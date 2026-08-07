@@ -8,6 +8,7 @@ import type {
   Severity,
 } from "@csb/shared";
 import {
+  classifyGateFindings,
   defaultGuardrailPolicy,
   evaluateGate,
   findingIdentity,
@@ -89,6 +90,17 @@ test("classifies bootstrap observations as new even when history matches", () =>
     baselineScanId: null,
   }));
   assert.equal(result.deltas[0]?.lifecycle, "new");
+});
+
+test("public classifier treats bootstrap observations as new", () => {
+  const high = finding("stable-xss", "high");
+  const result = classifyGateFindings(input({
+    currentFindings: [high],
+    baselineFindings: null,
+    historicalFindings: [high],
+    baselineScanId: null,
+  }));
+  assert.equal(result[0]?.lifecycle, "new");
 });
 
 test("blocks a reopened high finding", () => {
@@ -237,6 +249,32 @@ test("isolates exception objects and target arrays from returned-output mutation
   assert.deepEqual(exception.branches, ["main"]);
   assert.deepEqual(exception.ruleIndexes, []);
   assert.equal(evaluateGate(gateInput).decision.outcome, "pass");
+});
+
+test("isolates finding arrays from input and later evaluations", () => {
+  const current = finding("stable-xss", "high");
+  const historical = finding("stable-xss", "high");
+  const policy = defaultGuardrailPolicy();
+  policy.rules = [{ severity: ["high"], lifecycle: ["reopened"], decision: "block" }];
+  const gateInput = input({
+    policy,
+    currentFindings: [current],
+    baselineFindings: [],
+    historicalFindings: [historical],
+  });
+  const first = evaluateGate(gateInput);
+  assert.equal(first.decision.outcome, "blocked");
+
+  first.deltas[0]!.fingerprints.splice(0, first.deltas[0]!.fingerprints.length, "sha256:changed");
+  first.deltas[0]!.cwe.splice(0, first.deltas[0]!.cwe.length, "CWE-999");
+
+  const second = evaluateGate(gateInput);
+  assert.deepEqual(current.fingerprints, ["sha256:stable-xss"]);
+  assert.deepEqual(current.cwe, ["CWE-79"]);
+  assert.deepEqual(second.deltas[0]?.fingerprints, ["sha256:stable-xss"]);
+  assert.deepEqual(second.deltas[0]?.cwe, ["CWE-79"]);
+  assert.equal(second.deltas[0]?.lifecycle, "reopened");
+  assert.equal(second.decision.outcome, "blocked");
 });
 
 test("retains baseline scan provenance for fixed findings", () => {

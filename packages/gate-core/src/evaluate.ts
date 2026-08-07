@@ -38,7 +38,14 @@ const unreviewedTriage: FindingTriage = {
 };
 
 export function classifyGateFindings(input: EvaluateGateInput): GateFindingDelta[] {
-  const baseline = input.baselineFindings ?? [];
+  if (input.baselineFindings === null) {
+    return input.currentFindings.map((finding): GateFindingDelta => {
+      const identity = findingIdentity(finding);
+      return delta(finding, identity, "new", input);
+    });
+  }
+
+  const baseline = input.baselineFindings;
   const baselineIdentities = new Set(baseline.map(findingIdentity));
   const historicalIdentities = new Set(input.historicalFindings.map(findingIdentity));
   const currentIdentities = new Set(input.currentFindings.map(findingIdentity));
@@ -127,6 +134,8 @@ function delta(
 ): GateFindingDelta {
   return {
     ...finding,
+    fingerprints: [...finding.fingerprints],
+    cwe: [...finding.cwe],
     identity,
     lifecycle,
     triage: { ...(input.triageByIdentity.get(identity) ?? unreviewedTriage) },
@@ -150,10 +159,7 @@ function noChangesResult(): EvaluateGateResult {
 }
 
 function bootstrapResult(input: EvaluateGateInput): EvaluateGateResult {
-  const deltas = input.currentFindings.map((finding): GateFindingDelta => {
-    const identity = findingIdentity(finding);
-    return delta(finding, identity, "new", input);
-  });
+  const deltas = classifyGateFindings(input);
   return {
     deltas,
     decision: {
