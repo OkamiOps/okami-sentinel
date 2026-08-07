@@ -94,3 +94,29 @@ test("validates policies before writing them", () => {
   );
   assert.equal(fs.existsSync(path.join(repositoryPath, ".csb", "guardrails.json")), false);
 });
+
+test("does not follow a pre-existing temporary-file symlink", () => {
+  const repositoryPath = repo("csb-policy-temp-symlink-");
+  const outside = repo("csb-policy-outside-");
+  const outsideFile = path.join(outside, "sentinel.txt");
+  fs.writeFileSync(outsideFile, "do-not-overwrite");
+  fs.mkdirSync(path.join(repositoryPath, ".csb"));
+  fs.symlinkSync(outsideFile, path.join(repositoryPath, ".csb", "guardrails.json.tmp"));
+
+  assert.throws(() => writeGuardrailPolicy(repositoryPath, defaultGuardrailPolicy()));
+  assert.equal(fs.readFileSync(outsideFile, "utf8"), "do-not-overwrite");
+  assert.equal(fs.existsSync(path.join(repositoryPath, ".csb", "guardrails.json")), false);
+});
+
+test("rejects a .csb directory symlink before writing outside the repository", () => {
+  const repositoryPath = repo("csb-policy-dir-symlink-");
+  const outside = repo("csb-policy-dir-outside-");
+  fs.symlinkSync(outside, path.join(repositoryPath, ".csb"));
+
+  assert.throws(
+    () => writeGuardrailPolicy(repositoryPath, defaultGuardrailPolicy()),
+    (error: unknown) => error instanceof GuardrailPolicyError && error.path === "policyPath",
+  );
+  assert.equal(fs.existsSync(path.join(outside, "guardrails.json")), false);
+  assert.equal(fs.existsSync(path.join(outside, "guardrails.json.tmp")), false);
+});

@@ -13,7 +13,7 @@ const exceptionKeys = [
   "branches",
   "ruleIndexes",
 ] as const;
-const isoTimestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+const isoTimestamp = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
 export class GuardrailExceptionsError extends Error {
   constructor(
@@ -104,8 +104,38 @@ function nonEmptyString(value: unknown, fieldPath: string): string {
 
 function timestamp(value: unknown, fieldPath: string): string {
   const candidate = nonEmptyString(value, fieldPath);
-  if (!isoTimestamp.test(candidate) || !Number.isFinite(Date.parse(candidate))) fail(fieldPath, "must be a valid ISO timestamp");
-  return candidate;
+  const match = isoTimestamp.exec(candidate);
+  if (match === null) fail(fieldPath, "must be a valid ISO timestamp");
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  if (
+    month < 1
+    || month > 12
+    || day < 1
+    || day > daysInMonth(year, month)
+    || hour > 23
+    || minute > 59
+    || second > 59
+  ) {
+    fail(fieldPath, "must be a valid ISO timestamp");
+  }
+
+  const instant = Date.parse(candidate);
+  if (!Number.isFinite(instant)) fail(fieldPath, "must be a valid ISO timestamp");
+  return new Date(instant).toISOString();
+}
+
+function daysInMonth(year: number, month: number): number {
+  if (month === 2) {
+    const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    return leapYear ? 29 : 28;
+  }
+  return [4, 6, 9, 11].includes(month) ? 30 : 31;
 }
 
 function stringArray(value: unknown, fieldPath: string): string[] {
