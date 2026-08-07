@@ -8,6 +8,7 @@ export const ROOT_DIR = path.resolve(__dirname, "../../..");
 export const DATA_DIR = path.join(ROOT_DIR, "data");
 export const BENCHMARK_DB_PATH = path.join(DATA_DIR, "benchmark.db");
 export const RUNS_DIR = path.join(DATA_DIR, "runs");
+export const GATES_DIR = path.join(DATA_DIR, "gates");
 
 export const CODEX_HOME =
   process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex");

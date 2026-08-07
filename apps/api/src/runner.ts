@@ -102,6 +102,28 @@ export function subscribe(scanId: string, listener: Listener): () => void {
   return () => undefined;
 }
 
+export function waitForScan(scanId: string): Promise<ScanRun> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let unsubscribe: () => void = () => undefined;
+    unsubscribe = subscribe(scanId, (event) => {
+      if (
+        (event.type === "done" || event.status === "cancelled") &&
+        event.scan
+      ) {
+        settled = true;
+        unsubscribe();
+        resolve(event.scan);
+      } else if (event.type === "error") {
+        settled = true;
+        unsubscribe();
+        reject(new Error(event.message ?? "Scan falhou"));
+      }
+    });
+    if (settled) unsubscribe();
+  });
+}
+
 function subscribeDetached(
   scanId: string,
   run: ScanRun,
