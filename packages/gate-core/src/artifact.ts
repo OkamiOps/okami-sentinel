@@ -1,12 +1,15 @@
 import type {
   ChangeSet,
+  DecisionGraph,
   GateArtifact,
   GateDecision,
   GateFindingDelta,
   GateOutcome,
   GateSource,
   GitHubConclusion,
+  GuardrailException,
   GuardrailPolicy,
+  ScanCost,
   Severity,
 } from "@csb/shared";
 import type { EvaluateGateResult } from "./evaluate.js";
@@ -48,19 +51,31 @@ const nodeIds = ["changeset", "surface", "signal", "rule", "verdict"] as const;
 export function buildGateArtifact(input: BuildGateArtifactInput): GateArtifact {
   const envelope = buildEnvelope(input);
   const findings = input.evaluation.deltas.map(copyFinding);
-  assertPublicFindingPaths(findings);
   const decisionWithoutGraph = copyEvaluatedDecision(input.evaluation.decision);
   const decision: GateDecision = {
-    ...decisionWithoutGraph,
-    decisionGraph: buildDecisionGraph(envelope.changeSet, findings, decisionWithoutGraph),
+    outcome: decisionWithoutGraph.outcome,
+    summary: decisionWithoutGraph.summary,
+    violations: decisionWithoutGraph.violations,
+    warnings: decisionWithoutGraph.warnings,
+    exceptionsApplied: decisionWithoutGraph.exceptionsApplied,
+    githubConclusion: decisionWithoutGraph.githubConclusion,
+    decisionGraph: copyDecisionGraph(buildDecisionGraph(envelope.changeSet, findings, decisionWithoutGraph)),
   };
 
-  return {
+  return validatedArtifact({
     schemaVersion: 1,
-    ...envelope,
+    gateId: envelope.gateId,
+    repository: envelope.repository,
+    source: envelope.source,
+    changeSet: envelope.changeSet,
+    policy: envelope.policy,
+    scan: envelope.scan,
+    baselineCommit: envelope.baselineCommit,
     findings,
     decision,
-  };
+    versions: envelope.versions,
+    createdAt: envelope.createdAt,
+  });
 }
 
 export function buildOperationalErrorArtifact(input: BuildOperationalErrorArtifactInput): GateArtifact {
@@ -75,18 +90,41 @@ export function buildOperationalErrorArtifact(input: BuildOperationalErrorArtifa
     githubConclusion: "action_required",
   };
 
-  return {
+  return validatedArtifact({
     schemaVersion: 1,
-    ...envelope,
+    gateId: envelope.gateId,
+    repository: envelope.repository,
+    source: envelope.source,
+    changeSet: envelope.changeSet,
+    policy: envelope.policy,
+    scan: envelope.scan,
+    baselineCommit: envelope.baselineCommit,
     findings: [],
     decision: {
-      ...decisionWithoutGraph,
-      decisionGraph: buildDecisionGraph(envelope.changeSet, [], decisionWithoutGraph),
+      outcome: decisionWithoutGraph.outcome,
+      summary: decisionWithoutGraph.summary,
+      violations: decisionWithoutGraph.violations,
+      warnings: decisionWithoutGraph.warnings,
+      exceptionsApplied: decisionWithoutGraph.exceptionsApplied,
+      githubConclusion: decisionWithoutGraph.githubConclusion,
+      decisionGraph: copyDecisionGraph(buildDecisionGraph(envelope.changeSet, [], decisionWithoutGraph)),
     },
-  };
+    versions: envelope.versions,
+    createdAt: envelope.createdAt,
+  });
 }
 
 export function parseGateArtifact(value: unknown): GateArtifact {
+  validateGateArtifactV1(value);
+  return copyGateArtifact(value);
+}
+
+function validatedArtifact(artifact: GateArtifact): GateArtifact {
+  validateGateArtifactV1(artifact);
+  return artifact;
+}
+
+function validateGateArtifactV1(value: unknown): asserts value is GateArtifact {
   const artifact = record(value, "GateArtifact");
   const schemaVersion = artifact.schemaVersion;
   if (typeof schemaVersion === "number" && schemaVersion > 1) {
@@ -113,25 +151,18 @@ export function parseGateArtifact(value: unknown): GateArtifact {
   validateChangeSet(artifact.changeSet);
   validatePolicy(artifact.policy);
   validateScan(artifact.scan);
-  nullableString(artifact.baselineCommit, "GateArtifact.baselineCommit");
+  nullableNonEmptyString(artifact.baselineCommit, "GateArtifact.baselineCommit");
   const findings = array(artifact.findings, "GateArtifact.findings");
   findings.forEach((finding, index) => validateFinding(finding, `GateArtifact.findings[${index}]`));
   validateDecision(artifact.decision, findings);
   validateVersions(artifact.versions);
   isoTimestamp(artifact.createdAt, "GateArtifact.createdAt");
-  return value as GateArtifact;
+  validateDecisionInvariants(value as GateArtifact);
+  validateCanonicalDecisionGraph(value as GateArtifact);
 }
 
 function buildEnvelope(input: PublicArtifactEnvelope): Omit<GateArtifact, "schemaVersion" | "findings" | "decision"> {
-  requireNonEmpty(input.gateId, "gateId");
-  requireNonEmpty(input.repository.key, "repository.key");
-  requireNonEmpty(input.repository.name, "repository.name");
-  requireNonEmpty(input.changeSet.baseSha, "changeSet.baseSha");
-  requireNonEmpty(input.changeSet.headSha, "changeSet.headSha");
-  assertIsoTimestamp(input.createdAt, "createdAt");
-
   const changeSet = copyChangeSet(input.changeSet);
-  assertPublicPaths(changeSet);
 
   return {
     gateId: input.gateId,
@@ -177,8 +208,17 @@ function copyPolicy(policy: GuardrailPolicy): GuardrailPolicy {
   return {
     schemaVersion: 1,
     protectedBranches: [...policy.protectedBranches],
-    scope: { ...policy.scope },
-    scan: { ...policy.scan },
+    scope: {
+      mode: policy.scope.mode,
+      maxChangedPaths: policy.scope.maxChangedPaths,
+      fallback: policy.scope.fallback,
+    },
+    scan: {
+      model: policy.scan.model,
+      effort: policy.scan.effort,
+      mode: policy.scan.mode,
+      maxCostUsd: policy.scan.maxCostUsd,
+    },
     rules: policy.rules.map((rule) => ({
       severity: [...rule.severity],
       lifecycle: [...rule.lifecycle],
@@ -190,9 +230,21 @@ function copyPolicy(policy: GuardrailPolicy): GuardrailPolicy {
 function copyScan(scan: GateArtifact["scan"]): GateArtifact["scan"] {
   return {
     id: scan.id,
-    cost: scan.cost ? { ...scan.cost } : null,
+    cost: scan.cost ? copyScanCost(scan.cost) : null,
     status: scan.status,
   };
+}
+
+function copyScanCost(cost: ScanCost): ScanCost {
+  const copied: ScanCost = {
+    estimatedUsd: cost.estimatedUsd,
+    inputTokens: cost.inputTokens,
+    cachedInputTokens: cost.cachedInputTokens,
+    cacheWriteInputTokens: cost.cacheWriteInputTokens,
+    outputTokens: cost.outputTokens,
+  };
+  if (cost.model !== undefined) copied.model = cost.model;
+  return copied;
 }
 
 function copyFinding(finding: GateFindingDelta): GateFindingDelta {
@@ -210,13 +262,25 @@ function copyFinding(finding: GateFindingDelta): GateFindingDelta {
     cwe: [...finding.cwe],
     identity: finding.identity,
     lifecycle: finding.lifecycle,
-    triage: { ...finding.triage },
-    exception: finding.exception ? {
-      ...finding.exception,
-      branches: [...finding.exception.branches],
-      ruleIndexes: [...finding.exception.ruleIndexes],
-    } : null,
+    triage: {
+      status: finding.triage.status,
+      note: finding.triage.note,
+      updatedAt: finding.triage.updatedAt,
+    },
+    exception: finding.exception ? copyException(finding.exception) : null,
     sourceScanId: finding.sourceScanId,
+  };
+}
+
+function copyException(exception: GuardrailException): GuardrailException {
+  return {
+    findingIdentity: exception.findingIdentity,
+    reason: exception.reason,
+    owner: exception.owner,
+    createdAt: exception.createdAt,
+    expiresAt: exception.expiresAt,
+    branches: [...exception.branches],
+    ruleIndexes: [...exception.ruleIndexes],
   };
 }
 
@@ -224,56 +288,91 @@ function copyEvaluatedDecision(decision: EvaluateGateResult["decision"]): Evalua
   return {
     outcome: decision.outcome,
     summary: decision.summary,
-    violations: decision.violations.map((violation) => ({ ...violation })),
-    warnings: decision.warnings.map((warning) => ({ ...warning })),
+    violations: decision.violations.map(copyViolation),
+    warnings: decision.warnings.map(copyViolation),
     exceptionsApplied: [...decision.exceptionsApplied],
     githubConclusion: decision.githubConclusion,
+  };
+}
+
+function copyViolation(violation: GateDecision["violations"][number]): GateDecision["violations"][number] {
+  return {
+    findingIdentity: violation.findingIdentity,
+    ruleIndex: violation.ruleIndex,
+    decision: violation.decision,
+    reason: violation.reason,
+  };
+}
+
+function copyDecisionGraph(graph: DecisionGraph): DecisionGraph {
+  return {
+    nodes: graph.nodes.map((node) => ({
+      id: node.id,
+      kind: node.kind,
+      label: node.label,
+      value: node.value,
+      detail: node.detail,
+      tone: node.tone,
+      findingIdentity: node.findingIdentity,
+    })),
+    selectedNodeId: graph.selectedNodeId,
+  };
+}
+
+function copyGateArtifact(artifact: GateArtifact): GateArtifact {
+  return {
+    schemaVersion: 1,
+    gateId: artifact.gateId,
+    repository: {
+      key: artifact.repository.key,
+      owner: artifact.repository.owner,
+      name: artifact.repository.name,
+      defaultBranch: artifact.repository.defaultBranch,
+    },
+    source: artifact.source,
+    changeSet: copyChangeSet(artifact.changeSet),
+    policy: copyPolicy(artifact.policy),
+    scan: copyScan(artifact.scan),
+    baselineCommit: artifact.baselineCommit,
+    findings: artifact.findings.map(copyFinding),
+    decision: {
+      outcome: artifact.decision.outcome,
+      summary: artifact.decision.summary,
+      violations: artifact.decision.violations.map(copyViolation),
+      warnings: artifact.decision.warnings.map(copyViolation),
+      exceptionsApplied: [...artifact.decision.exceptionsApplied],
+      githubConclusion: artifact.decision.githubConclusion,
+      decisionGraph: copyDecisionGraph(artifact.decision.decisionGraph),
+    },
+    versions: {
+      gateCore: artifact.versions.gateCore,
+      scanner: artifact.versions.scanner,
+    },
+    createdAt: artifact.createdAt,
   };
 }
 
 function sanitizeOperationalSummary(value: string): string {
   const normalized = value
     .replace(/[\u0000-\u001f\u007f]+/g, " ")
-    .replace(/\bauthorization\s*[:=]\s*(?:bearer\s+)?[^\s,;]+/gi, "[REDACTED]")
-    .replace(/\b(?:api[-_ ]?key|token|secret|password)\s*[:=]\s*[^\s,;]+/gi, "[REDACTED]")
-    .replace(/(?:file:\/\/)?(?:\/[\w.@%+~:-]+)+(?:\/[^\s,;]*)?/g, "[LOCAL_PATH]")
-    .replace(/\b[A-Za-z]:\\(?:[^\\\s]+\\)*[^\s,;]*/g, "[LOCAL_PATH]")
+    .replace(/\b(?:authorization|api[-_ ]?key|token|secret|password)\s*[:=]\s*(?:bearer\s+)?[^\s,;|]+/gi, "[REDACTED]")
+    .replace(/\bbearer\s+[^\s,;|]+/gi, "[REDACTED]")
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/gi, "[REDACTED]")
+    .replace(/\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/gi, "[REDACTED]")
+    .replace(/\bglpat-[A-Za-z0-9_-]{20,}\b/gi, "[REDACTED]")
+    .replace(/\bxox[baprs]-[A-Za-z0-9-]{20,}\b/gi, "[REDACTED]")
+    .replace(/\b(?:sk|rk)_live_[A-Za-z0-9]{16,}\b/gi, "[REDACTED]")
+    .replace(/\bAKIA[0-9A-Z]{16}\b/g, "[REDACTED]")
+    .replace(/\bAIza[0-9A-Za-z_-]{30,}\b/g, "[REDACTED]")
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED]")
+    .replace(/file:\/\/[^\s,;|]*/gi, "[LOCAL_PATH]")
+    .replace(/(^|[\s("'=])\\\\[^\\/\s,;|]+[\\/][^\s,;|]*/g, "$1[LOCAL_PATH]")
+    .replace(/(^|[\s("'=])[A-Za-z]:[\\/][^\s,;|]*/g, "$1[LOCAL_PATH]")
+    .replace(/(^|[\s("'=:])\/(?!\/)[^\s,;|]*/g, "$1[LOCAL_PATH]")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 500);
   return normalized || "Falha operacional.";
-}
-
-function assertPublicFindingPaths(findings: GateFindingDelta[]): void {
-  for (const finding of findings) {
-    if (finding.primaryPath !== null && isAbsoluteLocalPath(finding.primaryPath)) {
-      throw new Error("GateArtifact não pode publicar caminho absoluto local");
-    }
-  }
-}
-
-function assertPublicPaths(changeSet: ChangeSet): void {
-  const paths = [
-    ...changeSet.files.flatMap((file) => [file.path, file.previousPath]),
-    ...changeSet.scanPaths,
-  ];
-  for (const path of paths) {
-    if (path !== null && isAbsoluteLocalPath(path)) {
-      throw new Error("GateArtifact não pode publicar caminho absoluto local");
-    }
-  }
-}
-
-function isAbsoluteLocalPath(value: string): boolean {
-  return value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value) || value.startsWith("file://");
-}
-
-function requireNonEmpty(value: string, path: string): void {
-  if (!value.trim()) throw new Error(`${path} não pode ser vazio`);
-}
-
-function assertIsoTimestamp(value: string, path: string): void {
-  if (!isIsoTimestamp(value)) throw new Error(`${path} deve ser um timestamp ISO`);
 }
 
 function validateRepository(value: unknown): void {
@@ -501,6 +600,108 @@ function validateDecisionGraph(value: unknown, findingIdentities: Set<string>, o
   equal(verdict.value, outcome.toUpperCase(), "GateArtifact.decision.decisionGraph.nodes[4].value");
 }
 
+function validateDecisionInvariants(artifact: GateArtifact): void {
+  const { decision } = artifact;
+
+  decision.violations.forEach((row, index) => {
+    if (row.decision !== "block") {
+      fail(`GateArtifact.decision.violations[${index}].decision`, "deve ser block");
+    }
+  });
+  decision.warnings.forEach((row, index) => {
+    if (row.decision !== "review") {
+      fail(`GateArtifact.decision.warnings[${index}].decision`, "deve ser review");
+    }
+  });
+
+  if (decision.violations.length > 0 && decision.outcome !== "blocked") {
+    fail("GateArtifact.decision.violations", "exige outcome blocked");
+  }
+  if (decision.violations.length === 0 && decision.warnings.length > 0 && decision.outcome !== "warning") {
+    fail("GateArtifact.decision.warnings", "exige outcome warning quando não há blockers");
+  }
+
+  if (decision.outcome === "blocked" && decision.violations.length === 0) {
+    fail("GateArtifact.decision.outcome", "blocked exige violations");
+  }
+  if (decision.outcome === "warning" && (decision.violations.length > 0 || decision.warnings.length === 0)) {
+    fail("GateArtifact.decision.outcome", "warning exige apenas warning rows");
+  }
+  if (decision.outcome === "pass" && (decision.violations.length > 0 || decision.warnings.length > 0)) {
+    fail("GateArtifact.decision.outcome", "pass não aceita violations ou warnings");
+  }
+  if (
+    (decision.outcome === "no_changes" || decision.outcome === "bootstrap" || decision.outcome === "error")
+    && (decision.violations.length > 0 || decision.warnings.length > 0)
+  ) {
+    fail("GateArtifact.decision.outcome", `${decision.outcome} não aceita violations ou warnings`);
+  }
+
+  if (decision.outcome === "bootstrap" && artifact.baselineCommit !== null) {
+    fail("GateArtifact.decision.outcome", "bootstrap exige baselineCommit nulo");
+  }
+  if (
+    (decision.outcome === "pass" || decision.outcome === "warning" || decision.outcome === "blocked")
+    && artifact.baselineCommit === null
+  ) {
+    fail("GateArtifact.baselineCommit", `é obrigatório para outcome ${decision.outcome}`);
+  }
+  if (
+    artifact.baselineCommit === null
+    && artifact.changeSet.files.length > 0
+    && decision.outcome !== "bootstrap"
+    && decision.outcome !== "error"
+  ) {
+    fail("GateArtifact.baselineCommit", "diff alterado sem baseline aceita apenas bootstrap ou error");
+  }
+
+  if (decision.outcome === "no_changes") {
+    if (artifact.changeSet.files.length > 0) {
+      fail("GateArtifact.decision.outcome", "no_changes exige changeset vazio");
+    }
+    if (artifact.findings.length > 0) {
+      fail("GateArtifact.decision.outcome", "no_changes não aceita findings");
+    }
+  }
+  if (decision.outcome === "error" && artifact.findings.length > 0) {
+    fail("GateArtifact.decision.outcome", "error não aceita findings");
+  }
+
+  if (/^(?:failed|error)$/i.test(artifact.scan.status.trim()) && decision.outcome !== "error") {
+    fail("GateArtifact.scan.status", "failed/error exige outcome error/action_required");
+  }
+}
+
+function validateCanonicalDecisionGraph(artifact: GateArtifact): void {
+  const decision = copyEvaluatedDecision(artifact.decision);
+  const canonical = buildDecisionGraph(artifact.changeSet, artifact.findings, decision);
+  if (!decisionGraphsEqual(artifact.decision.decisionGraph, canonical)) {
+    fail("GateArtifact.decision.decisionGraph", "não corresponde ao grafo canônico");
+  }
+}
+
+function decisionGraphsEqual(actual: DecisionGraph, expected: DecisionGraph): boolean {
+  if (actual.selectedNodeId !== expected.selectedNodeId || actual.nodes.length !== expected.nodes.length) {
+    return false;
+  }
+  for (let index = 0; index < actual.nodes.length; index += 1) {
+    const left = actual.nodes[index]!;
+    const right = expected.nodes[index]!;
+    if (
+      left.id !== right.id
+      || left.kind !== right.kind
+      || left.label !== right.label
+      || left.value !== right.value
+      || left.detail !== right.detail
+      || left.tone !== right.tone
+      || left.findingIdentity !== right.findingIdentity
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function validateVersions(value: unknown): void {
   const versions = record(value, "GateArtifact.versions");
   exactKeys(versions, ["gateCore", "scanner"], "GateArtifact.versions");
@@ -527,6 +728,7 @@ function array(value: unknown, path: string): unknown[] {
 
 function string(value: unknown, path: string): string {
   if (typeof value !== "string") fail(path, "deve ser texto");
+  assertPublicString(value, path);
   return value;
 }
 
@@ -541,10 +743,13 @@ function nullableString(value: unknown, path: string): string | null {
   return string(value, path);
 }
 
+function nullableNonEmptyString(value: unknown, path: string): string | null {
+  if (value === null) return null;
+  return nonEmptyString(value, path);
+}
+
 function publicPath(value: unknown, path: string): string {
-  const parsed = nonEmptyString(value, path);
-  if (isAbsoluteLocalPath(parsed)) fail(path, "não pode ser um caminho absoluto local");
-  return parsed;
+  return nonEmptyString(value, path);
 }
 
 function nullablePublicPath(value: unknown, path: string): string | null {
@@ -582,6 +787,35 @@ function isoTimestamp(value: unknown, path: string): string {
 function nullableIsoTimestamp(value: unknown, path: string): string | null {
   if (value === null) return null;
   return isoTimestamp(value, path);
+}
+
+function assertPublicString(value: string, path: string): void {
+  if (containsAbsoluteLocalPath(value)) {
+    fail(path, "contém caminho absoluto local");
+  }
+  if (containsSecret(value)) {
+    fail(path, "contém possível segredo");
+  }
+}
+
+function containsAbsoluteLocalPath(value: string): boolean {
+  return /file:\/\//i.test(value)
+    || /(?:^|[\s("'=])\\\\[^\\/\s,;|]+[\\/][^\s,;|]*/.test(value)
+    || /(?:^|[\s("'=])[A-Za-z]:[\\/][^\s,;|]*/.test(value)
+    || /(?:^|[\s("'=:])\/(?!\/)(?:[^\s,;|]|$)/.test(value);
+}
+
+function containsSecret(value: string): boolean {
+  return /\b(?:authorization|api[-_ ]?key|token|secret|password)\s*[:=]\s*(?:bearer\s+)?[^\s,;|]+/i.test(value)
+    || /\bbearer\s+[^\s,;|]+/i.test(value)
+    || /\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/i.test(value)
+    || /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/i.test(value)
+    || /\bglpat-[A-Za-z0-9_-]{20,}\b/i.test(value)
+    || /\bxox[baprs]-[A-Za-z0-9-]{20,}\b/i.test(value)
+    || /\b(?:sk|rk)_live_[A-Za-z0-9]{16,}\b/i.test(value)
+    || /\bAKIA[0-9A-Z]{16}\b/.test(value)
+    || /\bAIza[0-9A-Za-z_-]{30,}\b/.test(value)
+    || /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/.test(value);
 }
 
 function isIsoTimestamp(value: string): boolean {
