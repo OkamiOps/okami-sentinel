@@ -4,8 +4,12 @@ import type {
   GateArtifact,
   GateFindingDelta,
   GateOutcome,
+  GateFindingLifecycle,
+  GateRuleDecision,
   GateRun,
   GateStatus,
+  GuardrailPolicy,
+  Severity,
 } from "@csb/shared";
 
 export type GateTone = "neutral" | "good" | "warning" | "risk" | "active";
@@ -20,6 +24,29 @@ export interface NodeEvidence {
   summary: string;
   rows: EvidenceRow[];
   finding: GateFindingDelta | null;
+}
+
+export interface PolicyEditorRule {
+  severity: Severity[];
+  lifecycle: GateFindingLifecycle[];
+  decision: GateRuleDecision;
+}
+
+export interface PolicyEditorState {
+  protectedBranches: string[];
+  scopeMode: GuardrailPolicy["scope"]["mode"];
+  maxChangedPaths: number;
+  fallback: GuardrailPolicy["scope"]["fallback"];
+  model: string;
+  effort: string;
+  scanMode: GuardrailPolicy["scan"]["mode"];
+  maxCostUsd: number;
+  rules: PolicyEditorRule[];
+}
+
+export interface PolicyEditorError {
+  field: string;
+  message: string;
 }
 
 const activeStatuses = new Set<GateStatus>([
@@ -89,6 +116,67 @@ export function gateOutcomeTone(outcome: GateOutcome | null): GateTone {
 
 export function isGateActive(status: GateStatus): boolean {
   return activeStatuses.has(status);
+}
+
+export function editorStateFromPolicy(policy: GuardrailPolicy): PolicyEditorState {
+  return {
+    protectedBranches: [...policy.protectedBranches],
+    scopeMode: policy.scope.mode,
+    maxChangedPaths: policy.scope.maxChangedPaths,
+    fallback: policy.scope.fallback,
+    model: policy.scan.model,
+    effort: policy.scan.effort,
+    scanMode: policy.scan.mode,
+    maxCostUsd: policy.scan.maxCostUsd,
+    rules: policy.rules.map((rule) => ({
+      severity: [...rule.severity],
+      lifecycle: [...rule.lifecycle],
+      decision: rule.decision,
+    })),
+  };
+}
+
+export function policyFromEditor(editor: PolicyEditorState): GuardrailPolicy {
+  return {
+    schemaVersion: 1,
+    protectedBranches: editor.protectedBranches.map((branch) => branch.trim()).filter(Boolean),
+    scope: {
+      mode: editor.scopeMode,
+      maxChangedPaths: editor.maxChangedPaths,
+      fallback: editor.fallback,
+    },
+    scan: {
+      model: editor.model.trim(),
+      effort: editor.effort.trim(),
+      mode: editor.scanMode,
+      maxCostUsd: editor.maxCostUsd,
+    },
+    rules: editor.rules.map((rule) => ({
+      severity: [...rule.severity],
+      lifecycle: [...rule.lifecycle],
+      decision: rule.decision,
+    })),
+  };
+}
+
+export function validatePolicyEditor(editor: PolicyEditorState): PolicyEditorError | null {
+  if (editor.protectedBranches.length === 0 || editor.protectedBranches.some((branch) => !branch.trim())) {
+    return { field: "protectedBranches", message: "Informe pelo menos uma branch protegida." };
+  }
+  if (!Number.isInteger(editor.maxChangedPaths) || editor.maxChangedPaths <= 0) {
+    return { field: "maxChangedPaths", message: "O teto de paths deve ser um inteiro maior que 0." };
+  }
+  if (!editor.model.trim()) return { field: "model", message: "Informe o modelo do scan." };
+  if (!editor.effort.trim()) return { field: "effort", message: "Informe o effort do scan." };
+  if (!Number.isFinite(editor.maxCostUsd) || editor.maxCostUsd <= 0) {
+    return { field: "maxCostUsd", message: "O envelope deve ser maior que US$ 0." };
+  }
+  if (editor.rules.length === 0) return { field: "rules", message: "Adicione pelo menos uma regra." };
+  const invalidRule = editor.rules.findIndex((rule) => rule.severity.length === 0 || rule.lifecycle.length === 0);
+  if (invalidRule >= 0) {
+    return { field: `rules.${invalidRule}`, message: `A regra ${invalidRule + 1} precisa de severidade e lifecycle.` };
+  }
+  return null;
 }
 
 export function evidenceForNode(

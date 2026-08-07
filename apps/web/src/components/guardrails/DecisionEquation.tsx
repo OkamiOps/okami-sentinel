@@ -13,7 +13,7 @@ export function DecisionEquation({ nodes }: { nodes: readonly DecisionGraphNode[
           <div key={node.id} className="contents">
             <div className="min-w-0 flex-1 border px-3 py-2.5">
               <div className="bench-label">{node.label}</div>
-              <div className="mt-1 break-words text-xs font-medium">{node.value || "Não determinado"}</div>
+              <div className={`mt-1 break-words text-xs font-medium ${node.id === "verdict" ? "lg:whitespace-nowrap" : ""}`}>{node.value || "Não determinado"}</div>
             </div>
             {index < nodes.length - 1 && (
               <span className="flex items-center justify-center text-muted-foreground" aria-hidden>

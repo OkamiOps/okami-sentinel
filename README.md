@@ -44,6 +44,29 @@ Na subida, a API indexa scans já existentes no state do Codex Security (ex.: Co
 3. **Detalhe** — findings, evidência, progresso SSE enquanto o scan roda  
 4. **Comparar** — 2+ runs para ranking high/$ e diff de findings  
 
+## Guardrails locais
+
+`Guardrails` executa um gate de segurança contra o diff de um repositório Git local. O gate mostra o changeset, o escopo efetivo enviado ao scanner, o resultado da política e a cadeia causal do Decision Graph.
+
+1. Abra **Guardrails** e escolha **Cadastrar**.
+2. Informe a raiz absoluta de um repositório Git local. A API valida o diretório antes do enrollment.
+3. Escolha **Executar preflight**, selecione o repositório e informe as referências base e head (por exemplo, `main` e `HEAD`).
+4. Acompanhe a lane no Portfolio Pipeline. Um diff vazio termina como `no_changes`, sem iniciar scan e sem consumir custo.
+5. Selecione os nós do Decision Graph para inspecionar a evidência usada na decisão.
+
+A política de cada repositório fica em `.csb/guardrails.json`. O editor visual preserva a ordem das regras, simula a configuração em memória contra um GateArtifact existente e mostra o JSON antes/depois. A gravação só ocorre após confirmação explícita; o app não cria commit nem faz push.
+
+Outcomes locais:
+
+- `no_changes`: não há arquivos alterados entre as referências;
+- `bootstrap`: não existe baseline; o resultado é neutro e nunca aparece como aprovação;
+- `pass`: nenhuma regra bloqueante ou de revisão foi acionada;
+- `warning`: a política exige revisão;
+- `blocked`: uma regra bloqueante foi acionada;
+- `error`: falha operacional; nunca é convertida em aprovação.
+
+A publicação do mesmo resultado como GitHub Check e a instalação do workflow pertencem ao próximo plano. Esta entrega não publica, não instala workflow e não altera o GitHub.
+
 ## Variáveis opcionais
 
 | Variável | Default | Efeito |

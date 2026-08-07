@@ -11,6 +11,9 @@ export function EvidenceTrace({ artifact, node }: { artifact: GateArtifact; node
   const attackPathHref = finding?.sourceScanId && finding.findingId
     ? `/scans/${encodeURIComponent(finding.sourceScanId)}/findings/${encodeURIComponent(finding.findingId)}/path?evidenceScan=${encodeURIComponent(finding.sourceScanId)}`
     : null;
+  const policyHref = node.kind === "rule"
+    ? `/guardrails/repositories/${encodeURIComponent(artifact.repository.key)}/policy`
+    : null;
 
   return (
     <section className="bench-panel min-w-0" aria-labelledby="evidence-trace-title">
@@ -35,6 +38,13 @@ export function EvidenceTrace({ artifact, node }: { artifact: GateArtifact; node
           <Button asChild variant="outline" className="mt-4 min-h-11 w-full justify-between sm:w-auto">
             <Link to={attackPathHref}>
               Abrir no Attack Path <ArrowUpRight aria-hidden size={14} />
+            </Link>
+          </Button>
+        )}
+        {policyHref && (
+          <Button asChild variant="outline" className="mt-4 min-h-11 w-full justify-between sm:w-auto">
+            <Link to={policyHref}>
+              Abrir simulação da política <ArrowUpRight aria-hidden size={14} />
             </Link>
           </Button>
         )}

@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { DecisionGraph, GateRun } from "@csb/shared";
+import type { DecisionGraph, GateRun, GuardrailPolicy } from "@csb/shared";
 
 import {
+  editorStateFromPolicy,
   guardrailHref,
+  policyFromEditor,
   selectDecisionNode,
   selectGate,
+  validatePolicyEditor,
 } from "./guardrails.js";
 
 function gatesFixture(): GateRun[] {
@@ -78,6 +81,28 @@ function graphFixture(): DecisionGraph {
   };
 }
 
+function policyFixture(): GuardrailPolicy {
+  return {
+    schemaVersion: 1,
+    protectedBranches: ["main", "release"],
+    scope: { mode: "changed", maxChangedPaths: 50, fallback: "repository" },
+    scan: {
+      model: "gpt-5.6-sol",
+      effort: "high",
+      mode: "standard",
+      maxCostUsd: 18,
+    },
+    rules: [
+      { severity: ["critical"], lifecycle: ["new", "reopened"], decision: "block" },
+      { severity: ["high"], lifecycle: ["persistent"], decision: "review" },
+    ],
+  };
+}
+
+function editorFixture() {
+  return editorStateFromPolicy(policyFixture());
+}
+
 test("selects the requested gate or falls back to the first blocked lane", () => {
   assert.equal(selectGate(gatesFixture(), "gate-pass")?.id, "gate-pass");
   assert.equal(selectGate(gatesFixture(), null)?.id, "gate-blocked");
@@ -97,4 +122,16 @@ test("builds a reloadable guardrail URL", () => {
     guardrailHref("gate-1", "signal"),
     "/guardrails/gate-1?node=signal",
   );
+});
+
+test("serializes the visual editor without changing rule order", () => {
+  const policy = policyFixture();
+  assert.deepEqual(policyFromEditor(editorStateFromPolicy(policy)).rules, policy.rules);
+});
+
+test("rejects an invalid cost before calling the API", () => {
+  assert.deepEqual(validatePolicyEditor({ ...editorFixture(), maxCostUsd: 0 }), {
+    field: "maxCostUsd",
+    message: "O envelope deve ser maior que US$ 0.",
+  });
 });
