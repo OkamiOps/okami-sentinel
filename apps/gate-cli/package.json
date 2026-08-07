@@ -1,0 +1,19 @@
+{
+  "name": "@csb/gate-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "csb-gate": "./src/index.ts" },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "test": "tsx --test src/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@csb/gate-core": "workspace:*",
+    "@csb/gate-runtime": "workspace:*",
+    "@csb/shared": "workspace:*"
+  },
+  "devDependencies": { "@types/node": "^22.15.32", "tsx": "^4.23.1", "typescript": "^5.8.3" }
+}
