@@ -93,7 +93,9 @@
 - Produces: `GuardrailRepository`, `GuardrailPolicy`, `GateRun`, `GateArtifact`, `GateDecision`, `ChangeSet`, `GateFindingDelta`, `DecisionGraph`, `defaultGuardrailPolicy()`.
 - Consumes: `FindingSummary`, `FindingTriage`, `ScanCost`, `Severity` from `@csb/shared`.
 
-- [ ] **Step 1: Add the failing default-policy test**
+- [ ] **Step 1: Create the workspace scaffold and add the failing default-policy test**
+
+Create `packages/gate-core/package.json` with the exact manifest shown in Step 3, add the root-convention `tsconfig.json`, and create an empty `src/index.ts`. Run `pnpm install` under Node 24.17.0 so the workspace filter resolves. Do not create `default-policy.ts` yet. Then add the failing test:
 
 ```ts
 import assert from "node:assert/strict";
@@ -113,11 +115,11 @@ test("default policy blocks new or reopened critical and high findings", () => {
 });
 ```
 
-- [ ] **Step 2: Run the test and confirm the package is missing**
+- [ ] **Step 2: Run the test and confirm the implementation is missing**
 
 Run: `pnpm --filter @csb/gate-core test`
 
-Expected: FAIL because `@csb/gate-core` and `default-policy.ts` do not exist.
+Expected: FAIL because `default-policy.ts` does not exist; the test runner must report the test file rather than `No projects matched`.
 
 - [ ] **Step 3: Add public types and the default policy**
 
@@ -262,7 +264,7 @@ export interface GuardrailRepository {
 }
 ```
 
-Create `packages/gate-core/package.json`:
+The `packages/gate-core/package.json` scaffold created in Step 1 must contain exactly:
 
 ```json
 {
@@ -303,7 +305,7 @@ export function defaultGuardrailPolicy(): GuardrailPolicy {
 }
 ```
 
-Export it from `packages/gate-core/src/index.ts`. Add `"engines": { "node": ">=24 <25" }` and `"test": "pnpm -r --if-present test"` to the root `package.json`. Add `.superpowers/` to `.gitignore`. Run `pnpm install` under Node 24.17.0 to update the lockfile.
+Export it from `packages/gate-core/src/index.ts`. Add `"engines": { "node": ">=24 <25" }` and `"test": "pnpm -r --if-present test"` to the root `package.json`. Add `.superpowers/` to `.gitignore`. Run `pnpm install` under Node 24.17.0 again only if these manifest changes alter the lockfile.
 
 - [ ] **Step 4: Run package and workspace gates**
 
@@ -619,7 +621,9 @@ git commit -m "feat: explain gate decisions with causal artifacts"
 - Consumes: repository path, base/head refs, `GuardrailPolicy` and versioned exception JSON.
 - Produces: `resolveChangeSet(input, runner?)`, `readGuardrailPolicy(repoPath)`, `writeGuardrailPolicy(repoPath, policy)`, `readGuardrailExceptions(repoPath)`.
 
-- [ ] **Step 1: Write parser and policy-file tests**
+- [ ] **Step 1: Create the runtime scaffold and write parser/configuration tests**
+
+Create `packages/gate-runtime/package.json` with the exact manifest shown in Step 3, add the root-convention `tsconfig.json`, and create an empty `src/index.ts`. Run `pnpm install` under Node 24.17.0 so the workspace filter resolves. Do not create any adapter implementation yet. Then add the failing tests:
 
 ```ts
 test("parses modified, deleted and renamed paths from nul-separated git output", () => {
@@ -672,11 +676,11 @@ test("reads versioned exceptions and rejects incomplete entries", () => {
 
 Run: `pnpm --filter @csb/gate-runtime test`
 
-Expected: FAIL because the runtime workspace and adapters do not exist.
+Expected: FAIL because the adapter modules do not exist; the test runner must report the test files rather than `No projects matched`.
 
 - [ ] **Step 3: Create the runtime workspace and implement adapters without a shell**
 
-Create `packages/gate-runtime/package.json`:
+The `packages/gate-runtime/package.json` scaffold created in Step 1 must contain exactly:
 
 ```json
 {

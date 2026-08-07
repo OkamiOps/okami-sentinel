@@ -83,7 +83,9 @@
 - Consumes: `@csb/gate-core`, `@csb/gate-runtime`, repository checkout, policy path, optional baseline artifact and scanner credential from environment.
 - Produces: `runGateCli(options, deps?)`, `csb-gate-result.json`, exit codes `0 | 2 | 3`.
 
-- [ ] **Step 1: Write CLI contract tests**
+- [ ] **Step 1: Create the CLI scaffold and write contract tests**
+
+Create `apps/gate-cli/package.json` with the exact manifest shown in Step 3, add the root-convention `tsconfig.json`, and create an empty `src/index.ts`. Run `pnpm install` under Node 24.17.0 so the workspace filter resolves. Do not implement args, scanner or run logic yet. Then add the failing tests:
 
 ```ts
 test("writes a blocked artifact and returns exit code 2", async () => {
@@ -110,15 +112,15 @@ test("returns zero for pass, warning, bootstrap and no_changes", async () => {
 });
 ```
 
-- [ ] **Step 2: Run the CLI test and verify the workspace is missing**
+- [ ] **Step 2: Run the CLI test and verify the implementation is missing**
 
 Run: `pnpm --filter @csb/gate-cli test`
 
-Expected: FAIL because `apps/gate-cli` does not exist.
+Expected: FAIL because the CLI modules do not exist; the test runner must report `run.test.ts` rather than `No projects matched`.
 
 - [ ] **Step 3: Create the CLI workspace and validated arguments**
 
-Create `package.json`:
+The `apps/gate-cli/package.json` scaffold created in Step 1 must contain exactly:
 
 ```json
 {
