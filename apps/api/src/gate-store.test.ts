@@ -518,3 +518,70 @@ test("rejects mismatched summary types and free-form error codes", () => {
     db.close();
   }
 });
+
+test("rejects loose timestamps and persists valid ISO offsets as canonical UTC", () => {
+  const db = new Database(":memory:");
+
+  try {
+    assert.throws(
+      () =>
+        appendGateEvent(
+          "gate-1",
+          {
+            sequence: 1,
+            type: "done",
+            payload: {
+              completedAt:
+                "Thu, 01 Jan 1970 00:00:00 GMT (Bearer s3crt)",
+            },
+            createdAt: "2026-08-07T10:00:00Z",
+          },
+          db,
+        ),
+      /status or progress summary/i,
+    );
+    assert.throws(
+      () =>
+        appendGateEvent(
+          "gate-1",
+          {
+            sequence: 2,
+            type: "done",
+            payload: { completedAt: "2026-02-30T10:00:00Z" },
+            createdAt: "2026-08-07T10:00:01Z",
+          },
+          db,
+        ),
+      /status or progress summary/i,
+    );
+
+    appendGateEvent(
+      "gate-1",
+      {
+        sequence: 3,
+        type: "done",
+        payload: { completedAt: "2026-08-07T10:00:00+02:00" },
+        createdAt: "2026-08-07T10:00:02Z",
+      },
+      db,
+    );
+
+    assert.deepEqual(listGateEvents("gate-1", db), [
+      {
+        sequence: 3,
+        type: "done",
+        payload: { completedAt: "2026-08-07T08:00:00.000Z" },
+        createdAt: "2026-08-07T10:00:02Z",
+      },
+    ]);
+    const persisted = db
+      .prepare(
+        "SELECT payload_json FROM gate_events WHERE gate_id = ? AND sequence = ?",
+      )
+      .get("gate-1", 3) as { payload_json: string };
+    assert.equal(persisted.payload_json.includes("Bearer"), false);
+    assert.equal(persisted.payload_json.includes("+02:00"), false);
+  } finally {
+    db.close();
+  }
+});

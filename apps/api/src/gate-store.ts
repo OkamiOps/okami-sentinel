@@ -138,6 +138,8 @@ const GITHUB_CONCLUSIONS = new Set<GitHubConclusion>([
 ]);
 const EVENT_CODE_PATTERN = /^[a-z][a-z0-9_.:-]*$/i;
 const EVENT_ID_PATTERN = /^[a-z0-9][a-z0-9_.:-]*$/i;
+const ISO_TIMESTAMP_PATTERN =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/;
 
 export function ensureGateSchema(
   database: Database.Database = getDb(),
@@ -519,8 +521,11 @@ function serializeEventPayload(payload: GateEventPayload): string {
     if (!isTypedEventSummaryValue(key, value)) {
       throw new Error("Gate event payload must be a status or progress summary");
     }
+    if (key === "completedAt" && typeof value === "string") {
+      canonicalPayload[key] = normalizeIsoTimestamp(value) as string;
+    }
   }
-  return payloadJson;
+  return JSON.stringify(canonicalPayload);
 }
 
 function isEventSummaryScalar(
@@ -566,9 +571,7 @@ function isTypedEventSummaryValue(
     case "completedAt":
       return (
         value === null ||
-        (typeof value === "string" &&
-          value.length <= 64 &&
-          Number.isFinite(Date.parse(value)))
+        (typeof value === "string" && normalizeIsoTimestamp(value) !== undefined)
       );
     case "current":
     case "total":
@@ -599,4 +602,45 @@ function isBoundedEventId(
     value.length <= 256 &&
     EVENT_ID_PATTERN.test(value)
   );
+}
+
+function normalizeIsoTimestamp(value: string): string | undefined {
+  const match = ISO_TIMESTAMP_PATTERN.exec(value);
+  if (match === null) return undefined;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const offsetHour = match[7] === undefined ? 0 : Number(match[7]);
+  const offsetMinute = match[8] === undefined ? 0 : Number(match[8]);
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > daysInMonth(year, month) ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59 ||
+    offsetHour > 23 ||
+    offsetMinute > 59
+  ) {
+    return undefined;
+  }
+
+  const instant = Date.parse(value);
+  return Number.isFinite(instant)
+    ? new Date(instant).toISOString()
+    : undefined;
+}
+
+function daysInMonth(year: number, month: number): number {
+  if (month === 2) {
+    const leapYear =
+      year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    return leapYear ? 29 : 28;
+  }
+  return [4, 6, 9, 11].includes(month) ? 30 : 31;
 }
