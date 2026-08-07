@@ -5,12 +5,14 @@ import type { GateRun, GuardrailRepository } from "@csb/shared";
 import {
   appendGateEvent,
   ensureGateSchema,
+  getCachedGitHubBaseline,
   getGateRun,
   insertGateRun,
   listGateEvents,
   listGateRuns,
   listGuardrailRepositories,
   updateGateRun,
+  upsertCachedGitHubBaseline,
   upsertGuardrailRepository,
 } from "./gate-store.js";
 
@@ -121,7 +123,8 @@ test("creates only the additive gate schema and expected index", () => {
            'guardrail_repositories',
            'gate_runs',
            'gate_runs_by_repository_started',
-           'gate_events'
+           'gate_events',
+           'github_baselines'
          )
          ORDER BY name`,
       )
@@ -131,8 +134,32 @@ test("creates only the additive gate schema and expected index", () => {
       { name: "gate_events", type: "table" },
       { name: "gate_runs", type: "table" },
       { name: "gate_runs_by_repository_started", type: "index" },
+      { name: "github_baselines", type: "table" },
       { name: "guardrail_repositories", type: "table" },
     ]);
+  } finally {
+    db.close();
+  }
+});
+
+test("round-trips the cached github baseline metadata", () => {
+  const db = new Database(":memory:");
+  const baseline = {
+    repositoryKey: "github.com/okami/csb",
+    workflowRunId: "98123",
+    headSha: "head456",
+    artifactPath:
+      "/workspace/csb/data/github-cache/github.com_okami_csb/98123/csb-gate-result.json",
+    fetchedAt: "2026-08-07T12:00:00.000Z",
+  };
+
+  try {
+    upsertCachedGitHubBaseline(baseline, db);
+    assert.deepEqual(
+      getCachedGitHubBaseline("github.com/okami/csb", db),
+      baseline,
+    );
+    assert.equal(getCachedGitHubBaseline("github.com/okami/missing", db), null);
   } finally {
     db.close();
   }

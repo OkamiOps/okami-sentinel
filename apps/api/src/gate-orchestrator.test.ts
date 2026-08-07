@@ -84,12 +84,16 @@ function scan(status: ScanRun["status"]): ScanRun {
 interface FakeDeps extends LocalGateDependencies {
   readonly runs: Map<string, GateRun>;
   startScanCalls: number;
+  githubBaselineCalls: number;
   lastScanRequest: StartScanRequest | null;
   cancelledScanId: string | null;
 }
 
 function fakeDeps(options: {
   changeSet?: ChangeSet;
+  githubBaseline?: GateArtifact | null;
+  githubBaselineError?: Error;
+  remoteReady?: boolean;
   scanStatus?: ScanRun["status"];
   holdScan?: boolean;
 } = {}): FakeDeps {
@@ -100,19 +104,23 @@ function fakeDeps(options: {
     repositoryPath: "/workspace/csb",
     displayName: "Codex Security Benchmark",
     defaultBranch: "main",
-    remoteOwner: "okami",
-    remoteName: "csb",
+    remoteOwner: options.remoteReady === false ? null : "okami",
+    remoteName: options.remoteReady === false ? null : "csb",
     enabled: true,
     policyPath: ".csb/guardrails.json",
     lastGateId: null,
     githubStatus: "not_checked",
   };
   const completedScan = scan(options.scanStatus ?? "completed");
-  const held = new Promise<ScanRun>(() => undefined);
+  let releaseHeld: ((value: ScanRun) => void) | null = null;
+  const held = new Promise<ScanRun>((resolve) => {
+    releaseHeld = resolve;
+  });
 
   const deps: FakeDeps = {
     runs,
     startScanCalls: 0,
+    githubBaselineCalls: 0,
     lastScanRequest: null,
     cancelledScanId: null,
     createGateId: () => "gate-1",
@@ -136,10 +144,18 @@ function fakeDeps(options: {
     waitForScan: async () => options.holdScan ? held : completedScan,
     cancelScan: (id) => {
       deps.cancelledScanId = id;
+      releaseHeld?.({ ...completedScan, status: "cancelled" });
       return true;
     },
     isScanActive: () => true,
     getBaselineScanId: () => null,
+    githubBaselineProvider: {
+      getBaseline: async () => {
+        deps.githubBaselineCalls += 1;
+        if (options.githubBaselineError) throw options.githubBaselineError;
+        return options.githubBaseline ?? null;
+      },
+    },
     getScan: (id) => id === "scan-1" ? completedScan : null,
     listScans: () => [],
     readFindings: () => [] as FindingSummary[],
@@ -154,6 +170,40 @@ function fakeDeps(options: {
     },
   };
   return deps;
+}
+
+function githubBaseline(headSha = "remote-head"): GateArtifact {
+  return buildGateArtifact({
+    gateId: "github-gate",
+    repository: {
+      key: "github.com/okami/csb",
+      owner: "okami",
+      name: "csb",
+      defaultBranch: "main",
+    },
+    source: "github",
+    changeSet: {
+      ...changeSet(["src/a.ts"]),
+      headRef: headSha,
+      headSha,
+    },
+    policy: defaultGuardrailPolicy(),
+    scan: { id: "github-scan", cost: null, status: "completed" },
+    baselineCommit: null,
+    evaluation: {
+      deltas: [],
+      decision: {
+        outcome: "bootstrap",
+        summary: "Baseline initialized with 0 finding(s).",
+        violations: [],
+        warnings: [],
+        exceptionsApplied: [],
+        githubConclusion: "neutral",
+      },
+    },
+    versions: { gateCore: "0.1.0", scanner: "gpt-5.6-sol" },
+    createdAt: "2026-08-07T09:00:00.000Z",
+  });
 }
 
 test("finishes no_changes without starting a scan", async () => {
@@ -191,6 +241,57 @@ test("cancels the linked scan", async () => {
 
   assert.equal(cancelGate(gate.id, deps), true);
   assert.equal(deps.cancelledScanId, "scan-1");
+});
+
+test("uses the github provider only when github baseline is requested and a remote is ready", async () => {
+  const deps = fakeDeps({ githubBaseline: githubBaseline() });
+  const gate = await startLocalGate(
+    { ...request(), baselineSource: "github" },
+    deps,
+  );
+  await waitForGate(gate.id);
+
+  assert.equal(deps.githubBaselineCalls, 1);
+  assert.equal(deps.runs.get(gate.id)?.baselineCommit, "remote-head");
+  assert.equal(deps.runs.get(gate.id)?.outcome, "pass");
+});
+
+test("keeps the local baseline provider intact by default", async () => {
+  const deps = fakeDeps({ githubBaseline: githubBaseline() });
+  const gate = await startLocalGate(request(), deps);
+  await waitForGate(gate.id);
+
+  assert.equal(deps.githubBaselineCalls, 0);
+  assert.equal(deps.runs.get(gate.id)?.outcome, "bootstrap");
+});
+
+test("rejects github baseline selection when the repository has no ready remote", async () => {
+  const deps = fakeDeps({ remoteReady: false });
+
+  await assert.rejects(
+    () => startLocalGate({ ...request(), baselineSource: "github" }, deps),
+    /remoto GitHub não está pronto/,
+  );
+  assert.equal(deps.githubBaselineCalls, 0);
+  assert.equal(deps.runs.size, 0);
+});
+
+test("turns unavailable github baseline history into an operational error", async () => {
+  const deps = fakeDeps({
+    githubBaselineError: new Error(
+      "histórico encontrado, mas o artifact de baseline não está disponível",
+    ),
+  });
+  const gate = await startLocalGate(
+    { ...request(), baselineSource: "github" },
+    deps,
+  );
+  await waitForGate(gate.id);
+
+  assert.equal(deps.githubBaselineCalls, 1);
+  assert.equal(deps.runs.get(gate.id)?.status, "error");
+  assert.equal(deps.runs.get(gate.id)?.outcome, "error");
+  assert.match(deps.runs.get(gate.id)?.error ?? "", /histórico encontrado/);
 });
 
 async function until(predicate: () => boolean): Promise<void> {

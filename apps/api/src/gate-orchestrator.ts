@@ -53,6 +53,10 @@ import {
   type GateEvent,
   type GateRunUpdate,
 } from "./gate-store.js";
+import {
+  GitHubBaselineProvider,
+  type BaselineProvider,
+} from "./github-baseline.js";
 import { readFindingsFile, toFindingSummaries } from "./ingest.js";
 import {
   cancelScan,
@@ -65,6 +69,7 @@ export interface LocalGateRequest {
   repositoryKey: string;
   baseRef: string;
   headRef: string;
+  baselineSource?: "local" | "github";
 }
 
 export interface LocalGateDependencies {
@@ -83,6 +88,7 @@ export interface LocalGateDependencies {
   cancelScan(scanId: string): boolean;
   isScanActive(scanId: string): boolean;
   getBaselineScanId(repositoryKey: string): string | null;
+  githubBaselineProvider: BaselineProvider;
   getScan(scanId: string): ScanRun | null;
   listScans(): ScanRun[];
   readFindings(scanDir: string): FindingSummary[];
@@ -95,6 +101,7 @@ export interface LocalGateDependencies {
 }
 
 const activeGates = new Map<string, Promise<void>>();
+const githubBaselineProvider = new GitHubBaselineProvider();
 
 const productionDeps: LocalGateDependencies = {
   createGateId: () => nanoid(12),
@@ -115,6 +122,7 @@ const productionDeps: LocalGateDependencies = {
   cancelScan,
   isScanActive,
   getBaselineScanId: getRepositoryBaseline,
+  githubBaselineProvider,
   getScan: getRun,
   listScans: listRuns,
   readFindings: (scanDir) => toFindingSummaries(readFindingsFile(scanDir)),
@@ -132,6 +140,13 @@ export async function startLocalGate(
 ): Promise<GateRun> {
   const repository = deps.getRepository(request.repositoryKey);
   if (!repository) throw new Error(`Repositório não configurado: ${request.repositoryKey}`);
+  const baselineSource = request.baselineSource ?? "local";
+  if (
+    baselineSource === "github" &&
+    (repository.remoteOwner === null || repository.remoteName === null)
+  ) {
+    throw new Error("O remoto GitHub não está pronto para fornecer baselines");
+  }
 
   const run: GateRun = {
     id: deps.createGateId(),
@@ -154,7 +169,7 @@ export async function startLocalGate(
   };
   deps.insertGateRun(run);
   emit(run.id, "status", { gateId: run.id, status: "queued" }, deps);
-  launchGate(run.id, deps, false);
+  launchGate(run.id, deps, false, baselineSource);
   return run;
 }
 
@@ -183,7 +198,7 @@ export function subscribeGate(
     gate.scanId !== null &&
     deps.isScanActive(gate.scanId)
   ) {
-    launchGate(gateId, deps, true);
+    launchGate(gateId, deps, true, "local");
   }
   return unsubscribe;
 }
@@ -205,9 +220,10 @@ function launchGate(
   gateId: string,
   deps: LocalGateDependencies,
   recoverScan: boolean,
+  baselineSource: "local" | "github",
 ): void {
   if (activeGates.has(gateId)) return;
-  const task = runGate(gateId, deps, recoverScan).finally(() => {
+  const task = runGate(gateId, deps, recoverScan, baselineSource).finally(() => {
     if (activeGates.get(gateId) === task) activeGates.delete(gateId);
   });
   activeGates.set(gateId, task);
@@ -217,6 +233,7 @@ async function runGate(
   gateId: string,
   deps: LocalGateDependencies,
   recoverScan: boolean,
+  baselineSource: "local" | "github",
 ): Promise<void> {
   const gate = requiredGate(gateId, deps);
   const repository = requiredRepository(gate.repositoryKey, deps);
@@ -237,7 +254,15 @@ async function runGate(
 
     if (changeSet.files.length === 0) {
       transition(gateId, "evaluating", deps);
-      await evaluateAndComplete(gateId, repository, policy, changeSet, null, deps);
+      await evaluateAndComplete(
+        gateId,
+        repository,
+        policy,
+        changeSet,
+        null,
+        baselineSource,
+        deps,
+      );
       return;
     }
 
@@ -270,10 +295,27 @@ async function runGate(
       throw new Error(`Scan finalizou com status ${scan.status}`);
     }
     transition(gateId, "evaluating", deps);
-    await evaluateAndComplete(gateId, repository, policy, changeSet, scan, deps);
+    await evaluateAndComplete(
+      gateId,
+      repository,
+      policy,
+      changeSet,
+      scan,
+      baselineSource,
+      deps,
+    );
   } catch (error) {
     if (deps.getGateRun(gateId)?.status === "cancelled") return;
-    await failGate(gateId, repository, policy, changeSet, scan, error, deps);
+    await failGate(
+      gateId,
+      repository,
+      policy,
+      changeSet,
+      scan,
+      baselineSource,
+      error,
+      deps,
+    );
   }
 }
 
@@ -283,13 +325,12 @@ async function evaluateAndComplete(
   policy: GuardrailPolicy,
   changeSet: import("@csb/shared").ChangeSet,
   scan: ScanRun | null,
+  baselineSource: "local" | "github",
   deps: LocalGateDependencies,
 ): Promise<void> {
-  const baselineScanId = deps.getBaselineScanId(repository.repositoryKey);
-  const baselineScan = baselineScanId === null ? null : deps.getScan(baselineScanId);
-  const baselineFindings = baselineScan === null
-    ? null
-    : deps.readFindings(baselineScan.scanDir);
+  const baseline = await resolveBaseline(repository, baselineSource, deps);
+  const baselineScanId = baseline.scanId;
+  const baselineFindings = baseline.findings;
   const currentFindings = scan === null ? [] : deps.readFindings(scan.scanDir);
   const historicalFindings = deps.listScans()
     .filter((candidate) =>
@@ -311,7 +352,7 @@ async function evaluateAndComplete(
     baselineScanId,
     now: deps.now(),
   });
-  const baselineCommit = baselineScan?.revision ?? null;
+  const baselineCommit = baseline.commit;
   const artifact = deps.buildGateArtifact({
     ...artifactEnvelope(gateId, repository, policy, changeSet, scan, baselineCommit, deps.now()),
     evaluation,
@@ -350,6 +391,7 @@ async function failGate(
   policy: GuardrailPolicy | null,
   changeSet: import("@csb/shared").ChangeSet | null,
   scan: ScanRun | null,
+  baselineSource: "local" | "github",
   error: unknown,
   deps: LocalGateDependencies,
 ): Promise<void> {
@@ -357,10 +399,10 @@ async function failGate(
   const message = error instanceof Error ? error.message : "Falha operacional no gate";
   let artifactPath: string | null = null;
   if (policy !== null && changeSet !== null) {
-    const baselineScanId = deps.getBaselineScanId(repository.repositoryKey);
-    const baselineCommit = baselineScanId === null
-      ? null
-      : deps.getScan(baselineScanId)?.revision ?? null;
+    const baselineCommit =
+      baselineSource === "local"
+        ? localBaseline(repository.repositoryKey, deps).commit
+        : null;
     const artifact = deps.buildOperationalErrorArtifact({
       ...artifactEnvelope(gateId, repository, policy, changeSet, scan, baselineCommit, completedAt),
       operationalSummary: message,
@@ -383,6 +425,54 @@ async function failGate(
     completedAt,
     artifactAvailable: artifactPath !== null,
   }, deps);
+}
+
+async function resolveBaseline(
+  repository: GuardrailRepository,
+  source: "local" | "github",
+  deps: LocalGateDependencies,
+): Promise<{
+  scanId: string | null;
+  findings: FindingSummary[] | null;
+  commit: string | null;
+}> {
+  if (source === "local") return localBaseline(repository.repositoryKey, deps);
+  if (repository.remoteOwner === null || repository.remoteName === null) {
+    throw new Error("O remoto GitHub não está pronto para fornecer baselines");
+  }
+  const artifact = await deps.githubBaselineProvider.getBaseline({
+    repositoryKey: repository.repositoryKey,
+    owner: repository.remoteOwner,
+    name: repository.remoteName,
+    defaultBranch: repository.defaultBranch,
+  });
+  if (artifact === null) {
+    return { scanId: null, findings: null, commit: null };
+  }
+  return {
+    scanId: artifact.scan.id ?? artifact.gateId,
+    findings: artifact.findings.filter(
+      (finding) => finding.lifecycle !== "fixed",
+    ),
+    commit: artifact.changeSet.headSha,
+  };
+}
+
+function localBaseline(
+  repositoryKey: string,
+  deps: LocalGateDependencies,
+): {
+  scanId: string | null;
+  findings: FindingSummary[] | null;
+  commit: string | null;
+} {
+  const scanId = deps.getBaselineScanId(repositoryKey);
+  const scan = scanId === null ? null : deps.getScan(scanId);
+  return {
+    scanId,
+    findings: scan === null ? null : deps.readFindings(scan.scanDir),
+    commit: scan?.revision ?? null,
+  };
 }
 
 function artifactEnvelope(

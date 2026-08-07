@@ -48,6 +48,22 @@ interface GateEventRow {
   created_at: string;
 }
 
+interface CachedGitHubBaselineRow {
+  repository_key: string;
+  workflow_run_id: string;
+  head_sha: string;
+  artifact_path: string;
+  fetched_at: string;
+}
+
+export interface CachedGitHubBaseline {
+  repositoryKey: string;
+  workflowRunId: string;
+  headSha: string;
+  artifactPath: string;
+  fetchedAt: string;
+}
+
 export type GateRunUpdate = Partial<
   Pick<
     GateRun,
@@ -189,7 +205,60 @@ export function ensureGateSchema(
       created_at TEXT NOT NULL,
       PRIMARY KEY (gate_id, sequence)
     );
+
+    CREATE TABLE IF NOT EXISTS github_baselines (
+      repository_key TEXT PRIMARY KEY,
+      workflow_run_id TEXT NOT NULL,
+      head_sha TEXT NOT NULL,
+      artifact_path TEXT NOT NULL,
+      fetched_at TEXT NOT NULL
+    );
   `);
+}
+
+export function getCachedGitHubBaseline(
+  repositoryKey: string,
+  database: Database.Database = getDb(),
+): CachedGitHubBaseline | null {
+  ensureGateSchema(database);
+  const row = database
+    .prepare("SELECT * FROM github_baselines WHERE repository_key = ?")
+    .get(repositoryKey) as CachedGitHubBaselineRow | undefined;
+  if (row === undefined) return null;
+  return {
+    repositoryKey: row.repository_key,
+    workflowRunId: row.workflow_run_id,
+    headSha: row.head_sha,
+    artifactPath: row.artifact_path,
+    fetchedAt: row.fetched_at,
+  };
+}
+
+export function upsertCachedGitHubBaseline(
+  baseline: CachedGitHubBaseline,
+  database: Database.Database = getDb(),
+): void {
+  ensureGateSchema(database);
+  database
+    .prepare(
+      `INSERT INTO github_baselines (
+         repository_key, workflow_run_id, head_sha, artifact_path, fetched_at
+       ) VALUES (
+         @repository_key, @workflow_run_id, @head_sha, @artifact_path, @fetched_at
+       )
+       ON CONFLICT(repository_key) DO UPDATE SET
+         workflow_run_id = excluded.workflow_run_id,
+         head_sha = excluded.head_sha,
+         artifact_path = excluded.artifact_path,
+         fetched_at = excluded.fetched_at`,
+    )
+    .run({
+      repository_key: baseline.repositoryKey,
+      workflow_run_id: baseline.workflowRunId,
+      head_sha: baseline.headSha,
+      artifact_path: baseline.artifactPath,
+      fetched_at: baseline.fetchedAt,
+    });
 }
 
 export function upsertGuardrailRepository(
