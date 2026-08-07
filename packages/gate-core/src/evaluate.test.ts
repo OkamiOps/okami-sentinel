@@ -3,6 +3,7 @@ import test from "node:test";
 import type {
   ChangeSet,
   FindingSummary,
+  FindingTriage,
   GuardrailException,
   Severity,
 } from "@csb/shared";
@@ -61,6 +62,7 @@ function input(overrides: Partial<EvaluateGateInput> = {}): EvaluateGateInput {
     triageByIdentity: new Map(),
     exceptions: [],
     sourceScanId: "scan-current",
+    baselineScanId: "scan-baseline",
     now: "2026-08-07T00:00:00Z",
     ...overrides,
   };
@@ -73,9 +75,20 @@ test("returns no_changes without a scan", () => {
 });
 
 test("returns bootstrap when no baseline exists", () => {
-  const result = evaluateGate(input({ baselineFindings: null }));
+  const result = evaluateGate(input({ baselineFindings: null, baselineScanId: null }));
   assert.equal(result.decision.outcome, "bootstrap");
   assert.equal(result.decision.githubConclusion, "neutral");
+});
+
+test("classifies bootstrap observations as new even when history matches", () => {
+  const high = finding("stable-xss", "high");
+  const result = evaluateGate(input({
+    currentFindings: [high],
+    baselineFindings: null,
+    historicalFindings: [high],
+    baselineScanId: null,
+  }));
+  assert.equal(result.deltas[0]?.lifecycle, "new");
 });
 
 test("blocks a reopened high finding", () => {
@@ -150,4 +163,90 @@ test("keeps false-positive findings in the artifact without blocking", () => {
   }));
   assert.equal(result.deltas.length, 1);
   assert.equal(result.decision.outcome, "pass");
+});
+
+test("isolates default triage from later evaluations", () => {
+  const high = finding("stable-xss", "high");
+  const first = evaluateGate(input({
+    currentFindings: [high],
+    baselineFindings: [],
+    historicalFindings: [high],
+  }));
+  assert.equal(first.decision.outcome, "blocked");
+
+  first.deltas[0]!.triage.status = "false_positive";
+  try {
+    const second = evaluateGate(input({
+      currentFindings: [high],
+      baselineFindings: [],
+      historicalFindings: [high],
+    }));
+    assert.equal(second.deltas[0]?.triage.status, "unreviewed");
+    assert.equal(second.decision.outcome, "blocked");
+  } finally {
+    first.deltas[0]!.triage.status = "unreviewed";
+  }
+});
+
+test("isolates provided triage from returned-output mutation", () => {
+  const high = finding("stable-xss", "high");
+  const triage: FindingTriage = {
+    status: "confirmed",
+    note: "Reviewed",
+    updatedAt: "2026-08-07T00:00:00Z",
+  };
+  const gateInput = input({
+    currentFindings: [high],
+    baselineFindings: [],
+    historicalFindings: [high],
+    triageByIdentity: new Map([[findingIdentity(high), triage]]),
+  });
+  const first = evaluateGate(gateInput);
+
+  first.deltas[0]!.triage.status = "false_positive";
+
+  assert.equal(triage.status, "confirmed");
+  assert.equal(evaluateGate(gateInput).decision.outcome, "blocked");
+});
+
+test("isolates exception objects and target arrays from returned-output mutation", () => {
+  const high = finding("stable-xss", "high");
+  const exception: GuardrailException = {
+    findingIdentity: findingIdentity(high),
+    reason: "Migration window",
+    owner: "marcos",
+    createdAt: "2026-08-01T00:00:00Z",
+    expiresAt: "2026-08-30T00:00:00Z",
+    branches: ["main"],
+    ruleIndexes: [],
+  };
+  const gateInput = input({
+    currentFindings: [high],
+    baselineFindings: [],
+    historicalFindings: [high],
+    exceptions: [exception],
+  });
+  const first = evaluateGate(gateInput);
+  const returnedException = first.deltas[0]!.exception!;
+
+  returnedException.reason = "Changed outside the evaluator";
+  returnedException.branches.length = 0;
+  returnedException.ruleIndexes.push(99);
+
+  assert.equal(exception.reason, "Migration window");
+  assert.deepEqual(exception.branches, ["main"]);
+  assert.deepEqual(exception.ruleIndexes, []);
+  assert.equal(evaluateGate(gateInput).decision.outcome, "pass");
+});
+
+test("retains baseline scan provenance for fixed findings", () => {
+  const high = finding("stable-xss", "high");
+  const result = evaluateGate(input({
+    currentFindings: [],
+    baselineFindings: [high],
+    sourceScanId: "scan-current",
+    baselineScanId: "scan-baseline",
+  }));
+  assert.equal(result.deltas[0]?.lifecycle, "fixed");
+  assert.equal(result.deltas[0]?.sourceScanId, "scan-baseline");
 });

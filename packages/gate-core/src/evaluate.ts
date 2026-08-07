@@ -22,6 +22,7 @@ export interface EvaluateGateInput {
   triageByIdentity: ReadonlyMap<string, FindingTriage>;
   exceptions: GuardrailException[];
   sourceScanId: string;
+  baselineScanId: string | null;
   now: string;
 }
 
@@ -83,7 +84,7 @@ export function evaluateGate(input: EvaluateGateInput): EvaluateGateResult {
         && (exception.branches.includes(input.branch) || exception.ruleIndexes.includes(ruleIndex)),
       );
       if (activeException) {
-        finding.exception ??= activeException;
+        finding.exception ??= cloneException(activeException);
         if (!exceptionsApplied.includes(finding.identity)) exceptionsApplied.push(finding.identity);
         return;
       }
@@ -128,9 +129,9 @@ function delta(
     ...finding,
     identity,
     lifecycle,
-    triage: input.triageByIdentity.get(identity) ?? unreviewedTriage,
+    triage: { ...(input.triageByIdentity.get(identity) ?? unreviewedTriage) },
     exception: null,
-    sourceScanId: input.sourceScanId,
+    sourceScanId: sourceScanId(lifecycle, input),
   };
 }
 
@@ -149,7 +150,10 @@ function noChangesResult(): EvaluateGateResult {
 }
 
 function bootstrapResult(input: EvaluateGateInput): EvaluateGateResult {
-  const deltas = classifyGateFindings(input);
+  const deltas = input.currentFindings.map((finding): GateFindingDelta => {
+    const identity = findingIdentity(finding);
+    return delta(finding, identity, "new", input);
+  });
   return {
     deltas,
     decision: {
@@ -167,4 +171,23 @@ function decisionSummary(outcome: GateOutcome, violations: number, warnings: num
   if (outcome === "blocked") return `${violations} blocking policy violation(s).`;
   if (outcome === "warning") return `${warnings} policy warning(s).`;
   return "No policy violations.";
+}
+
+function cloneException(exception: GuardrailException): GuardrailException {
+  return {
+    ...exception,
+    branches: [...exception.branches],
+    ruleIndexes: [...exception.ruleIndexes],
+  };
+}
+
+function sourceScanId(
+  lifecycle: GateFindingDelta["lifecycle"],
+  input: EvaluateGateInput,
+): string {
+  if (lifecycle !== "fixed") return input.sourceScanId;
+  if (input.baselineScanId === null) {
+    throw new Error("baselineScanId is required for fixed findings");
+  }
+  return input.baselineScanId;
 }
