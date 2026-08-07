@@ -1,0 +1,18 @@
+name: CSB Security Change Gate
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+  checks: write
+jobs:
+  security-change-gate:
+    uses: OkamiOps/Codex-Security-Benchmark/.github/workflows/security-change-gate.yml@v1
+    with:
+      policy_path: .csb/guardrails.json
+      default_branch: main
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

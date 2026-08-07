@@ -1,0 +1,204 @@
+name: CSB Security Change Gate
+
+on:
+  workflow_call:
+    inputs:
+      policy_path:
+        description: Repository-relative path to the CSB guardrail policy
+        required: false
+        type: string
+        default: .csb/guardrails.json
+      csb_ref:
+        description: Immutable CSB release ref
+        required: false
+        type: string
+        default: v1
+      default_branch:
+        description: Default branch used by the gate policy
+        required: false
+        type: string
+        default: main
+    secrets:
+      OPENAI_API_KEY:
+        description: Scanner credential
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+  checks: write
+
+jobs:
+  security-change-gate:
+    name: CSB Security Change Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout CSB release
+        uses: actions/checkout@v4
+        with:
+          repository: OkamiOps/Codex-Security-Benchmark
+          ref: ${{ inputs.csb_ref }}
+          path: .csb-tool
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.17.0
+
+      - name: Set up pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.5.2 --activate
+
+      - name: Install gate CLI dependency closure
+        run: pnpm --dir .csb-tool install --frozen-lockfile --filter @csb/gate-cli...
+
+      - name: Resolve event revisions
+        id: revisions
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || github.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          echo "base_sha=${BASE_SHA}" >> "${GITHUB_OUTPUT}"
+          echo "head_sha=${HEAD_SHA}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check scanner authentication
+        id: scanner-auth
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [[ -n "${OPENAI_API_KEY}" ]]; then
+            echo "ready=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "ready=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Run security change gate
+        id: gate
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          POLICY_PATH: ${{ inputs.policy_path }}
+          DEFAULT_BRANCH: ${{ inputs.default_branch }}
+          BASE_SHA: ${{ steps.revisions.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.revisions.outputs.head_sha }}
+        run: |
+          set +e
+          pnpm --dir .csb-tool --filter @csb/gate-cli start -- \
+            --repository "${GITHUB_WORKSPACE}" \
+            --base-ref "${BASE_SHA}" \
+            --head-ref "${HEAD_SHA}" \
+            --policy "${POLICY_PATH}" \
+            --output "${GITHUB_WORKSPACE}/csb-gate-result.json" \
+            --repository-key "github.com/${GITHUB_REPOSITORY}" \
+            --repository-name "${GITHUB_REPOSITORY#*/}" \
+            --default-branch "${DEFAULT_BRANCH}" \
+            --owner "${GITHUB_REPOSITORY_OWNER}" \
+            --gate-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          gate_exit=$?
+          set -e
+          echo "exit_code=${gate_exit}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload gate artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: csb-gate-artifact
+          path: csb-gate-result.json
+          if-no-files-found: warn
+
+      - name: Write gate summary
+        if: always()
+        env:
+          HAS_SCANNER_CREDENTIAL: ${{ steps.scanner-auth.outputs.ready }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+          let body = '## CSB Security Change Gate\n\n';
+          if (!fs.existsSync('csb-gate-result.json')) {
+            body += 'The gate artifact was not produced. Inspect the setup and CLI steps.\n';
+          } else {
+            const artifact = JSON.parse(fs.readFileSync('csb-gate-result.json', 'utf8'));
+            const credentialReady = process.env.HAS_SCANNER_CREDENTIAL === 'true';
+            const conclusion = artifact.decision.githubConclusion;
+            body += `- Outcome: \`${artifact.decision.outcome}\`\n`;
+            body += `- Conclusion: \`${conclusion}\`\n`;
+            body += `- Findings: ${artifact.findings.length}\n`;
+            body += `- Estimated cost: $${artifact.scan.cost?.estimatedUsd ?? 0}\n`;
+            if (!credentialReady) body += '- Check publication: unavailable because scanner authentication is missing\n';
+          }
+          fs.appendFileSync(summaryPath, body);
+          NODE
+
+      - name: Publish CSB check
+        if: always() && hashFiles('csb-gate-result.json') != '' && steps.scanner-auth.outputs.ready == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('node:fs');
+            const artifact = JSON.parse(fs.readFileSync('csb-gate-result.json', 'utf8'));
+            const severityRank = new Map(['critical', 'high', 'medium', 'low', 'info', 'unknown'].map((value, index) => [value, index]));
+            const lifecycleRank = new Map(['new', 'reopened', 'persistent', 'fixed'].map((value, index) => [value, index]));
+            const relativeLocation = (finding) => {
+              const raw = finding.primaryPath;
+              if (typeof raw !== 'string' || raw.length === 0) return null;
+              const match = raw.match(/:(\d+)(?:-(\d+))?$/);
+              const candidate = raw.replace(/:(\d+)(?:-(\d+))?$/, '').replaceAll('\\', '/');
+              if (candidate.startsWith('/') || candidate.split('/').includes('..')) return null;
+              const startLine = match ? Number(match[1]) : 1;
+              const endLine = match?.[2] ? Number(match[2]) : startLine;
+              return { path: candidate, startLine, endLine };
+            };
+            const annotations = [...artifact.findings]
+              .sort((left, right) =>
+                (severityRank.get(left.severity) ?? 99) - (severityRank.get(right.severity) ?? 99)
+                || (lifecycleRank.get(left.lifecycle) ?? 99) - (lifecycleRank.get(right.lifecycle) ?? 99)
+                || String(left.identity).localeCompare(String(right.identity)))
+              .map((finding) => ({ finding, location: relativeLocation(finding) }))
+              .filter(({ location }) => location !== null)
+              .slice(0, 20)
+              .map(({ finding, location }) => ({
+                path: location.path,
+                start_line: location.startLine,
+                end_line: location.endLine,
+                annotation_level: ['critical', 'high'].includes(finding.severity) ? 'failure' : finding.severity === 'medium' ? 'warning' : 'notice',
+                title: String(finding.title).slice(0, 255),
+                message: String(finding.summary ?? `${finding.severity}/${finding.lifecycle}: ${finding.identity}`).slice(0, 6000),
+              }));
+            const conclusion = artifact.decision.githubConclusion;
+            await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'CSB Security Change Gate',
+              head_sha: artifact.changeSet.headSha,
+              status: 'completed',
+              conclusion,
+              output: {
+                title: `CSB gate: ${artifact.decision.outcome}`,
+                summary: artifact.decision.summary,
+                annotations,
+              },
+            });
+
+      - name: Enforce gate result
+        if: always()
+        env:
+          GATE_EXIT: ${{ steps.gate.outputs.exit_code }}
+          HAS_SCANNER_CREDENTIAL: ${{ steps.scanner-auth.outputs.ready }}
+        run: |
+          if [[ "${HAS_SCANNER_CREDENTIAL}" != "true" ]]; then
+            exit 3
+          fi
+          case "${GATE_EXIT:-3}" in
+            2|3) exit "${GATE_EXIT:-3}" ;;
+            *) exit 0 ;;
+          esac
