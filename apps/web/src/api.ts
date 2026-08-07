@@ -89,6 +89,10 @@ export const api = {
     }),
   cancelScan: (id: string) =>
     request<{ ok: boolean }>(`/scans/${id}/cancel`, { method: "POST" }),
+  deleteScan: (id: string) =>
+    request<{ ok: boolean; artifactsPreserved: boolean }>(`/scans/${id}`, {
+      method: "DELETE",
+    }),
   compare: (body: CompareRequest) =>
     request<CompareResult>("/compare", {
       method: "POST",

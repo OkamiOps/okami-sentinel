@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { findingIdentity as coreFindingIdentity } from "@csb/gate-core";
 import type { FindingSummary } from "@csb/shared";
-import { classifyCurrentFinding, findingIdentity, normalizeRepositoryKey } from "./lifecycle.js";
+import {
+  classifyCurrentFinding,
+  findingIdentity,
+  isRemovableScanStatus,
+  normalizeRepositoryKey,
+} from "./lifecycle.js";
 
 const finding: FindingSummary = {
   findingId: "run-specific-id",
@@ -33,4 +38,11 @@ test("classifies persisting, regressed and new signals", () => {
 test("normalizes repository keys across trailing separators", () => {
   assert.equal(normalizeRepositoryKey("/work/repo///"), "/work/repo");
   assert.equal(normalizeRepositoryKey("C:\\work\\repo\\"), "C:/work/repo");
+});
+
+test("allows ledger removal only for failed and cancelled scans", () => {
+  assert.equal(isRemovableScanStatus("failed"), true);
+  assert.equal(isRemovableScanStatus("cancelled"), true);
+  assert.equal(isRemovableScanStatus("running"), false);
+  assert.equal(isRemovableScanStatus("completed"), false);
 });

@@ -313,6 +313,19 @@ export function deleteRun(id: string): void {
   getDb().prepare(`DELETE FROM runs WHERE id = ?`).run(id);
 }
 
+export function hideRun(
+  id: string,
+  database: Database.Database = getDb(),
+): void {
+  database
+    .prepare(
+      `INSERT INTO hidden_runs (id, hidden_at)
+       VALUES (?, ?)
+       ON CONFLICT(id) DO UPDATE SET hidden_at = excluded.hidden_at`,
+    )
+    .run(id, new Date().toISOString());
+}
+
 export function parseCostJson(raw: string | null | undefined): ScanCost | null {
   if (!raw) return null;
   try {

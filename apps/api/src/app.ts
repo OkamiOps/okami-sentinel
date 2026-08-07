@@ -31,7 +31,7 @@ import type {
 import { compareScans } from "./compare.js";
 import { getCodexInfo } from "./codex-info.js";
 import { CODEX_SECURITY_STATE_DIR } from "./config.js";
-import { getRun, listRuns } from "./db.js";
+import { getRun, hideRun, listRuns } from "./db.js";
 import { listDirectory } from "./fs.js";
 import {
   cancelGate,
@@ -70,6 +70,7 @@ import {
 import { buildMetricsSummary } from "./metrics.js";
 import { withProgress, withProgressMany } from "./progress.js";
 import { buildRegressionSummary, markScanAsRepositoryBaseline, updateFindingTriage } from "./regression.js";
+import { isRemovableScanStatus } from "./lifecycle.js";
 import { MAX_CONCURRENT_SCANS } from "./config.js";
 import {
   cancelScan,
@@ -85,7 +86,7 @@ app.use(
   "*",
   cors({
     origin: ["http://127.0.0.1:5173", "http://localhost:5173"],
-    allowMethods: ["GET", "POST", "PUT", "OPTIONS"],
+    allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowHeaders: ["Content-Type"],
   }),
 );
@@ -409,6 +410,20 @@ app.post("/ingest", (c) => {
 app.get("/metrics/summary", (c) => c.json(buildMetricsSummary()));
 
 app.get("/scans", (c) => c.json({ scans: withProgressMany(listRuns()) }));
+
+app.delete("/scans/:id", (c) => {
+  const id = c.req.param("id");
+  const run = getRun(id);
+  if (!run) return c.json({ error: "Scan não encontrado" }, 404);
+  if (isScanActive(id) || !isRemovableScanStatus(run.status)) {
+    return c.json(
+      { error: "Somente scans falhos ou cancelados podem ser excluídos do ledger." },
+      409,
+    );
+  }
+  hideRun(id);
+  return c.json({ ok: true, artifactsPreserved: true });
+});
 
 app.get("/scans/:id", (c) => {
   const run = getRun(c.req.param("id"));

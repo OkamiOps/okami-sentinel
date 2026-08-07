@@ -1,4 +1,4 @@
-import type { FindingLifecycle } from "@csb/shared";
+import type { FindingLifecycle, ScanStatus } from "@csb/shared";
 import { findingIdentity } from "@csb/gate-core";
 
 export { findingIdentity };
@@ -15,4 +15,8 @@ export function classifyCurrentFinding(
 
 export function normalizeRepositoryKey(value: string): string {
   return value.replaceAll("\\", "/").replace(/\/+$/, "");
+}
+
+export function isRemovableScanStatus(status: ScanStatus | string): boolean {
+  return status === "failed" || status === "cancelled";
 }
