@@ -4,6 +4,7 @@ import type {
   GateRun,
   GateSource,
   GateStatus,
+  GitHubConclusion,
   GuardrailRepository,
 } from "@csb/shared";
 import { getDb } from "./db.js";
@@ -63,10 +64,27 @@ export type GateRunUpdate = Partial<
 
 export type GateEventType = "status" | "scan" | "decision" | "done" | "error";
 
+export interface GateEventPayload {
+  artifactAvailable?: boolean;
+  code?: string;
+  completedAt?: string | null;
+  conclusion?: GitHubConclusion | null;
+  current?: number;
+  estimatedUsd?: number;
+  gateId?: string;
+  outcome?: GateOutcome | null;
+  percent?: number;
+  phase?: GateStatus;
+  progress?: number;
+  scanId?: string | null;
+  status?: GateStatus;
+  total?: number;
+}
+
 export interface GateEvent {
   sequence: number;
   type: GateEventType;
-  payload: Record<string, unknown>;
+  payload: GateEventPayload;
   createdAt: string;
 }
 
@@ -86,7 +104,6 @@ const EVENT_SUMMARY_KEYS = new Set([
   "current",
   "estimatedUsd",
   "gateId",
-  "message",
   "outcome",
   "percent",
   "phase",
@@ -95,6 +112,32 @@ const EVENT_SUMMARY_KEYS = new Set([
   "status",
   "total",
 ]);
+const GATE_STATUSES = new Set<GateStatus>([
+  "queued",
+  "resolving",
+  "scanning",
+  "evaluating",
+  "publishing",
+  "completed",
+  "cancelled",
+  "error",
+]);
+const GATE_OUTCOMES = new Set<GateOutcome>([
+  "no_changes",
+  "bootstrap",
+  "pass",
+  "warning",
+  "blocked",
+  "error",
+]);
+const GITHUB_CONCLUSIONS = new Set<GitHubConclusion>([
+  "success",
+  "neutral",
+  "failure",
+  "action_required",
+]);
+const EVENT_CODE_PATTERN = /^[a-z][a-z0-9_.:-]*$/i;
+const EVENT_ID_PATTERN = /^[a-z0-9][a-z0-9_.:-]*$/i;
 
 export function ensureGateSchema(
   database: Database.Database = getDb(),
@@ -353,7 +396,7 @@ export function listGateEvents(
   return rows.map((row) => ({
     sequence: row.sequence,
     type: row.type as GateEventType,
-    payload: JSON.parse(row.payload_json) as Record<string, unknown>,
+    payload: JSON.parse(row.payload_json) as GateEventPayload,
     createdAt: row.created_at,
   }));
 }
@@ -428,42 +471,132 @@ function rowToGateRun(row: GateRunRow): GateRun {
   };
 }
 
-function serializeEventPayload(payload: Record<string, unknown>): string {
-  let payloadJson: string;
-  try {
-    payloadJson = JSON.stringify(payload);
-  } catch {
-    throw new Error("Gate event payload must be JSON serializable");
-  }
-
-  if (payloadJson === undefined) {
-    throw new Error("Gate event payload must be JSON serializable");
-  }
-  if (Buffer.byteLength(payloadJson, "utf8") > MAX_EVENT_PAYLOAD_BYTES) {
-    throw new Error("Gate event payload is too large");
-  }
+function serializeEventPayload(payload: GateEventPayload): string {
   if (
     payload === null ||
     Array.isArray(payload) ||
     (Object.getPrototypeOf(payload) !== Object.prototype &&
       Object.getPrototypeOf(payload) !== null)
   ) {
-    throw new Error("Gate event payload must be a status or progress summary");
+    throw new Error(
+      "Gate event payload must be a plain status or progress summary",
+    );
   }
 
-  for (const [key, value] of Object.entries(payload)) {
-    if (!EVENT_SUMMARY_KEYS.has(key) || !isEventSummaryValue(value)) {
+  const canonicalPayload: Record<string, string | number | boolean | null> =
+    Object.create(null) as Record<string, string | number | boolean | null>;
+  for (const key of Reflect.ownKeys(payload)) {
+    if (typeof key !== "string") {
+      throw new Error("Gate event payload must be a status or progress summary");
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(payload, key);
+    if (descriptor === undefined) continue;
+    if (descriptor.get !== undefined || descriptor.set !== undefined) {
+      throw new Error("Gate event payload accessors are not supported");
+    }
+    if (!descriptor.enumerable) continue;
+
+    const value = descriptor.value;
+    if (value === payload) {
+      throw new Error("Gate event payload must be JSON serializable");
+    }
+    if (!EVENT_SUMMARY_KEYS.has(key) || !isEventSummaryScalar(value)) {
+      throw new Error("Gate event payload must be a status or progress summary");
+    }
+    canonicalPayload[key] = value;
+  }
+
+  let payloadJson: string;
+  try {
+    payloadJson = JSON.stringify(canonicalPayload);
+  } catch {
+    throw new Error("Gate event payload must be JSON serializable");
+  }
+  if (Buffer.byteLength(payloadJson, "utf8") > MAX_EVENT_PAYLOAD_BYTES) {
+    throw new Error("Gate event payload is too large");
+  }
+  for (const [key, value] of Object.entries(canonicalPayload)) {
+    if (!isTypedEventSummaryValue(key, value)) {
       throw new Error("Gate event payload must be a status or progress summary");
     }
   }
   return payloadJson;
 }
 
-function isEventSummaryValue(value: unknown): boolean {
+function isEventSummaryScalar(
+  value: unknown,
+): value is string | number | boolean | null {
   return (
     value === null ||
     typeof value === "string" ||
     typeof value === "boolean" ||
     (typeof value === "number" && Number.isFinite(value))
+  );
+}
+
+function isTypedEventSummaryValue(
+  key: string,
+  value: string | number | boolean | null,
+): boolean {
+  switch (key) {
+    case "status":
+    case "phase":
+      return typeof value === "string" && GATE_STATUSES.has(value as GateStatus);
+    case "outcome":
+      return (
+        value === null ||
+        (typeof value === "string" && GATE_OUTCOMES.has(value as GateOutcome))
+      );
+    case "conclusion":
+      return (
+        value === null ||
+        (typeof value === "string" &&
+          GITHUB_CONCLUSIONS.has(value as GitHubConclusion))
+      );
+    case "code":
+      return (
+        typeof value === "string" &&
+        value.length <= 128 &&
+        EVENT_CODE_PATTERN.test(value)
+      );
+    case "gateId":
+      return isBoundedEventId(value, false);
+    case "scanId":
+      return isBoundedEventId(value, true);
+    case "completedAt":
+      return (
+        value === null ||
+        (typeof value === "string" &&
+          value.length <= 64 &&
+          Number.isFinite(Date.parse(value)))
+      );
+    case "current":
+    case "total":
+      return (
+        typeof value === "number" &&
+        Number.isSafeInteger(value) &&
+        value >= 0
+      );
+    case "percent":
+    case "progress":
+      return typeof value === "number" && value >= 0 && value <= 100;
+    case "estimatedUsd":
+      return typeof value === "number" && value >= 0;
+    case "artifactAvailable":
+      return typeof value === "boolean";
+    default:
+      return false;
+  }
+}
+
+function isBoundedEventId(
+  value: string | number | boolean | null,
+  nullable: boolean,
+): boolean {
+  if (value === null) return nullable;
+  return (
+    typeof value === "string" &&
+    value.length <= 256 &&
+    EVENT_ID_PATTERN.test(value)
   );
 }

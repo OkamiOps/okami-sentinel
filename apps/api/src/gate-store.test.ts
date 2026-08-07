@@ -297,6 +297,110 @@ test("persists bounded status summaries in sequence order", () => {
   }
 });
 
+test("serializes a canonical event payload without invoking toJSON", () => {
+  const db = new Database(":memory:");
+  let toJsonCalls = 0;
+  const payload: Record<string, unknown> = { status: "completed" };
+  Object.defineProperty(payload, "toJSON", {
+    enumerable: false,
+    value: () => {
+      toJsonCalls += 1;
+      return {
+        status: "completed",
+        logs: "raw scanner output",
+        evidence: "Bearer s3crt",
+      };
+    },
+  });
+
+  try {
+    appendGateEvent(
+      "gate-1",
+      {
+        sequence: 1,
+        type: "status",
+        payload,
+        createdAt: "2026-08-07T10:00:00Z",
+      },
+      db,
+    );
+
+    assert.equal(toJsonCalls, 0);
+    assert.deepEqual(listGateEvents("gate-1", db)[0]?.payload, {
+      status: "completed",
+    });
+    const persisted = db
+      .prepare(
+        "SELECT payload_json FROM gate_events WHERE gate_id = ? AND sequence = ?",
+      )
+      .get("gate-1", 1) as { payload_json: string };
+    assert.equal(persisted.payload_json.includes("logs"), false);
+    assert.equal(persisted.payload_json.includes("evidence"), false);
+    assert.equal(persisted.payload_json.includes("s3crt"), false);
+  } finally {
+    db.close();
+  }
+});
+
+test("rejects accessors and custom prototypes without executing them", () => {
+  const db = new Database(":memory:");
+  let getterCalls = 0;
+  let inheritedToJsonCalls = 0;
+  const accessorPayload: Record<string, unknown> = {};
+  Object.defineProperty(accessorPayload, "status", {
+    enumerable: true,
+    get: () => {
+      getterCalls += 1;
+      return "completed";
+    },
+  });
+  const inheritedPayload = Object.assign(
+    Object.create({
+      toJSON: () => {
+        inheritedToJsonCalls += 1;
+        return { status: "completed", logs: "raw scanner output" };
+      },
+    }) as Record<string, unknown>,
+    { status: "completed" },
+  );
+
+  try {
+    assert.throws(
+      () =>
+        appendGateEvent(
+          "gate-1",
+          {
+            sequence: 1,
+            type: "status",
+            payload: accessorPayload,
+            createdAt: "2026-08-07T10:00:00Z",
+          },
+          db,
+        ),
+      /accessor/i,
+    );
+    assert.throws(
+      () =>
+        appendGateEvent(
+          "gate-1",
+          {
+            sequence: 2,
+            type: "status",
+            payload: inheritedPayload as never,
+            createdAt: "2026-08-07T10:00:01Z",
+          },
+          db,
+        ),
+      /plain status or progress summary/i,
+    );
+    assert.equal(getterCalls, 0);
+    assert.equal(inheritedToJsonCalls, 0);
+    assert.deepEqual(listGateEvents("gate-1", db), []);
+  } finally {
+    db.close();
+  }
+});
+
 test("rejects scanner logs, oversized summaries and unserializable events", () => {
   const db = new Database(":memory:");
   const circular: Record<string, unknown> = {};
@@ -310,7 +414,7 @@ test("rejects scanner logs, oversized summaries and unserializable events", () =
           {
             sequence: 1,
             type: "scan",
-            payload: { logs: "raw scanner output" },
+            payload: { logs: "raw scanner output" } as never,
             createdAt: "2026-08-07T10:00:00Z",
           },
           db,
@@ -324,7 +428,7 @@ test("rejects scanner logs, oversized summaries and unserializable events", () =
           {
             sequence: 2,
             type: "status",
-            payload: { message: "x".repeat(4_097) },
+            payload: { code: "x".repeat(4_097) },
             createdAt: "2026-08-07T10:00:01Z",
           },
           db,
@@ -344,6 +448,70 @@ test("rejects scanner logs, oversized summaries and unserializable events", () =
           db,
         ),
       /serializable/i,
+    );
+    assert.deepEqual(listGateEvents("gate-1", db), []);
+  } finally {
+    db.close();
+  }
+});
+
+test("rejects free-form event messages instead of persisting logs or secrets", () => {
+  const db = new Database(":memory:");
+
+  try {
+    assert.throws(
+      () =>
+        appendGateEvent(
+          "gate-1",
+          {
+            sequence: 1,
+            type: "error",
+            payload: {
+              message: "Bearer s3crt from /home/marcos scanner.log",
+            } as never,
+            createdAt: "2026-08-07T10:00:00Z",
+          },
+          db,
+        ),
+      /status or progress summary/i,
+    );
+    assert.deepEqual(listGateEvents("gate-1", db), []);
+  } finally {
+    db.close();
+  }
+});
+
+test("rejects mismatched summary types and free-form error codes", () => {
+  const db = new Database(":memory:");
+
+  try {
+    assert.throws(
+      () =>
+        appendGateEvent(
+          "gate-1",
+          {
+            sequence: 1,
+            type: "status",
+            payload: { status: 42 } as never,
+            createdAt: "2026-08-07T10:00:00Z",
+          },
+          db,
+        ),
+      /status or progress summary/i,
+    );
+    assert.throws(
+      () =>
+        appendGateEvent(
+          "gate-1",
+          {
+            sequence: 2,
+            type: "error",
+            payload: { code: "Bearer s3crt from scanner.log" },
+            createdAt: "2026-08-07T10:00:01Z",
+          },
+          db,
+        ),
+      /status or progress summary/i,
     );
     assert.deepEqual(listGateEvents("gate-1", db), []);
   } finally {
