@@ -13,6 +13,9 @@ importers:
       '@csb/gate-core':
         specifier: workspace:*
         version: link:../../packages/gate-core
+      '@csb/gate-runtime':
+        specifier: workspace:*
+        version: link:../../packages/gate-runtime
       '@csb/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -135,6 +138,25 @@ importers:
 
   packages/gate-core:
     dependencies:
+      '@csb/shared':
+        specifier: workspace:*
+        version: link:../shared
+    devDependencies:
+      '@types/node':
+        specifier: ^22.15.32
+        version: 22.20.1
+      tsx:
+        specifier: ^4.23.1
+        version: 4.23.1
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
+
+  packages/gate-runtime:
+    dependencies:
+      '@csb/gate-core':
+        specifier: workspace:*
+        version: link:../gate-core
       '@csb/shared':
         specifier: workspace:*
         version: link:../shared
