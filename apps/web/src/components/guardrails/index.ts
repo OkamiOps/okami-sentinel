@@ -7,3 +7,4 @@ export { PortfolioPipeline } from "./PortfolioPipeline";
 export { PolicyDiffPreview } from "./PolicyDiffPreview";
 export { PolicyRuleEditor } from "./PolicyRuleEditor";
 export { PublishGateControl } from "./PublishGateControl";
+export { RepositoryDirectoryBrowser } from "./RepositoryDirectoryBrowser";

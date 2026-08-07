@@ -130,6 +130,7 @@ function dependencies(options: {
     : artifact;
   const attempts = new Map<string, GatePublicationAttempt>();
   const githubStatus: GuardrailGitHubStatus = {
+    subscription: { ready: true, message: "ready", action: null },
     cli: { available: true, ready: true, message: "ready", action: null },
     remote: { ready: true, message: "ready", action: null },
     auth: { ready: true, message: "ready", action: null },

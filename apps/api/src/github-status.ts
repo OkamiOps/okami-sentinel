@@ -7,12 +7,14 @@ import type {
 } from "@csb/shared";
 
 import {
+  createGhRunner,
   defaultGhRunner,
   type GhResult,
   type GhRunner,
 } from "./github-cli.js";
 
 const SECRET_NAME = "OPENAI_API_KEY";
+const defaultCodexRunner = createGhRunner("codex");
 const WORKFLOW_PATH = path.join(
   ".github",
   "workflows",
@@ -60,16 +62,28 @@ function parseJson(value: string): unknown {
 export async function getGitHubStatus(
   repositoryPath: string,
   runner: GhRunner = defaultGhRunner,
+  codexRunner: GhRunner = defaultCodexRunner,
 ): Promise<GuardrailGitHubStatus> {
   const cwd = path.resolve(repositoryPath);
   const workflowInstalled = fs.existsSync(path.join(cwd, WORKFLOW_PATH));
+  const codexAuthResult = await run(codexRunner, ["login", "status"], cwd);
+  const codexAuthOutput = `${codexAuthResult.stdout}\n${codexAuthResult.stderr}`;
+  const subscriptionReady =
+    codexAuthResult.exitCode === 0 && /logged in using chatgpt/i.test(codexAuthOutput);
+  const subscription = capability(
+    subscriptionReady,
+    subscriptionReady
+      ? "Assinatura Codex local detectada neste Mac."
+      : "Nenhuma sessão Codex por assinatura foi detectada.",
+    subscriptionReady ? null : "Entre com sua conta ChatGPT usando codex login.",
+  );
   const cliResult = await run(runner, ["--version"], cwd);
   const cliReady = cliResult.exitCode === 0;
   const cli = {
     ...capability(
       cliReady,
-      cliReady ? "GitHub CLI is available." : "GitHub CLI is not available.",
-      cliReady ? null : "Install GitHub CLI (gh).",
+      cliReady ? "GitHub CLI disponível." : "GitHub CLI não encontrado.",
+      cliReady ? null : "Instale o GitHub CLI (gh).",
     ),
     available: cliReady,
   };
@@ -77,10 +91,11 @@ export async function getGitHubStatus(
   if (!cliReady) {
     const unavailable = capability(
       false,
-      "GitHub CLI is required for this diagnostic.",
-      "Install GitHub CLI (gh).",
+      "O GitHub CLI é necessário para este diagnóstico.",
+      "Instale o GitHub CLI (gh).",
     );
     return {
+      subscription,
       cli,
       remote: unavailable,
       auth: unavailable,
@@ -96,9 +111,9 @@ export async function getGitHubStatus(
   const auth = capability(
     authResult.exitCode === 0,
     authResult.exitCode === 0
-      ? "GitHub CLI authentication is ready."
-      : "GitHub CLI is not authenticated.",
-    authResult.exitCode === 0 ? null : "Run gh auth login.",
+      ? "GitHub CLI autenticado."
+      : "GitHub CLI sem autenticação.",
+    authResult.exitCode === 0 ? null : "Execute gh auth login.",
   );
 
   const remoteResult = await run(
@@ -116,17 +131,17 @@ export async function getGitHubStatus(
   const remote = capability(
     repositorySlug !== null,
     repositorySlug
-      ? `GitHub remote ${repositorySlug} is available.`
-      : "No GitHub repository remote could be resolved.",
-    repositorySlug ? null : "Configure a GitHub remote for this repository.",
+      ? `Remote GitHub ${repositorySlug} disponível.`
+      : "Nenhum remote GitHub foi encontrado.",
+    repositorySlug ? null : "Configure um remote GitHub para este repositório.",
   );
 
   const permissions = repositorySlug
     ? await permissionsCapability(runner, cwd, repositorySlug)
     : capability(
         false,
-        "Repository permissions cannot be checked without a GitHub remote.",
-        "Configure a GitHub remote for this repository.",
+        "As permissões não podem ser verificadas sem um remote GitHub.",
+        "Configure um remote GitHub para este repositório.",
       );
 
   const secretResult = await run(
@@ -148,9 +163,9 @@ export async function getGitHubStatus(
   const secret = capability(
     secretReady,
     secretReady
-      ? `${SECRET_NAME} is configured.`
-      : `${SECRET_NAME} is not configured.`,
-    secretReady ? null : `Create the repository secret ${SECRET_NAME}.`,
+      ? `${SECRET_NAME} configurada no repositório.`
+      : `${SECRET_NAME} não configurada no repositório.`,
+    secretReady ? null : `Crie o secret ${SECRET_NAME} no repositório.`,
   );
 
   const workflow = workflowCapability(workflowInstalled);
@@ -158,9 +173,9 @@ export async function getGitHubStatus(
   const baseline = capability(
     baselineReady,
     baselineReady
-      ? "Default-branch baselines can be resolved by the gate."
-      : "Baseline resolution requires a readable GitHub Actions repository.",
-    baselineReady ? null : "Resolve the GitHub remote and Actions permissions.",
+      ? "O gate pode resolver baselines da branch principal."
+      : "A baseline remota exige acesso de leitura ao GitHub Actions.",
+    baselineReady ? null : "Resolva o remote GitHub e as permissões do Actions.",
   );
   const ready = [
     cli,
@@ -173,6 +188,7 @@ export async function getGitHubStatus(
   ].every((item) => item.ready);
 
   return {
+    subscription,
     cli,
     remote,
     auth,
@@ -206,20 +222,20 @@ async function permissionsCapability(
   if (repositoryResult.exitCode !== 0 || !actionsReadable) {
     return capability(
       false,
-      "Repository or Actions permissions could not be verified.",
-      "Grant repository and Actions access to the authenticated GitHub account.",
+      "Não foi possível verificar as permissões do repositório ou Actions.",
+      "Conceda acesso ao repositório e ao Actions para a conta autenticada.",
     );
   }
   if (!canPublish) {
     return capability(
       false,
-      "Repository access is read-only; local Check publication needs write or admin access.",
-      "Grant write or admin access for local Check publication.",
+      "O acesso ao repositório é somente leitura; publicar um Check local exige escrita ou admin.",
+      "Conceda acesso de escrita ou admin para publicar o Check local.",
     );
   }
   return capability(
     true,
-    "Repository and GitHub Actions permissions are ready.",
+    "Permissões do repositório e GitHub Actions prontas.",
     null,
   );
 }
@@ -228,8 +244,8 @@ function workflowCapability(installed: boolean): GitHubCapabilityStatus {
   return capability(
     installed,
     installed
-      ? "CSB caller workflow is installed."
-      : "CSB caller workflow is not installed.",
-    installed ? null : "Install the CSB caller workflow.",
+      ? "Caller workflow do CSB instalado."
+      : "Caller workflow do CSB não instalado.",
+    installed ? null : "Instale o caller workflow do CSB.",
   );
 }

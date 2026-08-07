@@ -15,6 +15,7 @@ import {
   EvidenceTrace,
   PortfolioPipeline,
   PublishGateControl,
+  RepositoryDirectoryBrowser,
 } from "../components/guardrails";
 import { AlertBanner, EmptyState, Loading, PageHeader } from "../components/ui";
 import { guardrailHref, isGateActive, selectDecisionNode, selectGate } from "../lib/guardrails";
@@ -300,20 +301,25 @@ function EnrollmentSheet({
       <SheetTrigger asChild>
         <Button variant="outline" className="min-h-11"><Plus aria-hidden size={14} />Cadastrar</Button>
       </SheetTrigger>
-      <SheetContent className="w-full border-border bg-background sm:max-w-md">
+      <SheetContent className="w-full border-border bg-background sm:max-w-xl">
         <SheetHeader>
           <SheetTitle className="font-heading">Cadastrar repositório</SheetTitle>
-          <SheetDescription>O caminho é validado pela API antes de entrar no portfolio local.</SheetDescription>
+          <SheetDescription>Navegue até a pasta raiz do projeto. A API confirma se ela é um repositório Git antes do cadastro.</SheetDescription>
         </SheetHeader>
-        <form className="mt-6 grid gap-5" onSubmit={submit}>
-          <Field label="Caminho absoluto" htmlFor="guardrail-repository-path" hint="Informe a raiz de um repositório Git local.">
-            <Input id="guardrail-repository-path" className="min-h-11 font-mono" required value={repositoryPath} onChange={(event) => setRepositoryPath(event.target.value)} />
-          </Field>
+        <form className="mt-5 grid gap-5" onSubmit={submit}>
+          <div>
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <span className="text-sm font-semibold">Escolha a pasta do repositório</span>
+              <span className="font-mono text-[8px] text-muted-foreground">COMEÇA EM ~/Documents/Git</span>
+            </div>
+            <RepositoryDirectoryBrowser active={open} value={repositoryPath} onChange={setRepositoryPath} />
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">Clique em uma pasta para entrar nela. Quando a raiz do projeto estiver em “Pasta atual”, cadastre.</p>
+          </div>
           <Field label="Nome de exibição" htmlFor="guardrail-repository-name" hint="Opcional; o nome da pasta será usado quando vazio.">
             <Input id="guardrail-repository-name" className="min-h-11" value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
           </Field>
           <Button type="submit" className="min-h-11" disabled={busy || !repositoryPath.trim()}>
-            <Plus aria-hidden size={14} />{busy ? "Cadastrando…" : "Cadastrar repositório"}
+            <Plus aria-hidden size={14} />{busy ? "Cadastrando…" : "Cadastrar pasta atual"}
           </Button>
         </form>
       </SheetContent>

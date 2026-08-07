@@ -5,6 +5,7 @@ import { Link, useSearchParams } from "react-router-dom";
 
 import { api } from "../api";
 import { GitHubStatusPanel } from "../components/guardrails";
+import type { ScannerAccessMode } from "../lib/github-guardrails";
 import { AlertBanner, EmptyState, Loading, PageHeader } from "../components/ui";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -19,6 +20,7 @@ export function GuardrailSetupPage() {
   const [busy, setBusy] = useState(false);
 
   const requestedKey = params.get("repository");
+  const accessMode: ScannerAccessMode = params.get("scanner") === "api" ? "api" : "subscription";
   const selected = repositories?.find((repository) => repository.repositoryKey === requestedKey) ?? repositories?.[0] ?? null;
 
   const loadRepositories = useCallback(async () => {
@@ -84,6 +86,14 @@ export function GuardrailSetupPage() {
     }
   }
 
+  function selectAccessMode(mode: ScannerAccessMode) {
+    const next = new URLSearchParams(params);
+    next.set("scanner", mode);
+    setParams(next, { replace: true });
+    setMessage(null);
+    setActionError(null);
+  }
+
   if (repositories === null && !loadError) return <Loading />;
 
   return (
@@ -91,7 +101,7 @@ export function GuardrailSetupPage() {
       <PageHeader
         code="03C / GITHUB SETUP"
         title="Preparar GitHub"
-        description="Verifique cada capacidade exigida para usar GitHub Checks. A tela chama somente a API local; comandos externos nunca são executados sem uma ação explícita sua."
+        description="Use sua assinatura Codex para scans locais ou uma API key para automação no GitHub Actions. A tela separa os requisitos de cada modo."
         actions={<Button asChild variant="ghost" className="min-h-11"><Link to="/guardrails"><ArrowLeft aria-hidden size={14} />Voltar a Guardrails</Link></Button>}
       />
 
@@ -121,7 +131,7 @@ export function GuardrailSetupPage() {
               <div>
                 <label className="text-sm font-semibold" htmlFor="github-repository-select">Repositório</label>
                 <Select value={selected.repositoryKey} onValueChange={(value) => {
-                  setParams({ repository: value });
+                  setParams({ repository: value, scanner: accessMode });
                   setMessage(null);
                   setActionError(null);
                 }}>
@@ -138,6 +148,8 @@ export function GuardrailSetupPage() {
               repository={selected}
               status={status}
               busy={busy}
+              accessMode={accessMode}
+              onAccessModeChange={selectAccessMode}
               onInstallWorkflow={installWorkflow}
               onSyncBaseline={syncBaseline}
             />

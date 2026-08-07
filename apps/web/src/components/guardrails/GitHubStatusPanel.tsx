@@ -1,8 +1,12 @@
 import { useState } from "react";
 import type { GuardrailGitHubStatus, GuardrailRepository } from "@csb/shared";
-import { Check, Clipboard, FilePlus2, RotateCw, ShieldAlert } from "lucide-react";
+import { Check, Clipboard, FilePlus2, KeyRound, Laptop2, RotateCw, ShieldAlert } from "lucide-react";
 
-import { githubSetupModel, type GitHubSetupStep } from "../../lib/github-guardrails";
+import {
+  githubSetupModel,
+  type GitHubSetupStep,
+  type ScannerAccessMode,
+} from "../../lib/github-guardrails";
 import { cx } from "../ui";
 import { Button } from "@/components/ui/button";
 import {
@@ -20,16 +24,20 @@ export function GitHubStatusPanel({
   repository,
   status,
   busy,
+  accessMode,
+  onAccessModeChange,
   onInstallWorkflow,
   onSyncBaseline,
 }: {
   repository: GuardrailRepository;
   status: GuardrailGitHubStatus;
   busy: boolean;
+  accessMode: ScannerAccessMode;
+  onAccessModeChange: (mode: ScannerAccessMode) => void;
   onInstallWorkflow: () => Promise<void>;
   onSyncBaseline: () => Promise<void>;
 }) {
-  const model = githubSetupModel(status, repository);
+  const model = githubSetupModel(status, repository, accessMode);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
 
@@ -46,11 +54,36 @@ export function GitHubStatusPanel({
 
   return (
     <section className="bench-panel bench-corners min-w-0 overflow-hidden" aria-labelledby="github-capability-title">
+      <div className="grid border-b lg:grid-cols-[minmax(14rem,.4fr)_minmax(0,1fr)]">
+        <div className="border-b px-4 py-4 lg:border-b-0 lg:border-r">
+          <div className="bench-label text-primary">SCANNER ACCESS</div>
+          <h2 className="mt-1 font-heading text-base font-semibold">Como o scan será autenticado?</h2>
+          <p className="mt-2 text-xs leading-5 text-muted-foreground">Escolha a credencial que você realmente usa. O modo pode ser trocado a qualquer momento.</p>
+        </div>
+        <div className="grid sm:grid-cols-2" role="radiogroup" aria-label="Modo de autenticação do scanner">
+          <AccessModeButton
+            active={accessMode === "subscription"}
+            icon={<Laptop2 aria-hidden size={17} />}
+            title="Assinatura Codex"
+            meta="LOCAL / SEM SECRET"
+            description="Usa a sessão ChatGPT/Codex deste Mac para o preflight local e permite publicar o resultado via gh."
+            onClick={() => onAccessModeChange("subscription")}
+          />
+          <AccessModeButton
+            active={accessMode === "api"}
+            icon={<KeyRound aria-hidden size={17} />}
+            title="API"
+            meta="CI / GITHUB ACTIONS"
+            description="Usa OPENAI_API_KEY no repositório para executar o gate automaticamente em PRs, sem depender deste Mac."
+            onClick={() => onAccessModeChange("api")}
+          />
+        </div>
+      </div>
       <div className="grid border-b lg:grid-cols-[minmax(0,1fr)_minmax(22rem,.55fr)]">
         <div className="px-4 py-3 lg:border-r">
           <div className="bench-label text-primary">GITHUB CAPABILITY TRACE</div>
           <h2 id="github-capability-title" className="mt-1 font-heading text-base font-semibold">Pré-requisitos para publicar Checks</h2>
-          <p className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">A bancada verifica o ambiente local e mostra o primeiro bloqueio. Nenhum comando é executado por esta tela.</p>
+          <p className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">{accessMode === "subscription" ? "Verifica a sessão Codex local e as capacidades necessárias para publicar o resultado pelo GitHub CLI." : "Verifica o secret e o workflow necessários para automatizar o gate no GitHub Actions."}</p>
         </div>
         <div className={cx("border-t px-4 py-3 lg:border-t-0", model.ready ? "bg-chart-2/[.06]" : "bg-primary/[.06]")}>
           <div className="bench-label">{model.ready ? "CAPACIDADE" : "PRÓXIMO BLOQUEIO"}</div>
@@ -110,6 +143,45 @@ export function GitHubStatusPanel({
         </SheetContent>
       </Sheet>
     </section>
+  );
+}
+
+function AccessModeButton({
+  active,
+  icon,
+  title,
+  meta,
+  description,
+  onClick,
+}: {
+  active: boolean;
+  icon: React.ReactNode;
+  title: string;
+  meta: string;
+  description: string;
+  onClick: () => void;
+}) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      role="radio"
+      aria-checked={active}
+      className={cx(
+        "h-auto min-h-28 w-full items-start justify-start gap-3 whitespace-normal rounded-none border-0 p-4 text-left sm:border-l",
+        active ? "bg-primary/[.09] text-foreground hover:bg-primary/[.12]" : "text-muted-foreground",
+      )}
+      onClick={onClick}
+    >
+      <span className={cx("mt-0.5 grid size-8 shrink-0 place-items-center border", active ? "border-primary text-primary" : "border-border")}>{icon}</span>
+      <span className="min-w-0">
+        <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span className="font-heading text-sm font-semibold text-foreground">{title}</span>
+          <span className={cx("font-mono text-[8px]", active ? "text-primary" : "text-muted-foreground")}>{meta}</span>
+        </span>
+        <span className="mt-2 block max-w-xl text-xs font-normal leading-5">{description}</span>
+      </span>
+    </Button>
   );
 }
 

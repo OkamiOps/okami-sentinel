@@ -13,6 +13,17 @@ interface FakeGhOptions {
   push?: boolean;
 }
 
+function fakeCodex(chatGpt = true): GhRunner {
+  return async (args) => {
+    assert.deepEqual(args, ["login", "status"]);
+    return {
+      stdout: chatGpt ? "Logged in using ChatGPT" : "Logged in using an API key",
+      stderr: "",
+      exitCode: 0,
+    };
+  };
+}
+
 function fakeGh(
   options: FakeGhOptions = {},
 ): { runner: GhRunner; calls: string[][] } {
@@ -86,8 +97,9 @@ test("reports each github capability independently", async () => {
   });
 
   try {
-    const status = await getGitHubStatus(repositoryPath, gh.runner);
+    const status = await getGitHubStatus(repositoryPath, gh.runner, fakeCodex());
 
+    assert.equal(status.subscription.ready, true);
     assert.equal(status.cli.available, true);
     assert.equal(status.auth.ready, true);
     assert.equal(status.remote.ready, true);
@@ -118,14 +130,33 @@ test("reports read-only repository access without hiding healthy capabilities", 
   const gh = fakeGh({ push: false });
 
   try {
-    const status = await getGitHubStatus(repositoryPath, gh.runner);
+    const status = await getGitHubStatus(repositoryPath, gh.runner, fakeCodex());
 
     assert.equal(status.auth.ready, true);
     assert.equal(status.secret.ready, true);
     assert.equal(status.workflow.ready, true);
     assert.equal(status.permissions.ready, false);
-    assert.match(status.permissions.message, /read-only/i);
+    assert.match(status.permissions.message, /somente leitura/i);
     assert.equal(status.ready, false);
+  } finally {
+    fs.rmSync(repositoryPath, { recursive: true, force: true });
+  }
+});
+
+test("does not present an API-key login as a subscription", async () => {
+  const repositoryPath = fs.mkdtempSync(
+    path.join(os.tmpdir(), "csb-codex-api-auth-"),
+  );
+  const gh = fakeGh();
+
+  try {
+    const status = await getGitHubStatus(
+      repositoryPath,
+      gh.runner,
+      fakeCodex(false),
+    );
+    assert.equal(status.subscription.ready, false);
+    assert.match(status.subscription.action ?? "", /codex login/i);
   } finally {
     fs.rmSync(repositoryPath, { recursive: true, force: true });
   }

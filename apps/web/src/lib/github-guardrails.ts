@@ -8,6 +8,7 @@ import type {
 
 export type GitHubSetupStepId =
   | "repository"
+  | "scanner"
   | "remote"
   | "cli"
   | "auth"
@@ -17,6 +18,7 @@ export type GitHubSetupStepId =
   | "baseline";
 
 export type GitHubSetupActionKind = "copy" | "install" | "sync" | "none";
+export type ScannerAccessMode = "subscription" | "api";
 
 export interface GitHubSetupStep {
   id: GitHubSetupStepId;
@@ -37,9 +39,10 @@ export interface GitHubSetupViewModel {
 export function githubSetupModel(
   status: GuardrailGitHubStatus,
   repository?: GuardrailRepository,
+  accessMode: ScannerAccessMode = "api",
 ): GitHubSetupViewModel {
   const repositoryReady = repository ? Boolean(repository.repositoryPath) : true;
-  const steps: GitHubSetupStep[] = [
+  const sharedSteps: GitHubSetupStep[] = [
     {
       id: "repository",
       title: "Confirme o repositório Git",
@@ -49,21 +52,30 @@ export function githubSetupModel(
       actionKind: "none",
       command: null,
     },
+    ...(accessMode === "subscription"
+      ? [capabilityStep("scanner", "Use sua assinatura Codex", status.subscription, "codex login")]
+      : []),
     capabilityStep("remote", "Configure o remote GitHub", status.remote),
     capabilityStep("cli", "Instale o gh CLI", status.cli),
     capabilityStep("auth", "Autentique o gh CLI", status.auth, "gh auth login"),
     capabilityStep("permissions", "Libere Actions e Checks", status.permissions),
-    capabilityStep("secret", "Configure o secret do scanner", status.secret, "gh secret set OPENAI_API_KEY"),
+  ];
+  const apiSteps: GitHubSetupStep[] = [
+    capabilityStep("secret", "Configure a API do scanner", status.secret, "gh secret set OPENAI_API_KEY"),
     {
       ...capabilityStep("workflow", "Instale o caller workflow", status.workflow),
       actionKind: status.workflow.ready ? "none" : "install",
     },
+  ];
+  const steps: GitHubSetupStep[] = [
+    ...sharedSteps,
+    ...(accessMode === "api" ? apiSteps : []),
     {
       ...capabilityStep("baseline", "Sincronize a baseline remota", status.baseline),
       actionKind: status.baseline.ready ? "none" : "sync",
     },
   ];
-  const ready = status.ready && steps.every((step) => step.ready);
+  const ready = steps.every((step) => step.ready);
   const primary = steps.find((step) => !step.ready) ?? {
     id: "baseline",
     title: "Integração GitHub pronta",

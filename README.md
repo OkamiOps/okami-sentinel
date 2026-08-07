@@ -16,7 +16,9 @@ Aplicação local para disparar scans do [`@openai/codex-security`](https://gith
 - Python 3.10+ (exigido pelo Codex Security)
 - GitHub CLI (`gh`) autenticado para diagnóstico, baseline remoto e publicação local opcional
 - GitHub Actions habilitado no repositório que usará o gate
-- secret de Actions `OPENAI_API_KEY` no repositório
+- uma das formas de acesso ao scanner:
+  - **Assinatura Codex:** sessão local ativa, confirmada por `codex login status` como `Logged in using ChatGPT`;
+  - **API:** secret de Actions `OPENAI_API_KEY` no repositório para execução autônoma no GitHub Actions.
 - Login no Codex Security:
 
 ```bash
@@ -70,7 +72,12 @@ Outcomes locais:
 
 ## GitHub Actions e Checks
 
-Em **Guardrails → Setup GitHub**, o app diagnostica cada capability separadamente, pode criar o caller workflow localmente, sincroniza o baseline remoto e publica um gate local como Check mediante confirmação. Instalar o workflow cria `.github/workflows/csb-security-change-gate.yml`; não faz commit nem push.
+Em **Guardrails → Setup GitHub**, escolha como o scanner será autenticado:
+
+- **Assinatura Codex:** usa a sessão ChatGPT/Codex deste Mac. Não exige `OPENAI_API_KEY`, executa o preflight localmente e pode publicar o resultado como Check usando o `gh` autenticado. Não executa scans autônomos no GitHub Actions.
+- **API:** usa `OPENAI_API_KEY` no repositório e o caller workflow para executar o gate automaticamente em PRs, sem depender deste Mac.
+
+O app diagnostica cada capability separadamente, pode criar o caller workflow localmente, sincroniza o baseline remoto e publica um gate local como Check mediante confirmação. Instalar o workflow cria `.github/workflows/csb-security-change-gate.yml`; não faz commit nem push.
 
 Caller mínimo:
 
@@ -119,7 +126,8 @@ O modo local continua funcionando sem GitHub. Nesse caso não há instalação, 
 - **gh CLI:** valide a instalação com `gh --version`.
 - **Authentication:** execute `gh auth status`; se necessário, `gh auth login`.
 - **Permissions:** a conta precisa de acesso de escrita ou admin para publicar Checks e leitura de Actions para sincronizar baselines.
-- **Scanner secret:** confirme `OPENAI_API_KEY` com `gh secret list --json name`; o app nunca lê nem armazena o valor.
+- **Assinatura Codex:** confirme `Logged in using ChatGPT` com `codex login status`; se necessário, execute `codex login`.
+- **Scanner por API:** confirme `OPENAI_API_KEY` com `gh secret list --json name`; o app nunca lê nem armazena o valor.
 - **Caller workflow:** confirme `.github/workflows/csb-security-change-gate.yml`, a referência `@v1` e as permissões mínimas do exemplo.
 - **Remote baseline:** confirme que há uma run da default branch com o artifact `csb-gate-artifact` ainda retido. Artifact inválido ou expirado exige nova run válida.
 

@@ -493,6 +493,7 @@ export interface GitHubCapabilityStatus {
 }
 
 export interface GuardrailGitHubStatus {
+  subscription: GitHubCapabilityStatus;
   cli: GitHubCapabilityStatus & { available: boolean };
   remote: GitHubCapabilityStatus;
   auth: GitHubCapabilityStatus;
