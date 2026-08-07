@@ -344,3 +344,140 @@ export function normalizeSeverity(value: unknown): Severity {
   }
   return "unknown";
 }
+
+export type GateSource = "local" | "github";
+export type GateStatus = "queued" | "resolving" | "scanning" | "evaluating" | "publishing" | "completed" | "cancelled" | "error";
+export type GateOutcome = "no_changes" | "bootstrap" | "pass" | "warning" | "blocked" | "error";
+export type GateFindingLifecycle = "new" | "reopened" | "persistent" | "fixed";
+export type GateRuleDecision = "block" | "review";
+export type GitHubConclusion = "success" | "neutral" | "failure" | "action_required";
+
+export interface GuardrailRule {
+  severity: Severity[];
+  lifecycle: GateFindingLifecycle[];
+  decision: GateRuleDecision;
+}
+
+export interface GuardrailPolicy {
+  schemaVersion: 1;
+  protectedBranches: string[];
+  scope: { mode: "changed" | "repository"; maxChangedPaths: number; fallback: "repository" | "error" };
+  scan: { model: string; effort: string; mode: "standard" | "deep"; maxCostUsd: number };
+  rules: GuardrailRule[];
+}
+
+export interface ChangeSetFile {
+  status: "added" | "modified" | "renamed" | "deleted";
+  path: string;
+  previousPath: string | null;
+  additions: number | null;
+  deletions: number | null;
+}
+
+export interface ChangeSet {
+  baseRef: string;
+  headRef: string;
+  baseSha: string;
+  headSha: string;
+  files: ChangeSetFile[];
+  scanPaths: string[];
+  scopeMode: "changed" | "repository";
+  fallbackReason: string | null;
+}
+
+export interface GuardrailException {
+  findingIdentity: string;
+  reason: string;
+  owner: string;
+  createdAt: string;
+  expiresAt: string;
+  branches: string[];
+  ruleIndexes: number[];
+}
+
+export interface GateFindingDelta extends FindingSummary {
+  identity: string;
+  lifecycle: GateFindingLifecycle;
+  triage: FindingTriage;
+  exception: GuardrailException | null;
+  sourceScanId: string;
+}
+
+export interface DecisionGraphNode {
+  id: string;
+  kind: "changeset" | "surface" | "signal" | "rule" | "verdict";
+  label: string;
+  value: string;
+  detail: string | null;
+  tone: "neutral" | "good" | "warning" | "risk";
+  findingIdentity: string | null;
+}
+
+export interface DecisionGraph { nodes: DecisionGraphNode[]; selectedNodeId: string; }
+
+export interface GateViolation {
+  findingIdentity: string;
+  ruleIndex: number;
+  decision: GateRuleDecision;
+  reason: string;
+}
+
+export interface GateDecision {
+  outcome: GateOutcome;
+  summary: string;
+  violations: GateViolation[];
+  warnings: GateViolation[];
+  exceptionsApplied: string[];
+  githubConclusion: GitHubConclusion;
+  decisionGraph: DecisionGraph;
+}
+
+export interface GateArtifact {
+  schemaVersion: 1;
+  gateId: string;
+  repository: { key: string; owner: string | null; name: string; defaultBranch: string };
+  source: GateSource;
+  changeSet: ChangeSet;
+  policy: GuardrailPolicy;
+  scan: { id: string | null; cost: ScanCost | null; status: string };
+  baselineCommit: string | null;
+  findings: GateFindingDelta[];
+  decision: GateDecision;
+  versions: { gateCore: string; scanner: string | null };
+  createdAt: string;
+}
+
+export interface GateRun {
+  id: string;
+  repositoryKey: string;
+  repositoryPath: string;
+  source: GateSource;
+  baseRef: string;
+  headRef: string;
+  pullRequestNumber: number | null;
+  scanId: string | null;
+  status: GateStatus;
+  outcome: GateOutcome | null;
+  policyVersion: number;
+  baselineCommit: string | null;
+  artifactPath: string | null;
+  error: string | null;
+  startedAt: string;
+  completedAt: string | null;
+  estimatedUsd: number;
+}
+
+export type RepositoryGitHubStatus = "not_configured" | "not_checked" | "ready" | "action_required";
+
+export interface GuardrailRepository {
+  repositoryKey: string;
+  repositoryPath: string;
+  displayName: string;
+  defaultBranch: string;
+  remoteOwner: string | null;
+  remoteName: string | null;
+  enabled: boolean;
+  policyPath: string;
+  lastGateId: string | null;
+  githubStatus: RepositoryGitHubStatus;
+}

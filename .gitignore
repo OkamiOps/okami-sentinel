@@ -12,3 +12,4 @@ apps/api/dist/
 *.tsbuildinfo
 tmp/
 .pnpm-store/
+.superpowers/

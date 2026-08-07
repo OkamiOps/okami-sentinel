@@ -3,11 +3,15 @@
   "private": true,
   "version": "0.1.0",
   "packageManager": "pnpm@11.5.2",
+  "engines": {
+    "node": ">=24 <25"
+  },
   "scripts": {
     "dev": "pnpm -r --parallel --filter @csb/api --filter @csb/web run dev",
     "dev:api": "pnpm --filter @csb/api dev",
     "dev:web": "pnpm --filter @csb/web dev",
     "build": "pnpm -r run build",
-    "typecheck": "pnpm -r run typecheck"
+    "typecheck": "pnpm -r run typecheck",
+    "test": "pnpm -r --if-present test"
   }
 }
