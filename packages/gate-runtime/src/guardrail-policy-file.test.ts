@@ -101,9 +101,25 @@ test("does not follow a pre-existing temporary-file symlink", () => {
   const outsideFile = path.join(outside, "sentinel.txt");
   fs.writeFileSync(outsideFile, "do-not-overwrite");
   fs.mkdirSync(path.join(repositoryPath, ".csb"));
-  fs.symlinkSync(outsideFile, path.join(repositoryPath, ".csb", "guardrails.json.tmp"));
 
-  assert.throws(() => writeGuardrailPolicy(repositoryPath, defaultGuardrailPolicy()));
+  const mutableFs = fs as unknown as { openSync: typeof fs.openSync };
+  const originalOpenSync = fs.openSync;
+  let planted = false;
+  mutableFs.openSync = ((...args: unknown[]) => {
+    const candidate = String(args[0]);
+    if (!planted && candidate.endsWith(".tmp")) {
+      fs.symlinkSync(outsideFile, candidate);
+      planted = true;
+    }
+    return Reflect.apply(originalOpenSync, fs, args) as number;
+  }) as typeof fs.openSync;
+
+  try {
+    assert.throws(() => writeGuardrailPolicy(repositoryPath, defaultGuardrailPolicy()));
+  } finally {
+    mutableFs.openSync = originalOpenSync;
+  }
+  assert.equal(planted, true);
   assert.equal(fs.readFileSync(outsideFile, "utf8"), "do-not-overwrite");
   assert.equal(fs.existsSync(path.join(repositoryPath, ".csb", "guardrails.json")), false);
 });
@@ -119,4 +135,54 @@ test("rejects a .csb directory symlink before writing outside the repository", (
   );
   assert.equal(fs.existsSync(path.join(outside, "guardrails.json")), false);
   assert.equal(fs.existsSync(path.join(outside, "guardrails.json.tmp")), false);
+});
+
+test("validates the opened temporary before writing when .csb is swapped during open", () => {
+  const repositoryPath = repo("csb-policy-open-race-");
+  const policyDirectory = path.join(repositoryPath, ".csb");
+  const parkedDirectory = path.join(repositoryPath, ".csb-parked");
+  const outside = repo("csb-policy-open-race-outside-");
+  fs.mkdirSync(policyDirectory);
+
+  const mutableFs = fs as unknown as {
+    openSync: typeof fs.openSync;
+    writeFileSync: typeof fs.writeFileSync;
+  };
+  const originalOpenSync = fs.openSync;
+  const originalWriteFileSync = fs.writeFileSync;
+  let swapped = false;
+  let observedOutsideContent: string | null = null;
+
+  mutableFs.openSync = ((...args: unknown[]) => {
+    const candidate = String(args[0]);
+    if (!swapped && candidate.startsWith(`${policyDirectory}${path.sep}`) && candidate.endsWith(".tmp")) {
+      fs.renameSync(policyDirectory, parkedDirectory);
+      fs.symlinkSync(outside, policyDirectory);
+      swapped = true;
+    }
+    return Reflect.apply(originalOpenSync, fs, args) as number;
+  }) as typeof fs.openSync;
+  mutableFs.writeFileSync = ((...args: unknown[]) => {
+    Reflect.apply(originalWriteFileSync, fs, args);
+    if (swapped && typeof args[0] === "number") {
+      const outsideTemporary = fs.readdirSync(outside).find((entry) => entry.endsWith(".tmp"));
+      if (outsideTemporary !== undefined) {
+        observedOutsideContent = fs.readFileSync(path.join(outside, outsideTemporary), "utf8");
+      }
+    }
+  }) as typeof fs.writeFileSync;
+
+  try {
+    assert.throws(
+      () => writeGuardrailPolicy(repositoryPath, defaultGuardrailPolicy()),
+      (error: unknown) => error instanceof GuardrailPolicyError && error.path === "policyPath",
+    );
+  } finally {
+    mutableFs.openSync = originalOpenSync;
+    mutableFs.writeFileSync = originalWriteFileSync;
+  }
+
+  assert.equal(swapped, true);
+  assert.equal(observedOutsideContent, null, "policy content must not be written through the swapped parent");
+  assert.deepEqual(fs.readdirSync(outside), [], "an empty temporary created by the race should be safely removed");
 });

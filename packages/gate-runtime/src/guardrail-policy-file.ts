@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -39,9 +40,10 @@ export function readGuardrailPolicy(repositoryPath: string): GuardrailPolicy {
 
 export function writeGuardrailPolicy(repositoryPath: string, policy: GuardrailPolicy): void {
   const validated = parseGuardrailPolicy(policy);
-  const directory = preparePolicyDirectory(repositoryPath);
+  const preparedDirectory = preparePolicyDirectory(repositoryPath);
+  const { directory } = preparedDirectory;
   const destination = path.join(directory, "guardrails.json");
-  const temporary = path.join(directory, "guardrails.json.tmp");
+  const temporary = path.join(directory, `guardrails.json.${randomUUID()}.tmp`);
 
   let descriptor: number | null = null;
   let temporaryIdentity: FileIdentity | null = null;
@@ -52,11 +54,13 @@ export function writeGuardrailPolicy(repositoryPath: string, policy: GuardrailPo
       0o600,
     );
     temporaryIdentity = fileIdentity(fs.fstatSync(descriptor));
+    assertSafePolicyDirectory(repositoryPath, directory, undefined, preparedDirectory.identity);
+    assertTemporaryIdentity(temporary, temporaryIdentity);
     fs.writeFileSync(descriptor, `${JSON.stringify(validated, null, 2)}\n`, "utf8");
     fs.fsyncSync(descriptor);
     fs.closeSync(descriptor);
     descriptor = null;
-    assertSafePolicyDirectory(repositoryPath, directory);
+    assertSafePolicyDirectory(repositoryPath, directory, undefined, preparedDirectory.identity);
     assertTemporaryIdentity(temporary, temporaryIdentity);
     fs.renameSync(temporary, destination);
   } catch (error) {
@@ -165,7 +169,12 @@ interface FileIdentity {
   ino: number;
 }
 
-function preparePolicyDirectory(repositoryPath: string): string {
+interface PreparedPolicyDirectory {
+  directory: string;
+  identity: FileIdentity;
+}
+
+function preparePolicyDirectory(repositoryPath: string): PreparedPolicyDirectory {
   let repositoryRealPath: string;
   try {
     repositoryRealPath = fs.realpathSync(repositoryPath);
@@ -181,15 +190,16 @@ function preparePolicyDirectory(repositoryPath: string): string {
       fail("policyPath", `configuration directory cannot be created: ${errorMessage(error)}`);
     }
   }
-  assertSafePolicyDirectory(repositoryPath, directory, repositoryRealPath);
-  return directory;
+  const identity = assertSafePolicyDirectory(repositoryPath, directory, repositoryRealPath);
+  return { directory, identity };
 }
 
 function assertSafePolicyDirectory(
   repositoryPath: string,
   directory: string,
   knownRepositoryRealPath?: string,
-): void {
+  expectedIdentity?: FileIdentity,
+): FileIdentity {
   try {
     const metadata = fs.lstatSync(directory);
     if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
@@ -200,6 +210,10 @@ function assertSafePolicyDirectory(
     if (directoryRealPath !== path.join(repositoryRealPath, ".csb")) {
       fail("policyPath", ".csb resolves outside the repository");
     }
+    if (expectedIdentity !== undefined && !sameIdentity(metadata, expectedIdentity)) {
+      fail("policyPath", ".csb was replaced during policy publication");
+    }
+    return fileIdentity(metadata);
   } catch (error) {
     if (error instanceof GuardrailPolicyError) throw error;
     fail("policyPath", `configuration directory cannot be validated: ${errorMessage(error)}`);
