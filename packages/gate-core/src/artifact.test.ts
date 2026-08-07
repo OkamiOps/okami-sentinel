@@ -122,6 +122,59 @@ function passInput(): BuildGateArtifactInput {
   return input;
 }
 
+function bootstrapInput(): BuildGateArtifactInput {
+  const input = artifactInput();
+  input.baselineCommit = null;
+  input.evaluation.deltas[0]!.lifecycle = "new";
+  input.evaluation.decision = {
+    outcome: "bootstrap",
+    summary: "Baseline initialized.",
+    violations: [],
+    warnings: [],
+    exceptionsApplied: [],
+    githubConclusion: "neutral",
+  };
+  return input;
+}
+
+function warningInput(): BuildGateArtifactInput {
+  const input = artifactInput();
+  input.evaluation.deltas[0]!.lifecycle = "persistent";
+  input.evaluation.decision = {
+    outcome: "warning",
+    summary: "1 policy warning(s).",
+    violations: [],
+    warnings: [{
+      findingIdentity: input.evaluation.deltas[0]!.identity,
+      ruleIndex: 2,
+      decision: "review",
+      reason: "high/persistent",
+    }],
+    exceptionsApplied: [],
+    githubConclusion: "neutral",
+  };
+  return input;
+}
+
+function noChangesInput(baselineCommit: string | null = null): BuildGateArtifactInput {
+  const input = artifactInput();
+  input.changeSet = { ...changeSet(), files: [], scanPaths: [] };
+  input.scan = { id: null, cost: null, status: "not_run" };
+  input.baselineCommit = baselineCommit;
+  input.evaluation = {
+    deltas: [],
+    decision: {
+      outcome: "no_changes",
+      summary: "No changed files to scan.",
+      violations: [],
+      warnings: [],
+      exceptionsApplied: [],
+      githubConclusion: "success",
+    },
+  };
+  return input;
+}
+
 function replaceArtifactDecision(
   artifact: GateArtifact,
   decision: BuildGateArtifactInput["evaluation"]["decision"],
@@ -184,11 +237,12 @@ test("whitelists nested runtime fields before serialization", () => {
   };
   Object.assign(input.evaluation.deltas[0]!.exception, { runtimeExtra: markers[5] });
   Object.assign(input.evaluation.decision.violations[0]!, { runtimeExtra: markers[6] });
+  input.policy.rules.push({ severity: ["high"], lifecycle: ["reopened"], decision: "review" });
   input.evaluation.decision.warnings = [{
     findingIdentity: input.evaluation.deltas[0]!.identity,
-    ruleIndex: 2,
+    ruleIndex: 3,
     decision: "review",
-    reason: "high/persistent",
+    reason: "high/reopened",
   }];
   Object.assign(input.evaluation.decision.warnings[0]!, { runtimeExtra: markers[7] });
 
@@ -228,7 +282,7 @@ test("rejects every unsafe public-string bypass with its field path", () => {
     {
       name: "loose Bearer token",
       path: "findings[0].summary",
-      mutate: (input) => { input.evaluation.deltas[0]!.summary = "Bearer s3crt"; },
+      mutate: (input) => { input.evaluation.deltas[0]!.summary = "Bearer aB3dE5fG7hJ9kL2m"; },
     },
     {
       name: "named secret assignment",
@@ -258,6 +312,81 @@ test("rejects every unsafe public-string bypass with its field path", () => {
       fixture.name,
     );
   }
+});
+
+test("rejects prefixed secret assignments without underscore boundary gaps", () => {
+  for (const assignment of [
+    "OPENAI_API_KEY = ordinary-value",
+    "GITHUB_TOKEN=ordinary-value",
+    "AWS_SECRET_ACCESS_KEY: ordinary-value",
+    "DATABASE_PASSWORD = ordinary-value",
+    "INTERNAL_WEBHOOK_SECRET=ordinary-value",
+  ]) {
+    const input = artifactInput();
+    input.evaluation.deltas[0]!.summary = assignment;
+
+    assert.throws(
+      () => buildGateArtifact(input),
+      /findings\[0\]\.summary.*possível segredo/,
+      assignment,
+    );
+  }
+});
+
+test("rejects known local roots inside narrative delimiters", () => {
+  for (const leakedPath of [
+    "leaked [`/Users/marcos/private/repo`]",
+    "read from '/home/marcos/private/repo'",
+    "stored at [/tmp/private-report.json]",
+    "temporary root [/tmp]",
+    "opened from \"/private/var/folders/data\"",
+    "opened from `/root/private/data`",
+    "opened from `/var/tmp/private/data`",
+    "opened from `C:\\Users\\marcos\\private`",
+    "opened from [\\\\server\\share\\private]",
+    "opened from FiLe:///Users/marcos/private",
+  ]) {
+    const input = artifactInput();
+    input.evaluation.deltas[0]!.summary = leakedPath;
+
+    assert.throws(
+      () => buildGateArtifact(input),
+      /findings\[0\]\.summary.*caminho absoluto local/,
+      leakedPath,
+    );
+  }
+});
+
+test("allows normal routes and conceptual security evidence", () => {
+  const input = artifactInput();
+  input.evaluation.deltas[0]!.summary = [
+    "Unauthenticated GET /api/users",
+    "conceptual /etc/passwd evidence",
+    "normal GET /tmpfiles/list route",
+    "Bearer token authentication bypass",
+  ].join("; ");
+
+  const artifact = buildGateArtifact(input);
+
+  assert.equal(artifact.findings[0]?.summary, input.evaluation.deltas[0]!.summary);
+});
+
+test("keeps path-typed fields strictly repository-relative", () => {
+  const absoluteRoute = artifactInput();
+  absoluteRoute.evaluation.deltas[0]!.primaryPath = "/api/users";
+  assert.throws(() => buildGateArtifact(absoluteRoute), /primaryPath.*relativo ao repositório/);
+
+  const traversal = artifactInput();
+  traversal.changeSet.files[0]!.path = "../outside.ts";
+  assert.throws(() => buildGateArtifact(traversal), /files\[0\]\.path.*relativo ao repositório/);
+
+  const homeRelative = artifactInput();
+  homeRelative.changeSet.scanPaths[0] = "~/.ssh/id_ed25519";
+  assert.throws(() => buildGateArtifact(homeRelative), /scanPaths\[0\].*relativo ao repositório/);
+
+  const remoteUrl = artifactInput();
+  remoteUrl.changeSet.files[0]!.path = "https://example.com/source.ts";
+  assert.throws(() => buildGateArtifact(remoteUrl), /files\[0\]\.path.*relativo ao repositório/);
 });
 
 test("requires publishable repository and commit identities", () => {
@@ -310,21 +439,24 @@ test("sanitizes operational details before publication", () => {
 test("sanitizes operational bypass forms without publishing evidence", () => {
   const { evaluation: _evaluation, ...envelope } = artifactInput();
   const secrets = [
-    "s3crt",
+    "aB3dE5fG7hJ9kL2m",
     `ghp_${"a".repeat(36)}`,
     `sk-proj-${"b".repeat(32)}`,
     "named-secret",
+    "env-secret-value",
   ];
   const artifact = buildOperationalErrorArtifact({
     ...envelope,
     operationalSummary: [
-      "Bearer s3crt",
+      "Bearer aB3dE5fG7hJ9kL2m",
       secrets[1],
       secrets[2],
       "token = named-secret",
+      "OPENAI_API_KEY = env-secret-value",
       " FiLe:///Users/marcos/private",
       " C:\\Users\\marcos\\private",
       " \\\\server\\share\\private",
+      " leaked [`/Users/marcos/bracketed`]",
     ].join(" | "),
   });
   const serialized = JSON.stringify(artifact);
@@ -333,6 +465,15 @@ test("sanitizes operational bypass forms without publishing evidence", () => {
   assert.equal(serialized.toLowerCase().includes("file://"), false);
   assert.equal(serialized.includes("C:\\Users"), false);
   assert.equal(serialized.includes("\\\\server\\share"), false);
+});
+
+test("preserves conceptual routes and Bearer evidence in operational summaries", () => {
+  const { evaluation: _evaluation, ...envelope } = artifactInput();
+  const summary = "Unauthenticated GET /api/users; conceptual /etc/passwd; GET /tmpfiles/list; Bearer token authentication bypass";
+
+  const artifact = buildOperationalErrorArtifact({ ...envelope, operationalSummary: summary });
+
+  assert.equal(artifact.decision.summary, summary);
 });
 
 test("rejects pass without a baseline for a changed diff", () => {
@@ -365,34 +506,136 @@ test("rejects a failed scan with a pass decision", () => {
 });
 
 test("preserves bootstrap and no_changes baseline semantics", () => {
-  const bootstrap = artifactInput();
-  bootstrap.evaluation.decision = {
-    outcome: "bootstrap",
-    summary: "Baseline initialized.",
-    violations: [],
-    warnings: [],
-    exceptionsApplied: [],
-    githubConclusion: "neutral",
-  };
+  const bootstrap = bootstrapInput();
+  bootstrap.baselineCommit = "unexpected-baseline";
   assert.throws(() => buildGateArtifact(bootstrap), /bootstrap.*baselineCommit/);
   bootstrap.baselineCommit = null;
   assert.equal(buildGateArtifact(bootstrap).decision.outcome, "bootstrap");
 
-  const noChanges = passInput();
-  noChanges.changeSet = { ...changeSet(), files: [], scanPaths: [] };
-  noChanges.baselineCommit = null;
-  noChanges.evaluation = {
-    deltas: [],
-    decision: {
-      outcome: "no_changes",
-      summary: "No changed files to scan.",
-      violations: [],
-      warnings: [],
-      exceptionsApplied: [],
-      githubConclusion: "success",
-    },
+  assert.equal(buildGateArtifact(noChangesInput()).decision.outcome, "no_changes");
+  assert.equal(buildGateArtifact(noChangesInput("previous-baseline")).baselineCommit, "previous-baseline");
+});
+
+test("requires a completed identified scan for every conclusive security outcome", () => {
+  const factories: Array<() => BuildGateArtifactInput> = [
+    bootstrapInput,
+    passInput,
+    warningInput,
+    artifactInput,
+  ];
+  const invalidScans: Array<{ id: string | null; status: string }> = [
+    { id: null, status: "completed" },
+    { id: "scan-current", status: "running" },
+    { id: "scan-current", status: "cancelled" },
+    { id: "scan-current", status: "incomplete" },
+    { id: "scan-current", status: "failed" },
+    { id: "scan-current", status: "error" },
+    { id: "scan-current", status: "not_run" },
+  ];
+
+  for (const factory of factories) {
+    for (const invalidScan of invalidScans) {
+      const input = factory();
+      input.scan.id = invalidScan.id;
+      input.scan.status = invalidScan.status;
+      assert.throws(
+        () => buildGateArtifact(input),
+        /GateArtifact\.scan\.(?:id|status)/,
+        `${input.evaluation.decision.outcome}/${invalidScan.id}/${invalidScan.status}`,
+      );
+    }
+  }
+});
+
+test("requires canonical not_run scan evidence for no_changes", () => {
+  const withScanId = noChangesInput();
+  withScanId.scan.id = "scan-unexpected";
+  assert.throws(() => buildGateArtifact(withScanId), /scan\.id/);
+
+  const withCost = noChangesInput();
+  withCost.scan.cost = artifactInput().scan.cost;
+  assert.throws(() => buildGateArtifact(withCost), /scan\.cost/);
+
+  const completed = noChangesInput();
+  completed.scan.status = "completed";
+  assert.throws(() => buildGateArtifact(completed), /scan\.status.*not_run/);
+});
+
+test("allows operational errors with failed or incomplete scan state", () => {
+  for (const status of ["failed", "incomplete"]) {
+    const { evaluation: _evaluation, ...envelope } = artifactInput();
+    envelope.scan.status = status;
+    const artifact = buildOperationalErrorArtifact({
+      ...envelope,
+      operationalSummary: "scanner unavailable",
+    });
+    assert.equal(artifact.decision.outcome, "error");
+    assert.equal(artifact.scan.status, status);
+  }
+});
+
+test("enforces evaluator-canonical outcomes for empty and non-empty diffs", () => {
+  const emptyPass = passInput();
+  emptyPass.changeSet = { ...changeSet(), files: [], scanPaths: [] };
+  assert.throws(() => buildGateArtifact(emptyPass), /empty diff.*no_changes/);
+
+  const emptyBootstrap = bootstrapInput();
+  emptyBootstrap.changeSet = { ...changeSet(), files: [], scanPaths: [] };
+  assert.throws(() => buildGateArtifact(emptyBootstrap), /empty diff.*no_changes/);
+
+  const changedNoChanges = noChangesInput();
+  changedNoChanges.changeSet = changeSet();
+  assert.throws(() => buildGateArtifact(changedNoChanges), /no_changes.*changeset vazio/);
+});
+
+test("requires every bootstrap finding lifecycle to be new", () => {
+  for (const lifecycle of ["persistent", "reopened", "fixed"] as const) {
+    const input = bootstrapInput();
+    input.evaluation.deltas[0]!.lifecycle = lifecycle;
+    assert.throws(
+      () => buildGateArtifact(input),
+      /findings\[0\]\.lifecycle.*bootstrap.*new/,
+      lifecycle,
+    );
+  }
+});
+
+test("validates decision row rule indexes, decisions and finding coverage", () => {
+  const outOfRange = artifactInput();
+  outOfRange.evaluation.decision.violations[0]!.ruleIndex = 99;
+  assert.throws(() => buildGateArtifact(outOfRange), /ruleIndex.*policy\.rules/);
+
+  const violationOnReviewRule = artifactInput();
+  violationOnReviewRule.evaluation.decision.violations[0]!.ruleIndex = 2;
+  assert.throws(() => buildGateArtifact(violationOnReviewRule), /violations\[0\].*regra block/);
+
+  const warningOnBlockRule = warningInput();
+  warningOnBlockRule.evaluation.decision.warnings[0]!.ruleIndex = 1;
+  assert.throws(() => buildGateArtifact(warningOnBlockRule), /warnings\[0\].*regra review/);
+
+  const severityMismatch = artifactInput();
+  severityMismatch.evaluation.decision.violations[0]!.ruleIndex = 0;
+  assert.throws(() => buildGateArtifact(severityMismatch), /violations\[0\].*severity/);
+
+  const lifecycleMismatch = warningInput();
+  lifecycleMismatch.policy.rules[2]!.lifecycle = ["new"];
+  assert.throws(() => buildGateArtifact(lifecycleMismatch), /warnings\[0\].*lifecycle/);
+});
+
+test("parser enforces decision row policy references", () => {
+  const artifact = structuredClone(buildGateArtifact(artifactInput()));
+  artifact.decision.violations[0]!.ruleIndex = 2;
+  const decision = {
+    outcome: artifact.decision.outcome,
+    summary: artifact.decision.summary,
+    violations: artifact.decision.violations,
+    warnings: artifact.decision.warnings,
+    exceptionsApplied: artifact.decision.exceptionsApplied,
+    githubConclusion: artifact.decision.githubConclusion,
   };
-  assert.equal(buildGateArtifact(noChanges).decision.outcome, "no_changes");
+  artifact.decision.decisionGraph = buildDecisionGraph(artifact.changeSet, artifact.findings, decision);
+
+  assert.throws(() => parseGateArtifact(artifact), /violations\[0\].*regra block/);
 });
 
 test("parses a complete schema v1 artifact", () => {
@@ -444,7 +687,8 @@ test("rejects a graph node pointing at the wrong existing finding", () => {
 
 test("rejects a graph built for a different selected rule", () => {
   const artifact = structuredClone(buildGateArtifact(artifactInput()));
-  artifact.decision.violations[0]!.ruleIndex = 0;
+  artifact.policy.rules.push({ severity: ["high"], lifecycle: ["reopened"], decision: "block" });
+  artifact.decision.violations[0]!.ruleIndex = 3;
 
   assert.throws(() => parseGateArtifact(artifact), /decisionGraph.*canônico/);
 });

@@ -353,10 +353,9 @@ function copyGateArtifact(artifact: GateArtifact): GateArtifact {
 }
 
 function sanitizeOperationalSummary(value: string): string {
-  const normalized = value
-    .replace(/[\u0000-\u001f\u007f]+/g, " ")
-    .replace(/\b(?:authorization|api[-_ ]?key|token|secret|password)\s*[:=]\s*(?:bearer\s+)?[^\s,;|]+/gi, "[REDACTED]")
-    .replace(/\bbearer\s+[^\s,;|]+/gi, "[REDACTED]")
+  let normalized = value.replace(/[\u0000-\u001f\u007f]+/g, " ");
+  normalized = redactSecretAssignments(normalized);
+  normalized = redactBearerCredentials(normalized)
     .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/gi, "[REDACTED]")
     .replace(/\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/gi, "[REDACTED]")
     .replace(/\bglpat-[A-Za-z0-9_-]{20,}\b/gi, "[REDACTED]")
@@ -364,15 +363,42 @@ function sanitizeOperationalSummary(value: string): string {
     .replace(/\b(?:sk|rk)_live_[A-Za-z0-9]{16,}\b/gi, "[REDACTED]")
     .replace(/\bAKIA[0-9A-Z]{16}\b/g, "[REDACTED]")
     .replace(/\bAIza[0-9A-Za-z_-]{30,}\b/g, "[REDACTED]")
-    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED]")
-    .replace(/file:\/\/[^\s,;|]*/gi, "[LOCAL_PATH]")
-    .replace(/(^|[\s("'=])\\\\[^\\/\s,;|]+[\\/][^\s,;|]*/g, "$1[LOCAL_PATH]")
-    .replace(/(^|[\s("'=])[A-Za-z]:[\\/][^\s,;|]*/g, "$1[LOCAL_PATH]")
-    .replace(/(^|[\s("'=:])\/(?!\/)[^\s,;|]*/g, "$1[LOCAL_PATH]")
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED]");
+  normalized = redactLocalHostPaths(normalized)
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 500);
   return normalized || "Falha operacional.";
+}
+
+function redactSecretAssignments(value: string): string {
+  return value
+    .replace(
+      /(^|[^A-Za-z0-9_])(?:[A-Za-z0-9]+_)*(?:SECRET_ACCESS_KEY|API_KEY|ACCESS_KEY|TOKEN|SECRET|PASSWORD)\s*[:=]\s*[^\s,;|]+/gi,
+      "$1[REDACTED]",
+    )
+    .replace(
+      /\b(?:authorization|api[- ]?key|token|secret|password)\s*[:=]\s*(?:bearer\s+)?[^\s,;|]+/gi,
+      "[REDACTED]",
+    );
+}
+
+function redactBearerCredentials(value: string): string {
+  return value.replace(/\bbearer\s+([^\s,;|]+)/gi, (match, candidate: string) => (
+    isCredentialLikeBearerValue(candidate) ? "[REDACTED]" : match
+  ));
+}
+
+function redactLocalHostPaths(value: string): string {
+  return value
+    .replace(/file:\/\/[^\s,;|\]})>`'"]*/gi, "[LOCAL_PATH]")
+    .replace(/(^|[\s"'`\[({=,:])\\\\[^\\/\s,;|\]})>`'"]+[\\/][^\s,;|\]})>`'"]*/g, "$1[LOCAL_PATH]")
+    .replace(/(^|[\s"'`\[({=,:])[A-Za-z]:[\\/][^\s,;|\]})>`'"]*/g, "$1[LOCAL_PATH]")
+    .replace(
+      /(^|[\s"'`\[({=,:])\/(?:Users|tmp|private|root|var\/folders|var\/tmp)(?=\/|[\s,;|\]})>`'"]|$)(?:\/[^\s,;|\]})>`'"]*)?/g,
+      "$1[LOCAL_PATH]",
+    )
+    .replace(/(^|[\s"'`\[({=,:])\/home\/[^/\s,;|\]})>`'"]+\/[^\s,;|\]})>`'"]*/g, "$1[LOCAL_PATH]");
 }
 
 function validateRepository(value: unknown): void {
@@ -613,6 +639,8 @@ function validateDecisionInvariants(artifact: GateArtifact): void {
       fail(`GateArtifact.decision.warnings[${index}].decision`, "deve ser review");
     }
   });
+  validateDecisionRuleReferences(artifact, decision.violations, "violations", "block");
+  validateDecisionRuleReferences(artifact, decision.warnings, "warnings", "review");
 
   if (decision.violations.length > 0 && decision.outcome !== "blocked") {
     fail("GateArtifact.decision.violations", "exige outcome blocked");
@@ -647,12 +675,11 @@ function validateDecisionInvariants(artifact: GateArtifact): void {
     fail("GateArtifact.baselineCommit", `é obrigatório para outcome ${decision.outcome}`);
   }
   if (
-    artifact.baselineCommit === null
-    && artifact.changeSet.files.length > 0
-    && decision.outcome !== "bootstrap"
+    artifact.changeSet.files.length === 0
+    && decision.outcome !== "no_changes"
     && decision.outcome !== "error"
   ) {
-    fail("GateArtifact.baselineCommit", "diff alterado sem baseline aceita apenas bootstrap ou error");
+    fail("GateArtifact.decision.outcome", "empty diff exige no_changes");
   }
 
   if (decision.outcome === "no_changes") {
@@ -667,9 +694,67 @@ function validateDecisionInvariants(artifact: GateArtifact): void {
     fail("GateArtifact.decision.outcome", "error não aceita findings");
   }
 
-  if (/^(?:failed|error)$/i.test(artifact.scan.status.trim()) && decision.outcome !== "error") {
-    fail("GateArtifact.scan.status", "failed/error exige outcome error/action_required");
+  if (decision.outcome === "bootstrap") {
+    artifact.findings.forEach((finding, index) => {
+      if (finding.lifecycle !== "new") {
+        fail(`GateArtifact.findings[${index}].lifecycle`, "bootstrap aceita apenas lifecycle new");
+      }
+    });
   }
+
+  if (
+    decision.outcome === "bootstrap"
+    || decision.outcome === "pass"
+    || decision.outcome === "warning"
+    || decision.outcome === "blocked"
+  ) {
+    if (artifact.scan.id === null) {
+      fail("GateArtifact.scan.id", `${decision.outcome} exige scan identificado`);
+    }
+    if (artifact.scan.status !== "completed") {
+      if (/^(?:failed|error)$/i.test(artifact.scan.status.trim())) {
+        fail("GateArtifact.scan.status", "failed/error exige outcome error/action_required");
+      }
+      fail("GateArtifact.scan.status", `${decision.outcome} exige status completed`);
+    }
+  }
+
+  if (decision.outcome === "no_changes") {
+    if (artifact.scan.id !== null) {
+      fail("GateArtifact.scan.id", "no_changes não aceita scan id");
+    }
+    if (artifact.scan.cost !== null) {
+      fail("GateArtifact.scan.cost", "no_changes não aceita custo de scan");
+    }
+    if (artifact.scan.status !== "not_run") {
+      fail("GateArtifact.scan.status", "no_changes exige status not_run");
+    }
+  }
+}
+
+function validateDecisionRuleReferences(
+  artifact: GateArtifact,
+  rows: GateDecision["violations"],
+  rowKind: "violations" | "warnings",
+  expectedDecision: "block" | "review",
+): void {
+  rows.forEach((row, index) => {
+    const path = `GateArtifact.decision.${rowKind}[${index}]`;
+    const rule = artifact.policy.rules[row.ruleIndex];
+    if (!rule) {
+      fail(`${path}.ruleIndex`, "não referencia policy.rules");
+    }
+    if (rule.decision !== expectedDecision) {
+      fail(path, `deve referenciar regra ${expectedDecision}`);
+    }
+    const finding = artifact.findings.find((candidate) => candidate.identity === row.findingIdentity)!;
+    if (!rule.severity.includes(finding.severity)) {
+      fail(path, "regra não cobre severity do finding");
+    }
+    if (!rule.lifecycle.includes(finding.lifecycle)) {
+      fail(path, "regra não cobre lifecycle do finding");
+    }
+  });
 }
 
 function validateCanonicalDecisionGraph(artifact: GateArtifact): void {
@@ -749,7 +834,11 @@ function nullableNonEmptyString(value: unknown, path: string): string | null {
 }
 
 function publicPath(value: unknown, path: string): string {
-  return nonEmptyString(value, path);
+  const parsed = nonEmptyString(value, path);
+  if (!isRepositoryRelativePath(parsed)) {
+    fail(path, "deve ser relativo ao repositório");
+  }
+  return parsed;
 }
 
 function nullablePublicPath(value: unknown, path: string): string | null {
@@ -790,7 +879,7 @@ function nullableIsoTimestamp(value: unknown, path: string): string | null {
 }
 
 function assertPublicString(value: string, path: string): void {
-  if (containsAbsoluteLocalPath(value)) {
+  if (containsLocalHostPath(value)) {
     fail(path, "contém caminho absoluto local");
   }
   if (containsSecret(value)) {
@@ -798,17 +887,43 @@ function assertPublicString(value: string, path: string): void {
   }
 }
 
-function containsAbsoluteLocalPath(value: string): boolean {
+function containsLocalHostPath(value: string): boolean {
   return /file:\/\//i.test(value)
-    || /(?:^|[\s("'=])\\\\[^\\/\s,;|]+[\\/][^\s,;|]*/.test(value)
-    || /(?:^|[\s("'=])[A-Za-z]:[\\/][^\s,;|]*/.test(value)
-    || /(?:^|[\s("'=:])\/(?!\/)(?:[^\s,;|]|$)/.test(value);
+    || /(?:^|[\s"'`\[({=,:])\\\\[^\\/\s,;|\]})>`'"]+[\\/][^\s,;|\]})>`'"]*/.test(value)
+    || /(?:^|[\s"'`\[({=,:])[A-Za-z]:[\\/][^\s,;|\]})>`'"]*/.test(value)
+    || /(?:^|[\s"'`\[({=,:])\/(?:Users|tmp|private|root|var\/folders|var\/tmp)(?=\/|[\s,;|\]})>`'"]|$)/.test(value)
+    || /(?:^|[\s"'`\[({=,:])\/home\/[^/\s,;|\]})>`'"]+\//.test(value);
 }
 
 function containsSecret(value: string): boolean {
-  return /\b(?:authorization|api[-_ ]?key|token|secret|password)\s*[:=]\s*(?:bearer\s+)?[^\s,;|]+/i.test(value)
-    || /\bbearer\s+[^\s,;|]+/i.test(value)
-    || /\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/i.test(value)
+  return containsSecretAssignment(value)
+    || containsBearerCredential(value)
+    || containsCommonToken(value);
+}
+
+function containsSecretAssignment(value: string): boolean {
+  return /(?:^|[^A-Za-z0-9_])(?:[A-Za-z0-9]+_)*(?:SECRET_ACCESS_KEY|API_KEY|ACCESS_KEY|TOKEN|SECRET|PASSWORD)\s*[:=]\s*[^\s,;|]+/i.test(value)
+    || /\b(?:authorization|api[- ]?key|token|secret|password)\s*[:=]\s*(?:bearer\s+)?[^\s,;|]+/i.test(value);
+}
+
+function containsBearerCredential(value: string): boolean {
+  const matches = value.matchAll(/\bbearer\s+([^\s,;|]+)/gi);
+  for (const match of matches) {
+    if (isCredentialLikeBearerValue(match[1] ?? "")) return true;
+  }
+  return false;
+}
+
+function isCredentialLikeBearerValue(value: string): boolean {
+  const candidate = value.replace(/^[`'"\[({]+|[`'"\])}]+$/g, "");
+  if (!candidate || /^(?:token|credential|authentication)$/i.test(candidate)) return false;
+  return containsCommonToken(candidate)
+    || candidate.length >= 16
+    || (candidate.length >= 8 && /[A-Za-z]/.test(candidate) && /[0-9._~+/=-]/.test(candidate));
+}
+
+function containsCommonToken(value: string): boolean {
+  return /\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/i.test(value)
     || /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/i.test(value)
     || /\bglpat-[A-Za-z0-9_-]{20,}\b/i.test(value)
     || /\bxox[baprs]-[A-Za-z0-9-]{20,}\b/i.test(value)
@@ -816,6 +931,20 @@ function containsSecret(value: string): boolean {
     || /\bAKIA[0-9A-Z]{16}\b/.test(value)
     || /\bAIza[0-9A-Za-z_-]{30,}\b/.test(value)
     || /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/.test(value);
+}
+
+function isRepositoryRelativePath(value: string): boolean {
+  if (value !== value.trim()) return false;
+  const location = value.replace(/:\d+(?::\d+)?(?:-\d+)?$/, "").replaceAll("\\", "/");
+  if (
+    /^~(?:\/|$)/.test(location)
+    || /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(location)
+    || /^[A-Za-z]:/.test(location)
+    || /^\//.test(location)
+  ) {
+    return false;
+  }
+  return !location.split("/").includes("..");
 }
 
 function isIsoTimestamp(value: string): boolean {
