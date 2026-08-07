@@ -374,11 +374,11 @@ function sanitizeOperationalSummary(value: string): string {
 function redactSecretAssignments(value: string): string {
   return value
     .replace(
-      /(^|[^A-Za-z0-9_])(?:[A-Za-z0-9]+_)*(?:SECRET_ACCESS_KEY|API_KEY|ACCESS_KEY|TOKEN|SECRET|PASSWORD)\s*[:=]\s*[^\s,;|]+/gi,
+      /(^|[^A-Za-z0-9_])(?:[A-Za-z0-9]+_)*(?:SECRET_ACCESS_KEY|API_KEY|ACCESS_KEY|TOKEN|SECRET|PASSWORD)\s*[:=]\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|`[^`\r\n]*`|[^\s,;|]+)/gi,
       "$1[REDACTED]",
     )
     .replace(
-      /\b(?:authorization|api[- ]?key|token|secret|password)\s*[:=]\s*(?:bearer\s+)?[^\s,;|]+/gi,
+      /\b(?:authorization|api[- ]?key|token|secret|password)\s*[:=]\s*(?:bearer\s+)?(?:"[^"\r\n]*"|'[^'\r\n]*'|`[^`\r\n]*`|[^\s,;|]+)/gi,
       "[REDACTED]",
     );
 }
@@ -398,7 +398,7 @@ function redactLocalHostPaths(value: string): string {
       /(^|[\s"'`\[({=,:])\/(?:Users|tmp|private|root|var\/folders|var\/tmp)(?=\/|[\s,;|\]})>`'"]|$)(?:\/[^\s,;|\]})>`'"]*)?/g,
       "$1[LOCAL_PATH]",
     )
-    .replace(/(^|[\s"'`\[({=,:])\/home\/[^/\s,;|\]})>`'"]+\/[^\s,;|\]})>`'"]*/g, "$1[LOCAL_PATH]");
+    .replace(/(^|[\s"'`\[({=,:])\/home\/[^/\s,;|\]})>`'"]+(?:\/[^\s,;|\]})>`'"]*)?/g, "$1[LOCAL_PATH]");
 }
 
 function validateRepository(value: unknown): void {
@@ -892,7 +892,7 @@ function containsLocalHostPath(value: string): boolean {
     || /(?:^|[\s"'`\[({=,:])\\\\[^\\/\s,;|\]})>`'"]+[\\/][^\s,;|\]})>`'"]*/.test(value)
     || /(?:^|[\s"'`\[({=,:])[A-Za-z]:[\\/][^\s,;|\]})>`'"]*/.test(value)
     || /(?:^|[\s"'`\[({=,:])\/(?:Users|tmp|private|root|var\/folders|var\/tmp)(?=\/|[\s,;|\]})>`'"]|$)/.test(value)
-    || /(?:^|[\s"'`\[({=,:])\/home\/[^/\s,;|\]})>`'"]+\//.test(value);
+    || /(?:^|[\s"'`\[({=,:])\/home\/[^/\s,;|\]})>`'"]+(?:\/[^\s,;|\]})>`'"]*)?/.test(value);
 }
 
 function containsSecret(value: string): boolean {
@@ -902,8 +902,8 @@ function containsSecret(value: string): boolean {
 }
 
 function containsSecretAssignment(value: string): boolean {
-  return /(?:^|[^A-Za-z0-9_])(?:[A-Za-z0-9]+_)*(?:SECRET_ACCESS_KEY|API_KEY|ACCESS_KEY|TOKEN|SECRET|PASSWORD)\s*[:=]\s*[^\s,;|]+/i.test(value)
-    || /\b(?:authorization|api[- ]?key|token|secret|password)\s*[:=]\s*(?:bearer\s+)?[^\s,;|]+/i.test(value);
+  return /(?:^|[^A-Za-z0-9_])(?:[A-Za-z0-9]+_)*(?:SECRET_ACCESS_KEY|API_KEY|ACCESS_KEY|TOKEN|SECRET|PASSWORD)\s*[:=]\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|`[^`\r\n]*`|[^\s,;|]+)/i.test(value)
+    || /\b(?:authorization|api[- ]?key|token|secret|password)\s*[:=]\s*(?:bearer\s+)?(?:"[^"\r\n]*"|'[^'\r\n]*'|`[^`\r\n]*`|[^\s,;|]+)/i.test(value);
 }
 
 function containsBearerCredential(value: string): boolean {
@@ -916,10 +916,11 @@ function containsBearerCredential(value: string): boolean {
 
 function isCredentialLikeBearerValue(value: string): boolean {
   const candidate = value.replace(/^[`'"\[({]+|[`'"\])}]+$/g, "");
-  if (!candidate || /^(?:token|credential|authentication)$/i.test(candidate)) return false;
-  return containsCommonToken(candidate)
-    || candidate.length >= 16
-    || (candidate.length >= 8 && /[A-Za-z]/.test(candidate) && /[0-9._~+/=-]/.test(candidate));
+  if (!candidate) return false;
+  if (/^(?:token|credential|authentication|authorization|header|scheme)(?:-[a-z]+)*$/i.test(candidate)) {
+    return false;
+  }
+  return true;
 }
 
 function containsCommonToken(value: string): boolean {

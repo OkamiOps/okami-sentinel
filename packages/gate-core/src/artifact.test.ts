@@ -371,6 +371,68 @@ test("allows normal routes and conceptual security evidence", () => {
   assert.equal(artifact.findings[0]?.summary, input.evaluation.deltas[0]!.summary);
 });
 
+test("distinguishes short Bearer secrets from conceptual Bearer evidence", () => {
+  const leaked = artifactInput();
+  leaked.evaluation.deltas[0]!.summary = "Authorization failed with Bearer s3crt";
+  assert.throws(
+    () => buildGateArtifact(leaked),
+    /findings\[0\]\.summary.*possível segredo/,
+  );
+
+  for (const conceptual of [
+    "Bearer token-based authentication",
+    "Bearer authentication-header bypass",
+  ]) {
+    const allowed = artifactInput();
+    allowed.evaluation.deltas[0]!.summary = conceptual;
+    assert.equal(buildGateArtifact(allowed).findings[0]?.summary, conceptual);
+  }
+
+  const { evaluation: _evaluation, ...envelope } = artifactInput();
+  const operational = buildOperationalErrorArtifact({
+    ...envelope,
+    operationalSummary: "Bearer s3crt; Bearer token-based authentication; Bearer authentication-header bypass",
+  });
+  assert.equal(operational.decision.summary.includes("s3crt"), false);
+  assert.equal(operational.decision.summary.includes("Bearer token-based authentication"), true);
+  assert.equal(operational.decision.summary.includes("Bearer authentication-header bypass"), true);
+});
+
+test("rejects and fully redacts quoted multiword secret assignments", () => {
+  const leaked = artifactInput();
+  leaked.evaluation.deltas[0]!.summary = 'DATABASE_PASSWORD="correct horse battery staple"';
+  assert.throws(
+    () => buildGateArtifact(leaked),
+    /findings\[0\]\.summary.*possível segredo/,
+  );
+
+  const { evaluation: _evaluation, ...envelope } = artifactInput();
+  const operational = buildOperationalErrorArtifact({
+    ...envelope,
+    operationalSummary: 'scanner failed with DATABASE_PASSWORD="correct horse battery staple" after startup',
+  });
+  for (const fragment of ["correct", "horse", "battery", "staple"]) {
+    assert.equal(operational.decision.summary.includes(fragment), false);
+  }
+  assert.equal(operational.decision.summary.includes("after startup"), true);
+});
+
+test("rejects and redacts an exact Linux home directory", () => {
+  const leaked = artifactInput();
+  leaked.evaluation.deltas[0]!.summary = "opened from /home/marcos";
+  assert.throws(
+    () => buildGateArtifact(leaked),
+    /findings\[0\]\.summary.*caminho absoluto local/,
+  );
+
+  const { evaluation: _evaluation, ...envelope } = artifactInput();
+  const operational = buildOperationalErrorArtifact({
+    ...envelope,
+    operationalSummary: "opened from /home/marcos",
+  });
+  assert.equal(operational.decision.summary.includes("/home/marcos"), false);
+});
+
 test("keeps path-typed fields strictly repository-relative", () => {
   const absoluteRoute = artifactInput();
   absoluteRoute.evaluation.deltas[0]!.primaryPath = "/api/users";
