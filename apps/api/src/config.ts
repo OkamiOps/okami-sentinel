@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,9 +14,19 @@ export const GATES_DIR = path.join(DATA_DIR, "gates");
 export const CODEX_HOME =
   process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex");
 
+const configuredStateDir = process.env.CODEX_SECURITY_STATE_DIR?.trim();
+const defaultStateDir = path.join(
+  CODEX_HOME,
+  "state",
+  "plugins",
+  "codex-security",
+);
+
 export const CODEX_SECURITY_STATE_DIR =
-  process.env.CODEX_SECURITY_STATE_DIR?.trim() ||
-  path.join(CODEX_HOME, "state", "plugins", "codex-security");
+  configuredStateDir ||
+  (hasWritableDirectory(defaultStateDir)
+    ? defaultStateDir
+    : path.join(DATA_DIR, "codex-security-state"));
 
 export const WORKBENCH_DB_PATH = path.join(
   CODEX_SECURITY_STATE_DIR,
@@ -23,6 +34,8 @@ export const WORKBENCH_DB_PATH = path.join(
 );
 
 export const SCANS_ROOT = path.join(CODEX_SECURITY_STATE_DIR, "scans");
+export const CODEX_SECURITY_NPM_CACHE_DIR =
+  process.env.CSB_NPM_CACHE_DIR?.trim() || path.join(DATA_DIR, "npm-cache");
 
 export const API_HOST = process.env.CSB_HOST || "127.0.0.1";
 export const API_PORT = Number(process.env.CSB_PORT || 8787);
@@ -40,3 +53,33 @@ export const CODEX_SECURITY_ARGS_PREFIX =
   process.env.CODEX_SECURITY_BIN?.trim()
     ? []
     : ["--yes", "@openai/codex-security"];
+
+export function codexSecurityEnvironment(
+  source: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  return {
+    ...source,
+    CODEX_SECURITY_STATE_DIR,
+    npm_config_cache: CODEX_SECURITY_NPM_CACHE_DIR,
+    CI: "1",
+    NO_COLOR: "1",
+  };
+}
+
+function hasWritableDirectory(targetPath: string): boolean {
+  let current = path.resolve(targetPath);
+
+  while (!fs.existsSync(current)) {
+    const parent = path.dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
+
+  try {
+    if (!fs.statSync(current).isDirectory()) return false;
+    fs.accessSync(current, fs.constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}

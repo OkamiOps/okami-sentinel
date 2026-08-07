@@ -4,7 +4,7 @@ import type { CodexInfo } from "@csb/shared";
 import {
   CODEX_SECURITY_ARGS_PREFIX,
   CODEX_SECURITY_BIN,
-  CODEX_SECURITY_STATE_DIR,
+  codexSecurityEnvironment,
 } from "./config.js";
 
 const execFileAsync = promisify(execFile);
@@ -15,7 +15,7 @@ export async function getCodexInfo(): Promise<CodexInfo | null> {
       CODEX_SECURITY_BIN,
       [...CODEX_SECURITY_ARGS_PREFIX, "info", "--json"],
       {
-        env: { ...process.env, CODEX_SECURITY_STATE_DIR, CI: "1", NO_COLOR: "1" },
+        env: codexSecurityEnvironment(),
         timeout: 60_000,
         maxBuffer: 2 * 1024 * 1024,
       },

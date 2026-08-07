@@ -7,7 +7,7 @@ Aplicação local para disparar scans do [`@openai/codex-security`](https://gith
 - **Web:** Vite + React + TypeScript + Tailwind CSS + daisyUI + Hugeicons + Framer Motion (`apps/web`)
 - **API:** Node + Hono (`apps/api`)
 - **Shared types:** `packages/shared`
-- **Dados:** lê `~/.codex/state/plugins/codex-security` e espelha métricas em `data/benchmark.db`
+- **Dados:** usa `~/.codex/state/plugins/codex-security` quando o diretório é gravável; em ambientes restritos, usa `data/codex-security-state`. As métricas ficam em `data/benchmark.db`.
 
 ## Pré-requisitos
 
@@ -135,8 +135,9 @@ O modo local continua funcionando sem GitHub. Nesse caso não há instalação, 
 
 | Variável | Default | Efeito |
 |---|---|---|
-| `CODEX_SECURITY_STATE_DIR` | `~/.codex/state/plugins/codex-security` | State do plugin |
+| `CODEX_SECURITY_STATE_DIR` | global quando gravável; senão `data/codex-security-state` | State do plugin e saída dos scans |
 | `CODEX_SECURITY_BIN` | `npx` | Binário do CLI |
+| `CSB_NPM_CACHE_DIR` | `data/npm-cache` | Cache isolado usado pelo `npx` do scanner |
 | `CSB_HOST` / `CSB_PORT` | `127.0.0.1` / `8787` | Bind da API |
 | `CSB_MAX_CONCURRENT_SCANS` | `8` | Máximo de scans CLI em paralelo |
 

@@ -13,7 +13,7 @@ import { emptySeverityCounts } from "@csb/shared";
 import {
   CODEX_SECURITY_ARGS_PREFIX,
   CODEX_SECURITY_BIN,
-  CODEX_SECURITY_STATE_DIR,
+  codexSecurityEnvironment,
   MAX_CONCURRENT_SCANS,
   RUNS_DIR,
   SCANS_ROOT,
@@ -309,12 +309,7 @@ export async function startScan(req: StartScanRequest): Promise<ScanRun> {
 
   const child = spawn(CODEX_SECURITY_BIN, args, {
     cwd: repositoryPath,
-    env: {
-      ...process.env,
-      CODEX_SECURITY_STATE_DIR,
-      CI: "1",
-      NO_COLOR: "1",
-    },
+    env: codexSecurityEnvironment(),
     // Own process group so an API restart does not SIGTERM long-running scans.
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],

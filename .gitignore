@@ -3,6 +3,8 @@ dist/
 data/*.db
 data/*.db-*
 data/runs/
+data/codex-security-state/
+data/npm-cache/
 .DS_Store
 *.log
 .env
