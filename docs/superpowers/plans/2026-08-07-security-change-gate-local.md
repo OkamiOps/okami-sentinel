@@ -335,8 +335,10 @@ git commit -m "feat: add guardrail contracts and gate core workspace"
 - Create: `packages/gate-core/src/evaluate.ts`
 - Create: `packages/gate-core/src/evaluate.test.ts`
 - Modify: `packages/gate-core/src/index.ts`
+- Modify: `apps/api/package.json`
 - Modify: `apps/api/src/lifecycle.ts`
 - Modify: `apps/api/src/lifecycle.test.ts`
+- Modify: `pnpm-lock.yaml`
 
 **Interfaces:**
 - Consumes: `GuardrailPolicy`, current/baseline/historical findings, triage, exceptions and `ChangeSet`.
@@ -433,6 +435,7 @@ export interface EvaluateGateInput {
   triageByIdentity: ReadonlyMap<string, FindingTriage>;
   exceptions: GuardrailException[];
   sourceScanId: string;
+  baselineScanId: string | null;
   now: string;
 }
 
@@ -489,6 +492,8 @@ export function githubConclusion(outcome: GateOutcome): GitHubConclusion {
 
 Move the stable fingerprint logic from `apps/api/src/lifecycle.ts` into `packages/gate-core/src/identity.ts`. Keep `apps/api/src/lifecycle.ts` as a compatibility wrapper that imports and re-exports `findingIdentity`; existing regression tests must remain green.
 
+Declare `@csb/gate-core` as a workspace dependency in `apps/api/package.json` in this task so the compatibility wrapper crosses a valid package boundary and API typecheck remains green. `classifyGateFindings` and `evaluateGate` must classify every bootstrap observation as `new`. Every output delta clones mutable finding arrays, triage and exception target arrays so output mutation cannot alter inputs or a later decision. `fixed` deltas require and use `baselineScanId`; non-fixed deltas use `sourceScanId`.
+
 - [ ] **Step 4: Run core and regression tests**
 
 Run:
@@ -503,7 +508,7 @@ Expected: evaluator matrix passes and all existing API tests remain green.
 - [ ] **Step 5: Commit the evaluator**
 
 ```bash
-git add packages/gate-core/src apps/api/src/lifecycle.ts apps/api/src/lifecycle.test.ts
+git add packages/gate-core/src apps/api/package.json apps/api/src/lifecycle.ts apps/api/src/lifecycle.test.ts pnpm-lock.yaml
 git commit -m "feat: evaluate guardrail policies deterministically"
 ```
 
@@ -708,7 +713,7 @@ The `packages/gate-runtime/package.json` scaffold created in Step 1 must contain
 }
 ```
 
-Use the root TypeScript conventions in `packages/gate-runtime/tsconfig.json`, export every public adapter from `src/index.ts`, and add both `@csb/gate-core` and `@csb/gate-runtime` as workspace dependencies in `apps/api/package.json`.
+Use the root TypeScript conventions in `packages/gate-runtime/tsconfig.json`, export every public adapter from `src/index.ts`, and add `@csb/gate-runtime` as a workspace dependency in `apps/api/package.json`. `@csb/gate-core` is already declared by Task 2 for the lifecycle compatibility wrapper.
 
 Run `pnpm install` under Node 24.17.0 immediately after creating the workspace so `pnpm-lock.yaml` records `@csb/gate-runtime` before its tests run.
 
