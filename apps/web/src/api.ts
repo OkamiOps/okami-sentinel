@@ -7,7 +7,9 @@ import type {
   FsListResponse,
   GateArtifact,
   GateDecision,
+  GatePublishStatus,
   GateRun,
+  GuardrailGitHubStatus,
   GuardrailPolicy,
   GuardrailRepository,
   HealthResponse,
@@ -52,6 +54,14 @@ export interface PolicySimulationRequest {
 export interface PolicySimulationResponse {
   decision: GateDecision;
   configurationErrors: Array<{ field: string; message: string }>;
+}
+
+export interface GatePublicationAttempt {
+  id: string;
+  gateId: string;
+  status: Extract<GatePublishStatus, "publishing" | "published" | "failed">;
+  error: string | null;
+  createdAt: string;
 }
 
 export const api = {
@@ -111,6 +121,20 @@ export const api = {
     `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/policy/simulate`,
     { method: "POST", body: JSON.stringify(body) },
   ),
+  getGuardrailGitHubStatus: (repositoryKey: string) =>
+    request<{ status: GuardrailGitHubStatus }>(
+      `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/github-status`,
+    ),
+  installGuardrailWorkflow: (repositoryKey: string) =>
+    request<{ workflow: { path: string; committed: false } }>(
+      `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/install-workflow`,
+      { method: "POST" },
+    ),
+  syncGuardrailBaseline: (repositoryKey: string) =>
+    request<{ baseline: GateArtifact | null }>(
+      `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/baseline/sync`,
+      { method: "POST" },
+    ),
   listGates: (repositoryKey?: string) =>
     request<{ gates: GateRun[] }>(
       `/guardrails/gates${repositoryKey ? `?repositoryKey=${encodeURIComponent(repositoryKey)}` : ""}`,
@@ -127,6 +151,11 @@ export const api = {
   cancelGate: (gateId: string) =>
     request<{ ok: boolean }>(
       `/guardrails/gates/${encodeURIComponent(gateId)}/cancel`,
+      { method: "POST" },
+    ),
+  publishGate: (gateId: string) =>
+    request<{ gate: GateRun; attempt: GatePublicationAttempt }>(
+      `/guardrails/gates/${encodeURIComponent(gateId)}/publish`,
       { method: "POST" },
     ),
   gateEventsUrl: (gateId: string) =>

@@ -162,6 +162,12 @@ export async function startLocalGate(
     policyVersion: 1,
     baselineCommit: null,
     artifactPath: null,
+    publishStatus:
+      repository.remoteOwner !== null && repository.remoteName !== null
+        ? "waiting"
+        : "not_configured",
+    publishError: null,
+    publishedAt: null,
     error: null,
     startedAt: deps.now(),
     completedAt: null,

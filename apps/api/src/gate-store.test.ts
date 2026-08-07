@@ -9,8 +9,10 @@ import {
   getGateRun,
   insertGateRun,
   listGateEvents,
+  listGatePublicationAttempts,
   listGateRuns,
   listGuardrailRepositories,
+  recordGatePublicationAttempt,
   updateGateRun,
   upsertCachedGitHubBaseline,
   upsertGuardrailRepository,
@@ -49,6 +51,9 @@ function gateRunFixture(overrides: Partial<GateRun> = {}): GateRun {
     policyVersion: 1,
     baselineCommit: null,
     artifactPath: null,
+    publishStatus: "not_configured",
+    publishError: null,
+    publishedAt: null,
     error: null,
     startedAt: "2026-08-07T09:00:00Z",
     completedAt: null,
@@ -124,7 +129,9 @@ test("creates only the additive gate schema and expected index", () => {
            'gate_runs',
            'gate_runs_by_repository_started',
            'gate_events',
-           'github_baselines'
+           'github_baselines',
+           'gate_publication_attempts',
+           'gate_publication_attempts_by_gate'
          )
          ORDER BY name`,
       )
@@ -132,10 +139,99 @@ test("creates only the additive gate schema and expected index", () => {
 
     assert.deepEqual(objects, [
       { name: "gate_events", type: "table" },
+      { name: "gate_publication_attempts", type: "table" },
+      { name: "gate_publication_attempts_by_gate", type: "index" },
       { name: "gate_runs", type: "table" },
       { name: "gate_runs_by_repository_started", type: "index" },
       { name: "github_baselines", type: "table" },
       { name: "guardrail_repositories", type: "table" },
+    ]);
+  } finally {
+    db.close();
+  }
+});
+
+test("migrates a local-plan gate schema idempotently", () => {
+  const db = new Database(":memory:");
+
+  try {
+    db.exec(`
+      CREATE TABLE gate_runs (
+        id TEXT PRIMARY KEY,
+        repository_key TEXT NOT NULL,
+        repository_path TEXT NOT NULL,
+        source TEXT NOT NULL,
+        base_ref TEXT NOT NULL,
+        head_ref TEXT NOT NULL,
+        pull_request_number INTEGER,
+        scan_id TEXT,
+        status TEXT NOT NULL,
+        outcome TEXT,
+        policy_version INTEGER NOT NULL,
+        baseline_commit TEXT,
+        artifact_path TEXT,
+        error TEXT,
+        estimated_usd REAL NOT NULL DEFAULT 0,
+        started_at TEXT NOT NULL,
+        completed_at TEXT
+      );
+    `);
+
+    ensureGateSchema(db);
+    ensureGateSchema(db);
+
+    const columns = db
+      .prepare("PRAGMA table_info(gate_runs)")
+      .all()
+      .map((column) => (column as { name: string }).name);
+    assert.equal(columns.includes("publish_status"), true);
+    assert.equal(columns.includes("publish_error"), true);
+    assert.equal(columns.includes("published_at"), true);
+  } finally {
+    db.close();
+  }
+});
+
+test("keeps every publication retry and finalizes each attempt in place", () => {
+  const db = new Database(":memory:");
+
+  try {
+    const first = {
+      id: "attempt-1",
+      gateId: "gate-1",
+      status: "publishing" as const,
+      error: null,
+      createdAt: "2026-08-07T10:00:00.000Z",
+    };
+    recordGatePublicationAttempt(first, db);
+    recordGatePublicationAttempt({
+      ...first,
+      status: "failed",
+      error: "GitHub API unavailable",
+    }, db);
+    recordGatePublicationAttempt({
+      id: "attempt-2",
+      gateId: "gate-1",
+      status: "published",
+      error: null,
+      createdAt: "2026-08-07T10:01:00.000Z",
+    }, db);
+
+    assert.deepEqual(listGatePublicationAttempts("gate-1", db), [
+      {
+        id: "attempt-2",
+        gateId: "gate-1",
+        status: "published",
+        error: null,
+        createdAt: "2026-08-07T10:01:00.000Z",
+      },
+      {
+        id: "attempt-1",
+        gateId: "gate-1",
+        status: "failed",
+        error: "GitHub API unavailable",
+        createdAt: "2026-08-07T10:00:00.000Z",
+      },
     ]);
   } finally {
     db.close();

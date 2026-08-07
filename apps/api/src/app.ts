@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 
 import { Hono } from "hono";
@@ -39,12 +40,28 @@ import {
   subscribeGate,
 } from "./gate-orchestrator.js";
 import {
+  type GatePublicationAttempt,
+  type GateRunUpdate,
   getGateRun,
+  listGatePublicationAttempts,
   listGateRuns,
   listGuardrailRepositories,
+  recordGatePublicationAttempt,
+  updateGateRun,
   upsertGuardrailRepository,
   type GateEvent,
 } from "./gate-store.js";
+import { GitHubBaselineProvider } from "./github-baseline.js";
+import {
+  publishGateCheck,
+  type PublishGateCheckInput,
+} from "./github-check.js";
+import { getGitHubStatus } from "./github-status.js";
+import {
+  installCallerWorkflow,
+  type InstallCallerWorkflowOptions,
+  type InstallCallerWorkflowResult,
+} from "./github-workflow.js";
 import {
   importExternalScans,
   readFindingsFile,
@@ -88,7 +105,19 @@ export interface GuardrailsApiDependencies {
   startGate(request: { repositoryKey: string; baseRef: string; headRef: string }): Promise<GateRun>;
   cancelGate(gateId: string): boolean;
   subscribeGate(gateId: string, listener: (event: GateEvent) => void): () => void;
+  getGitHubStatus(repositoryPath: string): ReturnType<typeof getGitHubStatus>;
+  installWorkflow(
+    repositoryPath: string,
+    options: InstallCallerWorkflowOptions,
+  ): Promise<InstallCallerWorkflowResult>;
+  syncBaseline(repository: GuardrailRepository): Promise<GateArtifact | null>;
+  publishCheck(input: PublishGateCheckInput): Promise<void>;
+  updateGate(gateId: string, updates: GateRunUpdate): void;
+  recordPublicationAttempt(attempt: GatePublicationAttempt): void;
+  listPublicationAttempts(gateId: string): GatePublicationAttempt[];
 }
+
+const githubBaselineProvider = new GitHubBaselineProvider();
 
 const guardrailsDependencies: GuardrailsApiDependencies = {
   listRepositories: listGuardrailRepositories,
@@ -105,6 +134,18 @@ const guardrailsDependencies: GuardrailsApiDependencies = {
   startGate: startLocalGate,
   cancelGate,
   subscribeGate,
+  getGitHubStatus,
+  installWorkflow: installCallerWorkflow,
+  syncBaseline: (repository) => githubBaselineProvider.getBaseline({
+    repositoryKey: repository.repositoryKey,
+    owner: repository.remoteOwner!,
+    name: repository.remoteName!,
+    defaultBranch: repository.defaultBranch,
+  }),
+  publishCheck: publishGateCheck,
+  updateGate: updateGateRun,
+  recordPublicationAttempt: recordGatePublicationAttempt,
+  listPublicationAttempts: listGatePublicationAttempts,
 };
 
 export function createGuardrailsApp(
@@ -181,6 +222,43 @@ export function createGuardrailsApp(
     }
   });
 
+  guardrails.get("/guardrails/repositories/:repositoryKey/github-status", async (c) => {
+    const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
+    if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
+    const status = await deps.getGitHubStatus(repository.repositoryPath);
+    return c.json({ status });
+  });
+
+  guardrails.post("/guardrails/repositories/:repositoryKey/install-workflow", async (c) => {
+    const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
+    if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
+    if (!hasGitHubRemote(repository)) {
+      return c.json({ error: "Repositório não possui remoto GitHub" }, 400);
+    }
+    try {
+      const workflow = await deps.installWorkflow(repository.repositoryPath, {
+        defaultBranch: repository.defaultBranch,
+        secretName: "OPENAI_API_KEY",
+      });
+      return c.json({ workflow }, 201);
+    } catch (error) {
+      return c.json({ error: errorMessage(error) }, 502);
+    }
+  });
+
+  guardrails.post("/guardrails/repositories/:repositoryKey/baseline/sync", async (c) => {
+    const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
+    if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
+    if (!hasGitHubRemote(repository)) {
+      return c.json({ error: "Repositório não possui remoto GitHub" }, 400);
+    }
+    try {
+      return c.json({ baseline: await deps.syncBaseline(repository) });
+    } catch (error) {
+      return c.json({ error: errorMessage(error) }, 502);
+    }
+  });
+
   guardrails.get("/guardrails/gates", (c) =>
     c.json({ gates: deps.listGates(c.req.query("repositoryKey") ?? null) }));
 
@@ -243,6 +321,64 @@ export function createGuardrailsApp(
       return c.json({ error: "Gate não está ativo" }, 404);
     }
     return c.json({ ok: true });
+  });
+
+  guardrails.post("/guardrails/gates/:gateId/publish", async (c) => {
+    const gateId = c.req.param("gateId");
+    const gate = deps.getGate(gateId);
+    if (!gate) return c.json({ error: "Gate não encontrado" }, 404);
+    const artifact = deps.getArtifact(gateId);
+    if (!artifact) return c.json({ error: "Gate ainda não possui artifact" }, 409);
+    const repository = deps.getRepository(gate.repositoryKey);
+    if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
+    if (!hasGitHubRemote(repository)) {
+      return c.json({ error: "Repositório não possui remoto GitHub" }, 400);
+    }
+
+    const attempt: GatePublicationAttempt = {
+      id: randomUUID(),
+      gateId,
+      status: "publishing",
+      error: null,
+      createdAt: new Date().toISOString(),
+    };
+    deps.updateGate(gateId, {
+      publishStatus: "publishing",
+      publishError: null,
+      publishedAt: null,
+    });
+    deps.recordPublicationAttempt(attempt);
+
+    try {
+      await deps.publishCheck({
+        artifact,
+        owner: repository.remoteOwner!,
+        repository: repository.remoteName!,
+        detailsUrl: null,
+      });
+      const publishedAttempt = { ...attempt, status: "published" as const };
+      deps.recordPublicationAttempt(publishedAttempt);
+      deps.updateGate(gateId, {
+        publishStatus: "published",
+        publishError: null,
+        publishedAt: new Date().toISOString(),
+      });
+      return c.json({ gate: deps.getGate(gateId), attempt: publishedAttempt });
+    } catch (error) {
+      const message = errorMessage(error);
+      const failedAttempt = {
+        ...attempt,
+        status: "failed" as const,
+        error: message,
+      };
+      deps.recordPublicationAttempt(failedAttempt);
+      deps.updateGate(gateId, {
+        publishStatus: "failed",
+        publishError: message,
+        publishedAt: null,
+      });
+      return c.json({ error: message }, 502);
+    }
   });
 
   return guardrails;
@@ -482,6 +618,12 @@ function repositoryKey(value: string): string {
   } catch {
     return value;
   }
+}
+
+function hasGitHubRemote(
+  repository: GuardrailRepository,
+): repository is GuardrailRepository & { remoteOwner: string; remoteName: string } {
+  return repository.remoteOwner !== null && repository.remoteName !== null;
 }
 
 function simulateDecision(

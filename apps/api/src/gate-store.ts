@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import type {
   GateOutcome,
+  GatePublishStatus,
   GateRun,
   GateSource,
   GateStatus,
@@ -35,6 +36,9 @@ interface GateRunRow {
   policy_version: number;
   baseline_commit: string | null;
   artifact_path: string | null;
+  publish_status: string;
+  publish_error: string | null;
+  published_at: string | null;
   error: string | null;
   estimated_usd: number;
   started_at: string;
@@ -56,12 +60,30 @@ interface CachedGitHubBaselineRow {
   fetched_at: string;
 }
 
+interface GatePublicationAttemptRow {
+  id: string;
+  gate_id: string;
+  status: string;
+  error: string | null;
+  created_at: string;
+}
+
 export interface CachedGitHubBaseline {
   repositoryKey: string;
   workflowRunId: string;
   headSha: string;
   artifactPath: string;
   fetchedAt: string;
+}
+
+export type GatePublicationAttemptStatus = "publishing" | "published" | "failed";
+
+export interface GatePublicationAttempt {
+  id: string;
+  gateId: string;
+  status: GatePublicationAttemptStatus;
+  error: string | null;
+  createdAt: string;
 }
 
 export type GateRunUpdate = Partial<
@@ -72,6 +94,9 @@ export type GateRunUpdate = Partial<
     | "outcome"
     | "baselineCommit"
     | "artifactPath"
+    | "publishStatus"
+    | "publishError"
+    | "publishedAt"
     | "error"
     | "estimatedUsd"
     | "completedAt"
@@ -188,6 +213,9 @@ export function ensureGateSchema(
       policy_version INTEGER NOT NULL,
       baseline_commit TEXT,
       artifact_path TEXT,
+      publish_status TEXT NOT NULL DEFAULT 'not_configured',
+      publish_error TEXT,
+      published_at TEXT,
       error TEXT,
       estimated_usd REAL NOT NULL DEFAULT 0,
       started_at TEXT NOT NULL,
@@ -213,7 +241,75 @@ export function ensureGateSchema(
       artifact_path TEXT NOT NULL,
       fetched_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS gate_publication_attempts (
+      id TEXT PRIMARY KEY,
+      gate_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      error TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS gate_publication_attempts_by_gate
+      ON gate_publication_attempts(gate_id, created_at DESC);
   `);
+
+  const gateRunColumns = new Set(
+    (database.prepare("PRAGMA table_info(gate_runs)").all() as Array<{ name: string }>)
+      .map((column) => column.name),
+  );
+  if (!gateRunColumns.has("publish_status")) {
+    database.exec("ALTER TABLE gate_runs ADD COLUMN publish_status TEXT NOT NULL DEFAULT 'not_configured'");
+  }
+  if (!gateRunColumns.has("publish_error")) {
+    database.exec("ALTER TABLE gate_runs ADD COLUMN publish_error TEXT");
+  }
+  if (!gateRunColumns.has("published_at")) {
+    database.exec("ALTER TABLE gate_runs ADD COLUMN published_at TEXT");
+  }
+}
+
+export function recordGatePublicationAttempt(
+  attempt: GatePublicationAttempt,
+  database: Database.Database = getDb(),
+): void {
+  ensureGateSchema(database);
+  database.prepare(
+    `INSERT INTO gate_publication_attempts (
+       id, gate_id, status, error, created_at
+     ) VALUES (
+       @id, @gate_id, @status, @error, @created_at
+     )
+     ON CONFLICT(id) DO UPDATE SET
+       status = excluded.status,
+       error = excluded.error`,
+  ).run({
+    id: attempt.id,
+    gate_id: attempt.gateId,
+    status: attempt.status,
+    error: attempt.error,
+    created_at: attempt.createdAt,
+  });
+}
+
+export function listGatePublicationAttempts(
+  gateId: string,
+  database: Database.Database = getDb(),
+): GatePublicationAttempt[] {
+  ensureGateSchema(database);
+  const rows = database.prepare(
+    `SELECT id, gate_id, status, error, created_at
+     FROM gate_publication_attempts
+     WHERE gate_id = ?
+     ORDER BY created_at DESC, id DESC`,
+  ).all(gateId) as GatePublicationAttemptRow[];
+  return rows.map((row) => ({
+    id: row.id,
+    gateId: row.gate_id,
+    status: row.status as GatePublicationAttemptStatus,
+    error: row.error,
+    createdAt: row.created_at,
+  }));
 }
 
 export function getCachedGitHubBaseline(
@@ -333,13 +429,13 @@ export function insertGateRun(
       `INSERT INTO gate_runs (
          id, repository_key, repository_path, source, base_ref, head_ref,
          pull_request_number, scan_id, status, outcome, policy_version,
-         baseline_commit, artifact_path, error, estimated_usd, started_at,
-         completed_at
+         baseline_commit, artifact_path, publish_status, publish_error,
+         published_at, error, estimated_usd, started_at, completed_at
        ) VALUES (
          @id, @repository_key, @repository_path, @source, @base_ref, @head_ref,
          @pull_request_number, @scan_id, @status, @outcome, @policy_version,
-         @baseline_commit, @artifact_path, @error, @estimated_usd, @started_at,
-         @completed_at
+         @baseline_commit, @artifact_path, @publish_status, @publish_error,
+         @published_at, @error, @estimated_usd, @started_at, @completed_at
        )`,
     )
     .run(gateRunToParams(run));
@@ -375,6 +471,18 @@ export function updateGateRun(
     assignments.push("artifact_path = @artifact_path");
     params.artifact_path =
       updates.artifactPath === null ? null : updates.artifactPath;
+  }
+  if (updates.publishStatus !== undefined) {
+    assignments.push("publish_status = @publish_status");
+    params.publish_status = updates.publishStatus;
+  }
+  if (updates.publishError !== undefined) {
+    assignments.push("publish_error = @publish_error");
+    params.publish_error = updates.publishError === null ? null : updates.publishError;
+  }
+  if (updates.publishedAt !== undefined) {
+    assignments.push("published_at = @published_at");
+    params.published_at = updates.publishedAt === null ? null : updates.publishedAt;
   }
   if (updates.error !== undefined) {
     assignments.push("error = @error");
@@ -511,6 +619,9 @@ function gateRunToParams(run: GateRun): Record<string, unknown> {
     baseline_commit:
       run.baselineCommit === null ? null : run.baselineCommit,
     artifact_path: run.artifactPath === null ? null : run.artifactPath,
+    publish_status: run.publishStatus,
+    publish_error: run.publishError === null ? null : run.publishError,
+    published_at: run.publishedAt === null ? null : run.publishedAt,
     error: run.error === null ? null : run.error,
     estimated_usd: run.estimatedUsd,
     started_at: run.startedAt,
@@ -535,6 +646,9 @@ function rowToGateRun(row: GateRunRow): GateRun {
     baselineCommit:
       row.baseline_commit === null ? null : row.baseline_commit,
     artifactPath: row.artifact_path === null ? null : row.artifact_path,
+    publishStatus: row.publish_status as GatePublishStatus,
+    publishError: row.publish_error === null ? null : row.publish_error,
+    publishedAt: row.published_at === null ? null : row.published_at,
     error: row.error === null ? null : row.error,
     estimatedUsd: row.estimated_usd,
     startedAt: row.started_at,

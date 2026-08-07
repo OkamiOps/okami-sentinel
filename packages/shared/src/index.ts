@@ -348,6 +348,7 @@ export function normalizeSeverity(value: unknown): Severity {
 export type GateSource = "local" | "github";
 export type GateStatus = "queued" | "resolving" | "scanning" | "evaluating" | "publishing" | "completed" | "cancelled" | "error";
 export type GateOutcome = "no_changes" | "bootstrap" | "pass" | "warning" | "blocked" | "error";
+export type GatePublishStatus = "not_configured" | "waiting" | "publishing" | "published" | "failed";
 export type GateFindingLifecycle = "new" | "reopened" | "persistent" | "fixed";
 export type GateRuleDecision = "block" | "review";
 export type GitHubConclusion = "success" | "neutral" | "failure" | "action_required";
@@ -461,6 +462,9 @@ export interface GateRun {
   policyVersion: number;
   baselineCommit: string | null;
   artifactPath: string | null;
+  publishStatus: GatePublishStatus;
+  publishError: string | null;
+  publishedAt: string | null;
   error: string | null;
   startedAt: string;
   completedAt: string | null;
