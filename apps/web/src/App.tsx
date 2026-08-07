@@ -13,17 +13,18 @@ import { ActivityPage } from "./pages/ActivityPage";
 import { AttackPathPage } from "./pages/AttackPathPage";
 import { ComparePage } from "./pages/ComparePage";
 import { DashboardPage } from "./pages/DashboardPage";
+import { GuardrailsPage } from "./pages/GuardrailsPage";
 import { NewScanPage } from "./pages/NewScanPage";
 import { ScanDetailPage } from "./pages/ScanDetailPage";
 import { ScansPage } from "./pages/ScansPage";
 import { SettingsPage } from "./pages/SettingsPage";
 
-const nav = [["/", "Visão"], ["/scans", "Runs"], ["/scans/new", "Operar"], ["/compare", "Comparar"], ["/activity", "Atividade"], ["/settings", "Sistema"]] as const;
+const nav = [["/", "Visão"], ["/scans", "Runs"], ["/guardrails", "Guardrails"], ["/scans/new", "Operar"], ["/compare", "Comparar"], ["/activity", "Atividade"], ["/settings", "Sistema"]] as const;
 
 function NavStrip({ onNavigate }: { onNavigate?: () => void }) {
   const { pathname } = useLocation();
   return <nav className="flex flex-col md:flex-row md:items-stretch">{nav.map(([to, label], index) => {
-    const isActive = to === "/scans" ? pathname === "/scans" || (pathname.startsWith("/scans/") && pathname !== "/scans/new") : pathname === to;
+    const isActive = to === "/scans" ? pathname === "/scans" || (pathname.startsWith("/scans/") && pathname !== "/scans/new") : to === "/guardrails" ? pathname === "/guardrails" || pathname.startsWith("/guardrails/") : pathname === to;
     return <Link key={to} to={to} aria-current={isActive ? "page" : undefined} onClick={onNavigate} className={cx("group relative flex h-11 items-center gap-3 border-b border-border px-4 font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:border-b-0 md:border-r", isActive && "bg-accent text-primary")}><span className="text-[8px] opacity-45">0{index + 1}</span>{label}<span className={cx("absolute inset-x-0 bottom-0 h-px bg-primary transition-transform", isActive ? "scale-x-100" : "scale-x-0 group-hover:scale-x-100")} /></Link>;
   })}</nav>;
 }
@@ -69,6 +70,8 @@ export function App() {
         <Route path="/activity" element={<ActivityPage />} />
         <Route path="/scans" element={<ScansPage />} />
         <Route path="/scans/new" element={<NewScanPage />} />
+        <Route path="/guardrails" element={<GuardrailsPage />} />
+        <Route path="/guardrails/:gateId" element={<GuardrailsPage />} />
         <Route path="/scans/:id/findings/:findingId/path" element={<AttackPathPage />} />
         <Route path="/scans/:id" element={<ScanDetailPage />} />
         <Route path="/compare" element={<ComparePage />} />
