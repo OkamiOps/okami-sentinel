@@ -20,6 +20,7 @@ import {
   parseRecipe,
   upsertRun,
 } from "./db.js";
+import { normalizeAttackPath } from "./attack-path.js";
 import { dirsMatch } from "./progress.js";
 
 interface WorkbenchScanRow {
@@ -301,7 +302,7 @@ export function readFindingsFile(scanDir: string): FindingDetail[] {
         ? (f.severity as { rationale?: unknown })
         : null;
 
-    return {
+    const detail: FindingDetail = {
       findingId: String(f.findingId ?? f.occurrenceId ?? cryptoRandom()),
       occurrenceId: typeof f.occurrenceId === "string" ? f.occurrenceId : null,
       title: String(f.title ?? "Untitled finding"),
@@ -314,6 +315,7 @@ export function readFindingsFile(scanDir: string): FindingDetail[] {
       category,
       cwe,
       attackPath: f.attackPath ?? null,
+      attackPathModel: null,
       codeEvidence: Array.isArray(f.codeEvidence) ? f.codeEvidence : [],
       remediation: f.remediation ?? null,
       locations: f.locations ?? null,
@@ -327,6 +329,10 @@ export function readFindingsFile(scanDir: string): FindingDetail[] {
           ? severityObj.rationale
           : null,
       confidenceRationale,
+    };
+    return {
+      ...detail,
+      attackPathModel: normalizeAttackPath(detail),
     };
   });
 }

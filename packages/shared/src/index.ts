@@ -94,8 +94,57 @@ export interface FindingSummary {
   cwe: string[];
 }
 
+export type AttackPathEvidenceState = "proven" | "inferred" | "missing";
+
+export type AttackPathNodeKind =
+  | "attacker"
+  | "source"
+  | "entrypoint"
+  | "implementation"
+  | "control"
+  | "sink"
+  | "evidence"
+  | "outcome";
+
+export interface AttackPathLocation {
+  path: string;
+  startLine: number | null;
+  endLine: number | null;
+}
+
+export interface AttackPathNode {
+  id: string;
+  kind: AttackPathNodeKind;
+  label: string;
+  summary: string | null;
+  evidenceState: AttackPathEvidenceState;
+  evidenceRef: string | null;
+  location: AttackPathLocation | null;
+  code: string | null;
+  language: string | null;
+  explanation: string | null;
+}
+
+export interface AttackPathLane {
+  id: string;
+  label: string;
+  nodes: AttackPathNode[];
+}
+
+export interface AttackPathModel {
+  status: "validated" | "partial" | "unstructured";
+  summary: string | null;
+  preconditions: string | null;
+  limitations: string[];
+  impact: { level: string | null; rationale: string | null };
+  likelihood: { level: string | null; rationale: string | null };
+  lanes: AttackPathLane[];
+  warnings: string[];
+}
+
 export interface FindingDetail extends FindingSummary {
   attackPath: unknown;
+  attackPathModel: AttackPathModel | null;
   codeEvidence: unknown[];
   remediation: unknown;
   locations: unknown;
@@ -106,6 +155,42 @@ export interface FindingDetail extends FindingSummary {
   remediationTests: unknown;
   severityRationale: string | null;
   confidenceRationale: string | null;
+}
+
+export type FindingLifecycle = "new" | "persisting" | "fixed" | "regressed";
+
+export type FindingTriageStatus =
+  | "unreviewed"
+  | "confirmed"
+  | "accepted"
+  | "false_positive";
+
+export interface FindingTriage {
+  status: FindingTriageStatus;
+  note: string | null;
+  updatedAt: string | null;
+}
+
+export interface LifecycleFinding extends FindingSummary {
+  identity: string;
+  lifecycle: FindingLifecycle;
+  triage: FindingTriage;
+  /** Scan containing the evidence. Fixed findings point to the baseline scan. */
+  sourceScanId: string;
+}
+
+export interface RegressionSummary {
+  scanId: string;
+  baseline: ScanRun | null;
+  baselineSource: "explicit" | "automatic" | "none";
+  isRepositoryBaseline: boolean;
+  counts: Record<FindingLifecycle, number>;
+  findings: LifecycleFinding[];
+}
+
+export interface UpdateFindingTriageRequest {
+  status: FindingTriageStatus;
+  note?: string | null;
 }
 
 export interface MetricsSummary {

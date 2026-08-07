@@ -3,6 +3,8 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import {
   emptySeverityCounts,
+  type FindingTriage,
+  type FindingTriageStatus,
   type ScanCost,
   type ScanRun,
   type ScanStatus,
@@ -80,6 +82,26 @@ export function getDb(): Database.Database {
       updated_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS runs_by_updated ON runs(updated_at DESC);
+    CREATE TABLE IF NOT EXISTS hidden_runs (
+      id TEXT PRIMARY KEY,
+      hidden_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS repository_baselines (
+      repository_key TEXT PRIMARY KEY,
+      scan_id TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS finding_triage (
+      repository_key TEXT NOT NULL,
+      finding_key TEXT NOT NULL,
+      status TEXT NOT NULL,
+      note TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (repository_key, finding_key)
+    );
+    CREATE INDEX IF NOT EXISTS finding_triage_by_repository
+      ON finding_triage(repository_key, updated_at DESC);
   `);
   return db;
 }
@@ -206,7 +228,13 @@ export function upsertRun(run: ScanRun): void {
 
 export function listRuns(): ScanRun[] {
   const rows = getDb()
-    .prepare(`SELECT * FROM runs ORDER BY COALESCE(started_at, created_at) DESC`)
+    .prepare(
+      `SELECT runs.*
+       FROM runs
+       LEFT JOIN hidden_runs ON hidden_runs.id = runs.id
+       WHERE hidden_runs.id IS NULL
+       ORDER BY COALESCE(runs.started_at, runs.created_at) DESC`,
+    )
     .all() as BenchmarkRow[];
   return rows.map(rowToScanRun);
 }
@@ -216,6 +244,69 @@ export function getRun(id: string): ScanRun | null {
     | BenchmarkRow
     | undefined;
   return row ? rowToScanRun(row) : null;
+}
+
+export function getRepositoryBaseline(repositoryKey: string): string | null {
+  const row = getDb()
+    .prepare(`SELECT scan_id FROM repository_baselines WHERE repository_key = ?`)
+    .get(repositoryKey) as { scan_id: string } | undefined;
+  return row?.scan_id ?? null;
+}
+
+export function setRepositoryBaseline(repositoryKey: string, scanId: string): void {
+  getDb()
+    .prepare(
+      `INSERT INTO repository_baselines (repository_key, scan_id, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(repository_key) DO UPDATE SET
+         scan_id = excluded.scan_id,
+         updated_at = excluded.updated_at`,
+    )
+    .run(repositoryKey, scanId, new Date().toISOString());
+}
+
+export function getFindingTriage(repositoryKey: string): Map<string, FindingTriage> {
+  const rows = getDb()
+    .prepare(
+      `SELECT finding_key, status, note, updated_at
+       FROM finding_triage
+       WHERE repository_key = ?`,
+    )
+    .all(repositoryKey) as Array<{
+      finding_key: string;
+      status: FindingTriageStatus;
+      note: string | null;
+      updated_at: string;
+    }>;
+  return new Map(rows.map((row) => [row.finding_key, { status: row.status, note: row.note, updatedAt: row.updated_at }]));
+}
+
+export function upsertFindingTriage(
+  repositoryKey: string,
+  findingKey: string,
+  status: FindingTriageStatus,
+  note: string | null,
+): FindingTriage {
+  if (status === "unreviewed" && note === null) {
+    getDb()
+      .prepare(`DELETE FROM finding_triage WHERE repository_key = ? AND finding_key = ?`)
+      .run(repositoryKey, findingKey);
+    return { status, note, updatedAt: null };
+  }
+
+  const now = new Date().toISOString();
+  getDb()
+    .prepare(
+      `INSERT INTO finding_triage (
+         repository_key, finding_key, status, note, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(repository_key, finding_key) DO UPDATE SET
+         status = excluded.status,
+         note = excluded.note,
+         updated_at = excluded.updated_at`,
+    )
+    .run(repositoryKey, findingKey, status, note, now, now);
+  return { status, note, updatedAt: now };
 }
 
 export function deleteRun(id: string): void {

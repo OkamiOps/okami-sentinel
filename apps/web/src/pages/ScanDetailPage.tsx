@@ -1,757 +1,220 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  Analytics01Icon,
-  ArrowLeft01Icon,
-  Bug01Icon,
-  Copy01Icon,
-  DollarCircleIcon,
-  File01Icon,
-  Folder01Icon,
-  GitBranchIcon,
-  Search01Icon,
-  StopIcon,
-  Timer01Icon,
-} from "@hugeicons/core-free-icons";
-import type { FindingDetail, FindingSummary, ScanEvent, ScanRun } from "@csb/shared";
+import { Analytics01Icon, ArrowLeft01Icon, Copy01Icon, RefreshIcon, Search01Icon, SecurityCheckIcon, StopIcon } from "@hugeicons/core-free-icons";
+import type { FindingDetail, FindingLifecycle, FindingTriageStatus, LifecycleFinding, RegressionSummary, ScanEvent, ScanRun } from "@csb/shared";
 import { api } from "../api";
-import { FindingInspector } from "../components/FindingInspector";
-import {
-  AlertBanner,
-  EmptyState,
-  LiveDuration,
-  LevelPill,
-  MetricCard,
-  ScanProgressBar,
-  SeverityBadge,
-  SevRail,
-  StatusBadge,
-  Surface,
-  cx,
-} from "../components/ui";
+import { AlertBanner, EmptyState, LiveDuration, Loading, Panel, ProgressTrack, Readout, SeverityBadge, SeverityStrip, StatusBadge, cx } from "../components/ui";
+import { AttackPathPreview } from "../components/attack-path";
+import { BulletList, InspectorSection } from "../components/InspectorPrimitives";
+import { LifecycleBadge, lifecycleLabel, lifecycleTone } from "../components/LifecycleBadge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { formatDate, formatTokens, formatUsd, shortId } from "../format";
+import { attackPathHref } from "../lib/attack-path";
 
-type Tab = "overview" | "findings" | "logs";
+type View = "evidence" | "telemetry" | "profile";
 
 export function ScanDetailPage() {
   const { id = "" } = useParams();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const [scan, setScan] = useState<ScanRun | null>(null);
-  const [findings, setFindings] = useState<FindingSummary[]>([]);
+  const [findings, setFindings] = useState<LifecycleFinding[]>([]);
+  const [regression, setRegression] = useState<RegressionSummary | null>(null);
   const [selected, setSelected] = useState<FindingDetail | null>(null);
+  const [selectedSignal, setSelectedSignal] = useState<LifecycleFinding | null>(null);
+  const [view, setView] = useState<View>("evidence");
   const [severity, setSeverity] = useState("");
-  const [category, setCategory] = useState("");
-  const [q, setQ] = useState("");
-  const [tab, setTab] = useState<Tab>("overview");
+  const [lifecycle, setLifecycle] = useState<FindingLifecycle | "">("");
+  const [query, setQuery] = useState("");
   const [logs, setLogs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [baselineBusy, setBaselineBusy] = useState(false);
   const logRef = useRef<HTMLPreElement>(null);
-
-  async function load() {
-    const data = await api.getScan(id);
-    setScan(data.scan);
-    setFindings(data.findings);
-    return data;
-  }
-
-  useEffect(() => {
-    setTab("overview");
-    setSelected(null);
-    setSeverity("");
-    setCategory("");
-    setQ("");
-    setLogs([]);
-    void load()
-      .then((data) => {
-        if (searchParams.get("f")) setTab("findings");
-        else if (data.scan.status === "running") setTab("logs");
-        else if (data.findings.length > 0) setTab("findings");
-      })
-      .catch((err) =>
-        setError(err instanceof Error ? err.message : "Falha ao carregar"),
-      );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
-
-  useEffect(() => {
-    if (!scan || scan.status !== "running") return;
-    const es = new EventSource(`/api/scans/${id}/events`);
-    const onAny = () => (ev: MessageEvent) => {
-      try {
-        const data = JSON.parse(String(ev.data)) as ScanEvent;
-        if (data.message) setLogs((prev) => [...prev.slice(-500), data.message!]);
-        if (data.scan) setScan(data.scan);
-        if (data.progress && !data.scan) {
-          setScan((prev) => (prev ? { ...prev, progress: data.progress! } : prev));
-        }
-        if (data.type === "done") {
-          void load();
-          es.close();
-        } else if (data.type === "error") {
-          // Orphaned/restart cases used to emit a hard error — only close if
-          // the scan actually left the running state.
-          void load().then((d) => {
-            if (d.scan.status !== "running") es.close();
-          });
-        }
-      } catch {
-        // ignore
-      }
-    };
-    for (const t of ["log", "status", "cost", "progress", "done", "error"]) {
-      es.addEventListener(t, onAny());
-    }
-    const timer = window.setInterval(() => {
-      void load().catch(() => undefined);
-    }, 4000);
-    return () => {
-      es.close();
-      window.clearInterval(timer);
-    };
-  }, [id, scan?.status]);
-
-  useEffect(() => {
-    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
-  }, [logs]);
-
-  const categories = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const f of findings) {
-      const c = f.category ?? null;
-      if (!c) continue;
-      m.set(c, (m.get(c) ?? 0) + 1);
-    }
-    return [...m.entries()].sort((a, b) => b[1] - a[1]);
-  }, [findings]);
-
-  const filtered = useMemo(() => {
-    return findings.filter((f) => {
-      if (severity && f.severity !== severity) return false;
-      if (category && (f.category ?? "Uncategorized") !== category) return false;
-      if (!q) return true;
-      const cwe = f.cwe ?? [];
-      const hay =
-        `${f.title} ${f.primaryPath ?? ""} ${f.summary ?? ""} ${f.category ?? ""} ${cwe.join(" ")}`.toLowerCase();
-      return hay.includes(q.toLowerCase());
-    });
-  }, [findings, severity, category, q]);
-
-  const severityCounts = useMemo(() => {
-    const c = { critical: 0, high: 0, medium: 0, low: 0, other: 0 };
-    for (const f of findings) {
-      if (f.severity in c) c[f.severity as keyof typeof c] += 1;
-      else c.other += 1;
-    }
-    return c;
-  }, [findings]);
-
-  useEffect(() => {
-    const fid = searchParams.get("f");
-    if (!fid || !findings.length) return;
-    if (selected?.findingId === fid) return;
-    const hit = findings.find((f) => f.findingId === fid);
-    if (hit) {
-      setTab("findings");
-      void openFinding(hit, false);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [findings, searchParams]);
-
-  async function openFinding(f: FindingSummary, pushUrl = true) {
-    setTab("findings");
-    try {
-      const { finding } = await api.getFinding(id, f.findingId);
-      setSelected(finding);
-      if (pushUrl) setSearchParams({ f: f.findingId }, { replace: true });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Falha ao abrir finding");
-    }
-  }
-
-  async function cancel() {
-    try {
-      await api.cancelScan(id);
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Falha ao cancelar");
-    }
-  }
-
-  async function copyText(text: string) {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // ignore
-    }
-  }
-
-  if (!scan && !error) {
-    return (
-      <div className="flex min-h-64 items-center justify-center">
-        <span className="loading loading-spinner loading-lg text-primary" />
-      </div>
-    );
-  }
+  async function load() { const [r, delta] = await Promise.all([api.getScan(id), api.regression(id)]); setScan(r.scan); setRegression(delta); setFindings(delta.findings); return r; }
+  useEffect(() => { setScan(null); setFindings([]); setRegression(null); setSelected(null); setSelectedSignal(null); setLogs([]); void load().then((r) => { setView(r.scan.status === "running" ? "telemetry" : "evidence"); }).catch((err) => setError(err instanceof Error ? err.message : "Falha ao carregar canal")); }, [id]);
+  useEffect(() => { if (!scan || scan.status !== "running") return; const es = new EventSource(`/api/scans/${id}/events`); const handler = (event: MessageEvent) => { try { const data = JSON.parse(String(event.data)) as ScanEvent; if (data.message) setLogs((old) => [...old.slice(-450), data.message!]); if (data.scan) setScan(data.scan); else if (data.progress) setScan((old) => old ? { ...old, progress: data.progress! } : old); if (data.type === "done") { void load(); es.close(); } } catch { /* malformed event */ } }; ["log", "status", "cost", "progress", "done", "error"].forEach((name) => es.addEventListener(name, handler)); const poll = window.setInterval(() => void load().catch(() => undefined), 4500); return () => { es.close(); window.clearInterval(poll); }; }, [id, scan?.status]);
+  useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, [logs]);
+  const filtered = useMemo(() => findings.filter((f) => (!severity || f.severity === severity) && (!lifecycle || f.lifecycle === lifecycle) && `${f.title} ${f.summary} ${f.primaryPath} ${f.category} ${f.cwe.join(" ")} ${f.lifecycle} ${f.triage.status}`.toLowerCase().includes(query.toLowerCase())), [findings, severity, lifecycle, query]);
+  async function openFinding(f: LifecycleFinding, update = true) { try { const r = await api.getFinding(f.sourceScanId, f.findingId); setSelected(r.finding); setSelectedSignal(f); setView("evidence"); if (update) setParams({ f: f.findingId }, { replace: true }); } catch (err) { setError(err instanceof Error ? err.message : "Falha ao abrir evidência"); } }
+  useEffect(() => { const fid = params.get("f"); const hit = findings.find((f) => f.findingId === fid); if (hit && (selected?.findingId !== fid || selectedSignal?.sourceScanId !== hit.sourceScanId)) void openFinding(hit, false); }, [findings, params]);
+  async function cancel() { try { await api.cancelScan(id); await load(); } catch (err) { setError(err instanceof Error ? err.message : "Falha ao cancelar"); } }
+  async function setBaseline() { setBaselineBusy(true); try { const delta = await api.setBaseline(id); setRegression(delta); setFindings(delta.findings); setLifecycle(""); } catch (err) { setError(err instanceof Error ? err.message : "Falha ao fixar baseline"); } finally { setBaselineBusy(false); } }
+  async function saveTriage(status: FindingTriageStatus, note: string) { if (!selectedSignal) return; const { triage } = await api.updateTriage(id, selectedSignal.findingId, { status, note }); setFindings((items) => items.map((item) => item.identity === selectedSignal.identity ? { ...item, triage } : item)); setSelectedSignal((item) => item ? { ...item, triage } : item); }
+  if (!scan && !error) return <Loading />;
   if (!scan) return <AlertBanner>{error}</AlertBanner>;
-
-  const running = scan.status === "running";
-  const highPlus = scan.severity.high + scan.severity.critical;
-  const usd = scan.cost?.estimatedUsd ?? 0;
-  const usdPerFinding =
-    scan.cost && scan.severity.total > 0 ? usd / scan.severity.total : null;
-  const highPerDollar = usd > 0 ? highPlus / usd : null;
-  const maxCat = Math.max(1, ...categories.map(([, n]) => n), 1);
-  const totalFindings = Math.max(1, findings.length);
-
-  return (
-    <div className="space-y-6">
-      <section
-        className={cx(
-          "relative overflow-hidden rounded-box border bg-base-100",
-          running ? "border-primary/40 ring-1 ring-primary/20" : "border-base-300",
-        )}
-      >
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-primary to-transparent opacity-70" />
-
-        <div className="flex flex-col gap-6 p-5 lg:flex-row lg:items-start lg:justify-between lg:p-6">
-          <div className="min-w-0 flex-1">
-            <div className="mb-3 flex flex-wrap items-center gap-2">
-              <Link to="/scans" className="btn btn-ghost btn-sm gap-1.5">
-                <HugeiconsIcon icon={ArrowLeft01Icon} size={15} />
-                Scans
-              </Link>
-              <StatusBadge status={scan.status} />
-              <span className="badge badge-ghost badge-sm font-mono">
-                {scan.model}/{scan.effort}
-              </span>
-              {scan.mode && (
-                <span className="badge badge-ghost badge-sm font-mono">{scan.mode}</span>
-              )}
-              <span className="badge badge-ghost badge-sm font-mono">{shortId(scan.id)}</span>
-            </div>
-
-            <h1 className="font-display text-3xl font-bold tracking-tight sm:text-4xl">
-              {scan.displayName}
-            </h1>
-
-            <button
-              type="button"
-              className="mt-2 max-w-full truncate font-mono text-sm text-base-content/55 hover:text-primary"
-              onClick={() => void copyText(scan.repositoryPath ?? scan.scanDir)}
-              title="Copiar path"
-            >
-              {scan.repositoryPath ?? scan.scanDir}
-              {copied && <span className="ml-2 text-success">copiado</span>}
-            </button>
-
-            <div className="mt-4 flex flex-wrap gap-2">
-              <Link to="/compare" className="btn btn-ghost btn-sm gap-1.5">
-                <HugeiconsIcon icon={Analytics01Icon} size={15} />
-                Comparar
-              </Link>
-              {running && (
-                <button
-                  className="btn btn-error btn-sm gap-1.5"
-                  type="button"
-                  onClick={() => void cancel()}
-                >
-                  <HugeiconsIcon icon={StopIcon} size={15} />
-                  Cancelar scan
-                </button>
-              )}
-            </div>
-
-            {(running || scan.status === "completed") && scan.progress && (
-              <ScanProgressBar
-                progress={scan.progress}
-                status={scan.status}
-                className="mt-5 max-w-xl"
-              />
-            )}
-          </div>
-        </div>
-
-        <div className="grid gap-3 border-t border-base-300 p-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 lg:p-5">
-          <MetricCard
-            label={running ? "Decorrido" : "Duração"}
-            icon={Timer01Icon}
-            accent={running}
-            value={
-              <LiveDuration
-                startedAt={scan.startedAt}
-                completedAt={scan.completedAt}
-                status={scan.status}
-                durationMs={scan.durationMs}
-                className="text-[1.85rem] font-bold tracking-tight"
-              />
-            }
-            hint={
-              running && scan.progress
-                ? `${scan.progress.percent}% · ${scan.progress.phaseLabel}`
-                : formatDate(scan.startedAt)
-            }
-          />
-          <MetricCard
-            label="Custo estimado"
-            icon={DollarCircleIcon}
-            accent
-            value={formatUsd(usd)}
-            hint={
-              scan.cost
-                ? `${formatTokens(scan.cost.inputTokens + scan.cost.outputTokens)} tokens`
-                : "sem custo"
-            }
-          />
-          <MetricCard
-            label="Findings"
-            icon={Bug01Icon}
-            value={String(scan.severity.total)}
-            hint={`${scan.severity.high} high · ${scan.severity.medium} med · ${scan.severity.low} low`}
-          />
-          <MetricCard
-            label="High+"
-            value={String(highPlus)}
-            hint="critical + high"
-          />
-          <MetricCard
-            label="High / $"
-            value={highPerDollar != null ? highPerDollar.toFixed(2) : "—"}
-            hint="eficiência"
-          />
-          <MetricCard
-            label="$ / finding"
-            value={usdPerFinding != null ? formatUsd(usdPerFinding) : "—"}
-            hint="custo unitário"
-          />
-        </div>
-
-        {(scan.cost?.inputTokens || 0) > 0 && (
-          <div className="grid gap-px border-t border-base-300 bg-base-300 sm:grid-cols-4">
-            <TokenCell label="Input" value={scan.cost!.inputTokens} />
-            <TokenCell label="Cached" value={scan.cost!.cachedInputTokens} />
-            <TokenCell label="Output" value={scan.cost!.outputTokens} />
-            <TokenCell label="USD" value={scan.cost!.estimatedUsd} money />
-          </div>
-        )}
-      </section>
-
-      {error && <AlertBanner>{error}</AlertBanner>}
-
-      <div
-        role="tablist"
-        className="inline-flex w-full gap-0.5 rounded-full bg-base-200 p-1 ring-1 ring-base-content/10 sm:w-fit"
-      >
-        {(
-          [
-            ["overview", "Visão geral"],
-            ["findings", `Findings (${findings.length})`],
-            ["logs", running ? "Logs ao vivo" : "Logs"],
-          ] as const
-        ).map(([key, label]) => (
-          <button
-            key={key}
-            type="button"
-            role="tab"
-            aria-selected={tab === key}
-            className={cx(
-              "flex-1 rounded-full px-4 py-1.5 text-sm font-medium transition sm:flex-none",
-              tab === key
-                ? "bg-base-content text-base-100 shadow-sm"
-                : "text-base-content/55 hover:bg-base-content/5 hover:text-base-content/85",
-            )}
-            onClick={() => setTab(key)}
-          >
-            {label}
-            {key === "logs" && running && <span className="live-dot ml-2" />}
-          </button>
-        ))}
+  const highPlus = scan.severity.critical + scan.severity.high;
+  return <div>
+    <header className="bench-panel bench-corners mb-4">
+      <div className="flex h-8 items-center justify-between border-b px-3 font-mono text-[8px] uppercase tracking-[.13em] text-muted-foreground"><span className="text-primary">CHANNEL / {shortId(scan.id)}</span><span>{scan.status === "running" ? "LIVE TELEMETRY" : "ARCHIVED EVIDENCE"}</span></div>
+      <div className="grid lg:grid-cols-[minmax(0,1fr)_24rem]">
+        <div className="min-w-0 border-b p-5 lg:border-b-0 lg:border-r"><div className="flex flex-wrap items-center gap-2"><Button asChild variant="ghost" size="sm"><Link to="/scans"><HugeiconsIcon icon={ArrowLeft01Icon} size={12} />Ledger</Link></Button><StatusBadge status={scan.status} /><span className="border px-2 py-1 font-mono text-[9px] text-muted-foreground">{scan.model}/{scan.effort}/{scan.mode}</span></div><h1 className="mt-5 truncate font-heading text-3xl font-semibold tracking-[-.045em] sm:text-4xl">{scan.displayName}</h1><button type="button" onClick={() => void navigator.clipboard.writeText(scan.repositoryPath ?? scan.scanDir)} className="mt-2 flex max-w-full items-center gap-2 truncate font-mono text-[10px] text-muted-foreground hover:text-primary"><HugeiconsIcon icon={Copy01Icon} size={11} />{scan.repositoryPath ?? scan.scanDir}</button><div className="mt-5"><SeverityStrip counts={scan.severity} total={scan.severity.total} /></div><div className="mt-5 flex flex-wrap gap-2"><Button asChild variant="outline" size="sm"><Link to={`/compare?ids=${scan.id}`}><HugeiconsIcon icon={Analytics01Icon} size={12} />Patch no comparador</Link></Button><Button asChild variant="outline" size="sm"><Link to={rescanHref(scan)}><HugeiconsIcon icon={RefreshIcon} size={12} />Repetir perfil</Link></Button>{scan.status === "completed" && <Button variant="outline" size="sm" onClick={() => void setBaseline()} disabled={baselineBusy || regression?.isRepositoryBaseline}><HugeiconsIcon icon={SecurityCheckIcon} size={12} />{regression?.isRepositoryBaseline ? "Baseline do repo" : baselineBusy ? "Fixando…" : "Fixar baseline"}</Button>}{scan.status === "running" && <Button variant="destructive" size="sm" onClick={() => void cancel()}><HugeiconsIcon icon={StopIcon} size={12} />Cancelar processo</Button>}</div></div>
+        <div className="grid grid-cols-2 gap-x-4 gap-y-5 p-5"><Readout label="HIGH+" value={highPlus} tone="risk" /><Readout label="TOTAL" value={scan.severity.total} /><Readout label="COST" value={formatUsd(scan.cost?.estimatedUsd)} tone="signal" /><Readout label="DURATION" value={<LiveDuration startedAt={scan.startedAt} completedAt={scan.completedAt} status={scan.status} durationMs={scan.durationMs} showDot={false} />} /><Readout label="INPUT" value={formatTokens(scan.cost?.inputTokens)} /><Readout label="OUTPUT" value={formatTokens(scan.cost?.outputTokens)} /></div>
       </div>
-
-      {tab === "overview" && (
-        <div className="grid gap-5 xl:grid-cols-[1.35fr_0.85fr]">
-          <Surface title="Severidade & categorias">
-            <div className="space-y-5 p-5 sm:p-6">
-              <div className="flex h-3.5 overflow-hidden rounded-full bg-base-200">
-                {severityCounts.critical > 0 && (
-                  <span
-                    className="bg-error"
-                    style={{ width: `${(severityCounts.critical / totalFindings) * 100}%` }}
-                  />
-                )}
-                {severityCounts.high > 0 && (
-                  <span
-                    className="bg-error/70"
-                    style={{ width: `${(severityCounts.high / totalFindings) * 100}%` }}
-                  />
-                )}
-                {severityCounts.medium > 0 && (
-                  <span
-                    className="bg-warning"
-                    style={{ width: `${(severityCounts.medium / totalFindings) * 100}%` }}
-                  />
-                )}
-                {severityCounts.low > 0 && (
-                  <span
-                    className="bg-info"
-                    style={{ width: `${(severityCounts.low / totalFindings) * 100}%` }}
-                  />
-                )}
-              </div>
-
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <SevCount label="Critical" n={severityCounts.critical} tone="error" />
-                <SevCount label="High" n={severityCounts.high} tone="error" />
-                <SevCount label="Medium" n={severityCounts.medium} tone="warning" />
-                <SevCount label="Low" n={severityCounts.low} tone="info" />
-              </div>
-
-              {categories.length > 0 && (
-                <div>
-                  <div className="mb-3 text-sm font-medium text-base-content/55">
-                    Top categorias
-                  </div>
-                  <div className="space-y-2.5">
-                    {categories.slice(0, 8).map(([cat, n]) => (
-                      <button
-                        key={cat}
-                        type="button"
-                        className="flex w-full items-center gap-3 rounded-xl px-2 py-1.5 text-left transition hover:bg-base-200/70"
-                        onClick={() => {
-                          setCategory(cat);
-                          setTab("findings");
-                        }}
-                      >
-                        <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                          {cat}
-                        </span>
-                        <span className="font-mono text-sm tabular-nums text-base-content/50">
-                          {n}
-                        </span>
-                        <div className="h-2 w-28 overflow-hidden rounded-full bg-base-200">
-                          <div
-                            className="h-full bg-secondary"
-                            style={{ width: `${Math.max(10, (n / maxCat) * 100)}%` }}
-                          />
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {findings.length > 0 && (
-                <div>
-                  <div className="mb-3 flex items-center justify-between">
-                    <div className="text-sm font-medium text-base-content/55">
-                      Top findings
-                    </div>
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-sm"
-                      onClick={() => setTab("findings")}
-                    >
-                      Ver todos
-                    </button>
-                  </div>
-                  <div className="space-y-1.5">
-                    {findings.slice(0, 5).map((f) => (
-                      <button
-                        key={f.findingId}
-                        type="button"
-                        className="flex w-full items-start gap-3 rounded-xl px-2 py-2.5 text-left transition hover:bg-base-200/70"
-                        onClick={() => void openFinding(f)}
-                      >
-                        <SeverityBadge severity={f.severity} />
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-semibold">{f.title}</p>
-                          {f.category && (
-                            <p className="mt-0.5 truncate text-xs text-primary/80">
-                              {f.category}
-                            </p>
-                          )}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </Surface>
-
-          <Surface title="Alvo">
-            <div className="space-y-4 p-5 sm:p-6">
-              <MetaRow
-                icon={Folder01Icon}
-                label="Repositório"
-                value={scan.repositoryPath ?? "—"}
-                onCopy={
-                  scan.repositoryPath ? () => void copyText(scan.repositoryPath!) : undefined
-                }
-              />
-              <MetaRow icon={GitBranchIcon} label="Revision" value={scan.revision ?? "—"} mono />
-              <MetaRow
-                icon={DollarCircleIcon}
-                label="Modelo / effort"
-                value={`${scan.model ?? "—"} / ${scan.effort ?? "—"}`}
-                mono
-              />
-              <MetaRow
-                icon={File01Icon}
-                label="Output"
-                value={scan.scanDir}
-                mono
-                onCopy={() => void copyText(scan.scanDir)}
-              />
-              <MetaRow label="Início" value={formatDate(scan.startedAt)} />
-              <MetaRow label="Fim" value={formatDate(scan.completedAt)} />
-              <MetaRow label="Source" value={scan.source} />
-            </div>
-          </Surface>
-        </div>
-      )}
-
-      {tab === "findings" && (
-        <div className="space-y-4">
-          <div className="flex flex-col gap-3 rounded-box border border-base-300 bg-base-100 p-4 sm:flex-row sm:items-center">
-            <label className="input input-bordered flex flex-1 items-center gap-2">
-              <HugeiconsIcon icon={Search01Icon} size={16} className="opacity-50" />
-              <input
-                className="grow text-sm"
-                placeholder="Buscar título, path, CWE, categoria…"
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-              />
-            </label>
-            <div className="flex flex-wrap gap-1.5">
-              {[
-                ["", "Todas"],
-                ["critical", "Crit"],
-                ["high", "High"],
-                ["medium", "Med"],
-                ["low", "Low"],
-              ].map(([value, label]) => (
-                <button
-                  key={value || "all"}
-                  type="button"
-                  className={cx("btn btn-sm", severity === value ? "btn-primary" : "btn-ghost")}
-                  onClick={() => setSeverity(value)}
-                >
-                  {label}
-                  {value === "critical" && severityCounts.critical > 0
-                    ? ` ${severityCounts.critical}`
-                    : ""}
-                  {value === "high" && severityCounts.high > 0
-                    ? ` ${severityCounts.high}`
-                    : ""}
-                  {value === "medium" && severityCounts.medium > 0
-                    ? ` ${severityCounts.medium}`
-                    : ""}
-                  {value === "low" && severityCounts.low > 0 ? ` ${severityCounts.low}` : ""}
-                </button>
-              ))}
-            </div>
-            {categories.length > 0 && (
-              <select
-                className="select select-bordered select-sm max-w-[16rem] font-mono text-sm"
-                value={category}
-                onChange={(e) => setCategory(e.target.value)}
-              >
-                <option value="">Todas categorias</option>
-                {categories.map(([c, n]) => (
-                  <option key={c} value={c}>
-                    {c} ({n})
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
-
-          <div className="grid overflow-hidden rounded-box border border-base-300 bg-base-100 xl:grid-cols-[minmax(0,24rem)_1fr] 2xl:grid-cols-[minmax(0,28rem)_1fr]">
-            <div className="max-h-[78vh] overflow-y-auto border-b border-base-300 xl:border-b-0 xl:border-r">
-              <div className="sticky top-0 z-10 flex items-center justify-between border-b border-base-300 bg-base-100/95 px-4 py-3 backdrop-blur">
-                <span className="text-sm font-medium text-base-content/60">
-                  {filtered.length}
-                  {filtered.length !== findings.length ? ` / ${findings.length}` : ""}{" "}
-                  findings
-                </span>
-                <HugeiconsIcon icon={Bug01Icon} size={15} className="text-base-content/35" />
-              </div>
-
-              {filtered.length === 0 ? (
-                <EmptyState
-                  title="Nenhum finding"
-                  description={
-                    running
-                      ? "Ainda em andamento — veja os logs."
-                      : "Nada corresponde aos filtros."
-                  }
-                  icon={Bug01Icon}
-                />
-              ) : (
-                <div className="divide-y divide-base-300/50">
-                  {filtered.map((f, idx) => (
-                    <button
-                      key={f.findingId}
-                      type="button"
-                      className={cx(
-                        "flex w-full gap-3 px-3 py-3.5 text-left transition",
-                        selected?.findingId === f.findingId
-                          ? "bg-primary/12"
-                          : "hover:bg-base-200/70",
-                      )}
-                      onClick={() => void openFinding(f)}
-                    >
-                      <SevRail severity={f.severity} />
-                      <span className="w-6 shrink-0 pt-1 font-mono text-xs text-base-content/35">
-                        {String(idx + 1).padStart(2, "0")}
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
-                          <SeverityBadge severity={f.severity} />
-                          {f.confidence && <LevelPill level={f.confidence} />}
-                          {f.cwe?.[0] && (
-                            <span className="rounded border border-secondary/35 bg-secondary/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-secondary">
-                              {f.cwe[0]}
-                            </span>
-                          )}
-                        </div>
-                        <p className="line-clamp-2 text-[15px] font-semibold leading-snug text-base-content">
-                          {f.title}
-                        </p>
-                        {f.category && (
-                          <p className="mt-1 truncate text-sm text-primary/85">{f.category}</p>
-                        )}
-                        <p className="mt-1 truncate font-mono text-xs text-base-content/45">
-                          {f.primaryPath ?? f.findingId}
-                        </p>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="max-h-[78vh] overflow-hidden xl:sticky xl:top-16">
-              <FindingInspector
-                finding={selected}
-                onClose={
-                  selected
-                    ? () => {
-                        setSelected(null);
-                        setSearchParams({}, { replace: true });
-                      }
-                    : undefined
-                }
-              />
-            </div>
-          </div>
-        </div>
-      )}
-
-      {tab === "logs" && (
-        <Surface
-          title={
-            <span className="flex items-center gap-2">
-              Stream do CLI
-              {running && <span className="loading loading-dots loading-xs text-primary" />}
-            </span>
-          }
-          action={
-            <span className="font-mono text-sm text-base-content/45">{logs.length} linhas</span>
-          }
-        >
-          <pre
-            ref={logRef}
-            className="hud-frame max-h-[65vh] overflow-auto bg-[#0a0c10] p-5 font-mono text-xs leading-relaxed text-emerald-100/85"
-          >
-            {logs.length
-              ? logs.join("\n")
-              : running
-                ? "Aguardando eventos… Se a API reiniciou no meio do scan, o stdout original se perde; progresso e atividade do workbench entram aqui."
-                : "Sem logs capturados para este run (só runs iniciados pela UI emitem stream)."}
-          </pre>
-        </Surface>
-      )}
-    </div>
-  );
+      {regression && <RegressionRail regression={regression} active={lifecycle} onSelect={(value) => { setLifecycle((current) => current === value ? "" : value); setView("evidence"); }} />}
+      {scan.progress && <div className="border-t px-4 py-3"><div className="mb-2 flex items-center justify-between font-mono text-[9px]"><span>{scan.progress.phaseLabel} / {scan.progress.detail}</span><span className="text-primary">{scan.progress.percent}%</span></div><ProgressTrack value={scan.progress.percent} /></div>}
+    </header>
+    {error && <AlertBanner>{error}</AlertBanner>}
+    <div className="mb-4 flex overflow-x-auto border border-border">{(["evidence", "telemetry", "profile"] as View[]).map((id, i) => <button key={id} type="button" onClick={() => setView(id)} className={cx("h-10 border-r px-4 font-mono text-[9px] uppercase tracking-wider", view === id ? "bg-accent text-primary" : "text-muted-foreground hover:text-foreground")}>0{i + 1} / {id}</button>)}</div>
+    {view === "evidence" && <EvidenceWorkbench scan={scan} findings={filtered} allFindings={findings} selected={selected} selectedSignal={selectedSignal} query={query} severity={severity} lifecycle={lifecycle} onQuery={setQuery} onSeverity={setSeverity} onLifecycle={setLifecycle} onOpen={(f) => void openFinding(f)} onSaveTriage={saveTriage} />}
+    {view === "telemetry" && <Telemetry scan={scan} logs={logs} logRef={logRef} />}
+    {view === "profile" && <Profile scan={scan} />}
+  </div>;
 }
 
-function TokenCell({
-  label,
-  value,
-  money,
-}: {
-  label: string;
-  value: number;
-  money?: boolean;
-}) {
-  return (
-    <div className="bg-base-100 px-5 py-3.5">
-      <div className="text-xs uppercase tracking-wide text-base-content/45">{label}</div>
-      <div className="mt-0.5 font-mono text-base tabular-nums">
-        {money ? formatUsd(value) : formatTokens(value)}
-      </div>
-    </div>
-  );
+function EvidenceWorkbench({ scan, findings, allFindings, selected, selectedSignal, query, severity, lifecycle, onQuery, onSeverity, onLifecycle, onOpen, onSaveTriage }: { scan: ScanRun; findings: LifecycleFinding[]; allFindings: LifecycleFinding[]; selected: FindingDetail | null; selectedSignal: LifecycleFinding | null; query: string; severity: string; lifecycle: FindingLifecycle | ""; onQuery: (v: string) => void; onSeverity: (v: string) => void; onLifecycle: (v: FindingLifecycle | "") => void; onOpen: (f: LifecycleFinding) => void; onSaveTriage: (status: FindingTriageStatus, note: string) => Promise<void> }) {
+  return <div className="grid min-h-[36rem] md:grid-cols-[minmax(18rem,.75fr)_minmax(26rem,1.25fr)] xl:grid-cols-[14rem_minmax(18rem,.75fr)_minmax(24rem,1.25fr)]">
+    <aside className="bench-panel border-b md:col-start-1 md:row-start-1 md:border-r xl:col-auto xl:row-auto xl:border-b-0"><div className="border-b p-3"><label className="flex items-center gap-2"><HugeiconsIcon icon={Search01Icon} size={12} className="text-muted-foreground" /><Input value={query} onChange={(e) => onQuery(e.target.value)} placeholder="search evidence" className="h-8 border-0 bg-transparent px-0 font-mono text-[10px] shadow-none focus-visible:ring-0" /></label></div><FilterGroup label="SEVERITY"><FilterButton label="all signals" count={allFindings.length} active={!severity} onClick={() => onSeverity("")} />{["critical", "high", "medium", "low", "info"].map((value) => <FilterButton key={value} label={value} count={allFindings.filter((finding) => finding.severity === value).length} active={severity === value} onClick={() => onSeverity(value)} />)}</FilterGroup><FilterGroup label="LIFECYCLE"><FilterButton label="all states" count={allFindings.length} active={!lifecycle} onClick={() => onLifecycle("")} />{lifecycleOrder.map((value) => <FilterButton key={value} label={lifecycleLabel[value]} count={allFindings.filter((finding) => finding.lifecycle === value).length} active={lifecycle === value} onClick={() => onLifecycle(value)} tone={lifecycleTone[value]} />)}</FilterGroup><div className="border-t p-3 text-[10px] leading-relaxed text-muted-foreground">Lifecycle compara fingerprints do canal atual com o baseline e o histórico deste repositório.</div></aside>
+    <Panel className="border-b md:col-start-1 md:row-start-2 md:border-r xl:col-auto xl:row-auto xl:border-b-0" label="SIGNAL / DELTA LIST" title={`${findings.length} evidências no recorte`}><div className="max-h-[42rem] overflow-auto">{findings.map((f) => <button key={`${f.sourceScanId}:${f.findingId}`} onClick={() => onOpen(f)} className={cx("w-full border-b px-3 py-3 text-left hover:bg-accent", selectedSignal?.identity === f.identity && "bg-accent shadow-[inset_2px_0_0_var(--primary)]")}><div className="flex items-start gap-2"><SeverityBadge severity={f.severity} /><LifecycleBadge state={f.lifecycle} /><span className="min-w-0 flex-1 text-xs font-semibold leading-snug">{f.title}</span></div><div className="mt-2 flex min-w-0 items-center gap-2 font-mono text-[8px] text-muted-foreground"><span className="min-w-0 flex-1 truncate">{f.primaryPath ?? f.category ?? f.findingId}</span>{f.triage.status !== "unreviewed" && <span className="shrink-0 uppercase text-chart-2">{triageLabel[f.triage.status]}</span>}</div></button>)}{!findings.length && <EmptyState title="Nenhum sinal neste recorte" description="Remova filtros ou selecione outro estado do lifecycle." />}</div></Panel>
+    <Panel className="md:col-start-2 md:row-span-2 md:row-start-1 xl:col-auto xl:row-auto xl:row-span-1" label="INSPECTOR" title={selected?.title ?? "Selecione uma evidência"} aside={selected && <div className="flex items-center gap-2"><LifecycleBadge state={selectedSignal?.lifecycle ?? "new"} /><SeverityBadge severity={selected.severity} /></div>} wrapTitle><div className="max-h-[42rem] overflow-auto">{selected && selectedSignal ? <FindingInspector key={`${selectedSignal.identity}:${selectedSignal.triage.updatedAt}`} scan={scan} finding={selected} signal={selectedSignal} onSaveTriage={onSaveTriage} /> : <EmptyState title="Inspector desarmado" description="Abra um finding na coluna central." />}</div></Panel>
+  </div>;
 }
 
-function SevCount({
-  label,
-  n,
-  tone,
-}: {
-  label: string;
-  n: number;
-  tone: "error" | "warning" | "info";
-}) {
-  const toneClass =
-    tone === "error"
-      ? "border-error/30 bg-error/10 text-error"
-      : tone === "warning"
-        ? "border-warning/30 bg-warning/10 text-warning"
-        : "border-info/30 bg-info/10 text-info";
-  return (
-    <div className={cx("rounded-xl border px-4 py-3.5", toneClass)}>
-      <div className="text-sm font-medium opacity-80">{label}</div>
-      <div className="mt-1 font-display text-2xl font-bold tabular-nums">{n}</div>
-    </div>
-  );
+const lifecycleOrder: FindingLifecycle[] = ["new", "regressed", "persisting", "fixed"];
+const triageLabel: Record<FindingTriageStatus, string> = { unreviewed: "não revisado", confirmed: "confirmado", accepted: "aceito", false_positive: "falso positivo" };
+
+function RegressionRail({ regression, active, onSelect }: { regression: RegressionSummary; active: FindingLifecycle | ""; onSelect: (state: FindingLifecycle) => void }) {
+  return <div className="grid border-t sm:grid-cols-2 lg:grid-cols-[minmax(14rem,1.4fr)_repeat(4,minmax(7rem,.65fr))]">
+    <div className="min-w-0 border-b border-r px-4 py-3 sm:col-span-2 lg:col-span-1 lg:border-b-0"><div className="bench-label">REPOSITORY BASELINE / {regression.baselineSource}</div>{regression.baseline ? <div className="mt-1 flex items-center gap-2"><span className="truncate text-xs font-semibold">{regression.baseline.displayName}</span><span className="shrink-0 font-mono text-[8px] text-primary">{shortId(regression.baseline.id)}</span></div> : <div className="mt-1 text-xs text-muted-foreground">Primeira observação deste repositório</div>}</div>
+    {lifecycleOrder.map((state) => <button key={state} type="button" aria-pressed={active === state} onClick={() => onSelect(state)} className={cx("border-b border-r px-4 py-3 text-left transition hover:bg-accent lg:border-b-0", active === state && "bg-accent shadow-[inset_0_-2px_0_var(--primary)]")}><span className={cx("font-mono text-[8px] uppercase tracking-wider", lifecycleTone[state])}>{lifecycleLabel[state]}</span><strong className="mt-1 block font-mono text-lg">{regression.counts[state]}</strong></button>)}
+  </div>;
 }
 
-function MetaRow({
-  icon,
-  label,
-  value,
-  mono,
-  onCopy,
-}: {
-  icon?: typeof Folder01Icon;
-  label: string;
-  value: string;
-  mono?: boolean;
-  onCopy?: () => void;
-}) {
-  return (
-    <div className="rounded-xl border border-base-300/70 bg-base-200/30 px-4 py-3">
-      <div className="mb-1.5 flex items-center justify-between gap-2">
-        <span className="flex items-center gap-1.5 text-sm text-base-content/55">
-          {icon && <HugeiconsIcon icon={icon} size={14} />}
-          {label}
-        </span>
-        {onCopy && (
-          <button type="button" className="btn btn-ghost btn-xs gap-1" onClick={onCopy}>
-            <HugeiconsIcon icon={Copy01Icon} size={13} />
-            copiar
-          </button>
-        )}
-      </div>
-      <div className={cx("break-all text-sm leading-relaxed", mono && "font-mono text-[13px]")}>
-        {value}
-      </div>
+function FilterGroup({ label, children }: { label: string; children: ReactNode }) {
+  return <div className="border-b p-2"><div className="bench-label px-2 pb-1 pt-1">{label}</div>{children}</div>;
+}
+
+function FilterButton({ label, count, active, onClick, tone }: { label: string; count: number; active: boolean; onClick: () => void; tone?: string }) {
+  return <button type="button" onClick={onClick} className={cx("flex w-full justify-between px-2 py-1.5 font-mono text-[8px] uppercase", active ? "bg-accent text-primary" : "text-muted-foreground hover:text-foreground")}><span className={tone}>{label}</span><span>{count}</span></button>;
+}
+
+function Telemetry({ scan, logs, logRef }: { scan: ScanRun; logs: string[]; logRef: React.RefObject<HTMLPreElement | null> }) { return <div className="grid gap-4 lg:grid-cols-[17rem_minmax(0,1fr)]"><Panel label="PROCESS" title="Runtime telemetry"><div className="grid gap-5 p-4"><Readout label="STATUS" value={scan.status.toUpperCase()} tone={scan.status === "running" ? "signal" : "good"} /><Readout label="STARTED" value={formatDate(scan.startedAt)} /><Readout label="PID" value={scan.pid ?? "—"} /><Readout label="PHASE" value={scan.progress?.phaseLabel ?? "—"} /></div></Panel><Panel label="STDOUT / EVENT STREAM" title="Motor local"><pre ref={logRef} className="h-[34rem] overflow-auto whitespace-pre-wrap bg-[#070908] p-4 font-mono text-[10px] leading-5 text-[#aab7ae]">{logs.length ? logs.join("\n") : scan.status === "running" ? "Aguardando eventos do processo…" : "O stream desta execução não está mais ativo."}</pre></Panel></div>; }
+function Profile({ scan }: { scan: ScanRun }) { const rows = [["scan id", scan.id], ["source", scan.source], ["repository", scan.repositoryPath ?? "—"], ["revision", scan.revision ?? "—"], ["scan dir", scan.scanDir], ["model", scan.model ?? "—"], ["effort", scan.effort ?? "—"], ["mode", scan.mode ?? "—"], ["started", formatDate(scan.startedAt)], ["completed", formatDate(scan.completedAt)]]; return <Panel label="MANIFEST" title="Execution profile"><div className="grid sm:grid-cols-2">{rows.map(([label, value]) => <div key={label} className="min-w-0 border-b p-4 sm:border-r"><div className="bench-label">{label}</div><div className="mt-2 break-all font-mono text-[10px]">{value}</div></div>)}</div></Panel>; }
+
+type InspectorView = "brief" | "flow" | "evidence" | "fix";
+type DataRecord = Record<string, unknown>;
+
+function FindingInspector({ scan, finding, signal, onSaveTriage }: { scan: ScanRun; finding: FindingDetail; signal: LifecycleFinding; onSaveTriage: (status: FindingTriageStatus, note: string) => Promise<void> }) {
+  const [view, setView] = useState<InspectorView>("brief");
+  const tabs: Array<[InspectorView, string, string]> = [
+    ["brief", "01", "Resumo"],
+    ["flow", "02", "Caminho"],
+    ["evidence", "03", `Evidências · ${Array.isArray(finding.codeEvidence) ? finding.codeEvidence.length : 0}`],
+    ["fix", "04", "Correção"],
+  ];
+
+  return <div>
+    <TriageConsole scan={scan} finding={finding} signal={signal} onSave={onSaveTriage} />
+    <div className="sticky top-0 z-10 flex overflow-x-auto border-b bg-card/95 backdrop-blur-sm">
+      {tabs.map(([id, code, label]) => <button key={id} type="button" onClick={() => setView(id)} className={cx("h-10 shrink-0 border-r px-3 font-mono text-[8px] uppercase tracking-wider", view === id ? "bg-accent text-primary" : "text-muted-foreground hover:text-foreground")}><span className="mr-2 opacity-55">{code}</span>{label}</button>)}
     </div>
-  );
+    {view === "brief" && <FindingBrief finding={finding} />}
+    {view === "flow" && <AttackPathPreview model={finding.attackPathModel} hrefForSelection={(laneId, nodeId) => attackPathHref({ scanId: scan.id, findingId: finding.findingId, evidenceScanId: signal.sourceScanId, laneId, nodeId })} />}
+    {view === "evidence" && <EvidenceStack value={finding.codeEvidence} locations={finding.locations} />}
+    {view === "fix" && <RemediationPlan finding={finding} />}
+  </div>;
+}
+
+function TriageConsole({ scan, finding, signal, onSave }: { scan: ScanRun; finding: FindingDetail; signal: LifecycleFinding; onSave: (status: FindingTriageStatus, note: string) => Promise<void> }) {
+  const [status, setStatus] = useState<FindingTriageStatus>(signal.triage.status);
+  const [note, setNote] = useState(signal.triage.note ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function save() { setBusy(true); setError(null); try { await onSave(status, note); } catch (err) { setError(err instanceof Error ? err.message : "Falha ao salvar decisão"); } finally { setBusy(false); } }
+  return <div className="border-b bg-primary/[.035] p-3">
+    <div className="flex flex-wrap items-center justify-between gap-2"><div className="flex items-center gap-2"><LifecycleBadge state={signal.lifecycle} /><span className="font-mono text-[8px] uppercase text-muted-foreground">{signal.lifecycle === "fixed" ? "evidência do baseline" : "evidência do canal atual"}</span></div><span className="font-mono text-[7px] uppercase text-muted-foreground">decision record</span></div>
+    <div className="mt-3 grid gap-2 sm:grid-cols-[10rem_minmax(0,1fr)_auto]">
+      <Select value={status} onValueChange={(value) => setStatus(value as FindingTriageStatus)}><SelectTrigger className="h-9 rounded-none font-mono text-[9px] uppercase"><SelectValue /></SelectTrigger><SelectContent className="rounded-none"><SelectItem value="unreviewed">Não revisado</SelectItem><SelectItem value="confirmed">Confirmado</SelectItem><SelectItem value="accepted">Risco aceito</SelectItem><SelectItem value="false_positive">Falso positivo</SelectItem></SelectContent></Select>
+      <Input value={note} onChange={(event) => setNote(event.target.value)} placeholder="Nota da decisão…" className="h-9 rounded-none text-[10px]" />
+      <Button type="button" size="sm" onClick={() => void save()} disabled={busy}>{busy ? "Salvando…" : "Salvar"}</Button>
+    </div>
+    <div className="mt-2 flex items-center justify-between gap-3"><span className={cx("font-mono text-[8px]", error ? "text-destructive" : "text-muted-foreground")}>{error ?? (signal.triage.updatedAt ? `última decisão · ${formatDate(signal.triage.updatedAt)}` : "nenhuma decisão registrada")}</span><Button asChild variant="ghost" size="sm"><Link to={rescanHref(scan, finding.primaryPath)}><HugeiconsIcon icon={RefreshIcon} size={11} />Rescan do escopo</Link></Button></div>
+  </div>;
+}
+
+function FindingBrief({ finding }: { finding: FindingDetail }) {
+  const rootCause = dataRecord(finding.rootCause);
+  const validation = dataRecord(finding.validation);
+  return <div>
+    <InspectorSection label="O QUE ACONTECE"><p className="text-[15px] leading-7 text-muted-foreground">{finding.summary ?? "Sem resumo disponível."}</p></InspectorSection>
+    <div className="grid border-b sm:grid-cols-2">
+      <MetaCell label="Categoria" value={finding.category ?? "Não classificada"} />
+      <MetaCell label="Confiança" value={finding.confidence ?? "Não informada"} />
+      <MetaCell label="Regra" value={finding.ruleId ?? "—"} mono />
+      <MetaCell label="Local principal" value={finding.primaryPath ?? "—"} mono />
+    </div>
+    <InspectorSection label="POR QUE ESTA SEVERIDADE"><Callout tone="risk">{finding.severityRationale ?? "A severidade não inclui uma justificativa detalhada."}</Callout></InspectorSection>
+    {textValue(rootCause?.summary) && <InspectorSection label="CAUSA RAIZ"><p className="text-xs leading-6 text-muted-foreground">{textValue(rootCause?.summary)}</p></InspectorSection>}
+    {textValue(validation?.summary) && <InspectorSection label="COMO FOI VALIDADO"><p className="text-xs leading-6 text-muted-foreground">{textValue(validation?.summary)}</p>{textValue(validation?.method) && <div className="mt-3 inline-flex border px-2 py-1 font-mono text-[8px] uppercase text-chart-2">{textValue(validation?.method)}</div>}</InspectorSection>}
+    {finding.confidenceRationale && <InspectorSection label="CONFIANÇA"><Callout tone="evidence">{finding.confidenceRationale}</Callout></InspectorSection>}
+  </div>;
+}
+
+function EvidenceStack({ value, locations }: { value: unknown; locations: unknown }) {
+  const evidence = Array.isArray(value) ? value.map(dataRecord).filter((item): item is DataRecord => Boolean(item)) : [];
+  const locationRows = Array.isArray(locations) ? locations.map(dataRecord).filter((item): item is DataRecord => Boolean(item)) : [];
+  if (!evidence.length) return <EmptyState title="Código não anexado" description="O finding não trouxe blocos de evidência estruturados." />;
+  return <div>
+    <div className="border-b px-4 py-3 text-xs leading-relaxed text-muted-foreground">Cada bloco marca o papel do código no fluxo. Abra somente o trecho que deseja revisar.</div>
+    {evidence.map((item, index) => <CodeEvidence key={textValue(item.id) ?? index} item={item} index={index} />)}
+    {locationRows.length > 0 && <InspectorSection label="TODAS AS LOCALIZAÇÕES"><div className="space-y-1.5">{locationRows.map((item, index) => <div key={`${textValue(item.path)}-${index}`} className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3 border-l border-border py-1 pl-3 font-mono text-[9px]"><span className="uppercase text-muted-foreground">{textValue(item.role) ?? "evidence"}</span><span className="break-all text-primary">{locationLabel(item)}</span></div>)}</div></InspectorSection>}
+  </div>;
+}
+
+function RemediationPlan({ finding }: { finding: FindingDetail }) {
+  const controls = textList(finding.preventiveControls);
+  const tests = textList(finding.remediationTests);
+  const validation = dataRecord(finding.validation);
+  const validationLimits = textList(validation?.limitations);
+  return <div>
+    <InspectorSection label="CORREÇÃO RECOMENDADA"><Callout tone="signal">{textValue(finding.remediation) ?? "O finding não inclui uma remediação textual."}</Callout></InspectorSection>
+    {controls.length > 0 && <InspectorSection label="CONTROLES PREVENTIVOS"><NumberedList items={controls} /></InspectorSection>}
+    {tests.length > 0 && <InspectorSection label="TESTES DE REGRESSÃO"><NumberedList items={tests} accent="evidence" /></InspectorSection>}
+    {validationLimits.length > 0 && <InspectorSection label="RESSALVAS DA VALIDAÇÃO"><BulletList items={validationLimits} /></InspectorSection>}
+  </div>;
+}
+
+function CodeEvidence({ item, index }: { item: DataRecord; index: number }) {
+  const code = textValue(item.code) ?? "";
+  const start = numberValue(item.startLine);
+  const role = textValue(item.role) ?? "evidence";
+  return <details className="group border-b" open={index === 0}>
+    <summary className="grid cursor-pointer list-none grid-cols-[2rem_minmax(0,1fr)_auto] items-start gap-3 px-4 py-3 hover:bg-accent/60">
+      <span className="font-mono text-[9px] text-primary">{String(index + 1).padStart(2, "0")}</span>
+      <span className="min-w-0"><span className="block font-mono text-[9px] uppercase tracking-wider text-muted-foreground">{role.replaceAll("_", " ")}</span><span className="mt-1 block break-all font-mono text-[10px] text-foreground">{locationLabel(item)}</span></span>
+      <span className="font-mono text-[10px] text-muted-foreground group-open:text-primary">＋</span>
+    </summary>
+    <div className="border-t bg-[#080b09]">
+      {textValue(item.explanation) && <p className="border-b px-4 py-3 text-xs leading-6 text-muted-foreground">{textValue(item.explanation)}</p>}
+      <pre className="max-w-full overflow-x-auto py-3 font-mono text-[10px] leading-5 text-[#c8d0ca] [tab-size:2]"><code className="block min-w-max">{code.split("\n").map((line, lineIndex) => <span key={lineIndex} className="grid grid-cols-[3.25rem_minmax(0,1fr)]"><span className="select-none border-r border-border/70 pr-3 text-right text-muted-foreground/45">{start != null ? start + lineIndex : lineIndex + 1}</span><span className="px-3">{line || " "}</span></span>)}</code></pre>
+    </div>
+  </details>;
+}
+
+function MetaCell({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) { return <div className="min-w-0 border-b border-r p-4"><div className="bench-label">{label}</div><div className={cx("mt-2 break-words text-xs", mono && "break-all font-mono text-[10px] text-primary")}>{value}</div></div>; }
+function Callout({ children, tone }: { children: React.ReactNode; tone: "risk" | "evidence" | "signal" }) { return <div className={cx("border-l-2 py-1 pl-3 text-xs leading-6", tone === "risk" && "border-destructive text-foreground", tone === "evidence" && "border-chart-2 text-muted-foreground", tone === "signal" && "border-primary text-foreground")}>{children}</div>; }
+function NumberedList({ items, accent = "signal" }: { items: string[]; accent?: "signal" | "evidence" }) { return <ol className="space-y-3">{items.map((item, index) => <li key={`${item}-${index}`} className="grid grid-cols-[2rem_minmax(0,1fr)] gap-3 text-xs leading-6"><span className={cx("flex size-6 items-center justify-center border font-mono text-[8px]", accent === "signal" ? "border-primary/45 text-primary" : "border-chart-2/45 text-chart-2")}>{String(index + 1).padStart(2, "0")}</span><span className="text-muted-foreground">{item}</span></li>)}</ol>; }
+
+function dataRecord(value: unknown): DataRecord | null { return value != null && typeof value === "object" && !Array.isArray(value) ? value as DataRecord : null; }
+function textValue(value: unknown): string | null { return typeof value === "string" && value.trim() ? value.trim() : null; }
+function numberValue(value: unknown): number | null { return typeof value === "number" && Number.isFinite(value) ? value : null; }
+function textList(value: unknown): string[] { return Array.isArray(value) ? value.map(textValue).filter((item): item is string => Boolean(item)) : []; }
+function locationLabel(item: DataRecord): string { const path = textValue(item.path) ?? "unknown"; const start = numberValue(item.startLine); const end = numberValue(item.endLine); if (start == null) return path; return `${path}:${start}${end != null && end !== start ? `–${end}` : ""}`; }
+function rescanHref(scan: ScanRun, findingPath?: string | null): string {
+  const params = new URLSearchParams({ from: scan.id });
+  if (scan.repositoryPath) params.set("repositoryPath", scan.repositoryPath);
+  if (scan.model) params.set("model", scan.model);
+  if (scan.effort) params.set("effort", scan.effort);
+  if (scan.mode === "standard" || scan.mode === "deep") params.set("mode", scan.mode);
+  const scope = rescanScope(scan.repositoryPath, findingPath);
+  if (scope) params.set("paths", scope);
+  return `/scans/new?${params.toString()}`;
+}
+function rescanScope(repositoryPath: string | null, findingPath?: string | null): string | null {
+  if (!findingPath) return null;
+  let value = findingPath.replace(/:\d+(?::\d+)?(?:-\d+)?$/, "").replaceAll("\\", "/");
+  const repository = repositoryPath?.replaceAll("\\", "/").replace(/\/$/, "");
+  if (repository && value.startsWith(`${repository}/`)) value = value.slice(repository.length + 1);
+  return value.replace(/^\.\//, "") || null;
 }

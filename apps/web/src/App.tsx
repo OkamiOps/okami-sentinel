@@ -1,207 +1,114 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { Link, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  Activity01Icon,
-  Analytics01Icon,
-  DashboardSquare01Icon,
-  Menu01Icon,
-  Moon02Icon,
-  PlusSignIcon,
-  SecurityCheckIcon,
-  Settings01Icon,
-  Shield01Icon,
-  Sun03Icon,
-} from "@hugeicons/core-free-icons";
-import { Link, NavLink, Route, Routes } from "react-router-dom";
+import { Activity01Icon, Analytics01Icon, ArrowRight01Icon, Menu01Icon, PlusSignIcon, RefreshIcon, SecurityCheckIcon } from "@hugeicons/core-free-icons";
 import type { ScanRun } from "@csb/shared";
 import { api } from "./api";
-import { cx, LiveDuration } from "./components/ui";
+import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuShortcut, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { LiveDuration, cx } from "./components/ui";
 import { formatUsd } from "./format";
 import { ActivityPage } from "./pages/ActivityPage";
+import { AttackPathPage } from "./pages/AttackPathPage";
 import { ComparePage } from "./pages/ComparePage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { NewScanPage } from "./pages/NewScanPage";
 import { ScanDetailPage } from "./pages/ScanDetailPage";
 import { ScansPage } from "./pages/ScansPage";
 import { SettingsPage } from "./pages/SettingsPage";
-import { useTheme } from "./theme";
 
-const navGroups = [
-  {
-    label: "Operar",
-    items: [
-      { to: "/", label: "Dashboard", icon: DashboardSquare01Icon, end: true },
-      { to: "/activity", label: "Atividade", icon: Activity01Icon, end: true },
-      { to: "/scans", label: "Scans", icon: Shield01Icon, end: true },
-      { to: "/scans/new", label: "Novo scan", icon: PlusSignIcon, end: true },
-    ],
-  },
-  {
-    label: "Analisar",
-    items: [{ to: "/compare", label: "Comparar", icon: Analytics01Icon }],
-  },
-  {
-    label: "Sistema",
-    items: [{ to: "/settings", label: "Configurações", icon: Settings01Icon }],
-  },
-] as const;
+const nav = [["/", "Visão"], ["/scans", "Runs"], ["/scans/new", "Operar"], ["/compare", "Comparar"], ["/activity", "Atividade"], ["/settings", "Sistema"]] as const;
+
+function NavStrip({ onNavigate }: { onNavigate?: () => void }) {
+  const { pathname } = useLocation();
+  return <nav className="flex flex-col md:flex-row md:items-stretch">{nav.map(([to, label], index) => {
+    const isActive = to === "/scans" ? pathname === "/scans" || (pathname.startsWith("/scans/") && pathname !== "/scans/new") : pathname === to;
+    return <Link key={to} to={to} aria-current={isActive ? "page" : undefined} onClick={onNavigate} className={cx("group relative flex h-11 items-center gap-3 border-b border-border px-4 font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:border-b-0 md:border-r", isActive && "bg-accent text-primary")}><span className="text-[8px] opacity-45">0{index + 1}</span>{label}<span className={cx("absolute inset-x-0 bottom-0 h-px bg-primary transition-transform", isActive ? "scale-x-100" : "scale-x-0 group-hover:scale-x-100")} /></Link>;
+  })}</nav>;
+}
 
 export function App() {
-  const { isDark, toggle } = useTheme();
-  const [activeScans, setActiveScans] = useState<ScanRun[]>([]);
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [active, setActive] = useState<ScanRun[]>([]);
+  const [launcherOpen, setLauncherOpen] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const loadActive = useCallback(async () => { const { scans } = await api.listScans(); setActive(scans.filter((scan) => scan.status === "running")); }, []);
+  useEffect(() => { let dead = false; const load = () => void api.listScans().then(({ scans }) => { if (!dead) setActive(scans.filter((s) => s.status === "running")); }).catch(() => undefined); load(); const id = window.setInterval(load, 4000); return () => { dead = true; window.clearInterval(id); }; }, []);
+  useEffect(() => { const onKeyDown = (event: KeyboardEvent) => { if (!(event.metaKey || event.ctrlKey)) return; if (event.key.toLowerCase() === "k") { event.preventDefault(); setLauncherOpen((open) => !open); } if (event.key === "Enter") { event.preventDefault(); navigate("/scans/new"); } }; window.addEventListener("keydown", onKeyDown); return () => window.removeEventListener("keydown", onKeyDown); }, [navigate]);
+  async function reindex() { setSyncing(true); try { await api.ingest(); await loadActive(); } finally { setSyncing(false); } }
+  const current = active[0];
 
-  useEffect(() => {
-    let cancelled = false;
-    async function poll() {
-      try {
-        const { scans } = await api.listScans();
-        if (cancelled) return;
-        setActiveScans(scans.filter((s) => s.status === "running"));
-      } catch {
-        // ignore
-      }
-    }
-    void poll();
-    const id = window.setInterval(() => void poll(), 4000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, []);
-
-  return (
-    <div className="drawer lg:drawer-open min-h-screen">
-      <input id="app-drawer" type="checkbox" className="drawer-toggle" />
-
-      <div className="drawer-content flex min-h-screen flex-col">
-        <header className="sticky top-0 z-30 border-b border-base-300/70 bg-base-100/85 backdrop-blur-md">
-          <div className="navbar min-h-14 px-3 sm:px-5">
-            <div className="flex-none lg:hidden">
-              <label htmlFor="app-drawer" className="btn btn-square btn-ghost btn-sm" aria-label="Menu">
-                <HugeiconsIcon icon={Menu01Icon} size={18} />
-              </label>
-            </div>
-
-            <div className="flex flex-1 items-center gap-3">
-              <div className="hidden font-display text-sm font-semibold tracking-tight lg:block">
-                Console
-              </div>
-              {activeScans.length > 0 ? (
-                <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                  {activeScans.slice(0, 3).map((s) => (
-                    <Link
-                      key={s.id}
-                      to={`/scans/${s.id}`}
-                      className="btn btn-ghost btn-sm h-auto min-h-0 gap-2 rounded-full border border-primary/30 bg-primary/10 px-3 py-1.5 text-primary hover:bg-primary/15"
-                    >
-                      <span className="live-dot" />
-                      <span className="max-w-[8rem] truncate font-medium">{s.displayName}</span>
-                      <LiveDuration
-                        startedAt={s.startedAt}
-                        status={s.status}
-                        durationMs={s.durationMs}
-                        className="text-xs"
-                        showDot={false}
-                      />
-                      <span className="font-mono text-xs opacity-80">
-                        {formatUsd(s.cost?.estimatedUsd)}
-                      </span>
-                    </Link>
-                  ))}
-                  {activeScans.length > 3 && (
-                    <Link
-                      to="/activity"
-                      className="btn btn-ghost btn-xs rounded-full border border-primary/25 text-primary"
-                    >
-                      +{activeScans.length - 3}
-                    </Link>
-                  )}
-                </div>
-              ) : (
-                <span className="hidden text-xs text-base-content/45 sm:inline">
-                  Nenhum scan em execução
-                </span>
-              )}
-            </div>
-
-            <div className="flex items-center gap-1.5">
-              <Link to="/scans/new" className="btn btn-primary btn-sm gap-1.5">
-                <HugeiconsIcon icon={PlusSignIcon} size={14} />
-                <span className="hidden sm:inline">Novo scan</span>
-              </Link>
-              <button
-                type="button"
-                className="btn btn-ghost btn-square btn-sm"
-                onClick={toggle}
-                aria-label={isDark ? "Ativar modo claro" : "Ativar modo escuro"}
-                title={isDark ? "Modo claro" : "Modo escuro"}
-              >
-                <HugeiconsIcon icon={isDark ? Sun03Icon : Moon02Icon} size={17} />
-              </button>
-            </div>
-          </div>
-        </header>
-
-        <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6 lg:px-8">
-          <Routes>
-            <Route path="/" element={<DashboardPage />} />
-            <Route path="/activity" element={<ActivityPage />} />
-            <Route path="/scans" element={<ScansPage />} />
-            <Route path="/scans/new" element={<NewScanPage />} />
-            <Route path="/scans/:id" element={<ScanDetailPage />} />
-            <Route path="/compare" element={<ComparePage />} />
-            <Route path="/settings" element={<SettingsPage />} />
-          </Routes>
-        </main>
+  return <div className="min-h-screen overflow-x-hidden pb-20">
+    <header className="sticky top-0 z-40 border-b border-border bg-background/95 backdrop-blur-md">
+      <div className="flex h-12 items-stretch">
+        <Link to="/" className="flex min-w-52 items-center gap-2 border-r px-4">
+          <span className="flex size-6 items-center justify-center border border-primary text-primary"><HugeiconsIcon icon={SecurityCheckIcon} size={13} /></span>
+          <span className="font-heading text-xs font-bold tracking-[-0.01em]">CSB</span><span className="font-mono text-[9px] text-muted-foreground">/ LOCAL BENCH</span>
+        </Link>
+        <div className="hidden flex-1 md:block"><NavStrip /></div>
+        <div className="ml-auto flex items-stretch">
+          <div className="hidden items-center gap-2 border-l px-4 font-mono text-[9px] text-muted-foreground lg:flex"><span className={cx("size-1.5 rounded-full", current ? "bg-primary" : "bg-chart-2")} />ENGINE {current ? `${active.length} LIVE` : "READY"}</div>
+          <Button asChild className="h-full border-y-0 border-r-0 px-4"><Link to="/scans/new"><HugeiconsIcon icon={PlusSignIcon} size={13} />LAUNCH</Link></Button>
+          <Sheet>
+            <SheetTrigger asChild><Button variant="ghost" size="icon" className="h-full border-y-0 border-r-0 md:hidden" aria-label="Abrir módulos"><HugeiconsIcon icon={Menu01Icon} size={16} /></Button></SheetTrigger>
+            <SheetContent side="right" className="w-72 border-border bg-background p-0"><SheetTitle className="border-b px-4 py-4 font-mono text-xs">CSB / MODULE INDEX</SheetTitle><NavStrip /></SheetContent>
+          </Sheet>
+        </div>
       </div>
-
-      <div className="drawer-side z-40">
-        <label htmlFor="app-drawer" className="drawer-overlay" aria-label="Fechar menu" />
-        <aside className="flex min-h-full w-[16.5rem] flex-col border-r border-base-300/70 bg-base-100">
-          <div className="border-b border-base-300/70 px-5 py-5">
-            <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-xl bg-primary text-primary-content">
-              <HugeiconsIcon icon={SecurityCheckIcon} size={18} strokeWidth={1.8} />
-            </div>
-            <div className="font-display text-[1.05rem] font-bold leading-tight tracking-tight">
-              Codex Security
-            </div>
-            <div className="mt-0.5 text-xs text-base-content/50">Benchmark Console</div>
-          </div>
-
-          <nav className="flex-1 space-y-5 overflow-y-auto px-3 py-4">
-            {navGroups.map((group) => (
-              <div key={group.label}>
-                <div className="mb-1.5 px-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-base-content/40">
-                  {group.label}
-                </div>
-                <ul className="menu menu-sm gap-0.5 p-0">
-                  {group.items.map((link) => (
-                    <li key={link.to}>
-                      <NavLink
-                        to={link.to}
-                        end={"end" in link ? link.end : false}
-                        className={({ isActive }) =>
-                          cx(
-                            "rounded-lg",
-                            isActive && "bg-primary/12 font-semibold text-primary",
-                          )
-                        }
-                      >
-                        <HugeiconsIcon icon={link.icon} size={17} strokeWidth={1.8} />
-                        {link.label}
-                      </NavLink>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
-          </nav>
-
-          <div className="border-t border-base-300/70 px-4 py-3 font-mono text-[10px] text-base-content/40">
-            local · 127.0.0.1
-          </div>
-        </aside>
+      <div className="flex h-6 min-w-0 items-center justify-end border-t border-border/60 px-4 font-mono text-[8px] uppercase tracking-[0.13em] text-muted-foreground sm:justify-between">
+        <span className="hidden shrink-0 sm:inline">security benchmark instrumentation</span>
+        <span className="min-w-0 truncate text-right">{location.pathname === "/" ? "/overview" : location.pathname}</span>
       </div>
+    </header>
+
+    <main className="mx-auto w-full max-w-[112rem] px-3 py-5 sm:px-5 lg:px-7">
+      <Routes>
+        <Route path="/" element={<DashboardPage />} />
+        <Route path="/activity" element={<ActivityPage />} />
+        <Route path="/scans" element={<ScansPage />} />
+        <Route path="/scans/new" element={<NewScanPage />} />
+        <Route path="/scans/:id/findings/:findingId/path" element={<AttackPathPage />} />
+        <Route path="/scans/:id" element={<ScanDetailPage />} />
+        <Route path="/compare" element={<ComparePage />} />
+        <Route path="/settings" element={<SettingsPage />} />
+      </Routes>
+    </main>
+
+    <CommandDock current={current} open={launcherOpen} onOpenChange={setLauncherOpen} syncing={syncing} onReindex={() => void reindex()} onNavigate={navigate} />
+  </div>;
+}
+
+function CommandDock({ current, open, onOpenChange, syncing, onReindex, onNavigate }: { current?: ScanRun; open: boolean; onOpenChange: (open: boolean) => void; syncing: boolean; onReindex: () => void; onNavigate: (to: string) => void }) {
+  return <div className="fixed inset-x-0 bottom-3 z-40 mx-auto w-[calc(100%-1.5rem)] max-w-5xl border border-primary/40 bg-[#0e1210]/96 shadow-[0_18px_60px_rgba(0,0,0,.55)] backdrop-blur-md">
+    <div className="flex h-12 items-stretch">
+      <DropdownMenu open={open} onOpenChange={onOpenChange}>
+        <DropdownMenuTrigger asChild><button type="button" className="group flex shrink-0 items-center gap-2 border-r border-primary/30 px-3 font-mono text-[9px] uppercase tracking-wider text-primary transition hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary" aria-label="Abrir ações rápidas"><span>ações</span><span className="hidden border border-primary/25 px-1 py-0.5 text-[7px] text-muted-foreground sm:inline">⌘K</span></button></DropdownMenuTrigger>
+        <DropdownMenuContent side="top" align="start" sideOffset={8} className="w-72 rounded-none border border-primary/35 bg-[#0e1210] p-1.5 shadow-[0_18px_60px_rgba(0,0,0,.65)] ring-0">
+          <DropdownMenuLabel className="px-2 py-2 font-mono text-[8px] uppercase tracking-[.14em] text-primary">Quick actions / local bench</DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          <DockMenuItem icon={PlusSignIcon} label="Novo scan" detail="Abrir launch sequencer" shortcut="⌘↵" onSelect={() => onNavigate("/scans/new")} />
+          <DockMenuItem icon={Activity01Icon} label="Runs" detail="Abrir ledger indexado" onSelect={() => onNavigate("/scans")} />
+          <DockMenuItem icon={Analytics01Icon} label="Comparar" detail="Montar canais lado a lado" onSelect={() => onNavigate("/compare")} />
+          <DropdownMenuSeparator />
+          <DockMenuItem icon={RefreshIcon} label={syncing ? "Reindexando…" : "Reindexar evidências"} detail="Atualizar a leitura da bancada" disabled={syncing} onSelect={onReindex} />
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      {current ? <Link to={`/scans/${current.id}`} className="flex min-w-0 flex-1 items-center gap-2 px-3 text-xs transition hover:bg-accent"><span className="live-dot shrink-0 text-primary" /><span className="hidden shrink-0 font-mono text-[8px] uppercase text-primary sm:inline">live</span><span className="min-w-0 flex-1 truncate">{current.displayName}</span><LiveDuration startedAt={current.startedAt} status={current.status} showDot={false} /><span className="hidden font-mono text-[9px] text-primary md:block">{formatUsd(current.cost?.estimatedUsd)}</span><HugeiconsIcon icon={ArrowRight01Icon} size={12} className="shrink-0" /></Link> : <div className="flex min-w-0 flex-1 items-center gap-2 px-3" aria-label="Motor pronto, nenhum scan ativo"><span className="size-1.5 shrink-0 rounded-full bg-chart-2" /><span className="font-mono text-[8px] uppercase tracking-wider text-chart-2">engine ready</span><span className="hidden truncate text-[10px] text-muted-foreground sm:block">Nenhum scan consumindo recursos</span></div>}
+
+      <DockLink to="/scans" label="Runs" icon={Activity01Icon} className="hidden sm:flex" />
+      <DockLink to="/compare" label="Comparar" icon={Analytics01Icon} className="hidden md:flex" />
+      <Link to="/scans/new" className="flex shrink-0 items-center gap-2 border-l border-primary/30 bg-primary px-3 font-mono text-[9px] font-semibold uppercase tracking-wider text-primary-foreground transition hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-background"><HugeiconsIcon icon={PlusSignIcon} size={12} /><span className="hidden lg:inline">Novo scan</span><span className="hidden border border-primary-foreground/25 px-1 py-0.5 text-[7px] xl:inline">⌘↵</span></Link>
     </div>
-  );
+  </div>;
+}
+
+function DockMenuItem({ icon, label, detail, shortcut, disabled, onSelect }: { icon: Parameters<typeof HugeiconsIcon>[0]["icon"]; label: string; detail: string; shortcut?: string; disabled?: boolean; onSelect: () => void }) {
+  return <DropdownMenuItem disabled={disabled} onSelect={onSelect} className="rounded-none px-2 py-2.5 focus:bg-primary/10"><HugeiconsIcon icon={icon} size={13} className="text-primary" /><span className="ml-1 min-w-0"><span className="block text-[11px] font-medium">{label}</span><span className="block text-[9px] text-muted-foreground">{detail}</span></span>{shortcut && <DropdownMenuShortcut className="font-mono text-[8px]">{shortcut}</DropdownMenuShortcut>}</DropdownMenuItem>;
+}
+
+function DockLink({ to, label, icon, className }: { to: string; label: string; icon: Parameters<typeof HugeiconsIcon>[0]["icon"]; className?: string }) {
+  return <Link to={to} className={cx("shrink-0 items-center gap-2 border-l px-3 font-mono text-[8px] uppercase tracking-wider text-muted-foreground transition hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring", className)}><HugeiconsIcon icon={icon} size={11} />{label}</Link>;
 }

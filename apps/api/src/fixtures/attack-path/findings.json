@@ -1,0 +1,78 @@
+{
+  "documentType": "codex-security.findings",
+  "schemaVersion": "1",
+  "findings": [
+    {
+      "findingId": "fixture-stored-xss",
+      "occurrenceId": "fixture-occurrence-1",
+      "title": "Stored script reaches report writer",
+      "summary": "Tenant-controlled markup reaches document.write.",
+      "severity": {
+        "level": "high",
+        "rationale": "The sink executes with administrator authority."
+      },
+      "confidence": {
+        "level": "high",
+        "rationale": "The source-to-sink trace is complete."
+      },
+      "ruleId": "xss.report",
+      "locations": [
+        {
+          "path": "src/export.ts",
+          "role": "primary"
+        }
+      ],
+      "attackPath": {
+        "evidenceRefs": ["source-1", "sink-2"],
+        "dataflow": {
+          "summary": "Writable tenant markup reaches the browser writer.",
+          "outcome": "Same-origin script execution"
+        },
+        "reachability": {
+          "preconditions": "An administrator opens the generated report."
+        },
+        "impact": {
+          "level": "high",
+          "why": "The payload runs in an authenticated origin."
+        },
+        "likelihood": {
+          "level": "high",
+          "why": "The normal export flow reaches the sink."
+        },
+        "limitations": ["Victim interaction is required."]
+      },
+      "codeEvidence": [
+        {
+          "id": "source-1",
+          "role": "source",
+          "label": "Writable profile field",
+          "path": "src/profile.ts",
+          "startLine": 14,
+          "endLine": 18,
+          "code": "await saveProfile(input);",
+          "language": "typescript",
+          "explanation": "A tenant controls the stored value."
+        },
+        {
+          "id": "sink-2",
+          "role": "sink",
+          "label": "Report document writer",
+          "path": "src/export.ts",
+          "startLine": 88,
+          "endLine": 88,
+          "code": "document.write(reportHtml);",
+          "language": "typescript",
+          "explanation": "The browser interprets the generated markup."
+        }
+      ],
+      "validation": {
+        "method": "source/sink trace",
+        "summary": "Validated through static dataflow analysis."
+      },
+      "taxonomy": {
+        "category": "Stored cross-site scripting",
+        "cwe": ["CWE-79"]
+      }
+    }
+  ]
+}

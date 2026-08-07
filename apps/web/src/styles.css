@@ -1,209 +1,160 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/manrope";
+
+@custom-variant dark (&:is(.dark *));
+
 @plugin "daisyui" {
-  themes: ember --default, ember-light;
+  themes: bench --default;
 }
 
 @plugin "daisyui/theme" {
-  name: "ember";
+  name: "bench";
   default: true;
   prefersdark: true;
   color-scheme: dark;
-
-  --color-base-100: oklch(18% 0.012 255);
-  --color-base-200: oklch(14% 0.01 255);
-  --color-base-300: oklch(24% 0.014 255);
-  --color-base-content: oklch(96% 0.008 95);
-
-  --color-primary: oklch(70% 0.17 42);
-  --color-primary-content: oklch(16% 0.03 42);
-
-  --color-secondary: oklch(68% 0.1 230);
-  --color-secondary-content: oklch(16% 0.02 230);
-
-  --color-accent: oklch(72% 0.13 155);
-  --color-accent-content: oklch(16% 0.03 155);
-
-  --color-neutral: oklch(28% 0.014 255);
-  --color-neutral-content: oklch(94% 0.008 95);
-
-  --color-info: oklch(70% 0.11 240);
-  --color-info-content: oklch(16% 0.03 240);
-  --color-success: oklch(72% 0.13 155);
-  --color-success-content: oklch(16% 0.03 155);
-  --color-warning: oklch(80% 0.13 80);
-  --color-warning-content: oklch(22% 0.04 80);
-  --color-error: oklch(66% 0.18 25);
-  --color-error-content: oklch(98% 0.01 25);
-
-  --radius-selector: 0.7rem;
-  --radius-field: 0.6rem;
-  --radius-box: 0.9rem;
+  --color-base-100: #101412;
+  --color-base-200: #0a0d0c;
+  --color-base-300: #2b332f;
+  --color-base-content: #edf0eb;
+  --color-primary: #e8a15e;
+  --color-primary-content: #130e09;
+  --color-secondary: #70cdbd;
+  --color-secondary-content: #071310;
+  --color-accent: #d6bd76;
+  --color-accent-content: #171209;
+  --color-neutral: #171c1a;
+  --color-neutral-content: #d6dbd5;
+  --color-info: #73aeca;
+  --color-success: #70cdbd;
+  --color-warning: #d6bd76;
+  --color-error: #ed6a62;
+  --radius-selector: 0.15rem;
+  --radius-field: 0.15rem;
+  --radius-box: 0.15rem;
   --border: 1px;
-  --depth: 1;
+  --depth: 0;
   --noise: 0;
 }
 
-@plugin "daisyui/theme" {
-  name: "ember-light";
-  color-scheme: light;
-
-  --color-base-100: oklch(99% 0.004 95);
-  --color-base-200: oklch(96% 0.006 95);
-  --color-base-300: oklch(90% 0.01 95);
-  --color-base-content: oklch(22% 0.02 255);
-
-  --color-primary: oklch(58% 0.17 42);
-  --color-primary-content: oklch(99% 0.01 95);
-
-  --color-secondary: oklch(48% 0.1 230);
-  --color-secondary-content: oklch(99% 0.01 95);
-
-  --color-accent: oklch(52% 0.12 155);
-  --color-accent-content: oklch(99% 0.01 95);
-
-  --color-neutral: oklch(32% 0.02 255);
-  --color-neutral-content: oklch(98% 0.004 95);
-
-  --color-info: oklch(55% 0.12 240);
-  --color-info-content: oklch(99% 0.01 95);
-  --color-success: oklch(52% 0.12 155);
-  --color-success-content: oklch(99% 0.01 95);
-  --color-warning: oklch(70% 0.14 75);
-  --color-warning-content: oklch(22% 0.04 75);
-  --color-error: oklch(55% 0.18 25);
-  --color-error-content: oklch(99% 0.01 95);
-
-  --radius-selector: 0.7rem;
-  --radius-field: 0.6rem;
-  --radius-box: 0.9rem;
-  --border: 1px;
-  --depth: 1;
-  --noise: 0;
+@theme inline {
+  --font-heading: "Manrope Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: 0.1rem;
+  --radius-md: 0.15rem;
+  --radius-lg: 0.2rem;
+  --radius-xl: 0.25rem;
 }
 
-@theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --font-display: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+:root,
+.dark {
+  --background: #090c0b;
+  --foreground: #edf0eb;
+  --card: #101412;
+  --card-foreground: #edf0eb;
+  --popover: #151a18;
+  --popover-foreground: #edf0eb;
+  --primary: #e8a15e;
+  --primary-foreground: #130e09;
+  --secondary: #17201d;
+  --secondary-foreground: #dfe5df;
+  --muted: #171c1a;
+  --muted-foreground: #8d9891;
+  --accent: #1c2521;
+  --accent-foreground: #edf0eb;
+  --destructive: #ed6a62;
+  --border: #2b332f;
+  --input: #36403b;
+  --ring: #e8a15e;
+  --chart-1: #e8a15e;
+  --chart-2: #70cdbd;
+  --chart-3: #d6bd76;
+  --chart-4: #ed6a62;
+  --chart-5: #73aeca;
+  --radius: 0.15rem;
 }
 
 @layer base {
-  html,
-  body,
-  #root {
-    min-height: 100%;
-  }
-
+  * { @apply border-border outline-ring/50; }
+  html, body, #root { min-height: 100%; }
+  html { background: var(--background); }
   body {
-    @apply bg-base-200 text-base-content font-sans antialiased;
+    @apply bg-background font-sans text-foreground antialiased;
+    overflow-x: hidden;
+    font-feature-settings: "ss02", "ss03", "cv11";
     background-image:
-      radial-gradient(ellipse 55% 40% at 0% 0%, color-mix(in oklab, var(--color-primary) 14%, transparent), transparent 55%),
-      radial-gradient(ellipse 40% 28% at 100% 0%, color-mix(in oklab, var(--color-secondary) 10%, transparent), transparent 50%);
-    background-attachment: fixed;
-    /* Prefer readable text; avoid washed-out grey body copy */
-    -webkit-font-smoothing: antialiased;
+      linear-gradient(color-mix(in srgb, var(--border) 14%, transparent) 1px, transparent 1px),
+      linear-gradient(90deg, color-mix(in srgb, var(--border) 10%, transparent) 1px, transparent 1px);
+    background-size: 48px 48px;
   }
-
-  /* Dense data UIs: stronger default contrast for secondary copy */
-  .text-muted {
-    color: color-mix(in oklab, var(--color-base-content) 62%, transparent);
-  }
-
-  [data-theme="ember-light"] body,
-  html[data-theme="ember-light"] body {
-    background-image:
-      radial-gradient(ellipse 55% 40% at 0% 0%, color-mix(in oklab, var(--color-primary) 8%, transparent), transparent 55%),
-      radial-gradient(ellipse 40% 28% at 100% 0%, color-mix(in oklab, var(--color-secondary) 6%, transparent), transparent 50%);
-  }
-
-  ::selection {
-    background: color-mix(in oklab, var(--color-primary) 35%, transparent);
-  }
+  button, a { -webkit-tap-highlight-color: transparent; }
+  :focus-visible { outline: 1px solid var(--ring); outline-offset: 2px; }
+  ::selection { background: color-mix(in srgb, var(--primary) 38%, transparent); }
 }
 
-@layer utilities {
-  .font-display {
-    font-family: var(--font-display);
-  }
-
-  .hud-frame {
-    position: relative;
-  }
-
-  .hud-frame::before,
-  .hud-frame::after {
-    content: "";
-    position: absolute;
-    width: 11px;
-    height: 11px;
-    border: 1.5px solid color-mix(in oklab, var(--color-primary) 65%, transparent);
-    pointer-events: none;
-    z-index: 1;
-  }
-
-  .hud-frame::before {
-    top: 8px;
-    left: 8px;
-    border-right: 0;
-    border-bottom: 0;
-  }
-
-  .hud-frame::after {
-    right: 8px;
-    bottom: 8px;
-    border-left: 0;
-    border-top: 0;
-  }
-
-  .live-dot {
-    width: 0.45rem;
-    height: 0.45rem;
-    border-radius: 999px;
-    background: currentColor;
-    box-shadow: 0 0 0 0 currentColor;
-    animation: livePulse 1.6s ease-out infinite;
-  }
-
-  .progress-pulse {
-    background-image: linear-gradient(
-      90deg,
-      transparent,
-      color-mix(in oklab, white 22%, transparent),
-      transparent
-    );
-    background-size: 200% 100%;
-    animation: progressSheen 1.8s linear infinite;
-  }
+.bench-panel {
+  background: color-mix(in srgb, var(--card) 96%, transparent);
+  border: 1px solid var(--border);
 }
 
-@keyframes livePulse {
-  0% {
-    box-shadow: 0 0 0 0 color-mix(in oklab, currentColor 55%, transparent);
-  }
-  70% {
-    box-shadow: 0 0 0 8px transparent;
-  }
-  100% {
-    box-shadow: 0 0 0 0 transparent;
-  }
+.bench-label {
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
 }
 
-@keyframes progressSheen {
-  0% {
-    background-position: 100% 0;
-  }
-  100% {
-    background-position: -100% 0;
-  }
+.bench-corners { position: relative; }
+.bench-corners::before,
+.bench-corners::after {
+  content: "";
+  position: absolute;
+  z-index: 2;
+  width: 7px;
+  height: 7px;
+  pointer-events: none;
 }
+.bench-corners::before { top: -1px; left: -1px; border-top: 1px solid var(--primary); border-left: 1px solid var(--primary); }
+.bench-corners::after { right: -1px; bottom: -1px; border-right: 1px solid var(--primary); border-bottom: 1px solid var(--primary); }
+
+.scanline {
+  background-image: repeating-linear-gradient(0deg, transparent 0, transparent 3px, rgb(255 255 255 / 0.012) 4px);
+}
+
+.recharts-cartesian-grid line { stroke: color-mix(in srgb, var(--foreground) 8%, transparent); }
+.recharts-text { fill: var(--muted-foreground); font-family: var(--font-mono); font-size: 10px; }
+.recharts-default-tooltip { border: 1px solid var(--border) !important; border-radius: 2px !important; background: var(--popover) !important; box-shadow: 0 16px 40px rgb(0 0 0 / .35) !important; }
+
+.live-dot { width: .42rem; height: .42rem; border-radius: 999px; background: currentColor; animation: livePulse 1.7s ease-out infinite; }
+@keyframes livePulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 60%, transparent); } 75% { box-shadow: 0 0 0 7px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
 
 @media (prefers-reduced-motion: reduce) {
-  .live-dot {
-    animation: none;
-  }
-
-  .progress-pulse {
-    animation: none;
-    background-image: none;
-  }
+  *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
 }

@@ -3,11 +3,14 @@ import type {
   CompareResult,
   FindingDetail,
   FindingSummary,
+  FindingTriage,
   FsListResponse,
   HealthResponse,
   MetricsSummary,
+  RegressionSummary,
   ScanRun,
   StartScanRequest,
+  UpdateFindingTriageRequest,
 } from "@csb/shared";
 
 const BASE = "/api";
@@ -38,6 +41,15 @@ export const api = {
     request<{ scan: ScanRun; findings: FindingSummary[] }>(`/scans/${id}`),
   getFinding: (scanId: string, findingId: string) =>
     request<{ finding: FindingDetail }>(`/scans/${scanId}/findings/${encodeURIComponent(findingId)}`),
+  regression: (scanId: string) =>
+    request<RegressionSummary>(`/scans/${scanId}/regression`),
+  setBaseline: (scanId: string) =>
+    request<RegressionSummary>(`/scans/${scanId}/baseline`, { method: "POST" }),
+  updateTriage: (scanId: string, findingId: string, body: UpdateFindingTriageRequest) =>
+    request<{ triage: FindingTriage }>(`/scans/${scanId}/findings/${encodeURIComponent(findingId)}/triage`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   startScan: (body: StartScanRequest) =>
     request<{ scan: ScanRun }>("/scans", {
       method: "POST",

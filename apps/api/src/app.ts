@@ -5,6 +5,7 @@ import type {
   CompareRequest,
   HealthResponse,
   StartScanRequest,
+  UpdateFindingTriageRequest,
 } from "@csb/shared";
 import { compareScans } from "./compare.js";
 import { getCodexInfo } from "./codex-info.js";
@@ -18,6 +19,7 @@ import {
 } from "./ingest.js";
 import { buildMetricsSummary } from "./metrics.js";
 import { withProgress, withProgressMany } from "./progress.js";
+import { buildRegressionSummary, markScanAsRepositoryBaseline, updateFindingTriage } from "./regression.js";
 import { MAX_CONCURRENT_SCANS } from "./config.js";
 import {
   cancelScan,
@@ -69,6 +71,22 @@ app.get("/scans/:id", (c) => {
   return c.json({ scan: withProgress(run), findings });
 });
 
+app.get("/scans/:id/regression", (c) => {
+  try {
+    return c.json(buildRegressionSummary(c.req.param("id")));
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : "Falha ao calcular regressões" }, 404);
+  }
+});
+
+app.post("/scans/:id/baseline", (c) => {
+  try {
+    return c.json(markScanAsRepositoryBaseline(c.req.param("id")));
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : "Falha ao fixar baseline" }, 400);
+  }
+});
+
 app.get("/scans/:id/findings", (c) => {
   const run = getRun(c.req.param("id"));
   if (!run) return c.json({ error: "Scan não encontrado" }, 404);
@@ -98,6 +116,23 @@ app.get("/scans/:id/findings/:findingId", (c) => {
   );
   if (!finding) return c.json({ error: "Finding não encontrado" }, 404);
   return c.json({ finding });
+});
+
+app.post("/scans/:id/findings/:findingId/triage", async (c) => {
+  const body = (await c.req.json()) as UpdateFindingTriageRequest;
+  const allowed = new Set(["unreviewed", "confirmed", "accepted", "false_positive"]);
+  if (!allowed.has(body.status)) return c.json({ error: "Estado de triagem inválido" }, 400);
+  try {
+    const triage = updateFindingTriage(
+      c.req.param("id"),
+      c.req.param("findingId"),
+      body.status,
+      typeof body.note === "string" ? body.note : null,
+    );
+    return c.json({ triage });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : "Falha ao salvar triagem" }, 400);
+  }
 });
 
 app.post("/scans", async (c) => {
