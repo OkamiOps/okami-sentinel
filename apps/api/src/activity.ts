@@ -2,17 +2,18 @@ import fs from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
 import Database from "better-sqlite3";
-import { WORKBENCH_DB_PATH } from "./config.js";
+import { RUNS_DIR, WORKBENCH_DB_PATH } from "./config.js";
 import { dirsMatch } from "./progress.js";
 
 export function cliLogPath(scanDir: string): string {
-  return path.join(scanDir, "csb-cli.log");
+  return path.join(RUNS_DIR, `${path.basename(scanDir)}.log`);
 }
 
 export function appendCliLog(scanDir: string, line: string): void {
   try {
-    fs.mkdirSync(scanDir, { recursive: true, mode: 0o700 });
-    fs.appendFileSync(cliLogPath(scanDir), `${line}\n`, "utf8");
+    const file = cliLogPath(scanDir);
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    fs.appendFileSync(file, `${line}\n`, "utf8");
   } catch {
     // ignore disk errors
   }
