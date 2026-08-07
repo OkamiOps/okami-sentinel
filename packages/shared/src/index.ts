@@ -481,3 +481,20 @@ export interface GuardrailRepository {
   lastGateId: string | null;
   githubStatus: RepositoryGitHubStatus;
 }
+
+export interface GitHubCapabilityStatus {
+  ready: boolean;
+  message: string;
+  action: string | null;
+}
+
+export interface GuardrailGitHubStatus {
+  cli: GitHubCapabilityStatus & { available: boolean };
+  remote: GitHubCapabilityStatus;
+  auth: GitHubCapabilityStatus;
+  permissions: GitHubCapabilityStatus;
+  secret: GitHubCapabilityStatus;
+  workflow: GitHubCapabilityStatus;
+  baseline: GitHubCapabilityStatus;
+  ready: boolean;
+}
