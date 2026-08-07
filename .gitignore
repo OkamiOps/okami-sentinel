@@ -13,3 +13,4 @@ apps/api/dist/
 tmp/
 .pnpm-store/
 .superpowers/
+.worktrees/
