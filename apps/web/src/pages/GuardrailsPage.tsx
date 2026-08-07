@@ -5,8 +5,8 @@ import type {
   GateRun,
   GuardrailRepository,
 } from "@csb/shared";
-import { GitPullRequestArrow, Plus, Square } from "lucide-react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { GitBranch, GitPullRequestArrow, Plus, Square } from "lucide-react";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { api } from "../api";
 import {
@@ -14,6 +14,7 @@ import {
   DecisionGraph,
   EvidenceTrace,
   PortfolioPipeline,
+  PublishGateControl,
 } from "../components/guardrails";
 import { AlertBanner, EmptyState, Loading, PageHeader } from "../components/ui";
 import { guardrailHref, isGateActive, selectDecisionNode, selectGate } from "../lib/guardrails";
@@ -177,7 +178,19 @@ export function GuardrailsPage() {
     }
   }
 
+  function updateSelectedGate(gate: GateRun) {
+    setState((current) => {
+      if (current.status !== "ready" || current.selectedGate?.id !== gate.id) return current;
+      return {
+        ...current,
+        gates: current.gates.map((item) => item.id === gate.id ? gate : item),
+        selectedGate: gate,
+      };
+    });
+  }
+
   const selectedGateActive = readyState.selectedGate ? isGateActive(readyState.selectedGate.status) : false;
+  const setupRepositoryKey = readyState.selectedGate?.repositoryKey ?? readyState.repositories[0]?.repositoryKey ?? null;
 
   return (
     <div className="min-w-0">
@@ -187,6 +200,9 @@ export function GuardrailsPage() {
         description="Acompanhe cada mudança do diff ao veredito e inspecione a evidência usada pela política local. A interface exibe a decisão do artifact; não a recalcula."
         actions={(
           <>
+            <Button asChild variant="outline" className="min-h-11">
+              <Link to={setupRepositoryKey ? `/guardrails/setup?repository=${encodeURIComponent(setupRepositoryKey)}` : "/guardrails/setup"}><GitBranch aria-hidden size={14} />Configurar GitHub</Link>
+            </Button>
             {selectedGateActive && (
               <Button variant="destructive" className="min-h-11" onClick={() => void cancelSelected()} disabled={busy}>
                 <Square aria-hidden size={13} />Cancelar gate
@@ -226,6 +242,12 @@ export function GuardrailsPage() {
       )}
       {readyState.selectedGate?.outcome === "no_changes" && (
         <div className="mt-4"><AlertBanner tone="success">Nenhuma mudança entre as referências. O gate encerrou sem iniciar scan e sem consumir custo.</AlertBanner></div>
+      )}
+
+      {readyState.selectedGate?.status === "completed" && readyState.artifact && (
+        <div className="mt-4">
+          <PublishGateControl gate={readyState.selectedGate} artifact={readyState.artifact} onGateChange={updateSelectedGate} />
+        </div>
       )}
 
       {readyState.selectedGate && !readyState.artifact && (

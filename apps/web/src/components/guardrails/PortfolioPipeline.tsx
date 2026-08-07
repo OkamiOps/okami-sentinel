@@ -3,6 +3,7 @@ import { ChevronDown, GitCompareArrows, ShieldCheck } from "lucide-react";
 
 import { formatUsd } from "../../format";
 import { cx } from "../ui";
+import { prCheckLabel } from "../../lib/github-guardrails";
 import { gateStageLabel } from "../../lib/guardrails";
 import { GateOutcomeBadge } from "./GateOutcomeBadge";
 
@@ -70,8 +71,8 @@ export function PortfolioPipeline({
                 </div>
                 <PipelineCell
                   label="PR check"
-                  primary={gate.pullRequestNumber ? `PR #${gate.pullRequestNumber}` : "Não publicado"}
-                  secondary={gate.source === "github" ? "GitHub" : "Local"}
+                  primary={prCheckLabel(gate)}
+                  secondary={gate.pullRequestNumber ? `PR #${gate.pullRequestNumber}` : gate.source === "github" ? "GitHub" : "Local"}
                 />
               </button>
             );
@@ -111,7 +112,7 @@ export function PortfolioPipeline({
                   <MobileCell label="Arquivos" value={artifact ? String(artifact.changeSet.files.length) : "Não determinado"} />
                   <MobileCell label="Scan" value={gateStageLabel(gate.status)} />
                   <MobileCell label="Custo estimado" value={`${formatUsd(gate.estimatedUsd)} USD`} />
-                  <MobileCell label="PR check" value={gate.pullRequestNumber ? `PR #${gate.pullRequestNumber}` : "Não publicado"} />
+                  <MobileCell label="PR check" value={prCheckLabel(gate)} />
                   <MobileCell label="Origem" value={gate.source} />
                 </div>
               )}

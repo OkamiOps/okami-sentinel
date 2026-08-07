@@ -15,6 +15,7 @@ import { ComparePage } from "./pages/ComparePage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { GuardrailsPage } from "./pages/GuardrailsPage";
 import { GuardrailPolicyPage } from "./pages/GuardrailPolicyPage";
+import { GuardrailSetupPage } from "./pages/GuardrailSetupPage";
 import { NewScanPage } from "./pages/NewScanPage";
 import { ScanDetailPage } from "./pages/ScanDetailPage";
 import { ScansPage } from "./pages/ScansPage";
@@ -72,6 +73,7 @@ export function App() {
         <Route path="/scans" element={<ScansPage />} />
         <Route path="/scans/new" element={<NewScanPage />} />
         <Route path="/guardrails" element={<GuardrailsPage />} />
+        <Route path="/guardrails/setup" element={<GuardrailSetupPage />} />
         <Route path="/guardrails/repositories/:repositoryKey/policy" element={<GuardrailPolicyPage />} />
         <Route path="/guardrails/:gateId" element={<GuardrailsPage />} />
         <Route path="/scans/:id/findings/:findingId/path" element={<AttackPathPage />} />
