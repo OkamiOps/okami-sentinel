@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { findingIdentity as coreFindingIdentity } from "@csb/gate-core";
 import type { FindingSummary } from "@csb/shared";
 import { classifyCurrentFinding, findingIdentity, normalizeRepositoryKey } from "./lifecycle.js";
 
@@ -18,6 +19,7 @@ const finding: FindingSummary = {
 };
 
 test("uses a stable fingerprint before run-specific ids", () => {
+  assert.equal(findingIdentity, coreFindingIdentity);
   assert.equal(findingIdentity(finding), "fp:codex-security/v1:sha256:stable-fingerprint");
 });
 

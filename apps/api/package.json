@@ -11,6 +11,7 @@
     "build": "tsc --noEmit"
   },
   "dependencies": {
+    "@csb/gate-core": "workspace:*",
     "@csb/shared": "workspace:*",
     "@hono/node-server": "^1.14.4",
     "better-sqlite3": "^11.10.0",

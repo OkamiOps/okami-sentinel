@@ -10,6 +10,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@csb/gate-core':
+        specifier: workspace:*
+        version: link:../../packages/gate-core
       '@csb/shared':
         specifier: workspace:*
         version: link:../../packages/shared
