@@ -5,6 +5,11 @@ import type {
   FindingSummary,
   FindingTriage,
   FsListResponse,
+  GateArtifact,
+  GateDecision,
+  GateRun,
+  GuardrailPolicy,
+  GuardrailRepository,
   HealthResponse,
   MetricsSummary,
   RegressionSummary,
@@ -12,6 +17,7 @@ import type {
   StartScanRequest,
   UpdateFindingTriageRequest,
 } from "@csb/shared";
+import { parseApiResponse } from "./lib/http.js";
 
 const BASE = "/api";
 
@@ -23,13 +29,29 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...(init?.headers ?? {}),
     },
   });
-  const data = (await res.json()) as T & { error?: string };
-  if (!res.ok) {
-    throw new Error(
-      (data as { error?: string }).error || `HTTP ${res.status}`,
-    );
-  }
-  return data;
+  return parseApiResponse<T>(res);
+}
+
+export interface EnrollGuardrailRepositoryRequest {
+  repositoryPath: string;
+  displayName?: string;
+}
+
+export interface StartLocalGateRequest {
+  repositoryKey: string;
+  baseRef: string;
+  headRef: string;
+}
+
+export interface PolicySimulationRequest {
+  gateId: string;
+  policy: GuardrailPolicy;
+  now?: string;
+}
+
+export interface PolicySimulationResponse {
+  decision: GateDecision;
+  configurationErrors: Array<{ field: string; message: string }>;
 }
 
 export const api = {
@@ -66,4 +88,47 @@ export const api = {
     request<FsListResponse>(
       `/fs/list${path ? `?path=${encodeURIComponent(path)}` : ""}`,
     ),
+  listGuardrailRepositories: () =>
+    request<{ repositories: GuardrailRepository[] }>("/guardrails/repositories"),
+  enrollGuardrailRepository: (body: EnrollGuardrailRepositoryRequest) =>
+    request<{ repository: GuardrailRepository }>("/guardrails/repositories", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  getGuardrailPolicy: (repositoryKey: string) =>
+    request<{ policy: GuardrailPolicy }>(
+      `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/policy`,
+    ),
+  updateGuardrailPolicy: (repositoryKey: string, policy: GuardrailPolicy) =>
+    request<{ policy: GuardrailPolicy }>(
+      `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/policy`,
+      { method: "PUT", body: JSON.stringify(policy) },
+    ),
+  simulateGuardrailPolicy: (
+    repositoryKey: string,
+    body: PolicySimulationRequest,
+  ) => request<PolicySimulationResponse>(
+    `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/policy/simulate`,
+    { method: "POST", body: JSON.stringify(body) },
+  ),
+  listGates: (repositoryKey?: string) =>
+    request<{ gates: GateRun[] }>(
+      `/guardrails/gates${repositoryKey ? `?repositoryKey=${encodeURIComponent(repositoryKey)}` : ""}`,
+    ),
+  startGate: (body: StartLocalGateRequest) =>
+    request<{ gate: GateRun }>("/guardrails/gates", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  getGate: (gateId: string) =>
+    request<{ gate: GateRun; artifact: GateArtifact | null }>(
+      `/guardrails/gates/${encodeURIComponent(gateId)}`,
+    ),
+  cancelGate: (gateId: string) =>
+    request<{ ok: boolean }>(
+      `/guardrails/gates/${encodeURIComponent(gateId)}/cancel`,
+      { method: "POST" },
+    ),
+  gateEventsUrl: (gateId: string) =>
+    `${BASE}/guardrails/gates/${encodeURIComponent(gateId)}/events`,
 };

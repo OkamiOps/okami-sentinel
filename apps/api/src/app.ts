@@ -1,8 +1,28 @@
+import path from "node:path";
+
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
+import {
+  buildDecisionGraph,
+  evaluateGate,
+} from "@csb/gate-core";
+import {
+  defaultGitRunner,
+  parseGuardrailPolicy,
+  readGuardrailExceptions,
+  readGuardrailPolicy,
+  writeGuardrailPolicy,
+} from "@csb/gate-runtime";
 import type {
   CompareRequest,
+  GateArtifact,
+  GateDecision,
+  GateFindingDelta,
+  GateRun,
+  GuardrailException,
+  GuardrailPolicy,
+  GuardrailRepository,
   HealthResponse,
   StartScanRequest,
   UpdateFindingTriageRequest,
@@ -12,6 +32,19 @@ import { getCodexInfo } from "./codex-info.js";
 import { CODEX_SECURITY_STATE_DIR } from "./config.js";
 import { getRun, listRuns } from "./db.js";
 import { listDirectory } from "./fs.js";
+import {
+  cancelGate,
+  getGateArtifact,
+  startLocalGate,
+  subscribeGate,
+} from "./gate-orchestrator.js";
+import {
+  getGateRun,
+  listGateRuns,
+  listGuardrailRepositories,
+  upsertGuardrailRepository,
+  type GateEvent,
+} from "./gate-store.js";
 import {
   importExternalScans,
   readFindingsFile,
@@ -35,10 +68,187 @@ app.use(
   "*",
   cors({
     origin: ["http://127.0.0.1:5173", "http://localhost:5173"],
-    allowMethods: ["GET", "POST", "OPTIONS"],
+    allowMethods: ["GET", "POST", "PUT", "OPTIONS"],
     allowHeaders: ["Content-Type"],
   }),
 );
+
+export interface GuardrailsApiDependencies {
+  listRepositories(): GuardrailRepository[];
+  resolveRepository(repositoryPath: string, displayName?: string): Promise<GuardrailRepository>;
+  upsertRepository(repository: GuardrailRepository): void;
+  getRepository(repositoryKey: string): GuardrailRepository | null;
+  readPolicy(repositoryPath: string): GuardrailPolicy;
+  parsePolicy(value: unknown): GuardrailPolicy;
+  writePolicy(repositoryPath: string, policy: GuardrailPolicy): void;
+  readExceptions(repositoryPath: string): GuardrailException[];
+  listGates(repositoryKey?: string | null): GateRun[];
+  getGate(gateId: string): GateRun | null;
+  getArtifact(gateId: string): GateArtifact | null;
+  startGate(request: { repositoryKey: string; baseRef: string; headRef: string }): Promise<GateRun>;
+  cancelGate(gateId: string): boolean;
+  subscribeGate(gateId: string, listener: (event: GateEvent) => void): () => void;
+}
+
+const guardrailsDependencies: GuardrailsApiDependencies = {
+  listRepositories: listGuardrailRepositories,
+  resolveRepository: inspectRepository,
+  upsertRepository: upsertGuardrailRepository,
+  getRepository: findRepository,
+  readPolicy: readGuardrailPolicy,
+  parsePolicy: parseGuardrailPolicy,
+  writePolicy: writeGuardrailPolicy,
+  readExceptions: readGuardrailExceptions,
+  listGates: listGateRuns,
+  getGate: getGateRun,
+  getArtifact: getGateArtifact,
+  startGate: startLocalGate,
+  cancelGate,
+  subscribeGate,
+};
+
+export function createGuardrailsApp(
+  deps: GuardrailsApiDependencies = guardrailsDependencies,
+): Hono {
+  const guardrails = new Hono();
+
+  guardrails.get("/guardrails/repositories", (c) =>
+    c.json({ repositories: deps.listRepositories() }));
+
+  guardrails.post("/guardrails/repositories", async (c) => {
+    try {
+      const body = await c.req.json<{ repositoryPath?: string; displayName?: string }>();
+      if (typeof body.repositoryPath !== "string" || !body.repositoryPath.trim()) {
+        return c.json({ error: "Caminho do repositório é obrigatório" }, 400);
+      }
+      const repository = await deps.resolveRepository(body.repositoryPath, body.displayName);
+      deps.upsertRepository(repository);
+      return c.json({ repository }, 201);
+    } catch (error) {
+      return c.json({ error: errorMessage(error) }, 400);
+    }
+  });
+
+  guardrails.get("/guardrails/repositories/:repositoryKey/policy", (c) => {
+    const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
+    if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
+    try {
+      return c.json({ policy: deps.readPolicy(repository.repositoryPath) });
+    } catch (error) {
+      return c.json({ error: errorMessage(error) }, 400);
+    }
+  });
+
+  guardrails.put("/guardrails/repositories/:repositoryKey/policy", async (c) => {
+    const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
+    if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
+    try {
+      const policy = deps.parsePolicy(await c.req.json());
+      deps.writePolicy(repository.repositoryPath, policy);
+      return c.json({ policy });
+    } catch (error) {
+      return c.json({ error: errorMessage(error) }, 400);
+    }
+  });
+
+  guardrails.post("/guardrails/repositories/:repositoryKey/policy/simulate", async (c) => {
+    const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
+    if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
+    try {
+      const body = await c.req.json<{ gateId?: string; policy?: unknown; now?: string }>();
+      if (typeof body.gateId !== "string") throw new Error("gateId é obrigatório");
+      const artifact = deps.getArtifact(body.gateId);
+      if (!artifact || artifact.repository.key !== repository.repositoryKey) {
+        return c.json({ error: "Artifact do gate não encontrado" }, 404);
+      }
+      const policy = deps.parsePolicy(body.policy);
+      const now = body.now ?? new Date().toISOString();
+      if (!Number.isFinite(Date.parse(now))) throw new Error("now deve ser uma data ISO válida");
+      const exceptions = deps.readExceptions(repository.repositoryPath);
+      const configurationErrors = exceptions.flatMap((exception, index) =>
+        Date.parse(exception.expiresAt) <= Date.parse(now)
+          ? [{ field: `exceptions[${index}].expiresAt`, message: "Exceção expirada" }]
+          : []);
+      const decision = simulateDecision(
+        artifact,
+        policy,
+        exceptions.filter((exception) => Date.parse(exception.expiresAt) > Date.parse(now)),
+        now,
+      );
+      return c.json({ decision, configurationErrors });
+    } catch (error) {
+      return c.json({ error: errorMessage(error) }, 400);
+    }
+  });
+
+  guardrails.get("/guardrails/gates", (c) =>
+    c.json({ gates: deps.listGates(c.req.query("repositoryKey") ?? null) }));
+
+  guardrails.post("/guardrails/gates", async (c) => {
+    try {
+      const body = await c.req.json<{
+        repositoryKey?: string;
+        baseRef?: string;
+        headRef?: string;
+      }>();
+      if (!body.repositoryKey || !body.baseRef || !body.headRef) {
+        return c.json({ error: "repositoryKey, baseRef e headRef são obrigatórios" }, 400);
+      }
+      const gate = await deps.startGate({
+        repositoryKey: body.repositoryKey,
+        baseRef: body.baseRef,
+        headRef: body.headRef,
+      });
+      return c.json({ gate }, 202);
+    } catch (error) {
+      return c.json({ error: errorMessage(error) }, 400);
+    }
+  });
+
+  guardrails.get("/guardrails/gates/:gateId", (c) => {
+    const gate = deps.getGate(c.req.param("gateId"));
+    if (!gate) return c.json({ error: "Gate não encontrado" }, 404);
+    return c.json({ gate, artifact: deps.getArtifact(gate.id) });
+  });
+
+  guardrails.get("/guardrails/gates/:gateId/events", (c) => {
+    const gateId = c.req.param("gateId");
+    if (!deps.getGate(gateId)) return c.json({ error: "Gate não encontrado" }, 404);
+    return streamSSE(c, async (stream) => {
+      let closed = false;
+      let unsubscribe: () => void = () => undefined;
+      let pending = Promise.resolve();
+      const stop = deps.subscribeGate(gateId, (event) => {
+        pending = pending.then(() => stream.writeSSE({
+          event: event.type,
+          data: JSON.stringify(event),
+          id: String(event.sequence),
+        }));
+        if (event.type === "done" || event.type === "error") closed = true;
+      });
+      unsubscribe = stop;
+      if (closed) unsubscribe();
+      stream.onAbort(() => {
+        closed = true;
+        unsubscribe();
+      });
+      while (!closed) await stream.sleep(100);
+      await pending;
+      unsubscribe();
+    });
+  });
+
+  guardrails.post("/guardrails/gates/:gateId/cancel", (c) => {
+    if (!deps.cancelGate(c.req.param("gateId"))) {
+      return c.json({ error: "Gate não está ativo" }, 404);
+    }
+    return c.json({ ok: true });
+  });
+
+  return guardrails;
+}
+
+app.route("/", createGuardrailsApp());
 
 app.get("/health", async (c) => {
   const codexInfo = await getCodexInfo();
@@ -210,3 +420,113 @@ app.get("/fs/list", (c) => {
     );
   }
 });
+
+function findRepository(repositoryKey: string): GuardrailRepository | null {
+  return listGuardrailRepositories().find(
+    (repository) => repository.repositoryKey === repositoryKey,
+  ) ?? null;
+}
+
+async function inspectRepository(
+  repositoryPath: string,
+  requestedDisplayName?: string,
+): Promise<GuardrailRepository> {
+  const repositoryRoot = path.resolve(
+    (await defaultGitRunner(["rev-parse", "--show-toplevel"], repositoryPath)).trim(),
+  );
+  const remoteUrl = await optionalGit(["config", "--get", "remote.origin.url"], repositoryRoot);
+  const remote = parseGitHubRemote(remoteUrl);
+  const remoteHead = await optionalGit(
+    ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+    repositoryRoot,
+  );
+  const currentBranch = await optionalGit(["branch", "--show-current"], repositoryRoot);
+  const defaultBranch = remoteHead?.replace(/^origin\//, "") || currentBranch || "main";
+  const displayName = requestedDisplayName?.trim() || path.basename(repositoryRoot);
+
+  return {
+    repositoryKey: remote
+      ? `github.com/${remote.owner}/${remote.name}`
+      : `local/${path.basename(repositoryRoot)}`,
+    repositoryPath: repositoryRoot,
+    displayName,
+    defaultBranch,
+    remoteOwner: remote?.owner ?? null,
+    remoteName: remote?.name ?? null,
+    enabled: true,
+    policyPath: ".csb/guardrails.json",
+    lastGateId: null,
+    githubStatus: remote ? "not_checked" : "not_configured",
+  };
+}
+
+async function optionalGit(args: string[], cwd: string): Promise<string | null> {
+  try {
+    return (await defaultGitRunner(args, cwd)).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function parseGitHubRemote(
+  remoteUrl: string | null,
+): { owner: string; name: string } | null {
+  if (!remoteUrl) return null;
+  const match = /github\.com[/:]([^/]+)\/([^/]+?)(?:\.git)?$/.exec(remoteUrl);
+  return match ? { owner: match[1]!, name: match[2]! } : null;
+}
+
+function repositoryKey(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function simulateDecision(
+  artifact: GateArtifact,
+  policy: GuardrailPolicy,
+  exceptions: GuardrailException[],
+  now: string,
+): GateDecision {
+  const currentFindings = artifact.findings.filter(
+    (finding) => finding.lifecycle !== "fixed",
+  );
+  const hasBaseline = artifact.baselineCommit !== null;
+  const baselineFindings = hasBaseline
+    ? artifact.findings.filter((finding) =>
+        finding.lifecycle === "persistent" || finding.lifecycle === "fixed")
+    : null;
+  const historicalFindings = artifact.findings.filter(
+    (finding) => finding.lifecycle === "reopened",
+  );
+  const triageByIdentity = new Map(
+    artifact.findings.map((finding) => [finding.identity, finding.triage]),
+  );
+  const evaluation = evaluateGate({
+    policy,
+    branch: artifact.changeSet.headRef,
+    changeSet: artifact.changeSet,
+    currentFindings,
+    baselineFindings,
+    historicalFindings,
+    triageByIdentity,
+    exceptions,
+    sourceScanId: artifact.scan.id ?? "policy-simulation",
+    baselineScanId: hasBaseline ? "policy-simulation-baseline" : null,
+    now,
+  });
+  return {
+    ...evaluation.decision,
+    decisionGraph: buildDecisionGraph(
+      artifact.changeSet,
+      evaluation.deltas as GateFindingDelta[],
+      evaluation.decision,
+    ),
+  };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Falha na operação";
+}
