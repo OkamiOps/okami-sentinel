@@ -6,6 +6,7 @@ import type { FsListResponse, HealthResponse } from "@csb/shared";
 import { api } from "../api";
 import { AlertBanner, PageHeader, Panel, Readout, cx } from "../components/ui";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { formatUsd } from "../format";
 
@@ -76,8 +77,8 @@ export function NewScanPage() {
 
         <Panel className="bench-corners" label="STAGE 03 / AUTHORIZE" title="Cost envelope">
           <div className="grid grid-cols-2 border-b p-4"><Readout label="EXPECTED" value={unlimited ? "OPEN" : formatUsd(expected)} tone="signal" /><Readout label="CEILING" value={unlimited ? "NONE" : formatUsd(cost)} /></div>
-          <div className="border-b p-4"><label className="bench-label" htmlFor="cost">MAX COST / USD</label><Input id="cost" type="number" min="100" step="1" value={maxCostUsd} onChange={(e) => setMaxCostUsd(e.target.value)} disabled={unlimited} className="mt-2 font-mono text-lg" /><label className="mt-3 flex cursor-pointer items-center gap-3 text-xs text-muted-foreground"><input type="checkbox" className="checkbox checkbox-sm checkbox-primary" checked={unlimited} onChange={(e) => setUnlimited(e.target.checked)} />Sem limite de custo</label></div>
-          <div className="border-b p-4"><label className="flex cursor-pointer items-start gap-3 text-xs leading-relaxed"><input type="checkbox" className="checkbox checkbox-sm checkbox-primary mt-0.5" checked={authorized} onChange={(e) => setAuthorized(e.target.checked)} /><span>Autorizo o perfil <strong>{model}/{effort}/{mode}</strong> e entendo que o custo é estimado.</span></label></div>
+          <div className="border-b p-4"><label className="bench-label" htmlFor="cost">MAX COST / USD</label><Input id="cost" type="number" min="100" step="1" value={maxCostUsd} onChange={(e) => setMaxCostUsd(e.target.value)} disabled={unlimited} className="mt-2 font-mono text-lg" /><label htmlFor="unlimited-cost" className="mt-3 flex cursor-pointer items-center gap-3 text-xs text-muted-foreground"><Checkbox id="unlimited-cost" checked={unlimited} onCheckedChange={(checked) => setUnlimited(checked === true)} />Sem limite de custo</label></div>
+          <div className="border-b p-4"><div className="bench-label">CONFIRMAÇÃO OBRIGATÓRIA</div><label htmlFor="authorize-scan" className={cx("mt-3 flex cursor-pointer items-start gap-3 border p-3 transition-colors", authorized ? "border-primary bg-primary/[.06]" : "border-primary/50 bg-background hover:border-primary hover:bg-accent/40")}><Checkbox id="authorize-scan" className="mt-0.5" checked={authorized} onCheckedChange={(checked) => setAuthorized(checked === true)} /><span><span className="block text-sm font-semibold">Autorizar execução</span><span className="mt-1 block text-[11px] leading-relaxed text-muted-foreground">Perfil <strong className="text-foreground">{model}/{effort}/{mode}</strong> · custo estimado.</span></span></label></div>
           <div className="p-4"><Button type="submit" size="lg" disabled={busy || !authorized} className="w-full justify-between">{busy ? "TRANSMITINDO…" : "TRANSMITIR MANIFESTO"}<HugeiconsIcon icon={ArrowRight01Icon} size={13} /></Button><div className="mt-3 flex items-center justify-between font-mono text-[8px] text-muted-foreground"><span>ENGINE {health?.ok ? "READY" : "CHECK"}</span><span>{health?.activeScanIds.length ?? 0}/{health?.maxConcurrentScans ?? "—"} ACTIVE</span></div></div>
         </Panel>
       </div>
