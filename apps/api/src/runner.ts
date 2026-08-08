@@ -26,7 +26,7 @@ import {
   readDetachedActivity,
 } from "./activity.js";
 import { getRun, upsertRun } from "./db.js";
-import { refreshRunByScanDir, refreshRunFromDisk } from "./ingest.js";
+import { readWorkbenchScan, refreshRunByScanDir } from "./ingest.js";
 import { parseCliPhaseHint, progressForStatus, withProgress } from "./progress.js";
 
 type Listener = (event: ScanEvent) => void;
@@ -488,7 +488,21 @@ function maybeParseCost(line: string, activeScan: ActiveScan, run: ScanRun): voi
   emit(activeScan, { type: "cost", cost, scan: run });
 }
 
-function refreshAfterClose(outputDir: string, fallback: ScanRun): ScanRun {
+interface RunRefreshDependencies {
+  readOfficialRun: (id: string) => ScanRun | null;
+  refreshByScanDir: (scanDir: string, fallbackId: string) => ScanRun | null;
+}
+
+const runRefreshDependencies: RunRefreshDependencies = {
+  readOfficialRun: readWorkbenchScan,
+  refreshByScanDir: refreshRunByScanDir,
+};
+
+export function refreshAfterClose(
+  outputDir: string,
+  fallback: ScanRun,
+  dependencies: RunRefreshDependencies = runRefreshDependencies,
+): ScanRun {
   // Try to pick up official workbench id if created
   try {
     const manifestPath = path.join(outputDir, "scan-manifest.json");
@@ -498,7 +512,7 @@ function refreshAfterClose(outputDir: string, fallback: ScanRun): ScanRun {
       };
       const officialId = manifest.scan?.id;
       if (officialId) {
-        const official = refreshRunFromDisk(officialId);
+        const official = dependencies.readOfficialRun(officialId);
         if (official) {
           // Keep our benchmark id as primary key but merge metrics
           return {
@@ -516,7 +530,7 @@ function refreshAfterClose(outputDir: string, fallback: ScanRun): ScanRun {
     // fall through
   }
   // No manifest (common when the CLI fails mid-seal) — still merge cost by scanDir.
-  const byDir = refreshRunByScanDir(outputDir, fallback.id);
+  const byDir = dependencies.refreshByScanDir(outputDir, fallback.id);
   if (byDir) {
     return {
       ...byDir,
