@@ -27,7 +27,7 @@ function NavStrip({ onNavigate }: { onNavigate?: () => void }) {
   const { pathname } = useLocation();
   return <nav className="flex flex-col md:flex-row md:items-stretch">{nav.map(([to, label], index) => {
     const isActive = to === "/scans" ? pathname === "/scans" || (pathname.startsWith("/scans/") && pathname !== "/scans/new") : to === "/guardrails" ? pathname === "/guardrails" || pathname.startsWith("/guardrails/") : pathname === to;
-    return <Link key={to} to={to} aria-current={isActive ? "page" : undefined} onClick={onNavigate} className={cx("group relative flex h-11 items-center gap-3 border-b border-border px-4 font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:border-b-0 md:border-r", isActive && "bg-accent text-primary")}><span className="text-[8px] opacity-45">0{index + 1}</span>{label}<span className={cx("absolute inset-x-0 bottom-0 h-px bg-primary transition-transform", isActive ? "scale-x-100" : "scale-x-0 group-hover:scale-x-100")} /></Link>;
+    return <Link key={to} to={to} aria-current={isActive ? "page" : undefined} onClick={onNavigate} className={cx("group relative flex h-11 items-center gap-3 border-b border-border px-4 font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:border-b-0 md:border-r", isActive && "bg-accent text-chart-1")}><span className="text-[8px] opacity-45">0{index + 1}</span>{label}<span className={cx("absolute inset-x-0 bottom-0 h-px bg-chart-1 transition-transform", isActive ? "scale-x-100" : "scale-x-0 group-hover:scale-x-100")} /></Link>;
   })}</nav>;
 }
 
@@ -47,7 +47,7 @@ export function App() {
     <header className="sticky top-0 z-40 border-b border-border bg-background/95 backdrop-blur-md">
       <div className="flex h-12 items-stretch">
         <Link to="/" className="flex min-w-52 items-center gap-2 border-r px-4">
-          <span className="flex size-6 items-center justify-center border border-primary text-primary"><HugeiconsIcon icon={SecurityCheckIcon} size={13} /></span>
+          <span className="flex size-6 items-center justify-center border border-chart-1 text-chart-1"><HugeiconsIcon icon={SecurityCheckIcon} size={13} /></span>
           <span className="font-heading text-xs font-bold tracking-[-0.01em]">CSB</span><span className="font-mono text-[9px] text-muted-foreground">/ LOCAL BENCH</span>
         </Link>
         <div className="hidden flex-1 md:block"><NavStrip /></div>
@@ -88,12 +88,12 @@ export function App() {
 }
 
 function CommandDock({ current, open, onOpenChange, syncing, onReindex, onNavigate }: { current?: ScanRun; open: boolean; onOpenChange: (open: boolean) => void; syncing: boolean; onReindex: () => void; onNavigate: (to: string) => void }) {
-  return <div className="fixed inset-x-0 bottom-3 z-40 mx-auto w-[calc(100%-1.5rem)] max-w-5xl border border-primary/40 bg-[#0e1210]/96 shadow-[0_18px_60px_rgba(0,0,0,.55)] backdrop-blur-md">
+  return <div className="fixed inset-x-0 bottom-3 z-40 mx-auto w-[calc(100%-1.5rem)] max-w-5xl border border-border bg-[#0b0b12]/96 shadow-[0_18px_60px_rgba(0,0,0,.55)] backdrop-blur-md">
     <div className="flex h-12 items-stretch">
       <DropdownMenu open={open} onOpenChange={onOpenChange}>
-        <DropdownMenuTrigger asChild><button type="button" className="group flex shrink-0 items-center gap-2 border-r border-primary/30 px-3 font-mono text-[9px] uppercase tracking-wider text-primary transition hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary" aria-label="Abrir ações rápidas"><span>ações</span><span className="hidden border border-primary/25 px-1 py-0.5 text-[7px] text-muted-foreground sm:inline">⌘K</span></button></DropdownMenuTrigger>
-        <DropdownMenuContent side="top" align="start" sideOffset={8} className="w-72 rounded-none border border-primary/35 bg-[#0e1210] p-1.5 shadow-[0_18px_60px_rgba(0,0,0,.65)] ring-0">
-          <DropdownMenuLabel className="px-2 py-2 font-mono text-[8px] uppercase tracking-[.14em] text-primary">Quick actions / local bench</DropdownMenuLabel>
+        <DropdownMenuTrigger asChild><button type="button" className="group flex shrink-0 items-center gap-2 border-r border-chart-4/30 px-3 font-mono text-[9px] uppercase tracking-wider text-chart-4 transition hover:bg-chart-4/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-chart-4" aria-label="Abrir ações rápidas"><span>ações</span><span className="hidden border border-chart-4/25 px-1 py-0.5 text-[7px] text-muted-foreground sm:inline">⌘K</span></button></DropdownMenuTrigger>
+        <DropdownMenuContent side="top" align="start" sideOffset={8} className="w-72 rounded-none border border-chart-4/35 bg-[#0b0b12] p-1.5 shadow-[0_18px_60px_rgba(0,0,0,.65)] ring-0">
+          <DropdownMenuLabel className="px-2 py-2 font-mono text-[8px] uppercase tracking-[.14em] text-chart-4">Quick actions / local bench</DropdownMenuLabel>
           <DropdownMenuSeparator />
           <DockMenuItem icon={PlusSignIcon} label="Novo scan" detail="Abrir launch sequencer" shortcut="⌘↵" onSelect={() => onNavigate("/scans/new")} />
           <DockMenuItem icon={Activity01Icon} label="Runs" detail="Abrir ledger indexado" onSelect={() => onNavigate("/scans")} />
@@ -107,13 +107,13 @@ function CommandDock({ current, open, onOpenChange, syncing, onReindex, onNaviga
 
       <DockLink to="/scans" label="Runs" icon={Activity01Icon} className="hidden sm:flex" />
       <DockLink to="/compare" label="Comparar" icon={Analytics01Icon} className="hidden md:flex" />
-      <Link to="/scans/new" className="flex shrink-0 items-center gap-2 border-l border-primary/30 bg-primary px-3 font-mono text-[9px] font-semibold uppercase tracking-wider text-primary-foreground transition hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-background"><HugeiconsIcon icon={PlusSignIcon} size={12} /><span className="hidden lg:inline">Novo scan</span><span className="hidden border border-primary-foreground/25 px-1 py-0.5 text-[7px] xl:inline">⌘↵</span></Link>
+      <Link to="/scans/new" className="flex shrink-0 items-center gap-2 border-l border-chart-1/30 bg-chart-1 px-3 font-mono text-[9px] font-semibold uppercase tracking-wider text-primary-foreground transition hover:bg-chart-1/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-background"><HugeiconsIcon icon={PlusSignIcon} size={12} /><span className="hidden lg:inline">Novo scan</span><span className="hidden border border-primary-foreground/25 px-1 py-0.5 text-[7px] xl:inline">⌘↵</span></Link>
     </div>
   </div>;
 }
 
 function DockMenuItem({ icon, label, detail, shortcut, disabled, onSelect }: { icon: Parameters<typeof HugeiconsIcon>[0]["icon"]; label: string; detail: string; shortcut?: string; disabled?: boolean; onSelect: () => void }) {
-  return <DropdownMenuItem disabled={disabled} onSelect={onSelect} className="rounded-none px-2 py-2.5 focus:bg-primary/10"><HugeiconsIcon icon={icon} size={13} className="text-primary" /><span className="ml-1 min-w-0"><span className="block text-[11px] font-medium">{label}</span><span className="block text-[9px] text-muted-foreground">{detail}</span></span>{shortcut && <DropdownMenuShortcut className="font-mono text-[8px]">{shortcut}</DropdownMenuShortcut>}</DropdownMenuItem>;
+  return <DropdownMenuItem disabled={disabled} onSelect={onSelect} className="rounded-none px-2 py-2.5 focus:bg-chart-4/10"><HugeiconsIcon icon={icon} size={13} className="text-chart-4" /><span className="ml-1 min-w-0"><span className="block text-[11px] font-medium">{label}</span><span className="block text-[9px] text-muted-foreground">{detail}</span></span>{shortcut && <DropdownMenuShortcut className="font-mono text-[8px]">{shortcut}</DropdownMenuShortcut>}</DropdownMenuItem>;
 }
 
 function DockLink({ to, label, icon, className }: { to: string; label: string; icon: Parameters<typeof HugeiconsIcon>[0]["icon"]; className?: string }) {

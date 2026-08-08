@@ -7,8 +7,8 @@ const buttonVariants = cva(
   "inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap border text-xs font-semibold transition-colors disabled:pointer-events-none disabled:opacity-40 [&_svg]:pointer-events-none [&_svg]:shrink-0 focus-visible:outline-none",
   { variants: {
     variant: {
-      default: "border-primary bg-primary text-primary-foreground hover:bg-primary/88",
-      destructive: "border-destructive bg-destructive text-white hover:bg-destructive/88",
+      default: "border-chart-1 bg-chart-1 text-primary-foreground hover:bg-chart-1/88",
+      destructive: "border-destructive bg-destructive text-background hover:bg-destructive/88",
       outline: "border-border bg-background/70 text-foreground hover:border-primary/60 hover:bg-accent",
       secondary: "border-border bg-secondary text-secondary-foreground hover:bg-secondary/70",
       ghost: "border-transparent bg-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
