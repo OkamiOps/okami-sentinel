@@ -34,6 +34,11 @@ export const WORKBENCH_DB_PATH = path.join(
 );
 
 export const SCANS_ROOT = path.join(CODEX_SECURITY_STATE_DIR, "scans");
+export const CODEX_SECURITY_SESSIONS_DIR = path.join(
+  CODEX_SECURITY_STATE_DIR,
+  "codex-home",
+  "sessions",
+);
 export const CODEX_SECURITY_NPM_CACHE_DIR =
   process.env.CSB_NPM_CACHE_DIR?.trim() || path.join(DATA_DIR, "npm-cache");
 

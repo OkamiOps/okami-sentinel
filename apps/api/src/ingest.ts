@@ -9,7 +9,11 @@ import {
   type ScanRun,
   type SeverityCounts,
 } from "@csb/shared";
-import { SCANS_ROOT, WORKBENCH_DB_PATH } from "./config.js";
+import {
+  CODEX_SECURITY_SESSIONS_DIR,
+  SCANS_ROOT,
+  WORKBENCH_DB_PATH,
+} from "./config.js";
 import {
   deleteRun,
   displayNameFromPaths,
@@ -58,9 +62,26 @@ function countSeverityFromFindings(findingsPath: string): SeverityCounts {
 
 /**
  * When a scan dies before writing findings.json (e.g. ChatGPT cyber flag),
- * recover reportable findings from the on-disk findings/<slug>/*.md folders.
+ * recover reportable findings from partial artifacts or Codex worker sessions.
  */
-export function recoverFindingsJsonFromMarkdown(scanDir: string): number {
+interface CodexSessionMeta {
+  file: string;
+  id: string;
+  parentId: string | null;
+  cwd: string;
+  timestamp: string;
+}
+
+interface SessionRecovery {
+  findings: Array<Record<string, unknown>>;
+  sessionCount: number;
+  consolidated: boolean;
+}
+
+export function recoverFindingsJsonFromMarkdown(
+  scanDir: string,
+  sessionsRoot = CODEX_SECURITY_SESSIONS_DIR,
+): number {
   const findingsPath = path.join(scanDir, "findings.json");
   if (fs.existsSync(findingsPath)) {
     try {
@@ -213,14 +234,30 @@ export function recoverFindingsJsonFromMarkdown(scanDir: string): number {
     }
   }
 
+  let sessionRecovery: SessionRecovery | null = null;
+  if (findings.length === 0) {
+    sessionRecovery = recoverFindingsFromCodexSessions(scanDir, sessionsRoot);
+    findings.push(...sessionRecovery.findings);
+  }
+
   if (findings.length === 0) return 0;
   fs.writeFileSync(
     findingsPath,
     JSON.stringify(
       {
         documentType: "codex-security.findings",
-        schemaVersion: "recovered-1",
+        schemaVersion: sessionRecovery ? "recovered-session-1" : "recovered-1",
         recovered: true,
+        recovery: sessionRecovery
+          ? {
+              source: "codex-session-workers",
+              consolidated: sessionRecovery.consolidated,
+              sessionCount: sessionRecovery.sessionCount,
+              note: sessionRecovery.consolidated
+                ? "Recovered from the root Codex session result."
+                : "Recovered from worker results after the root session stopped before consolidation; semantic overlap may remain.",
+            }
+          : undefined,
         findings,
       },
       null,
@@ -229,6 +266,272 @@ export function recoverFindingsJsonFromMarkdown(scanDir: string): number {
     "utf8",
   );
   return findings.length;
+}
+
+function recoverFindingsFromCodexSessions(
+  scanDir: string,
+  sessionsRoot: string,
+): SessionRecovery {
+  const empty: SessionRecovery = {
+    findings: [],
+    sessionCount: 0,
+    consolidated: false,
+  };
+  if (!fs.existsSync(sessionsRoot)) return empty;
+
+  const resolvedScanDir = path.resolve(scanDir);
+  const sessions = listJsonlFiles(sessionsRoot)
+    .map(readSessionMeta)
+    .filter((meta): meta is CodexSessionMeta => meta !== null)
+    .filter((meta) => path.resolve(meta.cwd) === resolvedScanDir);
+  if (sessions.length === 0) return empty;
+
+  const root = sessions
+    .filter((session) => session.parentId === null)
+    .sort((left, right) => left.timestamp.localeCompare(right.timestamp))
+    .at(-1);
+  const scoped = root
+    ? sessions.filter(
+        (session) => session.id === root.id || session.parentId === root.id,
+      )
+    : sessions;
+
+  const rootFindings = root ? readLastSessionFindings(root.file) : [];
+  const sourceSessions = rootFindings.length > 0
+    ? [{ session: root!, findings: rootFindings }]
+    : scoped
+        .filter((session) => session.id !== root?.id)
+        .map((session) => ({
+          session,
+          findings: readLastSessionFindings(session.file),
+        }))
+        .filter((entry) => entry.findings.length > 0);
+
+  const seen = new Set<string>();
+  const recovered: Array<Record<string, unknown>> = [];
+  for (const { session, findings: rawFindings } of sourceSessions) {
+    rawFindings.forEach((raw, index) => {
+      const normalized = normalizeSessionFinding(
+        raw,
+        session.id,
+        index,
+        rootFindings.length > 0,
+      );
+      const key = String(normalized.title ?? "").trim().toLowerCase();
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      recovered.push(normalized);
+    });
+  }
+
+  return {
+    findings: recovered,
+    sessionCount: sourceSessions.length,
+    consolidated: rootFindings.length > 0,
+  };
+}
+
+function listJsonlFiles(root: string): string[] {
+  const files: string[] = [];
+  const stack = [root];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const target = path.join(current, entry.name);
+      if (entry.isDirectory()) stack.push(target);
+      else if (entry.isFile() && entry.name.endsWith(".jsonl")) files.push(target);
+    }
+  }
+  return files;
+}
+
+function readSessionMeta(file: string): CodexSessionMeta | null {
+  let descriptor: number | null = null;
+  try {
+    descriptor = fs.openSync(file, "r");
+    const buffer = Buffer.alloc(64 * 1024);
+    const bytesRead = fs.readSync(descriptor, buffer, 0, buffer.length, 0);
+    const line = buffer.subarray(0, bytesRead).toString("utf8").split(/\r?\n/, 1)[0];
+    if (!line) return null;
+    const row = JSON.parse(line) as {
+      type?: unknown;
+      timestamp?: unknown;
+      payload?: {
+        id?: unknown;
+        parent_thread_id?: unknown;
+        cwd?: unknown;
+      };
+    };
+    if (
+      row.type !== "session_meta" ||
+      typeof row.payload?.id !== "string" ||
+      typeof row.payload.cwd !== "string"
+    ) return null;
+    return {
+      file,
+      id: row.payload.id,
+      parentId:
+        typeof row.payload.parent_thread_id === "string"
+          ? row.payload.parent_thread_id
+          : null,
+      cwd: row.payload.cwd,
+      timestamp: typeof row.timestamp === "string" ? row.timestamp : "",
+    };
+  } catch {
+    return null;
+  } finally {
+    if (descriptor !== null) fs.closeSync(descriptor);
+  }
+}
+
+function readLastSessionFindings(file: string): Array<Record<string, unknown>> {
+  let latest: Array<Record<string, unknown>> = [];
+  let body: string;
+  try {
+    body = fs.readFileSync(file, "utf8");
+  } catch {
+    return latest;
+  }
+  for (const line of body.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      const row = JSON.parse(line) as {
+        type?: unknown;
+        payload?: {
+          type?: unknown;
+          role?: unknown;
+          content?: Array<{ text?: unknown; output_text?: unknown }>;
+        };
+      };
+      if (
+        row.type !== "response_item" ||
+        row.payload?.type !== "message" ||
+        row.payload.role !== "assistant"
+      ) continue;
+      for (const content of row.payload.content ?? []) {
+        const text = typeof content.text === "string"
+          ? content.text
+          : typeof content.output_text === "string"
+            ? content.output_text
+            : null;
+        if (!text) continue;
+        const parsed = parseJsonObject(text);
+        if (parsed && Array.isArray(parsed.findings)) {
+          latest = parsed.findings.filter(
+            (finding): finding is Record<string, unknown> =>
+              Boolean(finding) && typeof finding === "object" && !Array.isArray(finding),
+          );
+        }
+      }
+    } catch {
+      // skip malformed event lines
+    }
+  }
+  return latest;
+}
+
+function parseJsonObject(text: string): Record<string, unknown> | null {
+  const trimmed = text.trim();
+  const candidate = trimmed.startsWith("```")
+    ? trimmed.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "")
+    : trimmed;
+  try {
+    const parsed = JSON.parse(candidate) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeSessionFinding(
+  raw: Record<string, unknown>,
+  sessionId: string,
+  index: number,
+  consolidated: boolean,
+): Record<string, unknown> {
+  const title = typeof raw.title === "string" && raw.title.trim()
+    ? raw.title.trim()
+    : `Recovered finding ${index + 1}`;
+  const severity = normalizeSeverity(raw.severity);
+  const cwe = typeof raw.cwe === "string"
+    ? [raw.cwe]
+    : Array.isArray(raw.cwe)
+      ? raw.cwe.filter((value): value is string => typeof value === "string")
+      : [];
+  const locations = normalizeSessionLocations(raw.locations);
+  const summary = firstString(
+    raw.summary,
+    raw.concrete_impact,
+    raw.impact,
+    raw.source_to_sink_explanation,
+    raw.source_to_sink,
+  );
+  const id = `recovered-session-${sessionId}-${index + 1}`;
+
+  return {
+    findingId: id,
+    occurrenceId: id,
+    title,
+    summary: summary ?? title,
+    severity: { level: severity },
+    confidence: {
+      level: typeof raw.confidence === "string" ? raw.confidence : "medium",
+      rationale:
+        "Recovered from a Codex worker result after the scan stopped before sealing findings.json.",
+    },
+    ruleId: `session-recovery/${cwe[0] ?? "unclassified"}`,
+    remediation: firstString(raw.recommended_remediation, raw.remediation),
+    locations,
+    codeEvidence: [],
+    taxonomy: { category: "Recovered worker finding", cwe },
+    validation: {
+      supportingEvidence: raw.supporting_evidence ?? raw.supporting_source_evidence ?? null,
+      counterEvidence: raw.counterevidence ?? null,
+    },
+    provenance: {
+      source: "codex-session-recovery",
+      sessionId,
+      consolidated,
+    },
+  };
+}
+
+function normalizeSessionLocations(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((location) => {
+    if (typeof location === "string") {
+      const match = location.match(/^(.*?):(\d+(?:-\d+)?)$/);
+      return [{
+        path: match?.[1] ?? location,
+        lines: match?.[2] ?? null,
+        role: "primary",
+      }];
+    }
+    if (!location || typeof location !== "object") return [];
+    const record = location as Record<string, unknown>;
+    const locationPath = firstString(record.path, record.file);
+    if (!locationPath) return [];
+    return [{
+      path: locationPath,
+      lines: typeof record.lines === "string" ? record.lines : null,
+      role: "primary",
+    }];
+  });
+}
+
+function firstString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
 }
 
 export function readFindingsFile(scanDir: string): FindingDetail[] {

@@ -167,7 +167,7 @@ export function ComparePage() {
     />
     {error && <AlertBanner>{error}</AlertBanner>}
     {!result && <>
-      {partialScanCount > 0 && <AlertBanner tone="warning"><strong>{partialScanCount} scans interrompidos preservaram findings.</strong> Eles aparecem abaixo como resultados parciais; podem entrar no diff, mas não representam cobertura concluída.</AlertBanner>}
+      {partialScanCount > 0 && <AlertBanner tone="warning"><strong>{partialScanCount} scans interrompidos preservaram findings.</strong> Eles aparecem abaixo como resultados parciais; podem entrar no diff, mas não representam cobertura concluída e podem conter sobreposição quando a consolidação não terminou.</AlertBanner>}
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
       <Panel className="order-2 xl:order-1" label="RUN LIBRARY" title={`${scans.length} scans comparáveis`} aside={<span className="font-mono text-[8px] text-muted-foreground">SELECIONE 2–{MAX_COMPARE_SCANS} · {partialScanCount} PARCIAIS</span>}>
         {scans.length ? <div className="grid md:grid-cols-2 xl:max-h-[32rem] xl:overflow-auto">
@@ -288,7 +288,7 @@ function ComparisonOutput({ result }: { result: CompareResult }) {
   return <section className="mt-6">
     <div className="mb-3 flex items-center gap-3"><span className="bench-label text-primary">SECURITY CHANGESET / {partialScans.length ? "PARTIAL INPUT" : "READY"}</span><span className="h-px flex-1 bg-border" /><span className="font-mono text-[8px] text-muted-foreground">{result.scans.length} SCANS · 1 BASELINE · {result.candidateScanIds.length} CANDIDATOS · {partialScans.length} PARCIAIS</span></div>
     <AlertBanner tone="info"><strong>Leitura de cobertura, não de remediação.</strong> “Só baseline” significa que o candidato não reportou o sinal; isso não prova que a vulnerabilidade foi corrigida. Da mesma forma, “só candidato” não significa que ela surgiu agora.</AlertBanner>
-    {partialScans.length > 0 && <AlertBanner tone="warning"><strong>{partialScans.length === 1 ? "Uma execução falhou" : `${partialScans.length} execuções falharam`} depois de produzir findings.</strong> Os resultados preservados entram nos gráficos e no ranking, mas custo, duração e cobertura descrevem apenas o trabalho realizado antes da interrupção.</AlertBanner>}
+    {partialScans.length > 0 && <AlertBanner tone="warning"><strong>{partialScans.length === 1 ? "Uma execução falhou" : `${partialScans.length} execuções falharam`} depois de produzir findings.</strong> Os resultados preservados entram nos gráficos e no ranking, mas custo, duração e cobertura descrevem apenas o trabalho realizado antes da interrupção; quando o scan parou antes da consolidação, pode haver sobreposição entre workers.</AlertBanner>}
     {!sameRepository && <AlertBanner tone="warning">Os scans pertencem a alvos diferentes. O diff continua disponível, mas sinais exclusivos podem refletir aplicações diferentes, não regressões.</AlertBanner>}
     <DecisionCockpit ranking={decisionRanking} objective={objective} onObjectiveChange={setObjective} />
     <UnitEconomicsSummary rows={decisionRanking} baselineScanId={result.baselineScanId} />
