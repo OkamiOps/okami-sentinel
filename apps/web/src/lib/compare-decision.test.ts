@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ScanRun } from "@csb/shared";
-import { buildDecisionRanking, buildMarginalEconomics } from "./compare-decision";
+import { buildDecisionRanking, buildMarginalEconomics, isComparableScan, isPartialComparableScan } from "./compare-decision";
 
 function scan(id: string, total: number, high: number, cost: number | null, durationMs: number | null): ScanRun {
   return {
@@ -60,4 +60,15 @@ test("keeps the balanced score bounded and ordered", () => {
   const ranking = buildDecisionRanking([scan("wide", 30, 12, 30, 30_000), scan("efficient", 15, 8, 4, 20_000)], "balanced");
   assert.ok(ranking[0].score >= ranking[1].score);
   assert.ok(ranking.every((row) => row.score >= 0 && row.score <= 100));
+});
+
+test("accepts failed scans only when they preserved findings", () => {
+  const partial = { ...scan("partial", 12, 4, 20, 30_000), status: "failed" as const };
+  const emptyFailure = { ...scan("empty", 0, 0, 2, 10_000), status: "failed" as const };
+
+  assert.equal(isComparableScan(partial), true);
+  assert.equal(isPartialComparableScan(partial), true);
+  assert.equal(isComparableScan(emptyFailure), false);
+  assert.equal(isPartialComparableScan(emptyFailure), false);
+  assert.equal(isComparableScan(scan("complete", 0, 0, 1, 10_000)), true);
 });

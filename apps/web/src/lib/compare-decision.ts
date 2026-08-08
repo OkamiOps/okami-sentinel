@@ -26,6 +26,14 @@ export interface MarginalDecisionRow {
   costPerExtraHighPlus: number | null;
 }
 
+export function isPartialComparableScan(scan: ScanRun): boolean {
+  return scan.status === "failed" && scan.severity.total > 0;
+}
+
+export function isComparableScan(scan: ScanRun): boolean {
+  return scan.status === "completed" || isPartialComparableScan(scan);
+}
+
 function ratio(value: number, maximum: number): number {
   return maximum > 0 ? value / maximum : 0;
 }

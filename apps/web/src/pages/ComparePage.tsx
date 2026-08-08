@@ -40,6 +40,7 @@ import {
   Panel,
   SeverityBadge,
   SeverityStrip,
+  StatusBadge,
   cx,
 } from "../components/ui";
 import { Button } from "@/components/ui/button";
@@ -52,7 +53,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { formatDate, formatDuration, formatTokens, formatUsd, shortId } from "../format";
-import { buildDecisionRanking, buildMarginalEconomics, type CompareObjective, type ScanDecisionRow } from "../lib/compare-decision";
+import {
+  buildDecisionRanking,
+  buildMarginalEconomics,
+  isComparableScan,
+  isPartialComparableScan,
+  type CompareObjective,
+  type ScanDecisionRow,
+} from "../lib/compare-decision";
 
 const changeOrder: CompareFindingChange[] = [
   "candidate_only",
@@ -102,10 +110,10 @@ export function ComparePage() {
     void api
       .listScans()
       .then(({ scans: all }) => {
-        const complete = all.filter((scan) => scan.status === "completed");
-        setScans(complete);
+        const comparable = all.filter(isComparableScan);
+        setScans(comparable);
         const ids = (params.get("ids") ?? "").split(",").filter(Boolean);
-        setSelected(ids.filter((id) => complete.some((scan) => scan.id === id)).slice(0, 5));
+        setSelected(ids.filter((id) => comparable.some((scan) => scan.id === id)).slice(0, 5));
       })
       .catch((reason) => setError(reason instanceof Error ? reason.message : "Falha ao listar scans"));
   }, [params]);
@@ -114,6 +122,7 @@ export function ComparePage() {
     () => selected.map((id) => scans.find((scan) => scan.id === id)).filter((scan): scan is ScanRun => Boolean(scan)),
     [selected, scans],
   );
+  const partialScanCount = scans.filter(isPartialComparableScan).length;
 
   function toggle(id: string) {
     if (!selected.includes(id) && selected.length >= 5) {
@@ -156,8 +165,10 @@ export function ComparePage() {
       </Button>}
     />
     {error && <AlertBanner>{error}</AlertBanner>}
-    {!result && <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
-      <Panel className="order-2 xl:order-1" label="RUN LIBRARY" title={`${scans.length} scans concluídos`} aside={<span className="font-mono text-[8px] text-muted-foreground">SELECIONE 2–5</span>}>
+    {!result && <>
+      {partialScanCount > 0 && <AlertBanner tone="warning"><strong>{partialScanCount} scans interrompidos preservaram findings.</strong> Eles aparecem abaixo como resultados parciais; podem entrar no diff, mas não representam cobertura concluída.</AlertBanner>}
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
+      <Panel className="order-2 xl:order-1" label="RUN LIBRARY" title={`${scans.length} scans comparáveis`} aside={<span className="font-mono text-[8px] text-muted-foreground">SELECIONE 2–5 · {partialScanCount} PARCIAIS</span>}>
         {scans.length ? <div className="grid md:grid-cols-2 xl:max-h-[32rem] xl:overflow-auto">
           {scans.map((scan) => {
             const position = selected.indexOf(scan.id);
@@ -178,7 +189,10 @@ export function ComparePage() {
               <span className="min-w-0">
                 <span className="flex items-start justify-between gap-3">
                   <span className="truncate text-sm font-semibold">{scan.displayName}</span>
-                  {active && <span className="shrink-0 font-mono text-[8px] text-primary">{position === 0 ? "BASELINE" : `CANDIDATO ${String(position).padStart(2, "0")}`}</span>}
+                  <span className="flex shrink-0 flex-col items-end gap-1">
+                    <PartialScanBadges scan={scan} compact />
+                    {active && <span className="font-mono text-[8px] text-primary">{position === 0 ? "BASELINE" : `CANDIDATO ${String(position).padStart(2, "0")}`}</span>}
+                  </span>
                 </span>
                 <span className="mt-1 block truncate font-mono text-[9px] text-muted-foreground">{scan.model}/{scan.effort}/{scan.mode}</span>
                 <span className="mt-4 block"><SeverityStrip counts={scan.severity} total={scan.severity.total} /></span>
@@ -190,7 +204,7 @@ export function ComparePage() {
               </span>
             </button>;
           })}
-        </div> : <EmptyState title="Nenhum scan concluído" description="Conclua dois scans para produzir um diff de segurança." />}
+        </div> : <EmptyState title="Nenhum scan comparável" description="Conclua dois scans ou preserve findings em uma execução interrompida para produzir um diff." />}
       </Panel>
       <Panel className="order-1 h-fit xl:order-2 xl:sticky xl:top-24" label="DIFF INPUT" title="Ordem da comparação">
         <CompareSlot role="BASELINE" scan={chosen[0]} onRemove={() => chosen[0] && toggle(chosen[0].id)} />
@@ -205,7 +219,8 @@ export function ComparePage() {
           <Button className="w-full" onClick={() => void compare()} disabled={chosen.length < 2 || busy}>Executar diff de {chosen.length} scans</Button>
         </div>
       </Panel>
-    </div>}
+      </div>
+    </>}
     {result && <ComparisonOutput result={result} />}
   </div>;
 }
@@ -215,11 +230,19 @@ function CompareSlot({ role, scan, onRemove, onPromote }: { role: string; scan?:
     <div className="bench-label text-primary">{role}</div>
     {scan ? <div className="mt-2">
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0"><div className="truncate text-sm font-semibold">{scan.displayName}</div><div className="mt-1 truncate font-mono text-[8px] text-muted-foreground">{shortId(scan.id)} · {formatDate(scan.startedAt)}</div></div>
+        <div className="min-w-0"><div className="truncate text-sm font-semibold">{scan.displayName}</div><div className="mt-1 truncate font-mono text-[8px] text-muted-foreground">{shortId(scan.id)} · {formatDate(scan.startedAt)}</div><PartialScanBadges scan={scan} /></div>
         <div className="flex shrink-0 flex-col items-end gap-1">{onPromote && <button type="button" onClick={onPromote} className="font-mono text-[7px] uppercase text-primary hover:text-foreground">usar baseline</button>}<button type="button" onClick={onRemove} className="font-mono text-[8px] uppercase text-muted-foreground hover:text-destructive">remover</button></div>
       </div>
     </div> : <p className="mt-2 text-xs leading-relaxed text-muted-foreground">Selecione um scan na biblioteca.</p>}
   </div>;
+}
+
+function PartialScanBadges({ scan, compact = false }: { scan: ScanRun; compact?: boolean }) {
+  if (!isPartialComparableScan(scan)) return null;
+  return <span className="mt-2 flex flex-wrap items-center gap-1.5">
+    <StatusBadge status={scan.status} />
+    <span className="inline-flex h-5 items-center border border-chart-3/40 bg-chart-3/[.08] px-1.5 font-mono text-[8px] uppercase tracking-wider text-chart-3">{compact ? "parcial" : "resultado parcial"}</span>
+  </span>;
 }
 
 function ComparisonOutput({ result }: { result: CompareResult }) {
@@ -253,6 +276,7 @@ function ComparisonOutput({ result }: { result: CompareResult }) {
   const candidateHigh = candidate.severity.critical + candidate.severity.high;
   const highDelta = candidateHigh - baselineHigh;
   const sameRepository = normalizePath(baseline.repositoryPath) === normalizePath(candidate.repositoryPath);
+  const partialScans = result.scans.filter(isPartialComparableScan);
   function selectCandidate(id: string) {
     setActiveCandidateId(id);
     setChange("all");
@@ -261,8 +285,9 @@ function ComparisonOutput({ result }: { result: CompareResult }) {
   }
 
   return <section className="mt-6">
-    <div className="mb-3 flex items-center gap-3"><span className="bench-label text-primary">SECURITY CHANGESET / READY</span><span className="h-px flex-1 bg-border" /><span className="font-mono text-[8px] text-muted-foreground">{result.scans.length} SCANS · 1 BASELINE · {result.candidateScanIds.length} CANDIDATOS</span></div>
+    <div className="mb-3 flex items-center gap-3"><span className="bench-label text-primary">SECURITY CHANGESET / {partialScans.length ? "PARTIAL INPUT" : "READY"}</span><span className="h-px flex-1 bg-border" /><span className="font-mono text-[8px] text-muted-foreground">{result.scans.length} SCANS · 1 BASELINE · {result.candidateScanIds.length} CANDIDATOS · {partialScans.length} PARCIAIS</span></div>
     <AlertBanner tone="info"><strong>Leitura de cobertura, não de remediação.</strong> “Só baseline” significa que o candidato não reportou o sinal; isso não prova que a vulnerabilidade foi corrigida. Da mesma forma, “só candidato” não significa que ela surgiu agora.</AlertBanner>
+    {partialScans.length > 0 && <AlertBanner tone="warning"><strong>{partialScans.length === 1 ? "Uma execução falhou" : `${partialScans.length} execuções falharam`} depois de produzir findings.</strong> Os resultados preservados entram nos gráficos e no ranking, mas custo, duração e cobertura descrevem apenas o trabalho realizado antes da interrupção.</AlertBanner>}
     {!sameRepository && <AlertBanner tone="warning">Os scans pertencem a alvos diferentes. O diff continua disponível, mas sinais exclusivos podem refletir aplicações diferentes, não regressões.</AlertBanner>}
     <DecisionCockpit ranking={decisionRanking} objective={objective} onObjectiveChange={setObjective} />
     <UnitEconomicsSummary rows={decisionRanking} baselineScanId={result.baselineScanId} />
@@ -325,7 +350,7 @@ function CandidateRail({ result, activeCandidateId, onSelect }: { result: Compar
         const highDelta = scan.severity.critical + scan.severity.high - baselineHigh;
         return <button key={id} type="button" aria-pressed={activeCandidateId === id} onClick={() => onSelect(id)} className={cx("min-w-0 border-b border-r p-4 text-left transition hover:bg-accent/60", activeCandidateId === id && "bg-accent shadow-[inset_0_-2px_0_var(--primary)]")}>
           <div className="flex items-center justify-between gap-2"><span className="font-mono text-[8px] text-primary">C-{String(index + 1).padStart(2, "0")}</span><span className={cx("font-mono text-[9px]", highDelta > 0 ? "text-destructive" : highDelta < 0 ? "text-chart-2" : "text-muted-foreground")}>{signed(highDelta)} high+</span></div>
-          <div className="mt-2 truncate text-xs font-semibold">{scan.displayName}</div>
+          <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2"><span className="truncate text-xs font-semibold">{scan.displayName}</span><PartialScanBadges scan={scan} compact /></div>
           <div className="mt-1 truncate font-mono text-[8px] text-muted-foreground">{scan.model}/{scan.effort}/{scan.mode}</div>
           <div className="mt-3 flex gap-3 font-mono text-[8px]"><span className="text-primary">{comparison.counts.candidate_only} só candidato</span><span className="text-chart-3">{comparison.counts.baseline_only} só baseline</span></div>
         </button>;
@@ -383,7 +408,7 @@ function DecisionCockpit({ ranking, objective, onObjectiveChange }: { ranking: S
       <div className="relative min-h-72 overflow-hidden border-b p-6 xl:border-b-0 xl:border-r">
         <div className="pointer-events-none absolute -right-8 -top-12 font-mono text-[12rem] font-semibold leading-none text-primary/[.035]">01</div>
         <div className="bench-label text-primary">VENCEDOR / {meta.label}</div>
-        <div className="mt-4 max-w-3xl font-heading text-3xl font-semibold tracking-[-.045em] sm:text-5xl">{decisionProfile(winner.scan)}</div>
+        <div className="mt-4 flex flex-wrap items-end gap-3"><div className="max-w-3xl font-heading text-3xl font-semibold tracking-[-.045em] sm:text-5xl">{decisionProfile(winner.scan)}</div><PartialScanBadges scan={winner.scan} /></div>
         <div className="mt-2 font-mono text-[9px] text-muted-foreground">{winner.scan.displayName} · {shortId(winner.scan.id)}</div>
         <p className="mt-5 max-w-2xl text-sm leading-relaxed text-foreground/80">{decisionReason(winner, objective)}</p>
         <div className="mt-6 grid grid-cols-2 border sm:grid-cols-4">
@@ -396,7 +421,7 @@ function DecisionCockpit({ ranking, objective, onObjectiveChange }: { ranking: S
           <DecisionMetric label="FINDINGS / H" value={formatRate(winner.findingsPerHour)} />
           <DecisionMetric label="DURAÇÃO" value={formatDuration(winner.durationMs)} />
         </div>
-        {runnerUp && <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[8px] text-muted-foreground"><span>2º LUGAR</span><span className="text-foreground">{decisionProfile(runnerUp.scan)}</span><span>{decisionValue(runnerUp, objective)}</span></div>}
+        {runnerUp && <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[8px] text-muted-foreground"><span>2º LUGAR</span><span className="text-foreground">{decisionProfile(runnerUp.scan)}</span><span>{decisionValue(runnerUp, objective)}</span><PartialScanBadges scan={runnerUp.scan} compact /></div>}
       </div>
       <div className="flex flex-col justify-between bg-muted/10 p-6">
         <div>
@@ -443,6 +468,7 @@ function EconomicsLeader({ label, row, value, detail }: { label: string; row?: S
     <div className="bench-label text-primary">{label}</div>
     <div className="mt-3 font-mono text-2xl font-semibold tracking-[-.04em]">{value}</div>
     <div className="mt-3 truncate text-xs font-semibold">{row ? decisionProfile(row.scan) : "Sem vencedor"}</div>
+    {row && <PartialScanBadges scan={row.scan} compact />}
     <div className="mt-1 text-[9px] leading-relaxed text-muted-foreground">{detail}</div>
   </div>;
 }
@@ -595,7 +621,7 @@ function DetectionScoreboard({ ranking, objective, baselineScanId, activeCandida
           const marginal = marginalById.get(scan.id);
           return <tr key={scan.id} className={cx(scan.id === activeCandidateId && "bg-accent")}>
             <td className={cx("sticky left-0 z-10 font-mono text-lg font-semibold", scan.id === activeCandidateId ? "bg-accent" : "bg-background", index === 0 ? "text-primary" : "text-muted-foreground")}>{String(index + 1).padStart(2, "0")}</td>
-            <td className={cx("sticky left-12 z-10", scan.id === activeCandidateId ? "bg-accent" : "bg-background")}><button type="button" disabled={!selectable} onClick={() => onSelect(scan.id)} className="max-w-56 text-left disabled:cursor-default"><span className="flex items-center gap-2"><span className="truncate text-xs font-semibold">{decisionProfile(scan)}</span>{index === 0 && <span className="shrink-0 border border-primary/40 px-1.5 py-0.5 font-mono text-[7px] uppercase text-primary">vence</span>}</span><span className="mt-1 block truncate font-mono text-[8px] text-muted-foreground">{scan.id === baselineScanId ? "BASELINE" : scan.displayName}</span></button></td>
+            <td className={cx("sticky left-12 z-10", scan.id === activeCandidateId ? "bg-accent" : "bg-background")}><button type="button" disabled={!selectable} onClick={() => onSelect(scan.id)} className="max-w-56 text-left disabled:cursor-default"><span className="flex items-center gap-2"><span className="truncate text-xs font-semibold">{decisionProfile(scan)}</span>{index === 0 && <span className="shrink-0 border border-primary/40 px-1.5 py-0.5 font-mono text-[7px] uppercase text-primary">vence</span>}</span><span className="mt-1 flex flex-wrap items-center gap-2"><span className="truncate font-mono text-[8px] text-muted-foreground">{scan.id === baselineScanId ? "BASELINE" : scan.displayName}</span><PartialScanBadges scan={scan} compact /></span></button></td>
             <td className="font-mono text-sm font-semibold text-primary">{decisionValue(row, objective)}</td>
             <td><div className="flex items-center gap-3"><div className="h-1.5 w-20 overflow-hidden bg-muted"><div className="h-full bg-primary" style={{ width: `${Math.max(0, Math.min(100, row.score))}%` }} /></div><span className="font-mono text-[9px]">{row.score.toFixed(0)}</span></div></td>
             <td className="font-mono text-sm font-semibold">{row.total}</td>
@@ -626,6 +652,7 @@ function RunReadout({ role, scan }: { role: string; scan: ScanRun }) {
     <div className="bench-label text-primary">{role} / {shortId(scan.id)}</div>
     <div className="mt-2 truncate font-heading text-xl font-semibold tracking-[-.035em]">{scan.displayName}</div>
     <div className="mt-1 truncate font-mono text-[9px] text-muted-foreground">{scan.model}/{scan.effort}/{scan.mode}</div>
+    <PartialScanBadges scan={scan} />
     <div className="mt-5"><SeverityStrip counts={scan.severity} total={scan.severity.total} /></div>
     <div className="mt-2 flex items-center justify-between gap-3 font-mono text-[9px]"><span>{scan.severity.total} findings</span><span className="text-muted-foreground">{formatDate(scan.startedAt)}</span></div>
     <div className="mt-3 truncate border-l border-primary/50 pl-3 font-mono text-[8px] text-muted-foreground">REV / {scan.revision ? shortId(scan.revision) : "unversioned"}</div>
@@ -738,7 +765,7 @@ function decisionProfile(scan: ScanRun): string {
 
 function chartProfile(scan: ScanRun): string {
   const model = scan.model?.replace(/^gpt-5\.6-/, "") ?? "modelo";
-  return `${model}/${scan.effort ?? "—"}`;
+  return `${model}/${scan.effort ?? "—"}${isPartialComparableScan(scan) ? " · parcial" : ""}`;
 }
 
 function decisionValue(row: ScanDecisionRow, objective: CompareObjective): string {
@@ -752,12 +779,13 @@ function decisionValue(row: ScanDecisionRow, objective: CompareObjective): strin
 
 function decisionReason(row: ScanDecisionRow, objective: CompareObjective): string {
   const profile = decisionProfile(row.scan);
-  if (objective === "coverage") return `${profile} lidera em cobertura observada com ${row.total} achados reportados. Isso mede amplitude, não confirma que todos sejam verdadeiros positivos.`;
-  if (objective === "high_plus") return `${profile} reportou ${row.highPlus} sinais Critical ou High, o maior volume prioritário deste recorte.`;
-  if (objective === "cost_per_finding") return `${profile} custou ${formatUsd(row.costPerFinding)} por finding reportado, o menor custo unitário do comparativo.`;
-  if (objective === "cost_per_high") return `${profile} custou ${formatUsd(row.costPerHighPlus)} por sinal Critical ou High, o melhor retorno para achados prioritários.`;
-  if (objective === "speed") return `${profile} terminou em ${formatDuration(row.durationMs)}, a menor duração registrada neste comparativo.`;
-  return `${profile} oferece o melhor equilíbrio relativo: 30% cobertura, 25% High+, 20% custo por finding, 15% custo por High+ e 10% velocidade.`;
+  const partialNote = isPartialComparableScan(row.scan) ? " Resultado parcial: a execução foi interrompida antes de concluir a cobertura." : "";
+  if (objective === "coverage") return `${profile} lidera em cobertura observada com ${row.total} achados reportados. Isso mede amplitude, não confirma que todos sejam verdadeiros positivos.${partialNote}`;
+  if (objective === "high_plus") return `${profile} reportou ${row.highPlus} sinais Critical ou High, o maior volume prioritário deste recorte.${partialNote}`;
+  if (objective === "cost_per_finding") return `${profile} custou ${formatUsd(row.costPerFinding)} por finding reportado, o menor custo unitário do comparativo.${partialNote}`;
+  if (objective === "cost_per_high") return `${profile} custou ${formatUsd(row.costPerHighPlus)} por sinal Critical ou High, o melhor retorno para achados prioritários.${partialNote}`;
+  if (objective === "speed") return `${profile} terminou em ${formatDuration(row.durationMs)}, a menor duração registrada neste comparativo.${partialNote}`;
+  return `${profile} oferece o melhor equilíbrio relativo: 30% cobertura, 25% High+, 20% custo por finding, 15% custo por High+ e 10% velocidade.${partialNote}`;
 }
 
 function formatChartValue(value: TooltipValueType | undefined): string {
