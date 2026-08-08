@@ -7,6 +7,22 @@ import {
   Search01Icon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Legend,
+  ResponsiveContainer,
+  Scatter,
+  ScatterChart,
+  Tooltip as RechartsTooltip,
+  XAxis,
+  YAxis,
+  ZAxis,
+  type TooltipContentProps,
+  type TooltipValueType,
+} from "recharts";
 import type {
   CompareFindingChange,
   CompareFindingDelta,
@@ -36,6 +52,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { formatDate, formatDuration, formatTokens, formatUsd, shortId } from "../format";
+import { buildDecisionRanking, type CompareObjective, type ScanDecisionRow } from "../lib/compare-decision";
 
 const changeOrder: CompareFindingChange[] = [
   "candidate_only",
@@ -63,6 +80,14 @@ const severityRows: Array<[keyof SeverityCounts, string]> = [
   ["info", "Info"],
   ["total", "Total"],
 ];
+const objectives: Array<{ id: CompareObjective; label: string; description: string }> = [
+  { id: "balanced", label: "Equilíbrio", description: "Cobertura 40% · High+ 30% · eficiência 20% · velocidade 10%" },
+  { id: "coverage", label: "Cobertura", description: "Maior volume total reportado" },
+  { id: "high_plus", label: "High+", description: "Maior volume crítico + alto" },
+  { id: "efficiency", label: "Eficiência $", description: "Mais High+ reportado por dólar" },
+  { id: "speed", label: "Velocidade", description: "Menor duração medida" },
+];
+const scanChartColors = ["var(--primary)", "var(--chart-3)", "var(--chart-2)", "var(--chart-4)", "var(--chart-5)"];
 
 export function ComparePage() {
   const [params] = useSearchParams();
@@ -123,15 +148,15 @@ export function ComparePage() {
     <PageHeader
       code="05 / COMPARE"
       title="Diff de segurança"
-      description="Escolha um baseline e até quatro candidatos. A matriz compara todos os scans; o ledger detalha cada candidato contra o mesmo baseline."
-      actions={<Button onClick={() => void compare()} disabled={busy || selected.length < 2}>
+      description="Escolha um baseline e até quatro candidatos. O cockpit aponta o vencedor por objetivo; o diff mostra exatamente onde as execuções divergem."
+      actions={result ? <Button variant="outline" onClick={() => setResult(null)}>ALTERAR SCANS</Button> : <Button onClick={() => void compare()} disabled={busy || selected.length < 2}>
         <HugeiconsIcon icon={Analytics01Icon} size={13} />
         {busy ? "CALCULANDO DIFF…" : `COMPARAR ${selected.length} SCANS`}
       </Button>}
     />
     {error && <AlertBanner>{error}</AlertBanner>}
-    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
-      <Panel className={cx("order-2 xl:order-1", result && "hidden xl:block")} label="RUN LIBRARY" title={`${scans.length} scans concluídos`} aside={<span className="font-mono text-[8px] text-muted-foreground">SELECIONE 2–5</span>}>
+    {!result && <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
+      <Panel className="order-2 xl:order-1" label="RUN LIBRARY" title={`${scans.length} scans concluídos`} aside={<span className="font-mono text-[8px] text-muted-foreground">SELECIONE 2–5</span>}>
         {scans.length ? <div className="grid md:grid-cols-2 xl:max-h-[32rem] xl:overflow-auto">
           {scans.map((scan) => {
             const position = selected.indexOf(scan.id);
@@ -179,7 +204,7 @@ export function ComparePage() {
           <Button className="w-full" onClick={() => void compare()} disabled={chosen.length < 2 || busy}>Executar diff de {chosen.length} scans</Button>
         </div>
       </Panel>
-    </div>
+    </div>}
     {result && <ComparisonOutput result={result} />}
   </div>;
 }
@@ -199,15 +224,18 @@ function CompareSlot({ role, scan, onRemove, onPromote }: { role: string; scan?:
 function ComparisonOutput({ result }: { result: CompareResult }) {
   const baseline = result.scans.find((scan) => scan.id === result.baselineScanId);
   const [activeCandidateId, setActiveCandidateId] = useState(result.candidateScanIds[0] ?? "");
+  const [objective, setObjective] = useState<CompareObjective>("balanced");
   const [change, setChange] = useState<CompareFindingChange | "all">("all");
   const [severity, setSeverity] = useState<Severity | "all">("all");
   const [query, setQuery] = useState("");
   useEffect(() => {
     setActiveCandidateId(result.candidateScanIds[0] ?? "");
+    setObjective("balanced");
     setChange("all");
     setSeverity("all");
     setQuery("");
   }, [result]);
+  const decisionRanking = useMemo(() => buildDecisionRanking(result.scans, objective), [result.scans, objective]);
   const comparison = result.comparisons.find((item) => item.candidateScanId === activeCandidateId);
   const candidate = result.scans.find((scan) => scan.id === activeCandidateId);
   const pairFindings = comparison?.findings ?? [];
@@ -235,6 +263,9 @@ function ComparisonOutput({ result }: { result: CompareResult }) {
     <div className="mb-3 flex items-center gap-3"><span className="bench-label text-primary">SECURITY CHANGESET / READY</span><span className="h-px flex-1 bg-border" /><span className="font-mono text-[8px] text-muted-foreground">{result.scans.length} SCANS · 1 BASELINE · {result.candidateScanIds.length} CANDIDATOS</span></div>
     <AlertBanner tone="info"><strong>Leitura de cobertura, não de remediação.</strong> “Só baseline” significa que o candidato não reportou o sinal; isso não prova que a vulnerabilidade foi corrigida. Da mesma forma, “só candidato” não significa que ela surgiu agora.</AlertBanner>
     {!sameRepository && <AlertBanner tone="warning">Os scans pertencem a alvos diferentes. O diff continua disponível, mas sinais exclusivos podem refletir aplicações diferentes, não regressões.</AlertBanner>}
+    <DecisionCockpit ranking={decisionRanking} objective={objective} onObjectiveChange={setObjective} />
+    <ComparisonCharts result={result} activeCandidateId={activeCandidateId} onSelectCandidate={selectCandidate} />
+    <DetectionScoreboard ranking={decisionRanking} objective={objective} baselineScanId={result.baselineScanId} activeCandidateId={activeCandidateId} onSelect={selectCandidate} />
     <CandidateRail result={result} activeCandidateId={activeCandidateId} onSelect={selectCandidate} />
     <div className="bench-panel bench-corners">
       <div className="grid lg:grid-cols-[minmax(0,1fr)_16rem_minmax(0,1fr)]">
@@ -253,9 +284,6 @@ function ComparisonOutput({ result }: { result: CompareResult }) {
         </button>)}
       </div>
     </div>
-
-    <ScanSeverityMatrix scans={result.scans} baselineScanId={result.baselineScanId} activeCandidateId={activeCandidateId} onSelect={selectCandidate} />
-    <DetectionScoreboard scans={result.scans} baselineScanId={result.baselineScanId} activeCandidateId={activeCandidateId} />
 
     <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,.85fr)_minmax(0,1.15fr)]">
       <SeverityLedger baseline={baseline} candidate={candidate} />
@@ -286,7 +314,7 @@ function ComparisonOutput({ result }: { result: CompareResult }) {
 function CandidateRail({ result, activeCandidateId, onSelect }: { result: CompareResult; activeCandidateId: string; onSelect: (id: string) => void }) {
   const baseline = result.scans.find((scan) => scan.id === result.baselineScanId);
   const baselineHigh = baseline ? baseline.severity.critical + baseline.severity.high : 0;
-  return <Panel className="mb-4" label="CANDIDATE CHANNELS" title="Escolha o diff detalhado" aside={<span className="font-mono text-[8px] text-muted-foreground">TODOS PERMANECEM NA MATRIZ</span>} wrapTitle>
+  return <Panel className="mb-4" label="CANDIDATE CHANNELS" title="Escolha o diff detalhado" aside={<span className="font-mono text-[8px] text-muted-foreground">TODOS PERMANECEM NO RANKING</span>} wrapTitle>
     <div className="grid grid-cols-2 xl:grid-cols-4">
       {result.candidateScanIds.map((id, index) => {
         const scan = result.scans.find((item) => item.id === id);
@@ -304,45 +332,167 @@ function CandidateRail({ result, activeCandidateId, onSelect }: { result: Compar
   </Panel>;
 }
 
-function ScanSeverityMatrix({ scans, baselineScanId, activeCandidateId, onSelect }: { scans: ScanRun[]; baselineScanId: string; activeCandidateId: string; onSelect: (id: string) => void }) {
-  return <Panel className="mt-4" label="MULTI-SCAN MATRIX" title="Achados reportados por severidade" aside={<span className="font-mono text-[8px] text-muted-foreground">CLIQUE EM UM CANDIDATO PARA ABRIR O DIFF</span>} wrapTitle>
-    <div className="overflow-x-auto">
-      <table className="table min-w-[48rem]">
-        <thead><tr className="font-mono text-[8px] uppercase tracking-wider text-muted-foreground"><th>Severidade</th>{scans.map((scan, index) => <th key={scan.id} className={cx("min-w-36", scan.id === activeCandidateId && "bg-accent")}><button type="button" disabled={scan.id === baselineScanId} onClick={() => onSelect(scan.id)} className="w-full text-left disabled:cursor-default"><span className="block text-primary">{scan.id === baselineScanId ? "Baseline" : `C-${String(index).padStart(2, "0")}`}</span><span className="mt-1 block truncate text-[10px] normal-case text-foreground">{scan.displayName}</span><span className="mt-0.5 block truncate text-[7px] font-normal normal-case text-muted-foreground">{scan.model}/{scan.effort}</span></button></th>)}</tr></thead>
-        <tbody>{severityRows.map(([key, label]) => <tr key={key}><td className={cx("font-mono text-[9px] uppercase", key === "critical" && "text-destructive", key === "high" && "text-destructive/80", key === "medium" && "text-chart-3", key === "low" && "text-chart-5", key === "total" && "font-semibold text-foreground")}>{label}</td>{scans.map((scan) => <td key={scan.id} className={cx("font-mono text-sm font-semibold tabular-nums", scan.id === activeCandidateId && "bg-accent text-primary")}>{scan.severity[key]}</td>)}</tr>)}</tbody>
-      </table>
+function DecisionCockpit({ ranking, objective, onObjectiveChange }: { ranking: ScanDecisionRow[]; objective: CompareObjective; onObjectiveChange: (objective: CompareObjective) => void }) {
+  const winner = ranking[0];
+  const runnerUp = ranking[1];
+  const meta = objectives.find((item) => item.id === objective) ?? objectives[0];
+  if (!winner) return null;
+  return <Panel className="mt-4 overflow-hidden" label="DECISION COCKPIT" title="Qual execução foi melhor para o seu objetivo?" aside={<span className="font-mono text-[8px] text-muted-foreground">CRITÉRIO EXPLÍCITO · SEM CHUTE DE PRECISÃO</span>} wrapTitle>
+    <div className="grid border-b sm:grid-cols-2 xl:grid-cols-5">
+      {objectives.map((item) => <button key={item.id} type="button" aria-pressed={objective === item.id} onClick={() => onObjectiveChange(item.id)} className={cx("min-h-20 border-b border-r px-4 py-3 text-left transition hover:bg-accent/60", objective === item.id && "bg-accent shadow-[inset_0_-2px_0_var(--primary)]")}>
+        <span className={cx("block font-mono text-[9px] uppercase tracking-wider", objective === item.id ? "text-primary" : "text-muted-foreground")}>{item.label}</span>
+        <span className="mt-1.5 block text-[9px] leading-snug text-muted-foreground">{item.description}</span>
+      </button>)}
+    </div>
+    <div className="grid xl:grid-cols-[minmax(0,1.25fr)_minmax(20rem,.75fr)]">
+      <div className="relative min-h-72 overflow-hidden border-b p-6 xl:border-b-0 xl:border-r">
+        <div className="pointer-events-none absolute -right-8 -top-12 font-mono text-[12rem] font-semibold leading-none text-primary/[.035]">01</div>
+        <div className="bench-label text-primary">VENCEDOR / {meta.label}</div>
+        <div className="mt-4 max-w-3xl font-heading text-3xl font-semibold tracking-[-.045em] sm:text-5xl">{decisionProfile(winner.scan)}</div>
+        <div className="mt-2 font-mono text-[9px] text-muted-foreground">{winner.scan.displayName} · {shortId(winner.scan.id)}</div>
+        <p className="mt-5 max-w-2xl text-sm leading-relaxed text-foreground/80">{decisionReason(winner, objective)}</p>
+        <div className="mt-6 grid grid-cols-2 border sm:grid-cols-4">
+          <DecisionMetric label="RESULTADO" value={decisionValue(winner, objective)} accent />
+          <DecisionMetric label="HIGH+" value={String(winner.highPlus)} />
+          <DecisionMetric label="CUSTO" value={formatUsd(winner.costUsd)} />
+          <DecisionMetric label="DURAÇÃO" value={formatDuration(winner.durationMs)} />
+        </div>
+        {runnerUp && <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[8px] text-muted-foreground"><span>2º LUGAR</span><span className="text-foreground">{decisionProfile(runnerUp.scan)}</span><span>{decisionValue(runnerUp, objective)}</span></div>}
+      </div>
+      <div className="flex flex-col justify-between bg-muted/10 p-6">
+        <div>
+          <div className="bench-label text-chart-3">LIMITE DA LEITURA</div>
+          <div className="mt-4 font-heading text-2xl font-semibold tracking-[-.035em]">Precisão ainda não é mensurável.</div>
+          <p className="mt-3 text-xs leading-relaxed text-muted-foreground">O ranking mede o que cada execução reportou, quanto custou e quanto demorou. Sem findings confirmados e falsos positivos triados, nenhum scan pode ser chamado de “mais correto”.</p>
+        </div>
+        <div className="mt-8 border-l-2 border-chart-3 pl-4">
+          <div className="font-mono text-[8px] uppercase tracking-wider text-chart-3">COMO VALIDAR QUALIDADE REAL</div>
+          <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">Confirme uma amostra, marque falso positivo/verdadeiro positivo e use esse conjunto como ground truth. Aí o produto poderá calcular precisão, recall e F1 sem vender ficção.</p>
+        </div>
+      </div>
     </div>
   </Panel>;
 }
 
-function DetectionScoreboard({ scans, baselineScanId, activeCandidateId }: { scans: ScanRun[]; baselineScanId: string; activeCandidateId: string }) {
-  const ordered = [...scans].sort((left, right) => right.severity.total - left.severity.total);
-  const largestCount = Math.max(...scans.map((scan) => scan.severity.total));
-  const positiveCosts = scans.map((scan) => scan.cost?.estimatedUsd).filter((value): value is number => value != null && value > 0);
-  const lowestCost = positiveCosts.length ? Math.min(...positiveCosts) : null;
-  return <Panel className="mt-4" label="DETECTION SCOREBOARD" title="Quem reportou mais, quanto custou e quanto demorou" aside={<span className="font-mono text-[8px] text-muted-foreground">VOLUME ≠ PRECISÃO · ORDENADO POR TOTAL</span>} wrapTitle>
+function DecisionMetric({ label, value, accent = false }: { label: string; value: string; accent?: boolean }) {
+  return <div className="min-w-0 border-r p-3"><div className="bench-label">{label}</div><div className={cx("mt-2 truncate font-mono text-sm font-semibold", accent && "text-primary")}>{value}</div></div>;
+}
+
+function ComparisonCharts({ result, activeCandidateId, onSelectCandidate }: { result: CompareResult; activeCandidateId: string; onSelectCandidate: (id: string) => void }) {
+  const severityData = result.scans.map((scan) => ({
+    scanId: scan.id,
+    label: chartProfile(scan),
+    critical: scan.severity.critical,
+    high: scan.severity.high,
+    medium: scan.severity.medium,
+    low: scan.severity.low,
+    info: scan.severity.info,
+    total: scan.severity.total,
+  }));
+  const scatterData = result.scans.filter((scan) => scan.cost?.estimatedUsd != null).map((scan, index) => ({
+    scanId: scan.id,
+    label: chartProfile(scan),
+    cost: scan.cost?.estimatedUsd ?? 0,
+    total: scan.severity.total,
+    highPlus: scan.severity.critical + scan.severity.high,
+    color: scanChartColors[index % scanChartColors.length],
+  }));
+  const agreementData = result.comparisons.map((comparison) => {
+    const scan = result.scans.find((item) => item.id === comparison.candidateScanId);
+    return {
+      scanId: comparison.candidateScanId,
+      label: `${comparison.candidateScanId === activeCandidateId ? "● " : ""}${scan ? chartProfile(scan) : shortId(comparison.candidateScanId)}`,
+      candidateOnly: comparison.counts.candidate_only,
+      shared: comparison.counts.both + comparison.counts.severity_changed,
+      baselineOnly: comparison.counts.baseline_only,
+    };
+  });
+  const severityHeight = Math.max(280, severityData.length * 58);
+  const agreementHeight = Math.max(240, agreementData.length * 62);
+  return <div className="mt-4 grid gap-4 xl:grid-cols-2">
+    <Panel label="SEVERITY PROFILE" title="Composição do que cada scan reportou" aside={<span className="font-mono text-[8px] text-muted-foreground">VALORES ABSOLUTOS</span>} wrapTitle>
+      <div style={{ height: severityHeight }} className="px-2 py-4">
+        <ResponsiveContainer width="100%" height="100%"><BarChart data={severityData} layout="vertical" margin={{ top: 4, right: 18, bottom: 4, left: 16 }}>
+          <CartesianGrid horizontal={false} strokeDasharray="2 5" />
+          <XAxis type="number" axisLine={false} tickLine={false} allowDecimals={false} />
+          <YAxis type="category" dataKey="label" axisLine={false} tickLine={false} width={104} />
+          <RechartsTooltip content={(props) => <DecisionChartTooltip {...props} />} cursor={{ fill: "var(--accent)", fillOpacity: 0.35 }} />
+          <Legend iconType="square" verticalAlign="top" align="right" wrapperStyle={{ fontSize: 9, fontFamily: "var(--font-mono)" }} />
+          <Bar dataKey="critical" name="Critical" stackId="severity" fill="var(--destructive)" />
+          <Bar dataKey="high" name="High" stackId="severity" fill="var(--chart-4)" />
+          <Bar dataKey="medium" name="Medium" stackId="severity" fill="var(--chart-3)" />
+          <Bar dataKey="low" name="Low" stackId="severity" fill="var(--chart-5)" />
+          <Bar dataKey="info" name="Info" stackId="severity" fill="var(--chart-2)" />
+        </BarChart></ResponsiveContainer>
+      </div>
+    </Panel>
+    <Panel label="COST × COVERAGE" title="Quanto de cobertura foi comprado" aside={<span className="font-mono text-[8px] text-muted-foreground">MELHOR ZONA: ALTO E À ESQUERDA</span>} wrapTitle>
+      <div className="grid border-b sm:grid-cols-2 xl:grid-cols-3">{scatterData.map((point) => <button key={point.scanId} type="button" disabled={point.scanId === result.baselineScanId} onClick={() => onSelectCandidate(point.scanId)} className={cx("flex min-w-0 items-center gap-2 border-b border-r px-3 py-2 text-left hover:bg-accent/60 disabled:cursor-default", point.scanId === activeCandidateId && "bg-accent")}><span className="size-2 shrink-0" style={{ background: point.color }} /><span className="min-w-0"><span className="block truncate font-mono text-[8px] text-foreground">{point.label}</span><span className="mt-0.5 block font-mono text-[7px] text-muted-foreground">{formatUsd(point.cost)} · {point.total} achados · {point.highPlus} High+</span></span></button>)}</div>
+      <div className="h-[22rem] px-2 py-4">
+        <ResponsiveContainer width="100%" height="100%"><ScatterChart margin={{ top: 18, right: 24, bottom: 12, left: 0 }}>
+          <CartesianGrid strokeDasharray="2 5" />
+          <XAxis type="number" dataKey="cost" name="Custo USD" axisLine={false} tickLine={false} tickFormatter={(value) => `$${Number(value).toFixed(0)}`} />
+          <YAxis type="number" dataKey="total" name="Achados" axisLine={false} tickLine={false} allowDecimals={false} />
+          <ZAxis type="number" dataKey="highPlus" range={[90, 360]} name="High+" />
+          <RechartsTooltip content={(props) => <DecisionChartTooltip {...props} />} cursor={{ strokeDasharray: "3 3" }} />
+          <Scatter name="Scans" data={scatterData} fill="var(--primary)">
+            {scatterData.map((point) => <Cell key={point.scanId} fill={point.color} stroke={point.scanId === activeCandidateId ? "var(--foreground)" : "var(--background)"} strokeWidth={point.scanId === activeCandidateId ? 3 : 2} />)}
+          </Scatter>
+        </ScatterChart></ResponsiveContainer>
+      </div>
+      <div className="border-t px-4 py-3 text-[9px] leading-relaxed text-muted-foreground">Tamanho do ponto = High+. O gráfico compara eficiência visualmente; não mede falsos positivos.</div>
+    </Panel>
+    <Panel className="xl:col-span-2" label="BASELINE AGREEMENT" title="O que cada candidato compartilha — ou não — com o baseline" aside={<span className="font-mono text-[8px] text-muted-foreground">CONCORDÂNCIA ≠ VERDADE</span>} wrapTitle>
+      <div style={{ height: agreementHeight }} className="px-2 py-4">
+        <ResponsiveContainer width="100%" height="100%"><BarChart data={agreementData} layout="vertical" margin={{ top: 4, right: 18, bottom: 4, left: 16 }}>
+          <CartesianGrid horizontal={false} strokeDasharray="2 5" />
+          <XAxis type="number" axisLine={false} tickLine={false} allowDecimals={false} />
+          <YAxis type="category" dataKey="label" axisLine={false} tickLine={false} width={112} />
+          <RechartsTooltip content={(props) => <DecisionChartTooltip {...props} />} cursor={{ fill: "var(--accent)", fillOpacity: 0.35 }} />
+          <Legend iconType="square" verticalAlign="top" align="right" wrapperStyle={{ fontSize: 9, fontFamily: "var(--font-mono)" }} />
+          <Bar dataKey="shared" name="Em ambos" stackId="agreement" fill="var(--chart-2)" onClick={(entry) => typeof entry.payload?.scanId === "string" && onSelectCandidate(entry.payload.scanId)} />
+          <Bar dataKey="candidateOnly" name="Só candidato" stackId="agreement" fill="var(--primary)" onClick={(entry) => typeof entry.payload?.scanId === "string" && onSelectCandidate(entry.payload.scanId)} />
+          <Bar dataKey="baselineOnly" name="Só baseline" stackId="agreement" fill="var(--chart-3)" onClick={(entry) => typeof entry.payload?.scanId === "string" && onSelectCandidate(entry.payload.scanId)} />
+        </BarChart></ResponsiveContainer>
+      </div>
+    </Panel>
+  </div>;
+}
+
+function DecisionChartTooltip({ active, payload }: TooltipContentProps) {
+  if (!active || !payload?.length) return null;
+  const point = payload[0]?.payload as { label?: string } | undefined;
+  return <div className="min-w-36 border bg-popover p-3 shadow-2xl">
+    <div className="mb-2 text-xs font-semibold text-foreground">{point?.label ?? "Scan"}</div>
+    <div className="space-y-1 font-mono text-[9px]">{payload.map((entry) => <div key={String(entry.dataKey)} className="flex items-center justify-between gap-5"><span style={{ color: entry.color }}>{entry.name}</span><span className="text-foreground">{formatChartValue(entry.value)}</span></div>)}</div>
+  </div>;
+}
+
+function DetectionScoreboard({ ranking, objective, baselineScanId, activeCandidateId, onSelect }: { ranking: ScanDecisionRow[]; objective: CompareObjective; baselineScanId: string; activeCandidateId: string; onSelect: (id: string) => void }) {
+  const meta = objectives.find((item) => item.id === objective) ?? objectives[0];
+  return <Panel className="mt-4" label="DECISION RANKING" title={`Ranking por ${meta.label.toLowerCase()}`} aside={<span className="font-mono text-[8px] text-muted-foreground">MUDE O OBJETIVO ACIMA PARA RECALCULAR</span>} wrapTitle>
     <div className="overflow-x-auto">
-      <table className="table min-w-[66rem]">
-        <thead><tr className="font-mono text-[8px] uppercase tracking-wider text-muted-foreground"><th>Execução</th><th>Perfil</th><th>Critical</th><th>High+</th><th>Total</th><th>Custo</th><th>USD / finding</th><th>Duração</th><th>Input</th><th>Output</th></tr></thead>
-        <tbody>{ordered.map((scan) => {
-          const cost = scan.cost?.estimatedUsd;
-          const costPerFinding = cost != null && scan.severity.total > 0 ? cost / scan.severity.total : null;
+      <table className="table min-w-[72rem]">
+        <thead><tr className="font-mono text-[8px] uppercase tracking-wider text-muted-foreground"><th>#</th><th>Execução</th><th>Resultado no critério</th><th>Nota relativa</th><th>High+</th><th>Total</th><th>Custo</th><th>High+ / USD</th><th>Duração</th><th>Tokens in / out</th></tr></thead>
+        <tbody>{ranking.map((row, index) => {
+          const scan = row.scan;
+          const selectable = scan.id !== baselineScanId;
           return <tr key={scan.id} className={cx(scan.id === activeCandidateId && "bg-accent")}>
-            <td><div className="flex items-center gap-2"><span className="text-xs font-semibold">{scan.displayName}</span>{scan.severity.total === largestCount && <span className="border border-primary/40 px-1.5 py-0.5 font-mono text-[7px] uppercase text-primary">maior contagem</span>}</div><div className="mt-1 font-mono text-[8px] text-muted-foreground">{scan.id === baselineScanId ? "BASELINE" : scan.id === activeCandidateId ? "CANDIDATO ATIVO" : shortId(scan.id)}</div></td>
-            <td className="font-mono text-[8px] text-muted-foreground">{scan.model}/{scan.effort}/{scan.mode}</td>
-            <td className="font-mono text-destructive">{scan.severity.critical}</td>
-            <td className="font-mono text-destructive">{scan.severity.critical + scan.severity.high}</td>
-            <td className="font-mono text-sm font-semibold">{scan.severity.total}</td>
-            <td className="font-mono text-primary">{formatUsd(cost)}{cost != null && cost === lowestCost && <span className="ml-2 text-[7px] uppercase text-chart-2">menor</span>}</td>
-            <td className="font-mono">{costPerFinding == null ? "—" : formatUsd(costPerFinding)}</td>
-            <td className="font-mono">{formatDuration(scan.durationMs)}</td>
-            <td className="font-mono">{formatTokens(scan.cost?.inputTokens)}</td>
-            <td className="font-mono">{formatTokens(scan.cost?.outputTokens)}</td>
+            <td className={cx("font-mono text-lg font-semibold", index === 0 ? "text-primary" : "text-muted-foreground")}>{String(index + 1).padStart(2, "0")}</td>
+            <td><button type="button" disabled={!selectable} onClick={() => onSelect(scan.id)} className="max-w-56 text-left disabled:cursor-default"><span className="flex items-center gap-2"><span className="truncate text-xs font-semibold">{decisionProfile(scan)}</span>{index === 0 && <span className="shrink-0 border border-primary/40 px-1.5 py-0.5 font-mono text-[7px] uppercase text-primary">vence</span>}</span><span className="mt-1 block truncate font-mono text-[8px] text-muted-foreground">{scan.id === baselineScanId ? "BASELINE" : scan.displayName}</span></button></td>
+            <td className="font-mono text-sm font-semibold text-primary">{decisionValue(row, objective)}</td>
+            <td><div className="flex items-center gap-3"><div className="h-1.5 w-20 overflow-hidden bg-muted"><div className="h-full bg-primary" style={{ width: `${Math.max(0, Math.min(100, row.score))}%` }} /></div><span className="font-mono text-[9px]">{row.score.toFixed(0)}</span></div></td>
+            <td className="font-mono text-destructive">{row.highPlus}</td>
+            <td className="font-mono text-sm font-semibold">{row.total}</td>
+            <td className="font-mono">{formatUsd(row.costUsd)}</td>
+            <td className="font-mono">{row.highPerDollar == null ? "—" : row.highPerDollar.toFixed(3)}</td>
+            <td className="font-mono">{formatDuration(row.durationMs)}</td>
+            <td className="font-mono text-[9px] text-muted-foreground">{formatTokens(scan.cost?.inputTokens)} / {formatTokens(scan.cost?.outputTokens)}</td>
           </tr>;
         })}</tbody>
       </table>
     </div>
-    <div className="border-t px-4 py-3 text-[10px] leading-relaxed text-muted-foreground">“Maior contagem” indica apenas volume reportado. Para medir qualidade do scanner ainda é necessário confirmar findings, falsos positivos e duplicidades.</div>
+    <div className="border-t px-4 py-3 text-[10px] leading-relaxed text-muted-foreground">A nota é relativa apenas aos scans selecionados. Ela muda conforme o objetivo e não representa precisão ou taxa de acerto.</div>
   </Panel>;
 }
 
@@ -443,6 +593,39 @@ function ChangeBadge({ change }: { change: CompareFindingChange }) {
 
 function Presence({ active, label }: { active: boolean; label: string }) {
   return <span className={cx("flex size-5 items-center justify-center border font-mono text-[8px]", active ? "border-primary/50 bg-primary/10 text-primary" : "border-border text-muted-foreground/35")}>{label}</span>;
+}
+
+function decisionProfile(scan: ScanRun): string {
+  const model = scan.model?.replace(/^gpt-5\.6-/, "") ?? "modelo desconhecido";
+  return `${model} / ${scan.effort ?? "—"} / ${scan.mode ?? "—"}`;
+}
+
+function chartProfile(scan: ScanRun): string {
+  const model = scan.model?.replace(/^gpt-5\.6-/, "") ?? "modelo";
+  return `${model}/${scan.effort ?? "—"}`;
+}
+
+function decisionValue(row: ScanDecisionRow, objective: CompareObjective): string {
+  if (objective === "coverage") return `${row.total} achados`;
+  if (objective === "high_plus") return `${row.highPlus} High+`;
+  if (objective === "efficiency") return row.highPerDollar == null ? "sem custo" : `${row.highPerDollar.toFixed(3)} High+/$`;
+  if (objective === "speed") return formatDuration(row.durationMs);
+  return `${row.score.toFixed(0)} / 100`;
+}
+
+function decisionReason(row: ScanDecisionRow, objective: CompareObjective): string {
+  const profile = decisionProfile(row.scan);
+  if (objective === "coverage") return `${profile} lidera em cobertura observada com ${row.total} achados reportados. Isso mede amplitude, não confirma que todos sejam verdadeiros positivos.`;
+  if (objective === "high_plus") return `${profile} reportou ${row.highPlus} sinais Critical ou High, o maior volume prioritário deste recorte.`;
+  if (objective === "efficiency") return `${profile} entregou ${row.highPerDollar?.toFixed(3) ?? "—"} sinais High+ por dólar, a melhor eficiência de custo medida entre os scans selecionados.`;
+  if (objective === "speed") return `${profile} terminou em ${formatDuration(row.durationMs)}, a menor duração registrada neste comparativo.`;
+  return `${profile} oferece o melhor equilíbrio relativo: 40% cobertura total, 30% High+, 20% High+ por dólar e 10% velocidade.`;
+}
+
+function formatChartValue(value: TooltipValueType | undefined): string {
+  if (typeof value === "number") return value.toFixed(value % 1 ? 2 : 0);
+  if (Array.isArray(value)) return value.join(" – ");
+  return value == null ? "—" : String(value);
 }
 
 function signed(value: number): string { return value > 0 ? `+${value}` : String(value); }
