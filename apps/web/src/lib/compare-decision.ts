@@ -102,8 +102,8 @@ export function buildMarginalEconomics(rows: ScanDecisionRow[], baselineScanId: 
       extraCostUsd,
       extraFindings,
       extraHighPlus,
-      costPerExtraFinding: extraCostUsd == null || extraFindings <= 0 ? null : extraCostUsd / extraFindings,
-      costPerExtraHighPlus: extraCostUsd == null || extraHighPlus <= 0 ? null : extraCostUsd / extraHighPlus,
+      costPerExtraFinding: extraCostUsd == null || extraCostUsd <= 0 || extraFindings <= 0 ? null : extraCostUsd / extraFindings,
+      costPerExtraHighPlus: extraCostUsd == null || extraCostUsd <= 0 || extraHighPlus <= 0 ? null : extraCostUsd / extraHighPlus,
     };
   });
 }

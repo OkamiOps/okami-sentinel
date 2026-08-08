@@ -1,10 +1,11 @@
-import type {
-  CompareFindingChange,
-  CompareFindingDelta,
-  ComparePairResult,
-  CompareResult,
-  FindingSummary,
-  ScanRun,
+import {
+  MAX_COMPARE_SCANS,
+  type CompareFindingChange,
+  type CompareFindingDelta,
+  type ComparePairResult,
+  type CompareResult,
+  type FindingSummary,
+  type ScanRun,
 } from "@csb/shared";
 import { getRun } from "./db.js";
 import { readFindingsFile, toFindingSummaries } from "./ingest.js";
@@ -19,8 +20,8 @@ const changeOrder: CompareFindingChange[] = [
 const severityOrder = ["critical", "high", "medium", "low", "info", "unknown"];
 
 export function compareScans(scanIds: string[]): CompareResult {
-  if (scanIds.length < 2 || scanIds.length > 5) {
-    throw new Error("Selecione de 2 a 5 scans para comparar");
+  if (scanIds.length < 2 || scanIds.length > MAX_COMPARE_SCANS) {
+    throw new Error(`Selecione de 2 a ${MAX_COMPARE_SCANS} scans para comparar`);
   }
 
   const scans: ScanRun[] = [];

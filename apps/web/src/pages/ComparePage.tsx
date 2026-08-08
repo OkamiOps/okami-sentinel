@@ -23,13 +23,14 @@ import {
   type TooltipContentProps,
   type TooltipValueType,
 } from "recharts";
-import type {
-  CompareFindingChange,
-  CompareFindingDelta,
-  CompareResult,
-  ScanRun,
-  Severity,
-  SeverityCounts,
+import {
+  MAX_COMPARE_SCANS,
+  type CompareFindingChange,
+  type CompareFindingDelta,
+  type CompareResult,
+  type ScanRun,
+  type Severity,
+  type SeverityCounts,
 } from "@csb/shared";
 import { api } from "../api";
 import {
@@ -113,7 +114,7 @@ export function ComparePage() {
         const comparable = all.filter(isComparableScan);
         setScans(comparable);
         const ids = (params.get("ids") ?? "").split(",").filter(Boolean);
-        setSelected(ids.filter((id) => comparable.some((scan) => scan.id === id)).slice(0, 5));
+        setSelected(ids.filter((id) => comparable.some((scan) => scan.id === id)).slice(0, MAX_COMPARE_SCANS));
       })
       .catch((reason) => setError(reason instanceof Error ? reason.message : "Falha ao listar scans"));
   }, [params]);
@@ -125,8 +126,8 @@ export function ComparePage() {
   const partialScanCount = scans.filter(isPartialComparableScan).length;
 
   function toggle(id: string) {
-    if (!selected.includes(id) && selected.length >= 5) {
-      setError("O comparador aceita um baseline e até quatro candidatos por vez.");
+    if (!selected.includes(id) && selected.length >= MAX_COMPARE_SCANS) {
+      setError(`O comparador aceita um baseline e até ${MAX_COMPARE_SCANS - 1} candidatos por vez.`);
       return;
     }
     setError(null);
@@ -158,7 +159,7 @@ export function ComparePage() {
     <PageHeader
       code="05 / COMPARE"
       title="Diff de segurança"
-      description="Escolha um baseline e até quatro candidatos. O cockpit aponta o vencedor por objetivo; o diff mostra exatamente onde as execuções divergem."
+      description={`Escolha um baseline e até ${MAX_COMPARE_SCANS - 1} candidatos. O cockpit aponta o vencedor por objetivo; o diff mostra exatamente onde as execuções divergem.`}
       actions={result ? <Button variant="outline" onClick={() => setResult(null)}>ALTERAR SCANS</Button> : <Button onClick={() => void compare()} disabled={busy || selected.length < 2}>
         <HugeiconsIcon icon={Analytics01Icon} size={13} />
         {busy ? "CALCULANDO DIFF…" : `COMPARAR ${selected.length} SCANS`}
@@ -168,7 +169,7 @@ export function ComparePage() {
     {!result && <>
       {partialScanCount > 0 && <AlertBanner tone="warning"><strong>{partialScanCount} scans interrompidos preservaram findings.</strong> Eles aparecem abaixo como resultados parciais; podem entrar no diff, mas não representam cobertura concluída.</AlertBanner>}
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
-      <Panel className="order-2 xl:order-1" label="RUN LIBRARY" title={`${scans.length} scans comparáveis`} aside={<span className="font-mono text-[8px] text-muted-foreground">SELECIONE 2–5 · {partialScanCount} PARCIAIS</span>}>
+      <Panel className="order-2 xl:order-1" label="RUN LIBRARY" title={`${scans.length} scans comparáveis`} aside={<span className="font-mono text-[8px] text-muted-foreground">SELECIONE 2–{MAX_COMPARE_SCANS} · {partialScanCount} PARCIAIS</span>}>
         {scans.length ? <div className="grid md:grid-cols-2 xl:max-h-[32rem] xl:overflow-auto">
           {scans.map((scan) => {
             const position = selected.indexOf(scan.id);
@@ -213,7 +214,7 @@ export function ComparePage() {
         </div>
         <div className="max-h-72 overflow-auto">
           {chosen.slice(1).map((scan, index) => <CompareSlot key={scan.id} role={`CANDIDATO ${String(index + 1).padStart(2, "0")}`} scan={scan} onRemove={() => toggle(scan.id)} onPromote={() => promoteToBaseline(scan.id)} />)}
-          {chosen.length < 2 && <div className="p-4 text-xs leading-relaxed text-muted-foreground">Selecione ao menos um candidato. Você pode conectar até quatro.</div>}
+          {chosen.length < 2 && <div className="p-4 text-xs leading-relaxed text-muted-foreground">Selecione ao menos um candidato. Você pode conectar até {MAX_COMPARE_SCANS - 1}.</div>}
         </div>
         <div className="border-t p-3">
           <Button className="w-full" onClick={() => void compare()} disabled={chosen.length < 2 || busy}>Executar diff de {chosen.length} scans</Button>
@@ -342,7 +343,7 @@ function CandidateRail({ result, activeCandidateId, onSelect }: { result: Compar
   const baseline = result.scans.find((scan) => scan.id === result.baselineScanId);
   const baselineHigh = baseline ? baseline.severity.critical + baseline.severity.high : 0;
   return <Panel className="mb-4" label="CANDIDATE CHANNELS" title="Escolha o diff detalhado" aside={<span className="font-mono text-[8px] text-muted-foreground">TODOS PERMANECEM NO RANKING</span>} wrapTitle>
-    <div className="grid grid-cols-2 xl:grid-cols-4">
+    <div className="grid grid-cols-2 xl:grid-cols-5">
       {result.candidateScanIds.map((id, index) => {
         const scan = result.scans.find((item) => item.id === id);
         const comparison = result.comparisons.find((item) => item.candidateScanId === id);

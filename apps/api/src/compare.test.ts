@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { FindingSummary, Severity } from "@csb/shared";
-import { buildFindingDiff } from "./compare.js";
+import { buildFindingDiff, compareScans } from "./compare.js";
 
 function finding(id: string, severity: Severity): FindingSummary {
   return {
@@ -46,4 +46,15 @@ test("reports observed coverage without claiming that an absent finding was reso
   assert.equal(result.findings[2].baseline?.primaryPath, "src/baseline-only.ts");
   assert.equal(result.findings[1].baseline?.severity, "medium");
   assert.equal(result.findings[1].candidate?.severity, "high");
+});
+
+test("accepts up to six scan slots before resolving their ids", () => {
+  assert.throws(
+    () => compareScans(Array.from({ length: 7 }, (_, index) => `missing-${index}`)),
+    /Selecione de 2 a 6 scans/,
+  );
+  assert.throws(
+    () => compareScans(Array.from({ length: 6 }, (_, index) => `missing-${index}`)),
+    /Scan não encontrado: missing-0/,
+  );
 });

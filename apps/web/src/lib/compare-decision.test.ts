@@ -56,6 +56,16 @@ test("calculates marginal cost against the selected baseline", () => {
   assert.equal(marginal.costPerExtraHighPlus, 1.4);
 });
 
+test("does not represent a cheaper candidate as negative marginal cost", () => {
+  const rows = buildDecisionRanking([scan("baseline", 10, 2, 20, 1_800_000), scan("candidate", 20, 7, 12, 2_400_000)], "coverage");
+  const marginal = buildMarginalEconomics(rows, "baseline")[0];
+
+  assert.equal(marginal.extraCostUsd, -8);
+  assert.equal(marginal.extraFindings, 10);
+  assert.equal(marginal.costPerExtraFinding, null);
+  assert.equal(marginal.costPerExtraHighPlus, null);
+});
+
 test("keeps the balanced score bounded and ordered", () => {
   const ranking = buildDecisionRanking([scan("wide", 30, 12, 30, 30_000), scan("efficient", 15, 8, 4, 20_000)], "balanced");
   assert.ok(ranking[0].score >= ranking[1].score);

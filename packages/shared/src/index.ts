@@ -19,6 +19,8 @@ export type EffortLevel =
 
 export type ScanMode = "standard" | "deep";
 
+export const MAX_COMPARE_SCANS = 6;
+
 export interface SeverityCounts {
   critical: number;
   high: number;
