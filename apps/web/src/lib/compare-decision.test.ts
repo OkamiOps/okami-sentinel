@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ScanRun } from "@csb/shared";
-import { buildDecisionRanking } from "./compare-decision";
+import { buildDecisionRanking, buildMarginalEconomics } from "./compare-decision";
 
 function scan(id: string, total: number, high: number, cost: number | null, durationMs: number | null): ScanRun {
   return {
@@ -24,16 +24,36 @@ function scan(id: string, total: number, high: number, cost: number | null, dura
   };
 }
 
-test("selects different leaders for coverage and cost efficiency", () => {
+test("selects different leaders for coverage and unit cost", () => {
   const scans = [scan("wide", 30, 12, 30, 30_000), scan("efficient", 15, 8, 4, 20_000)];
   assert.equal(buildDecisionRanking(scans, "coverage")[0].scan.id, "wide");
-  assert.equal(buildDecisionRanking(scans, "efficiency")[0].scan.id, "efficient");
+  assert.equal(buildDecisionRanking(scans, "cost_per_finding")[0].scan.id, "efficient");
+  assert.equal(buildDecisionRanking(scans, "cost_per_high")[0].scan.id, "efficient");
 });
 
 test("does not treat missing cost or duration as the best result", () => {
   const scans = [scan("unknown", 30, 12, null, null), scan("measured", 15, 8, 4, 20_000)];
-  assert.equal(buildDecisionRanking(scans, "efficiency")[0].scan.id, "measured");
+  assert.equal(buildDecisionRanking(scans, "cost_per_finding")[0].scan.id, "measured");
+  assert.equal(buildDecisionRanking(scans, "cost_per_high")[0].scan.id, "measured");
   assert.equal(buildDecisionRanking(scans, "speed")[0].scan.id, "measured");
+});
+
+test("calculates unit cost and hourly throughput", () => {
+  const row = buildDecisionRanking([scan("measured", 10, 4, 5, 1_800_000)], "coverage")[0];
+  assert.equal(row.costPerFinding, 0.5);
+  assert.equal(row.costPerHighPlus, 1.25);
+  assert.equal(row.findingsPerHour, 20);
+  assert.equal(row.highPerHour, 8);
+});
+
+test("calculates marginal cost against the selected baseline", () => {
+  const rows = buildDecisionRanking([scan("baseline", 10, 2, 5, 1_800_000), scan("candidate", 20, 7, 12, 2_400_000)], "coverage");
+  const marginal = buildMarginalEconomics(rows, "baseline")[0];
+  assert.equal(marginal.extraCostUsd, 7);
+  assert.equal(marginal.extraFindings, 10);
+  assert.equal(marginal.extraHighPlus, 5);
+  assert.equal(marginal.costPerExtraFinding, 0.7);
+  assert.equal(marginal.costPerExtraHighPlus, 1.4);
 });
 
 test("keeps the balanced score bounded and ordered", () => {

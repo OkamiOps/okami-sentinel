@@ -52,7 +52,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { formatDate, formatDuration, formatTokens, formatUsd, shortId } from "../format";
-import { buildDecisionRanking, type CompareObjective, type ScanDecisionRow } from "../lib/compare-decision";
+import { buildDecisionRanking, buildMarginalEconomics, type CompareObjective, type ScanDecisionRow } from "../lib/compare-decision";
 
 const changeOrder: CompareFindingChange[] = [
   "candidate_only",
@@ -81,10 +81,11 @@ const severityRows: Array<[keyof SeverityCounts, string]> = [
   ["total", "Total"],
 ];
 const objectives: Array<{ id: CompareObjective; label: string; description: string }> = [
-  { id: "balanced", label: "Equilíbrio", description: "Cobertura 40% · High+ 30% · eficiência 20% · velocidade 10%" },
+  { id: "balanced", label: "Equilíbrio", description: "Cobertura 30% · High+ 25% · $/finding 20% · $/High+ 15% · velocidade 10%" },
   { id: "coverage", label: "Cobertura", description: "Maior volume total reportado" },
   { id: "high_plus", label: "High+", description: "Maior volume crítico + alto" },
-  { id: "efficiency", label: "Eficiência $", description: "Mais High+ reportado por dólar" },
+  { id: "cost_per_finding", label: "$ / finding", description: "Menor custo por achado reportado" },
+  { id: "cost_per_high", label: "$ / High+", description: "Menor custo por achado prioritário" },
   { id: "speed", label: "Velocidade", description: "Menor duração medida" },
 ];
 const scanChartColors = ["var(--primary)", "var(--chart-3)", "var(--chart-2)", "var(--chart-4)", "var(--chart-5)"];
@@ -264,7 +265,8 @@ function ComparisonOutput({ result }: { result: CompareResult }) {
     <AlertBanner tone="info"><strong>Leitura de cobertura, não de remediação.</strong> “Só baseline” significa que o candidato não reportou o sinal; isso não prova que a vulnerabilidade foi corrigida. Da mesma forma, “só candidato” não significa que ela surgiu agora.</AlertBanner>
     {!sameRepository && <AlertBanner tone="warning">Os scans pertencem a alvos diferentes. O diff continua disponível, mas sinais exclusivos podem refletir aplicações diferentes, não regressões.</AlertBanner>}
     <DecisionCockpit ranking={decisionRanking} objective={objective} onObjectiveChange={setObjective} />
-    <ComparisonCharts result={result} activeCandidateId={activeCandidateId} onSelectCandidate={selectCandidate} />
+    <UnitEconomicsSummary rows={decisionRanking} baselineScanId={result.baselineScanId} />
+    <ComparisonCharts result={result} rows={decisionRanking} activeCandidateId={activeCandidateId} onSelectCandidate={selectCandidate} />
     <DetectionScoreboard ranking={decisionRanking} objective={objective} baselineScanId={result.baselineScanId} activeCandidateId={activeCandidateId} onSelect={selectCandidate} />
     <CandidateRail result={result} activeCandidateId={activeCandidateId} onSelect={selectCandidate} />
     <div className="bench-panel bench-corners">
@@ -338,7 +340,7 @@ function DecisionCockpit({ ranking, objective, onObjectiveChange }: { ranking: S
   const meta = objectives.find((item) => item.id === objective) ?? objectives[0];
   if (!winner) return null;
   return <Panel className="mt-4 overflow-hidden" label="DECISION COCKPIT" title="Qual execução foi melhor para o seu objetivo?" aside={<span className="font-mono text-[8px] text-muted-foreground">CRITÉRIO EXPLÍCITO · SEM CHUTE DE PRECISÃO</span>} wrapTitle>
-    <div className="grid border-b sm:grid-cols-2 xl:grid-cols-5">
+    <div className="grid border-b sm:grid-cols-2 xl:grid-cols-6">
       {objectives.map((item) => <button key={item.id} type="button" aria-pressed={objective === item.id} onClick={() => onObjectiveChange(item.id)} className={cx("min-h-20 border-b border-r px-4 py-3 text-left transition hover:bg-accent/60", objective === item.id && "bg-accent shadow-[inset_0_-2px_0_var(--primary)]")}>
         <span className={cx("block font-mono text-[9px] uppercase tracking-wider", objective === item.id ? "text-primary" : "text-muted-foreground")}>{item.label}</span>
         <span className="mt-1.5 block text-[9px] leading-snug text-muted-foreground">{item.description}</span>
@@ -353,8 +355,12 @@ function DecisionCockpit({ ranking, objective, onObjectiveChange }: { ranking: S
         <p className="mt-5 max-w-2xl text-sm leading-relaxed text-foreground/80">{decisionReason(winner, objective)}</p>
         <div className="mt-6 grid grid-cols-2 border sm:grid-cols-4">
           <DecisionMetric label="RESULTADO" value={decisionValue(winner, objective)} accent />
+          <DecisionMetric label="TOTAL" value={String(winner.total)} />
           <DecisionMetric label="HIGH+" value={String(winner.highPlus)} />
           <DecisionMetric label="CUSTO" value={formatUsd(winner.costUsd)} />
+          <DecisionMetric label="$ / FINDING" value={formatUsd(winner.costPerFinding)} />
+          <DecisionMetric label="$ / HIGH+" value={formatUsd(winner.costPerHighPlus)} />
+          <DecisionMetric label="FINDINGS / H" value={formatRate(winner.findingsPerHour)} />
           <DecisionMetric label="DURAÇÃO" value={formatDuration(winner.durationMs)} />
         </div>
         {runnerUp && <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[8px] text-muted-foreground"><span>2º LUGAR</span><span className="text-foreground">{decisionProfile(runnerUp.scan)}</span><span>{decisionValue(runnerUp, objective)}</span></div>}
@@ -378,7 +384,37 @@ function DecisionMetric({ label, value, accent = false }: { label: string; value
   return <div className="min-w-0 border-r p-3"><div className="bench-label">{label}</div><div className={cx("mt-2 truncate font-mono text-sm font-semibold", accent && "text-primary")}>{value}</div></div>;
 }
 
-function ComparisonCharts({ result, activeCandidateId, onSelectCandidate }: { result: CompareResult; activeCandidateId: string; onSelectCandidate: (id: string) => void }) {
+function UnitEconomicsSummary({ rows, baselineScanId }: { rows: ScanDecisionRow[]; baselineScanId: string }) {
+  const bestFinding = [...rows].filter((row) => row.costPerFinding != null).sort((left, right) => (left.costPerFinding ?? Infinity) - (right.costPerFinding ?? Infinity))[0];
+  const bestHigh = [...rows].filter((row) => row.costPerHighPlus != null).sort((left, right) => (left.costPerHighPlus ?? Infinity) - (right.costPerHighPlus ?? Infinity))[0];
+  const bestThroughput = [...rows].filter((row) => row.findingsPerHour != null).sort((left, right) => (right.findingsPerHour ?? 0) - (left.findingsPerHour ?? 0))[0];
+  const marginal = buildMarginalEconomics(rows, baselineScanId);
+  const bestMarginal = [...marginal].filter((row) => row.costPerExtraFinding != null).sort((left, right) => (left.costPerExtraFinding ?? Infinity) - (right.costPerExtraFinding ?? Infinity))[0];
+  const bestMarginalScan = rows.find((row) => row.scan.id === bestMarginal?.scanId);
+  const bestMarginalHigh = [...marginal].filter((row) => row.costPerExtraHighPlus != null).sort((left, right) => (left.costPerExtraHighPlus ?? Infinity) - (right.costPerExtraHighPlus ?? Infinity))[0];
+  const bestMarginalHighScan = rows.find((row) => row.scan.id === bestMarginalHigh?.scanId);
+  return <Panel className="mt-4" label="UNIT ECONOMICS" title="Quem extraiu mais sinal de cada dólar e de cada hora" aside={<span className="font-mono text-[8px] text-muted-foreground">MENOR CUSTO UNITÁRIO = MELHOR</span>} wrapTitle>
+    <div className="grid sm:grid-cols-2 xl:grid-cols-5">
+      <EconomicsLeader label="MENOR $ / FINDING" row={bestFinding} value={formatUsd(bestFinding?.costPerFinding)} detail={bestFinding ? `${bestFinding.total} achados por ${formatUsd(bestFinding.costUsd)}` : "Sem custo mensurado"} />
+      <EconomicsLeader label="MENOR $ / HIGH+" row={bestHigh} value={formatUsd(bestHigh?.costPerHighPlus)} detail={bestHigh ? `${bestHigh.highPlus} High+ por ${formatUsd(bestHigh.costUsd)}` : "Nenhum High+ com custo"} />
+      <EconomicsLeader label="MENOR $ MARGINAL" row={bestMarginalScan} value={formatUsd(bestMarginal?.costPerExtraFinding)} detail={bestMarginal ? `+${bestMarginal.extraFindings} achados por ${formatUsd(bestMarginal.extraCostUsd)} vs baseline` : "Sem ganho adicional mensurável"} />
+      <EconomicsLeader label="MENOR $ / HIGH+ EXTRA" row={bestMarginalHighScan} value={formatUsd(bestMarginalHigh?.costPerExtraHighPlus)} detail={bestMarginalHigh ? `+${bestMarginalHigh.extraHighPlus} High+ por ${formatUsd(bestMarginalHigh.extraCostUsd)} vs baseline` : "Sem High+ adicional mensurável"} />
+      <EconomicsLeader label="MAIOR THROUGHPUT" row={bestThroughput} value={bestThroughput ? `${formatRate(bestThroughput.findingsPerHour)} / h` : "—"} detail={bestThroughput ? `${bestThroughput.total} achados em ${formatDuration(bestThroughput.durationMs)}` : "Sem duração mensurada"} />
+    </div>
+    <div className="border-t px-4 py-3 text-[9px] leading-relaxed text-muted-foreground">Todos os custos usam findings reportados, antes de confirmação ou remoção de falsos positivos. Por isso $/finding mede economia operacional, não precisão.</div>
+  </Panel>;
+}
+
+function EconomicsLeader({ label, row, value, detail }: { label: string; row?: ScanDecisionRow; value: string; detail: string }) {
+  return <div className="min-h-36 border-b border-r p-4">
+    <div className="bench-label text-primary">{label}</div>
+    <div className="mt-3 font-mono text-2xl font-semibold tracking-[-.04em]">{value}</div>
+    <div className="mt-3 truncate text-xs font-semibold">{row ? decisionProfile(row.scan) : "Sem vencedor"}</div>
+    <div className="mt-1 text-[9px] leading-relaxed text-muted-foreground">{detail}</div>
+  </div>;
+}
+
+function ComparisonCharts({ result, rows, activeCandidateId, onSelectCandidate }: { result: CompareResult; rows: ScanDecisionRow[]; activeCandidateId: string; onSelectCandidate: (id: string) => void }) {
   const severityData = result.scans.map((scan) => ({
     scanId: scan.id,
     label: chartProfile(scan),
@@ -407,8 +443,25 @@ function ComparisonCharts({ result, activeCandidateId, onSelectCandidate }: { re
       baselineOnly: comparison.counts.baseline_only,
     };
   });
+  const unitData = result.scans.map((scan) => {
+    const row = rows.find((item) => item.scan.id === scan.id);
+    return {
+      scanId: scan.id,
+      label: chartProfile(scan),
+      costPerFinding: row?.costPerFinding ?? null,
+      costPerHighPlus: row?.costPerHighPlus ?? null,
+    };
+  });
+  const marginalData = buildMarginalEconomics(rows, result.baselineScanId).map((marginal) => {
+    const scan = result.scans.find((item) => item.id === marginal.scanId);
+    return {
+      ...marginal,
+      label: scan ? chartProfile(scan) : shortId(marginal.scanId),
+    };
+  });
   const severityHeight = Math.max(280, severityData.length * 58);
   const agreementHeight = Math.max(240, agreementData.length * 62);
+  const economicsHeight = Math.max(280, unitData.length * 58);
   return <div className="mt-4 grid gap-4 xl:grid-cols-2">
     <Panel label="SEVERITY PROFILE" title="Composição do que cada scan reportou" aside={<span className="font-mono text-[8px] text-muted-foreground">VALORES ABSOLUTOS</span>} wrapTitle>
       <div style={{ height: severityHeight }} className="px-2 py-4">
@@ -442,6 +495,34 @@ function ComparisonCharts({ result, activeCandidateId, onSelectCandidate }: { re
       </div>
       <div className="border-t px-4 py-3 text-[9px] leading-relaxed text-muted-foreground">Tamanho do ponto = High+. O gráfico compara eficiência visualmente; não mede falsos positivos.</div>
     </Panel>
+    <Panel label="UNIT COST" title="Quanto custou cada finding reportado" aside={<span className="font-mono text-[8px] text-muted-foreground">MENOR É MELHOR</span>} wrapTitle>
+      <div style={{ height: economicsHeight }} className="px-2 py-4">
+        <ResponsiveContainer width="100%" height="100%"><BarChart data={unitData} layout="vertical" margin={{ top: 4, right: 18, bottom: 4, left: 16 }}>
+          <CartesianGrid horizontal={false} strokeDasharray="2 5" />
+          <XAxis type="number" axisLine={false} tickLine={false} tickFormatter={(value) => `$${Number(value).toFixed(2)}`} />
+          <YAxis type="category" dataKey="label" axisLine={false} tickLine={false} width={104} />
+          <RechartsTooltip content={(props) => <DecisionChartTooltip {...props} />} cursor={{ fill: "var(--accent)", fillOpacity: 0.35 }} />
+          <Legend iconType="square" verticalAlign="top" align="right" wrapperStyle={{ fontSize: 9, fontFamily: "var(--font-mono)" }} />
+          <Bar dataKey="costPerFinding" name="$ / finding" fill="var(--primary)" onClick={(entry) => typeof entry.payload?.scanId === "string" && entry.payload.scanId !== result.baselineScanId && onSelectCandidate(entry.payload.scanId)} />
+          <Bar dataKey="costPerHighPlus" name="$ / High+" fill="var(--chart-3)" onClick={(entry) => typeof entry.payload?.scanId === "string" && entry.payload.scanId !== result.baselineScanId && onSelectCandidate(entry.payload.scanId)} />
+        </BarChart></ResponsiveContainer>
+      </div>
+      <div className="border-t px-4 py-3 text-[9px] leading-relaxed text-muted-foreground">Sem barra em $/High+ significa que o scan não reportou Critical ou High; não significa custo zero.</div>
+    </Panel>
+    <Panel label="MARGINAL RETURN" title="Custo de cada achado adicional contra o baseline" aside={<span className="font-mono text-[8px] text-muted-foreground">Δ CUSTO / Δ ACHADOS</span>} wrapTitle>
+      <div style={{ height: economicsHeight }} className="px-2 py-4">
+        <ResponsiveContainer width="100%" height="100%"><BarChart data={marginalData} layout="vertical" margin={{ top: 4, right: 18, bottom: 4, left: 16 }}>
+          <CartesianGrid horizontal={false} strokeDasharray="2 5" />
+          <XAxis type="number" axisLine={false} tickLine={false} tickFormatter={(value) => `$${Number(value).toFixed(2)}`} />
+          <YAxis type="category" dataKey="label" axisLine={false} tickLine={false} width={104} />
+          <RechartsTooltip content={(props) => <DecisionChartTooltip {...props} />} cursor={{ fill: "var(--accent)", fillOpacity: 0.35 }} />
+          <Legend iconType="square" verticalAlign="top" align="right" wrapperStyle={{ fontSize: 9, fontFamily: "var(--font-mono)" }} />
+          <Bar dataKey="costPerExtraFinding" name="$ / finding extra" fill="var(--chart-2)" onClick={(entry) => typeof entry.payload?.scanId === "string" && onSelectCandidate(entry.payload.scanId)} />
+          <Bar dataKey="costPerExtraHighPlus" name="$ / High+ extra" fill="var(--chart-4)" onClick={(entry) => typeof entry.payload?.scanId === "string" && onSelectCandidate(entry.payload.scanId)} />
+        </BarChart></ResponsiveContainer>
+      </div>
+      <div className="border-t px-4 py-3 text-[9px] leading-relaxed text-muted-foreground">Métrica marginal só existe quando o candidato custa mais e reporta achados adicionais ao baseline.</div>
+    </Panel>
     <Panel className="xl:col-span-2" label="BASELINE AGREEMENT" title="O que cada candidato compartilha — ou não — com o baseline" aside={<span className="font-mono text-[8px] text-muted-foreground">CONCORDÂNCIA ≠ VERDADE</span>} wrapTitle>
       <div style={{ height: agreementHeight }} className="px-2 py-4">
         <ResponsiveContainer width="100%" height="100%"><BarChart data={agreementData} layout="vertical" margin={{ top: 4, right: 18, bottom: 4, left: 16 }}>
@@ -470,24 +551,35 @@ function DecisionChartTooltip({ active, payload }: TooltipContentProps) {
 
 function DetectionScoreboard({ ranking, objective, baselineScanId, activeCandidateId, onSelect }: { ranking: ScanDecisionRow[]; objective: CompareObjective; baselineScanId: string; activeCandidateId: string; onSelect: (id: string) => void }) {
   const meta = objectives.find((item) => item.id === objective) ?? objectives[0];
+  const marginalById = new Map(buildMarginalEconomics(ranking, baselineScanId).map((row) => [row.scanId, row]));
   return <Panel className="mt-4" label="DECISION RANKING" title={`Ranking por ${meta.label.toLowerCase()}`} aside={<span className="font-mono text-[8px] text-muted-foreground">MUDE O OBJETIVO ACIMA PARA RECALCULAR</span>} wrapTitle>
     <div className="overflow-x-auto">
-      <table className="table min-w-[72rem]">
-        <thead><tr className="font-mono text-[8px] uppercase tracking-wider text-muted-foreground"><th>#</th><th>Execução</th><th>Resultado no critério</th><th>Nota relativa</th><th>High+</th><th>Total</th><th>Custo</th><th>High+ / USD</th><th>Duração</th><th>Tokens in / out</th></tr></thead>
+      <table className="table min-w-[126rem]">
+        <thead><tr className="font-mono text-[8px] uppercase tracking-wider text-muted-foreground"><th className="sticky left-0 z-20 w-12 bg-background">#</th><th className="sticky left-12 z-20 min-w-60 bg-background">Execução</th><th>Resultado no critério</th><th>Nota relativa</th><th>Total</th><th>Critical</th><th>High</th><th>Medium</th><th>Low</th><th>High+</th><th>Custo</th><th>$ / finding</th><th>$ / High+</th><th>Findings / h</th><th>High+ / h</th><th>Δ custo</th><th>$ / finding extra</th><th>$ / High+ extra</th><th>Duração</th></tr></thead>
         <tbody>{ranking.map((row, index) => {
           const scan = row.scan;
           const selectable = scan.id !== baselineScanId;
+          const marginal = marginalById.get(scan.id);
           return <tr key={scan.id} className={cx(scan.id === activeCandidateId && "bg-accent")}>
-            <td className={cx("font-mono text-lg font-semibold", index === 0 ? "text-primary" : "text-muted-foreground")}>{String(index + 1).padStart(2, "0")}</td>
-            <td><button type="button" disabled={!selectable} onClick={() => onSelect(scan.id)} className="max-w-56 text-left disabled:cursor-default"><span className="flex items-center gap-2"><span className="truncate text-xs font-semibold">{decisionProfile(scan)}</span>{index === 0 && <span className="shrink-0 border border-primary/40 px-1.5 py-0.5 font-mono text-[7px] uppercase text-primary">vence</span>}</span><span className="mt-1 block truncate font-mono text-[8px] text-muted-foreground">{scan.id === baselineScanId ? "BASELINE" : scan.displayName}</span></button></td>
+            <td className={cx("sticky left-0 z-10 font-mono text-lg font-semibold", scan.id === activeCandidateId ? "bg-accent" : "bg-background", index === 0 ? "text-primary" : "text-muted-foreground")}>{String(index + 1).padStart(2, "0")}</td>
+            <td className={cx("sticky left-12 z-10", scan.id === activeCandidateId ? "bg-accent" : "bg-background")}><button type="button" disabled={!selectable} onClick={() => onSelect(scan.id)} className="max-w-56 text-left disabled:cursor-default"><span className="flex items-center gap-2"><span className="truncate text-xs font-semibold">{decisionProfile(scan)}</span>{index === 0 && <span className="shrink-0 border border-primary/40 px-1.5 py-0.5 font-mono text-[7px] uppercase text-primary">vence</span>}</span><span className="mt-1 block truncate font-mono text-[8px] text-muted-foreground">{scan.id === baselineScanId ? "BASELINE" : scan.displayName}</span></button></td>
             <td className="font-mono text-sm font-semibold text-primary">{decisionValue(row, objective)}</td>
             <td><div className="flex items-center gap-3"><div className="h-1.5 w-20 overflow-hidden bg-muted"><div className="h-full bg-primary" style={{ width: `${Math.max(0, Math.min(100, row.score))}%` }} /></div><span className="font-mono text-[9px]">{row.score.toFixed(0)}</span></div></td>
-            <td className="font-mono text-destructive">{row.highPlus}</td>
             <td className="font-mono text-sm font-semibold">{row.total}</td>
+            <td className="font-mono text-destructive">{scan.severity.critical}</td>
+            <td className="font-mono text-destructive/80">{scan.severity.high}</td>
+            <td className="font-mono text-chart-3">{scan.severity.medium}</td>
+            <td className="font-mono text-chart-5">{scan.severity.low}</td>
+            <td className="font-mono text-destructive">{row.highPlus}</td>
             <td className="font-mono">{formatUsd(row.costUsd)}</td>
-            <td className="font-mono">{row.highPerDollar == null ? "—" : row.highPerDollar.toFixed(3)}</td>
+            <td className="font-mono text-primary">{formatUsd(row.costPerFinding)}</td>
+            <td className="font-mono text-chart-3">{formatUsd(row.costPerHighPlus)}</td>
+            <td className="font-mono">{formatRate(row.findingsPerHour)}</td>
+            <td className="font-mono">{formatRate(row.highPerHour)}</td>
+            <td className="font-mono">{formatSignedUsd(marginal?.extraCostUsd)}</td>
+            <td className="font-mono">{formatUsd(marginal?.costPerExtraFinding)}</td>
+            <td className="font-mono">{formatUsd(marginal?.costPerExtraHighPlus)}</td>
             <td className="font-mono">{formatDuration(row.durationMs)}</td>
-            <td className="font-mono text-[9px] text-muted-foreground">{formatTokens(scan.cost?.inputTokens)} / {formatTokens(scan.cost?.outputTokens)}</td>
           </tr>;
         })}</tbody>
       </table>
@@ -527,9 +619,20 @@ function SeverityLedger({ baseline, candidate }: { baseline: ScanRun; candidate:
 function OperationalLedger({ result, baseline, candidate }: { result: CompareResult; baseline: ScanRun; candidate: ScanRun }) {
   const beforeRank = result.ranking.find((row) => row.scanId === baseline.id);
   const afterRank = result.ranking.find((row) => row.scanId === candidate.id);
+  const baselineHigh = baseline.severity.critical + baseline.severity.high;
+  const candidateHigh = candidate.severity.critical + candidate.severity.high;
+  const baselineCostPerFinding = unitCost(baseline.cost?.estimatedUsd, baseline.severity.total);
+  const candidateCostPerFinding = unitCost(candidate.cost?.estimatedUsd, candidate.severity.total);
+  const baselineCostPerHigh = unitCost(baseline.cost?.estimatedUsd, baselineHigh);
+  const candidateCostPerHigh = unitCost(candidate.cost?.estimatedUsd, candidateHigh);
+  const baselineFindingsPerHour = hourlyRate(baseline.severity.total, baseline.durationMs);
+  const candidateFindingsPerHour = hourlyRate(candidate.severity.total, candidate.durationMs);
   const rows: Array<[string, ReactNode, ReactNode, ReactNode]> = [
     ["Custo estimado", formatUsd(baseline.cost?.estimatedUsd), moneyDelta(baseline.cost?.estimatedUsd, candidate.cost?.estimatedUsd), formatUsd(candidate.cost?.estimatedUsd)],
+    ["USD / finding", formatUsd(baselineCostPerFinding), moneyDelta(baselineCostPerFinding, candidateCostPerFinding), formatUsd(candidateCostPerFinding)],
+    ["USD / High+", formatUsd(baselineCostPerHigh), moneyDelta(baselineCostPerHigh, candidateCostPerHigh), formatUsd(candidateCostPerHigh)],
     ["Duração", <LiveDuration startedAt={baseline.startedAt} completedAt={baseline.completedAt} status={baseline.status} durationMs={baseline.durationMs} showDot={false} />, durationDelta(baseline.durationMs, candidate.durationMs), <LiveDuration startedAt={candidate.startedAt} completedAt={candidate.completedAt} status={candidate.status} durationMs={candidate.durationMs} showDot={false} />],
+    ["Findings / hora", formatRate(baselineFindingsPerHour), decimalDelta(baselineFindingsPerHour, candidateFindingsPerHour), formatRate(candidateFindingsPerHour)],
     ["Input tokens", formatTokens(baseline.cost?.inputTokens), compactDelta(baseline.cost?.inputTokens, candidate.cost?.inputTokens), formatTokens(candidate.cost?.inputTokens)],
     ["Output tokens", formatTokens(baseline.cost?.outputTokens), compactDelta(baseline.cost?.outputTokens, candidate.cost?.outputTokens), formatTokens(candidate.cost?.outputTokens)],
     ["High+ / USD", metric(beforeRank?.highPerDollar), decimalDelta(beforeRank?.highPerDollar, afterRank?.highPerDollar), metric(afterRank?.highPerDollar)],
@@ -608,7 +711,8 @@ function chartProfile(scan: ScanRun): string {
 function decisionValue(row: ScanDecisionRow, objective: CompareObjective): string {
   if (objective === "coverage") return `${row.total} achados`;
   if (objective === "high_plus") return `${row.highPlus} High+`;
-  if (objective === "efficiency") return row.highPerDollar == null ? "sem custo" : `${row.highPerDollar.toFixed(3)} High+/$`;
+  if (objective === "cost_per_finding") return row.costPerFinding == null ? "sem custo" : `${formatUsd(row.costPerFinding)} / finding`;
+  if (objective === "cost_per_high") return row.costPerHighPlus == null ? "sem High+" : `${formatUsd(row.costPerHighPlus)} / High+`;
   if (objective === "speed") return formatDuration(row.durationMs);
   return `${row.score.toFixed(0)} / 100`;
 }
@@ -617,15 +721,33 @@ function decisionReason(row: ScanDecisionRow, objective: CompareObjective): stri
   const profile = decisionProfile(row.scan);
   if (objective === "coverage") return `${profile} lidera em cobertura observada com ${row.total} achados reportados. Isso mede amplitude, não confirma que todos sejam verdadeiros positivos.`;
   if (objective === "high_plus") return `${profile} reportou ${row.highPlus} sinais Critical ou High, o maior volume prioritário deste recorte.`;
-  if (objective === "efficiency") return `${profile} entregou ${row.highPerDollar?.toFixed(3) ?? "—"} sinais High+ por dólar, a melhor eficiência de custo medida entre os scans selecionados.`;
+  if (objective === "cost_per_finding") return `${profile} custou ${formatUsd(row.costPerFinding)} por finding reportado, o menor custo unitário do comparativo.`;
+  if (objective === "cost_per_high") return `${profile} custou ${formatUsd(row.costPerHighPlus)} por sinal Critical ou High, o melhor retorno para achados prioritários.`;
   if (objective === "speed") return `${profile} terminou em ${formatDuration(row.durationMs)}, a menor duração registrada neste comparativo.`;
-  return `${profile} oferece o melhor equilíbrio relativo: 40% cobertura total, 30% High+, 20% High+ por dólar e 10% velocidade.`;
+  return `${profile} oferece o melhor equilíbrio relativo: 30% cobertura, 25% High+, 20% custo por finding, 15% custo por High+ e 10% velocidade.`;
 }
 
 function formatChartValue(value: TooltipValueType | undefined): string {
   if (typeof value === "number") return value.toFixed(value % 1 ? 2 : 0);
   if (Array.isArray(value)) return value.join(" – ");
   return value == null ? "—" : String(value);
+}
+
+function formatRate(value: number | null | undefined): string {
+  return value == null || !Number.isFinite(value) ? "—" : value.toFixed(value >= 100 ? 0 : 1);
+}
+
+function formatSignedUsd(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  return `${value >= 0 ? "+" : "−"}${formatUsd(Math.abs(value))}`;
+}
+
+function unitCost(cost: number | null | undefined, count: number): number | null {
+  return cost == null || cost <= 0 || count <= 0 ? null : cost / count;
+}
+
+function hourlyRate(count: number, durationMs: number | null | undefined): number | null {
+  return durationMs == null || durationMs <= 0 ? null : count / (durationMs / 3_600_000);
 }
 
 function signed(value: number): string { return value > 0 ? `+${value}` : String(value); }
