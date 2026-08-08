@@ -249,9 +249,9 @@ export interface CompareRequest {
 }
 
 export type CompareFindingChange =
-  | "introduced"
-  | "resolved"
-  | "persistent"
+  | "candidate_only"
+  | "baseline_only"
+  | "both"
   | "severity_changed";
 
 export interface CompareFindingOccurrence extends FindingSummary {

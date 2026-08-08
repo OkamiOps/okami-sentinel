@@ -38,21 +38,21 @@ import {
 import { formatDate, formatDuration, formatTokens, formatUsd, shortId } from "../format";
 
 const changeOrder: CompareFindingChange[] = [
-  "introduced",
+  "candidate_only",
   "severity_changed",
-  "resolved",
-  "persistent",
+  "baseline_only",
+  "both",
 ];
 const changeLabel: Record<CompareFindingChange, string> = {
-  introduced: "nova",
-  resolved: "resolvida",
-  persistent: "persistente",
-  severity_changed: "reclassificada",
+  candidate_only: "só candidato",
+  baseline_only: "só baseline",
+  both: "em ambos",
+  severity_changed: "severidade diferente",
 };
 const changeTone: Record<CompareFindingChange, string> = {
-  introduced: "border-destructive/45 bg-destructive/10 text-destructive",
-  resolved: "border-chart-2/45 bg-chart-2/10 text-chart-2",
-  persistent: "border-border bg-muted/30 text-muted-foreground",
+  candidate_only: "border-primary/45 bg-primary/10 text-primary",
+  baseline_only: "border-chart-3/45 bg-chart-3/10 text-chart-3",
+  both: "border-chart-2/45 bg-chart-2/10 text-chart-2",
   severity_changed: "border-chart-3/45 bg-chart-3/10 text-chart-3",
 };
 const severityRows: Array<[keyof SeverityCounts, string]> = [
@@ -233,15 +233,16 @@ function ComparisonOutput({ result }: { result: CompareResult }) {
 
   return <section className="mt-6">
     <div className="mb-3 flex items-center gap-3"><span className="bench-label text-primary">SECURITY CHANGESET / READY</span><span className="h-px flex-1 bg-border" /><span className="font-mono text-[8px] text-muted-foreground">{result.scans.length} SCANS · 1 BASELINE · {result.candidateScanIds.length} CANDIDATOS</span></div>
+    <AlertBanner tone="info"><strong>Leitura de cobertura, não de remediação.</strong> “Só baseline” significa que o candidato não reportou o sinal; isso não prova que a vulnerabilidade foi corrigida. Da mesma forma, “só candidato” não significa que ela surgiu agora.</AlertBanner>
     {!sameRepository && <AlertBanner tone="warning">Os scans pertencem a alvos diferentes. O diff continua disponível, mas sinais exclusivos podem refletir aplicações diferentes, não regressões.</AlertBanner>}
     <CandidateRail result={result} activeCandidateId={activeCandidateId} onSelect={selectCandidate} />
     <div className="bench-panel bench-corners">
       <div className="grid lg:grid-cols-[minmax(0,1fr)_16rem_minmax(0,1fr)]">
         <RunReadout role="BASELINE" scan={baseline} />
         <div className="flex min-h-40 flex-col items-center justify-center border-b p-5 text-center lg:border-x lg:border-b-0">
-          <div className="bench-label">EXPOSURE DELTA / HIGH+</div>
+          <div className="bench-label">DETECTION DELTA / HIGH+</div>
           <div className={cx("mt-2 font-mono text-4xl font-semibold tabular-nums", highDelta > 0 ? "text-destructive" : highDelta < 0 ? "text-chart-2" : "text-muted-foreground")}>{signed(highDelta)}</div>
-          <div className="mt-1 text-[10px] text-muted-foreground">{highDelta > 0 ? "risco crítico aumentou" : highDelta < 0 ? "risco crítico reduziu" : "sem mudança em high+"}</div>
+          <div className="mt-1 text-[10px] text-muted-foreground">{highDelta > 0 ? `candidato reportou ${highDelta} high+ a mais` : highDelta < 0 ? `candidato reportou ${Math.abs(highDelta)} high+ a menos` : "mesma contagem de high+"}</div>
         </div>
         <RunReadout role="CANDIDATO" scan={candidate} />
       </div>
@@ -254,13 +255,14 @@ function ComparisonOutput({ result }: { result: CompareResult }) {
     </div>
 
     <ScanSeverityMatrix scans={result.scans} baselineScanId={result.baselineScanId} activeCandidateId={activeCandidateId} onSelect={selectCandidate} />
+    <DetectionScoreboard scans={result.scans} baselineScanId={result.baselineScanId} activeCandidateId={activeCandidateId} />
 
     <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,.85fr)_minmax(0,1.15fr)]">
       <SeverityLedger baseline={baseline} candidate={candidate} />
       <OperationalLedger result={result} baseline={baseline} candidate={candidate} />
     </div>
 
-    <Panel className="mt-4" label="EVIDENCE DIFF" title={`${filtered.length} de ${pairFindings.length} vulnerabilidades · ${candidate.displayName}`} aside={<span className="font-mono text-[8px] text-muted-foreground">EXPANDA UMA LINHA PARA INSPECIONAR</span>} wrapTitle>
+    <Panel className="mt-4" label="OBSERVATION DIFF" title={`${filtered.length} de ${pairFindings.length} sinais comparados · ${candidate.displayName}`} aside={<span className="font-mono text-[8px] text-muted-foreground">EXPANDA UMA LINHA PARA INSPECIONAR</span>} wrapTitle>
       <div className="grid gap-2 border-b p-3 md:grid-cols-[minmax(14rem,1fr)_11rem_10rem]">
         <label className="flex h-9 items-center gap-2 border bg-background px-3">
           <HugeiconsIcon icon={Search01Icon} size={12} className="text-muted-foreground" />
@@ -268,14 +270,14 @@ function ComparisonOutput({ result }: { result: CompareResult }) {
         </label>
         <Select value={change} onValueChange={(value) => setChange(value as CompareFindingChange | "all")}>
           <SelectTrigger className="h-9 rounded-none font-mono text-[9px] uppercase"><SelectValue /></SelectTrigger>
-          <SelectContent className="rounded-none"><SelectItem value="all">Todas as mudanças</SelectItem>{changeOrder.map((item) => <SelectItem key={item} value={item}>{changeLabel[item]}</SelectItem>)}</SelectContent>
+          <SelectContent className="rounded-none"><SelectItem value="all">Toda cobertura</SelectItem>{changeOrder.map((item) => <SelectItem key={item} value={item}>{changeLabel[item]}</SelectItem>)}</SelectContent>
         </Select>
         <Select value={severity} onValueChange={(value) => setSeverity(value as Severity | "all")}>
           <SelectTrigger className="h-9 rounded-none font-mono text-[9px] uppercase"><SelectValue /></SelectTrigger>
           <SelectContent className="rounded-none"><SelectItem value="all">Toda severidade</SelectItem>{(["critical", "high", "medium", "low", "info"] as Severity[]).map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent>
         </Select>
       </div>
-      <div className="hidden grid-cols-[8rem_9rem_minmax(18rem,1fr)_11rem] border-b px-4 py-2 font-mono text-[8px] uppercase tracking-wider text-muted-foreground lg:grid"><span>Mudança</span><span>Severidade</span><span>Vulnerabilidade / evidência</span><span>Presença</span></div>
+      <div className="hidden grid-cols-[8rem_9rem_minmax(18rem,1fr)_11rem] border-b px-4 py-2 font-mono text-[8px] uppercase tracking-wider text-muted-foreground lg:grid"><span>Cobertura</span><span>Severidade</span><span>Vulnerabilidade / evidência</span><span>Presença</span></div>
       <div>{filtered.map((finding) => <FindingDiffRow key={finding.key} finding={finding} />)}{filtered.length === 0 && <EmptyState title="Nenhuma vulnerabilidade neste recorte" description="Remova filtros ou altere a busca para ampliar o diff." />}</div>
     </Panel>
   </section>;
@@ -295,7 +297,7 @@ function CandidateRail({ result, activeCandidateId, onSelect }: { result: Compar
           <div className="flex items-center justify-between gap-2"><span className="font-mono text-[8px] text-primary">C-{String(index + 1).padStart(2, "0")}</span><span className={cx("font-mono text-[9px]", highDelta > 0 ? "text-destructive" : highDelta < 0 ? "text-chart-2" : "text-muted-foreground")}>{signed(highDelta)} high+</span></div>
           <div className="mt-2 truncate text-xs font-semibold">{scan.displayName}</div>
           <div className="mt-1 truncate font-mono text-[8px] text-muted-foreground">{scan.model}/{scan.effort}/{scan.mode}</div>
-          <div className="mt-3 flex gap-3 font-mono text-[8px]"><span className="text-destructive">+{comparison.counts.introduced} novas</span><span className="text-chart-2">−{comparison.counts.resolved} resolvidas</span></div>
+          <div className="mt-3 flex gap-3 font-mono text-[8px]"><span className="text-primary">{comparison.counts.candidate_only} só candidato</span><span className="text-chart-3">{comparison.counts.baseline_only} só baseline</span></div>
         </button>;
       })}
     </div>
@@ -303,13 +305,44 @@ function CandidateRail({ result, activeCandidateId, onSelect }: { result: Compar
 }
 
 function ScanSeverityMatrix({ scans, baselineScanId, activeCandidateId, onSelect }: { scans: ScanRun[]; baselineScanId: string; activeCandidateId: string; onSelect: (id: string) => void }) {
-  return <Panel className="mt-4" label="MULTI-SCAN MATRIX" title="Severidade absoluta em todos os canais" aside={<span className="font-mono text-[8px] text-muted-foreground">CLIQUE EM UM CANDIDATO PARA ABRIR O DIFF</span>} wrapTitle>
+  return <Panel className="mt-4" label="MULTI-SCAN MATRIX" title="Achados reportados por severidade" aside={<span className="font-mono text-[8px] text-muted-foreground">CLIQUE EM UM CANDIDATO PARA ABRIR O DIFF</span>} wrapTitle>
     <div className="overflow-x-auto">
       <table className="table min-w-[48rem]">
         <thead><tr className="font-mono text-[8px] uppercase tracking-wider text-muted-foreground"><th>Severidade</th>{scans.map((scan, index) => <th key={scan.id} className={cx("min-w-36", scan.id === activeCandidateId && "bg-accent")}><button type="button" disabled={scan.id === baselineScanId} onClick={() => onSelect(scan.id)} className="w-full text-left disabled:cursor-default"><span className="block text-primary">{scan.id === baselineScanId ? "Baseline" : `C-${String(index).padStart(2, "0")}`}</span><span className="mt-1 block truncate text-[10px] normal-case text-foreground">{scan.displayName}</span><span className="mt-0.5 block truncate text-[7px] font-normal normal-case text-muted-foreground">{scan.model}/{scan.effort}</span></button></th>)}</tr></thead>
         <tbody>{severityRows.map(([key, label]) => <tr key={key}><td className={cx("font-mono text-[9px] uppercase", key === "critical" && "text-destructive", key === "high" && "text-destructive/80", key === "medium" && "text-chart-3", key === "low" && "text-chart-5", key === "total" && "font-semibold text-foreground")}>{label}</td>{scans.map((scan) => <td key={scan.id} className={cx("font-mono text-sm font-semibold tabular-nums", scan.id === activeCandidateId && "bg-accent text-primary")}>{scan.severity[key]}</td>)}</tr>)}</tbody>
       </table>
     </div>
+  </Panel>;
+}
+
+function DetectionScoreboard({ scans, baselineScanId, activeCandidateId }: { scans: ScanRun[]; baselineScanId: string; activeCandidateId: string }) {
+  const ordered = [...scans].sort((left, right) => right.severity.total - left.severity.total);
+  const largestCount = Math.max(...scans.map((scan) => scan.severity.total));
+  const positiveCosts = scans.map((scan) => scan.cost?.estimatedUsd).filter((value): value is number => value != null && value > 0);
+  const lowestCost = positiveCosts.length ? Math.min(...positiveCosts) : null;
+  return <Panel className="mt-4" label="DETECTION SCOREBOARD" title="Quem reportou mais, quanto custou e quanto demorou" aside={<span className="font-mono text-[8px] text-muted-foreground">VOLUME ≠ PRECISÃO · ORDENADO POR TOTAL</span>} wrapTitle>
+    <div className="overflow-x-auto">
+      <table className="table min-w-[66rem]">
+        <thead><tr className="font-mono text-[8px] uppercase tracking-wider text-muted-foreground"><th>Execução</th><th>Perfil</th><th>Critical</th><th>High+</th><th>Total</th><th>Custo</th><th>USD / finding</th><th>Duração</th><th>Input</th><th>Output</th></tr></thead>
+        <tbody>{ordered.map((scan) => {
+          const cost = scan.cost?.estimatedUsd;
+          const costPerFinding = cost != null && scan.severity.total > 0 ? cost / scan.severity.total : null;
+          return <tr key={scan.id} className={cx(scan.id === activeCandidateId && "bg-accent")}>
+            <td><div className="flex items-center gap-2"><span className="text-xs font-semibold">{scan.displayName}</span>{scan.severity.total === largestCount && <span className="border border-primary/40 px-1.5 py-0.5 font-mono text-[7px] uppercase text-primary">maior contagem</span>}</div><div className="mt-1 font-mono text-[8px] text-muted-foreground">{scan.id === baselineScanId ? "BASELINE" : scan.id === activeCandidateId ? "CANDIDATO ATIVO" : shortId(scan.id)}</div></td>
+            <td className="font-mono text-[8px] text-muted-foreground">{scan.model}/{scan.effort}/{scan.mode}</td>
+            <td className="font-mono text-destructive">{scan.severity.critical}</td>
+            <td className="font-mono text-destructive">{scan.severity.critical + scan.severity.high}</td>
+            <td className="font-mono text-sm font-semibold">{scan.severity.total}</td>
+            <td className="font-mono text-primary">{formatUsd(cost)}{cost != null && cost === lowestCost && <span className="ml-2 text-[7px] uppercase text-chart-2">menor</span>}</td>
+            <td className="font-mono">{costPerFinding == null ? "—" : formatUsd(costPerFinding)}</td>
+            <td className="font-mono">{formatDuration(scan.durationMs)}</td>
+            <td className="font-mono">{formatTokens(scan.cost?.inputTokens)}</td>
+            <td className="font-mono">{formatTokens(scan.cost?.outputTokens)}</td>
+          </tr>;
+        })}</tbody>
+      </table>
+    </div>
+    <div className="border-t px-4 py-3 text-[10px] leading-relaxed text-muted-foreground">“Maior contagem” indica apenas volume reportado. Para medir qualidade do scanner ainda é necessário confirmar findings, falsos positivos e duplicidades.</div>
   </Panel>;
 }
 
@@ -325,7 +358,7 @@ function RunReadout({ role, scan }: { role: string; scan: ScanRun }) {
 }
 
 function SeverityLedger({ baseline, candidate }: { baseline: ScanRun; candidate: ScanRun }) {
-  return <Panel label="SEVERITY LEDGER" title="Distribuição e variação absoluta">
+  return <Panel label="PAIRWISE COUNTS" title="Diferença de achados reportados">
     <div className="grid grid-cols-[minmax(6rem,1fr)_5rem_5rem_5rem] border-b px-4 py-2 font-mono text-[8px] uppercase tracking-wider text-muted-foreground"><span>Severidade</span><span className="text-right">Antes</span><span className="text-right">Δ</span><span className="text-right">Depois</span></div>
     <div>{severityRows.map(([key, label]) => {
       const before = baseline.severity[key];
@@ -352,7 +385,7 @@ function OperationalLedger({ result, baseline, candidate }: { result: CompareRes
     ["High+ / USD", metric(beforeRank?.highPerDollar), decimalDelta(beforeRank?.highPerDollar, afterRank?.highPerDollar), metric(afterRank?.highPerDollar)],
     ["Findings / USD", metric(beforeRank?.totalPerDollar), decimalDelta(beforeRank?.totalPerDollar, afterRank?.totalPerDollar), metric(afterRank?.totalPerDollar)],
   ];
-  return <Panel label="OPERATIONAL DELTA" title="Custo, tempo e eficiência">
+  return <Panel label="OPERATIONAL DELTA" title="Custo, tempo e eficiência observada">
     <div className="grid grid-cols-[minmax(5rem,1fr)_4.5rem_4.5rem_4.5rem] border-b px-4 py-2 font-mono text-[8px] uppercase tracking-wider text-muted-foreground sm:grid-cols-[minmax(7rem,1fr)_7rem_7rem_7rem]"><span>Métrica</span><span className="text-right">Antes</span><span className="text-right">Δ</span><span className="text-right">Depois</span></div>
     <div>{rows.map(([label, before, delta, after]) => <div key={label} className="grid min-h-12 grid-cols-[minmax(5rem,1fr)_4.5rem_4.5rem_4.5rem] items-center border-b px-4 py-2 font-mono text-[10px] tabular-nums sm:grid-cols-[minmax(7rem,1fr)_7rem_7rem_7rem]"><span className="text-muted-foreground">{label}</span><span className="text-right">{before}</span><span className="text-right text-primary">{delta}</span><span className="text-right font-semibold">{after}</span></div>)}</div>
     <div className="grid border-t sm:grid-cols-2"><ProfileCell label="PROFILE" before={`${baseline.model}/${baseline.effort}/${baseline.mode}`} after={`${candidate.model}/${candidate.effort}/${candidate.mode}`} /><ProfileCell label="REVISION" before={baseline.revision ? shortId(baseline.revision) : "unversioned"} after={candidate.revision ? shortId(candidate.revision) : "unversioned"} /></div>
@@ -396,7 +429,7 @@ function OccurrenceReadout({ role, occurrence }: { role: string; occurrence: Com
         <MetaLine label="CWE" value={occurrence.cwe.join(", ") || "—"} />
       </dl>
       <Button asChild variant="outline" size="sm" className="mt-4"><Link to={`/scans/${occurrence.scanId}?f=${encodeURIComponent(occurrence.findingId)}`}>Abrir evidência</Link></Button>
-    </> : <div className="mt-3 border border-dashed p-4 text-xs text-muted-foreground">Ausente neste scan.</div>}
+    </> : <div className="mt-3 border border-dashed p-4 text-xs leading-relaxed text-muted-foreground">Não reportado por este scan. Isso não comprova correção nem ausência da vulnerabilidade.</div>}
   </div>;
 }
 

@@ -19,29 +19,31 @@ function finding(id: string, severity: Severity): FindingSummary {
   };
 }
 
-test("builds an evidence diff with introduced, resolved and severity changes", () => {
+test("reports observed coverage without claiming that an absent finding was resolved", () => {
   const result = buildFindingDiff(
     "baseline",
     "candidate",
     new Map([
-      ["baseline", [finding("resolved", "high"), finding("changed", "medium"), finding("same", "low")]],
-      ["candidate", [finding("introduced", "critical"), finding("changed", "high"), finding("same", "low")]],
+      ["baseline", [finding("baseline-only", "high"), finding("changed", "medium"), finding("same", "low")]],
+      ["candidate", [finding("candidate-only", "critical"), finding("changed", "high"), finding("same", "low")]],
     ]),
   );
 
   assert.deepEqual(result.counts, {
-    introduced: 1,
-    resolved: 1,
-    persistent: 1,
+    candidate_only: 1,
+    baseline_only: 1,
+    both: 1,
     severity_changed: 1,
   });
   assert.deepEqual(result.findings.map((item) => item.change), [
-    "introduced",
+    "candidate_only",
     "severity_changed",
-    "resolved",
-    "persistent",
+    "baseline_only",
+    "both",
   ]);
-  assert.equal(result.findings[0].candidate?.primaryPath, "src/introduced.ts");
+  assert.equal(result.findings[0].candidate?.primaryPath, "src/candidate-only.ts");
+  assert.equal(result.findings[2].candidate, null);
+  assert.equal(result.findings[2].baseline?.primaryPath, "src/baseline-only.ts");
   assert.equal(result.findings[1].baseline?.severity, "medium");
   assert.equal(result.findings[1].candidate?.severity, "high");
 });

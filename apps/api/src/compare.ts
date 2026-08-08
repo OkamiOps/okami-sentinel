@@ -11,10 +11,10 @@ import { readFindingsFile, toFindingSummaries } from "./ingest.js";
 import { findingIdentity } from "./lifecycle.js";
 
 const changeOrder: CompareFindingChange[] = [
-  "introduced",
+  "candidate_only",
   "severity_changed",
-  "resolved",
-  "persistent",
+  "baseline_only",
+  "both",
 ];
 const severityOrder = ["critical", "high", "medium", "low", "info", "unknown"];
 
@@ -79,9 +79,9 @@ export function buildFindingDiff(
   const candidate = indexFindings(findingsByScan.get(candidateScanId) ?? []);
   const keys = new Set([...baseline.keys(), ...candidate.keys()]);
   const counts: Record<CompareFindingChange, number> = {
-    introduced: 0,
-    resolved: 0,
-    persistent: 0,
+    candidate_only: 0,
+    baseline_only: 0,
+    both: 0,
     severity_changed: 0,
   };
   const findings: CompareFindingDelta[] = [];
@@ -90,12 +90,12 @@ export function buildFindingDiff(
     const before = baseline.get(key) ?? null;
     const after = candidate.get(key) ?? null;
     const change: CompareFindingChange = !before
-      ? "introduced"
+      ? "candidate_only"
       : !after
-        ? "resolved"
+        ? "baseline_only"
         : before.severity !== after.severity
           ? "severity_changed"
-          : "persistent";
+          : "both";
     counts[change] += 1;
     findings.push({
       key,
