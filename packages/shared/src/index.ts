@@ -248,15 +248,35 @@ export interface CompareRequest {
   scanIds: string[];
 }
 
-export interface CompareFindingBucket {
+export type CompareFindingChange =
+  | "introduced"
+  | "resolved"
+  | "persistent"
+  | "severity_changed";
+
+export interface CompareFindingOccurrence extends FindingSummary {
+  scanId: string;
+}
+
+export interface CompareFindingDelta {
   key: string;
   title: string;
-  severity: Severity;
-  presentIn: string[];
+  change: CompareFindingChange;
+  baseline: CompareFindingOccurrence | null;
+  candidate: CompareFindingOccurrence | null;
+}
+
+export interface ComparePairResult {
+  candidateScanId: string;
+  counts: Record<CompareFindingChange, number>;
+  findings: CompareFindingDelta[];
 }
 
 export interface CompareResult {
   scans: ScanRun[];
+  baselineScanId: string;
+  candidateScanIds: string[];
+  comparisons: ComparePairResult[];
   ranking: Array<{
     scanId: string;
     model: string | null;
@@ -268,8 +288,6 @@ export interface CompareResult {
     totalPerDollar: number | null;
     durationMs: number | null;
   }>;
-  shared: CompareFindingBucket[];
-  uniqueByScan: Record<string, CompareFindingBucket[]>;
 }
 
 export interface FsEntry {

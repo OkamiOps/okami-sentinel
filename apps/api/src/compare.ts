@@ -1,63 +1,42 @@
 import type {
-  CompareFindingBucket,
+  CompareFindingChange,
+  CompareFindingDelta,
+  ComparePairResult,
   CompareResult,
-  FindingDetail,
+  FindingSummary,
   ScanRun,
 } from "@csb/shared";
 import { getRun } from "./db.js";
-import { readFindingsFile } from "./ingest.js";
+import { readFindingsFile, toFindingSummaries } from "./ingest.js";
+import { findingIdentity } from "./lifecycle.js";
 
-function findingKey(f: FindingDetail): string {
-  if (f.fingerprints[0]) return f.fingerprints[0];
-  if (f.findingId) return f.findingId;
-  return `${f.title}::${f.primaryPath ?? ""}`;
-}
+const changeOrder: CompareFindingChange[] = [
+  "introduced",
+  "severity_changed",
+  "resolved",
+  "persistent",
+];
+const severityOrder = ["critical", "high", "medium", "low", "info", "unknown"];
 
 export function compareScans(scanIds: string[]): CompareResult {
-  if (scanIds.length < 2) {
-    throw new Error("Selecione pelo menos 2 scans para comparar");
+  if (scanIds.length < 2 || scanIds.length > 5) {
+    throw new Error("Selecione de 2 a 5 scans para comparar");
   }
 
   const scans: ScanRun[] = [];
-  const findingsByScan = new Map<string, FindingDetail[]>();
+  const findingsByScan = new Map<string, FindingSummary[]>();
 
   for (const id of scanIds) {
     const run = getRun(id);
     if (!run) throw new Error(`Scan não encontrado: ${id}`);
     scans.push(run);
-    findingsByScan.set(id, readFindingsFile(run.scanDir));
+    findingsByScan.set(id, toFindingSummaries(readFindingsFile(run.scanDir)));
   }
 
-  const allKeys = new Map<string, CompareFindingBucket>();
-  for (const scan of scans) {
-    const findings = findingsByScan.get(scan.id) ?? [];
-    for (const f of findings) {
-      const key = findingKey(f);
-      const existing = allKeys.get(key);
-      if (existing) {
-        if (!existing.presentIn.includes(scan.id)) existing.presentIn.push(scan.id);
-      } else {
-        allKeys.set(key, {
-          key,
-          title: f.title,
-          severity: f.severity,
-          presentIn: [scan.id],
-        });
-      }
-    }
-  }
-
-  const shared: CompareFindingBucket[] = [];
-  const uniqueByScan: Record<string, CompareFindingBucket[]> = {};
-  for (const id of scanIds) uniqueByScan[id] = [];
-
-  for (const bucket of allKeys.values()) {
-    if (bucket.presentIn.length === scans.length) {
-      shared.push(bucket);
-    } else if (bucket.presentIn.length === 1) {
-      uniqueByScan[bucket.presentIn[0]].push(bucket);
-    }
-  }
+  const comparisons: ComparePairResult[] = scanIds.slice(1).map((candidateScanId) => ({
+    candidateScanId,
+    ...buildFindingDiff(scanIds[0], candidateScanId, findingsByScan),
+  }));
 
   const ranking = scans.map((scan) => {
     const usd = scan.cost?.estimatedUsd ?? 0;
@@ -82,5 +61,63 @@ export function compareScans(scanIds: string[]): CompareResult {
     return bv - av;
   });
 
-  return { scans, ranking, shared, uniqueByScan };
+  return {
+    scans,
+    baselineScanId: scanIds[0],
+    candidateScanIds: scanIds.slice(1),
+    comparisons,
+    ranking,
+  };
+}
+
+export function buildFindingDiff(
+  baselineScanId: string,
+  candidateScanId: string,
+  findingsByScan: ReadonlyMap<string, FindingSummary[]>,
+): Pick<ComparePairResult, "counts" | "findings"> {
+  const baseline = indexFindings(findingsByScan.get(baselineScanId) ?? []);
+  const candidate = indexFindings(findingsByScan.get(candidateScanId) ?? []);
+  const keys = new Set([...baseline.keys(), ...candidate.keys()]);
+  const counts: Record<CompareFindingChange, number> = {
+    introduced: 0,
+    resolved: 0,
+    persistent: 0,
+    severity_changed: 0,
+  };
+  const findings: CompareFindingDelta[] = [];
+
+  for (const key of keys) {
+    const before = baseline.get(key) ?? null;
+    const after = candidate.get(key) ?? null;
+    const change: CompareFindingChange = !before
+      ? "introduced"
+      : !after
+        ? "resolved"
+        : before.severity !== after.severity
+          ? "severity_changed"
+          : "persistent";
+    counts[change] += 1;
+    findings.push({
+      key,
+      title: after?.title ?? before?.title ?? "Finding sem título",
+      change,
+      baseline: before ? { ...before, scanId: baselineScanId } : null,
+      candidate: after ? { ...after, scanId: candidateScanId } : null,
+    });
+  }
+
+  findings.sort((left, right) => {
+    const changeDelta = changeOrder.indexOf(left.change) - changeOrder.indexOf(right.change);
+    if (changeDelta !== 0) return changeDelta;
+    const leftSeverity = left.candidate?.severity ?? left.baseline?.severity ?? "unknown";
+    const rightSeverity = right.candidate?.severity ?? right.baseline?.severity ?? "unknown";
+    const severityDelta = severityOrder.indexOf(leftSeverity) - severityOrder.indexOf(rightSeverity);
+    return severityDelta || left.title.localeCompare(right.title);
+  });
+
+  return { counts, findings };
+}
+
+function indexFindings(findings: FindingSummary[]): Map<string, FindingSummary> {
+  return new Map(findings.map((finding) => [findingIdentity(finding), finding]));
 }
