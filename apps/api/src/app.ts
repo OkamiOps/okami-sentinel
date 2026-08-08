@@ -28,6 +28,7 @@ import type {
   StartScanRequest,
   UpdateFindingTriageRequest,
 } from "@csb/shared";
+import { purgeScanArtifacts } from "./activity.js";
 import { compareScans } from "./compare.js";
 import { getCodexInfo } from "./codex-info.js";
 import { CODEX_SECURITY_STATE_DIR } from "./config.js";
@@ -417,12 +418,17 @@ app.delete("/scans/:id", (c) => {
   if (!run) return c.json({ error: "Scan não encontrado" }, 404);
   if (isScanActive(id) || !isRemovableScanStatus(run.status)) {
     return c.json(
-      { error: "Somente scans falhos ou cancelados podem ser excluídos do ledger." },
+      { error: "Somente scans falhos ou cancelados podem ser excluídos." },
       409,
     );
   }
-  hideRun(id);
-  return c.json({ ok: true, artifactsPreserved: true });
+  try {
+    purgeScanArtifacts(run.scanDir);
+    hideRun(id);
+    return c.json({ ok: true, artifactsDeleted: true });
+  } catch (error) {
+    return c.json({ error: errorMessage(error) }, 409);
+  }
 });
 
 app.get("/scans/:id", (c) => {

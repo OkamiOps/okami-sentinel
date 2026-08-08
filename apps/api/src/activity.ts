@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
 import Database from "better-sqlite3";
-import { RUNS_DIR, WORKBENCH_DB_PATH } from "./config.js";
+import { RUNS_DIR, SCANS_ROOT, WORKBENCH_DB_PATH } from "./config.js";
 import { dirsMatch } from "./progress.js";
 
 export function cliLogPath(scanDir: string): string {
@@ -28,6 +28,34 @@ export function readCliLogTail(scanDir: string, maxLines = 250): string[] {
   } catch {
     return [];
   }
+}
+
+export function purgeScanArtifacts(
+  scanDir: string,
+  managedRoots: string[] = [SCANS_ROOT],
+): void {
+  const resolvedScanDir = path.resolve(scanDir);
+  const canonicalScanDir = fs.existsSync(resolvedScanDir)
+    ? fs.realpathSync.native(resolvedScanDir)
+    : resolvedScanDir;
+  const isManaged = managedRoots.some((root) => {
+    const resolvedRoot = path.resolve(root);
+    const canonicalRoot = fs.existsSync(resolvedRoot)
+      ? fs.realpathSync.native(resolvedRoot)
+      : resolvedRoot;
+    const relative = path.relative(canonicalRoot, canonicalScanDir);
+    return relative !== ""
+      && relative !== ".."
+      && !relative.startsWith(`..${path.sep}`)
+      && !path.isAbsolute(relative);
+  });
+
+  if (!isManaged) {
+    throw new Error("Diretório do scan fora das raízes gerenciadas; exclusão recusada.");
+  }
+
+  fs.rmSync(resolvedScanDir, { recursive: true, force: true });
+  fs.rmSync(cliLogPath(resolvedScanDir), { force: true });
 }
 
 /** Resolve the live workbench scan_dir for a CSB (or workbench) directory. */

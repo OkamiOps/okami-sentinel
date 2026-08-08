@@ -68,10 +68,10 @@ export function DeleteScanButton({
           <SheetHeader>
             <SheetTitle className="flex items-center gap-2 font-heading">
               <Trash2 aria-hidden size={17} className="text-destructive" />
-              Excluir scan do ledger
+              Excluir scan e arquivos
             </SheetTitle>
             <SheetDescription>
-              Remove esta execução das telas do produto. Os arquivos do scanner permanecem preservados no disco.
+              Remove esta execução da aplicação e apaga permanentemente sua pasta e o log local. Esta ação não pode ser desfeita.
             </SheetDescription>
           </SheetHeader>
 
@@ -87,12 +87,17 @@ export function DeleteScanButton({
             </div>
           </div>
 
+          <div className="mx-4 border border-destructive/40 bg-destructive/[.06] p-4">
+            <div className="bench-label text-destructive">PASTA QUE SERÁ APAGADA</div>
+            <div className="mt-2 break-all font-mono text-[10px] leading-relaxed text-foreground">{scan.scanDir}</div>
+          </div>
+
           {error && <div role="alert" className="mx-4 border border-destructive/50 bg-destructive/[.08] p-3 text-xs text-destructive">{error}</div>}
 
           <SheetFooter className="sm:flex-row sm:justify-end">
             <Button type="button" variant="outline" className="min-h-11" disabled={busy} onClick={() => setOpen(false)}>Cancelar</Button>
             <Button type="button" variant="destructive" className="min-h-11" disabled={busy} onClick={() => void remove()}>
-              <Trash2 aria-hidden size={14} />{busy ? "Excluindo…" : "Excluir do ledger"}
+              <Trash2 aria-hidden size={14} />{busy ? "Excluindo…" : "Excluir definitivamente"}
             </Button>
           </SheetFooter>
         </SheetContent>
