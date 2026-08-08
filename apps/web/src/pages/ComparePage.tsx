@@ -340,11 +340,44 @@ function DecisionCockpit({ ranking, objective, onObjectiveChange }: { ranking: S
   const meta = objectives.find((item) => item.id === objective) ?? objectives[0];
   if (!winner) return null;
   return <Panel className="mt-4 overflow-hidden" label="DECISION COCKPIT" title="Qual execução foi melhor para o seu objetivo?" aside={<span className="font-mono text-[8px] text-muted-foreground">CRITÉRIO EXPLÍCITO · SEM CHUTE DE PRECISÃO</span>} wrapTitle>
+    <div className="flex flex-col gap-2 border-b bg-muted/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+      <div>
+        <div className="bench-label text-primary">ESCOLHA O CRITÉRIO DE DECISÃO</div>
+        <p className="mt-1 text-[10px] text-muted-foreground">Clique em uma opção para recalcular o vencedor e o ranking completo.</p>
+      </div>
+      <div className="flex w-fit items-center gap-2 border border-primary/35 bg-primary/[.06] px-3 py-1.5 font-mono text-[8px] uppercase tracking-wider text-primary">
+        <span className="size-1.5 bg-primary" />
+        Critério atual: {meta.label}
+      </div>
+    </div>
     <div className="grid border-b sm:grid-cols-2 xl:grid-cols-6">
-      {objectives.map((item) => <button key={item.id} type="button" aria-pressed={objective === item.id} onClick={() => onObjectiveChange(item.id)} className={cx("min-h-20 border-b border-r px-4 py-3 text-left transition hover:bg-accent/60", objective === item.id && "bg-accent shadow-[inset_0_-2px_0_var(--primary)]")}>
-        <span className={cx("block font-mono text-[9px] uppercase tracking-wider", objective === item.id ? "text-primary" : "text-muted-foreground")}>{item.label}</span>
-        <span className="mt-1.5 block text-[9px] leading-snug text-muted-foreground">{item.description}</span>
-      </button>)}
+      {objectives.map((item) => {
+        const active = objective === item.id;
+        return <button
+          key={item.id}
+          type="button"
+          aria-pressed={active}
+          onClick={() => onObjectiveChange(item.id)}
+          className={cx(
+            "group relative min-h-28 cursor-pointer border-b border-r px-4 py-3 text-left transition-all focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary",
+            active
+              ? "bg-primary/[.08] shadow-[inset_0_3px_0_var(--primary)]"
+              : "hover:bg-primary/[.04] hover:shadow-[inset_0_3px_0_color-mix(in_oklab,var(--primary)_45%,transparent)]",
+          )}
+        >
+          <span className="flex items-center justify-between gap-3">
+            <span className={cx("font-mono text-[9px] uppercase tracking-wider", active ? "text-primary" : "text-foreground")}>{item.label}</span>
+            <span className={cx("flex size-4 shrink-0 items-center justify-center border transition-colors", active ? "border-primary bg-primary text-primary-foreground" : "border-muted-foreground/60 group-hover:border-primary")}>
+              {active && <HugeiconsIcon icon={Tick02Icon} size={11} />}
+            </span>
+          </span>
+          <span className="mt-2 block text-[9px] leading-snug text-muted-foreground">{item.description}</span>
+          <span className={cx("mt-3 flex items-center gap-1.5 font-mono text-[8px] uppercase tracking-wider transition-colors", active ? "text-primary" : "text-muted-foreground group-hover:text-primary")}>
+            {active ? "Selecionado" : "Selecionar"}
+            {!active && <HugeiconsIcon icon={ArrowRight01Icon} size={10} className="transition-transform group-hover:translate-x-0.5" />}
+          </span>
+        </button>;
+      })}
     </div>
     <div className="grid xl:grid-cols-[minmax(0,1.25fr)_minmax(20rem,.75fr)]">
       <div className="relative min-h-72 overflow-hidden border-b p-6 xl:border-b-0 xl:border-r">
