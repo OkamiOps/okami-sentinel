@@ -4,6 +4,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Analytics01Icon,
   ArrowRight01Icon,
+  DocumentValidationIcon,
   Search01Icon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
@@ -284,9 +285,12 @@ function ComparisonOutput({ result }: { result: CompareResult }) {
     setSeverity("all");
     setQuery("");
   }
+  const reportHref = `/compare/report?ids=${result.scans.map((scan) => scan.id).join(",")}&objective=${objective}`;
+  const objectiveLabel = objectives.find((item) => item.id === objective)?.label ?? "Equilíbrio";
 
   return <section className="mt-6">
     <div className="mb-3 flex items-center gap-3"><span className="bench-label text-primary">SECURITY CHANGESET / {partialScans.length ? "PARTIAL INPUT" : "READY"}</span><span className="h-px flex-1 bg-border" /><span className="font-mono text-[8px] text-muted-foreground">{result.scans.length} SCANS · 1 BASELINE · {result.candidateScanIds.length} CANDIDATOS · {partialScans.length} PARCIAIS</span></div>
+    <Button asChild className="mb-4 h-auto w-full justify-between border-chart-1 bg-chart-1 px-5 py-4 text-[#060609] hover:bg-chart-1/90"><Link to={reportHref} target="_blank"><span className="flex items-center gap-3"><HugeiconsIcon icon={DocumentValidationIcon} size={20} /><span className="text-left"><strong className="block text-sm uppercase tracking-[.08em]">Emitir relatório comparativo</strong><span className="mt-1 block font-mono text-[8px] font-normal uppercase opacity-75">{result.scans.length} scans · critério {objectiveLabel} · impressão / PDF</span></span></span><HugeiconsIcon icon={ArrowRight01Icon} size={16} /></Link></Button>
     <AlertBanner tone="info"><strong>Leitura de cobertura, não de remediação.</strong> “Só baseline” significa que o candidato não reportou o sinal; isso não prova que a vulnerabilidade foi corrigida. Da mesma forma, “só candidato” não significa que ela surgiu agora.</AlertBanner>
     {partialScans.length > 0 && <AlertBanner tone="warning"><strong>{partialScans.length === 1 ? "Uma execução falhou" : `${partialScans.length} execuções falharam`} depois de produzir findings.</strong> Os resultados preservados entram nos gráficos e no ranking, mas custo, duração e cobertura descrevem apenas o trabalho realizado antes da interrupção; quando o scan parou antes da consolidação, pode haver sobreposição entre workers.</AlertBanner>}
     {!sameRepository && <AlertBanner tone="warning">Os scans pertencem a alvos diferentes. O diff continua disponível, mas sinais exclusivos podem refletir aplicações diferentes, não regressões.</AlertBanner>}

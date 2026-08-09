@@ -4,6 +4,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowLeft01Icon, PrinterIcon, RefreshIcon } from "@hugeicons/core-free-icons";
 import type { FindingDetail, FindingLifecycle, LifecycleFinding, Severity } from "@csb/shared";
 import { api, type ScanReportData } from "../api";
+import { Kicker, MetaCell, Metric, ReportBrand, ReportFooter, ReportHeader, ReportSheet, ReportText } from "../components/report/ReportPrimitives";
 import { formatDate, formatDuration, formatTokens, formatUsd, shortId } from "../format";
 import { Button } from "@/components/ui/button";
 
@@ -212,34 +213,6 @@ export function ScanReportPage() {
   </div>;
 }
 
-function ReportSheet({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return <article className={`report-sheet relative flex flex-col ${className}`}>{children}</article>;
-}
-
-function ReportBrand() {
-  return <div className="flex items-center justify-between border-b border-border pb-5"><div className="flex items-center gap-3"><img src="/brand/okami-sentinel-mark.png" alt="" className="h-11 w-11 object-contain" /><div><div className="font-heading text-sm font-bold tracking-[.18em]">OKAMI</div><div className="font-mono text-[7px] uppercase tracking-[.38em] text-muted-foreground">Sentinel</div></div></div><div className="hidden font-mono text-[8px] uppercase tracking-[.16em] text-primary sm:block">Local security intelligence</div></div>;
-}
-
-function ReportHeader({ section, title, reportId }: { section: string; title: string; reportId: string }) {
-  return <header><ReportBrand /><div className="mt-9 flex items-end justify-between gap-6 border-b border-border pb-5"><div><Kicker>{section} / Report section</Kicker><h2 className="mt-2 font-heading text-3xl font-semibold tracking-[-.045em]">{title}</h2></div><span className="font-mono text-[8px] text-muted-foreground">{reportId}</span></div></header>;
-}
-
-function ReportFooter({ reportId }: { reportId: string }) {
-  return <footer className="mt-auto flex items-center justify-between border-t border-border pt-4 font-mono text-[7px] uppercase tracking-[.14em] text-muted-foreground"><span>{reportId} / confidential</span><span>OKAMI SENTINEL · <span className="report-page-number" /></span></footer>;
-}
-
-function Kicker({ children }: { children: ReactNode }) {
-  return <div className="font-mono text-[8px] uppercase tracking-[.18em] text-primary">{children}</div>;
-}
-
-function MetaCell({ label, value }: { label: string; value: ReactNode }) {
-  return <div className="min-w-0 border-b border-r border-border p-4"><div className="font-mono text-[7px] uppercase tracking-[.15em] text-muted-foreground">{label}</div><div className="mt-2 break-words font-mono text-[10px] leading-5 text-foreground">{value}</div></div>;
-}
-
-function Metric({ label, value, tone = "text-foreground" }: { label: string; value: ReactNode; tone?: string }) {
-  return <div className="border-b border-r border-border p-4"><div className="font-mono text-[7px] uppercase tracking-[.14em] text-muted-foreground">{label}</div><strong className={`mt-2 block font-mono text-xl ${tone}`}>{value}</strong></div>;
-}
-
 function SeverityRow({ severity, count, total }: { severity: Severity; count: number; total: number }) {
   const percentage = total ? Math.round((count / total) * 100) : 0;
   return <div className="grid grid-cols-[5rem_minmax(0,1fr)_4rem] items-center gap-3 border-b border-border/70 py-3 last:border-0"><span className={`font-mono text-[9px] uppercase ${severityText[severity]}`}>{severityLabel[severity]}</span><div className="h-2 bg-muted"><div className={`h-full ${severityBar[severity]}`} style={{ width: `${percentage}%` }} /></div><span className="text-right font-mono text-[9px]">{count} / {percentage}%</span></div>;
@@ -275,10 +248,6 @@ function FindingSheet({ finding, index, signal, reportId }: { finding: FindingDe
 
 function ReportSection({ title, children }: { title: string; children: ReactNode }) {
   return <section className="mt-6 border-t border-border pt-5"><Kicker>{title}</Kicker><div className="mt-3">{children}</div></section>;
-}
-
-function ReportText({ title, children }: { title: string; children: ReactNode }) {
-  return <div className="border border-border p-5"><Kicker>{title}</Kicker><p className="mt-3 text-xs leading-6 text-muted-foreground">{children}</p></div>;
 }
 
 function TextBlocks({ lines, fallback }: { lines: string[]; fallback?: string }) {

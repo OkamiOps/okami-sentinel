@@ -12,6 +12,7 @@ import { formatUsd } from "./format";
 import { ActivityPage } from "./pages/ActivityPage";
 import { AttackPathPage } from "./pages/AttackPathPage";
 import { ComparePage } from "./pages/ComparePage";
+import { CompareReportPage } from "./pages/CompareReportPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { GuardrailsPage } from "./pages/GuardrailsPage";
 import { GuardrailPolicyPage } from "./pages/GuardrailPolicyPage";
@@ -44,8 +45,8 @@ export function App() {
   async function reindex() { setSyncing(true); try { await api.ingest(); await loadActive(); } finally { setSyncing(false); } }
   const current = active[0];
 
-  if (/^\/scans\/[^/]+\/report$/.test(location.pathname)) {
-    return <Routes><Route path="/scans/:id/report" element={<ScanReportPage />} /></Routes>;
+  if (/^\/scans\/[^/]+\/report$/.test(location.pathname) || location.pathname === "/compare/report") {
+    return <Routes><Route path="/scans/:id/report" element={<ScanReportPage />} /><Route path="/compare/report" element={<CompareReportPage />} /></Routes>;
   }
 
   return <div className="min-h-screen overflow-x-hidden pb-20">
