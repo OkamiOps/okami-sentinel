@@ -39,9 +39,9 @@ function blockedArtifact(): GateArtifact {
     schemaVersion: 1,
     gateId: "gate-1",
     repository: {
-      key: "github.com/OkamiOps/Codex-Security-Benchmark",
+      key: "github.com/OkamiOps/okami-sentinel",
       owner: "OkamiOps",
-      name: "Codex-Security-Benchmark",
+      name: "okami-sentinel",
       defaultBranch: "main",
     },
     source: "local",
@@ -115,7 +115,7 @@ test("publishes a failure check for a blocked gate", async () => {
   await publishGateCheck({
     artifact,
     owner: "OkamiOps",
-    repository: "Codex-Security-Benchmark",
+    repository: "okami-sentinel",
     detailsUrl: null,
   }, gh.runner);
 
@@ -123,7 +123,7 @@ test("publishes a failure check for a blocked gate", async () => {
     "api",
     "--method",
     "POST",
-    "repos/OkamiOps/Codex-Security-Benchmark/check-runs",
+    "repos/OkamiOps/okami-sentinel/check-runs",
     "--input",
     "-",
   ]);

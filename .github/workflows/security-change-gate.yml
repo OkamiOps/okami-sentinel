@@ -43,7 +43,7 @@ jobs:
       - name: Checkout CSB release
         uses: actions/checkout@v6
         with:
-          repository: OkamiOps/Codex-Security-Benchmark
+          repository: OkamiOps/okami-sentinel
           ref: ${{ inputs.csb_ref }}
           path: .csb-tool
           persist-credentials: false

@@ -12,7 +12,7 @@
   </p>
 
   <p>
-    <a href="https://github.com/OkamiOps/Codex-Security-Benchmark/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/OkamiOps/Codex-Security-Benchmark/actions/workflows/ci.yml/badge.svg" /></a>
+    <a href="https://github.com/OkamiOps/okami-sentinel/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/OkamiOps/okami-sentinel/actions/workflows/ci.yml/badge.svg" /></a>
     <img alt="Node.js 24" src="https://img.shields.io/badge/Node.js-24.x-5FA04E?logo=nodedotjs&logoColor=white" />
     <img alt="pnpm 11.5.2" src="https://img.shields.io/badge/pnpm-11.5.2-F69220?logo=pnpm&logoColor=white" />
     <img alt="React 19" src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=0B0B12" />
@@ -111,8 +111,8 @@ flowchart LR
 ## Schnellstart
 
 ```bash
-git clone https://github.com/OkamiOps/Codex-Security-Benchmark.git
-cd Codex-Security-Benchmark
+git clone https://github.com/OkamiOps/okami-sentinel.git
+cd okami-sentinel
 corepack enable
 corepack prepare pnpm@11.5.2 --activate
 pnpm install
@@ -196,7 +196,7 @@ permissions:
   checks: write
 jobs:
   security-change-gate:
-    uses: OkamiOps/Codex-Security-Benchmark/.github/workflows/security-change-gate.yml@v1
+    uses: OkamiOps/okami-sentinel/.github/workflows/security-change-gate.yml@v1
     with:
       policy_path: .csb/guardrails.json
       default_branch: main
@@ -270,7 +270,7 @@ pnpm build
 ```
 
 ```text
-Codex-Security-Benchmark/
+okami-sentinel/
 ├── apps/
 │   ├── api/           # lokale HTTP/SSE-API
 │   ├── gate-cli/      # Headless-Gate-Befehl

@@ -45,14 +45,14 @@ function fakeGh(
       if (key === "repo view --json nameWithOwner,defaultBranchRef") {
         return success(
           JSON.stringify({
-            nameWithOwner: "OkamiOps/Codex-Security-Benchmark",
+            nameWithOwner: "OkamiOps/okami-sentinel",
             defaultBranchRef: { name: "main" },
           }),
         );
       }
       if (
         key ===
-        "api repos/OkamiOps/Codex-Security-Benchmark --jq .permissions"
+        "api repos/OkamiOps/okami-sentinel --jq .permissions"
       ) {
         return success(
           JSON.stringify({
@@ -66,7 +66,7 @@ function fakeGh(
       }
       if (
         key ===
-        "api repos/OkamiOps/Codex-Security-Benchmark/actions/permissions/workflow"
+        "api repos/OkamiOps/okami-sentinel/actions/permissions/workflow"
       ) {
         return success(
           JSON.stringify({

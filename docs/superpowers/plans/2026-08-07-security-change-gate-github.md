@@ -270,7 +270,7 @@ Define secret `OPENAI_API_KEY` as optional so missing authentication can produce
 The job must:
 
 1. checkout the caller repository into the workspace;
-2. checkout `OkamiOps/Codex-Security-Benchmark` at `${{ inputs.csb_ref }}` into `.csb-tool`;
+2. checkout `OkamiOps/okami-sentinel` at `${{ inputs.csb_ref }}` into `.csb-tool`;
 3. set up Node 24 and pnpm 11.5.2;
 4. run `pnpm --dir .csb-tool install --frozen-lockfile --filter @csb/gate-cli...` so only the CLI and its workspace dependency closure are installed;
 5. derive base/head SHAs from the event;
@@ -297,7 +297,7 @@ permissions:
   checks: write
 jobs:
   security-change-gate:
-    uses: OkamiOps/Codex-Security-Benchmark/.github/workflows/security-change-gate.yml@v1
+    uses: OkamiOps/okami-sentinel/.github/workflows/security-change-gate.yml@v1
     with:
       policy_path: .csb/guardrails.json
       default_branch: main
@@ -552,7 +552,7 @@ git commit -m "feat: sync github guardrail baselines"
 ```ts
 test("publishes a failure check for a blocked gate", async () => {
   const gh = recordingGh();
-  await publishGateCheck({ artifact: blockedArtifact(), owner: "OkamiOps", repository: "Codex-Security-Benchmark", detailsUrl: null }, gh);
+  await publishGateCheck({ artifact: blockedArtifact(), owner: "OkamiOps", repository: "okami-sentinel", detailsUrl: null }, gh);
   const payload = JSON.parse(gh.lastStdin ?? "{}");
   assert.equal(payload.name, "CSB Security Change Gate");
   assert.equal(payload.conclusion, "failure");

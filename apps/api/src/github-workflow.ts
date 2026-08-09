@@ -51,7 +51,7 @@ permissions:
   checks: write
 jobs:
   security-change-gate:
-    uses: OkamiOps/Codex-Security-Benchmark/.github/workflows/security-change-gate.yml@v1
+    uses: OkamiOps/okami-sentinel/.github/workflows/security-change-gate.yml@v1
     with:
       policy_path: .csb/guardrails.json
       default_branch: ${defaultBranch}
