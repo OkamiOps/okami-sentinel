@@ -438,6 +438,21 @@ app.get("/scans/:id", (c) => {
   return c.json({ scan: withProgress(run), findings });
 });
 
+app.get("/scans/:id/report", (c) => {
+  const run = getRun(c.req.param("id"));
+  if (!run) return c.json({ error: "Scan não encontrado" }, 404);
+  try {
+    return c.json({
+      scan: withProgress(run),
+      findings: readFindingsFile(run.scanDir),
+      regression: buildRegressionSummary(run.id),
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : "Falha ao montar relatório" }, 500);
+  }
+});
+
 app.get("/scans/:id/regression", (c) => {
   try {
     return c.json(buildRegressionSummary(c.req.param("id")));

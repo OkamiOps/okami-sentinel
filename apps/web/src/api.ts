@@ -64,6 +64,13 @@ export interface GatePublicationAttempt {
   createdAt: string;
 }
 
+export interface ScanReportData {
+  scan: ScanRun;
+  findings: FindingDetail[];
+  regression: RegressionSummary;
+  generatedAt: string;
+}
+
 export const api = {
   health: () => request<HealthResponse>("/health"),
   ingest: () => request<{ imported: number }>("/ingest", { method: "POST" }),
@@ -71,6 +78,7 @@ export const api = {
   listScans: () => request<{ scans: ScanRun[] }>("/scans"),
   getScan: (id: string) =>
     request<{ scan: ScanRun; findings: FindingSummary[] }>(`/scans/${id}`),
+  report: (id: string) => request<ScanReportData>(`/scans/${id}/report`),
   getFinding: (scanId: string, findingId: string) =>
     request<{ finding: FindingDetail }>(`/scans/${scanId}/findings/${encodeURIComponent(findingId)}`),
   regression: (scanId: string) =>

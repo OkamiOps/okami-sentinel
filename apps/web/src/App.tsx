@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Activity01Icon, Analytics01Icon, ArrowRight01Icon, Menu01Icon, PlusSignIcon, RefreshIcon, SecurityCheckIcon } from "@hugeicons/core-free-icons";
+import { Activity01Icon, Analytics01Icon, ArrowRight01Icon, Menu01Icon, PlusSignIcon, RefreshIcon } from "@hugeicons/core-free-icons";
 import type { ScanRun } from "@csb/shared";
 import { api } from "./api";
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,7 @@ import { GuardrailPolicyPage } from "./pages/GuardrailPolicyPage";
 import { GuardrailSetupPage } from "./pages/GuardrailSetupPage";
 import { NewScanPage } from "./pages/NewScanPage";
 import { ScanDetailPage } from "./pages/ScanDetailPage";
+import { ScanReportPage } from "./pages/ScanReportPage";
 import { ScansPage } from "./pages/ScansPage";
 import { SettingsPage } from "./pages/SettingsPage";
 
@@ -43,12 +44,16 @@ export function App() {
   async function reindex() { setSyncing(true); try { await api.ingest(); await loadActive(); } finally { setSyncing(false); } }
   const current = active[0];
 
+  if (/^\/scans\/[^/]+\/report$/.test(location.pathname)) {
+    return <Routes><Route path="/scans/:id/report" element={<ScanReportPage />} /></Routes>;
+  }
+
   return <div className="min-h-screen overflow-x-hidden pb-20">
     <header className="sticky top-0 z-40 border-b border-border bg-background/95 backdrop-blur-md">
       <div className="flex h-12 items-stretch">
         <Link to="/" className="flex min-w-52 items-center gap-2 border-r px-4">
-          <span className="flex size-6 items-center justify-center border border-chart-1 text-chart-1"><HugeiconsIcon icon={SecurityCheckIcon} size={13} /></span>
-          <span className="font-heading text-xs font-bold tracking-[-0.01em]">CSB</span><span className="font-mono text-[9px] text-muted-foreground">/ LOCAL BENCH</span>
+          <img src="/brand/okami-sentinel-mark.png" alt="" className="size-7 object-contain" />
+          <span className="font-heading text-xs font-bold tracking-[0.12em]">OKAMI</span><span className="font-mono text-[9px] text-muted-foreground">/ SENTINEL</span>
         </Link>
         <div className="hidden flex-1 md:block"><NavStrip /></div>
         <div className="ml-auto flex items-stretch">
@@ -56,12 +61,12 @@ export function App() {
           <Button asChild className="h-full border-y-0 border-r-0 px-4"><Link to="/scans/new"><HugeiconsIcon icon={PlusSignIcon} size={13} />LAUNCH</Link></Button>
           <Sheet>
             <SheetTrigger asChild><Button variant="ghost" size="icon" className="h-full border-y-0 border-r-0 md:hidden" aria-label="Abrir módulos"><HugeiconsIcon icon={Menu01Icon} size={16} /></Button></SheetTrigger>
-            <SheetContent side="right" className="w-72 border-border bg-background p-0"><SheetTitle className="border-b px-4 py-4 font-mono text-xs">CSB / MODULE INDEX</SheetTitle><NavStrip /></SheetContent>
+            <SheetContent side="right" className="w-72 border-border bg-background p-0"><SheetTitle className="border-b px-4 py-4 font-mono text-xs">SENTINEL / MODULE INDEX</SheetTitle><NavStrip /></SheetContent>
           </Sheet>
         </div>
       </div>
       <div className="flex h-6 min-w-0 items-center justify-end border-t border-border/60 px-4 font-mono text-[8px] uppercase tracking-[0.13em] text-muted-foreground sm:justify-between">
-        <span className="hidden shrink-0 sm:inline">security benchmark instrumentation</span>
+        <span className="hidden shrink-0 sm:inline">evidence-driven security benchmark</span>
         <span className="min-w-0 truncate text-right">{location.pathname === "/" ? "/overview" : location.pathname}</span>
       </div>
     </header>
