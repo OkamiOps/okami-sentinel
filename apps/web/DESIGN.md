@@ -1,17 +1,17 @@
 ---
-name: Codex Security Benchmark / Test Bench
+name: OKAMI Sentinel / Test Bench
 description: Dark security instrumentation workspace built around evidence channels
 colors:
-  canvas: "#090c0b"
-  machine: "#101412"
-  alloy: "#171c1a"
-  edge: "#2b332f"
-  ink: "#edf0eb"
-  signal-copper: "#e8a15e"
-  evidence-seafoam: "#70cdbd"
-  attention-straw: "#d6bd76"
-  risk-coral: "#ed6a62"
-  context-blue: "#73aeca"
+  canvas: "#08090f"
+  machine: "#0d1017"
+  alloy: "#171824"
+  edge: "#292b3a"
+  ink: "#f2f2f4"
+  command-orange: "#ff6b24"
+  evidence-cyan: "#11cddd"
+  priority-magenta: "#f32bc2"
+  attention-amber: "#f2b824"
+  success-green: "#66d889"
 typography:
   display: "Manrope Variable"
   body: "Geist Variable"
@@ -23,57 +23,62 @@ geometry:
 
 # Design system: Test Bench
 
+[English](DESIGN.md) · [Português (Brasil)](DESIGN.pt-BR.md) · [Deutsch](DESIGN.de.md) · [Français](DESIGN.fr.md)
+
 ## North star
 
-O produto é uma bancada de benchmark, não um painel SaaS. A interface organiza o trabalho como canais, sinais, traces, patch bays, manifests e inspectors. As referências foram traduzidas em cinco padrões recorrentes: heatmaps densos, workspaces multipainel, listas operacionais, command bars persistentes e readouts de instrumento.
+The product is a security benchmark bench, not a SaaS dashboard. Work is organized as channels, signals, traces, patch bays, manifests, and inspectors. The visual language uses dense heatmaps, multi-panel workspaces, operational lists, persistent command bars, and instrument readouts.
 
-## Assinatura
+## Signature
 
-O **Evidence Spectrum** é o elemento proprietário. Cada run vira um canal e cada canal recebe uma faixa normalizada de severidade. A faixa permite comparar distribuição, volume, custo e estado sem abrir uma coleção de cards ou recorrer a um donut.
+The **Evidence Spectrum** is the proprietary visual. Each run becomes a channel with a normalized severity band. The band compares distribution, volume, cost, and state without hiding evidence inside KPI-card grids or decorative donuts.
 
 ## Shell
 
-- Barra horizontal compacta; nenhuma sidebar.
-- Módulos numerados e estado do motor no mesmo barramento.
-- Seletor de idioma compacto no barramento superior, com o nome nativo de cada idioma e estado selecionado explícito.
-- Command deck persistente na base para lançar ou retornar ao processo ativo.
-- Canvas quase preto com grid estrutural discreto.
-- Painéis conectados por bordas; raio de 2px apenas onde a primitive exige.
+- Compact horizontal command bar; no permanent sidebar.
+- Numbered modules and engine state share the same rail.
+- Compact language selector with native names and explicit selection.
+- Persistent bottom command dock for launching or returning to active work.
+- Near-black canvas with a restrained structural grid.
+- Connected panels with 2px radius only where the primitive requires it.
 
-## Cor
+## Color roles
 
-- Copper: comando, custo e seleção ativa.
-- Seafoam: evidência, conclusão e eficiência.
-- Coral: critical/high e falha.
-- Straw: medium e amostras neutras.
-- Blue: low/contexto.
+- **Orange:** command, launch, destructive confirmation, and primary action.
+- **Cyan:** evidence, selection, focus, and efficiency.
+- **Magenta:** critical/high priority and meaningful divergence.
+- **Amber:** medium severity, warning, and partial results.
+- **Green:** completed, ready, and verified operational state.
 
-Cor nunca carrega significado sozinha; status e severidade sempre têm label textual.
+Color never carries meaning alone; status and severity always have a text label.
 
-## Rotas
+## Routes
 
-- **Visão:** channel index + Evidence Spectrum + sample readout + trace custo × evidência.
-- **Runs:** ledger denso; cancelados e falhos ficam fora do recorte corrente por padrão.
-- **Operar:** sequenciador conectado de target, strategy e authorization.
-- **Comparar:** sample library + patch bay + efficiency plane + truth table; nenhum radar.
-- **Relatórios:** leitura editorial para impressão/PDF, com marca Okami Sentinel, resumo executivo, métricas comparáveis e detalhe de findings sem transformar o documento em um índice de dezenas de páginas.
-- **Atividade:** live bus e event trace contínuo.
-- **Detalhe:** header de canal + evidence index/list/inspector em três painéis.
-- **Sistema:** engine matrix, capacity envelope e operação de índice.
+- **Overview:** channel index, Evidence Spectrum, sample readout, and cost/evidence traces.
+- **Runs:** dense ledger; canceled and failed runs are filtered deliberately, never silently destroyed.
+- **Operate:** connected target, strategy, and authorization sequencer.
+- **Compare:** run library, baseline/candidates, efficiency plane, decision cockpit, and evidence diff.
+- **Reports:** editorial print/PDF reading with OKAMI identity, executive summary, comparable metrics, and bounded finding detail.
+- **Activity:** live bus and continuous event trace.
+- **Scan detail:** channel header plus evidence index, list, inspector, telemetry, and profile.
+- **Guardrails:** repository portfolio, pipeline state, policy editor, and Decision Graph.
+- **System:** engine matrix, capacity envelope, authentication mode, and index operation.
 
 ## Component policy
 
-Shadcn fornece primitives de ação, input, sheet e infraestrutura. DaisyUI fornece controles de formulário, tabelas e loaders. Recharts desenha os traces e planos comparativos. CSS próprio fica restrito a tokens, grid do canvas e composições específicas do produto; não recria buttons, inputs, sheets ou tabelas.
+shadcn provides action, input, dropdown, sheet, dialog, and infrastructure primitives. daisyUI provides compatible form, table, and loading primitives. Recharts draws data traces and comparison planes. Custom CSS is restricted to tokens, the canvas grid, print composition, and product-specific connected layouts.
 
-## Regras
+## Rules
 
-1. Nenhuma rota começa com quatro KPIs em cards.
-2. Nenhuma informação decorativa compete com o sinal operacional.
-3. Valores financeiros exibem USD explicitamente.
-4. Gráficos precisam expor valores absolutos ou sua regra de normalização.
-5. Conteúdo largo usa overflow local; o documento nunca cria scroll horizontal.
-6. Mobile empilha módulos mantendo a ordem da decisão.
-7. Movimento respeita `prefers-reduced-motion`.
-8. Componentes precisam acomodar alemão e francês sem truncar ações essenciais; textos auxiliares podem quebrar linha, mas controles não podem se sobrepor.
-9. Datas e números seguem o locale ativo, enquanto USD e os códigos técnicos do scanner permanecem explícitos.
-10. Evidência de scanner não é traduzida automaticamente: fidelidade técnica tem prioridade sobre uniformidade editorial.
+1. No route begins with four generic KPI cards.
+2. Decorative information never competes with operational signal.
+3. Financial values explicitly display USD.
+4. Charts expose absolute values or their normalization rule.
+5. Wide content uses local overflow; the document never creates page-level horizontal scrolling.
+6. Mobile stacks modules in decision order.
+7. Motion respects `prefers-reduced-motion`.
+8. Components accommodate German and French without clipping essential actions.
+9. Dates and numbers follow the active locale; USD and scanner codes remain explicit.
+10. Scanner evidence is not translated automatically.
+11. Print layouts are validated in a real A4 PDF and may not hide overflow.
+12. Operational failure is never styled as security approval.

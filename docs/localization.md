@@ -1,33 +1,35 @@
-# Localização da interface
+# Interface localization
 
-O frontend do Okami Sentinel suporta cinco locales:
+[English](localization.md) · [Português (Brasil)](localization.pt-BR.md) · [Deutsch](localization.de.md) · [Français](localization.fr.md)
 
-- `pt-BR` — português do Brasil e fallback;
-- `en` — inglês;
-- `es` — espanhol;
-- `de` — alemão;
-- `fr` — francês.
+The OKAMI Sentinel frontend supports five locales:
 
-## Comportamento
+- `pt-BR` — Brazilian Portuguese and fallback;
+- `en` — English;
+- `es` — Spanish;
+- `de` — German;
+- `fr` — French.
 
-Na primeira visita, `resolveLocale` compara o idioma do navegador com os locales suportados. A escolha feita no seletor do barramento superior é salva em `localStorage` como `okami-sentinel.locale` e também atualiza o atributo `lang` do documento.
+## Behavior
 
-Datas e números usam `Intl` com o locale ativo. Moeda continua em USD porque custo de scan é uma métrica do produto, não uma conversão cambial.
+On the first visit, `resolveLocale` matches the browser language against supported locales. The language selected in the top command bar is stored in `localStorage` as `okami-sentinel.locale` and updates the document `lang` attribute.
 
-## Arquitetura
+Dates and numbers use `Intl` with the active locale. Currency remains in USD because scan cost is a product metric, not an exchange-rate conversion.
 
-- `apps/web/src/i18n.tsx`: tipos, dicionários, resolução de locale, persistência e provider React.
-- `apps/web/src/components/LanguageSwitcher.tsx`: seletor acessível baseado no dropdown compartilhado.
-- `apps/web/src/format.ts`: formatação localizada de datas, números e USD.
-- `apps/web/src/lib/i18n.test.ts`: cobertura do fallback, variantes do navegador e interpolação.
+## Architecture
 
-Para adicionar um texto, crie primeiro a chave no dicionário `ptBR` e forneça a tradução nos quatro dicionários restantes. O tipo `TranslationKey` impede o uso de chaves inexistentes.
+- `apps/web/src/i18n.tsx`: locale types, dictionaries, resolution, persistence, and React provider.
+- `apps/web/src/components/LanguageSwitcher.tsx`: accessible selector built on the shared dropdown primitive.
+- `apps/web/src/format.ts`: localized dates, numbers, and USD formatting.
+- `apps/web/src/lib/i18n.test.ts`: fallback, browser variants, and interpolation tests.
 
-## Limite deliberado
+Add a key to the canonical dictionary, then provide a value in all remaining dictionaries. The `TranslationKey` type prevents references to unknown keys.
 
-A interface, os comandos, os estados e a orientação operacional são localizados. Conteúdo produzido pelo scanner — título e resumo de finding, evidência, código, caminhos e logs — permanece no idioma original. Traduzir esse material automaticamente poderia alterar a precisão da evidência usada em uma decisão de segurança.
+## Deliberate boundary
 
-## Verificação mínima
+Interface commands, states, and operational guidance are localized. Scanner-produced titles, finding summaries, evidence, code, paths, and logs remain in the source language. Automatic translation could change evidence used in a security decision.
+
+## Minimum verification
 
 ```bash
 pnpm --filter @csb/web test
@@ -35,4 +37,4 @@ pnpm --filter @csb/web typecheck
 pnpm --filter @csb/web build
 ```
 
-Na validação visual, verifique desktop e mobile, com atenção especial ao alemão e ao francês por terem rótulos mais longos.
+Visual validation must cover desktop and mobile. Pay particular attention to German and French because their labels are often longer, and verify that no action overlaps or becomes unreachable.

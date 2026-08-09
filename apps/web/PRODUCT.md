@@ -1,57 +1,61 @@
-# Product
+# Product principles
+
+[English](PRODUCT.md) · [Português (Brasil)](PRODUCT.pt-BR.md) · [Deutsch](PRODUCT.de.md) · [Français](PRODUCT.fr.md)
 
 <!-- impeccable:product-schema 1 -->
 
 ## Platform
 
-web
+Web application with a local API.
 
 ## Users
 
-Desenvolvedores, profissionais de DevSecOps e AI Engineers usam o produto individualmente para operar scans e em equipe para revisar resultados, custo e eficiência técnica.
+Developers, DevSecOps professionals, security reviewers, and AI Engineers use the product individually to operate scans and collaboratively to review evidence, cost, and technical efficiency.
 
-## Product Purpose
+## Product purpose
 
-O Codex Security Benchmark é um console local para iniciar scans do `@openai/codex-security`, acompanhar execução, inspecionar findings, medir custo estimado e comparar combinações de modelo e effort. Sucesso significa localizar risco relevante com contexto suficiente para agir e entender o custo de cada estratégia de scan.
+OKAMI Sentinel is a local workbench for launching `@openai/codex-security` scans, following execution, inspecting findings, measuring estimated cost, and comparing model/effort combinations. Success means finding relevant risk with enough context to act while understanding the cost of each scan strategy.
 
 ## Positioning
 
-O produto cruza evidência de segurança com telemetria de execução: findings, severidade, modelo, effort, duração, tokens e custo estimado convivem no mesmo fluxo comparável.
+The product joins security evidence and execution telemetry. Findings, severity, model, effort, duration, tokens, and estimated cost live in one comparable flow.
 
-## Operating Context
+## Operating context
 
-O uso acontece durante desenvolvimento e revisão de segurança, com repositórios locais, state do Codex Security, scans longos e resultados que precisam ser lidos tanto durante a execução quanto depois. O fluxo principal é dashboard → novo scan → atividade/detalhe → comparação.
+The product is used during development and security review against local repositories. Scans can be long-running, partial, or expensive; results must remain readable during execution and afterward. The primary flow is overview → new scan → activity/detail → comparison → report.
 
-## Capabilities and Constraints
+## Capabilities and constraints
 
-- Interface React/Vite local com API Hono e dados espelhados em SQLite.
-- O dashboard indexa scans existentes do state do Codex Security.
-- A interface opera em português do Brasil, inglês, espanhol, alemão e francês; o locale do navegador é detectado na primeira visita e a preferência é persistida localmente.
-- Comparações aceitam um baseline e até cinco candidatos. Scans interrompidos que preservaram findings entram como resultados parciais, sempre identificados como tal.
-- Relatórios individuais e comparativos usam a mesma leitura de evidência, custo e eficiência apresentada no produto e podem ser impressos ou exportados em PDF pelo navegador.
-- Custos são estimativas de tokens e não valores de cobrança confirmados.
-- Comparações de high por dólar são heurísticas, não prova absoluta de qualidade.
-- Evidência técnica gerada pelo scanner permanece no idioma de origem para evitar alteração semântica do resultado.
-- O produto precisa continuar funcional em desktop e mobile, com teclado, foco visível e reduced motion.
+- Local React/Vite interface, Hono API, and metadata mirrored in SQLite.
+- Existing compatible scans are indexed from Codex Security state.
+- The UI supports PT-BR, English, Spanish, German, and French; browser locale is detected and the selection persists locally.
+- Comparisons accept one baseline and up to five candidates.
+- Interrupted scans that preserved findings remain available as explicitly labeled partial results.
+- Individual and comparison reports reuse the evidence, cost, and efficiency model shown in the product and can be printed or exported as PDF.
+- Cost values are token-based estimates, not confirmed billing.
+- High-per-dollar comparisons are heuristics, not proof of accuracy.
+- Scanner-generated evidence remains in its source language to preserve technical meaning.
+- Desktop, mobile, keyboard, visible focus, and reduced-motion support are product requirements.
 
-## Brand Commitments
+## Brand commitments
 
-O nome Codex Security Benchmark e a natureza técnica do produto devem permanecer. O tema principal é dark. A identidade deve evitar a aparência de SaaS genérico e traduzir as referências fornecidas pelo usuário para um instrumento de segurança, sem copiar produtos ou inventar claims.
+The product retains the OKAMI Sentinel name and its technical security-benchmark nature. The primary theme is dark. The interface must avoid generic SaaS patterns and behave like a security instrument without copying other products or inventing claims.
 
-## Evidence on Hand
+## Evidence on hand
 
-- Dados reais de scans, métricas e findings expostos pela API local.
-- Referências visuais fornecidas pelo usuário em 6 de agosto de 2026.
-- Marca Okami Sentinel fornecida pelo usuário e aplicada ao produto e aos relatórios; não inventar variações ou claims comerciais.
+- Real scan metadata, metrics, and findings exposed by the local API.
+- Visual references supplied during the August 2026 redesign.
+- The OKAMI Sentinel identity supplied for the product and reports; no unapproved brand variants or commercial claims.
 
-## Product Principles
+## Product principles
 
-- Mostrar sinal antes de decoração.
-- Manter custo e risco legíveis na mesma decisão.
-- Diferenciar estado operacional, evidência e estimativa.
-- Permitir leitura rápida individual e explicação clara para o time.
-- Preservar dados brutos e tornar ações destrutivas explícitas.
+- Show signal before decoration.
+- Keep risk and cost readable in the same decision.
+- Separate operational state, evidence, and estimation.
+- Support fast individual reading and clear team handoff.
+- Preserve raw data and make destructive actions explicit.
+- Never describe missing evidence as remediation without confirmation.
 
-## Accessibility & Inclusion
+## Accessibility and inclusion
 
-Contraste WCAG AA, navegação por teclado, estados que não dependem apenas de cor, alvos confortáveis e respeito a `prefers-reduced-motion` são requisitos do produto.
+WCAG AA contrast, keyboard navigation, non-color status labels, comfortable targets, readable long German/French strings, and `prefers-reduced-motion` support are product requirements.
