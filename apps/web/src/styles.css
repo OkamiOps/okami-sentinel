@@ -171,6 +171,7 @@
   counter-increment: report-page;
   width: min(210mm, calc(100vw - 2rem));
   min-height: 297mm;
+  box-sizing: border-box;
   padding: 17mm;
   background:
     linear-gradient(color-mix(in srgb, var(--border) 11%, transparent) 1px, transparent 1px),
@@ -205,14 +206,76 @@
   .report-stack { display: block; padding: 0; }
   .report-sheet {
     width: 210mm;
-    height: 297mm;
+    height: auto;
     min-height: 297mm;
     margin: 0;
-    overflow: hidden;
+    overflow: visible !important;
     border: 0;
     box-shadow: none;
+    break-inside: avoid;
     break-after: page;
     page-break-after: always;
+  }
+  .report-header,
+  .report-brand,
+  .report-footer,
+  .report-keep,
+  .report-row,
+  .report-sheet svg,
+  .report-sheet img {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  .report-header { break-after: avoid; page-break-after: avoid; }
+  .report-footer { break-before: avoid; page-break-before: avoid; }
+  .report-findings-grid {
+    display: grid !important;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+  .report-executive-winner {
+    grid-template-columns: minmax(0, 1fr) 16rem !important;
+  }
+  .report-executive-notes {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+  .report-run-comparison {
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) !important;
+  }
+  .report-run-arrow {
+    display: flex !important;
+  }
+  .report-conclusion-grid {
+    grid-template-columns: 1.2fr .8fr !important;
+  }
+  .report-executive-sheet {
+    padding-top: 12mm;
+    padding-bottom: 12mm;
+  }
+  .report-executive-sheet .report-header > div:last-child {
+    margin-top: 1.25rem !important;
+    padding-bottom: 1rem !important;
+  }
+  .report-executive-sheet > .mt-9 {
+    margin-top: 1.25rem !important;
+  }
+  .report-executive-sheet .report-row {
+    padding-top: .45rem !important;
+    padding-bottom: .45rem !important;
+  }
+  .report-executive-sheet .report-executive-notes {
+    gap: .75rem !important;
+    margin-top: .75rem !important;
+  }
+  .report-executive-sheet .report-executive-notes > * {
+    padding: .75rem !important;
+  }
+  .report-executive-sheet .report-executive-notes p {
+    margin-top: .5rem !important;
+    line-height: 1.1rem !important;
+  }
+  .report-findings-grid > * {
+    break-inside: avoid;
+    page-break-inside: avoid;
   }
   .report-sheet:last-child { break-after: auto; page-break-after: auto; }
 }
