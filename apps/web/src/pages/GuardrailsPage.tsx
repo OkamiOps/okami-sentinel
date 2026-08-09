@@ -29,6 +29,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { useI18n } from "../i18n";
 
 type GuardrailsState =
   | { status: "loading" }
@@ -42,6 +43,7 @@ type GuardrailsState =
     };
 
 export function GuardrailsPage() {
+  const { t } = useI18n();
   const { gateId = null } = useParams();
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
@@ -197,12 +199,12 @@ export function GuardrailsPage() {
     <div className="min-w-0">
       <PageHeader
         code="03 / GUARDRAILS"
-        title="Security change gate"
-        description="Acompanhe cada mudança do diff ao veredito e inspecione a evidência usada pela política local. A interface exibe a decisão do artifact; não a recalcula."
+        title={t("guardrails.title")}
+        description={t("guardrails.description")}
         actions={(
           <>
             <Button asChild variant="outline" className="min-h-11">
-              <Link to={setupRepositoryKey ? `/guardrails/setup?repository=${encodeURIComponent(setupRepositoryKey)}` : "/guardrails/setup"}><GitBranch aria-hidden size={14} />Configurar GitHub</Link>
+              <Link to={setupRepositoryKey ? `/guardrails/setup?repository=${encodeURIComponent(setupRepositoryKey)}` : "/guardrails/setup"}><GitBranch aria-hidden size={14} />{t("guardrails.setup")}</Link>
             </Button>
             {selectedGateActive && (
               <Button variant="destructive" className="min-h-11" onClick={() => void cancelSelected()} disabled={busy}>
@@ -227,10 +229,10 @@ export function GuardrailsPage() {
       ) : (
         <section className="bench-panel bench-corners">
           <EmptyState
-            title={readyState.repositories.length ? "Nenhum preflight executado" : "Nenhum repositório protegido"}
+            title={readyState.repositories.length ? t("guardrails.empty") : t("guardrails.noRepository")}
             description={readyState.repositories.length
-              ? "Execute o primeiro preflight para abrir uma lane no pipeline."
-              : "Cadastre um repositório Git local para criar a primeira lane de segurança."}
+              ? t("guardrails.emptyDescription")
+              : t("guardrails.noRepositoryDescription")}
           />
         </section>
       )}
@@ -290,6 +292,7 @@ function EnrollmentSheet({
   busy: boolean;
   onEnroll: (repositoryPath: string, displayName: string) => Promise<void>;
 }) {
+  const { t } = useI18n();
   const [repositoryPath, setRepositoryPath] = useState("");
   const [displayName, setDisplayName] = useState("");
   function submit(event: FormEvent) {
@@ -299,7 +302,7 @@ function EnrollmentSheet({
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetTrigger asChild>
-        <Button variant="outline" className="min-h-11"><Plus aria-hidden size={14} />Cadastrar</Button>
+        <Button variant="outline" className="min-h-11"><Plus aria-hidden size={14} />{t("guardrails.register")}</Button>
       </SheetTrigger>
       <SheetContent className="w-full border-border bg-background sm:max-w-xl">
         <SheetHeader>
@@ -340,6 +343,7 @@ function PreflightSheet({
   busy: boolean;
   onStart: (repositoryKey: string, baseRef: string, headRef: string) => Promise<void>;
 }) {
+  const { t } = useI18n();
   const [repositoryKey, setRepositoryKey] = useState(repositories[0]?.repositoryKey ?? "");
   const selected = repositories.find((repository) => repository.repositoryKey === repositoryKey) ?? repositories[0];
   const [baseRef, setBaseRef] = useState(selected?.defaultBranch ?? "main");
@@ -354,7 +358,7 @@ function PreflightSheet({
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetTrigger asChild>
-        <Button className="min-h-11" disabled={repositories.length === 0}><GitPullRequestArrow aria-hidden size={14} />Executar preflight</Button>
+        <Button className="min-h-11" disabled={repositories.length === 0}><GitPullRequestArrow aria-hidden size={14} />{t("guardrails.preflight")}</Button>
       </SheetTrigger>
       <SheetContent className="w-full border-border bg-background sm:max-w-md">
         <SheetHeader>

@@ -7,6 +7,7 @@ import { api, type ScanReportData } from "../api";
 import { Kicker, MetaCell, Metric, ReportBrand, ReportFooter, ReportHeader, ReportSheet, ReportText } from "../components/report/ReportPrimitives";
 import { formatDate, formatDuration, formatTokens, formatUsd, shortId } from "../format";
 import { Button } from "@/components/ui/button";
+import { useI18n } from "../i18n";
 
 const severityOrder: Severity[] = ["critical", "high", "medium", "low", "info", "unknown"];
 const severityLabel: Record<Severity, string> = {
@@ -41,6 +42,7 @@ const lifecycleLabel: Record<FindingLifecycle, string> = {
 };
 
 export function ScanReportPage() {
+  const { t } = useI18n();
   const { id = "" } = useParams();
   const [data, setData] = useState<ScanReportData | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -69,7 +71,7 @@ export function ScanReportPage() {
   const lifecycle = useMemo(() => new Map((data?.regression.findings ?? []).map((finding) => [finding.findingId, finding])), [data]);
 
   if (error) {
-    return <div className="flex min-h-screen items-center justify-center p-6"><div className="w-full max-w-xl border border-destructive/50 bg-destructive/10 p-6"><div className="font-mono text-[9px] uppercase tracking-[.16em] text-destructive">Report generation failed</div><p className="mt-3 text-sm">{error}</p><Button className="mt-5" onClick={() => setReload((value) => value + 1)}><HugeiconsIcon icon={RefreshIcon} size={13} />Tentar novamente</Button></div></div>;
+    return <div className="flex min-h-screen items-center justify-center p-6"><div className="w-full max-w-xl border border-destructive/50 bg-destructive/10 p-6"><div className="font-mono text-[9px] uppercase tracking-[.16em] text-destructive">Report generation failed</div><p className="mt-3 text-sm">{error}</p><Button className="mt-5" onClick={() => setReload((value) => value + 1)}><HugeiconsIcon icon={RefreshIcon} size={13} />{t("common.retry")}</Button></div></div>;
   }
 
   if (!data) {
@@ -85,10 +87,10 @@ export function ScanReportPage() {
   return <div className="report-root min-h-screen bg-[#040407] pb-16 text-foreground">
     <div className="report-toolbar report-no-print sticky top-0 z-50 border-b border-border bg-background/95 backdrop-blur-md">
       <div className="mx-auto flex max-w-[210mm] items-center gap-1 px-2 py-3 sm:gap-2 sm:px-4">
-        <Button asChild variant="ghost" size="sm"><Link to={`/scans/${scan.id}`}><HugeiconsIcon icon={ArrowLeft01Icon} size={13} />Voltar ao scan</Link></Button>
+        <Button asChild variant="ghost" size="sm"><Link to={`/scans/${scan.id}`}><HugeiconsIcon icon={ArrowLeft01Icon} size={13} />{t("report.back")}</Link></Button>
         <div className="hidden min-w-0 flex-1 truncate px-2 font-mono text-[9px] uppercase tracking-wider text-muted-foreground md:block">{scan.displayName} / {shortId(scan.id)}</div>
-        <Button className="ml-auto" variant="outline" size="sm" aria-label="Atualizar relatório" onClick={() => setReload((value) => value + 1)}><HugeiconsIcon icon={RefreshIcon} size={13} /><span className="hidden sm:inline">Atualizar</span></Button>
-        <Button size="sm" aria-label="Imprimir ou salvar como PDF" onClick={() => window.print()}><HugeiconsIcon icon={PrinterIcon} size={13} /><span className="hidden sm:inline">Imprimir / PDF</span><span className="sm:hidden">PDF</span></Button>
+        <Button className="ml-auto" variant="outline" size="sm" aria-label={t("report.refresh")} onClick={() => setReload((value) => value + 1)}><HugeiconsIcon icon={RefreshIcon} size={13} /><span className="hidden sm:inline">{t("report.refresh")}</span></Button>
+        <Button size="sm" aria-label={t("report.print")} onClick={() => window.print()}><HugeiconsIcon icon={PrinterIcon} size={13} /><span className="hidden sm:inline">{t("report.print")}</span><span className="sm:hidden">PDF</span></Button>
       </div>
     </div>
 
@@ -114,7 +116,7 @@ export function ScanReportPage() {
       </ReportSheet>
 
       <ReportSheet>
-        <ReportHeader section="01" title="Leitura executiva" reportId={reportId} />
+        <ReportHeader section="01" title={t("report.executive")} reportId={reportId} />
         <div className="mt-10 grid gap-4 md:grid-cols-[1.35fr_.65fr]">
           <section className="border border-border p-6">
             <Kicker>Decision signal</Kicker>

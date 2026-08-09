@@ -35,6 +35,7 @@ O **Evidence Spectrum** é o elemento proprietário. Cada run vira um canal e ca
 
 - Barra horizontal compacta; nenhuma sidebar.
 - Módulos numerados e estado do motor no mesmo barramento.
+- Seletor de idioma compacto no barramento superior, com o nome nativo de cada idioma e estado selecionado explícito.
 - Command deck persistente na base para lançar ou retornar ao processo ativo.
 - Canvas quase preto com grid estrutural discreto.
 - Painéis conectados por bordas; raio de 2px apenas onde a primitive exige.
@@ -55,6 +56,7 @@ Cor nunca carrega significado sozinha; status e severidade sempre têm label tex
 - **Runs:** ledger denso; cancelados e falhos ficam fora do recorte corrente por padrão.
 - **Operar:** sequenciador conectado de target, strategy e authorization.
 - **Comparar:** sample library + patch bay + efficiency plane + truth table; nenhum radar.
+- **Relatórios:** leitura editorial para impressão/PDF, com marca Okami Sentinel, resumo executivo, métricas comparáveis e detalhe de findings sem transformar o documento em um índice de dezenas de páginas.
 - **Atividade:** live bus e event trace contínuo.
 - **Detalhe:** header de canal + evidence index/list/inspector em três painéis.
 - **Sistema:** engine matrix, capacity envelope e operação de índice.
@@ -72,3 +74,6 @@ Shadcn fornece primitives de ação, input, sheet e infraestrutura. DaisyUI forn
 5. Conteúdo largo usa overflow local; o documento nunca cria scroll horizontal.
 6. Mobile empilha módulos mantendo a ordem da decisão.
 7. Movimento respeita `prefers-reduced-motion`.
+8. Componentes precisam acomodar alemão e francês sem truncar ações essenciais; textos auxiliares podem quebrar linha, mas controles não podem se sobrepor.
+9. Datas e números seguem o locale ativo, enquanto USD e os códigos técnicos do scanner permanecem explícitos.
+10. Evidência de scanner não é traduzida automaticamente: fidelidade técnica tem prioridade sobre uniformidade editorial.

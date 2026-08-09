@@ -9,8 +9,10 @@ import { AlertBanner, EmptyState, Loading, PageHeader, Panel, SeverityStrip, Sta
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { formatDate, formatUsd, shortId } from "../format";
+import { useI18n } from "../i18n";
 
 export function ScansPage() {
+  const { t } = useI18n();
   const [scans, setScans] = useState<ScanRun[]>([]);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("active");
@@ -23,15 +25,15 @@ export function ScansPage() {
   const evidence = visible.reduce((sum, scan) => sum + scan.severity.total, 0);
 
   return <div>
-    <PageHeader code="02 / RUN LEDGER" title="Indexed runs" description="Um ledger compacto de execuções. Cancelados e falhos ficam fora do campo principal por padrão, sem poluir a leitura operacional." actions={<Button asChild size="sm"><Link to="/scans/new"><HugeiconsIcon icon={PlusSignIcon} size={13} />Nova execução</Link></Button>} />
+    <PageHeader code="02 / RUN LEDGER" title={t("scans.title")} description={t("scans.description")} actions={<Button asChild size="sm"><Link to="/scans/new"><HugeiconsIcon icon={PlusSignIcon} size={13} />{t("scans.new")}</Link></Button>} />
     {error && <AlertBanner>{error}</AlertBanner>}
     <div className="bench-panel mb-4 grid sm:grid-cols-[minmax(0,1fr)_auto]">
-      <label className="flex h-11 items-center gap-2 border-b px-3 sm:border-b-0 sm:border-r"><HugeiconsIcon icon={Search01Icon} size={13} className="text-muted-foreground" /><Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filtrar por run, modelo ou path…" className="h-full border-0 bg-transparent px-0 text-xs shadow-none focus-visible:ring-0" /></label>
-      <div className="flex overflow-x-auto">{[["active", "CURRENT"], ["running", "LIVE"], ["completed", "COMPLETE"], ["failed", "FAILED"], ["cancelled", "CANCELLED"], ["all", "ALL"]].map(([id, label]) => <button key={id} type="button" onClick={() => setStatus(id)} className={`h-11 border-l px-3 font-mono text-[9px] ${status === id ? "bg-accent text-primary" : "text-muted-foreground hover:text-foreground"}`}>{label}</button>)}</div>
+      <label className="flex h-11 items-center gap-2 border-b px-3 sm:border-b-0 sm:border-r"><HugeiconsIcon icon={Search01Icon} size={13} className="text-muted-foreground" /><Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t("scans.filter")} className="h-full border-0 bg-transparent px-0 text-xs shadow-none focus-visible:ring-0" /></label>
+      <div className="flex overflow-x-auto">{[["active", t("common.current")], ["running", t("common.live")], ["completed", t("common.complete")], ["failed", t("common.failed")], ["cancelled", t("common.cancelled")], ["all", t("common.all")]].map(([id, label]) => <button key={id} type="button" onClick={() => setStatus(id)} className={`h-11 border-l px-3 font-mono text-[9px] uppercase ${status === id ? "bg-accent text-primary" : "text-muted-foreground hover:text-foreground"}`}>{label}</button>)}</div>
     </div>
     <div className="mb-4 grid grid-cols-2 border border-border lg:grid-cols-4"><LedgerReadout label="VISIBLE" value={visible.length} /><LedgerReadout label="EVIDENCE" value={evidence} /><LedgerReadout label="COST / USD" value={formatUsd(totalCost)} /><LedgerReadout label="ARCHIVED NOISE" value={scans.filter((s) => s.status === "cancelled" || s.status === "failed").length} /></div>
-    <Panel label="CHANNEL INDEX" title={`${visible.length} registros no campo`}>
-      {loading ? <Loading /> : visible.length ? <div className="overflow-x-auto"><table className="table min-w-[62rem]"><thead><tr className="font-mono text-[9px] uppercase text-muted-foreground"><th>ID</th><th>Run / target</th><th>Status</th><th>Evidence spectrum</th><th>High+</th><th>Cost</th><th>Started</th><th /></tr></thead><tbody>{visible.map((scan) => <RunRow key={scan.id} scan={scan} onDeleted={load} />)}</tbody></table></div> : <EmptyState title="Nenhum run neste recorte" description="Altere o filtro ou lance uma nova execução." />}
+    <Panel label="CHANNEL INDEX" title={t("scans.records", { count: visible.length })}>
+      {loading ? <Loading /> : visible.length ? <div className="overflow-x-auto"><table className="table min-w-[62rem]"><thead><tr className="font-mono text-[9px] uppercase text-muted-foreground"><th>ID</th><th>Run / target</th><th>Status</th><th>Evidence spectrum</th><th>High+</th><th>Cost</th><th>Started</th><th /></tr></thead><tbody>{visible.map((scan) => <RunRow key={scan.id} scan={scan} onDeleted={load} />)}</tbody></table></div> : <EmptyState title={t("scans.empty")} description={t("scans.emptyDescription")} />}
     </Panel>
   </div>;
 }

@@ -12,6 +12,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { useI18n } from "../../i18n";
 
 export function DeleteScanButton({
   scan,
@@ -22,6 +23,7 @@ export function DeleteScanButton({
   compact?: boolean;
   onDeleted: () => void | Promise<void>;
 }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,14 +52,14 @@ export function DeleteScanButton({
         variant={compact ? "ghost" : "outline"}
         size={compact ? "icon-sm" : "sm"}
         className="text-destructive hover:text-destructive"
-        aria-label={`Excluir scan ${scan.displayName}`}
+        aria-label={t("delete.label", { name: scan.displayName })}
         onClick={() => {
           setError(null);
           setOpen(true);
         }}
       >
         <Trash2 aria-hidden size={13} />
-        {!compact && "Excluir"}
+        {!compact && t("common.delete")}
       </Button>
 
       <Sheet open={open} onOpenChange={setOpen}>
@@ -68,10 +70,10 @@ export function DeleteScanButton({
           <SheetHeader>
             <SheetTitle className="flex items-center gap-2 font-heading">
               <Trash2 aria-hidden size={17} className="text-destructive" />
-              Excluir scan e arquivos
+              {t("delete.title")}
             </SheetTitle>
             <SheetDescription>
-              Remove esta execução da aplicação e apaga permanentemente sua pasta e o log local. Esta ação não pode ser desfeita.
+              {t("delete.description")}
             </SheetDescription>
           </SheetHeader>
 
@@ -88,16 +90,16 @@ export function DeleteScanButton({
           </div>
 
           <div className="mx-4 border border-destructive/40 bg-destructive/[.06] p-4">
-            <div className="bench-label text-destructive">PASTA QUE SERÁ APAGADA</div>
+            <div className="bench-label text-destructive">{t("delete.folder")}</div>
             <div className="mt-2 break-all font-mono text-[10px] leading-relaxed text-foreground">{scan.scanDir}</div>
           </div>
 
           {error && <div role="alert" className="mx-4 border border-destructive/50 bg-destructive/[.08] p-3 text-xs text-destructive">{error}</div>}
 
           <SheetFooter className="sm:flex-row sm:justify-end">
-            <Button type="button" variant="outline" className="min-h-11" disabled={busy} onClick={() => setOpen(false)}>Cancelar</Button>
+            <Button type="button" variant="outline" className="min-h-11" disabled={busy} onClick={() => setOpen(false)}>{t("common.cancel")}</Button>
             <Button type="button" variant="destructive" className="min-h-11" disabled={busy} onClick={() => void remove()}>
-              <Trash2 aria-hidden size={14} />{busy ? "Excluindo…" : "Excluir definitivamente"}
+              <Trash2 aria-hidden size={14} />{busy ? t("delete.deleting") : t("delete.forever")}
             </Button>
           </SheetFooter>
         </SheetContent>

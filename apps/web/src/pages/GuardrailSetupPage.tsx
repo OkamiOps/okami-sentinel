@@ -9,8 +9,10 @@ import type { ScannerAccessMode } from "../lib/github-guardrails";
 import { AlertBanner, EmptyState, Loading, PageHeader } from "../components/ui";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useI18n } from "../i18n";
 
 export function GuardrailSetupPage() {
+  const { t } = useI18n();
   const [params, setParams] = useSearchParams();
   const [repositories, setRepositories] = useState<GuardrailRepository[] | null>(null);
   const [status, setStatus] = useState<GuardrailGitHubStatus | null>(null);
@@ -100,9 +102,9 @@ export function GuardrailSetupPage() {
     <div className="min-w-0">
       <PageHeader
         code="03C / GITHUB SETUP"
-        title="Preparar GitHub"
-        description="Use sua assinatura Codex para scans locais ou uma API key para automação no GitHub Actions. A tela separa os requisitos de cada modo."
-        actions={<Button asChild variant="ghost" className="min-h-11"><Link to="/guardrails"><ArrowLeft aria-hidden size={14} />Voltar a Guardrails</Link></Button>}
+        title={t("guardrails.githubTitle")}
+        description={t("guardrails.githubDescription")}
+        actions={<Button asChild variant="ghost" className="min-h-11"><Link to="/guardrails"><ArrowLeft aria-hidden size={14} />{t("guardrails.back")}</Link></Button>}
       />
 
       {actionError && <AlertBanner>{actionError}</AlertBanner>}
@@ -110,7 +112,7 @@ export function GuardrailSetupPage() {
       {loadError && (
         <div className="mb-4">
           <AlertBanner>{loadError}</AlertBanner>
-          <Button variant="outline" className="min-h-11" onClick={() => selected ? void loadStatus(selected.repositoryKey) : void loadRepositories()}><RotateCw aria-hidden size={14} />Tentar novamente</Button>
+          <Button variant="outline" className="min-h-11" onClick={() => selected ? void loadStatus(selected.repositoryKey) : void loadRepositories()}><RotateCw aria-hidden size={14} />{t("common.retry")}</Button>
         </div>
       )}
 

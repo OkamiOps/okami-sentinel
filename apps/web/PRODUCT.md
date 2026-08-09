@@ -26,8 +26,12 @@ O uso acontece durante desenvolvimento e revisão de segurança, com repositóri
 
 - Interface React/Vite local com API Hono e dados espelhados em SQLite.
 - O dashboard indexa scans existentes do state do Codex Security.
+- A interface opera em português do Brasil, inglês, espanhol, alemão e francês; o locale do navegador é detectado na primeira visita e a preferência é persistida localmente.
+- Comparações aceitam um baseline e até cinco candidatos. Scans interrompidos que preservaram findings entram como resultados parciais, sempre identificados como tal.
+- Relatórios individuais e comparativos usam a mesma leitura de evidência, custo e eficiência apresentada no produto e podem ser impressos ou exportados em PDF pelo navegador.
 - Custos são estimativas de tokens e não valores de cobrança confirmados.
 - Comparações de high por dólar são heurísticas, não prova absoluta de qualidade.
+- Evidência técnica gerada pelo scanner permanece no idioma de origem para evitar alteração semântica do resultado.
 - O produto precisa continuar funcional em desktop e mobile, com teclado, foco visível e reduced motion.
 
 ## Brand Commitments
@@ -38,7 +42,7 @@ O nome Codex Security Benchmark e a natureza técnica do produto devem permanece
 
 - Dados reais de scans, métricas e findings expostos pela API local.
 - Referências visuais fornecidas pelo usuário em 6 de agosto de 2026.
-- Nenhum logo proprietário ou benchmark comercial foi fornecido; não fabricar.
+- Marca Okami Sentinel fornecida pelo usuário e aplicada ao produto e aos relatórios; não inventar variações ou claims comerciais.
 
 ## Product Principles
 

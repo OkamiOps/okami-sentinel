@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { useI18n } from "../i18n";
 
 type PolicyPageState =
   | { status: "loading" }
@@ -28,6 +29,7 @@ type PolicyPageState =
     };
 
 export function GuardrailPolicyPage() {
+  const { t } = useI18n();
   const { repositoryKey = "" } = useParams();
   const [state, setState] = useState<PolicyPageState>({ status: "loading" });
   const [editor, setEditor] = useState<PolicyEditorState | null>(null);
@@ -120,11 +122,11 @@ export function GuardrailPolicyPage() {
       <PageHeader
         code="03B / POLICY"
         title={state.repository.displayName}
-        description="Edite a política versionada, simule contra um artifact existente e confirme o JSON exato antes da gravação local. Commit e push não são executados."
+        description={t("guardrails.policyDescription")}
         actions={(
           <>
-            <Button asChild variant="ghost" className="min-h-11"><Link to={state.repository.lastGateId ? `/guardrails/${encodeURIComponent(state.repository.lastGateId)}` : "/guardrails"}><ArrowLeft aria-hidden size={14} />Voltar ao pipeline</Link></Button>
-            <Button className="min-h-11" disabled={busy || Boolean(validation) || !changed} onClick={() => setConfirmOpen(true)}><Save aria-hidden size={14} />Salvar política</Button>
+            <Button asChild variant="ghost" className="min-h-11"><Link to={state.repository.lastGateId ? `/guardrails/${encodeURIComponent(state.repository.lastGateId)}` : "/guardrails"}><ArrowLeft aria-hidden size={14} />{t("guardrails.backPipeline")}</Link></Button>
+            <Button className="min-h-11" disabled={busy || Boolean(validation) || !changed} onClick={() => setConfirmOpen(true)}><Save aria-hidden size={14} />{t("guardrails.savePolicy")}</Button>
           </>
         )}
       />

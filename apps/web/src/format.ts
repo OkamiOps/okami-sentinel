@@ -1,8 +1,11 @@
+import { getIntlLocale } from "./i18n";
+
 export function formatUsd(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return "—";
-  return new Intl.NumberFormat("en-US", {
+  return new Intl.NumberFormat(getIntlLocale(), {
     style: "currency",
     currency: "USD",
+    currencyDisplay: "code",
     maximumFractionDigits: 2,
   }).format(value);
 }
@@ -24,7 +27,7 @@ export function formatDuration(ms: number | null | undefined): string {
 
 export function formatDate(iso: string | null | undefined): string {
   if (!iso) return "—";
-  return new Intl.DateTimeFormat("pt-BR", {
+  return new Intl.DateTimeFormat(getIntlLocale(), {
     dateStyle: "short",
     timeStyle: "short",
   }).format(new Date(iso));

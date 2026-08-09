@@ -17,6 +17,7 @@ import { LifecycleBadge } from "../components/LifecycleBadge";
 import { AlertBanner, EmptyState, Loading, SeverityBadge, cx } from "../components/ui";
 import { Button } from "@/components/ui/button";
 import { getAttackPathSelection } from "../lib/attack-path";
+import { useI18n } from "../i18n";
 
 type AttackPathLoadState =
   | { status: "loading" }
@@ -29,6 +30,7 @@ type AttackPathLoadState =
     };
 
 export function AttackPathPage() {
+  const { t } = useI18n();
   const { id = "", findingId = "" } = useParams();
   const [params] = useSearchParams();
   const [state, setState] = useState<AttackPathLoadState>({ status: "loading" });
@@ -73,7 +75,7 @@ export function AttackPathPage() {
         <AlertBanner>{state.message}</AlertBanner>
         <Button asChild variant="outline" size="sm">
           <Link to={`/scans/${encodeURIComponent(id)}?f=${encodeURIComponent(findingId)}`}>
-            <ArrowLeft aria-hidden size={12} />Voltar ao finding
+            <ArrowLeft aria-hidden size={12} />{t("attackPath.backFinding")}
           </Link>
         </Button>
       </div>
@@ -85,13 +87,13 @@ export function AttackPathPage() {
     return (
       <section className="bench-panel bench-corners">
         <EmptyState
-          title="Caminho de ataque indisponível"
-          description="A evidência existe, mas este finding não trouxe uma cadeia causal estruturada."
+          title={t("attackPath.unavailable")}
+          description={t("attackPath.unavailableDescription")}
         />
         <div className="flex justify-center border-t p-4">
           <Button asChild variant="outline" size="sm">
             <Link to={`/scans/${encodeURIComponent(id)}?f=${encodeURIComponent(findingId)}`}>
-              <ArrowLeft aria-hidden size={12} />Voltar ao finding
+              <ArrowLeft aria-hidden size={12} />{t("attackPath.backFinding")}
             </Link>
           </Button>
         </div>

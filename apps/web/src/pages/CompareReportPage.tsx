@@ -8,6 +8,7 @@ import { Kicker, MetaCell, Metric, ReportBrand, ReportFooter, ReportHeader, Repo
 import { buildDecisionRanking, buildMarginalEconomics, isPartialComparableScan, type CompareObjective, type ScanDecisionRow } from "../lib/compare-decision";
 import { formatDuration, formatUsd, shortId } from "../format";
 import { Button } from "@/components/ui/button";
+import { useI18n } from "../i18n";
 
 const objectiveMeta: Record<CompareObjective, { label: string; description: string }> = {
   balanced: { label: "Equilíbrio", description: "Cobertura 30% · High+ 25% · $/finding 20% · $/High+ 15% · velocidade 10%" },
@@ -22,6 +23,7 @@ const changeLabel: Record<CompareFindingChange, string> = { candidate_only: "Só
 const changeTone: Record<CompareFindingChange, string> = { candidate_only: "text-primary", baseline_only: "text-chart-3", both: "text-chart-2", severity_changed: "text-chart-4" };
 
 export function CompareReportPage() {
+  const { t } = useI18n();
   const [params] = useSearchParams();
   const ids = useMemo(() => [...new Set((params.get("ids") ?? "").split(",").filter(Boolean))].slice(0, MAX_COMPARE_SCANS), [params]);
   const objective = parseObjective(params.get("objective"));
@@ -62,10 +64,10 @@ export function CompareReportPage() {
   return <div className="report-root min-h-screen bg-[#040407] pb-16 text-foreground">
     <div className="report-toolbar report-no-print sticky top-0 z-50 border-b border-border bg-background/95 backdrop-blur-md">
       <div className="mx-auto flex max-w-[210mm] items-center gap-1 px-2 py-3 sm:gap-2 sm:px-4">
-        <Button asChild variant="ghost" size="sm"><Link to={backHref}><HugeiconsIcon icon={ArrowLeft01Icon} size={13} />Voltar ao comparador</Link></Button>
+        <Button asChild variant="ghost" size="sm"><Link to={backHref}><HugeiconsIcon icon={ArrowLeft01Icon} size={13} />{t("report.back")}</Link></Button>
         <div className="hidden min-w-0 flex-1 truncate px-2 font-mono text-[9px] uppercase tracking-wider text-muted-foreground md:block">{result.scans.length} scans / {objectiveMeta[objective].label}</div>
-        <Button className="ml-auto" variant="outline" size="sm" aria-label="Atualizar relatório" onClick={() => setReload((value) => value + 1)}><HugeiconsIcon icon={RefreshIcon} size={13} /><span className="hidden sm:inline">Atualizar</span></Button>
-        <Button size="sm" aria-label="Imprimir ou salvar como PDF" onClick={() => window.print()}><HugeiconsIcon icon={PrinterIcon} size={13} /><span className="hidden sm:inline">Imprimir / PDF</span><span className="sm:hidden">PDF</span></Button>
+        <Button className="ml-auto" variant="outline" size="sm" aria-label={t("report.refresh")} onClick={() => setReload((value) => value + 1)}><HugeiconsIcon icon={RefreshIcon} size={13} /><span className="hidden sm:inline">{t("report.refresh")}</span></Button>
+        <Button size="sm" aria-label={t("report.print")} onClick={() => window.print()}><HugeiconsIcon icon={PrinterIcon} size={13} /><span className="hidden sm:inline">{t("report.print")}</span><span className="sm:hidden">PDF</span></Button>
       </div>
     </div>
 
@@ -91,7 +93,7 @@ export function CompareReportPage() {
       </ReportSheet>
 
       <ReportSheet>
-        <ReportHeader section="01" title="Leitura executiva" reportId={reportId} />
+        <ReportHeader section="01" title={t("report.executive")} reportId={reportId} />
         <div className="mt-9">
           <section className="border border-border p-6">
             <Kicker>Winner under explicit objective</Kicker>
@@ -128,7 +130,7 @@ export function CompareReportPage() {
       {result.comparisons.map((comparison, index) => <PairSummarySheet key={comparison.candidateScanId} result={result} comparison={comparison} index={index} reportId={reportId} />)}
 
       <ReportSheet>
-        <ReportHeader section="04" title="Conclusão operacional" reportId={reportId} />
+        <ReportHeader section="04" title={t("report.conclusion")} reportId={reportId} />
         <div className="mt-16 grid gap-6 md:grid-cols-[1.2fr_.8fr]">
           <section><Kicker>Decision handoff</Kicker><h2 className="mt-4 font-heading text-4xl font-semibold tracking-[-.05em]">O melhor scan depende do objetivo. A verdade depende da triagem.</h2><p className="mt-6 text-base leading-8 text-muted-foreground">Este comparativo permite escolher eficiência, cobertura ou velocidade sem misturar os critérios. Para medir qualidade real, confirme findings e estabeleça ground truth.</p></section>
           <div className="border border-border p-6"><Kicker>Next actions</Kicker><ol className="mt-5 space-y-5">{["Confirmar amostra compartilhada", "Revisar sinais exclusivos", "Normalizar perfil e escopo", "Registrar falsos positivos", "Repetir e comparar novamente"].map((item, index) => <li key={item} className="flex gap-4"><span className="font-mono text-xs text-primary">0{index + 1}</span><span className="text-sm">{item}</span></li>)}</ol></div>
@@ -201,7 +203,8 @@ function DetailedFinding({ finding }: { finding: CompareFindingDelta }) {
 }
 
 function ReportError({ error, onRetry }: { error: string; onRetry: () => void }) {
-  return <div className="flex min-h-screen items-center justify-center p-6"><div className="w-full max-w-xl border border-destructive/50 bg-destructive/10 p-6"><div className="font-mono text-[9px] uppercase tracking-[.16em] text-destructive">Comparison report failed</div><p className="mt-3 text-sm">{error}</p><Button className="mt-5" onClick={onRetry}><HugeiconsIcon icon={RefreshIcon} size={13} />Tentar novamente</Button></div></div>;
+  const { t } = useI18n();
+  return <div className="flex min-h-screen items-center justify-center p-6"><div className="w-full max-w-xl border border-destructive/50 bg-destructive/10 p-6"><div className="font-mono text-[9px] uppercase tracking-[.16em] text-destructive">Comparison report failed</div><p className="mt-3 text-sm">{error}</p><Button className="mt-5" onClick={onRetry}><HugeiconsIcon icon={RefreshIcon} size={13} />{t("common.retry")}</Button></div></div>;
 }
 
 function parseObjective(value: string | null): CompareObjective {

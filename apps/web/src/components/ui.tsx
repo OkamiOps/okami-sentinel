@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import clsx from "clsx";
 import { useElapsedMs } from "../hooks";
 import { formatDuration } from "../format";
+import { useI18n, type TranslationKey } from "../i18n";
 
 export function cx(...parts: Array<string | false | null | undefined>) { return clsx(parts); }
 
@@ -35,10 +36,11 @@ export function Panel({ children, className, label, title, aside, wrapTitle = fa
   );
 }
 
-const statusLabel: Record<string, string> = { completed: "complete", running: "live", failed: "failed", cancelled: "cancelled", queued: "queued", incomplete: "partial" };
+const statusLabel: Record<string, TranslationKey> = { completed: "common.complete", running: "common.live", failed: "common.failed", cancelled: "common.cancelled", queued: "common.queued", incomplete: "common.partial" };
 export function StatusBadge({ status }: { status: string }) {
+  const { t } = useI18n();
   const tone: Record<string, string> = { completed: "text-chart-2 border-chart-2/35", running: "text-primary border-primary/40", failed: "text-destructive border-destructive/40", cancelled: "text-muted-foreground border-border", queued: "text-chart-3 border-chart-3/35", incomplete: "text-chart-3 border-chart-3/35" };
-  return <span className={cx("inline-flex h-5 items-center gap-1.5 border px-1.5 font-mono text-[9px] uppercase tracking-wider", tone[status] ?? "border-border text-muted-foreground")}><span className={cx("size-1 rounded-full bg-current", status === "running" && "live-dot")} />{statusLabel[status] ?? status}</span>;
+  return <span className={cx("inline-flex h-5 items-center gap-1.5 border px-1.5 font-mono text-[9px] uppercase tracking-wider", tone[status] ?? "border-border text-muted-foreground")}><span className={cx("size-1 rounded-full bg-current", status === "running" && "live-dot")} />{statusLabel[status] ? t(statusLabel[status]) : status}</span>;
 }
 
 const severityTone: Record<string, string> = { critical: "border-destructive bg-destructive text-white", high: "border-destructive/50 bg-destructive/10 text-destructive", medium: "border-chart-3/50 bg-chart-3/10 text-chart-3", low: "border-chart-5/50 bg-chart-5/10 text-chart-5", info: "border-border bg-muted text-muted-foreground", unknown: "border-border bg-transparent text-muted-foreground" };
@@ -69,8 +71,9 @@ export function ProgressTrack({ value, label }: { value: number; label?: string 
 export function Loading() { return <div className="flex min-h-72 items-center justify-center"><span className="loading loading-bars loading-md text-primary" /></div>; }
 
 export function SeverityStrip({ counts, total }: { counts: { critical: number; high: number; medium: number; low: number; info?: number; unknown?: number }; total: number }) {
+  const { t } = useI18n();
   const rows = [
     ["critical", counts.critical, "bg-destructive"], ["high", counts.high, "bg-destructive/70"], ["medium", counts.medium, "bg-chart-3"], ["low", counts.low, "bg-chart-5"], ["info", counts.info ?? 0, "bg-muted-foreground/40"],
   ] as const;
-  return <div className="flex h-2.5 w-full overflow-hidden bg-muted" aria-label={`${total} evidências`}>{rows.map(([key, value, color]) => value > 0 && <span key={key} className={color} style={{ width: `${(value / Math.max(1, total)) * 100}%` }} title={`${key}: ${value}`} />)}</div>;
+  return <div className="flex h-2.5 w-full overflow-hidden bg-muted" aria-label={`${total} ${t("common.findings")}`}>{rows.map(([key, value, color]) => value > 0 && <span key={key} className={color} style={{ width: `${(value / Math.max(1, total)) * 100}%` }} title={`${key}: ${value}`} />)}</div>;
 }

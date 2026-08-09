@@ -63,6 +63,7 @@ import {
   type CompareObjective,
   type ScanDecisionRow,
 } from "../lib/compare-decision";
+import { useI18n, type TranslationKey } from "../i18n";
 
 const changeOrder: CompareFindingChange[] = [
   "candidate_only",
@@ -90,17 +91,18 @@ const severityRows: Array<[keyof SeverityCounts, string]> = [
   ["info", "Info"],
   ["total", "Total"],
 ];
-const objectives: Array<{ id: CompareObjective; label: string; description: string }> = [
-  { id: "balanced", label: "Equilíbrio", description: "Cobertura 30% · High+ 25% · $/finding 20% · $/High+ 15% · velocidade 10%" },
-  { id: "coverage", label: "Cobertura", description: "Maior volume total reportado" },
-  { id: "high_plus", label: "High+", description: "Maior volume crítico + alto" },
-  { id: "cost_per_finding", label: "$ / finding", description: "Menor custo por achado reportado" },
-  { id: "cost_per_high", label: "$ / High+", description: "Menor custo por achado prioritário" },
-  { id: "speed", label: "Velocidade", description: "Menor duração medida" },
+const objectives: Array<{ id: CompareObjective; label: TranslationKey; description: TranslationKey }> = [
+  { id: "balanced", label: "compare.objective.balanced", description: "compare.objective.balancedDescription" },
+  { id: "coverage", label: "compare.objective.coverage", description: "compare.objective.coverageDescription" },
+  { id: "high_plus", label: "compare.objective.highPlus", description: "compare.objective.highPlusDescription" },
+  { id: "cost_per_finding", label: "compare.objective.costFinding", description: "compare.objective.costFindingDescription" },
+  { id: "cost_per_high", label: "compare.objective.costHigh", description: "compare.objective.costHighDescription" },
+  { id: "speed", label: "compare.objective.speed", description: "compare.objective.speedDescription" },
 ];
 const scanChartColors = ["var(--primary)", "var(--chart-3)", "var(--chart-2)", "var(--chart-4)", "var(--chart-5)"];
 
 export function ComparePage() {
+  const { t } = useI18n();
   const [params] = useSearchParams();
   const [scans, setScans] = useState<ScanRun[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
@@ -128,7 +130,7 @@ export function ComparePage() {
 
   function toggle(id: string) {
     if (!selected.includes(id) && selected.length >= MAX_COMPARE_SCANS) {
-      setError(`O comparador aceita um baseline e até ${MAX_COMPARE_SCANS - 1} candidatos por vez.`);
+      setError(t("compare.limit", { count: MAX_COMPARE_SCANS - 1 }));
       return;
     }
     setError(null);
@@ -159,18 +161,18 @@ export function ComparePage() {
   return <div>
     <PageHeader
       code="05 / COMPARE"
-      title="Diff de segurança"
-      description={`Escolha um baseline e até ${MAX_COMPARE_SCANS - 1} candidatos. O cockpit aponta o vencedor por objetivo; o diff mostra exatamente onde as execuções divergem.`}
-      actions={result ? <Button variant="outline" onClick={() => setResult(null)}>ALTERAR SCANS</Button> : <Button onClick={() => void compare()} disabled={busy || selected.length < 2}>
+      title={t("compare.title")}
+      description={t("compare.description")}
+      actions={result ? <Button variant="outline" onClick={() => setResult(null)}>{t("compare.changeScans")}</Button> : <Button onClick={() => void compare()} disabled={busy || selected.length < 2}>
         <HugeiconsIcon icon={Analytics01Icon} size={13} />
-        {busy ? "CALCULANDO DIFF…" : `COMPARAR ${selected.length} SCANS`}
+        {busy ? t("compare.running") : t("compare.run", { count: selected.length })}
       </Button>}
     />
     {error && <AlertBanner>{error}</AlertBanner>}
     {!result && <>
-      {partialScanCount > 0 && <AlertBanner tone="warning"><strong>{partialScanCount} scans interrompidos preservaram findings.</strong> Eles aparecem abaixo como resultados parciais; podem entrar no diff, mas não representam cobertura concluída e podem conter sobreposição quando a consolidação não terminou.</AlertBanner>}
+      {partialScanCount > 0 && <AlertBanner tone="warning"><strong>{t("compare.partialPreserved", { count: partialScanCount })}</strong> {t("compare.partialExplanation")}</AlertBanner>}
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
-      <Panel className="order-2 xl:order-1" label="RUN LIBRARY" title={`${scans.length} scans comparáveis`} aside={<span className="font-mono text-[8px] text-muted-foreground">SELECIONE 2–{MAX_COMPARE_SCANS} · {partialScanCount} PARCIAIS</span>}>
+      <Panel className="order-2 xl:order-1" label={t("compare.library")} title={t("compare.comparableCount", { count: scans.length })} aside={<span className="font-mono text-[8px] uppercase text-muted-foreground">{t("compare.selectRange", { max: MAX_COMPARE_SCANS, count: partialScanCount })}</span>}>
         {scans.length ? <div className="grid md:grid-cols-2 xl:max-h-[32rem] xl:overflow-auto">
           {scans.map((scan) => {
             const position = selected.indexOf(scan.id);
@@ -193,7 +195,7 @@ export function ComparePage() {
                   <span className="truncate text-sm font-semibold">{scan.displayName}</span>
                   <span className="flex shrink-0 flex-col items-end gap-1">
                     <PartialScanBadges scan={scan} compact />
-                    {active && <span className="font-mono text-[8px] text-primary">{position === 0 ? "BASELINE" : `CANDIDATO ${String(position).padStart(2, "0")}`}</span>}
+                    {active && <span className="font-mono text-[8px] uppercase text-primary">{position === 0 ? t("compare.baseline") : t("compare.candidate", { index: String(position).padStart(2, "0") })}</span>}
                   </span>
                 </span>
                 <span className="mt-1 block truncate font-mono text-[9px] text-muted-foreground">{scan.model}/{scan.effort}/{scan.mode}</span>
@@ -201,24 +203,24 @@ export function ComparePage() {
                 <span className="mt-2 grid grid-cols-3 font-mono text-[9px]">
                   <span>{formatUsd(scan.cost?.estimatedUsd)}</span>
                   <span className="text-destructive">{scan.severity.critical + scan.severity.high} high+</span>
-                  <span className="text-right text-muted-foreground">{scan.severity.total} total</span>
+                  <span className="text-right text-muted-foreground">{scan.severity.total} {t("compare.total")}</span>
                 </span>
               </span>
             </button>;
           })}
-        </div> : <EmptyState title="Nenhum scan comparável" description="Conclua dois scans ou preserve findings em uma execução interrompida para produzir um diff." />}
+        </div> : <EmptyState title={t("compare.noComparable")} description={t("compare.noComparableDescription")} />}
       </Panel>
-      <Panel className="order-1 h-fit xl:order-2 xl:sticky xl:top-24" label="DIFF INPUT" title="Ordem da comparação">
-        <CompareSlot role="BASELINE" scan={chosen[0]} onRemove={() => chosen[0] && toggle(chosen[0].id)} />
+      <Panel className="order-1 h-fit xl:order-2 xl:sticky xl:top-24" label="DIFF INPUT" title={t("compare.order")}>
+        <CompareSlot role={t("compare.baseline")} scan={chosen[0]} onRemove={() => chosen[0] && toggle(chosen[0].id)} />
         <div className="flex h-10 items-center justify-center border-b bg-muted/20">
           <HugeiconsIcon icon={ArrowRight01Icon} size={14} className="rotate-90 text-primary xl:rotate-0" />
         </div>
         <div className="max-h-72 overflow-auto">
-          {chosen.slice(1).map((scan, index) => <CompareSlot key={scan.id} role={`CANDIDATO ${String(index + 1).padStart(2, "0")}`} scan={scan} onRemove={() => toggle(scan.id)} onPromote={() => promoteToBaseline(scan.id)} />)}
-          {chosen.length < 2 && <div className="p-4 text-xs leading-relaxed text-muted-foreground">Selecione ao menos um candidato. Você pode conectar até {MAX_COMPARE_SCANS - 1}.</div>}
+          {chosen.slice(1).map((scan, index) => <CompareSlot key={scan.id} role={t("compare.candidate", { index: String(index + 1).padStart(2, "0") })} scan={scan} onRemove={() => toggle(scan.id)} onPromote={() => promoteToBaseline(scan.id)} />)}
+          {chosen.length < 2 && <div className="p-4 text-xs leading-relaxed text-muted-foreground">{t("compare.selectCandidate", { count: MAX_COMPARE_SCANS - 1 })}</div>}
         </div>
         <div className="border-t p-3">
-          <Button className="w-full" onClick={() => void compare()} disabled={chosen.length < 2 || busy}>Executar diff de {chosen.length} scans</Button>
+          <Button className="w-full" onClick={() => void compare()} disabled={chosen.length < 2 || busy}>{busy ? t("compare.running") : t("compare.run", { count: chosen.length })}</Button>
         </div>
       </Panel>
       </div>
@@ -228,26 +230,29 @@ export function ComparePage() {
 }
 
 function CompareSlot({ role, scan, onRemove, onPromote }: { role: string; scan?: ScanRun; onRemove: () => void; onPromote?: () => void }) {
+  const { t } = useI18n();
   return <div className="min-h-28 p-4">
     <div className="bench-label text-primary">{role}</div>
     {scan ? <div className="mt-2">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0"><div className="truncate text-sm font-semibold">{scan.displayName}</div><div className="mt-1 truncate font-mono text-[8px] text-muted-foreground">{shortId(scan.id)} · {formatDate(scan.startedAt)}</div><PartialScanBadges scan={scan} /></div>
-        <div className="flex shrink-0 flex-col items-end gap-1">{onPromote && <button type="button" onClick={onPromote} className="font-mono text-[7px] uppercase text-primary hover:text-foreground">usar baseline</button>}<button type="button" onClick={onRemove} className="font-mono text-[8px] uppercase text-muted-foreground hover:text-destructive">remover</button></div>
+        <div className="flex shrink-0 flex-col items-end gap-1">{onPromote && <button type="button" onClick={onPromote} className="font-mono text-[7px] uppercase text-primary hover:text-foreground">{t("compare.useBaseline")}</button>}<button type="button" onClick={onRemove} className="font-mono text-[8px] uppercase text-muted-foreground hover:text-destructive">{t("compare.remove")}</button></div>
       </div>
-    </div> : <p className="mt-2 text-xs leading-relaxed text-muted-foreground">Selecione um scan na biblioteca.</p>}
+    </div> : <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{t("compare.selectLibrary")}</p>}
   </div>;
 }
 
 function PartialScanBadges({ scan, compact = false }: { scan: ScanRun; compact?: boolean }) {
+  const { t } = useI18n();
   if (!isPartialComparableScan(scan)) return null;
   return <span className="mt-2 flex flex-wrap items-center gap-1.5">
     <StatusBadge status={scan.status} />
-    <span className="inline-flex h-5 items-center border border-chart-3/40 bg-chart-3/[.08] px-1.5 font-mono text-[8px] uppercase tracking-wider text-chart-3">{compact ? "parcial" : "resultado parcial"}</span>
+    <span className="inline-flex h-5 items-center border border-chart-3/40 bg-chart-3/[.08] px-1.5 font-mono text-[8px] uppercase tracking-wider text-chart-3">{compact ? t("common.partial") : t("compare.partialResult")}</span>
   </span>;
 }
 
 function ComparisonOutput({ result }: { result: CompareResult }) {
+  const { t } = useI18n();
   const baseline = result.scans.find((scan) => scan.id === result.baselineScanId);
   const [activeCandidateId, setActiveCandidateId] = useState(result.candidateScanIds[0] ?? "");
   const [objective, setObjective] = useState<CompareObjective>("balanced");
@@ -286,13 +291,13 @@ function ComparisonOutput({ result }: { result: CompareResult }) {
     setQuery("");
   }
   const reportHref = `/compare/report?ids=${result.scans.map((scan) => scan.id).join(",")}&objective=${objective}`;
-  const objectiveLabel = objectives.find((item) => item.id === objective)?.label ?? "Equilíbrio";
+  const objectiveLabel = t(objectives.find((item) => item.id === objective)?.label ?? "compare.objective.balanced");
 
   return <section className="mt-6">
-    <div className="mb-4 flex flex-wrap items-center gap-3"><span className="bench-label text-primary">SECURITY CHANGESET / {partialScans.length ? "PARTIAL INPUT" : "READY"}</span><span className="h-px min-w-8 flex-1 bg-border" /><span className="font-mono text-[8px] text-muted-foreground">{result.scans.length} SCANS · 1 BASELINE · {result.candidateScanIds.length} CANDIDATOS · {partialScans.length} PARCIAIS</span><Button asChild variant="outline" size="sm" className="h-11 shrink-0 gap-3 border-primary/60 bg-primary/[.10] px-4 text-[10px] font-semibold uppercase tracking-[.08em] text-foreground shadow-[inset_3px_0_0_var(--primary)] hover:bg-primary/[.16] hover:text-foreground"><Link to={reportHref} target="_blank" aria-label={`Abrir relatório comparativo de ${result.scans.length} scans em PDF`}><HugeiconsIcon icon={DocumentValidationIcon} size={16} className="text-primary" /><span>Relatório comparativo</span><span className="border-l border-primary/30 pl-3 font-mono text-[8px] font-medium text-primary">{objectiveLabel} · PDF</span><HugeiconsIcon icon={ArrowRight01Icon} size={12} className="text-primary" /></Link></Button></div>
-    <AlertBanner tone="info"><strong>Leitura de cobertura, não de remediação.</strong> “Só baseline” significa que o candidato não reportou o sinal; isso não prova que a vulnerabilidade foi corrigida. Da mesma forma, “só candidato” não significa que ela surgiu agora.</AlertBanner>
-    {partialScans.length > 0 && <AlertBanner tone="warning"><strong>{partialScans.length === 1 ? "Uma execução falhou" : `${partialScans.length} execuções falharam`} depois de produzir findings.</strong> Os resultados preservados entram nos gráficos e no ranking, mas custo, duração e cobertura descrevem apenas o trabalho realizado antes da interrupção; quando o scan parou antes da consolidação, pode haver sobreposição entre workers.</AlertBanner>}
-    {!sameRepository && <AlertBanner tone="warning">Os scans pertencem a alvos diferentes. O diff continua disponível, mas sinais exclusivos podem refletir aplicações diferentes, não regressões.</AlertBanner>}
+    <div className="mb-4 flex flex-wrap items-center gap-3"><span className="bench-label text-primary">SECURITY CHANGESET / {partialScans.length ? "PARTIAL INPUT" : "READY"}</span><span className="h-px min-w-8 flex-1 bg-border" /><span className="font-mono text-[8px] text-muted-foreground">{result.scans.length} SCANS · 1 BASELINE · {result.candidateScanIds.length} CANDIDATES · {partialScans.length} PARTIAL</span><Button asChild variant="outline" size="sm" className="h-11 shrink-0 gap-3 border-primary/60 bg-primary/[.10] px-4 text-[10px] font-semibold uppercase tracking-[.08em] text-foreground shadow-[inset_3px_0_0_var(--primary)] hover:bg-primary/[.16] hover:text-foreground"><Link to={reportHref} target="_blank" aria-label={t("compare.openReport", { count: result.scans.length })}><HugeiconsIcon icon={DocumentValidationIcon} size={16} className="text-primary" /><span>{t("compare.report")}</span><span className="border-l border-primary/30 pl-3 font-mono text-[8px] font-medium text-primary">{objectiveLabel} · PDF</span><HugeiconsIcon icon={ArrowRight01Icon} size={12} className="text-primary" /></Link></Button></div>
+    <AlertBanner tone="info"><strong>{t("compare.coverageWarning")}</strong> {t("compare.coverageExplanation")}</AlertBanner>
+    {partialScans.length > 0 && <AlertBanner tone="warning"><strong>{partialScans.length === 1 ? t("compare.outputPartialTitleOne") : t("compare.outputPartialTitle", { count: partialScans.length })}</strong> {t("compare.outputPartialExplanation")}</AlertBanner>}
+    {!sameRepository && <AlertBanner tone="warning">{t("compare.differentTargets")}</AlertBanner>}
     <DecisionCockpit ranking={decisionRanking} objective={objective} onObjectiveChange={setObjective} />
     <UnitEconomicsSummary rows={decisionRanking} baselineScanId={result.baselineScanId} />
     <ComparisonCharts result={result} rows={decisionRanking} activeCandidateId={activeCandidateId} onSelectCandidate={selectCandidate} />
@@ -364,19 +369,20 @@ function CandidateRail({ result, activeCandidateId, onSelect }: { result: Compar
 }
 
 function DecisionCockpit({ ranking, objective, onObjectiveChange }: { ranking: ScanDecisionRow[]; objective: CompareObjective; onObjectiveChange: (objective: CompareObjective) => void }) {
+  const { t } = useI18n();
   const winner = ranking[0];
   const runnerUp = ranking[1];
   const meta = objectives.find((item) => item.id === objective) ?? objectives[0];
   if (!winner) return null;
-  return <Panel className="mt-4 overflow-hidden" label="DECISION COCKPIT" title="Qual execução foi melhor para o seu objetivo?" aside={<span className="font-mono text-[8px] text-muted-foreground">CRITÉRIO EXPLÍCITO · SEM CHUTE DE PRECISÃO</span>} wrapTitle>
+  return <Panel className="mt-4 overflow-hidden" label="DECISION COCKPIT" title={t("compare.decisionQuestion")} aside={<span className="font-mono text-[8px] text-muted-foreground">EXPLICIT CRITERION · NO PRECISION GUESS</span>} wrapTitle>
     <div className="flex flex-col gap-2 border-b bg-muted/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
       <div>
-        <div className="bench-label text-primary">ESCOLHA O CRITÉRIO DE DECISÃO</div>
-        <p className="mt-1 text-[10px] text-muted-foreground">Clique em uma opção para recalcular o vencedor e o ranking completo.</p>
+        <div className="bench-label text-primary">{t("compare.objective")}</div>
+        <p className="mt-1 text-[10px] text-muted-foreground">{t("compare.objectiveHelp")}</p>
       </div>
       <div className="flex w-fit items-center gap-2 border border-primary/35 bg-primary/[.06] px-3 py-1.5 font-mono text-[8px] uppercase tracking-wider text-primary">
         <span className="size-1.5 bg-primary" />
-        Critério atual: {meta.label}
+        {t("compare.objective")}: {t(meta.label)}
       </div>
     </div>
     <div className="grid border-b sm:grid-cols-2 xl:grid-cols-6">
@@ -395,14 +401,14 @@ function DecisionCockpit({ ranking, objective, onObjectiveChange }: { ranking: S
           )}
         >
           <span className="flex items-center justify-between gap-3">
-            <span className={cx("font-mono text-[9px] uppercase tracking-wider", active ? "text-primary" : "text-foreground")}>{item.label}</span>
+            <span className={cx("font-mono text-[9px] uppercase tracking-wider", active ? "text-primary" : "text-foreground")}>{t(item.label)}</span>
             <span className={cx("flex size-4 shrink-0 items-center justify-center border transition-colors", active ? "border-primary bg-primary text-primary-foreground" : "border-muted-foreground/60 group-hover:border-primary")}>
               {active && <HugeiconsIcon icon={Tick02Icon} size={11} />}
             </span>
           </span>
-          <span className="mt-2 block text-[9px] leading-snug text-muted-foreground">{item.description}</span>
+          <span className="mt-2 block text-[9px] leading-snug text-muted-foreground">{t(item.description)}</span>
           <span className={cx("mt-3 flex items-center gap-1.5 font-mono text-[8px] uppercase tracking-wider transition-colors", active ? "text-primary" : "text-muted-foreground group-hover:text-primary")}>
-            {active ? "Selecionado" : "Selecionar"}
+            {active ? t("compare.selected") : t("compare.select")}
             {!active && <HugeiconsIcon icon={ArrowRight01Icon} size={10} className="transition-transform group-hover:translate-x-0.5" />}
           </span>
         </button>;
@@ -411,31 +417,31 @@ function DecisionCockpit({ ranking, objective, onObjectiveChange }: { ranking: S
     <div className="grid xl:grid-cols-[minmax(0,1.25fr)_minmax(20rem,.75fr)]">
       <div className="relative min-h-72 overflow-hidden border-b p-6 xl:border-b-0 xl:border-r">
         <div className="pointer-events-none absolute -right-8 -top-12 font-mono text-[12rem] font-semibold leading-none text-primary/[.035]">01</div>
-        <div className="bench-label text-primary">VENCEDOR / {meta.label}</div>
+        <div className="bench-label text-primary">{t("compare.winner")} / {t(meta.label)}</div>
         <div className="mt-4 flex flex-wrap items-end gap-3"><div className="max-w-3xl font-heading text-3xl font-semibold tracking-[-.045em] sm:text-5xl">{decisionProfile(winner.scan)}</div><PartialScanBadges scan={winner.scan} /></div>
         <div className="mt-2 font-mono text-[9px] text-muted-foreground">{winner.scan.displayName} · {shortId(winner.scan.id)}</div>
-        <p className="mt-5 max-w-2xl text-sm leading-relaxed text-foreground/80">{decisionReason(winner, objective)}</p>
+        <p className="mt-5 max-w-2xl text-sm leading-relaxed text-foreground/80">{decisionReason(winner, objective, t)}</p>
         <div className="mt-6 grid grid-cols-2 border sm:grid-cols-4">
-          <DecisionMetric label="RESULTADO" value={decisionValue(winner, objective)} accent />
+          <DecisionMetric label={t("compare.result")} value={decisionValue(winner, objective)} accent />
           <DecisionMetric label="TOTAL" value={String(winner.total)} />
           <DecisionMetric label="HIGH+" value={String(winner.highPlus)} />
-          <DecisionMetric label="CUSTO" value={formatUsd(winner.costUsd)} />
+          <DecisionMetric label={t("dashboard.cost")} value={formatUsd(winner.costUsd)} />
           <DecisionMetric label="$ / FINDING" value={formatUsd(winner.costPerFinding)} />
           <DecisionMetric label="$ / HIGH+" value={formatUsd(winner.costPerHighPlus)} />
           <DecisionMetric label="FINDINGS / H" value={formatRate(winner.findingsPerHour)} />
-          <DecisionMetric label="DURAÇÃO" value={formatDuration(winner.durationMs)} />
+          <DecisionMetric label={t("dashboard.duration")} value={formatDuration(winner.durationMs)} />
         </div>
-        {runnerUp && <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[8px] text-muted-foreground"><span>2º LUGAR</span><span className="text-foreground">{decisionProfile(runnerUp.scan)}</span><span>{decisionValue(runnerUp, objective)}</span><PartialScanBadges scan={runnerUp.scan} compact /></div>}
+        {runnerUp && <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[8px] text-muted-foreground"><span>{t("compare.secondPlace")}</span><span className="text-foreground">{decisionProfile(runnerUp.scan)}</span><span>{decisionValue(runnerUp, objective)}</span><PartialScanBadges scan={runnerUp.scan} compact /></div>}
       </div>
       <div className="flex flex-col justify-between bg-muted/10 p-6">
         <div>
-          <div className="bench-label text-chart-3">LIMITE DA LEITURA</div>
-          <div className="mt-4 font-heading text-2xl font-semibold tracking-[-.035em]">Precisão ainda não é mensurável.</div>
-          <p className="mt-3 text-xs leading-relaxed text-muted-foreground">O ranking mede o que cada execução reportou, quanto custou e quanto demorou. Sem findings confirmados e falsos positivos triados, nenhum scan pode ser chamado de “mais correto”.</p>
+          <div className="bench-label text-chart-3">{t("compare.readingLimit")}</div>
+          <div className="mt-4 font-heading text-2xl font-semibold tracking-[-.035em]">{t("compare.precisionUnavailable")}</div>
+          <p className="mt-3 text-xs leading-relaxed text-muted-foreground">{t("compare.precisionExplanation")}</p>
         </div>
         <div className="mt-8 border-l-2 border-chart-3 pl-4">
-          <div className="font-mono text-[8px] uppercase tracking-wider text-chart-3">COMO VALIDAR QUALIDADE REAL</div>
-          <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">Confirme uma amostra, marque falso positivo/verdadeiro positivo e use esse conjunto como ground truth. Aí o produto poderá calcular precisão, recall e F1 sem vender ficção.</p>
+          <div className="font-mono text-[8px] uppercase tracking-wider text-chart-3">{t("compare.validateQuality")}</div>
+          <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">{t("compare.validateQualityExplanation")}</p>
         </div>
       </div>
     </div>
@@ -613,9 +619,10 @@ function DecisionChartTooltip({ active, payload }: TooltipContentProps) {
 }
 
 function DetectionScoreboard({ ranking, objective, baselineScanId, activeCandidateId, onSelect }: { ranking: ScanDecisionRow[]; objective: CompareObjective; baselineScanId: string; activeCandidateId: string; onSelect: (id: string) => void }) {
+  const { t } = useI18n();
   const meta = objectives.find((item) => item.id === objective) ?? objectives[0];
   const marginalById = new Map(buildMarginalEconomics(ranking, baselineScanId).map((row) => [row.scanId, row]));
-  return <Panel className="mt-4" label="DECISION RANKING" title={`Ranking por ${meta.label.toLowerCase()}`} aside={<span className="font-mono text-[8px] text-muted-foreground">MUDE O OBJETIVO ACIMA PARA RECALCULAR</span>} wrapTitle>
+  return <Panel className="mt-4" label="DECISION RANKING" title={`Ranking · ${t(meta.label)}`} aside={<span className="font-mono text-[8px] text-muted-foreground">CHANGE THE OBJECTIVE ABOVE TO RECALCULATE</span>} wrapTitle>
     <div className="overflow-x-auto">
       <table className="table min-w-[126rem]">
         <thead><tr className="font-mono text-[8px] uppercase tracking-wider text-muted-foreground"><th className="sticky left-0 z-20 w-12 bg-background">#</th><th className="sticky left-12 z-20 min-w-60 bg-background">Execução</th><th>Resultado no critério</th><th>Nota relativa</th><th>Total</th><th>Critical</th><th>High</th><th>Medium</th><th>Low</th><th>High+</th><th>Custo</th><th>$ / finding</th><th>$ / High+</th><th>Findings / h</th><th>High+ / h</th><th>Δ custo</th><th>$ / finding extra</th><th>$ / High+ extra</th><th>Duração</th></tr></thead>
@@ -781,15 +788,15 @@ function decisionValue(row: ScanDecisionRow, objective: CompareObjective): strin
   return `${row.score.toFixed(0)} / 100`;
 }
 
-function decisionReason(row: ScanDecisionRow, objective: CompareObjective): string {
+function decisionReason(row: ScanDecisionRow, objective: CompareObjective, t: (key: TranslationKey, variables?: Record<string, string | number>) => string): string {
   const profile = decisionProfile(row.scan);
-  const partialNote = isPartialComparableScan(row.scan) ? " Resultado parcial: a execução foi interrompida antes de concluir a cobertura." : "";
-  if (objective === "coverage") return `${profile} lidera em cobertura observada com ${row.total} achados reportados. Isso mede amplitude, não confirma que todos sejam verdadeiros positivos.${partialNote}`;
-  if (objective === "high_plus") return `${profile} reportou ${row.highPlus} sinais Critical ou High, o maior volume prioritário deste recorte.${partialNote}`;
-  if (objective === "cost_per_finding") return `${profile} custou ${formatUsd(row.costPerFinding)} por finding reportado, o menor custo unitário do comparativo.${partialNote}`;
-  if (objective === "cost_per_high") return `${profile} custou ${formatUsd(row.costPerHighPlus)} por sinal Critical ou High, o melhor retorno para achados prioritários.${partialNote}`;
-  if (objective === "speed") return `${profile} terminou em ${formatDuration(row.durationMs)}, a menor duração registrada neste comparativo.${partialNote}`;
-  return `${profile} oferece o melhor equilíbrio relativo: 30% cobertura, 25% High+, 20% custo por finding, 15% custo por High+ e 10% velocidade.${partialNote}`;
+  const partial = isPartialComparableScan(row.scan) ? t("compare.reason.partial") : "";
+  if (objective === "coverage") return t("compare.reason.coverage", { profile, count: row.total, partial });
+  if (objective === "high_plus") return t("compare.reason.highPlus", { profile, count: row.highPlus, partial });
+  if (objective === "cost_per_finding") return t("compare.reason.costFinding", { profile, cost: formatUsd(row.costPerFinding), partial });
+  if (objective === "cost_per_high") return t("compare.reason.costHigh", { profile, cost: formatUsd(row.costPerHighPlus), partial });
+  if (objective === "speed") return t("compare.reason.speed", { profile, duration: formatDuration(row.durationMs), partial });
+  return t("compare.reason.balanced", { profile, partial });
 }
 
 function formatChartValue(value: TooltipValueType | undefined): string {

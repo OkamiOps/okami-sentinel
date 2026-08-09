@@ -5,16 +5,19 @@ import "@fontsource-variable/jetbrains-mono";
 import { App } from "./App";
 import { ThemeProvider } from "./theme";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { I18nProvider } from "./i18n";
 import "./styles.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <ThemeProvider>
-      <TooltipProvider>
-        <BrowserRouter>
-          <App />
-        </BrowserRouter>
-      </TooltipProvider>
+      <I18nProvider>
+        <TooltipProvider>
+          <BrowserRouter>
+            <App />
+          </BrowserRouter>
+        </TooltipProvider>
+      </I18nProvider>
     </ThemeProvider>
   </StrictMode>,
 );

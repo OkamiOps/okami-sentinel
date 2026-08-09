@@ -1,6 +1,16 @@
 # Codex Security Benchmark
 
-Aplicação local para disparar scans do [`@openai/codex-security`](https://github.com/openai/codex-security), visualizar findings, acompanhar custo estimado e comparar modelo × effort.
+Aplicação local para disparar scans do [`@openai/codex-security`](https://github.com/openai/codex-security), visualizar findings, acompanhar custo estimado e comparar modelo × effort. A interface está disponível em português do Brasil, inglês, espanhol, alemão e francês.
+
+## Principais recursos
+
+- Operação local por assinatura Codex/ChatGPT ou por API.
+- Navegador de diretórios para escolher repositórios sem copiar caminhos absolutos.
+- Telemetria de execução, findings, severidade, custo estimado e duração em uma única interface.
+- Comparação de até seis scans, com baseline, candidatos, resultados parciais, diff e métricas de eficiência.
+- Relatório individual e relatório comparativo preparados para impressão ou exportação em PDF.
+- Guardrails locais e integração opcional com GitHub Checks.
+- Interface em **PT-BR**, **English**, **Español**, **Deutsch** e **Français**, com preferência persistida no navegador.
 
 ## Stack
 
@@ -44,10 +54,26 @@ Na subida, a API indexa scans já existentes no state do Codex Security (ex.: Co
 
 ## Uso
 
-1. **Dashboard** — gasto total, ranking modelo×effort, runs recentes  
-2. **Novo scan** — escolha pasta/repositório, modelo, effort, max cost e inicie pela UI  
-3. **Detalhe** — findings, evidência, progresso SSE enquanto o scan roda  
-4. **Comparar** — 2+ runs para ranking high/$ e diff de findings  
+1. **Visão** — gasto total, ranking modelo×effort, runs recentes e espectro de evidências.
+2. **Operar** — navegue até a pasta do repositório, escolha modelo, effort, modo e envelope de custo.
+3. **Atividade/Detalhe** — acompanhe telemetria SSE, findings, evidências e progresso do scan.
+4. **Comparar** — selecione de dois a seis scans, defina o baseline e compare cobertura, High+, custo por finding, custo por High+ e velocidade.
+5. **Relatórios** — emita um relatório individual no detalhe do scan ou um relatório comparativo após executar o diff.
+6. **Guardrails** — aplique políticas versionadas ao changeset local e, opcionalmente, publique o resultado no GitHub Checks.
+
+## Idiomas
+
+O seletor de idioma fica no barramento superior. A aplicação detecta o idioma do navegador na primeira visita e salva a escolha em `localStorage` usando a chave `okami-sentinel.locale`.
+
+| Código | Idioma |
+|---|---|
+| `pt-BR` | Português do Brasil (fallback) |
+| `en` | English |
+| `es` | Español |
+| `de` | Deutsch |
+| `fr` | Français |
+
+Datas e números seguem o locale selecionado. Valores financeiros continuam explicitamente em USD. Títulos, resumos, caminhos, código e evidências vindos do scanner não são traduzidos automaticamente, preservando a fidelidade do resultado original. A arquitetura e o fluxo para adicionar textos estão em [`docs/localization.md`](docs/localization.md).
 
 ## Guardrails locais
 
@@ -152,4 +178,6 @@ pnpm dev          # api + web
 pnpm dev:api
 pnpm dev:web
 pnpm typecheck
+pnpm test
+pnpm build
 ```
