@@ -10,6 +10,7 @@ import {
   updateConnectionRecord,
 } from "./connections-store.js";
 import {
+  type ConnectionRouteRegistry,
   ConnectionServiceError,
   createConnectionsService,
   type ConnectionsService,
@@ -17,6 +18,8 @@ import {
 } from "./connections-service.js";
 import { createConnectionsApp } from "./connections-api.js";
 import { app } from "./app.js";
+import type { RouteAdapter } from "./connections/route-adapter.js";
+import type { RouteManifest } from "./connections/route-registry.js";
 import type {
   ConnectionSecretBundle,
   CredentialVault,
@@ -58,15 +61,73 @@ function storeFor(db: Database.Database): ConnectionsStore {
 
 function cliConnectionInput(): CreateProviderConnectionRequest {
   return {
-    name: "Codex local",
-    providerKind: "openai",
-    routeKind: "codex-local",
+    name: "Claude Code local",
+    providerKind: "anthropic",
+    routeKind: "claude-code-local",
     transport: "local-cli",
     authKind: "existing-session",
-    protocol: "codex-cli",
+    protocol: "claude-code-cli",
     modelSelectionMode: "runtime-default",
   };
 }
+
+const TEST_MANIFESTS: readonly RouteManifest[] = [
+  {
+    routeKind: "openai-api",
+    providerKind: "openai",
+    transport: "http-inference",
+    protocol: "openai-responses",
+    authKinds: ["api-key"],
+  },
+  {
+    routeKind: "claude-code-local",
+    providerKind: "anthropic",
+    transport: "local-cli",
+    protocol: "claude-code-cli",
+    authKinds: ["existing-session"],
+  },
+];
+
+const TEST_ROUTES: ConnectionRouteRegistry = {
+  get(routeKind) {
+    const manifest = TEST_MANIFESTS.find((candidate) => candidate.routeKind === routeKind);
+    if (manifest === undefined) return undefined;
+    return {
+      routeKind: manifest.routeKind,
+      transport: manifest.transport,
+      protocol: manifest.protocol,
+      inspect: async () => ({
+        available: false,
+        reason: "protocol_unsupported",
+        supportsRuntimeDefault: manifest.routeKind === "claude-code-local",
+      }),
+      discoverModels: async () => ({
+        models: [],
+        supportsRuntimeDefault: manifest.routeKind === "claude-code-local",
+      }),
+      probe: async (connection, selection) => ({
+        id: "test-check",
+        connectionId: connection.id,
+        modelId: selection.modelId,
+        protocol: manifest.protocol,
+        status: "failed",
+        capabilities: {
+          tools: "unknown",
+          artifactOutput: "unknown",
+          structuredOutput: "unknown",
+          boundedExecution: "unknown",
+          osIsolation: "unknown",
+          streaming: "unknown",
+          usage: "unknown",
+          cancellation: "unknown",
+        },
+        errorCode: "protocol_unsupported",
+        checkedAt: "2026-08-11T00:00:00.000Z",
+      }),
+    } satisfies RouteAdapter;
+  },
+  getManifest: (routeKind) => TEST_MANIFESTS.find((candidate) => candidate.routeKind === routeKind),
+};
 
 function runtimeConnection(): ProviderConnection {
   return {
@@ -97,7 +158,11 @@ function runtimeConnection(): ProviderConnection {
 function fixture() {
   const db = new Database(":memory:");
   const vault = new FakeVault();
-  const service = createConnectionsService({ vault, store: storeFor(db) });
+  const service = createConnectionsService({
+    vault,
+    store: storeFor(db),
+    routes: TEST_ROUTES,
+  });
   return { api: createConnectionsApp({ service }), db, vault };
 }
 

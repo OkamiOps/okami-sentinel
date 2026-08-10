@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type {
   CapabilityReport,
+  ConnectionAuthKind,
   ModelCapabilities,
   ProviderModel,
   SafeProviderErrorCode,
@@ -45,45 +46,59 @@ export interface RouteManifest {
   providerKind: string;
   transport: RouteAdapter["transport"];
   protocol: RouteAdapter["protocol"];
+  authKinds: readonly ConnectionAuthKind[];
+}
+
+function immutableRouteManifest(manifest: RouteManifest): RouteManifest {
+  return Object.freeze({
+    ...manifest,
+    authKinds: Object.freeze([...manifest.authKinds]),
+  });
 }
 
 /** The only manifests registered in this sprint; HTTP registration belongs to Task 3 integration. */
 export const LOCAL_ROUTE_MANIFESTS: readonly RouteManifest[] = Object.freeze([
-  {
+  immutableRouteManifest({
     routeKind: "openai-codex-local",
     providerKind: "openai",
     transport: "codex-app-server",
     protocol: "codex-app-server",
-  },
-  {
+    authKinds: ["existing-session"],
+  }),
+  immutableRouteManifest({
     routeKind: "openai-chatgpt-app-server",
     providerKind: "openai",
     transport: "codex-app-server",
     protocol: "codex-app-server",
-  },
-  {
+    authKinds: ["browser-oauth", "device-code"],
+  }),
+  immutableRouteManifest({
     routeKind: "xai-grok-build-local",
     providerKind: "xai",
     transport: "local-cli",
     protocol: "grok-build-cli",
-  },
-  {
+    authKinds: ["existing-session"],
+  }),
+  immutableRouteManifest({
     routeKind: "claude-code-local",
     providerKind: "anthropic",
     transport: "local-cli",
     protocol: "claude-code-cli",
-  },
-  {
+    authKinds: ["existing-session"],
+  }),
+  immutableRouteManifest({
     routeKind: "cursor-agent-local",
     providerKind: "cursor",
     transport: "local-cli",
     protocol: "cursor-agent-cli",
-  },
+    authKinds: ["existing-session"],
+  }),
 ]);
 
 export interface RouteRegistry {
   readonly manifests: readonly RouteManifest[];
   get(routeKind: string): RouteAdapter | undefined;
+  getManifest(routeKind: string): RouteManifest | undefined;
   list(): readonly RouteAdapter[];
   register(adapter: RouteAdapter): void;
 }
@@ -98,6 +113,9 @@ export function createRouteRegistry(
   dependencies: RouteRegistryDependencies = {},
 ): RouteRegistry {
   const adapters = new Map<string, RouteAdapter>();
+  const manifests = new Map<string, RouteManifest>(
+    LOCAL_ROUTE_MANIFESTS.map((manifest) => [manifest.routeKind, manifest]),
+  );
   const now = dependencies.now ?? (() => new Date());
   const codex = dependencies.codex ?? new CodexAppServerBridge(
     createCodexAppServerJsonRpc(),
@@ -107,8 +125,15 @@ export function createRouteRegistry(
   const registry: RouteRegistry = {
     manifests: LOCAL_ROUTE_MANIFESTS,
     get: (routeKind) => adapters.get(routeKind),
+    getManifest: (routeKind) => manifests.get(routeKind),
     list: () => [...adapters.values()],
     register(adapter) {
+      const manifest = manifests.get(adapter.routeKind);
+      if (
+        manifest === undefined ||
+        manifest.transport !== adapter.transport ||
+        manifest.protocol !== adapter.protocol
+      ) throw new Error(`route manifest mismatch: ${adapter.routeKind}`);
       if (adapters.has(adapter.routeKind)) throw new Error(`route already registered: ${adapter.routeKind}`);
       adapters.set(adapter.routeKind, adapter);
     },
@@ -135,7 +160,11 @@ function createCodexRouteAdapter(
           ? { available: true, reason: null, supportsRuntimeDefault: false }
           : {
             available: false,
-            reason: account.status === "expired" ? "credential_expired" : "provider_unreachable",
+            reason: account.status === "expired"
+              ? "credential_expired"
+              : account.status === "authentication-required"
+                ? "credential_rejected"
+                : "provider_unreachable",
             supportsRuntimeDefault: false,
           };
       } catch (error) {

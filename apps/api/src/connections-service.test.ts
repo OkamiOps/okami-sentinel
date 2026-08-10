@@ -14,13 +14,20 @@ import {
   updateConnectionRecord,
 } from "./connections-store.js";
 import {
+  type ConnectionRouteRegistry,
   type ConnectionInconsistencyRecord,
-  createConnectionsService,
+  createConnectionsService as createConnectionsServiceBase,
+  type ConnectionsServiceDependencies,
   listConnectionRecoveryRecords,
   type ConnectionsStore,
   type ConnectionCatalogStore,
   validateScanConnectionSelection,
 } from "./connections-service.js";
+import { createLocalRuntimeAdapter } from "./connections/local-runtime-adapters.js";
+import {
+  createRouteRegistry,
+  type RouteManifest,
+} from "./connections/route-registry.js";
 import type { RouteAdapter } from "./connections/route-adapter.js";
 import type {
   ConnectionSecretBundle,
@@ -146,6 +153,54 @@ function runtimeRoute(
   };
 }
 
+interface TestRouteEntry {
+  adapter: RouteAdapter;
+  providerKind: string;
+  authKinds: RouteManifest["authKinds"];
+}
+
+function testRouteRegistry(...entries: TestRouteEntry[]): ConnectionRouteRegistry {
+  const adapters = new Map(entries.map(({ adapter }) => [adapter.routeKind, adapter]));
+  const manifests = new Map(entries.map(({ adapter, providerKind, authKinds }) => [
+    adapter.routeKind,
+    {
+      routeKind: adapter.routeKind as RouteManifest["routeKind"],
+      providerKind,
+      transport: adapter.transport,
+      protocol: adapter.protocol,
+      authKinds,
+    } satisfies RouteManifest,
+  ]));
+  return {
+    get: (routeKind) => adapters.get(routeKind),
+    getManifest: (routeKind) => manifests.get(routeKind),
+  };
+}
+
+const TEST_ROUTES = testRouteRegistry(
+  {
+    adapter: runtimeRoute({
+      routeKind: "openai-api",
+      transport: "http-inference",
+      protocol: "openai-responses",
+    }),
+    providerKind: "openai",
+    authKinds: ["api-key"],
+  },
+  {
+    adapter: runtimeRoute(),
+    providerKind: "anthropic",
+    authKinds: ["existing-session"],
+  },
+);
+
+function createConnectionsService(deps: ConnectionsServiceDependencies) {
+  return createConnectionsServiceBase({
+    ...deps,
+    routes: deps.routes ?? TEST_ROUTES,
+  });
+}
+
 function apiConnectionInput(
   apiKey = "sk-write-only",
 ): CreateProviderConnectionRequest {
@@ -167,15 +222,117 @@ function apiConnectionInput(
 
 function cliConnectionInput(): CreateProviderConnectionRequest {
   return {
-    name: "Codex local",
-    providerKind: "openai",
-    routeKind: "codex-local",
+    name: "Claude Code local",
+    providerKind: "anthropic",
+    routeKind: "claude-code-local",
     transport: "local-cli",
     authKind: "existing-session",
-    protocol: "codex-cli",
+    protocol: "claude-code-cli",
     modelSelectionMode: "runtime-default",
   };
 }
+
+function storedCursorConnection(authKind: "existing-session" | "api-key" = "api-key") {
+  return {
+    id: "conn-cursor-invalid-auth",
+    scopeId: "local" as const,
+    name: "Cursor Agent local",
+    providerKind: "cursor",
+    routeKind: "cursor-agent-local",
+    transport: "local-cli" as const,
+    authKind,
+    protocol: "cursor-agent-cli" as const,
+    status: "authentication-required" as const,
+    modelSelectionMode: "catalog" as const,
+    defaultModelId: null,
+    lastTestedAt: null,
+    lastModelSyncAt: null,
+    modelCatalogStale: false,
+    display: {
+      providerLabel: "cursor",
+      routeLabel: "cursor-agent-local",
+      secretConfigured: authKind === "api-key",
+      endpointConfigured: false,
+      endpointKind: null,
+    },
+    credentialRef: authKind === "api-key" ? "connection/conn-cursor-invalid-auth" : null,
+  };
+}
+
+test("closed local registry rejects unknown routes and Cursor API keys before vault or SQLite", async () => {
+  const db = new Database(":memory:");
+  try {
+    const vault = new FakeVault();
+    const service = createConnectionsServiceBase({ vault, store: storeFor(db) });
+
+    await assert.rejects(service.create({
+      ...cliConnectionInput(),
+      routeKind: "unknown-local-runtime",
+    }), { code: "invalid_connection" });
+    await assert.rejects(service.create({
+      name: "Cursor Agent local",
+      providerKind: "cursor",
+      routeKind: "cursor-agent-local",
+      transport: "local-cli",
+      authKind: "api-key",
+      protocol: "cursor-agent-cli",
+      modelSelectionMode: "catalog",
+      secret: { apiKey: "cursor-key-must-not-persist" },
+    }), { code: "invalid_connection" });
+
+    assert.equal(vault.putCalls, 0);
+    assert.equal(listConnections(db).length, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test("update validates the persisted route contract before vault or SQLite writes", async () => {
+  const db = new Database(":memory:");
+  try {
+    const vault = new FakeVault();
+    const stored = storedCursorConnection();
+    insertConnection(stored, db);
+    vault.values.set(stored.credentialRef!, { apiKey: "existing-cursor-key" });
+    const service = createConnectionsServiceBase({ vault, store: storeFor(db) });
+
+    await assert.rejects(
+      service.update(stored.id, { name: "Cursor renamed" }),
+      { code: "invalid_connection" },
+    );
+
+    assert.equal(vault.putCalls, 0);
+    assert.equal(getConnection(stored.id, db)?.name, "Cursor Agent local");
+  } finally {
+    db.close();
+  }
+});
+
+test("route usage rejects a persisted auth mismatch before launching Cursor", async () => {
+  const db = new Database(":memory:");
+  try {
+    const calls: string[][] = [];
+    const local = createLocalRuntimeAdapter({
+      execFile: async (binary, args) => {
+        calls.push([binary, ...args]);
+        return { stdout: "cursor-agent 1.0", stderr: "" };
+      },
+    });
+    const routes = createRouteRegistry({ local });
+    const stored = storedCursorConnection();
+    insertConnection(stored, db);
+    const service = createConnectionsServiceBase({
+      vault: new FakeVault(),
+      store: storeFor(db),
+      routes,
+    });
+
+    await assert.rejects(service.inspect(stored.id), { code: "protocol_unsupported" });
+    assert.deepEqual(calls, []);
+  } finally {
+    db.close();
+  }
+});
 
 test("creates a write-only HTTP connection with server generated identifiers", async () => {
   const db = new Database(":memory:");
@@ -281,7 +438,11 @@ test("refresh persists only models returned by the selected route and marks an e
       vault: new FakeVault(),
       store: storeFor(db),
       catalog,
-      routes: { get: (routeKind) => routeKind === adapter.routeKind ? adapter : undefined },
+      routes: testRouteRegistry({
+        adapter,
+        providerKind: "xai",
+        authKinds: ["existing-session"],
+      }),
     });
     const created = await service.create({
       name: "Grok local",
@@ -321,8 +482,8 @@ test("refresh persists only models returned by the selected route and marks an e
       vault: new FakeVault(),
       store: storeFor(db),
       catalog,
-      routes: {
-        get: () => runtimeRoute({
+      routes: testRouteRegistry({
+        adapter: runtimeRoute({
           routeKind: "xai-grok-build-local",
           protocol: "grok-build-cli",
           discoverModels: async () => ({
@@ -331,7 +492,9 @@ test("refresh persists only models returned by the selected route and marks an e
             safeError: { code: "model_discovery_unsupported" },
           }),
         }),
-      },
+        providerKind: "xai",
+        authKinds: ["existing-session"],
+      }),
     });
     const degraded = await degradedService.refreshModels(created.id);
     assert.equal(degraded?.discovery.safeError?.code, "model_discovery_unsupported");

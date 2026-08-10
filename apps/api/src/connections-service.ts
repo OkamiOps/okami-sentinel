@@ -26,7 +26,10 @@ import {
   updateConnectionRecord,
 } from "./connections-store.js";
 import type { RouteAdapter, RouteInspection, DiscoveryResult } from "./connections/route-adapter.js";
-import { createRouteRegistry } from "./connections/route-registry.js";
+import {
+  createRouteRegistry,
+  type RouteManifest,
+} from "./connections/route-registry.js";
 import {
   connectionSecretValues,
   type ConnectionSecretBundle,
@@ -123,6 +126,7 @@ export interface ConnectionCatalogStore {
 
 export interface ConnectionRouteRegistry {
   get(routeKind: string): RouteAdapter | undefined;
+  getManifest(routeKind: string): RouteManifest | undefined;
 }
 
 export interface ConnectionInspectionResult {
@@ -259,6 +263,7 @@ export function createConnectionsService(
     },
     async create(input) {
       const validated = validateCreateInput(input);
+      registeredAdapterFor(validated, routes, "invalid_connection");
       const id = randomUUID();
       const credentialRef = validated.secret === undefined ? null : `connection/${id}`;
       const stored = makeStoredConnection(id, credentialRef, validated);
@@ -289,6 +294,7 @@ export function createConnectionsService(
       const current = store.get(id);
       if (current === null) return null;
       const patch = validateUpdateInput(input);
+      registeredAdapterFor(current, routes, "invalid_connection");
 
       if (patch.secret !== undefined) {
         rejectSecretBearingLabels(
@@ -400,7 +406,9 @@ export function createConnectionsService(
       return { connection: toPublicConnection(updated), inspection };
     },
     listModels(id) {
-      if (store.get(id) === null) return null;
+      const connection = store.get(id);
+      if (connection === null) return null;
+      adapterFor(connection, routes);
       return catalog.getModels(id);
     },
     async refreshModels(id) {
@@ -453,12 +461,26 @@ function adapterFor(
   connection: StoredProviderConnection,
   routes: ConnectionRouteRegistry,
 ): RouteAdapter {
+  return registeredAdapterFor(connection, routes, "protocol_unsupported");
+}
+
+function registeredAdapterFor(
+  connection: Pick<StoredProviderConnection, "providerKind" | "routeKind" | "transport" | "authKind" | "protocol">,
+  routes: ConnectionRouteRegistry,
+  errorCode: "invalid_connection" | "protocol_unsupported",
+): RouteAdapter {
+  const manifest = routes.getManifest(connection.routeKind);
   const adapter = routes.get(connection.routeKind);
   if (
+    manifest === undefined ||
     adapter === undefined ||
+    manifest.providerKind !== connection.providerKind ||
+    manifest.transport !== connection.transport ||
+    manifest.protocol !== connection.protocol ||
+    !manifest.authKinds.includes(connection.authKind) ||
     adapter.transport !== connection.transport ||
     adapter.protocol !== connection.protocol
-  ) throw new ConnectionServiceError("protocol_unsupported");
+  ) throw new ConnectionServiceError(errorCode);
   return adapter;
 }
 
@@ -485,7 +507,9 @@ function updateRuntimeStatus(
     ? "ready"
     : inspection.reason === "credential_expired"
       ? "expired"
-      : "unavailable";
+      : inspection.reason === "credential_rejected"
+        ? "authentication-required"
+        : "unavailable";
   return store.update(connection.id, {
     status,
     lastTestedAt: new Date().toISOString(),
@@ -550,7 +574,14 @@ function validateCombination(input: {
   if (input.transport === "http-inference" && input.secret === undefined) {
     invalidConnection();
   }
-  if (input.authKind === "existing-session" && input.transport !== "local-cli") {
+  if (
+    input.authKind === "existing-session" &&
+    input.transport !== "local-cli" &&
+    input.transport !== "codex-app-server"
+  ) {
+    invalidConnection();
+  }
+  if (input.transport === "codex-app-server" && input.secret !== undefined) {
     invalidConnection();
   }
   if (

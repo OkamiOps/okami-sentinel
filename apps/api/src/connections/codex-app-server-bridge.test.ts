@@ -158,6 +158,16 @@ test("Codex notifications retain only the safe login status and cancellation use
     flowId: "login-2",
     status: "cancelled",
   });
+
+  rpc.notify("account/login/completed", {
+    loginId: "login-2",
+    success: false,
+    error: "cancelled by user",
+  });
+  assert.deepEqual(bridge.getLoginFlow("login-2"), {
+    flowId: "login-2",
+    status: "cancelled",
+  });
 });
 
 test("Codex account inspection drops identity fields and reports expiry safely", async () => {
@@ -188,7 +198,7 @@ test("Codex app-server failures are normalized without retaining raw output", as
   });
 });
 
-test("Codex JSON-RPC client initializes before account calls and forwards notifications", async () => {
+test("Codex JSON-RPC client completes initialize/initialized before account calls", async () => {
   const transport = new FakeLineTransport();
   const rpc = createCodexAppServerJsonRpc({ transport });
   let notification: { method: string; params: Record<string, unknown> } | undefined;
@@ -203,7 +213,15 @@ test("Codex JSON-RPC client initializes before account calls and forwards notifi
   transport.receive({ id: initialize.id, result: {} });
   await new Promise<void>((resolve) => setImmediate(resolve));
 
-  const accountRead = JSON.parse(transport.sent[1] ?? "{}") as { id: number; method: string };
+  const initialized = JSON.parse(transport.sent[1] ?? "{}") as {
+    id?: number;
+    method?: string;
+    params?: unknown;
+    jsonrpc?: string;
+  };
+  assert.deepEqual(initialized, { method: "initialized" });
+
+  const accountRead = JSON.parse(transport.sent[2] ?? "{}") as { id: number; method: string };
   assert.equal(accountRead.method, "account/read");
   transport.receive({ id: accountRead.id, result: { account: null } });
   assert.deepEqual(await pending, { account: null });
@@ -211,6 +229,33 @@ test("Codex JSON-RPC client initializes before account calls and forwards notifi
   transport.receive({ method: "account/updated", params: { status: "ready" } });
   assert.deepEqual(notification, { method: "account/updated", params: { status: "ready" } });
   rpc.close();
+});
+
+test("Codex maps official account/updated authMode and logout without retaining identity", () => {
+  const states = new FakeStateSink();
+  const rpc = new ScriptedJsonRpc([]);
+  new CodexAppServerBridge(rpc, {
+    now: () => new Date("2026-08-11T00:00:00.000Z"),
+    stateSink: states,
+  });
+
+  rpc.notify("account/updated", {
+    authMode: "chatgpt",
+    planType: "pro",
+    email: "person@example.test",
+  });
+  rpc.notify("account/updated", { authMode: null, planType: null });
+
+  assert.deepEqual(states.states, [
+    { loginId: null, status: "ready", planLabel: "pro", syncedAt: "2026-08-11T00:00:00.000Z" },
+    {
+      loginId: null,
+      status: "authentication-required",
+      planLabel: null,
+      syncedAt: "2026-08-11T00:00:00.000Z",
+    },
+  ]);
+  assert.equal(JSON.stringify(states.states).includes("person@example.test"), false);
 });
 
 test("Codex persists only safe login/account state and keeps browser/device handoffs ephemeral", async () => {

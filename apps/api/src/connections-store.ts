@@ -771,7 +771,8 @@ function safeCodexStateStatus(value: CodexAppServerSafeState["status"]): string 
   if (
     value !== "pending" && value !== "completed" && value !== "cancelled" &&
     value !== "expired" && value !== "denied" && value !== "failed" &&
-    value !== "ready" && value !== "unavailable"
+    value !== "ready" && value !== "authentication-required" &&
+    value !== "unavailable"
   ) {
     throw new Error("Invalid safe Codex login state");
   }

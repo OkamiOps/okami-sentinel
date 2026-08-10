@@ -209,3 +209,16 @@ test("local route registry has fixed route contracts without a bundled model cat
   assert.equal(JSON.stringify(registry.manifests).includes("defaultModel"), false);
   assert.equal(JSON.stringify(registry.manifests).includes("runtime-visible-grok"), false);
 });
+
+test("local route manifest auth contracts cannot be widened at runtime", () => {
+  const registry = createRouteRegistry({
+    local: createLocalRuntimeAdapter({ execFile: async () => ({ stdout: "", stderr: "" }) }),
+  });
+  const manifest = registry.getManifest("cursor-agent-local");
+  assert.notEqual(manifest, undefined);
+
+  assert.throws(() => {
+    (manifest!.authKinds as string[]).push("api-key");
+  }, TypeError);
+  assert.deepEqual(registry.getManifest("cursor-agent-local")?.authKinds, ["existing-session"]);
+});

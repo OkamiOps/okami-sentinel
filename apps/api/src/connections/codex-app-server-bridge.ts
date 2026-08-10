@@ -50,7 +50,7 @@ export interface CodexLoginState {
 }
 
 export interface CodexAccount {
-  status: "ready" | "expired" | "unavailable";
+  status: "ready" | "authentication-required" | "expired" | "unavailable";
   planLabel: string | null;
   syncedAt: string;
 }
@@ -160,7 +160,9 @@ class StdioCodexAppServerJsonRpc implements CodexAppServerJsonRpc {
     if (this.#initialized === undefined) {
       this.#initialized = this.#send("initialize", {
         clientInfo: { name: "okami-sentinel", version: "0.1.0" },
-      }).then(() => undefined, (error) => {
+      }).then(() => {
+        this.#notifyInitialized();
+      }, (error) => {
         this.#initialized = undefined;
         throw error;
       });
@@ -185,6 +187,10 @@ class StdioCodexAppServerJsonRpc implements CodexAppServerJsonRpc {
         reject(new Error("app-server transport unavailable"));
       }
     });
+  }
+
+  #notifyInitialized(): void {
+    this.#ensureTransport().send(`${JSON.stringify({ method: "initialized" })}\n`);
   }
 
   #handleLine(line: string): void {
@@ -379,8 +385,13 @@ export class CodexAppServerBridge {
   async readAccount(): Promise<CodexAccount> {
     try {
       const result = await this.rpc.request("account/read", {});
-      const account = accountRecord(result);
-      const summary = toCodexAccount(account, this.#now().toISOString());
+      const response = asRecord(result);
+      const account = accountRecord(response);
+      const summary = toCodexAccount(
+        account,
+        this.#now().toISOString(),
+        response.requiresOpenaiAuth === true,
+      );
       this.#lastSyncedAt = summary.syncedAt;
       this.#planLabel = summary.planLabel;
       this.#recordState(null, summary.status, summary.planLabel, summary.syncedAt);
@@ -424,23 +435,22 @@ export class CodexAppServerBridge {
     if (notification.method === "account/login/completed") {
       const loginId = optionalIdentifier(notification.params?.loginId);
       if (loginId === undefined) return;
+      const current = this.#flows.get(loginId);
+      if (current !== undefined && current.status !== "pending") return;
+      const status = notificationStatus(notification.params);
       this.#flows.set(loginId, {
         flowId: loginId,
-        status: notificationStatus(notification.params),
+        status,
       });
-      this.#recordState(loginId, notificationStatus(notification.params));
+      this.#recordState(loginId, status);
       return;
     }
     if (notification.method === "account/updated") {
       const syncedAt = this.#now().toISOString();
       this.#lastSyncedAt = syncedAt;
-      try {
-        const summary = toCodexAccount(accountRecord(notification.params), syncedAt);
-        this.#planLabel = summary.planLabel;
-        this.#recordState(null, summary.status, summary.planLabel, syncedAt);
-      } catch {
-        this.#recordState(null, "unavailable", this.#planLabel, syncedAt);
-      }
+      const summary = accountFromUpdatedNotification(notification.params, syncedAt);
+      this.#planLabel = summary.planLabel;
+      this.#recordState(null, summary.status, summary.planLabel, syncedAt);
     }
   }
 
@@ -515,15 +525,46 @@ function accountRecord(value: unknown): Record<string, unknown> | null {
   return asRecord(account);
 }
 
-function toCodexAccount(account: Record<string, unknown> | null, syncedAt: string): CodexAccount {
-  if (account === null) return { status: "unavailable", planLabel: null, syncedAt };
+function toCodexAccount(
+  account: Record<string, unknown> | null,
+  syncedAt: string,
+  requiresOpenaiAuth = false,
+): CodexAccount {
+  if (account === null) {
+    return {
+      status: requiresOpenaiAuth ? "authentication-required" : "unavailable",
+      planLabel: null,
+      syncedAt,
+    };
+  }
   const rawStatus = optionalText(account.status)?.toLowerCase();
-  const status = rawStatus === "expired" || rawStatus === "logged_out"
+  const status = rawStatus === "logged_out"
+    ? "authentication-required"
+    : rawStatus === "expired"
     ? "expired"
     : "ready";
   return {
     status,
     planLabel: safePlanLabel(account.planLabel ?? account.planType ?? account.plan),
+    syncedAt,
+  };
+}
+
+function accountFromUpdatedNotification(
+  params: Record<string, unknown>,
+  syncedAt: string,
+): CodexAccount {
+  if (params.authMode === null) {
+    return { status: "authentication-required", planLabel: null, syncedAt };
+  }
+  const authMode = optionalText(params.authMode)?.toLowerCase();
+  const status = authMode === "apikey" || authMode === "chatgpt" ||
+      authMode === "chatgptauthtokens" || authMode === "agentidentity"
+    ? "ready"
+    : "unavailable";
+  return {
+    status,
+    planLabel: status === "ready" ? safePlanLabel(params.planType) : null,
     syncedAt,
   };
 }
