@@ -1,4 +1,4 @@
-import { Entry } from "@napi-rs/keyring";
+import { randomUUID } from "node:crypto";
 
 import {
   connectionSecretValues,
@@ -12,116 +12,167 @@ import {
 export { VaultError } from "./credential-vault.js";
 
 const SERVICE = "com.okamiops.sentinel.connections";
+const AVAILABILITY_PROBE = "availability-probe";
 
-export interface EntryLike {
-  setPassword(password: string): void;
-  getPassword(): string | null;
-  deletePassword(): boolean | void;
+export interface NativeCredentialBackend {
+  getPassword(service: string, account: string): Promise<string | null>;
+  setPassword(service: string, account: string, password: string): Promise<void>;
+  deletePassword(service: string, account: string): Promise<boolean>;
 }
 
 export interface SystemCredentialVaultDependencies {
-  entry?: (account: string) => EntryLike;
-  redactor?: SecretRedactorRegistry;
+  redactor: SecretRedactorRegistry;
+  loadBackend?: () => Promise<NativeCredentialBackend>;
 }
 
-const noopRedactor: SecretRedactorRegistry = {
-  register() {},
-  unregister() {},
-};
-
 export class SystemCredentialVault implements CredentialVault {
-  private readonly entry: (account: string) => EntryLike;
   private readonly redactor: SecretRedactorRegistry;
+  private readonly loadBackend: () => Promise<NativeCredentialBackend>;
+  private backendPromise: Promise<NativeCredentialBackend> | undefined;
 
-  constructor(deps: SystemCredentialVaultDependencies = {}) {
-    this.entry = deps.entry ?? ((account) => new Entry(SERVICE, account));
-    this.redactor = deps.redactor ?? noopRedactor;
+  constructor(deps: SystemCredentialVaultDependencies) {
+    if (!deps?.redactor) throw new VaultError("secure_storage_unavailable");
+    this.redactor = deps.redactor;
+    this.loadBackend = deps.loadBackend ?? loadKeytarBackend;
   }
 
   async available() {
-    const backend = nativeBackend();
-    if (backend === "unsupported") return { available: false, backend };
+    const backendName = nativeBackend();
+    if (backendName === "unsupported") {
+      return { available: false, backend: backendName };
+    }
 
     try {
-      this.entry("availability-probe").getPassword();
-      return { available: true, backend };
-    } catch (error) {
-      return { available: isMissingEntry(error), backend };
+      const backend = await this.resolveBackend();
+      await backend.getPassword(SERVICE, AVAILABILITY_PROBE);
+      return { available: true, backend: backendName };
+    } catch {
+      return { available: false, backend: backendName };
     }
   }
 
   async put(ref: string, value: ConnectionSecretBundle): Promise<void> {
+    this.assertSupported();
     const bundle = validateConnectionSecretBundle(value);
-    const entry = this.resolveEntry(ref);
+    const values = connectionSecretValues(bundle);
+    const pendingScope = `${ref}:pending:${randomUUID()}`;
 
     try {
-      entry.setPassword(JSON.stringify(bundle));
+      this.redactor.register(pendingScope, values);
     } catch {
+      this.safeUnregister(pendingScope);
       throw new VaultError("credential_write_failed");
     }
 
-    this.redactor.register(ref, connectionSecretValues(bundle));
+    let backend: NativeCredentialBackend;
+    try {
+      backend = await this.resolveBackend();
+    } catch {
+      this.safeUnregister(pendingScope);
+      throw new VaultError("secure_storage_unavailable");
+    }
+
+    try {
+      await backend.setPassword(SERVICE, ref, JSON.stringify(bundle));
+    } catch {
+      // Keep the pending scope registered: a rejected native promise does not
+      // prove that the backend failed before committing the replacement.
+      throw new VaultError("credential_write_failed");
+    }
+
+    try {
+      this.redactor.register(ref, values);
+    } catch {
+      // The pending scope remains active, so the committed value stays redacted.
+      throw new VaultError("credential_write_failed");
+    }
+
+    try {
+      this.redactor.unregister(pendingScope);
+    } catch {
+      // The final scope is already active; never expose the registry error.
+      throw new VaultError("credential_write_failed");
+    }
   }
 
   async get(ref: string): Promise<ConnectionSecretBundle> {
-    const entry = this.resolveEntry(ref);
+    this.assertSupported();
+    const backend = await this.resolveBackend();
     let encoded: string | null;
 
     try {
-      encoded = entry.getPassword();
-    } catch (error) {
-      if (isMissingEntry(error)) throw new VaultError("credential_not_found");
+      encoded = await backend.getPassword(SERVICE, ref);
+    } catch {
       throw new VaultError("secure_storage_unavailable");
     }
 
     if (encoded === null) throw new VaultError("credential_not_found");
 
+    let bundle: ConnectionSecretBundle;
     try {
-      const bundle = validateConnectionSecretBundle(JSON.parse(encoded));
+      bundle = validateConnectionSecretBundle(JSON.parse(encoded));
       this.redactor.register(ref, connectionSecretValues(bundle));
-      return bundle;
     } catch {
       throw new VaultError("secure_storage_unavailable");
     }
+    return bundle;
   }
 
   async delete(ref: string): Promise<void> {
-    const entry = this.resolveEntry(ref);
+    this.assertSupported();
+    const backend = await this.resolveBackend();
 
     try {
-      entry.deletePassword();
-    } catch (error) {
-      if (!isMissingEntry(error)) {
-        throw new VaultError("secure_storage_unavailable");
-      }
-    }
-
-    this.redactor.unregister(ref);
-  }
-
-  private resolveEntry(ref: string): EntryLike {
-    try {
-      return this.entry(ref);
+      await backend.deletePassword(SERVICE, ref);
     } catch {
       throw new VaultError("secure_storage_unavailable");
+    }
+
+    try {
+      this.redactor.unregister(ref);
+    } catch {
+      throw new VaultError("secure_storage_unavailable");
+    }
+  }
+
+  private assertSupported(): void {
+    if (nativeBackend() === "unsupported") {
+      throw new VaultError("secure_storage_unavailable");
+    }
+  }
+
+  private async resolveBackend(): Promise<NativeCredentialBackend> {
+    this.assertSupported();
+    this.backendPromise ??= Promise.resolve().then(this.loadBackend);
+
+    try {
+      return await this.backendPromise;
+    } catch {
+      this.backendPromise = undefined;
+      throw new VaultError("secure_storage_unavailable");
+    }
+  }
+
+  private safeUnregister(scope: string): void {
+    try {
+      this.redactor.unregister(scope);
+    } catch {
+      // A cleanup failure is deliberately masked by the caller's VaultError.
     }
   }
 }
 
 export function createSystemCredentialVault(
-  deps: SystemCredentialVaultDependencies = {},
+  deps: SystemCredentialVaultDependencies,
 ): CredentialVault {
   return new SystemCredentialVault(deps);
 }
 
-export function isMissingEntry(error: unknown): boolean {
-  if (error === null || error === undefined) return true;
-  if (typeof error !== "object") return false;
-
-  return (
-    "code" in error &&
-    (error.code === "NoEntry" || error.code === "ENOENT")
-  );
+async function loadKeytarBackend(): Promise<NativeCredentialBackend> {
+  const imported = (await import("keytar")) as unknown as {
+    default?: NativeCredentialBackend;
+  } & NativeCredentialBackend;
+  return imported.default ?? imported;
 }
 
 function nativeBackend(): "keychain" | "secret-service" | "unsupported" {
