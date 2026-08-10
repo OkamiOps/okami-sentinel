@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { isSafeProviderErrorCode } from "@csb/shared";
 import type {
   CapabilityReport,
   ConnectionDisplay,
@@ -8,6 +9,7 @@ import type {
   ModelSelectionMode,
   ProviderConnection,
   ProviderModel,
+  SafeProviderErrorCode,
   ScanConnectionSnapshot,
 } from "@csb/shared";
 import { getDb } from "./db.js";
@@ -783,7 +785,7 @@ function nullableUsd(value: unknown): number | null | undefined {
     : undefined;
 }
 
-function requireSafeCapabilityErrorCode(value: unknown): string | null {
+function requireSafeCapabilityErrorCode(value: unknown): SafeProviderErrorCode | null {
   const errorCode = safeCapabilityErrorCode(value);
   if (value !== null && errorCode === null) {
     throw new Error("Invalid safe capability error code");
@@ -791,10 +793,8 @@ function requireSafeCapabilityErrorCode(value: unknown): string | null {
   return errorCode;
 }
 
-function safeCapabilityErrorCode(value: unknown): string | null {
-  return typeof value === "string" && /^[a-z][a-z0-9_]{0,79}$/.test(value)
-    ? value
-    : null;
+function safeCapabilityErrorCode(value: unknown): SafeProviderErrorCode | null {
+  return isSafeProviderErrorCode(value) ? value : null;
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

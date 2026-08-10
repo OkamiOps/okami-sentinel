@@ -231,7 +231,7 @@ test("canonicalizes capability and pricing metadata at the store boundary", () =
     );
     db.prepare("UPDATE connection_capability_checks SET capabilities_json = ?, error_code = ? WHERE id = ?").run(
       JSON.stringify({ tools: "supported", leakedHeader: privateMarker }),
-      privateUrl,
+      "unknown_snake_case",
       "check-safe",
     );
 
@@ -254,29 +254,38 @@ test("canonicalizes capability and pricing metadata at the store boundary", () =
   }
 });
 
-test("rejects an unsafe capability error code before persistence", () => {
+test("rejects secret and unknown capability error codes before persistence", () => {
   const db = new Database(":memory:");
-  const secret = "sk-error-code-secret";
+  const secret = "sk_error_code_secret";
 
   try {
     const store = new ConnectionStore(db);
     store.insert(connectionFixture());
 
-    assert.throws(() => store.writeCapabilityCheck({
-      id: "check-unsafe",
-      connectionId: "conn-1",
-      modelId: null,
-      protocol: "openai-responses",
-      status: "failed",
-      capabilities: {
-        tools: "unknown", artifactOutput: "unknown", structuredOutput: "unknown",
-        boundedExecution: "unknown", osIsolation: "unknown", streaming: "unknown",
-        usage: "unknown", cancellation: "unknown",
-      },
-      errorCode: `https://private.example/probe?token=${secret}`,
-      checkedAt: "2026-08-11T00:00:00.000Z",
-    }), /safe capability error code/i);
+    for (const [id, errorCode] of [
+      ["check-secret", secret],
+      ["check-unknown", "unknown_snake_case"],
+    ] as const) {
+      assert.throws(() => store.writeCapabilityCheck({
+        id,
+        connectionId: "conn-1",
+        modelId: null,
+        protocol: "openai-responses",
+        status: "failed",
+        capabilities: {
+          tools: "unknown", artifactOutput: "unknown", structuredOutput: "unknown",
+          boundedExecution: "unknown", osIsolation: "unknown", streaming: "unknown",
+          usage: "unknown", cancellation: "unknown",
+        },
+        errorCode: errorCode as never,
+        checkedAt: "2026-08-11T00:00:00.000Z",
+      }), /safe capability error code/i);
+    }
     assert.equal(db.serialize().toString("utf8").includes(secret), false);
+    assert.equal(
+      (db.prepare("SELECT count(*) AS count FROM connection_capability_checks").get() as { count: number }).count,
+      0,
+    );
   } finally {
     db.close();
   }

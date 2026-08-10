@@ -83,6 +83,35 @@ export interface ProviderModel {
   source: "provider-api" | "runtime";
 }
 
+/** The closed operational error vocabulary safe to persist or expose for providers. */
+export const SAFE_PROVIDER_ERROR_CODES = [
+  "credential_rejected",
+  "credential_expired",
+  "provider_unreachable",
+  "model_discovery_unsupported",
+  "model_access_denied",
+  "endpoint_access_denied",
+  "rate_limited",
+  "secure_storage_unavailable",
+  "runtime_missing",
+  "runtime_version_unsupported",
+  "oauth_flow_expired",
+  "oauth_access_denied",
+  "oauth_metadata_invalid",
+  "protocol_unsupported",
+] as const;
+
+export type SafeProviderErrorCode = (typeof SAFE_PROVIDER_ERROR_CODES)[number];
+
+export interface SafeProviderError {
+  code: SafeProviderErrorCode;
+}
+
+export function isSafeProviderErrorCode(value: unknown): value is SafeProviderErrorCode {
+  return typeof value === "string" &&
+    (SAFE_PROVIDER_ERROR_CODES as readonly string[]).includes(value);
+}
+
 export interface CapabilityReport {
   id: string;
   connectionId: string;
@@ -90,7 +119,7 @@ export interface CapabilityReport {
   protocol: ProviderProtocol;
   status: "passed" | "failed";
   capabilities: ModelCapabilities;
-  errorCode: string | null;
+  errorCode: SafeProviderErrorCode | null;
   checkedAt: string;
 }
 
