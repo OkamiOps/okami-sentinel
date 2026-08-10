@@ -28,7 +28,7 @@ import type {
   StartScanRequest,
   UpdateFindingTriageRequest,
 } from "@csb/shared";
-import { purgeScanArtifacts } from "./activity.js";
+import { purgeScanArtifacts, readCliLogSnapshot } from "./activity.js";
 import { compareScans } from "./compare.js";
 import { getCodexInfo } from "./codex-info.js";
 import { CODEX_SECURITY_STATE_DIR } from "./config.js";
@@ -449,6 +449,16 @@ app.get("/scans/:id", async (c) => {
   return c.json({ scan: withProgress(run), findings });
 });
 
+app.get("/scans/:id/telemetry", (c) => {
+  const run = getRun(c.req.param("id"));
+  if (!run) return c.json({ error: "Scan não encontrado" }, 404);
+  const requested = Number(c.req.query("limit") ?? 500);
+  const limit = Number.isFinite(requested)
+    ? Math.max(1, Math.min(1_000, Math.trunc(requested)))
+    : 500;
+  return c.json(readCliLogSnapshot(run.scanDir, limit));
+});
+
 app.get("/scans/:id/report", async (c) => {
   await refreshOpenRouterPricing();
   const run = getRun(c.req.param("id"));
@@ -550,6 +560,10 @@ app.post("/scans/:id/cancel", (c) => {
 
 app.get("/scans/:id/events", (c) => {
   const id = c.req.param("id");
+  const requestedCursor = Number(c.req.query("after"));
+  const afterCursor = Number.isFinite(requestedCursor) && requestedCursor >= 0
+    ? Math.trunc(requestedCursor)
+    : undefined;
   return streamSSE(c, async (stream) => {
     let closed = false;
     const unsubscribe = subscribe(id, async (event) => {
@@ -562,7 +576,7 @@ app.get("/scans/:id/events", (c) => {
         closed = true;
         unsubscribe();
       }
-    });
+    }, afterCursor);
 
     stream.onAbort(() => {
       closed = true;

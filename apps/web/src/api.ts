@@ -72,6 +72,11 @@ export interface ScanReportData {
   generatedAt: string;
 }
 
+export interface ScanTelemetrySnapshot {
+  lines: string[];
+  cursor: number;
+}
+
 export const api = {
   health: () => request<HealthResponse>("/health"),
   scanners: () => request<ScannerCatalogResponse>("/scanners"),
@@ -80,6 +85,8 @@ export const api = {
   listScans: () => request<{ scans: ScanRun[] }>("/scans"),
   getScan: (id: string) =>
     request<{ scan: ScanRun; findings: FindingSummary[] }>(`/scans/${id}`),
+  getTelemetry: (id: string) =>
+    request<ScanTelemetrySnapshot>(`/scans/${id}/telemetry?limit=500`),
   report: (id: string) => request<ScanReportData>(`/scans/${id}/report`),
   getFinding: (scanId: string, findingId: string) =>
     request<{ finding: FindingDetail }>(`/scans/${scanId}/findings/${encodeURIComponent(findingId)}`),

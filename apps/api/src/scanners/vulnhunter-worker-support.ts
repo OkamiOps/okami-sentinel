@@ -17,41 +17,29 @@ const SNAPSHOT_EXCLUDES = new Set([
   "_VULNHUNT_RESULTS_",
 ]);
 
-const REQUIRED_PHASES = [
-  "phase1_recon.md",
-  "phase2_hunt.md",
-  "phase2_shared.md",
-  "phase2_class_inj.md",
-  "phase2_class_nav.md",
-  "phase2_class_log.md",
-  "phase2b_verify.md",
-  "phase3_reproduce_test.md",
-  "phase3c_fixes.md",
-  "phase3d_sweep.md",
-  "phase4_report.md",
-] as const;
-
 export interface VulnHunterStageSnapshot {
   id: "recon" | "hunt" | "verify" | "validation-notes" | "sweep" | "report";
   label: string;
   percent: number;
 }
 
-export function validVulnHunterSkillRoot(root: string): boolean {
-  return fs.existsSync(path.join(root, "SKILL.md"))
-    && REQUIRED_PHASES.every((name) => fs.existsSync(path.join(root, "phases", name)));
-}
+const VULNHUNTER_DEFENSIVE_ARTIFACTS = new Set([
+  "reconnaissance.md",
+  "trace-review.md",
+  "verification.md",
+  "validation-notes.md",
+  "coverage-sweep.md",
+  "README.md",
+  "sentinel-findings.json",
+]);
 
 export function assertVulnHunterNonOperationalArtifacts(resultsDir: string): void {
-  for (const directoryName of ["poc", "exploit_tests"]) {
-    const directory = path.join(resultsDir, directoryName);
-    if (!fs.existsSync(directory)) continue;
-    for (const file of listSnapshotFiles(directory)) {
-      if (path.relative(directory, file).replaceAll("\\", "/") !== "README.md") {
-        throw new Error(
-          `VulnHunter read-only boundary rejected operational artifact ${path.relative(resultsDir, file)}.`,
-        );
-      }
+  if (!fs.existsSync(resultsDir)) return;
+  for (const entry of fs.readdirSync(resultsDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !VULNHUNTER_DEFENSIVE_ARTIFACTS.has(entry.name)) {
+      throw new Error(
+        `VulnHunter read-only boundary rejected operational artifact ${entry.name}.`,
+      );
     }
   }
 }
@@ -142,37 +130,21 @@ function hasFile(root: string, name: string): boolean {
   return visit(root);
 }
 
-function completedHunt(resultsDir: string): boolean {
-  const partitionsDir = path.join(resultsDir, "partitions");
-  const findingsDir = path.join(resultsDir, "results");
-  if (!fs.existsSync(findingsDir)) return false;
-  const partitionIds = fs.existsSync(partitionsDir)
-    ? fs.readdirSync(partitionsDir)
-      .flatMap((name) => name.match(/^(sg-.+)_data\.md$/)?.[1] ?? [])
-    : [];
-  const classGroups = ["inj", "nav", "log"];
-  const partitionsComplete = partitionIds.every((id) =>
-    classGroups.every((group) => fs.existsSync(path.join(findingsDir, `${id}_${group}_results.md`)))
-  );
-  return partitionsComplete
-    && fs.existsSync(path.join(findingsDir, "sink_driven_results.md"));
-}
-
 export function inferVulnHunterStage(resultsDir: string): VulnHunterStageSnapshot {
-  if (hasFile(resultsDir, "phase3d_output.md") || hasFile(resultsDir, "sentinel-findings.json")) {
+  if (hasFile(resultsDir, "coverage-sweep.md") || hasFile(resultsDir, "sentinel-findings.json")) {
     return { id: "report", label: "Evidence report", percent: 92 };
   }
-  if (hasFile(resultsDir, "phase3_output.md")) {
+  if (hasFile(resultsDir, "validation-notes.md")) {
     return { id: "sweep", label: "Coverage sweep", percent: 78 };
   }
-  if (hasFile(resultsDir, "phase2b_output.md")) {
+  if (hasFile(resultsDir, "verification.md")) {
     return { id: "validation-notes", label: "Static validation notes", percent: 62 };
   }
-  if (completedHunt(resultsDir)) {
+  if (hasFile(resultsDir, "trace-review.md")) {
     return { id: "verify", label: "Candidate verification", percent: 45 };
   }
-  if (hasFile(resultsDir, "phase1_output.md")) {
-    return { id: "hunt", label: "Parallel vulnerability hunt", percent: 24 };
+  if (hasFile(resultsDir, "reconnaissance.md")) {
+    return { id: "hunt", label: "Static trace review", percent: 24 };
   }
   return { id: "recon", label: "Repository reconnaissance", percent: 8 };
 }

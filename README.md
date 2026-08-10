@@ -75,11 +75,11 @@ It is built for developers, DevSecOps engineers, security reviewers, and AI engi
 |---|---|---|---|---|
 | [`@openai/codex-security`](https://github.com/openai/codex-security) | Stable | ChatGPT/Codex subscription or OpenAI API key | `gpt-5.6-sol`, `gpt-5.6-terra` | Standard or deep scan; explicit USD ceiling supported |
 | [Google Mantis](https://github.com/google/mantis) | Preview | ChatGPT/Codex subscription | `gpt-5.6-sol`, `gpt-5.6-terra` | Nine deterministic scan-only stages on an immutable snapshot |
-| [Capital One VulnHunter](https://github.com/capitalone/vulnhunter) | Experimental | ChatGPT/Codex subscription | `gpt-5.6-sol` | Six-stage, agent-driven static review on an immutable snapshot; exploit payloads, PoC code, and exploit tests are neither generated nor executed |
+| [Capital One VulnHunter](https://github.com/capitalone/vulnhunter) | Experimental | ChatGPT/Codex subscription | `gpt-5.6-sol` | Six-stage, read-only static compatibility profile derived from the reviewed VulnHunter methodology |
 
 Mantis is fetched at a reviewed commit, cached locally, and invoked through a deterministic Sentinel adapter. Phase one deliberately excludes `mantis-reproduce`, `mantis-chain`, and `mantis-patch`: the adapter does not write to the target repository and does not execute generated exploit code. Raw Mantis state remains beside the normalized Sentinel evidence for auditability.
 
-VulnHunter is also fetched at a reviewed commit, but its upstream workflow is Claude-oriented. Sentinel runs the upstream agent-driven path as an experimental Codex port and confines inspection to a separate snapshot. The reproduction phase is replaced by non-operational validation notes, and a second isolated session only finalizes the defensive handoff—no exploit payloads, PoC code, or exploit tests are generated or executed. Retained findings are normalized into the same Inspector evidence contract used by the other engines.
+VulnHunter's upstream workflow is Claude-oriented and intentionally includes operational verification stages that can trigger provider cyber safeguards. Sentinel therefore records the reviewed upstream revision as provenance for its separately versioned local profile, but does **not** fetch or send the upstream skill or its phase prompts to Codex at runtime. Its experimental compatibility profile keeps the useful shape—reconnaissance, forward static traces, adversarial falsification, coverage sweep, and evidence-backed remediation—inside one read-only session over an immutable snapshot. Retained findings are normalized into the same Inspector evidence contract used by the other engines. Provider policy can still reject a repository review; when that happens Sentinel preserves the full run log and reports the Trusted Access requirement instead of pretending the scanner completed.
 
 > [!NOTE]
 > A ChatGPT subscription and OpenAI API billing are separate routes. Selecting **ChatGPT subscription** removes `OPENAI_API_KEY` and `CODEX_API_KEY` from the child process; selecting **API key** requires one of them in the API environment. Sentinel never silently falls from one route into the other.
@@ -95,7 +95,7 @@ flowchart LR
     ROUTER["Capability router\nengine + auth + model"]
     CODEXSEC["Codex Security adapter"]
     MANTIS["Mantis scan-only adapter\npinned skills + snapshot"]
-    VULNHUNTER["VulnHunter static adapter\npinned skill + multi-agent traces"]
+    VULNHUNTER["VulnHunter compatibility profile\nversioned locally + static traces"]
     GATE["Guardrail engine\npolicy + decision graph"]
     GH["GitHub Actions\nChecks + artifacts"]
 
@@ -286,10 +286,8 @@ See [localization architecture](docs/localization.md).
 | `MANTIS_SOURCE_REF` | Pinned reviewed commit | Exact Mantis revision used by new runs |
 | `MANTIS_CACHE_DIR` | `data/mantis-cache` | Local cache for the pinned Mantis skills |
 | `MANTIS_SKILLS_DIR` | unset | Optional pre-provisioned Mantis skill directory; must contain every required scan-only stage |
-| `VULNHUNTER_REPOSITORY_URL` | `https://github.com/capitalone/vulnhunter.git` | Reviewed VulnHunter source repository |
-| `VULNHUNTER_SOURCE_REF` | Pinned reviewed commit | Exact VulnHunter revision used by new runs |
-| `VULNHUNTER_CACHE_DIR` | `data/vulnhunter-cache` | Local cache for the pinned VulnHunter skill |
-| `VULNHUNTER_SKILL_DIR` | unset | Optional pre-provisioned VulnHunter skill root containing `SKILL.md` and every required phase |
+| `VULNHUNTER_REPOSITORY_URL` | `https://github.com/capitalone/vulnhunter.git` | VulnHunter source repository recorded as methodology provenance |
+| `VULNHUNTER_SOURCE_REF` | Reviewed commit label | VulnHunter methodology revision recorded as provenance; it is not fetched at runtime |
 | `CSB_HOST` | `127.0.0.1` | API bind address |
 | `CSB_PORT` | `8787` | API port |
 | `CSB_MAX_CONCURRENT_SCANS` | `8` | Maximum concurrent scanner processes |

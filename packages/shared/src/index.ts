@@ -402,6 +402,8 @@ export interface HealthResponse {
 export interface ScanEvent {
   type: "log" | "status" | "cost" | "done" | "error" | "progress";
   at: string;
+  /** Byte position in the persisted scan log after this message was appended. */
+  cursor?: number;
   message?: string;
   status?: ScanStatus;
   cost?: Partial<ScanCost>;

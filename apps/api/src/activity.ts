@@ -9,25 +9,69 @@ export function cliLogPath(scanDir: string): string {
   return path.join(RUNS_DIR, `${path.basename(scanDir)}.log`);
 }
 
-export function appendCliLog(scanDir: string, line: string): void {
+export interface CliLogSnapshot {
+  lines: string[];
+  cursor: number;
+}
+
+export interface CliLogEntry {
+  line: string;
+  cursor: number;
+}
+
+export function appendCliLog(scanDir: string, line: string): number {
   try {
     const file = cliLogPath(scanDir);
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
     fs.appendFileSync(file, `${line}\n`, "utf8");
+    return fs.statSync(file).size;
   } catch {
     // ignore disk errors
+    return 0;
+  }
+}
+
+export function readCliLogSnapshot(scanDir: string, maxLines = 250): CliLogSnapshot {
+  const file = cliLogPath(scanDir);
+  if (!fs.existsSync(file)) return { lines: [], cursor: 0 };
+  try {
+    const buffer = fs.readFileSync(file);
+    return {
+      lines: buffer.toString("utf8").split(/\r?\n/).filter(Boolean).slice(-maxLines),
+      cursor: buffer.byteLength,
+    };
+  } catch {
+    return { lines: [], cursor: 0 };
+  }
+}
+
+export function readCliLogSince(
+  scanDir: string,
+  afterCursor: number,
+  maxLines = 250,
+): CliLogEntry[] {
+  const file = cliLogPath(scanDir);
+  if (!fs.existsSync(file)) return [];
+  try {
+    const buffer = fs.readFileSync(file);
+    const start = Math.max(0, Math.min(Math.trunc(afterCursor), buffer.byteLength));
+    const segments = buffer.subarray(start).toString("utf8").split("\n");
+    const entries: CliLogEntry[] = [];
+    let cursor = start;
+    for (const segment of segments) {
+      if (!segment && cursor >= buffer.byteLength) continue;
+      cursor += Buffer.byteLength(segment, "utf8") + 1;
+      const line = segment.endsWith("\r") ? segment.slice(0, -1) : segment;
+      if (line) entries.push({ line, cursor: Math.min(cursor, buffer.byteLength) });
+    }
+    return entries.slice(-maxLines);
+  } catch {
+    return [];
   }
 }
 
 export function readCliLogTail(scanDir: string, maxLines = 250): string[] {
-  const file = cliLogPath(scanDir);
-  if (!fs.existsSync(file)) return [];
-  try {
-    const text = fs.readFileSync(file, "utf8");
-    return text.split(/\r?\n/).filter(Boolean).slice(-maxLines);
-  } catch {
-    return [];
-  }
+  return readCliLogSnapshot(scanDir, maxLines).lines;
 }
 
 export function purgeScanArtifacts(

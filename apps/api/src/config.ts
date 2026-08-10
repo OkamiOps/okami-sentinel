@@ -97,13 +97,13 @@ export const VULNHUNTER_REPOSITORY_URL =
   process.env.VULNHUNTER_REPOSITORY_URL?.trim() ||
   "https://github.com/capitalone/vulnhunter.git";
 
-/** Reviewed upstream revision. The Codex port is deliberately pinned for reproducibility. */
+/** Version of Sentinel's local, audited static compatibility profile. */
+export const VULNHUNTER_PROFILE_VERSION = "sentinel-static-v1";
+
+/** Methodology revision reviewed while authoring the local profile; not fetched at runtime. */
 export const VULNHUNTER_SOURCE_REF =
   process.env.VULNHUNTER_SOURCE_REF?.trim() ||
   "8f9eadd772f66160df445b65730e2fbd6ea50d73";
-
-export const VULNHUNTER_CACHE_DIR =
-  process.env.VULNHUNTER_CACHE_DIR?.trim() || path.join(DATA_DIR, "vulnhunter-cache");
 
 export const VULNHUNTER_WORKER_BIN =
   process.env.VULNHUNTER_WORKER_BIN?.trim() ||

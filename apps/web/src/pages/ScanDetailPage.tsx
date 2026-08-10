@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { formatActivityState, formatDate, formatProgressMetric, formatTokens, formatUsd, shortId } from "../format";
 import { attackPathHref } from "../lib/attack-path";
+import { appendTelemetryEvent, mergeTelemetrySnapshot, telemetrySnapshot } from "../lib/telemetry";
 import { useI18n } from "../i18n";
 
 type View = "evidence" | "telemetry" | "profile";
@@ -32,14 +33,14 @@ export function ScanDetailPage() {
   const [severity, setSeverity] = useState("");
   const [lifecycle, setLifecycle] = useState<FindingLifecycle | "">("");
   const [query, setQuery] = useState("");
-  const [logs, setLogs] = useState<string[]>([]);
+  const [telemetry, setTelemetry] = useState(() => telemetrySnapshot([], 0));
   const [error, setError] = useState<string | null>(null);
   const [baselineBusy, setBaselineBusy] = useState(false);
   const logRef = useRef<HTMLPreElement>(null);
-  async function load() { const [r, delta] = await Promise.all([api.getScan(id), api.regression(id)]); setScan(r.scan); setRegression(delta); setFindings(delta.findings); return r; }
-  useEffect(() => { setScan(null); setFindings([]); setRegression(null); setSelected(null); setSelectedSignal(null); setLogs([]); void load().then((r) => { setView(r.scan.status === "running" ? "telemetry" : "evidence"); }).catch((err) => setError(err instanceof Error ? err.message : "Falha ao carregar canal")); }, [id]);
-  useEffect(() => { if (!scan || scan.status !== "running") return; const es = new EventSource(`/api/scans/${id}/events`); const handler = (event: MessageEvent) => { try { const data = JSON.parse(String(event.data)) as ScanEvent; if (data.message) setLogs((old) => [...old.slice(-450), data.message!]); if (data.scan) setScan(data.scan); else if (data.progress) setScan((old) => old ? { ...old, progress: data.progress! } : old); if (data.type === "done") { void load(); es.close(); } } catch { /* malformed event */ } }; ["log", "status", "cost", "progress", "done", "error"].forEach((name) => es.addEventListener(name, handler)); const poll = window.setInterval(() => void load().catch(() => undefined), 4500); return () => { es.close(); window.clearInterval(poll); }; }, [id, scan?.status]);
-  useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, [logs]);
+  async function load() { const [r, delta, history] = await Promise.all([api.getScan(id), api.regression(id), api.getTelemetry(id)]); setScan(r.scan); setRegression(delta); setFindings(delta.findings); setTelemetry((current) => mergeTelemetrySnapshot(current, history.lines, history.cursor)); return r; }
+  useEffect(() => { setScan(null); setFindings([]); setRegression(null); setSelected(null); setSelectedSignal(null); setTelemetry(telemetrySnapshot([], 0)); void load().then((r) => { setView(r.scan.status === "running" ? "telemetry" : "evidence"); }).catch((err) => setError(err instanceof Error ? err.message : "Falha ao carregar canal")); }, [id]);
+  useEffect(() => { if (!scan || scan.status !== "running") return; const es = new EventSource(`/api/scans/${id}/events?after=${telemetry.cursor}`); const handler = (event: MessageEvent) => { try { const data = JSON.parse(String(event.data)) as ScanEvent; if (data.message) setTelemetry((old) => appendTelemetryEvent(old, data)); if (data.scan) setScan(data.scan); else if (data.progress) setScan((old) => old ? { ...old, progress: data.progress! } : old); if (data.type === "done") { void load(); es.close(); } } catch { /* malformed event */ } }; ["log", "status", "cost", "progress", "done", "error"].forEach((name) => es.addEventListener(name, handler)); const poll = window.setInterval(() => void load().catch(() => undefined), 4500); return () => { es.close(); window.clearInterval(poll); }; }, [id, scan?.status]);
+  useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, [telemetry.lines]);
   const filtered = useMemo(() => findings.filter((f) => (!severity || f.severity === severity) && (!lifecycle || f.lifecycle === lifecycle) && `${f.title} ${f.summary} ${f.primaryPath} ${f.category} ${f.cwe.join(" ")} ${f.lifecycle} ${f.triage.status}`.toLowerCase().includes(query.toLowerCase())), [findings, severity, lifecycle, query]);
   async function openFinding(f: LifecycleFinding, update = true) { try { const r = await api.getFinding(f.sourceScanId, f.findingId); setSelected(r.finding); setSelectedSignal(f); setView("evidence"); if (update) setParams({ f: f.findingId }, { replace: true }); } catch (err) { setError(err instanceof Error ? err.message : "Falha ao abrir evidência"); } }
   useEffect(() => { const fid = params.get("f"); const hit = findings.find((f) => f.findingId === fid); if (hit && (selected?.findingId !== fid || selectedSignal?.sourceScanId !== hit.sourceScanId)) void openFinding(hit, false); }, [findings, params]);
@@ -72,7 +73,7 @@ export function ScanDetailPage() {
     {error && <AlertBanner>{error}</AlertBanner>}
     <div className="mb-4 flex overflow-x-auto border border-border">{(["evidence", "telemetry", "profile"] as View[]).map((id, i) => <button key={id} type="button" onClick={() => setView(id)} className={cx("h-10 border-r px-4 font-mono text-[9px] uppercase tracking-wider", view === id ? "bg-accent text-primary" : "text-muted-foreground hover:text-foreground")}>0{i + 1} / {id}</button>)}</div>
     {view === "evidence" && <EvidenceWorkbench scan={scan} findings={filtered} allFindings={findings} selected={selected} selectedSignal={selectedSignal} query={query} severity={severity} lifecycle={lifecycle} onQuery={setQuery} onSeverity={setSeverity} onLifecycle={setLifecycle} onOpen={(f) => void openFinding(f)} onSaveTriage={saveTriage} />}
-    {view === "telemetry" && <Telemetry scan={scan} logs={logs} logRef={logRef} />}
+    {view === "telemetry" && <Telemetry scan={scan} logs={telemetry.lines} logRef={logRef} />}
     {view === "profile" && <Profile scan={scan} />}
   </div>;
 }

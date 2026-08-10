@@ -6,7 +6,6 @@ import { CODEX_BIN } from "../config.js";
 import { createResilientLineWriter } from "./mantis-runtime.js";
 import { normalizeVulnHunterWorkspace } from "./vulnhunter-normalize.js";
 import {
-  buildVulnHunterFinalizationPrompt,
   buildVulnHunterPrompt,
   summarizeVulnHunterEvent,
   VULNHUNTER_CODEX_ISOLATION_ARGS,
@@ -18,7 +17,6 @@ import {
   assertVulnHunterNonOperationalArtifacts,
   createVulnHunterSnapshot,
   inferVulnHunterStage,
-  validVulnHunterSkillRoot,
 } from "./vulnhunter-worker-support.js";
 
 let currentChild: ChildProcess | null = null;
@@ -43,52 +41,6 @@ function progress(
       findings: runtime.findings,
     })}`,
   );
-}
-
-function run(command: string, args: string[], cwd: string): void {
-  const result = spawnSync(command, args, {
-    cwd,
-    env: process.env,
-    encoding: "utf8",
-    timeout: 5 * 60_000,
-    maxBuffer: 8 * 1024 * 1024,
-  });
-  if (result.status !== 0) {
-    throw new Error(
-      `${command} ${args.join(" ")} failed: ${(result.stderr || result.stdout || "unknown error").trim()}`,
-    );
-  }
-}
-
-function ensureVulnHunterSource(config: VulnHunterRunConfiguration): string {
-  const configured = process.env.VULNHUNTER_SKILL_DIR?.trim();
-  if (configured) {
-    const skillRoot = path.resolve(configured);
-    if (!validVulnHunterSkillRoot(skillRoot)) {
-      throw new Error(`VULNHUNTER_SKILL_DIR is incomplete: ${skillRoot}`);
-    }
-    return skillRoot;
-  }
-
-  fs.mkdirSync(config.source.cacheDir, { recursive: true, mode: 0o700 });
-  const stableDir = path.join(config.source.cacheDir, config.source.ref.slice(0, 12));
-  const stableSkillRoot = path.join(stableDir, "vulnhunt");
-  if (validVulnHunterSkillRoot(stableSkillRoot)) return stableSkillRoot;
-
-  const checkoutDir = `${stableDir}.checkout-${process.pid}-${Date.now()}`;
-  log(`[vulnhunter/bootstrap] Fetching reviewed source ${config.source.ref.slice(0, 12)}.`);
-  run(
-    "git",
-    ["clone", "--filter=blob:none", "--no-checkout", config.source.repositoryUrl, checkoutDir],
-    config.source.cacheDir,
-  );
-  run("git", ["-C", checkoutDir, "checkout", "--detach", config.source.ref], config.source.cacheDir);
-  const checkoutSkillRoot = path.join(checkoutDir, "vulnhunt");
-  if (!validVulnHunterSkillRoot(checkoutSkillRoot)) {
-    throw new Error("Fetched VulnHunter source is missing the reviewed skill phases.");
-  }
-  if (!fs.existsSync(stableDir)) fs.renameSync(checkoutDir, stableDir);
-  return validVulnHunterSkillRoot(stableSkillRoot) ? stableSkillRoot : checkoutSkillRoot;
 }
 
 function gitValue(repositoryPath: string, args: string[]): string | null {
@@ -141,7 +93,6 @@ function updateArtifactStage(
 
 async function runVulnHunter(
   config: VulnHunterRunConfiguration,
-  skillRoot: string,
   snapshotRoot: string,
   resultsDir: string,
   branchLabel: string,
@@ -151,7 +102,6 @@ async function runVulnHunter(
   const logDir = path.join(config.outputDir, "vulnhunter-logs");
   fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
   const prompt = buildVulnHunterPrompt({
-    skillPath: path.join(skillRoot, "SKILL.md"),
     snapshotRoot,
     resultsDir,
     branchLabel,
@@ -159,28 +109,7 @@ async function runVulnHunter(
     model: config.model,
     scopePaths: config.paths,
   });
-  await runCodexSession(config, stateRoot, resultsDir, prompt, "scan.jsonl", true);
-}
-
-async function runVulnHunterFinalization(
-  config: VulnHunterRunConfiguration,
-  snapshotRoot: string,
-  resultsDir: string,
-): Promise<void> {
-  const stateRoot = path.dirname(resultsDir);
-  const prompt = buildVulnHunterFinalizationPrompt({
-    snapshotRoot,
-    resultsDir,
-    scopePaths: config.paths,
-  });
-  await runCodexSession(
-    config,
-    stateRoot,
-    resultsDir,
-    prompt,
-    "finalization.jsonl",
-    false,
-  );
+  await runCodexSession(config, stateRoot, resultsDir, prompt, "scan.jsonl", false);
 }
 
 async function runCodexSession(
@@ -278,6 +207,14 @@ async function runCodexSession(
       if (cancelled) reject(new Error("VulnHunter scan cancelled."));
       else if (code === 0) resolve();
       else {
+        const policyBlocked = fatalMessage?.includes("Trusted Access for Cyber")
+          || fatalMessage?.includes("flagged for possible cybersecurity risk");
+        if (policyBlocked) {
+          reject(new Error(
+            "OpenAI policy blocked the VulnHunter static profile. The run log was preserved and no target code was executed. This account may require Trusted Access for Cyber: https://chatgpt.com/cyber",
+          ));
+          return;
+        }
         const detail = fatalMessage ? `: ${fatalMessage}` : ".";
         reject(new Error(`VulnHunter Codex session failed with exit ${code}${detail}`));
       }
@@ -300,12 +237,13 @@ async function main(): Promise<void> {
     stage: "bootstrap",
     stageLabel: "VulnHunter bootstrap",
     percent: 2,
-    detail: "verifying the pinned upstream skill",
+    detail: "preparing the audited static methodology profile",
     startedAt,
     updatedAt: startedAt,
     completedAt: null,
     snapshotId: null,
-    sourceRef: config.source.ref,
+    sourceRef: config.profileVersion,
+    methodologyRef: config.source.ref,
     findings: 0,
     usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
     error: null,
@@ -313,7 +251,6 @@ async function main(): Promise<void> {
   writeVulnHunterRuntime(config.outputDir, runtime);
 
   const metadata = scanMetadata(config.repositoryPath);
-  const skillRoot = ensureVulnHunterSource(config);
   progress(config, { percent: 5, detail: "creating an immutable source snapshot" });
   const { snapshotRoot, snapshotId } = createVulnHunterSnapshot(
     config.repositoryPath,
@@ -327,28 +264,20 @@ async function main(): Promise<void> {
     stage: "recon",
     stageLabel: "Repository reconnaissance",
     percent: 8,
-    detail: "snapshot pinned; starting agent-driven static analysis",
+    detail: "snapshot pinned; starting the audited static methodology profile",
     snapshotId,
   });
 
-  try {
-    await runVulnHunter(
-      config,
-      skillRoot,
-      snapshotRoot,
-      resultsDir,
-      metadata.branchLabel,
-      metadata.repositoryUrl,
-    );
-  } catch (error) {
-    if (cancelled || !fs.existsSync(path.join(resultsDir, "phase3d_output.md"))) throw error;
-    log(
-      `[vulnhunter/report] Analysis artifacts are complete; continuing with the isolated defensive finalizer after: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
+  await runVulnHunter(
+    config,
+    snapshotRoot,
+    resultsDir,
+    metadata.branchLabel,
+    metadata.repositoryUrl,
+  );
   assertVulnHunterNonOperationalArtifacts(resultsDir);
-  if (!fs.existsSync(path.join(resultsDir, "phase3d_output.md"))) {
-    throw new Error("VulnHunter completed without the required phase3d_output.md sweep.");
+  if (!fs.existsSync(path.join(resultsDir, "coverage-sweep.md"))) {
+    throw new Error("VulnHunter completed without the required coverage-sweep.md artifact.");
   }
   progress(config, {
     stage: "report",
@@ -356,10 +285,6 @@ async function main(): Promise<void> {
     percent: 92,
     detail: "assembling verified static evidence for Sentinel",
   });
-  if (!fs.existsSync(path.join(resultsDir, "sentinel-findings.json"))) {
-    await runVulnHunterFinalization(config, snapshotRoot, resultsDir);
-  }
-  assertVulnHunterNonOperationalArtifacts(resultsDir);
   if (!fs.existsSync(path.join(resultsDir, "sentinel-findings.json"))) {
     throw new Error("VulnHunter completed without the required sentinel-findings.json handoff.");
   }
@@ -398,11 +323,22 @@ process.on("SIGTERM", () => {
 });
 
 void main().catch((error) => {
-  const message = error instanceof Error ? error.message : String(error);
+  let message = error instanceof Error ? error.message : String(error);
   if (runtime && outputDirForSignal) {
     let recoveredFindings = runtime.findings;
     const resultsDir = path.join(outputDirForSignal, "vulnhunter", "results");
-    if (fs.existsSync(path.join(resultsDir, "sentinel-findings.json"))) {
+    let artifactsAreDefensive = true;
+    try {
+      assertVulnHunterNonOperationalArtifacts(resultsDir);
+    } catch (boundaryError) {
+      artifactsAreDefensive = false;
+      const boundaryMessage = boundaryError instanceof Error
+        ? boundaryError.message
+        : String(boundaryError);
+      message = `${boundaryMessage} Original session error: ${message}`;
+      log(`[vulnhunter/safety] ${boundaryMessage}`);
+    }
+    if (artifactsAreDefensive && fs.existsSync(path.join(resultsDir, "sentinel-findings.json"))) {
       try {
         recoveredFindings = normalizeVulnHunterWorkspace(resultsDir, outputDirForSignal);
         if (recoveredFindings > 0) {

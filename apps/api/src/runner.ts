@@ -19,6 +19,7 @@ import {
   appendCliLog,
   findPidsForScanDir,
   processAlive,
+  readCliLogSince,
   readCliLogTail,
   readDetachedActivity,
 } from "./activity.js";
@@ -61,9 +62,12 @@ const detached = new Map<string, DetachedWatch>();
 
 function emit(scan: ActiveScan, event: Omit<ScanEvent, "at"> & { at?: string }): void {
   const full: ScanEvent = { ...event, at: event.at ?? new Date().toISOString() };
+  if (full.message) {
+    const cursor = appendCliLog(scan.scanDir, full.message);
+    if (cursor > 0) full.cursor = cursor;
+  }
   scan.logBuffer.push(full);
   if (scan.logBuffer.length > 500) scan.logBuffer.shift();
-  if (full.message) appendCliLog(scan.scanDir, full.message);
   for (const listener of scan.listeners) listener(full);
 }
 
@@ -88,17 +92,25 @@ export function isScanActive(id: string): boolean {
   return active.has(id) || detached.has(id);
 }
 
-export function subscribe(scanId: string, listener: Listener): () => void {
+export function subscribe(
+  scanId: string,
+  listener: Listener,
+  afterCursor?: number,
+): () => void {
   const scan = active.get(scanId);
   if (scan) {
-    for (const past of scan.logBuffer) listener(past);
+    for (const past of scan.logBuffer) {
+      if (afterCursor === undefined || (past.cursor !== undefined && past.cursor > afterCursor)) {
+        listener(past);
+      }
+    }
     scan.listeners.add(listener);
     return () => scan.listeners.delete(listener);
   }
 
   const run = getRun(scanId);
   if (run?.status === "running") {
-    return subscribeDetached(scanId, run, listener);
+    return subscribeDetached(scanId, run, listener, afterCursor);
   }
 
   listener({
@@ -135,39 +147,48 @@ function subscribeDetached(
   scanId: string,
   run: ScanRun,
   listener: Listener,
+  afterCursor?: number,
 ): () => void {
   const enriched = withProgress(run);
-  listener({
-    type: "status",
-    at: new Date().toISOString(),
-    status: "running",
-    message:
-      "Scan ainda rodando, mas o stream stdout foi perdido no restart da API. " +
-      "Mostrando progresso/atividade do workbench" +
-      (readCliLogTail(run.scanDir, 1).length ? " + log gravado em disco." : "."),
-    scan: enriched,
-    progress: enriched.progress ?? undefined,
-  });
+  if (afterCursor === undefined) {
+    listener({
+      type: "status",
+      at: new Date().toISOString(),
+      status: "running",
+      message:
+        "Scan ainda rodando, mas o stream stdout foi perdido no restart da API. " +
+        "Mostrando progresso/atividade do workbench" +
+        (readCliLogTail(run.scanDir, 1).length ? " + log gravado em disco." : "."),
+      scan: enriched,
+      progress: enriched.progress ?? undefined,
+    });
+  }
 
-  for (const line of readCliLogTail(run.scanDir)) {
+  const restored = afterCursor === undefined
+    ? readCliLogTail(run.scanDir).map((line) => ({ line, cursor: undefined }))
+    : readCliLogSince(run.scanDir, afterCursor);
+  for (const entry of restored) {
     listener({
       type: "log",
       at: new Date().toISOString(),
-      message: line,
+      message: entry.line,
+      cursor: entry.cursor,
     });
   }
 
   let watch = detached.get(scanId);
+  let created = false;
   if (!watch) {
+    created = true;
     watch = {
       id: scanId,
       listeners: new Set(),
       timer: setInterval(() => tickDetached(scanId), 3000),
     };
     detached.set(scanId, watch);
-    tickDetached(scanId);
   }
   watch.listeners.add(listener);
+  if (created) tickDetached(scanId);
   return () => {
     watch!.listeners.delete(listener);
     if (watch!.listeners.size === 0) {
@@ -228,8 +249,8 @@ function tickDetached(scanId: string): void {
   if (activity.length && activityKey !== watch.lastActivityKey) {
     watch.lastActivityKey = activityKey;
     for (const line of activity.slice(-4)) {
-      emitDetached(watch, { type: "log", message: line });
-      appendCliLog(latest.scanDir, line);
+      const cursor = appendCliLog(latest.scanDir, line);
+      emitDetached(watch, { type: "log", message: line, cursor: cursor || undefined });
     }
   }
 }

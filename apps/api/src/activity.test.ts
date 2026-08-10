@@ -8,6 +8,7 @@ import {
   appendCliLog,
   cliLogPath,
   purgeScanArtifacts,
+  readCliLogSnapshot,
   readCliLogTail,
 } from "./activity.js";
 
@@ -21,6 +22,26 @@ test("persists runtime telemetry without writing into the scanner output directo
 
     assert.deepEqual(fs.readdirSync(scanDir), []);
     assert.deepEqual(readCliLogTail(scanDir), ["scan started"]);
+  } finally {
+    fs.rmSync(cliLogPath(scanDir), { force: true });
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("returns a byte cursor with the persisted telemetry snapshot", () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "csb-activity-cursor-"));
+  const scanDir = path.join(fixtureRoot, "csb-test-scan");
+  fs.mkdirSync(scanDir);
+
+  try {
+    const firstCursor = appendCliLog(scanDir, "repeated event");
+    const secondCursor = appendCliLog(scanDir, "repeated event");
+    const snapshot = readCliLogSnapshot(scanDir, 500);
+
+    assert.ok(firstCursor > 0);
+    assert.ok(secondCursor > firstCursor);
+    assert.equal(snapshot.cursor, secondCursor);
+    assert.deepEqual(snapshot.lines, ["repeated event", "repeated event"]);
   } finally {
     fs.rmSync(cliLogPath(scanDir), { force: true });
     fs.rmSync(fixtureRoot, { recursive: true, force: true });

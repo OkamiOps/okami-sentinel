@@ -17,7 +17,7 @@ import {
   MANTIS_WORKER_BIN,
   MANTIS_WORKER_ENTRY,
   ROOT_DIR,
-  VULNHUNTER_CACHE_DIR,
+  VULNHUNTER_PROFILE_VERSION,
   VULNHUNTER_REPOSITORY_URL,
   VULNHUNTER_SOURCE_REF,
   VULNHUNTER_WORKER_BIN,
@@ -183,10 +183,10 @@ function prepareVulnHunter(input: ScannerLaunchInput): ScannerLaunch {
     effort: input.effort,
     paths: (input.request.paths ?? []).map((item) => item.trim()).filter(Boolean),
     readOnly: true,
+    profileVersion: VULNHUNTER_PROFILE_VERSION,
     source: {
       repositoryUrl: VULNHUNTER_REPOSITORY_URL,
       ref: VULNHUNTER_SOURCE_REF,
-      cacheDir: VULNHUNTER_CACHE_DIR,
     },
   };
   const configPath = path.join(input.outputDir, "vulnhunter-run.json");
@@ -201,14 +201,14 @@ function prepareVulnHunter(input: ScannerLaunchInput): ScannerLaunch {
     effort: input.effort,
     mode: input.mode,
     paths: configuration.paths,
-    scannerVersion: VULNHUNTER_SOURCE_REF,
+    scannerVersion: VULNHUNTER_PROFILE_VERSION,
   });
   const args = [VULNHUNTER_WORKER_ENTRY, configPath];
   return {
     engine: "vulnhunter",
     authMode,
     provider: "openai",
-    scannerVersion: VULNHUNTER_SOURCE_REF,
+    scannerVersion: VULNHUNTER_PROFILE_VERSION,
     recipeHash: hash,
     command: VULNHUNTER_WORKER_BIN,
     args,
