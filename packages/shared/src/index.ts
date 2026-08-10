@@ -52,6 +52,67 @@ export type ProviderProtocol =
 
 export type ModelSelectionMode = "catalog" | "runtime-default";
 
+export type CapabilityState = "supported" | "unsupported" | "unknown";
+
+export interface ModelCapabilities {
+  tools: CapabilityState;
+  artifactOutput: CapabilityState;
+  structuredOutput: CapabilityState;
+  boundedExecution: CapabilityState;
+  osIsolation: CapabilityState;
+  streaming: CapabilityState;
+  usage: CapabilityState;
+  cancellation: CapabilityState;
+}
+
+/** Normalized USD prices reported by a provider, per one million tokens. */
+export interface ModelPricing {
+  inputUsdPerMillionTokens: number | null;
+  cachedInputUsdPerMillionTokens: number | null;
+  outputUsdPerMillionTokens: number | null;
+}
+
+export interface ProviderModel {
+  connectionId: string;
+  id: string;
+  displayName: string;
+  contextWindow: number | null;
+  capabilities: ModelCapabilities;
+  pricing: ModelPricing | null;
+  discoveredAt: string;
+  source: "provider-api" | "runtime";
+}
+
+export interface CapabilityReport {
+  id: string;
+  connectionId: string;
+  modelId: string | null;
+  protocol: ProviderProtocol;
+  status: "passed" | "failed";
+  capabilities: ModelCapabilities;
+  errorCode: string | null;
+  checkedAt: string;
+}
+
+export interface ScanConnectionSelection {
+  connectionId: string;
+  modelSelectionMode: ModelSelectionMode;
+  modelId: string | null;
+}
+
+export interface ScanConnectionSnapshot extends ScanConnectionSelection {
+  scanId: string;
+  routeKind: string;
+  capabilityCheckId: string | null;
+  capturedAt: string;
+}
+
+/** A stable server-resolved eligibility result for one connection/model pair. */
+export interface ConnectionCompatibility extends ScanConnectionSelection {
+  eligible: boolean;
+  reasons: string[];
+}
+
 export type ConnectionStatus =
   | "draft"
   | "authentication-required"
@@ -85,6 +146,7 @@ export interface ProviderConnection {
   defaultModelId: string | null;
   lastTestedAt: string | null;
   lastModelSyncAt: string | null;
+  modelCatalogStale: boolean;
   display: ConnectionDisplay;
 }
 

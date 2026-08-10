@@ -8,7 +8,9 @@ import type {
   CreateProviderConnectionRequest,
   ModelSelectionMode,
   ProviderConnection,
+  ProviderModel,
   ProviderProtocol,
+  ScanConnectionSelection,
   UpdateProviderConnectionRequest,
 } from "@csb/shared";
 import {
@@ -80,6 +82,10 @@ const CREATE_KEYS = new Set([
 
 export type ConnectionErrorCode =
   | "invalid_connection"
+  | "invalid_model_selection"
+  | "model_not_found"
+  | "model_catalog_stale"
+  | "model_discovery_unsupported"
   | "connection_not_found"
   | "connection_write_failed"
   | "connection_state_inconsistent"
@@ -115,6 +121,54 @@ export interface ConnectionsServiceDependencies {
   vault: CredentialVault;
   store?: ConnectionsStore;
   recovery?: ConnectionRecoverySink;
+}
+
+/** Facts obtained server-side from the selected route adapter and model store. */
+export interface ScanConnectionSelectionFacts {
+  transport: ConnectionTransport;
+  supportsRuntimeDefault: boolean;
+  model?: ProviderModel | null;
+  modelCatalogStale?: boolean;
+  modelDiscoverySupported?: boolean;
+}
+
+export function validateScanConnectionSelection(
+  selection: ScanConnectionSelection,
+  facts: ScanConnectionSelectionFacts,
+): void {
+  if (!isPlainDataRecord(selection) || !isPlainDataRecord(facts)) {
+    throw new ConnectionServiceError("invalid_model_selection");
+  }
+  if (
+    typeof selection.connectionId !== "string" ||
+    selection.connectionId.length === 0 ||
+    (selection.modelSelectionMode !== "catalog" && selection.modelSelectionMode !== "runtime-default")
+  ) throw new ConnectionServiceError("invalid_model_selection");
+
+  if (selection.modelSelectionMode === "runtime-default") {
+    if (
+      selection.modelId !== null ||
+      facts.transport === "http-inference" ||
+      facts.supportsRuntimeDefault !== true
+    ) throw new ConnectionServiceError("invalid_model_selection");
+    return;
+  }
+
+  if (typeof selection.modelId !== "string" || selection.modelId.length === 0) {
+    throw new ConnectionServiceError("invalid_model_selection");
+  }
+  if (facts.modelDiscoverySupported === false) {
+    throw new ConnectionServiceError("model_discovery_unsupported");
+  }
+  if (facts.modelCatalogStale === true) {
+    throw new ConnectionServiceError("model_catalog_stale");
+  }
+  if (
+    facts.model === null ||
+    facts.model === undefined ||
+    facts.model.connectionId !== selection.connectionId ||
+    facts.model.id !== selection.modelId
+  ) throw new ConnectionServiceError("model_not_found");
 }
 
 export type ConnectionInconsistencyOperation =
@@ -397,6 +451,7 @@ function makeStoredConnection(
     defaultModelId: null,
     lastTestedAt: null,
     lastModelSyncAt: null,
+    modelCatalogStale: false,
     display,
     credentialRef,
   };

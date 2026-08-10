@@ -17,6 +17,7 @@ import {
   createConnectionsService,
   listConnectionRecoveryRecords,
   type ConnectionsStore,
+  validateScanConnectionSelection,
 } from "./connections-service.js";
 import type {
   ConnectionSecretBundle,
@@ -150,6 +151,47 @@ test("permits an existing local CLI session without a vault secret", async () =>
   } finally {
     db.close();
   }
+});
+
+test("runtime-default is rejected for an HTTP connection", () => {
+  assert.throws(() => validateScanConnectionSelection({
+    connectionId: "conn-http",
+    modelSelectionMode: "runtime-default",
+    modelId: null,
+  }, {
+    transport: "http-inference",
+    supportsRuntimeDefault: false,
+  }), { code: "invalid_model_selection" });
+});
+
+test("catalog selection requires a live model from the selected connection", () => {
+  assert.throws(() => validateScanConnectionSelection({
+    connectionId: "conn-a",
+    modelSelectionMode: "catalog",
+    modelId: "model-owned-by-conn-b",
+  }, {
+    transport: "http-inference",
+    supportsRuntimeDefault: false,
+    model: {
+      connectionId: "conn-b",
+      id: "model-owned-by-conn-b",
+      displayName: "Model B",
+      contextWindow: null,
+      capabilities: {
+        tools: "unknown",
+        artifactOutput: "unknown",
+        structuredOutput: "unknown",
+        boundedExecution: "unknown",
+        osIsolation: "unknown",
+        streaming: "unknown",
+        usage: "unknown",
+        cancellation: "unknown",
+      },
+      pricing: null,
+      discoveredAt: "2026-08-11T00:00:00.000Z",
+      source: "provider-api",
+    },
+  }), { code: "model_not_found" });
 });
 
 test("requires a validated secret bundle for HTTP inference", async () => {
