@@ -80,6 +80,17 @@ input.on("line", (line) => {
       turn: request.params,
     }));
     send({ id: request.id, result: { turn: { id: "turn-1", status: "inProgress" } } });
+    const environmentDisabled =
+      (Array.isArray(threadParams?.environments) && threadParams.environments.length === 0) ||
+      (Array.isArray(request.params.environments) && request.params.environments.length === 0);
+    if (environmentDisabled) {
+      send({ method: "turn/completed", params: { threadId: "thread-1", turn: {
+        id: "turn-1",
+        status: "completed",
+        error: null
+      } } });
+      return;
+    }
     if (!writeArtifacts(prompt)) return;
     send({ method: "turn/started", params: { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress" } } });
     send({ method: "rawResponse/completed", params: {
@@ -180,11 +191,11 @@ process.on("SIGTERM", () => process.exit(0));
     assert.ok(invocation.includes("--stdio"));
     assert.ok(invocation.includes("hooks"));
     assert.ok(invocation.includes("memories"));
-    assert.deepEqual(rpcInvocation.thread.environments, []);
+    assert.equal("environments" in rpcInvocation.thread, false);
     assert.deepEqual(rpcInvocation.thread.dynamicTools, []);
     assert.deepEqual(rpcInvocation.thread.selectedCapabilityRoots, []);
     assert.deepEqual(rpcInvocation.thread.runtimeWorkspaceRoots, [path.join(outputDir, "vulnhunter")]);
-    assert.deepEqual(rpcInvocation.turn.environments, []);
+    assert.equal("environments" in rpcInvocation.turn, false);
     assert.deepEqual(rpcInvocation.turn.runtimeWorkspaceRoots, [path.join(outputDir, "vulnhunter")]);
     assert.match(String(rpcInvocation.thread.developerInstructions), /Ignore any AGENTS\.md/);
     assert.equal(fs.existsSync(path.join(outputDir, "vulnhunter-snapshot", "src", "app.ts")), true);
