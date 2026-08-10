@@ -11,7 +11,10 @@ import {
   explicitAuthEnvironment,
   prepareScannerLaunch,
 } from "./scanners/launch.js";
-import { normalizeMantisWorkspace } from "./scanners/mantis-normalize.js";
+import {
+  normalizeMantisFinding,
+  normalizeMantisWorkspace,
+} from "./scanners/mantis-normalize.js";
 import { refreshMantisRunFromDisk } from "./scanners/mantis-reconcile.js";
 import {
   createResilientLineWriter,
@@ -166,8 +169,16 @@ test("Mantis normalization keeps reportable evidence and preserves raw pipeline 
   const stateRoot = path.join(fixtureRoot, "state");
   const outputDir = path.join(fixtureRoot, "output");
   const findingsDir = path.join(stateRoot, "workspace", "findings");
+  const snapshotDir = path.join(outputDir, "mantis-snapshot", "src");
   fs.mkdirSync(findingsDir, { recursive: true });
   fs.mkdirSync(outputDir);
+  fs.mkdirSync(snapshotDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(snapshotDir, "auth.ts"),
+    Array.from({ length: 14 }, (_, index) =>
+      index === 9 ? "return db.users.findMany();" : `// line ${index + 1}`
+    ).join("\n"),
+  );
 
   fs.writeFileSync(
     path.join(findingsDir, "valid.json"),
@@ -181,6 +192,12 @@ test("Mantis normalization keeps reportable evidence and preserves raw pipeline 
       code_paths: ["src/auth.ts:10-12"],
       cwe: "CWE-862",
       mitigation: "Enforce the tenant boundary before data access.",
+      reasoning: "The handler reads all tenants without an ownership predicate.",
+      critic_reasoning: "Independent review confirmed the production route is reachable.",
+      attacker_position: "EXTERNAL",
+      privileges_required: "LOW",
+      user_interaction: "NONE",
+      impact: "A tenant can enumerate records owned by other tenants.",
     }),
   );
   fs.writeFileSync(
@@ -206,7 +223,66 @@ test("Mantis normalization keeps reportable evidence and preserves raw pipeline 
       level: "high",
       rationale: null,
     });
+    assert.deepEqual(payload.findings[0]?.rootCause, {
+      summary: "The handler reads all tenants without an ownership predicate.",
+    });
+    assert.deepEqual(payload.findings[0]?.validation, {
+      status: "VALID",
+      summary: "The handler reads all tenants without an ownership predicate.",
+      method: "Mantis review: VALID · production viability: VIABLE",
+      productionViability: "VIABLE",
+      supportingEvidence: [
+        "Independent review confirmed the production route is reachable.",
+      ],
+    });
+    assert.deepEqual(payload.findings[0]?.codeEvidence, [{
+      id: "evidence-1",
+      label: "Evidence at src/auth.ts:10–12",
+      path: "src/auth.ts",
+      startLine: 10,
+      endLine: 12,
+      lines: "10-12",
+      role: "evidence",
+      code: "return db.users.findMany();\n// line 11\n// line 12",
+      language: "typescript",
+      explanation: "The handler reads all tenants without an ownership predicate. Independent review confirmed the production route is reachable.",
+    }]);
+    assert.deepEqual(payload.findings[0]?.attackPath, {
+      summary: "The handler reads all tenants without an ownership predicate.",
+      evidenceRefs: ["evidence-1"],
+      reachability: {
+        attacker: "EXTERNAL",
+        preconditions: "Privileges required: LOW · user interaction: NONE",
+      },
+      dataflow: {
+        summary: "The handler reads all tenants without an ownership predicate.",
+        outcome: "A tenant can enumerate records owned by other tenants.",
+        evidenceRefs: ["evidence-1"],
+      },
+    });
     assert.equal(fs.existsSync(path.join(findingsDir, "false-positive.json")), true);
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("Mantis evidence hydration cannot read outside the immutable snapshot", () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-mantis-evidence-"));
+  const snapshotRoot = path.join(fixtureRoot, "snapshot");
+  fs.mkdirSync(snapshotRoot);
+  fs.writeFileSync(path.join(fixtureRoot, "secret.ts"), "do-not-expose");
+
+  try {
+    const normalized = normalizeMantisFinding({
+      id: "escape-attempt",
+      title: "Unsafe evidence locator",
+      severity: "HIGH",
+      status: "VALID",
+      code_paths: ["../secret.ts:1"],
+    }, snapshotRoot) as { codeEvidence: Array<{ code: string | null }> };
+
+    assert.equal(normalized.codeEvidence[0]?.code, null);
+    assert.equal(JSON.stringify(normalized).includes("do-not-expose"), false);
   } finally {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }

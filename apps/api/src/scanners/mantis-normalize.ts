@@ -19,9 +19,20 @@ export interface MantisFindingRecord extends Record<string, unknown> {
   cwe?: string;
   signature?: string;
   discovery_commit?: string;
+  attacker_position?: string;
+  privileges_required?: string;
+  user_interaction?: string;
 }
 
-function parseLocation(locator: string): Record<string, unknown> {
+interface MantisLocation extends Record<string, unknown> {
+  path: string;
+  startLine?: number;
+  endLine?: number;
+  lines?: string;
+  role: "primary";
+}
+
+function parseLocation(locator: string): MantisLocation {
   const match = locator.match(/^(.*):(\d+)(?:-(\d+))?$/);
   if (!match) return { path: locator, role: "primary" };
   const startLine = Number(match[2]);
@@ -33,6 +44,80 @@ function parseLocation(locator: string): Record<string, unknown> {
     lines: startLine === endLine ? String(startLine) : `${startLine}-${endLine}`,
     role: "primary",
   };
+}
+
+function text(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function languageForPath(filePath: string): string {
+  const extension = path.extname(filePath).toLowerCase();
+  return ({
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".py": "python",
+    ".go": "go",
+    ".rs": "rust",
+    ".java": "java",
+    ".rb": "ruby",
+    ".php": "php",
+    ".sql": "sql",
+    ".sh": "shell",
+    ".yml": "yaml",
+    ".yaml": "yaml",
+    ".json": "json",
+    ".xml": "xml",
+    ".html": "html",
+    ".css": "css",
+    ".scss": "scss",
+    ".md": "markdown",
+    ".toml": "toml",
+  } as Record<string, string>)[extension] ?? "text";
+}
+
+function sourceSnippet(snapshotRoot: string | null, location: MantisLocation): string | null {
+  if (!snapshotRoot || location.startLine == null) return null;
+  let root: string;
+  try {
+    root = fs.realpathSync(snapshotRoot);
+  } catch {
+    return null;
+  }
+  const target = path.resolve(root, location.path);
+  const relative = path.relative(root, target);
+  if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    return null;
+  }
+  try {
+    const realTarget = fs.realpathSync(target);
+    const realRelative = path.relative(root, realTarget);
+    if (realRelative === "" || realRelative === ".." || realRelative.startsWith(`..${path.sep}`) || path.isAbsolute(realRelative)) {
+      return null;
+    }
+    const stat = fs.statSync(realTarget);
+    if (!stat.isFile() || stat.size > 2 * 1024 * 1024) return null;
+    const lines = fs.readFileSync(realTarget, "utf8").split(/\r?\n/);
+    const start = Math.max(1, location.startLine);
+    const requestedEnd = location.endLine ?? start;
+    let end = Math.min(lines.length, requestedEnd, start + 199);
+    if (start > lines.length || end < start) return null;
+    let excerpt = lines.slice(start - 1, end).join("\n");
+    if (!excerpt.trim() && end < lines.length) {
+      end = Math.min(lines.length, end + 2, start + 199);
+      excerpt = lines.slice(start - 1, end).join("\n");
+    }
+    return excerpt;
+  } catch {
+    return null;
+  }
+}
+
+function locationLabel(location: MantisLocation): string {
+  if (location.startLine == null) return location.path;
+  const end = location.endLine ?? location.startLine;
+  return `${location.path}:${location.startLine}${end !== location.startLine ? `–${end}` : ""}`;
 }
 
 function confidenceForStatus(status: string | undefined): {
@@ -61,6 +146,7 @@ export function isReportableMantisFinding(finding: MantisFindingRecord): boolean
 
 export function normalizeMantisFinding(
   finding: MantisFindingRecord,
+  snapshotRoot: string | null = null,
 ): Record<string, unknown> {
   const id = String(finding.id);
   const locations = (finding.code_paths ?? [])
@@ -71,6 +157,21 @@ export function normalizeMantisFinding(
   const rationale = [finding.reasoning, finding.critic_reasoning]
     .filter((value): value is string => typeof value === "string" && Boolean(value.trim()))
     .join(" ");
+  const evidenceRefs = locations.map((_, index) => `evidence-${index + 1}`);
+  const validationMethod = [
+    text(finding.status) ? `Mantis review: ${text(finding.status)}` : null,
+    text(finding.production_viability)
+      ? `production viability: ${text(finding.production_viability)}`
+      : null,
+  ].filter((value): value is string => Boolean(value)).join(" · ") || null;
+  const preconditions = [
+    text(finding.privileges_required)
+      ? `Privileges required: ${text(finding.privileges_required)}`
+      : null,
+    text(finding.user_interaction)
+      ? `user interaction: ${text(finding.user_interaction)}`
+      : null,
+  ].filter((value): value is string => Boolean(value)).join(" · ") || null;
 
   return {
     findingId: `mantis-${id}`,
@@ -87,29 +188,50 @@ export function normalizeMantisFinding(
     ruleId: finding.cwe ? `mantis/${finding.cwe}` : "mantis/agentic-review",
     remediation: finding.mitigation ?? null,
     locations,
-    codeEvidence: locations.map((location) => ({
+    codeEvidence: locations.map((location, index) => ({
+      id: evidenceRefs[index],
+      label: `Evidence at ${locationLabel(location)}`,
       ...location,
-      rationale: rationale || "Reported by the Mantis review pipeline.",
+      role: "evidence",
+      code: sourceSnippet(snapshotRoot, location),
+      language: languageForPath(location.path),
+      explanation: rationale || "Reported by the Mantis review pipeline.",
     })),
     taxonomy: {
       category: "Mantis agentic review",
       cwe: finding.cwe ? [finding.cwe] : [],
     },
     attackPath: {
-      attackerPosition: finding.attacker_position ?? null,
-      privilegesRequired: finding.privileges_required ?? null,
-      userInteraction: finding.user_interaction ?? null,
-      impact: finding.impact ?? null,
+      summary: text(finding.reasoning),
+      evidenceRefs,
+      reachability: {
+        attacker: text(finding.attacker_position),
+        preconditions,
+      },
+      dataflow: {
+        summary: text(finding.reasoning),
+        outcome: text(finding.impact),
+        evidenceRefs,
+      },
+    },
+    rootCause: {
+      summary: text(finding.reasoning),
     },
     validation: {
       status: finding.status ?? null,
-      reasoning: finding.reasoning ?? null,
+      summary: text(finding.reasoning),
+      method: validationMethod,
       productionViability: finding.production_viability ?? null,
-      criticReasoning: finding.critic_reasoning ?? null,
+      supportingEvidence: text(finding.critic_reasoning)
+        ? [text(finding.critic_reasoning)]
+        : [],
     },
     fingerprints: {
+      algorithm: "google-mantis/v1",
+      primary: finding.signature
+        ? `google-mantis/v1:fingerprint:${finding.signature}`
+        : `google-mantis/v1:fingerprint:${id}`,
       mantisId: id,
-      signature: finding.signature ?? id,
       snapshot: finding.discovery_commit ?? "unknown",
     },
     provenance: {
@@ -139,7 +261,13 @@ export function readMantisFindingRecords(stateRoot: string): MantisFindingRecord
 
 export function normalizeMantisWorkspace(stateRoot: string, outputDir: string): number {
   const raw = readMantisFindingRecords(stateRoot);
-  const findings = raw.filter(isReportableMantisFinding).map(normalizeMantisFinding);
+  const snapshotRoot = path.join(outputDir, "mantis-snapshot");
+  const findings = raw
+    .filter(isReportableMantisFinding)
+    .map((finding) => normalizeMantisFinding(
+      finding,
+      fs.existsSync(snapshotRoot) ? snapshotRoot : null,
+    ));
   const payload = {
     schemaVersion: 1,
     engine: "mantis",
