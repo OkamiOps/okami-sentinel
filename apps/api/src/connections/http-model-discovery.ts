@@ -86,7 +86,11 @@ interface CatalogRequest {
   transport: HttpFetch;
   cursorQuery: string;
   readPage(payload: unknown): PageResult | null;
-  normalize(rows: readonly unknown[], discoveredAt: string): DiscoveredProviderModel[];
+  normalize(
+    rows: readonly unknown[],
+    discoveredAt: string,
+    sensitiveValues: readonly string[],
+  ): DiscoveredProviderModel[];
 }
 
 const UNKNOWN_CAPABILITIES: ModelCapabilities = Object.freeze({
@@ -202,10 +206,10 @@ export async function discoverOpenAiModels(
       transport,
       cursorQuery: "after",
       readPage: readOpenAiPage,
-      normalize: (rows, discoveredAt) => normalizeOpenAiRows(rows, {
+      normalize: (rows, discoveredAt, sensitiveValues) => normalizeOpenAiRows(rows, {
         connectionId: credentials.connectionId ?? "unbound",
         discoveredAt,
-      }),
+      }, sensitiveValues),
     });
   }, credentials.redactor);
 }
@@ -227,10 +231,10 @@ export async function discoverXaiModels(
     transport,
     cursorQuery: "after",
     readPage: readXaiPage,
-    normalize: (rows, discoveredAt) => normalizeOpenAiRows(rows, {
+    normalize: (rows, discoveredAt, sensitiveValues) => normalizeOpenAiRows(rows, {
       connectionId: credentials.connectionId ?? "unbound",
       discoveredAt,
-    }),
+    }, sensitiveValues),
   }), credentials.redactor);
 }
 
@@ -259,10 +263,10 @@ export async function discoverAnthropicModels(
       transport,
       cursorQuery: "after_id",
       readPage: readAnthropicPage,
-      normalize: (rows, discoveredAt) => normalizeAnthropicRows(rows, {
+      normalize: (rows, discoveredAt, sensitiveValues) => normalizeAnthropicRows(rows, {
         connectionId: credentials.connectionId ?? "unbound",
         discoveredAt,
-      }),
+      }, sensitiveValues),
     });
   }, credentials.redactor);
 }
@@ -286,10 +290,10 @@ export async function discoverGeminiModels(
     transport,
     cursorQuery: "pageToken",
     readPage: readGeminiPage,
-    normalize: (rows, discoveredAt) => normalizeGeminiRows(rows, {
+    normalize: (rows, discoveredAt, sensitiveValues) => normalizeGeminiRows(rows, {
       connectionId: credentials.connectionId ?? "unbound",
       discoveredAt,
-    }),
+    }, sensitiveValues),
   }), credentials.redactor);
 }
 
@@ -310,10 +314,10 @@ export async function discoverOpenRouterModels(
     transport,
     cursorQuery: "after",
     readPage: readOpenRouterPage,
-    normalize: (rows, discoveredAt) => normalizeOpenRouterRows(rows, {
+    normalize: (rows, discoveredAt, sensitiveValues) => normalizeOpenRouterRows(rows, {
       connectionId: credentials.connectionId ?? "unbound",
       discoveredAt,
-    }),
+    }, sensitiveValues),
   }), credentials.redactor);
 }
 
@@ -334,10 +338,10 @@ export async function discoverDeepSeekModels(
     transport,
     cursorQuery: "after",
     readPage: readOpenAiPage,
-    normalize: (rows, discoveredAt) => normalizeOpenAiRows(rows, {
+    normalize: (rows, discoveredAt, sensitiveValues) => normalizeOpenAiRows(rows, {
       connectionId: credentials.connectionId ?? "unbound",
       discoveredAt,
-    }),
+    }, sensitiveValues),
   }), credentials.redactor);
 }
 
@@ -400,7 +404,19 @@ async function discoverCatalog(request: CatalogRequest): Promise<HttpModelDiscov
     if (page === null || page.next.kind === "invalid") {
       return failedDiscovery({ code: "protocol_unsupported" }, pageCount - 1);
     }
-    models.push(...request.normalize(page.rows, request.now().toISOString()));
+    const bodySecrets = sensitiveBodyValues(response.data);
+    const bodyScope = `connections/http-body/${randomUUID()}`;
+    const redactor = request.redactor ?? globalSecretRedactor;
+    redactor.register(bodyScope, bodySecrets);
+    try {
+      models.push(...request.normalize(
+        page.rows,
+        request.now().toISOString(),
+        [...request.secretValues, ...bodySecrets],
+      ));
+    } finally {
+      redactor.unregister(bodyScope);
+    }
     if (page.next.kind === "done") return successfulDiscovery(models, pageCount);
     if (visitedCursors.has(page.next.value)) {
       return failedDiscovery({ code: "protocol_unsupported" }, pageCount);
@@ -469,42 +485,46 @@ function cursorFromHasMore(
 function normalizeOpenAiRows(
   rows: readonly unknown[],
   metadata: { connectionId: string; discoveredAt: string },
+  sensitiveValues: readonly string[],
 ): DiscoveredProviderModel[] {
   return normalizeRows(rows, metadata, (row) => ({
     id: stringAt(row, "id"),
     displayName: stringAt(row, "name") ?? stringAt(row, "id"),
     contextWindow: numberAt(row, "context_window") ?? numberAt(row, "context_length"),
     pricing: null,
-  }));
+  }), sensitiveValues);
 }
 
 function normalizeAnthropicRows(
   rows: readonly unknown[],
   metadata: { connectionId: string; discoveredAt: string },
+  sensitiveValues: readonly string[],
 ): DiscoveredProviderModel[] {
   return normalizeRows(rows, metadata, (row) => ({
     id: stringAt(row, "id"),
     displayName: stringAt(row, "display_name") ?? stringAt(row, "id"),
     contextWindow: null,
     pricing: null,
-  }));
+  }), sensitiveValues);
 }
 
 function normalizeGeminiRows(
   rows: readonly unknown[],
   metadata: { connectionId: string; discoveredAt: string },
+  sensitiveValues: readonly string[],
 ): DiscoveredProviderModel[] {
   return normalizeRows(rows, metadata, (row) => ({
     id: stringAt(row, "baseModelId"),
     displayName: stringAt(row, "displayName") ?? stringAt(row, "baseModelId"),
     contextWindow: numberAt(row, "inputTokenLimit"),
     pricing: null,
-  }));
+  }), sensitiveValues);
 }
 
 function normalizeOpenRouterRows(
   rows: readonly unknown[],
   metadata: { connectionId: string; discoveredAt: string },
+  sensitiveValues: readonly string[],
 ): DiscoveredProviderModel[] {
   return normalizeRows(rows, metadata, (row) => {
     const supportedParameters = stringArrayAt(row, "supported_parameters");
@@ -518,7 +538,7 @@ function normalizeOpenRouterRows(
         ? { supportedParameters, pricingReported: pricing !== null }
         : undefined,
     };
-  });
+  }, sensitiveValues);
 }
 
 function normalizeRows(
@@ -531,25 +551,34 @@ function normalizeRows(
     pricing: ModelPricing | null;
     unverifiedHints?: DiscoveredProviderModel["unverifiedHints"];
   },
+  sensitiveValues: readonly string[],
 ): DiscoveredProviderModel[] {
+  const secrets = catalogSecretMatcher(sensitiveValues);
   const ids = new Set<string>();
   const normalized: DiscoveredProviderModel[] = [];
   for (const value of rows) {
     const row = recordOf(value);
     if (row === null) continue;
     const result = fields(row);
-    if (result.id === null || ids.has(result.id)) continue;
+    if (result.id === null || secrets.contains(result.id) || ids.has(result.id)) continue;
     ids.add(result.id);
     normalized.push({
       connectionId: metadata.connectionId,
       id: result.id,
-      displayName: result.displayName ?? result.id,
+      displayName: secrets.redact(result.displayName ?? result.id),
       contextWindow: result.contextWindow,
       capabilities: unknownCapabilities(),
       pricing: result.pricing,
       discoveredAt: metadata.discoveredAt,
       source: "provider-api",
-      ...(result.unverifiedHints === undefined ? {} : { unverifiedHints: result.unverifiedHints }),
+      ...(result.unverifiedHints === undefined ? {} : {
+        unverifiedHints: {
+          ...result.unverifiedHints,
+          supportedParameters: result.unverifiedHints.supportedParameters.filter(
+            (parameter) => !secrets.contains(parameter),
+          ),
+        },
+      }),
     });
   }
   return normalized;
@@ -679,6 +708,49 @@ function isPermittedProviderUrl(value: string, allowInsecureLocalhost: boolean):
 function isLoopbackHost(hostname: string): boolean {
   const host = hostname.toLowerCase();
   return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+}
+
+function catalogSecretMatcher(values: readonly string[]): {
+  contains(value: string): boolean;
+  redact(value: string): string;
+} {
+  const secrets = [...new Set(values.map((value) => value.trim()).filter((value) => value.length >= 4))]
+    .sort((left, right) => right.length - left.length);
+  return {
+    contains(value) {
+      return secrets.some((secret) => value.includes(secret));
+    },
+    redact(value) {
+      let redacted = value;
+      for (const secret of secrets) redacted = redacted.split(secret).join("[REDACTED]");
+      return redacted;
+    },
+  };
+}
+
+function sensitiveBodyValues(payload: unknown): string[] {
+  const values: string[] = [];
+  visit(payload, false);
+  return values;
+
+  function visit(value: unknown, sensitiveField: boolean): void {
+    if (typeof value === "string") {
+      if (sensitiveField) values.push(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, sensitiveField);
+      return;
+    }
+    const record = recordOf(value);
+    if (record === null) return;
+    for (const [name, child] of Object.entries(record)) {
+      visit(
+        child,
+        sensitiveField || /(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|cookie|password|secret)/i.test(name),
+      );
+    }
+  }
 }
 
 function secretValuesForRequest(input: SafeFetchJsonInput): string[] {

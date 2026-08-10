@@ -152,6 +152,56 @@ test("OpenRouter keeps reported pricing and parameters as unverified hints", asy
   assert.equal(JSON.stringify(result).includes("router-secret"), false);
 });
 
+test("rejects or redacts catalog fields that echo a registered header secret", async () => {
+  const syntheticHeaderSecret = "synthetic-header-secret";
+  const result = await discoverOpenRouterModels({
+    headers: { "X-Workspace-Token": syntheticHeaderSecret },
+  }, fakeFetch({
+    "GET https://openrouter.ai/api/v1/models": json(200, {
+      data: [
+        { id: syntheticHeaderSecret, name: "must be rejected" },
+        {
+          id: "account-visible",
+          name: `Visible ${syntheticHeaderSecret}`,
+          supported_parameters: ["tools", syntheticHeaderSecret],
+          pricing: { prompt: "0.000001", completion: "0.000002" },
+        },
+        {
+          id: "body-visible",
+          name: "Visible synthetic-body-secret",
+          supported_parameters: ["tools", "synthetic-body-secret"],
+          response_metadata: { api_key: "synthetic-body-secret" },
+          pricing: { prompt: "0.000001", completion: "0.000002" },
+        },
+      ],
+    }),
+  }));
+
+  assert.deepEqual(result.models.map((model) => model.id), ["account-visible", "body-visible"]);
+  assert.equal(result.models.every((model) => !model.displayName.includes(syntheticHeaderSecret)), true);
+  assert.equal(result.models.every((model) => !model.displayName.includes("synthetic-body-secret")), true);
+  assert.deepEqual(
+    result.models.map((model) => model.unverifiedHints?.supportedParameters),
+    [["tools"], ["tools"]],
+  );
+  assert.equal(JSON.stringify(result).includes(syntheticHeaderSecret), false);
+  assert.equal(JSON.stringify(result).includes("synthetic-body-secret"), false);
+});
+
+test("rejects a catalog identifier that echoes a discovery URL query secret", async () => {
+  const querySecret = "synthetic-query-secret";
+  const result = await discoverOpenAiModels({
+    discoveryUrl: `https://gateway.example/v1/models?token=${querySecret}`,
+  }, fakeFetch({
+    [`GET https://gateway.example/v1/models?token=${querySecret}`]: json(200, {
+      data: [{ id: querySecret }, { id: "account-visible" }],
+    }),
+  }));
+
+  assert.deepEqual(result.models.map((model) => model.id), ["account-visible"]);
+  assert.equal(JSON.stringify(result).includes(querySecret), false);
+});
+
 test("maps credential and rate errors without retaining provider body or custom headers", async () => {
   for (const [status, code] of [
     [401, "credential_rejected"],

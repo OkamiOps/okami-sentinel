@@ -103,6 +103,23 @@ test("MiniMax remains non-ready when no catalog endpoint is explicitly available
   assert.equal(JSON.stringify(result).includes("minimax-secret"), false);
 });
 
+test("MiniMax ignores arbitrary discovery and base hosts rather than sending its plan token", async () => {
+  const transport = fakeFetch({});
+  const result = await discoverModels(connection("minimax-token-plan"), {
+    vault: fakeVault({
+      apiKey: "minimax-secret",
+      baseUrl: "https://untrusted.example/anthropic",
+      discoveryUrl: "https://untrusted.example/models",
+    }),
+    transport,
+  });
+
+  assert.equal(result.safeError?.code, "model_discovery_unsupported");
+  assert.deepEqual(transport.calls, []);
+  assert.equal(JSON.stringify(result).includes("minimax-secret"), false);
+  assert.equal(JSON.stringify(result).includes("untrusted.example"), false);
+});
+
 test("an empty authenticated catalog is valid and a later refresh removes absent rows", async () => {
   const empty = await refreshConnectionModels(connection("custom-openai-compatible"), {
     vault: fakeVault({ baseUrl: "https://gateway.example/v1", apiKey: "secret-value" }),
@@ -281,6 +298,41 @@ test("a partial agent loop or model 403 keeps all probe facts unknown", async ()
   assert.equal(denied.report.capabilities.structuredOutput, "unknown");
 });
 
+test("probe keeps the bundle redactor active through the complete session callback", async () => {
+  const activeScopes = new Map<string, readonly string[]>();
+  const redactor = {
+    register(scope: string, values: readonly string[]) {
+      activeScopes.set(scope, values);
+    },
+    unregister(scope: string) {
+      activeScopes.delete(scope);
+    },
+  };
+  const result = await probeHttpRoute(connection("gemini-api"), {
+    connectionId: "conn-a",
+    modelSelectionMode: "catalog",
+    modelId: "account-visible",
+  }, {
+    vault: fakeVault({
+      apiKey: "probe-session-secret",
+      headers: { "X-Workspace-Token": "probe-header-secret" },
+    }),
+    selectedModel: model("conn-a", "account-visible"),
+    redactor,
+    probeSession: async () => {
+      const registered = [...activeScopes.values()].flat();
+      assert.equal(registered.includes("probe-session-secret"), true);
+      assert.equal(registered.includes("probe-header-secret"), true);
+      return completeProbeMeasurement();
+    },
+  });
+
+  assert.equal(result.report.status, "passed");
+  assert.equal(activeScopes.size, 0);
+  assert.equal(JSON.stringify(result).includes("probe-session-secret"), false);
+  assert.equal(JSON.stringify(result).includes("probe-header-secret"), false);
+});
+
 function connection(routeKind: string): StoredProviderConnection {
   return {
     id: "conn-a",
@@ -329,6 +381,20 @@ function model(connectionId: string, id: string): ProviderModel {
     pricing: null,
     discoveredAt: "2026-08-11T00:00:00.000Z",
     source: "provider-api",
+  };
+}
+
+function completeProbeMeasurement() {
+  return {
+    capabilities: { tools: "supported" as const },
+    limitsEnforced: true,
+    agentLoop: {
+      workspaceToolRequested: true,
+      workspaceToolResultConsumed: true,
+      resultsWriteRequested: true,
+      artifactProduced: true,
+      structuredResultProduced: true,
+    },
   };
 }
 

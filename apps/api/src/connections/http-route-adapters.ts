@@ -16,6 +16,7 @@ import {
   VaultError,
   type ConnectionSecretBundle,
   type CredentialVault,
+  type SecretRedactorRegistry,
 } from "../credentials/credential-vault.js";
 import type { RouteAdapter } from "./route-adapter.js";
 import {
@@ -26,6 +27,7 @@ import {
   discoverOpenRouterModels,
   discoverXaiModels,
   unknownCapabilities,
+  withBundleRedaction,
   type DiscoveryCredentials,
   type HttpFetch,
   type HttpModelDiscoveryResult,
@@ -108,6 +110,7 @@ export interface HttpProbeDependencies {
   selectedModel: ProviderModel | null | undefined;
   probeSession?: HttpProbeSession;
   now?: () => Date;
+  redactor?: SecretRedactorRegistry;
 }
 
 export interface HttpProbeResult {
@@ -125,6 +128,7 @@ export interface HttpRouteAdapterDependencies {
     modelId: string,
   ) => ProviderModel | null | Promise<ProviderModel | null>;
   probeSession?: HttpProbeSession;
+  redactor?: SecretRedactorRegistry;
 }
 
 /**
@@ -163,11 +167,9 @@ export async function discoverModels(
     case "deepseek-api":
       return discoverDeepSeekModels(credentials, transport);
     case "minimax-token-plan":
-      // The Token Plan's Anthropic base does not imply an account model list.
-      // Only an explicit provider-published discovery endpoint may be called.
-      return bundle.bundle.discoveryUrl === undefined
-        ? unsupportedDiscovery()
-        : discoverAnthropicModels(credentials, transport);
+      // Its Token Plan base is an inference contract, not a documented catalog.
+      // Never send a plan credential to a user-configured discovery/base host.
+      return unsupportedDiscovery();
     case "mimo-token-plan":
       return discoverMimoModels(connection, credentials, transport);
     default:
@@ -227,23 +229,25 @@ export async function probeHttpRoute(
   if (metadata === null || metadata.inferencePath === null || metadata.protocol === null) {
     return failedProbe(connection, selection, "protocol_unsupported", deps.now);
   }
-  if (!isOwnedCatalogSelection(connection, selection, deps.selectedModel)) {
+  const selectedModel = deps.selectedModel;
+  if (!isOwnedCatalogSelection(connection, selection, selectedModel)) {
     return failedProbe(connection, selection, "model_access_denied", deps.now);
   }
   const bundle = await readBundle(connection, deps.vault);
   if ("safeError" in bundle) return failedProbe(connection, selection, bundle.safeError.code, deps.now);
   if (!hasCredential(bundle.bundle)) return failedProbe(connection, selection, "credential_rejected", deps.now);
-  if (deps.probeSession === undefined) return failedProbe(connection, selection, "protocol_unsupported", deps.now);
+  const probeSession = deps.probeSession;
+  if (probeSession === undefined) return failedProbe(connection, selection, "protocol_unsupported", deps.now);
 
   try {
-    const measurement = await deps.probeSession({
+    const measurement = await withBundleRedaction(bundle.bundle, async () => probeSession({
       connectionId: connection.id,
       routeKind: connection.routeKind,
       protocol: metadata.protocol,
       inferencePath: metadata.inferencePath,
-      model: deps.selectedModel,
+      model: selectedModel,
       credentials: bundle.bundle,
-    });
+    }), deps.redactor);
     if (!hasCompleteAgentEvidence(measurement)) {
       return failedProbe(connection, selection, "protocol_unsupported", deps.now);
     }
@@ -252,7 +256,7 @@ export async function probeHttpRoute(
       report: {
         id: randomUUID(),
         connectionId: connection.id,
-        modelId: deps.selectedModel.id,
+        modelId: selectedModel.id,
         protocol: metadata.protocol,
         status: "passed",
         capabilities,
@@ -297,6 +301,7 @@ export function createHttpRouteAdapter(
         selectedModel,
         probeSession: deps.probeSession,
         now: deps.now,
+        redactor: deps.redactor,
       })).report;
     },
   };
