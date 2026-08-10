@@ -128,7 +128,7 @@ export function ScanReportPage() {
           <section className="grid grid-cols-2 border border-border">
             <Metric label="FINDINGS" value={scan.severity.total} />
             <Metric label="HIGH+" value={highPlus} tone="text-chart-4" />
-            <Metric label="COST" value={formatUsd(estimatedUsd)} tone="text-chart-1" />
+            <Metric label={scan.cost?.pricingSource === "openrouter" ? "EST. COST" : "COST"} value={formatUsd(estimatedUsd)} tone="text-chart-1" />
             <Metric label="$ / FINDING" value={formatUsd(usdPerFinding)} tone="text-primary" />
           </section>
         </div>

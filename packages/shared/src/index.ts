@@ -77,6 +77,14 @@ export interface ScanCost {
   cacheWriteInputTokens: number;
   outputTokens: number;
   model?: string;
+  /** Identifies response-side estimates that are not an invoiced scanner cost. */
+  pricingSource?: "openrouter";
+  pricingModel?: string;
+  pricingUpdatedAt?: string;
+  inputUsd?: number;
+  cachedInputUsd?: number;
+  cacheWriteInputUsd?: number;
+  outputUsd?: number;
 }
 
 export type ScanPhase =
@@ -134,12 +142,15 @@ export interface ScanRun {
 }
 
 /**
- * Returns a comparable USD estimate only when the adapter actually reports one.
- * Mantis phase one runs against a ChatGPT plan allowance and intentionally does
- * not manufacture API-style USD pricing from token counters.
+ * Returns a comparable USD estimate only when the adapter reports one or when
+ * Mantis usage has been explicitly priced from the OpenRouter catalog.
  */
 export function scanEstimatedUsd(scan: ScanRun): number | null {
-  if (scan.engine === "mantis" && scan.authMode === "chatgpt") return null;
+  if (
+    scan.engine === "mantis" &&
+    scan.authMode === "chatgpt" &&
+    scan.cost?.pricingSource !== "openrouter"
+  ) return null;
   const value = scan.cost?.estimatedUsd;
   return value != null && Number.isFinite(value) ? value : null;
 }

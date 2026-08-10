@@ -69,6 +69,7 @@ import {
   toFindingSummaries,
 } from "./ingest.js";
 import { buildMetricsSummary } from "./metrics.js";
+import { refreshOpenRouterPricing } from "./openrouter-pricing.js";
 import { withProgress, withProgressMany } from "./progress.js";
 import { buildRegressionSummary, markScanAsRepositoryBaseline, updateFindingTriage } from "./regression.js";
 import { isRemovableScanStatus } from "./lifecycle.js";
@@ -411,9 +412,15 @@ app.post("/ingest", (c) => {
   return c.json(result);
 });
 
-app.get("/metrics/summary", (c) => c.json(buildMetricsSummary()));
+app.get("/metrics/summary", async (c) => {
+  await refreshOpenRouterPricing();
+  return c.json(buildMetricsSummary());
+});
 
-app.get("/scans", (c) => c.json({ scans: withProgressMany(listRuns()) }));
+app.get("/scans", async (c) => {
+  await refreshOpenRouterPricing();
+  return c.json({ scans: withProgressMany(listRuns()) });
+});
 
 app.delete("/scans/:id", (c) => {
   const id = c.req.param("id");
@@ -434,14 +441,16 @@ app.delete("/scans/:id", (c) => {
   }
 });
 
-app.get("/scans/:id", (c) => {
+app.get("/scans/:id", async (c) => {
+  await refreshOpenRouterPricing();
   const run = getRun(c.req.param("id"));
   if (!run) return c.json({ error: "Scan não encontrado" }, 404);
   const findings = toFindingSummaries(readFindingsFile(run.scanDir));
   return c.json({ scan: withProgress(run), findings });
 });
 
-app.get("/scans/:id/report", (c) => {
+app.get("/scans/:id/report", async (c) => {
+  await refreshOpenRouterPricing();
   const run = getRun(c.req.param("id"));
   if (!run) return c.json({ error: "Scan não encontrado" }, 404);
   try {

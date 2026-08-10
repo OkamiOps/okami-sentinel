@@ -315,7 +315,7 @@ okami-sentinel/
 ## Cost and security notes
 
 > [!WARNING]
-> Scans can be expensive. Codex Security's cost envelope maps to its `--max-cost` guardrail. Mantis uses nine sequential Codex calls through the ChatGPT subscription route and therefore does **not** claim a fake USD ceiling. Token estimates, plan allowances, credits, and final API billing are different measurements.
+> Scans can be expensive. Codex Security's cost envelope maps to its `--max-cost` guardrail. Mantis runs through the ChatGPT subscription route, so Sentinel labels its USD value as an **estimate**, not an invoice or subscription charge. The estimate uses the exact model's current OpenRouter base rates, prices uncached input, cache reads, cache writes, and output separately, refreshes the public catalog every six hours, and retains a reviewed offline snapshot when the catalog is unavailable. Token estimates, plan allowances, credits, and final API billing remain different measurements.
 
 - Data and evidence remain local unless you explicitly publish a GitHub Check or run the API-backed GitHub workflow.
 - Operational failures never become a passing security decision.

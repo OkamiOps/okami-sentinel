@@ -13,6 +13,7 @@ import {
   type SeverityCounts,
 } from "@csb/shared";
 import { BENCHMARK_DB_PATH, DATA_DIR } from "./config.js";
+import { withOpenRouterPricingEstimate } from "./openrouter-pricing.js";
 
 export interface BenchmarkRow {
   id: string;
@@ -160,7 +161,7 @@ export function rowToScanRun(row: BenchmarkRow): ScanRun {
         }
       : null;
 
-  return {
+  return withOpenRouterPricingEstimate({
     id: row.id,
     displayName: row.display_name,
     repositoryPath: row.repository_path,
@@ -182,7 +183,7 @@ export function rowToScanRun(row: BenchmarkRow): ScanRun {
     severity,
     source: row.source as ScanRun["source"],
     pid: row.pid,
-  };
+  });
 }
 
 export function upsertRun(run: ScanRun): void {

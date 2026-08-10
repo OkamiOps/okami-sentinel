@@ -56,6 +56,27 @@ test("does not treat Mantis subscription usage as zero-cost API execution", () =
   assert.equal(ranking.find((row) => row.scan.id === "mantis")?.costUsd, null);
 });
 
+test("uses an explicitly sourced OpenRouter estimate for Mantis comparisons", () => {
+  const mantis = {
+    ...scan("mantis-estimated", 30, 12, 18.14, 30_000),
+    engine: "mantis" as const,
+    authMode: "chatgpt" as const,
+    cost: {
+      estimatedUsd: 18.14,
+      inputTokens: 18_000_000,
+      cachedInputTokens: 17_000_000,
+      cacheWriteInputTokens: 0,
+      outputTokens: 169_000,
+      pricingSource: "openrouter" as const,
+      pricingModel: "openai/gpt-5.6-sol",
+    },
+  };
+  const ranking = buildDecisionRanking([mantis], "cost_per_finding");
+
+  assert.equal(ranking[0].costUsd, 18.14);
+  assert.equal(ranking[0].costPerFinding, 18.14 / 30);
+});
+
 test("calculates unit cost and hourly throughput", () => {
   const row = buildDecisionRanking([scan("measured", 10, 4, 5, 1_800_000)], "coverage")[0];
   assert.equal(row.costPerFinding, 0.5);
