@@ -74,6 +74,7 @@ import { withProgress, withProgressMany } from "./progress.js";
 import { buildRegressionSummary, markScanAsRepositoryBaseline, updateFindingTriage } from "./regression.js";
 import { isRemovableScanStatus } from "./lifecycle.js";
 import { MAX_CONCURRENT_SCANS } from "./config.js";
+import { createConnectionsApp } from "./connections-api.js";
 import { getScannerCatalog } from "./scanners/catalog.js";
 import {
   cancelScan,
@@ -89,8 +90,8 @@ app.use(
   "*",
   cors({
     origin: ["http://127.0.0.1:5173", "http://localhost:5173"],
-    allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowHeaders: ["Content-Type"],
+    allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowHeaders: ["Content-Type", "X-CSRF-Token"],
   }),
 );
 
@@ -389,6 +390,7 @@ export function createGuardrailsApp(
 }
 
 app.route("/", createGuardrailsApp());
+app.route("/", createConnectionsApp());
 
 app.get("/health", async (c) => {
   const codexInfo = await getCodexInfo();
