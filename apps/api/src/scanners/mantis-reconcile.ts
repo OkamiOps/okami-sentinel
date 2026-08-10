@@ -9,6 +9,10 @@ import {
 } from "@csb/shared";
 import { processAlive } from "../activity.js";
 import { readMantisRuntime } from "./mantis-runtime.js";
+import {
+  scannerCacheWriteInputTokens,
+  scannerUsageWasReported,
+} from "./usage.js";
 
 function countSeverity(findingsPath: string): SeverityCounts {
   const counts = emptySeverityCounts();
@@ -59,14 +63,16 @@ export function refreshMantisRunFromDisk(run: ScanRun): ScanRun {
       completedAt && run.startedAt
         ? Date.parse(completedAt) - Date.parse(run.startedAt)
         : run.durationMs,
-    cost: {
-      estimatedUsd: 0,
-      inputTokens: runtime.usage.inputTokens,
-      cachedInputTokens: runtime.usage.cachedInputTokens,
-      cacheWriteInputTokens: 0,
-      outputTokens: runtime.usage.outputTokens,
-      model: run.model ?? undefined,
-    },
+    cost: scannerUsageWasReported(runtime.usage)
+      ? {
+        estimatedUsd: 0,
+        inputTokens: runtime.usage.inputTokens,
+        cachedInputTokens: runtime.usage.cachedInputTokens,
+        cacheWriteInputTokens: scannerCacheWriteInputTokens(runtime.usage),
+        outputTokens: runtime.usage.outputTokens,
+        model: run.model ?? undefined,
+      }
+      : null,
     severity,
     scannerVersion: runtime.sourceRef,
     pid: status === "running" ? run.pid : null,

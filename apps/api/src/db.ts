@@ -149,8 +149,15 @@ export function rowToScanRun(row: BenchmarkRow): ScanRun {
     total: row.severity_total,
   };
 
+  const subscriptionUsageUnavailable =
+    (row.engine === "mantis" || row.engine === "vulnhunter") &&
+    row.auth_mode === "chatgpt" &&
+    (row.input_tokens ?? 0) <= 0 &&
+    (row.cached_input_tokens ?? 0) <= 0 &&
+    (row.cache_write_tokens ?? 0) <= 0 &&
+    (row.output_tokens ?? 0) <= 0;
   const cost: ScanCost | null =
-    row.estimated_usd != null
+    row.estimated_usd != null && !subscriptionUsageUnavailable
       ? {
           estimatedUsd: row.estimated_usd,
           inputTokens: row.input_tokens ?? 0,

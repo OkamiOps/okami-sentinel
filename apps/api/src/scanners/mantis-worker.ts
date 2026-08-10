@@ -235,8 +235,11 @@ function collectUsage(value: unknown, totals: MantisRuntimeState["usage"]): void
   const usage = record.usage;
   if (usage && typeof usage === "object") {
     const item = usage as Record<string, unknown>;
+    totals.reported = true;
     totals.inputTokens += Number(item.input_tokens ?? item.inputTokens ?? 0) || 0;
     totals.cachedInputTokens += Number(item.cached_input_tokens ?? item.cachedInputTokens ?? 0) || 0;
+    totals.cacheWriteInputTokens = (totals.cacheWriteInputTokens ?? 0) +
+      (Number(item.cache_write_input_tokens ?? item.cacheWriteInputTokens ?? 0) || 0);
     totals.outputTokens += Number(item.output_tokens ?? item.outputTokens ?? 0) || 0;
   }
 }
@@ -302,7 +305,13 @@ async function runStage(
       stdio: ["ignore", "pipe", "pipe"],
     });
     currentChild = child;
-    const stageUsage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
+    const stageUsage = {
+      reported: false,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      outputTokens: 0,
+    };
     let lastHeartbeatAt = 0;
     const stdout = readline.createInterface({ input: child.stdout! });
     const stderr = readline.createInterface({ input: child.stderr! });
@@ -340,8 +349,11 @@ async function runStage(
     child.on("close", (code) => {
       currentChild = null;
       if (runtime) {
+        runtime.usage.reported = runtime.usage.reported || stageUsage.reported;
         runtime.usage.inputTokens += stageUsage.inputTokens;
         runtime.usage.cachedInputTokens += stageUsage.cachedInputTokens;
+        runtime.usage.cacheWriteInputTokens = (runtime.usage.cacheWriteInputTokens ?? 0) +
+          stageUsage.cacheWriteInputTokens;
         runtime.usage.outputTokens += stageUsage.outputTokens;
       }
       if (cancelled) reject(new Error("Mantis scan cancelled."));
@@ -372,7 +384,13 @@ async function main(): Promise<void> {
     snapshotId: null,
     sourceRef: config.source.ref,
     findings: 0,
-    usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+    usage: {
+      reported: false,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      outputTokens: 0,
+    },
     error: null,
   };
   writeMantisRuntime(config.outputDir, runtime);

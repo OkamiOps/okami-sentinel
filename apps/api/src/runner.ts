@@ -310,14 +310,18 @@ export async function startScan(req: StartScanRequest): Promise<ScanRun> {
     startedAt,
     completedAt: null,
     durationMs: null,
-    cost: {
-      estimatedUsd: 0,
-      inputTokens: 0,
-      cachedInputTokens: 0,
-      cacheWriteInputTokens: 0,
-      outputTokens: 0,
-      model,
-    },
+    cost:
+      (launch.engine === "mantis" || launch.engine === "vulnhunter") &&
+        launch.authMode === "chatgpt"
+        ? null
+        : {
+          estimatedUsd: 0,
+          inputTokens: 0,
+          cachedInputTokens: 0,
+          cacheWriteInputTokens: 0,
+          outputTokens: 0,
+          model,
+        },
     severity: emptySeverityCounts(),
     source: "benchmark",
     pid: null,

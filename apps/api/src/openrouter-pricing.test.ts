@@ -135,6 +135,27 @@ test("does not invent a price when OpenRouter has no exact model", () => {
   );
 });
 
+test("does not label unreported zero usage as a zero-dollar OpenRouter estimate", () => {
+  const run = {
+    engine: "vulnhunter",
+    provider: "openai",
+    authMode: "chatgpt",
+    model: "gpt-5.6-sol",
+    cost: {
+      estimatedUsd: 0,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      outputTokens: 0,
+    },
+  } as ScanRun;
+
+  assert.strictEqual(
+    estimateScanWithOpenRouterPricing(run, [sol], "2026-08-10T18:00:00.000Z"),
+    run,
+  );
+});
+
 test("refreshes the public catalog used by response-side estimates", async () => {
   const refreshed = await refreshOpenRouterPricing(
     async () => new Response(JSON.stringify({

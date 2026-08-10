@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { ScanProgress } from "@csb/shared";
+import type { ScannerUsage } from "./usage.js";
 
 export interface MantisRunConfiguration {
   outputDir: string;
@@ -30,11 +31,7 @@ export interface MantisRuntimeState {
   snapshotId: string | null;
   sourceRef: string;
   findings: number;
-  usage: {
-    inputTokens: number;
-    cachedInputTokens: number;
-    outputTokens: number;
-  };
+  usage: ScannerUsage;
   error: string | null;
 }
 

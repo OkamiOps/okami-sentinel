@@ -17,6 +17,7 @@ import {
   normalizeMantisWorkspace,
 } from "./scanners/mantis-normalize.js";
 import { refreshMantisRunFromDisk } from "./scanners/mantis-reconcile.js";
+import { refreshVulnHunterRunFromDisk } from "./scanners/vulnhunter-reconcile.js";
 import {
   createResilientLineWriter,
   MANTIS_CODEX_ISOLATION_ARGS,
@@ -597,6 +598,8 @@ test("VulnHunter kickoff uses a local static methodology profile on an immutable
   assert.deepEqual(runtimeModule.VULNHUNTER_CODEX_ISOLATION_ARGS, [
     "--disable", "plugins",
     "--disable", "apps",
+    "--disable", "hooks",
+    "--disable", "memories",
     "--disable", "browser_use",
     "--disable", "computer_use",
   ]);
@@ -744,6 +747,111 @@ test("failed Mantis runs with normalized findings remain explicit partial result
   }
 });
 
+test("Mantis reconciliation preserves cache-write usage from a legacy reported runtime", () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-mantis-cost-"));
+  const startedAt = "2026-08-10T10:00:00.000Z";
+  try {
+    writeMantisRuntime(fixtureRoot, {
+      engine: "mantis",
+      status: "completed",
+      stage: "report",
+      stageLabel: "Evidence report",
+      percent: 100,
+      detail: null,
+      startedAt,
+      updatedAt: "2026-08-10T10:01:00.000Z",
+      completedAt: "2026-08-10T10:01:00.000Z",
+      snapshotId: "content:abc",
+      sourceRef: "a".repeat(40),
+      findings: 0,
+      usage: {
+        inputTokens: 100,
+        cachedInputTokens: 60,
+        cacheWriteInputTokens: 15,
+        outputTokens: 10,
+      },
+      error: null,
+    });
+    const refreshed = refreshMantisRunFromDisk({
+      id: "mantis-cost",
+      displayName: "fixture",
+      repositoryPath: fixtureRoot,
+      revision: null,
+      scanDir: fixtureRoot,
+      status: "running",
+      model: "gpt-5.6-sol",
+      effort: "high",
+      mode: "standard",
+      engine: "mantis",
+      provider: "openai",
+      authMode: "chatgpt",
+      scannerVersion: null,
+      recipeHash: "fixture",
+      startedAt,
+      completedAt: null,
+      durationMs: null,
+      cost: null,
+      severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0, total: 0 },
+      source: "benchmark",
+      pid: null,
+    });
+
+    assert.equal(refreshed.cost?.cacheWriteInputTokens, 15);
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("Mantis reconciliation leaves an unreported zero usage runtime without a cost", () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-mantis-cost-"));
+  const startedAt = "2026-08-10T10:00:00.000Z";
+  try {
+    writeMantisRuntime(fixtureRoot, {
+      engine: "mantis",
+      status: "failed",
+      stage: "architecture",
+      stageLabel: "Architecture",
+      percent: 10,
+      detail: null,
+      startedAt,
+      updatedAt: "2026-08-10T10:01:00.000Z",
+      completedAt: "2026-08-10T10:01:00.000Z",
+      snapshotId: "content:abc",
+      sourceRef: "a".repeat(40),
+      findings: 0,
+      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+      error: "provider stopped before usage was reported",
+    });
+    const refreshed = refreshMantisRunFromDisk({
+      id: "mantis-no-usage",
+      displayName: "fixture",
+      repositoryPath: fixtureRoot,
+      revision: null,
+      scanDir: fixtureRoot,
+      status: "running",
+      model: "gpt-5.6-sol",
+      effort: "high",
+      mode: "standard",
+      engine: "mantis",
+      provider: "openai",
+      authMode: "chatgpt",
+      scannerVersion: null,
+      recipeHash: "fixture",
+      startedAt,
+      completedAt: null,
+      durationMs: null,
+      cost: null,
+      severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0, total: 0 },
+      source: "benchmark",
+      pid: null,
+    });
+
+    assert.equal(refreshed.cost, null);
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
 test("failed VulnHunter runs preserve normalized findings as incomplete evidence", async () => {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-vulnhunter-partial-"));
   const startedAt = "2026-08-10T18:00:00.000Z";
@@ -809,6 +917,111 @@ test("failed VulnHunter runs preserve normalized findings as incomplete evidence
     assert.equal(refreshed.cost?.cachedInputTokens, 80);
     assert.equal(refreshed.cost?.outputTokens, 30);
     assert.equal(refreshed.revision, "content:def");
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("VulnHunter reconciliation preserves cache-write usage from a legacy reported runtime", () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-vulnhunter-cost-"));
+  const startedAt = "2026-08-10T18:00:00.000Z";
+  try {
+    writeVulnHunterRuntime(fixtureRoot, {
+      engine: "vulnhunter",
+      status: "completed",
+      stage: "report",
+      stageLabel: "Evidence report",
+      percent: 100,
+      detail: null,
+      startedAt,
+      updatedAt: "2026-08-10T18:01:00.000Z",
+      completedAt: "2026-08-10T18:01:00.000Z",
+      snapshotId: "content:def",
+      sourceRef: "b".repeat(40),
+      findings: 0,
+      usage: {
+        inputTokens: 100,
+        cachedInputTokens: 60,
+        cacheWriteInputTokens: 15,
+        outputTokens: 10,
+      },
+      error: null,
+    });
+    const refreshed = refreshVulnHunterRunFromDisk({
+      id: "vulnhunter-cost",
+      displayName: "fixture",
+      repositoryPath: fixtureRoot,
+      revision: null,
+      scanDir: fixtureRoot,
+      status: "running",
+      model: "gpt-5.6-sol",
+      effort: "high",
+      mode: "standard",
+      engine: "vulnhunter",
+      provider: "openai",
+      authMode: "chatgpt",
+      scannerVersion: null,
+      recipeHash: "fixture",
+      startedAt,
+      completedAt: null,
+      durationMs: null,
+      cost: null,
+      severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0, total: 0 },
+      source: "benchmark",
+      pid: null,
+    });
+
+    assert.equal(refreshed.cost?.cacheWriteInputTokens, 15);
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("VulnHunter reconciliation leaves an unreported zero usage runtime without a cost", () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-vulnhunter-cost-"));
+  const startedAt = "2026-08-10T18:00:00.000Z";
+  try {
+    writeVulnHunterRuntime(fixtureRoot, {
+      engine: "vulnhunter",
+      status: "failed",
+      stage: "recon",
+      stageLabel: "Repository reconnaissance",
+      percent: 8,
+      detail: null,
+      startedAt,
+      updatedAt: "2026-08-10T18:01:00.000Z",
+      completedAt: "2026-08-10T18:01:00.000Z",
+      snapshotId: "content:def",
+      sourceRef: "b".repeat(40),
+      findings: 0,
+      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+      error: "provider stopped before usage was reported",
+    });
+    const refreshed = refreshVulnHunterRunFromDisk({
+      id: "vulnhunter-no-usage",
+      displayName: "fixture",
+      repositoryPath: fixtureRoot,
+      revision: null,
+      scanDir: fixtureRoot,
+      status: "running",
+      model: "gpt-5.6-sol",
+      effort: "high",
+      mode: "standard",
+      engine: "vulnhunter",
+      provider: "openai",
+      authMode: "chatgpt",
+      scannerVersion: null,
+      recipeHash: "fixture",
+      startedAt,
+      completedAt: null,
+      durationMs: null,
+      cost: null,
+      severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0, total: 0 },
+      source: "benchmark",
+      pid: null,
+    });
+
+    assert.equal(refreshed.cost, null);
   } finally {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }

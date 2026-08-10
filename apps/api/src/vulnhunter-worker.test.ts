@@ -19,47 +19,102 @@ test("VulnHunter worker completes a local static profile without loading the ups
     `#!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
+import readline from "node:readline";
 const args = process.argv.slice(2);
-const stateRoot = args[args.indexOf("--cd") + 1];
-const prompt = args.at(-1);
-if (/SKILL\\.md|phase[1-4]_|dispatch.*agent/i.test(prompt)) {
-  console.log(JSON.stringify({ type: "error", message: "upstream instructions reached Codex" }));
-  process.exit(9);
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
+const input = readline.createInterface({ input: process.stdin });
+let stateRoot = "";
+let resultsDir = "";
+let threadParams = null;
+
+function writeArtifacts(prompt) {
+  if (/SKILL\\.md|phase[1-4]_|dispatch.*agent/i.test(prompt)) {
+    send({ method: "turn/completed", params: { threadId: "thread-1", turn: { id: "turn-1", status: "failed", error: { message: "upstream instructions reached Codex" } } } });
+    return false;
+  }
+  resultsDir = path.join(stateRoot, "results");
+  fs.mkdirSync(resultsDir, { recursive: true });
+  fs.writeFileSync(path.join(stateRoot, "invocation.json"), JSON.stringify(args));
+  fs.writeFileSync(path.join(resultsDir, "reconnaissance.md"), "# Reconnaissance");
+  fs.writeFileSync(path.join(resultsDir, "trace-review.md"), "# Static traces");
+  fs.writeFileSync(path.join(resultsDir, "verification.md"), "# Verification");
+  fs.writeFileSync(path.join(resultsDir, "validation-notes.md"), "# Static limitations");
+  fs.writeFileSync(path.join(resultsDir, "coverage-sweep.md"), "# Coverage");
+  fs.writeFileSync(path.join(resultsDir, "README.md"), "# Fixture report");
+  fs.writeFileSync(path.join(resultsDir, "sentinel-findings.json"), JSON.stringify({
+    schemaVersion: 1,
+    findings: [{
+      id: "VULN-001",
+      title: "Untrusted input reaches query",
+      severity: "High",
+      confidence: "high",
+      cwe: ["CWE-89"],
+      summary: "User input reaches a query sink.",
+      rootCause: "The query is assembled without a binding.",
+      entryPoint: "Public handler",
+      dataFlow: "userInput → query",
+      impact: "Unauthorized query manipulation.",
+      remediation: "Use parameter binding.",
+      validation: { summary: "Static trace survived falsification.", limitations: ["Static inspection only."] },
+      evidence: [{ path: "src/app.ts", startLine: 1, endLine: 1, role: "sink", explanation: "Query sink." }]
+    }]
+  }));
+  if (process.env.VULNHUNTER_TEST_UNSAFE === "1") {
+    fs.writeFileSync(path.join(resultsDir, "validation.sh"), "echo unsafe");
+  }
+  return true;
 }
-const resultsDir = path.join(stateRoot, "results");
-fs.mkdirSync(resultsDir, { recursive: true });
-fs.writeFileSync(path.join(stateRoot, "invocation.json"), JSON.stringify(args));
-fs.writeFileSync(path.join(resultsDir, "reconnaissance.md"), "# Reconnaissance");
-fs.writeFileSync(path.join(resultsDir, "trace-review.md"), "# Static traces");
-fs.writeFileSync(path.join(resultsDir, "verification.md"), "# Verification");
-fs.writeFileSync(path.join(resultsDir, "validation-notes.md"), "# Static limitations");
-fs.writeFileSync(path.join(resultsDir, "coverage-sweep.md"), "# Coverage");
-fs.writeFileSync(path.join(resultsDir, "README.md"), "# Fixture report");
-fs.writeFileSync(path.join(resultsDir, "sentinel-findings.json"), JSON.stringify({
-  schemaVersion: 1,
-  findings: [{
-    id: "VULN-001",
-    title: "Untrusted input reaches query",
-    severity: "High",
-    confidence: "high",
-    cwe: ["CWE-89"],
-    summary: "User input reaches a query sink.",
-    rootCause: "The query is assembled without a binding.",
-    entryPoint: "Public handler",
-    dataFlow: "userInput → query",
-    impact: "Unauthorized query manipulation.",
-    remediation: "Use parameter binding.",
-    validation: { summary: "Static trace survived falsification.", limitations: ["Static inspection only."] },
-    evidence: [{ path: "src/app.ts", startLine: 1, endLine: 1, role: "sink", explanation: "Query sink." }]
-  }]
-}));
-if (process.env.VULNHUNTER_TEST_UNSAFE === "1") {
-  fs.writeFileSync(path.join(resultsDir, "validation.sh"), "echo unsafe");
-  console.log(JSON.stringify({ type: "error", message: "fixture failed after writing artifacts" }));
-  process.exit(7);
-}
-console.log(JSON.stringify({ type: "thread.started" }));
-console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 120, cached_input_tokens: 40, output_tokens: 30 } }));
+
+input.on("line", (line) => {
+  const request = JSON.parse(line);
+  if (request.method === "initialize") {
+    send({ id: request.id, result: { userAgent: "fake-codex" } });
+  } else if (request.method === "thread/start") {
+    stateRoot = request.params.cwd;
+    threadParams = request.params;
+    send({ id: request.id, result: { thread: { id: "thread-1" } } });
+  } else if (request.method === "turn/start") {
+    const prompt = request.params.input[0].text;
+    fs.writeFileSync(path.join(stateRoot, "rpc-invocation.json"), JSON.stringify({
+      thread: threadParams,
+      turn: request.params,
+    }));
+    send({ id: request.id, result: { turn: { id: "turn-1", status: "inProgress" } } });
+    if (!writeArtifacts(prompt)) return;
+    send({ method: "turn/started", params: { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress" } } });
+    send({ method: "rawResponse/completed", params: {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      responseId: "response-1",
+      usage: { totalTokens: 55, inputTokens: 50, cachedInputTokens: 10, cacheWriteInputTokens: 3, outputTokens: 5, reasoningOutputTokens: 1 }
+    } });
+    send({ method: "rawResponse/completed", params: {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      responseId: "response-1",
+      usage: { totalTokens: 55, inputTokens: 50, cachedInputTokens: 10, cacheWriteInputTokens: 3, outputTokens: 5, reasoningOutputTokens: 1 }
+    } });
+    send({ method: "thread/tokenUsage/updated", params: {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      tokenUsage: { total: { totalTokens: 162, inputTokens: 120, cachedInputTokens: 40, cacheWriteInputTokens: 12, outputTokens: 30, reasoningOutputTokens: 4 }, last: { totalTokens: 162, inputTokens: 120, cachedInputTokens: 40, cacheWriteInputTokens: 12, outputTokens: 30, reasoningOutputTokens: 4 }, modelContextWindow: 200000 }
+    } });
+    setTimeout(() => {
+      const liveRuntime = JSON.parse(fs.readFileSync(path.join(path.dirname(stateRoot), "vulnhunter-runtime.json"), "utf8"));
+      fs.writeFileSync(path.join(stateRoot, "usage-observed-before-completion.json"), JSON.stringify(liveRuntime.usage));
+      const failed = process.env.VULNHUNTER_TEST_POLICY === "1" || process.env.VULNHUNTER_TEST_UNSAFE === "1";
+      const message = process.env.VULNHUNTER_TEST_POLICY === "1"
+        ? "This content was flagged for possible cybersecurity risk. Join Trusted Access for Cyber."
+        : "fixture failed after writing artifacts";
+      send({ method: "turn/completed", params: { threadId: "thread-1", turn: {
+        id: "turn-1",
+        status: failed ? "failed" : "completed",
+        error: failed ? { message } : null
+      } } });
+    }, 100);
+  }
+});
+process.on("SIGTERM", () => process.exit(0));
 `,
     { mode: 0o700 },
   );
@@ -91,23 +146,47 @@ console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 120,
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const runtime = JSON.parse(
       fs.readFileSync(path.join(outputDir, "vulnhunter-runtime.json"), "utf8"),
-    ) as Record<string, unknown> & { usage: Record<string, number> };
+    ) as Record<string, unknown> & { usage: Record<string, number | boolean> };
+    const liveUsage = JSON.parse(
+      fs.readFileSync(path.join(outputDir, "vulnhunter", "usage-observed-before-completion.json"), "utf8"),
+    ) as Record<string, number | boolean>;
     const normalized = JSON.parse(
       fs.readFileSync(path.join(outputDir, "findings.json"), "utf8"),
     ) as { findings: Array<{ codeEvidence: Array<{ code: string }> }> };
     const invocation = JSON.parse(
       fs.readFileSync(path.join(outputDir, "vulnhunter", "invocation.json"), "utf8"),
     ) as string[];
+    const rpcInvocation = JSON.parse(
+      fs.readFileSync(path.join(outputDir, "vulnhunter", "rpc-invocation.json"), "utf8"),
+    ) as {
+      thread: Record<string, unknown>;
+      turn: Record<string, unknown>;
+    };
     assert.equal(runtime.status, "completed");
     assert.equal(runtime.findings, 1);
     assert.equal(runtime.usage.inputTokens, 120);
     assert.equal(runtime.usage.cachedInputTokens, 40);
+    assert.equal(runtime.usage.cacheWriteInputTokens, 12);
     assert.equal(runtime.usage.outputTokens, 30);
+    assert.equal(runtime.usage.reported, true);
+    assert.equal(liveUsage.inputTokens, 120);
+    assert.equal(liveUsage.outputTokens, 30);
+    assert.equal(liveUsage.reported, true);
     assert.equal(normalized.findings[0]?.codeEvidence[0]?.code, "export const query = userInput;");
     assert.equal(fs.readFileSync(path.join(repositoryPath, "src", "app.ts"), "utf8"), "export const query = userInput;\n");
     assert.ok(invocation.includes("multi_agent"));
     assert.equal(invocation[invocation.indexOf("multi_agent") - 1], "--disable");
-    assert.ok(invocation.includes("workspace-write"));
+    assert.ok(invocation.includes("app-server"));
+    assert.ok(invocation.includes("--stdio"));
+    assert.ok(invocation.includes("hooks"));
+    assert.ok(invocation.includes("memories"));
+    assert.deepEqual(rpcInvocation.thread.environments, []);
+    assert.deepEqual(rpcInvocation.thread.dynamicTools, []);
+    assert.deepEqual(rpcInvocation.thread.selectedCapabilityRoots, []);
+    assert.deepEqual(rpcInvocation.thread.runtimeWorkspaceRoots, [path.join(outputDir, "vulnhunter")]);
+    assert.deepEqual(rpcInvocation.turn.environments, []);
+    assert.deepEqual(rpcInvocation.turn.runtimeWorkspaceRoots, [path.join(outputDir, "vulnhunter")]);
+    assert.match(String(rpcInvocation.thread.developerInstructions), /Ignore any AGENTS\.md/);
     assert.equal(fs.existsSync(path.join(outputDir, "vulnhunter-snapshot", "src", "app.ts")), true);
 
     const unsafeOutputDir = path.join(fixtureRoot, "unsafe-output");
@@ -144,6 +223,43 @@ console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 120,
     assert.equal(unsafeRuntime.findings, 0);
     assert.match(unsafeRuntime.error, /rejected operational artifact validation\.sh/);
     assert.equal(fs.existsSync(path.join(unsafeOutputDir, "findings.json")), false);
+
+    const policyOutputDir = path.join(fixtureRoot, "policy-output");
+    const policyConfigPath = path.join(fixtureRoot, "policy-vulnhunter-run.json");
+    fs.mkdirSync(policyOutputDir);
+    fs.writeFileSync(policyConfigPath, JSON.stringify({
+      outputDir: policyOutputDir,
+      repositoryPath,
+      model: "gpt-5.6-sol",
+      effort: "high",
+      paths: ["src"],
+      readOnly: true,
+      profileVersion: "sentinel-static-v1",
+      source: {
+        repositoryUrl: "https://github.com/capitalone/vulnhunter.git",
+        ref: "8f9eadd772f66160df445b65730e2fbd6ea50d73",
+      },
+    }));
+    const policyResult = spawnSync(
+      path.join(process.cwd(), "node_modules", ".bin", "tsx"),
+      [path.join(process.cwd(), "src", "scanners", "vulnhunter-worker.ts"), policyConfigPath],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, CODEX_BIN: fakeCodex, VULNHUNTER_TEST_POLICY: "1" },
+        encoding: "utf8",
+        timeout: 30_000,
+      },
+    );
+    assert.equal(policyResult.status, 1, policyResult.stderr || policyResult.stdout);
+    const policyRuntime = JSON.parse(
+      fs.readFileSync(path.join(policyOutputDir, "vulnhunter-runtime.json"), "utf8"),
+    ) as { status: string; usage: Record<string, number | boolean>; error: string };
+    assert.equal(policyRuntime.status, "failed");
+    assert.equal(policyRuntime.usage.reported, true);
+    assert.equal(policyRuntime.usage.inputTokens, 120);
+    assert.equal(policyRuntime.usage.cacheWriteInputTokens, 12);
+    assert.equal(policyRuntime.usage.outputTokens, 30);
+    assert.match(policyRuntime.error, /Trusted Access for Cyber/);
   } finally {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { ScanProgress } from "@csb/shared";
+import type { ScannerUsage } from "./usage.js";
 
 export interface VulnHunterRunConfiguration {
   outputDir: string;
@@ -32,11 +33,7 @@ export interface VulnHunterRuntimeState {
   sourceRef: string;
   methodologyRef?: string;
   findings: number;
-  usage: {
-    inputTokens: number;
-    cachedInputTokens: number;
-    outputTokens: number;
-  };
+  usage: ScannerUsage;
   error: string | null;
 }
 
@@ -52,6 +49,8 @@ const VULNHUNTER_STAGE_IDS = [
 export const VULNHUNTER_CODEX_ISOLATION_ARGS = [
   "--disable", "plugins",
   "--disable", "apps",
+  "--disable", "hooks",
+  "--disable", "memories",
   "--disable", "browser_use",
   "--disable", "computer_use",
 ] as const;
