@@ -29,6 +29,7 @@ import type { RouteAdapter, RouteInspection, DiscoveryResult } from "./connectio
 import {
   createRouteRegistry,
   type RouteManifest,
+  type RouteRegistryDependencies,
 } from "./connections/route-registry.js";
 import {
   connectionSecretValues,
@@ -167,6 +168,7 @@ export interface ConnectionsServiceDependencies {
   store?: ConnectionsStore;
   catalog?: ConnectionCatalogStore;
   routes?: ConnectionRouteRegistry;
+  routeDependencies?: Omit<RouteRegistryDependencies, "vault" | "resolveModel">;
   recovery?: ConnectionRecoverySink;
 }
 
@@ -252,7 +254,11 @@ export function createConnectionsService(
 ): ConnectionsService {
   const store = deps.store ?? sqliteConnectionsStore;
   const catalog = deps.catalog ?? new ConnectionStore();
-  const routes = deps.routes ?? createRouteRegistry();
+  const routes = deps.routes ?? createRouteRegistry({
+    ...deps.routeDependencies,
+    vault: deps.vault,
+    resolveModel: (connectionId, modelId) => catalog.getModel(connectionId, modelId),
+  });
   const recovery = deps.recovery ?? processRecoverySink;
 
   return {

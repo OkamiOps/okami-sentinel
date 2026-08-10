@@ -21,6 +21,12 @@ import {
   createLocalRuntimeAdapter,
   type LocalRuntimeAdapter,
 } from "./local-runtime-adapters.js";
+import {
+  HTTP_ROUTE_KINDS,
+  registerHttpRouteAdapters,
+  type HttpRouteAdapterDependencies,
+  type HttpRouteKind,
+} from "./http-route-adapters.js";
 import type {
   DiscoveryResult,
   RouteAdapter,
@@ -95,6 +101,49 @@ export const LOCAL_ROUTE_MANIFESTS: readonly RouteManifest[] = Object.freeze([
   }),
 ]);
 
+const HTTP_ROUTE_MANIFESTS: Readonly<Record<HttpRouteKind, RouteManifest>> = Object.freeze({
+  "openai-api": immutableRouteManifest({
+    routeKind: "openai-api", providerKind: "openai", transport: "http-inference",
+    protocol: "openai-responses", authKinds: ["api-key"],
+  }),
+  "xai-api": immutableRouteManifest({
+    routeKind: "xai-api", providerKind: "xai", transport: "http-inference",
+    protocol: "openai-responses", authKinds: ["api-key"],
+  }),
+  "anthropic-api": immutableRouteManifest({
+    routeKind: "anthropic-api", providerKind: "anthropic", transport: "http-inference",
+    protocol: "anthropic-messages", authKinds: ["api-key"],
+  }),
+  "openrouter-api": immutableRouteManifest({
+    routeKind: "openrouter-api", providerKind: "openrouter", transport: "http-inference",
+    protocol: "openai-chat", authKinds: ["api-key"],
+  }),
+  "gemini-api": immutableRouteManifest({
+    routeKind: "gemini-api", providerKind: "google", transport: "http-inference",
+    protocol: "openai-chat", authKinds: ["api-key"],
+  }),
+  "deepseek-api": immutableRouteManifest({
+    routeKind: "deepseek-api", providerKind: "deepseek", transport: "http-inference",
+    protocol: "openai-chat", authKinds: ["api-key"],
+  }),
+  "minimax-token-plan": immutableRouteManifest({
+    routeKind: "minimax-token-plan", providerKind: "minimax", transport: "http-inference",
+    protocol: "anthropic-messages", authKinds: ["api-key"],
+  }),
+  "mimo-token-plan": immutableRouteManifest({
+    routeKind: "mimo-token-plan", providerKind: "xiaomi", transport: "http-inference",
+    protocol: "anthropic-messages", authKinds: ["api-key"],
+  }),
+  "custom-openai-compatible": immutableRouteManifest({
+    routeKind: "custom-openai-compatible", providerKind: "custom", transport: "http-inference",
+    protocol: "openai-chat", authKinds: ["api-key", "custom-headers"],
+  }),
+  "custom-anthropic-compatible": immutableRouteManifest({
+    routeKind: "custom-anthropic-compatible", providerKind: "custom", transport: "http-inference",
+    protocol: "anthropic-messages", authKinds: ["api-key", "custom-headers"],
+  }),
+});
+
 export interface RouteRegistry {
   readonly manifests: readonly RouteManifest[];
   get(routeKind: string): RouteAdapter | undefined;
@@ -107,14 +156,23 @@ export interface RouteRegistryDependencies {
   codex?: CodexAppServerBridge;
   local?: LocalRuntimeAdapter;
   now?: () => Date;
+  vault?: HttpRouteAdapterDependencies["vault"];
+  resolveModel?: HttpRouteAdapterDependencies["resolveModel"];
+  http?: Omit<HttpRouteAdapterDependencies, "vault" | "resolveModel" | "now">;
 }
 
 export function createRouteRegistry(
   dependencies: RouteRegistryDependencies = {},
 ): RouteRegistry {
   const adapters = new Map<string, RouteAdapter>();
+  const availableManifests = dependencies.vault === undefined
+    ? LOCAL_ROUTE_MANIFESTS
+    : Object.freeze([
+      ...LOCAL_ROUTE_MANIFESTS,
+      ...HTTP_ROUTE_KINDS.map((routeKind) => HTTP_ROUTE_MANIFESTS[routeKind]),
+    ]);
   const manifests = new Map<string, RouteManifest>(
-    LOCAL_ROUTE_MANIFESTS.map((manifest) => [manifest.routeKind, manifest]),
+    availableManifests.map((manifest) => [manifest.routeKind, manifest]),
   );
   const now = dependencies.now ?? (() => new Date());
   const codex = dependencies.codex ?? new CodexAppServerBridge(
@@ -123,7 +181,7 @@ export function createRouteRegistry(
   );
   const local = dependencies.local ?? createLocalRuntimeAdapter();
   const registry: RouteRegistry = {
-    manifests: LOCAL_ROUTE_MANIFESTS,
+    manifests: availableManifests,
     get: (routeKind) => adapters.get(routeKind),
     getManifest: (routeKind) => manifests.get(routeKind),
     list: () => [...adapters.values()],
@@ -141,6 +199,14 @@ export function createRouteRegistry(
   registry.register(createCodexRouteAdapter("openai-codex-local", codex, now));
   registry.register(createCodexRouteAdapter("openai-chatgpt-app-server", codex, now));
   for (const adapter of createLocalRouteAdapters(local)) registry.register(adapter);
+  if (dependencies.vault !== undefined) {
+    registerHttpRouteAdapters(registry.register, {
+      ...dependencies.http,
+      vault: dependencies.vault,
+      resolveModel: dependencies.resolveModel,
+      now,
+    });
+  }
   return registry;
 }
 

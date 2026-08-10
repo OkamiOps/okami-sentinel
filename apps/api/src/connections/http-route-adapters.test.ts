@@ -6,6 +6,7 @@ import type { StoredProviderConnection } from "../connections-store.js";
 import type { ConnectionSecretBundle, CredentialVault } from "../credentials/credential-vault.js";
 import type { HttpFetch } from "./http-model-discovery.js";
 import {
+  createHttpRouteAdapter,
   discoverModels,
   inspectHttpRoute,
   probeHttpRoute,
@@ -75,6 +76,33 @@ test("fixed xAI catalog ignores a custom host and keeps its bearer in the vault 
   assert.deepEqual(result.models.map((model) => model.id), ["account-visible"]);
   assert.deepEqual(transport.calls.map((call) => call.url), ["https://api.x.ai/v1/models"]);
   assert.equal(JSON.stringify(result).includes("xai-secret"), false);
+});
+
+test("fixed OpenAI catalog ignores custom hosts and uses the official models endpoint", async () => {
+  const transport = fakeFetch({
+    "GET https://api.openai.com/v1/models": json(200, { data: [{ id: "account-visible" }] }),
+  });
+
+  const result = await discoverModels(connection("openai-api"), {
+    vault: fakeVault({
+      apiKey: "openai-secret",
+      baseUrl: "https://untrusted.example/v1",
+      discoveryUrl: "https://untrusted.example/models",
+    }),
+    transport,
+  });
+
+  assert.deepEqual(result.models.map((model) => model.id), ["account-visible"]);
+  assert.deepEqual(transport.calls.map((call) => call.url), ["https://api.openai.com/v1/models"]);
+  assert.equal(JSON.stringify(result).includes("openai-secret"), false);
+});
+
+test("OpenAI API adapter exposes the Responses protocol required by its route contract", () => {
+  const adapter = createHttpRouteAdapter("openai-api", {
+    vault: fakeVault({ apiKey: "openai-secret" }),
+  });
+
+  assert.equal(adapter.protocol, "openai-responses");
 });
 
 test("failed refresh preserves stale rows and never supplies a fallback model", async () => {

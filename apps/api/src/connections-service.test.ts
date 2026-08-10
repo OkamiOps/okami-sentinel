@@ -287,6 +287,23 @@ test("closed local registry rejects unknown routes and Cursor API keys before va
   }
 });
 
+test("default registry accepts the reviewed OpenAI API route before vault persistence", async () => {
+  const db = new Database(":memory:");
+  try {
+    const vault = new FakeVault();
+    const service = createConnectionsServiceBase({ vault, store: storeFor(db) });
+
+    const connection = await service.create(apiConnectionInput());
+
+    assert.equal(connection.routeKind, "openai-api");
+    assert.equal(connection.protocol, "openai-responses");
+    assert.equal(vault.putCalls, 1);
+    assert.equal(listConnections(db).length, 1);
+  } finally {
+    db.close();
+  }
+});
+
 test("update validates the persisted route contract before vault or SQLite writes", async () => {
   const db = new Database(":memory:");
   try {

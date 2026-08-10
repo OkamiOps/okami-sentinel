@@ -149,7 +149,11 @@ export async function discoverModels(
   const transport = deps.transport ?? fetch;
   switch (connection.routeKind) {
     case "openai-api":
-      return discoverOpenAiModels(credentials, transport);
+      return discoverOpenAiModels({
+        ...credentials,
+        baseUrl: undefined,
+        discoveryUrl: undefined,
+      }, transport);
     case "custom-openai-compatible":
       return bundle.bundle.baseUrl === undefined && bundle.bundle.discoveryUrl === undefined
         ? unsupportedDiscovery()
@@ -276,7 +280,7 @@ export function createHttpRouteAdapter(
   routeKind: HttpRouteKind,
   deps: HttpRouteAdapterDependencies,
 ): RouteAdapter {
-  const metadata = routeMetadataFor(routeKind, "openai-chat");
+  const metadata = routeMetadataFor(routeKind, defaultProtocolForRoute(routeKind));
   if (metadata === null) throw new TypeError("Unsupported HTTP route kind");
   return {
     routeKind,
@@ -305,6 +309,21 @@ export function createHttpRouteAdapter(
       })).report;
     },
   };
+}
+
+function defaultProtocolForRoute(routeKind: HttpRouteKind): ProviderProtocol {
+  switch (routeKind) {
+    case "openai-api":
+    case "xai-api":
+      return "openai-responses";
+    case "anthropic-api":
+    case "custom-anthropic-compatible":
+    case "minimax-token-plan":
+    case "mimo-token-plan":
+      return "anthropic-messages";
+    default:
+      return "openai-chat";
+  }
 }
 
 export function createHttpRouteAdapters(
