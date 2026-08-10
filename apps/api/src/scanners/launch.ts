@@ -17,8 +17,14 @@ import {
   MANTIS_WORKER_BIN,
   MANTIS_WORKER_ENTRY,
   ROOT_DIR,
+  VULNHUNTER_CACHE_DIR,
+  VULNHUNTER_REPOSITORY_URL,
+  VULNHUNTER_SOURCE_REF,
+  VULNHUNTER_WORKER_BIN,
+  VULNHUNTER_WORKER_ENTRY,
 } from "../config.js";
 import type { MantisRunConfiguration } from "./mantis-runtime.js";
+import type { VulnHunterRunConfiguration } from "./vulnhunter-runtime.js";
 
 export interface ScannerLaunch {
   engine: ScannerEngine;
@@ -168,9 +174,58 @@ function prepareMantis(input: ScannerLaunchInput): ScannerLaunch {
   };
 }
 
+function prepareVulnHunter(input: ScannerLaunchInput): ScannerLaunch {
+  const authMode = input.request.authMode ?? "chatgpt";
+  const configuration: VulnHunterRunConfiguration = {
+    outputDir: input.outputDir,
+    repositoryPath: input.repositoryPath,
+    model: input.model,
+    effort: input.effort,
+    paths: (input.request.paths ?? []).map((item) => item.trim()).filter(Boolean),
+    readOnly: true,
+    source: {
+      repositoryUrl: VULNHUNTER_REPOSITORY_URL,
+      ref: VULNHUNTER_SOURCE_REF,
+      cacheDir: VULNHUNTER_CACHE_DIR,
+    },
+  };
+  const configPath = path.join(input.outputDir, "vulnhunter-run.json");
+  fs.writeFileSync(configPath, `${JSON.stringify(configuration, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  const hash = recipeHash({
+    engine: "vulnhunter",
+    authMode,
+    model: input.model,
+    effort: input.effort,
+    mode: input.mode,
+    paths: configuration.paths,
+    scannerVersion: VULNHUNTER_SOURCE_REF,
+  });
+  const args = [VULNHUNTER_WORKER_ENTRY, configPath];
+  return {
+    engine: "vulnhunter",
+    authMode,
+    provider: "openai",
+    scannerVersion: VULNHUNTER_SOURCE_REF,
+    recipeHash: hash,
+    command: VULNHUNTER_WORKER_BIN,
+    args,
+    cwd: ROOT_DIR,
+    env: explicitAuthEnvironment(authMode, {
+      ...process.env,
+      NO_COLOR: "1",
+      CI: "1",
+    }),
+    displayCommand: `sentinel-vulnhunter ${path.basename(configPath)}`,
+  };
+}
+
 export function prepareScannerLaunch(input: ScannerLaunchInput): ScannerLaunch {
   const engine = input.request.engine ?? "codex-security";
   if (engine === "codex-security") return prepareCodexSecurity(input);
   if (engine === "mantis") return prepareMantis(input);
-  throw new Error("VulnHunter Codex port ainda não está disponível.");
+  if (engine === "vulnhunter") return prepareVulnHunter(input);
+  throw new Error(`Scanner não suportado: ${engine}`);
 }

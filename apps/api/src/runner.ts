@@ -34,6 +34,7 @@ import {
 import { validateScannerRequest } from "./scanners/catalog.js";
 import { prepareScannerLaunch } from "./scanners/launch.js";
 import { refreshMantisRunFromDisk } from "./scanners/mantis-reconcile.js";
+import { refreshVulnHunterRunFromDisk } from "./scanners/vulnhunter-reconcile.js";
 
 type Listener = (event: ScanEvent) => void;
 
@@ -503,6 +504,9 @@ export function refreshAfterClose(
 ): ScanRun {
   if (fallback.engine === "mantis") {
     return refreshMantisRunFromDisk(getRun(fallback.id) ?? fallback);
+  }
+  if (fallback.engine === "vulnhunter") {
+    return refreshVulnHunterRunFromDisk(getRun(fallback.id) ?? fallback);
   }
   // Try to pick up official workbench id if created
   try {

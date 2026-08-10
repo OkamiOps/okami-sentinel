@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import type { ScanProgress, ScanRun } from "@csb/shared";
 import * as config from "./config.js";
+import { readFindingsFile } from "./ingest.js";
 import { buildScannerCatalog } from "./scanners/catalog.js";
 import {
   explicitAuthEnvironment,
@@ -22,6 +23,7 @@ import {
   summarizeMantisEvent,
   writeMantisRuntime,
 } from "./scanners/mantis-runtime.js";
+import { writeVulnHunterRuntime } from "./scanners/vulnhunter-runtime.js";
 import {
   isInternalProgressMarker,
   parseCliPhaseHint,
@@ -59,7 +61,7 @@ test("Codex binary resolution prefers an explicit override, then the ChatGPT bun
   );
 });
 
-test("catalog exposes only routes that have a real phase-one adapter", () => {
+test("catalog exposes every scanner backed by a real local adapter", () => {
   const catalog = buildScannerCatalog({
     codexSecurityReady: true,
     codexSecurityChatGpt: true,
@@ -78,8 +80,16 @@ test("catalog exposes only routes that have a real phase-one adapter", () => {
   assert.equal(mantis?.stageCount, 9);
   assert.equal(mantis?.writesTarget, false);
   assert.equal(mantis?.executesGeneratedCode, false);
-  assert.equal(vulnhunter?.enabled, false);
+  assert.equal(vulnhunter?.enabled, true);
+  assert.equal(vulnhunter?.available, true);
   assert.equal(vulnhunter?.maturity, "experimental");
+  assert.deepEqual(vulnhunter?.authModes.map((auth) => auth.id), ["chatgpt"]);
+  assert.deepEqual(vulnhunter?.models.map((model) => model.id), ["gpt-5.6-sol"]);
+  assert.deepEqual(vulnhunter?.efforts, ["high", "xhigh"]);
+  assert.deepEqual(vulnhunter?.modes, ["standard"]);
+  assert.equal(vulnhunter?.stageCount, 6);
+  assert.equal(vulnhunter?.writesTarget, false);
+  assert.equal(vulnhunter?.executesGeneratedCode, false);
 });
 
 test("ChatGPT authentication never inherits API credentials", () => {
@@ -103,9 +113,11 @@ test("launch adapters produce explicit, reproducible recipes without executing a
   const repositoryPath = path.join(fixtureRoot, "repository");
   const codexOutput = path.join(fixtureRoot, "codex-output");
   const mantisOutput = path.join(fixtureRoot, "mantis-output");
+  const vulnhunterOutput = path.join(fixtureRoot, "vulnhunter-output");
   fs.mkdirSync(repositoryPath);
   fs.mkdirSync(codexOutput);
   fs.mkdirSync(mantisOutput);
+  fs.mkdirSync(vulnhunterOutput);
 
   try {
     const codexSecurity = prepareScannerLaunch({
@@ -159,6 +171,45 @@ test("launch adapters produce explicit, reproducible recipes without executing a
     assert.match(mantis.recipeHash, /^[a-f0-9]{64}$/);
     assert.equal(mantis.env.OPENAI_API_KEY, undefined);
     assert.equal(mantis.env.CODEX_API_KEY, undefined);
+
+    let vulnhunter: ReturnType<typeof prepareScannerLaunch>;
+    try {
+      vulnhunter = prepareScannerLaunch({
+        request: {
+          repositoryPath,
+          engine: "vulnhunter",
+          provider: "openai",
+          authMode: "chatgpt",
+          model: "gpt-5.6-sol",
+          effort: "high",
+          mode: "standard",
+          paths: ["src/api"],
+        },
+        repositoryPath,
+        outputDir: vulnhunterOutput,
+        model: "gpt-5.6-sol",
+        effort: "high",
+        mode: "standard",
+      });
+    } catch (error) {
+      assert.fail(`VulnHunter launch adapter is missing: ${String(error)}`);
+    }
+    const vulnhunterConfig = JSON.parse(
+      fs.readFileSync(path.join(vulnhunterOutput, "vulnhunter-run.json"), "utf8"),
+    ) as {
+      repositoryPath: string;
+      paths: string[];
+      readOnly: boolean;
+      source: { ref: string };
+    };
+    assert.equal(vulnhunter.engine, "vulnhunter");
+    assert.equal(vulnhunterConfig.repositoryPath, repositoryPath);
+    assert.deepEqual(vulnhunterConfig.paths, ["src/api"]);
+    assert.equal(vulnhunterConfig.readOnly, true);
+    assert.match(vulnhunterConfig.source.ref, /^[a-f0-9]{40}$/);
+    assert.match(vulnhunter.recipeHash, /^[a-f0-9]{64}$/);
+    assert.equal(vulnhunter.env.OPENAI_API_KEY, undefined);
+    assert.equal(vulnhunter.env.CODEX_API_KEY, undefined);
   } finally {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }
@@ -288,6 +339,398 @@ test("Mantis evidence hydration cannot read outside the immutable snapshot", () 
   }
 });
 
+test("VulnHunter normalization hydrates Inspector evidence without claiming runtime proof", async () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-vulnhunter-normalize-"));
+  const outputDir = path.join(fixtureRoot, "output");
+  const resultsDir = path.join(outputDir, "vulnhunter", "results");
+  const snapshotDir = path.join(outputDir, "vulnhunter-snapshot", "src");
+  fs.mkdirSync(resultsDir, { recursive: true });
+  fs.mkdirSync(snapshotDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(snapshotDir, "login.ts"),
+    [
+      "export async function login(req) {",
+      "  const email = req.body.email;",
+      "  const sql = `SELECT * FROM users WHERE email = '${email}'`;",
+      "  return db.query(sql);",
+      "}",
+    ].join("\n"),
+  );
+  fs.writeFileSync(path.join(fixtureRoot, "secret.ts"), "do-not-expose");
+  fs.writeFileSync(
+    path.join(resultsDir, "sentinel-findings.json"),
+    JSON.stringify({
+      schemaVersion: 1,
+      findings: [{
+        id: "VULN-001",
+        title: "Login query accepts attacker-controlled SQL",
+        severity: "High",
+        confidence: "high",
+        cwe: ["CWE-89"],
+        summary: "The public login route interpolates an attacker-controlled email into SQL.",
+        rootCause: "The query is assembled with string interpolation instead of parameters.",
+        entryPoint: "POST /login",
+        dataFlow: "req.body.email → template literal → db.query",
+        impact: "An unauthenticated attacker can alter the login query.",
+        remediation: "Use a parameterized query.",
+        severityRationale: "The route is unauthenticated and reaches a database query.",
+        validation: {
+          summary: "Static falsification found no sanitizer or parameter binding.",
+          limitations: ["The database dialect is unavailable in the snapshot."],
+        },
+        evidence: [
+          {
+            path: "src/login.ts",
+            startLine: 2,
+            endLine: 2,
+            role: "source",
+            explanation: "The request body controls email.",
+          },
+          {
+            path: "src/login.ts",
+            startLine: 4,
+            endLine: 4,
+            role: "sink",
+            explanation: "The interpolated query reaches db.query.",
+          },
+          {
+            path: "../secret.ts",
+            startLine: 1,
+            endLine: 1,
+            role: "evidence",
+            explanation: "This locator must stay confined to the snapshot.",
+          },
+        ],
+      }],
+    }),
+  );
+
+  try {
+    const modulePath = `./scanners/${"vulnhunter-normalize"}.js`;
+    let normalizer: {
+      normalizeVulnHunterWorkspace(resultsDir: string, outputDir: string): number;
+    };
+    try {
+      normalizer = await import(modulePath) as typeof normalizer;
+    } catch (error) {
+      assert.fail(`VulnHunter normalizer is missing: ${String(error)}`);
+    }
+
+    assert.equal(normalizer.normalizeVulnHunterWorkspace(resultsDir, outputDir), 1);
+    const payload = JSON.parse(
+      fs.readFileSync(path.join(outputDir, "findings.json"), "utf8"),
+    ) as { engine: string; findings: Array<Record<string, unknown>> };
+    const finding = payload.findings[0] as {
+      findingId: string;
+      severity: { level: string };
+      confidence: { level: string; rationale: string };
+      ruleId: string;
+      rootCause: { summary: string };
+      validation: { summary: string; method: string; limitations: string[] };
+      codeEvidence: Array<{ role: string; code: string | null; explanation: string }>;
+      attackPath: { evidenceRefs: string[]; dataflow: { summary: string; outcome: string } };
+      fingerprints: { primary: string };
+    };
+    assert.equal(payload.engine, "vulnhunter");
+    assert.equal(finding.findingId, "vulnhunter-VULN-001");
+    assert.equal(finding.severity.level, "high");
+    assert.equal(finding.confidence.level, "high");
+    assert.match(finding.confidence.rationale, /static/i);
+    assert.equal(finding.ruleId, "vulnhunter/CWE-89");
+    assert.equal(
+      finding.rootCause.summary,
+      "The query is assembled with string interpolation instead of parameters.",
+    );
+    assert.equal(finding.validation.summary, "Static falsification found no sanitizer or parameter binding.");
+    assert.match(finding.validation.method, /read-only static/i);
+    assert.deepEqual(finding.validation.limitations, [
+      "The database dialect is unavailable in the snapshot.",
+      "No exploit payload, PoC code, or exploit test was generated or executed by Sentinel's read-only Codex port.",
+    ]);
+    assert.equal(finding.codeEvidence[0]?.role, "source");
+    assert.equal(finding.codeEvidence[0]?.code, "  const email = req.body.email;");
+    assert.equal(finding.codeEvidence[1]?.role, "sink");
+    assert.equal(finding.codeEvidence[1]?.code, "  return db.query(sql);");
+    assert.equal(finding.codeEvidence.length, 2);
+    assert.equal(JSON.stringify(finding).includes("do-not-expose"), false);
+    assert.deepEqual(finding.attackPath.evidenceRefs, ["evidence-1", "evidence-2"]);
+    assert.equal(finding.attackPath.dataflow.summary, "req.body.email → template literal → db.query");
+    assert.equal(finding.attackPath.dataflow.outcome, "An unauthenticated attacker can alter the login query.");
+    assert.match(finding.fingerprints.primary, /^capitalone-vulnhunter\/v1:sha256:[a-f0-9]{64}$/);
+    const inspector = readFindingsFile(outputDir)[0];
+    assert.equal(inspector?.primaryPath, "src/login.ts");
+    assert.equal(inspector?.codeEvidence.length, 2);
+    assert.equal(inspector?.attackPathModel?.lanes[0]?.nodes.some((node) => node.kind === "sink"), true);
+    const stableFingerprint = finding.fingerprints.primary;
+    const handoffPath = path.join(resultsDir, "sentinel-findings.json");
+    const reworded = JSON.parse(fs.readFileSync(handoffPath, "utf8")) as {
+      findings: Array<{ title: string; rootCause: string }>;
+    };
+    reworded.findings[0]!.title = "Same sink with different generated wording";
+    reworded.findings[0]!.rootCause = "Equivalent explanation with different prose.";
+    fs.writeFileSync(handoffPath, JSON.stringify(reworded));
+    normalizer.normalizeVulnHunterWorkspace(resultsDir, outputDir);
+    const rerun = JSON.parse(fs.readFileSync(path.join(outputDir, "findings.json"), "utf8")) as {
+      findings: Array<{ fingerprints: { primary: string } }>;
+    };
+    assert.equal(rerun.findings[0]?.fingerprints.primary, stableFingerprint);
+    fs.writeFileSync(handoffPath, JSON.stringify({ schemaVersion: 1, findings: "invalid" }));
+    assert.throws(
+      () => normalizer.normalizeVulnHunterWorkspace(resultsDir, outputDir),
+      /does not match schemaVersion 1/,
+    );
+    fs.writeFileSync(handoffPath, JSON.stringify({
+      schemaVersion: 1,
+      findings: [{ id: "VULN-001", title: "Missing evidence", severity: "High", evidence: [] }],
+    }));
+    assert.throws(
+      () => normalizer.normalizeVulnHunterWorkspace(resultsDir, outputDir),
+      /has no confined line-level evidence/,
+    );
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("VulnHunter progress reports stage and liveness instead of a fabricated percentage", async () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-vulnhunter-progress-"));
+  const staleAt = "2026-08-10T18:00:00.000Z";
+  const recentAt = new Date("2026-08-10T18:09:55.000Z");
+  const now = Date.parse("2026-08-10T18:10:00.000Z");
+
+  try {
+    const modulePath = `./scanners/${"vulnhunter-runtime"}.js`;
+    const runtimeModule = await import(modulePath) as {
+      writeVulnHunterRuntime(scanDir: string, state: Record<string, unknown>): void;
+      readVulnHunterRuntime(scanDir: string): Record<string, unknown> | null;
+      latestVulnHunterActivityAt(scanDir: string, state: Record<string, unknown>): string;
+      vulnhunterRuntimeProgress(
+        state: Record<string, unknown>,
+        lastActivityAt: string,
+        nowMs: number,
+      ): ScanProgress;
+    };
+    const state = {
+      engine: "vulnhunter",
+      status: "running",
+      stage: "hunt",
+      stageLabel: "Parallel hunt",
+      percent: 24,
+      detail: "Trace agents are reviewing partitions",
+      startedAt: staleAt,
+      updatedAt: staleAt,
+      completedAt: null,
+      snapshotId: "content:abc",
+      sourceRef: "a".repeat(40),
+      findings: 0,
+      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+      error: null,
+    };
+    runtimeModule.writeVulnHunterRuntime(fixtureRoot, state);
+    const logsDir = path.join(fixtureRoot, "vulnhunter-logs");
+    fs.mkdirSync(logsDir);
+    const logPath = path.join(logsDir, "scan.jsonl");
+    fs.writeFileSync(logPath, '{"type":"item.completed"}\n');
+    fs.utimesSync(logPath, recentAt, recentAt);
+
+    const persisted = runtimeModule.readVulnHunterRuntime(fixtureRoot);
+    assert.equal(persisted?.stage, "hunt");
+    const lastActivityAt = runtimeModule.latestVulnHunterActivityAt(fixtureRoot, state);
+    const progress = runtimeModule.vulnhunterRuntimeProgress(state, lastActivityAt, now);
+    assert.equal(progress.indeterminate, true);
+    assert.equal(progress.phase, "discovery");
+    assert.equal(progress.currentItem, 2);
+    assert.equal(progress.itemsCompleted, 1);
+    assert.equal(progress.itemsTotal, 6);
+    assert.equal(progress.activityState, "active");
+    assert.match(progressEventMessage(progress), /stage 2\/6/);
+    assert.doesNotMatch(progressEventMessage(progress), /24%/);
+  } catch (error) {
+    assert.fail(`VulnHunter runtime telemetry is missing: ${String(error)}`);
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("public scan progress reads VulnHunter artifact-backed runtime telemetry", () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-vulnhunter-progress-"));
+  const now = new Date().toISOString();
+  try {
+    writeVulnHunterRuntime(fixtureRoot, {
+      engine: "vulnhunter",
+      status: "running",
+      stage: "verify",
+      stageLabel: "Candidate verification",
+      percent: 45,
+      detail: "falsifying candidate traces",
+      startedAt: now,
+      updatedAt: now,
+      lastActivityAt: now,
+      completedAt: null,
+      snapshotId: "content:abc",
+      sourceRef: "a".repeat(40),
+      findings: 2,
+      usage: { inputTokens: 100, cachedInputTokens: 40, outputTokens: 20 },
+      error: null,
+    });
+
+    const progress = progressForStatus("running", fixtureRoot, "standard", now);
+    assert.equal(progress?.phase, "validation");
+    assert.equal(progress?.phaseLabel, "Candidate verification");
+    assert.equal(progress?.indeterminate, true);
+    assert.equal(progress?.currentItem, 3);
+    assert.equal(progress?.itemsTotal, 6);
+    assert.equal(progress?.reportableFindings, 2);
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("VulnHunter kickoff binds the upstream skill to an immutable read-only snapshot", async () => {
+  const runtimeModule = await import(`./scanners/${"vulnhunter-runtime"}.js`) as {
+    VULNHUNTER_CODEX_ISOLATION_ARGS: readonly string[];
+    buildVulnHunterPrompt?: (input: Record<string, unknown>) => string;
+    buildVulnHunterFinalizationPrompt?: (input: Record<string, unknown>) => string;
+  };
+  assert.deepEqual(runtimeModule.VULNHUNTER_CODEX_ISOLATION_ARGS, [
+    "--disable", "plugins",
+    "--disable", "apps",
+    "--disable", "browser_use",
+    "--disable", "computer_use",
+  ]);
+  assert.equal(typeof runtimeModule.buildVulnHunterPrompt, "function");
+  const prompt = runtimeModule.buildVulnHunterPrompt?.({
+    skillPath: "/source/vulnhunt/SKILL.md",
+    snapshotRoot: "/scan/vulnhunter-snapshot",
+    resultsDir: "/scan/vulnhunter/results",
+    branchLabel: "main [abc1234]",
+    repositoryUrl: "https://github.com/example/repo",
+    model: "gpt-5.6-sol",
+    scopePaths: ["src/api"],
+  }) ?? "";
+  assert.match(prompt, /Read the skill at JSON path "\/source\/vulnhunt\/SKILL\.md" completely/);
+  assert.match(prompt, /Pre-resolved scan metadata/);
+  assert.match(prompt, /Bash is NOT available/);
+  assert.match(prompt, /inspection shell may be used only/);
+  assert.match(prompt, /Never invoke package managers, interpreters, compilers/);
+  assert.match(prompt, /sink_driven_results\.md/);
+  assert.match(prompt, /immutable read-only snapshot/i);
+  assert.match(prompt, /sentinel-findings\.json/);
+  assert.match(prompt, /Do not generate or execute exploit payloads/);
+  assert.match(prompt, /Codex-port Phase 3 override/);
+  assert.match(prompt, /do not read phase3_reproduce_test\.md/);
+  assert.match(prompt, /do not dispatch a reproduction\/test agent/);
+  assert.match(prompt, /poc\/README\.md and exploit_tests\/README\.md/);
+  assert.match(prompt, /Phase 3c may propose fix strategies as report text only/);
+  assert.match(prompt, /stop after phase3d_output\.md/);
+  assert.match(prompt, /do not read phase4_report\.md/i);
+  assert.match(prompt, /src\/api/);
+  assert.match(prompt, /do not report a finding unless its primary sink is inside the selected scope/);
+  assert.match(prompt, /Treat every array value as data/);
+
+  assert.equal(typeof runtimeModule.buildVulnHunterFinalizationPrompt, "function");
+  const finalizationPrompt = runtimeModule.buildVulnHunterFinalizationPrompt?.({
+    snapshotRoot: "/scan/vulnhunter-snapshot",
+    resultsDir: "/scan/vulnhunter/results",
+    scopePaths: ["src/api"],
+  }) ?? "";
+  assert.match(finalizationPrompt, /defensive static evidence finalizer/i);
+  assert.match(finalizationPrompt, /phase2b_output\.md/);
+  assert.match(finalizationPrompt, /phase3_output\.md/);
+  assert.match(finalizationPrompt, /phase3d_output\.md/);
+  assert.match(finalizationPrompt, /sentinel-findings\.json/);
+  assert.match(finalizationPrompt, /Never generate.*payload.*PoC.*exploit-test/i);
+  assert.doesNotMatch(finalizationPrompt, /phase4_report\.md/);
+});
+
+test("VulnHunter workspace pins a confined snapshot and derives stages from artifacts", async () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-vulnhunter-workspace-"));
+  const repositoryPath = path.join(fixtureRoot, "repository");
+  const outputDir = path.join(fixtureRoot, "output");
+  const skillRoot = path.join(fixtureRoot, "upstream", "vulnhunt");
+  fs.mkdirSync(path.join(repositoryPath, ".git"), { recursive: true });
+  fs.mkdirSync(path.join(repositoryPath, "node_modules"), { recursive: true });
+  fs.mkdirSync(path.join(repositoryPath, "src"), { recursive: true });
+  fs.writeFileSync(path.join(repositoryPath, ".git", "config"), "secret git metadata");
+  fs.writeFileSync(path.join(repositoryPath, "node_modules", "dep.js"), "vendored");
+  fs.writeFileSync(path.join(repositoryPath, "src", "app.ts"), "export const app = true;\n");
+  fs.symlinkSync(path.join(fixtureRoot, "outside.txt"), path.join(repositoryPath, "src", "outside-link"));
+  fs.writeFileSync(path.join(fixtureRoot, "outside.txt"), "outside");
+  fs.mkdirSync(path.join(skillRoot, "phases"), { recursive: true });
+  fs.writeFileSync(path.join(skillRoot, "SKILL.md"), "# VulnHunter");
+  for (const name of [
+    "phase1_recon.md",
+    "phase2_hunt.md",
+    "phase2_shared.md",
+    "phase2_class_inj.md",
+    "phase2_class_nav.md",
+    "phase2_class_log.md",
+    "phase2b_verify.md",
+    "phase3_reproduce_test.md",
+    "phase3c_fixes.md",
+    "phase3d_sweep.md",
+    "phase4_report.md",
+  ]) fs.writeFileSync(path.join(skillRoot, "phases", name), `# ${name}`);
+
+  try {
+    const modulePath = `./scanners/${"vulnhunter-worker-support"}.js`;
+    let support: {
+      validVulnHunterSkillRoot(root: string): boolean;
+      assertVulnHunterNonOperationalArtifacts(resultsDir: string): void;
+      createVulnHunterSnapshot(repositoryPath: string, outputDir: string): {
+        snapshotRoot: string;
+        snapshotId: string;
+      };
+      inferVulnHunterStage(resultsDir: string): { id: string; label: string };
+    };
+    try {
+      support = await import(modulePath) as typeof support;
+    } catch (error) {
+      assert.fail(`VulnHunter worker support is missing: ${String(error)}`);
+    }
+    assert.equal(support.validVulnHunterSkillRoot(skillRoot), true);
+    const snapshot = support.createVulnHunterSnapshot(repositoryPath, outputDir);
+    assert.match(snapshot.snapshotId, /^content:[a-f0-9]{64}$/);
+    assert.equal(fs.existsSync(path.join(snapshot.snapshotRoot, "src", "app.ts")), true);
+    assert.equal(fs.existsSync(path.join(snapshot.snapshotRoot, ".git")), false);
+    assert.equal(fs.existsSync(path.join(snapshot.snapshotRoot, "node_modules")), false);
+    assert.equal(fs.existsSync(path.join(snapshot.snapshotRoot, "src", "outside-link")), false);
+
+    const resultsDir = path.join(outputDir, "vulnhunter", "results");
+    fs.mkdirSync(path.join(resultsDir, "results"), { recursive: true });
+    fs.mkdirSync(path.join(resultsDir, "partitions"), { recursive: true });
+    assert.equal(support.inferVulnHunterStage(resultsDir).id, "recon");
+    fs.writeFileSync(path.join(resultsDir, "phase1_output.md"), "recon");
+    assert.equal(support.inferVulnHunterStage(resultsDir).id, "hunt");
+    fs.writeFileSync(path.join(resultsDir, "partitions", "sg-1_data.md"), "partition");
+    fs.writeFileSync(path.join(resultsDir, "results", "sg-1_inj_results.md"), "candidate");
+    assert.equal(support.inferVulnHunterStage(resultsDir).id, "hunt");
+    fs.writeFileSync(path.join(resultsDir, "results", "sg-1_nav_results.md"), "safe");
+    fs.writeFileSync(path.join(resultsDir, "results", "sg-1_log_results.md"), "safe");
+    assert.equal(support.inferVulnHunterStage(resultsDir).id, "hunt");
+    fs.writeFileSync(path.join(resultsDir, "results", "sink_driven_results.md"), "safe");
+    assert.equal(support.inferVulnHunterStage(resultsDir).id, "verify");
+    fs.writeFileSync(path.join(resultsDir, "phase2b_output.md"), "verified");
+    assert.equal(support.inferVulnHunterStage(resultsDir).id, "validation-notes");
+    fs.writeFileSync(path.join(resultsDir, "phase3_output.md"), "static poc");
+    assert.equal(support.inferVulnHunterStage(resultsDir).id, "sweep");
+    fs.writeFileSync(path.join(resultsDir, "phase3d_output.md"), "sweep");
+    assert.equal(support.inferVulnHunterStage(resultsDir).id, "report");
+    fs.mkdirSync(path.join(resultsDir, "poc"));
+    fs.mkdirSync(path.join(resultsDir, "exploit_tests"));
+    fs.writeFileSync(path.join(resultsDir, "poc", "README.md"), "Non-operational notice.");
+    fs.writeFileSync(path.join(resultsDir, "exploit_tests", "README.md"), "Non-operational notice.");
+    assert.doesNotThrow(() => support.assertVulnHunterNonOperationalArtifacts(resultsDir));
+    fs.writeFileSync(path.join(resultsDir, "exploit_tests", "exploit.ts"), "throw new Error();");
+    assert.throws(
+      () => support.assertVulnHunterNonOperationalArtifacts(resultsDir),
+      /rejected operational artifact/,
+    );
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
 test("failed Mantis runs with normalized findings remain explicit partial results", () => {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-mantis-partial-"));
   const startedAt = "2026-08-10T10:00:00.000Z";
@@ -341,6 +784,76 @@ test("failed Mantis runs with normalized findings remain explicit partial result
     assert.equal(refreshed.severity.critical, 1);
     assert.equal(refreshed.cost?.inputTokens, 10);
     assert.equal(refreshed.revision, "content:abc");
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("failed VulnHunter runs preserve normalized findings as incomplete evidence", async () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-vulnhunter-partial-"));
+  const startedAt = "2026-08-10T18:00:00.000Z";
+  fs.writeFileSync(
+    path.join(fixtureRoot, "findings.json"),
+    JSON.stringify({ findings: [{ severity: { level: "high" } }] }),
+  );
+  const runtimeModule = await import(`./scanners/${"vulnhunter-runtime"}.js`) as {
+    writeVulnHunterRuntime(scanDir: string, state: Record<string, unknown>): void;
+  };
+  runtimeModule.writeVulnHunterRuntime(fixtureRoot, {
+    engine: "vulnhunter",
+    status: "failed",
+    stage: "verify",
+    stageLabel: "Adversarial verification",
+    percent: 52,
+    detail: "verification session failed",
+    startedAt,
+    updatedAt: "2026-08-10T18:05:00.000Z",
+    completedAt: "2026-08-10T18:05:00.000Z",
+    snapshotId: "content:def",
+    sourceRef: "b".repeat(40),
+    findings: 1,
+    usage: { inputTokens: 120, cachedInputTokens: 80, outputTokens: 30 },
+    error: "verification session failed",
+  });
+  const run: ScanRun = {
+    id: "vulnhunter-partial",
+    displayName: "fixture",
+    repositoryPath: fixtureRoot,
+    revision: null,
+    scanDir: fixtureRoot,
+    status: "running",
+    model: "gpt-5.6-sol",
+    effort: "high",
+    mode: "standard",
+    engine: "vulnhunter",
+    provider: "openai",
+    authMode: "chatgpt",
+    scannerVersion: null,
+    recipeHash: "fixture",
+    startedAt,
+    completedAt: null,
+    durationMs: null,
+    cost: null,
+    severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0, total: 0 },
+    source: "benchmark",
+    pid: null,
+  };
+
+  try {
+    const modulePath = `./scanners/${"vulnhunter-reconcile"}.js`;
+    let reconciler: { refreshVulnHunterRunFromDisk(run: ScanRun): ScanRun };
+    try {
+      reconciler = await import(modulePath) as typeof reconciler;
+    } catch (error) {
+      assert.fail(`VulnHunter reconciler is missing: ${String(error)}`);
+    }
+    const refreshed = reconciler.refreshVulnHunterRunFromDisk(run);
+    assert.equal(refreshed.status, "incomplete");
+    assert.equal(refreshed.severity.high, 1);
+    assert.equal(refreshed.cost?.inputTokens, 120);
+    assert.equal(refreshed.cost?.cachedInputTokens, 80);
+    assert.equal(refreshed.cost?.outputTokens, 30);
+    assert.equal(refreshed.revision, "content:def");
   } finally {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }

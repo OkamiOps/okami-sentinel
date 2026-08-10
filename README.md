@@ -75,9 +75,11 @@ It is built for developers, DevSecOps engineers, security reviewers, and AI engi
 |---|---|---|---|---|
 | [`@openai/codex-security`](https://github.com/openai/codex-security) | Stable | ChatGPT/Codex subscription or OpenAI API key | `gpt-5.6-sol`, `gpt-5.6-terra` | Standard or deep scan; explicit USD ceiling supported |
 | [Google Mantis](https://github.com/google/mantis) | Preview | ChatGPT/Codex subscription | `gpt-5.6-sol`, `gpt-5.6-terra` | Nine deterministic scan-only stages on an immutable snapshot |
-| [Capital One VulnHunter](https://github.com/capitalone/vulnhunter) | Experimental / unavailable | — | — | Visible in the router, but disabled until its Claude-specific upstream flow has a benchmarked Codex adapter |
+| [Capital One VulnHunter](https://github.com/capitalone/vulnhunter) | Experimental | ChatGPT/Codex subscription | `gpt-5.6-sol` | Six-stage, agent-driven static review on an immutable snapshot; exploit payloads, PoC code, and exploit tests are neither generated nor executed |
 
 Mantis is fetched at a reviewed commit, cached locally, and invoked through a deterministic Sentinel adapter. Phase one deliberately excludes `mantis-reproduce`, `mantis-chain`, and `mantis-patch`: the adapter does not write to the target repository and does not execute generated exploit code. Raw Mantis state remains beside the normalized Sentinel evidence for auditability.
+
+VulnHunter is also fetched at a reviewed commit, but its upstream workflow is Claude-oriented. Sentinel runs the upstream agent-driven path as an experimental Codex port and confines inspection to a separate snapshot. The reproduction phase is replaced by non-operational validation notes, and a second isolated session only finalizes the defensive handoff—no exploit payloads, PoC code, or exploit tests are generated or executed. Retained findings are normalized into the same Inspector evidence contract used by the other engines.
 
 > [!NOTE]
 > A ChatGPT subscription and OpenAI API billing are separate routes. Selecting **ChatGPT subscription** removes `OPENAI_API_KEY` and `CODEX_API_KEY` from the child process; selecting **API key** requires one of them in the API environment. Sentinel never silently falls from one route into the other.
@@ -93,6 +95,7 @@ flowchart LR
     ROUTER["Capability router\nengine + auth + model"]
     CODEXSEC["Codex Security adapter"]
     MANTIS["Mantis scan-only adapter\npinned skills + snapshot"]
+    VULNHUNTER["VulnHunter static adapter\npinned skill + multi-agent traces"]
     GATE["Guardrail engine\npolicy + decision graph"]
     GH["GitHub Actions\nChecks + artifacts"]
 
@@ -102,6 +105,7 @@ flowchart LR
     API --> ROUTER
     ROUTER --> CODEXSEC
     ROUTER --> MANTIS
+    ROUTER --> VULNHUNTER
     API --> GATE
     GATE -. optional .-> GH
 ```
@@ -125,6 +129,7 @@ flowchart LR
 - At least one scanner access route:
   - **Codex Security via subscription:** an active ChatGPT sign-in reported by `npx @openai/codex-security login status`;
   - **Mantis via subscription:** an active sign-in reported by `codex login status` as `Logged in using ChatGPT`;
+  - **VulnHunter via subscription:** the same active generic Codex sign-in, with `gpt-5.6-sol` available;
   - **Codex Security via API:** `OPENAI_API_KEY` or `CODEX_API_KEY` configured in the local API process, or `OPENAI_API_KEY` configured as a repository Actions secret for CI.
 
 ## Quick start
@@ -157,7 +162,7 @@ npx @openai/codex-security login
 # or
 npx @openai/codex-security login --device-auth
 
-# Mantis uses the generic Codex session
+# Mantis and VulnHunter use the generic Codex session
 codex login
 ```
 
@@ -176,7 +181,7 @@ At startup, the API indexes compatible scans already present in the configured C
 
 | Route | Supported engines | Best for | Needs `OPENAI_API_KEY`? | Runs autonomously in GitHub Actions? |
 |---|---|---|---:|---:|
-| **ChatGPT subscription** | Codex Security, Mantis | Local interactive use | No | No |
+| **ChatGPT subscription** | Codex Security, Mantis, VulnHunter | Local interactive use | No | No |
 | **OpenAI API** | Codex Security | CI, pull requests, unattended gates | Yes | Yes |
 
 The scanner catalog is resolved by the local API and the UI disables invalid combinations. The application never returns or stores an API-key value; it only diagnoses whether the required capability is available.
@@ -276,11 +281,15 @@ See [localization architecture](docs/localization.md).
 | `CODEX_SECURITY_STATE_DIR` | Global state when writable; otherwise `data/codex-security-state` | Scanner state and output |
 | `CODEX_SECURITY_BIN` | `npx` | Scanner CLI executable |
 | `CSB_NPM_CACHE_DIR` | `data/npm-cache` | Isolated npm cache used by scanner `npx` |
-| `CODEX_BIN` | ChatGPT Desktop bundled CLI on macOS, otherwise `codex` | Explicit Codex CLI override used as the Mantis inference host |
+| `CODEX_BIN` | ChatGPT Desktop bundled CLI on macOS, otherwise `codex` | Explicit Codex CLI override used as the Mantis and VulnHunter inference host |
 | `MANTIS_REPOSITORY_URL` | `https://github.com/google/mantis.git` | Reviewed Mantis source repository |
 | `MANTIS_SOURCE_REF` | Pinned reviewed commit | Exact Mantis revision used by new runs |
 | `MANTIS_CACHE_DIR` | `data/mantis-cache` | Local cache for the pinned Mantis skills |
 | `MANTIS_SKILLS_DIR` | unset | Optional pre-provisioned Mantis skill directory; must contain every required scan-only stage |
+| `VULNHUNTER_REPOSITORY_URL` | `https://github.com/capitalone/vulnhunter.git` | Reviewed VulnHunter source repository |
+| `VULNHUNTER_SOURCE_REF` | Pinned reviewed commit | Exact VulnHunter revision used by new runs |
+| `VULNHUNTER_CACHE_DIR` | `data/vulnhunter-cache` | Local cache for the pinned VulnHunter skill |
+| `VULNHUNTER_SKILL_DIR` | unset | Optional pre-provisioned VulnHunter skill root containing `SKILL.md` and every required phase |
 | `CSB_HOST` | `127.0.0.1` | API bind address |
 | `CSB_PORT` | `8787` | API port |
 | `CSB_MAX_CONCURRENT_SCANS` | `8` | Maximum concurrent scanner processes |
@@ -315,7 +324,7 @@ okami-sentinel/
 ## Cost and security notes
 
 > [!WARNING]
-> Scans can be expensive. Codex Security's cost envelope maps to its `--max-cost` guardrail. Mantis runs through the ChatGPT subscription route, so Sentinel labels its USD value as an **estimate**, not an invoice or subscription charge. The estimate uses the exact model's current OpenRouter base rates, prices uncached input, cache reads, cache writes, and output separately, refreshes the public catalog every six hours, and retains a reviewed offline snapshot when the catalog is unavailable. Token estimates, plan allowances, credits, and final API billing remain different measurements.
+> Scans can be expensive. Codex Security's cost envelope maps to its `--max-cost` guardrail. Mantis and VulnHunter run through the ChatGPT subscription route, so Sentinel labels their USD values as **estimates**, not invoices or subscription charges. The estimate uses the exact model's current OpenRouter base rates, prices uncached input, cache reads, cache writes, and output separately, refreshes the public catalog every six hours, and retains a reviewed offline snapshot when the catalog is unavailable. Token estimates, plan allowances, credits, and final API billing remain different measurements.
 
 - Data and evidence remain local unless you explicitly publish a GitHub Check or run the API-backed GitHub workflow.
 - Operational failures never become a passing security decision.

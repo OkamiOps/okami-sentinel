@@ -118,7 +118,8 @@ export function estimateScanWithOpenRouterPricing(
   models: OpenRouterModel[],
   pricingUpdatedAt: string,
 ): ScanRun {
-  if (run.engine !== "mantis" || run.authMode !== "chatgpt" || !run.cost) return run;
+  const subscriptionScanner = run.engine === "mantis" || run.engine === "vulnhunter";
+  if (!subscriptionScanner || run.authMode !== "chatgpt" || !run.cost) return run;
   const modelId = openRouterModelId(run);
   const model = modelId ? models.find((candidate) => candidate.id === modelId) : undefined;
   if (!model) return run;

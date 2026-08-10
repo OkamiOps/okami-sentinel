@@ -93,6 +93,31 @@ export const MANTIS_WORKER_ENTRY = path.join(
   "mantis-worker.ts",
 );
 
+export const VULNHUNTER_REPOSITORY_URL =
+  process.env.VULNHUNTER_REPOSITORY_URL?.trim() ||
+  "https://github.com/capitalone/vulnhunter.git";
+
+/** Reviewed upstream revision. The Codex port is deliberately pinned for reproducibility. */
+export const VULNHUNTER_SOURCE_REF =
+  process.env.VULNHUNTER_SOURCE_REF?.trim() ||
+  "8f9eadd772f66160df445b65730e2fbd6ea50d73";
+
+export const VULNHUNTER_CACHE_DIR =
+  process.env.VULNHUNTER_CACHE_DIR?.trim() || path.join(DATA_DIR, "vulnhunter-cache");
+
+export const VULNHUNTER_WORKER_BIN =
+  process.env.VULNHUNTER_WORKER_BIN?.trim() ||
+  path.join(ROOT_DIR, "apps", "api", "node_modules", ".bin", "tsx");
+
+export const VULNHUNTER_WORKER_ENTRY = path.join(
+  ROOT_DIR,
+  "apps",
+  "api",
+  "src",
+  "scanners",
+  "vulnhunter-worker.ts",
+);
+
 export const API_HOST = process.env.CSB_HOST || "127.0.0.1";
 export const API_PORT = Number(process.env.CSB_PORT || 8787);
 

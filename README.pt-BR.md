@@ -75,9 +75,11 @@ Foi criado para desenvolvedores, profissionais de DevSecOps, revisores de segura
 |---|---|---|---|
 | [`@openai/codex-security`](https://github.com/openai/codex-security) | Estável | Assinatura ChatGPT/Codex ou API OpenAI | Standard/deep, com teto explícito em USD |
 | [Google Mantis](https://github.com/google/mantis) | Preview | Assinatura ChatGPT/Codex | Nove etapas scan-only sobre snapshot imutável |
-| [Capital One VulnHunter](https://github.com/capitalone/vulnhunter) | Experimental / indisponível | — | Visível, mas bloqueado até existir um adapter Codex validado por benchmark |
+| [Capital One VulnHunter](https://github.com/capitalone/vulnhunter) | Experimental | Assinatura ChatGPT/Codex | Seis etapas agent-driven sobre snapshot imutável; payloads, código PoC e testes de exploit não são gerados nem executados |
 
 O adapter Mantis usa uma revisão fixa e auditada. Ele não escreve no repositório-alvo e exclui deliberadamente `mantis-reproduce`, `mantis-chain` e `mantis-patch`. Assinatura ChatGPT e faturamento da API são rotas diferentes; o Sentinel remove chaves de API do processo filho quando a assinatura é selecionada e nunca troca silenciosamente de uma rota para outra.
+
+O VulnHunter também usa uma revisão fixa e auditada. Como o fluxo upstream foi criado para Claude, o Sentinel o executa como um port Codex experimental: a análise ocorre em um snapshot separado, a reprodução é substituída por notas de validação não operacionais e uma segunda sessão isolada apenas fecha o handoff defensivo. Nenhum payload, código PoC ou teste de exploit é gerado ou executado, e os findings retidos são normalizados para o Inspector canônico.
 
 ## Arquitetura
 
@@ -90,6 +92,7 @@ flowchart LR
     ROUTER["Router de capacidades\nengine + auth + modelo"]
     SCANNER["Adapter Codex Security"]
     MANTIS["Adapter Mantis scan-only"]
+    VULNHUNTER["Adapter VulnHunter estático"]
     GATE["Motor de guardrails\npolítica + Decision Graph"]
     GH["GitHub Actions\nChecks + artifacts"]
 
@@ -99,6 +102,7 @@ flowchart LR
     API --> ROUTER
     ROUTER --> SCANNER
     ROUTER --> MANTIS
+    ROUTER --> VULNHUNTER
     API --> GATE
     GATE -. opcional .-> GH
 ```
@@ -122,6 +126,7 @@ flowchart LR
 - Ao menos uma rota de acesso:
   - **Codex Security por assinatura:** login ativo em `npx @openai/codex-security login status`;
   - **Mantis por assinatura:** `codex login status` exibindo `Logged in using ChatGPT`;
+  - **VulnHunter por assinatura:** a mesma sessão genérica do Codex, com `gpt-5.6-sol` disponível;
   - **Codex Security por API:** `OPENAI_API_KEY` ou `CODEX_API_KEY` no processo local da API, ou `OPENAI_API_KEY` como secret do Actions.
 
 ## Início rápido
@@ -154,7 +159,7 @@ npx @openai/codex-security login
 # ou
 npx @openai/codex-security login --device-auth
 
-# O Mantis usa a sessão genérica do Codex
+# Mantis e VulnHunter usam a sessão genérica do Codex
 codex login
 ```
 
@@ -173,7 +178,7 @@ Na inicialização, a API indexa scans compatíveis já existentes no state conf
 
 | Rota | Motores compatíveis | Melhor uso | Exige `OPENAI_API_KEY`? | Actions autônomo? |
 |---|---|---|---:|---:|
-| **Assinatura ChatGPT** | Codex Security, Mantis | Uso local e interativo | Não | Não |
+| **Assinatura ChatGPT** | Codex Security, Mantis, VulnHunter | Uso local e interativo | Não | Não |
 | **API OpenAI** | Codex Security | CI, pull requests e gates autônomos | Sim | Sim |
 
 A aplicação nunca lê ou armazena o valor do secret do repositório. Ela apenas diagnostica se a capability necessária está disponível.
@@ -273,6 +278,11 @@ Veja a [arquitetura de localização](docs/localization.pt-BR.md).
 | `CODEX_SECURITY_STATE_DIR` | State global quando gravável; senão `data/codex-security-state` | State e saída do scanner |
 | `CODEX_SECURITY_BIN` | `npx` | Executável do scanner |
 | `CSB_NPM_CACHE_DIR` | `data/npm-cache` | Cache npm isolado usado pelo scanner |
+| `CODEX_BIN` | CLI incluída no ChatGPT Desktop no macOS; senão `codex` | Host de inferência do Mantis e VulnHunter |
+| `VULNHUNTER_REPOSITORY_URL` | `https://github.com/capitalone/vulnhunter.git` | Repositório upstream revisado |
+| `VULNHUNTER_SOURCE_REF` | Commit revisado e fixado | Revisão exata usada em novos scans |
+| `VULNHUNTER_CACHE_DIR` | `data/vulnhunter-cache` | Cache local da skill fixada |
+| `VULNHUNTER_SKILL_DIR` | não definido | Skill já provisionada opcional, com `SKILL.md` e todas as fases |
 | `CSB_HOST` | `127.0.0.1` | Bind da API |
 | `CSB_PORT` | `8787` | Porta da API |
 | `CSB_MAX_CONCURRENT_SCANS` | `8` | Máximo de processos simultâneos |
@@ -305,7 +315,7 @@ okami-sentinel/
 ## Notas de custo e segurança
 
 > [!WARNING]
-> Scans podem ser caros. O envelope do Codex Security mapeia para `--max-cost`. O Mantis usa nove chamadas sequenciais via assinatura ChatGPT e, por isso, não inventa um teto em USD. Estimativa de tokens, franquia do plano, créditos e cobrança final da API são medidas diferentes.
+> Scans podem ser caros. O envelope do Codex Security mapeia para `--max-cost`. Mantis e VulnHunter usam a assinatura ChatGPT; seus valores em USD são estimativas equivalentes calculadas com os preços públicos do OpenRouter, não cobrança ou fatura. Tokens, franquia do plano, créditos e cobrança final da API são medidas diferentes.
 
 - Dados e evidências permanecem locais, exceto quando você publica um GitHub Check ou executa o workflow com API.
 - Falhas operacionais nunca se transformam em decisão de segurança aprovada.

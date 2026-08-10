@@ -87,6 +87,33 @@ test("annotates ChatGPT Mantis usage as an OpenRouter estimate for the exact mod
   assert.equal(estimated.cost?.outputUsd, 5.08128);
 });
 
+test("annotates ChatGPT VulnHunter usage with the same explicit OpenRouter estimate", () => {
+  const run = {
+    engine: "vulnhunter",
+    provider: "openai",
+    authMode: "chatgpt",
+    model: "gpt-5.6-sol",
+    cost: {
+      estimatedUsd: 0,
+      inputTokens: 1_000_000,
+      cachedInputTokens: 250_000,
+      cacheWriteInputTokens: 0,
+      outputTokens: 100_000,
+    },
+  } as ScanRun;
+
+  const estimated = estimateScanWithOpenRouterPricing(
+    run,
+    [sol],
+    "2026-08-10T18:00:00.000Z",
+  );
+
+  assert.notStrictEqual(estimated, run);
+  assert.equal(estimated.cost?.estimatedUsd, 6.875);
+  assert.equal(estimated.cost?.pricingSource, "openrouter");
+  assert.equal(estimated.cost?.pricingModel, "openai/gpt-5.6-sol");
+});
+
 test("does not invent a price when OpenRouter has no exact model", () => {
   const run = {
     engine: "mantis",

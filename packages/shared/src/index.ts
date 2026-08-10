@@ -143,11 +143,11 @@ export interface ScanRun {
 
 /**
  * Returns a comparable USD estimate only when the adapter reports one or when
- * Mantis usage has been explicitly priced from the OpenRouter catalog.
+ * subscription-scanner usage has been explicitly priced from the OpenRouter catalog.
  */
 export function scanEstimatedUsd(scan: ScanRun): number | null {
   if (
-    scan.engine === "mantis" &&
+    (scan.engine === "mantis" || scan.engine === "vulnhunter") &&
     scan.authMode === "chatgpt" &&
     scan.cost?.pricingSource !== "openrouter"
   ) return null;

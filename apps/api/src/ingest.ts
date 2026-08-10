@@ -27,6 +27,7 @@ import {
 import { normalizeAttackPath } from "./attack-path.js";
 import { dirsMatch } from "./progress.js";
 import { refreshMantisRunFromDisk } from "./scanners/mantis-reconcile.js";
+import { refreshVulnHunterRunFromDisk } from "./scanners/vulnhunter-reconcile.js";
 
 interface WorkbenchScanRow {
   id: string;
@@ -987,6 +988,13 @@ export function reconcileRunningScans(): number {
     const before = `${run.status}|${run.cost?.estimatedUsd ?? 0}|${run.severity.total}`;
     if (run.engine === "mantis") {
       const refreshed = refreshMantisRunFromDisk(run);
+      upsertRun(refreshed);
+      const after = `${refreshed.status}|${refreshed.cost?.estimatedUsd ?? 0}|${refreshed.severity.total}`;
+      if (before !== after) updated += 1;
+      continue;
+    }
+    if (run.engine === "vulnhunter") {
+      const refreshed = refreshVulnHunterRunFromDisk(run);
       upsertRun(refreshed);
       const after = `${refreshed.status}|${refreshed.cost?.estimatedUsd ?? 0}|${refreshed.severity.total}`;
       if (before !== after) updated += 1;

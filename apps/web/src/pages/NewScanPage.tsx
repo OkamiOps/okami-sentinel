@@ -58,7 +58,7 @@ const placeholderScanners: ScannerCapability[] = scannerOrder.map((engine) => ({
       : engine === "mantis"
         ? "Google Mantis"
         : "Capital One VulnHunter",
-  enabled: engine !== "vulnhunter",
+  enabled: true,
   available: false,
   maturity: engine === "codex-security" ? "stable" : engine === "mantis" ? "preview" : "experimental",
   reason: null,
@@ -579,13 +579,13 @@ export function NewScanPage() {
                   {paths ? `${paths.split(",").filter(Boolean).length} paths` : t("newScan.fullScope")}
                 </span>
               </div>
-              {engine === "mantis" && (
+              {(engine === "mantis" || engine === "vulnhunter") && (
                 <div className="mt-4 border-l-2 border-chart-3 bg-chart-3/[.045] px-3 py-2">
                   <div className="font-mono text-[8px] uppercase tracking-wider text-chart-3">
-                    {t("newScan.mantisBoundary")}
+                    {t(engine === "mantis" ? "newScan.mantisBoundary" : "newScan.vulnHunterBoundary")}
                   </div>
                   <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">
-                    {t("newScan.mantisBoundaryDescription")}
+                    {t(engine === "mantis" ? "newScan.mantisBoundaryDescription" : "newScan.vulnHunterBoundaryDescription")}
                   </p>
                 </div>
               )}
@@ -632,7 +632,7 @@ export function NewScanPage() {
                 <div className="border-b p-4">
                   <div className="bench-label">{t("newScan.planUsage")}</div>
                   <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-                    {t("newScan.planUsageDescription")}
+                    {t(engine === "vulnhunter" ? "newScan.vulnHunterPlanUsageDescription" : "newScan.planUsageDescription")}
                   </p>
                   <div className="mt-4 grid gap-2 font-mono text-[8px] uppercase text-muted-foreground">
                     <span className="flex items-center justify-between border-b pb-2">

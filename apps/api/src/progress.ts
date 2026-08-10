@@ -8,6 +8,11 @@ import {
   mantisRuntimeProgress,
   readMantisRuntime,
 } from "./scanners/mantis-runtime.js";
+import {
+  latestVulnHunterActivityAt,
+  readVulnHunterRuntime,
+  vulnhunterRuntimeProgress,
+} from "./scanners/vulnhunter-runtime.js";
 
 const PHASES: ScanPhase[] = [
   "preflight",
@@ -280,6 +285,14 @@ export function progressForStatus(
     return mantisRuntimeProgress(
       mantis,
       latestMantisActivityAt(scanDir, mantis),
+    );
+  }
+
+  const vulnhunter = readVulnHunterRuntime(scanDir);
+  if (vulnhunter) {
+    return vulnhunterRuntimeProgress(
+      vulnhunter,
+      latestVulnHunterActivityAt(scanDir, vulnhunter),
     );
   }
 

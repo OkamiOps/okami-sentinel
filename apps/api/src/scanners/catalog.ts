@@ -80,6 +80,15 @@ export function buildScannerCatalog(probe: RuntimeProbe): ScannerCatalogResponse
         : "The Codex CLI has no stored ChatGPT sign-in.",
     },
   ];
+  const vulnhunterAuth = [
+    {
+      id: "chatgpt" as const,
+      available: probe.codexChatGpt,
+      reason: probe.codexChatGpt
+        ? null
+        : "The Codex CLI has no stored ChatGPT sign-in.",
+    },
+  ];
 
   const scanners: ScannerCapability[] = [
     {
@@ -125,16 +134,18 @@ export function buildScannerCatalog(probe: RuntimeProbe): ScannerCatalogResponse
     {
       engine: "vulnhunter",
       name: "Capital One VulnHunter",
-      enabled: false,
-      available: false,
+      enabled: true,
+      available: probe.codexReady && vulnhunterAuth.some((auth) => auth.available),
       maturity: "experimental",
-      reason: "The upstream runtime is Claude-specific. The Codex port is not implemented yet.",
+      reason: !probe.codexReady
+        ? "Codex CLI is unavailable; the VulnHunter port needs it as the inference host."
+        : vulnhunterAuth.find((auth) => !auth.available)?.reason ?? null,
       sourceUrl: "https://github.com/capitalone/vulnhunter",
-      authModes: [],
-      models: [],
-      efforts: [],
-      modes: [],
-      stageCount: 0,
+      authModes: vulnhunterAuth,
+      models: [{ id: "gpt-5.6-sol", profile: "frontier" }],
+      efforts: ["high", "xhigh"],
+      modes: ["standard"],
+      stageCount: 6,
       writesTarget: false,
       executesGeneratedCode: false,
     },
@@ -186,11 +197,7 @@ export async function validateScannerRequest(req: StartScanRequest): Promise<Sca
   const catalog = await getScannerCatalog();
   const scanner = catalog.scanners.find((candidate) => candidate.engine === engine);
   if (!scanner || !scanner.enabled) {
-    throw new Error(
-      engine === "vulnhunter"
-        ? "VulnHunter ainda exige o runtime Claude upstream; o port Codex está marcado como experimental."
-        : `Scanner não suportado: ${engine}`,
-    );
+    throw new Error(`Scanner não suportado: ${engine}`);
   }
   if (!scanner.available) {
     throw new Error(scanner.reason ?? `${scanner.name} não está disponível neste host.`);
@@ -211,9 +218,9 @@ export async function validateScannerRequest(req: StartScanRequest): Promise<Sca
   if (req.mode && !scanner.modes.includes(req.mode)) {
     throw new Error(`Modo ${req.mode} não é válido para ${scanner.name}.`);
   }
-  if (engine === "mantis" && req.maxCostUsd != null) {
+  if (["mantis", "vulnhunter"].includes(engine) && req.maxCostUsd != null) {
     throw new Error(
-      "O adapter Mantis usa a assinatura Codex e não promete um teto USD falso; remova maxCostUsd.",
+      `${scanner.name} usa a assinatura Codex e não promete um teto USD falso; remova maxCostUsd.`,
     );
   }
   return scanner;
