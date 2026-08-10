@@ -173,12 +173,15 @@ interface ProviderConnection {
   authKind: ConnectionAuthKind;
   protocol: ProviderProtocol;
   status: ConnectionStatus;
-  credentialRef: string | null;
   modelSelectionMode: ModelSelectionMode;
   defaultModelId: string | null;
   lastTestedAt: string | null;
   lastModelSyncAt: string | null;
   display: ConnectionDisplay;
+}
+
+interface StoredProviderConnection extends ProviderConnection {
+  credentialRef: string | null;
 }
 
 interface ConnectionDisplay {
@@ -209,7 +212,7 @@ interface ProviderModel {
 
 O `routeKind` é um identificador de adapter, não um enum fechado compartilhado. Novos adapters podem ser registrados sem alterar o contrato central.
 
-`ConnectionDisplay` é um contrato fechado produzido pelo backend. Ele nunca contém URL, hostname, path, nome de header ou qualquer valor derivado do secret bundle.
+`ConnectionDisplay` é um contrato fechado produzido pelo backend. Ele nunca contém URL, hostname, path, nome de header ou qualquer valor derivado do secret bundle. `credentialRef` existe apenas no registro interno da API e nunca atravessa o contrato HTTP.
 
 ## Persistência e cofre
 
