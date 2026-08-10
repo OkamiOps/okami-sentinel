@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { CODEX_BIN } from "../config.js";
+import { processSecretValues, SecretRedactor } from "../redaction.js";
 import { normalizeMantisWorkspace } from "./mantis-normalize.js";
 import {
   createResilientLineWriter,
@@ -54,6 +55,8 @@ let cancelled = false;
 let runtime: MantisRuntimeState | null = null;
 let outputDirForSignal: string | null = null;
 const log = createResilientLineWriter(process.stdout);
+const workerRedactor = new SecretRedactor();
+workerRedactor.register("process", processSecretValues(process.env));
 
 function progress(
   config: MantisRunConfiguration,
@@ -317,9 +320,10 @@ async function runStage(
     const stderr = readline.createInterface({ input: child.stderr! });
 
     stdout.on("line", (line) => {
-      fs.appendFileSync(logPath, `${line}\n`, "utf8");
+      const safeLine = workerRedactor.redactText(line);
+      fs.appendFileSync(logPath, `${safeLine}\n`, "utf8");
       try {
-        const event = JSON.parse(line) as Record<string, unknown>;
+        const event = JSON.parse(safeLine) as Record<string, unknown>;
         if (event.type === "turn.completed") collectUsage(event, stageUsage);
         const activity = summarizeMantisEvent(event);
         const nowMs = Date.now();
@@ -341,8 +345,9 @@ async function runStage(
       }
     });
     stderr.on("line", (line) => {
-      fs.appendFileSync(logPath, `${JSON.stringify({ stream: "stderr", line })}\n`, "utf8");
-      log(`[mantis/${stage.id}] ${line}`);
+      const safeLine = workerRedactor.redactText(line);
+      fs.appendFileSync(logPath, `${JSON.stringify({ stream: "stderr", line: safeLine })}\n`, "utf8");
+      log(`[mantis/${stage.id}] ${safeLine}`);
     });
 
     child.on("error", reject);
@@ -457,7 +462,7 @@ process.on("SIGTERM", () => {
 });
 
 void main().catch((error) => {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = workerRedactor.redactText(error instanceof Error ? error.message : String(error));
   if (runtime && outputDirForSignal) {
     let recoveredFindings = runtime.findings;
     const stateRoot = path.join(outputDirForSignal, "mantis");
@@ -469,7 +474,7 @@ void main().catch((error) => {
         }
       } catch (normalizationError) {
         log(
-          `[mantis/recovery] Partial normalization failed: ${normalizationError instanceof Error ? normalizationError.message : String(normalizationError)}`,
+          `[mantis/recovery] Partial normalization failed: ${workerRedactor.redactText(normalizationError instanceof Error ? normalizationError.message : String(normalizationError))}`,
         );
       }
     }

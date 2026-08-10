@@ -4,6 +4,7 @@ import { execSync } from "node:child_process";
 import Database from "better-sqlite3";
 import { RUNS_DIR, SCANS_ROOT, WORKBENCH_DB_PATH } from "./config.js";
 import { dirsMatch } from "./progress.js";
+import { redactText } from "./redaction.js";
 
 export function cliLogPath(scanDir: string): string {
   return path.join(RUNS_DIR, `${path.basename(scanDir)}.log`);
@@ -23,7 +24,7 @@ export function appendCliLog(scanDir: string, line: string): number {
   try {
     const file = cliLogPath(scanDir);
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-    fs.appendFileSync(file, `${line}\n`, "utf8");
+    fs.appendFileSync(file, `${redactText(line)}\n`, "utf8");
     return fs.statSync(file).size;
   } catch {
     // ignore disk errors
@@ -37,7 +38,7 @@ export function readCliLogSnapshot(scanDir: string, maxLines = 250): CliLogSnaps
   try {
     const buffer = fs.readFileSync(file);
     return {
-      lines: buffer.toString("utf8").split(/\r?\n/).filter(Boolean).slice(-maxLines),
+      lines: buffer.toString("utf8").split(/\r?\n/).filter(Boolean).slice(-maxLines).map(redactText),
       cursor: buffer.byteLength,
     };
   } catch {
@@ -61,7 +62,7 @@ export function readCliLogSince(
     for (const segment of segments) {
       if (!segment && cursor >= buffer.byteLength) continue;
       cursor += Buffer.byteLength(segment, "utf8") + 1;
-      const line = segment.endsWith("\r") ? segment.slice(0, -1) : segment;
+      const line = redactText(segment.endsWith("\r") ? segment.slice(0, -1) : segment);
       if (line) entries.push({ line, cursor: Math.min(cursor, buffer.byteLength) });
     }
     return entries.slice(-maxLines);

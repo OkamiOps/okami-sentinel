@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { CODEX_BIN } from "../config.js";
+import { processSecretValues, SecretRedactor } from "../redaction.js";
 import { createResilientLineWriter } from "./mantis-runtime.js";
 import { normalizeVulnHunterWorkspace } from "./vulnhunter-normalize.js";
 import {
@@ -24,6 +25,8 @@ let cancelled = false;
 let runtime: VulnHunterRuntimeState | null = null;
 let outputDirForSignal: string | null = null;
 const log = createResilientLineWriter(process.stdout);
+const workerRedactor = new SecretRedactor();
+workerRedactor.register("process", processSecretValues(process.env));
 
 function progress(
   config: VulnHunterRunConfiguration,
@@ -274,9 +277,10 @@ async function runCodexSession(
     };
 
     stdout.on("line", (line) => {
-      fs.appendFileSync(logPath, `${line}\n`, "utf8");
+      const safeLine = workerRedactor.redactText(line);
+      fs.appendFileSync(logPath, `${safeLine}\n`, "utf8");
       try {
-        const event = JSON.parse(line) as Record<string, unknown>;
+        const event = JSON.parse(safeLine) as Record<string, unknown>;
         if (typeof event.id === "number" && !("method" in event)) {
           const waiting = pending.get(event.id);
           if (waiting) {
@@ -368,7 +372,8 @@ async function runCodexSession(
       }
     });
     stderr.on("line", (line) => {
-      fs.appendFileSync(logPath, `${JSON.stringify({ stream: "stderr", line })}\n`, "utf8");
+      const safeLine = workerRedactor.redactText(line);
+      fs.appendFileSync(logPath, `${JSON.stringify({ stream: "stderr", line: safeLine })}\n`, "utf8");
       if (!stderrNoticeShown) {
         stderrNoticeShown = true;
         log("[vulnhunter/runtime] Codex diagnostics captured in the local scan log.");
@@ -562,7 +567,7 @@ process.on("SIGTERM", () => {
 });
 
 void main().catch((error) => {
-  let message = error instanceof Error ? error.message : String(error);
+  let message = workerRedactor.redactText(error instanceof Error ? error.message : String(error));
   if (runtime && outputDirForSignal) {
     let recoveredFindings = runtime.findings;
     const resultsDir = path.join(outputDirForSignal, "vulnhunter", "results");
@@ -571,9 +576,9 @@ void main().catch((error) => {
       assertVulnHunterNonOperationalArtifacts(resultsDir);
     } catch (boundaryError) {
       artifactsAreDefensive = false;
-      const boundaryMessage = boundaryError instanceof Error
+      const boundaryMessage = workerRedactor.redactText(boundaryError instanceof Error
         ? boundaryError.message
-        : String(boundaryError);
+        : String(boundaryError));
       message = `${boundaryMessage} Original session error: ${message}`;
       log(`[vulnhunter/safety] ${boundaryMessage}`);
     }
@@ -585,7 +590,7 @@ void main().catch((error) => {
         }
       } catch (normalizationError) {
         log(
-          `[vulnhunter/recovery] Partial normalization failed: ${normalizationError instanceof Error ? normalizationError.message : String(normalizationError)}`,
+          `[vulnhunter/recovery] Partial normalization failed: ${workerRedactor.redactText(normalizationError instanceof Error ? normalizationError.message : String(normalizationError))}`,
         );
       }
     }

@@ -36,6 +36,7 @@ import { validateScannerRequest } from "./scanners/catalog.js";
 import { prepareScannerLaunch } from "./scanners/launch.js";
 import { refreshMantisRunFromDisk } from "./scanners/mantis-reconcile.js";
 import { refreshVulnHunterRunFromDisk } from "./scanners/vulnhunter-reconcile.js";
+import { redactText } from "./redaction.js";
 
 type Listener = (event: ScanEvent) => void;
 
@@ -60,8 +61,16 @@ interface DetachedWatch {
 const active = new Map<string, ActiveScan>();
 const detached = new Map<string, DetachedWatch>();
 
+function safeEvent(event: Omit<ScanEvent, "at"> & { at?: string }): ScanEvent {
+  return {
+    ...event,
+    ...(event.message === undefined ? {} : { message: redactText(event.message) }),
+    at: event.at ?? new Date().toISOString(),
+  };
+}
+
 function emit(scan: ActiveScan, event: Omit<ScanEvent, "at"> & { at?: string }): void {
-  const full: ScanEvent = { ...event, at: event.at ?? new Date().toISOString() };
+  const full = safeEvent(event);
   if (full.message) {
     const cursor = appendCliLog(scan.scanDir, full.message);
     if (cursor > 0) full.cursor = cursor;
@@ -75,7 +84,7 @@ function emitDetached(
   watch: DetachedWatch,
   event: Omit<ScanEvent, "at"> & { at?: string },
 ): void {
-  const full: ScanEvent = { ...event, at: event.at ?? new Date().toISOString() };
+  const full = safeEvent(event);
   for (const listener of watch.listeners) listener(full);
 }
 
