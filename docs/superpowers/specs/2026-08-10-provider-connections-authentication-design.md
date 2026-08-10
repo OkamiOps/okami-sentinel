@@ -93,7 +93,7 @@ As três rotas têm cartões, `routeKind`, lifecycle, telemetria e compatibilida
 
 O consent screen pode mostrar “Grok Build” porque o client OAuth é compartilhado; isso é uma identidade do client de consentimento, não uma dependência de runtime. A UI precisa comunicar literalmente: `OAuth xAI gerenciado pelo Sentinel — o consentimento pode mencionar Grok Build; nenhum Grok Build CLI será executado ou lido.` O trade-off explícito é acompanhar a disponibilidade desse cliente público compartilhado; erro de OAuth, remoção do client ou mudança de entitlement deixa a conexão expirada/degradada, sem fallback escondido para CLI ou API key.
 
-O Sentinel descobre os endpoints no OIDC e aceita apenas issuer `https://auth.x.ai` e endpoints HTTPS sob `x.ai`. Depois de obter bearer, a rota OAuth usa diretamente `https://api.x.ai/v1` pelos endpoints `/models` e `/responses`, como o plugin xAI do OpenCode. OAuth bearer não vira `XAI_API_KEY`: ambos são segredos distintos, mas o adapter OAuth coloca o primeiro somente no header `Authorization` em memória para a origin pinada.
+O Sentinel descobre os endpoints no OIDC e exige correspondência literal: origin OAuth `https://auth.x.ai`, device path `/oauth2/device/code`, token path `/oauth2/token` e revocation path `/oauth2/revoke`. Depois de obter bearer, a rota OAuth aceita exclusivamente a origin `https://api.x.ai`, com model discovery em `/v1/models` e inferência em `/v1/responses`, como o plugin xAI do OpenCode. OAuth bearer não vira `XAI_API_KEY`: ambos são segredos distintos, mas o adapter OAuth coloca o primeiro somente no header `Authorization` em memória para a origin e paths pinados.
 
 #### Boundary do OAuth xAI gerenciado
 
@@ -115,9 +115,9 @@ sequenceDiagram
   Flow-->>UI: estado seguro, sem token
 ```
 
-- **Device v1:** RFC 8628 não usa redirect/callback nem PKCE. O backend guarda `device_code` apenas no `AuthFlowStore`; a UI recebe `verification_uri_complete` (ou `verification_uri`), `user_code`, expiração e `flowId`, abre a URL no browser desktop quando possível e sempre preserva a ação de copiar/abrir manualmente. Polling respeita `interval`, `authorization_pending` e `slow_down`; um `AbortSignal` por flow encerra cancelamento, expiração, fechamento e reconexão sem nova troca de token.
+- **Device v1:** RFC 8628 não usa redirect/callback nem PKCE. O backend guarda `device_code` apenas no `AuthFlowStore`; a UI recebe `verification_uri_complete` (ou `verification_uri`), `user_code`, expiração e `flowId`, abre a URL no browser desktop quando possível e sempre preserva a ação de copiar/abrir manualmente. Polling usa 5 segundos quando `interval` estiver ausente, não numérico ou menor/igual a zero. `authorization_pending` espera o intervalo corrente; cada `slow_down` soma 5 segundos ao intervalo e mantém esse novo valor em todos os polls seguintes. Timeout ou erro de rede nunca gera retry imediato: aumenta o backoff persistente em pelo menos 5 segundos, espera respeitando o intervalo corrente e o deadline, e encerra ao expirar. Qualquer erro OAuth diferente de `authorization_pending` e `slow_down` é terminal. Um `AbortSignal` por flow encerra cancelamento, expiração e fechamento; nenhum caminho pode entrar em busy-loop.
 - **Tokens:** access, refresh e id token opcional só entram no `CredentialVault`; SQLite armazena apenas `credential_ref`. Refresh é single-flight por conexão e persiste o refresh token rotacionado antes de qualquer uso subsequente. `disconnect` aborta flow pendente, tenta o `revocation_endpoint` descoberto com token retirado do vault, apaga o bundle local e registra apenas resultado seguro (`revoked`, `revoke_pending` ou `local_removed`).
-- **Transporte e logs:** o bearer só é colocado em memória no request do `xai-oauth-responses` adapter para `https://api.x.ai/v1`. Nenhum token, `device_code`, URL com query ou header atravessa SQLite, logs, SSE, manifest, analytics ou mensagens de erro. O redactor é registrado antes de trocar tokens.
+- **Transporte e logs:** o bearer só é colocado em memória no request do `xai-oauth-responses` adapter para `https://api.x.ai/v1/models` ou `https://api.x.ai/v1/responses`. Nenhum token, `device_code`, URL com query ou header atravessa SQLite, logs, SSE, manifest, analytics ou mensagens de erro. O redactor é registrado antes de trocar tokens.
 
 ### Claude / Anthropic
 
@@ -241,9 +241,14 @@ interface ProviderModel {
 
 interface XaiPublicOAuthPreset {
   issuer: "https://auth.x.ai";
+  deviceAuthorizationPath: "/oauth2/device/code";
+  tokenPath: "/oauth2/token";
+  revocationPath: "/oauth2/revoke";
   clientId: "b1a00492-073a-47ea-816f-4c329264a828";
   scopes: "openid profile email offline_access grok-cli:access api:access";
-  responsesBaseUrl: "https://api.x.ai/v1";
+  inferenceOrigin: "https://api.x.ai";
+  modelsPath: "/v1/models";
+  responsesPath: "/v1/responses";
   allowedOrigins: readonly ["https://auth.x.ai", "https://api.x.ai"];
 }
 
@@ -529,7 +534,7 @@ Um run nunca muda de conexão ou modelo silenciosamente. Fallback exige polític
 - Sessão expirada: preservar cadastro e marcar `expired`.
 - Device code expirado: permitir gerar um novo fluxo sem duplicar a conexão.
 - Cancelamento/fechamento de flow: abortar polling, descartar `device_code` efêmero e manter credencial anterior intacta.
-- Metadata OIDC ou endpoint divergente: falhar fechado em `oauth_metadata_invalid`; nunca usar host sugerido por token ou UI.
+- Metadata OIDC divergente da origin `https://auth.x.ai` ou dos paths `/oauth2/device/code`, `/oauth2/token` e `/oauth2/revoke`: falhar fechado em `oauth_metadata_invalid`; nunca usar host/path sugerido por token ou UI.
 - Discovery falhou: manter último catálogo como stale, sem afirmar acesso atual.
 - Modelo removido: bloquear novo scan e manter runs históricos intactos.
 - Provider custom sem `/models`: permitir discovery URL explícita; sem ela, cadastro não fica ready.
@@ -586,9 +591,9 @@ O recurso segue o Test Bench Okami existente:
 - fake Chat Completions com tool calls;
 - fake Anthropic Messages com `tool_use`/`tool_result`;
 - mock `/models` com paginação, ACL e modelo removido;
-- fake device flow completo, `authorization_pending`, `slow_down`, negado, expirado e cancelado;
-- fake preset público imutável, metadata OIDC com endpoint inválido e nenhuma configuração vinda da UI;
-- fake refresh rotacionado, revogação e Responses direto recusado fora de `https://api.x.ai/v1`;
+- fake device flow com relógio controlado: `interval` ausente/inválido usa 5 segundos, `authorization_pending` mantém intervalo, cada `slow_down` soma 5 segundos persistentemente, timeout/rede aplica backoff até o deadline, erro OAuth desconhecido encerra e nenhum caso entra em busy-loop;
+- fake preset público imutável, metadata OIDC recusada fora da origin `https://auth.x.ai` ou dos paths `/oauth2/device/code`, `/oauth2/token` e `/oauth2/revoke`, sem configuração vinda da UI;
+- fake refresh rotacionado, revogação e Responses recusados fora da origin `https://api.x.ai` ou dos paths `/v1/models` e `/v1/responses`;
 - fake CLI status/models/scan sem depender de conta real;
 - teste opcional, explicitamente autorizado, com provider real sem registrar payload secreto.
 
