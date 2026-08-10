@@ -11,7 +11,6 @@ import {
 } from "./session-types.js";
 
 export interface AnthropicMessagesSessionSpec {
-  routeKind: string;
   model: ProviderModel;
   instructions: string;
 }
@@ -20,7 +19,6 @@ export interface AnthropicMessagesSessionSpec {
 export function createAnthropicMessagesWireAdapter(
   spec: AnthropicMessagesSessionSpec,
 ): WireSessionAdapter {
-  const endpoint = anthropicMessagesEndpoint(spec.routeKind);
   const messages: unknown[] = [{ role: "user", content: spec.instructions }];
 
   return {
@@ -36,7 +34,7 @@ export function createAnthropicMessagesWireAdapter(
         });
       }
       return {
-        url: endpoint,
+        operation: "messages",
         body: {
           model: spec.model.id,
           max_tokens: 4_096,
@@ -69,17 +67,6 @@ export function createAnthropicMessagesWireAdapter(
       };
     },
   };
-}
-
-export function anthropicMessagesEndpoint(routeKind: string): string {
-  switch (routeKind) {
-    case "anthropic-api":
-      return "https://api.anthropic.com/v1/messages";
-    case "minimax-token-plan":
-      return "https://api.minimax.io/v1/messages";
-    default:
-      throw new AgentSessionError("runner_protocol_unsupported");
-  }
 }
 
 function anthropicTools(): readonly unknown[] {

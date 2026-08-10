@@ -59,6 +59,7 @@ function adapterFor(input: CreateAgentSessionInput): WireSessionAdapter {
     case "openai-chat":
       return createOpenAiChatWireAdapter(input);
     case "openai-responses":
+    case "xai-oauth-responses":
       return createOpenAiResponsesWireAdapter(input);
     case "anthropic-messages":
       return createAnthropicMessagesWireAdapter(input);

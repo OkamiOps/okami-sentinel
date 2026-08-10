@@ -11,7 +11,6 @@ import {
 } from "./session-types.js";
 
 export interface OpenAiResponsesSessionSpec {
-  routeKind: string;
   model: ProviderModel;
   instructions: string;
 }
@@ -20,7 +19,6 @@ export interface OpenAiResponsesSessionSpec {
 export function createOpenAiResponsesWireAdapter(
   spec: OpenAiResponsesSessionSpec,
 ): WireSessionAdapter {
-  const endpoint = openAiResponsesEndpoint(spec.routeKind);
   let previousResponseId: string | undefined;
 
   return {
@@ -33,7 +31,7 @@ export function createOpenAiResponsesWireAdapter(
           output: result.content,
         }));
       return {
-        url: endpoint,
+        operation: "responses",
         body: {
           model: spec.model.id,
           instructions: spec.instructions,
@@ -67,17 +65,6 @@ export function createOpenAiResponsesWireAdapter(
       };
     },
   };
-}
-
-export function openAiResponsesEndpoint(routeKind: string): string {
-  switch (routeKind) {
-    case "openai-api":
-      return "https://api.openai.com/v1/responses";
-    case "xai-api":
-      return "https://api.x.ai/v1/responses";
-    default:
-      throw new AgentSessionError("runner_protocol_unsupported");
-  }
 }
 
 function openAiResponsesTools(): readonly unknown[] {

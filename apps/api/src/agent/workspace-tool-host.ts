@@ -1,8 +1,19 @@
-import { open, lstat, mkdir, readdir, readFile, realpath } from "node:fs/promises";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { constants, type Dirent, type Stats } from "node:fs";
+import {
+  chmod,
+  type FileHandle,
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  realpath,
+} from "node:fs/promises";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import {
   AgentSessionError,
+  type AgentSessionErrorCode,
+  type WorkspaceToolBudget,
   type WorkspaceToolHost,
   type WorkspaceToolHostOptions,
   type WorkspaceToolName,
@@ -15,6 +26,13 @@ const DEFAULT_MAX_LIST_ENTRIES = 1_000;
 const DEFAULT_MAX_SEARCH_RESULTS = 200;
 const DEFAULT_MAX_SEARCH_BYTES = 4_194_304;
 const DEFAULT_MAX_RECURSION_DEPTH = 6;
+const NO_FOLLOW = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
+const DIRECTORY_ONLY = typeof constants.O_DIRECTORY === "number" ? constants.O_DIRECTORY : 0;
+const READ_FLAGS = constants.O_RDONLY | NO_FOLLOW;
+const DIRECTORY_READ_FLAGS = constants.O_RDONLY | NO_FOLLOW | DIRECTORY_ONLY;
+const CREATE_EXCLUSIVE_FLAGS = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NO_FOLLOW;
+
+type ToolDenialCode = Extract<AgentSessionErrorCode, "tool_path_denied" | "tool_write_denied">;
 
 interface ToolHostLimits {
   maxReadBytes: number;
@@ -23,6 +41,27 @@ interface ToolHostLimits {
   maxSearchResults: number;
   maxSearchBytes: number;
   maxRecursionDepth: number;
+}
+
+interface RootRef {
+  path: string;
+  identity: FileIdentity;
+  denialCode: ToolDenialCode;
+}
+
+interface FileIdentity {
+  dev: number;
+  ino: number;
+}
+
+interface PinnedPath {
+  path: string;
+  info: Stats;
+}
+
+interface ArtifactTarget {
+  path: string;
+  parent: PinnedPath;
 }
 
 interface ListEntry {
@@ -46,19 +85,28 @@ export async function createWorkspaceToolHost(
   const limits = limitsFor(options);
   const snapshotRoot = await existingDirectory(options.snapshotRoot, "tool_path_denied");
   const artifactRoot = await writableDirectory(options.artifactRoot);
-  if (rootsOverlap(snapshotRoot, artifactRoot)) throw new AgentSessionError("tool_path_denied");
+  if (rootsOverlap(snapshotRoot.path, artifactRoot.path)) {
+    throw new AgentSessionError("tool_path_denied");
+  }
 
   return {
-    async call(name, input) {
+    minimumOutputBytes(name, input) {
+      return minimumToolOutputBytes(name, input, limits);
+    },
+    async call(name, input, budget) {
+      const maxOutputBytes = outputBudget(budget);
+      if (minimumToolOutputBytes(name, input, limits) > maxOutputBytes) {
+        throw new AgentSessionError("agent_output_byte_limit");
+      }
       switch (name) {
         case "workspace.list":
-          return listWorkspace(snapshotRoot, input, limits);
+          return listWorkspace(snapshotRoot, input, limits, maxOutputBytes);
         case "workspace.read":
-          return readWorkspace(snapshotRoot, input, limits);
+          return readWorkspace(snapshotRoot, input, limits, maxOutputBytes);
         case "workspace.search":
-          return searchWorkspace(snapshotRoot, input, limits);
+          return searchWorkspace(snapshotRoot, input, limits, maxOutputBytes);
         case "results.write":
-          return writeArtifact(artifactRoot, input, limits);
+          return writeArtifact(artifactRoot, input, limits, maxOutputBytes);
         default:
           return Promise.reject(new AgentSessionError("tool_name_denied"));
       }
@@ -66,204 +114,391 @@ export async function createWorkspaceToolHost(
   };
 }
 
-async function listWorkspace(
-  snapshotRoot: string,
+function minimumToolOutputBytes(
+  name: WorkspaceToolName,
   input: unknown,
   limits: ToolHostLimits,
+): number {
+  const value = objectInput(input);
+  switch (name) {
+    case "workspace.list":
+      optionalPath(value.path, true);
+      boundedPositive(value.maxEntries, limits.maxListEntries, "tool_argument_invalid");
+      boundedPositive(value.maxDepth, limits.maxRecursionDepth, "tool_argument_invalid");
+      return serializedBytes({ entries: [], truncated: false });
+    case "workspace.read": {
+      const path = requiredPath(value.path);
+      boundedPositive(value.maxBytes, limits.maxReadBytes, "tool_argument_invalid");
+      return serializedBytes({ path, content: "" });
+    }
+    case "workspace.search":
+      nonEmptyString(value.query);
+      optionalPath(value.path, true);
+      boundedPositive(value.maxResults, limits.maxSearchResults, "tool_argument_invalid");
+      boundedPositive(value.maxBytes, limits.maxSearchBytes, "tool_argument_invalid");
+      return serializedBytes({ matches: [], truncated: false });
+    case "results.write": {
+      const path = requiredPath(value.path);
+      const content = stringInput(value.content);
+      return serializedBytes({ path, bytes: Buffer.byteLength(content, "utf8") });
+    }
+    default:
+      throw new AgentSessionError("tool_name_denied");
+  }
+}
+
+async function listWorkspace(
+  snapshotRoot: RootRef,
+  input: unknown,
+  limits: ToolHostLimits,
+  maxOutputBytes: number,
 ): Promise<WorkspaceToolResult> {
   const value = objectInput(input);
   const requestedPath = optionalPath(value.path, true);
   const maxEntries = boundedPositive(value.maxEntries, limits.maxListEntries, "tool_argument_invalid");
   const maxDepth = boundedPositive(value.maxDepth, limits.maxRecursionDepth, "tool_argument_invalid");
   const directory = await snapshotTarget(snapshotRoot, requestedPath);
-  const info = await lstat(directory);
-  if (!info.isDirectory()) throw new AgentSessionError("tool_path_denied");
+  if (!directory.info.isDirectory()) throw new AgentSessionError("tool_path_denied");
 
   const entries: ListEntry[] = [];
+  let truncated = false;
   await walkDirectory(snapshotRoot, directory, requestedPath, 0, maxDepth, async (entry, path) => {
-    if (entries.length >= maxEntries) return false;
-    entries.push({ path, kind: entry.isDirectory() ? "directory" : "file" });
-    return true;
+    if (entries.length >= maxEntries) {
+      truncated = true;
+      return false;
+    }
+    const candidate: ListEntry = {
+      path,
+      kind: entry.info.isDirectory() ? "directory" : "file",
+    };
+    if (!bothTruncationStatesFit({ entries: [...entries, candidate] }, maxOutputBytes)) {
+      truncated = true;
+      return false;
+    }
+    entries.push(candidate);
+    if (entries.length >= maxEntries) truncated = true;
+    return !truncated;
   });
-  return textResult({ entries, truncated: entries.length >= maxEntries });
+  return textResult({ entries, truncated }, maxOutputBytes);
 }
 
 async function readWorkspace(
-  snapshotRoot: string,
+  snapshotRoot: RootRef,
   input: unknown,
   limits: ToolHostLimits,
+  maxOutputBytes: number,
 ): Promise<WorkspaceToolResult> {
   const value = objectInput(input);
   const requestedPath = requiredPath(value.path);
   const maxBytes = boundedPositive(value.maxBytes, limits.maxReadBytes, "tool_argument_invalid");
+  const emptyBytes = serializedBytes({ path: requestedPath, content: "" });
+  const outputContentCapacity = maxOutputBytes - emptyBytes;
   const target = await snapshotTarget(snapshotRoot, requestedPath);
-  const info = await lstat(target);
-  if (!info.isFile()) throw new AgentSessionError("tool_path_denied");
-  if (info.size > maxBytes) throw new AgentSessionError("tool_read_limit");
-  const content = await readFile(target, "utf8");
-  if (Buffer.byteLength(content, "utf8") > maxBytes) throw new AgentSessionError("tool_read_limit");
-  return textResult({ path: requestedPath, content });
+  if (!target.info.isFile()) throw new AgentSessionError("tool_path_denied");
+  if (target.info.size > maxBytes) throw new AgentSessionError("tool_read_limit");
+  if (target.info.size > outputContentCapacity) {
+    throw new AgentSessionError("agent_output_byte_limit");
+  }
+  const content = (await readPinnedSnapshotFile(snapshotRoot, target, maxBytes)).toString("utf8");
+  return textResult({ path: requestedPath, content }, maxOutputBytes);
 }
 
 async function searchWorkspace(
-  snapshotRoot: string,
+  snapshotRoot: RootRef,
   input: unknown,
   limits: ToolHostLimits,
+  maxOutputBytes: number,
 ): Promise<WorkspaceToolResult> {
   const value = objectInput(input);
   const query = nonEmptyString(value.query);
   const requestedPath = optionalPath(value.path, true);
   const maxResults = boundedPositive(value.maxResults, limits.maxSearchResults, "tool_argument_invalid");
-  const maxBytes = boundedPositive(value.maxBytes, limits.maxSearchBytes, "tool_argument_invalid");
+  const requestedMaxBytes = boundedPositive(value.maxBytes, limits.maxSearchBytes, "tool_argument_invalid");
+  const emptyBytes = serializedBytes({ matches: [], truncated: false });
+  const maxBytes = Math.min(requestedMaxBytes, Math.max(0, maxOutputBytes - emptyBytes));
   const root = await snapshotTarget(snapshotRoot, requestedPath);
-  const rootInfo = await lstat(root);
-  if (!rootInfo.isDirectory() && !rootInfo.isFile()) throw new AgentSessionError("tool_path_denied");
+  if (!root.info.isDirectory() && !root.info.isFile()) throw new AgentSessionError("tool_path_denied");
 
   const matches: SearchMatch[] = [];
   let bytesRead = 0;
-  const inspectFile = async (file: string, relativePath: string): Promise<boolean> => {
-    const info = await lstat(file);
-    if (!info.isFile()) return true;
-    if (bytesRead + info.size > maxBytes) return false;
-    bytesRead += info.size;
-    const content = await readFile(file, "utf8");
+  let truncated = maxBytes === 0;
+  const inspectFile = async (file: PinnedPath, relativePath: string): Promise<boolean> => {
+    if (!file.info.isFile()) return true;
+    if (bytesRead + file.info.size > maxBytes) {
+      truncated = true;
+      return false;
+    }
+    const content = (await readPinnedSnapshotFile(snapshotRoot, file, maxBytes - bytesRead)).toString("utf8");
+    bytesRead += file.info.size;
     for (const [index, line] of content.split(/\r?\n/).entries()) {
       if (!line.includes(query)) continue;
-      matches.push({ path: relativePath, line: index + 1, text: line });
-      if (matches.length >= maxResults) return false;
+      const match = { path: relativePath, line: index + 1, text: line };
+      if (matches.length >= maxResults ||
+          !bothTruncationStatesFit({ matches: [...matches, match] }, maxOutputBytes)) {
+        truncated = true;
+        return false;
+      }
+      matches.push(match);
+      if (matches.length >= maxResults) {
+        truncated = true;
+        return false;
+      }
     }
     return true;
   };
 
-  if (rootInfo.isFile()) {
+  if (!truncated && root.info.isFile()) {
     await inspectFile(root, requestedPath);
-  } else {
-    await walkDirectory(snapshotRoot, root, requestedPath, 0, limits.maxRecursionDepth, async (entry, path, file) => {
-      if (matches.length >= maxResults || bytesRead >= maxBytes) return false;
-      return entry.isDirectory() || await inspectFile(file, path);
-    });
+  } else if (!truncated) {
+    await walkDirectory(
+      snapshotRoot,
+      root,
+      requestedPath,
+      0,
+      limits.maxRecursionDepth,
+      async (entry, path) => entry.info.isDirectory() || inspectFile(entry, path),
+    );
   }
-  return textResult({ matches, truncated: matches.length >= maxResults || bytesRead >= maxBytes });
+  return textResult({ matches, truncated }, maxOutputBytes);
 }
 
 async function writeArtifact(
-  artifactRoot: string,
+  artifactRoot: RootRef,
   input: unknown,
   limits: ToolHostLimits,
+  maxOutputBytes: number,
 ): Promise<WorkspaceToolResult> {
   const value = objectInput(input);
   const artifactPath = requiredPath(value.path);
   const content = stringInput(value.content);
   const bytes = Buffer.byteLength(content, "utf8");
   if (bytes > limits.maxWriteBytes) throw new AgentSessionError("tool_output_limit");
+  const result = textResult({ path: artifactPath, bytes }, maxOutputBytes);
 
   const target = await artifactTarget(artifactRoot, artifactPath);
-  let handle;
+  let handle: FileHandle | undefined;
   try {
-    handle = await open(target, "wx", 0o600);
+    handle = await open(target.path, CREATE_EXCLUSIVE_FLAGS, 0o600);
+    const opened = await handle.stat();
+    const linked = await secureLstat(target.path, "tool_write_denied");
+    assertRegularPinnedFile(opened, linked, "tool_write_denied");
+    await assertPinnedDirectory(target.parent, "tool_write_denied");
+    await assertPinnedRoot(artifactRoot);
+
     await handle.writeFile(content, "utf8");
+
+    const written = await handle.stat();
+    const linkedAfterWrite = await secureLstat(target.path, "tool_write_denied");
+    if (!sameObject(opened, written) || !sameObject(opened, linkedAfterWrite) ||
+        !written.isFile() || written.size !== bytes) {
+      throw new AgentSessionError("tool_write_denied");
+    }
+    await assertPinnedDirectory(target.parent, "tool_write_denied");
+    await assertPinnedRoot(artifactRoot);
   } catch (error) {
-    if (isFileSystemError(error, "EEXIST") || isFileSystemError(error, "ELOOP")) {
+    if (error instanceof AgentSessionError) throw error;
+    if (isFileSystemError(error, "EEXIST") || isFileSystemError(error, "ELOOP") ||
+        isFileSystemError(error, "ENOTDIR") || isFileSystemError(error, "ENOENT")) {
       throw new AgentSessionError("tool_write_denied");
     }
     throw error;
   } finally {
     await handle?.close();
   }
-  return {
-    content: JSON.stringify({ path: artifactPath, bytes }),
-    artifact: { path: artifactPath, bytes },
-  };
+  return { ...result, artifact: { path: artifactPath, bytes } };
 }
 
-async function existingDirectory(path: string, code: "tool_path_denied" | "tool_write_denied"): Promise<string> {
-  if (typeof path !== "string" || path.length === 0 || path.includes("\0")) throw new AgentSessionError(code);
+async function existingDirectory(path: string, code: ToolDenialCode): Promise<RootRef> {
+  if (typeof path !== "string" || path.length === 0 || path.includes("\0")) {
+    throw new AgentSessionError(code);
+  }
   const absolute = resolve(path);
   try {
-    const info = await lstat(absolute);
-    if (info.isSymbolicLink() || !info.isDirectory()) throw new AgentSessionError(code);
-    return await realpath(absolute);
+    const lexical = await lstat(absolute);
+    if (lexical.isSymbolicLink() || !lexical.isDirectory()) throw new AgentSessionError(code);
+    const canonical = await realpath(absolute);
+    const canonicalInfo = await lstat(canonical);
+    if (!canonicalInfo.isDirectory() || !sameObject(lexical, canonicalInfo)) {
+      throw new AgentSessionError(code);
+    }
+    return { path: canonical, identity: identityOf(canonicalInfo), denialCode: code };
   } catch (error) {
     if (error instanceof AgentSessionError) throw error;
     throw new AgentSessionError(code);
   }
 }
 
-async function writableDirectory(path: string): Promise<string> {
+async function writableDirectory(path: string): Promise<RootRef> {
   if (typeof path !== "string" || path.length === 0 || path.includes("\0")) {
     throw new AgentSessionError("tool_write_denied");
   }
   try {
     await mkdir(resolve(path), { recursive: true, mode: 0o700 });
-  } catch {
+    const root = await existingDirectory(path, "tool_write_denied");
+    await chmod(root.path, 0o700);
+    return existingDirectory(root.path, "tool_write_denied");
+  } catch (error) {
+    if (error instanceof AgentSessionError) throw error;
     throw new AgentSessionError("tool_write_denied");
   }
-  return existingDirectory(path, "tool_write_denied");
 }
 
-async function snapshotTarget(snapshotRoot: string, requestedPath: string): Promise<string> {
+async function snapshotTarget(snapshotRoot: RootRef, requestedPath: string): Promise<PinnedPath> {
+  await assertPinnedRoot(snapshotRoot);
   const normalized = normalizeRelativePath(requestedPath, true);
-  const candidate = resolve(snapshotRoot, ...normalized.split("/"));
-  if (candidate !== snapshotRoot && !isInside(snapshotRoot, candidate)) {
+  const candidate = resolve(snapshotRoot.path, ...normalized.split("/"));
+  if (candidate !== snapshotRoot.path && !isInside(snapshotRoot.path, candidate)) {
     throw new AgentSessionError("tool_path_denied");
   }
-  await rejectSymlinkSegments(snapshotRoot, normalized, "tool_path_denied");
+  await rejectSymlinkSegments(snapshotRoot.path, normalized, "tool_path_denied");
   try {
+    const lexical = await lstat(candidate);
+    if (lexical.isSymbolicLink()) throw new AgentSessionError("tool_path_denied");
     const canonical = await realpath(candidate);
-    if (canonical !== snapshotRoot && !isInside(snapshotRoot, canonical)) {
+    if (canonical !== snapshotRoot.path && !isInside(snapshotRoot.path, canonical)) {
       throw new AgentSessionError("tool_path_denied");
     }
-    return canonical;
+    const canonicalInfo = await lstat(canonical);
+    if (!sameObject(lexical, canonicalInfo)) throw new AgentSessionError("tool_path_denied");
+    await assertPinnedRoot(snapshotRoot);
+    return { path: canonical, info: canonicalInfo };
   } catch (error) {
     if (error instanceof AgentSessionError) throw error;
     throw new AgentSessionError("tool_path_denied");
   }
 }
 
-async function artifactTarget(artifactRoot: string, requestedPath: string): Promise<string> {
+async function artifactTarget(artifactRoot: RootRef, requestedPath: string): Promise<ArtifactTarget> {
+  await assertPinnedRoot(artifactRoot);
   const normalized = normalizeRelativePath(requestedPath, false);
   const segments = normalized.split("/");
   const filename = segments.pop();
-  if (filename === undefined || filename.length === 0) throw new AgentSessionError("tool_write_denied");
-  let parent = artifactRoot;
+  if (filename === undefined || filename.length === 0) {
+    throw new AgentSessionError("tool_write_denied");
+  }
+
+  let parent: PinnedPath = {
+    path: artifactRoot.path,
+    info: await secureLstat(artifactRoot.path, "tool_write_denied"),
+  };
   for (const segment of segments) {
-    const next = join(parent, segment);
+    await assertPinnedDirectory(parent, "tool_write_denied");
+    await assertPinnedRoot(artifactRoot);
+    const next = join(parent.path, segment);
+    let info: Stats;
     try {
-      const info = await lstat(next);
-      if (info.isSymbolicLink() || !info.isDirectory()) throw new AgentSessionError("tool_write_denied");
+      info = await lstat(next);
+      if (info.isSymbolicLink() || !info.isDirectory()) {
+        throw new AgentSessionError("tool_write_denied");
+      }
     } catch (error) {
       if (error instanceof AgentSessionError) throw error;
+      if (!isFileSystemError(error, "ENOENT")) throw new AgentSessionError("tool_write_denied");
       try {
         await mkdir(next, { mode: 0o700 });
-        const created = await lstat(next);
-        if (created.isSymbolicLink() || !created.isDirectory()) throw new AgentSessionError("tool_write_denied");
+        info = await lstat(next);
+        if (info.isSymbolicLink() || !info.isDirectory()) {
+          throw new AgentSessionError("tool_write_denied");
+        }
       } catch (mkdirError) {
         if (mkdirError instanceof AgentSessionError) throw mkdirError;
         throw new AgentSessionError("tool_write_denied");
       }
     }
-    parent = next;
+    await assertPinnedDirectory(parent, "tool_write_denied");
+    await assertPinnedRoot(artifactRoot);
+    parent = { path: next, info };
   }
-  const canonicalParent = await realpath(parent);
-  if (!isInside(artifactRoot, canonicalParent) && canonicalParent !== artifactRoot) {
+
+  const canonicalParent = await realpath(parent.path);
+  if (canonicalParent !== artifactRoot.path && !isInside(artifactRoot.path, canonicalParent)) {
     throw new AgentSessionError("tool_write_denied");
   }
-  const target = join(canonicalParent, filename);
-  if (!isInside(artifactRoot, target)) throw new AgentSessionError("tool_write_denied");
+  const canonicalInfo = await secureLstat(canonicalParent, "tool_write_denied");
+  if (!sameObject(parent.info, canonicalInfo) || !canonicalInfo.isDirectory()) {
+    throw new AgentSessionError("tool_write_denied");
+  }
+  parent = { path: canonicalParent, info: canonicalInfo };
+  await assertPinnedDirectory(parent, "tool_write_denied");
+  await assertPinnedRoot(artifactRoot);
+
+  const target = join(parent.path, filename);
+  if (!isInside(artifactRoot.path, target)) throw new AgentSessionError("tool_write_denied");
   try {
-    const info = await lstat(target);
-    if (info.isSymbolicLink()) throw new AgentSessionError("tool_write_denied");
+    await lstat(target);
+    throw new AgentSessionError("tool_write_denied");
   } catch (error) {
     if (error instanceof AgentSessionError) throw error;
     if (!isFileSystemError(error, "ENOENT")) throw new AgentSessionError("tool_write_denied");
   }
-  return target;
+  return { path: target, parent };
+}
+
+async function readPinnedSnapshotFile(
+  snapshotRoot: RootRef,
+  target: PinnedPath,
+  maxBytes: number,
+): Promise<Buffer> {
+  if (!target.info.isFile() || target.info.size > maxBytes) {
+    throw new AgentSessionError("tool_path_denied");
+  }
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(target.path, READ_FLAGS);
+    const opened = await handle.stat();
+    assertRegularPinnedFile(target.info, opened, "tool_path_denied");
+    const content = Buffer.alloc(opened.size);
+    let offset = 0;
+    while (offset < content.length) {
+      const { bytesRead } = await handle.read(content, offset, content.length - offset, offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    const handleAfterRead = await handle.stat();
+    const pathAfterRead = await secureLstat(target.path, "tool_path_denied");
+    if (offset !== content.length || !sameVersion(opened, handleAfterRead) ||
+        !sameVersion(opened, pathAfterRead)) {
+      throw new AgentSessionError("tool_path_denied");
+    }
+    await assertPinnedRoot(snapshotRoot);
+    return content;
+  } catch (error) {
+    if (error instanceof AgentSessionError) throw error;
+    throw new AgentSessionError("tool_path_denied");
+  } finally {
+    await handle?.close();
+  }
+}
+
+async function readPinnedDirectory(snapshotRoot: RootRef, directory: PinnedPath): Promise<Dirent[]> {
+  if (!directory.info.isDirectory()) throw new AgentSessionError("tool_path_denied");
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(directory.path, DIRECTORY_READ_FLAGS);
+    const opened = await handle.stat();
+    if (!opened.isDirectory() || !sameObject(directory.info, opened)) {
+      throw new AgentSessionError("tool_path_denied");
+    }
+    const entries = await readdir(directory.path, { withFileTypes: true });
+    const handleAfterRead = await handle.stat();
+    const pathAfterRead = await secureLstat(directory.path, "tool_path_denied");
+    if (!sameVersion(opened, handleAfterRead) || !sameVersion(opened, pathAfterRead)) {
+      throw new AgentSessionError("tool_path_denied");
+    }
+    await assertPinnedRoot(snapshotRoot);
+    return entries;
+  } catch (error) {
+    if (error instanceof AgentSessionError) throw error;
+    throw new AgentSessionError("tool_path_denied");
+  } finally {
+    await handle?.close();
+  }
 }
 
 async function rejectSymlinkSegments(
   root: string,
   normalizedPath: string,
-  code: "tool_path_denied" | "tool_write_denied",
+  code: ToolDenialCode,
 ): Promise<void> {
   if (normalizedPath === ".") return;
   let cursor = root;
@@ -280,34 +515,80 @@ async function rejectSymlinkSegments(
 }
 
 async function walkDirectory(
-  snapshotRoot: string,
-  directory: string,
+  snapshotRoot: RootRef,
+  directory: PinnedPath,
   displayRoot: string,
   depth: number,
   maxDepth: number,
-  visit: (entry: { isDirectory(): boolean }, path: string, file: string) => Promise<boolean>,
+  visit: (entry: PinnedPath, path: string) => Promise<boolean>,
 ): Promise<boolean> {
   if (depth > maxDepth) return true;
-  let entries;
-  try {
-    entries = await readdir(directory, { withFileTypes: true });
-  } catch {
-    throw new AgentSessionError("tool_path_denied");
-  }
+  const entries = await readPinnedDirectory(snapshotRoot, directory);
   entries.sort((left, right) => left.name.localeCompare(right.name));
   for (const entry of entries) {
     if (entry.isSymbolicLink()) continue;
-    const file = join(directory, entry.name);
     const path = displayRoot === "." ? entry.name : `${displayRoot}/${entry.name}`;
-    if (!isInside(snapshotRoot, file)) throw new AgentSessionError("tool_path_denied");
-    const continueWalking = await visit(entry, path, file);
+    let pinned: PinnedPath;
+    try {
+      pinned = await snapshotTarget(snapshotRoot, path);
+    } catch (error) {
+      if (error instanceof AgentSessionError && error.code === "tool_path_denied") throw error;
+      throw new AgentSessionError("tool_path_denied");
+    }
+    if (!pinned.info.isDirectory() && !pinned.info.isFile()) continue;
+    const continueWalking = await visit(pinned, path);
     if (!continueWalking) return false;
-    if (entry.isDirectory() && depth < maxDepth) {
-      const walked = await walkDirectory(snapshotRoot, file, path, depth + 1, maxDepth, visit);
+    if (pinned.info.isDirectory() && depth < maxDepth) {
+      const walked = await walkDirectory(snapshotRoot, pinned, path, depth + 1, maxDepth, visit);
       if (!walked) return false;
     }
   }
   return true;
+}
+
+async function assertPinnedRoot(root: RootRef): Promise<void> {
+  const current = await secureLstat(root.path, root.denialCode);
+  if (current.isSymbolicLink() || !current.isDirectory() || !sameIdentity(root.identity, current)) {
+    throw new AgentSessionError(root.denialCode);
+  }
+}
+
+async function assertPinnedDirectory(path: PinnedPath, code: ToolDenialCode): Promise<void> {
+  const current = await secureLstat(path.path, code);
+  if (current.isSymbolicLink() || !current.isDirectory() || !sameObject(path.info, current)) {
+    throw new AgentSessionError(code);
+  }
+}
+
+function assertRegularPinnedFile(first: Stats, second: Stats, code: ToolDenialCode): void {
+  if (!first.isFile() || !second.isFile() || second.isSymbolicLink() || !sameObject(first, second)) {
+    throw new AgentSessionError(code);
+  }
+}
+
+async function secureLstat(path: string, code: ToolDenialCode): Promise<Stats> {
+  try {
+    return await lstat(path);
+  } catch {
+    throw new AgentSessionError(code);
+  }
+}
+
+function sameObject(first: Pick<Stats, "dev" | "ino">, second: Pick<Stats, "dev" | "ino">): boolean {
+  return first.dev === second.dev && first.ino === second.ino;
+}
+
+function sameVersion(first: Stats, second: Stats): boolean {
+  return sameObject(first, second) && first.size === second.size &&
+    first.mtimeMs === second.mtimeMs && first.ctimeMs === second.ctimeMs;
+}
+
+function identityOf(info: Stats): FileIdentity {
+  return { dev: info.dev, ino: info.ino };
+}
+
+function sameIdentity(identity: FileIdentity, info: Stats): boolean {
+  return identity.dev === info.dev && identity.ino === info.ino;
 }
 
 function normalizeRelativePath(value: string, allowRoot: boolean): string {
@@ -345,7 +626,9 @@ function stringInput(value: unknown): string {
 }
 
 function nonEmptyString(value: unknown): string {
-  if (typeof value !== "string" || value.length === 0) throw new AgentSessionError("tool_argument_invalid");
+  if (typeof value !== "string" || value.length === 0) {
+    throw new AgentSessionError("tool_argument_invalid");
+  }
   return value;
 }
 
@@ -370,12 +653,38 @@ function limitsFor(options: WorkspaceToolHostOptions): ToolHostLimits {
 
 function boundedOption(value: number | undefined, fallback: number): number {
   if (value === undefined) return fallback;
-  if (!Number.isSafeInteger(value) || value <= 0 || value > fallback) throw new AgentSessionError("tool_argument_invalid");
+  if (!Number.isSafeInteger(value) || value <= 0 || value > fallback) {
+    throw new AgentSessionError("tool_argument_invalid");
+  }
   return value;
 }
 
-function textResult(value: unknown): WorkspaceToolResult {
-  return { content: JSON.stringify(value) };
+function outputBudget(budget: WorkspaceToolBudget | undefined): number {
+  if (budget === undefined) return Number.MAX_SAFE_INTEGER;
+  if (!Number.isSafeInteger(budget.maxOutputBytes) || budget.maxOutputBytes <= 0) {
+    throw new AgentSessionError("agent_output_byte_limit");
+  }
+  return budget.maxOutputBytes;
+}
+
+function textResult(value: unknown, maxOutputBytes: number): WorkspaceToolResult {
+  const content = JSON.stringify(value);
+  if (Buffer.byteLength(content, "utf8") > maxOutputBytes) {
+    throw new AgentSessionError("agent_output_byte_limit");
+  }
+  return { content };
+}
+
+function serializedBytes(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
+function bothTruncationStatesFit(
+  value: { entries: ListEntry[] } | { matches: SearchMatch[] },
+  maxOutputBytes: number,
+): boolean {
+  return serializedBytes({ ...value, truncated: false }) <= maxOutputBytes &&
+    serializedBytes({ ...value, truncated: true }) <= maxOutputBytes;
 }
 
 function rootsOverlap(first: string, second: string): boolean {

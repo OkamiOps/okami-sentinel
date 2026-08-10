@@ -16,12 +16,7 @@ import {
   type WireSessionAdapter,
 } from "./session-types.js";
 
-export const GEMINI_OPENAI_CHAT_ENDPOINT =
-  "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
-
 export interface OpenAiChatSessionSpec {
-  connectionId: string;
-  routeKind: string;
   model: ProviderModel;
   instructions: string;
 }
@@ -53,7 +48,6 @@ export interface AgentProbeMeasurement {
 
 /** Creates the wire translator only; all local side effects remain in the runner. */
 export function createOpenAiChatWireAdapter(spec: OpenAiChatSessionSpec): WireSessionAdapter {
-  const endpoint = openAiChatEndpoint(spec.routeKind);
   const messages: unknown[] = [{ role: "system", content: spec.instructions }];
 
   return {
@@ -62,7 +56,7 @@ export function createOpenAiChatWireAdapter(spec: OpenAiChatSessionSpec): WireSe
         messages.push({ role: "tool", tool_call_id: result.callId, content: result.content });
       }
       return {
-        url: endpoint,
+        operation: "chat-completions",
         body: {
           model: spec.model.id,
           messages,
@@ -126,8 +120,6 @@ export async function probeOpenAiChatSession(
       host,
       upstream,
       adapter: createOpenAiChatWireAdapter({
-        connectionId: route.connectionId,
-        routeKind: route.routeKind,
         model,
         instructions: spec.instructions,
       }),
@@ -149,21 +141,6 @@ export async function probeOpenAiChatSession(
     limitsEnforced,
     agentLoop: evidence,
   };
-}
-
-export function openAiChatEndpoint(routeKind: string): string {
-  switch (routeKind) {
-    case "gemini-api":
-      return GEMINI_OPENAI_CHAT_ENDPOINT;
-    case "openai-api":
-      return "https://api.openai.com/v1/chat/completions";
-    case "openrouter-api":
-      return "https://openrouter.ai/api/v1/chat/completions";
-    case "deepseek-api":
-      return "https://api.deepseek.com/chat/completions";
-    default:
-      throw new AgentSessionError("runner_protocol_unsupported");
-  }
 }
 
 function advanceProbeEvidence(

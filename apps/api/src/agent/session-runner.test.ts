@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -59,7 +59,8 @@ test("a Gemini OpenAI chat probe proves agent facts only after the complete arti
     routeKind: "gemini-api",
   }, selected, probeSpec(fixture), upstream);
 
-  assert.equal(upstream.requests[0]?.url, "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions");
+  assert.equal(wireOperation(upstream.requests[0]), "chat-completions");
+  assert.equal(upstream.requests[0] !== undefined && "url" in upstream.requests[0], false);
   assert.equal(upstream.modelIds.every((id) => id === selected.id), true);
   assert.deepEqual(pickAgentFacts(report), {
     tools: "supported",
@@ -227,6 +228,90 @@ test("deadline and abort cancel in-flight work without issuing another model req
   assert.equal(abortEvents.some((event) => isCancellation(event, true)), true);
 });
 
+test("deadline cuts off an upstream request that ignores AbortSignal and handles a late rejection", async (t) => {
+  const fixture = await fixtureRoots("ignored-deadline-signal");
+  t.after(fixture.cleanup);
+  const started = deferred<void>();
+  let rejectLate: ((error: Error) => void) | undefined;
+  const unhandled: unknown[] = [];
+  const onUnhandled = (error: unknown) => unhandled.push(error);
+  process.on("unhandledRejection", onUnhandled);
+  t.after(() => process.off("unhandledRejection", onUnhandled));
+
+  const session = await createAgentSession({
+    ...sessionSpec(fixture, "openai-chat", "gemini-api", { timeoutMs: 5 }),
+    probe: capability(),
+  }, {
+    request() {
+      started.resolve();
+      return new Promise((_resolve, reject) => {
+        rejectLate = reject;
+      });
+    },
+    async cancel() {
+      return true;
+    },
+  });
+  const events: unknown[] = [];
+  const running = collect(session.run(), events);
+  await started.promise;
+  await assert.rejects(withTestDeadline(running, 250), { code: "agent_time_limit" });
+  assert.equal(events.some((event) => isCancellation(event, true)), true);
+
+  rejectLate?.(new Error("late upstream rejection"));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(unhandled, []);
+});
+
+test("cancel cuts off an upstream request that ignores AbortSignal", async (t) => {
+  const fixture = await fixtureRoots("ignored-cancel-signal");
+  t.after(fixture.cleanup);
+  const started = deferred<void>();
+  let rejectLate: ((error: Error) => void) | undefined;
+  const session = await createAgentSession({
+    ...sessionSpec(fixture, "openai-chat", "gemini-api"),
+    probe: capability(),
+  }, {
+    request() {
+      started.resolve();
+      return new Promise((_resolve, reject) => {
+        rejectLate = reject;
+      });
+    },
+    async cancel() {
+      return true;
+    },
+  });
+  const events: unknown[] = [];
+  const running = collect(session.run(), events);
+  t.after(async () => {
+    rejectLate?.(new Error("test cleanup"));
+    await running.catch(() => undefined);
+  });
+  await started.promise;
+  assert.deepEqual(await session.cancel(), { remote: true });
+  await withTestDeadline(running, 250);
+  assert.equal(events.some((event) => isCancellation(event, true)), true);
+});
+
+test("remaining output budget prevents results.write before host I/O", async (t) => {
+  const fixture = await fixtureRoots("runner-write-budget");
+  t.after(fixture.cleanup);
+  const reply = chatToolCall(
+    "results.write",
+    { path: "must-not-exist.json", content: "{}" },
+    "write-without-budget",
+  );
+  const responseBytes = Buffer.byteLength(JSON.stringify(reply), "utf8");
+  const session = await createAgentSession({
+    ...sessionSpec(fixture, "openai-chat", "gemini-api", { maxOutputBytes: responseBytes + 1 }),
+    probe: capability(),
+  }, fakeOpenAiChat([reply]));
+
+  await assert.rejects(collect(session.run(), []), { code: "agent_output_byte_limit" });
+  assert.equal(await fileExists(join(fixture.artifactRoot, "must-not-exist.json")), false);
+});
+
 test("malformed frames fail safely and absent usage stays null", async (t) => {
   const malformedFixture = await fixtureRoots("malformed-frame");
   const usageFixture = await fixtureRoots("usage-fields");
@@ -291,6 +376,57 @@ test("OpenAI Responses and Anthropic Messages complete the same constrained arti
   const anthropicEvents: unknown[] = [];
   await collect(anthropicSession.run(), anthropicEvents);
   assert.equal(anthropicEvents.some((event) => isArtifact(event, "report.json")), true);
+});
+
+test("wire operations are route-agnostic for custom, MiMo, and xAI OAuth sessions", async (t) => {
+  const fixture = await fixtureRoots("route-agnostic-wire");
+  t.after(fixture.cleanup);
+  const selected = model("account-visible/model:exact");
+  const cases = [
+    {
+      routeKind: "custom-openai-compatible",
+      protocol: "openai-chat",
+      operation: "chat-completions",
+      response: chatFinalText("done"),
+    },
+    {
+      routeKind: "custom-anthropic-compatible",
+      protocol: "anthropic-messages",
+      operation: "messages",
+      response: anthropicFinalStructured({ status: "ok" }),
+    },
+    {
+      routeKind: "mimo-token-plan",
+      protocol: "openai-responses",
+      operation: "responses",
+      response: responsesFinalStructured({ status: "ok" }),
+    },
+    {
+      routeKind: "xai-oauth",
+      protocol: "xai-oauth-responses",
+      operation: "responses",
+      response: responsesFinalStructured({ status: "ok" }),
+    },
+  ] as const;
+
+  for (const candidate of cases) {
+    const requests: AgentUpstreamRequest[] = [];
+    const session = await createAgentSession({
+      ...sessionSpec(fixture, "openai-chat", candidate.routeKind),
+      protocol: candidate.protocol,
+      model: selected,
+      probe: capability(),
+    } as never, {
+      async request(request) {
+        requests.push(request);
+        return candidate.response;
+      },
+    });
+    await collect(session.run(), []);
+    assert.equal(wireOperation(requests[0]), candidate.operation);
+    assert.equal(requests[0] !== undefined && "url" in requests[0], false);
+    assert.equal((requests[0]?.body as { model?: unknown }).model, selected.id);
+  }
 });
 
 function capability(): ModelCapabilities {
@@ -394,14 +530,14 @@ function alwaysRequestsWorkspaceRead() {
 }
 
 function fakeOpenAiChat(replies: unknown[]) {
-  const requests: Array<{ url: string; body: { model?: unknown } }> = [];
+  const requests: AgentUpstreamRequest[] = [];
   const modelIds: unknown[] = [];
   return {
     requests,
     modelIds,
     async request(request: AgentUpstreamRequest) {
       const body = request.body as { model?: unknown };
-      requests.push({ url: request.url, body });
+      requests.push(request);
       modelIds.push(body.model);
       const reply = replies.shift();
       if (reply === undefined) throw new Error("fake transcript exhausted");
@@ -495,4 +631,43 @@ function isCompletedTool(value: unknown): boolean {
 async function collect(events: AsyncIterable<unknown>, output: unknown[]): Promise<unknown[]> {
   for await (const event of events) output.push(event);
   return output;
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function wireOperation(request: unknown): unknown {
+  return typeof request === "object" && request !== null
+    ? (request as { operation?: unknown }).operation
+    : undefined;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+async function withTestDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(Object.assign(new Error("test timeout"), { code: "test_timeout" })), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
 }

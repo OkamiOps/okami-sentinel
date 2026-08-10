@@ -50,8 +50,17 @@ export interface WorkspaceToolResult {
   artifact?: WorkspaceArtifact;
 }
 
+export interface WorkspaceToolBudget {
+  maxOutputBytes: number;
+}
+
 export interface WorkspaceToolHost {
-  call(name: WorkspaceToolName, input: unknown): Promise<WorkspaceToolResult>;
+  minimumOutputBytes(name: WorkspaceToolName, input: unknown): number;
+  call(
+    name: WorkspaceToolName,
+    input: unknown,
+    budget?: WorkspaceToolBudget,
+  ): Promise<WorkspaceToolResult>;
 }
 
 export interface WorkspaceToolHostOptions {
@@ -76,7 +85,12 @@ export interface AgentSessionLimits {
 export interface AgentSessionSpec {
   connectionId: string;
   routeKind: string;
-  protocol: Extract<ProviderProtocol, "openai-responses" | "openai-chat" | "anthropic-messages">;
+  protocol: Extract<ProviderProtocol,
+    | "openai-responses"
+    | "openai-chat"
+    | "anthropic-messages"
+    | "xai-oauth-responses"
+  >;
   model: ProviderModel;
   snapshotRoot: string;
   artifactRoot: string;
@@ -122,8 +136,10 @@ export interface CreateAgentSessionInput extends AgentSessionSpec {
   probe: ModelCapabilities | { capabilities: ModelCapabilities };
 }
 
+export type AgentWireOperation = "responses" | "chat-completions" | "messages";
+
 export interface AgentWireRequest {
-  url: string;
+  operation: AgentWireOperation;
   body: unknown;
 }
 
@@ -255,7 +271,13 @@ class ConstrainedWireSession implements AgentSession {
           yield { type: "tool", phase: "consumed", callId: result.callId, name: result.name };
         }
         modelTurns += 1;
-        const response = await this.#options.upstream.request({ ...request, signal: this.#controller.signal });
+        const response = await raceWithAbort(
+          Promise.resolve().then(() => this.#options.upstream.request({
+            ...request,
+            signal: this.#controller.signal,
+          })),
+          this.#controller.signal,
+        );
         this.#throwIfStopped();
         const responseBytes = serializedByteLength(response);
         if (outputBytes + responseBytes > this.#options.limits.maxOutputBytes) {
@@ -283,7 +305,13 @@ class ConstrainedWireSession implements AgentSession {
           seenCallIds.add(call.id);
           toolCalls += 1;
           yield { type: "tool", phase: "requested", callId: call.id, name: call.name };
-          const result = await this.#options.host.call(call.name, call.input);
+          const remainingOutputBytes = this.#options.limits.maxOutputBytes - outputBytes;
+          if (this.#options.host.minimumOutputBytes(call.name, call.input) > remainingOutputBytes) {
+            throw new AgentSessionError("agent_output_byte_limit");
+          }
+          const result = await this.#options.host.call(call.name, call.input, {
+            maxOutputBytes: remainingOutputBytes,
+          });
           this.#throwIfStopped();
           const resultBytes = Buffer.byteLength(result.content, "utf8");
           if (outputBytes + resultBytes > this.#options.limits.maxOutputBytes) {
@@ -345,6 +373,41 @@ class ConstrainedWireSession implements AgentSession {
     }
     return this.#remoteCancellation;
   }
+}
+
+/**
+ * AbortSignal is advisory at the provider boundary. This race makes the local
+ * deadline authoritative while retaining a rejection handler on late upstream
+ * settlement so a non-cooperative client cannot hang the session or leak an
+ * unhandled rejection.
+ */
+function raceWithAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      reject(new AgentSessionError("agent_cancelled"));
+    };
+
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+
+    operation.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 function emptyUsage(): AgentUsage {
