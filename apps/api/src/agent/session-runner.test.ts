@@ -1,0 +1,498 @@
+import assert from "node:assert/strict";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import test from "node:test";
+
+import type { ModelCapabilities, ProviderModel } from "@csb/shared";
+import { createAgentSession, DEFAULT_AGENT_LIMITS } from "./session-runner.js";
+import { probeOpenAiChatSession } from "./openai-chat-session.js";
+import type { AgentUpstreamRequest } from "./session-types.js";
+
+test("a session cannot be created from an unmeasured tool capability", async () => {
+  await assert.rejects(createAgentSession({
+    probe: { ...capability(), tools: "unsupported" },
+    protocol: "openai-chat",
+  } as never), { code: "runner_capability_missing" });
+});
+
+test("an endless valid tool transcript stops before an N+1 model or tool call", async (t) => {
+  const root = await mkdtemp(join(process.cwd(), ".test-agent-runner-"));
+  const snapshotRoot = join(root, "snapshot");
+  const artifactRoot = join(root, "artifacts");
+  await mkdir(snapshotRoot);
+  await mkdir(artifactRoot);
+  await writeFile(join(snapshotRoot, "index.ts"), "export const value = 1;\n");
+  t.after(async () => rm(root, { recursive: true, force: true }));
+
+  const upstream = alwaysRequestsWorkspaceRead();
+  const session = await createAgentSession({
+    probe: capability(),
+    protocol: "openai-chat",
+    routeKind: "gemini-api",
+    connectionId: "connection-a",
+    model: model("account-visible"),
+    snapshotRoot,
+    artifactRoot,
+    instructions: "Inspect the snapshot and report only through the allowed tools.",
+    limits: { ...DEFAULT_AGENT_LIMITS, maxModelTurns: 3, maxToolCalls: 2 },
+    signal: new AbortController().signal,
+  }, upstream);
+
+  const events: unknown[] = [];
+  await assert.rejects(collect(session.run(), events), { code: "agent_tool_limit" });
+  assert.equal(upstream.modelCalls, 2);
+  assert.equal(events.filter(isCompletedTool).length, 2);
+});
+
+test("a Gemini OpenAI chat probe proves agent facts only after the complete artifact loop", async (t) => {
+  const fixture = await fixtureRoots("probe-complete");
+  t.after(fixture.cleanup);
+  const selected = model("account-visible");
+  const upstream = fakeOpenAiChat([
+    chatToolCall("workspace.read", { path: "index.ts" }, "read-1"),
+    chatToolCall("results.write", { path: "probe-result.json", content: JSON.stringify({ status: "ok" }) }, "write-1"),
+    chatFinalStructured({ status: "ok" }),
+  ]);
+
+  const report = await probeOpenAiChatSession({
+    connectionId: "connection-a",
+    routeKind: "gemini-api",
+  }, selected, probeSpec(fixture), upstream);
+
+  assert.equal(upstream.requests[0]?.url, "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions");
+  assert.equal(upstream.modelIds.every((id) => id === selected.id), true);
+  assert.deepEqual(pickAgentFacts(report), {
+    tools: "supported",
+    artifactOutput: "supported",
+    structuredOutput: "supported",
+    boundedExecution: "supported",
+  });
+});
+
+test("an incomplete Gemini transcript keeps agent facts unknown while proving bounded execution", async (t) => {
+  const fixture = await fixtureRoots("probe-incomplete");
+  t.after(fixture.cleanup);
+  const report = await probeOpenAiChatSession({
+    connectionId: "connection-a",
+    routeKind: "gemini-api",
+  }, model("account-visible"), probeSpec(fixture), fakeOpenAiChat([chatFinalText("no tools")]));
+
+  assert.deepEqual(pickAgentFacts(report), {
+    tools: "unknown",
+    artifactOutput: "unknown",
+    structuredOutput: "unknown",
+    boundedExecution: "supported",
+  });
+});
+
+test("plain chat completion never enters the tool loop", async (t) => {
+  const fixture = await fixtureRoots("plain-chat");
+  t.after(fixture.cleanup);
+  const upstream = fakeOpenAiChat([chatFinalText("plain completion")]);
+  const session = await createAgentSession({
+    ...sessionSpec(fixture, "openai-chat", "gemini-api"),
+    probe: capability(),
+  }, upstream);
+
+  const events: unknown[] = [];
+  await collect(session.run(), events);
+  assert.equal(upstream.requests.length, 1);
+  assert.equal(events.some((event) => isCompletedTool(event)), false);
+});
+
+test("duplicate tool ids and malformed function arguments fail without a follow-on tool", async (t) => {
+  const duplicateFixture = await fixtureRoots("duplicate-tool");
+  const malformedFixture = await fixtureRoots("malformed-tool");
+  t.after(duplicateFixture.cleanup);
+  t.after(malformedFixture.cleanup);
+
+  const duplicate = fakeOpenAiChat([
+    chatToolCall("workspace.read", { path: "index.ts" }, "same-id"),
+    chatToolCall("workspace.read", { path: "index.ts" }, "same-id"),
+  ]);
+  const duplicateSession = await createAgentSession({
+    ...sessionSpec(duplicateFixture, "openai-chat", "gemini-api"),
+    probe: capability(),
+  }, duplicate);
+  await assert.rejects(collect(duplicateSession.run(), []), { code: "agent_protocol_error" });
+  assert.equal(duplicate.requests.length, 2);
+
+  const malformed = fakeOpenAiChat([{
+    choices: [{
+      message: {
+        tool_calls: [{
+          id: "invalid-args",
+          type: "function",
+          function: { name: "workspace.read", arguments: "{" },
+        }],
+      },
+    }],
+  }]);
+  const malformedSession = await createAgentSession({
+    ...sessionSpec(malformedFixture, "openai-chat", "gemini-api"),
+    probe: capability(),
+  }, malformed);
+  await assert.rejects(collect(malformedSession.run(), []), { code: "agent_protocol_error" });
+  assert.equal(malformed.requests.length, 1);
+});
+
+test("the runner stops output overflow before a tool can be invoked", async (t) => {
+  const fixture = await fixtureRoots("output-overflow");
+  t.after(fixture.cleanup);
+  const upstream = fakeOpenAiChat([chatFinalText("this response is intentionally longer than one byte")]);
+  const session = await createAgentSession({
+    ...sessionSpec(fixture, "openai-chat", "gemini-api", { maxOutputBytes: 1 }),
+    probe: capability(),
+  }, upstream);
+
+  await assert.rejects(collect(session.run(), []), { code: "agent_output_byte_limit" });
+  assert.equal(upstream.requests.length, 1);
+});
+
+test("input and turn budgets stop before their next upstream request", async (t) => {
+  const inputFixture = await fixtureRoots("input-overflow");
+  const turnsFixture = await fixtureRoots("turn-limit");
+  t.after(inputFixture.cleanup);
+  t.after(turnsFixture.cleanup);
+
+  const inputUpstream = fakeOpenAiChat([chatFinalText("must not be requested")]);
+  const inputSession = await createAgentSession({
+    ...sessionSpec(inputFixture, "openai-chat", "gemini-api", { maxInputBytes: 1 }),
+    probe: capability(),
+  }, inputUpstream);
+  await assert.rejects(collect(inputSession.run(), []), { code: "agent_input_byte_limit" });
+  assert.equal(inputUpstream.requests.length, 0);
+
+  const turnUpstream = alwaysRequestsWorkspaceRead();
+  const turnSession = await createAgentSession({
+    ...sessionSpec(turnsFixture, "openai-chat", "gemini-api", { maxModelTurns: 1, maxToolCalls: 2 }),
+    probe: capability(),
+  }, turnUpstream);
+  await assert.rejects(collect(turnSession.run(), []), { code: "agent_turn_limit" });
+  assert.equal(turnUpstream.modelCalls, 1);
+});
+
+test("deadline and abort cancel in-flight work without issuing another model request", async (t) => {
+  const timeFixture = await fixtureRoots("time-limit");
+  const abortFixture = await fixtureRoots("abort-limit");
+  t.after(timeFixture.cleanup);
+  t.after(abortFixture.cleanup);
+
+  let timeCalls = 0;
+  const timeUpstream = {
+    async request(request: { signal: AbortSignal }) {
+      timeCalls += 1;
+      await new Promise<void>((_resolve, reject) => {
+        request.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+      return chatFinalText("unreachable");
+    },
+    async cancel() {
+      return true;
+    },
+  };
+  const timeSession = await createAgentSession({
+    ...sessionSpec(timeFixture, "openai-chat", "gemini-api", { timeoutMs: 1 }),
+    probe: capability(),
+  }, timeUpstream);
+  const timeEvents: unknown[] = [];
+  await assert.rejects(collect(timeSession.run(), timeEvents), { code: "agent_time_limit" });
+  assert.equal(timeCalls, 1);
+  assert.equal(timeEvents.some((event) => isCancellation(event, true)), true);
+
+  const controller = new AbortController();
+  const abortUpstream = fakeOpenAiChat([
+    chatToolCall("workspace.read", { path: "index.ts" }, "read-once"),
+    chatFinalText("this completion must be discarded"),
+  ]);
+  const originalRequest = abortUpstream.request;
+  abortUpstream.request = async (request) => {
+    const response = await originalRequest(request);
+    if (abortUpstream.requests.length === 2) controller.abort();
+    return response;
+  };
+  const abortSession = await createAgentSession({
+    ...sessionSpec(abortFixture, "openai-chat", "gemini-api"),
+    signal: controller.signal,
+    probe: capability(),
+  }, {
+    ...abortUpstream,
+    async cancel() {
+      return true;
+    },
+  });
+  const abortEvents: unknown[] = [];
+  await collect(abortSession.run(), abortEvents);
+  assert.equal(abortUpstream.requests.length, 2);
+  assert.equal(abortEvents.some((event) => isCancellation(event, true)), true);
+});
+
+test("malformed frames fail safely and absent usage stays null", async (t) => {
+  const malformedFixture = await fixtureRoots("malformed-frame");
+  const usageFixture = await fixtureRoots("usage-fields");
+  t.after(malformedFixture.cleanup);
+  t.after(usageFixture.cleanup);
+
+  const malformed = fakeOpenAiChat([{ type: "response.output_text.delta", delta: "ignored" }]);
+  const malformedSession = await createAgentSession({
+    ...sessionSpec(malformedFixture, "openai-chat", "gemini-api"),
+    probe: capability(),
+  }, malformed);
+  await assert.rejects(collect(malformedSession.run(), []), { code: "agent_protocol_error" });
+
+  const usageSession = await createAgentSession({
+    ...sessionSpec(usageFixture, "openai-chat", "gemini-api"),
+    probe: capability(),
+  }, fakeOpenAiChat([{
+    choices: [{ message: { content: "plain" } }],
+    usage: {
+      prompt_tokens: 10,
+      completion_tokens: 5,
+      prompt_tokens_details: { cached_tokens: 3 },
+      completion_tokens_details: { reasoning_tokens: 2 },
+    },
+  }]));
+  const usageEvents: unknown[] = [];
+  await collect(usageSession.run(), usageEvents);
+  assert.deepEqual(usageEvents.find(isUsage), {
+    type: "usage",
+    usage: { inputTokens: 10, cachedInputTokens: 3, outputTokens: 5, reasoningTokens: 2 },
+  });
+});
+
+test("OpenAI Responses and Anthropic Messages complete the same constrained artifact loop", async (t) => {
+  const responsesFixture = await fixtureRoots("responses-loop");
+  const anthropicFixture = await fixtureRoots("anthropic-loop");
+  t.after(responsesFixture.cleanup);
+  t.after(anthropicFixture.cleanup);
+
+  const responses = fakeTranscript([
+    responsesToolCall("workspace.read", { path: "index.ts" }, "response-read"),
+    responsesToolCall("results.write", { path: "report.json", content: JSON.stringify({ status: "ok" }) }, "response-write"),
+    responsesFinalStructured({ status: "ok" }),
+  ]);
+  const responseSession = await createAgentSession({
+    ...sessionSpec(responsesFixture, "openai-responses", "openai-api"),
+    probe: capability(),
+  }, responses);
+  const responseEvents: unknown[] = [];
+  await collect(responseSession.run(), responseEvents);
+  assert.equal(responseEvents.some((event) => isArtifact(event, "report.json")), true);
+
+  const anthropic = fakeTranscript([
+    anthropicToolCall("workspace.read", { path: "index.ts" }, "anthropic-read"),
+    anthropicToolCall("results.write", { path: "report.json", content: JSON.stringify({ status: "ok" }) }, "anthropic-write"),
+    anthropicFinalStructured({ status: "ok" }),
+  ]);
+  const anthropicSession = await createAgentSession({
+    ...sessionSpec(anthropicFixture, "anthropic-messages", "anthropic-api"),
+    probe: capability(),
+  }, anthropic);
+  const anthropicEvents: unknown[] = [];
+  await collect(anthropicSession.run(), anthropicEvents);
+  assert.equal(anthropicEvents.some((event) => isArtifact(event, "report.json")), true);
+});
+
+function capability(): ModelCapabilities {
+  return {
+    tools: "supported",
+    artifactOutput: "supported",
+    structuredOutput: "supported",
+    boundedExecution: "supported",
+    osIsolation: "unknown",
+    streaming: "unknown",
+    usage: "unknown",
+    cancellation: "unknown",
+  };
+}
+
+function model(id: string): ProviderModel {
+  return {
+    connectionId: "connection-a",
+    id,
+    displayName: id,
+    contextWindow: null,
+    capabilities: capability(),
+    pricing: null,
+    discoveredAt: "2026-08-11T00:00:00.000Z",
+    source: "provider-api",
+  };
+}
+
+async function fixtureRoots(name: string) {
+  const root = await mkdtemp(join(process.cwd(), `.test-agent-${name}-`));
+  const snapshotRoot = join(root, "snapshot");
+  const artifactRoot = join(root, "artifacts");
+  await mkdir(snapshotRoot);
+  await mkdir(artifactRoot);
+  await writeFile(join(snapshotRoot, "index.ts"), "export const value = 1;\n");
+  return {
+    snapshotRoot,
+    artifactRoot,
+    async cleanup() {
+      await rm(root, { recursive: true, force: true });
+    },
+  };
+}
+
+function sessionSpec(
+  fixture: Awaited<ReturnType<typeof fixtureRoots>>,
+  protocol: "openai-responses" | "openai-chat" | "anthropic-messages",
+  routeKind: string,
+  limits: Partial<typeof DEFAULT_AGENT_LIMITS> = {},
+) {
+  return {
+    connectionId: "connection-a",
+    routeKind,
+    protocol,
+    model: model("account-visible"),
+    snapshotRoot: fixture.snapshotRoot,
+    artifactRoot: fixture.artifactRoot,
+    instructions: "Inspect the snapshot and report through the allowed tools.",
+    limits: { ...DEFAULT_AGENT_LIMITS, ...limits },
+    signal: new AbortController().signal,
+  };
+}
+
+function probeSpec(fixture: Awaited<ReturnType<typeof fixtureRoots>>) {
+  const spec = sessionSpec(fixture, "openai-chat", "gemini-api");
+  return {
+    snapshotRoot: spec.snapshotRoot,
+    artifactRoot: spec.artifactRoot,
+    instructions: spec.instructions,
+    limits: spec.limits,
+    signal: spec.signal,
+  };
+}
+
+function alwaysRequestsWorkspaceRead() {
+  let modelCalls = 0;
+  return {
+    get modelCalls() {
+      return modelCalls;
+    },
+    async request(request: AgentUpstreamRequest) {
+      modelCalls += 1;
+      const body = request.body as { model?: unknown };
+      assert.equal(body.model, "account-visible");
+      return {
+        choices: [{
+          message: {
+            tool_calls: [{
+              id: `tool-${modelCalls}`,
+              type: "function",
+              function: {
+                name: "workspace.read",
+                arguments: JSON.stringify({ path: "index.ts" }),
+              },
+            }],
+          },
+        }],
+      };
+    },
+  };
+}
+
+function fakeOpenAiChat(replies: unknown[]) {
+  const requests: Array<{ url: string; body: { model?: unknown } }> = [];
+  const modelIds: unknown[] = [];
+  return {
+    requests,
+    modelIds,
+    async request(request: AgentUpstreamRequest) {
+      const body = request.body as { model?: unknown };
+      requests.push({ url: request.url, body });
+      modelIds.push(body.model);
+      const reply = replies.shift();
+      if (reply === undefined) throw new Error("fake transcript exhausted");
+      return reply;
+    },
+  };
+}
+
+function fakeTranscript(replies: unknown[]) {
+  return {
+    async request() {
+      const reply = replies.shift();
+      if (reply === undefined) throw new Error("fake transcript exhausted");
+      return reply;
+    },
+  };
+}
+
+function chatToolCall(name: string, input: Record<string, unknown>, id: string) {
+  return {
+    choices: [{
+      message: {
+        tool_calls: [{ id, type: "function", function: { name, arguments: JSON.stringify(input) } }],
+      },
+    }],
+  };
+}
+
+function chatFinalText(content: string) {
+  return { choices: [{ message: { content } }] };
+}
+
+function chatFinalStructured(value: Record<string, unknown>) {
+  return { choices: [{ message: { content: JSON.stringify(value) } }] };
+}
+
+function responsesToolCall(name: string, input: Record<string, unknown>, id: string) {
+  return {
+    id: `response-${id}`,
+    output: [{ type: "function_call", call_id: id, name, arguments: JSON.stringify(input) }],
+  };
+}
+
+function responsesFinalStructured(value: Record<string, unknown>) {
+  return {
+    id: "response-final",
+    output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify(value) }] }],
+  };
+}
+
+function anthropicToolCall(name: string, input: Record<string, unknown>, id: string) {
+  return { content: [{ type: "tool_use", id, name, input }], stop_reason: "tool_use" };
+}
+
+function anthropicFinalStructured(value: Record<string, unknown>) {
+  return { content: [{ type: "text", text: JSON.stringify(value) }], stop_reason: "end_turn" };
+}
+
+function pickAgentFacts(report: { capabilities: Partial<ModelCapabilities> }) {
+  return {
+    tools: report.capabilities.tools,
+    artifactOutput: report.capabilities.artifactOutput,
+    structuredOutput: report.capabilities.structuredOutput,
+    boundedExecution: report.capabilities.boundedExecution,
+  };
+}
+
+function isArtifact(value: unknown, path: string): boolean {
+  return typeof value === "object" && value !== null &&
+    (value as { type?: unknown }).type === "artifact" &&
+    (value as { path?: unknown }).path === path;
+}
+
+function isCancellation(value: unknown, remote: boolean): boolean {
+  return typeof value === "object" && value !== null &&
+    (value as { type?: unknown }).type === "cancellation" &&
+    (value as { remote?: unknown }).remote === remote;
+}
+
+function isUsage(value: unknown): boolean {
+  return typeof value === "object" && value !== null &&
+    (value as { type?: unknown }).type === "usage";
+}
+
+function isCompletedTool(value: unknown): boolean {
+  return typeof value === "object" && value !== null &&
+    (value as { type?: unknown }).type === "tool" &&
+    (value as { phase?: unknown }).phase === "result";
+}
+
+async function collect(events: AsyncIterable<unknown>, output: unknown[]): Promise<unknown[]> {
+  for await (const event of events) output.push(event);
+  return output;
+}
