@@ -6,7 +6,7 @@
 
 **Architecture:** A process-wide redaction boundary sanitizes scanner output before persistence or SSE. `CredentialVault`, `ConnectionStore`, and `ConnectionsService` separate OS secret storage, SQLite metadata, and write-only orchestration; a Hono sub-app exposes safe DTOs consumed by a Test Bench-styled React page.
 
-**Tech Stack:** Node.js 24, TypeScript, Hono, better-sqlite3, `@napi-rs/keyring` 1.3.x, React 19, React Router, Shadcn/Radix, Tailwind 4, pnpm 11.5.2.
+**Tech Stack:** Node.js 24, TypeScript, Hono, better-sqlite3, `keytar` 7.9.0 behind `CredentialVault`, React 19, React Router, Shadcn/Radix, Tailwind 4, pnpm 11.5.2.
 
 ## Global Constraints
 
@@ -37,9 +37,9 @@
 - Modify `apps/api/src/scanners/mantis-worker.ts`: redact child stdout/stderr before stage JSONL.
 - Modify `apps/api/src/scanners/vulnhunter-worker.ts`: redact app-server stdout/stderr before JSONL.
 - Create `apps/api/src/credentials/credential-vault.ts`: vault interface, secret bundle validation, and safe errors.
-- Create `apps/api/src/credentials/system-credential-vault.ts`: `@napi-rs/keyring` adapter.
-- Create `apps/api/src/credential-vault.test.ts`: fake keyring and bundle round-trip tests.
-- Modify `apps/api/package.json` and `pnpm-lock.yaml`: add the native keyring binding.
+- Create `apps/api/src/credentials/system-credential-vault.ts`: lazy `keytar` adapter.
+- Create `apps/api/src/credential-vault.test.ts`: fake async native backend and bundle round-trip tests.
+- Modify `apps/api/package.json`, `pnpm-lock.yaml`, and `pnpm-workspace.yaml`: add and approve the native binding while preserving existing build approvals.
 - Create `apps/api/src/connections-store.ts`: idempotent schema and SQLite metadata operations.
 - Create `apps/api/src/connections-store.test.ts`: in-memory schema, isolation, deletion, and secret-absence tests.
 - Create `apps/api/src/connections-service.ts`: write-only validation and vault/SQLite consistency orchestration.
@@ -233,24 +233,27 @@ git commit -m "security: redact scanner telemetry globally"
 - Consumes: `globalSecretRedactor.register(scope, values)` from Task 1.
 - Produces: `ConnectionSecretBundle`, `CredentialVault`, `SystemCredentialVault`, `VaultError`, and `connectionSecretValues`.
 
-- [ ] **Step 1: Add the native keyring dependency**
+- [ ] **Step 1: Add the native credential-store dependency**
 
 Run:
 
 ```bash
-pnpm --filter @csb/api add @napi-rs/keyring@^1.3.0
+pnpm --filter @csb/api add keytar@7.9.0
 ```
 
-Expected: `apps/api/package.json` and `pnpm-lock.yaml` include `@napi-rs/keyring`; no postinstall error on Node 24.
+Expected: `apps/api/package.json` and `pnpm-lock.yaml` include exact `keytar@7.9.0`; `pnpm-workspace.yaml` preserves the existing `better-sqlite3` and `esbuild` approvals and adds `keytar`; no postinstall error on Node 24.
 
-- [ ] **Step 2: Write failing vault contract tests with an injected keyring factory**
+- [ ] **Step 2: Write failing vault contract tests with an injected async native backend**
 
-Define a fake `EntryLike` map and assert safe round-trip, missing entry, unavailable backend, deletion, and redactor registration:
+Define a fake `NativeCredentialBackend` and assert safe round-trip, missing entry, unavailable backend, deletion, fail-closed platform handling, and redactor registration before persistence:
 
 ```ts
 test("stores a validated bundle and registers its values for redaction", async () => {
-  const backend = new FakeKeyring();
-  const vault = createSystemCredentialVault({ entry: backend.entry });
+  const backend = new FakeCredentialBackend();
+  const vault = createSystemCredentialVault({
+    redactor,
+    loadBackend: async () => backend,
+  });
   await vault.put("connection/abc", {
     baseUrl: "https://token-plan.example/v1",
     discoveryUrl: "https://token-plan.example/v1/models",
@@ -262,7 +265,10 @@ test("stores a validated bundle and registers its values for redaction", async (
 });
 
 test("never falls back when the native store is unavailable", async () => {
-  const vault = createSystemCredentialVault({ entry: () => { throw new Error("locked"); } });
+  const vault = createSystemCredentialVault({
+    redactor,
+    loadBackend: async () => { throw new Error("locked"); },
+  });
   await assert.rejects(vault.put("connection/abc", { apiKey: "secret-value" }), {
     code: "secure_storage_unavailable",
   });
@@ -307,59 +313,26 @@ export class VaultError extends Error {
 
 Reject unknown keys, empty secrets, non-HTTP(S) URLs, header names outside `/^[A-Za-z0-9-]+$/`, and control characters. `connectionSecretValues()` returns URL, key, discovery URL, and header values for Task 1 without returning header names.
 
-- [ ] **Step 5: Implement `SystemCredentialVault` using native bindings**
+- [ ] **Step 5: Implement `SystemCredentialVault` using the native async backend**
 
-Use service `com.okamiops.sentinel.connections` and account equal to the server-generated credential ref:
+Use service `com.okamiops.sentinel.connections` and account equal to the server-generated credential ref. Load `keytar` lazily only on macOS/Linux, require the process-wide redactor as a constructor dependency, register a pending redaction scope before writes, and never provide a plaintext or alternate native fallback:
 
 ```ts
-import { Entry } from "@napi-rs/keyring";
-
 const SERVICE = "com.okamiops.sentinel.connections";
 
-export function createSystemCredentialVault(deps = { entry: (account: string) => new Entry(SERVICE, account) }): CredentialVault {
-  return {
-    async available() {
-      if (process.platform !== "darwin" && process.platform !== "linux") {
-        return { available: false, backend: "unsupported" };
-      }
-      try {
-        deps.entry("availability-probe").getPassword();
-        return { available: true, backend: process.platform === "darwin" ? "keychain" : "secret-service" };
-      } catch (error) {
-        if (isMissingEntry(error)) {
-          return { available: true, backend: process.platform === "darwin" ? "keychain" : "secret-service" };
-        }
-        return { available: false, backend: process.platform === "darwin" ? "keychain" : "secret-service" };
-      }
-    },
-    async put(ref, value) {
-      const bundle = validateConnectionSecretBundle(value);
-      try {
-        deps.entry(ref).setPassword(JSON.stringify(bundle));
-        globalSecretRedactor.register(ref, connectionSecretValues(bundle));
-      } catch {
-        throw new VaultError("credential_write_failed");
-      }
-    },
-    async get(ref) {
-      try {
-        const bundle = validateConnectionSecretBundle(JSON.parse(deps.entry(ref).getPassword()));
-        globalSecretRedactor.register(ref, connectionSecretValues(bundle));
-        return bundle;
-      } catch (error) {
-        if (isMissingEntry(error)) throw new VaultError("credential_not_found");
-        throw new VaultError("secure_storage_unavailable");
-      }
-    },
-    async delete(ref) {
-      try { deps.entry(ref).deletePassword(); } catch (error) { if (!isMissingEntry(error)) throw new VaultError("secure_storage_unavailable"); }
-      globalSecretRedactor.unregister(ref);
-    },
-  };
+export interface NativeCredentialBackend {
+  getPassword(service: string, account: string): Promise<string | null>;
+  setPassword(service: string, account: string, password: string): Promise<void>;
+  deletePassword(service: string, account: string): Promise<boolean>;
 }
+
+export function createSystemCredentialVault(deps: {
+  redactor: SecretRedactorRegistry;
+  loadBackend?: () => Promise<NativeCredentialBackend>;
+}): CredentialVault;
 ```
 
-Map native errors in one `isMissingEntry()` helper. Never include the native error message or bundle in `VaultError`.
+`available()` must use a unique non-secret probe account and prove `setPassword → getPassword → deletePassword`, with cleanup attempted in `finally`; a failure or mismatch returns unavailable. Preserve rejected native promises as normalized `VaultError` codes, distinguish confirmed `null`/`false`, and never include a native error message or bundle in `VaultError`.
 
 - [ ] **Step 6: Run tests, typecheck, and a bounded native smoke test**
 
@@ -368,10 +341,10 @@ Run:
 ```bash
 pnpm --filter @csb/api exec tsx --test src/credential-vault.test.ts
 pnpm --filter @csb/api typecheck
-node -e "import('@napi-rs/keyring').then(({Entry})=>{const e=new Entry('com.okamiops.sentinel.smoke','node24'); e.setPassword('ok'); if(e.getPassword()!=='ok') process.exit(1); e.deletePassword(); console.log('keyring smoke ok')})"
+node -e "import('keytar').then(async ({default:k})=>{const s='com.okamiops.sentinel.smoke',a='node24-keytar-review'; try { await k.setPassword(s,a,'ok'); if(await k.getPassword(s,a)!=='ok') process.exitCode=1; else console.log('keytar smoke ok'); } finally { await k.deletePassword(s,a); }})"
 ```
 
-Expected: tests PASS, typecheck exits 0, smoke prints `keyring smoke ok`, and the smoke entry is deleted.
+Expected: tests PASS, typecheck exits 0, smoke prints `keytar smoke ok`, and a separate read confirms the smoke entry is absent.
 
 - [ ] **Step 7: Commit the vault**
 
