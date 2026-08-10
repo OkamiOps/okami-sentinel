@@ -329,7 +329,9 @@ function discoveryCredentials(
   return {
     ...bundle,
     connectionId: connection.id,
-    allowInsecureLocalhost: allowInsecureLocalhost(connection, bundle),
+    ...(allowInsecureLocalhost(connection, bundle)
+      ? { allowInsecureLocalhost: true as const }
+      : {}),
     ...(now === undefined ? {} : { now }),
   };
 }
@@ -419,10 +421,8 @@ function allowInsecureLocalhost(
   bundle: ConnectionSecretBundle,
 ): boolean {
   if (connection.routeKind !== "custom-openai-compatible" &&
-      connection.routeKind !== "custom-anthropic-compatible" &&
-      connection.routeKind !== "mimo-token-plan") return false;
-  return (bundle as ConnectionSecretBundle & { allowInsecureLocalhost?: unknown })
-    .allowInsecureLocalhost === true;
+      connection.routeKind !== "custom-anthropic-compatible") return false;
+  return bundle.allowInsecureLocalhost === true;
 }
 
 async function readBundle(

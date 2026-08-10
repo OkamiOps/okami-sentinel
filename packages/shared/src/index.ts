@@ -191,6 +191,8 @@ export interface ConnectionSecretInput {
   baseUrl?: string;
   discoveryUrl?: string;
   headers?: Record<string, string>;
+  /** Explicit opt-in for plain HTTP on loopback hosts only. */
+  allowInsecureLocalhost?: true;
 }
 
 export interface CreateProviderConnectionRequest {

@@ -3,6 +3,8 @@ export interface ConnectionSecretBundle {
   baseUrl?: string;
   discoveryUrl?: string;
   headers?: Record<string, string>;
+  /** Explicit opt-in for plain HTTP on loopback hosts only. */
+  allowInsecureLocalhost?: true;
 }
 
 export interface CredentialVault {
@@ -42,6 +44,7 @@ const ALLOWED_KEYS = new Set([
   "baseUrl",
   "discoveryUrl",
   "headers",
+  "allowInsecureLocalhost",
 ]);
 const HEADER_NAME = /^[A-Za-z0-9-]+$/;
 const CONTROL_CHARACTER = /[\u0000-\u001F\u007F]/;
@@ -73,6 +76,19 @@ export function validateConnectionSecretBundle(
   }
   if (hasOwn(value, "headers")) {
     bundle.headers = validatedHeaders(value.headers);
+  }
+  if (hasOwn(value, "allowInsecureLocalhost")) {
+    if (value.allowInsecureLocalhost !== true) invalidBundle();
+    bundle.allowInsecureLocalhost = true;
+  }
+
+  if (
+    bundle.apiKey === undefined &&
+    bundle.baseUrl === undefined &&
+    bundle.discoveryUrl === undefined &&
+    bundle.headers === undefined
+  ) {
+    invalidBundle();
   }
 
   return bundle;

@@ -45,7 +45,7 @@ export type SafeFetchJsonResult =
 export interface DiscoveryCredentials extends ConnectionSecretBundle {
   connectionId?: string;
   /** This is intentionally not persisted by this module. */
-  allowInsecureLocalhost?: boolean;
+  allowInsecureLocalhost?: true;
   now?: () => Date;
   redactor?: SecretRedactorRegistry;
 }

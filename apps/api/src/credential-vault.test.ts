@@ -161,6 +161,37 @@ test("rejects bundles with unknown, empty, or unsafe values before storage", asy
   assert.equal(backend.values.size, 0);
 });
 
+test("persists the explicit insecure-localhost opt-in without treating it as secret text", async () => {
+  const { redactor, vault } = createFixture();
+  const bundle: ConnectionSecretBundle = {
+    apiKey: "local-secret",
+    baseUrl: "http://127.0.0.1:7331/v1",
+    allowInsecureLocalhost: true,
+  };
+
+  await vault.put("connection/local-http", bundle);
+
+  assert.deepEqual(await vault.get("connection/local-http"), bundle);
+  assert.deepEqual(redactor.registered.get("connection/local-http"), [
+    "http://127.0.0.1:7331/v1",
+    "local-secret",
+  ]);
+});
+
+test("rejects an insecure-localhost flag without credential material or when it is not true", async () => {
+  const { backend, vault } = createFixture();
+
+  await assert.rejects(
+    vault.put("connection/flag-only", { allowInsecureLocalhost: true }),
+    /invalid connection secret bundle/i,
+  );
+  await assert.rejects(
+    vault.put("connection/flag-false", { apiKey: "secret", allowInsecureLocalhost: false } as never),
+    /invalid connection secret bundle/i,
+  );
+  assert.equal(backend.values.size, 0);
+});
+
 test("reports a missing credential without native error details", async () => {
   const { vault } = createFixture();
 
