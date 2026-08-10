@@ -31,7 +31,8 @@ A decisão aprovada é criar uma camada persistente de Connections, local-first 
 
 - Não extrair tokens de sessão pertencentes a Codex, Claude Code, Cursor ou Grok Build.
 - Não reutilizar token de assinatura como se fosse API key do provider.
-- Não implementar OAuth não documentado por engenharia reversa nem copiar `client_id`, scope ou host de inferência de outro produto como se fossem contrato da xAI.
+- Não acoplar o OAuth xAI ao Grok Build CLI, importar sua sessão ou executar seus comandos para autenticar.
+- Não ampliar o v1 xAI para browser authorization-code/loopback, registro dinâmico de client ou host de inferência configurável pela UI.
 - Não afirmar que uma API de agente remoto é equivalente a uma API de inferência.
 - Não prometer custo ou tokens quando o runtime não os reporta.
 - Não suportar FreeBuf como provider enquanto não houver uma API pública compatível documentada.
@@ -85,14 +86,14 @@ Codex CLI e OAuth/device podem usar a mesma tecnologia de runtime, mas são jorn
 Três rotas independentes:
 
 1. **Grok Build local:** detecta e reutiliza uma sessão existente do CLI.
-2. **Conta xAI/Grok — OAuth gerenciado pelo Sentinel:** browser authorization-code com callback loopback ou device code RFC 8628, ambos iniciados, acompanhados, renovados e cancelados pelo Sentinel. Esta rota não invoca, instala, lê ou depende do Grok Build CLI.
+2. **Conta xAI/Grok — OAuth gerenciado pelo Sentinel:** device code RFC 8628 iniciado, acompanhado, renovado e cancelado pelo Sentinel. Esta rota não invoca, instala, lê ou depende do Grok Build CLI.
 3. **xAI API:** `XAI_API_KEY` no vault, `GET https://api.x.ai/v1/models` e execução direta pelo xAI Responses API.
 
-As três rotas têm cartões, `routeKind`, lifecycle, telemetria e compatibilidade próprios. A existência de um consent screen que se apresente como “Grok Build” não transforma a rota OAuth em rota CLI: projetos open-source independentes (OpenCode, OpenClaw e Hermes) fazem device OAuth diretamente contra `auth.x.ai`, sem executar o CLI. Isso é evidência de fluxo, não autorização para o Sentinel copiar as credenciais públicas de outro aplicativo.
+As três rotas têm cartões, `routeKind`, lifecycle, telemetria e compatibilidade próprios. O preset server-only `XaiPublicOAuthPreset` usa o cliente OAuth público Grok-CLI que OpenCode e Hermes implementam sem executar o CLI: `clientId` `b1a00492-073a-47ea-816f-4c329264a828`, scopes `openid profile email offline_access grok-cli:access api:access`, issuer `https://auth.x.ai` e Responses base URL `https://api.x.ai/v1`. Esses valores são imutáveis no backend e nunca vêm da UI.
 
-O Sentinel só habilita a rota 2 quando possui uma `XaiOAuthRegistration` revisada: `clientId`, scopes aprovados, redirect URI de loopback permitida (quando browser), trust policy para issuer e descriptor do upstream OAuth. O documento OIDC atualmente expõe authorization, token, device authorization e revocation endpoints e `S256`, mas não expõe `registration_endpoint`; portanto o Sentinel não inventa registro dinâmico nem hardcode um `clientId` retirado de outro repositório. Sem registro xAI próprio/explicitamente autorizado e descriptor de transporte, a rota fica `unavailable` com motivo `oauth_registration_unavailable`; as rotas CLI e API continuam utilizáveis.
+O consent screen pode mostrar “Grok Build” porque o client OAuth é compartilhado; isso é uma identidade do client de consentimento, não uma dependência de runtime. A UI precisa comunicar literalmente: `OAuth xAI gerenciado pelo Sentinel — o consentimento pode mencionar Grok Build; nenhum Grok Build CLI será executado ou lido.` O trade-off explícito é acompanhar a disponibilidade desse cliente público compartilhado; erro de OAuth, remoção do client ou mudança de entitlement deixa a conexão expirada/degradada, sem fallback escondido para CLI ou API key.
 
-Também não se presume que o bearer OAuth seja uma `XAI_API_KEY`: OpenClaw atualmente usa um upstream OAuth separado enquanto OpenCode e Hermes injetam o bearer em uma rota Responses. A seleção do upstream é somente do `XaiOAuthTransportDescriptor` revisado para aquela registration; jamais vem de URL livre digitada pela UI, nem é inferida do token. Um probe autenticado e explicitamente autorizado confirma catálogo e Responses antes de a conexão ficar `ready`.
+O Sentinel descobre os endpoints no OIDC e aceita apenas issuer `https://auth.x.ai` e endpoints HTTPS sob `x.ai`. Depois de obter bearer, a rota OAuth usa diretamente `https://api.x.ai/v1` pelos endpoints `/models` e `/responses`, como o plugin xAI do OpenCode. OAuth bearer não vira `XAI_API_KEY`: ambos são segredos distintos, mas o adapter OAuth coloca o primeiro somente no header `Authorization` em memória para a origin pinada.
 
 #### Boundary do OAuth xAI gerenciado
 
@@ -104,20 +105,19 @@ sequenceDiagram
   participant Vault as CredentialVault
   participant API as OAuth transport
 
-  UI->>Flow: iniciar browser ou device
-  Flow->>Auth: metadata OIDC + grant
-  Auth-->>UI: consentimento ou user code
-  Auth-->>Flow: callback code ou token grant
+  UI->>Flow: iniciar device code
+  Flow->>Auth: metadata OIDC + device grant
+  Auth-->>UI: consentimento e user code
+  Auth-->>Flow: token grant por polling
   Flow->>Vault: access/refresh token e metadata privada
   Flow->>API: discovery/probe com bearer em memoria
   API-->>Flow: modelos/capacidades
   Flow-->>UI: estado seguro, sem token
 ```
 
-- **Browser:** o flow cria `state` imprevisível e PKCE `S256`; mantém o verifier somente no `AuthFlowStore` efêmero, vinculado a conexão, redirect e expiração. O callback aceita apenas `127.0.0.1`, valida `state` uma vez e troca o `code` no backend. Não há callback pelo frontend nem URL de redirect customizável pelo usuário.
-- **Device:** como RFC 8628 não usa redirect/callback nem PKCE, o backend guarda `device_code` apenas no `AuthFlowStore`; a UI recebe `verification_uri`, `user_code`, expiração e `flowId`. Polling respeita `interval`, `authorization_pending` e `slow_down`; um `AbortSignal` por flow encerra cancelamento, expiração, fechamento e reconexão sem nova troca de token.
+- **Device v1:** RFC 8628 não usa redirect/callback nem PKCE. O backend guarda `device_code` apenas no `AuthFlowStore`; a UI recebe `verification_uri_complete` (ou `verification_uri`), `user_code`, expiração e `flowId`, abre a URL no browser desktop quando possível e sempre preserva a ação de copiar/abrir manualmente. Polling respeita `interval`, `authorization_pending` e `slow_down`; um `AbortSignal` por flow encerra cancelamento, expiração, fechamento e reconexão sem nova troca de token.
 - **Tokens:** access, refresh e id token opcional só entram no `CredentialVault`; SQLite armazena apenas `credential_ref`. Refresh é single-flight por conexão e persiste o refresh token rotacionado antes de qualquer uso subsequente. `disconnect` aborta flow pendente, tenta o `revocation_endpoint` descoberto com token retirado do vault, apaga o bundle local e registra apenas resultado seguro (`revoked`, `revoke_pending` ou `local_removed`).
-- **Transporte e logs:** o bearer só é colocado em memória no request do `xai-oauth-responses` adapter para origins pinadas pelo descriptor. Nenhum token, `device_code`, `code_verifier`, authorization code, URL com query ou header atravessa SQLite, logs, SSE, manifest, analytics ou mensagens de erro. O redactor é registrado antes de trocar tokens.
+- **Transporte e logs:** o bearer só é colocado em memória no request do `xai-oauth-responses` adapter para `https://api.x.ai/v1`. Nenhum token, `device_code`, URL com query ou header atravessa SQLite, logs, SSE, manifest, analytics ou mensagens de erro. O redactor é registrado antes de trocar tokens.
 
 ### Claude / Anthropic
 
@@ -239,26 +239,16 @@ interface ProviderModel {
   source: "provider-api" | "runtime";
 }
 
-interface XaiOAuthRegistration {
-  registrationId: string;
-  clientId: string;
+interface XaiPublicOAuthPreset {
   issuer: "https://auth.x.ai";
-  scopes: readonly string[];
-  browserRedirectUri: string | null;
-  transport: XaiOAuthTransportDescriptor;
+  clientId: "b1a00492-073a-47ea-816f-4c329264a828";
+  scopes: "openid profile email offline_access grok-cli:access api:access";
+  responsesBaseUrl: "https://api.x.ai/v1";
+  allowedOrigins: readonly ["https://auth.x.ai", "https://api.x.ai"];
 }
 
-interface XaiOAuthTransportDescriptor {
-  inferenceBaseUrl: string;
-  modelsPath: string;
-  settingsPath: string | null;
-  allowedOrigins: readonly string[];
-  protocol: "openai-responses";
-}
-
-type XaiOAuthFlowMode = "browser-pkce" | "device-code";
+type XaiOAuthFlowMode = "device-code";
 type XaiOAuthFlowStatus =
-  | "pending-browser"
   | "pending-device"
   | "exchanging"
   | "completed"
@@ -272,7 +262,7 @@ O `routeKind` é um identificador de adapter, não um enum fechado compartilhado
 
 `ConnectionDisplay` é um contrato fechado produzido pelo backend. Ele nunca contém URL, hostname, path, nome de header ou qualquer valor derivado do secret bundle. `credentialRef` existe apenas no registro interno da API e nunca atravessa o contrato HTTP.
 
-`XaiOAuthRegistration`, `XaiOAuthTransportDescriptor` e os valores de `AuthFlowStore` são contratos **server-only**; não pertencem a `packages/shared`, SQLite, log ou resposta HTTP. A UI recebe somente o modo autorizado, `flowId`, estado, expiração, URI/user code de device quando aplicável e mensagens redigidas.
+`XaiPublicOAuthPreset` e os valores de `AuthFlowStore` são contratos **server-only**; não pertencem a `packages/shared`, SQLite, log ou resposta HTTP. A UI recebe somente o modo device, `flowId`, estado, expiração, URI/user code e mensagens redigidas.
 
 ## Persistência e cofre
 
@@ -304,7 +294,7 @@ interface CredentialVault {
 - Linux desktop: Secret Service;
 - ausência de cofre seguro: bloquear persistência de conexão secreta com instrução clara; nunca cair para plaintext.
 
-O bundle criptografado inclui base URL, discovery URL, API key e nomes/valores de headers customizados. Para OAuth gerenciado inclui access token, refresh token, id token opcional, expiração, token endpoint e descriptor de transporte revisado. A UI recebe apenas representação mascarada. Atualizar um segredo exige informar um novo valor.
+O bundle criptografado inclui base URL, discovery URL, API key e nomes/valores de headers customizados. Para OAuth gerenciado inclui access token, refresh token, id token opcional, expiração e token endpoint. A UI recebe apenas representação mascarada. Atualizar um segredo exige informar um novo valor.
 
 Credenciais de CLIs permanecem sob custódia do próprio runtime. O Sentinel guarda apenas a referência lógica e o último status observado.
 
@@ -352,9 +342,9 @@ Um Sheet/Dialog Shadcn em três etapas:
 2. **Autenticar:** status de CLI, browser OAuth, device code ou formulário write-only de segredo.
 3. **Descobrir e validar:** carregar catálogo real, escolher modelo padrão e executar probe explícito.
 
-Browser OAuth mostra progresso e callback local. Device code mostra URL, código copiável, expiração e polling cancelável. Fechar o diálogo não apaga uma sessão já concluída.
+Browser OAuth mostra progresso e callback local para providers que o suportam. Para xAI v1, device code mostra URL, código copiável, expiração e polling cancelável; o desktop abre `verification_uri_complete` quando presente. Fechar o diálogo não apaga uma sessão já concluída.
 
-Para xAI, os rótulos precisam impedir a falsa equivalência: `Grok Build local — sessão do CLI existente`, `Conta xAI/Grok — OAuth gerenciado pelo Sentinel` e `xAI API — API key`. No cartão OAuth, a interface informa que o Sentinel guarda os tokens no vault do sistema e não usa nem lê o Grok Build CLI. Caso a registration não esteja aprovada, explica que OAuth xAI não está habilitado neste build e oferece somente as rotas realmente disponíveis.
+Para xAI, os rótulos precisam impedir a falsa equivalência: `Grok Build local — sessão do CLI existente`, `Conta xAI/Grok — OAuth gerenciado pelo Sentinel` e `xAI API — API key`. No cartão OAuth, a interface informa que o Sentinel guarda os tokens no vault do sistema, usa o cliente OAuth público compartilhado e não usa nem lê o Grok Build CLI.
 
 Para OpenAI, a interface diferencia `Reutilizar Codex local` de `Conectar ChatGPT pelo Sentinel`, embora ambos possam chegar ao mesmo runtime oficial.
 
@@ -379,7 +369,7 @@ POST   /connections/:id/models/refresh
 GET    /connections/:id/models
 ```
 
-`POST /connections` aceita o segredo uma única vez e devolve somente metadados. O fluxo OAuth/device devolve status, `verification_uri` e `user_code` quando aplicável, nunca access/refresh/id token, `device_code`, authorization code, PKCE verifier, endpoints completos ou descriptor privado.
+`POST /connections` aceita o segredo uma única vez e devolve somente metadados. O fluxo OAuth/device devolve status, `verification_uri` e `user_code` quando aplicável, nunca access/refresh/id token, `device_code`, endpoints completos ou valores internos do preset.
 
 Os erros são normalizados em:
 
@@ -393,11 +383,9 @@ Os erros são normalizados em:
 - `secure_storage_unavailable`;
 - `runtime_missing`;
 - `runtime_version_unsupported`.
-- `oauth_registration_unavailable`;
-- `oauth_state_mismatch`;
 - `oauth_flow_expired`;
 - `oauth_access_denied`;
-- `oauth_transport_unverified`.
+- `oauth_metadata_invalid`.
 
 ## Descoberta de modelos
 
@@ -407,7 +395,7 @@ Fontes:
 
 - Codex app-server: `model/list`;
 - Grok Build local: comando de catálogo suportado pelo runtime, sem importar token para o Sentinel;
-- xAI OAuth gerenciado: `GET {XaiOAuthTransportDescriptor.inferenceBaseUrl}{modelsPath}` com bearer somente em memória e origins pinadas; `settingsPath`, quando o descriptor o fornecer, pode sugerir o runtime default mas não substitui o catálogo;
+- xAI OAuth gerenciado: `GET https://api.x.ai/v1/models` com bearer somente em memória; sem lista estática ou fallback de endpoint;
 - Cursor Agent: comando de catálogo suportado pelo runtime;
 - OpenAI-compatible: `GET {baseUrl}/models` ou discovery URL configurada;
 - Anthropic-compatible: `GET /v1/models` ou discovery URL configurada;
@@ -485,7 +473,7 @@ Podem usar:
 
 - Codex CLI/app-server;
 - Sentinel API Agent Runner;
-- Sentinel API Agent Runner com `xai-oauth-responses`, somente depois de registration, transport e probe autenticado terem passado;
+- Sentinel API Agent Runner com `xai-oauth-responses`, somente depois de metadata OIDC, device OAuth, vault, catálogo e probe autenticado terem passado;
 - Claude Code CLI após validar sandbox e artifacts;
 - Grok Build CLI após validar sandbox do sistema operacional;
 - Cursor Agent CLI em preview até provar isolamento de rede e filesystem;
@@ -540,9 +528,8 @@ Um run nunca muda de conexão ou modelo silenciosamente. Fallback exige polític
 - CLI ausente: mostrar comando de instalação/documentação; não tentar instalar silenciosamente.
 - Sessão expirada: preservar cadastro e marcar `expired`.
 - Device code expirado: permitir gerar um novo fluxo sem duplicar a conexão.
-- Callback browser com `state` inválido, reutilizado ou expirado: não trocar código, marcar apenas o flow como `failed` e exigir novo início.
-- Cancelamento/fechamento de flow: abortar polling ou listener loopback, descartar `device_code`/PKCE efêmeros e manter credencial anterior intacta.
-- Registration/metadata ou origin do OAuth divergente: falhar fechado em `oauth_registration_unavailable` ou `oauth_transport_unverified`; nunca usar host sugerido por token ou UI.
+- Cancelamento/fechamento de flow: abortar polling, descartar `device_code` efêmero e manter credencial anterior intacta.
+- Metadata OIDC ou endpoint divergente: falhar fechado em `oauth_metadata_invalid`; nunca usar host sugerido por token ou UI.
 - Discovery falhou: manter último catálogo como stale, sem afirmar acesso atual.
 - Modelo removido: bloquear novo scan e manter runs históricos intactos.
 - Provider custom sem `/models`: permitir discovery URL explícita; sem ela, cadastro não fica ready.
@@ -589,7 +576,7 @@ O recurso segue o Test Bench Okami existente:
 9. resolver produz razões estáveis por scanner e sistema operacional;
 10. run snapshot sobrevive à remoção da conexão;
 11. usage ausente continua `null`;
-12. OAuth/device nunca aparece nos logs como token, `device_code`, callback code, verifier ou URL com query;
+12. OAuth/device nunca aparece nos logs como token, `device_code` ou URL com query;
 13. cancelamento impede novas tool calls;
 14. tool host bloqueia traversal, symlink escape e escrita fora de artifacts.
 
@@ -600,15 +587,15 @@ O recurso segue o Test Bench Okami existente:
 - fake Anthropic Messages com `tool_use`/`tool_result`;
 - mock `/models` com paginação, ACL e modelo removido;
 - fake device flow completo, `authorization_pending`, `slow_down`, negado, expirado e cancelado;
-- fake browser authorization-code com `state` único, PKCE `S256`, callback duplicado e redirect host inválido;
-- fake refresh rotacionado, revogação e upstream OAuth recusado por origin;
+- fake preset público imutável, metadata OIDC com endpoint inválido e nenhuma configuração vinda da UI;
+- fake refresh rotacionado, revogação e Responses direto recusado fora de `https://api.x.ai/v1`;
 - fake CLI status/models/scan sem depender de conta real;
 - teste opcional, explicitamente autorizado, com provider real sem registrar payload secreto.
 
 ### Frontend
 
 - fluxo de cadastro por teclado;
-- OAuth browser e device code;
+- browser OAuth para providers que o suportam e device code para xAI v1;
 - API key write-only;
 - conexão pronta, stale, expirada e indisponível;
 - filtro de catálogos extensos como OpenRouter;
@@ -626,7 +613,7 @@ O recurso segue o Test Bench Okami existente:
 6. Sentinel API Agent Runner com Responses.
 7. Adapters Chat Completions e Anthropic Messages.
 8. Rotas Codex CLI/app-server e Claude Code.
-9. Rota xAI OAuth gerenciada pelo Sentinel após a foundation e gate de registration/transport; rota Grok Build e Cursor Agent sob os gates de sandbox.
+9. Rota xAI OAuth device-code gerenciada pelo Sentinel após a foundation; rota Grok Build e Cursor Agent sob os gates de sandbox.
 10. Cursor Background Agents em preview remoto.
 11. Probes reais autorizados e matriz final de compatibilidade.
 
@@ -634,7 +621,7 @@ O recurso segue o Test Bench Okami existente:
 
 - O usuário cadastra e mantém várias conexões sem reautenticar a cada scan.
 - OpenAI mostra separadamente CLI existente, OAuth/device conduzido pelo Sentinel e API.
-- Grok/xAI mostra separadamente CLI existente, OAuth browser/device gerenciado pelo Sentinel sem CLI e xAI API. A rota OAuth só fica pronta após registration/transport verificados; seus tokens ficam somente no vault.
+- Grok/xAI mostra separadamente CLI existente, OAuth device-code gerenciado pelo Sentinel sem CLI e xAI API. A rota OAuth usa o preset público compartilhado, seus tokens ficam somente no vault e entitlement é validado por catálogo/probe.
 - Claude mostra Claude Code Max e Anthropic API como limites e cobranças distintas.
 - Cursor mostra CLI e Background Agents API sem fingir que existe inferência HTTP genérica.
 - MiniMax e MiMo aceitam a URL correta do token plan.

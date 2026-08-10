@@ -1,50 +1,53 @@
-# xAI OAuth independente do Grok Build — plano de implementação
+# xAI device OAuth independente do Grok Build — plano de implementação
 
-> **Pré-requisito:** executar somente depois do plano `2026-08-10-provider-connections-foundation.md` estar integrado e verde. Esta entrega adiciona OAuth xAI gerenciado pelo Sentinel; ela não executa, instala, importa sessão ou chama o Grok Build CLI.
+> **Pré-requisito:** executar somente depois do plano `2026-08-10-provider-connections-foundation.md` estar integrado e verde. Esta entrega adiciona OAuth xAI device-code gerenciado pelo Sentinel; ela não executa, instala, importa sessão ou chama o Grok Build CLI.
 
 ## Objetivo
 
-Entregar uma Connection `xai-oauth` para contas xAI/Grok com browser authorization-code + PKCE S256 ou device code RFC 8628, tokens somente no `CredentialVault`, refresh/revoke, catálogo/probe pelo transporte OAuth aprovado e execução posterior pelo `Sentinel API Agent Runner` usando Responses. A rota xAI API key permanece um adapter diferente.
+Entregar uma Connection `xai-oauth` para conta xAI/Grok por RFC 8628 device code, usando o cliente OAuth público Grok-CLI que OpenCode e Hermes usam, sem dependência do binário Grok Build. O Sentinel abre a URL de verificação no desktop, faz polling, guarda/renova/revoga tokens exclusivamente no `CredentialVault`, descobre modelos e envia Responses com bearer em memória diretamente a `https://api.x.ai/v1`.
 
-## Decisão e gates que não podem ser pulados
+A rota xAI API key continua distinta: `XAI_API_KEY` não é token OAuth e não participa deste fluxo.
 
-O documento OIDC live em `https://auth.x.ai/.well-known/openid-configuration` anuncia `authorization_code`, `refresh_token`, `urn:ietf:params:oauth:grant-type:device_code`, `S256`, token/device/revocation endpoints, mas não anuncia `registration_endpoint`. OpenCode, OpenClaw e Hermes demonstram um fluxo xAI independente de CLI, porém seus `client_id`, scopes e, no caso de OpenClaw, upstream OAuth, pertencem a seus próprios contratos.
+## Preset v1 e trade-off explícito
 
-Antes de expor o botão de login em produção, deve existir uma `XaiOAuthRegistration` fornecida por xAI ou explicitamente autorizada para o Sentinel. Não reutilizar `client_id`, scopes, User-Agent, headers ou `cli-chat-proxy.grok.com` copiados de projetos de terceiros. Sem essa registration, a UI mostra a rota como indisponível; CLI local e `XAI_API_KEY` não são afetados.
+OpenCode `packages/opencode/src/plugin/xai.ts` no commit `b9f3b38` declara o cliente público Grok-CLI `b1a00492-073a-47ea-816f-4c329264a828`, os scopes `openid profile email offline_access grok-cli:access api:access`, device code via OIDC e injection do bearer na Responses API default `https://api.x.ai/v1`. Hermes usa a mesma família de client/flow. O Sentinel adota exatamente esse contrato como preset imutável de backend:
+
+```ts
+const XAI_PUBLIC_OAUTH_PRESET = {
+  issuer: "https://auth.x.ai",
+  clientId: "b1a00492-073a-47ea-816f-4c329264a828",
+  scopes: "openid profile email offline_access grok-cli:access api:access",
+  responsesBaseUrl: "https://api.x.ai/v1",
+  allowedOrigins: ["https://auth.x.ai", "https://api.x.ai"],
+} as const;
+```
+
+O consent screen pode chamar o client de “Grok Build”; a UI explica que é o client público compartilhado e que o Sentinel não executa, instala ou lê o Grok Build CLI. O trade-off v1 é acompanhar a disponibilidade e a política de entitlement desse client. Falha de login, refresh, catálogo ou `403` de assinatura deixa a conexão `expired`/`degraded`; não existe fallback silencioso para CLI ou API key.
+
+O v1 não implementa browser authorization-code/loopback, PKCE, client registration, upstream OAuth alternativo, hosts customizáveis nem endpoint vindo da UI. Device code é o caminho browser-friendly: o desktop abre `verification_uri_complete` quando disponível, o usuário aprova no browser e o Sentinel faz polling local.
 
 ## Arquitetura
 
 ```mermaid
 flowchart LR
   UI["Connections UI"] --> API["Connections API"]
-  API --> FLOW["XaiOAuthFlowStore (memory only)"]
-  API --> META["OIDC metadata resolver"]
-  FLOW --> AUTH["auth.x.ai"]
+  API --> FLOW["XaiOAuthFlowStore: memory only"]
+  FLOW --> AUTH["auth.x.ai OIDC/device grant"]
   FLOW --> VAULT["CredentialVault"]
   VAULT --> REFRESH["single-flight refresh/revoke"]
-  REFRESH --> TRANSPORT["Pinned OAuth Responses transport"]
-  TRANSPORT --> MODELS["OAuth models/settings discovery"]
-  MODELS --> RESOLVER["Compatibility resolver"]
+  REFRESH --> XAI["https://api.x.ai/v1/models + /responses"]
+  XAI --> RESOLVER["Capability/compatibility resolver"]
 ```
 
 ### Server-only contracts
 
-These types stay in `apps/api`; neither values nor fields leak through `packages/shared`, SQLite, SSE, activity logs or command displays.
-
 ```ts
-interface XaiOAuthRegistration {
-  registrationId: string;
-  clientId: string;
+interface XaiPublicOAuthPreset {
   issuer: "https://auth.x.ai";
-  scopes: readonly string[];
-  browserRedirectUri: string | null;
-  transport: {
-    inferenceBaseUrl: string;
-    modelsPath: string;
-    settingsPath: string | null;
-    allowedOrigins: readonly string[];
-    protocol: "openai-responses";
-  };
+  clientId: "b1a00492-073a-47ea-816f-4c329264a828";
+  scopes: "openid profile email offline_access grok-cli:access api:access";
+  responsesBaseUrl: "https://api.x.ai/v1";
+  allowedOrigins: readonly ["https://auth.x.ai", "https://api.x.ai"];
 }
 
 interface XaiOAuthSecretBundle {
@@ -53,165 +56,138 @@ interface XaiOAuthSecretBundle {
   idToken?: string;
   expiresAt: string | null;
   tokenEndpoint: string;
-  transport: XaiOAuthRegistration["transport"];
 }
 
 interface XaiOAuthFlowPublic {
   id: string;
-  mode: "browser-pkce" | "device-code";
-  status: "pending-browser" | "pending-device" | "exchanging" | "completed" | "cancelled" | "expired" | "denied" | "failed";
+  mode: "device-code";
+  status: "pending-device" | "exchanging" | "completed" | "cancelled" | "expired" | "denied" | "failed";
   expiresAt: string;
-  authorizationUrl?: string;
-  verificationUri?: string;
-  userCode?: string;
+  verificationUri: string;
+  userCode: string;
   safeErrorCode?: string;
 }
 ```
 
-`XaiOAuthFlowStore` retains a hashed `state` and PKCE verifier for browser mode, or `device_code` for device mode, plus an `AbortController`. The only UI-visible identifiers are `flowId`, expiry, authorization URL or verification URI/user code. No callback code, device code, verifier, access token, refresh token, complete token response, provider error body or transport endpoint appears in a public DTO.
+`XaiOAuthFlowStore` mantém somente em memória `device_code`, deadline, interval e `AbortController`; a UI recebe `flowId`, URL/código públicos e estado. Access/refresh/id token, erro bruto e header nunca atravessam DTO, SQLite, SSE, analytics, manifest ou log.
 
 ## File map
 
 ### Shared API-safe types
 
-- Modify `packages/shared/src/index.ts`: add public route ID `xai-oauth`, non-secret auth-flow DTO/status and normalized safe error codes. Do not add registration, endpoint, client ID or OAuth secret types.
+- Modify `packages/shared/src/index.ts`: route ID `xai-oauth`, DTO device-flow sem segredo e safe errors `oauth_flow_expired`, `oauth_access_denied`, `oauth_metadata_invalid`.
 
 ### API
 
-- Create `apps/api/src/connections/xai-oauth-registration.ts`: immutable, server-injected registration loader and strict validation; disabled result when no reviewed registration exists.
-- Create `apps/api/src/connections/xai-oauth-metadata.ts`: OIDC discovery and exact issuer/origin/grant/S256 validation.
-- Create `apps/api/src/connections/xai-oauth-flow-store.ts`: bounded in-memory flow lifetime, one-use state and abort/expiry cleanup.
-- Create `apps/api/src/connections/xai-oauth-flow.ts`: browser PKCE and device-code start/exchange/poll/cancel orchestration.
-- Create `apps/api/src/connections/xai-oauth-credentials.ts`: secret bundle validation, vault-only load/store, single-flight refresh rotation, revocation.
-- Create `apps/api/src/connections/xai-oauth-transport.ts`: strict origin/path validation and Responses requests with an in-memory bearer.
-- Create `apps/api/src/connections/xai-oauth-model-discovery.ts`: authenticated model/settings discovery, no static model fallback.
-- Modify `apps/api/src/connections-service.ts`: register the xAI route and status transitions after foundation exists.
-- Modify `apps/api/src/connections-api.ts`: route-specific auth start/status/cancel/disconnect handlers with no-store output.
-- Modify `apps/api/src/connections-store.ts`: persist only route/status/credential reference, never flow, registration or OAuth values.
-- Modify `apps/api/src/runner.ts` and the future Responses adapter registry: select `xai-oauth-responses` only after a ready connection and capability probe.
+- Create `apps/api/src/connections/xai-public-oauth-preset.ts`: único preset imutável e validador de issuer/origins; sem configuração da UI/env.
+- Create `apps/api/src/connections/xai-oauth-metadata.ts`: OIDC discovery, pinning em `auth.x.ai` e validação de token/device/revocation endpoints.
+- Create `apps/api/src/connections/xai-oauth-flow-store.ts`: tempo de vida limitado, dados privados e cancelamento.
+- Create `apps/api/src/connections/xai-oauth-flow.ts`: request device code, abrir `verification_uri_complete`, polling/cancelamento e troca de token.
+- Create `apps/api/src/connections/xai-oauth-credentials.ts`: vault-only bundle, refresh single-flight/rotation e revoke.
+- Create `apps/api/src/connections/xai-oauth-transport.ts`: Responses direto para o preset e bearer somente em memória.
+- Create `apps/api/src/connections/xai-oauth-model-discovery.ts`: `GET /models` autenticado e probe Responses, sem lista fallback.
+- Modify `apps/api/src/connections-service.ts`, `apps/api/src/connections-api.ts`, `apps/api/src/connections-store.ts` e a futura registry de Responses para registrar a rota e persistir somente `credential_ref`/status.
 
 ### Tests
 
-- Create `apps/api/src/connections/xai-oauth-registration.test.ts`
+- Create `apps/api/src/connections/xai-public-oauth-preset.test.ts`
 - Create `apps/api/src/connections/xai-oauth-metadata.test.ts`
 - Create `apps/api/src/connections/xai-oauth-flow-store.test.ts`
 - Create `apps/api/src/connections/xai-oauth-flow.test.ts`
 - Create `apps/api/src/connections/xai-oauth-credentials.test.ts`
 - Create `apps/api/src/connections/xai-oauth-transport.test.ts`
 - Create `apps/api/src/connections/xai-oauth-model-discovery.test.ts`
-- Extend `apps/api/src/connections-api.test.ts`, `apps/api/src/connections-service.test.ts`, `apps/api/src/connections-store.test.ts` and the future API-agent adapter tests.
+- Extend foundation tests `connections-api.test.ts`, `connections-service.test.ts`, `connections-store.test.ts`, `credential-vault.test.ts`, `redaction.test.ts` and adapter/resolver tests.
 
-### Web (after API tests are green)
+### Web (somente depois do backend verde)
 
-- Modify `apps/web/src/api.ts`: safe start/status/cancel/disconnect calls only.
-- Create `apps/web/src/components/connections/XaiOAuthAuthPanel.tsx`: device/browser state, copy action, expiry and cancel.
-- Modify `apps/web/src/components/connections/ConnectionEditorSheet.tsx`: separate xAI CLI, managed OAuth and API-key route choices.
-- Modify `apps/web/src/i18n.tsx`: all supported locale strings.
-- Create `apps/web/src/lib/xai-oauth-flow.ts` and `apps/web/src/lib/xai-oauth-flow.test.ts`: pure polling/display state logic.
+- Modify `apps/web/src/api.ts`: start/status/cancel/disconnect seguros.
+- Create `apps/web/src/components/connections/XaiOAuthDevicePanel.tsx`: URL, código, expiração, copy/open/cancel e aviso do client compartilhado.
+- Modify `apps/web/src/components/connections/ConnectionEditorSheet.tsx`: separar `Grok Build local`, `OAuth xAI pelo Sentinel` e `xAI API`.
+- Modify `apps/web/src/i18n.tsx`; create `apps/web/src/lib/xai-oauth-flow.ts` e teste puro correspondente.
 
-The web task must use the `frontend-design` skill, existing Shadcn/Radix components, the Test Bench system and visual QA at `1600×1000`, `1024×768`, `820×1180`, `390×844`, and `344×882`. No hand-written global CSS or `apps/web/.impeccable/` changes.
+O futuro trabalho web usa `frontend-design`, os componentes Shadcn/Radix existentes, Test Bench e visual QA em `1600×1000`, `1024×768`, `820×1180`, `390×844` e `344×882`. Não criar CSS global manual nem tocar em `apps/web/.impeccable/`.
 
 ## TDD delivery slices
 
-All commands below use Node 24. Each numbered behavior begins with its test, the focused test is observed failing for the expected missing behavior, implementation is minimal, then focused and relevant regression tests are green. Do not write production code before that red observation.
+Todos os comandos usam Node 24. Cada slice começa com teste RED observado, recebe implementação mínima e termina GREEN antes do próximo slice. Não escrever runtime antes do teste correspondente.
 
-### 1. Fail closed without an approved registration
+### 1. Preset público imutável
 
-1. Write `xai-oauth-registration.test.ts` with an absent config and malformed/origin-escaping registration. Assert `oauth_registration_unavailable`, no client ID in public DTO and no dynamic client registration request.
-2. Run RED:
+1. Criar `xai-public-oauth-preset.test.ts`: valores exatos de client, scopes, issuer, Responses base e duas origins; assertar que request/DTO não aceita override de UI, env, token ou model row.
+2. RED:
 
    ```bash
-   PATH=/Users/marcos/.nvm/versions/node/v24.17.0/bin:$PATH pnpm --filter @csb/api exec tsx --test src/connections/xai-oauth-registration.test.ts
+   PATH=/Users/marcos/.nvm/versions/node/v24.17.0/bin:$PATH pnpm --filter @csb/api exec tsx --test src/connections/xai-public-oauth-preset.test.ts
    ```
 
-3. Implement `loadXaiOAuthRegistration()` with injected release config. Permit only issuer `https://auth.x.ai`, HTTPS descriptor origins, path-only model/settings paths and no user-supplied replacement.
-4. Re-run focused test, then `connections-service.test.ts`.
+3. Implementar somente o preset e seu validador. Não criar registro dinâmico, tela de config ou fallback de CLI.
 
-### 2. Resolve and pin OIDC metadata
+### 2. Metadata OIDC pinado
 
-1. Write a fake OIDC-server test that accepts only the expected issuer, `authorization_code`, device-code grant, token/device/revocation endpoints and `S256`; reject missing fields, HTTP, non-x.ai and a discovery redirect.
-2. Run RED:
+1. Criar teste com servidor OIDC fake: aceitar token/device/revoke HTTPS em `auth.x.ai`; rejeitar issuer, redirect, endpoint ou grant inválido.
+2. RED e GREEN:
 
    ```bash
    PATH=/Users/marcos/.nvm/versions/node/v24.17.0/bin:$PATH pnpm --filter @csb/api exec tsx --test src/connections/xai-oauth-metadata.test.ts
    ```
 
-3. Implement `resolveXaiOAuthMetadata()`. It is cached by issuer only, bounds response bytes and never logs the document or errors verbatim.
-4. GREEN plus registration test. Metadata may discover endpoints; it may not discover a client ID or transport descriptor.
+3. Implementar discovery com limite de bytes/timeout e erro seguro `oauth_metadata_invalid`; metadata descobre endpoints, nunca substitui o preset.
 
-### 3. Browser authorization-code flow is stateful and PKCE-bound
+### 3. Device code sem CLI
 
-1. Write flow-store/flow tests that start browser mode and assert a 127.0.0.1 registered redirect, one public `authorizationUrl`, opaque `state`, a `code_challenge_method=S256`, and no verifier/device code in returned JSON.
-2. Test callback success, duplicate callback, mismatched/expired state, authorization error, server restart and cancellation. Only the valid one-use callback can call the token endpoint.
-3. Run RED:
+1. Escrever flow tests: POST com client/scopes do preset; DTO público contém somente URI/user code/expiry; Sentinel tenta abrir `verification_uri_complete`; o flow não executa processo/CLI.
+2. Cobrir `authorization_pending`, `slow_down`, deny, expiry, erro de rede e `AbortSignal` de cancelamento/fechamento.
+3. RED e GREEN:
 
    ```bash
    PATH=/Users/marcos/.nvm/versions/node/v24.17.0/bin:$PATH pnpm --filter @csb/api exec tsx --test src/connections/xai-oauth-flow-store.test.ts src/connections/xai-oauth-flow.test.ts
    ```
 
-4. Implement a loopback-only callback server owned by the API process and a bounded `XaiOAuthFlowStore`; bind no public interface and remove callback state on all terminal paths.
-5. Exchange the authorization code only in the backend, store response through the vault function in slice 5, and return only safe state.
+4. Implementar `XaiOAuthFlowStore` limitado e polling por `interval`; nunca expor/persistir `device_code`.
 
-### 4. Device code flow is cancellable and obeys RFC 8628 responses
+### 4. Vault, refresh rotation e revoke
 
-1. Extend `xai-oauth-flow.test.ts` with device-code response validation; public URI/user code/expiry, private device code; `authorization_pending`, `slow_down`, denial, expiry, network failure and AbortSignal cancellation.
-2. Run RED with the same focused command.
-3. Implement device request and token polling using discovered endpoints, provider `interval` floor and deadline. There is no fabricated PKCE/state parameter in the RFC 8628 request; `flowId` binds UI events to its private record.
-4. Ensure closing Sheet invokes cancel, clears the private device code and cannot revoke/overwrite a prior successful credential.
-
-### 5. Vault-only token rotation and revocation
-
-1. Write credential tests with an injected fake vault. Assert API/SQLite/SSE never see token strings; a single expired connection issues one refresh; a returned refresh token atomically replaces the old one; transport uncertainty does not replay a rotating refresh token; `invalid_grant` moves connection to `expired`.
-2. Add disconnect tests for abort-before-revoke, discovery-provided revocation endpoint, safe `revoke_pending` on remote failure and local bundle removal.
-3. Run RED:
+1. Escrever testes com vault fake: tokens não aparecem em API/SQLite/SSE; expiração concorrente faz uma refresh; refresh token devolvido substitui o anterior; erro de transporte não repete refresh rotacionado; `invalid_grant` marca `expired`.
+2. Testar disconnect: abortar flow, usar endpoint de revogação descoberto, registrar apenas `revoked`/`revoke_pending`/`local_removed` e limpar bundle local.
+3. RED e GREEN:
 
    ```bash
    PATH=/Users/marcos/.nvm/versions/node/v24.17.0/bin:$PATH pnpm --filter @csb/api exec tsx --test src/connections/xai-oauth-credentials.test.ts src/credential-vault.test.ts src/redaction.test.ts
    ```
 
-4. Implement `storeXaiOAuthTokens`, `getFreshXaiOAuthAccessToken` and `disconnectXaiOAuth`. Register secrets with the global redactor before any error/event can be emitted. A failed rotation preserves the existing vault state; a successful one writes the new pair before it is used again.
+4. Registrar todos os tokens no redactor antes de qualquer evento/erro.
 
-### 6. OAuth transport, model discovery and probe
+### 5. Responses, modelos, probe e entitlement
 
-1. Write transport tests that reject every origin/path except the server-provided descriptor, assert exactly one in-memory `Authorization: Bearer` header, redact redirects/error bodies and never accept a base URL from UI/token/model row.
-2. Write discovery tests for OAuth `/models` and optional settings response: normal rows, empty/ACL result, model removed and failing endpoint. Assert no static fallback makes a connection `ready`.
-3. Run RED:
+1. Escrever tests que permitem apenas `https://api.x.ai/v1/models` e `/responses`, com bearer em memória e sem URL user-configurable; rejeitar redirect/origin diferente.
+2. Cobrir catálogo normal/vazio/modelo removido e `403` pós-login. `403` vira `model_access_denied`/entitlement seguro, não `credential_rejected`; sem catálogo válido, não há `ready` nem lista estática.
+3. RED e GREEN:
 
    ```bash
    PATH=/Users/marcos/.nvm/versions/node/v24.17.0/bin:$PATH pnpm --filter @csb/api exec tsx --test src/connections/xai-oauth-transport.test.ts src/connections/xai-oauth-model-discovery.test.ts
    ```
 
-4. Implement the pinned Responses transport and discovery adapter. It must not treat xAI OAuth tokens as `XAI_API_KEY` or fall back to the API-key origin. Record normalized model metadata and safe capability evidence only after a cheap authenticated probe.
-5. Add an integration fake that completes device/browser exchange, returns a rotating refresh response, lists models and handles a Responses probe.
+4. Implementar o adapter `xai-oauth-responses` e probe barato. A API-key xAI permanece em adapter/credencial separado.
 
-### 7. API contracts and compatibility gate
+### 6. API, resolver e UI device-only
 
-1. Add API tests for `POST /connections/:id/auth/start`, flow GET/cancel and disconnect: `Cache-Control: no-store`, CSRF, no token-shaped values and typed status/error transitions.
-2. Add resolver tests: xAI OAuth absent registration/failed probe is unavailable; ready `xai-oauth-responses` is eligible for Mantis/VulnHunter only after its explicit runner capability is present; it never enables Codex Security by accident.
-3. Run RED:
+1. Testes API para start/status/cancel/disconnect: CSRF, `Cache-Control: no-store`, nenhum token/device code em JSON e status tipado.
+2. Testes do resolver: OAuth pronto é elegível para Mantis/VulnHunter somente quando o runner Responses explicitamente suportar; nunca ativa Codex Security por acidente.
+3. RED e GREEN:
 
    ```bash
    PATH=/Users/marcos/.nvm/versions/node/v24.17.0/bin:$PATH pnpm --filter @csb/api exec tsx --test src/connections-api.test.ts src/connections-service.test.ts src/scanner-adapters.test.ts
    ```
 
-4. Implement only the route registration/selection required by the tests. No hidden CLI fallback, environment secret fallback or model list fallback.
-
-### 8. UI after backend is green
-
-1. First write pure web tests for every public flow status, one expiration timer, copy confirmation and cancel action; run RED.
-2. Implement the separate route choices and `XaiOAuthAuthPanel` using existing Shadcn/Radix controls. Render browser/device as distinct methods; never render Grok Build as an OAuth dependency.
-3. Run:
+4. Depois, escrever RED web para URL/código/cancelamento/expiração/aviso “consentimento pode mencionar Grok Build”; implementar somente o painel device-code e executar:
 
    ```bash
    PATH=/Users/marcos/.nvm/versions/node/v24.17.0/bin:$PATH pnpm --filter @csb/web exec vitest run src/lib/xai-oauth-flow.test.ts
    PATH=/Users/marcos/.nvm/versions/node/v24.17.0/bin:$PATH pnpm --filter @csb/web run typecheck
    ```
 
-4. Perform browser visual QA and accessibility keyboard checks at the required breakpoints. Capture artifacts outside the repository or in the accepted QA location; do not touch `.impeccable`.
-
-## End-to-end verification and release gate
-
-Run after all focused tests are green:
+## Verificação final e limites
 
 ```bash
 PATH=/Users/marcos/.nvm/versions/node/v24.17.0/bin:$PATH pnpm --filter @csb/api exec tsx --test src/connections/*.test.ts src/credential-vault.test.ts src/redaction.test.ts src/scanner-adapters.test.ts
@@ -220,11 +196,6 @@ PATH=/Users/marcos/.nvm/versions/node/v24.17.0/bin:$PATH pnpm test
 git diff --check
 ```
 
-An external xAI account test is optional and requires explicit authorization. It must use an approved Sentinel registration and an isolated test connection, redact all recording surfaces, verify browser and/or device completion plus one model/probe request, then revoke/disconnect. A green fake server does not waive this registration/entitlement gate; OAuth success also does not prove model access, which must be reported separately as `model_access_denied` or a provider entitlement error.
+Teste real de conta só ocorre com autorização explícita, sem registrar payload/tokens, e valida uma jornada device, refresh, modelo/probe, 403 de entitlement quando aplicável e disconnect/revoke. Não há implementação de runtime/UI nesta sprint documental.
 
-## Out of scope for this plan
-
-- Acquiring xAI client registration, subscription entitlement or permission to use another application's shared client.
-- Grok Build CLI execution/sandboxing; that remains a separate local-CLI adapter.
-- General multi-user/server deployment, arbitrary OAuth issuer support and arbitrary custom OAuth endpoints.
-- Modifying runtime/UI in the present documentation sprint.
+Fora de escopo: browser authorization-code/loopback, PKCE, registro OAuth próprio/dinâmico, importação ou execução de Grok Build, hosts OAuth customizados, multiusuário e fallback automático entre OAuth/API key/CLI.
