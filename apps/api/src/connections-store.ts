@@ -13,6 +13,10 @@ import type {
   ScanConnectionSnapshot,
 } from "@csb/shared";
 import { getDb } from "./db.js";
+import type {
+  CodexAppServerSafeState,
+  CodexAppServerStateSink,
+} from "./connections/codex-app-server-bridge.js";
 
 interface ProviderConnectionRow {
   id: string;
@@ -138,6 +142,7 @@ export function ensureConnectionSchema(
   ensureProviderModelsSchema(database);
   ensureCapabilityChecksSchema(database);
   ensureSnapshotsSchema(database);
+  ensureCodexAppServerStateSchema(database);
 }
 
 /** Narrow persistence boundary for safe connection metadata and immutable snapshots. */
@@ -368,6 +373,23 @@ export class ConnectionStore {
   }
 }
 
+/** SQLite sink for safe Codex app-server account state; OAuth handoffs are never accepted here. */
+export class CodexAppServerStateStore implements CodexAppServerStateSink {
+  constructor(private readonly database: Database.Database = getDb()) {
+    ensureConnectionSchema(database);
+  }
+
+  record(state: CodexAppServerSafeState): void {
+    const safe = codexAppServerStateToParams(state);
+    this.database
+      .prepare(
+        `INSERT INTO codex_app_server_state (login_id, status, plan_label, synced_at)
+         VALUES (@login_id, @status, @plan_label, @synced_at)`,
+      )
+      .run(safe);
+  }
+}
+
 export function listConnections(
   database: Database.Database = getDb(),
 ): StoredProviderConnection[] {
@@ -529,6 +551,19 @@ function ensureSnapshotsSchema(database: Database.Database): void {
     })();
   }
   createSnapshotsIndex(database);
+}
+
+function ensureCodexAppServerStateSchema(database: Database.Database): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS codex_app_server_state (
+      login_id TEXT,
+      status TEXT NOT NULL,
+      plan_label TEXT,
+      synced_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS codex_app_server_state_by_synced_at
+      ON codex_app_server_state(synced_at DESC);
+  `);
 }
 
 function createSnapshotsTable(database: Database.Database): void {
@@ -708,6 +743,53 @@ function snapshotToParams(snapshot: ScanConnectionSnapshot): Record<string, unkn
     capability_check_id: snapshot.capabilityCheckId,
     captured_at: snapshot.capturedAt,
   };
+}
+
+function codexAppServerStateToParams(
+  state: CodexAppServerSafeState,
+): Record<string, string | null> {
+  const loginId = state.loginId === null ? null : safeCodexLoginId(state.loginId);
+  const status = safeCodexStateStatus(state.status);
+  const planLabel = state.planLabel === null ? null : safeCodexPlanLabel(state.planLabel);
+  const syncedAt = safeTimestamp(state.syncedAt);
+  return {
+    login_id: loginId,
+    status,
+    plan_label: planLabel,
+    synced_at: syncedAt,
+  };
+}
+
+function safeCodexLoginId(value: string): string {
+  if (!/^[a-z0-9][a-z0-9._-]{0,159}$/i.test(value)) {
+    throw new Error("Invalid safe Codex login state");
+  }
+  return value;
+}
+
+function safeCodexStateStatus(value: CodexAppServerSafeState["status"]): string {
+  if (
+    value !== "pending" && value !== "completed" && value !== "cancelled" &&
+    value !== "expired" && value !== "denied" && value !== "failed" &&
+    value !== "ready" && value !== "unavailable"
+  ) {
+    throw new Error("Invalid safe Codex login state");
+  }
+  return value;
+}
+
+function safeCodexPlanLabel(value: string): string {
+  if (!/^[a-z0-9][a-z0-9 ._-]{0,79}$/i.test(value)) {
+    throw new Error("Invalid safe Codex login state");
+  }
+  return value;
+}
+
+function safeTimestamp(value: string): string {
+  if (!Number.isFinite(Date.parse(value)) || new Date(value).toISOString() !== value) {
+    throw new Error("Invalid safe Codex login state");
+  }
+  return value;
 }
 
 function rowToSnapshot(row: SnapshotRow): ScanConnectionSnapshot {

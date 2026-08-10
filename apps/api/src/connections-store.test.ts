@@ -4,6 +4,7 @@ import Database from "better-sqlite3";
 import type { StoredProviderConnection } from "./connections-store.js";
 import {
   ConnectionStore,
+  CodexAppServerStateStore,
   deleteConnectionRecord,
   ensureConnectionSchema,
   getConnection,
@@ -67,6 +68,37 @@ test("schema stores only closed connection metadata", () => {
       "routeLabel",
       "secretConfigured",
     ]);
+  } finally {
+    db.close();
+  }
+});
+
+test("Codex app-server state rows contain only safe login/account metadata", () => {
+  const db = new Database(":memory:");
+  try {
+    const state = new CodexAppServerStateStore(db);
+    state.record({
+      loginId: "login-safe",
+      status: "pending",
+      planLabel: null,
+      syncedAt: "2026-08-11T00:00:00.000Z",
+    });
+    state.record({
+      loginId: null,
+      status: "expired",
+      planLabel: "pro",
+      syncedAt: "2026-08-11T00:01:00.000Z",
+    });
+
+    const inspected = JSON.stringify({
+      columns: db.prepare("PRAGMA table_info(codex_app_server_state)").all(),
+      rows: db.prepare("SELECT login_id, status, plan_label, synced_at FROM codex_app_server_state ORDER BY synced_at").all(),
+    });
+    assert.equal(inspected.includes("verificationUrl"), false);
+    assert.equal(inspected.includes("userCode"), false);
+    assert.equal(inspected.includes("accessToken"), false);
+    assert.match(inspected, /login-safe/);
+    assert.match(inspected, /"pro"/);
   } finally {
     db.close();
   }

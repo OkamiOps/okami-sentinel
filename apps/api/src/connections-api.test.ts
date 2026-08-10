@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import Database from "better-sqlite3";
-import type { CreateProviderConnectionRequest } from "@csb/shared";
+import type { CreateProviderConnectionRequest, ProviderConnection } from "@csb/shared";
 import {
   deleteConnectionRecord,
   getConnection,
@@ -65,6 +65,32 @@ function cliConnectionInput(): CreateProviderConnectionRequest {
     authKind: "existing-session",
     protocol: "codex-cli",
     modelSelectionMode: "runtime-default",
+  };
+}
+
+function runtimeConnection(): ProviderConnection {
+  return {
+    id: "conn-local",
+    scopeId: "local",
+    name: "Claude local",
+    providerKind: "anthropic",
+    routeKind: "claude-code-local",
+    transport: "local-cli",
+    authKind: "existing-session",
+    protocol: "claude-code-cli",
+    status: "ready",
+    modelSelectionMode: "runtime-default",
+    defaultModelId: null,
+    lastTestedAt: "2026-08-11T00:00:00.000Z",
+    lastModelSyncAt: null,
+    modelCatalogStale: false,
+    display: {
+      providerLabel: "Anthropic",
+      routeLabel: "Claude Code local",
+      secretConfigured: false,
+      endpointConfigured: false,
+      endpointKind: null,
+    },
   };
 }
 
@@ -270,6 +296,10 @@ test("read failures are normalized without exposing secret exception text", asyn
     create: async () => { throw new Error("unused"); },
     update: async () => { throw new Error("unused"); },
     remove: async () => { throw new Error("unused"); },
+    inspect: async () => { throw new Error("unused"); },
+    listModels: () => { throw new Error("unused"); },
+    refreshModels: async () => { throw new Error("unused"); },
+    probe: async () => { throw new Error("unused"); },
   };
   const api = createConnectionsApp({ service });
 
@@ -288,6 +318,10 @@ test("reports a compensation inconsistency with an explicit safe code", async ()
     },
     update: async () => null,
     remove: async () => false,
+    inspect: async () => null,
+    listModels: () => null,
+    refreshModels: async () => null,
+    probe: async () => null,
   };
   const api = createConnectionsApp({ service });
   const token = await csrfToken(api);
@@ -300,6 +334,69 @@ test("reports a compensation inconsistency with an explicit safe code", async ()
 
   assert.equal(response.status, 409);
   assert.deepEqual(await response.json(), { error: "connection_state_inconsistent" });
+});
+
+test("local runtime refresh returns a no-store safe catalog result without a model fallback", async () => {
+  const connection = runtimeConnection();
+  const service: ConnectionsService = {
+    list: () => [connection],
+    get: () => connection,
+    create: async () => connection,
+    update: async () => connection,
+    remove: async () => false,
+    inspect: async () => ({
+      connection,
+      inspection: { available: true, reason: null, supportsRuntimeDefault: true },
+    }),
+    listModels: () => [],
+    refreshModels: async () => ({
+      connection,
+      discovery: {
+        models: [],
+        supportsRuntimeDefault: true,
+      },
+    }),
+    probe: async () => ({
+      connection,
+      report: {
+        id: "check-local",
+        connectionId: connection.id,
+        modelId: null,
+        protocol: "claude-code-cli",
+        status: "failed",
+        capabilities: {
+          tools: "unknown",
+          artifactOutput: "unknown",
+          structuredOutput: "unknown",
+          boundedExecution: "unknown",
+          osIsolation: "unknown",
+          streaming: "unknown",
+          usage: "unknown",
+          cancellation: "unknown",
+        },
+        errorCode: "protocol_unsupported",
+        checkedAt: "2026-08-11T00:00:00.000Z",
+      },
+    }),
+  };
+  const api = createConnectionsApp({ service });
+  const token = await csrfToken(api);
+
+  const response = await api.request("/connections/conn-local/models/refresh", {
+    method: "POST",
+    headers: { "X-CSRF-Token": token },
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  const body = await response.json() as {
+    discovery: { models: unknown[]; supportsRuntimeDefault: boolean };
+    connection: { defaultModelId: string | null; modelSelectionMode: string };
+  };
+  assert.deepEqual(body.discovery.models, []);
+  assert.equal(body.discovery.supportsRuntimeDefault, true);
+  assert.equal(body.connection.defaultModelId, null);
+  assert.equal(body.connection.modelSelectionMode, "runtime-default");
 });
 
 test("the root app mounts connections and permits PATCH with the CSRF header", async () => {

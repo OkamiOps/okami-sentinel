@@ -3,6 +3,7 @@ import type {
   ConnectionTransport,
   ProviderModel,
   ProviderProtocol,
+  SafeProviderError,
   ScanConnectionSelection,
 } from "@csb/shared";
 import type { StoredProviderConnection } from "../connections-store.js";
@@ -18,6 +19,8 @@ export interface RouteInspection {
 export interface SafeAuthFlow {
   flowId: string;
   status: "pending" | "completed" | "cancelled" | "expired" | "denied" | "failed";
+  /** Ephemeral browser handoff URL. It is never persisted by an adapter. */
+  authUrl?: string | null;
   verificationUrl: string | null;
   userCode: string | null;
   expiresAt: string | null;
@@ -26,6 +29,8 @@ export interface SafeAuthFlow {
 export interface DiscoveryResult {
   models: readonly ProviderModel[];
   supportsRuntimeDefault: boolean;
+  /** Stable outcome code; never an upstream diagnostic or credential-bearing message. */
+  safeError?: SafeProviderError;
 }
 
 /**

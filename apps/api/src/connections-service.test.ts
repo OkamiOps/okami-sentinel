@@ -3,6 +3,7 @@ import test from "node:test";
 import Database from "better-sqlite3";
 import type {
   CreateProviderConnectionRequest,
+  ProviderModel,
   UpdateProviderConnectionRequest,
 } from "@csb/shared";
 import {
@@ -17,8 +18,10 @@ import {
   createConnectionsService,
   listConnectionRecoveryRecords,
   type ConnectionsStore,
+  type ConnectionCatalogStore,
   validateScanConnectionSelection,
 } from "./connections-service.js";
+import type { RouteAdapter } from "./connections/route-adapter.js";
 import type {
   ConnectionSecretBundle,
   CredentialVault,
@@ -82,6 +85,64 @@ function storeFor(db: Database.Database): ConnectionsStore {
     insert: (connection) => insertConnection(connection, db),
     update: (id, patch) => updateConnectionRecord(id, patch, db),
     delete: (id) => deleteConnectionRecord(id, db),
+  };
+}
+
+class FakeCatalog implements ConnectionCatalogStore {
+  readonly models = new Map<string, ProviderModel[]>();
+  readonly reports: unknown[] = [];
+  stale: string[] = [];
+
+  getModels(connectionId: string) {
+    return this.models.get(connectionId) ?? [];
+  }
+
+  getModel(connectionId: string, modelId: string) {
+    return this.getModels(connectionId).find((model) => model.id === modelId) ?? null;
+  }
+
+  replaceModels(connectionId: string, models: readonly ProviderModel[]) {
+    this.models.set(connectionId, [...models]);
+  }
+
+  markModelCatalogStale(connectionId: string) {
+    this.stale.push(connectionId);
+  }
+
+  writeCapabilityCheck(report: unknown) {
+    this.reports.push(report);
+  }
+}
+
+function runtimeRoute(
+  overrides: Partial<RouteAdapter> = {},
+): RouteAdapter {
+  return {
+    routeKind: "claude-code-local",
+    transport: "local-cli",
+    protocol: "claude-code-cli",
+    inspect: async () => ({ available: true, reason: null, supportsRuntimeDefault: true }),
+    discoverModels: async () => ({ models: [], supportsRuntimeDefault: true }),
+    probe: async (connection, selection) => ({
+      id: "check-1",
+      connectionId: connection.id,
+      modelId: selection.modelId,
+      protocol: "claude-code-cli",
+      status: "failed",
+      capabilities: {
+        tools: "unknown",
+        artifactOutput: "unknown",
+        structuredOutput: "unknown",
+        boundedExecution: "unknown",
+        osIsolation: "unknown",
+        streaming: "unknown",
+        usage: "unknown",
+        cancellation: "unknown",
+      },
+      errorCode: "protocol_unsupported",
+      checkedAt: "2026-08-11T00:00:00.000Z",
+    }),
+    ...overrides,
   };
 }
 
@@ -162,6 +223,122 @@ test("runtime-default is rejected for an HTTP connection", () => {
     transport: "http-inference",
     supportsRuntimeDefault: false,
   }), { code: "invalid_model_selection" });
+});
+
+test("runtime-default is allowed only when the Claude local adapter reports it", () => {
+  assert.throws(() => validateScanConnectionSelection({
+    connectionId: "conn-local",
+    modelSelectionMode: "runtime-default",
+    modelId: null,
+  }, {
+    routeKind: "xai-grok-build-local",
+    transport: "local-cli",
+    supportsRuntimeDefault: true,
+  }), { code: "invalid_model_selection" });
+
+  assert.doesNotThrow(() => validateScanConnectionSelection({
+    connectionId: "conn-claude",
+    modelSelectionMode: "runtime-default",
+    modelId: null,
+  }, {
+    routeKind: "claude-code-local",
+    transport: "local-cli",
+    supportsRuntimeDefault: true,
+  }));
+});
+
+test("refresh persists only models returned by the selected route and marks an error stale", async () => {
+  const db = new Database(":memory:");
+  try {
+    const catalog = new FakeCatalog();
+    const adapter = runtimeRoute({
+      routeKind: "xai-grok-build-local",
+      protocol: "grok-build-cli",
+      discoverModels: async (connection) => ({
+        models: [{
+          connectionId: connection.id,
+          id: "runtime-reported-model",
+          displayName: "Runtime reported model",
+          contextWindow: null,
+          capabilities: {
+            tools: "unknown",
+            artifactOutput: "unknown",
+            structuredOutput: "unknown",
+            boundedExecution: "unknown",
+            osIsolation: "unknown",
+            streaming: "unknown",
+            usage: "unknown",
+            cancellation: "unknown",
+          },
+          pricing: null,
+          discoveredAt: "2026-08-11T00:00:00.000Z",
+          source: "runtime",
+        }],
+        supportsRuntimeDefault: false,
+      }),
+    });
+    const service = createConnectionsService({
+      vault: new FakeVault(),
+      store: storeFor(db),
+      catalog,
+      routes: { get: (routeKind) => routeKind === adapter.routeKind ? adapter : undefined },
+    });
+    const created = await service.create({
+      name: "Grok local",
+      providerKind: "xai",
+      routeKind: "xai-grok-build-local",
+      transport: "local-cli",
+      authKind: "existing-session",
+      protocol: "grok-build-cli",
+      modelSelectionMode: "catalog",
+    });
+    catalog.models.set(created.id, [{
+      connectionId: created.id,
+      id: "removed-model",
+      displayName: "Removed model",
+      contextWindow: null,
+      capabilities: {
+        tools: "unknown",
+        artifactOutput: "unknown",
+        structuredOutput: "unknown",
+        boundedExecution: "unknown",
+        osIsolation: "unknown",
+        streaming: "unknown",
+        usage: "unknown",
+        cancellation: "unknown",
+      },
+      pricing: null,
+      discoveredAt: "2026-08-10T00:00:00.000Z",
+      source: "runtime",
+    }]);
+
+    const refreshed = await service.refreshModels(created.id);
+
+    assert.deepEqual(refreshed?.discovery.models.map((model) => model.id), ["runtime-reported-model"]);
+    assert.deepEqual(catalog.getModels(created.id).map((model) => model.id), ["runtime-reported-model"]);
+
+    const degradedService = createConnectionsService({
+      vault: new FakeVault(),
+      store: storeFor(db),
+      catalog,
+      routes: {
+        get: () => runtimeRoute({
+          routeKind: "xai-grok-build-local",
+          protocol: "grok-build-cli",
+          discoverModels: async () => ({
+            models: [],
+            supportsRuntimeDefault: false,
+            safeError: { code: "model_discovery_unsupported" },
+          }),
+        }),
+      },
+    });
+    const degraded = await degradedService.refreshModels(created.id);
+    assert.equal(degraded?.discovery.safeError?.code, "model_discovery_unsupported");
+    assert.deepEqual(catalog.stale, [created.id]);
+  } finally {
+    db.close();
+  }
 });
 
 test("catalog selection requires a live model from the selected connection", () => {

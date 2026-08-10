@@ -50,6 +50,59 @@ export function createConnectionsApp(
       return connectionError(c, error);
     }
   });
+  connections.get("/connections/:id/models", (c) => {
+    try {
+      const models = deps.service.listModels(connectionId(c.req.param("id")));
+      if (models === null) return c.json({ error: "connection_not_found" }, 404);
+      return c.json({ models });
+    } catch (error) {
+      return connectionError(c, error);
+    }
+  });
+
+  connections.post("/connections/:id/inspect", async (c) => {
+    if (!hasValidCsrfToken(c.req.header("X-CSRF-Token"), csrfToken)) {
+      return c.json({ error: "csrf_invalid" }, 403);
+    }
+    try {
+      const result = await deps.service.inspect(connectionId(c.req.param("id")));
+      if (result === null) return c.json({ error: "connection_not_found" }, 404);
+      return c.json(result);
+    } catch (error) {
+      return connectionError(c, error);
+    }
+  });
+
+  connections.post("/connections/:id/models/refresh", async (c) => {
+    if (!hasValidCsrfToken(c.req.header("X-CSRF-Token"), csrfToken)) {
+      return c.json({ error: "csrf_invalid" }, 403);
+    }
+    try {
+      const result = await deps.service.refreshModels(connectionId(c.req.param("id")));
+      if (result === null) return c.json({ error: "connection_not_found" }, 404);
+      return c.json(result);
+    } catch (error) {
+      return connectionError(c, error);
+    }
+  });
+
+  connections.post("/connections/:id/probe", async (c) => {
+    if (!hasValidCsrfToken(c.req.header("X-CSRF-Token"), csrfToken)) {
+      return c.json({ error: "csrf_invalid" }, 403);
+    }
+    try {
+      const id = connectionId(c.req.param("id"));
+      const selection = await requestJson<{ connectionId?: unknown; modelSelectionMode?: unknown; modelId?: unknown }>(
+        c.req.raw,
+      );
+      if (selection.connectionId !== id) throw new ConnectionServiceError("invalid_model_selection");
+      const result = await deps.service.probe(id, selection as never);
+      if (result === null) return c.json({ error: "connection_not_found" }, 404);
+      return c.json(result);
+    } catch (error) {
+      return connectionError(c, error);
+    }
+  });
 
   connections.post("/connections", async (c) => {
     if (!hasValidCsrfToken(c.req.header("X-CSRF-Token"), csrfToken)) {

@@ -7,14 +7,17 @@ import type {
   ConnectionTransport,
   CreateProviderConnectionRequest,
   ModelSelectionMode,
+  CapabilityReport,
   ProviderConnection,
   ProviderModel,
   ProviderProtocol,
+  SafeProviderErrorCode,
   ScanConnectionSelection,
   UpdateProviderConnectionRequest,
 } from "@csb/shared";
 import {
   deleteConnectionRecord,
+  ConnectionStore,
   getConnection,
   insertConnection,
   listConnections,
@@ -22,6 +25,8 @@ import {
   type StoredProviderConnection,
   updateConnectionRecord,
 } from "./connections-store.js";
+import type { RouteAdapter, RouteInspection, DiscoveryResult } from "./connections/route-adapter.js";
+import { createRouteRegistry } from "./connections/route-registry.js";
 import {
   connectionSecretValues,
   type ConnectionSecretBundle,
@@ -68,7 +73,7 @@ const LOCAL_CLI_PROTOCOLS = new Set<ProviderProtocol>([
 const CONTROL_CHARACTER = /[\u0000-\u001F\u007F]/;
 const IDENTIFIER = /^[a-z0-9][a-z0-9_-]{0,79}$/;
 const URL_OR_HOSTNAME = /(?:https?:\/\/|(?:^|\s)(?:[a-z0-9-]+\.)+[a-z]{2,}(?:[/:?#\s]|$))/i;
-const CREDENTIAL_SHAPED = /(?:authorization\s*[:=]|\b(?:bearer|basic)\s+\S+|(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret)\s*[:=]|[?&](?:api[_-]?key|token|password|secret)=|\b(?:sk|xai)-[a-z0-9_-]{4,})/i;
+const CREDENTIAL_SHAPED = /(?:authorization\s*[:=]|\b(?:bearer|basic)\s+\S+|(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret)\s*[:=]|[?&](?:api[_-]?key|token|password|secret)=|\bsk-[a-z0-9_-]{4,}|\bxai-(?!grok-build-local\b)[a-z0-9_-]{4,})/i;
 const CREATE_KEYS = new Set([
   "name",
   "providerKind",
@@ -89,7 +94,8 @@ export type ConnectionErrorCode =
   | "connection_not_found"
   | "connection_write_failed"
   | "connection_state_inconsistent"
-  | "secure_storage_unavailable";
+  | "secure_storage_unavailable"
+  | SafeProviderErrorCode;
 
 export class ConnectionServiceError extends Error {
   constructor(readonly code: ConnectionErrorCode) {
@@ -106,6 +112,34 @@ export interface ConnectionsStore {
   delete(id: string): boolean;
 }
 
+/** The model/probe persistence boundary consumed only after an adapter returns safe facts. */
+export interface ConnectionCatalogStore {
+  getModels(connectionId: string): ProviderModel[];
+  getModel(connectionId: string, modelId: string): ProviderModel | null;
+  replaceModels(connectionId: string, models: readonly ProviderModel[]): void;
+  markModelCatalogStale(connectionId: string): void;
+  writeCapabilityCheck(report: CapabilityReport): void;
+}
+
+export interface ConnectionRouteRegistry {
+  get(routeKind: string): RouteAdapter | undefined;
+}
+
+export interface ConnectionInspectionResult {
+  connection: ProviderConnection;
+  inspection: RouteInspection;
+}
+
+export interface ConnectionModelRefreshResult {
+  connection: ProviderConnection;
+  discovery: DiscoveryResult;
+}
+
+export interface ConnectionProbeResult {
+  connection: ProviderConnection;
+  report: CapabilityReport;
+}
+
 export interface ConnectionsService {
   list(): ProviderConnection[];
   get(id: string): ProviderConnection | null;
@@ -115,16 +149,26 @@ export interface ConnectionsService {
     input: UpdateProviderConnectionRequest,
   ): Promise<ProviderConnection | null>;
   remove(id: string): Promise<boolean>;
+  inspect(id: string): Promise<ConnectionInspectionResult | null>;
+  listModels(id: string): ProviderModel[] | null;
+  refreshModels(id: string): Promise<ConnectionModelRefreshResult | null>;
+  probe(
+    id: string,
+    selection: ScanConnectionSelection,
+  ): Promise<ConnectionProbeResult | null>;
 }
 
 export interface ConnectionsServiceDependencies {
   vault: CredentialVault;
   store?: ConnectionsStore;
+  catalog?: ConnectionCatalogStore;
+  routes?: ConnectionRouteRegistry;
   recovery?: ConnectionRecoverySink;
 }
 
 /** Facts obtained server-side from the selected route adapter and model store. */
 export interface ScanConnectionSelectionFacts {
+  routeKind?: string;
   transport: ConnectionTransport;
   supportsRuntimeDefault: boolean;
   model?: ProviderModel | null;
@@ -149,6 +193,7 @@ export function validateScanConnectionSelection(
     if (
       selection.modelId !== null ||
       facts.transport === "http-inference" ||
+      facts.routeKind !== "claude-code-local" ||
       facts.supportsRuntimeDefault !== true
     ) throw new ConnectionServiceError("invalid_model_selection");
     return;
@@ -202,6 +247,8 @@ export function createConnectionsService(
   deps: ConnectionsServiceDependencies,
 ): ConnectionsService {
   const store = deps.store ?? sqliteConnectionsStore;
+  const catalog = deps.catalog ?? new ConnectionStore();
+  const routes = deps.routes ?? createRouteRegistry();
   const recovery = deps.recovery ?? processRecoverySink;
 
   return {
@@ -344,6 +391,53 @@ export function createConnectionsService(
         throw new ConnectionServiceError("connection_write_failed");
       }
     },
+    async inspect(id) {
+      const connection = store.get(id);
+      if (connection === null) return null;
+      const adapter = adapterFor(connection, routes);
+      const inspection = await adapter.inspect(connection);
+      const updated = updateRuntimeStatus(store, connection, inspection);
+      return { connection: toPublicConnection(updated), inspection };
+    },
+    listModels(id) {
+      if (store.get(id) === null) return null;
+      return catalog.getModels(id);
+    },
+    async refreshModels(id) {
+      const connection = store.get(id);
+      if (connection === null) return null;
+      const adapter = adapterFor(connection, routes);
+      const discovered = await adapter.discoverModels(connection);
+      const discovery = validDiscovery(connection, discovered);
+      if (discovery.safeError !== undefined) {
+        catalog.markModelCatalogStale(connection.id);
+        const updated = store.update(connection.id, { status: "degraded" });
+        return { connection: toPublicConnection(updated), discovery };
+      }
+      catalog.replaceModels(connection.id, discovery.models);
+      const updated = store.update(connection.id, { status: "ready" });
+      return { connection: toPublicConnection(updated), discovery };
+    },
+    async probe(id, selection) {
+      const connection = store.get(id);
+      if (connection === null) return null;
+      const adapter = adapterFor(connection, routes);
+      const inspection = await adapter.inspect(connection);
+      validateScanConnectionSelection(selection, {
+        routeKind: connection.routeKind,
+        transport: connection.transport,
+        supportsRuntimeDefault: inspection.supportsRuntimeDefault,
+        model: selection.modelId === null ? null : catalog.getModel(connection.id, selection.modelId),
+        modelCatalogStale: connection.modelCatalogStale,
+      });
+      const report = await adapter.probe(connection, selection);
+      catalog.writeCapabilityCheck(report);
+      const updated = store.update(connection.id, {
+        status: report.status === "passed" ? "ready" : "degraded",
+        lastTestedAt: report.checkedAt,
+      });
+      return { connection: toPublicConnection(updated), report };
+    },
   };
 }
 
@@ -354,6 +448,49 @@ const sqliteConnectionsStore: ConnectionsStore = {
   update: updateConnectionRecord,
   delete: deleteConnectionRecord,
 };
+
+function adapterFor(
+  connection: StoredProviderConnection,
+  routes: ConnectionRouteRegistry,
+): RouteAdapter {
+  const adapter = routes.get(connection.routeKind);
+  if (
+    adapter === undefined ||
+    adapter.transport !== connection.transport ||
+    adapter.protocol !== connection.protocol
+  ) throw new ConnectionServiceError("protocol_unsupported");
+  return adapter;
+}
+
+function validDiscovery(
+  connection: StoredProviderConnection,
+  discovery: DiscoveryResult,
+): DiscoveryResult {
+  if (discovery.models.some((model) => model.connectionId !== connection.id)) {
+    return {
+      models: [],
+      supportsRuntimeDefault: false,
+      safeError: { code: "protocol_unsupported" },
+    };
+  }
+  return discovery;
+}
+
+function updateRuntimeStatus(
+  store: ConnectionsStore,
+  connection: StoredProviderConnection,
+  inspection: RouteInspection,
+): StoredProviderConnection {
+  const status: ConnectionStatus = inspection.available
+    ? "ready"
+    : inspection.reason === "credential_expired"
+      ? "expired"
+      : "unavailable";
+  return store.update(connection.id, {
+    status,
+    lastTestedAt: new Date().toISOString(),
+  });
+}
 
 function validateCreateInput(input: CreateProviderConnectionRequest): ValidatedCreateInput {
   if (!isPlainDataRecord(input)) invalidConnection();
