@@ -20,7 +20,7 @@
 - Claude has `claude-code-local` and `anthropic-api`; Cursor has only the real `cursor-agent-local` and `cursor-background-agents` routes. Do not create a fictional Cursor HTTP inference adapter.
 - Custom OpenAI-compatible and Anthropic-compatible connections accept base URL, optional discovery URL, API key, and custom headers write-only through the vault.
 - MiniMax Token Plan uses its Token Plan Anthropic base `https://api.minimax.io/anthropic`; Xiaomi MiMo Token Plan requires the regional Token Plan base supplied by the subscription page, never the pay-as-you-go base. Both are protocol presets, not model catalogs.
-- Gemini API and DeepSeek API are credential/protocol presets, not model catalogs. Their adapters discover the authenticated account's current models from the official Models APIs; neither registry nor UI contains Gemini or DeepSeek model IDs.
+- Gemini API and DeepSeek API are credential/protocol presets, not model catalogs. Their adapters discover the authenticated account's current models from the official Models APIs; neither registry nor UI contains Gemini or DeepSeek model IDs. `gemini-api` executes through Google's official OpenAI-compatible Chat Completions endpoint and `openai-chat-session`, but only a complete probe of the selected discovered model may enable an agent runner.
 - OpenRouter is an HTTP preset; OpenCode is an optional future runtime extension point, not a credential vault; FreeBuf remains absent from selectable routes until it publishes a compatible public API contract.
 - Mantis and VulnHunter may use HTTP only through `AgentSessionRunner` after a successful tool/artifact capability probe. A plain Chat Completions response has no implied filesystem tools, artifact writer, sandbox, or cancellation.
 - Preserve current Codex Security behavior. It is selectable only where the installed Codex Security contract explicitly supports that route; custom providers remain unavailable with a stable reason.
@@ -37,11 +37,11 @@
 | Claude | Claude Code documents local account/Console authentication and a CLI with explicit model selection. | Preserve the CLI credential in Claude Code; do not reinterpret Claude Max/Pro as an Anthropic Console API key. |
 | Cursor | Cursor documents `cursor-agent login`, `status`, `logout`, and API-key CLI invocation; Background Agents is a separate GitHub-backed remote jobs API. | Probe/run the local CLI or create remote jobs. Never offer `cursor /v1/chat/completions`. |
 | OpenRouter | `GET /api/v1/models` exposes model metadata/pricing and supported parameters. | Normalize its live catalog and use reported support as an input to the probe, not as a bypass for the probe. |
-| Gemini | Gemini documents authenticated `models.list` at `GET https://generativelanguage.googleapis.com/v1beta/models`, including `nextPageToken`. | Store its API key only in the vault, paginate the live catalog, and never ship a Gemini model list. |
+| Gemini | Gemini documents authenticated `models.list` at `GET https://generativelanguage.googleapis.com/v1beta/models`, plus an official OpenAI-compatible `.../v1beta/openai/chat/completions` endpoint with function calling. | Discover without a static list; execute with `openai-chat-session`; treat function calling as a wire contract, not proof that the selected model completed Sentinel's tool/artifact loop. |
 | DeepSeek | DeepSeek documents an authenticated List Models API. | Use the fixed official API preset and normalize only returned rows; never ship a DeepSeek model list. |
 | MiniMax/MiMo | MiniMax documents its dedicated Token Plan key/base; MiMo documents separate OpenAI- and Anthropic-compatible Token Plan regional bases and says the subscription page wins. | Persist endpoint/key only in the vault; discover with the configured protocol endpoint or keep the connection not-ready when no upstream catalog is exposed. |
 
-The mutable upstream contracts above must be rechecked immediately before implementation. Primary references: [Codex app-server](https://developers.openai.com/codex/app-server), [OpenAI Models API](https://platform.openai.com/docs/api-reference/models/object), [xAI CLI](https://docs.x.ai/build/cli/reference), [xAI Models API](https://docs.x.ai/developers/rest-api-reference/inference/models), [Claude Code setup](https://docs.anthropic.com/en/docs/claude-code/getting-started), [Cursor authentication](https://docs.cursor.com/en/cli/reference/authentication), [Cursor Background Agents API](https://docs.cursor.com/background-agent/api/overview), [OpenRouter Models API](https://openrouter.ai/docs/api/api-reference/models/get-models), [Gemini Models API](https://ai.google.dev/api/models), [DeepSeek List Models API](https://api-docs.deepseek.com/api/list-models), [MiniMax Token Plan](https://platform.minimax.io/docs/token-plan/quickstart), and [MiMo Token Plan integration](https://mimo.mi.com/docs/en-US/quick-start/faq/api-integration).
+The mutable upstream contracts above must be rechecked immediately before implementation. Primary references: [Codex app-server](https://developers.openai.com/codex/app-server), [OpenAI Models API](https://platform.openai.com/docs/api-reference/models/object), [xAI CLI](https://docs.x.ai/build/cli/reference), [xAI Models API](https://docs.x.ai/developers/rest-api-reference/inference/models), [Claude Code setup](https://docs.anthropic.com/en/docs/claude-code/getting-started), [Cursor authentication](https://docs.cursor.com/en/cli/reference/authentication), [Cursor Background Agents API](https://docs.cursor.com/background-agent/api/overview), [OpenRouter Models API](https://openrouter.ai/docs/api/api-reference/models/get-models), [Gemini Models API](https://ai.google.dev/api/models), [Gemini OpenAI compatibility](https://ai.google.dev/gemini-api/docs/openai), [DeepSeek List Models API](https://api-docs.deepseek.com/api/list-models), [MiniMax Token Plan](https://platform.minimax.io/docs/token-plan/quickstart), and [MiMo Token Plan integration](https://mimo.mi.com/docs/en-US/quick-start/faq/api-integration).
 
 ## Route and selection boundary
 
@@ -97,7 +97,7 @@ The code must not add `models`, `defaultModel`, or a provider-specific model arr
 - Create `apps/api/src/connections/codex-app-server-bridge.ts`: JSON-RPC transport, `account/*` and `model/list` façade.
 - Create `apps/api/src/connections/local-runtime-adapters.ts`: Codex local, Grok Build, Claude Code, and Cursor Agent status/catalog behavior.
 - Create `apps/api/src/connections/http-model-discovery.ts`: safe HTTP catalog fetch/pagination/normalization.
-- Create `apps/api/src/connections/http-route-adapters.ts`: OpenAI/xAI/Anthropic/OpenRouter/Token Plan/custom route configuration and probes.
+- Create `apps/api/src/connections/http-route-adapters.ts`: OpenAI/xAI/Anthropic/OpenRouter/Gemini/DeepSeek/Token Plan/custom route configuration and probe candidates.
 - Create `apps/api/src/connections/cursor-background-agents-adapter.ts`: Background Agents job probe and remote-job boundary only.
 - Create `apps/api/src/connections/remote-agent-job-runner.ts`: confirmed remote repository/branch job contract used only by Background Agents.
 - Create `apps/api/src/connections/xai-oauth-adapter.ts`: registration seam for the independently implemented approved xAI device OAuth modules.
@@ -174,7 +174,7 @@ test("model rows and snapshots never serialize a vault bundle", () => {
   const store = new ConnectionStore(db);
   store.replaceModels("conn-openrouter", [{
     connectionId: "conn-openrouter", id: "vendor/model-a", displayName: "Model A",
-    contextWindow: 128_000, capabilities: { tools: "unknown", structuredOutput: "unknown", streaming: "unknown", usage: "unknown", cancellation: "unknown" },
+    contextWindow: 128_000, capabilities: { tools: "unknown", artifactOutput: "unknown", structuredOutput: "unknown", boundedExecution: "unknown", osIsolation: "unknown", streaming: "unknown", usage: "unknown", cancellation: "unknown" },
     pricing: null, discoveredAt: "2026-08-11T00:00:00.000Z", source: "provider-api",
   }]);
   store.writeSnapshot({ scanId: "scan-a", connectionId: "conn-openrouter", routeKind: "openrouter-api", modelSelectionMode: "catalog", modelId: "vendor/model-a", capabilityCheckId: "check-a", capturedAt: "2026-08-11T00:00:00.000Z" });
@@ -232,7 +232,8 @@ Add the shared contract without `credentialRef`, endpoint, or header fields:
 ```ts
 export type CapabilityState = "supported" | "unsupported" | "unknown";
 export interface ModelCapabilities {
-  tools: CapabilityState; structuredOutput: CapabilityState; streaming: CapabilityState;
+  tools: CapabilityState; artifactOutput: CapabilityState; structuredOutput: CapabilityState;
+  boundedExecution: CapabilityState; osIsolation: CapabilityState; streaming: CapabilityState;
   usage: CapabilityState; cancellation: CapabilityState;
 }
 export interface ProviderModel {
@@ -426,9 +427,18 @@ test("failed refresh preserves stale rows and never supplies a fallback model", 
 test("Gemini and DeepSeek presets discover only live authenticated catalogs", async () => {
   const gemini = await discoverModels(connection("gemini-api"), fakeGeminiPages());
   const deepseek = await discoverModels(connection("deepseek-api"), fakeDeepSeekModels());
-  assert.deepEqual(gemini.models.map((model) => model.id), ["models/account-visible"]);
+  assert.deepEqual(gemini.models.map((model) => model.id), ["account-visible"]);
   assert.deepEqual(deepseek.models.map((model) => model.id), ["account-visible"]);
   assert.equal(JSON.stringify([gemini, deepseek]).includes("fallbackModel"), false);
+});
+
+test("Gemini preset exposes the official OpenAI chat wire path without inferring agent capability", async () => {
+  const route = await inspectHttpRoute(connection("gemini-api"), fakeVault("gemini-secret"));
+  assert.equal(route.protocol, "openai-chat");
+  assert.equal(route.inferencePath, "/v1beta/openai/chat/completions");
+  assert.equal(route.capabilities.tools, "unknown");
+  assert.equal(route.capabilities.structuredOutput, "unknown");
+  assert.equal(JSON.stringify(route).includes("gemini-secret"), false);
 });
 ```
 
@@ -444,7 +454,7 @@ Expected: FAIL because no HTTP discovery adapter exists.
 
 - [ ] **Step 3: Implement safe HTTP fetch and protocol normalizers**
 
-`http-model-discovery.ts` takes `ConnectionSecretBundle` only inside its function boundary, registers all values with the existing redactor, turns off redirects, applies an 8-second timeout/1 MiB response cap, accepts HTTPS by default (HTTP only if the local-only custom route has an explicit `allowInsecureLocalhost` safe boolean), and returns a `SafeProviderError` without URL/header/body. It must normalize OpenAI-style `{data:[...]}`, xAI-style `{data:[...]}` or `{models:[...]}`, Anthropic page data, Gemini `{models:[...], nextPageToken}`, and OpenRouter data. Cursor Background Agents must not import this module.
+`http-model-discovery.ts` takes `ConnectionSecretBundle` only inside its function boundary, registers all values with the existing redactor, turns off redirects, applies an 8-second timeout/1 MiB response cap, accepts HTTPS by default (HTTP only if the local-only custom route has an explicit `allowInsecureLocalhost` safe boolean), and returns a `SafeProviderError` without URL/header/body. It must normalize OpenAI-style `{data:[...]}`, xAI-style `{data:[...]}` or `{models:[...]}`, Anthropic page data, Gemini `{models:[...], nextPageToken}`, and OpenRouter data. For Gemini, store the API-returned `baseModelId` as `ProviderModel.id` because Google's Models contract identifies it as the value passed to generation requests; never invent or bundle that value. Cursor Background Agents must not import this module.
 
 Implement these endpoint strategies:
 
@@ -454,7 +464,7 @@ Implement these endpoint strategies:
 | `xai-api` | `Authorization: Bearer` | fixed official `https://api.x.ai/v1/models`; do not accept a custom host |
 | `anthropic-api`, `custom-anthropic-compatible` | `x-api-key` plus protocol version/custom headers | configured official/custom models discovery URL; if not exposed, return `model_discovery_unsupported` and remain non-ready |
 | `openrouter-api` | bearer | fixed `https://openrouter.ai/api/v1/models`; retain returned pricing/capability metadata as unverified hints |
-| `gemini-api` | vault API key; native Gemini protocol | fixed `GET https://generativelanguage.googleapis.com/v1beta/models` with `x-goog-api-key`; paginate only `nextPageToken`; no preset model IDs |
+| `gemini-api` | vault API key; native Models API for discovery and official OpenAI-compatible Chat Completions for execution | discover with fixed `GET https://generativelanguage.googleapis.com/v1beta/models` plus `x-goog-api-key` and `nextPageToken`; normalize the returned `baseModelId`, then execute only that selected value at `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions` with bearer auth through `openai-chat-session`; no preset model IDs or inferred capability |
 | `deepseek-api` | vault API key; official OpenAI-compatible protocol | fixed official DeepSeek base and documented List Models endpoint; normalize only returned rows; no preset model IDs |
 | `minimax-token-plan` | Token Plan key and Anthropic-compatible base `https://api.minimax.io/anthropic` | call the Token Plan's documented discovery endpoint if available; otherwise stay non-ready rather than insert a MiniMax model name |
 | `mimo-token-plan` | Token Plan key and a user-copied regional Token Plan base/protocol | try the matching protocol's models discovery endpoint; preserve the exact subscription-provided base in the vault; remain non-ready if it cannot list models |
@@ -463,11 +473,13 @@ Headers and all URLs remain inside the vault; `ConnectionDisplay` exposes only `
 
 - [ ] **Step 4: Implement explicit low-cost probes**
 
-`probe()` targets only the selected catalog row and returns measured facts, not a provider guess. It must separately record `tools`, `structuredOutput`, `streaming`, `usage`, `cancellation`, `contextWindow`, and `pricing`. A `401` is `credential_rejected`, `403` is `endpoint_access_denied` or `model_access_denied`, `429` is `rate_limited`, and a malformed wire response is `protocol_unsupported`. Every unknown remains `unknown`. Gemini discovery alone does not imply an `AgentSessionRunner`: until a native Gemini tool-loop adapter and artifact probe exist, Mantis/VulnHunter remain disabled for that route. DeepSeek's OpenAI-compatible route likewise passes only after the selected live model completes the measured tool/artifact probe.
+`probe()` targets only the selected catalog row and returns measured facts, not a provider guess. It must separately record `tools`, `artifactOutput`, `structuredOutput`, `boundedExecution`, `streaming`, `usage`, `cancellation`, `contextWindow`, and `pricing`. A `401` is `credential_rejected`, `403` is `endpoint_access_denied` or `model_access_denied`, `429` is `rate_limited`, and a malformed wire response is `protocol_unsupported`. Every unknown remains `unknown`.
+
+For `gemini-api`, route inspection only registers an `openai-chat` candidate. The user-triggered probe must call Google's official OpenAI-compatible endpoint with the exact selected catalog model and Task 5's `openai-chat-session`; it is successful only when the real response sequence requests a workspace tool, consumes its result, requests `results.write`, produces the artifact, and returns the required structured result while all configured turn/tool/byte/time limits remain enforced. Any missing stage, malformed tool arguments, limit breach, refusal, timeout, or upstream error records the affected facts as `unknown`/`unsupported` and keeps Mantis/VulnHunter blocked. DeepSeek's OpenAI-compatible route follows the same measured rule; neither provider name nor documented function-calling support sets a fact to `supported`.
 
 - [ ] **Step 5: Cover pagination, ACL, stale behavior, and URL isolation**
 
-Add tests for empty but valid catalog, paged result, catalog refresh after model removal, 401/403/429, timeout, provider-reported pricing, custom header redaction, a URL containing query secrets, OpenRouter tool metadata, Gemini `nextPageToken`, DeepSeek List Models, and MiniMax/MiMo discovery missing. Assert Gemini/DeepSeek fixtures contain no registry-provided model, and a model from `conn-a` cannot be selected by `conn-b`.
+Add tests for empty but valid catalog, paged result, catalog refresh after model removal, 401/403/429, timeout, provider-reported pricing, custom header redaction, a URL containing query secrets, OpenRouter tool metadata, Gemini `nextPageToken`, Gemini's fixed OpenAI-compatible chat path with all agent facts initially `unknown`, DeepSeek List Models, and MiniMax/MiMo discovery missing. Assert Gemini/DeepSeek fixtures contain no registry-provided model, and a model from `conn-a` cannot be selected by `conn-b`.
 
 - [ ] **Step 6: Run GREEN and commit**
 
@@ -630,6 +642,28 @@ test("an infinite valid tool transcript stops exactly at the configured limit", 
   assert.equal(upstream.modelCalls, 2);
   assert.equal(upstream.toolCalls, 2);
 });
+
+test("Gemini OpenAI chat probe supports an agent session only after the complete artifact loop", async () => {
+  const selected = discoveredModel("account-visible");
+  const upstream = fakeGeminiOpenAiChat([
+    toolCall("workspace.read", { path: "src/index.ts" }),
+    toolCall("results.write", { path: "probe-result.json", content: structuredProbeResult() }),
+    finalStructuredResult(),
+  ]);
+  const report = await probeOpenAiChatSession(geminiRoute(), selected, boundedSessionSpec(), upstream);
+  assert.equal(upstream.requests[0]?.url, "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions");
+  assert.deepEqual(pickAgentFacts(report), {
+    tools: "supported", artifactOutput: "supported", structuredOutput: "supported", boundedExecution: "supported",
+  });
+  assert.equal(upstream.modelIds.every((id) => id === selected.id), true);
+});
+
+test("an incomplete Gemini tool transcript preserves unknown facts", async () => {
+  const report = await probeOpenAiChatSession(geminiRoute(), discoveredModel("account-visible"), boundedSessionSpec(), fakeGeminiOpenAiChat([finalTextOnly()]));
+  assert.deepEqual(pickAgentFacts(report), {
+    tools: "unknown", artifactOutput: "unknown", structuredOutput: "unknown", boundedExecution: "supported",
+  });
+});
 ```
 
 - [ ] **Step 2: Verify RED**
@@ -669,11 +703,13 @@ export type WorkspaceToolName = "workspace.list" | "workspace.read" | "workspace
 
 Canonicalize every requested path against the snapshot root; reject absolute paths, `..`, NUL bytes, and symlinks resolving outside it. `workspace.list`, `workspace.read`, and `workspace.search` are read-only and size/recursion bounded. `results.write` allows only a normalized relative artifact path below the per-run artifact directory; no overwrite outside that root. There is no shell, edit, execute-code, browser, or extra-network tool.
 
-The OpenAI Responses, Chat Completions, and Anthropic Messages adapters each translate the same four tool definitions to their documented wire format, loop only while the model returns a requested tool call, and emit normalized `tool`, `artifact`, `usage`, `completion`, `failure`, and `cancellation` events. Before every next model request and tool invocation, atomically check turn, tool-call, cumulative input/output byte, deadline, and abort limits so no N+1 call escapes. Fail with stable safe codes `agent_turn_limit`, `agent_tool_limit`, `agent_input_byte_limit`, `agent_output_byte_limit`, or `agent_time_limit`, then cancel in-flight work. Usage fields absent from an upstream event remain `null`. On `AbortSignal`, stop issuing new model/tool calls, request documented remote cancellation where available, and report whether cancellation is local-only.
+The OpenAI Responses, Chat Completions, and Anthropic Messages adapters each translate the same four tool definitions to their documented wire format, loop only while the model returns a requested tool call, and emit normalized `tool`, `artifact`, `usage`, `completion`, `failure`, and `cancellation` events. `openai-chat-session` also accepts the fixed `gemini-api` OpenAI-compatible endpoint from Task 3; it sends the selected discovered model unchanged and contains no Gemini model table or provider-capability shortcut.
+
+Before every next model request and tool invocation, atomically check turn, tool-call, cumulative input/output byte, deadline, and abort limits so no N+1 call escapes. Fail with stable safe codes `agent_turn_limit`, `agent_tool_limit`, `agent_input_byte_limit`, `agent_output_byte_limit`, or `agent_time_limit`, then cancel in-flight work. A successful agent probe requires the observed end-to-end sequence `workspace tool → tool result → results.write → artifact event → structured completion`; only that measured sequence may set `tools`, `artifactOutput`, and `structuredOutput` to `supported`. Runner limit enforcement sets `boundedExecution`; it does not make the other facts supported. Usage fields absent from an upstream event remain `null`. On `AbortSignal`, stop issuing new model/tool calls, request documented remote cancellation where available, and report whether cancellation is local-only.
 
 - [ ] **Step 5: Add protocol-specific GREEN tests**
 
-Use deterministic fake HTTP transcripts: one valid tool loop and artifact for each protocol; duplicate call id; invalid function arguments; model text with no artifact; malformed streamed frame; usage with cache/reasoning; cancellation during a tool result; plain chat completions with no tools; an endless sequence of unique valid tool calls; input/output byte overflow; and deadline expiry. Assert the endless transcript stops exactly at the configured turn/tool limit and performs no N+1 upstream or tool call. Plain chat without tools must never enter the loop.
+Use deterministic fake HTTP transcripts: one valid tool loop and artifact for each protocol; Gemini OpenAI-compatible complete and incomplete probes; duplicate call id; invalid function arguments; model text with no artifact; malformed streamed frame; usage with cache/reasoning; cancellation during a tool result; plain chat completions with no tools; an endless sequence of unique valid tool calls; input/output byte overflow; and deadline expiry. Assert Gemini requests use only the selected discovered model and fixed official path, an incomplete probe leaves agent facts unknown, and the endless transcript stops exactly at the configured turn/tool limit with no N+1 upstream or tool call. Plain chat without tools must never enter the loop.
 
 - [ ] **Step 6: Run GREEN and commit**
 
@@ -719,6 +755,23 @@ test("scan start rejects a model owned by another connection before a child is s
   await assert.rejects(startScan({ repositoryPath: fixtureRepo, engine: "vulnhunter", connectionId: "conn-a", modelSelectionMode: "catalog", modelId: "model-from-conn-b" }), { code: "model_not_found" });
   assert.equal(fakeSpawner.calls.length, 0);
 });
+
+test("Gemini remains blocked when its selected-model artifact probe is incomplete", () => {
+  const decision = resolveCompatibility({
+    engine: "mantis", connection: connection("gemini-api"), model: discoveredModel("account-visible"),
+    probe: selectedModelProbe({ tools: "unknown", artifactOutput: "unknown", structuredOutput: "unknown", boundedExecution: "supported", cancellation: "supported", osIsolation: "supported" }),
+  });
+  assert.deepEqual(decision, { eligible: false, reasons: ["agent_tools_unproven", "artifact_output_missing", "structured_result_unproven"] });
+});
+
+test("Gemini selects openai-chat-session only after a complete current probe of that model", () => {
+  const model = discoveredModel("account-visible");
+  const decision = resolveCompatibility({
+    engine: "mantis", connection: connection("gemini-api"), model,
+    probe: selectedModelProbe({ modelId: model.id, protocol: "openai-chat", tools: "supported", artifactOutput: "supported", structuredOutput: "supported", boundedExecution: "supported", cancellation: "supported", osIsolation: "supported" }),
+  });
+  assert.deepEqual(decision, { eligible: true, reasons: [], runnerKind: "agent-session", protocol: "openai-chat" });
+});
 ```
 
 - [ ] **Step 2: Verify RED**
@@ -751,6 +804,8 @@ Use these exact decisions:
 | VulnHunter | same agent requirements plus read-only snapshot and explicit static-analysis profile | `snapshot_read_only_required`, `runner_capability_missing` |
 | Cursor Background Agents | remote job only, explicit GitHub repository/branch confirmation; not a local snapshot substitute | `remote_repository_confirmation_required` |
 
+For `gemini-api`, the only candidate runner is Task 5's `openai-chat-session`. Eligibility additionally requires a fresh persisted probe for the exact selected `connectionId + modelId + protocol` with `tools`, `artifactOutput`, `structuredOutput`, `boundedExecution`, cancellation, and OS-isolation facts supported. A mismatched/stale report, `unknown`, refusal, incomplete transcript, or probe failure remains blocked; Google's provider-level function-calling documentation is never converted into a model capability fact.
+
 The resolver may show `unknown` capability as a reason but never treats it as supported. It returns a stable `ConnectionCompatibility` response for the frontend; it does not trust a client-submitted capability flag.
 
 - [ ] **Step 4: Replace the legacy request/launch defaulting**
@@ -772,7 +827,7 @@ export interface StartScanRequest {
 }
 ```
 
-`LaunchPlan` resolves the connection and selected model server-side, validates compatibility and freshness, reads secret material from the vault only inside the selected adapter, creates a `ScanConnectionSnapshot`, and returns either a local child plan, app-server plan, AgentSession plan, or remote-job plan. Delete the legacy `req.model || scanner.models[0] || "gpt-5.6-sol"` behavior. `ScannerLaunch.displayCommand` contains only command/route labels, never injected env or URL.
+`LaunchPlan` resolves the connection and selected model server-side, validates compatibility and freshness, reads secret material from the vault only inside the selected adapter, creates a `ScanConnectionSnapshot`, and returns either a local child plan, app-server plan, AgentSession plan, or remote-job plan. A Gemini AgentSession plan binds the fixed official endpoint, `openai-chat-session`, the selected discovered model, and the persisted complete probe id; it cannot be created from route metadata alone. Delete the legacy `req.model || scanner.models[0] || "gpt-5.6-sol"` behavior. `ScannerLaunch.displayCommand` contains only command/route labels, never injected env or URL.
 
 Add nullable snapshot columns/migration-safe tables so existing runs read normally. The run history displays `connectionId`/route/model snapshot metadata but never needs vault access after creation.
 
@@ -939,11 +994,13 @@ git commit -m "feat: choose compatible connections when starting scans"
 - [ ] Run `pnpm --filter @csb/api test` first and retain output proving both `connections nested test canary` and `agent nested test canary` executed; then run every focused API/web test listed above, `pnpm typecheck`, root `pnpm test`, and `git diff --check` under Node 24.
 - [ ] Assert via API responses, explicit `sqlite_master`/safe-row queries plus snapshot DTO serialization, SSE fixture, child display command, and activity log fixture that a token, API key, custom-header value, full custom URL, and device code are absent.
 - [ ] Verify three OpenAI, three xAI, two Claude, two Cursor, Gemini API, and DeepSeek API route cards exist and that only their documented runner path is selectable; neither Gemini nor DeepSeek has a bundled model ID.
+- [ ] Verify `gemini-api` routes execution through the fixed official OpenAI-compatible Chat Completions endpoint and `openai-chat-session`, always using the selected discovered model; no provider name or route manifest may set an agent capability to supported.
+- [ ] Replay complete and incomplete Gemini probe transcripts: only `workspace tool → tool result → results.write → artifact → structured completion` under enforced limits produces an eligible report; `unknown`, failure, stale/mismatched model probe, or any missing stage keeps Mantis/VulnHunter blocked before the scan runner starts.
 - [ ] Verify Cursor Background requires confirmed repository and branch before vault/network access, then uses only the Task 4 `RemoteAgentJobRunner` create/status/cancel contract.
 - [ ] Verify a custom Chat Completions connection without an observed tool/artifact probe is visibly incompatible with Mantis/VulnHunter.
 - [ ] Replay the endless valid-tool transcript and prove model-turn, tool-call, input/output-byte, and wall-time limits terminate safely without an N+1 call.
 - [ ] Verify deletion/rotation of a connection does not mutate existing `scan_connection_snapshots` or historical cost/usage values.
-- [ ] Before any live OAuth/provider probe, get explicit permission and report provider/route/time/result only—never account data, payload, model ID if sensitive, endpoint, or secret.
+- [ ] Before any live OAuth/provider probe, get explicit permission. If authorized, run the Gemini probe against the user's selected discovered model and persist support only after the full bounded artifact loop succeeds; if not authorized, leave the live gate pending and the route blocked. Report provider/route/time/result only—never account data, payload, model ID if sensitive, endpoint, or secret.
 
 ## Explicit non-goals
 
