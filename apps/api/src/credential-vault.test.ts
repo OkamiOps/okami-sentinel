@@ -15,6 +15,7 @@ const SERVICE = "com.okamiops.sentinel.connections";
 
 class FakeCredentialBackend implements NativeCredentialBackend {
   readonly values = new Map<string, string>();
+  readOverride: string | undefined;
   readError: Error | undefined;
   writeError: Error | undefined;
   deleteError: Error | undefined;
@@ -25,6 +26,7 @@ class FakeCredentialBackend implements NativeCredentialBackend {
     assert.equal(service, SERVICE);
     this.events.push(`backend:get:${account}`);
     if (this.readError) throw this.readError;
+    if (this.readOverride !== undefined) return this.readOverride;
     return this.values.get(account) ?? null;
   }
 
@@ -209,13 +211,79 @@ test("maps a rejected lazy backend load to secure storage unavailable", async ()
 });
 
 test("marks the backend unavailable when its probe read rejects", async () => {
-  const { backend, vault } = createFixture();
+  const { backend, events, vault } = createFixture();
   backend.readError = new Error("locked backend");
 
   assert.deepEqual(await vault.available(), {
     available: false,
     backend: process.platform === "darwin" ? "keychain" : "secret-service",
   });
+  assert.equal(events.some((event) => event.startsWith("backend:delete:")), true);
+  assert.equal(backend.values.size, 0);
+});
+
+test("requires write access and attempts cleanup when the probe write rejects", async () => {
+  const { backend, events, vault } = createFixture();
+  backend.writeError = new Error("write denied");
+
+  assert.deepEqual(await vault.available(), {
+    available: false,
+    backend: process.platform === "darwin" ? "keychain" : "secret-service",
+  });
+  assert.deepEqual(
+    events.map((event) => event.slice(0, event.lastIndexOf(":"))),
+    ["backend:set", "backend:delete"],
+  );
+});
+
+test("rejects a read mismatch and removes the dedicated probe entry", async () => {
+  const { backend, events, vault } = createFixture();
+  backend.readOverride = "unexpected-probe-value";
+
+  assert.deepEqual(await vault.available(), {
+    available: false,
+    backend: process.platform === "darwin" ? "keychain" : "secret-service",
+  });
+  assert.deepEqual(
+    events.map((event) => event.slice(0, event.lastIndexOf(":"))),
+    ["backend:set", "backend:get", "backend:delete"],
+  );
+  assert.equal(backend.values.size, 0);
+});
+
+test("returns unavailable when deleting the probe is denied", async () => {
+  const { backend, events, vault } = createFixture();
+  backend.deleteError = new Error("delete denied");
+
+  assert.deepEqual(await vault.available(), {
+    available: false,
+    backend: process.platform === "darwin" ? "keychain" : "secret-service",
+  });
+  assert.equal(events.some((event) => event.startsWith("backend:delete:")), true);
+});
+
+test("proves write, read, and delete with random probes outside the redactor", async () => {
+  const { events, redactor, vault } = createFixture();
+  const backendName =
+    process.platform === "darwin" ? "keychain" : "secret-service";
+
+  assert.deepEqual(await vault.available(), {
+    available: true,
+    backend: backendName,
+  });
+  assert.deepEqual(await vault.available(), {
+    available: true,
+    backend: backendName,
+  });
+
+  const accounts = events.map((event) => event.slice(event.lastIndexOf(":") + 1));
+  assert.equal(accounts.length, 6);
+  assert.deepEqual(accounts.slice(0, 3), Array(3).fill(accounts[0]));
+  assert.deepEqual(accounts.slice(3), Array(3).fill(accounts[3]));
+  assert.notEqual(accounts[0], accounts[3]);
+  assert.match(accounts[0] ?? "", /^[0-9a-f-]{36}$/);
+  assert.match(accounts[3] ?? "", /^[0-9a-f-]{36}$/);
+  assert.equal(redactor.registered.size, 0);
 });
 
 test("maps a backend read rejection without exposing its raw error", async () => {

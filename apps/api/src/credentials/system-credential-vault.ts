@@ -12,7 +12,7 @@ import {
 export { VaultError } from "./credential-vault.js";
 
 const SERVICE = "com.okamiops.sentinel.connections";
-const AVAILABILITY_PROBE = "availability-probe";
+const AVAILABILITY_PROBE_VALUE = "okami-sentinel-vault-probe";
 
 export interface NativeCredentialBackend {
   getPassword(service: string, account: string): Promise<string | null>;
@@ -42,13 +42,34 @@ export class SystemCredentialVault implements CredentialVault {
       return { available: false, backend: backendName };
     }
 
+    const probeAccount = randomUUID();
+    let backend: NativeCredentialBackend | undefined;
+    let available = false;
+
     try {
-      const backend = await this.resolveBackend();
-      await backend.getPassword(SERVICE, AVAILABILITY_PROBE);
-      return { available: true, backend: backendName };
+      backend = await this.resolveBackend();
+      await backend.setPassword(
+        SERVICE,
+        probeAccount,
+        AVAILABILITY_PROBE_VALUE,
+      );
+      available =
+        (await backend.getPassword(SERVICE, probeAccount)) ===
+        AVAILABILITY_PROBE_VALUE;
     } catch {
-      return { available: false, backend: backendName };
+      available = false;
+    } finally {
+      if (backend) {
+        try {
+          const deleted = await backend.deletePassword(SERVICE, probeAccount);
+          if (!deleted) available = false;
+        } catch {
+          available = false;
+        }
+      }
     }
+
+    return { available, backend: backendName };
   }
 
   async put(ref: string, value: ConnectionSecretBundle): Promise<void> {
