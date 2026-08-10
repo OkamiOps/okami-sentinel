@@ -14,6 +14,8 @@ export type RemoteAgentJobStatus =
   | "cancelled"
   | "expired";
 
+export const REMOTE_AGENT_JOB_REQUEST_TIMEOUT_MS = 8_000;
+
 export interface RemoteAgentStatus {
   status: RemoteAgentJobStatus;
   terminal: boolean;
@@ -23,6 +25,8 @@ export interface CursorBackgroundAgentCreateInput {
   repositoryUrl: string;
   branch: string;
   instructions: string;
+  /** Must be a row previously discovered for the selected connection. */
+  modelId: string;
   apiKey: string;
   signal: AbortSignal;
 }
@@ -68,11 +72,18 @@ export interface RemoteAgentConnectionStore {
   get(id: string): StoredProviderConnection | null;
 }
 
+/** Narrow catalog seam: a remote job may use only the connection's live model row. */
+export interface RemoteAgentModelCatalog {
+  getModel(connectionId: string, modelId: string): { connectionId: string; id: string } | null;
+}
+
 export type RemoteAgentJobErrorCode =
   | "remote_repository_confirmation_required"
   | "remote_repository_invalid"
   | "remote_branch_required"
   | "remote_instructions_invalid"
+  | "remote_model_required"
+  | "remote_model_not_found"
   | "remote_job_not_found"
   | "remote_job_cancelled"
   | "remote_job_deadline_exceeded"
@@ -98,10 +109,11 @@ export interface RemoteAgentJobRunner {
     branch: string;
     confirmed: boolean;
     instructions: string;
+    modelId: string;
     signal: AbortSignal;
   }): Promise<{ remoteJobId: string; status: "queued" | "running" }>;
-  status(remoteJobId: string): Promise<RemoteAgentStatus>;
-  cancel(remoteJobId: string): Promise<{ remote: boolean }>;
+  status(remoteJobId: string, signal?: AbortSignal): Promise<RemoteAgentStatus>;
+  cancel(remoteJobId: string, signal?: AbortSignal): Promise<{ remote: boolean }>;
   waitForTerminal(
     remoteJobId: string,
     input: { signal: AbortSignal; deadlineMs: number; pollIntervalMs: number },
@@ -111,11 +123,13 @@ export interface RemoteAgentJobRunner {
 export interface RemoteAgentJobRunnerDependencies {
   vault: CredentialVault;
   connections: RemoteAgentConnectionStore;
+  models: RemoteAgentModelCatalog;
   api: CursorBackgroundAgentsClient;
   jobs?: RemoteAgentJobStore;
   createId?: () => string;
   now?: () => number;
   sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
+  requestTimeoutMs?: number;
 }
 
 /**
@@ -129,91 +143,123 @@ export function createRemoteAgentJobRunner(
   const createId = deps.createId ?? randomUUID;
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? sleepUntil;
+  const requestTimeoutMs = positiveBoundedInteger(
+    deps.requestTimeoutMs ?? REMOTE_AGENT_JOB_REQUEST_TIMEOUT_MS,
+    REMOTE_AGENT_JOB_REQUEST_TIMEOUT_MS,
+  );
 
   return {
     async create(input) {
       validateCreateInput(input);
       const connection = cursorBackgroundConnection(input.connectionId, deps.connections);
-      const apiKey = await readApiKey(connection, deps.vault);
-      throwIfAborted(input.signal);
-
-      let created: CursorBackgroundAgentCreateResult;
+      const modelId = selectedModelId(connection.id, input.modelId, deps.models);
+      const request = createRequestScope(input.signal, requestTimeoutMs);
       try {
-        created = await deps.api.create({
+        const apiKey = await awaitWithin(readApiKey(connection, deps.vault), request.signal);
+        const created = await awaitWithin(deps.api.create({
           repositoryUrl: input.repositoryUrl,
           branch: input.branch,
           instructions: input.instructions,
+          modelId,
           apiKey,
-          signal: input.signal,
+          signal: request.signal,
+        }), request.signal);
+
+        const remoteJobId = validOpaqueId(createId());
+        jobs.put({
+          remoteJobId,
+          connectionId: connection.id,
+          agentId: validOpaqueId(created.agentId),
+          runId: validOpaqueId(created.runId),
+          status: created.status,
         });
+        return { remoteJobId, status: created.status };
       } catch (error) {
         throw normalizeRemoteError(error);
+      } finally {
+        request.dispose();
       }
-
-      const remoteJobId = validOpaqueId(createId());
-      jobs.put({
-        remoteJobId,
-        connectionId: connection.id,
-        agentId: validOpaqueId(created.agentId),
-        runId: validOpaqueId(created.runId),
-        status: created.status,
-      });
-      return { remoteJobId, status: created.status };
     },
 
-    async status(remoteJobId) {
+    async status(remoteJobId, signal) {
       const job = requiredJob(remoteJobId, jobs);
       const connection = cursorBackgroundConnection(job.connectionId, deps.connections);
-      const apiKey = await readApiKey(connection, deps.vault);
+      const request = createRequestScope(signal, requestTimeoutMs);
       try {
-        const status = await deps.api.status({
-          agentId: job.agentId,
-          runId: job.runId,
-          apiKey,
-        });
-        const safeStatus = validStatus(status);
+        const apiKey = await awaitWithin(readApiKey(connection, deps.vault), request.signal);
+        const safeStatus = await readRemoteStatus(deps.api, job, apiKey, request.signal);
         jobs.update(job.remoteJobId, safeStatus.status);
         return safeStatus;
       } catch (error) {
         throw normalizeRemoteError(error);
+      } finally {
+        request.dispose();
       }
     },
 
-    async cancel(remoteJobId) {
+    async cancel(remoteJobId, signal) {
       const job = requiredJob(remoteJobId, jobs);
       const connection = cursorBackgroundConnection(job.connectionId, deps.connections);
-      const apiKey = await readApiKey(connection, deps.vault);
+      const request = createRequestScope(signal, requestTimeoutMs);
       try {
-        await deps.api.cancel({ agentId: job.agentId, runId: job.runId, apiKey });
+        const apiKey = await awaitWithin(readApiKey(connection, deps.vault), request.signal);
+        try {
+          await awaitWithin(deps.api.cancel({
+            agentId: job.agentId,
+            runId: job.runId,
+            apiKey,
+            signal: request.signal,
+          }), request.signal);
+        } catch (error) {
+          if (!isRunNotCancellable(error)) throw error;
+          const finalStatus = await readRemoteStatus(deps.api, job, apiKey, request.signal);
+          if (!finalStatus.terminal) throw new RemoteAgentJobError("provider_unreachable");
+          jobs.update(job.remoteJobId, finalStatus.status);
+          return { remote: false };
+        }
         jobs.update(job.remoteJobId, "cancelled");
         return { remote: true };
       } catch (error) {
         throw normalizeRemoteError(error);
+      } finally {
+        request.dispose();
       }
     },
 
     async waitForTerminal(remoteJobId, input) {
       validatePollingInput(input);
       const deadlineAt = now() + input.deadlineMs;
-      for (;;) {
-        if (input.signal.aborted) {
-          await cancelAfterTerminalCondition(remoteJobId, this.cancel, "remote_job_cancelled");
-        }
-        if (now() >= deadlineAt) {
-          await cancelAfterTerminalCondition(remoteJobId, this.cancel, "remote_job_deadline_exceeded");
-        }
-
-        const current = await this.status(remoteJobId);
-        if (current.terminal) return current;
-
-        try {
-          await sleep(input.pollIntervalMs, input.signal);
-        } catch {
-          if (input.signal.aborted) {
-            await cancelAfterTerminalCondition(remoteJobId, this.cancel, "remote_job_cancelled");
+      const lifecycle = createRequestScope(input.signal, input.deadlineMs);
+      try {
+        for (;;) {
+          const terminalCode = terminalCondition(input.signal, lifecycle, now() >= deadlineAt);
+          if (terminalCode !== null) {
+            await cancelAfterTerminalCondition(remoteJobId, this.cancel, terminalCode);
           }
-          throw new RemoteAgentJobError("provider_unreachable");
+
+          try {
+            const current = await this.status(remoteJobId, lifecycle.signal);
+            if (current.terminal) return current;
+          } catch (error) {
+            const terminalCodeAfterStatus = terminalCondition(input.signal, lifecycle, now() >= deadlineAt);
+            if (terminalCodeAfterStatus !== null) {
+              await cancelAfterTerminalCondition(remoteJobId, this.cancel, terminalCodeAfterStatus);
+            }
+            throw normalizeRemoteError(error);
+          }
+
+          try {
+            await awaitWithin(sleep(input.pollIntervalMs, lifecycle.signal), lifecycle.signal);
+          } catch (error) {
+            const terminalCodeAfterSleep = terminalCondition(input.signal, lifecycle, now() >= deadlineAt);
+            if (terminalCodeAfterSleep !== null) {
+              await cancelAfterTerminalCondition(remoteJobId, this.cancel, terminalCodeAfterSleep);
+            }
+            throw normalizeRemoteError(error);
+          }
         }
+      } finally {
+        lifecycle.dispose();
       }
     },
   };
@@ -246,6 +292,7 @@ function validateCreateInput(input: {
   branch: string;
   confirmed: boolean;
   instructions: string;
+  modelId: string;
   signal: AbortSignal;
 }): void {
   if (input.confirmed !== true) {
@@ -260,10 +307,36 @@ function validateCreateInput(input: {
   if (!isSafeText(input.instructions, 32_000)) {
     throw new RemoteAgentJobError("remote_instructions_invalid");
   }
+  if (!isSafeText(input.modelId, 240)) {
+    throw new RemoteAgentJobError("remote_model_required");
+  }
   if (!isSafeText(input.connectionId, 160)) {
     throw new RemoteAgentJobError("protocol_unsupported");
   }
   throwIfAborted(input.signal);
+}
+
+function selectedModelId(
+  connectionId: string,
+  requestedModelId: string,
+  models: RemoteAgentModelCatalog,
+): string {
+  if (!isSafeText(requestedModelId, 240)) {
+    throw new RemoteAgentJobError("remote_model_required");
+  }
+  let model: { connectionId: string; id: string } | null;
+  try {
+    model = models.getModel(connectionId, requestedModelId);
+  } catch {
+    throw new RemoteAgentJobError("remote_model_not_found");
+  }
+  if (
+    model === null ||
+    model.connectionId !== connectionId ||
+    model.id !== requestedModelId ||
+    !isSafeText(model.id, 240)
+  ) throw new RemoteAgentJobError("remote_model_not_found");
+  return model.id;
 }
 
 function validatePollingInput(input: {
@@ -328,10 +401,21 @@ function requiredJob(remoteJobId: string, jobs: RemoteAgentJobStore): RemoteAgen
 }
 
 function validStatus(status: RemoteAgentStatus): RemoteAgentStatus {
-  if (!isRemoteAgentJobStatus(status.status) || typeof status.terminal !== "boolean") {
+  if (
+    !isRemoteAgentJobStatus(status.status) ||
+    typeof status.terminal !== "boolean" ||
+    status.terminal !== isTerminalStatus(status.status)
+  ) {
     throw new RemoteAgentJobError("protocol_unsupported");
   }
   return { status: status.status, terminal: status.terminal };
+}
+
+function isTerminalStatus(status: RemoteAgentJobStatus): boolean {
+  return status === "completed" ||
+    status === "failed" ||
+    status === "cancelled" ||
+    status === "expired";
 }
 
 function validOpaqueId(value: string): string {
@@ -374,6 +458,78 @@ function throwIfAborted(signal: AbortSignal): void {
   if (signal.aborted) throw new RemoteAgentJobError("remote_job_cancelled");
 }
 
+async function readRemoteStatus(
+  api: CursorBackgroundAgentsClient,
+  job: RemoteAgentJobRecord,
+  apiKey: string,
+  signal: AbortSignal,
+): Promise<RemoteAgentStatus> {
+  const status = await awaitWithin(api.status({
+    agentId: job.agentId,
+    runId: job.runId,
+    apiKey,
+    signal,
+  }), signal);
+  return validStatus(status);
+}
+
+function isRunNotCancellable(error: unknown): boolean {
+  return typeof error === "object" && error !== null &&
+    "code" in error && (error as { code?: unknown }).code === "run_not_cancellable";
+}
+
+function createRequestScope(parent: AbortSignal | undefined, timeoutMs: number): {
+  signal: AbortSignal;
+  dispose(): void;
+} {
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  if (parent?.aborted) controller.abort();
+  else parent?.addEventListener("abort", onAbort, { once: true });
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return {
+    signal: controller.signal,
+    dispose() {
+      clearTimeout(timer);
+      parent?.removeEventListener("abort", onAbort);
+    },
+  };
+}
+
+async function awaitWithin<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    consumeLate(operation);
+    throw new RemoteAgentJobError("remote_job_cancelled");
+  }
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => {
+      consumeLate(operation);
+      reject(new RemoteAgentJobError("remote_job_cancelled"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([operation, aborted]);
+  } finally {
+    if (onAbort !== undefined) signal.removeEventListener("abort", onAbort);
+  }
+}
+
+function consumeLate(operation: Promise<unknown>): void {
+  void operation.then(() => undefined, () => undefined);
+}
+
+function terminalCondition(
+  parent: AbortSignal,
+  lifecycle: { signal: AbortSignal },
+  deadlineReached: boolean,
+): "remote_job_cancelled" | "remote_job_deadline_exceeded" | null {
+  if (parent.aborted) return "remote_job_cancelled";
+  if (deadlineReached || lifecycle.signal.aborted) return "remote_job_deadline_exceeded";
+  return null;
+}
+
 async function cancelAfterTerminalCondition(
   remoteJobId: string,
   cancel: (id: string) => Promise<{ remote: boolean }>,
@@ -385,6 +541,13 @@ async function cancelAfterTerminalCondition(
     // The lifecycle terminal condition is more useful than a retryable cancel failure.
   }
   throw new RemoteAgentJobError(code);
+}
+
+function positiveBoundedInteger(value: unknown, maximum: number): number {
+  if (!Number.isInteger(value) || (value as number) <= 0 || (value as number) > maximum) {
+    throw new TypeError("Invalid remote agent job request timeout");
+  }
+  return value as number;
 }
 
 function sleepUntil(delayMs: number, signal: AbortSignal): Promise<void> {
@@ -416,7 +579,9 @@ function normalizeRemoteError(error: unknown): RemoteAgentJobError {
       code === "endpoint_access_denied" ||
       code === "rate_limited" ||
       code === "provider_unreachable" ||
-      code === "protocol_unsupported"
+      code === "protocol_unsupported" ||
+      code === "remote_model_required" ||
+      code === "remote_model_not_found"
     ) return new RemoteAgentJobError(code);
   }
   return new RemoteAgentJobError("provider_unreachable");

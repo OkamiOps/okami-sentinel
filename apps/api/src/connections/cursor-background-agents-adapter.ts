@@ -27,6 +27,7 @@ export type CursorBackgroundAgentsErrorCode =
   | "endpoint_access_denied"
   | "rate_limited"
   | "provider_unreachable"
+  | "run_not_cancellable"
   | "protocol_unsupported";
 
 /** Deliberately omits response text, headers, and URLs. */
@@ -71,6 +72,7 @@ export function createCursorBackgroundAgentsAdapter(
     async create(input) {
       validateCreateInput(input);
       const apiKey = requiredApiKey(input.apiKey);
+      const selectedModelId = modelId(input.modelId, apiKey);
       const payload = await requestJson(
         transport,
         "/v1/agents",
@@ -80,6 +82,7 @@ export function createCursorBackgroundAgentsAdapter(
           body: JSON.stringify({
             prompt: { text: input.instructions },
             repos: [{ url: input.repositoryUrl, startingRef: input.branch }],
+            model: { id: selectedModelId },
           }),
           signal: input.signal,
         },
@@ -122,7 +125,7 @@ export function createCursorBackgroundAgentsAdapter(
       const payload = await requestJson(
         transport,
         `/v1/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(runId)}/cancel`,
-        { method: "POST", apiKey, signal: input.signal },
+        { method: "POST", apiKey, signal: input.signal, allowRunNotCancellable: true },
         timeoutMs,
         responseMaxBytes,
       );
@@ -162,15 +165,17 @@ async function requestJson(
     apiKey: string;
     body?: string;
     signal?: AbortSignal;
+    allowRunNotCancellable?: boolean;
   },
   timeoutMs: number,
   responseMaxBytes: number,
 ): Promise<unknown> {
   const controlled = withDeadline(input.signal, timeoutMs);
   try {
+    if (controlled.signal.aborted) throw new CursorBackgroundAgentsError("provider_unreachable");
     let response: Response;
     try {
-      response = await transport(`${CURSOR_CLOUD_AGENTS_ORIGIN}${path}`, {
+      const pendingResponse = transport(`${CURSOR_CLOUD_AGENTS_ORIGIN}${path}`, {
         method: input.method,
         redirect: "error",
         headers: {
@@ -180,12 +185,19 @@ async function requestJson(
         ...(input.body === undefined ? {} : { body: input.body }),
         signal: controlled.signal,
       });
+      void pendingResponse.then(
+        (lateResponse) => {
+          if (controlled.signal.aborted) cancelBody(lateResponse.body);
+        },
+        () => undefined,
+      ).catch(() => undefined);
+      response = await awaitWithin(pendingResponse, controlled.signal);
     } catch (error) {
       if (controlled.signal.aborted) throw new CursorBackgroundAgentsError("provider_unreachable");
       throw normalizeTransportError(error);
     }
-    if (!response.ok) throw statusError(response.status);
-    const text = await readBoundedText(response, responseMaxBytes);
+    if (!response.ok) throw statusError(response.status, input.allowRunNotCancellable === true);
+    const text = await readBoundedText(response, responseMaxBytes, controlled.signal);
     try {
       return JSON.parse(text) as unknown;
     } catch {
@@ -214,18 +226,22 @@ function withDeadline(parent: AbortSignal | undefined, timeoutMs: number): {
   };
 }
 
-async function readBoundedText(response: Response, maxBytes: number): Promise<string> {
+async function readBoundedText(
+  response: Response,
+  maxBytes: number,
+  signal: AbortSignal,
+): Promise<string> {
   if (response.body === null) throw new CursorBackgroundAgentsError("protocol_unsupported");
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
   try {
     for (;;) {
-      const next = await reader.read();
+      const next = await awaitWithin(reader.read(), signal, () => cancelReader(reader));
       if (next.done) break;
       total += next.value.byteLength;
       if (total > maxBytes) {
-        await reader.cancel();
+        cancelReader(reader);
         throw new CursorBackgroundAgentsError("protocol_unsupported");
       }
       chunks.push(next.value);
@@ -249,11 +265,12 @@ function concat(chunks: readonly Uint8Array[], total: number): Uint8Array {
   return merged;
 }
 
-function statusError(status: number): CursorBackgroundAgentsError {
+function statusError(status: number, allowRunNotCancellable: boolean): CursorBackgroundAgentsError {
   if (status === 401) return new CursorBackgroundAgentsError("credential_rejected");
   if (status === 403) return new CursorBackgroundAgentsError("endpoint_access_denied");
   if (status === 429) return new CursorBackgroundAgentsError("rate_limited");
   if (status >= 500) return new CursorBackgroundAgentsError("provider_unreachable");
+  if (status === 409 && allowRunNotCancellable) return new CursorBackgroundAgentsError("run_not_cancellable");
   return new CursorBackgroundAgentsError("protocol_unsupported");
 }
 
@@ -261,8 +278,56 @@ function validateCreateInput(input: CursorBackgroundAgentCreateInput): void {
   if (!isGithubRepositoryUrl(input.repositoryUrl) ||
       !isSafeText(input.branch, 240) ||
       !isSafeText(input.instructions, 32_000) ||
+      !isSafeText(input.modelId, 240) ||
       !(input.signal instanceof AbortSignal)) {
     throw new CursorBackgroundAgentsError("protocol_unsupported");
+  }
+}
+
+async function awaitWithin<T>(
+  operation: Promise<T>,
+  signal: AbortSignal,
+  onAbort?: () => void,
+): Promise<T> {
+  if (signal.aborted) {
+    onAbort?.();
+    consumeLate(operation);
+    throw new CursorBackgroundAgentsError("provider_unreachable");
+  }
+  let abortListener: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    abortListener = () => {
+      onAbort?.();
+      consumeLate(operation);
+      reject(new CursorBackgroundAgentsError("provider_unreachable"));
+    };
+    signal.addEventListener("abort", abortListener, { once: true });
+  });
+  try {
+    return await Promise.race([operation, aborted]);
+  } finally {
+    if (abortListener !== undefined) signal.removeEventListener("abort", abortListener);
+  }
+}
+
+function consumeLate(operation: Promise<unknown>): void {
+  void operation.then(() => undefined, () => undefined);
+}
+
+function cancelReader(reader: ReadableStreamDefaultReader<Uint8Array>): void {
+  try {
+    void reader.cancel().then(() => undefined, () => undefined);
+  } catch {
+    // Abort is still terminal even when an upstream body refuses cancellation.
+  }
+}
+
+function cancelBody(body: ReadableStream<Uint8Array> | null): void {
+  if (body === null) return;
+  try {
+    void body.cancel().then(() => undefined, () => undefined);
+  } catch {
+    // The late response is deliberately discarded either way.
   }
 }
 

@@ -6,8 +6,9 @@ import {
   createCursorBackgroundAgentsAdapter,
   type CursorBackgroundFetch,
 } from "./cursor-background-agents-adapter.js";
+import type { CursorBackgroundAgentCreateInput } from "./remote-agent-job-runner.js";
 
-test("Cursor Background creates a v1 cloud agent with an explicit GitHub starting ref and no model fallback", async () => {
+test("Cursor Background creates a v1 cloud agent with the selected catalog model and no fallback", async () => {
   const transport = fakeFetch({
     "POST https://api.cursor.com/v1/agents": json(200, {
       agent: { id: "bc-agent-1", status: "ACTIVE" },
@@ -16,13 +17,15 @@ test("Cursor Background creates a v1 cloud agent with an explicit GitHub startin
   });
   const adapter = createCursorBackgroundAgentsAdapter({ transport });
 
-  const result = await adapter.create({
+  const input: CursorBackgroundAgentCreateInput & { modelId: string } = {
     repositoryUrl: "https://github.com/acme/repository",
     branch: "main",
     instructions: "Review the repository.",
+    modelId: "account-visible",
     apiKey: "cursor-secret",
     signal: new AbortController().signal,
-  });
+  };
+  const result = await adapter.create(input);
 
   assert.equal(CURSOR_CLOUD_AGENTS_ORIGIN, "https://api.cursor.com");
   assert.deepEqual(result, { agentId: "bc-agent-1", runId: "run-1", status: "queued" });
@@ -48,12 +51,33 @@ test("Cursor Background creates a v1 cloud agent with an explicit GitHub startin
       body: JSON.stringify({
         prompt: { text: "Review the repository." },
         repos: [{ url: "https://github.com/acme/repository", startingRef: "main" }],
+        model: { id: "account-visible" },
       }),
     },
   });
   assert.equal(createCall?.init.signal instanceof AbortSignal, true);
-  assert.equal(String(transport.calls[0]?.init.body).includes("model"), false);
+  assert.equal(String(transport.calls[0]?.init.body).includes("cursor-default"), false);
   assert.equal(JSON.stringify(result).includes("cursor-secret"), false);
+});
+
+test("Cursor Background refuses a create request without an explicit selected model before the network", async () => {
+  const transport = fakeFetch({});
+  const adapter = createCursorBackgroundAgentsAdapter({ transport });
+  const input = {
+    repositoryUrl: "https://github.com/acme/repository",
+    branch: "main",
+    instructions: "Review the repository.",
+    apiKey: "cursor-secret",
+    signal: new AbortController().signal,
+  } as unknown as CursorBackgroundAgentCreateInput;
+
+  await assert.rejects(
+    adapter.create(input),
+    (error: unknown) => typeof error === "object" && error !== null &&
+      (error as { code?: unknown }).code === "protocol_unsupported",
+  );
+
+  assert.deepEqual(transport.calls, []);
 });
 
 test("Cursor Background reads run state and cancels only through the documented v1 endpoints", async () => {
@@ -130,6 +154,7 @@ test("Cursor Background adapter rejects repository credentials before making its
       repositoryUrl: "https://token@github.com/acme/repository",
       branch: "main",
       instructions: "Review the repository.",
+      modelId: "account-visible",
       apiKey: "cursor-secret",
       signal: new AbortController().signal,
     }),
@@ -138,6 +163,57 @@ test("Cursor Background adapter rejects repository credentials before making its
   );
 
   assert.deepEqual(transport.calls, []);
+});
+
+test("Cursor Background returns within its deadline when a transport ignores abort", async () => {
+  const transport: CursorBackgroundFetch = async () => new Promise<Response>(() => {});
+  const adapter = createCursorBackgroundAgentsAdapter({ transport, timeoutMs: 5 });
+
+  const outcome = await settleWithin(
+    adapter.listModels({ apiKey: "cursor-secret" }),
+    80,
+  );
+
+  assert.equal(outcome, "provider_unreachable");
+});
+
+test("Cursor Background returns within its deadline when a response body ignores abort", async () => {
+  let cancelled = false;
+  const transport: CursorBackgroundFetch = async () => ({
+    ok: true,
+    status: 200,
+    body: {
+      getReader: () => ({
+        read: async () => new Promise<ReadableStreamReadResult<Uint8Array>>(() => {}),
+        cancel: async () => {
+          cancelled = true;
+        },
+        releaseLock() {},
+      }),
+    },
+  }) as unknown as Response;
+  const adapter = createCursorBackgroundAgentsAdapter({ transport, timeoutMs: 5 });
+
+  const outcome = await settleWithin(
+    adapter.listModels({ apiKey: "cursor-secret" }),
+    80,
+  );
+
+  assert.equal(outcome, "provider_unreachable");
+  assert.equal(cancelled, true);
+});
+
+test("Cursor Background preserves a cancel race as a safe run_not_cancellable signal", async () => {
+  const transport = fakeFetch({
+    "POST https://api.cursor.com/v1/agents/bc-agent-1/runs/run-1/cancel": json(409, {}),
+  });
+  const adapter = createCursorBackgroundAgentsAdapter({ transport });
+
+  await assert.rejects(
+    adapter.cancel({ agentId: "bc-agent-1", runId: "run-1", apiKey: "cursor-secret" }),
+    (error: unknown) => typeof error === "object" && error !== null &&
+      (error as { code?: unknown }).code === "run_not_cancellable",
+  );
 });
 
 function json(status: number, value: unknown): Response {
@@ -159,4 +235,16 @@ function fakeFetch(routes: Record<string, Response>): CursorBackgroundFetch & {
   }) as CursorBackgroundFetch & { calls: Array<{ url: string; init: RequestInit }> };
   transport.calls = calls;
   return transport;
+}
+
+async function settleWithin(promise: Promise<unknown>, timeoutMs: number): Promise<string> {
+  return Promise.race([
+    promise.then(
+      () => "resolved",
+      (error: unknown) => typeof error === "object" && error !== null && "code" in error
+        ? String((error as { code?: unknown }).code)
+        : "rejected",
+    ),
+    new Promise<string>((resolve) => setTimeout(() => resolve("test_timeout"), timeoutMs)),
+  ]);
 }

@@ -15,6 +15,7 @@ test("Cursor Background refuses an unconfirmed repository before reading the vau
   const runner = createRemoteAgentJobRunner({
     vault,
     connections: fakeConnections(),
+    models: fakeModels(),
     api,
   });
 
@@ -25,6 +26,7 @@ test("Cursor Background refuses an unconfirmed repository before reading the vau
       branch: "main",
       confirmed: false,
       instructions: "Review the repository.",
+      modelId: "account-visible",
       signal: new AbortController().signal,
     }),
     (error: unknown) => error instanceof RemoteAgentJobError &&
@@ -38,27 +40,60 @@ test("Cursor Background refuses an unconfirmed repository before reading the vau
 test("Cursor Background reads the API key only in the creation request scope and never returns it", async () => {
   const vault = fakeVault({ apiKey: "cursor-secret" });
   const api = fakeCursorApi();
-  const runner = createRemoteAgentJobRunner({
+  const dependencies = {
     vault,
     connections: fakeConnections(),
+    models: fakeModels(),
     api,
-  });
+  };
+  const runner = createRemoteAgentJobRunner(dependencies);
 
-  const job = await runner.create({
+  const input = {
     connectionId: "cursor-bg",
     repositoryUrl: "https://github.com/acme/repository",
     branch: "review-branch",
     confirmed: true,
     instructions: "Review the repository.",
+    modelId: "account-visible",
     signal: new AbortController().signal,
-  });
+  };
+  const job = await runner.create(input);
 
   assert.deepEqual(vault.getCalls, ["connection/cursor-bg"]);
   assert.equal(api.calls.length, 1);
   assert.equal(api.calls[0]?.apiKey, "cursor-secret");
+  assert.equal(api.safeCalls[0]?.modelId, "account-visible");
   assert.equal(job.status, "queued");
   assert.equal(JSON.stringify(job).includes("cursor-secret"), false);
   assert.equal(JSON.stringify(api.safeCalls).includes("cursor-secret"), false);
+});
+
+test("Cursor Background requires a model owned by the selected connection before reading the vault", async () => {
+  const vault = fakeVault({ apiKey: "cursor-secret" });
+  const api = fakeCursorApi();
+  const dependencies = {
+    vault,
+    connections: fakeConnections(),
+    api,
+    models: fakeModels(),
+  };
+  const runner = createRemoteAgentJobRunner(dependencies);
+
+  await assert.rejects(
+    runner.create({
+      connectionId: "cursor-bg",
+      repositoryUrl: "https://github.com/acme/repository",
+      branch: "review-branch",
+      confirmed: true,
+      instructions: "Review the repository.",
+      modelId: "not-in-catalog",
+      signal: new AbortController().signal,
+    }),
+    (error: unknown) => error instanceof RemoteAgentJobError && error.code === "remote_model_not_found",
+  );
+
+  assert.deepEqual(vault.getCalls, []);
+  assert.deepEqual(api.calls, []);
 });
 
 test("Cursor Background polls only until its v1 run reaches a terminal state", async () => {
@@ -77,6 +112,7 @@ test("Cursor Background polls only until its v1 run reaches a terminal state", a
   const runner = createRemoteAgentJobRunner({
     vault,
     connections: fakeConnections(),
+    models: fakeModels(),
     api,
     sleep: async (delay) => {
       sleeps.push(delay);
@@ -88,6 +124,7 @@ test("Cursor Background polls only until its v1 run reaches a terminal state", a
     branch: "main",
     confirmed: true,
     instructions: "Review the repository.",
+    modelId: "account-visible",
     signal: new AbortController().signal,
   });
 
@@ -110,6 +147,7 @@ test("Cursor Background cancels the remote v1 run when polling is aborted or rea
   const runner = createRemoteAgentJobRunner({
     vault,
     connections: fakeConnections(),
+    models: fakeModels(),
     api,
     now: () => now,
     sleep: async () => {
@@ -122,6 +160,7 @@ test("Cursor Background cancels the remote v1 run when polling is aborted or rea
     branch: "main",
     confirmed: true,
     instructions: "Review the repository.",
+    modelId: "account-visible",
     signal: new AbortController().signal,
   });
 
@@ -145,6 +184,7 @@ test("Cursor Background does not call the remote API after the stored API key ha
   const runner = createRemoteAgentJobRunner({
     vault,
     connections: fakeConnections(),
+    models: fakeModels(),
     api,
   });
   const created = await runner.create({
@@ -153,6 +193,7 @@ test("Cursor Background does not call the remote API after the stored API key ha
     branch: "main",
     confirmed: true,
     instructions: "Review the repository.",
+    modelId: "account-visible",
     signal: new AbortController().signal,
   });
   vault.get = async () => {
@@ -173,6 +214,7 @@ test("Cursor Background sends a remote cancellation when an active polling signa
   const runner = createRemoteAgentJobRunner({
     vault,
     connections: fakeConnections(),
+    models: fakeModels(),
     api,
   });
   const created = await runner.create({
@@ -181,6 +223,7 @@ test("Cursor Background sends a remote cancellation when an active polling signa
     branch: "main",
     confirmed: true,
     instructions: "Review the repository.",
+    modelId: "account-visible",
     signal: new AbortController().signal,
   });
   const abort = new AbortController();
@@ -199,6 +242,88 @@ test("Cursor Background sends a remote cancellation when an active polling signa
   assert.equal(api.cancelCalls, 1);
 });
 
+test("Cursor Background bounds an ignored status and ignored cancellation after its polling deadline", async () => {
+  const vault = fakeVault({ apiKey: "cursor-secret" });
+  const api = fakeCursorApi();
+  let statusSignal: AbortSignal | undefined;
+  let cancelSignal: AbortSignal | undefined;
+  api.status = async (input) => {
+    statusSignal = input.signal;
+    return new Promise(() => {});
+  };
+  api.cancel = async (input) => {
+    cancelSignal = input.signal;
+    api.cancelCalls += 1;
+    return new Promise(() => {});
+  };
+  const dependencies = {
+    vault,
+    connections: fakeConnections(),
+    models: fakeModels(),
+    api,
+    requestTimeoutMs: 20,
+  };
+  const runner = createRemoteAgentJobRunner(dependencies);
+  const created = await runner.create({
+    connectionId: "cursor-bg",
+    repositoryUrl: "https://github.com/acme/repository",
+    branch: "main",
+    confirmed: true,
+    instructions: "Review the repository.",
+    modelId: "account-visible",
+    signal: new AbortController().signal,
+  });
+
+  const outcome = await settleWithin(
+    runner.waitForTerminal(created.remoteJobId, {
+      signal: new AbortController().signal,
+      deadlineMs: 5,
+      pollIntervalMs: 1,
+    }),
+    100,
+  );
+
+  assert.equal(outcome, "remote_job_deadline_exceeded");
+  assert.equal(statusSignal instanceof AbortSignal, true);
+  assert.equal(cancelSignal instanceof AbortSignal, true);
+  assert.equal(api.cancelCalls, 1);
+});
+
+test("Cursor Background reconciles a 409 cancel race through the final run state", async () => {
+  const vault = fakeVault({ apiKey: "cursor-secret" });
+  const api = fakeCursorApi();
+  api.cancel = async () => {
+    api.cancelCalls += 1;
+    throw { code: "run_not_cancellable" };
+  };
+  api.status = async () => {
+    api.statusCalls += 1;
+    return { status: "completed", terminal: true };
+  };
+  const dependencies = {
+    vault,
+    connections: fakeConnections(),
+    api,
+    models: fakeModels(),
+  };
+  const runner = createRemoteAgentJobRunner(dependencies);
+  const created = await runner.create({
+    connectionId: "cursor-bg",
+    repositoryUrl: "https://github.com/acme/repository",
+    branch: "main",
+    confirmed: true,
+    instructions: "Review the repository.",
+    modelId: "account-visible",
+    signal: new AbortController().signal,
+  });
+
+  const result = await runner.cancel(created.remoteJobId);
+
+  assert.deepEqual(result, { remote: false });
+  assert.equal(api.statusCalls, 1);
+  assert.equal(api.cancelCalls, 1);
+});
+
 test("Cursor Background rejects remote identifiers that could expose an upstream URL", async () => {
   const vault = fakeVault({ apiKey: "cursor-secret" });
   const api = fakeCursorApi();
@@ -210,6 +335,7 @@ test("Cursor Background rejects remote identifiers that could expose an upstream
   const runner = createRemoteAgentJobRunner({
     vault,
     connections: fakeConnections(),
+    models: fakeModels(),
     api,
   });
 
@@ -220,6 +346,7 @@ test("Cursor Background rejects remote identifiers that could expose an upstream
       branch: "main",
       confirmed: true,
       instructions: "Review the repository.",
+      modelId: "account-visible",
       signal: new AbortController().signal,
     }),
     (error: unknown) => error instanceof RemoteAgentJobError && error.code === "protocol_unsupported",
@@ -301,6 +428,7 @@ function fakeCursorApi(): CursorBackgroundAgentsClient & {
       safeCalls.push({
         repositoryUrlConfigured: input.repositoryUrl.length > 0,
         branchConfigured: input.branch.length > 0,
+        modelId: (input as { modelId?: unknown }).modelId,
       });
       return { agentId: "bc-agent-1", runId: "run-1", status: "queued" };
     },
@@ -313,4 +441,26 @@ function fakeCursorApi(): CursorBackgroundAgentsClient & {
     },
   };
   return api;
+}
+
+function fakeModels(): {
+  getModel(connectionId: string, modelId: string): { connectionId: string; id: string } | null;
+} {
+  return {
+    getModel(connectionId, modelId) {
+      return connectionId === "cursor-bg" && modelId === "account-visible"
+        ? { connectionId, id: modelId }
+        : null;
+    },
+  };
+}
+
+async function settleWithin(promise: Promise<unknown>, timeoutMs: number): Promise<string> {
+  return Promise.race([
+    promise.then(
+      () => "resolved",
+      (error: unknown) => error instanceof RemoteAgentJobError ? error.code : "rejected",
+    ),
+    new Promise<string>((resolve) => setTimeout(() => resolve("test_timeout"), timeoutMs)),
+  ]);
 }
