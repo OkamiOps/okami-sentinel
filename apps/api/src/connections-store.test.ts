@@ -165,6 +165,123 @@ test("model refreshes are atomic and only a failed refresh marks the catalog sta
   }
 });
 
+test("canonicalizes capability and pricing metadata at the store boundary", () => {
+  const db = new Database(":memory:");
+  const privateMarker = "sk-capability-metadata-secret";
+  const privateUrl = "https://private.example/v1";
+
+  try {
+    const store = new ConnectionStore(db);
+    store.insert(connectionFixture());
+    store.replaceModels("conn-1", [{
+      connectionId: "conn-1",
+      id: "model-safe",
+      displayName: "Safe model",
+      contextWindow: null,
+      capabilities: Object.assign({
+        tools: "supported", artifactOutput: "unknown", structuredOutput: "unknown",
+        boundedExecution: "unknown", osIsolation: "unknown", streaming: "unknown",
+        usage: "unknown", cancellation: "unknown",
+      } as const, {
+        providerSecret: privateMarker,
+      }),
+      pricing: Object.assign({
+        inputUsdPerMillionTokens: 1,
+        cachedInputUsdPerMillionTokens: null,
+        outputUsdPerMillionTokens: 2,
+      }, {
+        endpoint: privateUrl,
+      }),
+      discoveredAt: "2026-08-11T00:00:00.000Z",
+      source: "provider-api",
+    }]);
+    store.writeCapabilityCheck({
+      id: "check-safe",
+      connectionId: "conn-1",
+      modelId: "model-safe",
+      protocol: "openai-responses",
+      status: "passed",
+      capabilities: Object.assign({
+        tools: "supported", artifactOutput: "unknown", structuredOutput: "unknown",
+        boundedExecution: "unknown", osIsolation: "unknown", streaming: "unknown",
+        usage: "unknown", cancellation: "unknown",
+      } as const, {
+        authorization: privateMarker,
+      }),
+      errorCode: "rate_limited",
+      checkedAt: "2026-08-11T00:00:00.000Z",
+    });
+
+    const persisted = JSON.stringify({
+      model: db.prepare("SELECT capabilities_json, pricing_json FROM provider_models WHERE model_id = ?").get("model-safe"),
+      check: db.prepare("SELECT capabilities_json, error_code FROM connection_capability_checks WHERE id = ?").get("check-safe"),
+    });
+    assert.equal(persisted.includes(privateMarker), false);
+    assert.equal(persisted.includes(privateUrl), false);
+
+    db.prepare("UPDATE provider_models SET capabilities_json = ?, pricing_json = ? WHERE model_id = ?").run(
+      JSON.stringify({ tools: "supported", ignored: "supported" }),
+      JSON.stringify({
+        inputUsdPerMillionTokens: 1,
+        cachedInputUsdPerMillionTokens: null,
+        outputUsdPerMillionTokens: 2,
+        endpoint: privateUrl,
+      }),
+      "model-safe",
+    );
+    db.prepare("UPDATE connection_capability_checks SET capabilities_json = ?, error_code = ? WHERE id = ?").run(
+      JSON.stringify({ tools: "supported", leakedHeader: privateMarker }),
+      privateUrl,
+      "check-safe",
+    );
+
+    const model = store.getModel("conn-1", "model-safe")!;
+    const check = store.getCapabilityCheck("check-safe")!;
+    assert.deepEqual(Object.keys(model.capabilities).sort(), [
+      "artifactOutput", "boundedExecution", "cancellation", "osIsolation",
+      "streaming", "structuredOutput", "tools", "usage",
+    ]);
+    assert.deepEqual(Object.keys(model.pricing!).sort(), [
+      "cachedInputUsdPerMillionTokens", "inputUsdPerMillionTokens", "outputUsdPerMillionTokens",
+    ]);
+    assert.deepEqual(Object.keys(check.capabilities).sort(), [
+      "artifactOutput", "boundedExecution", "cancellation", "osIsolation",
+      "streaming", "structuredOutput", "tools", "usage",
+    ]);
+    assert.equal(check.errorCode, null);
+  } finally {
+    db.close();
+  }
+});
+
+test("rejects an unsafe capability error code before persistence", () => {
+  const db = new Database(":memory:");
+  const secret = "sk-error-code-secret";
+
+  try {
+    const store = new ConnectionStore(db);
+    store.insert(connectionFixture());
+
+    assert.throws(() => store.writeCapabilityCheck({
+      id: "check-unsafe",
+      connectionId: "conn-1",
+      modelId: null,
+      protocol: "openai-responses",
+      status: "failed",
+      capabilities: {
+        tools: "unknown", artifactOutput: "unknown", structuredOutput: "unknown",
+        boundedExecution: "unknown", osIsolation: "unknown", streaming: "unknown",
+        usage: "unknown", cancellation: "unknown",
+      },
+      errorCode: `https://private.example/probe?token=${secret}`,
+      checkedAt: "2026-08-11T00:00:00.000Z",
+    }), /safe capability error code/i);
+    assert.equal(db.serialize().toString("utf8").includes(secret), false);
+  } finally {
+    db.close();
+  }
+});
+
 test("migrates legacy catalog, check, and snapshot tables idempotently", () => {
   const db = new Database(":memory:");
 
@@ -223,6 +340,10 @@ test("migrates legacy catalog, check, and snapshot tables idempotently", () => {
       "scan-legacy", "conn-legacy", "openai", "openai-api", "http-inference",
       "api-key", "openai-responses", "legacy-model", "{}", "2026-08-10T00:00:00.000Z",
     );
+    db.prepare("INSERT INTO scan_connection_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
+      "scan-legacy-http-null", "conn-legacy", "openai", "openai-api", "http-inference",
+      "api-key", "openai-responses", null, "{}", "2026-08-10T00:00:00.000Z",
+    );
 
     ensureConnectionSchema(db);
     ensureConnectionSchema(db);
@@ -230,6 +351,7 @@ test("migrates legacy catalog, check, and snapshot tables idempotently", () => {
     const store = new ConnectionStore(db);
     assert.equal(store.getModel("conn-legacy", "legacy-model")?.displayName, "Legacy model");
     assert.equal(store.getSnapshot("scan-legacy")?.modelSelectionMode, "catalog");
+    assert.equal(store.getSnapshot("scan-legacy-http-null")?.modelSelectionMode, "legacy-unknown");
     assert.equal(store.getCapabilityCheck("check-legacy")?.modelId, null);
     assert.equal(store.getCapabilityCheck("check-legacy")?.protocol, "openai-responses");
   } finally {

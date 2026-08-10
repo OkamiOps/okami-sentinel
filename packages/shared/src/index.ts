@@ -100,8 +100,14 @@ export interface ScanConnectionSelection {
   modelId: string | null;
 }
 
-export interface ScanConnectionSnapshot extends ScanConnectionSelection {
+/** Legacy snapshots without a model choice are historical-only and cannot start a scan. */
+export type SnapshotModelSelectionMode = ModelSelectionMode | "legacy-unknown";
+
+export interface ScanConnectionSnapshot {
   scanId: string;
+  connectionId: string;
+  modelSelectionMode: SnapshotModelSelectionMode;
+  modelId: string | null;
   routeKind: string;
   capabilityCheckId: string | null;
   capturedAt: string;

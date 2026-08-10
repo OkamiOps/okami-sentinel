@@ -61,7 +61,7 @@ interface SnapshotRow {
   scan_id: string;
   connection_id: string;
   route_kind: string;
-  model_selection_mode: ModelSelectionMode;
+  model_selection_mode: ScanConnectionSnapshot["modelSelectionMode"];
   model_id: string | null;
   capability_check_id: string | null;
   captured_at: string;
@@ -519,7 +519,7 @@ function ensureSnapshotsSchema(database: Database.Database): void {
           capability_check_id, captured_at
         )
         SELECT scan_id, connection_id, route_kind,
-          CASE WHEN model_id IS NULL THEN 'runtime-default' ELSE 'catalog' END,
+          CASE WHEN model_id IS NULL THEN 'legacy-unknown' ELSE 'catalog' END,
           model_id, NULL, created_at
         FROM scan_connection_snapshots_legacy;
         DROP TABLE scan_connection_snapshots_legacy;
@@ -643,13 +643,15 @@ function rowToStoredProviderConnection(
 }
 
 function modelToParams(model: ProviderModel): Record<string, unknown> {
+  const capabilities = canonicalizeCapabilities(model.capabilities);
+  const pricing = canonicalizePricing(model.pricing);
   return {
     connection_id: model.connectionId,
     model_id: model.id,
     display_name: model.displayName,
     context_window: model.contextWindow,
-    capabilities_json: JSON.stringify(model.capabilities),
-    pricing_json: model.pricing === null ? null : JSON.stringify(model.pricing),
+    capabilities_json: JSON.stringify(capabilities),
+    pricing_json: pricing === null ? null : JSON.stringify(pricing),
     discovered_at: model.discoveredAt,
     source: model.source,
   };
@@ -675,8 +677,8 @@ function capabilityReportToParams(report: CapabilityReport): Record<string, unkn
     model_id: report.modelId,
     protocol: report.protocol,
     status: report.status,
-    capabilities_json: JSON.stringify(report.capabilities),
-    error_code: report.errorCode,
+    capabilities_json: JSON.stringify(canonicalizeCapabilities(report.capabilities)),
+    error_code: requireSafeCapabilityErrorCode(report.errorCode),
     checked_at: report.checkedAt,
   };
 }
@@ -689,7 +691,7 @@ function rowToCapabilityReport(row: CapabilityReportRow): CapabilityReport {
     protocol: row.protocol,
     status: row.status,
     capabilities: parseCapabilities(row.capabilities_json),
-    errorCode: row.error_code,
+    errorCode: safeCapabilityErrorCode(row.error_code),
     checkedAt: row.checked_at,
   };
 }
@@ -720,10 +722,7 @@ function rowToSnapshot(row: SnapshotRow): ScanConnectionSnapshot {
 
 function parseCapabilities(value: string): ModelCapabilities {
   try {
-    const parsed = JSON.parse(value) as Partial<ModelCapabilities>;
-    if (Object.values(parsed).every((state) => state === "supported" || state === "unsupported" || state === "unknown")) {
-      return { ...unknownCapabilities, ...parsed };
-    }
+    return canonicalizeCapabilities(JSON.parse(value));
   } catch {
     // Historical malformed rows are safely downgraded rather than trusted.
   }
@@ -733,18 +732,72 @@ function parseCapabilities(value: string): ModelCapabilities {
 function parsePricing(value: string | null): ModelPricing | null {
   if (value === null) return null;
   try {
-    const parsed = JSON.parse(value) as ModelPricing;
-    if (
-      isNullableFiniteNumber(parsed.inputUsdPerMillionTokens) &&
-      isNullableFiniteNumber(parsed.cachedInputUsdPerMillionTokens) &&
-      isNullableFiniteNumber(parsed.outputUsdPerMillionTokens)
-    ) return parsed;
+    return canonicalizePricing(JSON.parse(value));
   } catch {
     // Historical malformed rows do not become an invented price.
   }
   return null;
 }
 
-function isNullableFiniteNumber(value: unknown): value is number | null {
-  return value === null || (typeof value === "number" && Number.isFinite(value));
+function canonicalizeCapabilities(value: unknown): ModelCapabilities {
+  const candidate = isPlainRecord(value) ? value : {};
+  return {
+    tools: capabilityState(candidate.tools),
+    artifactOutput: capabilityState(candidate.artifactOutput),
+    structuredOutput: capabilityState(candidate.structuredOutput),
+    boundedExecution: capabilityState(candidate.boundedExecution),
+    osIsolation: capabilityState(candidate.osIsolation),
+    streaming: capabilityState(candidate.streaming),
+    usage: capabilityState(candidate.usage),
+    cancellation: capabilityState(candidate.cancellation),
+  };
+}
+
+function capabilityState(value: unknown): ModelCapabilities[keyof ModelCapabilities] {
+  return value === "supported" || value === "unsupported" || value === "unknown"
+    ? value
+    : "unknown";
+}
+
+function canonicalizePricing(value: unknown): ModelPricing | null {
+  if (!isPlainRecord(value)) return null;
+  const inputUsdPerMillionTokens = nullableUsd(value.inputUsdPerMillionTokens);
+  const cachedInputUsdPerMillionTokens = nullableUsd(value.cachedInputUsdPerMillionTokens);
+  const outputUsdPerMillionTokens = nullableUsd(value.outputUsdPerMillionTokens);
+  if (
+    inputUsdPerMillionTokens === undefined ||
+    cachedInputUsdPerMillionTokens === undefined ||
+    outputUsdPerMillionTokens === undefined
+  ) return null;
+  return {
+    inputUsdPerMillionTokens,
+    cachedInputUsdPerMillionTokens,
+    outputUsdPerMillionTokens,
+  };
+}
+
+function nullableUsd(value: unknown): number | null | undefined {
+  if (value === null) return null;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+function requireSafeCapabilityErrorCode(value: unknown): string | null {
+  const errorCode = safeCapabilityErrorCode(value);
+  if (value !== null && errorCode === null) {
+    throw new Error("Invalid safe capability error code");
+  }
+  return errorCode;
+}
+
+function safeCapabilityErrorCode(value: unknown): string | null {
+  return typeof value === "string" && /^[a-z][a-z0-9_]{0,79}$/.test(value)
+    ? value
+    : null;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value) &&
+    (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 }
