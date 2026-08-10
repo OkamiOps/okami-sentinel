@@ -38,7 +38,7 @@ test("acquires one in-memory csrf token before connection writes", async () => {
       headers: request.headers,
       body: await request.text(),
     });
-    if (request.url.endsWith("/csrf")) return Response.json({ csrfToken: "memory-only-token" });
+    if (request.url.endsWith("/security-session")) return Response.json({ csrfToken: "memory-only-token" });
     return Response.json({ connection });
   });
   const body: CreateProviderConnectionRequest = {
@@ -56,13 +56,29 @@ test("acquires one in-memory csrf token before connection writes", async () => {
   await client.update("conn-1", { name: "Renamed" });
 
   assert.deepEqual(calls.map((call) => `${call.method} ${call.path}`), [
-    "GET /api/connections/csrf",
+    "GET /api/connections/security-session",
     "POST /api/connections",
     "PATCH /api/connections/conn-1",
   ]);
   assert.equal(calls[1].headers.get("x-csrf-token"), "memory-only-token");
   assert.equal(calls[2].headers.get("x-csrf-token"), "memory-only-token");
   assert.equal(calls[1].body?.includes("credentialRef"), false);
+});
+
+test("accepts an empty 204 response after deleting a connection", async () => {
+  const calls: string[] = [];
+  const client = createConnectionsClient(async (input, init) => {
+    const path = new URL(String(input), "http://sentinel.local").pathname;
+    calls.push(`${init?.method ?? "GET"} ${path}`);
+    if (path.endsWith("/security-session")) return Response.json({ csrfToken: "memory-only-token" });
+    return new Response(null, { status: 204 });
+  });
+
+  await client.remove("conn-1");
+  assert.deepEqual(calls, [
+    "GET /api/connections/security-session",
+    "DELETE /api/connections/conn-1",
+  ]);
 });
 
 test("lists provider connection read models without asking for csrf", async () => {

@@ -23,7 +23,7 @@ export interface ConnectionDraft {
   headers: string;
 }
 
-export type ConnectionDraftError = "name" | "provider" | "route" | "headers" | null;
+export type ConnectionDraftError = "name" | "provider" | "route" | "headers" | "secret" | null;
 
 export function blankConnectionDraft(connection?: ProviderConnection): ConnectionDraft {
   return {
@@ -49,12 +49,42 @@ export function selectConnection(
   return connections.find((connection) => connection.id === connectionId) ?? connections[0];
 }
 
-export function validateConnectionDraft(draft: ConnectionDraft): ConnectionDraftError {
+export function validateConnectionDraft(
+  draft: ConnectionDraft,
+  options: { requireHttpSecret?: boolean } = {},
+): ConnectionDraftError {
   if (!draft.name.trim()) return "name";
   if (!draft.providerKind.trim()) return "provider";
   if (!draft.routeKind.trim()) return "route";
   if (draft.headers.trim() && parseSecretHeaders(draft.headers) === null) return "headers";
+  if (draft.transport === "http-inference" && options.requireHttpSecret !== false && !connectionSecretInput(draft)) return "secret";
   return null;
+}
+
+export function changeConnectionTransport(
+  draft: ConnectionDraft,
+  transport: ConnectionTransport,
+): ConnectionDraft {
+  if (transport === "local-cli") {
+    return {
+      ...draft,
+      transport,
+      authKind: "existing-session",
+      protocol: "codex-cli",
+      modelSelectionMode: "runtime-default",
+      apiKey: "",
+      baseUrl: "",
+      discoveryUrl: "",
+      headers: "",
+    };
+  }
+  return {
+    ...draft,
+    transport,
+    authKind: "api-key",
+    protocol: "openai-chat",
+    modelSelectionMode: "catalog",
+  };
 }
 
 export function createConnectionRequest(draft: ConnectionDraft): CreateProviderConnectionRequest {
@@ -71,6 +101,7 @@ export function createConnectionRequest(draft: ConnectionDraft): CreateProviderC
 }
 
 export function updateConnectionRequest(draft: ConnectionDraft): UpdateProviderConnectionRequest {
+  if (draft.transport === "local-cli") return { name: draft.name.trim() };
   return {
     name: draft.name.trim(),
     ...connectionSecretRequest(draft),

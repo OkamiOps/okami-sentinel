@@ -68,7 +68,11 @@ export function ProgressTrack({ value, label, indeterminate = false }: { value: 
   return <div><progress className="progress progress-primary h-1 w-full rounded-none" {...(indeterminate ? {} : { value: Math.max(0, Math.min(100, value)), max: 100 })} aria-label={label ?? (indeterminate ? "Scanner activity" : `${value}%`)} />{label && <div className="mt-1 font-mono text-[9px] text-muted-foreground">{label}</div>}</div>;
 }
 
-export function Loading() { return <div className="flex min-h-72 items-center justify-center"><span className="loading loading-bars loading-md text-primary" /></div>; }
+export function Loading({ label }: { label?: string }) {
+  const { t } = useI18n();
+  const status = label ?? t("common.loading");
+  return <div role="status" aria-live="polite" aria-label={status} className="flex min-h-72 flex-col items-center justify-center gap-3"><span aria-hidden="true" className="loading loading-bars loading-md text-primary" /><span className="font-mono text-[9px] uppercase tracking-[0.12em] text-muted-foreground">{status}</span></div>;
+}
 
 export function SeverityStrip({ counts, total }: { counts: { critical: number; high: number; medium: number; low: number; info?: number; unknown?: number }; total: number }) {
   const { t } = useI18n();

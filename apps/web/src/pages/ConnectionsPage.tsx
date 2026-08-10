@@ -70,10 +70,10 @@ export function ConnectionsPage() {
 
   return <div>
     <SettingsSectionNav />
-    <PageHeader code="06.02 / CONNECTIONS" title={t("connections.title")} description={t("connections.description")} actions={<Button size="sm" onClick={() => setEditor({ open: true, connection: null })}><Plus aria-hidden="true" className="size-3" />{t("connections.add")}</Button>} />
+    <PageHeader code={t("connections.moduleCode")} title={t("connections.title")} description={t("connections.description")} actions={<Button size="sm" onClick={() => setEditor({ open: true, connection: null })}><Plus aria-hidden="true" className="size-3" />{t("connections.add")}</Button>} />
     {error && <AlertBanner>{error}</AlertBanner>}
     {notice && <AlertBanner tone="success">{notice}</AlertBanner>}
-    {connections === null ? <Loading /> : connections.length === 0 ? <section className="bench-panel bench-corners"><EmptyState title={t("connections.empty")} description={t("connections.emptyDescription")} /></section> : <section className="bench-panel bench-corners min-w-0 overflow-hidden"><div className="grid min-w-0 lg:grid-cols-[minmax(18rem,.72fr)_minmax(0,1.28fr)]"><ConnectionList connections={connections} selectedId={selected?.id ?? null} onSelect={setSelectedId} /><ConnectionInspector connection={selected} onEdit={() => setEditor({ open: true, connection: selected })} onDelete={() => void remove()} deleting={deleting} /></div></section>}
+    {connections === null ? <Loading label={t("connections.loading")} /> : connections.length === 0 ? <section className="bench-panel bench-corners"><EmptyState title={t("connections.empty")} description={t("connections.emptyDescription")} /></section> : <section className="bench-panel bench-corners min-w-0 overflow-hidden"><div className="grid min-w-0 lg:grid-cols-[minmax(18rem,.72fr)_minmax(0,1.28fr)]"><ConnectionList connections={connections} selectedId={selected?.id ?? null} onSelect={setSelectedId} /><ConnectionInspector connection={selected} onEdit={() => setEditor({ open: true, connection: selected })} onDelete={() => void remove()} deleting={deleting} /></div></section>}
     <ConnectionEditorSheet open={editor.open} connection={editor.open ? editor.connection : null} onOpenChange={(open) => setEditor(open ? { open: true, connection: editor.open ? editor.connection : null } : { open: false })} onCreate={saveCreated} onUpdate={saveUpdated} />
   </div>;
 }

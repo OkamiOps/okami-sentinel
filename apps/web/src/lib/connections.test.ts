@@ -5,8 +5,10 @@ import type { ProviderConnection } from "@csb/shared";
 
 import {
   blankConnectionDraft,
+  changeConnectionTransport,
   createConnectionRequest,
   selectConnection,
+  updateConnectionRequest,
   validateConnectionDraft,
 } from "./connections.js";
 
@@ -83,4 +85,33 @@ test("serializes only values entered during this edit and never a blank secret b
     baseUrl: "https://token-plan.example/v1",
   });
   assert.equal("credentialRef" in request, false);
+});
+
+test("rejects an HTTP inference route without a valid secret field", () => {
+  const draft = blankConnectionDraft();
+  draft.name = "Missing credentials";
+
+  assert.equal(validateConnectionDraft(draft), "secret");
+});
+
+test("clears secret-like fields when changing an HTTP draft to local CLI", () => {
+  const draft = blankConnectionDraft();
+  draft.apiKey = "api-secret";
+  draft.baseUrl = "https://secret.example/v1";
+  draft.discoveryUrl = "https://secret.example/v1/models";
+  draft.headers = "X-Secret: header-secret";
+
+  const cli = changeConnectionTransport(draft, "local-cli");
+  assert.equal(cli.apiKey, "");
+  assert.equal(cli.baseUrl, "");
+  assert.equal(cli.discoveryUrl, "");
+  assert.equal(cli.headers, "");
+  assert.equal(createConnectionRequest({ ...cli, name: "Local CLI" }).secret, undefined);
+});
+
+test("never sends a secret in a local CLI patch", () => {
+  const draft = blankConnectionDraft(connectionFixture("one"));
+  draft.apiKey = "must-not-cross-the-boundary";
+
+  assert.deepEqual(updateConnectionRequest(draft), { name: "Local Codex" });
 });

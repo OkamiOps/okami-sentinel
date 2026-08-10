@@ -51,7 +51,7 @@ export function createConnectionsClient(fetcher: Fetcher = fetch): {
 } {
   let csrfToken: Promise<string> | null = null;
   const getCsrfToken = () => {
-    csrfToken ??= fetcher(`${BASE}/connections/csrf`, { headers: { Accept: "application/json" } })
+    csrfToken ??= fetcher(`${BASE}/connections/security-session`, { headers: { Accept: "application/json" } })
       .then((response) => parseApiResponse<{ csrfToken: string }>(response))
       .then(({ csrfToken: token }) => token);
     return csrfToken;
@@ -70,7 +70,15 @@ export function createConnectionsClient(fetcher: Fetcher = fetch): {
     async list() { return (await read<ProviderConnectionsResponse>("/connections")).connections; },
     async create(body) { return (await write<ProviderConnectionResponse>("/connections", "POST", body)).connection; },
     async update(id, body) { return (await write<ProviderConnectionResponse>(`/connections/${encodeURIComponent(id)}`, "PATCH", body)).connection; },
-    async remove(id) { await write<{ ok: true }>(`/connections/${encodeURIComponent(id)}`, "DELETE"); },
+    async remove(id) {
+      const token = await getCsrfToken();
+      const response = await fetcher(`${BASE}/connections/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: { Accept: "application/json", "X-CSRF-Token": token },
+      });
+      if (response.status === 204) return;
+      await parseApiResponse<unknown>(response);
+    },
   };
 }
 

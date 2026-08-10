@@ -21,4 +21,7 @@ test("translates the connection workbench in every supported locale", () => {
   assert.equal(translate("es", "connections.title"), "Rutas de conexión");
   assert.equal(translate("de", "connections.title"), "Verbindungsrouten");
   assert.equal(translate("fr", "connections.title"), "Routes de connexion");
+  assert.equal(translate("pt-BR", "connections.transport.local-cli"), "CLI local");
+  assert.equal(translate("de", "connections.status.ready"), "Bereit");
+  assert.equal(translate("fr", "connections.auth.existing-session"), "Session locale existante");
 });
