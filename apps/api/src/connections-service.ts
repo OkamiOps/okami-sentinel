@@ -21,6 +21,7 @@ import {
   updateConnectionRecord,
 } from "./connections-store.js";
 import {
+  connectionSecretValues,
   type ConnectionSecretBundle,
   type CredentialVault,
   validateConnectionSecretBundle,
@@ -189,6 +190,10 @@ export function createConnectionsService(
       const patch = validateUpdateInput(input);
 
       if (patch.secret !== undefined) {
+        rejectSecretBearingLabels(
+          [patch.name ?? current.name, current.providerKind, current.routeKind],
+          patch.secret,
+        );
         validateCombination({
           transport: current.transport,
           authKind: current.authKind,
@@ -198,6 +203,15 @@ export function createConnectionsService(
       }
 
       if (patch.secret === undefined) {
+        if (patch.name !== undefined && current.credentialRef !== null) {
+          const currentBundle = await readOptionalBundle(
+            deps.vault,
+            current.credentialRef,
+          );
+          if (currentBundle !== undefined) {
+            rejectSecretBearingLabels([patch.name], currentBundle);
+          }
+        }
         try {
           return toPublicConnection(store.update(id, { name: patch.name }));
         } catch {
@@ -301,6 +315,10 @@ function validateCreateInput(input: CreateProviderConnectionRequest): ValidatedC
   const secret = input.secret === undefined
     ? undefined
     : validateSecret(input.secret);
+
+  if (secret !== undefined) {
+    rejectSecretBearingLabels([name, providerKind, routeKind], secret);
+  }
 
   validateCombination({ transport, authKind, protocol, secret });
   return {
@@ -431,6 +449,22 @@ function connectionIdentifier(value: unknown): string {
     invalidConnection();
   }
   return identifier;
+}
+
+function rejectSecretBearingLabels(
+  labels: readonly string[],
+  secret: ConnectionSecretBundle,
+): void {
+  const normalizedLabels = labels.map((label) =>
+    label.normalize("NFKC").toLocaleLowerCase("en-US"),
+  );
+  for (const value of connectionSecretValues(secret)) {
+    const normalizedSecret = value.normalize("NFKC").toLocaleLowerCase("en-US");
+    if (normalizedSecret.length < 4) continue;
+    if (normalizedLabels.some((label) => label.includes(normalizedSecret))) {
+      invalidConnection();
+    }
+  }
 }
 
 function enumValue<T extends string>(value: unknown, values: Set<T>): T {

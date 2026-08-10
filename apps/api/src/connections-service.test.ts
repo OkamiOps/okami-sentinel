@@ -205,6 +205,47 @@ test("rejects URL and credential-shaped connection metadata before vault or SQLi
   }
 });
 
+test("rejects opaque bundle values copied into any create metadata label", async () => {
+  const db = new Database(":memory:");
+  try {
+    const vault = new FakeVault();
+    const service = createConnectionsService({ vault, store: storeFor(db) });
+    const cases: CreateProviderConnectionRequest[] = [
+      {
+        ...apiConnectionInput("opaque-value-12345"),
+        name: "opaque-value-12345",
+      },
+      {
+        ...apiConnectionInput("provider-opaque-12345"),
+        providerKind: "provider-opaque-12345",
+      },
+      {
+        ...apiConnectionInput("opaque-route-12345"),
+        routeKind: "prefix-opaque-route-12345",
+      },
+      {
+        ...apiConnectionInput("unrelated-api-key"),
+        name: "Production header-opaque-12345 connection",
+        secret: {
+          apiKey: "unrelated-api-key",
+          headers: { "X-Workspace": "header-opaque-12345" },
+        },
+      },
+    ];
+
+    for (const input of cases) {
+      await assert.rejects(service.create(input), { code: "invalid_connection" });
+    }
+    assert.equal(vault.values.size, 0);
+    assert.equal(listConnections(db).length, 0);
+    const serialized = db.serialize().toString("utf8");
+    assert.equal(serialized.includes("opaque-value-12345"), false);
+    assert.equal(serialized.includes("header-opaque-12345"), false);
+  } finally {
+    db.close();
+  }
+});
+
 test("rejects unknown create fields and non-plain request objects", async () => {
   const db = new Database(":memory:");
   try {
@@ -237,6 +278,47 @@ test("rejects a secret patch for a local existing-session connection", async () 
     );
     assert.equal(vault.values.size, 0);
     assert.equal(getConnection(created.id, db)?.credentialRef, null);
+  } finally {
+    db.close();
+  }
+});
+
+test("rejects a name and replacement secret that contain the same opaque value", async () => {
+  const db = new Database(":memory:");
+  try {
+    const vault = new FakeVault();
+    const service = createConnectionsService({ vault, store: storeFor(db) });
+    const created = await service.create(apiConnectionInput("old-opaque-value"));
+    const ref = getConnection(created.id, db)!.credentialRef!;
+
+    await assert.rejects(
+      service.update(created.id, {
+        name: "replacement-opaque-value-12345",
+        secret: { apiKey: "opaque-value-12345" },
+      }),
+      { code: "invalid_connection" },
+    );
+    assert.equal(getConnection(created.id, db)?.name, "OpenAI production");
+    assert.deepEqual(await vault.get(ref), apiConnectionInput("old-opaque-value").secret);
+    assert.equal(db.serialize().toString("utf8").includes("opaque-value-12345"), false);
+  } finally {
+    db.close();
+  }
+});
+
+test("rejects a name-only patch containing an opaque secret already in the vault", async () => {
+  const db = new Database(":memory:");
+  try {
+    const vault = new FakeVault();
+    const service = createConnectionsService({ vault, store: storeFor(db) });
+    const created = await service.create(apiConnectionInput("opaque-existing-12345"));
+
+    await assert.rejects(
+      service.update(created.id, { name: "Production opaque-existing-12345" }),
+      { code: "invalid_connection" },
+    );
+    assert.equal(getConnection(created.id, db)?.name, "OpenAI production");
+    assert.equal(db.serialize().toString("utf8").includes("opaque-existing-12345"), false);
   } finally {
     db.close();
   }

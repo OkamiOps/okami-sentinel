@@ -218,6 +218,36 @@ test("HTTP create rejects unknown fields and URL-shaped identifiers", async () =
   }
 });
 
+test("HTTP create rejects an opaque secret copied into a public label", async () => {
+  const { api, db, vault } = fixture();
+  try {
+    const token = await csrfToken(api);
+    const secret = "opaque-http-value-12345";
+    const response = await api.request("/connections", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": token },
+      body: JSON.stringify({
+        name: `Production ${secret}`,
+        providerKind: "openai",
+        routeKind: "openai-api",
+        transport: "http-inference",
+        authKind: "api-key",
+        protocol: "openai-responses",
+        modelSelectionMode: "catalog",
+        secret: { apiKey: secret },
+      }),
+    });
+
+    assert.equal(response.status, 400);
+    assert.equal(JSON.stringify(await response.json()).includes(secret), false);
+    assert.equal(vault.values.size, 0);
+    assert.equal(listConnections(db).length, 0);
+    assert.equal(db.serialize().toString("utf8").includes(secret), false);
+  } finally {
+    db.close();
+  }
+});
+
 test("unknown connections use normalized 404s without reflecting encoded paths", async () => {
   const { api, db } = fixture();
   try {
