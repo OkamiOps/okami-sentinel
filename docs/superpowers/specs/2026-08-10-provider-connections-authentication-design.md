@@ -178,7 +178,21 @@ interface ProviderConnection {
   defaultModelId: string | null;
   lastTestedAt: string | null;
   lastModelSyncAt: string | null;
-  safeDisplay: Record<string, string>;
+  display: ConnectionDisplay;
+}
+
+interface ConnectionDisplay {
+  providerLabel: string;
+  routeLabel: string;
+  secretConfigured: boolean;
+  endpointConfigured: boolean;
+  endpointKind: "preset" | "custom" | null;
+}
+
+interface ScanConnectionSelection {
+  connectionId: string;
+  modelSelectionMode: ModelSelectionMode;
+  modelId: string | null;
 }
 
 interface ProviderModel {
@@ -194,6 +208,8 @@ interface ProviderModel {
 ```
 
 O `routeKind` é um identificador de adapter, não um enum fechado compartilhado. Novos adapters podem ser registrados sem alterar o contrato central.
+
+`ConnectionDisplay` é um contrato fechado produzido pelo backend. Ele nunca contém URL, hostname, path, nome de header ou qualquer valor derivado do secret bundle.
 
 ## Persistência e cofre
 
@@ -392,7 +408,7 @@ Estável apenas nas rotas oficialmente suportadas pelo pacote atual:
 - Fireworks;
 - Amazon Bedrock.
 
-O Codex CLI suporta providers customizados via TOML/Responses, mas o wrapper Codex Security 0.1.8 não oferece contrato estável para credencial e recipe de provider arbitrário. Uma conexão custom Responses pode aparecer como `experimental` somente após teste contratual contra a versão instalada. Não será anunciada como compatibilidade estável por inferência.
+O Codex CLI suporta providers customizados via TOML/Responses, mas o wrapper Codex Security 0.1.8 não oferece contrato estável para credencial e recipe de provider arbitrário. Por isso, conexões customizadas ficam indisponíveis para Codex Security com razão objetiva. Elas são executadas exclusivamente pelo Sentinel API Agent Runner em Mantis e VulnHunter. Suporte futuro exige contrato oficial novo ou adapter explicitamente versionado; um probe isolado não altera essa decisão.
 
 ### Mantis e VulnHunter
 
@@ -434,7 +450,7 @@ Ordem aprovada:
 6. revisar custo/telemetria disponíveis;
 7. iniciar.
 
-`StartScanRequest` passa a receber `connectionId` e `modelId`. O backend resolve o segredo e o runner. `provider`, `authMode` e `model` permanecem no run apenas como snapshot legível e histórico.
+`StartScanRequest` passa a receber `connectionId`, `modelSelectionMode` e `modelId: string | null`. O backend resolve o segredo e o runner. No modo `catalog`, `modelId` é obrigatório e precisa pertencer ao catálogo da conexão. No modo `runtime-default`, `modelId` deve ser `null` e a conexão precisa declarar exatamente esse modo. `provider`, `authMode` e `model` permanecem no run apenas como snapshot legível e histórico.
 
 Um run nunca muda de conexão ou modelo silenciosamente. Fallback exige política explícita futura.
 
