@@ -64,8 +64,8 @@ export function LiveDuration({ startedAt, completedAt, status, durationMs, showD
   return <span className="inline-flex items-center gap-1.5 font-mono text-[10px] tabular-nums text-muted-foreground">{showDot && status === "running" && <span className="live-dot text-primary" />}{formatDuration(durationMs ?? elapsed)}</span>;
 }
 
-export function ProgressTrack({ value, label }: { value: number; label?: string }) {
-  return <div><div className="h-1 bg-muted"><div className="h-full bg-primary transition-[width]" style={{ width: `${Math.max(0, Math.min(100, value))}%` }} /></div>{label && <div className="mt-1 font-mono text-[9px] text-muted-foreground">{label}</div>}</div>;
+export function ProgressTrack({ value, label, indeterminate = false }: { value: number; label?: string; indeterminate?: boolean }) {
+  return <div><progress className="progress progress-primary h-1 w-full rounded-none" {...(indeterminate ? {} : { value: Math.max(0, Math.min(100, value)), max: 100 })} aria-label={label ?? (indeterminate ? "Scanner activity" : `${value}%`)} />{label && <div className="mt-1 font-mono text-[9px] text-muted-foreground">{label}</div>}</div>;
 }
 
 export function Loading() { return <div className="flex min-h-72 items-center justify-center"><span className="loading loading-bars loading-md text-primary" /></div>; }

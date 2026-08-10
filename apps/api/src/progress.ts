@@ -4,6 +4,7 @@ import Database from "better-sqlite3";
 import type { ScanPhase, ScanProgress, ScanRun, ScanStatus } from "@csb/shared";
 import { WORKBENCH_DB_PATH } from "./config.js";
 import {
+  latestMantisActivityAt,
   mantisRuntimeProgress,
   readMantisRuntime,
 } from "./scanners/mantis-runtime.js";
@@ -52,6 +53,22 @@ interface ProgressRow {
 
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
+}
+
+export function isInternalProgressMarker(line: string): boolean {
+  return /(?:^|\s)SENTINEL_PROGRESS\s+\{/.test(line);
+}
+
+export function progressEventMessage(progress: ScanProgress): string {
+  const metric =
+    progress.indeterminate &&
+    progress.currentItem != null &&
+    progress.itemsTotal > 0
+      ? `stage ${progress.currentItem}/${progress.itemsTotal}`
+      : `${progress.percent}%`;
+  return progress.detail
+    ? `${progress.phaseLabel} · ${progress.detail} (${metric})`
+    : `${progress.phaseLabel} (${metric})`;
 }
 
 function phaseIndex(phase: string | null | undefined): number {
@@ -259,7 +276,12 @@ export function progressForStatus(
   if (status !== "running" && status !== "queued") return null;
 
   const mantis = readMantisRuntime(scanDir);
-  if (mantis) return mantisRuntimeProgress(mantis);
+  if (mantis) {
+    return mantisRuntimeProgress(
+      mantis,
+      latestMantisActivityAt(scanDir, mantis),
+    );
+  }
 
   const fromWb = readProgressForScanDir(scanDir);
   const age = elapsedMs(startedAt);

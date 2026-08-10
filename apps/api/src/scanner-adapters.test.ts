@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import type { ScanRun } from "@csb/shared";
+import type { ScanProgress, ScanRun } from "@csb/shared";
 import * as config from "./config.js";
 import { buildScannerCatalog } from "./scanners/catalog.js";
 import {
@@ -12,8 +13,18 @@ import {
 } from "./scanners/launch.js";
 import { normalizeMantisWorkspace } from "./scanners/mantis-normalize.js";
 import { refreshMantisRunFromDisk } from "./scanners/mantis-reconcile.js";
-import { writeMantisRuntime } from "./scanners/mantis-runtime.js";
-import { parseCliPhaseHint } from "./progress.js";
+import {
+  createResilientLineWriter,
+  MANTIS_CODEX_ISOLATION_ARGS,
+  summarizeMantisEvent,
+  writeMantisRuntime,
+} from "./scanners/mantis-runtime.js";
+import {
+  isInternalProgressMarker,
+  parseCliPhaseHint,
+  progressEventMessage,
+  progressForStatus,
+} from "./progress.js";
 
 test("Codex binary resolution prefers an explicit override, then the ChatGPT bundle", () => {
   const resolveCodexBin = (
@@ -267,4 +278,122 @@ test("Sentinel progress markers map Mantis stages without parsing prose", () => 
   assert.equal(parsed?.phase, "dedupe");
   assert.equal(parsed?.phaseLabel, "Deduplication");
   assert.equal(parsed?.reportableFindings, 4);
+});
+
+test("Mantis progress uses real Codex log activity instead of presenting a frozen percentage", () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-mantis-activity-"));
+  const staleAt = "2026-08-10T15:05:56.000Z";
+  const recentAt = new Date();
+
+  try {
+    writeMantisRuntime(fixtureRoot, {
+      engine: "mantis",
+      status: "running",
+      stage: "architecture",
+      stageLabel: "Architecture",
+      percent: 10,
+      detail: "running mantis-architecture",
+      startedAt: staleAt,
+      updatedAt: staleAt,
+      completedAt: null,
+      snapshotId: "content:abc",
+      sourceRef: "a".repeat(40),
+      findings: 0,
+      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+      error: null,
+    });
+    const logsDir = path.join(fixtureRoot, "mantis-logs");
+    fs.mkdirSync(logsDir);
+    const stageLog = path.join(logsDir, "architecture.jsonl");
+    fs.writeFileSync(stageLog, '{"type":"item.completed"}\n');
+    fs.utimesSync(stageLog, recentAt, recentAt);
+
+    const progress = progressForStatus(
+      "running",
+      fixtureRoot,
+      "standard",
+      staleAt,
+    );
+
+    assert.equal(progress?.indeterminate, true);
+    assert.equal(progress?.currentItem, 1);
+    assert.equal(progress?.itemsCompleted, 0);
+    assert.equal(progress?.itemsTotal, 9);
+    assert.equal(progress?.activityState, "active");
+    assert.ok(progress?.lastActivityAt);
+    assert.ok(Math.abs(Date.parse(progress!.lastActivityAt!) - recentAt.getTime()) < 1_000);
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("Mantis heartbeat descriptions expose useful activity without leaking command contents", () => {
+  const summary = summarizeMantisEvent({
+    type: "item.completed",
+    item: {
+      id: "item_33",
+      type: "command_execution",
+      command: "cat /private/secret.txt",
+    },
+  });
+
+  assert.equal(summary, "Command execution completed");
+  assert.doesNotMatch(summary ?? "", /secret|private|cat/i);
+});
+
+test("Mantis telemetry survives a closed parent stdout pipe", () => {
+  class BrokenOutput extends EventEmitter {
+    writes = 0;
+    write(): boolean {
+      this.writes += 1;
+      const error = Object.assign(new Error("broken pipe"), { code: "EPIPE" });
+      this.emit("error", error);
+      return false;
+    }
+  }
+
+  const output = new BrokenOutput();
+  const writeLine = createResilientLineWriter(output);
+
+  assert.doesNotThrow(() => writeLine("first heartbeat"));
+  assert.doesNotThrow(() => writeLine("second heartbeat"));
+  assert.equal(output.writes, 1);
+});
+
+test("Mantis progress events describe stages without repeating the internal percentage", () => {
+  const progress: ScanProgress = {
+    percent: 10,
+    phase: "threat_model",
+    phaseLabel: "Architecture",
+    detail: "Command execution completed",
+    unit: "stages",
+    itemsCompleted: 0,
+    itemsTotal: 9,
+    currentItem: 1,
+    indeterminate: true,
+  };
+  const message = progressEventMessage(progress);
+
+  assert.equal(
+    message,
+    "Architecture · Command execution completed (stage 1/9)",
+  );
+  assert.doesNotMatch(message, /10%/);
+});
+
+test("internal Sentinel progress markers are not presented as operator log lines", () => {
+  assert.equal(
+    isInternalProgressMarker(
+      '[stdout] SENTINEL_PROGRESS {"percent":10,"stage":"architecture"}',
+    ),
+    true,
+  );
+  assert.equal(
+    isInternalProgressMarker("[mantis/architecture] Command execution completed"),
+    false,
+  );
+});
+
+test("Mantis Codex sessions disable unrelated user plugins", () => {
+  assert.deepEqual(MANTIS_CODEX_ISOLATION_ARGS, ["--disable", "plugins"]);
 });

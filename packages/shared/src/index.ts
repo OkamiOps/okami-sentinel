@@ -99,6 +99,13 @@ export interface ScanProgress {
   itemsTotal: number;
   deepPhase?: string | null;
   reportableFindings?: number;
+  /** True when the scanner exposes stage/activity telemetry, not measurable completion. */
+  indeterminate?: boolean;
+  /** One-based stage position when a scanner runs a fixed pipeline. */
+  currentItem?: number;
+  /** Liveness derived from the scanner's most recent observable event. */
+  activityState?: "active" | "quiet" | "stale";
+  lastActivityAt?: string | null;
 }
 
 export interface ScanRun {

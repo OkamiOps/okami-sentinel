@@ -6,8 +6,11 @@ import readline from "node:readline";
 import { CODEX_BIN } from "../config.js";
 import { normalizeMantisWorkspace } from "./mantis-normalize.js";
 import {
+  createResilientLineWriter,
+  MANTIS_CODEX_ISOLATION_ARGS,
   type MantisRunConfiguration,
   type MantisRuntimeState,
+  summarizeMantisEvent,
   writeMantisRuntime,
 } from "./mantis-runtime.js";
 
@@ -50,10 +53,7 @@ let currentChild: ChildProcess | null = null;
 let cancelled = false;
 let runtime: MantisRuntimeState | null = null;
 let outputDirForSignal: string | null = null;
-
-function log(message: string): void {
-  process.stdout.write(`${message}\n`);
-}
+const log = createResilientLineWriter(process.stdout);
 
 function progress(
   config: MantisRunConfiguration,
@@ -277,6 +277,7 @@ async function runStage(
   fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
   const logPath = path.join(logDir, `${stage.id}.jsonl`);
   const args = [
+    ...MANTIS_CODEX_ISOLATION_ARGS,
     "exec",
     "--json",
     "--ephemeral",
@@ -302,6 +303,7 @@ async function runStage(
     });
     currentChild = child;
     const stageUsage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
+    let lastHeartbeatAt = 0;
     const stdout = readline.createInterface({ input: child.stdout! });
     const stderr = readline.createInterface({ input: child.stderr! });
 
@@ -310,6 +312,21 @@ async function runStage(
       try {
         const event = JSON.parse(line) as Record<string, unknown>;
         if (event.type === "turn.completed") collectUsage(event, stageUsage);
+        const activity = summarizeMantisEvent(event);
+        const nowMs = Date.now();
+        if (activity && runtime && nowMs - lastHeartbeatAt >= 1_000) {
+          lastHeartbeatAt = nowMs;
+          const now = new Date(nowMs).toISOString();
+          runtime = {
+            ...runtime,
+            detail: activity,
+            lastActivityAt: now,
+            activitySequence: (runtime.activitySequence ?? 0) + 1,
+            updatedAt: now,
+          };
+          writeMantisRuntime(config.outputDir, runtime);
+          log(`[mantis/${stage.id}] ${activity}`);
+        }
       } catch {
         // The JSONL contract is best effort; preserve the raw line in the stage log.
       }

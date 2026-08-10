@@ -24,7 +24,13 @@ import {
 } from "./activity.js";
 import { getRun, upsertRun } from "./db.js";
 import { readWorkbenchScan, refreshRunByScanDir } from "./ingest.js";
-import { parseCliPhaseHint, progressForStatus, withProgress } from "./progress.js";
+import {
+  isInternalProgressMarker,
+  parseCliPhaseHint,
+  progressEventMessage,
+  progressForStatus,
+  withProgress,
+} from "./progress.js";
 import { validateScannerRequest } from "./scanners/catalog.js";
 import { prepareScannerLaunch } from "./scanners/launch.js";
 import { refreshMantisRunFromDisk } from "./scanners/mantis-reconcile.js";
@@ -210,9 +216,7 @@ function tickDetached(scanId: string): void {
       emitDetached(watch, {
         type: "progress",
         progress,
-        message: progress.detail
-          ? `${progress.phaseLabel} · ${progress.detail} (${progress.percent}%)`
-          : `${progress.phaseLabel} (${progress.percent}%)`,
+        message: progressEventMessage(progress),
         scan: { ...latest, progress },
       });
     }
@@ -330,10 +334,12 @@ export async function startScan(req: StartScanRequest): Promise<ScanRun> {
     const text = chunk.toString("utf8");
     for (const line of text.split(/\r?\n/)) {
       if (!line.trim()) continue;
-      emit(activeScan, {
-        type: "log",
-        message: `[${stream}] ${line}`,
-      });
+      if (!isInternalProgressMarker(line)) {
+        emit(activeScan, {
+          type: "log",
+          message: `[${stream}] ${line}`,
+        });
+      }
       maybeParseCost(line, activeScan, run);
       maybeParseProgress(line, activeScan, run);
     }
@@ -401,7 +407,7 @@ export async function startScan(req: StartScanRequest): Promise<ScanRun> {
 }
 
 function progressKey(p: ScanProgress): string {
-  return `${p.percent}|${p.phase}|${p.detail ?? ""}|${p.deepPhase ?? ""}`;
+  return `${p.percent}|${p.phase}|${p.detail ?? ""}|${p.deepPhase ?? ""}|${p.activityState ?? ""}|${p.lastActivityAt ?? ""}`;
 }
 
 function applyProgress(
@@ -416,9 +422,7 @@ function applyProgress(
   emit(activeScan, {
     type: "progress",
     progress,
-    message: progress.detail
-      ? `${progress.phaseLabel} · ${progress.detail} (${progress.percent}%)`
-      : `${progress.phaseLabel} (${progress.percent}%)`,
+    message: progressEventMessage(progress),
     scan: { ...run },
   });
 }

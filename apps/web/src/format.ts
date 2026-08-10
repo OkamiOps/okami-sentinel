@@ -1,4 +1,5 @@
 import { getIntlLocale } from "./i18n";
+import type { ScanProgress } from "@csb/shared";
 
 export function formatUsd(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return "—";
@@ -57,4 +58,27 @@ export function elapsedFrom(
     if (!Number.isNaN(end)) return Math.max(0, end - start);
   }
   return Math.max(0, nowMs - start);
+}
+
+export function formatProgressMetric(
+  progress: ScanProgress | null | undefined,
+): string {
+  if (!progress) return "—";
+  if (
+    progress.indeterminate &&
+    progress.currentItem != null &&
+    progress.itemsTotal > 0
+  ) {
+    return `STAGE ${String(progress.currentItem).padStart(2, "0")}/${String(progress.itemsTotal).padStart(2, "0")}`;
+  }
+  return `${Math.round(progress.percent)}%`;
+}
+
+export function formatActivityState(
+  state: ScanProgress["activityState"],
+): string {
+  if (state === "active") return "ACTIVE";
+  if (state === "quiet") return "QUIET";
+  if (state === "stale") return "NO EVENTS";
+  return "—";
 }
