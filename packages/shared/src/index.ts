@@ -25,6 +25,101 @@ export type ScannerAuthMode = "chatgpt" | "api-key";
 
 export type ScannerMaturity = "stable" | "preview" | "experimental";
 
+export type ConnectionTransport =
+  | "local-cli"
+  | "codex-app-server"
+  | "http-inference"
+  | "remote-agent-api";
+
+export type ConnectionAuthKind =
+  | "existing-session"
+  | "browser-oauth"
+  | "device-code"
+  | "api-key"
+  | "custom-headers";
+
+export type ProviderProtocol =
+  | "codex-cli"
+  | "codex-app-server"
+  | "claude-code-cli"
+  | "cursor-agent-cli"
+  | "grok-build-cli"
+  | "xai-oauth-responses"
+  | "openai-responses"
+  | "openai-chat"
+  | "anthropic-messages"
+  | "cursor-background-agents";
+
+export type ModelSelectionMode = "catalog" | "runtime-default";
+
+export type ConnectionStatus =
+  | "draft"
+  | "authentication-required"
+  | "testing"
+  | "ready"
+  | "degraded"
+  | "expired"
+  | "unavailable";
+
+export interface ConnectionDisplay {
+  providerLabel: string;
+  routeLabel: string;
+  secretConfigured: boolean;
+  endpointConfigured: boolean;
+  endpointKind: "preset" | "custom" | null;
+}
+
+export interface ProviderConnection {
+  id: string;
+  scopeId: "local";
+  name: string;
+  /** An extensible provider identifier, for example an adapter family. */
+  providerKind: string;
+  /** An extensible operational adapter identifier. */
+  routeKind: string;
+  transport: ConnectionTransport;
+  authKind: ConnectionAuthKind;
+  protocol: ProviderProtocol;
+  status: ConnectionStatus;
+  modelSelectionMode: ModelSelectionMode;
+  defaultModelId: string | null;
+  lastTestedAt: string | null;
+  lastModelSyncAt: string | null;
+  display: ConnectionDisplay;
+}
+
+/** Write-only values accepted when a connection is created or updated. */
+export interface ConnectionSecretInput {
+  apiKey?: string;
+  baseUrl?: string;
+  discoveryUrl?: string;
+  headers?: Record<string, string>;
+}
+
+export interface CreateProviderConnectionRequest {
+  name: string;
+  providerKind: string;
+  routeKind: string;
+  transport: ConnectionTransport;
+  authKind: ConnectionAuthKind;
+  protocol: ProviderProtocol;
+  modelSelectionMode: ModelSelectionMode;
+  secret?: ConnectionSecretInput;
+}
+
+export interface UpdateProviderConnectionRequest {
+  name?: string;
+  secret?: ConnectionSecretInput;
+}
+
+export interface ProviderConnectionResponse {
+  connection: ProviderConnection;
+}
+
+export interface ProviderConnectionsResponse {
+  connections: ProviderConnection[];
+}
+
 export interface ScannerAuthCapability {
   id: ScannerAuthMode;
   available: boolean;

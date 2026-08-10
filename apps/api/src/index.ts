@@ -8,11 +8,13 @@ import {
   RUNS_DIR,
 } from "./config.js";
 import { getDb } from "./db.js";
+import { ensureConnectionSchema } from "./connections-store.js";
 import { importExternalScans, reconcileRunningScans } from "./ingest.js";
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(RUNS_DIR, { recursive: true });
 getDb();
+ensureConnectionSchema(getDb());
 
 const { imported, pruned } = importExternalScans();
 console.log(
