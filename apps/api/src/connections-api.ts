@@ -109,8 +109,11 @@ function connectionId(value: string): string {
 }
 
 function hasValidCsrfToken(value: string | undefined, token: string): boolean {
-  if (value === undefined || value.length !== token.length) return false;
-  return timingSafeEqual(Buffer.from(value), Buffer.from(token));
+  if (value === undefined) return false;
+  const supplied = Buffer.from(value);
+  const expected = Buffer.from(token);
+  if (supplied.byteLength !== expected.byteLength) return false;
+  return timingSafeEqual(supplied, expected);
 }
 
 async function requestJson<T>(request: Request): Promise<T> {
@@ -131,6 +134,7 @@ function connectionError(c: Context, error: unknown): Response {
       ? "connection_not_found"
       : "secure_storage_unavailable";
   if (code === "connection_not_found") return c.json({ error: code }, 404);
+  if (code === "connection_state_inconsistent") return c.json({ error: code }, 409);
   if (code === "secure_storage_unavailable") return c.json({ error: code }, 503);
   return c.json({ error: code }, 400);
 }

@@ -63,11 +63,25 @@ const LOCAL_CLI_PROTOCOLS = new Set<ProviderProtocol>([
   "grok-build-cli",
 ]);
 const CONTROL_CHARACTER = /[\u0000-\u001F\u007F]/;
+const IDENTIFIER = /^[a-z0-9][a-z0-9_-]{0,79}$/;
+const URL_OR_HOSTNAME = /(?:https?:\/\/|(?:^|\s)(?:[a-z0-9-]+\.)+[a-z]{2,}(?:[/:?#\s]|$))/i;
+const CREDENTIAL_SHAPED = /(?:authorization\s*[:=]|\b(?:bearer|basic)\s+\S+|(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret)\s*[:=]|[?&](?:api[_-]?key|token|password|secret)=|\b(?:sk|xai)-[a-z0-9_-]{4,})/i;
+const CREATE_KEYS = new Set([
+  "name",
+  "providerKind",
+  "routeKind",
+  "transport",
+  "authKind",
+  "protocol",
+  "modelSelectionMode",
+  "secret",
+]);
 
 export type ConnectionErrorCode =
   | "invalid_connection"
   | "connection_not_found"
   | "connection_write_failed"
+  | "connection_state_inconsistent"
   | "secure_storage_unavailable";
 
 export class ConnectionServiceError extends Error {
@@ -99,12 +113,41 @@ export interface ConnectionsService {
 export interface ConnectionsServiceDependencies {
   vault: CredentialVault;
   store?: ConnectionsStore;
+  recovery?: ConnectionRecoverySink;
+}
+
+export type ConnectionInconsistencyOperation =
+  | "create-rollback"
+  | "update-rollback"
+  | "delete-rollback";
+
+export interface ConnectionInconsistencyRecord {
+  connectionId: string;
+  credentialRef: string;
+  operation: ConnectionInconsistencyOperation;
+  recordedAt: string;
+}
+
+export interface ConnectionRecoverySink {
+  record(record: ConnectionInconsistencyRecord): void;
+}
+
+const processRecoveryRecords: ConnectionInconsistencyRecord[] = [];
+const processRecoverySink: ConnectionRecoverySink = {
+  record(record) {
+    processRecoveryRecords.push(Object.freeze({ ...record }));
+  },
+};
+
+export function listConnectionRecoveryRecords(): readonly ConnectionInconsistencyRecord[] {
+  return processRecoveryRecords.map((record) => ({ ...record }));
 }
 
 export function createConnectionsService(
   deps: ConnectionsServiceDependencies,
 ): ConnectionsService {
   const store = deps.store ?? sqliteConnectionsStore;
+  const recovery = deps.recovery ?? processRecoverySink;
 
   return {
     list: () => store.list().map(toPublicConnection),
@@ -129,7 +172,12 @@ export function createConnectionsService(
       try {
         store.insert(stored);
       } catch {
-        if (credentialRef !== null) await discardNewCredential(deps.vault, credentialRef);
+        if (
+          credentialRef !== null &&
+          !await discardNewCredential(deps.vault, credentialRef)
+        ) {
+          throw inconsistentState(recovery, id, credentialRef, "create-rollback");
+        }
         throw new ConnectionServiceError("connection_write_failed");
       }
 
@@ -139,6 +187,15 @@ export function createConnectionsService(
       const current = store.get(id);
       if (current === null) return null;
       const patch = validateUpdateInput(input);
+
+      if (patch.secret !== undefined) {
+        validateCombination({
+          transport: current.transport,
+          authKind: current.authKind,
+          protocol: current.protocol,
+          secret: patch.secret,
+        });
+      }
 
       if (patch.secret === undefined) {
         try {
@@ -151,7 +208,7 @@ export function createConnectionsService(
       const credentialRef = current.credentialRef ?? `connection/${current.id}`;
       const previousBundle = current.credentialRef === null
         ? undefined
-        : await readPreviousBundle(deps.vault, current.credentialRef);
+        : await readOptionalBundle(deps.vault, current.credentialRef);
       try {
         await deps.vault.put(credentialRef, patch.secret);
       } catch (error) {
@@ -166,7 +223,9 @@ export function createConnectionsService(
       try {
         return toPublicConnection(store.update(id, recordPatch));
       } catch {
-        await restoreCredential(deps.vault, credentialRef, previousBundle);
+        if (!await restoreCredential(deps.vault, credentialRef, previousBundle)) {
+          throw inconsistentState(recovery, id, credentialRef, "update-rollback");
+        }
         throw new ConnectionServiceError("connection_write_failed");
       }
     },
@@ -176,7 +235,7 @@ export function createConnectionsService(
 
       let removedBundle: ConnectionSecretBundle | undefined;
       if (current.credentialRef !== null) {
-        removedBundle = await readPreviousBundle(deps.vault, current.credentialRef);
+        removedBundle = await readOptionalBundle(deps.vault, current.credentialRef);
         try {
           await deps.vault.delete(current.credentialRef);
         } catch (error) {
@@ -186,13 +245,33 @@ export function createConnectionsService(
 
       try {
         const deleted = store.delete(id);
-        if (!deleted && current.credentialRef !== null) {
-          await restoreCredential(deps.vault, current.credentialRef, removedBundle);
+        if (
+          !deleted &&
+          current.credentialRef !== null &&
+          removedBundle !== undefined &&
+          !await restoreCredential(deps.vault, current.credentialRef, removedBundle)
+        ) {
+          throw inconsistentState(
+            recovery,
+            id,
+            current.credentialRef,
+            "delete-rollback",
+          );
         }
         return deleted;
-      } catch {
-        if (current.credentialRef !== null) {
-          await restoreCredential(deps.vault, current.credentialRef, removedBundle);
+      } catch (error) {
+        if (error instanceof ConnectionServiceError) throw error;
+        if (
+          current.credentialRef !== null &&
+          removedBundle !== undefined &&
+          !await restoreCredential(deps.vault, current.credentialRef, removedBundle)
+        ) {
+          throw inconsistentState(
+            recovery,
+            id,
+            current.credentialRef,
+            "delete-rollback",
+          );
         }
         throw new ConnectionServiceError("connection_write_failed");
       }
@@ -209,10 +288,12 @@ const sqliteConnectionsStore: ConnectionsStore = {
 };
 
 function validateCreateInput(input: CreateProviderConnectionRequest): ValidatedCreateInput {
-  if (!isRecord(input)) invalidConnection();
-  const name = requiredText(input.name);
-  const providerKind = requiredText(input.providerKind);
-  const routeKind = requiredText(input.routeKind);
+  if (!isPlainDataRecord(input)) invalidConnection();
+  const keys = Object.getOwnPropertyNames(input);
+  if (keys.some((key) => !CREATE_KEYS.has(key))) invalidConnection();
+  const name = connectionName(input.name);
+  const providerKind = connectionIdentifier(input.providerKind);
+  const routeKind = connectionIdentifier(input.routeKind);
   const transport = enumValue(input.transport, TRANSPORTS);
   const authKind = enumValue(input.authKind, AUTH_KINDS);
   const protocol = enumValue(input.protocol, PROTOCOLS);
@@ -238,14 +319,14 @@ function validateUpdateInput(input: UpdateProviderConnectionRequest): {
   name: string | undefined;
   secret: ConnectionSecretBundle | undefined;
 } {
-  if (!isRecord(input)) invalidConnection();
+  if (!isPlainDataRecord(input)) invalidConnection();
   const allowed = new Set(["name", "secret"]);
   if (
-    Object.keys(input).length === 0 ||
-    Object.keys(input).some((key) => !allowed.has(key))
+    Object.getOwnPropertyNames(input).length === 0 ||
+    Object.getOwnPropertyNames(input).some((key) => !allowed.has(key))
   ) invalidConnection();
 
-  const name = input.name === undefined ? undefined : requiredText(input.name);
+  const name = input.name === undefined ? undefined : connectionName(input.name);
   const secret = input.secret === undefined ? undefined : validateSecret(input.secret);
   if (name === undefined && secret === undefined) invalidConnection();
   return { name, secret };
@@ -336,6 +417,22 @@ function requiredText(value: unknown): string {
   return value.trim();
 }
 
+function connectionName(value: unknown): string {
+  const name = requiredText(value);
+  if (URL_OR_HOSTNAME.test(name) || CREDENTIAL_SHAPED.test(name)) {
+    invalidConnection();
+  }
+  return name;
+}
+
+function connectionIdentifier(value: unknown): string {
+  const identifier = requiredText(value);
+  if (!IDENTIFIER.test(identifier) || CREDENTIAL_SHAPED.test(identifier)) {
+    invalidConnection();
+  }
+  return identifier;
+}
+
 function enumValue<T extends string>(value: unknown, values: Set<T>): T {
   if (typeof value !== "string" || !values.has(value as T)) invalidConnection();
   return value as T;
@@ -349,30 +446,43 @@ function validateSecret(value: unknown): ConnectionSecretBundle {
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+function isPlainDataRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return false;
+  if (Object.getOwnPropertySymbols(value).length > 0) return false;
+  return Object.values(Object.getOwnPropertyDescriptors(value)).every(
+    (descriptor) => "value" in descriptor,
+  );
 }
 
 function invalidConnection(): never {
   throw new ConnectionServiceError("invalid_connection");
 }
 
-async function readPreviousBundle(
+async function readOptionalBundle(
   vault: CredentialVault,
   credentialRef: string,
-): Promise<ConnectionSecretBundle> {
+): Promise<ConnectionSecretBundle | undefined> {
   try {
     return await vault.get(credentialRef);
   } catch (error) {
+    if (error instanceof VaultError && error.code === "credential_not_found") {
+      return undefined;
+    }
     throw normalizeVaultError(error);
   }
 }
 
-async function discardNewCredential(vault: CredentialVault, credentialRef: string): Promise<void> {
+async function discardNewCredential(
+  vault: CredentialVault,
+  credentialRef: string,
+): Promise<boolean> {
   try {
     await vault.delete(credentialRef);
+    return true;
   } catch {
-    // Do not replace the original persistence error or disclose a vault failure.
+    return false;
   }
 }
 
@@ -380,20 +490,37 @@ async function restoreCredential(
   vault: CredentialVault,
   credentialRef: string,
   previous: ConnectionSecretBundle | undefined,
-): Promise<void> {
+): Promise<boolean> {
   try {
     if (previous === undefined) await vault.delete(credentialRef);
     else await vault.put(credentialRef, previous);
+    return true;
   } catch {
-    // The caller already returns a normalized metadata failure. Never expose bundles.
+    return false;
   }
+}
+
+function inconsistentState(
+  recovery: ConnectionRecoverySink,
+  connectionId: string,
+  credentialRef: string,
+  operation: ConnectionInconsistencyOperation,
+): ConnectionServiceError {
+  try {
+    recovery.record({
+      connectionId,
+      credentialRef,
+      operation,
+      recordedAt: new Date().toISOString(),
+    });
+  } catch {
+    // The explicit inconsistency error remains authoritative if recording fails.
+  }
+  return new ConnectionServiceError("connection_state_inconsistent");
 }
 
 function normalizeVaultError(error: unknown): ConnectionServiceError {
   if (error instanceof ConnectionServiceError) return error;
-  if (error instanceof VaultError && error.code === "credential_not_found") {
-    return new ConnectionServiceError("connection_not_found");
-  }
   return new ConnectionServiceError("secure_storage_unavailable");
 }
 

@@ -10,6 +10,7 @@ import {
   updateConnectionRecord,
 } from "./connections-store.js";
 import {
+  ConnectionServiceError,
   createConnectionsService,
   type ConnectionsService,
   type ConnectionsStore,
@@ -104,6 +105,25 @@ test("mutations require the per-process CSRF token and every response is no-stor
   }
 });
 
+test("a multibyte CSRF value returns 403 without throwing", async () => {
+  const { api, db } = fixture();
+  try {
+    const denied = await api.request("/connections", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": "é".repeat(43),
+      },
+      body: JSON.stringify(cliConnectionInput()),
+    });
+
+    assert.equal(denied.status, 403);
+    assert.deepEqual(await denied.json(), { error: "csrf_invalid" });
+  } finally {
+    db.close();
+  }
+});
+
 test("HTTP CRUD returns only public DTOs and accepts encoded path identifiers", async () => {
   const { api, db } = fixture();
   try {
@@ -175,6 +195,29 @@ test("normalizes validation and vault exceptions without echoing a secret", asyn
   }
 });
 
+test("HTTP create rejects unknown fields and URL-shaped identifiers", async () => {
+  const { api, db } = fixture();
+  try {
+    const token = await csrfToken(api);
+    for (const body of [
+      { ...cliConnectionInput(), credentialRef: "connection/client-value" },
+      { ...cliConnectionInput(), routeKind: "https://secret.example/v1?token=leak" },
+    ]) {
+      const response = await api.request("/connections", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": token },
+        body: JSON.stringify(body),
+      });
+      assert.equal(response.status, 400);
+      const serialized = JSON.stringify(await response.json());
+      assert.equal(serialized.includes("secret.example"), false);
+      assert.equal(serialized.includes("client-value"), false);
+    }
+  } finally {
+    db.close();
+  }
+});
+
 test("unknown connections use normalized 404s without reflecting encoded paths", async () => {
   const { api, db } = fixture();
   try {
@@ -204,6 +247,29 @@ test("read failures are normalized without exposing secret exception text", asyn
 
   assert.equal(response.status, 503);
   assert.equal(JSON.stringify(await response.json()).includes("super-secret-value"), false);
+});
+
+test("reports a compensation inconsistency with an explicit safe code", async () => {
+  const service: ConnectionsService = {
+    list: () => [],
+    get: () => null,
+    create: async () => {
+      throw new ConnectionServiceError("connection_state_inconsistent");
+    },
+    update: async () => null,
+    remove: async () => false,
+  };
+  const api = createConnectionsApp({ service });
+  const token = await csrfToken(api);
+
+  const response = await api.request("/connections", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": token },
+    body: JSON.stringify(cliConnectionInput()),
+  });
+
+  assert.equal(response.status, 409);
+  assert.deepEqual(await response.json(), { error: "connection_state_inconsistent" });
 });
 
 test("the root app mounts connections and permits PATCH with the CSRF header", async () => {

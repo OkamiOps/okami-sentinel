@@ -13,38 +13,65 @@ import {
   updateConnectionRecord,
 } from "./connections-store.js";
 import {
+  type ConnectionInconsistencyRecord,
   createConnectionsService,
+  listConnectionRecoveryRecords,
   type ConnectionsStore,
 } from "./connections-service.js";
 import type {
   ConnectionSecretBundle,
   CredentialVault,
 } from "./credentials/credential-vault.js";
+import { VaultError } from "./credentials/credential-vault.js";
 
 class FakeVault implements CredentialVault {
   readonly values = new Map<string, ConnectionSecretBundle>();
   putError: Error | undefined;
+  putErrorAtCall = new Map<number, Error>();
+  putCalls = 0;
+  getError: Error | undefined;
   deleteError: Error | undefined;
+  deleteErrorAtCall = new Map<number, Error>();
+  deleteCalls = 0;
 
   async available() {
     return { available: true, backend: "keychain" as const };
   }
 
   async put(ref: string, value: ConnectionSecretBundle) {
+    this.putCalls += 1;
+    const scheduled = this.putErrorAtCall.get(this.putCalls);
+    if (scheduled) throw scheduled;
     if (this.putError) throw this.putError;
     this.values.set(ref, structuredClone(value));
   }
 
   async get(ref: string) {
+    if (this.getError) throw this.getError;
     const value = this.values.get(ref);
-    if (!value) throw new Error("credential_not_found");
+    if (!value) throw new VaultError("credential_not_found");
     return structuredClone(value);
   }
 
   async delete(ref: string) {
+    this.deleteCalls += 1;
+    const scheduled = this.deleteErrorAtCall.get(this.deleteCalls);
+    if (scheduled) throw scheduled;
     if (this.deleteError) throw this.deleteError;
     this.values.delete(ref);
   }
+}
+
+function recoverySink() {
+  const records: ConnectionInconsistencyRecord[] = [];
+  return {
+    records,
+    sink: {
+      record(record: ConnectionInconsistencyRecord) {
+        records.push(structuredClone(record));
+      },
+    },
+  };
 }
 
 function storeFor(db: Database.Database): ConnectionsStore {
@@ -156,6 +183,65 @@ test("rejects invalid local CLI route combinations before persistence", async ()
   }
 });
 
+test("rejects URL and credential-shaped connection metadata before vault or SQLite", async () => {
+  const db = new Database(":memory:");
+  try {
+    const vault = new FakeVault();
+    const service = createConnectionsService({ vault, store: storeFor(db) });
+    const invalid = [
+      { ...cliConnectionInput(), name: "Authorization: Bearer private-token" },
+      { ...cliConnectionInput(), providerKind: "https://private.example/v1" },
+      { ...cliConnectionInput(), routeKind: "private.example" },
+      { ...cliConnectionInput(), routeKind: "codex/local?token=private" },
+    ];
+
+    for (const input of invalid) {
+      await assert.rejects(service.create(input), { code: "invalid_connection" });
+    }
+    assert.equal(vault.values.size, 0);
+    assert.equal(listConnections(db).length, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test("rejects unknown create fields and non-plain request objects", async () => {
+  const db = new Database(":memory:");
+  try {
+    const vault = new FakeVault();
+    const service = createConnectionsService({ vault, store: storeFor(db) });
+    const unknown = Object.assign(cliConnectionInput(), {
+      credentialRef: "connection/attacker-controlled",
+    });
+    const inherited = Object.assign(Object.create({ status: "ready" }), cliConnectionInput());
+
+    await assert.rejects(service.create(unknown as never), { code: "invalid_connection" });
+    await assert.rejects(service.create(inherited), { code: "invalid_connection" });
+    assert.equal(vault.values.size, 0);
+    assert.equal(listConnections(db).length, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test("rejects a secret patch for a local existing-session connection", async () => {
+  const db = new Database(":memory:");
+  try {
+    const vault = new FakeVault();
+    const service = createConnectionsService({ vault, store: storeFor(db) });
+    const created = await service.create(cliConnectionInput());
+
+    await assert.rejects(
+      service.update(created.id, { secret: { apiKey: "must-not-persist" } }),
+      { code: "invalid_connection" },
+    );
+    assert.equal(vault.values.size, 0);
+    assert.equal(getConnection(created.id, db)?.credentialRef, null);
+  } finally {
+    db.close();
+  }
+});
+
 test("create rolls back the vault when metadata insertion fails", async () => {
   const db = new Database(":memory:");
   try {
@@ -168,6 +254,31 @@ test("create rolls back the vault when metadata insertion fails", async () => {
 
     await assert.rejects(service.create(apiConnectionInput()), { code: "connection_write_failed" });
     assert.equal(vault.values.size, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test("create reports and records inconsistency when vault compensation fails", async () => {
+  const db = new Database(":memory:");
+  try {
+    const vault = new FakeVault();
+    vault.deleteError = new Error("delete compensation failed with sk-write-only");
+    const recoveryCount = listConnectionRecoveryRecords().length;
+    const base = storeFor(db);
+    const service = createConnectionsService({
+      vault,
+      store: { ...base, insert: () => { throw new Error("insert failed"); } },
+    });
+
+    await assert.rejects(service.create(apiConnectionInput()), {
+      code: "connection_state_inconsistent",
+    });
+    assert.equal(vault.values.size, 1);
+    const recorded = listConnectionRecoveryRecords().at(recoveryCount);
+    assert.equal(recorded?.operation, "create-rollback");
+    assert.equal(JSON.stringify(recorded).includes("sk-write-only"), false);
+    assert.match(recorded?.credentialRef ?? "", /^connection\/[0-9a-f-]{36}$/i);
   } finally {
     db.close();
   }
@@ -201,6 +312,74 @@ test("update restores the previous vault bundle when metadata update fails", asy
   }
 });
 
+test("update reports inconsistency when restoring the prior secret fails", async () => {
+  const db = new Database(":memory:");
+  try {
+    const vault = new FakeVault();
+    const recovery = recoverySink();
+    const base = storeFor(db);
+    const service = createConnectionsService({ vault, recovery: recovery.sink, store: base });
+    const created = await service.create(apiConnectionInput("old-secret"));
+    const ref = getConnection(created.id, db)!.credentialRef!;
+    vault.putErrorAtCall.set(3, new Error("restore failed with old-secret"));
+    const failing = createConnectionsService({
+      vault,
+      recovery: recovery.sink,
+      store: { ...base, update: () => { throw new Error("metadata failed"); } },
+    });
+
+    await assert.rejects(
+      failing.update(created.id, { secret: { apiKey: "new-secret" } }),
+      { code: "connection_state_inconsistent" },
+    );
+    assert.deepEqual(await vault.get(ref), { apiKey: "new-secret" });
+    assert.equal(recovery.records.at(-1)?.operation, "update-rollback");
+    assert.equal(JSON.stringify(recovery.records).includes("old-secret"), false);
+    assert.equal(JSON.stringify(recovery.records).includes("new-secret"), false);
+  } finally {
+    db.close();
+  }
+});
+
+test("rotates a secret when metadata exists but the vault entry is missing", async () => {
+  const db = new Database(":memory:");
+  try {
+    const vault = new FakeVault();
+    const service = createConnectionsService({ vault, store: storeFor(db) });
+    const created = await service.create(apiConnectionInput("old-secret"));
+    const ref = getConnection(created.id, db)!.credentialRef!;
+    vault.values.delete(ref);
+
+    const updated = await service.update(created.id, { secret: { apiKey: "replacement-secret" } });
+
+    assert.equal(updated?.id, created.id);
+    assert.deepEqual(await vault.get(ref), { apiKey: "replacement-secret" });
+  } finally {
+    db.close();
+  }
+});
+
+test("real vault unavailability still blocks rotate and delete", async () => {
+  const db = new Database(":memory:");
+  try {
+    const vault = new FakeVault();
+    const service = createConnectionsService({ vault, store: storeFor(db) });
+    const created = await service.create(apiConnectionInput());
+    vault.getError = new VaultError("secure_storage_unavailable");
+
+    await assert.rejects(
+      service.update(created.id, { secret: { apiKey: "replacement-secret" } }),
+      { code: "secure_storage_unavailable" },
+    );
+    await assert.rejects(service.remove(created.id), {
+      code: "secure_storage_unavailable",
+    });
+    assert.notEqual(getConnection(created.id, db), null);
+  } finally {
+    db.close();
+  }
+});
+
 test("delete removes the secret before metadata while keeping scan snapshots outside the service", async () => {
   const db = new Database(":memory:");
   try {
@@ -213,6 +392,50 @@ test("delete removes the secret before metadata while keeping scan snapshots out
     assert.equal(vault.values.has(ref), false);
     assert.equal(getConnection(created.id, db), null);
     assert.equal(await service.remove(created.id), false);
+  } finally {
+    db.close();
+  }
+});
+
+test("deletes stale metadata when its vault entry is already missing", async () => {
+  const db = new Database(":memory:");
+  try {
+    const vault = new FakeVault();
+    const service = createConnectionsService({ vault, store: storeFor(db) });
+    const created = await service.create(apiConnectionInput());
+    const ref = getConnection(created.id, db)!.credentialRef!;
+    vault.values.delete(ref);
+
+    assert.equal(await service.remove(created.id), true);
+    assert.equal(getConnection(created.id, db), null);
+  } finally {
+    db.close();
+  }
+});
+
+test("delete reports inconsistency when restoring a removed secret fails", async () => {
+  const db = new Database(":memory:");
+  try {
+    const vault = new FakeVault();
+    const recovery = recoverySink();
+    const base = storeFor(db);
+    const service = createConnectionsService({ vault, recovery: recovery.sink, store: base });
+    const created = await service.create(apiConnectionInput("old-secret"));
+    const ref = getConnection(created.id, db)!.credentialRef!;
+    vault.putErrorAtCall.set(2, new Error("restore failed with old-secret"));
+    const failing = createConnectionsService({
+      vault,
+      recovery: recovery.sink,
+      store: { ...base, delete: () => { throw new Error("metadata delete failed"); } },
+    });
+
+    await assert.rejects(failing.remove(created.id), {
+      code: "connection_state_inconsistent",
+    });
+    assert.equal(vault.values.has(ref), false);
+    assert.notEqual(getConnection(created.id, db), null);
+    assert.equal(recovery.records.at(-1)?.operation, "delete-rollback");
+    assert.equal(JSON.stringify(recovery.records).includes("old-secret"), false);
   } finally {
     db.close();
   }
