@@ -4,6 +4,7 @@ import { api } from "../api";
 import { AlertBanner, PageHeader, Panel, Readout } from "../components/ui";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "../i18n";
+import { SettingsSectionNav } from "../components/settings/SettingsSectionNav";
 
 export function SettingsPage() {
   const { t } = useI18n();
@@ -15,6 +16,7 @@ export function SettingsPage() {
   useEffect(() => { void load(); }, []);
   async function ingest() { setBusy(true); try { const r = await api.ingest(); setMessage(t("settings.imported", { count: r.imported })); await load(); } catch (err) { setError(err instanceof Error ? err.message : "Falha ao reindexar"); } finally { setBusy(false); } }
   return <div>
+    <SettingsSectionNav />
     <PageHeader code="06 / SYSTEM" title={t("settings.title")} description={t("settings.description")} />
     {error && <AlertBanner>{error}</AlertBanner>}{message && <AlertBanner tone="success">{message}</AlertBanner>}
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1.3fr)_minmax(18rem,.7fr)]">

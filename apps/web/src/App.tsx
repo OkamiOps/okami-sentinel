@@ -22,6 +22,7 @@ import { ScanDetailPage } from "./pages/ScanDetailPage";
 import { ScanReportPage } from "./pages/ScanReportPage";
 import { ScansPage } from "./pages/ScansPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { ConnectionsPage } from "./pages/ConnectionsPage";
 import { LanguageSwitcher } from "./components/LanguageSwitcher";
 import { useI18n, type TranslationKey } from "./i18n";
 
@@ -91,6 +92,7 @@ export function App() {
         <Route path="/scans/:id" element={<ScanDetailPage />} />
         <Route path="/compare" element={<ComparePage />} />
         <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/settings/connections" element={<ConnectionsPage />} />
       </Routes>
     </main>
 

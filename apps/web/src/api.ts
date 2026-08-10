@@ -1,6 +1,7 @@
 import type {
   CompareRequest,
   CompareResult,
+  CreateProviderConnectionRequest,
   FindingDetail,
   FindingSummary,
   FindingTriage,
@@ -14,11 +15,15 @@ import type {
   GuardrailRepository,
   HealthResponse,
   MetricsSummary,
+  ProviderConnection,
+  ProviderConnectionResponse,
+  ProviderConnectionsResponse,
   RegressionSummary,
   ScanRun,
   ScannerCatalogResponse,
   StartScanRequest,
   UpdateFindingTriageRequest,
+  UpdateProviderConnectionRequest,
 } from "@csb/shared";
 import { parseApiResponse } from "./lib/http.js";
 
@@ -34,6 +39,42 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   return parseApiResponse<T>(res);
 }
+
+type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
+/** Keeps the CSRF token in the browser process only; public DTOs omit vault data. */
+export function createConnectionsClient(fetcher: Fetcher = fetch): {
+  list(): Promise<ProviderConnection[]>;
+  create(body: CreateProviderConnectionRequest): Promise<ProviderConnection>;
+  update(id: string, body: UpdateProviderConnectionRequest): Promise<ProviderConnection>;
+  remove(id: string): Promise<void>;
+} {
+  let csrfToken: Promise<string> | null = null;
+  const getCsrfToken = () => {
+    csrfToken ??= fetcher(`${BASE}/connections/csrf`, { headers: { Accept: "application/json" } })
+      .then((response) => parseApiResponse<{ csrfToken: string }>(response))
+      .then(({ csrfToken: token }) => token);
+    return csrfToken;
+  };
+  const read = async <T>(path: string): Promise<T> =>
+    parseApiResponse<T>(await fetcher(`${BASE}${path}`, { headers: { Accept: "application/json" } }));
+  const write = async <T>(path: string, method: "POST" | "PATCH" | "DELETE", body?: unknown): Promise<T> => {
+    const token = await getCsrfToken();
+    return parseApiResponse<T>(await fetcher(`${BASE}${path}`, {
+      method,
+      headers: { Accept: "application/json", "Content-Type": "application/json", "X-CSRF-Token": token },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    }));
+  };
+  return {
+    async list() { return (await read<ProviderConnectionsResponse>("/connections")).connections; },
+    async create(body) { return (await write<ProviderConnectionResponse>("/connections", "POST", body)).connection; },
+    async update(id, body) { return (await write<ProviderConnectionResponse>(`/connections/${encodeURIComponent(id)}`, "PATCH", body)).connection; },
+    async remove(id) { await write<{ ok: true }>(`/connections/${encodeURIComponent(id)}`, "DELETE"); },
+  };
+}
+
+const connections = createConnectionsClient();
 
 export interface EnrollGuardrailRepositoryRequest {
   repositoryPath: string;
@@ -79,6 +120,10 @@ export interface ScanTelemetrySnapshot {
 
 export const api = {
   health: () => request<HealthResponse>("/health"),
+  listConnections: () => connections.list(),
+  createConnection: (body: CreateProviderConnectionRequest) => connections.create(body),
+  updateConnection: (id: string, body: UpdateProviderConnectionRequest) => connections.update(id, body),
+  deleteConnection: (id: string) => connections.remove(id),
   scanners: () => request<ScannerCatalogResponse>("/scanners"),
   ingest: () => request<{ imported: number }>("/ingest", { method: "POST" }),
   metrics: () => request<MetricsSummary>("/metrics/summary"),
