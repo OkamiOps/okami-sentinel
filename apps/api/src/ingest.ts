@@ -26,6 +26,7 @@ import {
 } from "./db.js";
 import { normalizeAttackPath } from "./attack-path.js";
 import { dirsMatch } from "./progress.js";
+import { refreshMantisRunFromDisk } from "./scanners/mantis-reconcile.js";
 
 interface WorkbenchScanRow {
   id: string;
@@ -42,7 +43,7 @@ interface WorkbenchScanRow {
   target_summary: string | null;
 }
 
-function countSeverityFromFindings(findingsPath: string): SeverityCounts {
+export function countSeverityFromFindings(findingsPath: string): SeverityCounts {
   const counts = emptySeverityCounts();
   if (!fs.existsSync(findingsPath)) return counts;
   try {
@@ -705,6 +706,11 @@ function workbenchRowToScanRun(row: WorkbenchScanRow): ScanRun {
     model: recipe.model ?? cost?.model ?? null,
     effort: recipe.effort,
     mode: recipe.mode ?? row.mode,
+    engine: "codex-security",
+    provider: "openai",
+    authMode: null,
+    scannerVersion: null,
+    recipeHash: null,
     startedAt: row.started_at,
     completedAt: row.completed_at,
     durationMs: durationMs(row.started_at, row.completed_at),
@@ -814,6 +820,11 @@ export function readFilesystemScans(): ScanRun[] {
         model: null,
         effort: null,
         mode: null,
+        engine: "codex-security",
+        provider: "openai",
+        authMode: null,
+        scannerVersion: null,
+        recipeHash: null,
         startedAt: manifest.scan?.startedAt ?? null,
         completedAt: manifest.scan?.completedAt ?? null,
         durationMs: durationMs(
@@ -874,6 +885,11 @@ function mergeRuns(a: ScanRun, b: ScanRun): ScanRun {
     model: primary.model ?? secondary.model,
     effort: primary.effort ?? secondary.effort,
     mode: primary.mode ?? secondary.mode,
+    engine: primary.engine ?? secondary.engine,
+    provider: primary.provider ?? secondary.provider,
+    authMode: primary.authMode ?? secondary.authMode,
+    scannerVersion: primary.scannerVersion ?? secondary.scannerVersion,
+    recipeHash: primary.recipeHash ?? secondary.recipeHash,
     cost: pickCost(primary.cost, secondary.cost),
     startedAt: primary.startedAt ?? secondary.startedAt,
     completedAt: primary.completedAt ?? secondary.completedAt,
@@ -969,6 +985,13 @@ export function reconcileRunningScans(): number {
   for (const run of listRuns()) {
     if (run.status !== "running") continue;
     const before = `${run.status}|${run.cost?.estimatedUsd ?? 0}|${run.severity.total}`;
+    if (run.engine === "mantis") {
+      const refreshed = refreshMantisRunFromDisk(run);
+      upsertRun(refreshed);
+      const after = `${refreshed.status}|${refreshed.cost?.estimatedUsd ?? 0}|${refreshed.severity.total}`;
+      if (before !== after) updated += 1;
+      continue;
+    }
     const refreshed = refreshRunByScanDir(run.scanDir, run.id);
     if (!refreshed) continue;
     const after = `${refreshed.status}|${refreshed.cost?.estimatedUsd ?? 0}|${refreshed.severity.total}`;

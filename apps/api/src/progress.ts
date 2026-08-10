@@ -3,6 +3,10 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import type { ScanPhase, ScanProgress, ScanRun, ScanStatus } from "@csb/shared";
 import { WORKBENCH_DB_PATH } from "./config.js";
+import {
+  mantisRuntimeProgress,
+  readMantisRuntime,
+} from "./scanners/mantis-runtime.js";
 
 const PHASES: ScanPhase[] = [
   "preflight",
@@ -254,6 +258,9 @@ export function progressForStatus(
   }
   if (status !== "running" && status !== "queued") return null;
 
+  const mantis = readMantisRuntime(scanDir);
+  if (mantis) return mantisRuntimeProgress(mantis);
+
   const fromWb = readProgressForScanDir(scanDir);
   const age = elapsedMs(startedAt);
   const idleDir = scanDirLooksIdle(scanDir);
@@ -321,6 +328,32 @@ export function withProgressMany(runs: ScanRun[]): ScanRun[] {
 
 /** Parse CLI progress lines as a weak fallback before workbench rows exist. */
 export function parseCliPhaseHint(line: string): Partial<ScanProgress> | null {
+  const sentinelMarker = line.match(/SENTINEL_PROGRESS\s+(.+)$/);
+  if (sentinelMarker) {
+    try {
+      const marker = JSON.parse(sentinelMarker[1]) as {
+        percent?: unknown;
+        phaseLabel?: unknown;
+        detail?: unknown;
+        stage?: unknown;
+        findings?: unknown;
+      };
+      const percent = Number(marker.percent);
+      if (Number.isFinite(percent)) {
+        return {
+          percent: clamp(percent, 1, 99),
+          phase: typeof marker.stage === "string" ? marker.stage : "discovery",
+          phaseLabel:
+            typeof marker.phaseLabel === "string" ? marker.phaseLabel : "Mantis",
+          detail: typeof marker.detail === "string" ? marker.detail : null,
+          reportableFindings: Number(marker.findings ?? 0) || 0,
+        };
+      }
+    } catch {
+      // Preserve compatibility with non-JSON CLI lines.
+    }
+  }
+
   const phaseMatch = line.match(
     /Scan phase:\s*(.+?)(?:\s*\(|$)/i,
   );

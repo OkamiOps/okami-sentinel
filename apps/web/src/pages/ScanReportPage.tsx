@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowLeft01Icon, PrinterIcon, RefreshIcon } from "@hugeicons/core-free-icons";
-import type { FindingDetail, FindingLifecycle, LifecycleFinding, Severity } from "@csb/shared";
+import { scanEstimatedUsd, type FindingDetail, type FindingLifecycle, type LifecycleFinding, type Severity } from "@csb/shared";
 import { api, type ScanReportData } from "../api";
 import { Kicker, MetaCell, Metric, ReportBrand, ReportFooter, ReportHeader, ReportSheet, ReportText } from "../components/report/ReportPrimitives";
 import { formatDate, formatDuration, formatTokens, formatUsd, shortId } from "../format";
@@ -79,9 +79,10 @@ export function ScanReportPage() {
   }
 
   const { scan, regression, generatedAt } = data;
-  const partial = scan.status === "failed" && scan.severity.total > 0;
+  const partial = (scan.status === "failed" || scan.status === "incomplete") && scan.severity.total > 0;
   const highPlus = scan.severity.critical + scan.severity.high;
-  const usdPerFinding = scan.cost && scan.severity.total ? scan.cost.estimatedUsd / scan.severity.total : null;
+  const estimatedUsd = scanEstimatedUsd(scan);
+  const usdPerFinding = estimatedUsd != null && scan.severity.total ? estimatedUsd / scan.severity.total : null;
   const reportId = `SNT-${scan.id.toUpperCase()}`;
 
   return <div className="report-root min-h-screen bg-[#040407] pb-16 text-foreground">
@@ -108,7 +109,7 @@ export function ScanReportPage() {
           <div className="mt-auto grid border-y border-border sm:grid-cols-2">
             <MetaCell label="TARGET" value={scan.displayName} />
             <MetaCell label="REPORT ID" value={reportId} />
-            <MetaCell label="SCAN CHANNEL" value={`${scan.model ?? "—"}/${scan.effort ?? "—"}/${scan.mode ?? "—"}`} />
+            <MetaCell label="SCAN CHANNEL" value={`${scan.engine} · ${scan.model ?? "—"}/${scan.effort ?? "—"}/${scan.mode ?? "—"}`} />
             <MetaCell label="GENERATED" value={formatDate(generatedAt)} />
           </div>
           <div className="mt-7 flex items-center justify-between gap-4 font-mono text-[8px] uppercase tracking-[.16em] text-muted-foreground"><span>Confidential / local evidence</span><span>{scan.status.toUpperCase()}</span></div>
@@ -127,7 +128,7 @@ export function ScanReportPage() {
           <section className="grid grid-cols-2 border border-border">
             <Metric label="FINDINGS" value={scan.severity.total} />
             <Metric label="HIGH+" value={highPlus} tone="text-chart-4" />
-            <Metric label="COST" value={formatUsd(scan.cost?.estimatedUsd)} tone="text-chart-1" />
+            <Metric label="COST" value={formatUsd(estimatedUsd)} tone="text-chart-1" />
             <Metric label="$ / FINDING" value={formatUsd(usdPerFinding)} tone="text-primary" />
           </section>
         </div>
@@ -163,9 +164,13 @@ export function ScanReportPage() {
           <MetaCell label="STATUS" value={partial ? "FAILED / PARTIAL RESULTS" : scan.status.toUpperCase()} />
           <MetaCell label="REPOSITORY" value={scan.repositoryPath ?? "—"} />
           <MetaCell label="REVISION" value={scan.revision ?? "—"} />
+          <MetaCell label="ENGINE" value={scan.engine} />
+          <MetaCell label="AUTHENTICATION" value={scan.authMode ?? "—"} />
           <MetaCell label="MODEL" value={scan.model ?? "—"} />
           <MetaCell label="REASONING EFFORT" value={scan.effort ?? "—"} />
           <MetaCell label="SCAN MODE" value={scan.mode ?? "—"} />
+          <MetaCell label="SCANNER VERSION" value={scan.scannerVersion ?? "—"} />
+          <MetaCell label="RECIPE HASH" value={scan.recipeHash ?? "—"} />
           <MetaCell label="SOURCE" value={scan.source} />
           <MetaCell label="STARTED" value={formatDate(scan.startedAt)} />
           <MetaCell label="COMPLETED" value={formatDate(scan.completedAt)} />

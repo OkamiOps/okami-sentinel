@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowRight01Icon, PlusSignIcon, Search01Icon } from "@hugeicons/core-free-icons";
-import type { ScanRun } from "@csb/shared";
+import { scanEstimatedUsd, type ScanRun } from "@csb/shared";
 import { api } from "../api";
 import { DeleteScanButton } from "../components/scans/DeleteScanButton";
 import { AlertBanner, EmptyState, Loading, PageHeader, Panel, SeverityStrip, StatusBadge } from "../components/ui";
@@ -20,8 +20,9 @@ export function ScansPage() {
   const [loading, setLoading] = useState(true);
   async function load() { try { const r = await api.listScans(); setScans(r.scans); setError(null); } catch (err) { setError(err instanceof Error ? err.message : "Falha ao carregar runs"); } finally { setLoading(false); } }
   useEffect(() => { void load(); const id = window.setInterval(() => void load(), 6000); return () => window.clearInterval(id); }, []);
-  const visible = useMemo(() => scans.filter((scan) => { if (status === "active" && (scan.status === "cancelled" || scan.status === "failed")) return false; if (status !== "all" && status !== "active" && scan.status !== status) return false; const hay = `${scan.displayName} ${scan.model} ${scan.effort} ${scan.repositoryPath}`.toLowerCase(); return hay.includes(query.toLowerCase()); }), [scans, query, status]);
-  const totalCost = visible.reduce((sum, scan) => sum + (scan.cost?.estimatedUsd ?? 0), 0);
+  const visible = useMemo(() => scans.filter((scan) => { if (status === "active" && (scan.status === "cancelled" || scan.status === "failed")) return false; if (status !== "all" && status !== "active" && scan.status !== status) return false; const hay = `${scan.displayName} ${scan.engine} ${scan.model} ${scan.effort} ${scan.repositoryPath}`.toLowerCase(); return hay.includes(query.toLowerCase()); }), [scans, query, status]);
+  const pricedCosts = visible.map(scanEstimatedUsd).filter((value): value is number => value != null);
+  const totalCost = pricedCosts.length ? pricedCosts.reduce((sum, value) => sum + value, 0) : null;
   const evidence = visible.reduce((sum, scan) => sum + scan.severity.total, 0);
 
   return <div>
@@ -38,5 +39,5 @@ export function ScansPage() {
   </div>;
 }
 
-function RunRow({ scan, onDeleted }: { scan: ScanRun; onDeleted: () => Promise<void> }) { const high = scan.severity.critical + scan.severity.high; return <tr className="border-border hover:bg-accent/70"><td className="font-mono text-[9px] text-primary">{shortId(scan.id)}</td><td className="max-w-80"><Link to={`/scans/${scan.id}`} className="block truncate text-sm font-semibold hover:text-primary">{scan.displayName}</Link><span className="block truncate font-mono text-[9px] text-muted-foreground">{scan.repositoryPath ?? scan.scanDir}<br />{scan.model}/{scan.effort}/{scan.mode}</span></td><td><StatusBadge status={scan.status} /></td><td className="w-48"><SeverityStrip counts={scan.severity} total={scan.severity.total} /></td><td className={high ? "font-mono text-destructive" : "font-mono text-muted-foreground"}>{high}</td><td className="font-mono text-primary">{formatUsd(scan.cost?.estimatedUsd)}</td><td className="font-mono text-[9px] text-muted-foreground">{formatDate(scan.startedAt)}</td><td><div className="flex items-center justify-end gap-1"><DeleteScanButton scan={scan} compact onDeleted={onDeleted} /><Button asChild variant="ghost" size="icon-sm"><Link to={`/scans/${scan.id}`} aria-label="Abrir run"><HugeiconsIcon icon={ArrowRight01Icon} size={12} /></Link></Button></div></td></tr>; }
+function RunRow({ scan, onDeleted }: { scan: ScanRun; onDeleted: () => Promise<void> }) { const high = scan.severity.critical + scan.severity.high; return <tr className="border-border hover:bg-accent/70"><td className="font-mono text-[9px] text-primary">{shortId(scan.id)}</td><td className="max-w-80"><Link to={`/scans/${scan.id}`} className="block truncate text-sm font-semibold hover:text-primary">{scan.displayName}</Link><span className="block truncate font-mono text-[9px] text-muted-foreground">{scan.repositoryPath ?? scan.scanDir}<br />{scan.engine} · {scan.model}/{scan.effort}/{scan.mode}</span></td><td><StatusBadge status={scan.status} /></td><td className="w-48"><SeverityStrip counts={scan.severity} total={scan.severity.total} /></td><td className={high ? "font-mono text-destructive" : "font-mono text-muted-foreground"}>{high}</td><td className="font-mono text-primary">{formatUsd(scanEstimatedUsd(scan))}</td><td className="font-mono text-[9px] text-muted-foreground">{formatDate(scan.startedAt)}</td><td><div className="flex items-center justify-end gap-1"><DeleteScanButton scan={scan} compact onDeleted={onDeleted} /><Button asChild variant="ghost" size="icon-sm"><Link to={`/scans/${scan.id}`} aria-label="Abrir run"><HugeiconsIcon icon={ArrowRight01Icon} size={12} /></Link></Button></div></td></tr>; }
 function LedgerReadout({ label, value }: { label: string; value: string | number }) { return <div className="border-r p-3 last:border-r-0"><div className="bench-label">{label}</div><div className="mt-1 font-mono text-xl font-semibold">{value}</div></div>; }

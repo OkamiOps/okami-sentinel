@@ -26,6 +26,7 @@ import {
 } from "recharts";
 import {
   MAX_COMPARE_SCANS,
+  scanEstimatedUsd,
   type CompareFindingChange,
   type CompareFindingDelta,
   type CompareResult,
@@ -198,10 +199,10 @@ export function ComparePage() {
                     {active && <span className="font-mono text-[8px] uppercase text-primary">{position === 0 ? t("compare.baseline") : t("compare.candidate", { index: String(position).padStart(2, "0") })}</span>}
                   </span>
                 </span>
-                <span className="mt-1 block truncate font-mono text-[9px] text-muted-foreground">{scan.model}/{scan.effort}/{scan.mode}</span>
+                <span className="mt-1 block truncate font-mono text-[9px] text-muted-foreground">{scan.engine} · {scan.model}/{scan.effort}/{scan.mode}</span>
                 <span className="mt-4 block"><SeverityStrip counts={scan.severity} total={scan.severity.total} /></span>
                 <span className="mt-2 grid grid-cols-3 font-mono text-[9px]">
-                  <span>{formatUsd(scan.cost?.estimatedUsd)}</span>
+                  <span>{formatUsd(scanEstimatedUsd(scan))}</span>
                   <span className="text-destructive">{scan.severity.critical + scan.severity.high} high+</span>
                   <span className="text-right text-muted-foreground">{scan.severity.total} {t("compare.total")}</span>
                 </span>
@@ -360,7 +361,7 @@ function CandidateRail({ result, activeCandidateId, onSelect }: { result: Compar
         return <button key={id} type="button" aria-pressed={activeCandidateId === id} onClick={() => onSelect(id)} className={cx("min-w-0 border-b border-r p-4 text-left transition hover:bg-accent/60", activeCandidateId === id && "bg-accent shadow-[inset_0_-2px_0_var(--primary)]")}>
           <div className="flex items-center justify-between gap-2"><span className="font-mono text-[8px] text-primary">C-{String(index + 1).padStart(2, "0")}</span><span className={cx("font-mono text-[9px]", highDelta > 0 ? "text-destructive" : highDelta < 0 ? "text-chart-2" : "text-muted-foreground")}>{signed(highDelta)} high+</span></div>
           <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2"><span className="truncate text-xs font-semibold">{scan.displayName}</span><PartialScanBadges scan={scan} compact /></div>
-          <div className="mt-1 truncate font-mono text-[8px] text-muted-foreground">{scan.model}/{scan.effort}/{scan.mode}</div>
+          <div className="mt-1 truncate font-mono text-[8px] text-muted-foreground">{scan.engine} · {scan.model}/{scan.effort}/{scan.mode}</div>
           <div className="mt-3 flex gap-3 font-mono text-[8px]"><span className="text-primary">{comparison.counts.candidate_only} só candidato</span><span className="text-chart-3">{comparison.counts.baseline_only} só baseline</span></div>
         </button>;
       })}
@@ -494,14 +495,17 @@ function ComparisonCharts({ result, rows, activeCandidateId, onSelectCandidate }
     info: scan.severity.info,
     total: scan.severity.total,
   }));
-  const scatterData = result.scans.filter((scan) => scan.cost?.estimatedUsd != null).map((scan, index) => ({
-    scanId: scan.id,
-    label: chartProfile(scan),
-    cost: scan.cost?.estimatedUsd ?? 0,
-    total: scan.severity.total,
-    highPlus: scan.severity.critical + scan.severity.high,
-    color: scanChartColors[index % scanChartColors.length],
-  }));
+  const scatterData = result.scans.flatMap((scan, index) => {
+    const cost = scanEstimatedUsd(scan);
+    return cost == null ? [] : [{
+      scanId: scan.id,
+      label: chartProfile(scan),
+      cost,
+      total: scan.severity.total,
+      highPlus: scan.severity.critical + scan.severity.high,
+      color: scanChartColors[index % scanChartColors.length],
+    }];
+  });
   const agreementData = result.comparisons.map((comparison) => {
     const scan = result.scans.find((item) => item.id === comparison.candidateScanId);
     return {
@@ -662,7 +666,7 @@ function RunReadout({ role, scan }: { role: string; scan: ScanRun }) {
   return <div className="min-w-0 p-5">
     <div className="bench-label text-primary">{role} / {shortId(scan.id)}</div>
     <div className="mt-2 truncate font-heading text-xl font-semibold tracking-[-.035em]">{scan.displayName}</div>
-    <div className="mt-1 truncate font-mono text-[9px] text-muted-foreground">{scan.model}/{scan.effort}/{scan.mode}</div>
+    <div className="mt-1 truncate font-mono text-[9px] text-muted-foreground">{scan.engine} · {scan.model}/{scan.effort}/{scan.mode}</div>
     <PartialScanBadges scan={scan} />
     <div className="mt-5"><SeverityStrip counts={scan.severity} total={scan.severity.total} /></div>
     <div className="mt-2 flex items-center justify-between gap-3 font-mono text-[9px]"><span>{scan.severity.total} findings</span><span className="text-muted-foreground">{formatDate(scan.startedAt)}</span></div>
@@ -692,14 +696,16 @@ function OperationalLedger({ result, baseline, candidate }: { result: CompareRes
   const afterRank = result.ranking.find((row) => row.scanId === candidate.id);
   const baselineHigh = baseline.severity.critical + baseline.severity.high;
   const candidateHigh = candidate.severity.critical + candidate.severity.high;
-  const baselineCostPerFinding = unitCost(baseline.cost?.estimatedUsd, baseline.severity.total);
-  const candidateCostPerFinding = unitCost(candidate.cost?.estimatedUsd, candidate.severity.total);
-  const baselineCostPerHigh = unitCost(baseline.cost?.estimatedUsd, baselineHigh);
-  const candidateCostPerHigh = unitCost(candidate.cost?.estimatedUsd, candidateHigh);
+  const baselineCost = scanEstimatedUsd(baseline);
+  const candidateCost = scanEstimatedUsd(candidate);
+  const baselineCostPerFinding = unitCost(baselineCost, baseline.severity.total);
+  const candidateCostPerFinding = unitCost(candidateCost, candidate.severity.total);
+  const baselineCostPerHigh = unitCost(baselineCost, baselineHigh);
+  const candidateCostPerHigh = unitCost(candidateCost, candidateHigh);
   const baselineFindingsPerHour = hourlyRate(baseline.severity.total, baseline.durationMs);
   const candidateFindingsPerHour = hourlyRate(candidate.severity.total, candidate.durationMs);
   const rows: Array<[string, ReactNode, ReactNode, ReactNode]> = [
-    ["Custo estimado", formatUsd(baseline.cost?.estimatedUsd), moneyDelta(baseline.cost?.estimatedUsd, candidate.cost?.estimatedUsd), formatUsd(candidate.cost?.estimatedUsd)],
+    ["Custo estimado", formatUsd(baselineCost), moneyDelta(baselineCost, candidateCost), formatUsd(candidateCost)],
     ["USD / finding", formatUsd(baselineCostPerFinding), moneyDelta(baselineCostPerFinding, candidateCostPerFinding), formatUsd(candidateCostPerFinding)],
     ["USD / High+", formatUsd(baselineCostPerHigh), moneyDelta(baselineCostPerHigh, candidateCostPerHigh), formatUsd(candidateCostPerHigh)],
     ["Duração", <LiveDuration startedAt={baseline.startedAt} completedAt={baseline.completedAt} status={baseline.status} durationMs={baseline.durationMs} showDot={false} />, durationDelta(baseline.durationMs, candidate.durationMs), <LiveDuration startedAt={candidate.startedAt} completedAt={candidate.completedAt} status={candidate.status} durationMs={candidate.durationMs} showDot={false} />],
@@ -712,7 +718,7 @@ function OperationalLedger({ result, baseline, candidate }: { result: CompareRes
   return <Panel label="OPERATIONAL DELTA" title="Custo, tempo e eficiência observada">
     <div className="grid grid-cols-[minmax(5rem,1fr)_4.5rem_4.5rem_4.5rem] border-b px-4 py-2 font-mono text-[8px] uppercase tracking-wider text-muted-foreground sm:grid-cols-[minmax(7rem,1fr)_7rem_7rem_7rem]"><span>Métrica</span><span className="text-right">Antes</span><span className="text-right">Δ</span><span className="text-right">Depois</span></div>
     <div>{rows.map(([label, before, delta, after]) => <div key={label} className="grid min-h-12 grid-cols-[minmax(5rem,1fr)_4.5rem_4.5rem_4.5rem] items-center border-b px-4 py-2 font-mono text-[10px] tabular-nums sm:grid-cols-[minmax(7rem,1fr)_7rem_7rem_7rem]"><span className="text-muted-foreground">{label}</span><span className="text-right">{before}</span><span className="text-right text-primary">{delta}</span><span className="text-right font-semibold">{after}</span></div>)}</div>
-    <div className="grid border-t sm:grid-cols-2"><ProfileCell label="PROFILE" before={`${baseline.model}/${baseline.effort}/${baseline.mode}`} after={`${candidate.model}/${candidate.effort}/${candidate.mode}`} /><ProfileCell label="REVISION" before={baseline.revision ? shortId(baseline.revision) : "unversioned"} after={candidate.revision ? shortId(candidate.revision) : "unversioned"} /></div>
+    <div className="grid border-t sm:grid-cols-2"><ProfileCell label="PROFILE" before={`${baseline.engine} · ${baseline.model}/${baseline.effort}/${baseline.mode}`} after={`${candidate.engine} · ${candidate.model}/${candidate.effort}/${candidate.mode}`} /><ProfileCell label="REVISION" before={baseline.revision ? shortId(baseline.revision) : "unversioned"} after={candidate.revision ? shortId(candidate.revision) : "unversioned"} /></div>
   </Panel>;
 }
 
@@ -771,12 +777,12 @@ function Presence({ active, label }: { active: boolean; label: string }) {
 
 function decisionProfile(scan: ScanRun): string {
   const model = scan.model?.replace(/^gpt-5\.6-/, "") ?? "modelo desconhecido";
-  return `${model} / ${scan.effort ?? "—"} / ${scan.mode ?? "—"}`;
+  return `${scan.engine} / ${model} / ${scan.effort ?? "—"} / ${scan.mode ?? "—"}`;
 }
 
 function chartProfile(scan: ScanRun): string {
   const model = scan.model?.replace(/^gpt-5\.6-/, "") ?? "modelo";
-  return `${model}/${scan.effort ?? "—"}${isPartialComparableScan(scan) ? " · parcial" : ""}`;
+  return `${scan.engine} · ${model}/${scan.effort ?? "—"}${isPartialComparableScan(scan) ? " · parcial" : ""}`;
 }
 
 function decisionValue(row: ScanDecisionRow, objective: CompareObjective): string {

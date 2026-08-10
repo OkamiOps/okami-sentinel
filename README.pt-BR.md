@@ -1,7 +1,7 @@
 <div align="center">
   <img src="apps/web/public/brand/okami-sentinel-mark.png" width="112" alt="Símbolo do lobo OKAMI Sentinel" />
   <h1>OKAMI Sentinel</h1>
-  <p><strong>Inteligência de segurança local para scans do Codex Security.</strong></p>
+  <p><strong>Uma bancada local de evidências. Várias metodologias de scan de segurança.</strong></p>
   <p>Execute, inspecione, compare e governe scans de segurança assistidos por IA sem perder a evidência, o custo ou o contexto operacional de cada resultado.</p>
 
   <p>
@@ -30,7 +30,7 @@
 
 Scans de segurança normalmente são revisados isoladamente: um terminal, um relatório, uma conta. O OKAMI Sentinel transforma essas execuções em um sistema operacional comparável. Cada run vira um canal de evidência com modelo, effort, duração, volume de tokens, custo estimado, severidade, findings e estado de execução preservados em um workspace local.
 
-Foi criado para desenvolvedores, profissionais de DevSecOps, revisores de segurança e AI Engineers que avaliam o [`@openai/codex-security`](https://github.com/openai/codex-security) em repositórios reais.
+Foi criado para desenvolvedores, profissionais de DevSecOps, revisores de segurança e AI Engineers que precisam avaliar a metodologia do scanner e o modelo separadamente em repositórios reais.
 
 ## O que você recebe
 
@@ -38,7 +38,7 @@ Foi criado para desenvolvedores, profissionais de DevSecOps, revisores de segura
 |---|---|
 | **Campo de evidências** | O que cada run reportou e como a severidade está distribuída? |
 | **Ledger de runs** | Quais scans concluíram, falharam ou preservaram resultados parciais? |
-| **Launch sequencer** | Qual repositório, modelo, effort, modo, escopo e limite de custo executar? |
+| **Launch sequencer** | Qual scanner, autenticação, modelo, effort, modo e escopo executar? |
 | **Inspector de evidências** | Onde está o finding, qual é o attack path e qual evidência o sustenta? |
 | **Cockpit comparativo** | Qual run reportou mais cobertura, High+, velocidade ou eficiência de custo? |
 | **Relatórios** | Como entregar um scan ou uma comparação de seis scans em PDF? |
@@ -58,7 +58,8 @@ Foi criado para desenvolvedores, profissionais de DevSecOps, revisores de segura
 
 ## Principais recursos
 
-- **Assinatura ou API** — use uma sessão Codex/ChatGPT local ou `OPENAI_API_KEY` em execuções autônomas no GitHub Actions.
+- **Roteamento por capacidades** — escolha a metodologia; a interface exibe apenas combinações de autenticação, modelo, effort e modo que o adapter consegue executar.
+- **Assinatura ou API** — use uma sessão Codex/ChatGPT local ou uma rota `OPENAI_API_KEY` cobrada separadamente quando o scanner oferecer suporte.
 - **Navegador de diretórios** — selecione pastas locais sem copiar caminhos absolutos manualmente.
 - **Telemetria ao vivo** — acompanhe estado, fase, eventos SSE, duração, tokens, custo estimado e saída preservada.
 - **Inspeção orientada por evidência** — filtre severidade e lifecycle, leia resumos e localizações e percorra attack paths.
@@ -68,6 +69,16 @@ Foi criado para desenvolvedores, profissionais de DevSecOps, revisores de segura
 - **Guardrails versionados** — políticas locais, exceções explícitas, Decision Graph e publicação opcional no GitHub Checks.
 - **Cinco locales na interface** — PT-BR, English, Español, Deutsch e Français.
 
+## Motores de scan
+
+| Motor | Estado na fase 1 | Autenticação | Limite de execução |
+|---|---|---|---|
+| [`@openai/codex-security`](https://github.com/openai/codex-security) | Estável | Assinatura ChatGPT/Codex ou API OpenAI | Standard/deep, com teto explícito em USD |
+| [Google Mantis](https://github.com/google/mantis) | Preview | Assinatura ChatGPT/Codex | Nove etapas scan-only sobre snapshot imutável |
+| [Capital One VulnHunter](https://github.com/capitalone/vulnhunter) | Experimental / indisponível | — | Visível, mas bloqueado até existir um adapter Codex validado por benchmark |
+
+O adapter Mantis usa uma revisão fixa e auditada. Ele não escreve no repositório-alvo e exclui deliberadamente `mantis-reproduce`, `mantis-chain` e `mantis-patch`. Assinatura ChatGPT e faturamento da API são rotas diferentes; o Sentinel remove chaves de API do processo filho quando a assinatura é selecionada e nunca troca silenciosamente de uma rota para outra.
+
 ## Arquitetura
 
 ```mermaid
@@ -76,14 +87,18 @@ flowchart LR
     API["API local\nHono + Node.js"]
     DB[("SQLite\nmetadados do benchmark")]
     STATE[("State do Codex Security\nsaída + evidências")]
-    SCANNER["@openai/codex-security"]
+    ROUTER["Router de capacidades\nengine + auth + modelo"]
+    SCANNER["Adapter Codex Security"]
+    MANTIS["Adapter Mantis scan-only"]
     GATE["Motor de guardrails\npolítica + Decision Graph"]
     GH["GitHub Actions\nChecks + artifacts"]
 
     UI -->|HTTP + SSE| API
     API --> DB
     API --> STATE
-    API --> SCANNER
+    API --> ROUTER
+    ROUTER --> SCANNER
+    ROUTER --> MANTIS
     API --> GATE
     GATE -. opcional .-> GH
 ```
@@ -104,9 +119,10 @@ flowchart LR
 - Python `3.10+` para o Codex Security
 - GitHub CLI (`gh`) para diagnóstico, baseline remoto e publicação opcional de Checks
 - GitHub Actions nos repositórios que usarão o gate remoto
-- Um modo de acesso ao scanner:
-  - **Assinatura Codex:** sessão local ativa exibida por `codex login status` como `Logged in using ChatGPT`;
-  - **API:** `OPENAI_API_KEY` configurada como secret do Actions.
+- Ao menos uma rota de acesso:
+  - **Codex Security por assinatura:** login ativo em `npx @openai/codex-security login status`;
+  - **Mantis por assinatura:** `codex login status` exibindo `Logged in using ChatGPT`;
+  - **Codex Security por API:** `OPENAI_API_KEY` ou `CODEX_API_KEY` no processo local da API, ou `OPENAI_API_KEY` como secret do Actions.
 
 ## Início rápido
 
@@ -137,6 +153,9 @@ Faça login no scanner quando necessário:
 npx @openai/codex-security login
 # ou
 npx @openai/codex-security login --device-auth
+
+# O Mantis usa a sessão genérica do Codex
+codex login
 ```
 
 Na inicialização, a API indexa scans compatíveis já existentes no state configurado do Codex Security.
@@ -144,7 +163,7 @@ Na inicialização, a API indexa scans compatíveis já existentes no state conf
 ## Fluxo principal
 
 1. **Visão** — inspecione canais indexados, severidade, custo e duração.
-2. **Operar** — navegue até o repositório e selecione modelo, effort, modo, escopo e envelope de custo.
+2. **Operar** — navegue até o repositório, escolha a metodologia e selecione uma rota disponível de autenticação, modelo, effort, modo e escopo.
 3. **Atividade / Detalhe** — acompanhe telemetria e inspecione as evidências preservadas.
 4. **Comparar** — selecione de duas a seis runs, defina o baseline e avalie cobertura, High+, `$ / finding`, `$ / High+` e velocidade.
 5. **Relatório** — gere o relatório individual no detalhe ou o comparativo após executar o diff.
@@ -152,10 +171,10 @@ Na inicialização, a API indexa scans compatíveis já existentes no state conf
 
 ## Modos de autenticação
 
-| Modo | Melhor uso | Exige `OPENAI_API_KEY`? | Executa autonomamente no Actions? |
-|---|---|---:|---:|
-| **Assinatura Codex** | Uso local e interativo no Mac | Não | Não |
-| **API** | CI, pull requests e gates autônomos | Sim | Sim |
+| Rota | Motores compatíveis | Melhor uso | Exige `OPENAI_API_KEY`? | Actions autônomo? |
+|---|---|---|---:|---:|
+| **Assinatura ChatGPT** | Codex Security, Mantis | Uso local e interativo | Não | Não |
+| **API OpenAI** | Codex Security | CI, pull requests e gates autônomos | Sim | Sim |
 
 A aplicação nunca lê ou armazena o valor do secret do repositório. Ela apenas diagnostica se a capability necessária está disponível.
 
@@ -286,7 +305,7 @@ okami-sentinel/
 ## Notas de custo e segurança
 
 > [!WARNING]
-> Scans podem ser caros. O envelope de custo da interface mapeia para o guardrail `--max-cost` e encerra a run após a estimativa ultrapassar o limite. O custo estimado de tokens pode diferir da assinatura ChatGPT ou da cobrança final da API.
+> Scans podem ser caros. O envelope do Codex Security mapeia para `--max-cost`. O Mantis usa nove chamadas sequenciais via assinatura ChatGPT e, por isso, não inventa um teto em USD. Estimativa de tokens, franquia do plano, créditos e cobrança final da API são medidas diferentes.
 
 - Dados e evidências permanecem locais, exceto quando você publica um GitHub Check ou executa o workflow com API.
 - Falhas operacionais nunca se transformam em decisão de segurança aprovada.
@@ -308,5 +327,5 @@ Este repositório está em desenvolvimento ativo. Interfaces, schemas locais e o
 ---
 
 <div align="center">
-  <sub>Workbench local independente construído sobre o OpenAI Codex Security. O OKAMI Sentinel não é um produto oficial da OpenAI.</sub>
+  <sub>Workbench local independente para scanners de segurança assistidos por IA. O OKAMI Sentinel não é um produto oficial da OpenAI, Google ou Capital One.</sub>
 </div>

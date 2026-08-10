@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowRight01Icon, PlusSignIcon, RefreshIcon } from "@hugeicons/core-free-icons";
 import { Bar, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import type { MetricsSummary, ScanRun } from "@csb/shared";
+import { scanEstimatedUsd, type MetricsSummary, type ScanRun } from "@csb/shared";
 import { api } from "../api";
 import { AlertBanner, EmptyState, LiveDuration, Loading, PageHeader, Panel, Readout, SeverityStrip, StatusBadge, cx } from "../components/ui";
 import { Button } from "@/components/ui/button";
@@ -37,7 +37,7 @@ export function DashboardPage() {
         <div className="border-b lg:border-b-0 lg:border-r">
           <div className="flex h-11 items-center justify-between border-b px-3"><span className="bench-label">{t("dashboard.runChannels")}</span><span className="font-mono text-[9px] uppercase text-muted-foreground">{channels.length} {t("dashboard.indexed")}</span></div>
           <div className="max-h-[25rem] overflow-auto">
-            {channels.length ? channels.map((scan, index) => { const focused = selected?.id === scan.id; return <button key={scan.id} type="button" aria-pressed={focused} onClick={() => setSelectedId(scan.id)} className={cx("grid w-full grid-cols-[2.3rem_minmax(0,1fr)_auto] items-center gap-2 border-b px-3 py-3 text-left transition hover:bg-accent", focused && "bg-primary/8 shadow-[inset_3px_0_0_var(--primary)]")}><span className={cx("font-mono text-[9px]", focused ? "text-primary" : "text-muted-foreground")}>CH-{String(index + 1).padStart(2, "0")}</span><span className="min-w-0"><span className="block truncate text-xs font-medium">{scan.displayName}</span><span className="mt-1 block truncate font-mono text-[8px] text-muted-foreground">{scan.model}/{scan.effort}</span></span><span className="flex flex-col items-end gap-1">{focused && <span className="font-mono text-[7px] uppercase tracking-wider text-primary">{t("dashboard.focus")}</span>}<StatusBadge status={scan.status} /></span></button>; }) : <EmptyState title={t("dashboard.noChannel")} description={t("dashboard.noChannelDescription")} />}
+            {channels.length ? channels.map((scan, index) => { const focused = selected?.id === scan.id; return <button key={scan.id} type="button" aria-pressed={focused} onClick={() => setSelectedId(scan.id)} className={cx("grid w-full grid-cols-[2.3rem_minmax(0,1fr)_auto] items-center gap-2 border-b px-3 py-3 text-left transition hover:bg-accent", focused && "bg-primary/8 shadow-[inset_3px_0_0_var(--primary)]")}><span className={cx("font-mono text-[9px]", focused ? "text-primary" : "text-muted-foreground")}>CH-{String(index + 1).padStart(2, "0")}</span><span className="min-w-0"><span className="block truncate text-xs font-medium">{scan.displayName}</span><span className="mt-1 block truncate font-mono text-[8px] text-muted-foreground">{scan.engine} · {scan.model}/{scan.effort}</span></span><span className="flex flex-col items-end gap-1">{focused && <span className="font-mono text-[7px] uppercase tracking-wider text-primary">{t("dashboard.focus")}</span>}<StatusBadge status={scan.status} /></span></button>; }) : <EmptyState title={t("dashboard.noChannel")} description={t("dashboard.noChannelDescription")} />}
           </div>
         </div>
 
@@ -57,7 +57,7 @@ export function DashboardPage() {
             <h2 className="mt-2 text-lg font-semibold leading-tight">{selected.displayName}</h2>
             <p className="mt-1 truncate font-mono text-[9px] text-muted-foreground">{selected.repositoryPath ?? selected.scanDir}</p>
             <div className="mt-5"><SeverityStrip counts={selected.severity} total={selected.severity.total} /></div>
-            <div className="mt-5 grid grid-cols-2 gap-x-4 gap-y-5"><Readout label="HIGH+" value={selected.severity.critical + selected.severity.high} tone="risk" /><Readout label="TOTAL" value={selected.severity.total} /><Readout label={t("dashboard.cost")} value={formatUsd(selected.cost?.estimatedUsd)} tone="signal" /><Readout label={t("dashboard.duration")} value={<LiveDuration startedAt={selected.startedAt} completedAt={selected.completedAt} status={selected.status} durationMs={selected.durationMs} showDot={false} />} /></div>
+            <div className="mt-5 grid grid-cols-2 gap-x-4 gap-y-5"><Readout label="HIGH+" value={selected.severity.critical + selected.severity.high} tone="risk" /><Readout label="TOTAL" value={selected.severity.total} /><Readout label={t("dashboard.cost")} value={formatUsd(scanEstimatedUsd(selected))} tone="signal" /><Readout label={t("dashboard.duration")} value={<LiveDuration startedAt={selected.startedAt} completedAt={selected.completedAt} status={selected.status} durationMs={selected.durationMs} showDot={false} />} /></div>
             <Button asChild variant="outline" size="sm" className="mt-6 w-full justify-between"><Link to={`/scans/${selected.id}`}>{t("dashboard.openChannel")} <HugeiconsIcon icon={ArrowRight01Icon} size={12} /></Link></Button>
           </div> : <EmptyState title={t("dashboard.noSample")} />}
         </div>
@@ -82,7 +82,7 @@ export function DashboardPage() {
     </div>
 
     <Panel className="mt-4" label="RUN LEDGER" title={t("dashboard.latestRuns")} aside={<Button asChild variant="ghost" size="sm"><Link to="/scans">{t("dashboard.openLedger")} <HugeiconsIcon icon={ArrowRight01Icon} size={12} /></Link></Button>}>
-      <div className="overflow-x-auto"><table className="table table-sm min-w-[48rem]"><thead><tr className="font-mono text-[9px] uppercase text-muted-foreground"><th>Channel</th><th>Run</th><th>Status</th><th>Model</th><th>{t("dashboard.exposure")}</th><th className="text-right">{t("dashboard.cost")}</th><th>{t("dashboard.started")}</th></tr></thead><tbody>{channels.slice(0, 6).map((scan, i) => <tr key={scan.id} className="border-border hover:bg-accent"><td className="font-mono text-[9px] text-primary">CH-{String(i + 1).padStart(2, "0")}</td><td><Link className="font-medium hover:text-primary" to={`/scans/${scan.id}`}>{scan.displayName}</Link></td><td><StatusBadge status={scan.status} /></td><td className="font-mono text-[9px] text-muted-foreground">{scan.model}/{scan.effort}</td><td className="font-mono">{scan.severity.critical + scan.severity.high} / {scan.severity.total}</td><td className="text-right font-mono tabular-nums text-primary">{formatUsd(scan.cost?.estimatedUsd)}</td><td className="font-mono text-[9px] text-muted-foreground">{formatDate(scan.startedAt)}</td></tr>)}</tbody></table></div>
+      <div className="overflow-x-auto"><table className="table table-sm min-w-[48rem]"><thead><tr className="font-mono text-[9px] uppercase text-muted-foreground"><th>Channel</th><th>Run</th><th>Status</th><th>Engine / model</th><th>{t("dashboard.exposure")}</th><th className="text-right">{t("dashboard.cost")}</th><th>{t("dashboard.started")}</th></tr></thead><tbody>{channels.slice(0, 6).map((scan, i) => <tr key={scan.id} className="border-border hover:bg-accent"><td className="font-mono text-[9px] text-primary">CH-{String(i + 1).padStart(2, "0")}</td><td><Link className="font-medium hover:text-primary" to={`/scans/${scan.id}`}>{scan.displayName}</Link></td><td><StatusBadge status={scan.status} /></td><td className="font-mono text-[9px] text-muted-foreground">{scan.engine} · {scan.model}/{scan.effort}</td><td className="font-mono">{scan.severity.critical + scan.severity.high} / {scan.severity.total}</td><td className="text-right font-mono tabular-nums text-primary">{formatUsd(scanEstimatedUsd(scan))}</td><td className="font-mono text-[9px] text-muted-foreground">{formatDate(scan.startedAt)}</td></tr>)}</tbody></table></div>
     </Panel>
   </div>;
 }
@@ -170,7 +170,7 @@ function SelectedComposition({ scan, channelIndex }: { scan: ScanRun; channelInd
   return <div className="animate-in fade-in-0 slide-in-from-bottom-1 duration-200">
     <div className="p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0"><div className="font-mono text-[8px] uppercase tracking-[.12em] text-primary">CH-{String(channelIndex + 1).padStart(2, "0")} / {t("dashboard.focus")}</div><h3 className="mt-1 truncate text-base font-semibold">{scan.displayName}</h3><p className="mt-1 truncate font-mono text-[8px] text-muted-foreground">{scan.model}/{scan.effort} · {scan.mode ?? "standard"}</p></div>
+        <div className="min-w-0"><div className="font-mono text-[8px] uppercase tracking-[.12em] text-primary">CH-{String(channelIndex + 1).padStart(2, "0")} / {t("dashboard.focus")}</div><h3 className="mt-1 truncate text-base font-semibold">{scan.displayName}</h3><p className="mt-1 truncate font-mono text-[8px] text-muted-foreground">{scan.engine} · {scan.model}/{scan.effort} · {scan.mode ?? "standard"}</p></div>
         <div className="flex items-center gap-2"><StatusBadge status={scan.status} /><span className="font-mono text-[9px] text-muted-foreground">{total} findings</span></div>
       </div>
       <p className="mt-4 text-[10px] leading-relaxed text-muted-foreground">{t("dashboard.compositionDescription")}</p>
@@ -189,7 +189,7 @@ function ComparisonLane({ scan, index, focused, onSelect }: { scan: ScanRun; ind
   const { t } = useI18n();
   return <button type="button" aria-pressed={focused} onClick={onSelect} className={cx("grid w-full grid-cols-[2.6rem_minmax(7rem,.7fr)_minmax(9rem,1.3fr)_3rem] items-center gap-2 border-b px-3 py-2.5 text-left transition hover:bg-accent", focused && "bg-primary/8 shadow-[inset_2px_0_0_var(--primary)]")}>
     <span className={cx("font-mono text-[8px]", focused ? "text-primary" : "text-muted-foreground")}>CH-{String(index + 1).padStart(2, "0")}</span>
-    <span className="min-w-0"><span className="block truncate text-[10px] font-medium">{scan.displayName}</span><span className="block truncate font-mono text-[7px] text-muted-foreground">{scan.model}/{scan.effort}</span></span>
+    <span className="min-w-0"><span className="block truncate text-[10px] font-medium">{scan.displayName}</span><span className="block truncate font-mono text-[7px] text-muted-foreground">{scan.engine} · {scan.model}/{scan.effort}</span></span>
     <span className="min-w-0">{scan.severity.total ? <SeverityStrip counts={scan.severity} total={scan.severity.total} /> : <span className="flex h-2.5 items-center justify-center border border-dashed border-border font-mono text-[6px] uppercase text-muted-foreground">{t("dashboard.noFindings")}</span>}</span>
     <span className={cx("text-right font-mono text-[9px]", focused ? "text-primary" : "text-muted-foreground")}>{scan.severity.total}</span>
   </button>;

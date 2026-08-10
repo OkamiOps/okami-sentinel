@@ -11,9 +11,6 @@ import type {
 } from "@csb/shared";
 import { emptySeverityCounts } from "@csb/shared";
 import {
-  CODEX_SECURITY_ARGS_PREFIX,
-  CODEX_SECURITY_BIN,
-  codexSecurityEnvironment,
   MAX_CONCURRENT_SCANS,
   RUNS_DIR,
   SCANS_ROOT,
@@ -28,6 +25,9 @@ import {
 import { getRun, upsertRun } from "./db.js";
 import { readWorkbenchScan, refreshRunByScanDir } from "./ingest.js";
 import { parseCliPhaseHint, progressForStatus, withProgress } from "./progress.js";
+import { validateScannerRequest } from "./scanners/catalog.js";
+import { prepareScannerLaunch } from "./scanners/launch.js";
+import { refreshMantisRunFromDisk } from "./scanners/mantis-reconcile.js";
 
 type Listener = (event: ScanEvent) => void;
 
@@ -245,38 +245,25 @@ export async function startScan(req: StartScanRequest): Promise<ScanRun> {
     throw new Error(`Repositório inválido: ${repositoryPath}`);
   }
 
+  const scanner = await validateScannerRequest(req);
+
   const displayName = req.displayName?.trim() || path.basename(repositoryPath);
   const id = nanoid(12);
   const outputDir = path.join(SCANS_ROOT, safeName(displayName), `csb-${safeName(displayName)}-${id}`);
   fs.mkdirSync(outputDir, { recursive: true, mode: 0o700 });
   fs.mkdirSync(RUNS_DIR, { recursive: true });
 
-  const model = req.model || "gpt-5.6-sol";
+  const model = req.model || scanner.models[0]?.id || "gpt-5.6-sol";
   const effort = req.effort || "high";
   const mode = req.mode || "standard";
-
-  const args = [
-    ...CODEX_SECURITY_ARGS_PREFIX,
-    "scan",
+  const launch = prepareScannerLaunch({
+    request: req,
     repositoryPath,
-    "--model",
-    model,
-    "--effort",
-    String(effort),
-    "--mode",
-    mode,
-    "--output-dir",
     outputDir,
-    "--json",
-  ];
-
-  if (req.maxCostUsd != null && req.maxCostUsd > 0) {
-    args.push("--max-cost", String(req.maxCostUsd));
-  }
-  // Only explicit user paths — let Codex Security use its default repo scope otherwise.
-  for (const p of req.paths ?? []) {
-    if (p.trim()) args.push("--path", p.trim());
-  }
+    model,
+    effort: String(effort),
+    mode,
+  });
 
   const startedAt = new Date().toISOString();
   const run: ScanRun = {
@@ -289,6 +276,11 @@ export async function startScan(req: StartScanRequest): Promise<ScanRun> {
     model,
     effort: String(effort),
     mode,
+    engine: launch.engine,
+    provider: launch.provider,
+    authMode: launch.authMode,
+    scannerVersion: launch.scannerVersion,
+    recipeHash: launch.recipeHash,
     startedAt,
     completedAt: null,
     durationMs: null,
@@ -307,9 +299,9 @@ export async function startScan(req: StartScanRequest): Promise<ScanRun> {
   };
   upsertRun(run);
 
-  const child = spawn(CODEX_SECURITY_BIN, args, {
-    cwd: repositoryPath,
-    env: codexSecurityEnvironment(),
+  const child = spawn(launch.command, launch.args, {
+    cwd: launch.cwd,
+    env: launch.env,
     // Own process group so an API restart does not SIGTERM long-running scans.
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
@@ -330,7 +322,7 @@ export async function startScan(req: StartScanRequest): Promise<ScanRun> {
   emit(activeScan, {
     type: "status",
     status: "running",
-    message: `Iniciando: ${CODEX_SECURITY_BIN} ${args.join(" ")}`,
+    message: `Iniciando ${scanner.name}: ${launch.displayCommand}`,
     scan: run,
   });
 
@@ -375,10 +367,12 @@ export async function startScan(req: StartScanRequest): Promise<ScanRun> {
   child.on("close", (code) => {
     if (activeScan.progressTimer) clearInterval(activeScan.progressTimer);
     const refreshed = refreshAfterClose(outputDir, run);
-    if (code === 0 || refreshed.status === "completed") {
-      refreshed.status = refreshed.status === "failed" ? "failed" : "completed";
-    } else if (refreshed.status === "cancelled") {
+    if (refreshed.status === "completed") {
+      // Keep the scanner's terminal state.
+    } else if (refreshed.status === "cancelled" || refreshed.status === "incomplete") {
       // keep
+    } else if (code === 0 && refreshed.status !== "failed") {
+      refreshed.status = "completed";
     } else {
       refreshed.status = code === null ? "cancelled" : "failed";
     }
@@ -503,6 +497,9 @@ export function refreshAfterClose(
   fallback: ScanRun,
   dependencies: RunRefreshDependencies = runRefreshDependencies,
 ): ScanRun {
+  if (fallback.engine === "mantis") {
+    return refreshMantisRunFromDisk(getRun(fallback.id) ?? fallback);
+  }
   // Try to pick up official workbench id if created
   try {
     const manifestPath = path.join(outputDir, "scan-manifest.json");
@@ -519,6 +516,11 @@ export function refreshAfterClose(
             ...official,
             id: fallback.id,
             source: "benchmark",
+            engine: fallback.engine,
+            provider: fallback.provider,
+            authMode: fallback.authMode,
+            scannerVersion: official.scannerVersion ?? fallback.scannerVersion,
+            recipeHash: fallback.recipeHash,
             model: official.model ?? fallback.model,
             effort: official.effort ?? fallback.effort,
             scanDir: official.scanDir || fallback.scanDir,
@@ -536,6 +538,11 @@ export function refreshAfterClose(
       ...byDir,
       id: fallback.id,
       source: "benchmark",
+      engine: fallback.engine,
+      provider: fallback.provider,
+      authMode: fallback.authMode,
+      scannerVersion: byDir.scannerVersion ?? fallback.scannerVersion,
+      recipeHash: fallback.recipeHash,
       model: byDir.model ?? fallback.model,
       effort: byDir.effort ?? fallback.effort,
       mode: byDir.mode ?? fallback.mode,

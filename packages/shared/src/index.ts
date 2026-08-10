@@ -19,6 +19,45 @@ export type EffortLevel =
 
 export type ScanMode = "standard" | "deep";
 
+export type ScannerEngine = "codex-security" | "mantis" | "vulnhunter";
+
+export type ScannerAuthMode = "chatgpt" | "api-key";
+
+export type ScannerMaturity = "stable" | "preview" | "experimental";
+
+export interface ScannerAuthCapability {
+  id: ScannerAuthMode;
+  available: boolean;
+  reason: string | null;
+}
+
+export interface ScannerModelCapability {
+  id: string;
+  profile: "frontier" | "balanced" | "specialized";
+}
+
+export interface ScannerCapability {
+  engine: ScannerEngine;
+  name: string;
+  enabled: boolean;
+  available: boolean;
+  maturity: ScannerMaturity;
+  reason: string | null;
+  sourceUrl: string;
+  authModes: ScannerAuthCapability[];
+  models: ScannerModelCapability[];
+  efforts: EffortLevel[];
+  modes: ScanMode[];
+  stageCount: number;
+  writesTarget: boolean;
+  executesGeneratedCode: boolean;
+}
+
+export interface ScannerCatalogResponse {
+  scanners: ScannerCapability[];
+  refreshedAt: string;
+}
+
 export const MAX_COMPARE_SCANS = 6;
 
 export interface SeverityCounts {
@@ -72,6 +111,11 @@ export interface ScanRun {
   model: string | null;
   effort: string | null;
   mode: ScanMode | string | null;
+  engine: ScannerEngine;
+  provider: string | null;
+  authMode: ScannerAuthMode | null;
+  scannerVersion: string | null;
+  recipeHash: string | null;
   startedAt: string | null;
   completedAt: string | null;
   durationMs: number | null;
@@ -80,6 +124,17 @@ export interface ScanRun {
   source: "workbench" | "benchmark" | "filesystem";
   pid: number | null;
   progress?: ScanProgress | null;
+}
+
+/**
+ * Returns a comparable USD estimate only when the adapter actually reports one.
+ * Mantis phase one runs against a ChatGPT plan allowance and intentionally does
+ * not manufacture API-style USD pricing from token counters.
+ */
+export function scanEstimatedUsd(scan: ScanRun): number | null {
+  if (scan.engine === "mantis" && scan.authMode === "chatgpt") return null;
+  const value = scan.cost?.estimatedUsd;
+  return value != null && Number.isFinite(value) ? value : null;
 }
 
 export interface FindingSummary {
@@ -238,6 +293,9 @@ export interface MetricsSummary {
 
 export interface StartScanRequest {
   repositoryPath: string;
+  engine?: ScannerEngine;
+  authMode?: ScannerAuthMode;
+  provider?: string;
   model?: string;
   effort?: EffortLevel | string;
   mode?: ScanMode;

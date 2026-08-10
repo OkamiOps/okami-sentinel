@@ -14,6 +14,11 @@ function scan(id: string, total: number, high: number, cost: number | null, dura
     model: id,
     effort: "high",
     mode: "standard",
+    engine: "codex-security",
+    provider: "openai",
+    authMode: "chatgpt",
+    scannerVersion: null,
+    recipeHash: null,
     startedAt: "2026-08-08T00:00:00.000Z",
     completedAt: "2026-08-08T00:01:00.000Z",
     durationMs,
@@ -36,6 +41,19 @@ test("does not treat missing cost or duration as the best result", () => {
   assert.equal(buildDecisionRanking(scans, "cost_per_finding")[0].scan.id, "measured");
   assert.equal(buildDecisionRanking(scans, "cost_per_high")[0].scan.id, "measured");
   assert.equal(buildDecisionRanking(scans, "speed")[0].scan.id, "measured");
+});
+
+test("does not treat Mantis subscription usage as zero-cost API execution", () => {
+  const mantis = {
+    ...scan("mantis", 30, 12, 0, 30_000),
+    engine: "mantis" as const,
+    authMode: "chatgpt" as const,
+  };
+  const measured = scan("measured", 15, 8, 4, 20_000);
+  const ranking = buildDecisionRanking([mantis, measured], "cost_per_finding");
+
+  assert.equal(ranking[0].scan.id, "measured");
+  assert.equal(ranking.find((row) => row.scan.id === "mantis")?.costUsd, null);
 });
 
 test("calculates unit cost and hourly throughput", () => {
@@ -74,10 +92,13 @@ test("keeps the balanced score bounded and ordered", () => {
 
 test("accepts failed scans only when they preserved findings", () => {
   const partial = { ...scan("partial", 12, 4, 20, 30_000), status: "failed" as const };
+  const incomplete = { ...scan("incomplete", 3, 1, null, 30_000), status: "incomplete" as const };
   const emptyFailure = { ...scan("empty", 0, 0, 2, 10_000), status: "failed" as const };
 
   assert.equal(isComparableScan(partial), true);
   assert.equal(isPartialComparableScan(partial), true);
+  assert.equal(isComparableScan(incomplete), true);
+  assert.equal(isPartialComparableScan(incomplete), true);
   assert.equal(isComparableScan(emptyFailure), false);
   assert.equal(isPartialComparableScan(emptyFailure), false);
   assert.equal(isComparableScan(scan("complete", 0, 0, 1, 10_000)), true);

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowLeft01Icon, PrinterIcon, RefreshIcon } from "@hugeicons/core-free-icons";
-import { MAX_COMPARE_SCANS, type CompareFindingChange, type CompareFindingDelta, type ComparePairResult, type CompareResult, type ScanRun, type Severity } from "@csb/shared";
+import { MAX_COMPARE_SCANS, scanEstimatedUsd, type CompareFindingChange, type CompareFindingDelta, type ComparePairResult, type CompareResult, type ScanRun, type Severity } from "@csb/shared";
 import { api } from "../api";
 import { Kicker, MetaCell, Metric, ReportBrand, ReportFooter, ReportHeader, ReportSheet, ReportText } from "../components/report/ReportPrimitives";
 import { buildDecisionRanking, buildMarginalEconomics, isPartialComparableScan, type CompareObjective, type ScanDecisionRow } from "../lib/compare-decision";
@@ -56,7 +56,8 @@ export function CompareReportPage() {
   const marginal = new Map(buildMarginalEconomics(ranking, result.baselineScanId).map((row) => [row.scanId, row]));
   const baseline = result.scans.find((scan) => scan.id === result.baselineScanId)!;
   const partialScans = result.scans.filter(isPartialComparableScan);
-  const totalCost = result.scans.reduce((sum, scan) => sum + (scan.cost?.estimatedUsd ?? 0), 0);
+  const pricedCosts = result.scans.map(scanEstimatedUsd).filter((value): value is number => value != null);
+  const totalCost = pricedCosts.length ? pricedCosts.reduce((sum, value) => sum + value, 0) : null;
   const reportId = `CMP-${result.baselineScanId.slice(0, 6).toUpperCase()}-${result.scans.length}X`;
   const winner = ranking[0];
   const backHref = `/compare?ids=${result.scans.map((scan) => scan.id).join(",")}`;
@@ -97,12 +98,12 @@ export function CompareReportPage() {
         <div className="mt-9">
           <section className="report-keep border border-border p-6">
             <Kicker>Winner under explicit objective</Kicker>
-            <div className="report-executive-winner mt-4 grid gap-5 md:grid-cols-[minmax(0,1fr)_16rem]"><div><div className="flex items-start gap-4"><span className="font-mono text-5xl font-semibold text-primary">01</span><div className="min-w-0"><h2 className="break-words font-heading text-2xl font-semibold leading-tight tracking-[-.04em] sm:text-3xl">{profile(winner.scan)}</h2><p className="mt-1 font-mono text-[8px] text-muted-foreground">{winner.scan.displayName} / {shortId(winner.scan.id)}</p></div></div><p className="mt-6 text-sm leading-7 text-muted-foreground">Lidera no critério <strong className="text-foreground">{objectiveMeta[objective].label}</strong>: {objectiveMeta[objective].description}. O ranking mede resultados reportados, custo e duração; não mede precisão sem triagem.</p></div>{isPartialComparableScan(winner.scan) ? <div className="self-start border-l-2 border-chart-3 bg-chart-3/5 px-4 py-3 text-xs leading-6"><strong>Resultado parcial:</strong> a execução vencedora falhou após preservar findings. Sua cobertura não foi concluída.</div> : <div className="self-start border-l-2 border-chart-2 bg-chart-2/5 px-4 py-3 text-xs leading-6"><strong>Execução concluída:</strong> o motor encerrou o fluxo, mas os findings ainda dependem de triagem técnica.</div>}</div>
+            <div className="report-executive-winner mt-4 grid gap-5 md:grid-cols-[minmax(0,1fr)_16rem]"><div><div className="flex items-start gap-4"><span className="font-mono text-5xl font-semibold text-primary">01</span><div className="min-w-0"><h2 className="break-words font-heading text-2xl font-semibold leading-tight tracking-[-.04em] sm:text-3xl">{profile(winner.scan)}</h2><p className="mt-1 font-mono text-[8px] text-muted-foreground">{winner.scan.displayName} / {shortId(winner.scan.id)}</p></div></div><p className="mt-6 text-sm leading-7 text-muted-foreground">Lidera no critério <strong className="text-foreground">{objectiveMeta[objective].label}</strong>: {objectiveMeta[objective].description}. O ranking mede resultados reportados, custo e duração; não mede precisão sem triagem.</p></div>{isPartialComparableScan(winner.scan) ? <div className="self-start border-l-2 border-chart-3 bg-chart-3/5 px-4 py-3 text-xs leading-6"><strong>Resultado parcial:</strong> a execução vencedora foi interrompida após preservar findings. Sua cobertura não foi concluída.</div> : <div className="self-start border-l-2 border-chart-2 bg-chart-2/5 px-4 py-3 text-xs leading-6"><strong>Execução concluída:</strong> o motor encerrou o fluxo, mas os findings ainda dependem de triagem técnica.</div>}</div>
           </section>
           <section className="report-keep mt-4 grid grid-cols-2 border border-border sm:grid-cols-4">
             <Metric label="SCANS" value={result.scans.length} />
             <Metric label="PARTIAL" value={partialScans.length} tone="text-chart-3" />
-            <Metric label="TOTAL COST" value={formatUsd(totalCost)} tone="text-chart-1" />
+            <Metric label={pricedCosts.length === result.scans.length ? "TOTAL COST" : "KNOWN COST"} value={formatUsd(totalCost)} tone="text-chart-1" />
             <Metric label="OBJECTIVE" value={objectiveMeta[objective].label} tone="text-primary" />
           </section>
         </div>
@@ -150,10 +151,12 @@ function RankingRows({ rows, marginal }: { rows: ScanDecisionRow[]; marginal: Ma
 }
 
 function CoverageCostPlot({ rows }: { rows: ScanDecisionRow[] }) {
-  const maxCost = Math.max(1, ...rows.map((row) => row.costUsd ?? 0));
-  const maxTotal = Math.max(1, ...rows.map((row) => row.total));
-  const maxHigh = Math.max(1, ...rows.map((row) => row.highPlus));
-  return <div className="mt-4"><svg viewBox="0 0 640 300" role="img" aria-label="Gráfico de custo por cobertura reportada" className="h-auto w-full"><line x1="52" y1="252" x2="610" y2="252" stroke="var(--border)" /><line x1="52" y1="28" x2="52" y2="252" stroke="var(--border)" />{[0.25, 0.5, 0.75, 1].map((ratio) => <g key={ratio}><line x1="52" y1={252 - ratio * 214} x2="610" y2={252 - ratio * 214} stroke="var(--border)" strokeDasharray="2 6" /><line x1={52 + ratio * 538} y1="28" x2={52 + ratio * 538} y2="252" stroke="var(--border)" strokeDasharray="2 6" /></g>)}<text x="52" y="278" fill="var(--muted-foreground)" fontSize="9">LOW COST</text><text x="547" y="278" fill="var(--muted-foreground)" fontSize="9">HIGH COST</text><text x="57" y="20" fill="var(--muted-foreground)" fontSize="9">MORE FINDINGS</text>{rows.map((row, index) => { const x = 52 + ((row.costUsd ?? 0) / maxCost) * 538; const y = 252 - (row.total / maxTotal) * 214; const radius = 8 + (row.highPlus / maxHigh) * 12; return <g key={row.scan.id}><circle cx={x} cy={y} r={radius} fill={index === 0 ? "var(--primary)" : `var(--chart-${(index % 5) + 1})`} fillOpacity=".78" stroke="var(--foreground)" strokeWidth="1" /><text x={x} y={y + 3} textAnchor="middle" fill="var(--background)" fontSize="8" fontWeight="700">S{index + 1}</text></g>; })}</svg><div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{rows.map((row, index) => <div key={row.scan.id} className="flex min-w-0 items-center gap-2 border border-border px-2 py-2"><span className="font-mono text-[8px] text-primary">S{index + 1}</span><span className="min-w-0 truncate font-mono text-[7px] text-muted-foreground">{profile(row.scan)} · {formatUsd(row.costUsd)} · {row.total} total</span></div>)}</div></div>;
+  const pricedRows = rows.map((row, index) => ({ row, index })).filter(({ row }) => row.costUsd != null);
+  if (!pricedRows.length) return <div className="mt-4 border border-border p-6 text-[10px] leading-5 text-muted-foreground">Nenhuma execução deste recorte publicou uma estimativa USD comparável. Uso de franquia da assinatura não é tratado como custo zero.</div>;
+  const maxCost = Math.max(1, ...pricedRows.map(({ row }) => row.costUsd!));
+  const maxTotal = Math.max(1, ...pricedRows.map(({ row }) => row.total));
+  const maxHigh = Math.max(1, ...pricedRows.map(({ row }) => row.highPlus));
+  return <div className="mt-4"><svg viewBox="0 0 640 300" role="img" aria-label="Gráfico de custo por cobertura reportada" className="h-auto w-full"><line x1="52" y1="252" x2="610" y2="252" stroke="var(--border)" /><line x1="52" y1="28" x2="52" y2="252" stroke="var(--border)" />{[0.25, 0.5, 0.75, 1].map((ratio) => <g key={ratio}><line x1="52" y1={252 - ratio * 214} x2="610" y2={252 - ratio * 214} stroke="var(--border)" strokeDasharray="2 6" /><line x1={52 + ratio * 538} y1="28" x2={52 + ratio * 538} y2="252" stroke="var(--border)" strokeDasharray="2 6" /></g>)}<text x="52" y="278" fill="var(--muted-foreground)" fontSize="9">LOW COST</text><text x="547" y="278" fill="var(--muted-foreground)" fontSize="9">HIGH COST</text><text x="57" y="20" fill="var(--muted-foreground)" fontSize="9">MORE FINDINGS</text>{pricedRows.map(({ row, index }) => { const x = 52 + (row.costUsd! / maxCost) * 538; const y = 252 - (row.total / maxTotal) * 214; const radius = 8 + (row.highPlus / maxHigh) * 12; return <g key={row.scan.id}><circle cx={x} cy={y} r={radius} fill={index === 0 ? "var(--primary)" : `var(--chart-${(index % 5) + 1})`} fillOpacity=".78" stroke="var(--foreground)" strokeWidth="1" /><text x={x} y={y + 3} textAnchor="middle" fill="var(--background)" fontSize="8" fontWeight="700">S{index + 1}</text></g>; })}</svg><div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{rows.map((row, index) => <div key={row.scan.id} className="flex min-w-0 items-center gap-2 border border-border px-2 py-2"><span className="font-mono text-[8px] text-primary">S{index + 1}</span><span className="min-w-0 truncate font-mono text-[7px] text-muted-foreground">{profile(row.scan)} · {formatUsd(row.costUsd)} · {row.total} total</span></div>)}</div></div>;
 }
 
 function SeverityProfiles({ scans }: { scans: ScanRun[] }) {
@@ -167,28 +170,32 @@ function PairSummarySheet({ result, comparison, index, reportId }: { result: Com
   const baselineHigh = baseline.severity.critical + baseline.severity.high;
   const candidateHigh = candidate.severity.critical + candidate.severity.high;
   const total = comparison.findings.length || 1;
-  const baselineCostPerFinding = unitCost(baseline.cost?.estimatedUsd, baseline.severity.total);
-  const candidateCostPerFinding = unitCost(candidate.cost?.estimatedUsd, candidate.severity.total);
-  const baselineCostPerHigh = unitCost(baseline.cost?.estimatedUsd, baselineHigh);
-  const candidateCostPerHigh = unitCost(candidate.cost?.estimatedUsd, candidateHigh);
+  const baselineCost = scanEstimatedUsd(baseline);
+  const candidateCost = scanEstimatedUsd(candidate);
+  const costDelta = baselineCost == null || candidateCost == null ? null : candidateCost - baselineCost;
+  const baselineCostPerFinding = unitCost(baselineCost, baseline.severity.total);
+  const candidateCostPerFinding = unitCost(candidateCost, candidate.severity.total);
+  const baselineCostPerHigh = unitCost(baselineCost, baselineHigh);
+  const candidateCostPerHigh = unitCost(candidateCost, candidateHigh);
   const agreement = Math.round(((comparison.counts.both + comparison.counts.severity_changed) / total) * 100);
   const priority = priorityDivergences(comparison.findings, 3);
   const direction = candidate.severity.total === baseline.severity.total ? "reportou o mesmo volume total" : candidate.severity.total > baseline.severity.total ? `reportou ${candidate.severity.total - baseline.severity.total} findings a mais` : `reportou ${baseline.severity.total - candidate.severity.total} findings a menos`;
   return <ReportSheet>
     <ReportHeader section="03" title={`Pair ${String(index + 1).padStart(2, "0")} / ${profile(candidate)}`} reportId={reportId} />
     <div className="report-run-comparison report-keep mt-7 grid gap-3 md:grid-cols-[1fr_auto_1fr]"><RunCard role="BASELINE" scan={baseline} /><div className="report-run-arrow hidden items-center font-mono text-xl text-primary md:flex">→</div><RunCard role={`CANDIDATE ${String(index + 1).padStart(2, "0")}`} scan={candidate} /></div>
-    <section className="report-keep mt-4 grid grid-cols-2 border border-border sm:grid-cols-4"><Metric label="Δ TOTAL" value={signed(candidate.severity.total - baseline.severity.total)} tone="text-primary" /><Metric label="Δ HIGH+" value={signed(candidateHigh - baselineHigh)} tone="text-chart-4" /><Metric label="Δ COST" value={formatSignedUsd((candidate.cost?.estimatedUsd ?? 0) - (baseline.cost?.estimatedUsd ?? 0))} tone="text-chart-1" /><Metric label="AGREEMENT" value={`${agreement}%`} tone="text-chart-2" /></section>
-    <section className="report-keep mt-4 border border-border p-4"><Kicker>Operational reading</Kicker><p className="mt-3 text-[11px] leading-5 text-muted-foreground">O candidato {direction}, com {signed(candidateHigh - baselineHigh)} High+ e custo {formatSignedUsd((candidate.cost?.estimatedUsd ?? 0) - (baseline.cost?.estimatedUsd ?? 0))} contra o baseline. O custo unitário mudou de <strong className="text-foreground">{formatUsd(baselineCostPerFinding)}</strong> para <strong className="text-foreground">{formatUsd(candidateCostPerFinding)}</strong> por finding e de <strong className="text-foreground">{formatUsd(baselineCostPerHigh)}</strong> para <strong className="text-foreground">{formatUsd(candidateCostPerHigh)}</strong> por High+.</p><div className="mt-3 flex h-3 bg-muted">{(["candidate_only", "severity_changed", "both", "baseline_only"] as CompareFindingChange[]).map((change) => <span key={change} className={change === "candidate_only" ? "bg-primary" : change === "severity_changed" ? "bg-chart-4" : change === "both" ? "bg-chart-2" : "bg-chart-3"} style={{ width: `${(comparison.counts[change] / total) * 100}%` }} />)}</div><div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">{(["candidate_only", "severity_changed", "both", "baseline_only"] as CompareFindingChange[]).map((change) => <div key={change} className="flex items-center justify-between border border-border px-2 py-2"><span className={`font-mono text-[6px] uppercase ${changeTone[change]}`}>{changeLabel[change]}</span><strong className="font-mono text-[10px]">{comparison.counts[change]}</strong></div>)}</div></section>
+    <section className="report-keep mt-4 grid grid-cols-2 border border-border sm:grid-cols-4"><Metric label="Δ TOTAL" value={signed(candidate.severity.total - baseline.severity.total)} tone="text-primary" /><Metric label="Δ HIGH+" value={signed(candidateHigh - baselineHigh)} tone="text-chart-4" /><Metric label="Δ COST" value={formatSignedUsd(costDelta)} tone="text-chart-1" /><Metric label="AGREEMENT" value={`${agreement}%`} tone="text-chart-2" /></section>
+    <section className="report-keep mt-4 border border-border p-4"><Kicker>Operational reading</Kicker><p className="mt-3 text-[11px] leading-5 text-muted-foreground">O candidato {direction}, com {signed(candidateHigh - baselineHigh)} High+ e custo {formatSignedUsd(costDelta)} contra o baseline. O custo unitário mudou de <strong className="text-foreground">{formatUsd(baselineCostPerFinding)}</strong> para <strong className="text-foreground">{formatUsd(candidateCostPerFinding)}</strong> por finding e de <strong className="text-foreground">{formatUsd(baselineCostPerHigh)}</strong> para <strong className="text-foreground">{formatUsd(candidateCostPerHigh)}</strong> por High+.</p><div className="mt-3 flex h-3 bg-muted">{(["candidate_only", "severity_changed", "both", "baseline_only"] as CompareFindingChange[]).map((change) => <span key={change} className={change === "candidate_only" ? "bg-primary" : change === "severity_changed" ? "bg-chart-4" : change === "both" ? "bg-chart-2" : "bg-chart-3"} style={{ width: `${(comparison.counts[change] / total) * 100}%` }} />)}</div><div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">{(["candidate_only", "severity_changed", "both", "baseline_only"] as CompareFindingChange[]).map((change) => <div key={change} className="flex items-center justify-between border border-border px-2 py-2"><span className={`font-mono text-[6px] uppercase ${changeTone[change]}`}>{changeLabel[change]}</span><strong className="font-mono text-[10px]">{comparison.counts[change]}</strong></div>)}</div></section>
     <section className="mt-4 border border-border"><div className="report-keep border-b border-border px-4 py-3"><Kicker>Priority divergences / technical detail</Kicker></div><div className="report-findings-grid grid md:grid-cols-3">{priority.map((finding) => <DetailedFinding key={finding.key} finding={finding} />)}{!priority.length && <div className="report-keep p-6 text-xs text-muted-foreground">Nenhuma divergência de presença ou severidade neste par.</div>}</div></section>
-    {(isPartialComparableScan(baseline) || isPartialComparableScan(candidate)) && <div className="report-keep mt-5 border-l-2 border-chart-3 bg-chart-3/5 px-4 py-3 text-[10px] leading-5"><strong>Entrada parcial:</strong> pelo menos um scan falhou depois de produzir findings; os números não representam cobertura concluída.</div>}
+    {(isPartialComparableScan(baseline) || isPartialComparableScan(candidate)) && <div className="report-keep mt-5 border-l-2 border-chart-3 bg-chart-3/5 px-4 py-3 text-[10px] leading-5"><strong>Entrada parcial:</strong> pelo menos um scan foi interrompido depois de produzir findings; os números não representam cobertura concluída.</div>}
     <ReportFooter reportId={reportId} />
   </ReportSheet>;
 }
 
 function RunCard({ role, scan }: { role: string; scan: ScanRun }) {
   const highPlus = scan.severity.critical + scan.severity.high;
-  const costPerFinding = scan.cost && scan.severity.total ? scan.cost.estimatedUsd / scan.severity.total : null;
-  return <div className="border border-border p-4"><Kicker>{role}</Kicker><div className="mt-2 flex items-start justify-between gap-3"><div className="min-w-0"><h3 className="break-words font-heading text-base font-semibold">{profile(scan)}</h3><p className="mt-1 font-mono text-[7px] text-muted-foreground">{shortId(scan.id)} · {scan.status} · {formatDuration(scan.durationMs)}</p></div>{isPartialComparableScan(scan) && <span className="border border-chart-3/50 px-2 py-1 font-mono text-[7px] uppercase text-chart-3">partial</span>}</div><div className="mt-3 grid grid-cols-4 border border-border"><SmallMetric label="Total" value={scan.severity.total} /><SmallMetric label="High+" value={highPlus} /><SmallMetric label="Cost" value={formatUsd(scan.cost?.estimatedUsd)} /><SmallMetric label="$/F" value={formatUsd(costPerFinding)} /></div></div>;
+  const estimatedUsd = scanEstimatedUsd(scan);
+  const costPerFinding = estimatedUsd != null && scan.severity.total ? estimatedUsd / scan.severity.total : null;
+  return <div className="border border-border p-4"><Kicker>{role}</Kicker><div className="mt-2 flex items-start justify-between gap-3"><div className="min-w-0"><h3 className="break-words font-heading text-base font-semibold">{profile(scan)}</h3><p className="mt-1 font-mono text-[7px] text-muted-foreground">{shortId(scan.id)} · {scan.status} · {formatDuration(scan.durationMs)}</p></div>{isPartialComparableScan(scan) && <span className="border border-chart-3/50 px-2 py-1 font-mono text-[7px] uppercase text-chart-3">partial</span>}</div><div className="mt-3 grid grid-cols-4 border border-border"><SmallMetric label="Total" value={scan.severity.total} /><SmallMetric label="High+" value={highPlus} /><SmallMetric label="Cost" value={formatUsd(estimatedUsd)} /><SmallMetric label="$/F" value={formatUsd(costPerFinding)} /></div></div>;
 }
 
 function SmallMetric({ label, value }: { label: string; value: ReactNode }) {
@@ -212,11 +219,11 @@ function parseObjective(value: string | null): CompareObjective {
 }
 
 function profile(scan: ScanRun): string {
-  return `${scan.model ?? "model"}/${scan.effort ?? "effort"}/${scan.mode ?? "mode"}`;
+  return `${scan.engine} · ${scan.model ?? "model"}/${scan.effort ?? "effort"}/${scan.mode ?? "mode"}`;
 }
 
 function signed(value: number): string { return value > 0 ? `+${value}` : String(value); }
-function formatSignedUsd(value: number): string { return `${value > 0 ? "+" : value < 0 ? "−" : ""}${formatUsd(Math.abs(value))}`; }
+function formatSignedUsd(value: number | null): string { return value == null ? "—" : `${value > 0 ? "+" : value < 0 ? "−" : ""}${formatUsd(Math.abs(value))}`; }
 function unitCost(cost: number | null | undefined, findings: number): number | null { return cost == null || findings <= 0 ? null : cost / findings; }
 function trimText(value: string, max: number): string { return value.length <= max ? value : `${value.slice(0, max - 1).trimEnd()}…`; }
 function priorityDivergences(findings: CompareFindingDelta[], limit: number): CompareFindingDelta[] {

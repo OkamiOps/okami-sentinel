@@ -5,6 +5,7 @@ data/*.db-*
 data/runs/
 data/codex-security-state/
 data/npm-cache/
+data/mantis-cache/
 .DS_Store
 *.log
 .env

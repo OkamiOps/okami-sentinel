@@ -8,6 +8,8 @@ import {
   type ScanCost,
   type ScanRun,
   type ScanStatus,
+  type ScannerAuthMode,
+  type ScannerEngine,
   type SeverityCounts,
 } from "@csb/shared";
 import { BENCHMARK_DB_PATH, DATA_DIR } from "./config.js";
@@ -22,6 +24,11 @@ export interface BenchmarkRow {
   model: string | null;
   effort: string | null;
   mode: string | null;
+  engine: string | null;
+  provider: string | null;
+  auth_mode: string | null;
+  scanner_version: string | null;
+  recipe_hash: string | null;
   started_at: string | null;
   completed_at: string | null;
   duration_ms: number | null;
@@ -61,6 +68,11 @@ export function getDb(): Database.Database {
       model TEXT,
       effort TEXT,
       mode TEXT,
+      engine TEXT NOT NULL DEFAULT 'codex-security',
+      provider TEXT,
+      auth_mode TEXT,
+      scanner_version TEXT,
+      recipe_hash TEXT,
       started_at TEXT,
       completed_at TEXT,
       duration_ms INTEGER,
@@ -103,7 +115,26 @@ export function getDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS finding_triage_by_repository
       ON finding_triage(repository_key, updated_at DESC);
   `);
+  ensureRunMetadataColumns(db);
   return db;
+}
+
+function ensureRunMetadataColumns(database: Database.Database): void {
+  const columns = new Set(
+    (database.prepare(`PRAGMA table_info(runs)`).all() as Array<{ name: string }>).map(
+      (column) => column.name,
+    ),
+  );
+  const additions = [
+    ["engine", "TEXT NOT NULL DEFAULT 'codex-security'"],
+    ["provider", "TEXT"],
+    ["auth_mode", "TEXT"],
+    ["scanner_version", "TEXT"],
+    ["recipe_hash", "TEXT"],
+  ] as const;
+  for (const [name, definition] of additions) {
+    if (!columns.has(name)) database.exec(`ALTER TABLE runs ADD COLUMN ${name} ${definition}`);
+  }
 }
 
 export function rowToScanRun(row: BenchmarkRow): ScanRun {
@@ -139,6 +170,11 @@ export function rowToScanRun(row: BenchmarkRow): ScanRun {
     model: row.model,
     effort: row.effort,
     mode: row.mode,
+    engine: (row.engine ?? "codex-security") as ScannerEngine,
+    provider: row.provider,
+    authMode: row.auth_mode as ScannerAuthMode | null,
+    scannerVersion: row.scanner_version,
+    recipeHash: row.recipe_hash,
     startedAt: row.started_at,
     completedAt: row.completed_at,
     durationMs: row.duration_ms,
@@ -155,13 +191,15 @@ export function upsertRun(run: ScanRun): void {
     .prepare(
       `INSERT INTO runs (
         id, display_name, repository_path, revision, scan_dir, status,
-        model, effort, mode, started_at, completed_at, duration_ms,
+        model, effort, mode, engine, provider, auth_mode, scanner_version, recipe_hash,
+        started_at, completed_at, duration_ms,
         estimated_usd, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens,
         severity_critical, severity_high, severity_medium, severity_low, severity_info, severity_unknown, severity_total,
         source, pid, created_at, updated_at
       ) VALUES (
         @id, @display_name, @repository_path, @revision, @scan_dir, @status,
-        @model, @effort, @mode, @started_at, @completed_at, @duration_ms,
+        @model, @effort, @mode, @engine, @provider, @auth_mode, @scanner_version, @recipe_hash,
+        @started_at, @completed_at, @duration_ms,
         @estimated_usd, @input_tokens, @cached_input_tokens, @cache_write_tokens, @output_tokens,
         @severity_critical, @severity_high, @severity_medium, @severity_low, @severity_info, @severity_unknown, @severity_total,
         @source, @pid, @created_at, @updated_at
@@ -175,6 +213,11 @@ export function upsertRun(run: ScanRun): void {
         model=excluded.model,
         effort=excluded.effort,
         mode=excluded.mode,
+        engine=excluded.engine,
+        provider=excluded.provider,
+        auth_mode=excluded.auth_mode,
+        scanner_version=excluded.scanner_version,
+        recipe_hash=excluded.recipe_hash,
         started_at=excluded.started_at,
         completed_at=excluded.completed_at,
         duration_ms=excluded.duration_ms,
@@ -204,6 +247,11 @@ export function upsertRun(run: ScanRun): void {
       model: run.model,
       effort: run.effort,
       mode: run.mode,
+      engine: run.engine,
+      provider: run.provider,
+      auth_mode: run.authMode,
+      scanner_version: run.scannerVersion,
+      recipe_hash: run.recipeHash,
       started_at: run.startedAt,
       completed_at: run.completedAt,
       duration_ms: run.durationMs,

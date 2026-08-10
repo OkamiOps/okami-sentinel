@@ -16,6 +16,7 @@ import type {
   MetricsSummary,
   RegressionSummary,
   ScanRun,
+  ScannerCatalogResponse,
   StartScanRequest,
   UpdateFindingTriageRequest,
 } from "@csb/shared";
@@ -73,6 +74,7 @@ export interface ScanReportData {
 
 export const api = {
   health: () => request<HealthResponse>("/health"),
+  scanners: () => request<ScannerCatalogResponse>("/scanners"),
   ingest: () => request<{ imported: number }>("/ingest", { method: "POST" }),
   metrics: () => request<MetricsSummary>("/metrics/summary"),
   listScans: () => request<{ scans: ScanRun[] }>("/scans"),

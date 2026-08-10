@@ -1,4 +1,4 @@
-import type { ScanRun } from "@csb/shared";
+import { scanEstimatedUsd, type ScanRun } from "@csb/shared";
 
 export type CompareObjective = "balanced" | "coverage" | "high_plus" | "cost_per_finding" | "cost_per_high" | "speed";
 
@@ -27,7 +27,7 @@ export interface MarginalDecisionRow {
 }
 
 export function isPartialComparableScan(scan: ScanRun): boolean {
-  return scan.status === "failed" && scan.severity.total > 0;
+  return (scan.status === "failed" || scan.status === "incomplete") && scan.severity.total > 0;
 }
 
 export function isComparableScan(scan: ScanRun): boolean {
@@ -45,7 +45,8 @@ function inverseDuration(durationMs: number | null, fastestMs: number | null): n
 
 export function buildDecisionRanking(scans: ScanRun[], objective: CompareObjective): ScanDecisionRow[] {
   const raw = scans.map((scan) => {
-    const costUsd = scan.cost?.estimatedUsd != null && scan.cost.estimatedUsd > 0 ? scan.cost.estimatedUsd : null;
+    const estimatedUsd = scanEstimatedUsd(scan);
+    const costUsd = estimatedUsd != null && estimatedUsd > 0 ? estimatedUsd : null;
     const durationMs = scan.durationMs != null && scan.durationMs > 0 ? scan.durationMs : null;
     const total = scan.severity.total;
     const highPlus = scan.severity.critical + scan.severity.high;

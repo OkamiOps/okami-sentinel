@@ -73,6 +73,7 @@ import { withProgress, withProgressMany } from "./progress.js";
 import { buildRegressionSummary, markScanAsRepositoryBaseline, updateFindingTriage } from "./regression.js";
 import { isRemovableScanStatus } from "./lifecycle.js";
 import { MAX_CONCURRENT_SCANS } from "./config.js";
+import { getScannerCatalog } from "./scanners/catalog.js";
 import {
   cancelScan,
   getActiveScanIds,
@@ -402,6 +403,8 @@ app.get("/health", async (c) => {
   };
   return c.json(body);
 });
+
+app.get("/scanners", async (c) => c.json(await getScannerCatalog()));
 
 app.post("/ingest", (c) => {
   const result = importExternalScans();

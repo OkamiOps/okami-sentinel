@@ -6,6 +6,7 @@ import {
   type CompareResult,
   type FindingSummary,
   type ScanRun,
+  scanEstimatedUsd,
 } from "@csb/shared";
 import { getRun } from "./db.js";
 import { readFindingsFile, toFindingSummaries } from "./ingest.js";
@@ -40,18 +41,18 @@ export function compareScans(scanIds: string[]): CompareResult {
   }));
 
   const ranking = scans.map((scan) => {
-    const usd = scan.cost?.estimatedUsd ?? 0;
+    const usd = scanEstimatedUsd(scan);
     const high = scan.severity.high + scan.severity.critical;
     const total = scan.severity.total;
     return {
       scanId: scan.id,
       model: scan.model,
       effort: scan.effort,
-      estimatedUsd: usd,
+      estimatedUsd: usd ?? 0,
       findingsHigh: high,
       findingsTotal: total,
-      highPerDollar: usd > 0 ? high / usd : null,
-      totalPerDollar: usd > 0 ? total / usd : null,
+      highPerDollar: usd != null && usd > 0 ? high / usd : null,
+      totalPerDollar: usd != null && usd > 0 ? total / usd : null,
       durationMs: scan.durationMs,
     };
   });
