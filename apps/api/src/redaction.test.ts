@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { emptySeverityCounts, type ScanEvent, type ScanProgress, type ScanRun } from "@csb/shared";
 import * as runnerModule from "./runner.js";
@@ -75,6 +77,36 @@ test("redacts escaped JSON credential fields without corrupting JSON", () => {
     api_key: "[REDACTED]",
     normal: "visible",
   });
+});
+
+test("redacts quoted Bearer and Basic credentials through their closing quote", () => {
+  const marker = "quoted-authorization-secret-marker";
+  const redactor = new SecretRedactor();
+  const inputs = [
+    `Authorization: Bearer "prefix \\"${marker}\\" C:\\vault"`,
+    `Authorization=Basic 'prefix \\'${marker}\\' C:\\vault'`,
+  ];
+
+  for (const input of inputs) {
+    const output = redactor.redactText(input);
+    assert.doesNotMatch(output, new RegExp(marker));
+    assert.match(output, /^Authorization\s*[:=]\s*\[REDACTED\]$/);
+  }
+});
+
+test("redacts a registered exact value after JSON escaping in a normal field", () => {
+  const marker = "json-exact-secret-marker";
+  const secret = `custom "${marker}\\value"`;
+  const redactor = new SecretRedactor();
+  redactor.register("test/json-exact", [secret]);
+  const input = JSON.stringify({ message: `received ${secret} from provider` });
+
+  const output = redactor.redactText(input);
+  const parsed = JSON.parse(output) as { message: string };
+
+  assert.doesNotMatch(output, new RegExp(marker));
+  assert.equal(parsed.message.includes(secret), false);
+  assert.equal(parsed.message, "received [REDACTED] from provider");
 });
 
 test("global redactor initializes with bare process secrets", () => {
@@ -221,5 +253,108 @@ test("scanner workers route arbitrary failures through the safe error helper", (
       source,
       /String\((?:error|normalizationError|boundaryError)\)/,
     );
+  }
+});
+
+test("cancel keeps launch secrets registered through trailing child output", () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-cancel-redaction-"));
+  const repositoryPath = path.join(fixtureRoot, "repository");
+  const stateDir = path.join(fixtureRoot, "state");
+  const fakeScanner = path.join(fixtureRoot, "fake-scanner.mjs");
+  const marker = "cancel-trailing-secret-marker";
+  fs.mkdirSync(repositoryPath);
+  fs.mkdirSync(stateDir);
+  fs.writeFileSync(
+    fakeScanner,
+    `#!/usr/bin/env node
+const marker = ${JSON.stringify(marker)};
+if (!process.argv.includes("scan")) {
+  process.stdout.write("{}\\n");
+  process.exit(0);
+}
+process.on("SIGTERM", () => {
+  setTimeout(() => {
+    process.stdout.write(marker + "\\n");
+    setTimeout(() => process.exit(143), 40);
+  }, 20);
+});
+setInterval(() => undefined, 1_000);
+`,
+    { mode: 0o700 },
+  );
+
+  const runnerUrl = new URL("./runner.ts", import.meta.url).href;
+  const dbUrl = new URL("./db.ts", import.meta.url).href;
+  const activityUrl = new URL("./activity.ts", import.meta.url).href;
+  const harness = `
+import fs from "node:fs";
+const { startScan, cancelScan, subscribe } = await import(${JSON.stringify(runnerUrl)});
+const { deleteRun } = await import(${JSON.stringify(dbUrl)});
+const { cliLogPath } = await import(${JSON.stringify(activityUrl)});
+process.env.OPENAI_API_KEY = ${JSON.stringify(marker)};
+let run;
+let unsubscribe = () => undefined;
+try {
+  run = await startScan({
+    repositoryPath: ${JSON.stringify(repositoryPath)},
+    engine: "codex-security",
+    provider: "openai",
+    authMode: "api-key",
+    mode: "standard",
+  });
+  const events = [];
+  unsubscribe = subscribe(run.id, (event) => events.push(event));
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const cancelled = cancelScan(run.id);
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const logFile = cliLogPath(run.scanDir);
+  const log = fs.existsSync(logFile) ? fs.readFileSync(logFile, "utf8") : "";
+  const payload = JSON.stringify({ cancelled, events, log });
+  unsubscribe();
+  deleteRun(run.id);
+  fs.rmSync(logFile, { force: true });
+  fs.rmSync(run.scanDir, { recursive: true, force: true });
+  process.stdout.write(payload + "\\n", () => process.exit(0));
+} catch (error) {
+  unsubscribe();
+  if (run) {
+    deleteRun(run.id);
+    fs.rmSync(cliLogPath(run.scanDir), { force: true });
+    fs.rmSync(run.scanDir, { recursive: true, force: true });
+  }
+  process.stderr.write(String(error) + "\\n", () => process.exit(1));
+}
+`;
+
+  try {
+    const probe = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "--input-type=module", "--eval", harness],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          CODEX_BIN: fakeScanner,
+          CODEX_SECURITY_BIN: fakeScanner,
+          CODEX_SECURITY_STATE_DIR: stateDir,
+          OPENAI_API_KEY: "bootstrap-process-key",
+        },
+        encoding: "utf8",
+        timeout: 10_000,
+      },
+    );
+    assert.equal(probe.status, 0, probe.stderr || probe.stdout);
+    const result = JSON.parse(probe.stdout.trim()) as {
+      cancelled: boolean;
+      events: ScanEvent[];
+      log: string;
+    };
+    const exposed = JSON.stringify({ events: result.events, log: result.log });
+
+    assert.equal(result.cancelled, true);
+    assert.doesNotMatch(exposed, new RegExp(marker));
+    assert.match(exposed, /\[REDACTED\]/);
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }
 });

@@ -1,6 +1,8 @@
 const REDACTED = "[REDACTED]";
 const SENSITIVE_NAME = /(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|cookie|password|secret)/i;
 const SENSITIVE_FIELD = "(?:authorization|x-api-key|api[_-]?key|access[_-]?token|refresh[_-]?token|token|cookie|password|secret)";
+const DOUBLE_QUOTED_VALUE = String.raw`"(?:\\.|[^"\\])*"`;
+const SINGLE_QUOTED_VALUE = String.raw`'(?:\\.|[^'\\])*'`;
 
 export class SecretRedactor {
   readonly #scopes = new Map<string, Set<string>>();
@@ -16,7 +18,11 @@ export class SecretRedactor {
   }
 
   redactText(input: string): string {
-    const exact = [...new Set([...this.#scopes.values()].flatMap((values) => [...values]))]
+    const exact = [...new Set(
+      [...this.#scopes.values()].flatMap((values) =>
+        [...values].flatMap((value) => [value, JSON.stringify(value).slice(1, -1)]),
+      ),
+    )]
       .sort((left, right) => right.length - left.length);
     let output = input;
     for (const value of exact) output = output.split(value).join(REDACTED);
@@ -29,7 +35,11 @@ export class SecretRedactor {
       `$1${REDACTED}'`,
     );
     output = output.replace(
-      new RegExp(`(${SENSITIVE_FIELD}\\s*[:=]\\s*)(?:bearer|basic)?\\s*[^\\s,;"}]+`, "gi"),
+      new RegExp(
+        `(authorization\\s*[:=]\\s*)(?:bearer|basic)?\\s*` +
+          `(?:${DOUBLE_QUOTED_VALUE}|${SINGLE_QUOTED_VALUE}|[^\\s,;"'}]+)`,
+        "gi",
+      ),
       `$1${REDACTED}`,
     );
     output = output.replace(

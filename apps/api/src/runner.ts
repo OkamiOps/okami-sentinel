@@ -50,7 +50,7 @@ interface ActiveScan {
   child: ChildProcess;
   listeners: Set<Listener>;
   logBuffer: ScanEvent[];
-  redactionScope: string;
+  releaseRedactionScope: () => void;
   progressTimer?: ReturnType<typeof setInterval>;
   lastProgressKey?: string;
 }
@@ -388,6 +388,12 @@ export async function startScan(req: StartScanRequest): Promise<ScanRun> {
 
   const redactionScope = `scan/${id}`;
   globalSecretRedactor.register(redactionScope, processSecretValues(launch.env));
+  let redactionScopeReleased = false;
+  const releaseRedactionScope = (): void => {
+    if (redactionScopeReleased) return;
+    redactionScopeReleased = true;
+    globalSecretRedactor.unregister(redactionScope);
+  };
 
   const activeScan: ActiveScan = {
     id,
@@ -395,7 +401,7 @@ export async function startScan(req: StartScanRequest): Promise<ScanRun> {
     child,
     listeners: new Set(),
     logBuffer: [],
-    redactionScope,
+    releaseRedactionScope,
   };
   active.set(id, activeScan);
 
@@ -444,7 +450,7 @@ export async function startScan(req: StartScanRequest): Promise<ScanRun> {
       scan: run,
     });
     active.delete(id);
-    globalSecretRedactor.unregister(activeScan.redactionScope);
+    activeScan.releaseRedactionScope();
   });
 
   child.on("close", (code) => {
@@ -480,7 +486,7 @@ export async function startScan(req: StartScanRequest): Promise<ScanRun> {
       progress: refreshed.progress ?? undefined,
     });
     active.delete(id);
-    globalSecretRedactor.unregister(activeScan.redactionScope);
+    activeScan.releaseRedactionScope();
   });
 
   return run;
@@ -702,7 +708,6 @@ export function cancelScan(id: string): boolean {
     }
   }
   active.delete(id);
-  if (scan) globalSecretRedactor.unregister(scan.redactionScope);
   const watch = detached.get(id);
   if (watch) {
     clearInterval(watch.timer);
