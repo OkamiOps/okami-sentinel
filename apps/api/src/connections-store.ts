@@ -346,6 +346,26 @@ export class ConnectionStore {
     return row === undefined ? null : rowToCapabilityReport(row);
   }
 
+  getLatestCapabilityCheck(
+    connectionId: string,
+    modelId: string | null,
+    protocol: CapabilityReport["protocol"],
+  ): CapabilityReport | null {
+    const row = this.database
+      .prepare(
+        `SELECT id, connection_id, model_id, protocol, status, capabilities_json,
+          error_code, checked_at
+         FROM connection_capability_checks
+         WHERE connection_id = ?
+           AND model_id IS ?
+           AND protocol = ?
+         ORDER BY checked_at DESC, id DESC
+         LIMIT 1`,
+      )
+      .get(connectionId, modelId, protocol) as CapabilityReportRow | undefined;
+    return row === undefined ? null : rowToCapabilityReport(row);
+  }
+
   writeSnapshot(snapshot: ScanConnectionSnapshot): void {
     this.database
       .prepare(

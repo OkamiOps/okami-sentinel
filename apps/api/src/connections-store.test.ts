@@ -323,6 +323,56 @@ test("rejects secret and unknown capability error codes before persistence", () 
   }
 });
 
+test("resolves only the newest capability check for the exact connection, model, and protocol", () => {
+  const db = new Database(":memory:");
+  const unknown = {
+    tools: "unknown", artifactOutput: "unknown", structuredOutput: "unknown",
+    boundedExecution: "unknown", osIsolation: "unknown", streaming: "unknown",
+    usage: "unknown", cancellation: "unknown",
+  } as const;
+
+  try {
+    const store = new ConnectionStore(db);
+    store.insert(connectionFixture());
+    for (const report of [
+      {
+        id: "older-exact", connectionId: "conn-1", modelId: "model-1",
+        protocol: "openai-responses" as const, checkedAt: "2026-08-11T10:00:00.000Z",
+      },
+      {
+        id: "newer-other-model", connectionId: "conn-1", modelId: "model-2",
+        protocol: "openai-responses" as const, checkedAt: "2026-08-11T12:00:00.000Z",
+      },
+      {
+        id: "newer-other-protocol", connectionId: "conn-1", modelId: "model-1",
+        protocol: "openai-chat" as const, checkedAt: "2026-08-11T12:01:00.000Z",
+      },
+      {
+        id: "newest-exact", connectionId: "conn-1", modelId: "model-1",
+        protocol: "openai-responses" as const, checkedAt: "2026-08-11T11:00:00.000Z",
+      },
+    ]) {
+      store.writeCapabilityCheck({
+        ...report,
+        status: "passed",
+        capabilities: unknown,
+        errorCode: null,
+      });
+    }
+
+    assert.equal(
+      store.getLatestCapabilityCheck("conn-1", "model-1", "openai-responses")?.id,
+      "newest-exact",
+    );
+    assert.equal(
+      store.getLatestCapabilityCheck("conn-1", "missing", "openai-responses"),
+      null,
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test("migrates legacy catalog, check, and snapshot tables idempotently", () => {
   const db = new Database(":memory:");
 
