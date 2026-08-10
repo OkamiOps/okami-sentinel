@@ -57,17 +57,17 @@ export function App() {
   return <div className="min-h-screen overflow-x-hidden pb-20">
     <header className="sticky top-0 z-40 border-b border-border bg-background/95 backdrop-blur-md">
       <div className="flex h-12 items-stretch">
-        <Link to="/" className="flex min-w-52 items-center gap-2 border-r px-4">
-          <img src="/brand/okami-sentinel-mark.png" alt="" className="size-7 object-contain" />
-          <span className="font-heading text-xs font-bold tracking-[0.12em]">OKAMI</span><span className="font-mono text-[9px] text-muted-foreground">/ SENTINEL</span>
+        <Link to="/" className="flex min-w-0 flex-1 items-center gap-2 border-r px-3 sm:min-w-52 sm:flex-none sm:px-4">
+          <img src="/brand/okami-sentinel-mark.png" alt="" className="size-7 shrink-0 object-contain" />
+          <span className="shrink-0 font-heading text-xs font-bold tracking-[0.12em]">OKAMI</span><span className="hidden font-mono text-[9px] text-muted-foreground sm:inline">/ SENTINEL</span>
         </Link>
-        <div className="hidden flex-1 md:block"><NavStrip /></div>
+        <div className="hidden flex-1 xl:block"><NavStrip /></div>
         <div className="ml-auto flex items-stretch">
-          <div className="hidden items-center gap-2 border-l px-4 font-mono text-[9px] text-muted-foreground lg:flex"><span className={cx("size-1.5 rounded-full", current ? "bg-primary" : "bg-chart-2")} />{current ? t("shell.engineLive", { count: active.length }) : t("shell.engineReady")}</div>
+          <div className="hidden items-center gap-2 border-l px-4 font-mono text-[9px] text-muted-foreground 2xl:flex"><span className={cx("size-1.5 rounded-full", current ? "bg-primary" : "bg-chart-2")} />{current ? t("shell.engineLive", { count: active.length }) : t("shell.engineReady")}</div>
           <LanguageSwitcher />
-          <Button asChild className="h-full border-y-0 border-r-0 px-4"><Link to="/scans/new"><HugeiconsIcon icon={PlusSignIcon} size={13} />{t("shell.launch")}</Link></Button>
+          <Button asChild className="h-full border-y-0 border-r-0 px-3 sm:px-4"><Link to="/scans/new"><HugeiconsIcon icon={PlusSignIcon} size={13} />{t("shell.launch")}</Link></Button>
           <Sheet>
-            <SheetTrigger asChild><Button variant="ghost" size="icon" className="h-full border-y-0 border-r-0 md:hidden" aria-label={t("shell.openModules")}><HugeiconsIcon icon={Menu01Icon} size={16} /></Button></SheetTrigger>
+            <SheetTrigger asChild><Button variant="ghost" size="icon" className="h-full border-y-0 border-r-0 xl:hidden" aria-label={t("shell.openModules")}><HugeiconsIcon icon={Menu01Icon} size={16} /></Button></SheetTrigger>
             <SheetContent side="right" className="w-72 border-border bg-background p-0"><SheetTitle className="border-b px-4 py-4 font-mono text-xs">{t("shell.moduleIndex")}</SheetTitle><NavStrip /></SheetContent>
           </Sheet>
         </div>
