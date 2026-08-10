@@ -36,7 +36,11 @@ import { validateScannerRequest } from "./scanners/catalog.js";
 import { prepareScannerLaunch } from "./scanners/launch.js";
 import { refreshMantisRunFromDisk } from "./scanners/mantis-reconcile.js";
 import { refreshVulnHunterRunFromDisk } from "./scanners/vulnhunter-reconcile.js";
-import { redactText } from "./redaction.js";
+import {
+  globalSecretRedactor,
+  processSecretValues,
+  redactText,
+} from "./redaction.js";
 
 type Listener = (event: ScanEvent) => void;
 
@@ -46,6 +50,7 @@ interface ActiveScan {
   child: ChildProcess;
   listeners: Set<Listener>;
   logBuffer: ScanEvent[];
+  redactionScope: string;
   progressTimer?: ReturnType<typeof setInterval>;
   lastProgressKey?: string;
 }
@@ -61,16 +66,45 @@ interface DetachedWatch {
 const active = new Map<string, ActiveScan>();
 const detached = new Map<string, DetachedWatch>();
 
-function safeEvent(event: Omit<ScanEvent, "at"> & { at?: string }): ScanEvent {
+function redactProgressString<T extends string | null | undefined>(value: T): T {
+  return (typeof value === "string" ? redactText(value) : value) as T;
+}
+
+export function sanitizeScanProgress(progress: ScanProgress): ScanProgress {
+  return {
+    ...progress,
+    phase: redactProgressString(progress.phase),
+    phaseLabel: redactText(progress.phaseLabel),
+    detail: redactProgressString(progress.detail),
+    unit: redactProgressString(progress.unit),
+    deepPhase: redactProgressString(progress.deepPhase),
+    activityState: redactProgressString(progress.activityState),
+    lastActivityAt: redactProgressString(progress.lastActivityAt),
+  };
+}
+
+export function sanitizeScanRun(run: ScanRun): ScanRun {
+  return run.progress
+    ? { ...run, progress: sanitizeScanProgress(run.progress) }
+    : run;
+}
+
+export function sanitizeScanEvent(
+  event: Omit<ScanEvent, "at"> & { at?: string },
+): ScanEvent {
   return {
     ...event,
     ...(event.message === undefined ? {} : { message: redactText(event.message) }),
+    ...(event.progress === undefined
+      ? {}
+      : { progress: sanitizeScanProgress(event.progress) }),
+    ...(event.scan === undefined ? {} : { scan: sanitizeScanRun(event.scan) }),
     at: event.at ?? new Date().toISOString(),
   };
 }
 
 function emit(scan: ActiveScan, event: Omit<ScanEvent, "at"> & { at?: string }): void {
-  const full = safeEvent(event);
+  const full = sanitizeScanEvent(event);
   if (full.message) {
     const cursor = appendCliLog(scan.scanDir, full.message);
     if (cursor > 0) full.cursor = cursor;
@@ -84,7 +118,7 @@ function emitDetached(
   watch: DetachedWatch,
   event: Omit<ScanEvent, "at"> & { at?: string },
 ): void {
-  const full = safeEvent(event);
+  const full = sanitizeScanEvent(event);
   for (const listener of watch.listeners) listener(full);
 }
 
@@ -158,7 +192,7 @@ function subscribeDetached(
   listener: Listener,
   afterCursor?: number,
 ): () => void {
-  const enriched = withProgress(run);
+  const enriched = sanitizeScanRun(withProgress(run));
   if (afterCursor === undefined) {
     listener({
       type: "status",
@@ -214,12 +248,13 @@ function tickDetached(scanId: string): void {
   if (!run) return;
 
   if (run.status !== "running") {
+    const enriched = sanitizeScanRun(withProgress(run));
     emitDetached(watch, {
       type: "done",
       status: run.status,
       message: `Scan finalizado (${run.status})`,
-      scan: withProgress(run),
-      progress: withProgress(run).progress ?? undefined,
+      scan: enriched,
+      progress: enriched.progress ?? undefined,
     });
     clearInterval(watch.timer);
     detached.delete(scanId);
@@ -233,13 +268,14 @@ function tickDetached(scanId: string): void {
     // ignore
   }
   const latest = getRun(scanId) ?? run;
-  const progress = progressForStatus(
+  const restoredProgress = progressForStatus(
     "running",
     latest.scanDir,
     latest.mode,
     latest.startedAt,
   );
-  if (progress) {
+  if (restoredProgress) {
+    const progress = sanitizeScanProgress(restoredProgress);
     const key = progressKey(progress);
     if (watch.lastProgressKey !== key) {
       watch.lastProgressKey = key;
@@ -301,6 +337,7 @@ export async function startScan(req: StartScanRequest): Promise<ScanRun> {
   });
 
   const startedAt = new Date().toISOString();
+  const initialProgress = progressForStatus("running", outputDir, mode, startedAt);
   const run: ScanRun = {
     id,
     displayName,
@@ -334,7 +371,7 @@ export async function startScan(req: StartScanRequest): Promise<ScanRun> {
     severity: emptySeverityCounts(),
     source: "benchmark",
     pid: null,
-    progress: progressForStatus("running", outputDir, mode, startedAt),
+    progress: initialProgress ? sanitizeScanProgress(initialProgress) : null,
   };
   upsertRun(run);
 
@@ -349,12 +386,16 @@ export async function startScan(req: StartScanRequest): Promise<ScanRun> {
   run.pid = child.pid ?? null;
   upsertRun(run);
 
+  const redactionScope = `scan/${id}`;
+  globalSecretRedactor.register(redactionScope, processSecretValues(launch.env));
+
   const activeScan: ActiveScan = {
     id,
     scanDir: outputDir,
     child,
     listeners: new Set(),
     logBuffer: [],
+    redactionScope,
   };
   active.set(id, activeScan);
 
@@ -403,6 +444,7 @@ export async function startScan(req: StartScanRequest): Promise<ScanRun> {
       scan: run,
     });
     active.delete(id);
+    globalSecretRedactor.unregister(activeScan.redactionScope);
   });
 
   child.on("close", (code) => {
@@ -422,10 +464,12 @@ export async function startScan(req: StartScanRequest): Promise<ScanRun> {
       refreshed.durationMs ??
       (Date.parse(refreshed.completedAt) - Date.parse(startedAt));
     refreshed.pid = null;
-    refreshed.progress =
-      refreshed.status === "completed"
-        ? progressForStatus("completed", refreshed.scanDir, refreshed.mode)
-        : null;
+    const completedProgress = refreshed.status === "completed"
+      ? progressForStatus("completed", refreshed.scanDir, refreshed.mode)
+      : null;
+    refreshed.progress = completedProgress
+      ? sanitizeScanProgress(completedProgress)
+      : null;
     upsertRun(refreshed);
     emit(activeScan, {
       type: "done",
@@ -436,6 +480,7 @@ export async function startScan(req: StartScanRequest): Promise<ScanRun> {
       progress: refreshed.progress ?? undefined,
     });
     active.delete(id);
+    globalSecretRedactor.unregister(activeScan.redactionScope);
   });
 
   return run;
@@ -450,14 +495,15 @@ function applyProgress(
   run: ScanRun,
   progress: ScanProgress,
 ): void {
-  const key = progressKey(progress);
+  const safeProgress = sanitizeScanProgress(progress);
+  const key = progressKey(safeProgress);
   if (activeScan.lastProgressKey === key) return;
   activeScan.lastProgressKey = key;
-  run.progress = progress;
+  run.progress = safeProgress;
   emit(activeScan, {
     type: "progress",
-    progress,
-    message: progressEventMessage(progress),
+    progress: safeProgress,
+    message: progressEventMessage(safeProgress),
     scan: { ...run },
   });
 }
@@ -656,6 +702,7 @@ export function cancelScan(id: string): boolean {
     }
   }
   active.delete(id);
+  if (scan) globalSecretRedactor.unregister(scan.redactionScope);
   const watch = detached.get(id);
   if (watch) {
     clearInterval(watch.timer);

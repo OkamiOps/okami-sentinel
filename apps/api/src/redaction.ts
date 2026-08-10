@@ -21,11 +21,11 @@ export class SecretRedactor {
     let output = input;
     for (const value of exact) output = output.split(value).join(REDACTED);
     output = output.replace(
-      new RegExp(`((?:"${SENSITIVE_FIELD}"|${SENSITIVE_FIELD})\\s*[:=]\\s*")([^\"]*)"`, "gi"),
+      new RegExp(`((?:"${SENSITIVE_FIELD}"|${SENSITIVE_FIELD})\\s*[:=]\\s*")((?:\\\\.|[^"\\\\])*)"`, "gi"),
       `$1${REDACTED}"`,
     );
     output = output.replace(
-      new RegExp(`((?:"${SENSITIVE_FIELD}"|${SENSITIVE_FIELD})\\s*[:=]\\s*')([^']*)'`, "gi"),
+      new RegExp(`((?:"${SENSITIVE_FIELD}"|${SENSITIVE_FIELD})\\s*[:=]\\s*')((?:\\\\.|[^'\\\\])*)'`, "gi"),
       `$1${REDACTED}'`,
     );
     output = output.replace(
@@ -45,9 +45,14 @@ export class SecretRedactor {
 }
 
 export const globalSecretRedactor = new SecretRedactor();
+globalSecretRedactor.register("process/environment", processSecretValues(process.env));
 export const redactText = (value: string): string => globalSecretRedactor.redactText(value);
-export const redactErrorMessage = (error: unknown): string =>
-  redactText(error instanceof Error ? error.message : "Unexpected provider error");
+export const redactErrorMessage = (
+  error: unknown,
+  redactor: SecretRedactor = globalSecretRedactor,
+): string => redactor.redactText(
+  error instanceof Error ? error.message : "Unexpected provider error",
+);
 
 export function processSecretValues(environment: NodeJS.ProcessEnv | Record<string, string | undefined>): string[] {
   return Object.entries(environment)

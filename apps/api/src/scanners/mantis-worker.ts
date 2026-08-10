@@ -4,7 +4,11 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { CODEX_BIN } from "../config.js";
-import { processSecretValues, SecretRedactor } from "../redaction.js";
+import {
+  processSecretValues,
+  redactErrorMessage,
+  SecretRedactor,
+} from "../redaction.js";
 import { normalizeMantisWorkspace } from "./mantis-normalize.js";
 import {
   createResilientLineWriter,
@@ -57,6 +61,8 @@ let outputDirForSignal: string | null = null;
 const log = createResilientLineWriter(process.stdout);
 const workerRedactor = new SecretRedactor();
 workerRedactor.register("process", processSecretValues(process.env));
+const safeErrorMessage = (error: unknown): string =>
+  redactErrorMessage(error, workerRedactor);
 
 function progress(
   config: MantisRunConfiguration,
@@ -462,7 +468,7 @@ process.on("SIGTERM", () => {
 });
 
 void main().catch((error) => {
-  const message = workerRedactor.redactText(error instanceof Error ? error.message : String(error));
+  const message = safeErrorMessage(error);
   if (runtime && outputDirForSignal) {
     let recoveredFindings = runtime.findings;
     const stateRoot = path.join(outputDirForSignal, "mantis");
@@ -474,7 +480,7 @@ void main().catch((error) => {
         }
       } catch (normalizationError) {
         log(
-          `[mantis/recovery] Partial normalization failed: ${workerRedactor.redactText(normalizationError instanceof Error ? normalizationError.message : String(normalizationError))}`,
+          `[mantis/recovery] Partial normalization failed: ${safeErrorMessage(normalizationError)}`,
         );
       }
     }
