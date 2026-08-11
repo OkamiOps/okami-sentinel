@@ -353,6 +353,7 @@ test("Mantis local detects a snapshot mutation before the next Claude stage", as
 });
 
 test("Mantis local rejects Grok and Cursor plans before creating a CLI", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-local-denied-plan-"));
   let created = 0;
   const dependencies = {
     getSnapshot: () => snapshot({ routeKind: "xai-grok-build-local" }),
@@ -365,26 +366,31 @@ test("Mantis local rejects Grok and Cursor plans before creating a CLI", async (
     readSourceRevision: () => SOURCE_REF,
     now: () => NOW,
   };
-  for (const denied of [
-    plan({ routeKind: "xai-grok-build-local", protocol: "grok-build-cli" }),
-    plan({ routeKind: "cursor-agent-local", protocol: "cursor-agent-cli" }),
-  ]) {
-    await assert.rejects(
-      runMantisLocalClaude({
-        outputDir: "/private/tmp/not-created",
-        repositoryPath: "/private/tmp/not-created",
-        paths: [],
-        sourceRef: SOURCE_REF,
-        sourceCacheDir: "/private/tmp/not-created-cache",
-        providerPlan: denied,
-      }, dependencies),
-      (error: unknown) => error instanceof MantisLocalRunnerError && error.code === "provider_plan_revalidation_failed",
-    );
+  try {
+    for (const denied of [
+      plan({ routeKind: "xai-grok-build-local", protocol: "grok-build-cli" }),
+      plan({ routeKind: "cursor-agent-local", protocol: "cursor-agent-cli" }),
+    ]) {
+      await assert.rejects(
+        runMantisLocalClaude({
+          outputDir: path.join(root, "output"),
+          repositoryPath: path.join(root, "repository"),
+          paths: [],
+          sourceRef: SOURCE_REF,
+          sourceCacheDir: path.join(root, "cache"),
+          providerPlan: denied,
+        }, dependencies),
+        (error: unknown) => error instanceof MantisLocalRunnerError && error.code === "provider_plan_revalidation_failed",
+      );
+    }
+    assert.equal(created, 0);
+  } finally {
+    removeFixture(root);
   }
-  assert.equal(created, 0);
 });
 
 test("Mantis local rejects a mismatched persisted Claude tuple before model lookup or CLI creation", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-local-mismatched-plan-"));
   let modelReads = 0;
   let cliCreates = 0;
   const dependencies = (candidate: Partial<StoredProviderConnection>, snapshotPatch: Partial<ScanConnectionSnapshot> = {}) => ({
@@ -402,25 +408,29 @@ test("Mantis local rejects a mismatched persisted Claude tuple before model look
     now: () => NOW,
   });
 
-  for (const [candidate, snapshotPatch] of [
-    [{ providerKind: "openai" }, {}],
-    [{ credentialRef: "connection/claude-local" }, {}],
-    [{}, { capabilityCheckId: "unexpected-local-probe" }],
-  ] as const) {
-    await assert.rejects(
-      runMantisLocalClaude({
-        outputDir: "/private/tmp/not-created",
-        repositoryPath: "/private/tmp/not-created",
-        paths: [],
-        sourceRef: SOURCE_REF,
-        sourceCacheDir: "/private/tmp/not-created-cache",
-        providerPlan: plan(),
-      }, dependencies(candidate, snapshotPatch)),
-      (error: unknown) => error instanceof MantisLocalRunnerError && error.code === "provider_plan_revalidation_failed",
-    );
+  try {
+    for (const [candidate, snapshotPatch] of [
+      [{ providerKind: "openai" }, {}],
+      [{ credentialRef: "connection/claude-local" }, {}],
+      [{}, { capabilityCheckId: "unexpected-local-probe" }],
+    ] as const) {
+      await assert.rejects(
+        runMantisLocalClaude({
+          outputDir: path.join(root, "output"),
+          repositoryPath: path.join(root, "repository"),
+          paths: [],
+          sourceRef: SOURCE_REF,
+          sourceCacheDir: path.join(root, "cache"),
+          providerPlan: plan(),
+        }, dependencies(candidate, snapshotPatch)),
+        (error: unknown) => error instanceof MantisLocalRunnerError && error.code === "provider_plan_revalidation_failed",
+      );
+    }
+    assert.equal(modelReads, 0);
+    assert.equal(cliCreates, 0);
+  } finally {
+    removeFixture(root);
   }
-  assert.equal(modelReads, 0);
-  assert.equal(cliCreates, 0);
 });
 
 test("Mantis local fails before CLI execution when its pinned source is incomplete", async () => {
