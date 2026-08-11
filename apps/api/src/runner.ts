@@ -13,6 +13,10 @@ import { emptySeverityCounts } from "@csb/shared";
 import {
   CODEX_SECURITY_API_VAULT_TIMEOUT_MS,
   MAX_CONCURRENT_SCANS,
+  MANTIS_CACHE_DIR,
+  MANTIS_LOCAL_SOURCE_TIMEOUT_MS,
+  MANTIS_REPOSITORY_URL,
+  MANTIS_SOURCE_REF,
   RUNS_DIR,
   SCANS_ROOT,
 } from "./config.js";
@@ -37,9 +41,12 @@ import { validateScannerRequest } from "./scanners/catalog.js";
 import {
   prepareCodexSecurityApiLaunch,
   prepareMantisHttpLaunch,
+  prepareMantisLocalLaunch,
   prepareScannerLaunch,
 } from "./scanners/launch.js";
 import { createSafeMantisProviderPlan } from "./scanners/mantis-http-runner.js";
+import type { MantisLocalProviderPlan } from "./scanners/mantis-local-runner.js";
+import { resolveMantisLocalSource } from "./scanners/mantis-source.js";
 import { resolveScanLaunchSelection } from "./scanners/scan-selection.js";
 import type { ScanLaunchPlan } from "./connections/launch-plan.js";
 import type { SafeVulnHunterProviderPlan } from "./scanners/vulnhunter-runtime.js";
@@ -50,7 +57,7 @@ import {
 } from "./scanners/codex-security-api-bridge.js";
 import { refreshMantisRunFromDisk } from "./scanners/mantis-reconcile.js";
 import { refreshVulnHunterRunFromDisk } from "./scanners/vulnhunter-reconcile.js";
-import { getProviderRuntime } from "./provider-runtime.js";
+import { getProviderRuntime, type ProviderRuntime } from "./provider-runtime.js";
 import {
   globalSecretRedactor,
   processSecretValues,
@@ -321,15 +328,40 @@ function safeName(input: string): string {
 
 export interface StartScanOptions {
   signal?: AbortSignal;
+  /** Injectable only for deterministic launch-boundary tests. */
+  dependencies?: Partial<StartScanDependencies>;
 }
+
+type StartScanProviderRuntime = Pick<ProviderRuntime, "launchPlans" | "vault"> & {
+  store: Pick<ProviderRuntime["store"], "get" | "getSnapshot" | "getModel">;
+};
+
+interface StartScanDependencies {
+  validateScannerRequest: typeof validateScannerRequest;
+  providerRuntime: StartScanProviderRuntime;
+  resolveMantisLocalSource: typeof resolveMantisLocalSource;
+  spawn: ScannerSpawn;
+  /** Existing-session environment only; API-key variables are removed in launch.ts. */
+  environment: NodeJS.ProcessEnv;
+}
+
+type ScannerSpawn = (
+  command: string,
+  args: readonly string[],
+  options: {
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    detached: boolean;
+    stdio: ["ignore", "pipe", "pipe"];
+  },
+) => ChildProcess;
 
 export async function startScan(
   req: StartScanRequest,
   options: StartScanOptions = {},
 ): Promise<ScanRun> {
-  if (options.signal?.aborted) {
-    throw new CodexSecurityApiBridgeError("credential_unavailable");
-  }
+  throwIfLaunchAborted(options.signal);
+  const dependencies = options.dependencies ?? {};
 
   if (active.size >= MAX_CONCURRENT_SCANS) {
     throw new Error(
@@ -342,12 +374,13 @@ export async function startScan(
     throw new Error(`Repositório inválido: ${repositoryPath}`);
   }
 
-  const scanner = await validateScannerRequest(req);
+  const scanner = await (dependencies.validateScannerRequest ?? validateScannerRequest)(req);
+  throwIfLaunchAborted(options.signal);
 
   const displayName = req.displayName?.trim() || path.basename(repositoryPath);
   const id = nanoid(12);
   const outputDir = path.join(SCANS_ROOT, safeName(displayName), `csb-${safeName(displayName)}-${id}`);
-  const providerRuntime = getProviderRuntime();
+  const providerRuntime = dependencies.providerRuntime ?? getProviderRuntime();
   const selection = resolveScanLaunchSelection({
     request: req,
     scanId: id,
@@ -367,21 +400,56 @@ export async function startScan(
     })
     : null;
 
+  throwIfLaunchAborted(options.signal);
+  const localMantisPlan = localMantisProviderPlan(selection.plan);
+  const localMantisSource = localMantisPlan === null
+    ? null
+    : await (dependencies.resolveMantisLocalSource ?? resolveMantisLocalSource)({
+      repositoryUrl: MANTIS_REPOSITORY_URL,
+      ref: MANTIS_SOURCE_REF,
+      cacheDir: MANTIS_CACHE_DIR,
+      timeoutMs: MANTIS_LOCAL_SOURCE_TIMEOUT_MS,
+      signal: options.signal,
+    });
+  if (localMantisSource !== null && localMantisSource.ref !== MANTIS_SOURCE_REF) {
+    throw new Error("Mantis local source pin mismatch");
+  }
+  throwIfLaunchAborted(options.signal);
+
   // No output directory, worker config, or child process exists until the
   // immutable plan has passed and the exact Codex Security API tuple, when
   // selected, has resolved its vault credential.
   fs.mkdirSync(outputDir, { recursive: true, mode: 0o700 });
   fs.mkdirSync(RUNS_DIR, { recursive: true });
 
-  const model = selection.model ?? req.model ?? scanner.models[0]?.id ?? "gpt-5.6-sol";
+  // Connection-aware local runtime-default plans intentionally have no model.
+  // Never reinstate a browser value or the legacy GPT fallback for them.
+  const model = selection.connectionAware
+    ? selection.model
+    : selection.model ?? req.model ?? scanner.models[0]?.id ?? "gpt-5.6-sol";
   const effort = req.effort || "high";
   const mode = req.mode || "standard";
-  const launch = codexSecurityApiKey !== null
+  const requiredModel = (): string => {
+    if (model === null) throw new Error("Selected scanner route requires an exact provider model");
+    return model;
+  };
+  const launch = localMantisPlan !== null && localMantisSource !== null
+    ? prepareMantisLocalLaunch({
+      request: selection.request,
+      repositoryPath,
+      outputDir,
+      effort: String(effort),
+      mode,
+      sourceCacheDir: localMantisSource.sourceCacheDir,
+      mantisLocalProviderPlan: localMantisPlan,
+      ...(dependencies.environment === undefined ? {} : { environment: dependencies.environment }),
+    })
+    : codexSecurityApiKey !== null
     ? prepareCodexSecurityApiLaunch({
       request: selection.request,
       repositoryPath,
       outputDir,
-      model,
+      model: requiredModel(),
       effort: String(effort),
       mode,
       apiKey: codexSecurityApiKey,
@@ -392,7 +460,7 @@ export async function startScan(
         request: selection.request,
         repositoryPath,
         outputDir,
-        model,
+        model: requiredModel(),
         effort: String(effort),
         mode,
         providerKind: selection.plan.providerKind,
@@ -402,7 +470,7 @@ export async function startScan(
         request: selection.request,
         repositoryPath,
         outputDir,
-        model,
+        model: requiredModel(),
         effort: String(effort),
         mode,
         vulnhunterProviderPlan: vulnhunterProviderPlan(id, selection.plan),
@@ -434,7 +502,7 @@ export async function startScan(
     durationMs: null,
     cost:
       (launch.engine === "mantis" || launch.engine === "vulnhunter") &&
-        launch.authMode === "chatgpt"
+        (launch.authMode === "chatgpt" || launch.authMode === "existing-session")
         ? null
         : {
           estimatedUsd: 0,
@@ -442,7 +510,7 @@ export async function startScan(
           cachedInputTokens: 0,
           cacheWriteInputTokens: 0,
           outputTokens: 0,
-          model,
+          model: model ?? undefined,
         },
     severity: emptySeverityCounts(),
     source: "benchmark",
@@ -462,7 +530,8 @@ export async function startScan(
 
   let child: ChildProcess;
   try {
-    child = spawn(launch.command, launch.args, {
+    const spawnScanner: ScannerSpawn = dependencies.spawn ?? spawn;
+    child = spawnScanner(launch.command, launch.args, {
       cwd: launch.cwd,
       env: launch.env,
       // Own process group so an API restart does not SIGTERM long-running scans.
@@ -667,6 +736,9 @@ function maybeParseProgress(
 }
 
 function maybeParseCost(line: string, activeScan: ActiveScan, run: ScanRun): void {
+  // A subscription/local-session run has no reliable usage contract. Do not
+  // turn arbitrary prose such as "1,000 tokens" into a fictitious cost.
+  if (run.cost === null) return;
   // Heuristics from CLI progress lines
   const usd = line.match(/\$?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:USD|usd)/i);
   const tokens = line.match(/([0-9,]+)\s+tokens?/i);
@@ -686,6 +758,46 @@ function maybeParseCost(line: string, activeScan: ActiveScan, run: ScanRun): voi
   run.cost = cost;
   upsertRun(run);
   emit(activeScan, { type: "cost", cost, scan: run });
+}
+
+function throwIfLaunchAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new CodexSecurityApiBridgeError("credential_unavailable");
+}
+
+function localMantisProviderPlan(plan: ScanLaunchPlan | null): MantisLocalProviderPlan | null {
+  if (plan === null || plan.runnerKind !== "local-agent-session") return null;
+  if (
+    plan.engine !== "mantis" ||
+    plan.providerKind !== "anthropic" ||
+    plan.routeKind !== "claude-code-local" ||
+    plan.protocol !== "claude-code-cli" ||
+    plan.scannerAuthMode !== "existing-session" ||
+    plan.snapshot.connectionId !== plan.connectionId ||
+    plan.snapshot.routeKind !== plan.routeKind
+  ) throw new Error("Mantis local provider plan is invalid");
+  const modelSelectionMode = plan.snapshot.modelSelectionMode;
+  if (modelSelectionMode !== "catalog" && modelSelectionMode !== "runtime-default") {
+    throw new Error("Mantis local provider plan is invalid");
+  }
+  const runtimeDefault = modelSelectionMode === "runtime-default";
+  if (
+    (runtimeDefault && (plan.snapshot.modelId !== null || plan.model !== null || plan.capabilityCheckId !== null)) ||
+    (!runtimeDefault && (
+      modelSelectionMode !== "catalog" ||
+      plan.snapshot.modelId === null ||
+      plan.model === null ||
+      plan.model.id !== plan.snapshot.modelId ||
+      plan.capabilityCheckId !== null
+    ))
+  ) throw new Error("Mantis local provider plan is invalid");
+  return {
+    scanId: plan.snapshot.scanId,
+    connectionId: plan.connectionId,
+    routeKind: plan.routeKind,
+    protocol: plan.protocol,
+    modelSelectionMode,
+    modelId: plan.snapshot.modelId,
+  };
 }
 
 interface RunRefreshDependencies {

@@ -44,10 +44,8 @@ export interface MantisLocalWorkerConfiguration {
   repositoryPath: string;
   paths: string[];
   sourceRef: string;
-  /** Server-managed cache root; skillsRoot must be the exact ref-derived child. */
+  /** Server-managed cache root; the worker derives the exact ref child itself. */
   sourceCacheDir: string;
-  /** A server-pinned checkout containing precisely the required nine skills. */
-  skillsRoot: string;
   providerPlan: MantisLocalProviderPlan;
   /** Bounded per-stage process deadline; the core additionally caps this at 60s. */
   stageTimeoutMs?: number;
@@ -147,7 +145,6 @@ export async function runMantisLocalClaude(
     throwIfAborted(signal);
     revalidatePlan(configuration.providerPlan, dependencies);
     const pinnedSkills = loadPinnedSkills(
-      configuration.skillsRoot,
       configuration.sourceCacheDir,
       configuration.sourceRef,
       dependencies.readSourceRevision,
@@ -277,7 +274,6 @@ function revalidatePlan(
 }
 
 function loadPinnedSkills(
-  skillsRoot: string,
   sourceCacheDir: string,
   sourceRef: string,
   readSourceRevision: ((checkoutRoot: string) => string | null) | undefined,
@@ -286,12 +282,16 @@ function loadPinnedSkills(
   let root: string;
   try {
     const cacheRoot = fs.realpathSync(sourceCacheDir);
-    const cacheInfo = fs.statSync(cacheRoot);
-    if (!cacheInfo.isDirectory()) throw new Error("invalid cache");
-    const expectedRoot = path.resolve(sourceCacheDir, sourceRef.slice(0, 12));
-    if (path.resolve(skillsRoot) !== expectedRoot) throw new Error("source not derived from pin");
-    const info = fs.lstatSync(expectedRoot);
+    const cacheInfo = fs.lstatSync(cacheRoot);
     const currentUid = typeof process.getuid === "function" ? process.getuid() : undefined;
+    if (
+      !cacheInfo.isDirectory() ||
+      cacheInfo.isSymbolicLink() ||
+      (cacheInfo.mode & 0o077) !== 0 ||
+      (currentUid !== undefined && cacheInfo.uid !== currentUid)
+    ) throw new Error("invalid cache");
+    const expectedRoot = path.resolve(cacheRoot, sourceRef.slice(0, 12));
+    const info = fs.lstatSync(expectedRoot);
     if (
       !info.isDirectory() ||
       info.isSymbolicLink() ||
@@ -299,7 +299,7 @@ function loadPinnedSkills(
       (currentUid !== undefined && info.uid !== currentUid)
     ) throw new Error("not private directory");
     root = fs.realpathSync(expectedRoot);
-    if (fs.realpathSync(skillsRoot) !== root || !isInside(cacheRoot, root)) {
+    if (!isInside(cacheRoot, root)) {
       throw new Error("source root changed");
     }
     const revision = (readSourceRevision ?? readPinnedSourceRevision)(root);
@@ -464,7 +464,6 @@ function validateConfiguration(value: MantisLocalWorkerConfiguration): void {
     !safeText(value.repositoryPath, 4_096) ||
     !safeText(value.sourceRef, 64) ||
     !safeText(value.sourceCacheDir, 4_096) ||
-    !safeText(value.skillsRoot, 4_096) ||
     !Array.isArray(value.paths) ||
     value.paths.length > MAX_SCOPE_PATHS ||
     Buffer.byteLength(value.paths.join("\n"), "utf8") > MAX_SCOPE_BYTES ||

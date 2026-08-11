@@ -366,7 +366,6 @@ test("Mantis local rejects Grok and Cursor plans before creating a CLI", async (
         paths: [],
         sourceRef: SOURCE_REF,
         sourceCacheDir: "/private/tmp/not-created-cache",
-        skillsRoot: "/private/tmp/not-created",
         providerPlan: denied,
       }, dependencies),
       (error: unknown) => error instanceof MantisLocalRunnerError && error.code === "provider_plan_revalidation_failed",
@@ -387,7 +386,6 @@ test("Mantis local fails before CLI execution when its pinned source is incomple
         paths: [],
         sourceRef: SOURCE_REF,
         sourceCacheDir: path.join(root, "mantis-cache"),
-        skillsRoot: path.join(root, "missing-skills"),
         providerPlan: plan(),
       }, {
         getSnapshot: () => snapshot(),

@@ -116,10 +116,10 @@ test("Mantis local launch writes only the pinned Claude session identifiers and 
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-mantis-local-launch-"));
   const repositoryPath = path.join(fixtureRoot, "repository");
   const outputDir = path.join(fixtureRoot, "output");
-  const skillsRoot = path.join(fixtureRoot, "skills");
+  const sourceCacheDir = path.join(fixtureRoot, "cache");
   fs.mkdirSync(repositoryPath);
   fs.mkdirSync(outputDir);
-  fs.mkdirSync(skillsRoot);
+  fs.mkdirSync(sourceCacheDir, { mode: 0o700 });
   const apiKeys = {
     OPENAI_API_KEY: "openai-key-must-not-reach-local-worker",
     CODEX_API_KEY: "codex-key-must-not-reach-local-worker",
@@ -143,7 +143,7 @@ test("Mantis local launch writes only the pinned Claude session identifiers and 
       outputDir,
       effort: "high",
       mode: "standard",
-      skillsRoot,
+      sourceCacheDir,
       environment: apiKeys,
       mantisLocalProviderPlan: {
         scanId: "scan-local",
@@ -163,9 +163,9 @@ test("Mantis local launch writes only the pinned Claude session identifiers and 
     assert.match(launch.displayCommand, /^sentinel-mantis-local /);
     assert.equal(launch.args.at(-1), configPath);
     assert.deepEqual(Object.keys(config).sort(), [
-      "outputDir", "paths", "providerPlan", "repositoryPath", "skillsRoot", "sourceRef",
+      "outputDir", "paths", "providerPlan", "repositoryPath", "sourceCacheDir", "sourceRef",
     ]);
-    assert.equal(config.skillsRoot, skillsRoot);
+    assert.equal(config.sourceCacheDir, sourceCacheDir);
     assert.deepEqual(config.providerPlan, {
       scanId: "scan-local",
       connectionId: "claude-local",

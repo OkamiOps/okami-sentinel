@@ -1,13 +1,13 @@
-import { execFile as nativeExecFile } from "node:child_process";
-import { promisify } from "node:util";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
 import { MANTIS_STAGES } from "./mantis-http-runner.js";
 
-const execFile = promisify(nativeExecFile);
-const EXACT_GIT_REF = /^[a-f0-9]{40,64}$/i;
+const EXACT_GIT_REF = /^[a-f0-9]{40}$/i;
 const MAX_GIT_OUTPUT_BYTES = 128 * 1024;
+const MAX_SKILL_BYTES = 64 * 1024;
+const GIT_KILL_GRACE_MS = 250;
 
 export type MantisSourceErrorCode = "source_cancelled" | "source_invalid";
 
@@ -46,6 +46,8 @@ export interface ResolveMantisLocalSourceInput {
 }
 
 export interface ResolvedMantisLocalSource {
+  /** Private server-side cache root that the worker re-derives its checkout from. */
+  sourceCacheDir: string;
   /** Private checkout that contains the nine verified Mantis stage skills. */
   skillsRoot: string;
   ref: string;
@@ -68,7 +70,7 @@ export async function resolveMantisLocalSource(
   const cacheDir = path.resolve(input.cacheDir);
   ensurePrivateDirectory(cacheDir);
 
-  const skillsRoot = path.join(cacheDir, `local-${ref.slice(0, 12)}`);
+  const skillsRoot = path.join(cacheDir, ref.slice(0, 12));
   if (!fs.existsSync(skillsRoot)) {
     await git(command, [
       "clone",
@@ -88,7 +90,7 @@ export async function resolveMantisLocalSource(
     throw new MantisSourceError("source_invalid");
   }
   throwIfAborted(signal);
-  return { skillsRoot, ref };
+  return { sourceCacheDir: cacheDir, skillsRoot, ref };
 }
 
 async function nativeGit(
@@ -96,15 +98,72 @@ async function nativeGit(
   args: string[],
   options: MantisSourceCommandOptions,
 ): Promise<{ stdout: string; stderr: string }> {
-  const result = await execFile(binary, args, {
-    cwd: options.cwd,
-    timeout: options.timeout,
-    maxBuffer: options.maxBuffer,
-    shell: options.shell,
-    windowsHide: options.windowsHide,
-    signal: options.signal,
+  return new Promise((resolve, reject) => {
+    let stdout = "";
+    let stderr = "";
+    let outputBytes = 0;
+    let failure: Error | null = null;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    const child = spawn(binary, args, {
+      cwd: options.cwd,
+      shell: options.shell,
+      windowsHide: options.windowsHide,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const timeout = setTimeout(() => terminate(new Error("git preflight timed out")), options.timeout);
+
+    const abort = () => terminate(new Error("git preflight cancelled"));
+    options.signal.addEventListener("abort", abort, { once: true });
+    if (options.signal.aborted) abort();
+
+    const append = (stream: "stdout" | "stderr", chunk: Buffer) => {
+      if (failure !== null) return;
+      outputBytes += chunk.byteLength;
+      if (outputBytes > options.maxBuffer) {
+        terminate(new Error("git preflight output limit"));
+        return;
+      }
+      if (stream === "stdout") stdout += chunk.toString("utf8");
+      else stderr += chunk.toString("utf8");
+    };
+
+    child.stdout?.on("data", (chunk: Buffer) => append("stdout", chunk));
+    child.stderr?.on("data", (chunk: Buffer) => append("stderr", chunk));
+    child.on("error", (error) => {
+      if (failure === null) failure = error;
+    });
+    child.on("close", (code) => {
+      clearTimeout(timeout);
+      if (killTimer) clearTimeout(killTimer);
+      options.signal.removeEventListener("abort", abort);
+      if (failure !== null) {
+        reject(failure);
+        return;
+      }
+      if (code !== 0) {
+        reject(new Error("git preflight failed"));
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
+
+    function terminate(error: Error): void {
+      if (failure !== null) return;
+      failure = error;
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        // The close listener remains authoritative even when the child already exited.
+      }
+      killTimer = setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // close is still awaited; this is only a bounded escalation for this PID.
+        }
+      }, GIT_KILL_GRACE_MS);
+    }
   });
-  return { stdout: result.stdout, stderr: result.stderr };
 }
 
 async function git(
@@ -183,7 +242,7 @@ function hasRequiredSkills(skillsRoot: string): boolean {
       const file = path.resolve(skillsRoot, stage.skill, "SKILL.md");
       if (!inside(skillsRoot, file)) return false;
       const info = fs.statSync(file);
-      return info.isFile() && info.size > 0 && info.size <= 24 * 1024;
+      return info.isFile() && info.size > 0 && info.size <= MAX_SKILL_BYTES;
     } catch {
       return false;
     }

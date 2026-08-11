@@ -31,6 +31,15 @@ function populateSkills(root: string): void {
   }
 }
 
+function populateLargeSkill(root: string): void {
+  populateSkills(root);
+  fs.writeFileSync(
+    path.join(root, "mantis-calibrate", "SKILL.md"),
+    `# mantis-calibrate\n${"T".repeat(41_402)}\n`,
+    { mode: 0o600 },
+  );
+}
+
 test("Mantis local source clones argv-only, verifies the exact revision, and returns a private pinned skills root", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-source-"));
   const calls: Array<{ command: string; args: string[]; shell: false }> = [];
@@ -57,6 +66,7 @@ test("Mantis local source clones argv-only, verifies the exact revision, and ret
     });
 
     assert.match(source.skillsRoot, new RegExp(`${REF.slice(0, 12)}$`));
+    assert.equal(source.sourceCacheDir, path.join(root, "cache"));
     assert.equal(fs.statSync(source.skillsRoot).mode & 0o077, 0);
     assert.deepEqual(calls.map((call) => call.command), ["git", "git", "git"]);
     assert.deepEqual(calls.map((call) => call.shell), [false, false, false]);
@@ -116,4 +126,79 @@ test("Mantis local source honors an already-aborted request before git preflight
     (error: unknown) => error instanceof MantisSourceError && error.code === "source_cancelled",
   );
   assert.equal(calls, 0);
+});
+
+test("Mantis local source accepts the reviewed 41,402-byte stage skill before worker launch", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-source-large-skill-"));
+  try {
+    const source = await resolveMantisLocalSource({
+      repositoryUrl: "https://example.test/google/mantis.git",
+      ref: REF,
+      cacheDir: path.join(root, "cache"),
+      command: async (_binary, args) => {
+        if (args[0] === "clone") {
+          fs.mkdirSync(args.at(-1)!, { recursive: true, mode: 0o700 });
+          return { stdout: "", stderr: "" };
+        }
+        if (args.includes("checkout")) {
+          populateLargeSkill(args[1]!);
+          return { stdout: "", stderr: "" };
+        }
+        return { stdout: `${REF}\n`, stderr: "" };
+      },
+    });
+    assert.equal(fs.statSync(path.join(source.skillsRoot, "mantis-calibrate", "SKILL.md")).size, 41_422);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Mantis local source waits for the native git child close after aborting its exact preflight process", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-source-native-abort-"));
+  const bin = path.join(root, "bin");
+  const marker = path.join(root, "marker");
+  const originalPath = process.env.PATH;
+  fs.mkdirSync(bin, { mode: 0o700 });
+  fs.writeFileSync(path.join(bin, "git"), `#!/bin/sh
+trap 'printf terminated > ${JSON.stringify(marker)}; exit 143' TERM
+printf started > ${JSON.stringify(marker)}
+while :; do :; done
+`, { mode: 0o700 });
+  const controller = new AbortController();
+  process.env.PATH = `${bin}${path.delimiter}${originalPath ?? ""}`;
+  const operation = resolveMantisLocalSource({
+    repositoryUrl: "https://example.test/google/mantis.git",
+    ref: REF,
+    cacheDir: path.join(root, "cache"),
+    signal: controller.signal,
+    timeoutMs: 5_000,
+  });
+
+  try {
+    const started = await new Promise<boolean>((resolve) => {
+      const deadline = Date.now() + 500;
+      const poll = () => {
+        if (fs.existsSync(marker) && fs.readFileSync(marker, "utf8") === "started") {
+          resolve(true);
+          return;
+        }
+        if (Date.now() >= deadline) {
+          resolve(false);
+          return;
+        }
+        setTimeout(poll, 10);
+      };
+      poll();
+    });
+    assert.equal(started, true, "native git test process did not start");
+    controller.abort();
+    await assert.rejects(
+      operation,
+      (error: unknown) => error instanceof MantisSourceError && error.code === "source_cancelled",
+    );
+    assert.equal(fs.readFileSync(marker, "utf8"), "terminated");
+  } finally {
+    process.env.PATH = originalPath;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

@@ -87,7 +87,7 @@ export interface MantisLocalLaunchInput {
   outputDir: string;
   effort: string;
   mode: ScanMode;
-  skillsRoot: string;
+  sourceCacheDir: string;
   mantisLocalProviderPlan: MantisLocalProviderPlan;
   /** Private test seam; production inherits the existing Claude session. */
   environment?: NodeJS.ProcessEnv;
@@ -304,7 +304,7 @@ export function prepareMantisLocalLaunch(input: MantisLocalLaunchInput): Scanner
     repositoryPath: input.repositoryPath,
     paths: (input.request.paths ?? []).map((item) => item.trim()).filter(Boolean),
     sourceRef: MANTIS_SOURCE_REF,
-    skillsRoot: input.skillsRoot,
+    sourceCacheDir: input.sourceCacheDir,
     providerPlan: plan,
   };
   const configPath = path.join(input.outputDir, "mantis-local-run.json");
