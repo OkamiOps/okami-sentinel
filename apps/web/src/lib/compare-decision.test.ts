@@ -26,6 +26,7 @@ function scan(id: string, total: number, high: number, cost: number | null, dura
     severity: { critical: 0, high, medium: total - high, low: 0, info: 0, unknown: 0, total },
     source: "workbench",
     pid: null,
+    execution: null,
   };
 }
 

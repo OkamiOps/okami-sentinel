@@ -57,6 +57,11 @@ function localPlan(scanId: string): ScanLaunchPlan {
       modelSelectionMode: "runtime-default",
       modelId: null,
       capabilityCheckId: null,
+      executionProfile: null,
+      profileVersion: null,
+      methodologyRef: null,
+      protocol: "claude-code-cli",
+      authKind: "existing-session",
       capturedAt: "2026-08-11T16:00:00.000Z",
     },
   };

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import Database from "better-sqlite3";
 
+import * as dbModule from "./db.js";
 import { deleteRun, getRun, hideRun, upsertRun } from "./db.js";
 import type { ScanRun } from "@csb/shared";
 
@@ -91,16 +92,49 @@ test("round-trips frozen provider-catalog pricing and null costs", () => {
     upsertRun(nullCostRun);
 
     assert.deepEqual(getRun(pricedRun.id)?.cost, pricedRun.cost);
-    assert.deepEqual(getRun(pricedRun.id)?.execution, {
-      ...pricedRun.execution,
-      connectionId: null,
-      routeKind: null,
-      protocol: null,
-      authKind: null,
-    });
+    assert.deepEqual(getRun(pricedRun.id)?.execution, pricedRun.execution);
     assert.equal(getRun(nullCostRun.id)?.cost, null);
   } finally {
     deleteRun(pricedRun.id);
     deleteRun(nullCostRun.id);
+  }
+});
+
+test("adds complete execution columns to legacy run schemas idempotently", () => {
+  const ensureRunMetadataColumns = (
+    dbModule as typeof dbModule & {
+      ensureRunMetadataColumns?: (database: Database.Database) => void;
+    }
+  ).ensureRunMetadataColumns;
+
+  assert.equal(typeof ensureRunMetadataColumns, "function");
+  if (typeof ensureRunMetadataColumns !== "function") return;
+
+  const database = new Database(":memory:");
+  try {
+    database.exec("CREATE TABLE runs (id TEXT PRIMARY KEY)");
+    ensureRunMetadataColumns(database);
+    ensureRunMetadataColumns(database);
+
+    const columns = new Set(
+      (database.prepare("PRAGMA table_info(runs)").all() as Array<{ name: string }>).map(
+        (column) => column.name,
+      ),
+    );
+    for (const column of [
+      "execution_profile",
+      "profile_version",
+      "methodology_ref",
+      "capability_check_id",
+      "connection_id",
+      "route_kind",
+      "protocol",
+      "auth_kind",
+      "cost_json",
+    ]) {
+      assert.equal(columns.has(column), true);
+    }
+  } finally {
+    database.close();
   }
 });

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import Database from "better-sqlite3";
+import type { ScanConnectionSnapshot, ScanRun } from "@csb/shared";
 import type { StoredProviderConnection } from "./connections-store.js";
 import {
   ConnectionStore,
@@ -12,6 +13,20 @@ import {
   listConnections,
   updateConnectionRecord,
 } from "./connections-store.js";
+
+type IsRequired<T, Key extends keyof T> = {} extends Pick<T, Key> ? false : true;
+
+const requiredSnapshotProvenance: [
+  IsRequired<ScanConnectionSnapshot, "executionProfile">,
+  IsRequired<ScanConnectionSnapshot, "profileVersion">,
+  IsRequired<ScanConnectionSnapshot, "methodologyRef">,
+  IsRequired<ScanConnectionSnapshot, "protocol">,
+  IsRequired<ScanConnectionSnapshot, "authKind">,
+] = [true, true, true, true, true];
+const requiredRunExecution: IsRequired<ScanRun, "execution"> = true;
+
+void requiredSnapshotProvenance;
+void requiredRunExecution;
 
 function connectionFixture(
   overrides: Partial<StoredProviderConnection> = {},
@@ -140,6 +155,11 @@ test("model rows and snapshots never serialize a vault bundle", () => {
       modelSelectionMode: "catalog",
       modelId: "vendor/model-a",
       capabilityCheckId: "check-a",
+      executionProfile: null,
+      profileVersion: null,
+      methodologyRef: null,
+      protocol: null,
+      authKind: null,
       capturedAt: "2026-08-11T00:00:00.000Z",
     });
 
@@ -692,6 +712,11 @@ test("deletion cascades models and checks while scan snapshots remain", () => {
       modelSelectionMode: "catalog",
       modelId: "model-1",
       capabilityCheckId: "check-1",
+      executionProfile: null,
+      profileVersion: null,
+      methodologyRef: null,
+      protocol: null,
+      authKind: null,
       capturedAt: "2026-08-10T12:00:00.000Z",
     });
 

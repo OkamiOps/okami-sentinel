@@ -90,6 +90,7 @@ test("closing a scan enriches the launch record without creating an official-id 
       },
       source: "benchmark",
       pid: 123,
+      execution: null,
     };
     const official: ScanRun = {
       ...fallback,

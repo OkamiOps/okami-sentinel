@@ -97,6 +97,11 @@ function plan(scanId: string): ScanLaunchPlan {
       modelSelectionMode: "catalog",
       modelId: model.id,
       capabilityCheckId: null,
+      executionProfile: null,
+      profileVersion: null,
+      methodologyRef: null,
+      protocol: "openai-chat",
+      authKind: "api-key",
       capturedAt: "2026-08-11T12:00:00.000Z",
     },
   };

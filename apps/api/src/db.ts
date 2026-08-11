@@ -34,6 +34,10 @@ export interface BenchmarkRow {
   profile_version?: string | null;
   methodology_ref?: string | null;
   capability_check_id?: string | null;
+  connection_id?: string | null;
+  route_kind?: string | null;
+  protocol?: string | null;
+  auth_kind?: string | null;
   cost_json?: string | null;
   started_at: string | null;
   completed_at: string | null;
@@ -83,6 +87,10 @@ export function getDb(): Database.Database {
       profile_version TEXT,
       methodology_ref TEXT,
       capability_check_id TEXT,
+      connection_id TEXT,
+      route_kind TEXT,
+      protocol TEXT,
+      auth_kind TEXT,
       cost_json TEXT,
       started_at TEXT,
       completed_at TEXT,
@@ -130,7 +138,7 @@ export function getDb(): Database.Database {
   return db;
 }
 
-function ensureRunMetadataColumns(database: Database.Database): void {
+export function ensureRunMetadataColumns(database: Database.Database): void {
   const columns = new Set(
     (database.prepare(`PRAGMA table_info(runs)`).all() as Array<{ name: string }>).map(
       (column) => column.name,
@@ -146,6 +154,10 @@ function ensureRunMetadataColumns(database: Database.Database): void {
     ["profile_version", "TEXT"],
     ["methodology_ref", "TEXT"],
     ["capability_check_id", "TEXT"],
+    ["connection_id", "TEXT"],
+    ["route_kind", "TEXT"],
+    ["protocol", "TEXT"],
+    ["auth_kind", "TEXT"],
     ["cost_json", "TEXT"],
   ] as const;
   for (const [name, definition] of additions) {
@@ -219,13 +231,14 @@ export function rowToScanRun(row: BenchmarkRow): ScanRun {
 export function upsertRun(run: ScanRun): void {
   const now = new Date().toISOString();
   const cost = run.cost === null ? null : sanitizeScanCost(run.cost);
-  const execution = run.execution ?? null;
+  const execution = run.execution;
   getDb()
     .prepare(
       `INSERT INTO runs (
         id, display_name, repository_path, revision, scan_dir, status,
         model, effort, mode, engine, provider, auth_mode, scanner_version, recipe_hash,
-        execution_profile, profile_version, methodology_ref, capability_check_id, cost_json,
+        execution_profile, profile_version, methodology_ref, capability_check_id,
+        connection_id, route_kind, protocol, auth_kind, cost_json,
         started_at, completed_at, duration_ms,
         estimated_usd, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens,
         severity_critical, severity_high, severity_medium, severity_low, severity_info, severity_unknown, severity_total,
@@ -233,7 +246,8 @@ export function upsertRun(run: ScanRun): void {
       ) VALUES (
         @id, @display_name, @repository_path, @revision, @scan_dir, @status,
         @model, @effort, @mode, @engine, @provider, @auth_mode, @scanner_version, @recipe_hash,
-        @execution_profile, @profile_version, @methodology_ref, @capability_check_id, @cost_json,
+        @execution_profile, @profile_version, @methodology_ref, @capability_check_id,
+        @connection_id, @route_kind, @protocol, @auth_kind, @cost_json,
         @started_at, @completed_at, @duration_ms,
         @estimated_usd, @input_tokens, @cached_input_tokens, @cache_write_tokens, @output_tokens,
         @severity_critical, @severity_high, @severity_medium, @severity_low, @severity_info, @severity_unknown, @severity_total,
@@ -257,6 +271,10 @@ export function upsertRun(run: ScanRun): void {
         profile_version=excluded.profile_version,
         methodology_ref=excluded.methodology_ref,
         capability_check_id=excluded.capability_check_id,
+        connection_id=excluded.connection_id,
+        route_kind=excluded.route_kind,
+        protocol=excluded.protocol,
+        auth_kind=excluded.auth_kind,
         cost_json=excluded.cost_json,
         started_at=excluded.started_at,
         completed_at=excluded.completed_at,
@@ -296,6 +314,10 @@ export function upsertRun(run: ScanRun): void {
       profile_version: execution?.profileVersion ?? null,
       methodology_ref: execution?.methodologyRef ?? null,
       capability_check_id: execution?.capabilityCheckId ?? null,
+      connection_id: execution?.connectionId ?? null,
+      route_kind: execution?.routeKind ?? null,
+      protocol: execution?.protocol ?? null,
+      auth_kind: execution?.authKind ?? null,
       cost_json: cost === null ? null : JSON.stringify(cost),
       started_at: run.startedAt,
       completed_at: run.completedAt,
@@ -441,10 +463,10 @@ function rowToExecutionProvenance(row: BenchmarkRow): ScanRun["execution"] {
     profileVersion: row.profile_version,
     methodologyRef: row.methodology_ref,
     capabilityCheckId: row.capability_check_id ?? null,
-    connectionId: null,
-    routeKind: null,
-    protocol: null,
-    authKind: null,
+    connectionId: row.connection_id ?? null,
+    routeKind: row.route_kind ?? null,
+    protocol: (row.protocol ?? null) as NonNullable<ScanRun["execution"]>["protocol"],
+    authKind: (row.auth_kind ?? null) as NonNullable<ScanRun["execution"]>["authKind"],
   };
 }
 

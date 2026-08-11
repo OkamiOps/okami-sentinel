@@ -172,6 +172,11 @@ function snapshot(
     capabilityCheckId: PLAN.capabilityCheckId,
     capturedAt: "2026-08-11T12:00:00.000Z",
     ...patch,
+    executionProfile: patch.executionProfile ?? null,
+    profileVersion: patch.profileVersion ?? null,
+    methodologyRef: patch.methodologyRef ?? null,
+    protocol: patch.protocol ?? PLAN.protocol,
+    authKind: patch.authKind ?? "api-key",
   };
 }
 

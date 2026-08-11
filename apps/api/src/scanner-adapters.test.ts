@@ -427,6 +427,11 @@ test("Mantis HTTP launch serializes only the revalidated provider identifiers", 
         modelSelectionMode: "catalog",
         modelId: "gpt-live",
         capabilityCheckId: "capability-a",
+        executionProfile: null,
+        profileVersion: null,
+        methodologyRef: null,
+        protocol: "openai-responses",
+        authKind: "api-key",
         capturedAt: "2026-08-11T12:00:00.000Z",
       },
     });
@@ -973,6 +978,7 @@ test("failed Mantis runs with normalized findings remain explicit partial result
     severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0, total: 0 },
     source: "benchmark",
     pid: null,
+    execution: null,
   };
 
   try {
@@ -1033,6 +1039,7 @@ test("Mantis reconciliation preserves cache-write usage from a legacy reported r
       severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0, total: 0 },
       source: "benchmark",
       pid: null,
+      execution: null,
     });
 
     assert.equal(refreshed.cost?.cacheWriteInputTokens, 15);
@@ -1083,6 +1090,7 @@ test("Mantis reconciliation leaves an unreported zero usage runtime without a co
       severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0, total: 0 },
       source: "benchmark",
       pid: null,
+      execution: null,
     });
 
     assert.equal(refreshed.cost, null);
@@ -1139,6 +1147,7 @@ test("failed VulnHunter runs preserve normalized findings as incomplete evidence
     severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0, total: 0 },
     source: "benchmark",
     pid: null,
+    execution: null,
   };
 
   try {
@@ -1208,6 +1217,7 @@ test("VulnHunter reconciliation preserves cache-write usage from a legacy report
       severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0, total: 0 },
       source: "benchmark",
       pid: null,
+      execution: null,
     });
 
     assert.equal(refreshed.cost?.cacheWriteInputTokens, 15);
@@ -1258,6 +1268,7 @@ test("VulnHunter reconciliation leaves an unreported zero usage runtime without 
       severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0, total: 0 },
       source: "benchmark",
       pid: null,
+      execution: null,
     });
 
     assert.equal(refreshed.cost, null);

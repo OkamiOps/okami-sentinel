@@ -83,6 +83,7 @@ function scan(status: ScanRun["status"]): ScanRun {
     },
     source: "benchmark",
     pid: null,
+    execution: null,
   };
 }
 

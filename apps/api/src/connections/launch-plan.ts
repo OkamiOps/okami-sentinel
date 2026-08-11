@@ -113,6 +113,11 @@ export function createLaunchPlanResolver(
         modelSelectionMode: input.selection.modelSelectionMode,
         modelId: input.selection.modelId,
         capabilityCheckId: compatibility.capabilityCheckId,
+        executionProfile: null,
+        profileVersion: null,
+        methodologyRef: null,
+        protocol: compatibility.protocol,
+        authKind: connection.authKind,
         capturedAt,
       };
       dependencies.writeSnapshot(snapshot);

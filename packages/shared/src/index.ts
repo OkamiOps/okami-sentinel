@@ -294,12 +294,11 @@ export interface ScanConnectionSnapshot {
   modelId: string | null;
   routeKind: string;
   capabilityCheckId: string | null;
-  /** Optional only while legacy snapshot writers are migrated to the profile contract. */
-  executionProfile?: CodexSecurityExecutionProfile | null;
-  profileVersion?: string | null;
-  methodologyRef?: string | null;
-  protocol?: ProviderProtocol | null;
-  authKind?: ConnectionAuthKind | null;
+  executionProfile: CodexSecurityExecutionProfile | null;
+  profileVersion: string | null;
+  methodologyRef: string | null;
+  protocol: ProviderProtocol | null;
+  authKind: ConnectionAuthKind | null;
   capturedAt: string;
 }
 
@@ -538,8 +537,7 @@ export interface ScanRun {
   severity: SeverityCounts;
   source: "workbench" | "benchmark" | "filesystem";
   pid: number | null;
-  /** Absent only on legacy in-memory producers while they adopt provenance. */
-  execution?: ScanExecutionProvenance | null;
+  execution: ScanExecutionProvenance | null;
   progress?: ScanProgress | null;
 }
 

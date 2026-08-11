@@ -70,6 +70,7 @@ test("annotates ChatGPT Mantis usage as an OpenRouter estimate for the exact mod
     severity: { critical: 4, high: 16, medium: 7, low: 0, info: 0, unknown: 0, total: 27 },
     source: "benchmark",
     pid: null,
+    execution: null,
   };
 
   const estimated = estimateScanWithOpenRouterPricing(

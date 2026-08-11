@@ -184,6 +184,7 @@ test("runner redacts nested progress before an event can be serialized to SSE", 
     severity: emptySeverityCounts(),
     source: "benchmark",
     pid: null,
+    execution: null,
     progress,
   };
   globalSecretRedactor.register(scope, [marker]);

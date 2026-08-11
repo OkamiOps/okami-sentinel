@@ -719,6 +719,7 @@ function workbenchRowToScanRun(row: WorkbenchScanRow): ScanRun {
     severity,
     source: "workbench",
     pid: null,
+    execution: null,
   };
 }
 
@@ -836,6 +837,7 @@ export function readFilesystemScans(): ScanRun[] {
         severity,
         source: "filesystem",
         pid: null,
+        execution: null,
       });
     } catch {
       // skip

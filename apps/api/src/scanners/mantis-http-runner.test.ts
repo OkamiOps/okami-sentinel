@@ -130,6 +130,11 @@ function snapshot(patch: Partial<ScanConnectionSnapshot> = {}): ScanConnectionSn
     capabilityCheckId: "capability-a",
     capturedAt: NOW.toISOString(),
     ...patch,
+    executionProfile: patch.executionProfile ?? null,
+    profileVersion: patch.profileVersion ?? null,
+    methodologyRef: patch.methodologyRef ?? null,
+    protocol: patch.protocol ?? "openai-responses",
+    authKind: patch.authKind ?? "api-key",
   };
 }
 

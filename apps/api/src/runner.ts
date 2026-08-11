@@ -517,6 +517,7 @@ export async function startScan(
     severity: emptySeverityCounts(),
     source: "benchmark",
     pid: null,
+    execution: null,
     progress: initialProgress ? sanitizeScanProgress(initialProgress) : null,
   };
   upsertRun(run);

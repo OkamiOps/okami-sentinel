@@ -164,6 +164,11 @@ test("eligible HTTP launch writes exactly one immutable snapshot with the exact 
       modelSelectionMode: "catalog",
       modelId: "model-a",
       capabilityCheckId: "probe-a",
+      executionProfile: null,
+      profileVersion: null,
+      methodologyRef: null,
+      protocol: "openai-responses",
+      authKind: "api-key",
       capturedAt: NOW.toISOString(),
     },
   });
@@ -225,6 +230,11 @@ test("Claude Code runtime-default launch persists no browser model fallback", ()
     modelSelectionMode: "runtime-default",
     modelId: null,
     capabilityCheckId: null,
+    executionProfile: null,
+    profileVersion: null,
+    methodologyRef: null,
+    protocol: "claude-code-cli",
+    authKind: "existing-session",
     capturedAt: NOW.toISOString(),
   });
   assert.deepEqual(snapshots, [plan.snapshot]);

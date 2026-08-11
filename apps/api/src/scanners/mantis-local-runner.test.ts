@@ -98,6 +98,11 @@ function snapshot(patch: Partial<ScanConnectionSnapshot> = {}): ScanConnectionSn
     capabilityCheckId: null,
     capturedAt: NOW.toISOString(),
     ...patch,
+    executionProfile: patch.executionProfile ?? null,
+    profileVersion: patch.profileVersion ?? null,
+    methodologyRef: patch.methodologyRef ?? null,
+    protocol: patch.protocol ?? "claude-code-cli",
+    authKind: patch.authKind ?? "existing-session",
   };
 }
 
