@@ -152,3 +152,26 @@ test("xAI OAuth adapter maps expired credentials and disconnects without returni
   assert.deepEqual(await adapter.disconnectAuth?.(connection()), { status: "revoked" });
   assert.deepEqual(flow.calls, ["disconnect:conn-xai"]);
 });
+
+test("xAI model discovery has an authoritative deadline when its transport ignores abort", async () => {
+  const adapter = createXaiOAuthAdapter({
+    flow: new FakeXaiFlow(),
+    transport: async () => new Promise<Response>(() => undefined),
+  });
+
+  const result = await Promise.race([
+    adapter.discoverModels(connection()),
+    delay(8_250).then(() => "timed-out" as const),
+  ]);
+
+  assert.notEqual(result, "timed-out");
+  assert.deepEqual(result, {
+    models: [],
+    supportsRuntimeDefault: false,
+    safeError: { code: "provider_unreachable" },
+  });
+});
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}

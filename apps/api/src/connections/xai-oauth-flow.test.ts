@@ -420,6 +420,68 @@ test("expired xAI credentials refresh once, rotate before use, and keep the bear
   });
 });
 
+test("a delayed stale read joins the completed refresh instead of revoking its replacement", async () => {
+  class DelayedSecondReadStore extends MemoryCredentialStore {
+    readonly secondReadStarted = deferred<void>();
+    readonly releaseSecondRead = deferred<void>();
+    #reads = 0;
+
+    override async get(connectionId: string) {
+      const snapshot = await super.get(connectionId);
+      this.#reads += 1;
+      if (this.#reads === 2) {
+        this.secondReadStarted.resolve();
+        await this.releaseSecondRead.promise;
+      }
+      return snapshot;
+    }
+  }
+
+  const credentialStore = new DelayedSecondReadStore();
+  await credentialStore.put("conn-xai", {
+    accessToken: "expired-access-token",
+    refreshToken: "old-refresh-token",
+    expiresAt: "2026-08-10T00:00:00.000Z",
+  });
+  let refreshCalls = 0;
+  const flow = createXaiOAuthFlow({
+    credentialStore,
+    now: () => new Date("2026-08-11T00:00:00.000Z"),
+    transport: {
+      async requestDeviceCode() {
+        throw new Error("not used");
+      },
+      async requestToken() {
+        refreshCalls += 1;
+        return refreshCalls === 1
+          ? {
+            accessToken: "fresh-access-token",
+            refreshToken: "rotated-refresh-token",
+            expiresIn: 3600,
+          }
+          : { error: "invalid_grant" };
+      },
+      async revoke() {
+        throw new Error("not used");
+      },
+    },
+  });
+
+  const first = flow.getAccessToken("conn-xai");
+  const second = flow.getAccessToken("conn-xai");
+  await credentialStore.secondReadStarted.promise;
+  assert.equal(await first, "fresh-access-token");
+  credentialStore.releaseSecondRead.resolve();
+
+  assert.deepEqual(await Promise.all([first, second]), ["fresh-access-token", "fresh-access-token"]);
+  assert.equal(refreshCalls, 1);
+  assert.deepEqual(credentialStore.values.get("conn-xai"), {
+    accessToken: "fresh-access-token",
+    refreshToken: "rotated-refresh-token",
+    expiresAt: credentialStore.values.get("conn-xai")?.expiresAt ?? null,
+  });
+});
+
 test("disconnect rejects a stale refresh and preserves a newer device login", async () => {
   const credentialStore = new MemoryCredentialStore();
   await credentialStore.put("conn-xai", {

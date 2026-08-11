@@ -42,6 +42,8 @@ export type SafeFetchJsonResult =
   | { data: unknown }
   | { safeError: SafeProviderError };
 
+class HttpRequestAbortedError extends Error {}
+
 export interface DiscoveryCredentials extends ConnectionSecretBundle {
   connectionId?: string;
   /** This is intentionally not persisted by this module. */
@@ -133,12 +135,12 @@ export async function safeFetchJson(
     try {
       let response: Response;
       try {
-        response = await (input.transport ?? fetch)(input.url, {
+        response = await raceWithAbort(Promise.resolve().then(() => (input.transport ?? fetch)(input.url, {
           method: input.method ?? "GET",
           headers: input.headers,
           redirect: "error",
           signal: controller.signal,
-        });
+        })), controller.signal);
       } catch {
         return safeError("provider_unreachable");
       }
@@ -148,8 +150,9 @@ export async function safeFetchJson(
 
       let text: string;
       try {
-        text = await readBoundedResponse(response, HTTP_RESPONSE_LIMIT_BYTES);
-      } catch {
+        text = await readBoundedResponse(response, HTTP_RESPONSE_LIMIT_BYTES, controller.signal);
+      } catch (error) {
+        if (error instanceof HttpRequestAbortedError) return safeError("provider_unreachable");
         return safeError("protocol_unsupported");
       }
 
@@ -778,15 +781,29 @@ function allBundleSecretValues(bundle: ConnectionSecretBundle): string[] {
   return values;
 }
 
-async function readBoundedResponse(response: Response, limit: number): Promise<string> {
+async function readBoundedResponse(
+  response: Response,
+  limit: number,
+  signal?: AbortSignal,
+): Promise<string> {
   const body = response.body;
   if (body === null) throw new Error("empty response");
   const reader = body.getReader();
+  const cancelReader = () => {
+    void reader.cancel().catch(() => undefined);
+  };
+  if (signal?.aborted) {
+    cancelReader();
+    throw new HttpRequestAbortedError();
+  }
+  signal?.addEventListener("abort", cancelReader, { once: true });
   const chunks: Uint8Array[] = [];
   let length = 0;
   try {
     while (true) {
-      const next = await reader.read();
+      const next = signal === undefined
+        ? await reader.read()
+        : await raceWithAbort(reader.read(), signal);
       if (next.done) break;
       const chunk = next.value;
       length += chunk.byteLength;
@@ -799,6 +816,7 @@ async function readBoundedResponse(response: Response, limit: number): Promise<s
       chunks.push(chunk);
     }
   } finally {
+    signal?.removeEventListener("abort", cancelReader);
     reader.releaseLock();
   }
   const merged = new Uint8Array(length);
@@ -808,4 +826,32 @@ async function readBoundedResponse(response: Response, limit: number): Promise<s
     offset += chunk.byteLength;
   }
   return new TextDecoder().decode(merged);
+}
+
+/**
+ * Transport shims occasionally ignore AbortSignal. Race the operation so the
+ * provider boundary still settles at its deadline, while consuming a late
+ * rejection from that ignored request or stream read.
+ */
+function raceWithAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  void operation.catch(() => undefined);
+  if (signal.aborted) return Promise.reject(new HttpRequestAbortedError());
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      cleanup();
+      reject(new HttpRequestAbortedError());
+    };
+    const onFulfilled = (value: T) => {
+      cleanup();
+      resolve(value);
+    };
+    const onRejected = (error: unknown) => {
+      cleanup();
+      reject(error);
+    };
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+
+    signal.addEventListener("abort", onAbort, { once: true });
+    operation.then(onFulfilled, onRejected);
+  });
 }

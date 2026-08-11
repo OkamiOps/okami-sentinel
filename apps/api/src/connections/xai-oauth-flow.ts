@@ -181,6 +181,7 @@ interface TerminalFlow {
 
 interface ConnectionState {
   generation: number;
+  credentialRevision: number;
   mutations: Promise<void>;
   pendingStarts: Set<AbortController>;
 }
@@ -409,28 +410,39 @@ class ManagedXaiOAuthFlow implements XaiOAuthFlow {
 
   async getAccessToken(connectionId: string): Promise<string> {
     const safeConnectionId = requiredConnectionId(connectionId);
-    const generation = this.#generationFor(safeConnectionId);
-    const credentials = await this.#safeReadCredentials(safeConnectionId);
-    if (!this.#isCurrentGeneration(safeConnectionId, generation)) {
-      throw new XaiOAuthFlowError("credential_expired");
-    }
-    if (credentials === null) throw new XaiOAuthFlowError("credential_rejected");
-    if (!isExpiring(credentials.expiresAt, this.#now())) return credentials.accessToken;
+    while (true) {
+      const state = this.#stateFor(safeConnectionId);
+      const generation = state.generation;
+      const credentialRevision = state.credentialRevision;
+      const existingRefresh = this.#refreshes.get(safeConnectionId);
+      if (existingRefresh !== undefined && existingRefresh.generation === generation) {
+        return existingRefresh.promise;
+      }
 
-    const current = this.#refreshes.get(safeConnectionId);
-    if (current !== undefined && current.generation === generation) return current.promise;
-    const controller = new AbortController();
-    const refresh: RefreshOperation = {
-      generation,
-      controller,
-      promise: this.#refreshCredentials(safeConnectionId, credentials, generation, controller),
-    };
-    this.#refreshes.set(safeConnectionId, refresh);
-    try {
-      return await refresh.promise;
-    } finally {
-      if (this.#refreshes.get(safeConnectionId) === refresh) {
-        this.#refreshes.delete(safeConnectionId);
+      const credentials = await this.#safeReadCredentials(safeConnectionId);
+      if (!this.#isCurrentGeneration(safeConnectionId, generation)) {
+        throw new XaiOAuthFlowError("credential_expired");
+      }
+      if (state.credentialRevision !== credentialRevision) continue;
+      if (credentials === null) throw new XaiOAuthFlowError("credential_rejected");
+
+      const current = this.#refreshes.get(safeConnectionId);
+      if (current !== undefined && current.generation === generation) return current.promise;
+      if (!isExpiring(credentials.expiresAt, this.#now())) return credentials.accessToken;
+
+      const controller = new AbortController();
+      const refresh: RefreshOperation = {
+        generation,
+        controller,
+        promise: this.#refreshCredentials(safeConnectionId, credentials, generation, controller),
+      };
+      this.#refreshes.set(safeConnectionId, refresh);
+      try {
+        return await refresh.promise;
+      } finally {
+        if (this.#refreshes.get(safeConnectionId) === refresh) {
+          this.#refreshes.delete(safeConnectionId);
+        }
       }
     }
   }
@@ -643,6 +655,7 @@ class ManagedXaiOAuthFlow implements XaiOAuthFlow {
         [credentials.accessToken, credentials.refreshToken],
         async () => this.#credentialStore.put(connectionId, { ...credentials }),
       );
+      this.#stateFor(connectionId).credentialRevision += 1;
     });
   }
 
@@ -650,7 +663,10 @@ class ManagedXaiOAuthFlow implements XaiOAuthFlow {
     return this.#queueCredentialMutation(
       connectionId,
       generation,
-      async () => this.#credentialStore.delete(connectionId),
+      async () => {
+        await this.#credentialStore.delete(connectionId);
+        this.#stateFor(connectionId).credentialRevision += 1;
+      },
     );
   }
 
@@ -663,7 +679,10 @@ class ManagedXaiOAuthFlow implements XaiOAuthFlow {
   async #queueDisconnectDeletion(connectionId: string): Promise<void> {
     const state = this.#stateFor(connectionId);
     const operation = state.mutations.then(
-      async () => this.#credentialStore.delete(connectionId),
+      async () => {
+        await this.#credentialStore.delete(connectionId);
+        state.credentialRevision += 1;
+      },
     );
     state.mutations = operation.then(
       () => undefined,
@@ -726,6 +745,7 @@ class ManagedXaiOAuthFlow implements XaiOAuthFlow {
     if (existing !== undefined) return existing;
     const state: ConnectionState = {
       generation: 0,
+      credentialRevision: 0,
       mutations: Promise.resolve(),
       pendingStarts: new Set(),
     };
