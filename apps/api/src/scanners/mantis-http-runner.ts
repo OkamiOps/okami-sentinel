@@ -283,7 +283,7 @@ export async function runMantisHttpAgent(
       detail: "mapping Mantis findings into Sentinel's canonical schema",
     });
     if (reportArtifact === null) throw new MantisHttpRunnerError("stage_artifact_invalid");
-    materializeReportFindings(reportArtifact, stateRoot);
+    materializeReportFindings(reportArtifact, stateRoot, snapshotRoot);
     const findings = normalizeMantisWorkspace(stateRoot, outputDir);
     update({
       status: "completed",
@@ -515,7 +515,11 @@ function assertExpectedArtifact(root: string, expectedArtifact: string): void {
   }
 }
 
-function materializeReportFindings(reportArtifact: string, stateRoot: string): void {
+function materializeReportFindings(
+  reportArtifact: string,
+  stateRoot: string,
+  snapshotRoot: string,
+): void {
   let raw: string;
   try {
     const info = fs.statSync(reportArtifact);
@@ -544,7 +548,7 @@ function materializeReportFindings(reportArtifact: string, stateRoot: string): v
   if (
     !Array.isArray(findings) ||
     findings.length > MAX_REPORT_FINDINGS ||
-    findings.some((finding) => !validReportFinding(finding))
+    findings.some((finding) => !validReportFinding(finding, snapshotRoot))
   ) {
     throw new MantisHttpRunnerError("stage_artifact_invalid");
   }
@@ -561,7 +565,10 @@ function materializeReportFindings(reportArtifact: string, stateRoot: string): v
   }
 }
 
-function validReportFinding(value: unknown): value is Record<string, unknown> {
+function validReportFinding(
+  value: unknown,
+  snapshotRoot: string,
+): value is Record<string, unknown> {
   if (!isRecord(value)) return false;
   return isSafeText(value.id, 240) &&
     isSafeText(value.title, 2_000) &&
@@ -570,7 +577,35 @@ function validReportFinding(value: unknown): value is Record<string, unknown> {
     Array.isArray(value.code_paths) &&
     value.code_paths.length > 0 &&
     value.code_paths.length <= 64 &&
-    value.code_paths.every((codePath) => isSafeText(codePath, 2_048));
+    value.code_paths.every((codePath) => validEvidenceLocator(codePath, snapshotRoot));
+}
+
+function validEvidenceLocator(value: unknown, snapshotRoot: string): value is string {
+  if (!isSafeText(value, 2_048)) return false;
+  const match = value.match(/^(.+):([1-9]\d*)(?:-([1-9]\d*))?$/);
+  if (!match || !isSafeRelativePath(match[1]!, 2_048)) return false;
+  const startLine = Number(match[2]);
+  const endLine = Number(match[3] ?? match[2]);
+  if (
+    !Number.isSafeInteger(startLine) ||
+    !Number.isSafeInteger(endLine) ||
+    endLine < startLine ||
+    endLine - startLine >= 200
+  ) return false;
+
+  try {
+    const root = fs.realpathSync(snapshotRoot);
+    const target = fs.realpathSync(path.resolve(root, match[1]!));
+    if (!inside(root, target)) return false;
+    const info = fs.statSync(target);
+    if (!info.isFile() || info.size > 2 * 1024 * 1024) return false;
+    const source = fs.readFileSync(target, "utf8");
+    const lines = source.length === 0 ? [] : source.split(/\r\n|\n|\r/);
+    if (lines.at(-1) === "") lines.pop();
+    return endLine <= lines.length;
+  } catch {
+    return false;
+  }
 }
 
 function stageLimits() {
@@ -633,7 +668,7 @@ function validateConfiguration(configuration: MantisHttpWorkerConfiguration): vo
     !isSafeText(configuration.outputDir, 4_096) ||
     !isSafeText(configuration.repositoryPath, 4_096) ||
     !Array.isArray(configuration.paths) ||
-    configuration.paths.some((value) => !isSafeText(value, 1_024)) ||
+    configuration.paths.some((value) => !isSafeRelativePath(value, 1_024)) ||
     !isSafeText(configuration.sourceRef, 256) ||
     !isRecord(configuration.providerPlan) ||
     !validPlan(configuration.providerPlan)
@@ -724,6 +759,16 @@ function normalizeRunnerError(error: unknown, signal: AbortSignal): MantisHttpRu
 
 function isSafeText(value: unknown, maxLength: number): value is string {
   return typeof value === "string" && value.trim().length > 0 && value.length <= maxLength && !/[\u0000-\u001F\u007F]/.test(value);
+}
+
+function isSafeRelativePath(value: unknown, maxLength: number): value is string {
+  if (
+    !isSafeText(value, maxLength) ||
+    value !== value.trim() ||
+    path.isAbsolute(value) ||
+    path.win32.isAbsolute(value)
+  ) return false;
+  return value.split(/[\\/]+/).every((segment) => segment !== "..");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -413,13 +413,48 @@ test("reportable findings require bounded source code paths for Inspector eviden
   }
 });
 
+for (const [label, locator] of [
+  ["traversal", "../../etc/passwd:1"],
+  ["missing file", "src/missing.ts:1"],
+  ["missing line", "src/auth.ts"],
+  ["out-of-range line", "src/auth.ts:99"],
+] as const) {
+  test(`report artifact rejects ${label} evidence locators`, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-http-report-anchor-"));
+    const repositoryPath = path.join(root, "repository");
+    fs.mkdirSync(path.join(repositoryPath, "src"), { recursive: true });
+    fs.writeFileSync(path.join(repositoryPath, "src", "auth.ts"), "export const safe = true;\n");
+    try {
+      await assert.rejects(
+        runMantisFixture(root, repositoryPath, {
+          schemaVersion: 1,
+          engine: "mantis",
+          stage: "report",
+          findings: [{
+            id: "false-anchor",
+            title: "Finding with false evidence",
+            severity: "HIGH",
+            code_paths: [locator],
+          }],
+        }),
+        (error: unknown) => error instanceof MantisHttpRunnerError && error.code === "stage_artifact_invalid",
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
 test("valid report schema produces normalized Inspector evidence", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-http-report-valid-"));
   const repositoryPath = path.join(root, "repository");
   const outputDir = path.join(root, "output");
   const reportSpec: AgentSessionSpec[] = [];
   fs.mkdirSync(path.join(repositoryPath, "src"), { recursive: true });
-  fs.writeFileSync(path.join(repositoryPath, "src", "auth.ts"), "export const users = db.users.findMany();\n");
+  fs.writeFileSync(
+    path.join(repositoryPath, "src", "auth.ts"),
+    "export const users = db.users.findMany();\nexport const count = users.length;\n",
+  );
   try {
     const result = await runMantisFixture(root, repositoryPath, {
       schemaVersion: 1,
@@ -431,23 +466,58 @@ test("valid report schema produces normalized Inspector evidence", async () => {
         severity: "HIGH",
         status: "VALID",
         reasoning: "The handler lacks an ownership predicate.",
-        code_paths: ["src/auth.ts:1"],
+        code_paths: ["src/auth.ts:1-2"],
       }],
     }, reportSpec);
     const normalized = JSON.parse(fs.readFileSync(path.join(outputDir, "findings.json"), "utf8")) as {
-      findings: Array<{ findingId: string; title: string; codeEvidence: unknown[] }>;
+      findings: Array<{
+        findingId: string;
+        title: string;
+        codeEvidence: Array<{ code: string | null }>;
+      }>;
     };
 
     assert.equal(result.runtime.findings, 1);
     assert.equal(normalized.findings[0]?.findingId, "mantis-authz-users");
     assert.equal(normalized.findings[0]?.title, "Authenticated users can enumerate every account");
     assert.equal(normalized.findings[0]?.codeEvidence.length, 1);
+    assert.equal(
+      normalized.findings[0]?.codeEvidence[0]?.code,
+      "export const users = db.users.findMany();\nexport const count = users.length;",
+    );
     assert.match(reportSpec.find((spec) => spec.instructions.includes("stage_id=report"))!.instructions, /"schemaVersion":1/);
     assert.match(reportSpec.find((spec) => spec.instructions.includes("stage_id=report"))!.instructions, /findings.*required/i);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+for (const unsafePath of ["../outside", "/absolute/path"] as const) {
+  test(`Mantis HTTP rejects unsafe configured scope ${unsafePath} before interpolation`, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-http-scope-"));
+    const repositoryPath = path.join(root, "repository");
+    fs.mkdirSync(repositoryPath);
+    fs.writeFileSync(path.join(repositoryPath, "app.ts"), "export const safe = true;\n");
+    try {
+      await assert.rejects(
+        runMantisHttpAgent({
+          outputDir: path.join(root, "output"),
+          repositoryPath,
+          paths: [unsafePath],
+          sourceRef: "a".repeat(40),
+          providerPlan: plan(),
+        }, {
+          ...validDependencies(),
+          createSession: async () => assert.fail("session must not start"),
+          now: () => NOW,
+        }),
+        (error: unknown) => error instanceof MantisHttpRunnerError && error.code === "provider_plan_invalid",
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
 
 test("Mantis HTTP revalidation fails before the vault for a changed snapshot or direct xAI OAuth", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-http-revalidate-"));
