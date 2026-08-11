@@ -4,7 +4,7 @@ import {
   lstat,
   mkdir,
   open,
-  readdir,
+  opendir,
   realpath,
 } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -18,6 +18,7 @@ import {
   type WorkspaceToolName,
   type WorkspaceToolResult,
 } from "./session-types.js";
+import { collectBounded } from "./bounded-directory.js";
 
 const DEFAULT_MAX_READ_BYTES = 1_048_576;
 const DEFAULT_MAX_WRITE_BYTES = 16_777_216;
@@ -78,6 +79,12 @@ interface SearchMatch {
   line: number;
   text: string;
 }
+
+interface TraversalBudget {
+  remainingEntries: number;
+}
+
+const MAX_JSON_STRING_BYTES_PER_INPUT_BYTE = 6;
 
 /**
  * The host is the complete local capability surface for an agent session.
@@ -166,7 +173,15 @@ async function listWorkspace(
 
   const entries: ListEntry[] = [];
   let truncated = false;
-  await walkDirectory(snapshotRoot, directory, requestedPath, 0, maxDepth, async (entry, path) => {
+  await walkDirectory(
+    snapshotRoot,
+    directory,
+    requestedPath,
+    0,
+    maxDepth,
+    { remainingEntries: maxEntries },
+    () => { truncated = true; },
+    async (entry, path) => {
     if (entries.length >= maxEntries) {
       truncated = true;
       return false;
@@ -182,7 +197,8 @@ async function listWorkspace(
     entries.push(candidate);
     if (entries.length >= maxEntries) truncated = true;
     return !truncated;
-  });
+    },
+  );
   return textResult({ entries, truncated }, maxOutputBytes);
 }
 
@@ -200,7 +216,7 @@ async function readWorkspace(
   const target = await snapshotTarget(snapshotRoot, requestedPath);
   if (!target.info.isFile()) throw new AgentSessionError("tool_path_denied");
   if (target.info.size > maxBytes) throw new AgentSessionError("tool_read_limit");
-  if (target.info.size > outputContentCapacity) {
+  if (target.info.size > Math.floor(outputContentCapacity / MAX_JSON_STRING_BYTES_PER_INPUT_BYTE)) {
     throw new AgentSessionError("agent_output_byte_limit");
   }
   const content = (await readPinnedSnapshotFile(snapshotRoot, target, maxBytes)).toString("utf8");
@@ -260,6 +276,8 @@ async function searchWorkspace(
       requestedPath,
       0,
       limits.maxRecursionDepth,
+      { remainingEntries: limits.maxListEntries },
+      () => { truncated = true; },
       async (entry, path) => entry.info.isDirectory() || inspectFile(entry, path),
     );
   }
@@ -475,7 +493,11 @@ async function readPinnedSnapshotFile(
   }
 }
 
-async function readPinnedDirectory(snapshotRoot: RootRef, directory: PinnedPath): Promise<Dirent[]> {
+async function readPinnedDirectory(
+  snapshotRoot: RootRef,
+  directory: PinnedPath,
+  maxEntries: number,
+): Promise<{ entries: Dirent[]; truncated: boolean }> {
   if (!directory.info.isDirectory()) throw new AgentSessionError("tool_path_denied");
   let handle: FileHandle | undefined;
   try {
@@ -484,14 +506,17 @@ async function readPinnedDirectory(snapshotRoot: RootRef, directory: PinnedPath)
     if (!opened.isDirectory() || !sameObject(directory.info, opened)) {
       throw new AgentSessionError("tool_path_denied");
     }
-    const entries = await readdir(directory.path, { withFileTypes: true });
+    const stream = await opendir(directory.path, {
+      bufferSize: Math.min(maxEntries + 1, 32),
+    });
+    const result = await collectBounded(stream, maxEntries);
     const handleAfterRead = await handle.stat();
     const pathAfterRead = await secureLstat(directory.path, "tool_path_denied");
     if (!sameVersion(opened, handleAfterRead) || !sameVersion(opened, pathAfterRead)) {
       throw new AgentSessionError("tool_path_denied");
     }
     await assertPinnedRoot(snapshotRoot);
-    return entries;
+    return result;
   } catch (error) {
     if (error instanceof AgentSessionError) throw error;
     throw new AgentSessionError("tool_path_denied");
@@ -525,12 +550,24 @@ async function walkDirectory(
   displayRoot: string,
   depth: number,
   maxDepth: number,
+  budget: TraversalBudget,
+  onTraversalLimit: () => void,
   visit: (entry: PinnedPath, path: string) => Promise<boolean>,
 ): Promise<boolean> {
   if (depth > maxDepth) return true;
-  const entries = await readPinnedDirectory(snapshotRoot, directory);
+  if (budget.remainingEntries <= 0) {
+    onTraversalLimit();
+    return false;
+  }
+  const directoryRead = await readPinnedDirectory(snapshotRoot, directory, budget.remainingEntries);
+  const entries = directoryRead.entries;
   entries.sort((left, right) => left.name.localeCompare(right.name));
   for (const entry of entries) {
+    if (budget.remainingEntries <= 0) {
+      onTraversalLimit();
+      return false;
+    }
+    budget.remainingEntries -= 1;
     if (entry.isSymbolicLink()) continue;
     const path = displayRoot === "." ? entry.name : `${displayRoot}/${entry.name}`;
     let pinned: PinnedPath;
@@ -544,9 +581,22 @@ async function walkDirectory(
     const continueWalking = await visit(pinned, path);
     if (!continueWalking) return false;
     if (pinned.info.isDirectory() && depth < maxDepth) {
-      const walked = await walkDirectory(snapshotRoot, pinned, path, depth + 1, maxDepth, visit);
+      const walked = await walkDirectory(
+        snapshotRoot,
+        pinned,
+        path,
+        depth + 1,
+        maxDepth,
+        budget,
+        onTraversalLimit,
+        visit,
+      );
       if (!walked) return false;
     }
+  }
+  if (directoryRead.truncated) {
+    onTraversalLimit();
+    return false;
   }
   return true;
 }

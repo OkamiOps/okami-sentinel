@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, lstat, mkdtemp, mkdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, lstat, mkdtemp, mkdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -71,6 +71,33 @@ test("each read-only tool applies its remaining output budget before filesystem 
     "agent_output_byte_limit",
     "agent_output_byte_limit",
   ]);
+});
+
+test("workspace.read reserves worst-case JSON escaping before opening file content", async (t) => {
+  const root = await mkdtemp(join(process.cwd(), ".test-agent-host-escaped-budget-"));
+  const snapshotRoot = join(root, "snapshot");
+  const artifactRoot = join(root, "artifacts");
+  const escapedPath = join(snapshotRoot, "escaped.txt");
+  await mkdir(snapshotRoot);
+  await mkdir(artifactRoot, { mode: 0o700 });
+  await writeFile(escapedPath, "\0".repeat(16));
+  await chmod(escapedPath, 0o000);
+  t.after(async () => {
+    await chmod(escapedPath, 0o600).catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const host = await createWorkspaceToolHost({ snapshotRoot, artifactRoot });
+  const emptyEnvelope = Buffer.byteLength(JSON.stringify({ path: "escaped.txt", content: "" }), "utf8");
+
+  await assert.rejects(
+    host.call(
+      "workspace.read",
+      { path: "escaped.txt", maxBytes: 16 },
+      { maxOutputBytes: emptyEnvelope + 16 },
+    ),
+    { code: "agent_output_byte_limit" },
+  );
 });
 
 test("results.write rejects an insufficient output budget before creating a file", async (t) => {
