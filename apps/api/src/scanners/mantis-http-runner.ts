@@ -226,10 +226,10 @@ export async function runMantisHttpAgent(
     throwIfAborted(signal);
     const resolved = revalidateProviderPlan(configuration.providerPlan, dependencies, now());
     update({ percent: 5, detail: "creating an immutable source snapshot" });
-    const snapshotRoot = createSnapshot(configuration.repositoryPath, outputDir);
-    const snapshotId = hashSnapshot(snapshotRoot);
+    const snapshotRoot = createMantisSnapshot(configuration.repositoryPath, outputDir);
+    const snapshotId = hashMantisSnapshot(snapshotRoot);
     const stateRoot = path.join(outputDir, "mantis");
-    initializeState(stateRoot, snapshotRoot, snapshotId, now());
+    initializeMantisState(stateRoot, snapshotRoot, snapshotId, now());
 
     // Metadata and the immutable source snapshot are both pinned before this
     // worker may read a secret or construct a network-capable session.
@@ -257,7 +257,7 @@ export async function runMantisHttpAgent(
       snapshotId,
     });
 
-    let priorState: BoundedStageState | null = null;
+    let priorState: MantisBoundedStageState | null = null;
     let reportArtifact: string | null = null;
     const createSession = dependencies.createSession ?? createProductionSession;
     for (const stage of MANTIS_STAGES) {
@@ -309,7 +309,7 @@ export async function runMantisHttpAgent(
       detail: "mapping Mantis findings into Sentinel's canonical schema",
     });
     if (reportArtifact === null) throw new MantisHttpRunnerError("stage_artifact_invalid");
-    materializeReportFindings(reportArtifact, stateRoot, snapshotRoot);
+    materializeMantisReportArtifact(reportArtifact, stateRoot, snapshotRoot);
     const findings = normalizeMantisWorkspace(stateRoot, outputDir);
     update({
       status: "completed",
@@ -427,10 +427,10 @@ async function createProductionSession(input: MantisHttpSessionInput): Promise<A
 
 interface StageObservation {
   runtime: MantisRuntimeState;
-  state: BoundedStageState;
+  state: MantisBoundedStageState;
 }
 
-interface BoundedStageState {
+export interface MantisBoundedStageState {
   stage: string;
   summary: string;
 }
@@ -446,7 +446,7 @@ async function observeStage(
   let snapshotToolConsumed = false;
   let resultsWriteRequested = false;
   let artifactObserved = false;
-  let state: BoundedStageState | null = null;
+  let state: MantisBoundedStageState | null = null;
   let nextRuntime = runtime;
   for await (const event of session.run()) {
     switch (event.type) {
@@ -467,7 +467,7 @@ async function observeStage(
         nextRuntime = collectUsage(nextRuntime, event);
         break;
       case "completion":
-        state = boundedStageState(stage.id, event.structured);
+        state = boundedMantisStageState(stage.id, event.structured);
         break;
       case "cancellation":
         throw new MantisHttpRunnerError("agent_cancelled");
@@ -500,7 +500,7 @@ function collectUsage(runtime: MantisRuntimeState, event: Extract<AgentEvent, { 
 function stageInstructions(
   stage: MantisStageDefinition,
   paths: readonly string[],
-  priorState: BoundedStageState | null,
+  priorState: MantisBoundedStageState | null,
   expectedArtifact: string,
 ): string {
   const scope = paths.length > 0 ? paths.join(", ") : "the complete immutable repository snapshot";
@@ -532,7 +532,7 @@ function stageInstructions(
   ].join("\n");
 }
 
-function boundedStageState(stage: string, value: unknown): BoundedStageState {
+export function boundedMantisStageState(stage: string, value: unknown): MantisBoundedStageState {
   if (!isRecord(value) || value.stage !== stage || typeof value.summary !== "string" || value.summary.trim().length === 0) {
     throw new MantisHttpRunnerError("stage_evidence_incomplete");
   }
@@ -559,7 +559,8 @@ function assertExpectedArtifact(root: string, expectedArtifact: string): void {
   }
 }
 
-function materializeReportFindings(
+/** Shared report validator and Inspector evidence materializer. */
+export function materializeMantisReportArtifact(
   reportArtifact: string,
   stateRoot: string,
   snapshotRoot: string,
@@ -818,7 +819,8 @@ function validateConfiguration(configuration: MantisHttpWorkerConfiguration): vo
   ) throw new MantisHttpRunnerError("provider_plan_invalid");
 }
 
-function createSnapshot(repositoryPath: string, outputDir: string): string {
+/** Shared immutable snapshot boundary for every Mantis executor. */
+export function createMantisSnapshot(repositoryPath: string, outputDir: string): string {
   const sourceRoot = path.resolve(repositoryPath);
   const snapshotRoot = path.join(outputDir, "mantis-snapshot");
   if (!fs.existsSync(sourceRoot) || !fs.statSync(sourceRoot).isDirectory() || inside(sourceRoot, outputDir)) {
@@ -847,7 +849,7 @@ function createSnapshot(repositoryPath: string, outputDir: string): string {
   return snapshotRoot;
 }
 
-function hashSnapshot(root: string): string {
+export function hashMantisSnapshot(root: string): string {
   const hash = createHash("sha256");
   const visit = (directory: string) => {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
@@ -865,7 +867,7 @@ function hashSnapshot(root: string): string {
   return `content:${hash.digest("hex")}`;
 }
 
-function initializeState(stateRoot: string, snapshotRoot: string, snapshotId: string, now: Date): void {
+export function initializeMantisState(stateRoot: string, snapshotRoot: string, snapshotId: string, now: Date): void {
   const workspace = path.join(stateRoot, "workspace");
   fs.mkdirSync(path.join(workspace, "findings"), { recursive: true, mode: 0o700 });
   fs.mkdirSync(path.join(workspace, "archive"), { recursive: true, mode: 0o700 });
