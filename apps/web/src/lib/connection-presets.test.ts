@@ -8,10 +8,12 @@ import {
   applyConnectionPreset,
   applyMimoTokenPlanRegion,
   connectionPresetNeedsSecret,
+  customEndpointDraftError,
   getConnectionPreset,
   isManagedOAuthPreset,
   mimoSecretUpdateNeedsRegion,
   mimoTokenPlanDraftError,
+  tryGetConnectionPreset,
 } from "./connection-presets.js";
 
 test("maps every supported provider route preset to its registered transport contract", () => {
@@ -83,6 +85,37 @@ test("remote Cursor API remains secret-backed; only managed OAuth bypasses the s
 test("custom routes expose their endpoint bundle while local routes keep it hidden", () => {
   assert.equal(connectionPresetNeedsSecret(getConnectionPreset("custom-openai-compatible")), true);
   assert.equal(connectionPresetNeedsSecret(getConnectionPreset("openai-local-codex")), false);
+});
+
+test("ignores an empty or unknown preset id emitted while provider choices are replaced", () => {
+  assert.equal(tryGetConnectionPreset(""), null);
+  assert.equal(tryGetConnectionPreset("unknown-provider-route"), null);
+  assert.equal(tryGetConnectionPreset("openai-api")?.routeKind, "openai-api");
+});
+
+test("requires a complete custom endpoint bundle on create and secret replacement", () => {
+  const draft = applyConnectionPreset(blankConnectionDraft(), "custom-openai-compatible");
+  draft.name = "Custom gateway";
+  draft.apiKey = "entered-now";
+
+  assert.equal(customEndpointDraftError(draft, false), "custom-endpoint");
+
+  draft.baseUrl = "https://gateway.example/v1";
+  assert.equal(customEndpointDraftError(draft, false), null);
+
+  const edit = applyConnectionPreset(blankConnectionDraft(), "custom-anthropic-compatible");
+  edit.name = "Existing gateway";
+  assert.equal(customEndpointDraftError(edit, true), null);
+
+  edit.apiKey = "replacement";
+  assert.equal(customEndpointDraftError(edit, true), "custom-replacement");
+
+  edit.baseUrl = "https://gateway.example/v1";
+  assert.equal(customEndpointDraftError(edit, true), null);
+
+  edit.apiKey = "";
+  edit.headers = "Authorization: Bearer replacement";
+  assert.equal(customEndpointDraftError(edit, true), null);
 });
 
 test("pins MiMo Token Plan configuration to the exact selected region", () => {

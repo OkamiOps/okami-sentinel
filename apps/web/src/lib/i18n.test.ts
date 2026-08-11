@@ -28,9 +28,18 @@ test("translates the connection workbench in every supported locale", () => {
 });
 
 test("localizes every provider preset label and its critical setup guidance", () => {
+  const customBundleKeys = [
+    "connections.preset.customBundleRequiredHelp",
+    "connections.preset.customBundleReplacementWarning",
+    "connections.draftError.customEndpoint",
+    "connections.draftError.customReplacement",
+  ] as const;
   for (const locale of ["pt-BR", "en", "es", "de", "fr"] as const) {
     for (const preset of CONNECTION_PRESETS) {
       assert.notEqual(translate(locale, preset.labelKey), "");
+    }
+    for (const key of customBundleKeys) {
+      assert.notEqual(translate(locale, key), "");
     }
   }
 
@@ -38,4 +47,5 @@ test("localizes every provider preset label and its critical setup guidance", ()
   assert.equal(translate("es", "connections.preset.chooseMimoRegion"), "Elegir una región");
   assert.equal(translate("de", "connections.draftError.mimoRegion"), "Wähle vor dem Ersetzen des Zugangs eine MiMo-Token-Plan-Region.");
   assert.equal(translate("fr", "connections.preset.mimoRegionUpdateHelp"), "Choisissez explicitement une région avant de remplacer un identifiant Token Plan existant.");
+  assert.equal(translate("en", "connections.preset.customBundleReplacementWarning"), "While editing, any sensitive field replaces the entire bundle. Enter the base URL and an API key or header again.");
 });

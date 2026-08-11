@@ -102,9 +102,15 @@ function preset(
 }
 
 export function getConnectionPreset(id: ConnectionPresetId | string): ConnectionPreset {
-  const selected = CONNECTION_PRESETS.find((preset) => preset.id === id);
-  if (selected === undefined) throw new Error(`Unknown connection preset: ${id}`);
+  const selected = tryGetConnectionPreset(id);
+  if (selected === null) throw new Error(`Unknown connection preset: ${id}`);
   return selected;
+}
+
+/** Radix can briefly emit an empty value while its provider-specific options change. */
+export function tryGetConnectionPreset(id: string): ConnectionPreset | null {
+  if (!id) return null;
+  return CONNECTION_PRESETS.find((preset) => preset.id === id) ?? null;
 }
 
 export function presetForConnection(connection: ProviderConnection | null | undefined): ConnectionPreset | null {
@@ -161,6 +167,29 @@ export function connectionPresetNeedsSecret(preset: ConnectionPreset): boolean {
 
 export function presetShowsEndpointFields(preset: ConnectionPreset): boolean {
   return preset.endpointMode === "custom";
+}
+
+/**
+ * Secret writes replace the vault bundle. Compatible routes therefore need the
+ * endpoint and an authentication value together whenever a bundle is written.
+ */
+export function customEndpointDraftError(
+  draft: ConnectionDraft,
+  editing: boolean,
+): "custom-endpoint" | "custom-replacement" | null {
+  if (draft.routeKind !== "custom-openai-compatible" && draft.routeKind !== "custom-anthropic-compatible") {
+    return null;
+  }
+  const writesSecret = draft.apiKey.trim().length > 0 ||
+    draft.baseUrl.trim().length > 0 ||
+    draft.discoveryUrl.trim().length > 0 ||
+    draft.headers.trim().length > 0;
+  if (editing && !writesSecret) return null;
+
+  const complete = draft.baseUrl.trim().length > 0 &&
+    (draft.apiKey.trim().length > 0 || draft.headers.trim().length > 0);
+  if (complete) return null;
+  return editing ? "custom-replacement" : "custom-endpoint";
 }
 
 /** Editing a MiMo Token Plan secret must never infer a hidden stored region. */

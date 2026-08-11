@@ -18,10 +18,12 @@ import {
   applyConnectionPreset,
   applyMimoTokenPlanRegion,
   connectionPresetNeedsSecret,
+  customEndpointDraftError,
   getConnectionPreset,
   mimoTokenPlanDraftError,
   presetForConnection,
   presetShowsEndpointFields,
+  tryGetConnectionPreset,
   type ConnectionPreset,
   type ConnectionPresetId,
   type MimoTokenPlanRegionId,
@@ -80,7 +82,7 @@ export function ConnectionEditorSheet({ open, connection, onOpenChange, onCreate
   const [draft, setDraft] = useState<ConnectionDraft>(() => blankConnectionDraft(connection ?? undefined));
   const [presetId, setPresetId] = useState<ConnectionPresetId>(initialPresetId);
   const [mimoRegion, setMimoRegion] = useState<MimoTokenPlanRegionId | null>("cn");
-  const [error, setError] = useState<ConnectionDraftError | "mimo-region" | "request" | null>(null);
+  const [error, setError] = useState<ConnectionDraftError | "mimo-region" | "custom-endpoint" | "custom-replacement" | "request" | null>(null);
   const [saving, setSaving] = useState(false);
 
   const storedPreset = useMemo(() => presetForConnection(connection), [connection]);
@@ -108,7 +110,8 @@ export function ConnectionEditorSheet({ open, connection, onOpenChange, onCreate
   const update = <Key extends keyof ConnectionDraft>(key: Key, value: ConnectionDraft[Key]) => setDraft((current) => ({ ...current, [key]: value }));
 
   const choosePreset = (nextId: string) => {
-    const next = getConnectionPreset(nextId);
+    const next = tryGetConnectionPreset(nextId);
+    if (next === null) return;
     const region = next.id === "mimo-token-plan" ? "cn" : mimoRegion;
     setPresetId(next.id as ConnectionPresetId);
     setMimoRegion(region);
@@ -131,6 +134,11 @@ export function ConnectionEditorSheet({ open, connection, onOpenChange, onCreate
     const mimoError = mimoTokenPlanDraftError(draft, editing, mimoRegion);
     if (mimoError !== null) {
       setError(mimoError);
+      return;
+    }
+    const customEndpointError = customEndpointDraftError(draft, editing);
+    if (customEndpointError !== null) {
+      setError(customEndpointError);
       return;
     }
     const validation = validateConnectionDraft(draft, { requireHttpSecret: !editing });
@@ -158,8 +166,12 @@ export function ConnectionEditorSheet({ open, connection, onOpenChange, onCreate
     }
   }
 
-  const errorMessage = error === "request" ? t("connections.saveError") : error === "mimo-region" ? t("connections.draftError.mimoRegion") : error ? t(`connections.draftError.${error}`) : null;
-  const secretInvalid = error === "secret";
+  const errorMessage = error === "request" ? t("connections.saveError")
+    : error === "mimo-region" ? t("connections.draftError.mimoRegion")
+      : error === "custom-endpoint" ? t("connections.draftError.customEndpoint")
+        : error === "custom-replacement" ? t("connections.draftError.customReplacement")
+          : error ? t(`connections.draftError.${error}`) : null;
+  const secretInvalid = error === "secret" || error === "custom-endpoint" || error === "custom-replacement";
 
   return <Sheet open={open} onOpenChange={(next) => next ? onOpenChange(true) : close()}>
     <SheetContent side="right" className="w-full gap-0 overflow-y-auto border-border bg-background p-0 sm:max-w-[43rem]">
@@ -279,7 +291,7 @@ function CredentialSection({
       <Field id="connection-api-key" label={t("connections.apiKey")} invalid={secretInvalid}>
         {(a11y) => <Input {...a11y} type="password" value={draft.apiKey} onChange={(event) => onUpdate("apiKey", event.target.value)} autoComplete="new-password" placeholder={t("connections.placeholder.apiKey")} />}
       </Field>
-      {customEndpoint && <div className="space-y-4 border-l border-primary/40 pl-3"><p className="bench-label text-primary">{t("connections.preset.customEndpoint")}</p><Field id="connection-base-url" label={t("connections.customBaseUrl")} invalid={secretInvalid}>{(a11y) => <Input {...a11y} type="url" value={draft.baseUrl} onChange={(event) => onUpdate("baseUrl", event.target.value)} autoComplete="off" placeholder={t("connections.placeholder.baseUrl")} />}</Field><Field id="connection-discovery-url" label={t("connections.discoveryUrl")} description={t("connections.secretHelp")} invalid={secretInvalid}>{(a11y) => <Input {...a11y} type="url" value={draft.discoveryUrl} onChange={(event) => onUpdate("discoveryUrl", event.target.value)} autoComplete="off" placeholder={t("connections.placeholder.discoveryUrl")} />}</Field><Field id="connection-headers" label={t("connections.headers")} description={t("connections.headersHelp")} invalid={headersInvalid}>{(a11y) => <textarea {...a11y} value={draft.headers} onChange={(event) => onUpdate("headers", event.target.value)} autoComplete="off" className="min-h-20 w-full resize-y border border-input bg-transparent px-2.5 py-2 font-mono text-xs outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50" placeholder={t("connections.placeholder.headers")} />}</Field></div>}
+      {customEndpoint && <div className="space-y-4 border-l border-primary/40 pl-3"><p className="bench-label text-primary">{t("connections.preset.customEndpoint")}</p><p role="note" className="border border-primary/30 bg-primary/[.06] px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">{t(editing ? "connections.preset.customBundleReplacementWarning" : "connections.preset.customBundleRequiredHelp")}</p><Field id="connection-base-url" label={t("connections.customBaseUrl")} invalid={secretInvalid}>{(a11y) => <Input {...a11y} type="url" value={draft.baseUrl} onChange={(event) => onUpdate("baseUrl", event.target.value)} autoComplete="off" placeholder={t("connections.placeholder.baseUrl")} />}</Field><Field id="connection-discovery-url" label={t("connections.discoveryUrl")} invalid={secretInvalid}>{(a11y) => <Input {...a11y} type="url" value={draft.discoveryUrl} onChange={(event) => onUpdate("discoveryUrl", event.target.value)} autoComplete="off" placeholder={t("connections.placeholder.discoveryUrl")} />}</Field><Field id="connection-headers" label={t("connections.headers")} description={t("connections.headersHelp")} invalid={headersInvalid}>{(a11y) => <textarea {...a11y} value={draft.headers} onChange={(event) => onUpdate("headers", event.target.value)} autoComplete="off" className="min-h-20 w-full resize-y border border-input bg-transparent px-2.5 py-2 font-mono text-xs outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50" placeholder={t("connections.placeholder.headers")} />}</Field></div>}
     </fieldset>}
   </section>;
 }
