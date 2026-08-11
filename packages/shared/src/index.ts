@@ -148,7 +148,7 @@ export const VISIBLE_CONNECTION_PRESETS: readonly ConnectionPreset[] = Object.fr
   connectionPreset("gemini-api", "connections.preset.gemini-api", "google", "gemini-api", "http-inference", "api-key", "openai-chat", "catalog", "api-key", "preset"),
   connectionPreset("deepseek-api", "connections.preset.deepseek-api", "deepseek", "deepseek-api", "http-inference", "api-key", "openai-chat", "catalog", "api-key", "preset"),
   connectionPreset("minimax-token-plan", "connections.preset.minimax-token-plan", "minimax", "minimax-token-plan", "http-inference", "api-key", "anthropic-messages", "catalog", "token-plan", "preset"),
-  connectionPreset("mimo-token-plan", "connections.preset.mimo-token-plan", "xiaomi", "mimo-token-plan", "http-inference", "api-key", "anthropic-messages", "catalog", "token-plan", "mimo-region"),
+  connectionPreset("mimo-token-plan", "connections.preset.mimo-token-plan", "xiaomi", "mimo-token-plan", "http-inference", "api-key", "openai-chat", "catalog", "token-plan", "mimo-region"),
   connectionPreset("custom-openai-compatible", "connections.preset.custom-openai-compatible", "custom", "custom-openai-compatible", "http-inference", "api-key", "openai-chat", "catalog", "custom", "custom"),
   connectionPreset("custom-anthropic-compatible", "connections.preset.custom-anthropic-compatible", "custom", "custom-anthropic-compatible", "http-inference", "api-key", "anthropic-messages", "catalog", "custom", "custom"),
 ]);
