@@ -2,13 +2,13 @@ import type { ProviderModel } from "@csb/shared";
 
 import {
   AgentSessionError,
-  isWorkspaceToolName,
   type AgentToolCall,
   type AgentToolResult,
   type AgentWireRequest,
   type NormalizedModelReply,
   type WireSessionAdapter,
 } from "./session-types.js";
+import { WORKSPACE_TOOL_WIRE_CODEC } from "./workspace-tool-wire-codec.js";
 
 export interface OpenAiResponsesSessionSpec {
   model: ProviderModel;
@@ -69,16 +69,16 @@ export function createOpenAiResponsesWireAdapter(
 
 function openAiResponsesTools(): readonly unknown[] {
   return [
-    responseTool("workspace.list", "List read-only files from the workspace snapshot.", {
+    responseTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.list"), "List read-only files from the workspace snapshot.", {
       path: stringSchema(), maxEntries: integerSchema(), maxDepth: integerSchema(),
     }),
-    responseTool("workspace.read", "Read a file from the workspace snapshot.", {
+    responseTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.read"), "Read a file from the workspace snapshot.", {
       path: requiredStringSchema(), maxBytes: integerSchema(),
     }, ["path"]),
-    responseTool("workspace.search", "Search read-only workspace files for literal text.", {
+    responseTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.search"), "Search read-only workspace files for literal text.", {
       query: requiredStringSchema(), path: stringSchema(), maxResults: integerSchema(), maxBytes: integerSchema(),
     }, ["query"]),
-    responseTool("results.write", "Write a result artifact below the run artifact directory.", {
+    responseTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("results.write"), "Write a result artifact below the run artifact directory.", {
       path: requiredStringSchema(), content: requiredStringSchema(),
     }, ["path", "content"]),
   ];
@@ -100,12 +100,14 @@ function responseTool(
 }
 
 function readFunctionCall(value: Record<string, unknown>): AgentToolCall {
-  if (typeof value.call_id !== "string" || value.call_id.length === 0 || !isWorkspaceToolName(value.name)) {
+  if (typeof value.call_id !== "string" || value.call_id.length === 0 || typeof value.name !== "string") {
     throw protocolError();
   }
+  const name = WORKSPACE_TOOL_WIRE_CODEC.toInternal(value.name);
+  if (name === null) throw protocolError();
   return {
     id: value.call_id,
-    name: value.name,
+    name,
     input: argumentsObject(value.arguments),
   };
 }

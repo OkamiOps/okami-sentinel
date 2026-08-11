@@ -128,7 +128,7 @@ test("duplicate tool ids and malformed function arguments fail without a follow-
         tool_calls: [{
           id: "invalid-args",
           type: "function",
-          function: { name: "workspace.read", arguments: "{" },
+          function: { name: "workspace_read", arguments: "{" },
         }],
       },
     }],
@@ -580,7 +580,7 @@ function alwaysRequestsWorkspaceRead() {
               id: `tool-${modelCalls}`,
               type: "function",
               function: {
-                name: "workspace.read",
+                name: "workspace_read",
                 arguments: JSON.stringify({ path: "index.ts" }),
               },
             }],
@@ -622,7 +622,7 @@ function chatToolCall(name: string, input: Record<string, unknown>, id: string) 
   return {
     choices: [{
       message: {
-        tool_calls: [{ id, type: "function", function: { name, arguments: JSON.stringify(input) } }],
+        tool_calls: [{ id, type: "function", function: { name: portableWireToolName(name), arguments: JSON.stringify(input) } }],
       },
     }],
   };
@@ -639,7 +639,7 @@ function chatFinalStructured(value: Record<string, unknown>) {
 function responsesToolCall(name: string, input: Record<string, unknown>, id: string) {
   return {
     id: `response-${id}`,
-    output: [{ type: "function_call", call_id: id, name, arguments: JSON.stringify(input) }],
+    output: [{ type: "function_call", call_id: id, name: portableWireToolName(name), arguments: JSON.stringify(input) }],
   };
 }
 
@@ -651,7 +651,18 @@ function responsesFinalStructured(value: Record<string, unknown>) {
 }
 
 function anthropicToolCall(name: string, input: Record<string, unknown>, id: string) {
-  return { content: [{ type: "tool_use", id, name, input }], stop_reason: "tool_use" };
+  return { content: [{ type: "tool_use", id, name: portableWireToolName(name), input }], stop_reason: "tool_use" };
+}
+
+function portableWireToolName(name: string): string {
+  const wireName = ({
+    "workspace.list": "workspace_list",
+    "workspace.read": "workspace_read",
+    "workspace.search": "workspace_search",
+    "results.write": "results_write",
+  } as Record<string, string>)[name];
+  if (wireName === undefined) throw new Error("unknown test tool");
+  return wireName;
 }
 
 function anthropicFinalStructured(value: Record<string, unknown>) {

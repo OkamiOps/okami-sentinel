@@ -60,11 +60,11 @@ test("MiMo replays an opaque reasoning field and wire-safe tool call from its fi
   ]);
 });
 
-test("OpenAI chat rejects unknown wire names instead of treating internal names as wire protocol", () => {
+test("OpenAI chat rejects dotted internal names from a non-MiMo wire response", () => {
   const adapter = openAiChat.createOpenAiChatWireAdapter({
-    model: model("mimo-v2.5-pro"),
+    model: model("gemini-2.5-pro"),
     instructions: "Use only the declared workspace tools.",
-    routeKind: "mimo-token-plan",
+    routeKind: "gemini-api",
   });
 
   assert.throws(() => adapter.readResponse({
@@ -80,7 +80,7 @@ test("OpenAI chat rejects unknown wire names instead of treating internal names 
   }), { code: "agent_protocol_error" });
 });
 
-test("non-MiMo OpenAI chat keeps dotted names and never replays provider reasoning", () => {
+test("non-MiMo OpenAI chat uses portable wire names and never replays provider reasoning", () => {
   const adapter = openAiChat.createOpenAiChatWireAdapter({
     model: model("gemini-2.5-pro"),
     instructions: "Use only the declared workspace tools.",
@@ -89,10 +89,10 @@ test("non-MiMo OpenAI chat keeps dotted names and never replays provider reasoni
 
   const firstRequest = chatBody(adapter.nextRequest([]));
   assert.deepEqual(firstRequest.tools.map((tool) => tool.function.name), [
-    "workspace.list",
-    "workspace.read",
-    "workspace.search",
-    "results.write",
+    "workspace_list",
+    "workspace_read",
+    "workspace_search",
+    "results_write",
   ]);
 
   const reasoning = "untrusted provider text that must remain inert";
@@ -104,7 +104,7 @@ test("non-MiMo OpenAI chat keeps dotted names and never replays provider reasoni
         tool_calls: [{
           id: "call-list-1",
           type: "function",
-          function: { name: "workspace.list", arguments: "{}" },
+          function: { name: "workspace_list", arguments: "{}" },
         }],
       },
     }],

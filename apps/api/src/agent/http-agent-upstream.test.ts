@@ -280,7 +280,7 @@ test("AgentUpstream stops locally when a response reader ignores abort", async (
   await assert.rejects(pending, { code: "agent_cancelled" });
 });
 
-test("HttpProbeSession uses each supported protocol loop, records usage, and removes only its private temporary directory", async (t) => {
+test("HttpProbeSession completes each supported protocol loop, including MiniMax, and removes only its private temporary directory", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "csb-http-probe-test-"));
   t.after(async () => rm(root, { recursive: true, force: true }));
 
@@ -320,6 +320,16 @@ test("HttpProbeSession uses each supported protocol loop, records usage, and rem
       routeKind: "anthropic-api",
       protocol: "anthropic-messages" as const,
       expectedUrl: "https://api.anthropic.com/v1/messages",
+      replies: [
+        anthropicTool("workspace.read", { path: "probe-input.txt" }, "read-1"),
+        anthropicTool("results.write", { path: "probe.json", content: "{\"ok\":true}" }, "write-1"),
+        anthropicFinal({ ok: true }),
+      ],
+    },
+    {
+      routeKind: "minimax-token-plan",
+      protocol: "anthropic-messages" as const,
+      expectedUrl: "https://api.minimax.io/anthropic/v1/messages",
       replies: [
         anthropicTool("workspace.read", { path: "probe-input.txt" }, "read-1"),
         anthropicTool("results.write", { path: "probe.json", content: "{\"ok\":true}" }, "write-1"),
@@ -519,7 +529,7 @@ function json(status: number, body: unknown): Response {
 }
 
 function responsesTool(name: string, input: Record<string, unknown>, id: string) {
-  return { id: `response-${id}`, output: [{ type: "function_call", call_id: id, name, arguments: JSON.stringify(input) }], usage: { input_tokens: 1, output_tokens: 1 } };
+  return { id: `response-${id}`, output: [{ type: "function_call", call_id: id, name: portableWireToolName(name), arguments: JSON.stringify(input) }], usage: { input_tokens: 1, output_tokens: 1 } };
 }
 
 function responsesFinal(value: Record<string, unknown>) {
@@ -527,18 +537,11 @@ function responsesFinal(value: Record<string, unknown>) {
 }
 
 function chatTool(name: string, input: Record<string, unknown>, id: string) {
-  return { choices: [{ message: { tool_calls: [{ id, type: "function", function: { name, arguments: JSON.stringify(input) } }] } }], usage: { prompt_tokens: 1, completion_tokens: 1 } };
+  return { choices: [{ message: { tool_calls: [{ id, type: "function", function: { name: portableWireToolName(name), arguments: JSON.stringify(input) } }] } }], usage: { prompt_tokens: 1, completion_tokens: 1 } };
 }
 
 function mimoChatTool(name: string, input: Record<string, unknown>, id: string) {
-  const wireName = ({
-    "workspace.list": "workspace_list",
-    "workspace.read": "workspace_read",
-    "workspace.search": "workspace_search",
-    "results.write": "results_write",
-  } as Record<string, string>)[name];
-  if (wireName === undefined) throw new Error("unknown MiMo test tool");
-  return chatTool(wireName, input, id);
+  return chatTool(name, input, id);
 }
 
 function chatFinal(value: Record<string, unknown>) {
@@ -546,7 +549,18 @@ function chatFinal(value: Record<string, unknown>) {
 }
 
 function anthropicTool(name: string, input: Record<string, unknown>, id: string) {
-  return { content: [{ type: "tool_use", id, name, input }], usage: { input_tokens: 1, output_tokens: 1 } };
+  return { content: [{ type: "tool_use", id, name: portableWireToolName(name), input }], usage: { input_tokens: 1, output_tokens: 1 } };
+}
+
+function portableWireToolName(name: string): string {
+  const wireName = ({
+    "workspace.list": "workspace_list",
+    "workspace.read": "workspace_read",
+    "workspace.search": "workspace_search",
+    "results.write": "results_write",
+  } as Record<string, string>)[name];
+  if (wireName === undefined) throw new Error("unknown test tool");
+  return wireName;
 }
 
 function anthropicFinal(value: Record<string, unknown>) {

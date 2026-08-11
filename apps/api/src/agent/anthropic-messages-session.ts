@@ -2,13 +2,13 @@ import type { ProviderModel } from "@csb/shared";
 
 import {
   AgentSessionError,
-  isWorkspaceToolName,
   type AgentToolCall,
   type AgentToolResult,
   type AgentWireRequest,
   type NormalizedModelReply,
   type WireSessionAdapter,
 } from "./session-types.js";
+import { WORKSPACE_TOOL_WIRE_CODEC } from "./workspace-tool-wire-codec.js";
 
 export interface AnthropicMessagesSessionSpec {
   model: ProviderModel;
@@ -71,16 +71,16 @@ export function createAnthropicMessagesWireAdapter(
 
 function anthropicTools(): readonly unknown[] {
   return [
-    anthropicTool("workspace.list", "List read-only files from the workspace snapshot.", {
+    anthropicTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.list"), "List read-only files from the workspace snapshot.", {
       path: stringSchema(), maxEntries: integerSchema(), maxDepth: integerSchema(),
     }),
-    anthropicTool("workspace.read", "Read a file from the workspace snapshot.", {
+    anthropicTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.read"), "Read a file from the workspace snapshot.", {
       path: requiredStringSchema(), maxBytes: integerSchema(),
     }, ["path"]),
-    anthropicTool("workspace.search", "Search read-only workspace files for literal text.", {
+    anthropicTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.search"), "Search read-only workspace files for literal text.", {
       query: requiredStringSchema(), path: stringSchema(), maxResults: integerSchema(), maxBytes: integerSchema(),
     }, ["query"]),
-    anthropicTool("results.write", "Write a result artifact below the run artifact directory.", {
+    anthropicTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("results.write"), "Write a result artifact below the run artifact directory.", {
       path: requiredStringSchema(), content: requiredStringSchema(),
     }, ["path", "content"]),
   ];
@@ -100,10 +100,12 @@ function anthropicTool(
 }
 
 function readToolUse(value: Record<string, unknown>): AgentToolCall {
-  if (typeof value.id !== "string" || value.id.length === 0 || !isWorkspaceToolName(value.name)) {
+  if (typeof value.id !== "string" || value.id.length === 0 || typeof value.name !== "string") {
     throw protocolError();
   }
-  return { id: value.id, name: value.name, input: record(value.input) };
+  const name = WORKSPACE_TOOL_WIRE_CODEC.toInternal(value.name);
+  if (name === null) throw protocolError();
+  return { id: value.id, name, input: record(value.input) };
 }
 
 function anthropicUsage(value: unknown) {
