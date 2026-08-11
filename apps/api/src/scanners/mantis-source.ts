@@ -11,7 +11,7 @@ const MAX_SKILL_BYTES = 64 * 1024;
 const GIT_KILL_GRACE_MS = 250;
 const CACHE_LOCK_WAIT_MS = 60_000;
 const CACHE_LOCK_POLL_MS = 25;
-const RECOVERY_ENTRIES_PER_REF = 2;
+const CACHE_LOCK_HEARTBEAT_MS = 1_000;
 
 export type MantisSourceErrorCode = "source_cancelled" | "source_invalid";
 
@@ -57,6 +57,15 @@ export interface ResolvedMantisLocalSource {
   ref: string;
 }
 
+interface CacheLockIdentity {
+  dev: number;
+  ino: number;
+}
+
+interface CacheLockLease {
+  release(): void;
+}
+
 /**
  * Resolves the reviewed upstream Mantis skills before any scan output/config
  * or child worker exists. A cached checkout is usable only if `HEAD` is the
@@ -75,7 +84,7 @@ export async function resolveMantisLocalSource(
   ensurePrivateDirectory(cacheDir);
 
   const skillsRoot = path.join(cacheDir, ref.slice(0, 12));
-  const releaseLock = await acquireCacheLock(cacheDir, ref, timeout, signal);
+  const lock = await acquireCacheLock(cacheDir, ref, timeout, signal);
   let stagingRoot: string | null = null;
   try {
     if (await isValidCachedCheckout(command, cacheDir, skillsRoot, ref, timeout, signal)) {
@@ -108,7 +117,7 @@ export async function resolveMantisLocalSource(
     if (signal.aborted) throw new MantisSourceError("source_cancelled");
     throw new MantisSourceError("source_invalid");
   } finally {
-    releaseLock();
+    lock.release();
   }
 }
 
@@ -143,7 +152,7 @@ async function acquireCacheLock(
   ref: string,
   timeout: number,
   signal: AbortSignal,
-): Promise<() => void> {
+): Promise<CacheLockLease> {
   const lockRoot = path.join(cacheDir, `.mantis-source-${ref}.lock`);
   const staleAfterMs = Math.max(CACHE_LOCK_WAIT_MS, (timeout * 3) + GIT_KILL_GRACE_MS);
   const deadline = Date.now() + staleAfterMs;
@@ -152,7 +161,10 @@ async function acquireCacheLock(
     try {
       fs.mkdirSync(lockRoot, { mode: 0o700 });
       assertPrivateDirectory(lockRoot);
-      return () => releaseCacheLock(lockRoot);
+      const identity = readCacheLockIdentity(lockRoot);
+      if (identity === null) throw new Error("new lock identity is unavailable");
+      const stopHeartbeat = startCacheLockHeartbeat(lockRoot, identity);
+      return { release: () => releaseCacheLock(lockRoot, identity, stopHeartbeat) };
     } catch (error) {
       if (!isAlreadyExists(error)) throw new MantisSourceError("source_invalid");
       try {
@@ -170,13 +182,50 @@ async function acquireCacheLock(
   }
 }
 
-function releaseCacheLock(lockRoot: string): void {
+function releaseCacheLock(
+  lockRoot: string,
+  identity: CacheLockIdentity,
+  stopHeartbeat: () => void,
+): void {
+  stopHeartbeat();
+  try {
+    if (matchesCacheLockIdentity(lockRoot, identity)) fs.rmdirSync(lockRoot);
+  } catch {
+    // A replaced lock belongs to another caller and must remain untouched.
+  }
+}
+
+function startCacheLockHeartbeat(lockRoot: string, identity: CacheLockIdentity): () => void {
+  const timer = setInterval(() => {
+    try {
+      if (!matchesCacheLockIdentity(lockRoot, identity)) {
+        clearInterval(timer);
+        return;
+      }
+      const now = new Date();
+      fs.utimesSync(lockRoot, now, now);
+    } catch {
+      clearInterval(timer);
+    }
+  }, CACHE_LOCK_HEARTBEAT_MS);
+  timer.unref();
+  return () => clearInterval(timer);
+}
+
+function readCacheLockIdentity(lockRoot: string): CacheLockIdentity | null {
   try {
     const info = fs.lstatSync(lockRoot);
-    if (info.isDirectory() && !info.isSymbolicLink()) fs.rmdirSync(lockRoot);
+    return info.isDirectory() && !info.isSymbolicLink()
+      ? { dev: info.dev, ino: info.ino }
+      : null;
   } catch {
-    // A stale private lock fails closed on the next launch instead of deleting an unknown path.
+    return null;
   }
+}
+
+function matchesCacheLockIdentity(lockRoot: string, expected: CacheLockIdentity): boolean {
+  const actual = readCacheLockIdentity(lockRoot);
+  return actual !== null && actual.dev === expected.dev && actual.ino === expected.ino;
 }
 
 function isStaleCacheLock(lockRoot: string, staleAfterMs: number): boolean {
@@ -196,7 +245,6 @@ function reclaimStaleCacheLock(cacheDir: string, lockRoot: string, ref: string):
   try {
     assertDirectCacheChild(cacheDir, lockRoot);
     fs.renameSync(lockRoot, recovery);
-    pruneRecoveryEntries(cacheDir, ref);
   } catch {
     // Another waiting process may have won the atomic recovery rename.
   }
@@ -233,32 +281,9 @@ function retireCacheEntry(
   try {
     assertDirectCacheChild(cacheDir, entry);
     fs.renameSync(entry, recovery);
-    pruneRecoveryEntries(cacheDir, ref);
   } catch {
     // The cache is private. Leaving an unreachable staging directory is safer
     // than deleting a path that failed our bounded rename check.
-  }
-}
-
-function pruneRecoveryEntries(cacheDir: string, ref: string): void {
-  const prefix = `.mantis-source-${ref.slice(0, 12)}-`;
-  const recovery = fs.readdirSync(cacheDir, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink() && entry.name.startsWith(prefix) &&
-      (entry.name.includes("-invalid-") ||
-        entry.name.includes("-interrupted-") ||
-        entry.name.includes("-abandoned-lock-")))
-    .map((entry) => ({
-      path: path.join(cacheDir, entry.name),
-      mtimeMs: fs.lstatSync(path.join(cacheDir, entry.name)).mtimeMs,
-    }))
-    .sort((left, right) => right.mtimeMs - left.mtimeMs);
-  for (const entry of recovery.slice(RECOVERY_ENTRIES_PER_REF)) {
-    try {
-      assertDirectCacheChild(cacheDir, entry.path);
-      fs.rmSync(entry.path, { recursive: true, force: true, maxRetries: 1 });
-    } catch {
-      // A later locked launch may retry only this private cache entry.
-    }
   }
 }
 

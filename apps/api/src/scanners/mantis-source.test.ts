@@ -230,6 +230,113 @@ test("Mantis local source reclaims an abandoned SHA lock instead of waiting fore
   }
 });
 
+test("Mantis local source heartbeats its lock while a cold clone is active", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-source-lock-heartbeat-"));
+  const cacheDir = path.join(root, "cache");
+  const lockRoot = path.join(cacheDir, `.mantis-source-${REF}.lock`);
+  const controller = new AbortController();
+  let releaseClone: () => void = () => undefined;
+  const cloneStarted = new Promise<void>((resolve) => {
+    releaseClone = resolve;
+  });
+  const operation = resolveMantisLocalSource({
+    repositoryUrl: "https://example.test/google/mantis.git",
+    ref: REF,
+    cacheDir,
+    signal: controller.signal,
+    command: async (_binary, args) => {
+      if (args[0] === "clone") {
+        fs.mkdirSync(args.at(-1)!, { recursive: true, mode: 0o700 });
+        await cloneStarted;
+        return { stdout: "", stderr: "" };
+      }
+      throw new Error("clone cancellation must stop before checkout");
+    },
+  });
+
+  try {
+    const initialMtime = fs.statSync(lockRoot).mtimeMs;
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    assert.ok(fs.statSync(lockRoot).mtimeMs > initialMtime);
+  } finally {
+    controller.abort();
+    releaseClone();
+    await assert.rejects(
+      operation,
+      (error: unknown) => error instanceof MantisSourceError && error.code === "source_cancelled",
+    );
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Mantis local source stale takeover keeps a new lock when the old owner releases", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-source-lock-takeover-"));
+  const cacheDir = path.join(root, "cache");
+  const lockRoot = path.join(cacheDir, `.mantis-source-${REF}.lock`);
+  let cloneNumber = 0;
+  let releaseFirstClone: () => void = () => undefined;
+  let releaseSecondClone: () => void = () => undefined;
+  const firstCloneGate = new Promise<void>((resolve) => {
+    releaseFirstClone = resolve;
+  });
+  const secondCloneGate = new Promise<void>((resolve) => {
+    releaseSecondClone = resolve;
+  });
+  let secondLockAcquired: () => void = () => undefined;
+  const secondLockStarted = new Promise<void>((resolve) => {
+    secondLockAcquired = resolve;
+  });
+  const command: MantisSourceCommand = async (_binary, args) => {
+    if (args[0] === "clone") {
+      fs.mkdirSync(args.at(-1)!, { recursive: true, mode: 0o700 });
+      cloneNumber += 1;
+      if (cloneNumber === 1) await firstCloneGate;
+      else {
+        secondLockAcquired();
+        await secondCloneGate;
+      }
+      return { stdout: "", stderr: "" };
+    }
+    if (args.includes("checkout")) {
+      populateSkills(args[1]!);
+      return { stdout: "", stderr: "" };
+    }
+    if (args.includes("rev-parse")) return { stdout: `${REF}\n`, stderr: "" };
+    throw new Error(`unexpected git argv: ${args.join(" ")}`);
+  };
+
+  const first = resolveMantisLocalSource({
+    repositoryUrl: "https://example.test/google/mantis.git",
+    ref: REF,
+    cacheDir,
+    command,
+  });
+
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    fs.utimesSync(lockRoot, new Date(0), new Date(0));
+    const second = resolveMantisLocalSource({
+      repositoryUrl: "https://example.test/google/mantis.git",
+      ref: REF,
+      cacheDir,
+      command,
+    });
+    await secondLockStarted;
+    releaseFirstClone();
+    await first;
+    assert.equal(fs.existsSync(lockRoot), true, "old owner must not remove the new lock");
+    releaseSecondClone();
+    await assert.rejects(
+      second,
+      (error: unknown) => error instanceof MantisSourceError && error.code === "source_invalid",
+    );
+  } finally {
+    releaseFirstClone();
+    releaseSecondClone();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("Mantis local source honors an already-aborted request before git preflight", async () => {
   const controller = new AbortController();
   controller.abort();
