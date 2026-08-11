@@ -167,6 +167,89 @@ test("unsupported HTTP runner stops before the launch callback can create output
   assert.equal(launchPreparationCalls, 0);
 });
 
+test("Codex Security OpenAI API cannot fall through to client or global API-key auth", () => {
+  const fixture = resolver(plan({
+    engine: "codex-security",
+    routeKind: "openai-api",
+    runnerKind: "codex-security-contract",
+    protocol: "openai-responses",
+    scannerAuthMode: "api-key",
+  }));
+  const previousOpenAiKey = process.env.OPENAI_API_KEY;
+  const previousCodexKey = process.env.CODEX_API_KEY;
+  let launchPreparationCalls = 0;
+  process.env.OPENAI_API_KEY = "global-openai-key-must-not-steer";
+  process.env.CODEX_API_KEY = "global-codex-key-must-not-steer";
+
+  try {
+    assert.throws(() => resolveBeforeLaunch({
+      request: {
+        repositoryPath: "/repo",
+        engine: "codex-security",
+        provider: "openai",
+        model: "client-spoofed-model",
+        authMode: "api-key",
+        connection: {
+          connectionId: "openai-session",
+          modelSelectionMode: "catalog",
+          modelId: "gpt-live",
+        },
+      },
+      scanId: "scan-codex-api",
+      launchPlans: fixture.resolver,
+      prepareLaunch: () => {
+        launchPreparationCalls += 1;
+        return process.env.OPENAI_API_KEY ?? process.env.CODEX_API_KEY;
+      },
+    }), (error: unknown) =>
+      error instanceof ScanSelectionError && error.code === "provider_runner_unavailable");
+  } finally {
+    if (previousOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousOpenAiKey;
+    if (previousCodexKey === undefined) delete process.env.CODEX_API_KEY;
+    else process.env.CODEX_API_KEY = previousCodexKey;
+  }
+
+  assert.equal(launchPreparationCalls, 0);
+});
+
+test("Codex Security keeps the two scoped local session routes launchable", () => {
+  for (const routeKind of [
+    "openai-codex-local",
+    "openai-chatgpt-app-server",
+  ] as const) {
+    const fixture = resolver(plan({
+      engine: "codex-security",
+      routeKind,
+      runnerKind: "codex-security-contract",
+      protocol: "codex-app-server",
+      scannerAuthMode: "chatgpt",
+    }));
+    let launchPreparationCalls = 0;
+
+    const result = resolveBeforeLaunch({
+      request: {
+        repositoryPath: "/repo",
+        engine: "codex-security",
+        connection: {
+          connectionId: "openai-session",
+          modelSelectionMode: "catalog",
+          modelId: "gpt-live",
+        },
+      },
+      scanId: `scan-${routeKind}`,
+      launchPlans: fixture.resolver,
+      prepareLaunch: (selection) => {
+        launchPreparationCalls += 1;
+        return selection.request.authMode;
+      },
+    });
+
+    assert.equal(launchPreparationCalls, 1);
+    assert.equal(result.launch, "chatgpt");
+  }
+});
+
 test("connection launch does not fall through to the old Codex worker for a remote job", () => {
   const fixture = resolver(plan({
     routeKind: "cursor-background-agents",

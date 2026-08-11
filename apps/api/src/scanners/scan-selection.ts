@@ -8,6 +8,11 @@ import type {
   ScanLaunchPlan,
 } from "../connections/launch-plan.js";
 
+const SCOPED_CODEX_SECURITY_SESSION_ROUTES = new Set([
+  "openai-codex-local",
+  "openai-chatgpt-app-server",
+]);
+
 /** Safe, stable launch boundary errors. They intentionally reveal no route or credential details. */
 export type ScanSelectionErrorCode =
   | "provider_runner_unavailable"
@@ -74,6 +79,12 @@ export function resolveScanLaunchSelection(
   });
 
   if (plan.runnerKind === "agent-session" || plan.runnerKind === "remote-agent-job") {
+    throw new ScanSelectionError("provider_runner_unavailable");
+  }
+  if (
+    plan.runnerKind === "codex-security-contract" &&
+    !SCOPED_CODEX_SECURITY_SESSION_ROUTES.has(plan.routeKind)
+  ) {
     throw new ScanSelectionError("provider_runner_unavailable");
   }
   if (plan.model === null || plan.scannerAuthMode === undefined) {
