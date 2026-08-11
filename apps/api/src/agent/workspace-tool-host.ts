@@ -1,6 +1,5 @@
 import { constants, type Dirent, type Stats } from "node:fs";
 import {
-  chmod,
   type FileHandle,
   lstat,
   mkdir,
@@ -8,7 +7,7 @@ import {
   readdir,
   realpath,
 } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import {
   AgentSessionError,
@@ -49,6 +48,11 @@ interface RootRef {
   denialCode: ToolDenialCode;
 }
 
+/** A caller must provide an already-private, per-session directory. */
+interface ArtifactRootRef extends RootRef {
+  parent: RootRef;
+}
+
 interface FileIdentity {
   dev: number;
   ino: number;
@@ -84,7 +88,7 @@ export async function createWorkspaceToolHost(
 ): Promise<WorkspaceToolHost> {
   const limits = limitsFor(options);
   const snapshotRoot = await existingDirectory(options.snapshotRoot, "tool_path_denied");
-  const artifactRoot = await writableDirectory(options.artifactRoot);
+  const artifactRoot = await privateArtifactRoot(options.artifactRoot);
   if (rootsOverlap(snapshotRoot.path, artifactRoot.path)) {
     throw new AgentSessionError("tool_path_denied");
   }
@@ -263,7 +267,7 @@ async function searchWorkspace(
 }
 
 async function writeArtifact(
-  artifactRoot: RootRef,
+  artifactRoot: ArtifactRootRef,
   input: unknown,
   limits: ToolHostLimits,
   maxOutputBytes: number,
@@ -283,7 +287,7 @@ async function writeArtifact(
     const linked = await secureLstat(target.path, "tool_write_denied");
     assertRegularPinnedFile(opened, linked, "tool_write_denied");
     await assertPinnedDirectory(target.parent, "tool_write_denied");
-    await assertPinnedRoot(artifactRoot);
+    await assertPinnedArtifactRoot(artifactRoot);
 
     await handle.writeFile(content, "utf8");
 
@@ -294,7 +298,7 @@ async function writeArtifact(
       throw new AgentSessionError("tool_write_denied");
     }
     await assertPinnedDirectory(target.parent, "tool_write_denied");
-    await assertPinnedRoot(artifactRoot);
+    await assertPinnedArtifactRoot(artifactRoot);
   } catch (error) {
     if (error instanceof AgentSessionError) throw error;
     if (isFileSystemError(error, "EEXIST") || isFileSystemError(error, "ELOOP") ||
@@ -328,19 +332,20 @@ async function existingDirectory(path: string, code: ToolDenialCode): Promise<Ro
   }
 }
 
-async function writableDirectory(path: string): Promise<RootRef> {
-  if (typeof path !== "string" || path.length === 0 || path.includes("\0")) {
-    throw new AgentSessionError("tool_write_denied");
-  }
-  try {
-    await mkdir(resolve(path), { recursive: true, mode: 0o700 });
-    const root = await existingDirectory(path, "tool_write_denied");
-    await chmod(root.path, 0o700);
-    return existingDirectory(root.path, "tool_write_denied");
-  } catch (error) {
-    if (error instanceof AgentSessionError) throw error;
-    throw new AgentSessionError("tool_write_denied");
-  }
+/**
+ * Results are allowed only in a pre-provisioned, per-session 0700 directory.
+ * We never create or chmod a caller-controlled path: without portable openat,
+ * that would leave a parent-swap gap. Pinning the private root and its parent
+ * gives the runner an executable no-concurrent-writers contract.
+ */
+async function privateArtifactRoot(path: string): Promise<ArtifactRootRef> {
+  const root = await existingDirectory(path, "tool_write_denied");
+  const parentPath = dirname(root.path);
+  if (parentPath === root.path) throw new AgentSessionError("tool_write_denied");
+  const parent = await existingDirectory(parentPath, "tool_write_denied");
+  await assertPrivatePinnedDirectory(parent);
+  await assertPrivatePinnedDirectory(root);
+  return { ...root, parent };
 }
 
 async function snapshotTarget(snapshotRoot: RootRef, requestedPath: string): Promise<PinnedPath> {
@@ -368,8 +373,8 @@ async function snapshotTarget(snapshotRoot: RootRef, requestedPath: string): Pro
   }
 }
 
-async function artifactTarget(artifactRoot: RootRef, requestedPath: string): Promise<ArtifactTarget> {
-  await assertPinnedRoot(artifactRoot);
+async function artifactTarget(artifactRoot: ArtifactRootRef, requestedPath: string): Promise<ArtifactTarget> {
+  await assertPinnedArtifactRoot(artifactRoot);
   const normalized = normalizeRelativePath(requestedPath, false);
   const segments = normalized.split("/");
   const filename = segments.pop();
@@ -383,7 +388,7 @@ async function artifactTarget(artifactRoot: RootRef, requestedPath: string): Pro
   };
   for (const segment of segments) {
     await assertPinnedDirectory(parent, "tool_write_denied");
-    await assertPinnedRoot(artifactRoot);
+    await assertPinnedArtifactRoot(artifactRoot);
     const next = join(parent.path, segment);
     let info: Stats;
     try {
@@ -406,7 +411,7 @@ async function artifactTarget(artifactRoot: RootRef, requestedPath: string): Pro
       }
     }
     await assertPinnedDirectory(parent, "tool_write_denied");
-    await assertPinnedRoot(artifactRoot);
+    await assertPinnedArtifactRoot(artifactRoot);
     parent = { path: next, info };
   }
 
@@ -420,7 +425,7 @@ async function artifactTarget(artifactRoot: RootRef, requestedPath: string): Pro
   }
   parent = { path: canonicalParent, info: canonicalInfo };
   await assertPinnedDirectory(parent, "tool_write_denied");
-  await assertPinnedRoot(artifactRoot);
+  await assertPinnedArtifactRoot(artifactRoot);
 
   const target = join(parent.path, filename);
   if (!isInside(artifactRoot.path, target)) throw new AgentSessionError("tool_write_denied");
@@ -553,6 +558,30 @@ async function assertPinnedRoot(root: RootRef): Promise<void> {
   }
 }
 
+async function assertPinnedArtifactRoot(root: ArtifactRootRef): Promise<void> {
+  await assertPrivatePinnedDirectory(root.parent);
+  await assertPrivatePinnedDirectory(root);
+}
+
+async function assertPrivatePinnedDirectory(root: RootRef): Promise<void> {
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(root.path, DIRECTORY_READ_FLAGS);
+    const opened = await handle.stat();
+    const linked = await secureLstat(root.path, root.denialCode);
+    if (!opened.isDirectory() || opened.isSymbolicLink() || !sameIdentity(root.identity, opened) ||
+        !linked.isDirectory() || linked.isSymbolicLink() || !sameIdentity(root.identity, linked) ||
+        !isPrivateOwnerOnly(opened) || !isPrivateOwnerOnly(linked)) {
+      throw new AgentSessionError(root.denialCode);
+    }
+  } catch (error) {
+    if (error instanceof AgentSessionError) throw error;
+    throw new AgentSessionError(root.denialCode);
+  } finally {
+    await handle?.close();
+  }
+}
+
 async function assertPinnedDirectory(path: PinnedPath, code: ToolDenialCode): Promise<void> {
   const current = await secureLstat(path.path, code);
   if (current.isSymbolicLink() || !current.isDirectory() || !sameObject(path.info, current)) {
@@ -589,6 +618,11 @@ function identityOf(info: Stats): FileIdentity {
 
 function sameIdentity(identity: FileIdentity, info: Stats): boolean {
   return identity.dev === info.dev && identity.ino === info.ino;
+}
+
+function isPrivateOwnerOnly(info: Stats): boolean {
+  if ((info.mode & 0o077) !== 0) return false;
+  return typeof process.getuid !== "function" || info.uid === process.getuid();
 }
 
 function normalizeRelativePath(value: string, allowRoot: boolean): string {

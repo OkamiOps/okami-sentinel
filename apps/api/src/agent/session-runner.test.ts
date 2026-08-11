@@ -6,7 +6,11 @@ import test from "node:test";
 import type { ModelCapabilities, ProviderModel } from "@csb/shared";
 import { createAgentSession, DEFAULT_AGENT_LIMITS } from "./session-runner.js";
 import { probeOpenAiChatSession } from "./openai-chat-session.js";
-import type { AgentUpstreamRequest } from "./session-types.js";
+import {
+  createConstrainedWireSession,
+  type AgentSessionTimer,
+  type AgentUpstreamRequest,
+} from "./session-types.js";
 
 test("a session cannot be created from an unmeasured tool capability", async () => {
   await assert.rejects(createAgentSession({
@@ -20,7 +24,7 @@ test("an endless valid tool transcript stops before an N+1 model or tool call", 
   const snapshotRoot = join(root, "snapshot");
   const artifactRoot = join(root, "artifacts");
   await mkdir(snapshotRoot);
-  await mkdir(artifactRoot);
+  await mkdir(artifactRoot, { mode: 0o700 });
   await writeFile(join(snapshotRoot, "index.ts"), "export const value = 1;\n");
   t.after(async () => rm(root, { recursive: true, force: true }));
 
@@ -174,15 +178,16 @@ test("input and turn budgets stop before their next upstream request", async (t)
 });
 
 test("deadline and abort cancel in-flight work without issuing another model request", async (t) => {
-  const timeFixture = await fixtureRoots("time-limit");
   const abortFixture = await fixtureRoots("abort-limit");
-  t.after(timeFixture.cleanup);
   t.after(abortFixture.cleanup);
 
   let timeCalls = 0;
+  const timeStarted = deferred<void>();
+  const timeTimer = manualTimer();
   const timeUpstream = {
     async request(request: { signal: AbortSignal }) {
       timeCalls += 1;
+      timeStarted.resolve();
       await new Promise<void>((_resolve, reject) => {
         request.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
       });
@@ -192,12 +197,20 @@ test("deadline and abort cancel in-flight work without issuing another model req
       return true;
     },
   };
-  const timeSession = await createAgentSession({
-    ...sessionSpec(timeFixture, "openai-chat", "gemini-api", { timeoutMs: 1 }),
-    probe: capability(),
-  }, timeUpstream);
+  const timeSession = createConstrainedWireSession({
+    limits: { ...DEFAULT_AGENT_LIMITS, timeoutMs: 1 },
+    signal: new AbortController().signal,
+    host: noToolHost(),
+    upstream: timeUpstream,
+    adapter: finalOnlyAdapter(),
+    now: () => 0,
+    timer: timeTimer,
+  });
   const timeEvents: unknown[] = [];
-  await assert.rejects(collect(timeSession.run(), timeEvents), { code: "agent_time_limit" });
+  const timeRunning = collect(timeSession.run(), timeEvents);
+  await timeStarted.promise;
+  timeTimer.fireNext();
+  await assert.rejects(timeRunning, { code: "agent_time_limit" });
   assert.equal(timeCalls, 1);
   assert.equal(timeEvents.some((event) => isCancellation(event, true)), true);
 
@@ -292,6 +305,49 @@ test("cancel cuts off an upstream request that ignores AbortSignal", async (t) =
   assert.deepEqual(await session.cancel(), { remote: true });
   await withTestDeadline(running, 250);
   assert.equal(events.some((event) => isCancellation(event, true)), true);
+});
+
+test("a hanging remote cancellation cannot block local session finalization", async (t) => {
+  const started = deferred<void>();
+  const timer = manualTimer();
+  let rejectRemote: ((reason?: unknown) => void) | undefined;
+  const unhandled: unknown[] = [];
+  const onUnhandled = (error: unknown) => unhandled.push(error);
+  process.on("unhandledRejection", onUnhandled);
+  t.after(() => process.off("unhandledRejection", onUnhandled));
+  const session = createConstrainedWireSession({
+    limits: { ...DEFAULT_AGENT_LIMITS, timeoutMs: 10_000 },
+    signal: new AbortController().signal,
+    host: noToolHost(),
+    adapter: finalOnlyAdapter(),
+    now: () => 0,
+    timer,
+    upstream: {
+      request() {
+        started.resolve();
+        return new Promise(() => undefined);
+      },
+      cancel() {
+        return new Promise((_resolve, reject) => {
+          rejectRemote = reject;
+        });
+      },
+    },
+  });
+  const events: unknown[] = [];
+  const running = collect(session.run(), events);
+  void running.catch(() => undefined);
+
+  await started.promise;
+  const cancellation = session.cancel();
+  timer.fireNext();
+  assert.deepEqual(await cancellation, { remote: false });
+  await running;
+  assert.equal(events.some((event) => isCancellation(event, false)), true);
+  assert.notEqual(rejectRemote, undefined);
+  rejectRemote?.(new Error("late remote cancellation rejection"));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(unhandled, []);
 });
 
 test("remaining output budget prevents results.write before host I/O", async (t) => {
@@ -460,7 +516,7 @@ async function fixtureRoots(name: string) {
   const snapshotRoot = join(root, "snapshot");
   const artifactRoot = join(root, "artifacts");
   await mkdir(snapshotRoot);
-  await mkdir(artifactRoot);
+  await mkdir(artifactRoot, { mode: 0o700 });
   await writeFile(join(snapshotRoot, "index.ts"), "export const value = 1;\n");
   return {
     snapshotRoot,
@@ -656,6 +712,50 @@ function deferred<T>() {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+function noToolHost() {
+  return {
+    minimumOutputBytes() {
+      return 0;
+    },
+    async call() {
+      throw new Error("no tool call expected");
+    },
+  };
+}
+
+function finalOnlyAdapter() {
+  return {
+    nextRequest() {
+      return { operation: "chat-completions" as const, body: {} };
+    },
+    readResponse() {
+      throw new Error("no response expected");
+    },
+  };
+}
+
+function manualTimer(): AgentSessionTimer & { fireNext(): void } {
+  let nextId = 0;
+  const callbacks = new Map<number, { delayMs: number; callback: () => void }>();
+  return {
+    setTimeout(callback, delayMs) {
+      nextId += 1;
+      callbacks.set(nextId, { delayMs, callback });
+      return nextId;
+    },
+    clearTimeout(handle) {
+      if (typeof handle === "number") callbacks.delete(handle);
+    },
+    fireNext() {
+      const next = [...callbacks.entries()]
+        .sort((left, right) => left[1].delayMs - right[1].delayMs || left[0] - right[0])[0];
+      if (next === undefined) throw new Error("no scheduled timer");
+      callbacks.delete(next[0]);
+      next[1].callback();
+    },
+  };
 }
 
 async function withTestDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {

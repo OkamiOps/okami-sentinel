@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, mkdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { access, lstat, mkdtemp, mkdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -11,7 +11,7 @@ test("workspace tools reject traversal and symlink escape while artifacts stay i
   const artifactRoot = join(root, "artifacts");
   const outsideFile = join(root, "outside.txt");
   await mkdir(snapshotRoot);
-  await mkdir(artifactRoot);
+  await mkdir(artifactRoot, { mode: 0o700 });
   await writeFile(outsideFile, "outside");
   await symlink(outsideFile, join(snapshotRoot, "escape-link.txt"));
   t.after(async () => rm(root, { recursive: true, force: true }));
@@ -36,7 +36,7 @@ test("workspace listing defaults to the snapshot root and exposes no extra tool 
   const snapshotRoot = join(root, "snapshot");
   const artifactRoot = join(root, "artifacts");
   await mkdir(snapshotRoot);
-  await mkdir(artifactRoot);
+  await mkdir(artifactRoot, { mode: 0o700 });
   await writeFile(join(snapshotRoot, "visible.txt"), "visible");
   t.after(async () => rm(root, { recursive: true, force: true }));
 
@@ -54,7 +54,7 @@ test("each read-only tool applies its remaining output budget before filesystem 
   const snapshotRoot = join(root, "snapshot");
   const artifactRoot = join(root, "artifacts");
   await mkdir(snapshotRoot);
-  await mkdir(artifactRoot);
+  await mkdir(artifactRoot, { mode: 0o700 });
   await writeFile(join(snapshotRoot, "visible.txt"), "visible needle");
   t.after(async () => rm(root, { recursive: true, force: true }));
 
@@ -78,7 +78,7 @@ test("results.write rejects an insufficient output budget before creating a file
   const snapshotRoot = join(root, "snapshot");
   const artifactRoot = join(root, "artifacts");
   await mkdir(snapshotRoot);
-  await mkdir(artifactRoot);
+  await mkdir(artifactRoot, { mode: 0o700 });
   t.after(async () => rm(root, { recursive: true, force: true }));
 
   const host = await createWorkspaceToolHost({ snapshotRoot, artifactRoot });
@@ -95,7 +95,7 @@ test("a snapshot-root inode swap after host creation is rejected", async (t) => 
   const originalSnapshot = join(root, "snapshot-original");
   const artifactRoot = join(root, "artifacts");
   await mkdir(snapshotRoot);
-  await mkdir(artifactRoot);
+  await mkdir(artifactRoot, { mode: 0o700 });
   await writeFile(join(snapshotRoot, "visible.txt"), "original");
   t.after(async () => rm(root, { recursive: true, force: true }));
 
@@ -115,17 +115,53 @@ test("an artifact-root inode swap after host creation is rejected before write",
   const artifactRoot = join(root, "artifacts");
   const originalArtifacts = join(root, "artifacts-original");
   await mkdir(snapshotRoot);
-  await mkdir(artifactRoot);
+  await mkdir(artifactRoot, { mode: 0o700 });
   t.after(async () => rm(root, { recursive: true, force: true }));
 
   const host = await createWorkspaceToolHost({ snapshotRoot, artifactRoot });
   await rename(artifactRoot, originalArtifacts);
-  await mkdir(artifactRoot);
+  await mkdir(artifactRoot, { mode: 0o700 });
 
   await assert.rejects(host.call("results.write", { path: "report.json", content: "{}" }), {
     code: "tool_write_denied",
   });
   assert.equal(await fileExists(join(artifactRoot, "report.json")), false);
+});
+
+test("artifact setup rejects a shared caller directory without changing its permissions", async (t) => {
+  const root = await mkdtemp(join(process.cwd(), ".test-agent-host-shared-artifacts-"));
+  const snapshotRoot = join(root, "snapshot");
+  const artifactRoot = join(root, "artifacts");
+  await mkdir(snapshotRoot);
+  await mkdir(artifactRoot, { mode: 0o755 });
+  t.after(async () => rm(root, { recursive: true, force: true }));
+
+  await assert.rejects(createWorkspaceToolHost({ snapshotRoot, artifactRoot }), {
+    code: "tool_write_denied",
+  });
+  assert.equal((await lstat(artifactRoot)).mode & 0o777, 0o755);
+});
+
+test("a parent swap after the private artifact root is pinned creates no replacement artifact", async (t) => {
+  const root = await mkdtemp(join(process.cwd(), ".test-agent-host-artifact-parent-swap-"));
+  const snapshotRoot = join(root, "snapshot");
+  const artifactParent = join(root, "artifact-parent");
+  const artifactRoot = join(artifactParent, "session-root");
+  const originalParent = join(root, "artifact-parent-original");
+  await mkdir(snapshotRoot);
+  await mkdir(artifactParent, { mode: 0o700 });
+  await mkdir(artifactRoot, { mode: 0o700 });
+  t.after(async () => rm(root, { recursive: true, force: true }));
+
+  const host = await createWorkspaceToolHost({ snapshotRoot, artifactRoot });
+  await rename(artifactParent, originalParent);
+  await mkdir(artifactParent, { mode: 0o700 });
+  await mkdir(artifactRoot, { mode: 0o700 });
+
+  await assert.rejects(host.call("results.write", { path: "must-not-exist.json", content: "{}" }), {
+    code: "tool_write_denied",
+  });
+  assert.equal(await fileExists(join(artifactRoot, "must-not-exist.json")), false);
 });
 
 async function fileExists(path: string): Promise<boolean> {

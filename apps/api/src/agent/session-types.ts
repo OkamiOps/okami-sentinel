@@ -65,6 +65,7 @@ export interface WorkspaceToolHost {
 
 export interface WorkspaceToolHostOptions {
   snapshotRoot: string;
+  /** Existing, unique 0700 directory provisioned for this one session only. */
   artifactRoot: string;
   maxReadBytes?: number;
   maxWriteBytes?: number;
@@ -93,6 +94,7 @@ export interface AgentSessionSpec {
   >;
   model: ProviderModel;
   snapshotRoot: string;
+  /** Existing, unique 0700 directory reserved by the session owner. */
   artifactRoot: string;
   instructions: string;
   limits: AgentSessionLimits;
@@ -184,6 +186,13 @@ export interface ConstrainedWireSessionOptions {
   upstream: AgentUpstream;
   adapter: WireSessionAdapter;
   now?: () => number;
+  timer?: AgentSessionTimer;
+}
+
+/** Injectable timer boundary keeps deadline and cancellation tests deterministic. */
+export interface AgentSessionTimer {
+  setTimeout(callback: () => void, delayMs: number): unknown;
+  clearTimeout(handle: unknown): void;
 }
 
 /**
@@ -217,15 +226,18 @@ class ConstrainedWireSession implements AgentSession {
   readonly #controller = new AbortController();
   readonly #options: ConstrainedWireSessionOptions;
   readonly #now: () => number;
+  readonly #timer: AgentSessionTimer;
   #deadline: number | null = null;
   #started = false;
   #completed = false;
   #externallyCancelled = false;
+  #timedOut = false;
   #remoteCancellation: Promise<boolean> | undefined;
 
   constructor(options: ConstrainedWireSessionOptions) {
     this.#options = options;
     this.#now = this.#options.now ?? Date.now;
+    this.#timer = this.#options.timer ?? SYSTEM_TIMER;
   }
 
   async cancel(): Promise<{ remote: boolean }> {
@@ -240,8 +252,11 @@ class ConstrainedWireSession implements AgentSession {
     this.#started = true;
     this.#deadline = this.#now() + this.#options.limits.timeoutMs;
     const detachAbort = this.#attachExternalAbort();
-    const timeout = setTimeout(
-      () => this.#controller.abort(),
+    const timeout = this.#timer.setTimeout(
+      () => {
+        this.#timedOut = true;
+        this.#controller.abort();
+      },
       Math.max(0, this.#deadline - this.#now()),
     );
     const seenCallIds = new Set<string>();
@@ -339,7 +354,7 @@ class ConstrainedWireSession implements AgentSession {
       this.#completed = true;
       throw failure;
     } finally {
-      clearTimeout(timeout);
+      this.#timer.clearTimeout(timeout);
       detachAbort();
     }
   }
@@ -362,17 +377,54 @@ class ConstrainedWireSession implements AgentSession {
   }
 
   #hasTimedOut(): boolean {
-    return this.#deadline !== null && this.#now() >= this.#deadline && !this.#externallyCancelled;
+    return !this.#externallyCancelled && (this.#timedOut ||
+      (this.#deadline !== null && this.#now() >= this.#deadline));
   }
 
   #requestRemoteCancellation(): Promise<boolean> {
     if (this.#remoteCancellation === undefined) {
-      this.#remoteCancellation = Promise.resolve(this.#options.upstream.cancel?.())
-        .then((value) => value === true)
-        .catch(() => false);
+      const operation = Promise.resolve().then(() => this.#options.upstream.cancel?.());
+      this.#remoteCancellation = boundedCancellation(operation, this.#timer);
     }
     return this.#remoteCancellation;
   }
+}
+
+const REMOTE_CANCELLATION_GRACE_MS = 100;
+
+const SYSTEM_TIMER: AgentSessionTimer = {
+  setTimeout(callback, delayMs) {
+    return setTimeout(callback, delayMs);
+  },
+  clearTimeout(handle) {
+    clearTimeout(handle as ReturnType<typeof setTimeout>);
+  },
+};
+
+/**
+ * Remote providers may ignore cancellation indefinitely. The local session
+ * must finish on its own deadline, while these handlers consume late settle.
+ */
+function boundedCancellation(
+  operation: Promise<boolean | void>,
+  timer: AgentSessionTimer,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let timeout: unknown;
+    const finish = (remote: boolean) => {
+      if (settled) return;
+      settled = true;
+      if (timeout !== undefined) timer.clearTimeout(timeout);
+      resolve(remote);
+    };
+    timeout = timer.setTimeout(() => finish(false), REMOTE_CANCELLATION_GRACE_MS);
+    if (settled) timer.clearTimeout(timeout);
+    void operation.then(
+      (value) => finish(value === true),
+      () => finish(false),
+    );
+  });
 }
 
 /**
