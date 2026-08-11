@@ -14,7 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { formatActivityState, formatDate, formatProgressMetric, formatTokens, formatUsd, shortId } from "../format";
 import { attackPathHref } from "../lib/attack-path";
-import { executionProfileLabel } from "../lib/execution-profile";
+import { executionProfileLabel, portableRetryHref } from "../lib/execution-profile";
 import { appendTelemetryEvent, mergeTelemetrySnapshot, telemetrySnapshot } from "../lib/telemetry";
 import { useI18n } from "../i18n";
 
@@ -56,6 +56,7 @@ export function ScanDetailPage() {
     ? `IN ${formatUsd(scan.cost?.inputUsd)} · OUT ${formatUsd(scan.cost?.outputUsd)}`
     : undefined;
   const resolvedExecutionProfileLabel = executionProfileLabel(scan, t);
+  const retryHref = portableRetryHref(scan);
   return <div>
     <header className="bench-panel bench-corners mb-4">
       <div className="flex h-8 items-center justify-between border-b px-3 font-mono text-[8px] uppercase tracking-[.13em] text-muted-foreground"><span className="text-primary">CHANNEL / {shortId(scan.id)}</span><span>{scan.status === "running" ? "LIVE TELEMETRY" : "ARCHIVED EVIDENCE"}</span></div>
@@ -65,7 +66,7 @@ export function ScanDetailPage() {
           <h1 className="mt-5 truncate font-heading text-3xl font-semibold tracking-[-.045em] sm:text-4xl">{scan.displayName}</h1>
           <button type="button" onClick={() => void navigator.clipboard.writeText(scan.repositoryPath ?? scan.scanDir)} className="mt-2 flex max-w-full items-center gap-2 truncate font-mono text-[10px] text-muted-foreground hover:text-primary"><HugeiconsIcon icon={Copy01Icon} size={11} />{scan.repositoryPath ?? scan.scanDir}</button>
           <div className="mt-5"><SeverityStrip counts={scan.severity} total={scan.severity.total} /></div>
-          <div className="mt-5 flex flex-wrap gap-2"><Button asChild variant="outline" size="sm"><Link to={`/compare?ids=${scan.id}`}><HugeiconsIcon icon={Analytics01Icon} size={12} />{t("scanDetail.compare")}</Link></Button><Button asChild variant="outline" size="sm"><Link to={rescanHref(scan)}><HugeiconsIcon icon={RefreshIcon} size={12} />{t("scanDetail.repeat")}</Link></Button>{scan.status === "completed" && <Button variant="outline" size="sm" onClick={() => void setBaseline()} disabled={baselineBusy || regression?.isRepositoryBaseline}><HugeiconsIcon icon={SecurityCheckIcon} size={12} />{regression?.isRepositoryBaseline ? t("scanDetail.repoBaseline") : baselineBusy ? t("scanDetail.settingBaseline") : t("scanDetail.setBaseline")}</Button>}{scan.status === "running" && <Button variant="destructive" size="sm" onClick={() => void cancel()}><HugeiconsIcon icon={StopIcon} size={12} />{t("scanDetail.cancel")}</Button>}<DeleteScanButton scan={scan} onDeleted={() => navigate("/scans")} /></div>
+          <div className="mt-5 flex flex-wrap gap-2"><Button asChild variant="outline" size="sm"><Link to={`/compare?ids=${scan.id}`}><HugeiconsIcon icon={Analytics01Icon} size={12} />{t("scanDetail.compare")}</Link></Button>{retryHref && <Button asChild variant="outline" size="sm"><Link to={retryHref} className="focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background"><HugeiconsIcon icon={RefreshIcon} size={12} />{t("scanDetail.repeat")}</Link></Button>}{scan.status === "completed" && <Button variant="outline" size="sm" onClick={() => void setBaseline()} disabled={baselineBusy || regression?.isRepositoryBaseline}><HugeiconsIcon icon={SecurityCheckIcon} size={12} />{regression?.isRepositoryBaseline ? t("scanDetail.repoBaseline") : baselineBusy ? t("scanDetail.settingBaseline") : t("scanDetail.setBaseline")}</Button>}{scan.status === "running" && <Button variant="destructive" size="sm" onClick={() => void cancel()}><HugeiconsIcon icon={StopIcon} size={12} />{t("scanDetail.cancel")}</Button>}<DeleteScanButton scan={scan} onDeleted={() => navigate("/scans")} /></div>
         </div>
         <div className="grid grid-cols-2 gap-x-4 gap-y-5 p-5"><Readout label="HIGH+" value={highPlus} tone="risk" /><Readout label="TOTAL" value={scan.severity.total} /><Readout label={isOpenRouterEstimate ? "EST. COST" : "COST"} value={formatUsd(scanEstimatedUsd(scan))} detail={costDetail} tone="signal" /><Readout label="DURATION" value={<LiveDuration startedAt={scan.startedAt} completedAt={scan.completedAt} status={scan.status} durationMs={scan.durationMs} showDot={false} />} /><Readout label="INPUT" value={formatTokens(scan.cost?.inputTokens)} detail={isOpenRouterEstimate ? `CACHE ${formatTokens(scan.cost?.cachedInputTokens)}` : undefined} /><Readout label="OUTPUT" value={formatTokens(scan.cost?.outputTokens)} detail={isOpenRouterEstimate ? <span title={scan.cost?.pricingModel}>OPENROUTER RATE</span> : undefined} /><Button asChild className="col-span-2 h-auto justify-between border-chart-1 bg-chart-1 px-4 py-3 text-[#060609] hover:bg-chart-1/90"><Link to={`/scans/${scan.id}/report`} target="_blank"><span className="flex items-center gap-3"><HugeiconsIcon icon={DocumentValidationIcon} size={18} /><span className="text-left"><strong className="block text-xs uppercase tracking-[.08em]">{t("scanDetail.report")}</strong><span className="mt-0.5 block font-mono text-[8px] font-normal uppercase opacity-75">{scan.severity.total} findings · {t("scanDetail.print")}</span></span></span><HugeiconsIcon icon={ArrowRight01Icon} size={15} /></Link></Button></div>
       </div>
@@ -141,7 +142,7 @@ function FindingInspector({ scan, finding, signal, onSaveTriage }: { scan: ScanR
   ];
 
   return <div>
-    <TriageConsole scan={scan} finding={finding} signal={signal} onSave={onSaveTriage} />
+    <TriageConsole signal={signal} onSave={onSaveTriage} />
     <div className="sticky top-0 z-10 flex overflow-x-auto border-b bg-card/95 backdrop-blur-sm">
       {tabs.map(([id, code, label]) => <button key={id} type="button" onClick={() => setView(id)} className={cx("h-10 shrink-0 border-r px-3 font-mono text-[8px] uppercase tracking-wider", view === id ? "bg-accent text-primary" : "text-muted-foreground hover:text-foreground")}><span className="mr-2 opacity-55">{code}</span>{label}</button>)}
     </div>
@@ -152,7 +153,7 @@ function FindingInspector({ scan, finding, signal, onSaveTriage }: { scan: ScanR
   </div>;
 }
 
-function TriageConsole({ scan, finding, signal, onSave }: { scan: ScanRun; finding: FindingDetail; signal: LifecycleFinding; onSave: (status: FindingTriageStatus, note: string) => Promise<void> }) {
+function TriageConsole({ signal, onSave }: { signal: LifecycleFinding; onSave: (status: FindingTriageStatus, note: string) => Promise<void> }) {
   const [status, setStatus] = useState<FindingTriageStatus>(signal.triage.status);
   const [note, setNote] = useState(signal.triage.note ?? "");
   const [busy, setBusy] = useState(false);
@@ -165,7 +166,7 @@ function TriageConsole({ scan, finding, signal, onSave }: { scan: ScanRun; findi
       <Input value={note} onChange={(event) => setNote(event.target.value)} placeholder="Nota da decisão…" className="h-9 rounded-none text-[10px]" />
       <Button type="button" size="sm" onClick={() => void save()} disabled={busy}>{busy ? "Salvando…" : "Salvar"}</Button>
     </div>
-    <div className="mt-2 flex items-center justify-between gap-3"><span className={cx("font-mono text-[8px]", error ? "text-destructive" : "text-muted-foreground")}>{error ?? (signal.triage.updatedAt ? `última decisão · ${formatDate(signal.triage.updatedAt)}` : "nenhuma decisão registrada")}</span><Button asChild variant="ghost" size="sm"><Link to={rescanHref(scan, finding.primaryPath)}><HugeiconsIcon icon={RefreshIcon} size={11} />Rescan do escopo</Link></Button></div>
+    <div className={cx("mt-2 font-mono text-[8px]", error ? "text-destructive" : "text-muted-foreground")}>{error ?? (signal.triage.updatedAt ? `última decisão · ${formatDate(signal.triage.updatedAt)}` : "nenhuma decisão registrada")}</div>
   </div>;
 }
 
@@ -237,22 +238,3 @@ function textValue(value: unknown): string | null { return typeof value === "str
 function numberValue(value: unknown): number | null { return typeof value === "number" && Number.isFinite(value) ? value : null; }
 function textList(value: unknown): string[] { return Array.isArray(value) ? value.map(textValue).filter((item): item is string => Boolean(item)) : []; }
 function locationLabel(item: DataRecord): string { const path = textValue(item.path) ?? "unknown"; const start = numberValue(item.startLine); const end = numberValue(item.endLine); if (start == null) return path; return `${path}:${start}${end != null && end !== start ? `–${end}` : ""}`; }
-function rescanHref(scan: ScanRun, findingPath?: string | null): string {
-  const params = new URLSearchParams({ from: scan.id });
-  if (scan.repositoryPath) params.set("repositoryPath", scan.repositoryPath);
-  params.set("engine", scan.engine);
-  if (scan.authMode) params.set("authMode", scan.authMode);
-  if (scan.model) params.set("model", scan.model);
-  if (scan.effort) params.set("effort", scan.effort);
-  if (scan.mode === "standard" || scan.mode === "deep") params.set("mode", scan.mode);
-  const scope = rescanScope(scan.repositoryPath, findingPath);
-  if (scope) params.set("paths", scope);
-  return `/scans/new?${params.toString()}`;
-}
-function rescanScope(repositoryPath: string | null, findingPath?: string | null): string | null {
-  if (!findingPath) return null;
-  let value = findingPath.replace(/:\d+(?::\d+)?(?:-\d+)?$/, "").replaceAll("\\", "/");
-  const repository = repositoryPath?.replaceAll("\\", "/").replace(/\/$/, "");
-  if (repository && value.startsWith(`${repository}/`)) value = value.slice(repository.length + 1);
-  return value.replace(/^\.\//, "") || null;
-}

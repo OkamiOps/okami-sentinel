@@ -200,6 +200,11 @@ test("localizes Codex Security execution provenance and fail-closed Portable sta
   }
   assert.equal(translate("en", "newScan.profile.native"), "Native");
   assert.equal(translate("en", "newScan.profile.portable"), "Portable");
+  assert.equal(translate("pt-BR", "scanDetail.repeat"), "Repetir Portable");
+  assert.equal(translate("en", "scanDetail.repeat"), "Retry Portable");
+  assert.equal(translate("es", "scanDetail.repeat"), "Repetir Portable");
+  assert.equal(translate("de", "scanDetail.repeat"), "Portable wiederholen");
+  assert.equal(translate("fr", "scanDetail.repeat"), "Relancer Portable");
   assert.match(translate("en", "newScan.profile.portableReason"), /Sentinel/);
   assert.match(translate("en", "newScan.compatibilityPortableRunnerUnavailable"), /not available/i);
 });

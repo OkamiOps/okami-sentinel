@@ -35,6 +35,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { formatUsd } from "../format";
 import { useI18n, type TranslationKey } from "../i18n";
 import {
+  parsePortableRetryIntent,
+  selectionMatchesPortableRetry,
+} from "../lib/execution-profile";
+import {
   buildConnectionAwareStartRequest,
   canResolveConnectionWithEngine,
   compatibilityReasonKey,
@@ -54,7 +58,8 @@ type Saved = {
   repositoryPath?: string;
   engine?: ScannerEngine;
   connectionId?: string;
-  modelId?: string;
+  modelSelectionMode?: "catalog" | "runtime-default";
+  modelId?: string | null;
   effort?: string;
   mode?: ScanMode;
   maxCostUsd?: string;
@@ -102,6 +107,18 @@ function isEngine(value: string | null): value is ScannerEngine {
 }
 
 function launchInitial(params: URLSearchParams): Saved {
+  const retry = parsePortableRetryIntent(params);
+  if (params.has("from")) {
+    return retry === null ? {} : {
+      repositoryPath: retry.repositoryPath,
+      engine: retry.engine,
+      connectionId: retry.connectionId,
+      modelSelectionMode: retry.modelSelectionMode,
+      modelId: retry.modelId,
+      mode: retry.mode,
+      paths: retry.paths.join(","),
+    };
+  }
   const stored = saved();
   const engine = params.get("engine");
   const mode = params.get("mode");
@@ -136,7 +153,8 @@ export function NewScanPage() {
   const reduceMotion = useReducedMotion();
   const [searchParams] = useSearchParams();
   const initial = useMemo(() => launchInitial(searchParams), [searchParams]);
-  const rescanFrom = searchParams.get("from");
+  const retryIntent = useMemo(() => parsePortableRetryIntent(searchParams), [searchParams]);
+  const rescanFrom = retryIntent?.from ?? null;
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [catalog, setCatalog] = useState<ScannerCatalogResponse | null>(null);
   const [fsState, setFsState] = useState<FsListResponse | null>(null);
@@ -169,9 +187,15 @@ export function NewScanPage() {
     () => selectedConnection === null ? [] : models.filter((model) => model.connectionId === selectedConnection.id),
     [models, selectedConnection],
   );
-  const selection = useMemo(
+  const resolvedSelection = useMemo(
     () => connectionSelectionFor(selectedConnection, selectedConnectionModels, selectedModelId),
     [selectedConnection, selectedConnectionModels, selectedModelId],
+  );
+  const selection = useMemo(
+    () => retryIntent === null || selectionMatchesPortableRetry(retryIntent, resolvedSelection)
+      ? resolvedSelection
+      : null,
+    [resolvedSelection, retryIntent],
   );
   const selectedModel = useMemo(
     () => selection?.modelId === null || selection === null
@@ -184,7 +208,8 @@ export function NewScanPage() {
     [effort, selectedModel],
   );
   const engineReady = catalog !== null && scanner !== undefined && canResolveConnectionWithEngine(scanner);
-  const routeReady = engineReady && selection !== null && compatibility?.eligible === true &&
+  const modeReady = scanner?.modes.includes(mode) === true;
+  const routeReady = engineReady && modeReady && selection !== null && compatibility?.eligible === true &&
     compatibility.connectionId === selection.connectionId &&
     compatibility.modelSelectionMode === selection.modelSelectionMode &&
     compatibility.modelId === selection.modelId;
@@ -249,8 +274,9 @@ export function NewScanPage() {
 
   useEffect(() => {
     if (!catalog || !scanner) return;
+    if (retryIntent !== null) return;
     if (!scanner.modes.includes(mode) && scanner.modes[0]) setMode(scanner.modes[0]);
-  }, [catalog, mode, scanner]);
+  }, [catalog, mode, retryIntent, scanner]);
 
   useEffect(() => {
     setEffort(defaultReasoningEffortForModel(selectedModel));
@@ -260,23 +286,35 @@ export function NewScanPage() {
     let active = true;
     setModels([]);
     setModelsError(false);
-    if (selectedConnection === null || selectedConnection.modelSelectionMode === "runtime-default") {
+    const retryModelId = retryIntent !== null && retryIntent.connectionId === selectedConnection?.id
+      ? retryIntent.modelId
+      : undefined;
+    if (selectedConnection === null) {
       setModelsLoading(false);
-      setSelectedModelId(null);
+      setSelectedModelId(retryIntent !== null && retryIntent.connectionId === connectionId ? retryIntent.modelId : null);
+      return () => { active = false; };
+    }
+    if (selectedConnection.modelSelectionMode === "runtime-default") {
+      setModelsLoading(false);
+      setSelectedModelId(retryModelId ?? null);
       return () => { active = false; };
     }
     setModelsLoading(true);
-    setSelectedModelId(null);
+    setSelectedModelId(retryModelId ?? null);
     void loadLiveConnectionModels(api, selectedConnection.id)
       .then((catalogModels) => {
         if (!active) return;
         setModels(catalogModels);
-        setSelectedModelId((current) => catalogModels.some((model) => model.id === current) ? current : catalogModels[0]?.id ?? null);
+        setSelectedModelId((current) => retryModelId !== undefined
+          ? retryModelId
+          : catalogModels.some((model) => model.id === current)
+            ? current
+            : catalogModels[0]?.id ?? null);
       })
       .catch(() => { if (active) setModelsError(true); })
       .finally(() => { if (active) setModelsLoading(false); });
     return () => { active = false; };
-  }, [selectedConnection?.id, selectedConnection?.modelSelectionMode]);
+  }, [connectionId, retryIntent?.connectionId, retryIntent?.modelId, selectedConnection?.id, selectedConnection?.modelSelectionMode]);
 
   useEffect(() => {
     let active = true;
@@ -613,6 +651,7 @@ export function NewScanPage() {
                     <button
                       key={candidate}
                       type="button"
+                      aria-pressed={mode === candidate}
                       onClick={() => setMode(candidate)}
                       className={cx(
                         "relative border-l border-border px-3 py-3 font-mono text-[9px] uppercase first:border-l-0 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary",
