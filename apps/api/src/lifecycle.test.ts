@@ -40,9 +40,11 @@ test("normalizes repository keys across trailing separators", () => {
   assert.equal(normalizeRepositoryKey("C:\\work\\repo\\"), "C:/work/repo");
 });
 
-test("allows ledger removal only for failed and cancelled scans", () => {
+test("allows ledger removal for every terminal scan and blocks live work", () => {
+  assert.equal(isRemovableScanStatus("completed"), true);
   assert.equal(isRemovableScanStatus("failed"), true);
   assert.equal(isRemovableScanStatus("cancelled"), true);
+  assert.equal(isRemovableScanStatus("incomplete"), true);
+  assert.equal(isRemovableScanStatus("queued"), false);
   assert.equal(isRemovableScanStatus("running"), false);
-  assert.equal(isRemovableScanStatus("completed"), false);
 });

@@ -1,4 +1,4 @@
-import type { FindingLifecycle, ScanStatus } from "@csb/shared";
+import { isTerminalScanStatus, type FindingLifecycle, type ScanStatus } from "@csb/shared";
 import { findingIdentity } from "@csb/gate-core";
 
 export { findingIdentity };
@@ -18,5 +18,5 @@ export function normalizeRepositoryKey(value: string): string {
 }
 
 export function isRemovableScanStatus(status: ScanStatus | string): boolean {
-  return status === "failed" || status === "cancelled";
+  return isTerminalScanStatus(status);
 }

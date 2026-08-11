@@ -79,11 +79,24 @@ export function purgeScanArtifacts(
   scanDir: string,
   managedRoots: string[] = [SCANS_ROOT],
 ): void {
+  if (!isManagedScanArtifactDirectory(scanDir, managedRoots)) {
+    throw new Error("Diretório do scan fora das raízes gerenciadas; exclusão recusada.");
+  }
+
+  const resolvedScanDir = path.resolve(scanDir);
+  fs.rmSync(resolvedScanDir, { recursive: true, force: true });
+  fs.rmSync(cliLogPath(resolvedScanDir), { force: true });
+}
+
+export function isManagedScanArtifactDirectory(
+  scanDir: string,
+  managedRoots: string[] = [SCANS_ROOT],
+): boolean {
   const resolvedScanDir = path.resolve(scanDir);
   const canonicalScanDir = fs.existsSync(resolvedScanDir)
     ? fs.realpathSync.native(resolvedScanDir)
     : resolvedScanDir;
-  const isManaged = managedRoots.some((root) => {
+  return managedRoots.some((root) => {
     const resolvedRoot = path.resolve(root);
     const canonicalRoot = fs.existsSync(resolvedRoot)
       ? fs.realpathSync.native(resolvedRoot)
@@ -94,13 +107,6 @@ export function purgeScanArtifacts(
       && !relative.startsWith(`..${path.sep}`)
       && !path.isAbsolute(relative);
   });
-
-  if (!isManaged) {
-    throw new Error("Diretório do scan fora das raízes gerenciadas; exclusão recusada.");
-  }
-
-  fs.rmSync(resolvedScanDir, { recursive: true, force: true });
-  fs.rmSync(cliLogPath(resolvedScanDir), { force: true });
 }
 
 /** Resolve the live workbench scan_dir for a CSB (or workbench) directory. */

@@ -6,14 +6,21 @@ import * as dbModule from "./db.js";
 import { deleteRun, getRun, hideRun, parseCostJson, upsertRun } from "./db.js";
 import type { ScanRun } from "@csb/shared";
 
-test("hides a run from the ledger without deleting its record", () => {
+test("hides a run from the ledger, preserves its audit row and clears its baseline", () => {
   const database = new Database(":memory:");
 
   try {
     database.exec(`
       CREATE TABLE runs (id TEXT PRIMARY KEY);
       CREATE TABLE hidden_runs (id TEXT PRIMARY KEY, hidden_at TEXT NOT NULL);
+      CREATE TABLE repository_baselines (
+        repository_key TEXT PRIMARY KEY,
+        scan_id TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
       INSERT INTO runs (id) VALUES ('failed-scan');
+      INSERT INTO repository_baselines (repository_key, scan_id, updated_at)
+      VALUES ('/repo', 'failed-scan', '2026-08-11T00:00:00.000Z');
     `);
 
     hideRun("failed-scan", database);
@@ -25,6 +32,10 @@ test("hides a run from the ledger without deleting its record", () => {
     assert.deepEqual(
       database.prepare("SELECT id FROM hidden_runs").all(),
       [{ id: "failed-scan" }],
+    );
+    assert.deepEqual(
+      database.prepare("SELECT scan_id FROM repository_baselines").all(),
+      [],
     );
   } finally {
     database.close();

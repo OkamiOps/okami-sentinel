@@ -16,6 +16,23 @@ test("falls back to pt-BR and interpolates variables", () => {
   assert.equal(translate("de", "compare.run", { count: 6 }), "6 SCANS VERGLEICHEN");
 });
 
+test("localizes ledger identity and truthful scan removal in every supported locale", () => {
+  const keys = [
+    "scans.engine",
+    "scans.model",
+    "scans.total",
+    "delete.description",
+    "delete.folder",
+    "delete.forever",
+  ] as const;
+  for (const locale of ["pt-BR", "en", "es", "de", "fr"] as const) {
+    for (const key of keys) assert.notEqual(translate(locale, key), "");
+    assert.match(translate(locale, "delete.description"), /reposit|repos|dépôt/i);
+  }
+  assert.equal(translate("pt-BR", "scans.engine"), "Motor");
+  assert.equal(translate("en", "scans.total"), "Total");
+});
+
 test("translates the connection workbench in every supported locale", () => {
   assert.equal(translate("pt-BR", "connections.title"), "Rotas de conexão");
   assert.equal(translate("en", "connections.title"), "Connection routes");

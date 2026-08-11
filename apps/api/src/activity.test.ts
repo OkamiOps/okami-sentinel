@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   appendCliLog,
   cliLogPath,
+  isManagedScanArtifactDirectory,
   purgeScanArtifacts,
   readCliLogSnapshot,
   readCliLogTail,
@@ -77,6 +78,7 @@ test("refuses to purge a scan directory outside managed roots", () => {
   fs.writeFileSync(path.join(outsideDir, "keep.txt"), "keep", "utf8");
 
   try {
+    assert.equal(isManagedScanArtifactDirectory(outsideDir, [managedRoot]), false);
     assert.throws(
       () => purgeScanArtifacts(outsideDir, [managedRoot]),
       /fora das raízes gerenciadas/,
@@ -100,6 +102,10 @@ test("refuses a managed path that escapes through a symbolic link", () => {
   fs.symlinkSync(outsideRoot, linkedRoot, "dir");
 
   try {
+    assert.equal(
+      isManagedScanArtifactDirectory(path.join(linkedRoot, "failed-scan"), [managedRoot]),
+      false,
+    );
     assert.throws(
       () => purgeScanArtifacts(path.join(linkedRoot, "failed-scan"), [managedRoot]),
       /fora das raízes gerenciadas/,

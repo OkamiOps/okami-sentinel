@@ -457,13 +457,19 @@ export function hideRun(
   id: string,
   database: Database.Database = getDb(),
 ): void {
-  database
-    .prepare(
-      `INSERT INTO hidden_runs (id, hidden_at)
-       VALUES (?, ?)
-       ON CONFLICT(id) DO UPDATE SET hidden_at = excluded.hidden_at`,
-    )
-    .run(id, new Date().toISOString());
+  const hide = database.transaction((scanId: string, hiddenAt: string) => {
+    database
+      .prepare(
+        `INSERT INTO hidden_runs (id, hidden_at)
+         VALUES (?, ?)
+         ON CONFLICT(id) DO UPDATE SET hidden_at = excluded.hidden_at`,
+      )
+      .run(scanId, hiddenAt);
+    database
+      .prepare(`DELETE FROM repository_baselines WHERE scan_id = ?`)
+      .run(scanId);
+  });
+  hide(id, new Date().toISOString());
 }
 
 export function parseCostJson(raw: string | null | undefined): ScanCost | null {

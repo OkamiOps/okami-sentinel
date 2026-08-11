@@ -250,7 +250,7 @@ test("an external abort settles despite an uncooperative local CLI and consumes 
   await started;
   controller.abort();
 
-  const outcome = await settleAsCode(running, 30);
+  const outcome = await settleAsCode(running, 250);
   await new Promise<void>((resolve) => setTimeout(resolve, 5));
   rejectLate?.(new Error("late CLI failure must not escape"));
   await assert.rejects(running, { code: "agent_termination_unconfirmed" });

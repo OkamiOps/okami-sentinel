@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { ScanRun } from "@csb/shared";
+import { isTerminalScanStatus, type ScanRun } from "@csb/shared";
 import { Trash2 } from "lucide-react";
 
 import { api } from "../../api";
@@ -27,7 +27,7 @@ export function DeleteScanButton({
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const removable = scan.status === "failed" || scan.status === "cancelled";
+  const removable = isTerminalScanStatus(scan.status);
 
   if (!removable) return null;
 

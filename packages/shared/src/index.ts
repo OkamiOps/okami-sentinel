@@ -8,6 +8,13 @@ export type ScanStatus =
   | "cancelled"
   | "incomplete";
 
+export function isTerminalScanStatus(status: ScanStatus | string): boolean {
+  return status === "completed"
+    || status === "failed"
+    || status === "cancelled"
+    || status === "incomplete";
+}
+
 export type EffortLevel =
   | "minimal"
   | "low"

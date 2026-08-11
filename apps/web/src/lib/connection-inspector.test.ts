@@ -181,6 +181,7 @@ test("converts a polling error into a visible terminal failure", async () => {
     onError(error) { errors.push(error); },
     schedule: scheduler.schedule,
     clearSchedule: scheduler.clear,
+    now: () => new Date("2026-08-11T17:00:00.000Z"),
   });
 
   await poller.start("connection-a", "browser-oauth");

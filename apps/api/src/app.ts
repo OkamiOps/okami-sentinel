@@ -27,7 +27,7 @@ import type {
   HealthResponse,
   UpdateFindingTriageRequest,
 } from "@csb/shared";
-import { purgeScanArtifacts, readCliLogSnapshot } from "./activity.js";
+import { isManagedScanArtifactDirectory, purgeScanArtifacts, readCliLogSnapshot } from "./activity.js";
 import { compareScans } from "./compare.js";
 import { getCodexInfo } from "./codex-info.js";
 import { CODEX_SECURITY_STATE_DIR } from "./config.js";
@@ -436,14 +436,15 @@ app.delete("/scans/:id", (c) => {
   if (!run) return c.json({ error: "Scan não encontrado" }, 404);
   if (isScanActive(id) || !isRemovableScanStatus(run.status)) {
     return c.json(
-      { error: "Somente scans falhos ou cancelados podem ser excluídos." },
+      { error: "Somente scans concluídos, incompletos, falhos ou cancelados podem ser removidos." },
       409,
     );
   }
   try {
-    purgeScanArtifacts(run.scanDir);
+    const artifactsDeleted = isManagedScanArtifactDirectory(run.scanDir);
+    if (artifactsDeleted) purgeScanArtifacts(run.scanDir);
     hideRun(id);
-    return c.json({ ok: true, artifactsDeleted: true });
+    return c.json({ ok: true, artifactsDeleted });
   } catch (error) {
     return c.json({ error: errorMessage(error) }, 409);
   }
