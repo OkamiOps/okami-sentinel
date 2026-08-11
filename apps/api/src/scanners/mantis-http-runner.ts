@@ -558,7 +558,7 @@ function stageInstructions(
     ? [
       "The report artifact uses this exact final schema:",
       '{"schemaVersion":1,"engine":"mantis","stage":"report","findings":[]}',
-      "findings is required (an empty array is valid). Every finding requires non-empty id, title, severity from CRITICAL, HIGH, MEDIUM, LOW, or INFO, and a non-empty code_paths array of bounded source locators.",
+      "findings is required (an empty array is valid). Every finding requires non-empty id, title, severity from CRITICAL, HIGH, MEDIUM, LOW, or INFO, and a non-empty code_paths array. Every locator must use the exact repository-relative form relative/path.ext:line or relative/path.ext:start-end with positive line numbers; symbols and absolute paths are invalid.",
     ]
     : [];
   return [

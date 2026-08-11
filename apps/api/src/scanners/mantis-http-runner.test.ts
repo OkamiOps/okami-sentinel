@@ -730,6 +730,7 @@ test("valid report schema produces normalized Inspector evidence", async () => {
     );
     assert.match(reportSpec.find((spec) => spec.instructions.includes("stage_id=report"))!.instructions, /"schemaVersion":1/);
     assert.match(reportSpec.find((spec) => spec.instructions.includes("stage_id=report"))!.instructions, /findings.*required/i);
+    assert.match(reportSpec.find((spec) => spec.instructions.includes("stage_id=report"))!.instructions, /relative\/path\.ext:line/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
