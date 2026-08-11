@@ -219,6 +219,29 @@ export interface ProviderConnectionsResponse {
   connections: ProviderConnection[];
 }
 
+export interface ProviderModelsResponse {
+  models: ProviderModel[];
+}
+
+export interface ProviderAuthFlow {
+  flowId: string;
+  status: "pending" | "completed" | "cancelled" | "expired" | "denied" | "failed";
+  authUrl: string | null;
+  verificationUrl: string | null;
+  userCode: string | null;
+  expiresAt: string | null;
+}
+
+export interface ProviderAuthFlowResponse {
+  flow: ProviderAuthFlow;
+}
+
+export interface ProviderDisconnectResponse {
+  result: {
+    status: "revoked" | "revoke_pending" | "local_removed" | "not_supported";
+  };
+}
+
 export interface ScannerAuthCapability {
   id: ScannerAuthMode;
   available: boolean;

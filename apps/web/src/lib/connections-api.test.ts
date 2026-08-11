@@ -19,6 +19,7 @@ const connection: ProviderConnection = {
   defaultModelId: null,
   lastTestedAt: null,
   lastModelSyncAt: null,
+  modelCatalogStale: false,
   display: {
     providerLabel: "Custom",
     routeLabel: "OpenAI compatible",
@@ -90,4 +91,43 @@ test("lists provider connection read models without asking for csrf", async () =
 
   assert.deepEqual(await client.list(), [connection]);
   assert.deepEqual(calls, ["/api/connections"]);
+});
+
+test("uses the same csrf session for auth mutations while polling flow state without it", async () => {
+  const calls: Array<{ method: string; path: string; csrf: string | null }> = [];
+  const client = createConnectionsClient(async (input, init) => {
+    const request = new Request(`http://sentinel.local${String(input)}`, init);
+    const path = new URL(request.url).pathname;
+    calls.push({ method: request.method, path, csrf: request.headers.get("x-csrf-token") });
+    if (path.endsWith("/security-session")) return Response.json({ csrfToken: "auth-csrf" });
+    if (path.endsWith("/auth/start") || path.endsWith("/auth/flow-1")) {
+      return Response.json({
+        flow: {
+          flowId: "flow-1",
+          status: path.endsWith("/auth/start") ? "pending" : "completed",
+          authUrl: null,
+          verificationUrl: "https://auth.x.ai/activate",
+          userCode: "XAI-ABCD",
+          expiresAt: null,
+        },
+      }, { status: path.endsWith("/auth/start") ? 201 : 200 });
+    }
+    if (path.endsWith("/disconnect")) return Response.json({ result: { status: "revoked" } });
+    return Response.json({ ok: true });
+  });
+
+  const started = await client.startAuth("conn-1", "device-code");
+  const current = await client.getAuth("conn-1", started.flowId);
+  await client.cancelAuth("conn-1", started.flowId);
+  const disconnected = await client.disconnectAuth("conn-1");
+
+  assert.equal(current.status, "completed");
+  assert.equal(disconnected.status, "revoked");
+  assert.deepEqual(calls, [
+    { method: "GET", path: "/api/connections/security-session", csrf: null },
+    { method: "POST", path: "/api/connections/conn-1/auth/start", csrf: "auth-csrf" },
+    { method: "GET", path: "/api/connections/conn-1/auth/flow-1", csrf: null },
+    { method: "POST", path: "/api/connections/conn-1/auth/flow-1/cancel", csrf: "auth-csrf" },
+    { method: "POST", path: "/api/connections/conn-1/auth/disconnect", csrf: "auth-csrf" },
+  ]);
 });

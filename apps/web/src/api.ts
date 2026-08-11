@@ -1,6 +1,7 @@
 import type {
   CompareRequest,
   CompareResult,
+  CapabilityReport,
   CreateProviderConnectionRequest,
   FindingDetail,
   FindingSummary,
@@ -16,11 +17,17 @@ import type {
   HealthResponse,
   MetricsSummary,
   ProviderConnection,
+  ProviderAuthFlow,
+  ProviderAuthFlowResponse,
   ProviderConnectionResponse,
   ProviderConnectionsResponse,
+  ProviderDisconnectResponse,
+  ProviderModel,
+  ProviderModelsResponse,
   RegressionSummary,
   ScanRun,
   ScannerCatalogResponse,
+  ScanConnectionSelection,
   StartScanRequest,
   UpdateFindingTriageRequest,
   UpdateProviderConnectionRequest,
@@ -48,6 +55,14 @@ export function createConnectionsClient(fetcher: Fetcher = fetch): {
   create(body: CreateProviderConnectionRequest): Promise<ProviderConnection>;
   update(id: string, body: UpdateProviderConnectionRequest): Promise<ProviderConnection>;
   remove(id: string): Promise<void>;
+  listModels(id: string): Promise<ProviderModel[]>;
+  inspect(id: string): Promise<{ connection: ProviderConnection; inspection: { available: boolean; reason: string | null; supportsRuntimeDefault: boolean } }>;
+  refreshModels(id: string): Promise<{ connection: ProviderConnection; discovery: { models: ProviderModel[]; supportsRuntimeDefault: boolean; safeError?: { code: string } } }>;
+  probe(id: string, selection: ScanConnectionSelection): Promise<{ connection: ProviderConnection; report: CapabilityReport }>;
+  startAuth(id: string, mode: "browser-oauth" | "device-code"): Promise<ProviderAuthFlow>;
+  getAuth(id: string, flowId: string): Promise<ProviderAuthFlow>;
+  cancelAuth(id: string, flowId: string): Promise<void>;
+  disconnectAuth(id: string): Promise<ProviderDisconnectResponse["result"]>;
 } {
   let csrfToken: Promise<string> | null = null;
   const getCsrfToken = () => {
@@ -78,6 +93,42 @@ export function createConnectionsClient(fetcher: Fetcher = fetch): {
       });
       if (response.status === 204) return;
       await parseApiResponse<unknown>(response);
+    },
+    async listModels(id) {
+      return (await read<ProviderModelsResponse>(`/connections/${encodeURIComponent(id)}/models`)).models;
+    },
+    async inspect(id) {
+      return write(`/connections/${encodeURIComponent(id)}/inspect`, "POST");
+    },
+    async refreshModels(id) {
+      return write(`/connections/${encodeURIComponent(id)}/models/refresh`, "POST");
+    },
+    async probe(id, selection) {
+      return write(`/connections/${encodeURIComponent(id)}/probe`, "POST", selection);
+    },
+    async startAuth(id, mode) {
+      return (await write<ProviderAuthFlowResponse>(
+        `/connections/${encodeURIComponent(id)}/auth/start`,
+        "POST",
+        { mode },
+      )).flow;
+    },
+    async getAuth(id, flowId) {
+      return (await read<ProviderAuthFlowResponse>(
+        `/connections/${encodeURIComponent(id)}/auth/${encodeURIComponent(flowId)}`,
+      )).flow;
+    },
+    async cancelAuth(id, flowId) {
+      await write<{ ok: boolean }>(
+        `/connections/${encodeURIComponent(id)}/auth/${encodeURIComponent(flowId)}/cancel`,
+        "POST",
+      );
+    },
+    async disconnectAuth(id) {
+      return (await write<ProviderDisconnectResponse>(
+        `/connections/${encodeURIComponent(id)}/auth/disconnect`,
+        "POST",
+      )).result;
     },
   };
 }
@@ -132,6 +183,14 @@ export const api = {
   createConnection: (body: CreateProviderConnectionRequest) => connections.create(body),
   updateConnection: (id: string, body: UpdateProviderConnectionRequest) => connections.update(id, body),
   deleteConnection: (id: string) => connections.remove(id),
+  listConnectionModels: (id: string) => connections.listModels(id),
+  inspectConnection: (id: string) => connections.inspect(id),
+  refreshConnectionModels: (id: string) => connections.refreshModels(id),
+  probeConnection: (id: string, selection: ScanConnectionSelection) => connections.probe(id, selection),
+  startConnectionAuth: (id: string, mode: "browser-oauth" | "device-code") => connections.startAuth(id, mode),
+  getConnectionAuth: (id: string, flowId: string) => connections.getAuth(id, flowId),
+  cancelConnectionAuth: (id: string, flowId: string) => connections.cancelAuth(id, flowId),
+  disconnectConnectionAuth: (id: string) => connections.disconnectAuth(id),
   scanners: () => request<ScannerCatalogResponse>("/scanners"),
   ingest: () => request<{ imported: number }>("/ingest", { method: "POST" }),
   metrics: () => request<MetricsSummary>("/metrics/summary"),

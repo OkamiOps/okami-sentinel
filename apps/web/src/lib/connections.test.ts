@@ -27,6 +27,7 @@ function connectionFixture(id: string, name = "Local Codex"): ProviderConnection
     defaultModelId: null,
     lastTestedAt: null,
     lastModelSyncAt: null,
+    modelCatalogStale: false,
     display: {
       providerLabel: "OpenAI",
       routeLabel: "Codex CLI",
