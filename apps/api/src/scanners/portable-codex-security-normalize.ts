@@ -11,6 +11,11 @@ import {
   PORTABLE_CODEX_SECURITY_METHODOLOGY_REF,
   PORTABLE_CODEX_SECURITY_NAMESPACE,
 } from "./portable-codex-security-profile.js";
+import {
+  readPortableCodexSecurityDossier,
+  validatePortableCodexSecurityReportCoverage,
+  PortableCodexSecurityDossierError,
+} from "./portable-codex-security-dossier.js";
 
 export const PORTABLE_CODEX_SECURITY_NORMALIZATION_LIMITS = Object.freeze({
   maxHandoffBytes: 1_048_576,
@@ -55,6 +60,7 @@ export interface PortableCodexSecurityAnchorRecord extends Record<string, unknow
 
 export interface PortableCodexSecurityFindingRecord extends Record<string, unknown> {
   id?: string;
+  candidateId?: string;
   title?: string;
   severity?: string;
   confidence?: string;
@@ -72,6 +78,7 @@ interface PortableCodexSecurityHandoff {
   schemaVersion?: number;
   stage?: string;
   findings?: PortableCodexSecurityFindingRecord[];
+  coverage?: unknown;
 }
 
 interface CanonicalAnchor {
@@ -130,7 +137,7 @@ function boundedText(value: unknown, field: string): string | null {
 
 function requiredText(
   finding: PortableCodexSecurityFindingRecord,
-  field: "id" | "title" | "severity" | "confidence" | "category" | "remediation",
+  field: "id" | "candidateId" | "title" | "severity" | "confidence" | "category" | "summary" | "rootCause" | "impact" | "remediation",
 ): string {
   const value = boundedText(finding[field], field);
   if (!value) {
@@ -505,6 +512,7 @@ function normalizeFinding(
   outputBudget: PortableCodexSecurityOutputBudget,
 ): Record<string, unknown> {
   const rawId = requiredText(finding, "id");
+  requiredText(finding, "candidateId");
   const id = redactPublicText(rawId, "id", redactor, outputBudget);
   const title = redactPublicText(
     requiredText(finding, "title"),
@@ -527,6 +535,24 @@ function normalizeFinding(
   const remediation = redactPublicText(
     requiredText(finding, "remediation"),
     "remediation",
+    redactor,
+    outputBudget,
+  );
+  const summary = redactPublicText(
+    requiredText(finding, "summary"),
+    "summary",
+    redactor,
+    outputBudget,
+  );
+  const impact = redactPublicText(
+    requiredText(finding, "impact"),
+    "impact",
+    redactor,
+    outputBudget,
+  );
+  const rootCause = redactPublicText(
+    requiredText(finding, "rootCause"),
+    "rootCause",
     redactor,
     outputBudget,
   );
@@ -573,14 +599,6 @@ function normalizeFinding(
     const redacted = redactPublicText(bounded, "cwe", redactor, outputBudget);
     return /^CWE-\d+$/i.test(redacted) ? [redacted] : [];
   });
-  const summary = redactOptionalText(finding.summary, "summary", redactor, outputBudget);
-  const impact = redactOptionalText(finding.impact, "impact", redactor, outputBudget);
-  const rootCause = redactOptionalText(
-    finding.rootCause,
-    "rootCause",
-    redactor,
-    outputBudget,
-  );
   const severityRationale = redactOptionalText(
     finding.severityRationale,
     "severityRationale",
@@ -715,10 +733,14 @@ export function readPortableCodexSecurityFindingRecords(
       throw new PortableCodexSecurityArtifactError(`finding ${index + 1} is not an object`);
     }
     const id = requiredText(finding, "id");
+    requiredText(finding, "candidateId");
     requiredText(finding, "title");
     requiredText(finding, "severity");
     requiredText(finding, "confidence");
     requiredText(finding, "category");
+    requiredText(finding, "summary");
+    requiredText(finding, "rootCause");
+    requiredText(finding, "impact");
     requiredText(finding, "remediation");
     if (
       Array.isArray(finding.anchors) &&
@@ -732,6 +754,18 @@ export function readPortableCodexSecurityFindingRecords(
     }
     ids.add(id);
   });
+  const dossier = readPortableCodexSecurityDossier(resultsDir);
+  if (dossier === null) {
+    throw new PortableCodexSecurityArtifactError("coverage dossier is missing or invalid");
+  }
+  try {
+    validatePortableCodexSecurityReportCoverage(handoff, dossier);
+  } catch (error) {
+    if (error instanceof PortableCodexSecurityDossierError) {
+      throw new PortableCodexSecurityArtifactError(`coverage validation failed: ${error.reason}`);
+    }
+    throw error;
+  }
   return handoff.findings;
 }
 

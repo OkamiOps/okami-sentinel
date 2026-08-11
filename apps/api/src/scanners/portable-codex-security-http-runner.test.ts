@@ -218,8 +218,21 @@ function stageSessionFactory(
     fs.writeFileSync(
       path.join(input.spec.artifactRoot, artifact!),
       JSON.stringify(stage === "report"
-        ? { schemaVersion: 1, stage: "report", findings: [] }
-        : { schemaVersion: 1, stage, summary: "ok", observations: [] }),
+        ? {
+          schemaVersion: 1,
+          stage: "report",
+          findings: [],
+          coverage: { inspected: ["src"], unexamined: [], candidates: [] },
+        }
+        : {
+          schemaVersion: 1,
+          stage,
+          summary: "ok",
+          observations: [],
+          scope: { inspected: ["src"], unexamined: [] },
+          candidates: [],
+          assessments: [],
+        }),
       { mode: 0o600 },
     );
     return completedStageSession(stage, artifact!, summaryForStage(stage));
@@ -465,7 +478,7 @@ test("Portable Codex Security reads only the persisted vault reference for an AP
   }
 });
 
-test("Portable Codex Security runs six ordered isolated stages using the four closed tools and base64 prior state", async () => {
+test("Portable Codex Security runs six isolated stages with a server-owned bounded coverage dossier", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-stages-"));
   const config = configuration(root, plan({
     routeKind: "openai-api",
@@ -502,11 +515,23 @@ test("Portable Codex Security runs six ordered isolated stages using the four cl
       Array(6).fill("portable-stage-json-v1"),
     );
     assert.equal(specs[1]!.spec.instructions.includes(injection), false);
-    const prior = specs[1]!.spec.instructions.match(/BEGIN_PREVIOUS_STAGE_STATE_BASE64\n([A-Za-z0-9+/=]+)\nEND_PREVIOUS_STAGE_STATE_BASE64/)?.[1];
+    const prior = specs[1]!.spec.instructions.match(/BEGIN_PORTABLE_COVERAGE_DOSSIER_BASE64\n([A-Za-z0-9+/=]+)\nEND_PORTABLE_COVERAGE_DOSSIER_BASE64/)?.[1];
     assert.ok(prior);
     const decodedPrior = Buffer.from(prior!, "base64").toString("utf8");
-    assert.deepEqual(JSON.parse(decodedPrior), { stage: "inventory", summary: "ok" });
+    assert.deepEqual(JSON.parse(decodedPrior), {
+      schemaVersion: 1,
+      stageSummaries: [{ stage: "inventory", summary: "ok" }],
+      candidates: [],
+      assessments: [],
+      scope: { inspected: ["src"], unexamined: [] },
+    });
     assert.equal(decodedPrior.includes(injection), false);
+    const discoveryState = specs[2]!.spec.instructions.match(/BEGIN_PORTABLE_COVERAGE_DOSSIER_BASE64\n([A-Za-z0-9+/=]+)\nEND_PORTABLE_COVERAGE_DOSSIER_BASE64/)?.[1];
+    assert.ok(discoveryState);
+    assert.deepEqual(JSON.parse(Buffer.from(discoveryState!, "base64").toString("utf8")).stageSummaries, [
+      { stage: "inventory", summary: "ok" },
+      { stage: "threat-model", summary: "ok" },
+    ]);
   } finally {
     remove(root);
   }

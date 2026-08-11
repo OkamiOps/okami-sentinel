@@ -12,6 +12,7 @@ import {
   hashPortableCodexSecuritySnapshot,
   observePortableCodexSecurityStage,
 } from "./portable-codex-security-worker-support.js";
+import { createPortableCodexSecurityDossier } from "./portable-codex-security-dossier.js";
 import { PORTABLE_CODEX_SECURITY_STAGES } from "./portable-codex-security-profile.js";
 
 function stageSession(events: readonly unknown[]): AgentSession {
@@ -82,6 +83,7 @@ test("Portable Codex Security stage evidence rejects missing, extra, wrong, unkn
           session: stageSession(mutate(readyEvents(stage.artifact))),
           stage,
           artifactRoot,
+          dossier: createPortableCodexSecurityDossier(),
           usage: { reported: false, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
           redact: (value) => value,
         }),
@@ -104,6 +106,7 @@ test("Portable Codex Security stage evidence rejects unexpected files outside it
         session: stageSession(readyEvents(stage.artifact)),
         stage,
         artifactRoot: root,
+        dossier: createPortableCodexSecurityDossier(),
         usage: { reported: false, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
         redact: (value) => value,
       }),
@@ -137,13 +140,17 @@ test("Portable Codex Security accepts a validated terminal artifact without a pr
       ]),
       stage,
       artifactRoot: root,
+      dossier: createPortableCodexSecurityDossier(),
       usage: { reported: false, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
       redact: (value) => value,
     });
 
     assert.deepEqual(
-      JSON.parse(Buffer.from(observed.previousStageStateBase64, "base64").toString("utf8")),
-      { stage: stage.id, summary: "Inventory artifact validated" },
+      JSON.parse(Buffer.from(observed.dossierStateBase64, "base64").toString("utf8")),
+      {
+        ...createPortableCodexSecurityDossier(),
+        stageSummaries: [{ stage: "inventory", summary: "Inventory artifact validated" }],
+      },
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -181,13 +188,17 @@ test("Portable Codex Security accepts one corrected write after a rejected artif
       ]),
       stage,
       artifactRoot: root,
+      dossier: createPortableCodexSecurityDossier(),
       usage: { reported: false, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
       redact: (value) => value,
     });
 
     assert.deepEqual(
-      JSON.parse(Buffer.from(observed.previousStageStateBase64, "base64").toString("utf8")),
-      { stage: stage.id, summary: "Corrected inventory artifact" },
+      JSON.parse(Buffer.from(observed.dossierStateBase64, "base64").toString("utf8")),
+      {
+        ...createPortableCodexSecurityDossier(),
+        stageSummaries: [{ stage: "inventory", summary: "Corrected inventory artifact" }],
+      },
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -214,6 +225,7 @@ test("Portable Codex Security does not count a rejected workspace result as cons
         session: stageSession(events),
         stage,
         artifactRoot: root,
+        dossier: createPortableCodexSecurityDossier(),
         usage: { reported: false, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
         redact: (value) => value,
       }),
@@ -232,6 +244,7 @@ test("Portable Codex Security preserves a safe session limit failure code", asyn
       session: stageSession([{ type: "failure", code: "agent_input_byte_limit" }]),
       stage,
       artifactRoot: os.tmpdir(),
+      dossier: createPortableCodexSecurityDossier(),
       usage: { reported: false, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
       redact: (value) => value,
     }),

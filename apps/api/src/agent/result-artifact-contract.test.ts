@@ -47,3 +47,42 @@ test("Portable stage artifacts validate the declared path and stage before I/O",
     content: JSON.stringify(valid),
   });
 });
+
+test("Portable report never accepts an informational coverage statement as a vulnerability", () => {
+  assert.equal(normalizeResultArtifactInput({
+    path: "sentinel-findings.json",
+    content: JSON.stringify({
+      schemaVersion: 1,
+      stage: "report",
+      findings: [{
+        id: "PCS-COVERAGE",
+        candidateId: "candidate-coverage",
+        title: "No security findings emitted",
+        severity: "info",
+        confidence: "high",
+        category: "coverage",
+        summary: "This is a coverage statement and not a reportable vulnerability.",
+        rootCause: "No root cause exists because this is not a security finding.",
+        impact: "No security impact exists because this is not a vulnerability.",
+        remediation: "Do not emit coverage statements as security findings.",
+        anchors: [{
+          path: "src/index.ts",
+          startLine: 1,
+          endLine: 1,
+          role: "evidence",
+          explanation: "Coverage statements belong in the coverage section.",
+        }],
+      }],
+      coverage: {
+        inspected: ["src"],
+        unexamined: [],
+        candidates: [{
+          candidateId: "candidate-coverage",
+          disposition: "reported",
+          reason: "not-vulnerable",
+          evidence: [{ path: "src/index.ts", startLine: 1, endLine: 1, role: "evidence" }],
+        }],
+      },
+    }),
+  }, PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT), null);
+});

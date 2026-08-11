@@ -11,6 +11,15 @@ import {
 } from "../agent/session-types.js";
 import type { ScannerUsage } from "./usage.js";
 import type { PortableCodexSecurityStage } from "./portable-codex-security-profile.js";
+import {
+  applyPortableCodexSecurityStageArtifact,
+  portableCodexSecurityDossierBase64,
+  validatePortableCodexSecurityReportCoverage,
+  type PortableCodexSecurityDossier,
+  type PortableCoverageAnchor,
+  type PortableReportArtifact,
+  PortableCodexSecurityDossierError,
+} from "./portable-codex-security-dossier.js";
 
 export const PORTABLE_CODEX_SECURITY_TOOL_SURFACE = Object.freeze([
   ...WORKSPACE_TOOL_NAMES,
@@ -57,6 +66,10 @@ export interface PortableCodexSecurityStageObservationInput {
   session: AgentSession;
   stage: PortableCodexSecurityStage;
   artifactRoot: string;
+  /** Server-owned state from earlier stages, never written by a provider. */
+  dossier: PortableCodexSecurityDossier;
+  /** Immutable source snapshot used to reject invented or out-of-range anchors. */
+  snapshotRoot?: string;
   usage: ScannerUsage;
   redact: (value: string) => string;
   signal?: AbortSignal;
@@ -67,7 +80,8 @@ export interface PortableCodexSecurityStageObservationInput {
 
 export interface PortableCodexSecurityStageObservation {
   usage: ScannerUsage;
-  previousStageStateBase64: string;
+  dossier: PortableCodexSecurityDossier;
+  dossierStateBase64: string;
 }
 
 /**
@@ -289,13 +303,75 @@ export async function observePortableCodexSecurityStage(
   if (summaryText === null || Buffer.byteLength(summaryText, "utf8") > MAX_STAGE_SUMMARY_BYTES) {
     throw new PortableCodexSecurityStageError("stage_evidence_incomplete");
   }
+  let dossier: PortableCodexSecurityDossier;
+  try {
+    if (input.stage.id === "report") {
+      const report = validatePortableCodexSecurityReportCoverage(artifact, input.dossier);
+      if (input.snapshotRoot !== undefined) {
+        assertPortableCodexSecurityReportAnchors(input.snapshotRoot, report);
+      }
+      dossier = input.dossier;
+    } else {
+      dossier = applyPortableCodexSecurityStageArtifact(input.dossier, artifact);
+      if (input.snapshotRoot !== undefined) {
+        assertPortableCodexSecurityDossierAnchors(input.snapshotRoot, dossier);
+      }
+    }
+  } catch (error) {
+    if (error instanceof PortableCodexSecurityDossierError) {
+      throw new PortableCodexSecurityStageError("stage_evidence_incomplete");
+    }
+    throw error;
+  }
   return {
     usage,
-    previousStageStateBase64: Buffer.from(
-      JSON.stringify({ stage: input.stage.id, summary: summaryText }),
-      "utf8",
-    ).toString("base64"),
+    dossier,
+    dossierStateBase64: portableCodexSecurityDossierBase64(dossier),
   };
+}
+
+/** Ensures every carried candidate/assessment anchor references an exact pinned source line. */
+export function assertPortableCodexSecurityDossierAnchors(
+  snapshotRoot: string,
+  dossier: PortableCodexSecurityDossier,
+): void {
+  for (const candidate of dossier.candidates) assertPortableCodexSecuritySnapshotAnchors(snapshotRoot, candidate.anchors);
+  for (const assessment of dossier.assessments) assertPortableCodexSecuritySnapshotAnchors(snapshotRoot, assessment.evidence);
+}
+
+/** Ensures findings and coverage cannot justify a result with invented source anchors. */
+export function assertPortableCodexSecurityReportAnchors(
+  snapshotRoot: string,
+  report: PortableReportArtifact,
+): void {
+  for (const finding of report.findings) assertPortableCodexSecuritySnapshotAnchors(snapshotRoot, finding.anchors);
+  for (const coverage of report.coverage.candidates) {
+    assertPortableCodexSecuritySnapshotAnchors(snapshotRoot, coverage.evidence);
+  }
+}
+
+function assertPortableCodexSecuritySnapshotAnchors(
+  snapshotRoot: string,
+  anchors: readonly PortableCoverageAnchor[],
+): void {
+  const root = path.resolve(snapshotRoot);
+  for (const anchor of anchors) {
+    const candidate = path.resolve(root, anchor.path);
+    if (!isInside(root, candidate)) throw new PortableCodexSecurityStageError("stage_evidence_incomplete");
+    let contents: Buffer;
+    try {
+      contents = readPinnedSnapshotFile(candidate);
+    } catch {
+      throw new PortableCodexSecurityStageError("stage_evidence_incomplete");
+    }
+    const lines = contents.length === 0
+      ? 0
+      : contents.reduce((total, value) => total + (value === 10 ? 1 : 0), 0) +
+        (contents[contents.length - 1] === 10 ? 0 : 1);
+    if (anchor.endLine > lines) {
+      throw new PortableCodexSecurityStageError("stage_evidence_incomplete");
+    }
+  }
 }
 
 function portableAgentFailureCode(

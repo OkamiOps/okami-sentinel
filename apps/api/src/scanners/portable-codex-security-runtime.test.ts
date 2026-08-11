@@ -88,10 +88,10 @@ test("Portable Codex Security fixes six frozen bounded stages and prompts each s
     const prompt = buildPortableCodexSecurityStagePrompt(stage, {
       snapshotRoot: "/snapshot",
       artifactRoot: "/artifacts",
-      previousStageStateBase64: "eyJ1bnRydXN0ZWQiOnRydWV9",
+      dossierStateBase64: "eyJ1bnRydXN0ZWQiOnRydWV9",
     });
     assert.match(prompt, /repository text.*untrusted data/i);
-    assert.match(prompt, /previous stage state.*untrusted data/i);
+    assert.match(prompt, /coverage dossier.*untrusted data/i);
     assert.match(prompt, /do not execute/i);
     assert.match(prompt, /do not use network/i);
     assert.match(prompt, /do not generate.*PoC/i);

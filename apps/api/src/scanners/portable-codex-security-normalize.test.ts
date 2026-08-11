@@ -53,6 +53,7 @@ function removeFixture(root: string): void {
 function validFinding(anchor: Partial<PortableAnchor> = {}): Record<string, unknown> {
   return {
     id: "PCS-001",
+    candidateId: "candidate-001",
     title: "Authorization check is missing",
     severity: "high",
     confidence: "high",
@@ -73,9 +74,46 @@ function validFinding(anchor: Partial<PortableAnchor> = {}): Record<string, unkn
 }
 
 function writeHandoff(fixture: Fixture, findings: Record<string, unknown>[]): void {
+  const coverageCandidates = findings.flatMap((finding) => {
+    const candidateId = typeof finding.candidateId === "string" ? finding.candidateId : null;
+    const anchors = Array.isArray(finding.anchors) ? finding.anchors : [];
+    if (candidateId === null || anchors.length === 0) return [];
+    return [{
+      candidateId,
+      disposition: "reported",
+      reason: "control-not-present",
+      evidence: anchors.map((anchor) => ({
+        path: (anchor as PortableAnchor).path,
+        startLine: (anchor as PortableAnchor).startLine,
+        endLine: (anchor as PortableAnchor).endLine ?? (anchor as PortableAnchor).startLine,
+        role: (anchor as PortableAnchor).role ?? "evidence",
+      })),
+    }];
+  });
+  const dossier = {
+    schemaVersion: 1,
+    stageSummaries: [],
+    candidates: coverageCandidates.map((coverage, index) => ({
+      id: coverage.candidateId,
+      category: "Authorization",
+      anchors: coverage.evidence,
+      index,
+    })).map(({ index: _index, ...candidate }) => candidate),
+    assessments: [],
+    scope: { inspected: ["src"], unexamined: [] },
+  };
   fs.writeFileSync(
     path.join(fixture.resultsDir, "sentinel-findings.json"),
-    `${JSON.stringify({ schemaVersion: 1, findings }, null, 2)}\n`,
+    `${JSON.stringify({
+      schemaVersion: 1,
+      findings,
+      coverage: { inspected: ["src"], unexamined: [], candidates: coverageCandidates },
+    }, null, 2)}\n`,
+    { mode: 0o600 },
+  );
+  fs.writeFileSync(
+    path.join(fixture.resultsDir, "portable-codex-security-dossier.json"),
+    `${JSON.stringify(dossier)}\n`,
     { mode: 0o600 },
   );
 }
@@ -142,6 +180,7 @@ test("Portable Codex Security redacts every public text field, evidence path, an
         explanation: `Evidence contains ${secret}`,
       }),
       id: `PCS-${secret}`,
+      candidateId: `candidate-${secret}`,
       title: `Title ${secret}`,
       category: `Category ${secret}`,
       remediation: `Remove ${secret}`,
@@ -181,7 +220,7 @@ test("Portable Codex Security redacts every public text field, evidence path, an
 });
 
 test("Portable Codex Security rejects each missing required finding field before writing findings", () => {
-  for (const field of ["id", "title", "severity", "confidence", "category", "remediation"] as const) {
+  for (const field of ["id", "candidateId", "title", "severity", "confidence", "category", "summary", "rootCause", "impact", "remediation"] as const) {
     const fixture = createFixture();
     try {
       const finding = validFinding();
@@ -270,7 +309,7 @@ test("Portable Codex Security rejects the whole handoff for every unsafe primary
       writeHandoff(fixture, [validFinding(invalid.anchor(fixture))]);
       assert.throws(
         () => normalizePortableCodexSecurityWorkspace(fixture.resultsDir, fixture.outputDir),
-        new RegExp(invalid.name, "i"),
+        new RegExp(`${invalid.name}|coverage`, "i"),
       );
       assert.equal(
         fs.existsSync(path.join(fixture.outputDir, "findings.json")),
@@ -324,6 +363,7 @@ test("Portable Codex Security bounds findings and anchors before normalization",
     const findings = Array.from({ length: MAX_FINDINGS + 1 }, (_, index) => ({
       ...validFinding(),
       id: `PCS-${String(index + 1).padStart(3, "0")}`,
+      candidateId: `candidate-${String(index + 1).padStart(3, "0")}`,
     }));
     writeHandoff(findingFixture, findings);
     assert.throws(
@@ -351,7 +391,7 @@ test("Portable Codex Security bounds findings and anchors before normalization",
         anchorFixture.resultsDir,
         anchorFixture.outputDir,
       ),
-      /anchor limit/i,
+      /anchor limit|coverage/i,
     );
   } finally {
     removeFixture(anchorFixture.root);
@@ -406,6 +446,7 @@ test("Portable Codex Security rejects normalized output beyond its cumulative by
     const findings = Array.from({ length: 70 }, (_, index) => ({
       ...validFinding({ path: "src/wide.ts", startLine: 1, endLine: 1 }),
       id: `PCS-WIDE-${index + 1}`,
+      candidateId: `candidate-wide-${index + 1}`,
     }));
     writeHandoff(fixture, findings);
     assert.throws(
@@ -430,10 +471,13 @@ test("Portable Codex Security debits output budget while hydrating instead of re
     const findings = Array.from({ length: MAX_FINDINGS }, (_, findingIndex) => ({
       ...validFinding(),
       id: `PCS-BUDGET-${findingIndex + 1}`,
+      candidateId: `candidate-budget-${findingIndex + 1}`,
       anchors: Array.from({ length: MAX_ANCHORS_PER_FINDING }, () => ({
         path: "src/max-snippet.ts",
         startLine: 1,
         endLine: 1,
+        role: "evidence",
+        explanation: "This line provides repeated bounded evidence for normalization output.",
       })),
     }));
     writeHandoff(fixture, findings);

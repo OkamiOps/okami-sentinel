@@ -57,6 +57,10 @@ import {
   type PortableCodexSecuritySnapshot,
 } from "./portable-codex-security-worker-support.js";
 import {
+  createPortableCodexSecurityDossier,
+  writePortableCodexSecurityDossier,
+} from "./portable-codex-security-dossier.js";
+import {
   writePortableCodexSecurityRuntime,
   type PortableCodexSecurityRuntimeState,
 } from "./portable-codex-security-runtime.js";
@@ -296,7 +300,8 @@ export async function runPortableCodexSecurity(
     });
 
     const createSession = dependencies.createSession ?? productionSessionFactory(dependencies.createUpstream);
-    let previousStageStateBase64: string | null = null;
+    let dossier = createPortableCodexSecurityDossier();
+    let dossierStateBase64: string | null = null;
     let reportArtifactRoot: string | null = null;
     for (const stage of PORTABLE_CODEX_SECURITY_STAGES) {
       throwIfStopped(deadline);
@@ -333,7 +338,7 @@ export async function runPortableCodexSecurity(
           snapshotRoot: snapshot.snapshotRoot,
           artifactRoot,
           scopePaths: safeConfiguration.paths,
-          previousStageStateBase64,
+          dossierStateBase64,
         }),
         limits: sessionLimits(safeConfiguration.limits, remaining),
         signal: deadline.signal,
@@ -354,6 +359,8 @@ export async function runPortableCodexSecurity(
         session: activeSession,
         stage,
         artifactRoot,
+        dossier,
+        snapshotRoot: snapshot.snapshotRoot,
         usage: runtime.usage,
         signal: deadline.signal,
         redact: globalSecretRedactor.redactText.bind(globalSecretRedactor),
@@ -373,7 +380,8 @@ export async function runPortableCodexSecurity(
       activeSession = null;
       sessionCancelled = false;
       runtime = { ...runtime, usage: observed.usage };
-      previousStageStateBase64 = observed.previousStageStateBase64;
+      dossier = observed.dossier;
+      dossierStateBase64 = observed.dossierStateBase64;
       if (stage.id === "report") reportArtifactRoot = artifactRoot;
       update({ percent: stage.completePercent, detail: `${stage.label} complete` });
     }
@@ -392,6 +400,7 @@ export async function runPortableCodexSecurity(
       resultsDir,
       "sentinel-findings.json",
     );
+    writePortableCodexSecurityDossier(resultsDir, dossier);
     const findings = (dependencies.normalizeWorkspace ?? normalizePortableCodexSecurityWorkspace)(
       resultsDir,
       outputDir,
