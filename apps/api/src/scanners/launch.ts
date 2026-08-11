@@ -24,12 +24,15 @@ import {
   VULNHUNTER_WORKER_ENTRY,
 } from "../config.js";
 import type { MantisRunConfiguration } from "./mantis-runtime.js";
-import type { VulnHunterRunConfiguration } from "./vulnhunter-runtime.js";
+import type {
+  SafeVulnHunterProviderPlan,
+  VulnHunterRunConfiguration,
+} from "./vulnhunter-runtime.js";
 
 export interface ScannerLaunch {
   engine: ScannerEngine;
   authMode: ScannerAuthMode;
-  provider: "openai";
+  provider: string;
   scannerVersion: string | null;
   recipeHash: string;
   command: string;
@@ -46,6 +49,10 @@ export interface ScannerLaunchInput {
   model: string;
   effort: string;
   mode: ScanMode;
+  /** Only the server-resolved immutable reference may cross into a worker config. */
+  providerPlan?: SafeVulnHunterProviderPlan;
+  /** Run metadata only; never written into the child configuration. */
+  providerKind?: string;
 }
 
 export function explicitAuthEnvironment(
@@ -175,7 +182,9 @@ function prepareMantis(input: ScannerLaunchInput): ScannerLaunch {
 }
 
 function prepareVulnHunter(input: ScannerLaunchInput): ScannerLaunch {
-  const authMode = input.request.authMode ?? "chatgpt";
+  const authMode = input.providerPlan === undefined
+    ? input.request.authMode ?? "chatgpt"
+    : "api-key";
   const configuration: VulnHunterRunConfiguration = {
     outputDir: input.outputDir,
     repositoryPath: input.repositoryPath,
@@ -188,6 +197,9 @@ function prepareVulnHunter(input: ScannerLaunchInput): ScannerLaunch {
       repositoryUrl: VULNHUNTER_REPOSITORY_URL,
       ref: VULNHUNTER_SOURCE_REF,
     },
+    ...(input.providerPlan === undefined
+      ? {}
+      : { providerPlan: copyVulnHunterProviderPlan(input.providerPlan) }),
   };
   const configPath = path.join(input.outputDir, "vulnhunter-run.json");
   fs.writeFileSync(configPath, `${JSON.stringify(configuration, null, 2)}\n`, {
@@ -207,18 +219,45 @@ function prepareVulnHunter(input: ScannerLaunchInput): ScannerLaunch {
   return {
     engine: "vulnhunter",
     authMode,
-    provider: "openai",
+    provider: input.providerKind ?? "openai",
     scannerVersion: VULNHUNTER_PROFILE_VERSION,
     recipeHash: hash,
     command: VULNHUNTER_WORKER_BIN,
     args,
     cwd: ROOT_DIR,
-    env: explicitAuthEnvironment(authMode, {
-      ...process.env,
-      NO_COLOR: "1",
-      CI: "1",
-    }),
+    env: input.providerPlan === undefined
+      ? explicitAuthEnvironment(authMode, workerEnvironment())
+      : workerEnvironmentWithoutOpenAiKeys(),
     displayCommand: `sentinel-vulnhunter ${path.basename(configPath)}`,
+  };
+}
+
+function workerEnvironment(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    NO_COLOR: "1",
+    CI: "1",
+  };
+}
+
+/** HTTP credentials are read by the child from the native vault, never inherited. */
+function workerEnvironmentWithoutOpenAiKeys(): NodeJS.ProcessEnv {
+  const env = workerEnvironment();
+  delete env.OPENAI_API_KEY;
+  delete env.CODEX_API_KEY;
+  return env;
+}
+
+function copyVulnHunterProviderPlan(
+  plan: SafeVulnHunterProviderPlan,
+): SafeVulnHunterProviderPlan {
+  return {
+    scanId: plan.scanId,
+    connectionId: plan.connectionId,
+    routeKind: plan.routeKind,
+    protocol: plan.protocol,
+    modelId: plan.modelId,
+    capabilityCheckId: plan.capabilityCheckId,
   };
 }
 

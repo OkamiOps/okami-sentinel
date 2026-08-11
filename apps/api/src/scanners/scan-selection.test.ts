@@ -137,6 +137,45 @@ test("connection launch does not fall through to the old Codex worker for an HTT
   assert.equal(fixture.calls.length, 1);
 });
 
+test("VulnHunter accepts only a verified HTTP agent-session plan for its dedicated runner", () => {
+  const fixture = resolver(plan({
+    engine: "vulnhunter",
+    routeKind: "openai-api",
+    runnerKind: "agent-session",
+    protocol: "openai-responses",
+    scannerAuthMode: undefined,
+    snapshot: {
+      scanId: "scan-vulnhunter-http",
+      connectionId: "openai-session",
+      routeKind: "openai-api",
+      modelSelectionMode: "catalog",
+      modelId: "gpt-live",
+      capabilityCheckId: "probe-live",
+      capturedAt: "2026-08-11T12:00:00.000Z",
+    },
+    capabilityCheckId: "probe-live",
+  }));
+
+  const selected = resolveScanLaunchSelection({
+    request: {
+      repositoryPath: "/repo",
+      engine: "vulnhunter",
+      connection: {
+        connectionId: "openai-session",
+        modelSelectionMode: "catalog",
+        modelId: "gpt-live",
+      },
+    },
+    scanId: "scan-vulnhunter-http",
+    launchPlans: fixture.resolver,
+  });
+
+  assert.equal(selected.connectionAware, true);
+  assert.equal(selected.model, "gpt-live");
+  assert.equal(selected.plan?.runnerKind, "agent-session");
+  assert.equal(selected.request.authMode, undefined);
+});
+
 test("unsupported HTTP runner stops before the launch callback can create output, config, or spawn", () => {
   const fixture = resolver(plan({
     routeKind: "openai-api",

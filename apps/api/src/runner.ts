@@ -35,6 +35,8 @@ import {
 import { validateScannerRequest } from "./scanners/catalog.js";
 import { prepareScannerLaunch } from "./scanners/launch.js";
 import { resolveBeforeLaunch } from "./scanners/scan-selection.js";
+import type { ScanLaunchPlan } from "./connections/launch-plan.js";
+import type { SafeVulnHunterProviderPlan } from "./scanners/vulnhunter-runtime.js";
 import { refreshMantisRunFromDisk } from "./scanners/mantis-reconcile.js";
 import { refreshVulnHunterRunFromDisk } from "./scanners/vulnhunter-reconcile.js";
 import { getProviderRuntime } from "./provider-runtime.js";
@@ -343,6 +345,11 @@ export async function startScan(req: StartScanRequest): Promise<ScanRun> {
         model,
         effort: String(effort),
         mode,
+        providerPlan: vulnhunterProviderPlan(id, selection.plan),
+        providerKind: selection.plan?.engine === "vulnhunter" &&
+          selection.plan.runnerKind === "agent-session"
+          ? selection.plan.providerKind
+          : undefined,
       });
       return { model, effort, mode, launch };
     },
@@ -503,6 +510,30 @@ export async function startScan(req: StartScanRequest): Promise<ScanRun> {
   });
 
   return run;
+}
+
+/** Converts an already-persisted server plan into the child-safe DTO. */
+function vulnhunterProviderPlan(
+  scanId: string,
+  plan: ScanLaunchPlan | null,
+): SafeVulnHunterProviderPlan | undefined {
+  if (
+    plan?.engine !== "vulnhunter" ||
+    plan.runnerKind !== "agent-session" ||
+    plan.model === null ||
+    plan.capabilityCheckId === null ||
+    (plan.protocol !== "openai-responses" &&
+      plan.protocol !== "openai-chat" &&
+      plan.protocol !== "anthropic-messages")
+  ) return undefined;
+  return {
+    scanId,
+    connectionId: plan.connectionId,
+    routeKind: plan.routeKind,
+    protocol: plan.protocol,
+    modelId: plan.model.id,
+    capabilityCheckId: plan.capabilityCheckId,
+  };
 }
 
 function progressKey(p: ScanProgress): string {

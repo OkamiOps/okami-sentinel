@@ -13,6 +13,12 @@ const SCOPED_CODEX_SECURITY_SESSION_ROUTES = new Set([
   "openai-chatgpt-app-server",
 ]);
 
+const VULNHUNTER_HTTP_PROTOCOLS = new Set([
+  "openai-responses",
+  "openai-chat",
+  "anthropic-messages",
+]);
+
 /** Safe, stable launch boundary errors. They intentionally reveal no route or credential details. */
 export type ScanSelectionErrorCode =
   | "provider_runner_unavailable"
@@ -78,8 +84,24 @@ export function resolveScanLaunchSelection(
     remoteRepositoryConfirmed: input.request.remoteRepositoryConfirmed,
   });
 
-  if (plan.runnerKind === "agent-session" || plan.runnerKind === "remote-agent-job") {
+  if (plan.runnerKind === "remote-agent-job") {
     throw new ScanSelectionError("provider_runner_unavailable");
+  }
+  if (plan.runnerKind === "agent-session") {
+    if (!isVulnHunterHttpPlan(input.request, plan)) {
+      throw new ScanSelectionError("provider_runner_unavailable");
+    }
+    const { authMode: _untrustedAuthMode, ...request } = input.request;
+    return {
+      request: {
+        ...request,
+        provider: plan.providerKind,
+        model: plan.model!.id,
+      },
+      model: plan.model!.id,
+      plan,
+      connectionAware: true,
+    };
   }
   if (
     plan.runnerKind === "codex-security-contract" &&
@@ -102,6 +124,25 @@ export function resolveScanLaunchSelection(
     plan,
     connectionAware: true,
   };
+}
+
+/**
+ * The child runner re-validates this immutable reference before it reads the
+ * vault. This gate only decides whether a corresponding worker may be spawned.
+ */
+function isVulnHunterHttpPlan(
+  request: StartScanRequest,
+  plan: ScanLaunchPlan,
+): boolean {
+  return (request.engine ?? "codex-security") === "vulnhunter" &&
+    plan.model !== null &&
+    plan.capabilityCheckId !== null &&
+    plan.snapshot.modelSelectionMode === "catalog" &&
+    plan.snapshot.modelId === plan.model.id &&
+    plan.snapshot.capabilityCheckId === plan.capabilityCheckId &&
+    plan.snapshot.connectionId === plan.connectionId &&
+    plan.snapshot.routeKind === plan.routeKind &&
+    VULNHUNTER_HTTP_PROTOCOLS.has(plan.protocol);
 }
 
 /**

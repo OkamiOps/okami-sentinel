@@ -154,7 +154,7 @@ process.on("SIGTERM", () => process.exit(0));
         timeout: 30_000,
       },
     );
-    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(result.status, 0, `${result.error?.message ?? ""}\n${result.stderr || result.stdout}`);
     const runtime = JSON.parse(
       fs.readFileSync(path.join(outputDir, "vulnhunter-runtime.json"), "utf8"),
     ) as Record<string, unknown> & { usage: Record<string, number | boolean> };

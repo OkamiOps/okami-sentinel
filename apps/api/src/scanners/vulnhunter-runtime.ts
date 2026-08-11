@@ -3,6 +3,19 @@ import path from "node:path";
 import type { ScanProgress } from "@csb/shared";
 import type { ScannerUsage } from "./usage.js";
 
+/**
+ * Safe immutable reference passed to the HTTP worker. It deliberately contains
+ * no provider endpoint, headers, API key, or OAuth material.
+ */
+export interface SafeVulnHunterProviderPlan {
+  scanId: string;
+  connectionId: string;
+  routeKind: string;
+  protocol: "openai-responses" | "openai-chat" | "anthropic-messages" | "xai-oauth-responses";
+  modelId: string;
+  capabilityCheckId: string;
+}
+
 export interface VulnHunterRunConfiguration {
   outputDir: string;
   repositoryPath: string;
@@ -15,6 +28,8 @@ export interface VulnHunterRunConfiguration {
     repositoryUrl: string;
     ref: string;
   };
+  /** Absent preserves the legacy local Codex app-server worker path. */
+  providerPlan?: SafeVulnHunterProviderPlan;
 }
 
 export interface VulnHunterRuntimeState {

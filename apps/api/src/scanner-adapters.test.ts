@@ -219,6 +219,67 @@ test("launch adapters produce explicit, reproducible recipes without executing a
   }
 });
 
+test("VulnHunter HTTP launch serializes only the immutable provider reference", () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-vulnhunter-http-launch-"));
+  const repositoryPath = path.join(fixtureRoot, "repository");
+  const outputDir = path.join(fixtureRoot, "output");
+  fs.mkdirSync(repositoryPath);
+  fs.mkdirSync(outputDir);
+  const providerPlan = {
+    scanId: "scan-vulnhunter-http",
+    connectionId: "connection-a",
+    routeKind: "openai-api",
+    protocol: "openai-responses" as const,
+    modelId: "gpt-live",
+    capabilityCheckId: "capability-a",
+  };
+  const previousOpenAiKey = process.env.OPENAI_API_KEY;
+  const previousCodexKey = process.env.CODEX_API_KEY;
+  process.env.OPENAI_API_KEY = "global-openai-key-must-not-reach-vulnhunter";
+  process.env.CODEX_API_KEY = "global-codex-key-must-not-reach-vulnhunter";
+
+  try {
+    const launch = prepareScannerLaunch({
+      request: {
+        repositoryPath,
+        engine: "vulnhunter",
+        connection: {
+          connectionId: "connection-a",
+          modelSelectionMode: "catalog",
+          modelId: "gpt-live",
+        },
+      },
+      repositoryPath,
+      outputDir,
+      model: "gpt-live",
+      effort: "high",
+      mode: "standard",
+      providerPlan,
+      providerKind: "anthropic",
+    });
+    const config = JSON.parse(
+      fs.readFileSync(path.join(outputDir, "vulnhunter-run.json"), "utf8"),
+    ) as Record<string, unknown>;
+    assert.deepEqual(config.providerPlan, providerPlan);
+    const serialized = JSON.stringify(config);
+    assert.equal(serialized.includes("apiKey"), false);
+    assert.equal(serialized.includes("baseUrl"), false);
+    assert.equal(serialized.includes("headers"), false);
+    assert.equal(serialized.includes("global-openai-key-must-not-reach-vulnhunter"), false);
+    assert.equal(serialized.includes("global-codex-key-must-not-reach-vulnhunter"), false);
+    assert.equal(launch.provider, "anthropic");
+    assert.equal(launch.authMode, "api-key");
+    assert.equal(launch.env.OPENAI_API_KEY, undefined);
+    assert.equal(launch.env.CODEX_API_KEY, undefined);
+  } finally {
+    if (previousOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousOpenAiKey;
+    if (previousCodexKey === undefined) delete process.env.CODEX_API_KEY;
+    else process.env.CODEX_API_KEY = previousCodexKey;
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
 test("Mantis normalization keeps reportable evidence and preserves raw pipeline output", () => {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-mantis-normalize-"));
   const stateRoot = path.join(fixtureRoot, "state");

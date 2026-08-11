@@ -5,9 +5,19 @@ import readline from "node:readline";
 import { CODEX_BIN } from "../config.js";
 import {
   processSecretValues,
+  redactText,
   redactErrorMessage,
   SecretRedactor,
 } from "../redaction.js";
+import { getProviderRuntime } from "../provider-runtime.js";
+import {
+  createVulnHunterHttpRunner,
+} from "./vulnhunter-http-runner.js";
+import type { AgentEvent } from "../agent/session-types.js";
+import {
+  addVulnHunterHttpUsage,
+  serializeVulnHunterHttpEvent,
+} from "./vulnhunter-http-worker-support.js";
 import { createResilientLineWriter } from "./mantis-runtime.js";
 import { normalizeVulnHunterWorkspace } from "./vulnhunter-normalize.js";
 import {
@@ -28,11 +38,12 @@ let currentChild: ChildProcess | null = null;
 let cancelled = false;
 let runtime: VulnHunterRuntimeState | null = null;
 let outputDirForSignal: string | null = null;
+let httpAbortController: AbortController | null = null;
 const log = createResilientLineWriter(process.stdout);
 const workerRedactor = new SecretRedactor();
 workerRedactor.register("process", processSecretValues(process.env));
 const safeErrorMessage = (error: unknown): string =>
-  redactErrorMessage(error, workerRedactor);
+  workerRedactor.redactText(redactText(redactErrorMessage(error, workerRedactor)));
 
 function progress(
   config: VulnHunterRunConfiguration,
@@ -169,6 +180,10 @@ async function runVulnHunter(
   branchLabel: string,
   repositoryUrl: string,
 ): Promise<void> {
+  if (config.providerPlan !== undefined) {
+    await runHttpVulnHunter(config, snapshotRoot, resultsDir, branchLabel, repositoryUrl);
+    return;
+  }
   const stateRoot = path.dirname(resultsDir);
   const logDir = path.join(config.outputDir, "vulnhunter-logs");
   fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
@@ -181,6 +196,90 @@ async function runVulnHunter(
     scopePaths: config.paths,
   });
   await runCodexSession(config, stateRoot, resultsDir, prompt, "scan.jsonl", false);
+}
+
+async function runHttpVulnHunter(
+  config: VulnHunterRunConfiguration,
+  snapshotRoot: string,
+  resultsDir: string,
+  branchLabel: string,
+  repositoryUrl: string,
+): Promise<void> {
+  const prompt = buildVulnHunterPrompt({
+    snapshotRoot,
+    resultsDir,
+    branchLabel,
+    repositoryUrl,
+    model: config.model,
+    scopePaths: config.paths,
+  });
+  const logDir = path.join(config.outputDir, "vulnhunter-logs");
+  fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
+  const eventLogPath = path.join(logDir, "http-agent.jsonl");
+  const controller = new AbortController();
+  httpAbortController = controller;
+  let aggregateUsage: VulnHunterRuntimeState["usage"] = {
+    reported: false,
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    outputTokens: 0,
+  };
+  try {
+    const provider = getProviderRuntime();
+    const runner = createVulnHunterHttpRunner({
+      store: provider.store,
+      vault: provider.vault,
+    });
+    await runner.run({
+      plan: config.providerPlan!,
+      snapshotRoot,
+      resultsDir,
+      instructions: prompt,
+      signal: controller.signal,
+      onEvent: async (event) => {
+        fs.appendFileSync(eventLogPath, `${safeAgentEventLine(event)}\n`, {
+          encoding: "utf8",
+          mode: 0o600,
+        });
+        if (event.type === "usage") {
+          aggregateUsage = addVulnHunterHttpUsage(aggregateUsage, event.usage);
+          persistUsage(config, aggregateUsage);
+          return;
+        }
+        if (event.type === "tool" && event.phase === "requested") {
+          updateArtifactStage(config, resultsDir, httpActivity(event.name));
+          return;
+        }
+        if (event.type === "artifact") {
+          updateArtifactStage(config, resultsDir, "Defensive evidence artifact written");
+          return;
+        }
+        if (event.type === "completion") {
+          updateArtifactStage(config, resultsDir, "Bounded provider review completed");
+          return;
+        }
+        if (event.type === "cancellation") cancelled = true;
+      },
+    });
+  } finally {
+    httpAbortController = null;
+  }
+}
+
+function httpActivity(name: string): string {
+  if (name === "workspace.list" || name === "workspace.read") {
+    return "Repository evidence inspection started";
+  }
+  if (name === "workspace.search") return "Static evidence search started";
+  return "Defensive evidence artifact update started";
+}
+
+function safeAgentEventLine(event: AgentEvent): string {
+  return serializeVulnHunterHttpEvent(
+    event,
+    (value) => workerRedactor.redactText(redactText(value)),
+  );
 }
 
 async function runCodexSession(
@@ -559,6 +658,7 @@ async function main(): Promise<void> {
 process.on("SIGTERM", () => {
   cancelled = true;
   currentChild?.kill("SIGTERM");
+  httpAbortController?.abort();
   if (runtime && outputDirForSignal) {
     const now = new Date().toISOString();
     runtime = {
