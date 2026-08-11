@@ -132,3 +132,50 @@ test("pricing sidecar is private and ignores files opened beyond owner access", 
     fs.rmSync(scanDir, { recursive: true, force: true });
   }
 });
+
+test("pricing reader rejects symlinks and closes an lstat-to-open replacement", () => {
+  const scanDir = fs.mkdtempSync(path.join(os.tmpdir(), "portable-pricing-pinned-"));
+  const aliasDir = path.join(scanDir, "alias");
+  const replacement = path.join(scanDir, "replacement.json");
+  const target = portableCodexSecurityPricingPath(scanDir);
+  try {
+    writePortableCodexSecurityPricing(scanDir, pricing, CAPTURED_AT, MODEL_ID);
+    fs.mkdirSync(aliasDir, { mode: 0o700 });
+    fs.symlinkSync(target, portableCodexSecurityPricingPath(aliasDir));
+    assert.equal(readPortableCodexSecurityPricing(aliasDir), null);
+
+    fs.writeFileSync(replacement, JSON.stringify({
+      schemaVersion: 1,
+      pricing: {
+        currency: "USD",
+        capturedAt: CAPTURED_AT,
+        modelId: "replacement-model",
+        inputUsdPerMillionTokens: 1,
+        cachedInputUsdPerMillionTokens: 1,
+        cacheWriteInputUsdPerMillionTokens: null,
+        outputUsdPerMillionTokens: 1,
+      },
+    }), { mode: 0o600 });
+    fs.chmodSync(replacement, 0o600);
+
+    const mutableFs = fs as unknown as {
+      openSync: (...args: unknown[]) => number;
+    };
+    const originalOpen = mutableFs.openSync;
+    let swapped = false;
+    mutableFs.openSync = (...args) => {
+      if (!swapped && String(args[0]) === target) {
+        swapped = true;
+        fs.renameSync(replacement, target);
+      }
+      return originalOpen(...args);
+    };
+    try {
+      assert.equal(readPortableCodexSecurityPricing(scanDir), null);
+    } finally {
+      mutableFs.openSync = originalOpen;
+    }
+  } finally {
+    fs.rmSync(scanDir, { recursive: true, force: true });
+  }
+});

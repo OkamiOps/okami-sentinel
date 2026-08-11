@@ -271,6 +271,13 @@ export function progressForStatus(
   mode?: string | null,
   startedAt?: string | null,
 ): ScanProgress | null {
+  // Portable runtime is the authoritative durable stage ledger, including an
+  // incomplete/failed terminal state reconstructed after an API restart.
+  const portable = readPortableCodexSecurityRuntime(scanDir);
+  if (portable && (status !== "completed" || portable.status === "completed")) {
+    return portableCodexSecurityRuntimeProgress(portable);
+  }
+
   if (status === "completed") {
     return {
       percent: 100,
@@ -299,9 +306,6 @@ export function progressForStatus(
       latestVulnHunterActivityAt(scanDir, vulnhunter),
     );
   }
-
-  const portable = readPortableCodexSecurityRuntime(scanDir);
-  if (portable) return portableCodexSecurityRuntimeProgress(portable);
 
   const fromWb = readProgressForScanDir(scanDir);
   const age = elapsedMs(startedAt);

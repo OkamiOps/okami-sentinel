@@ -518,7 +518,7 @@ test("Codex Security OpenAI API accepts only the resolved catalog plan, never cl
   assert.equal(launchPreparationCalls, 1);
 });
 
-test("Codex Security Portable fails before launch preparation until its worker is wired", () => {
+test("Codex Security Portable reaches launch preparation only through its wired pinned contract", () => {
   const mimoModel: ProviderModel = {
     ...model,
     connectionId: "mimo-session",
@@ -562,7 +562,7 @@ test("Codex Security Portable fails before launch preparation until its worker i
   }));
 
   let launchPreparationCalls = 0;
-  assert.throws(() => resolveBeforeLaunch({
+  const portable = resolveBeforeLaunch({
     request: {
       repositoryPath: "/repo",
       engine: "codex-security",
@@ -582,9 +582,11 @@ test("Codex Security Portable fails before launch preparation until its worker i
       launchPreparationCalls += 1;
       return selection.request;
     },
-  }), (error: unknown) =>
-    error instanceof ScanSelectionError && error.code === "provider_runner_unavailable");
-  assert.equal(launchPreparationCalls, 0);
+  });
+  assert.equal(launchPreparationCalls, 1);
+  assert.equal(portable.launch.provider, "xiaomi");
+  assert.equal(portable.launch.model, "mimo-v2.5");
+  assert.equal(portable.launch.authMode, undefined);
 
   const forged = resolver(plan({
     engine: "codex-security",

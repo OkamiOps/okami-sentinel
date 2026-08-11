@@ -253,6 +253,47 @@ test("Portable Codex Security rejects every persisted identity mismatch before v
     assert.equal(vaultReads, 0);
     assert.equal(oauthReads, 0);
     assert.equal(sessions, 0);
+    assert.equal(
+      fs.existsSync(config.outputDir),
+      false,
+      "a rejected persisted plan must not create runtime/output artifacts",
+    );
+  } finally {
+    remove(root);
+  }
+});
+
+test("Portable Codex Security revalidates again after snapshot pinning before vault access", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-pre-vault-"));
+  const config = configuration(root);
+  let snapshotReads = 0;
+  let vaultReads = 0;
+  let sessions = 0;
+  try {
+    await assert.rejects(
+      runPortableCodexSecurity(config, dependencies({
+        getSnapshot: () => {
+          snapshotReads += 1;
+          return snapshotReads === 1 ? snapshot() : snapshot({ modelId: "stale-model" });
+        },
+        vault: {
+          get: async () => {
+            vaultReads += 1;
+            return { apiKey: "must-not-read" };
+          },
+        },
+        createSession: async () => {
+          sessions += 1;
+          throw new Error("must-not-start");
+        },
+      })),
+      (error: unknown) => error instanceof PortableCodexSecurityRunnerError &&
+        error.code === "provider_plan_revalidation_failed",
+    );
+    assert.equal(snapshotReads, 2);
+    assert.equal(vaultReads, 0);
+    assert.equal(sessions, 0);
+    assert.equal(fs.existsSync(path.join(config.outputDir, "portable-codex-security-runtime.json")), false);
   } finally {
     remove(root);
   }

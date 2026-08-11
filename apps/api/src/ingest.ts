@@ -18,6 +18,7 @@ import {
   deleteRun,
   displayNameFromPaths,
   durationMs,
+  getRun,
   listRuns,
   mapWorkbenchStatus,
   parseCostJson,
@@ -27,6 +28,7 @@ import {
 import { normalizeAttackPath } from "./attack-path.js";
 import { dirsMatch } from "./progress.js";
 import { refreshMantisRunFromDisk } from "./scanners/mantis-reconcile.js";
+import { refreshPortableCodexSecurityRunFromDisk } from "./scanners/portable-codex-security-reconcile.js";
 import { refreshVulnHunterRunFromDisk } from "./scanners/vulnhunter-reconcile.js";
 
 interface WorkbenchScanRow {
@@ -944,6 +946,12 @@ export function importExternalScans(): { imported: number; pruned: number } {
 }
 
 export function refreshRunFromDisk(id: string): ScanRun | null {
+  const stored = getRun(id);
+  if (stored && isPortableCodexSecurityRun(stored)) {
+    const refreshed = refreshPortableCodexSecurityRunFromDisk(stored);
+    upsertRun(refreshed);
+    return refreshed;
+  }
   const fromWb = readWorkbenchScan(id);
   if (fromWb) {
     recoverFindingsJsonFromMarkdown(fromWb.scanDir);
@@ -958,6 +966,14 @@ export function refreshRunFromDisk(id: string): ScanRun | null {
 
 /** Merge workbench row for a scanDir into an existing benchmark run (cost/status). */
 export function refreshRunByScanDir(scanDir: string, fallbackId?: string): ScanRun | null {
+  const stored = fallbackId === undefined
+    ? listRuns().find((run) => dirsMatch(run.scanDir, scanDir)) ?? null
+    : getRun(fallbackId) ?? listRuns().find((run) => dirsMatch(run.scanDir, scanDir)) ?? null;
+  if (stored && isPortableCodexSecurityRun(stored) && dirsMatch(stored.scanDir, scanDir)) {
+    const refreshed = refreshPortableCodexSecurityRunFromDisk(stored);
+    upsertRun(refreshed);
+    return refreshed;
+  }
   for (const wb of readWorkbenchScans()) {
     if (!dirsMatch(wb.scanDir, scanDir)) continue;
     recoverFindingsJsonFromMarkdown(wb.scanDir);
@@ -1002,10 +1018,22 @@ export function reconcileRunningScans(): number {
       if (before !== after) updated += 1;
       continue;
     }
+    if (isPortableCodexSecurityRun(run)) {
+      const refreshed = refreshPortableCodexSecurityRunFromDisk(run);
+      upsertRun(refreshed);
+      const after = `${refreshed.status}|${refreshed.cost?.estimatedUsd ?? 0}|${refreshed.severity.total}`;
+      if (before !== after) updated += 1;
+      continue;
+    }
     const refreshed = refreshRunByScanDir(run.scanDir, run.id);
     if (!refreshed) continue;
     const after = `${refreshed.status}|${refreshed.cost?.estimatedUsd ?? 0}|${refreshed.severity.total}`;
     if (before !== after) updated += 1;
   }
   return updated;
+}
+
+function isPortableCodexSecurityRun(run: ScanRun): boolean {
+  return run.engine === "codex-security" &&
+    run.execution?.executionProfile === "portable";
 }

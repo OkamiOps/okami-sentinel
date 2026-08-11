@@ -546,6 +546,7 @@ export async function startScan(
     source: "benchmark",
     pid: null,
     execution: selection.plan?.execution ?? null,
+    launchSelection: launchSelectionForRun(selection.plan, selection.request.paths),
     progress: initialProgress ? sanitizeScanProgress(initialProgress) : null,
   };
   upsertRun(run);
@@ -751,6 +752,19 @@ function portableCodexSecurityProviderPlan(
 function isPortableCodexSecurityRun(run: ScanRun): boolean {
   return run.engine === "codex-security" &&
     run.execution?.executionProfile === "portable";
+}
+
+/** Snapshot-owned model selection plus the exact normalized scope used at launch. */
+function launchSelectionForRun(
+  plan: ScanLaunchPlan | null,
+  paths: readonly string[] | undefined,
+): ScanRun["launchSelection"] {
+  if (plan === null) return null;
+  return {
+    modelSelectionMode: plan.snapshot.modelSelectionMode,
+    modelId: plan.snapshot.modelId,
+    paths: (paths ?? []).map((item) => item.trim()).filter(Boolean),
+  };
 }
 
 function isVulnHunterProviderProtocol(

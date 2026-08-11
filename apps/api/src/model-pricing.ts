@@ -20,6 +20,12 @@ interface PortableCodexSecurityPricingFile {
   pricing: FrozenCatalogPricing | null;
 }
 
+const MAX_PRICING_FILE_BYTES = 64 * 1024;
+const NO_FOLLOW = typeof fs.constants.O_NOFOLLOW === "number"
+  ? fs.constants.O_NOFOLLOW
+  : 0;
+const READ_NO_FOLLOW = fs.constants.O_RDONLY | NO_FOLLOW;
+
 export function portableCodexSecurityPricingPath(scanDir: string): string {
   return path.join(scanDir, "portable-codex-security-pricing.json");
 }
@@ -73,16 +79,35 @@ export function readPortableCodexSecurityPricing(
   scanDir: string,
 ): FrozenCatalogPricing | null {
   const target = portableCodexSecurityPricingPath(scanDir);
+  let descriptor: number | undefined;
   try {
-    const metadata = fs.lstatSync(target);
-    if (!metadata.isFile() || metadata.isSymbolicLink() || (metadata.mode & 0o077) !== 0) {
-      return null;
+    const expected = fs.lstatSync(target);
+    if (!validPricingFile(expected)) return null;
+    descriptor = fs.openSync(target, READ_NO_FOLLOW);
+    const opened = fs.fstatSync(descriptor);
+    if (!validPricingFile(opened) || !sameVersion(expected, opened)) return null;
+    const buffer = Buffer.alloc(opened.size);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const bytes = fs.readSync(descriptor, buffer, offset, buffer.length - offset, offset);
+      if (bytes === 0) break;
+      offset += bytes;
     }
-    const parsed: unknown = JSON.parse(fs.readFileSync(target, "utf8"));
+    const afterOpen = fs.fstatSync(descriptor);
+    const afterPath = fs.lstatSync(target);
+    if (
+      offset !== buffer.length ||
+      !validPricingFile(afterPath) ||
+      !sameVersion(opened, afterOpen) ||
+      !sameVersion(opened, afterPath)
+    ) return null;
+    const parsed: unknown = JSON.parse(buffer.toString("utf8"));
     if (!isPricingFile(parsed)) return null;
     return parsed.pricing;
   } catch {
     return null;
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
   }
 }
 
@@ -151,12 +176,29 @@ function tokenCost(tokens: number, rate: number): number {
 }
 
 function isPricingFile(value: unknown): value is PortableCodexSecurityPricingFile {
-  if (!isRecord(value) || value.schemaVersion !== 1 || !("pricing" in value)) return false;
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ["schemaVersion", "pricing"]) ||
+    value.schemaVersion !== 1 ||
+    !("pricing" in value)
+  ) return false;
   return value.pricing === null || isFrozenCatalogPricing(value.pricing);
 }
 
 function isFrozenCatalogPricing(value: unknown): value is FrozenCatalogPricing {
-  if (!isRecord(value) || value.currency !== "USD") return false;
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      "currency",
+      "capturedAt",
+      "modelId",
+      "inputUsdPerMillionTokens",
+      "cachedInputUsdPerMillionTokens",
+      "cacheWriteInputUsdPerMillionTokens",
+      "outputUsdPerMillionTokens",
+    ]) ||
+    value.currency !== "USD"
+  ) return false;
   return validTimestamp(value.capturedAt) &&
     safeModelId(value.modelId) &&
     nullableRate(value.inputUsdPerMillionTokens) &&
@@ -181,4 +223,20 @@ function nullableRate(value: unknown): value is number | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const allowed = new Set(keys);
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function validPricingFile(info: fs.Stats): boolean {
+  return !info.isSymbolicLink() && info.isFile() &&
+    (info.mode & 0o777) === 0o600 &&
+    info.size > 0 && info.size <= MAX_PRICING_FILE_BYTES;
+}
+
+function sameVersion(left: fs.Stats, right: fs.Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino && left.size === right.size &&
+    left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
 }

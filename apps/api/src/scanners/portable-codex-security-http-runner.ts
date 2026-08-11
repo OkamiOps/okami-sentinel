@@ -186,8 +186,12 @@ export async function runPortableCodexSecurity(
     error: null,
     errorCode: null,
   };
+  // A rejected persisted plan must be indistinguishable from no attempted
+  // launch: no runtime ledger or output directory exists before revalidation.
+  let runtimeWritable = false;
   const update = (patch: Partial<PortableCodexSecurityRuntimeState>) => {
     runtime = { ...runtime, ...patch, updatedAt: now().toISOString() };
+    if (!runtimeWritable) return;
     writePortableCodexSecurityRuntime(outputDir, runtime);
     log(globalSecretRedactor.redactText(`SENTINEL_PROGRESS ${JSON.stringify({
       percent: runtime.percent,
@@ -197,8 +201,6 @@ export async function runPortableCodexSecurity(
       findings: runtime.findings,
     })}`));
   };
-  writePortableCodexSecurityRuntime(outputDir, runtime);
-
   let activeSession: AgentSession | null = null;
   let sessionCancelled = false;
   const cancelActive = () => {
@@ -214,13 +216,25 @@ export async function runPortableCodexSecurity(
     throwIfStopped(deadline);
     const plan = createSafePortableCodexSecurityProviderPlan(safeConfiguration.providerPlan);
     let resolved = revalidatePortablePlan(plan, dependencies, now());
-    update({ percent: 5, detail: "creating an immutable source snapshot" });
     const snapshot = createPortableCodexSecuritySnapshot(
       safeConfiguration.repositoryPath,
       outputDir,
     );
     assertPortableCodexSecuritySnapshot(snapshot);
     throwIfStopped(deadline);
+    // Snapshotting is local-only; repeat metadata validation immediately
+    // before crossing into the vault/network credential boundary.
+    resolved = revalidatePortablePlan(plan, dependencies, now());
+    throwIfStopped(deadline);
+    runtime = {
+      ...runtime,
+      percent: 5,
+      detail: "immutable source snapshot pinned",
+      snapshotId: snapshot.snapshotId,
+      updatedAt: now().toISOString(),
+    };
+    runtimeWritable = true;
+    writePortableCodexSecurityRuntime(outputDir, runtime);
 
     const credentials = resolved.directXaiOAuth
       ? await readXaiOAuthCredentials(resolved.connection, dependencies.xaiOAuth, deadline)
@@ -349,7 +363,7 @@ export async function runPortableCodexSecurity(
       completedAt: now().toISOString(),
       updatedAt: now().toISOString(),
     };
-    writePortableCodexSecurityRuntime(outputDir, runtime);
+    if (runtimeWritable) writePortableCodexSecurityRuntime(outputDir, runtime);
     throw normalized;
   } finally {
     deadline.signal.removeEventListener("abort", cancelActive);

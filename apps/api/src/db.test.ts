@@ -80,6 +80,11 @@ test("round-trips frozen provider-catalog pricing and null costs", () => {
       protocol: "openai-chat",
       authKind: "api-key",
     },
+    launchSelection: {
+      modelSelectionMode: "catalog",
+      modelId: "mimo-v2.5",
+      paths: ["src/auth"],
+    },
   };
   const nullCostRun: ScanRun = {
     ...pricedRun,
@@ -93,6 +98,7 @@ test("round-trips frozen provider-catalog pricing and null costs", () => {
 
     assert.deepEqual(getRun(pricedRun.id)?.cost, pricedRun.cost);
     assert.deepEqual(getRun(pricedRun.id)?.execution, pricedRun.execution);
+    assert.deepEqual(getRun(pricedRun.id)?.launchSelection, pricedRun.launchSelection);
     assert.equal(getRun(nullCostRun.id)?.cost, null);
   } finally {
     deleteRun(pricedRun.id);
@@ -130,6 +136,7 @@ test("adds complete execution columns to legacy run schemas idempotently", () =>
       "route_kind",
       "protocol",
       "auth_kind",
+      "launch_selection_json",
       "cost_json",
     ]) {
       assert.equal(columns.has(column), true);

@@ -6,6 +6,7 @@ import {
   type FindingTriage,
   type FindingTriageStatus,
   type ScanCost,
+  type ScanLaunchSelection,
   type ScanRun,
   type ScanStatus,
   type ScannerAuthMode,
@@ -38,6 +39,7 @@ export interface BenchmarkRow {
   route_kind?: string | null;
   protocol?: string | null;
   auth_kind?: string | null;
+  launch_selection_json?: string | null;
   cost_json?: string | null;
   started_at: string | null;
   completed_at: string | null;
@@ -91,6 +93,7 @@ export function getDb(): Database.Database {
       route_kind TEXT,
       protocol TEXT,
       auth_kind TEXT,
+      launch_selection_json TEXT,
       cost_json TEXT,
       started_at TEXT,
       completed_at TEXT,
@@ -158,6 +161,7 @@ export function ensureRunMetadataColumns(database: Database.Database): void {
     ["route_kind", "TEXT"],
     ["protocol", "TEXT"],
     ["auth_kind", "TEXT"],
+    ["launch_selection_json", "TEXT"],
     ["cost_json", "TEXT"],
   ] as const;
   for (const [name, definition] of additions) {
@@ -201,6 +205,7 @@ export function rowToScanRun(row: BenchmarkRow): ScanRun {
         : null
       : parseCostJson(row.cost_json);
   const execution = rowToExecutionProvenance(row);
+  const launchSelection = parseLaunchSelection(row.launch_selection_json);
 
   return withOpenRouterPricingEstimate({
     id: row.id,
@@ -225,6 +230,7 @@ export function rowToScanRun(row: BenchmarkRow): ScanRun {
     source: row.source as ScanRun["source"],
     pid: row.pid,
     execution,
+    launchSelection,
   });
 }
 
@@ -232,13 +238,14 @@ export function upsertRun(run: ScanRun): void {
   const now = new Date().toISOString();
   const cost = run.cost === null ? null : sanitizeScanCost(run.cost);
   const execution = run.execution;
+  const launchSelection = sanitizeLaunchSelection(run.launchSelection);
   getDb()
     .prepare(
       `INSERT INTO runs (
         id, display_name, repository_path, revision, scan_dir, status,
         model, effort, mode, engine, provider, auth_mode, scanner_version, recipe_hash,
         execution_profile, profile_version, methodology_ref, capability_check_id,
-        connection_id, route_kind, protocol, auth_kind, cost_json,
+        connection_id, route_kind, protocol, auth_kind, launch_selection_json, cost_json,
         started_at, completed_at, duration_ms,
         estimated_usd, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens,
         severity_critical, severity_high, severity_medium, severity_low, severity_info, severity_unknown, severity_total,
@@ -247,7 +254,7 @@ export function upsertRun(run: ScanRun): void {
         @id, @display_name, @repository_path, @revision, @scan_dir, @status,
         @model, @effort, @mode, @engine, @provider, @auth_mode, @scanner_version, @recipe_hash,
         @execution_profile, @profile_version, @methodology_ref, @capability_check_id,
-        @connection_id, @route_kind, @protocol, @auth_kind, @cost_json,
+        @connection_id, @route_kind, @protocol, @auth_kind, @launch_selection_json, @cost_json,
         @started_at, @completed_at, @duration_ms,
         @estimated_usd, @input_tokens, @cached_input_tokens, @cache_write_tokens, @output_tokens,
         @severity_critical, @severity_high, @severity_medium, @severity_low, @severity_info, @severity_unknown, @severity_total,
@@ -275,6 +282,7 @@ export function upsertRun(run: ScanRun): void {
         route_kind=excluded.route_kind,
         protocol=excluded.protocol,
         auth_kind=excluded.auth_kind,
+        launch_selection_json=excluded.launch_selection_json,
         cost_json=excluded.cost_json,
         started_at=excluded.started_at,
         completed_at=excluded.completed_at,
@@ -318,6 +326,7 @@ export function upsertRun(run: ScanRun): void {
       route_kind: execution?.routeKind ?? null,
       protocol: execution?.protocol ?? null,
       auth_kind: execution?.authKind ?? null,
+      launch_selection_json: launchSelection === null ? null : JSON.stringify(launchSelection),
       cost_json: cost === null ? null : JSON.stringify(cost),
       started_at: run.startedAt,
       completed_at: run.completedAt,
@@ -448,6 +457,51 @@ export function parseCostJson(raw: string | null | undefined): ScanCost | null {
   } catch {
     return null;
   }
+}
+
+function parseLaunchSelection(
+  raw: string | null | undefined,
+): ScanLaunchSelection | null {
+  if (!raw) return null;
+  try {
+    return sanitizeLaunchSelection(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+/** Keeps retry state identifier-only and rejects legacy/malformed stored JSON. */
+function sanitizeLaunchSelection(value: unknown): ScanLaunchSelection | null {
+  if (!isRecord(value) || !Array.isArray(value.paths)) return null;
+  const modelSelectionMode = value.modelSelectionMode;
+  if (
+    modelSelectionMode !== "catalog" &&
+    modelSelectionMode !== "runtime-default" &&
+    modelSelectionMode !== "legacy-unknown"
+  ) return null;
+  const modelId = value.modelId;
+  if (
+    (modelSelectionMode === "catalog" && !safeLaunchIdentifier(modelId)) ||
+    (modelSelectionMode !== "catalog" && modelId !== null) ||
+    value.paths.length > 256 ||
+    !value.paths.every(safeLaunchPath)
+  ) return null;
+  return {
+    modelSelectionMode,
+    modelId: modelId as string | null,
+    paths: [...value.paths],
+  };
+}
+
+function safeLaunchIdentifier(value: unknown): value is string {
+  return typeof value === "string" && value.trim() === value &&
+    value.length > 0 && value.length <= 512 && !/[\u0000-\u001F\u007F]/.test(value);
+}
+
+function safeLaunchPath(value: unknown): value is string {
+  return safeLaunchIdentifier(value) && value.length <= 1_024 &&
+    !path.isAbsolute(value) && !path.win32.isAbsolute(value) &&
+    !value.split(/[\\/]+/).includes("..");
 }
 
 function rowToExecutionProvenance(row: BenchmarkRow): ScanRun["execution"] {

@@ -12,6 +12,11 @@ import {
   type ResolvedConnectionCompatibility,
 } from "./compatibility-resolver.js";
 import { isCodexSecurityApiConnection } from "../scanners/codex-security-api-bridge.js";
+import {
+  isPortableCodexSecurityRoute,
+  PORTABLE_CODEX_SECURITY_METHODOLOGY_REF,
+  PORTABLE_CODEX_SECURITY_PROFILE_VERSION,
+} from "../scanners/portable-codex-security-profile.js";
 
 export interface ScanCompatibilityStore {
   getConnection(id: string): StoredProviderConnection | null;
@@ -85,7 +90,13 @@ function runnerIsWired(
         connection.routeKind === "openai-chatgpt-app-server" ||
         isCodexSecurityApiConnection(connection);
     }
-    return false;
+    return resolved.runnerKind === "agent-session" &&
+      resolved.selectedProfile === "portable" &&
+      resolved.profileVersion === PORTABLE_CODEX_SECURITY_PROFILE_VERSION &&
+      resolved.methodologyRef === PORTABLE_CODEX_SECURITY_METHODOLOGY_REF &&
+      resolved.capabilityCheckId !== null &&
+      connection.transport === "http-inference" &&
+      isPortableCodexSecurityRoute(connection.routeKind, connection.protocol);
   }
   if (resolved.runnerKind === "codex-app-server") {
     return connection.routeKind === "openai-codex-local" ||

@@ -323,7 +323,7 @@ test("advertises Codex Security OpenAI API only after the exact child-env bridge
   assert.deepEqual(result.reasons, []);
 });
 
-test("keeps resolved Portable Codex Security unavailable until its dedicated worker is wired", () => {
+test("advertises resolved Portable Codex Security only through its dedicated worker contract", () => {
   const resolver = createScanCompatibilityResolver({
     getConnection: () => connection({
       providerKind: "xiaomi",
@@ -353,8 +353,9 @@ test("keeps resolved Portable Codex Security unavailable until its dedicated wor
     },
   });
 
-  assert.equal(auto.eligible, false);
-  assert.deepEqual(auto.reasons, ["provider_runner_unavailable"]);
+  assert.equal(auto.eligible, true);
+  assert.equal(auto.selectedProfile, "portable");
+  assert.equal(auto.profileVersion, "sentinel-codex-security-portable-v1");
 
   const portable = resolver.resolve({
     engine: "codex-security",
@@ -365,8 +366,10 @@ test("keeps resolved Portable Codex Security unavailable until its dedicated wor
     },
     executionProfilePreference: "portable",
   });
-  assert.equal(portable.eligible, false);
-  assert.deepEqual(portable.reasons, ["provider_runner_unavailable"]);
+  assert.equal(portable.eligible, true);
+  assert.deepEqual(portable.reasons, []);
+  assert.equal(portable.selectedProfile, "portable");
+  assert.equal(portable.methodologyRef, "sentinel/codex-security-methodology@v1");
 
   const native = resolver.resolve({
     engine: "codex-security",

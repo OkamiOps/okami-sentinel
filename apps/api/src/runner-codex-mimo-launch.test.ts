@@ -15,7 +15,7 @@ import type {
 } from "@csb/shared";
 
 import type { StoredProviderConnection } from "./connections-store.js";
-import { deleteRun } from "./db.js";
+import { deleteRun, getRun } from "./db.js";
 import type { ScanLaunchPlan } from "./connections/launch-plan.js";
 import { startScan } from "./runner.js";
 
@@ -202,6 +202,12 @@ test("startScan dispatches only the Portable worker for a resolved Portable Code
     assert.equal(run.authMode, null);
     assert.equal(run.cost, null);
     assert.deepEqual(run.execution, selectedPlan!.execution);
+    assert.deepEqual(run.launchSelection, {
+      modelSelectionMode: "catalog",
+      modelId: model.id,
+      paths: [],
+    });
+    assert.deepEqual(getRun(run.id)?.launchSelection, run.launchSelection);
     assert.match(run.recipeHash ?? "", /^[a-f0-9]{64}$/);
     assert.equal(launches.length, 1);
     const launch = launches[0]!;

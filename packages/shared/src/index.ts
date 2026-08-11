@@ -302,6 +302,17 @@ export interface ScanConnectionSnapshot {
   capturedAt: string;
 }
 
+/**
+ * Immutable retry input saved at launch time. It deliberately contains only
+ * model selection and relative scope paths, never connection secrets or a
+ * provider request body.
+ */
+export interface ScanLaunchSelection {
+  modelSelectionMode: SnapshotModelSelectionMode;
+  modelId: string | null;
+  paths: string[];
+}
+
 /** A stable server-resolved eligibility result for one connection/model pair. */
 export interface ConnectionCompatibility extends ScanConnectionSelection {
   eligible: boolean;
@@ -539,6 +550,8 @@ export interface ScanRun {
   source: "workbench" | "benchmark" | "filesystem";
   pid: number | null;
   execution: ScanExecutionProvenance | null;
+  /** Absent only on historical rows created before retry-safe launch records. */
+  launchSelection?: ScanLaunchSelection | null;
   progress?: ScanProgress | null;
 }
 
