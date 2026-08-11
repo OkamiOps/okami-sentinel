@@ -214,7 +214,7 @@ export async function validateScannerRequest(req: StartScanRequest): Promise<Sca
   // Its immutable route/model plan, rather than browser-supplied legacy fields
   // or this host's legacy CLI probe, decides authentication and availability.
   if (req.connection !== undefined) {
-    validateMethodologyRequest(scanner, req);
+    validateMethodologyRequest(scanner, req, { validateEffort: false });
     return scanner;
   }
 
@@ -239,8 +239,9 @@ export async function validateScannerRequest(req: StartScanRequest): Promise<Sca
 function validateMethodologyRequest(
   scanner: ScannerCapability,
   req: StartScanRequest,
+  options: { validateEffort?: boolean } = {},
 ): void {
-  if (req.effort && !scanner.efforts.some((candidate) => candidate === req.effort)) {
+  if (options.validateEffort !== false && req.effort && !scanner.efforts.some((candidate) => candidate === req.effort)) {
     throw new Error(`Effort ${req.effort} não é válido para ${scanner.name}.`);
   }
   if (req.mode && !scanner.modes.includes(req.mode)) {

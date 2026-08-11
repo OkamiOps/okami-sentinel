@@ -87,12 +87,13 @@ export function resolveScanLaunchSelection(
     selection: selectionForResolver(selection),
     remoteRepositoryConfirmed: input.request.remoteRepositoryConfirmed,
   });
+  const request = normalizeReasoningEffort(input.request, plan.model);
 
   if (plan.runnerKind === "agent-session") {
     if (isMantisHttpAgentPlan(plan)) {
       return {
         request: {
-          ...input.request,
+          ...request,
           provider: plan.providerKind,
           model: plan.model!.id,
           // Accounting metadata only. The selected worker reads the native
@@ -104,11 +105,11 @@ export function resolveScanLaunchSelection(
         connectionAware: true,
       };
     }
-    if (isVulnHunterHttpPlan(input.request, plan)) {
-      const { authMode: _untrustedAuthMode, ...request } = input.request;
+    if (isVulnHunterHttpPlan(request, plan)) {
+      const { authMode: _untrustedAuthMode, ...safeRequest } = request;
       return {
         request: {
-          ...request,
+          ...safeRequest,
           provider: plan.providerKind,
           model: plan.model!.id,
         },
@@ -120,7 +121,7 @@ export function resolveScanLaunchSelection(
     throw new ScanSelectionError("provider_runner_unavailable");
   }
   if (plan.runnerKind === "local-agent-session") {
-    return selectClaudeCodeLocalMantis(input.request, plan);
+    return selectClaudeCodeLocalMantis(request, plan);
   }
   if (plan.runnerKind === "remote-agent-job") {
     throw new ScanSelectionError("provider_runner_unavailable");
@@ -138,7 +139,7 @@ export function resolveScanLaunchSelection(
 
   return {
     request: {
-      ...input.request,
+      ...request,
       provider: plan.providerKind,
       model: plan.model.id,
       authMode: plan.scannerAuthMode,
@@ -146,6 +147,32 @@ export function resolveScanLaunchSelection(
     model: plan.model.id,
     plan,
     connectionAware: true,
+  };
+}
+
+/**
+ * A connection plan is the trust boundary for model capabilities. Browser
+ * effort is accepted only when the exact resolved catalog model exposed it;
+ * stale/missing values use the provider-published default, while absent model
+ * metadata leaves effort omitted for provider-managed behavior.
+ */
+function normalizeReasoningEffort(
+  request: StartScanRequest,
+  model: ScanLaunchPlan["model"],
+): StartScanRequest {
+  const metadata = model?.reasoningEffort;
+  if (metadata === undefined || metadata.options.length === 0) {
+    const { effort: _untrustedEffort, ...withoutEffort } = request;
+    return withoutEffort;
+  }
+  const defaultEffort = metadata.default !== null && metadata.options.includes(metadata.default)
+    ? metadata.default
+    : metadata.options[0]!;
+  return {
+    ...request,
+    effort: request.effort !== undefined && metadata.options.includes(request.effort)
+      ? request.effort
+      : defaultEffort,
   };
 }
 

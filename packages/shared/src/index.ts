@@ -200,6 +200,15 @@ export interface ModelPricing {
   outputUsdPerMillionTokens: number | null;
 }
 
+/**
+ * Optional model metadata reported by a provider catalog. Its absence means
+ * Sentinel must leave reasoning selection to the provider.
+ */
+export interface ModelReasoningEffort {
+  options: string[];
+  default: string | null;
+}
+
 export interface ProviderModel {
   connectionId: string;
   id: string;
@@ -207,6 +216,7 @@ export interface ProviderModel {
   contextWindow: number | null;
   capabilities: ModelCapabilities;
   pricing: ModelPricing | null;
+  reasoningEffort?: ModelReasoningEffort;
   discoveredAt: string;
   source: "provider-api" | "runtime";
 }

@@ -172,6 +172,20 @@ test("selected OpenAI API vault key launches Codex Security without a global key
   assert.equal(serializedSafeLaunch.includes("global-key-must-not-reach-child"), false);
 });
 
+test("provider-managed models do not synthesize a Codex Security effort flag", () => {
+  const launch = prepareCodexSecurityApiLaunch({
+    request: { repositoryPath: "/repo", engine: "codex-security" },
+    repositoryPath: "/repo",
+    outputDir: "/output",
+    model: "provider-managed-model",
+    effort: null,
+    mode: "standard",
+    apiKey: "vault-openai-key-not-process-key",
+    environment: { PATH: "/bin" },
+  });
+  assert.equal(launch.args.includes("--effort"), false);
+});
+
 test("an invalid Codex Security API tuple reads zero vault credentials", async () => {
   const selectedPlan = plan();
   const selectedVault = vault();

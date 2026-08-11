@@ -17,7 +17,6 @@ import {
 } from "@hugeicons/core-free-icons";
 import type {
   ConnectionCompatibility,
-  EffortLevel,
   FsListResponse,
   HealthResponse,
   ScannerCapability,
@@ -35,7 +34,13 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { formatUsd } from "../format";
 import { useI18n, type TranslationKey } from "../i18n";
-import { buildConnectionAwareStartRequest, canResolveConnectionWithEngine, connectionSelectionFor } from "../lib/new-scan-routing";
+import {
+  buildConnectionAwareStartRequest,
+  canResolveConnectionWithEngine,
+  connectionSelectionFor,
+  reasoningEffortGridClass,
+  reasoningEffortForModel,
+} from "../lib/new-scan-routing";
 
 const PREFS = "csb-bench-launch-v2";
 const scannerOrder: ScannerEngine[] = ["codex-security", "mantis", "vulnhunter"];
@@ -142,7 +147,7 @@ export function NewScanPage() {
   const [compatibility, setCompatibility] = useState<ConnectionCompatibility | null>(null);
   const [compatibilityLoading, setCompatibilityLoading] = useState(false);
   const [compatibilityError, setCompatibilityError] = useState(false);
-  const [effort, setEffort] = useState(initial.effort ?? "high");
+  const [effort, setEffort] = useState<string | null>(initial.effort ?? null);
   const [mode, setMode] = useState<ScanMode>(initial.mode ?? "standard");
   const [maxCostUsd, setMaxCostUsd] = useState(initial.maxCostUsd ?? "100");
   const [unlimited, setUnlimited] = useState(initial.unlimited ?? false);
@@ -163,6 +168,16 @@ export function NewScanPage() {
     () => connectionSelectionFor(selectedConnection, selectedConnectionModels, selectedModelId),
     [selectedConnection, selectedConnectionModels, selectedModelId],
   );
+  const selectedModel = useMemo(
+    () => selection?.modelId === null || selection === null
+      ? null
+      : selectedConnectionModels.find((model) => model.id === selection.modelId) ?? null,
+    [selectedConnectionModels, selection],
+  );
+  const reasoning = useMemo(
+    () => reasoningEffortForModel(selectedModel, effort),
+    [effort, selectedModel],
+  );
   const engineReady = catalog !== null && scanner !== undefined && canResolveConnectionWithEngine(scanner);
   const routeReady = engineReady && selection !== null && compatibility?.eligible === true &&
     compatibility.connectionId === selection.connectionId &&
@@ -172,7 +187,7 @@ export function NewScanPage() {
   const cost = Math.max(100, Number(maxCostUsd) || 100);
   const expected = Math.round(
     cost *
-      ({ minimal: 0.16, low: 0.3, medium: 0.55, high: 0.82, xhigh: 1 }[effort] ?? 0.7) *
+      ({ minimal: 0.16, low: 0.3, medium: 0.55, high: 0.82, xhigh: 1 }[reasoning.selected ?? ""] ?? 0.7) *
       (mode === "deep" ? 1.3 : 1),
   );
 
@@ -218,11 +233,12 @@ export function NewScanPage() {
 
   useEffect(() => {
     if (!catalog || !scanner) return;
-    if (!scanner.efforts.includes(effort as EffortLevel) && scanner.efforts[0]) {
-      setEffort(scanner.efforts[0]);
-    }
     if (!scanner.modes.includes(mode) && scanner.modes[0]) setMode(scanner.modes[0]);
-  }, [catalog, effort, mode, scanner]);
+  }, [catalog, mode, scanner]);
+
+  useEffect(() => {
+    setEffort((current) => current === reasoning.selected ? current : reasoning.selected);
+  }, [reasoning.selected]);
 
   useEffect(() => {
     let active = true;
@@ -301,7 +317,8 @@ export function NewScanPage() {
         selection,
         compatibility,
         remoteRepositoryConfirmed: authorized,
-        effort,
+        effort: reasoning.selected ?? undefined,
+        reasoning,
         mode,
         maxCostUsd: usesCostEnvelope && !unlimited ? cost : undefined,
         paths: paths.split(",").map((item) => item.trim()).filter(Boolean),
@@ -541,15 +558,19 @@ export function NewScanPage() {
             <div className="grid border-b md:grid-cols-[1.25fr_.75fr]">
               <div className="border-b p-4 md:border-b-0 md:border-r">
                 <div className="bench-label mb-3">{t("newScan.reasoningEffort")}</div>
-                <div className={cx("grid border border-border", (scanner?.efforts.length ?? 0) > 3 ? "grid-cols-5" : "grid-cols-3")}>
-                  {scanner?.efforts.map((candidate) => (
+                <div className={reasoningEffortGridClass}>
+                  {reasoning.options.length === 0 ? (
+                    <div className="flex h-14 items-center px-3 font-mono text-[8px] uppercase text-muted-foreground">
+                      {t("newScan.providerManagedEffort")}
+                    </div>
+                  ) : reasoning.options.map((candidate) => (
                     <button
                       key={candidate}
                       type="button"
                       onClick={() => setEffort(candidate)}
                       className={cx(
                         "relative h-14 border-l border-border px-1 font-mono text-[8px] uppercase first:border-l-0 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary",
-                        effort === candidate
+                        reasoning.selected === candidate
                           ? "z-10 bg-chart-4/[.06] text-chart-4 after:pointer-events-none after:absolute after:inset-0 after:border after:border-chart-4/60"
                           : "hover:bg-accent",
                       )}
@@ -687,7 +708,7 @@ export function NewScanPage() {
                 <span>
                   <span className="block text-sm font-semibold">{t("newScan.authorizeExecution")}</span>
                   <span className="mt-1 block text-[11px] leading-relaxed text-muted-foreground">
-                    {scanner?.name} / {selection?.modelId ?? (selection ? t("newScan.runtimeDefault") : "—")} / {effort} · {usesCostEnvelope ? t("newScan.estimatedCost") : t("newScan.planAllowance")}.
+                    {scanner?.name} / {selection?.modelId ?? (selection ? t("newScan.runtimeDefault") : "—")} / {reasoning.selected ?? t("newScan.providerManagedEffort")} · {usesCostEnvelope ? t("newScan.estimatedCost") : t("newScan.planAllowance")}.
                   </span>
                 </span>
               </label>

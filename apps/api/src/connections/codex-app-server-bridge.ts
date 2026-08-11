@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import type { ModelReasoningEffort } from "@csb/shared";
 
 import type { SafeProviderErrorCode } from "@csb/shared";
 import { redactText } from "../redaction.js";
@@ -75,6 +76,7 @@ export interface CodexAppServerBridgeOptions {
 export interface CodexRuntimeModel {
   id: string;
   displayName: string;
+  reasoningEffort?: ModelReasoningEffort;
 }
 
 export class CodexAppServerBridgeError extends Error {
@@ -587,9 +589,50 @@ function modelsFromResponse(response: Record<string, unknown>): CodexRuntimeMode
     const record = row as Record<string, unknown>;
     const id = optionalModelId(record.id);
     if (id === undefined) continue;
-    models.push({ id, displayName: optionalText(record.displayName ?? record.name) ?? id });
+    const reasoningEffort = modelReasoningEffort(record);
+    models.push({
+      id,
+      displayName: optionalText(record.displayName ?? record.name) ?? id,
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+    });
   }
   return models;
+}
+
+/**
+ * Codex app-server publishes these fields on model/list. Keep the metadata
+ * optional: no inferred effort is safer than guessing from a model identifier.
+ */
+function modelReasoningEffort(record: Record<string, unknown>): ModelReasoningEffort | undefined {
+  const options: string[] = [];
+  const seen = new Set<string>();
+  if (Array.isArray(record.supportedReasoningEfforts)) {
+    for (const item of record.supportedReasoningEfforts) {
+      if (typeof item !== "object" || item === null || Array.isArray(item)) continue;
+      const option = optionalReasoningEffort((item as Record<string, unknown>).reasoningEffort);
+      if (option !== undefined && !seen.has(option)) {
+        seen.add(option);
+        options.push(option);
+      }
+    }
+  }
+  const reportedDefault = optionalReasoningEffort(record.defaultReasoningEffort);
+  if (options.length === 0) {
+    return reportedDefault === undefined
+      ? undefined
+      : { options: [reportedDefault], default: reportedDefault };
+  }
+  return {
+    options,
+    default: reportedDefault !== undefined && seen.has(reportedDefault) ? reportedDefault : null,
+  };
+}
+
+function optionalReasoningEffort(value: unknown): string | undefined {
+  const effort = optionalText(value);
+  return effort !== undefined && /^[a-z][a-z0-9_-]{0,31}$/i.test(effort)
+    ? effort
+    : undefined;
 }
 
 function optionalModelId(value: unknown): string | undefined {

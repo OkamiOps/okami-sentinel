@@ -197,6 +197,49 @@ test("model refreshes are atomic and only a failed refresh marks the catalog sta
   }
 });
 
+test("preserves provider-reported reasoning metadata without inventing it for legacy models", () => {
+  const db = new Database(":memory:");
+  try {
+    const store = new ConnectionStore(db);
+    store.insert(connectionFixture());
+    store.replaceModels("conn-1", [{
+      connectionId: "conn-1",
+      id: "catalog-model",
+      displayName: "Catalog model",
+      contextWindow: null,
+      capabilities: {
+        tools: "unknown", artifactOutput: "unknown", structuredOutput: "unknown",
+        boundedExecution: "unknown", osIsolation: "unknown", streaming: "unknown",
+        usage: "unknown", cancellation: "unknown",
+      },
+      pricing: null,
+      reasoningEffort: { options: ["minimal", "high"], default: "high" },
+      discoveredAt: "2026-08-11T00:00:00.000Z",
+      source: "runtime",
+    }, {
+      connectionId: "conn-1",
+      id: "provider-managed-model",
+      displayName: "Provider managed model",
+      contextWindow: null,
+      capabilities: {
+        tools: "unknown", artifactOutput: "unknown", structuredOutput: "unknown",
+        boundedExecution: "unknown", osIsolation: "unknown", streaming: "unknown",
+        usage: "unknown", cancellation: "unknown",
+      },
+      pricing: null,
+      discoveredAt: "2026-08-11T00:00:00.000Z",
+      source: "provider-api",
+    }]);
+
+    assert.deepEqual(store.getModel("conn-1", "catalog-model")?.reasoningEffort, {
+      options: ["minimal", "high"], default: "high",
+    });
+    assert.equal(store.getModel("conn-1", "provider-managed-model")?.reasoningEffort, undefined);
+  } finally {
+    db.close();
+  }
+});
+
 test("canonicalizes capability and pricing metadata at the store boundary", () => {
   const db = new Database(":memory:");
   const privateMarker = "sk-capability-metadata-secret";

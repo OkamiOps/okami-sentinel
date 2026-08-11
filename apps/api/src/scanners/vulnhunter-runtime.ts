@@ -20,7 +20,7 @@ export interface VulnHunterRunConfiguration {
   outputDir: string;
   repositoryPath: string;
   model: string;
-  effort: string;
+  effort?: string;
   paths: string[];
   readOnly: true;
   profileVersion: string;

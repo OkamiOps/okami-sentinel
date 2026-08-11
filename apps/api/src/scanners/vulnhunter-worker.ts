@@ -546,7 +546,7 @@ async function runCodexSession(
         threadId,
         input: [{ type: "text", text: prompt, text_elements: [] }],
         model: config.model,
-        effort: config.effort,
+        ...(config.effort === undefined ? {} : { effort: config.effort }),
         cwd: stateRoot,
         runtimeWorkspaceRoots: [stateRoot],
         approvalPolicy: "never",

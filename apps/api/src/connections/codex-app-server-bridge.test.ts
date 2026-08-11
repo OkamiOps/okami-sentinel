@@ -110,9 +110,20 @@ test("Codex device login forwards only safe flow fields and Codex owns the crede
   assert.equal(JSON.stringify(rpc.requests).includes("accessToken"), false);
 });
 
-test("Codex model list follows cursors and returns only app-server-reported IDs", async () => {
+test("Codex model list follows cursors and preserves app-server reasoning metadata", async () => {
   const rpc = new ScriptedJsonRpc([
-    { data: [{ id: "account-visible-a", name: "Account visible A" }], nextCursor: "page-2" },
+    {
+      data: [{
+        id: "account-visible-a",
+        name: "Account visible A",
+        supportedReasoningEfforts: [
+          { reasoningEffort: "minimal", description: "Minimal" },
+          { reasoningEffort: "high", description: "High" },
+        ],
+        defaultReasoningEffort: "high",
+      }],
+      nextCursor: "page-2",
+    },
     { data: [{ id: "account-visible-b" }] },
   ]);
   const bridge = new CodexAppServerBridge(rpc);
@@ -120,7 +131,11 @@ test("Codex model list follows cursors and returns only app-server-reported IDs"
   const models = await bridge.listModels();
 
   assert.deepEqual(models, [
-    { id: "account-visible-a", displayName: "Account visible A" },
+    {
+      id: "account-visible-a",
+      displayName: "Account visible A",
+      reasoningEffort: { options: ["minimal", "high"], default: "high" },
+    },
     { id: "account-visible-b", displayName: "account-visible-b" },
   ]);
   assert.deepEqual(rpc.requests, [

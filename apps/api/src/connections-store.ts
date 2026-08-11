@@ -6,6 +6,7 @@ import type {
   ConnectionStatus,
   ModelCapabilities,
   ModelPricing,
+  ModelReasoningEffort,
   ModelSelectionMode,
   ProviderConnection,
   ProviderModel,
@@ -48,6 +49,7 @@ interface ProviderModelRow {
   context_window: number | null;
   capabilities_json: string;
   pricing_json: string | null;
+  reasoning_effort_json: string | null;
   discovered_at: string;
   source: ProviderModel["source"];
 }
@@ -281,7 +283,7 @@ export class ConnectionStore {
     const rows = this.database
       .prepare(
         `SELECT connection_id, model_id, display_name, context_window, capabilities_json,
-          pricing_json, discovered_at, source
+          pricing_json, reasoning_effort_json, discovered_at, source
          FROM provider_models
          WHERE connection_id = ?
          ORDER BY discovered_at DESC, model_id ASC`,
@@ -294,7 +296,7 @@ export class ConnectionStore {
     const row = this.database
       .prepare(
         `SELECT connection_id, model_id, display_name, context_window, capabilities_json,
-          pricing_json, discovered_at, source
+          pricing_json, reasoning_effort_json, discovered_at, source
          FROM provider_models
          WHERE connection_id = ? AND model_id = ?`,
       )
@@ -314,10 +316,10 @@ export class ConnectionStore {
       const insert = this.database.prepare(
         `INSERT INTO provider_models (
           connection_id, model_id, display_name, context_window, capabilities_json,
-          pricing_json, discovered_at, source
+          pricing_json, reasoning_effort_json, discovered_at, source
         ) VALUES (
           @connection_id, @model_id, @display_name, @context_window, @capabilities_json,
-          @pricing_json, @discovered_at, @source
+          @pricing_json, @reasoning_effort_json, @discovered_at, @source
         )`,
       );
       for (const model of models) insert.run(modelToParams(model));
@@ -472,6 +474,7 @@ export function deleteConnectionRecord(
 
 function ensureProviderModelsSchema(database: Database.Database): void {
   if (hasColumn(database, "provider_models", "model_id")) {
+    addColumnIfMissing(database, "provider_models", "reasoning_effort_json", "TEXT");
     database.exec(`
       CREATE INDEX IF NOT EXISTS provider_models_by_connection
         ON provider_models(connection_id, discovered_at DESC, model_id);
@@ -485,10 +488,10 @@ function ensureProviderModelsSchema(database: Database.Database): void {
       database.exec(`
         INSERT INTO provider_models (
           connection_id, model_id, display_name, context_window, capabilities_json,
-          pricing_json, discovered_at, source
+          pricing_json, reasoning_effort_json, discovered_at, source
         )
         SELECT connection_id, id, display_name, context_window, capabilities_json,
-          pricing_json, discovered_at, source
+          pricing_json, NULL, discovered_at, source
         FROM provider_models_legacy
       `);
       database.exec("DROP TABLE provider_models_legacy");
@@ -511,6 +514,7 @@ function createProviderModelsTable(database: Database.Database): void {
       context_window INTEGER,
       capabilities_json TEXT NOT NULL,
       pricing_json TEXT,
+      reasoning_effort_json TEXT,
       discovered_at TEXT NOT NULL,
       source TEXT NOT NULL,
       PRIMARY KEY (connection_id, model_id),
@@ -727,6 +731,7 @@ function rowToStoredProviderConnection(
 function modelToParams(model: ProviderModel): Record<string, unknown> {
   const capabilities = canonicalizeCapabilities(model.capabilities);
   const pricing = canonicalizePricing(model.pricing);
+  const reasoningEffort = canonicalizeReasoningEffort(model.reasoningEffort);
   return {
     connection_id: model.connectionId,
     model_id: model.id,
@@ -734,12 +739,14 @@ function modelToParams(model: ProviderModel): Record<string, unknown> {
     context_window: model.contextWindow,
     capabilities_json: JSON.stringify(capabilities),
     pricing_json: pricing === null ? null : JSON.stringify(pricing),
+    reasoning_effort_json: reasoningEffort === undefined ? null : JSON.stringify(reasoningEffort),
     discovered_at: model.discoveredAt,
     source: model.source,
   };
 }
 
 function rowToProviderModel(row: ProviderModelRow): ProviderModel {
+  const reasoningEffort = parseReasoningEffort(row.reasoning_effort_json);
   return {
     connectionId: row.connection_id,
     id: row.model_id,
@@ -747,6 +754,7 @@ function rowToProviderModel(row: ProviderModelRow): ProviderModel {
     contextWindow: row.context_window,
     capabilities: parseCapabilities(row.capabilities_json),
     pricing: parsePricing(row.pricing_json),
+    ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
     discoveredAt: row.discovered_at,
     source: row.source,
   };
@@ -869,6 +877,16 @@ function parsePricing(value: string | null): ModelPricing | null {
   return null;
 }
 
+function parseReasoningEffort(value: string | null): ModelReasoningEffort | undefined {
+  if (value === null) return undefined;
+  try {
+    return canonicalizeReasoningEffort(JSON.parse(value));
+  } catch {
+    // Historical malformed rows remain provider-managed.
+    return undefined;
+  }
+}
+
 function canonicalizeCapabilities(value: unknown): ModelCapabilities {
   const candidate = isPlainRecord(value) ? value : {};
   return {
@@ -887,6 +905,34 @@ function capabilityState(value: unknown): ModelCapabilities[keyof ModelCapabilit
   return value === "supported" || value === "unsupported" || value === "unknown"
     ? value
     : "unknown";
+}
+
+function canonicalizeReasoningEffort(value: unknown): ModelReasoningEffort | undefined {
+  if (!isPlainRecord(value)) return undefined;
+  const seen = new Set<string>();
+  const options = Array.isArray(value.options)
+    ? value.options.flatMap((option) => {
+      if (typeof option !== "string" || !safeReasoningEffort(option) || seen.has(option)) return [];
+      seen.add(option);
+      return [option];
+    })
+    : [];
+  const reportedDefault = typeof value.default === "string" && safeReasoningEffort(value.default)
+    ? value.default
+    : null;
+  if (options.length === 0) {
+    return reportedDefault === null
+      ? undefined
+      : { options: [reportedDefault], default: reportedDefault };
+  }
+  return {
+    options,
+    default: reportedDefault !== null && seen.has(reportedDefault) ? reportedDefault : null,
+  };
+}
+
+function safeReasoningEffort(value: string): boolean {
+  return /^[a-z][a-z0-9_-]{0,31}$/i.test(value);
 }
 
 function canonicalizePricing(value: unknown): ModelPricing | null {

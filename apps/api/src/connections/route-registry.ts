@@ -352,7 +352,7 @@ function createCodexRouteAdapter(
 
 function runtimeModel(
   connection: StoredProviderConnection,
-  model: { id: string; displayName: string },
+  model: { id: string; displayName: string; reasoningEffort?: ProviderModel["reasoningEffort"] },
   now: () => Date,
 ): ProviderModel {
   return {
@@ -362,6 +362,12 @@ function runtimeModel(
     contextWindow: null,
     capabilities: unknownCapabilities(),
     pricing: null,
+    ...(model.reasoningEffort === undefined ? {} : {
+      reasoningEffort: {
+        options: [...model.reasoningEffort.options],
+        default: model.reasoningEffort.default,
+      },
+    }),
     discoveredAt: now().toISOString(),
     source: "runtime",
   };

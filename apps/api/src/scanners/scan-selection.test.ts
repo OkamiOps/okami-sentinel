@@ -113,6 +113,62 @@ test("connection launch binds the server plan once and ignores client model/auth
   assert.equal(selected.request.provider, "openai");
 });
 
+test("connection launch accepts only reasoning efforts published by the resolved model", () => {
+  const configuredModel: ProviderModel = {
+    ...model,
+    reasoningEffort: { options: ["low", "high"], default: "high" },
+  };
+  const fixture = resolver(plan({ model: configuredModel }));
+
+  const selected = resolveScanLaunchSelection({
+    request: {
+      repositoryPath: "/repo",
+      engine: "mantis",
+      effort: "xhigh",
+      connection: {
+        connectionId: "openai-session",
+        modelSelectionMode: "catalog",
+        modelId: "gpt-live",
+      },
+    },
+    scanId: "scan-123",
+    launchPlans: fixture.resolver,
+  });
+  assert.equal(selected.request.effort, "high");
+
+  const allowed = resolveScanLaunchSelection({
+    request: {
+      repositoryPath: "/repo",
+      engine: "mantis",
+      effort: "low",
+      connection: {
+        connectionId: "openai-session",
+        modelSelectionMode: "catalog",
+        modelId: "gpt-live",
+      },
+    },
+    scanId: "scan-124",
+    launchPlans: fixture.resolver,
+  });
+  assert.equal(allowed.request.effort, "low");
+
+  const providerManaged = resolveScanLaunchSelection({
+    request: {
+      repositoryPath: "/repo",
+      engine: "mantis",
+      effort: "high",
+      connection: {
+        connectionId: "openai-session",
+        modelSelectionMode: "catalog",
+        modelId: "gpt-live",
+      },
+    },
+    scanId: "scan-125",
+    launchPlans: resolver(plan()).resolver,
+  });
+  assert.equal("effort" in providerManaged.request, false);
+});
+
 test("Mantis HTTP agent sessions retain the server plan instead of mapping to the old Codex worker", () => {
   const fixture = resolver(plan({
     routeKind: "openai-api",

@@ -427,7 +427,10 @@ export async function startScan(
   const model = selection.connectionAware
     ? selection.model
     : selection.model ?? req.model ?? scanner.models[0]?.id ?? "gpt-5.6-sol";
-  const effort = req.effort || "high";
+  // Legacy launches retain the historical high default. A resolved provider
+  // model without effort metadata is provider-managed, so no synthetic flag
+  // or persisted value may be introduced after selection normalization.
+  const effort = selection.request.effort ?? (selection.connectionAware ? null : "high");
   const mode = req.mode || "standard";
   const requiredModel = (): string => {
     if (model === null) throw new Error("Selected scanner route requires an exact provider model");
@@ -438,7 +441,7 @@ export async function startScan(
       request: selection.request,
       repositoryPath,
       outputDir,
-      effort: String(effort),
+      effort,
       mode,
       sourceCacheDir: localMantisSource.sourceCacheDir,
       mantisLocalProviderPlan: localMantisPlan,
@@ -450,7 +453,7 @@ export async function startScan(
       repositoryPath,
       outputDir,
       model: requiredModel(),
-      effort: String(effort),
+      effort,
       mode,
       apiKey: codexSecurityApiKey,
     })
@@ -461,7 +464,7 @@ export async function startScan(
         repositoryPath,
         outputDir,
         model: requiredModel(),
-        effort: String(effort),
+        effort,
         mode,
         providerKind: selection.plan.providerKind,
         mantisProviderPlan: createSafeMantisProviderPlan(selection.plan),
@@ -471,7 +474,7 @@ export async function startScan(
         repositoryPath,
         outputDir,
         model: requiredModel(),
-        effort: String(effort),
+        effort,
         mode,
         vulnhunterProviderPlan: vulnhunterProviderPlan(id, selection.plan),
         providerKind: selection.plan?.engine === "vulnhunter" &&
@@ -490,7 +493,7 @@ export async function startScan(
     scanDir: outputDir,
     status: "running",
     model,
-    effort: String(effort),
+    effort,
     mode,
     engine: launch.engine,
     provider: launch.provider,

@@ -24,13 +24,42 @@ export function connectionSelectionFor(
   return { connectionId: connection.id, modelSelectionMode: "catalog", modelId: selectedModelId };
 }
 
+export type ReasoningEffortControl =
+  | { kind: "provider-managed"; options: []; selected: null }
+  | { kind: "configurable"; options: string[]; selected: string };
+
+/** One equal-width column per provider-published option; no fixed cap. */
+export const reasoningEffortGridClass = "grid grid-flow-col auto-cols-fr border border-border";
+
+export function reasoningEffortForModel(
+  model: ProviderModel | null,
+  selectedEffort: string | null,
+): ReasoningEffortControl {
+  const metadata = model?.reasoningEffort;
+  if (metadata === undefined || metadata.options.length === 0) {
+    return { kind: "provider-managed", options: [], selected: null };
+  }
+  const selected = selectedEffort !== null && metadata.options.includes(selectedEffort)
+    ? selectedEffort
+    : metadata.default !== null && metadata.options.includes(metadata.default)
+      ? metadata.default
+      : metadata.options[0] ?? null;
+  if (selected === null) return { kind: "provider-managed", options: [], selected: null };
+  return {
+    kind: "configurable",
+    options: [...metadata.options],
+    selected,
+  };
+}
+
 type ConnectionAwareStartInput = Omit<StartScanRequest, "connection" | "provider" | "authMode" | "model"> & {
   selection: ScanConnectionSelection;
   compatibility: ConnectionCompatibility | null;
+  reasoning: ReasoningEffortControl;
 };
 
 export function buildConnectionAwareStartRequest(input: ConnectionAwareStartInput): StartScanRequest | null {
-  const { selection, compatibility, ...request } = input;
+  const { selection, compatibility, effort: _untrustedEffort, reasoning, ...request } = input;
   if (
     compatibility === null ||
     !compatibility.eligible ||
@@ -38,5 +67,9 @@ export function buildConnectionAwareStartRequest(input: ConnectionAwareStartInpu
     compatibility.modelSelectionMode !== selection.modelSelectionMode ||
     compatibility.modelId !== selection.modelId
   ) return null;
-  return { ...request, connection: selection };
+  return {
+    ...request,
+    ...(reasoning.kind === "configurable" ? { effort: reasoning.selected } : {}),
+    connection: selection,
+  };
 }

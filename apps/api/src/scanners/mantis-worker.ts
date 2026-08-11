@@ -302,8 +302,9 @@ async function runStage(
     "workspace-write",
     "--cd",
     stateRoot,
-    "-c",
-    `model_reasoning_effort=${JSON.stringify(config.effort)}`,
+    ...(config.effort === undefined
+      ? []
+      : ["-c", `model_reasoning_effort=${JSON.stringify(config.effort)}`]),
     stagePrompt(stage, sourceRoot, stateRoot, snapshotRoot, snapshotId, config.paths),
   ];
 

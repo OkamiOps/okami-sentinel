@@ -56,7 +56,7 @@ export interface ScannerLaunchInput {
   repositoryPath: string;
   outputDir: string;
   model: string;
-  effort: string;
+  effort: string | null;
   mode: ScanMode;
   /** Only the server-resolved immutable reference may cross into a worker config. */
   vulnhunterProviderPlan?: SafeVulnHunterProviderPlan;
@@ -85,7 +85,7 @@ export interface MantisLocalLaunchInput {
   request: StartScanRequest;
   repositoryPath: string;
   outputDir: string;
-  effort: string;
+  effort: string | null;
   mode: ScanMode;
   sourceCacheDir: string;
   mantisLocalProviderPlan: MantisLocalProviderPlan;
@@ -115,7 +115,7 @@ function recipeHash(input: {
   engine: ScannerEngine;
   authMode: ScannerAuthMode;
   model: string;
-  effort: string;
+  effort: string | null;
   mode: string;
   paths: string[];
   scannerVersion: string | null;
@@ -138,8 +138,7 @@ function prepareCodexSecurity(
     authMode,
     "--model",
     input.model,
-    "--effort",
-    input.effort,
+    ...(input.effort === null ? [] : ["--effort", input.effort]),
     "--mode",
     input.mode,
     "--output-dir",
@@ -206,7 +205,7 @@ function prepareMantis(input: ScannerLaunchInput): ScannerLaunch {
     outputDir: input.outputDir,
     repositoryPath: input.repositoryPath,
     model: input.model,
-    effort: input.effort,
+    ...(input.effort === null ? {} : { effort: input.effort }),
     paths: (input.request.paths ?? []).map((item) => item.trim()).filter(Boolean),
     source: {
       repositoryUrl: MANTIS_REPOSITORY_URL,
@@ -343,7 +342,7 @@ function prepareVulnHunter(input: ScannerLaunchInput): ScannerLaunch {
     outputDir: input.outputDir,
     repositoryPath: input.repositoryPath,
     model: input.model,
-    effort: input.effort,
+    ...(input.effort === null ? {} : { effort: input.effort }),
     paths: (input.request.paths ?? []).map((item) => item.trim()).filter(Boolean),
     readOnly: true,
     profileVersion: VULNHUNTER_PROFILE_VERSION,

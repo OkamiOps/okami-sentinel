@@ -7,7 +7,7 @@ export interface MantisRunConfiguration {
   outputDir: string;
   repositoryPath: string;
   model: string;
-  effort: string;
+  effort?: string;
   paths: string[];
   source: {
     repositoryUrl: string;

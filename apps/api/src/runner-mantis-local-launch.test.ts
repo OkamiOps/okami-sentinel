@@ -131,6 +131,7 @@ test("startScan launches only the dedicated local Mantis worker with a null runt
     await waitForClose();
     assert.equal(sourceCalls, 1);
     assert.equal(run.model, null);
+    assert.equal(run.effort, null);
     assert.equal(run.cost, null);
     assert.equal(run.provider, "anthropic");
     assert.equal(run.authMode, "existing-session");
