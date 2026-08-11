@@ -344,7 +344,7 @@ test("Codex Security maps each supported route authentication without reading a 
     model: model({ id: "mimo-v2.5", displayName: "MiMo V2.5" }),
     probe: null,
   });
-  assert.equal(mimo.resolver.resolve({
+  assert.throws(() => mimo.resolver.resolve({
     scanId: "scan-mimo",
     engine: "codex-security",
     selection: {
@@ -352,5 +352,8 @@ test("Codex Security maps each supported route authentication without reading a 
       modelSelectionMode: "catalog",
       modelId: "mimo-v2.5",
     },
-  }).scannerAuthMode, "api-key");
+  }), (error: unknown) =>
+    error instanceof LaunchPlanError &&
+    error.code === "codex_security_gateway_feature_unproven");
+  assert.deepEqual(mimo.snapshots, []);
 });

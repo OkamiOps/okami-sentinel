@@ -12,7 +12,6 @@ import {
   type ResolvedConnectionCompatibility,
 } from "./compatibility-resolver.js";
 import { isCodexSecurityApiConnection } from "../scanners/codex-security-api-bridge.js";
-import { isCodexSecurityMimoConnection } from "../scanners/codex-security-mimo-bridge.js";
 
 export interface ScanCompatibilityStore {
   getConnection(id: string): StoredProviderConnection | null;
@@ -83,8 +82,7 @@ function runnerIsWired(
     return resolved.runnerKind === "codex-security-contract" &&
       (connection.routeKind === "openai-codex-local" ||
         connection.routeKind === "openai-chatgpt-app-server" ||
-        isCodexSecurityApiConnection(connection) ||
-        isCodexSecurityMimoConnection(connection));
+        isCodexSecurityApiConnection(connection));
   }
   if (resolved.runnerKind === "codex-app-server") {
     return connection.routeKind === "openai-codex-local" ||

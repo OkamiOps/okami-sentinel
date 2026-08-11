@@ -8,6 +8,7 @@ import type {
   ProviderModel,
   ProviderProtocol,
 } from "@csb/shared";
+import { VISIBLE_CONNECTION_PRESETS } from "@csb/shared";
 
 import { resolveCompatibility } from "./compatibility-resolver.js";
 
@@ -224,7 +225,7 @@ test("VulnHunter additionally requires a read-only snapshot and static profile",
   assert.equal(decision.eligible, false);
 });
 
-test("Codex Security accepts its verified OpenAI contracts and the exact MiMo Token Plan bridge", () => {
+test("Codex Security accepts verified OpenAI contracts and blocks unproven MiMo agent messages", () => {
   for (const candidate of [
     connection("openai-codex-local", {
       providerKind: "openai",
@@ -276,8 +277,8 @@ test("Codex Security accepts its verified OpenAI contracts and the exact MiMo To
     model: model("mimo-v2.5"),
     now: NOW,
   });
-  assert.equal(mimo.eligible, true);
-  assert.equal(mimo.runnerKind, "codex-security-contract");
+  assert.equal(mimo.eligible, false);
+  assert.deepEqual(mimo.reasons, ["codex_security_gateway_feature_unproven"]);
 
   const mimoSpeech = resolveCompatibility({
     engine: "codex-security",
@@ -290,7 +291,7 @@ test("Codex Security accepts its verified OpenAI contracts and the exact MiMo To
     model: model("mimo-v2.5-asr"),
     now: NOW,
   });
-  assert.deepEqual(mimoSpeech.reasons, ["codex_security_provider_unsupported"]);
+  assert.deepEqual(mimoSpeech.reasons, ["codex_security_gateway_feature_unproven"]);
 
   const xai = resolveCompatibility({
     engine: "codex-security",
@@ -325,6 +326,60 @@ test("Codex Security accepts its verified OpenAI contracts and the exact MiMo To
     now: NOW,
   });
   assert.deepEqual(malformedMimo.reasons, ["codex_security_provider_unsupported"]);
+});
+
+test("Codex Security rejects every visible non-OpenAI route and malformed OpenAI auth", () => {
+  for (const preset of VISIBLE_CONNECTION_PRESETS.filter(
+    (candidate) => candidate.providerKind !== "openai",
+  )) {
+    const decision = resolveCompatibility({
+      engine: "codex-security",
+      connection: connection(preset.routeKind, {
+        providerKind: preset.providerKind,
+        transport: preset.transport,
+        authKind: preset.authKind,
+        protocol: preset.protocol,
+      }),
+      selection: {
+        connectionId: "conn-a",
+        modelSelectionMode: "catalog",
+        modelId: "model-a",
+      },
+      model: model(),
+      now: NOW,
+    });
+
+    assert.equal(decision.eligible, false, preset.id);
+  }
+
+  for (const candidate of [
+    connection("openai-codex-local", {
+      providerKind: "openai",
+      transport: "codex-app-server",
+      authKind: "api-key",
+      protocol: "codex-app-server",
+    }),
+    connection("openai-chatgpt-app-server", {
+      providerKind: "openai",
+      transport: "codex-app-server",
+      authKind: "existing-session",
+      protocol: "codex-app-server",
+    }),
+  ]) {
+    const decision = resolveCompatibility({
+      engine: "codex-security",
+      connection: candidate,
+      selection: {
+        connectionId: "conn-a",
+        modelSelectionMode: "catalog",
+        modelId: "model-a",
+      },
+      model: model(),
+      now: NOW,
+    });
+
+    assert.equal(decision.eligible, false, `${candidate.routeKind}/${candidate.authKind}`);
+  }
 });
 
 test("a model owned by another connection is blocked before runner selection", () => {

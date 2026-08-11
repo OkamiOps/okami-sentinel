@@ -27,11 +27,6 @@ import {
   VULNHUNTER_WORKER_BIN,
   VULNHUNTER_WORKER_ENTRY,
 } from "../config.js";
-import {
-  isMimoTokenPlanApiKey,
-  isMimoTokenPlanResponsesModel,
-  mimoTokenPlanOpenAiBase,
-} from "../connections/http-model-discovery.js";
 import type { MantisRunConfiguration } from "./mantis-runtime.js";
 import type {
   MantisHttpWorkerConfiguration,
@@ -72,15 +67,6 @@ export interface ScannerLaunchInput {
 export interface CodexSecurityApiLaunchInput extends ScannerLaunchInput {
   /** Secret material from the selected vault; never serialized into a config or command. */
   apiKey: string;
-  /** Injectable only to make the child-environment boundary testable. */
-  environment?: NodeJS.ProcessEnv;
-}
-
-export interface CodexSecurityMimoLaunchInput extends ScannerLaunchInput {
-  /** Token Plan secret from the selected vault; child environment only. */
-  apiKey: string;
-  /** Canonical regional Token Plan base URL selected by the connection preset. */
-  baseUrl: string;
   /** Injectable only to make the child-environment boundary testable. */
   environment?: NodeJS.ProcessEnv;
 }
@@ -222,55 +208,6 @@ export function prepareCodexSecurityApiLaunch(
       : { vulnhunterProviderPlan: input.vulnhunterProviderPlan }),
     ...(input.providerKind === undefined ? {} : { providerKind: input.providerKind }),
   }, environment);
-}
-
-/**
- * Builds the Xiaomi-documented Codex provider override. The scanner's 0.1.x
- * preflight still checks OPENAI_API_KEY for `--auth api-key`, so the same
- * Token Plan secret is exposed under that alias only inside this child. The
- * active Codex provider itself is pinned to MiMo and reads MIMO_API_KEY.
- */
-export function prepareCodexSecurityMimoLaunch(
-  input: CodexSecurityMimoLaunchInput,
-): ScannerLaunch {
-  const baseUrl = mimoTokenPlanOpenAiBase(input.baseUrl);
-  if (
-    !isMimoTokenPlanApiKey(input.apiKey) ||
-    baseUrl === null ||
-    !isMimoTokenPlanResponsesModel(input.model)
-  ) {
-    throw new Error("Codex Security MiMo credential is unavailable");
-  }
-
-  const environment = { ...(input.environment ?? codexSecurityEnvironment()) };
-  delete environment.CODEX_API_KEY;
-  environment.OPENAI_API_KEY = input.apiKey;
-  environment.MIMO_API_KEY = input.apiKey;
-
-  return prepareCodexSecurity({
-    request: { ...input.request, authMode: "api-key" },
-    repositoryPath: input.repositoryPath,
-    outputDir: input.outputDir,
-    model: input.model,
-    effort: input.effort,
-    mode: input.mode,
-    ...(input.vulnhunterProviderPlan === undefined
-      ? {}
-      : { vulnhunterProviderPlan: input.vulnhunterProviderPlan }),
-    providerKind: "xiaomi",
-  }, environment, {
-    provider: "xiaomi",
-    codexOverrides: [
-      `model_provider=${JSON.stringify("mimo")}`,
-      "model_supports_reasoning_summaries=true",
-      `model_reasoning_summary=${JSON.stringify("none")}`,
-      `web_search=${JSON.stringify("disabled")}`,
-      `model_providers.mimo.name=${JSON.stringify("MiMo")}`,
-      `model_providers.mimo.base_url=${JSON.stringify(baseUrl)}`,
-      `model_providers.mimo.env_key=${JSON.stringify("MIMO_API_KEY")}`,
-      `model_providers.mimo.wire_api=${JSON.stringify("responses")}`,
-    ],
-  });
 }
 
 function prepareMantis(input: ScannerLaunchInput): ScannerLaunch {

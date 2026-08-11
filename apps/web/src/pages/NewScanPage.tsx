@@ -37,6 +37,7 @@ import { useI18n, type TranslationKey } from "../i18n";
 import {
   buildConnectionAwareStartRequest,
   canResolveConnectionWithEngine,
+  compatibilityReasonKey,
   connectionSelectionFor,
   defaultReasoningEffortForModel,
   loadLiveConnectionModels,
@@ -725,7 +726,7 @@ export function NewScanPage() {
                 </p>
               )}
               {!compatibilityLoading && selectedConnection !== null && (compatibilityError || compatibility?.eligible === false) && (
-                <p className="mb-3 border border-chart-3/30 bg-chart-3/[.04] p-2 text-[10px] leading-relaxed text-chart-3">{compatibilityError ? t("newScan.compatibilityError") : t("newScan.compatibilityBlocked")} <Link to="/settings/connections" className="underline underline-offset-4">{t("newScan.manageConnections")}</Link></p>
+                <p className="mb-3 border border-chart-3/30 bg-chart-3/[.04] p-2 text-[10px] leading-relaxed text-chart-3">{compatibilityError ? t("newScan.compatibilityError") : t(compatibilityReasonKey(compatibility?.reasons ?? []))} <Link to="/settings/connections" className="underline underline-offset-4">{t("newScan.manageConnections")}</Link></p>
               )}
               {compatibilityLoading && <p role="status" className="mb-3 border border-dashed p-2 text-[10px] text-muted-foreground">{t("newScan.compatibilityLoading")}</p>}
               <Button

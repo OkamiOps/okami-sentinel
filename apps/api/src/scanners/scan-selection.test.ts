@@ -482,7 +482,7 @@ test("Codex Security OpenAI API accepts only the resolved catalog plan, never cl
   assert.equal(launchPreparationCalls, 1);
 });
 
-test("Codex Security MiMo uses only the resolved Token Plan model and API-key metadata", () => {
+test("Codex Security rejects an injected MiMo plan before launch preparation", () => {
   const mimoModel: ProviderModel = {
     ...model,
     connectionId: "mimo-session",
@@ -509,27 +509,32 @@ test("Codex Security MiMo uses only the resolved Token Plan model and API-key me
     },
   }));
 
-  const result = resolveBeforeLaunch({
-    request: {
-      repositoryPath: "/repo",
-      engine: "codex-security",
-      provider: "attacker-provider",
-      model: "attacker-model",
-      authMode: "chatgpt",
-      connection: {
-        connectionId: "mimo-session",
-        modelSelectionMode: "catalog",
-        modelId: "mimo-v2.5",
+  let launchPreparationCalls = 0;
+  assert.throws(
+    () => resolveBeforeLaunch({
+      request: {
+        repositoryPath: "/repo",
+        engine: "codex-security",
+        provider: "attacker-provider",
+        model: "attacker-model",
+        authMode: "chatgpt",
+        connection: {
+          connectionId: "mimo-session",
+          modelSelectionMode: "catalog",
+          modelId: "mimo-v2.5",
+        },
       },
-    },
-    scanId: "scan-codex-mimo",
-    launchPlans: fixture.resolver,
-    prepareLaunch: (selection) => selection.request,
-  });
-
-  assert.equal(result.launch.provider, "xiaomi");
-  assert.equal(result.launch.model, "mimo-v2.5");
-  assert.equal(result.launch.authMode, "api-key");
+      scanId: "scan-codex-mimo",
+      launchPlans: fixture.resolver,
+      prepareLaunch: (selection) => {
+        launchPreparationCalls += 1;
+        return selection.request;
+      },
+    }),
+    (error: unknown) =>
+      error instanceof ScanSelectionError && error.code === "provider_runner_unavailable",
+  );
+  assert.equal(launchPreparationCalls, 0);
 });
 
 test("Codex Security keeps the two scoped local session routes launchable", () => {

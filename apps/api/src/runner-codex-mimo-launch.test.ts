@@ -1,11 +1,8 @@
 import assert from "node:assert/strict";
-import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { PassThrough } from "node:stream";
 import test from "node:test";
 
 import type {
@@ -16,7 +13,6 @@ import type {
 
 import type { StoredProviderConnection } from "./connections-store.js";
 import type { ScanLaunchPlan } from "./connections/launch-plan.js";
-import { deleteRun } from "./db.js";
 import { startScan } from "./runner.js";
 
 const capabilities: ModelCapabilities = {
@@ -106,80 +102,62 @@ function plan(scanId: string): ScanLaunchPlan {
   };
 }
 
-function fakeChild(): ChildProcess {
-  const child = new EventEmitter() as ChildProcess;
-  Object.assign(child, {
-    pid: 91_338,
-    stdout: new PassThrough(),
-    stderr: new PassThrough(),
-  });
-  queueMicrotask(() => child.emit("close", 0));
-  return child;
-}
-
-test("startScan launches the exact MiMo Responses bridge without exposing the Token Plan key", async () => {
+test("startScan rejects an injected MiMo Codex plan before vault access or spawn", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "runner-codex-mimo-"));
   const repositoryPath = path.join(root, "repository");
   fs.mkdirSync(repositoryPath);
   const displayName = `codex-mimo-${randomUUID()}`;
   let selectedPlan: ScanLaunchPlan | null = null;
-  const launches: Array<{ args: readonly string[]; env: NodeJS.ProcessEnv }> = [];
-
-  const run = await startScan({
-    repositoryPath,
-    displayName,
-    engine: "codex-security",
-    connection: {
-      connectionId: connection.id,
-      modelSelectionMode: "catalog",
-      modelId: model.id,
-    },
-  }, {
-    dependencies: {
-      validateScannerRequest: async () => scanner,
-      providerRuntime: {
-        launchPlans: {
-          resolve: ({ scanId }) => {
-            selectedPlan = plan(scanId);
-            return selectedPlan;
-          },
-        },
-        store: {
-          get: () => connection,
-          getSnapshot: () => selectedPlan!.snapshot,
-          getModel: () => model,
-        },
-        vault: {
-          available: async () => ({ available: true, backend: "keychain" }),
-          put: async () => undefined,
-          get: async () => ({
-            apiKey: "tp-runner-secret",
-            baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1",
-          }),
-          delete: async () => undefined,
-        },
-      },
-      spawn: (_command, args, options) => {
-        launches.push({ args: [...args], env: { ...options.env } });
-        return fakeChild();
-      },
-    },
-  });
+  let vaultReads = 0;
+  let launches = 0;
 
   try {
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    assert.equal(run.provider, "xiaomi");
-    assert.equal(run.authMode, "api-key");
-    assert.equal(run.model, "mimo-v2.5");
-    assert.equal(launches.length, 1);
-    assert.equal(launches[0]?.env.MIMO_API_KEY, "tp-runner-secret");
-    assert.equal(launches[0]?.env.OPENAI_API_KEY, "tp-runner-secret");
-    assert.equal(launches[0]?.args.includes("model_provider=\"mimo\""), true);
-    assert.equal(launches[0]?.args.includes("model_providers.mimo.wire_api=\"responses\""), true);
-    assert.equal(JSON.stringify(launches[0]?.args).includes("tp-runner-secret"), false);
+    await assert.rejects(
+      () => startScan({
+        repositoryPath,
+        displayName,
+        engine: "codex-security",
+        connection: {
+          connectionId: connection.id,
+          modelSelectionMode: "catalog",
+          modelId: model.id,
+        },
+      }, {
+        dependencies: {
+          validateScannerRequest: async () => scanner,
+          providerRuntime: {
+            launchPlans: {
+              resolve: ({ scanId }) => {
+                selectedPlan = plan(scanId);
+                return selectedPlan;
+              },
+            },
+            store: {
+              get: () => connection,
+              getSnapshot: () => selectedPlan!.snapshot,
+              getModel: () => model,
+            },
+            vault: {
+              available: async () => ({ available: true, backend: "keychain" }),
+              put: async () => undefined,
+              get: async () => {
+                vaultReads += 1;
+                throw new Error("vault must not be read");
+              },
+              delete: async () => undefined,
+            },
+          },
+          spawn: () => {
+            launches += 1;
+            throw new Error("scanner must not be spawned");
+          },
+        },
+      }),
+      /provider_runner_unavailable/,
+    );
+    assert.equal(vaultReads, 0);
+    assert.equal(launches, 0);
   } finally {
-    deleteRun(run.id);
-    fs.rmSync(run.scanDir, { recursive: true, force: true });
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

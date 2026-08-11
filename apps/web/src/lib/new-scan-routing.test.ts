@@ -5,6 +5,7 @@ import type { ConnectionCompatibility, ProviderConnection, ProviderModel } from 
 import {
   buildConnectionAwareStartRequest,
   canResolveConnectionWithEngine,
+  compatibilityReasonKey,
   connectionSelectionFor,
   defaultReasoningEffortForModel,
   loadLiveConnectionModels,
@@ -13,6 +14,17 @@ import {
   reasoningEffortGridClass,
   reasoningEffortForModel,
 } from "./new-scan-routing.js";
+
+test("explains an unproven Codex Security gateway contract instead of a generic block", () => {
+  assert.equal(
+    compatibilityReasonKey(["codex_security_gateway_feature_unproven"]),
+    "newScan.compatibilityCodexGatewayUnproven",
+  );
+  assert.equal(
+    compatibilityReasonKey(["connection_not_ready"]),
+    "newScan.compatibilityBlocked",
+  );
+});
 
 function connection(modelSelectionMode: ProviderConnection["modelSelectionMode"] = "catalog"): ProviderConnection {
   return {

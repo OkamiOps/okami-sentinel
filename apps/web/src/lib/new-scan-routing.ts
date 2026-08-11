@@ -37,6 +37,14 @@ export const reasoningEffortViewportClass = "min-w-0 max-w-full overflow-x-auto 
 /** One equal-width, readable column per provider-published option; no fixed cap. */
 export const reasoningEffortGridClass = "grid w-max min-w-full grid-flow-col auto-cols-[minmax(8rem,1fr)] border border-border";
 
+export function compatibilityReasonKey(
+  reasons: readonly string[],
+): "newScan.compatibilityCodexGatewayUnproven" | "newScan.compatibilityBlocked" {
+  return reasons.includes("codex_security_gateway_feature_unproven")
+    ? "newScan.compatibilityCodexGatewayUnproven"
+    : "newScan.compatibilityBlocked";
+}
+
 export function reasoningEffortForModel(
   model: ProviderModel | null,
   selectedEffort: string | null,

@@ -40,7 +40,6 @@ import {
 import { validateScannerRequest } from "./scanners/catalog.js";
 import {
   prepareCodexSecurityApiLaunch,
-  prepareCodexSecurityMimoLaunch,
   prepareMantisHttpLaunch,
   prepareMantisLocalLaunch,
   prepareScannerLaunch,
@@ -56,10 +55,6 @@ import {
   isCodexSecurityApiPlan,
   resolveCodexSecurityApiKey,
 } from "./scanners/codex-security-api-bridge.js";
-import {
-  isCodexSecurityMimoPlan,
-  resolveCodexSecurityMimoCredential,
-} from "./scanners/codex-security-mimo-bridge.js";
 import { refreshMantisRunFromDisk } from "./scanners/mantis-reconcile.js";
 import { refreshVulnHunterRunFromDisk } from "./scanners/vulnhunter-reconcile.js";
 import { getProviderRuntime, type ProviderRuntime } from "./provider-runtime.js";
@@ -404,21 +399,6 @@ export async function startScan(
       timeoutMs: CODEX_SECURITY_API_VAULT_TIMEOUT_MS,
     })
     : null;
-  const codexSecurityMimoCredential =
-    selection.plan !== null && isCodexSecurityMimoPlan(selection.plan)
-      ? await resolveCodexSecurityMimoCredential({
-        scanId: id,
-        plan: selection.plan,
-        getConnection: (connectionId) => providerRuntime.store.get(connectionId),
-        getSnapshot: (scanId) => providerRuntime.store.getSnapshot(scanId),
-        getModel: (connectionId, modelId) =>
-          providerRuntime.store.getModel(connectionId, modelId),
-        vault: providerRuntime.vault,
-        signal: options.signal,
-        timeoutMs: CODEX_SECURITY_API_VAULT_TIMEOUT_MS,
-      })
-      : null;
-
   throwIfLaunchAborted(options.signal);
   const localMantisPlan = localMantisProviderPlan(selection.plan);
   const localMantisSource = localMantisPlan === null
@@ -475,17 +455,6 @@ export async function startScan(
       effort,
       mode,
       apiKey: codexSecurityApiKey,
-    })
-    : codexSecurityMimoCredential !== null
-    ? prepareCodexSecurityMimoLaunch({
-      request: selection.request,
-      repositoryPath,
-      outputDir,
-      model: requiredModel(),
-      effort,
-      mode,
-      apiKey: codexSecurityMimoCredential.apiKey,
-      baseUrl: codexSecurityMimoCredential.baseUrl,
     })
     : selection.plan?.runnerKind === "agent-session" &&
         selection.plan.engine === "mantis"

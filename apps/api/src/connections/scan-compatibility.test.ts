@@ -323,7 +323,7 @@ test("advertises Codex Security OpenAI API only after the exact child-env bridge
   assert.deepEqual(result.reasons, []);
 });
 
-test("advertises Codex Security for only the exact MiMo Token Plan child-env bridge", () => {
+test("does not advertise Codex Security when MiMo agent-message support is unproven", () => {
   const resolver = createScanCompatibilityResolver({
     getConnection: () => connection({
       providerKind: "xiaomi",
@@ -350,6 +350,6 @@ test("advertises Codex Security for only the exact MiMo Token Plan child-env bri
     },
   });
 
-  assert.equal(result.eligible, true);
-  assert.deepEqual(result.reasons, []);
+  assert.equal(result.eligible, false);
+  assert.deepEqual(result.reasons, ["codex_security_gateway_feature_unproven"]);
 });

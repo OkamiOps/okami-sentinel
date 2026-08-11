@@ -139,7 +139,7 @@ export function createLaunchPlanResolver(
 
 function scannerAuthMode(routeKind: string): ScannerAuthMode {
   if (routeKind === "claude-code-local") return "existing-session";
-  return routeKind === "openai-api" || routeKind === "mimo-token-plan"
+  return routeKind === "openai-api"
     ? "api-key"
     : "chatgpt";
 }

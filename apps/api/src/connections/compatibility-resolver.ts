@@ -7,8 +7,6 @@ import type {
   ScannerEngine,
   ScanConnectionSelection,
 } from "@csb/shared";
-import { isMimoTokenPlanResponsesModel } from "./http-model-discovery.js";
-
 export type RunnerKind =
   | "codex-security-contract"
   | "codex-app-server"
@@ -22,6 +20,7 @@ export type CompatibilityReason =
   | "model_catalog_stale"
   | "model_not_found"
   | "codex_security_provider_unsupported"
+  | "codex_security_gateway_feature_unproven"
   | "capability_probe_missing"
   | "capability_probe_mismatch"
   | "capability_probe_stale"
@@ -82,7 +81,10 @@ export function resolveCompatibility(
   if (reasons.length > 0) return blocked(base, unique(reasons));
 
   if (input.engine === "codex-security") {
-    if (!isCodexSecurityRoute(input.connection, input.model)) {
+    if (isUnprovenCodexSecurityGateway(input.connection)) {
+      return blocked(base, ["codex_security_gateway_feature_unproven"]);
+    }
+    if (!isCodexSecurityRoute(input.connection)) {
       return blocked(base, ["codex_security_provider_unsupported"]);
     }
     return eligible(
@@ -164,7 +166,6 @@ function isClaudeCodeLocalMantisSession(input: CompatibilityInput): boolean {
 
 function isCodexSecurityRoute(
   connection: ProviderConnection,
-  model: ProviderModel | null,
 ): boolean {
   if (
     connection.providerKind === "openai" &&
@@ -174,19 +175,34 @@ function isCodexSecurityRoute(
       connection.authKind === "api-key" &&
       connection.protocol === "openai-responses";
   }
-  if (connection.providerKind === "openai") {
-    return connection.transport === "codex-app-server" &&
-      connection.protocol === "codex-app-server" &&
-      (connection.routeKind === "openai-codex-local" ||
-        connection.routeKind === "openai-chatgpt-app-server");
+  if (
+    connection.providerKind === "openai" &&
+    connection.transport === "codex-app-server" &&
+    connection.protocol === "codex-app-server"
+  ) {
+    if (connection.routeKind === "openai-codex-local") {
+      return connection.authKind === "existing-session";
+    }
+    if (connection.routeKind === "openai-chatgpt-app-server") {
+      return connection.authKind === "browser-oauth" ||
+        connection.authKind === "device-code";
+    }
   }
+  return false;
+}
+
+/**
+ * MiMo is proven for Sentinel's OpenAI Chat session, not for the Codex
+ * Security multi-agent Responses item `agent_message`.
+ */
+function isUnprovenCodexSecurityGateway(
+  connection: ProviderConnection,
+): boolean {
   return connection.providerKind === "xiaomi" &&
     connection.routeKind === "mimo-token-plan" &&
     connection.transport === "http-inference" &&
     connection.authKind === "api-key" &&
-    connection.protocol === "openai-chat" &&
-    model !== null &&
-    isMimoTokenPlanResponsesModel(model.id);
+    connection.protocol === "openai-chat";
 }
 
 function selectionReasons(input: CompatibilityInput): CompatibilityReason[] {
