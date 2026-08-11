@@ -21,6 +21,10 @@ test("MiMo replays an opaque reasoning field and wire-safe tool call from its fi
     "workspace_search",
     "results_write",
   ]);
+  assert.match(firstRequest.tools[0]!.function.description, /virtual root.*\./i);
+  assert.match(firstRequest.tools[1]!.function.description, /repository-relative/i);
+  assert.match(firstRequest.tools[2]!.function.description, /repository-relative/i);
+  assert.match(firstRequest.tools[3]!.function.description, /result-relative/i);
 
   const reasoning = "opaque provider reasoning: do not render or execute this";
   const firstResponse = {
@@ -245,7 +249,7 @@ test("OpenAI chat parses a safe workspace read followed by results.write batch",
 });
 
 function chatBody(request: AgentWireRequest): {
-  tools: Array<{ function: { name: string } }>;
+  tools: Array<{ function: { name: string; description: string } }>;
   messages: unknown[];
   tool_choice?: unknown;
   parallel_tool_calls?: unknown;
@@ -255,7 +259,7 @@ function chatBody(request: AgentWireRequest): {
 } {
   assert.equal(request.operation, "chat-completions");
   return request.body as {
-    tools: Array<{ function: { name: string } }>;
+    tools: Array<{ function: { name: string; description: string } }>;
     messages: unknown[];
     tool_choice?: unknown;
     parallel_tool_calls?: unknown;

@@ -270,6 +270,10 @@ test("Mantis HTTP runner executes every bounded stage with chained state and nev
       assert.equal(spec.instructions.includes("results."), false);
       assert.match(spec.instructions, /workspace_(?:list|read|search)/);
       assert.match(spec.instructions, /results_write/);
+      assert.match(spec.instructions, /virtual workspace root is \./i);
+      assert.match(spec.instructions, /repository-relative/i);
+      assert.match(spec.instructions, /result-relative/i);
+      assert.match(spec.instructions, /must first call.*workspace_/i);
     }
     assert.match(specs[0]!.instructions, /Previous bounded stage state: none\./);
     const encodedPrior = specs[1]!.instructions.match(
@@ -551,6 +555,41 @@ test("Mantis HTTP canonicalizes a structured provider summary into inert bounded
     stage: "architecture",
     summary: JSON.stringify(summary),
   });
+});
+
+test("Mantis HTTP uses the validated stage artifact when the final provider text is not structured", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-http-artifact-state-"));
+  const repositoryPath = path.join(root, "repository");
+  fs.mkdirSync(repositoryPath);
+  fs.writeFileSync(path.join(repositoryPath, "app.ts"), "export const safe = true;\n");
+
+  try {
+    const result = await runMantisHttpAgent({
+      outputDir: path.join(root, "output"),
+      repositoryPath,
+      paths: [],
+      sourceRef: "a".repeat(40),
+      providerPlan: plan(),
+    }, {
+      ...validDependencies(),
+      createSession: async ({ spec }) => {
+        const stage = String(spec.instructions.match(/stage_id=([a-z-]+)/)?.[1]);
+        const artifact = `${stage}.json`;
+        fs.writeFileSync(
+          path.join(spec.artifactRoot, artifact),
+          JSON.stringify(stage === "report"
+            ? { schemaVersion: 1, engine: "mantis", stage, findings: [] }
+            : { stage, summary: `${stage} artifact state` }),
+        );
+        return unstructuredCompletionSession(artifact);
+      },
+      now: () => NOW,
+    });
+
+    assert.equal(result.runtime.status, "completed");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("report artifact requires an explicit findings array", async () => {
@@ -1313,6 +1352,31 @@ function failingSession(code: AgentSessionErrorCode): AgentSession {
   return {
     async *run() {
       yield { type: "failure", code } as const;
+    },
+    async cancel() {
+      return { remote: false };
+    },
+  };
+}
+
+function unstructuredCompletionSession(artifact: string): AgentSession {
+  return {
+    async *run() {
+      yield { type: "tool", phase: "requested", callId: "read", name: "workspace.read" } as const;
+      yield { type: "tool", phase: "consumed", callId: "read", name: "workspace.read" } as const;
+      yield { type: "tool", phase: "requested", callId: "write", name: "results.write" } as const;
+      yield { type: "artifact", path: artifact, bytes: 32 } as const;
+      yield {
+        type: "usage",
+        usage: {
+          inputTokens: 1,
+          cachedInputTokens: null,
+          cacheWriteInputTokens: null,
+          outputTokens: 1,
+          reasoningTokens: null,
+        },
+      } as const;
+      yield { type: "completion", text: "stage complete", structured: null } as const;
     },
     async cancel() {
       return { remote: false };

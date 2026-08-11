@@ -19,6 +19,10 @@ test("OpenAI Responses encodes declared tool names and decodes only portable wir
     "workspace_search",
     "results_write",
   ]);
+  assert.match(request.tools[0]!.description, /virtual root.*\./i);
+  assert.match(request.tools[1]!.description, /repository-relative/i);
+  assert.match(request.tools[2]!.description, /repository-relative/i);
+  assert.match(request.tools[3]!.description, /result-relative/i);
 
   const normalized = adapter.readResponse({
     id: "response-1",
@@ -167,10 +171,10 @@ test("OpenAI Responses closes the tool surface after results.write is consumed",
 });
 
 function responsesBody(request: AgentWireRequest): {
-  tools: Array<{ name: string }>;
+  tools: Array<{ name: string; description: string }>;
 } {
   assert.equal(request.operation, "responses");
-  return request.body as { tools: Array<{ name: string }> };
+  return request.body as { tools: Array<{ name: string; description: string }> };
 }
 
 function responseBody(request: AgentWireRequest): Record<string, unknown> {

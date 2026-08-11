@@ -514,7 +514,9 @@ async function observeStage(
         nextRuntime = collectUsage(nextRuntime, event);
         break;
       case "completion":
-        state = boundedMantisStageState(stage.id, event.structured);
+        if (event.structured !== null && event.structured !== undefined) {
+          state = boundedMantisStageState(stage.id, event.structured);
+        }
         break;
       case "cancellation":
         throw new MantisHttpRunnerError("agent_cancelled");
@@ -522,10 +524,11 @@ async function observeStage(
         throw normalizeAgentSessionFailure(event.code);
     }
   }
-  if (!snapshotToolRequested || !snapshotToolConsumed || !resultsWriteRequested || !artifactObserved || state === null) {
+  if (!snapshotToolRequested || !snapshotToolConsumed || !resultsWriteRequested || !artifactObserved) {
     throw new MantisHttpRunnerError("stage_evidence_incomplete");
   }
   assertExpectedArtifact(artifactRoot, expectedArtifact);
+  state ??= stageStateFromArtifact(artifactRoot, expectedArtifact, stage.id);
   return { runtime: nextRuntime, state };
 }
 
@@ -563,8 +566,10 @@ function stageInstructions(
     `stage_id=${stage.id}`,
     `Apply skill ${stage.skill}: ${stage.label}.`,
     `Read only the immutable snapshot using ${WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.list")}, ${WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.read")}, or ${WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.search")}. Focus: ${scope}.`,
+    "The virtual workspace root is .; use repository-relative paths for files. Physical and absolute paths are invalid.",
+    `Before writing a result, you must first call and consume at least one ${WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.list")}, ${WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.read")}, or ${WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.search")} result.`,
     "Do not use network access, shell commands, external tools, generated code, payloads, PoCs, patches, reproduction, or publishing.",
-    `Write exactly one compact JSON artifact with ${WORKSPACE_TOOL_WIRE_CODEC.toWire("results.write")} at ${expectedArtifact}. No other artifact is permitted.`,
+    `Write exactly one compact JSON artifact with ${WORKSPACE_TOOL_WIRE_CODEC.toWire("results.write")} at the result-relative path ${expectedArtifact}. No other artifact is permitted.`,
     ...reportSchema,
     "Return structured JSON exactly {stage, summary}; summary must be a concise defensive analysis state for the next stage.",
     ...priorStateBlock,
@@ -594,6 +599,34 @@ export function boundedMantisStageState(stage: string, value: unknown): MantisBo
     throw new MantisHttpRunnerError("stage_evidence_incomplete");
   }
   return state;
+}
+
+function stageStateFromArtifact(
+  artifactRoot: string,
+  expectedArtifact: string,
+  stage: string,
+): MantisBoundedStageState {
+  try {
+    const candidate = path.join(artifactRoot, expectedArtifact);
+    const info = fs.lstatSync(candidate);
+    const maximumBytes = stage === "report" ? MAX_REPORT_BYTES : MAX_PRIOR_STATE_BYTES;
+    if (!info.isFile() || info.isSymbolicLink() || info.size <= 0 || info.size > maximumBytes) {
+      throw new MantisHttpRunnerError("stage_evidence_incomplete");
+    }
+    const artifact: unknown = JSON.parse(fs.readFileSync(candidate, "utf8"));
+    if (stage !== "report") return boundedMantisStageState(stage, artifact);
+    if (!isRecord(artifact) || artifact.schemaVersion !== 1 || artifact.engine !== "mantis" ||
+        artifact.stage !== "report" || !Array.isArray(artifact.findings)) {
+      throw new MantisHttpRunnerError("stage_evidence_incomplete");
+    }
+    return boundedMantisStageState(stage, {
+      stage,
+      summary: `validated report artifact with ${artifact.findings.length} finding(s)`,
+    });
+  } catch (error) {
+    if (error instanceof MantisHttpRunnerError) throw error;
+    throw new MantisHttpRunnerError("stage_evidence_incomplete");
+  }
 }
 
 function assertExpectedArtifact(root: string, expectedArtifact: string): void {

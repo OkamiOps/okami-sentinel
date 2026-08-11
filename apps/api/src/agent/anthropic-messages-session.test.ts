@@ -19,6 +19,10 @@ test("Anthropic Messages encodes declared tool names and decodes only portable w
     "workspace_search",
     "results_write",
   ]);
+  assert.match(request.tools[0]!.description, /virtual root.*\./i);
+  assert.match(request.tools[1]!.description, /repository-relative/i);
+  assert.match(request.tools[2]!.description, /repository-relative/i);
+  assert.match(request.tools[3]!.description, /result-relative/i);
 
   const normalized = adapter.readResponse({
     content: [{
@@ -102,10 +106,10 @@ test("Anthropic Messages closes the tool surface after results.write is consumed
 });
 
 function messagesBody(request: AgentWireRequest): {
-  tools: Array<{ name: string }>;
+  tools: Array<{ name: string; description: string }>;
 } {
   assert.equal(request.operation, "messages");
-  return request.body as { tools: Array<{ name: string }> };
+  return request.body as { tools: Array<{ name: string; description: string }> };
 }
 
 function model(id: string, patch: Partial<ProviderModel> = {}): ProviderModel {

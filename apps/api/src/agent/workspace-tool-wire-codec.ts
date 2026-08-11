@@ -20,6 +20,14 @@ export interface WorkspaceToolWireCodec {
 /** Closed protocol codec; local tool names never cross an upstream wire. */
 export const WORKSPACE_TOOL_WIRE_CODEC = createWorkspaceToolWireCodec();
 
+/** Provider-neutral path contract shown on every upstream tool declaration. */
+export const WORKSPACE_TOOL_WIRE_DESCRIPTIONS = {
+  "workspace.list": "List read-only files. Use '.' for the virtual root or a repository-relative path; never use an absolute path.",
+  "workspace.read": "Read a file using a repository-relative path; never use an absolute path.",
+  "workspace.search": "Search read-only files using '.' for the virtual root or a repository-relative path; never use an absolute path.",
+  "results.write": "Write a result artifact using a result-relative path; never use an absolute path.",
+} as const satisfies Record<WorkspaceToolName, string>;
+
 function createWorkspaceToolWireCodec(): WorkspaceToolWireCodec {
   const toWire = new Map<WorkspaceToolName, string>();
   const toInternal = new Map<string, WorkspaceToolName>();

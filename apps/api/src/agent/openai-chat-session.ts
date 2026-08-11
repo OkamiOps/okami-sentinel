@@ -15,7 +15,10 @@ import {
   type NormalizedModelReply,
   type WireSessionAdapter,
 } from "./session-types.js";
-import { WORKSPACE_TOOL_WIRE_CODEC } from "./workspace-tool-wire-codec.js";
+import {
+  WORKSPACE_TOOL_WIRE_CODEC,
+  WORKSPACE_TOOL_WIRE_DESCRIPTIONS,
+} from "./workspace-tool-wire-codec.js";
 import { parseStructuredResult } from "./structured-result.js";
 
 export interface OpenAiChatSessionSpec {
@@ -217,7 +220,7 @@ function openAiChatTools(): readonly unknown[] {
       type: "function",
       function: {
         name: WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.list"),
-        description: "List read-only files from the supplied workspace snapshot.",
+        description: WORKSPACE_TOOL_WIRE_DESCRIPTIONS["workspace.list"],
         parameters: objectSchema({ path: stringSchema(), maxEntries: integerSchema(), maxDepth: integerSchema() }),
       },
     },
@@ -225,7 +228,7 @@ function openAiChatTools(): readonly unknown[] {
       type: "function",
       function: {
         name: WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.read"),
-        description: "Read a file from the supplied workspace snapshot.",
+        description: WORKSPACE_TOOL_WIRE_DESCRIPTIONS["workspace.read"],
         parameters: objectSchema({ path: requiredStringSchema(), maxBytes: integerSchema() }, ["path"]),
       },
     },
@@ -233,7 +236,7 @@ function openAiChatTools(): readonly unknown[] {
       type: "function",
       function: {
         name: WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.search"),
-        description: "Search read-only workspace files for literal text.",
+        description: WORKSPACE_TOOL_WIRE_DESCRIPTIONS["workspace.search"],
         parameters: objectSchema({ query: requiredStringSchema(), path: stringSchema(), maxResults: integerSchema(), maxBytes: integerSchema() }, ["query"]),
       },
     },
@@ -241,7 +244,7 @@ function openAiChatTools(): readonly unknown[] {
       type: "function",
       function: {
         name: WORKSPACE_TOOL_WIRE_CODEC.toWire("results.write"),
-        description: "Write a result artifact below the run artifact directory.",
+        description: WORKSPACE_TOOL_WIRE_DESCRIPTIONS["results.write"],
         parameters: objectSchema({ path: requiredStringSchema(), content: requiredStringSchema() }, ["path", "content"]),
       },
     },

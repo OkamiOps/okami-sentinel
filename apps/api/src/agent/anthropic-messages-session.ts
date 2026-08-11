@@ -9,7 +9,10 @@ import {
   type NormalizedModelReply,
   type WireSessionAdapter,
 } from "./session-types.js";
-import { WORKSPACE_TOOL_WIRE_CODEC } from "./workspace-tool-wire-codec.js";
+import {
+  WORKSPACE_TOOL_WIRE_CODEC,
+  WORKSPACE_TOOL_WIRE_DESCRIPTIONS,
+} from "./workspace-tool-wire-codec.js";
 import { parseStructuredResult } from "./structured-result.js";
 
 export interface AnthropicMessagesSessionSpec {
@@ -79,16 +82,16 @@ export function createAnthropicMessagesWireAdapter(
 
 function anthropicTools(): readonly unknown[] {
   return [
-    anthropicTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.list"), "List read-only files from the workspace snapshot.", {
+    anthropicTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.list"), WORKSPACE_TOOL_WIRE_DESCRIPTIONS["workspace.list"], {
       path: stringSchema(), maxEntries: integerSchema(), maxDepth: integerSchema(),
     }),
-    anthropicTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.read"), "Read a file from the workspace snapshot.", {
+    anthropicTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.read"), WORKSPACE_TOOL_WIRE_DESCRIPTIONS["workspace.read"], {
       path: requiredStringSchema(), maxBytes: integerSchema(),
     }, ["path"]),
-    anthropicTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.search"), "Search read-only workspace files for literal text.", {
+    anthropicTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.search"), WORKSPACE_TOOL_WIRE_DESCRIPTIONS["workspace.search"], {
       query: requiredStringSchema(), path: stringSchema(), maxResults: integerSchema(), maxBytes: integerSchema(),
     }, ["query"]),
-    anthropicTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("results.write"), "Write a result artifact below the run artifact directory.", {
+    anthropicTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("results.write"), WORKSPACE_TOOL_WIRE_DESCRIPTIONS["results.write"], {
       path: requiredStringSchema(), content: requiredStringSchema(),
     }, ["path", "content"]),
   ];
