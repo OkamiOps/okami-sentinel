@@ -33,7 +33,11 @@ import {
   withProgress,
 } from "./progress.js";
 import { validateScannerRequest } from "./scanners/catalog.js";
-import { prepareScannerLaunch } from "./scanners/launch.js";
+import {
+  prepareMantisHttpLaunch,
+  prepareScannerLaunch,
+} from "./scanners/launch.js";
+import { createSafeMantisProviderPlan } from "./scanners/mantis-http-runner.js";
 import { resolveBeforeLaunch } from "./scanners/scan-selection.js";
 import type { ScanLaunchPlan } from "./connections/launch-plan.js";
 import type { SafeVulnHunterProviderPlan } from "./scanners/vulnhunter-runtime.js";
@@ -338,19 +342,31 @@ export async function startScan(req: StartScanRequest): Promise<ScanRun> {
       const model = selection.model ?? req.model ?? scanner.models[0]?.id ?? "gpt-5.6-sol";
       const effort = req.effort || "high";
       const mode = req.mode || "standard";
-      const launch = prepareScannerLaunch({
-        request: selection.request,
-        repositoryPath,
-        outputDir,
-        model,
-        effort: String(effort),
-        mode,
-        providerPlan: vulnhunterProviderPlan(id, selection.plan),
-        providerKind: selection.plan?.engine === "vulnhunter" &&
-          selection.plan.runnerKind === "agent-session"
-          ? selection.plan.providerKind
-          : undefined,
-      });
+      const launch = selection.plan?.runnerKind === "agent-session" &&
+          selection.plan.engine === "mantis"
+        ? prepareMantisHttpLaunch({
+          request: selection.request,
+          repositoryPath,
+          outputDir,
+          model,
+          effort: String(effort),
+          mode,
+          providerKind: selection.plan.providerKind,
+          mantisProviderPlan: createSafeMantisProviderPlan(selection.plan),
+        })
+        : prepareScannerLaunch({
+          request: selection.request,
+          repositoryPath,
+          outputDir,
+          model,
+          effort: String(effort),
+          mode,
+          vulnhunterProviderPlan: vulnhunterProviderPlan(id, selection.plan),
+          providerKind: selection.plan?.engine === "vulnhunter" &&
+              selection.plan.runnerKind === "agent-session"
+            ? selection.plan.providerKind
+            : undefined,
+        });
       return { model, effort, mode, launch };
     },
   });

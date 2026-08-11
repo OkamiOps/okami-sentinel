@@ -93,6 +93,19 @@ export const MANTIS_WORKER_ENTRY = path.join(
   "mantis-worker.ts",
 );
 
+export const MANTIS_HTTP_WORKER_BIN =
+  process.env.MANTIS_HTTP_WORKER_BIN?.trim() ||
+  path.join(ROOT_DIR, "apps", "api", "node_modules", ".bin", "tsx");
+
+export const MANTIS_HTTP_WORKER_ENTRY = path.join(
+  ROOT_DIR,
+  "apps",
+  "api",
+  "src",
+  "scanners",
+  "mantis-http-worker.ts",
+);
+
 export const VULNHUNTER_REPOSITORY_URL =
   process.env.VULNHUNTER_REPOSITORY_URL?.trim() ||
   "https://github.com/capitalone/vulnhunter.git";

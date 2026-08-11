@@ -27,12 +27,45 @@ import {
 /** The provider body limit is independent from an agent-run output budget. */
 export const HTTP_AGENT_BODY_LIMIT_BYTES = 1_048_576;
 
-type HttpAgentProtocol = Extract<ProviderProtocol,
+export type HttpAgentProtocol = Extract<ProviderProtocol,
   | "openai-responses"
   | "openai-chat"
   | "anthropic-messages"
   | "xai-oauth-responses"
 >;
+
+/**
+ * Closed route/protocol vocabulary for server-side HTTP agent sessions. This
+ * intentionally says nothing about credentials or custom endpoint validity;
+ * those remain enforced by resolveRoute immediately before the HTTP request.
+ */
+export function isHttpAgentRouteProtocolSupported(
+  routeKind: string,
+  protocol: ProviderProtocol,
+): protocol is HttpAgentProtocol {
+  switch (routeKind) {
+    case "openai-api":
+      return protocol === "openai-responses" || protocol === "openai-chat";
+    case "xai-api":
+      return protocol === "openai-responses";
+    case "xai-oauth":
+      return protocol === "xai-oauth-responses";
+    case "anthropic-api":
+    case "minimax-token-plan":
+    case "custom-anthropic-compatible":
+      return protocol === "anthropic-messages";
+    case "openrouter-api":
+    case "gemini-api":
+    case "deepseek-api":
+      return protocol === "openai-chat";
+    case "custom-openai-compatible":
+      return protocol === "openai-responses" || protocol === "openai-chat";
+    // MiMo remains discovery-only until it receives its own execution route.
+    case "mimo-token-plan":
+    default:
+      return false;
+  }
+}
 
 export interface HttpAgentUpstreamOptions {
   routeKind: string;

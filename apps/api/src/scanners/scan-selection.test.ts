@@ -113,14 +113,15 @@ test("connection launch binds the server plan once and ignores client model/auth
   assert.equal(selected.request.provider, "openai");
 });
 
-test("connection launch does not fall through to the old Codex worker for an HTTP agent session", () => {
+test("Mantis HTTP agent sessions retain the server plan instead of mapping to the old Codex worker", () => {
   const fixture = resolver(plan({
     routeKind: "openai-api",
     runnerKind: "agent-session",
     protocol: "openai-responses",
+    capabilityCheckId: "capability-a",
   }));
 
-  assert.throws(() => resolveScanLaunchSelection({
+  const selected = resolveScanLaunchSelection({
     request: {
       repositoryPath: "/repo",
       engine: "mantis",
@@ -132,9 +133,13 @@ test("connection launch does not fall through to the old Codex worker for an HTT
     },
     scanId: "scan-123",
     launchPlans: fixture.resolver,
-  }), (error: unknown) =>
-    error instanceof ScanSelectionError && error.code === "provider_runner_unavailable");
+  });
   assert.equal(fixture.calls.length, 1);
+  assert.equal(selected.connectionAware, true);
+  assert.equal(selected.model, "gpt-live");
+  assert.equal(selected.request.model, "gpt-live");
+  assert.equal(selected.request.authMode, "api-key");
+  assert.equal(selected.plan?.runnerKind, "agent-session");
 });
 
 test("VulnHunter accepts only a verified HTTP agent-session plan for its dedicated runner", () => {
@@ -257,11 +262,12 @@ test("VulnHunter rejects xAI OAuth plans without the pinned xAI provider", () =>
     error instanceof ScanSelectionError && error.code === "provider_runner_unavailable");
 });
 
-test("unsupported HTTP runner stops before the launch callback can create output, config, or spawn", () => {
+test("unsupported xAI OAuth Mantis runner stops before launch side effects", () => {
   const fixture = resolver(plan({
-    routeKind: "openai-api",
+    routeKind: "xai-oauth",
     runnerKind: "agent-session",
-    protocol: "openai-responses",
+    protocol: "xai-oauth-responses",
+    capabilityCheckId: "capability-a",
   }));
   let launchPreparationCalls = 0;
 

@@ -7,6 +7,7 @@ import type {
   LaunchPlanResolver,
   ScanLaunchPlan,
 } from "../connections/launch-plan.js";
+import { isHttpAgentRouteProtocolSupported } from "../agent/http-agent-upstream.js";
 
 const SCOPED_CODEX_SECURITY_SESSION_ROUTES = new Set([
   "openai-codex-local",
@@ -86,24 +87,39 @@ export function resolveScanLaunchSelection(
     remoteRepositoryConfirmed: input.request.remoteRepositoryConfirmed,
   });
 
-  if (plan.runnerKind === "remote-agent-job") {
+  if (plan.runnerKind === "agent-session") {
+    if (isMantisHttpAgentPlan(plan)) {
+      return {
+        request: {
+          ...input.request,
+          provider: plan.providerKind,
+          model: plan.model!.id,
+          // Accounting metadata only. The selected worker reads the native
+          // vault after revalidating the immutable server plan.
+          authMode: "api-key",
+        },
+        model: plan.model!.id,
+        plan,
+        connectionAware: true,
+      };
+    }
+    if (isVulnHunterHttpPlan(input.request, plan)) {
+      const { authMode: _untrustedAuthMode, ...request } = input.request;
+      return {
+        request: {
+          ...request,
+          provider: plan.providerKind,
+          model: plan.model!.id,
+        },
+        model: plan.model!.id,
+        plan,
+        connectionAware: true,
+      };
+    }
     throw new ScanSelectionError("provider_runner_unavailable");
   }
-  if (plan.runnerKind === "agent-session") {
-    if (!isVulnHunterHttpPlan(input.request, plan)) {
-      throw new ScanSelectionError("provider_runner_unavailable");
-    }
-    const { authMode: _untrustedAuthMode, ...request } = input.request;
-    return {
-      request: {
-        ...request,
-        provider: plan.providerKind,
-        model: plan.model!.id,
-      },
-      model: plan.model!.id,
-      plan,
-      connectionAware: true,
-    };
+  if (plan.runnerKind === "remote-agent-job") {
+    throw new ScanSelectionError("provider_runner_unavailable");
   }
   if (
     plan.runnerKind === "codex-security-contract" &&
@@ -126,6 +142,16 @@ export function resolveScanLaunchSelection(
     plan,
     connectionAware: true,
   };
+}
+
+function isMantisHttpAgentPlan(plan: ScanLaunchPlan): boolean {
+  return plan.engine === "mantis" &&
+    plan.model !== null &&
+    typeof plan.capabilityCheckId === "string" &&
+    plan.capabilityCheckId.length > 0 &&
+    plan.routeKind !== "xai-oauth" &&
+    plan.protocol !== "xai-oauth-responses" &&
+    isHttpAgentRouteProtocolSupported(plan.routeKind, plan.protocol);
 }
 
 /**

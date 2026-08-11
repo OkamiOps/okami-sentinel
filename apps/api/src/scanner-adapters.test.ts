@@ -10,8 +10,10 @@ import { readFindingsFile } from "./ingest.js";
 import { buildScannerCatalog } from "./scanners/catalog.js";
 import {
   explicitAuthEnvironment,
+  prepareMantisHttpLaunch,
   prepareScannerLaunch,
 } from "./scanners/launch.js";
+import { createSafeMantisProviderPlan } from "./scanners/mantis-http-runner.js";
 import {
   normalizeMantisFinding,
   normalizeMantisWorkspace,
@@ -255,7 +257,7 @@ test("VulnHunter direct xAI OAuth launch serializes only the immutable provider 
       model: "grok-live",
       effort: "high",
       mode: "standard",
-      providerPlan,
+      vulnhunterProviderPlan: providerPlan,
       providerKind: "xai",
     });
     const config = JSON.parse(
@@ -278,6 +280,74 @@ test("VulnHunter direct xAI OAuth launch serializes only the immutable provider 
     else process.env.OPENAI_API_KEY = previousOpenAiKey;
     if (previousCodexKey === undefined) delete process.env.CODEX_API_KEY;
     else process.env.CODEX_API_KEY = previousCodexKey;
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("Mantis HTTP launch serializes only the revalidated provider identifiers", () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-mantis-http-launch-"));
+  const repositoryPath = path.join(fixtureRoot, "repository");
+  const outputDir = path.join(fixtureRoot, "output");
+  fs.mkdirSync(repositoryPath);
+  fs.mkdirSync(outputDir);
+
+  try {
+    const providerPlan = createSafeMantisProviderPlan({
+      engine: "mantis",
+      connectionId: "connection-a",
+      providerKind: "openai",
+      routeKind: "openai-api",
+      runnerKind: "agent-session",
+      protocol: "openai-responses",
+      model: {
+        connectionId: "connection-a",
+        id: "gpt-live",
+        displayName: "GPT Live",
+        contextWindow: null,
+        capabilities: {
+          tools: "supported", artifactOutput: "supported", structuredOutput: "supported",
+          boundedExecution: "supported", osIsolation: "supported", streaming: "supported",
+          usage: "supported", cancellation: "supported",
+        },
+        pricing: null,
+        discoveredAt: "2026-08-11T12:00:00.000Z",
+        source: "provider-api",
+      },
+      capabilityCheckId: "capability-a",
+      snapshot: {
+        scanId: "scan-a",
+        connectionId: "connection-a",
+        routeKind: "openai-api",
+        modelSelectionMode: "catalog",
+        modelId: "gpt-live",
+        capabilityCheckId: "capability-a",
+        capturedAt: "2026-08-11T12:00:00.000Z",
+      },
+    });
+    const launch = prepareMantisHttpLaunch({
+      request: { repositoryPath, engine: "mantis", paths: ["src"] },
+      repositoryPath,
+      outputDir,
+      model: "gpt-live",
+      effort: "high",
+      mode: "standard",
+      providerKind: "openai",
+      mantisProviderPlan: providerPlan,
+    });
+    const config = JSON.parse(fs.readFileSync(path.join(outputDir, "mantis-http-run.json"), "utf8")) as Record<string, unknown>;
+
+    assert.equal(launch.engine, "mantis");
+    assert.equal(launch.authMode, "api-key");
+    assert.equal(launch.provider, "openai");
+    assert.equal(config.model, undefined);
+    assert.equal(config.effort, undefined);
+    assert.equal(config.providerPlan instanceof Object, true);
+    assert.deepEqual(Object.keys(config.providerPlan as object).sort(), [
+      "capabilityCheckId", "connectionId", "modelId", "protocol", "routeKind", "scanId",
+    ]);
+    assert.equal(JSON.stringify(config).includes("apiKey"), false);
+    assert.equal(JSON.stringify(config).includes("secret"), false);
+  } finally {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }
 });

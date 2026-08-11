@@ -12,6 +12,8 @@ import {
   CODEX_SECURITY_BIN,
   codexSecurityEnvironment,
   MANTIS_CACHE_DIR,
+  MANTIS_HTTP_WORKER_BIN,
+  MANTIS_HTTP_WORKER_ENTRY,
   MANTIS_REPOSITORY_URL,
   MANTIS_SOURCE_REF,
   MANTIS_WORKER_BIN,
@@ -24,6 +26,10 @@ import {
   VULNHUNTER_WORKER_ENTRY,
 } from "../config.js";
 import type { MantisRunConfiguration } from "./mantis-runtime.js";
+import type {
+  MantisHttpWorkerConfiguration,
+  SafeMantisProviderPlan,
+} from "./mantis-http-runner.js";
 import type {
   SafeVulnHunterProviderPlan,
   VulnHunterRunConfiguration,
@@ -50,9 +56,15 @@ export interface ScannerLaunchInput {
   effort: string;
   mode: ScanMode;
   /** Only the server-resolved immutable reference may cross into a worker config. */
-  providerPlan?: SafeVulnHunterProviderPlan;
+  vulnhunterProviderPlan?: SafeVulnHunterProviderPlan;
   /** Run metadata only; never written into the child configuration. */
   providerKind?: string;
+}
+
+export interface MantisHttpLaunchInput extends ScannerLaunchInput {
+  /** Trusted runtime metadata, never serialized into the worker config. */
+  providerKind: string;
+  mantisProviderPlan: SafeMantisProviderPlan;
 }
 
 export function explicitAuthEnvironment(
@@ -181,8 +193,52 @@ function prepareMantis(input: ScannerLaunchInput): ScannerLaunch {
   };
 }
 
+/**
+ * HTTP agent sessions run in their own worker. Its config has no provider
+ * secret or mutable model data; it receives only the server-originated plan
+ * and re-resolves the snapshot, catalog, capability report, and vault later.
+ */
+export function prepareMantisHttpLaunch(input: MantisHttpLaunchInput): ScannerLaunch {
+  const configuration: MantisHttpWorkerConfiguration = {
+    outputDir: input.outputDir,
+    repositoryPath: input.repositoryPath,
+    paths: (input.request.paths ?? []).map((item) => item.trim()).filter(Boolean),
+    sourceRef: MANTIS_SOURCE_REF,
+    providerPlan: input.mantisProviderPlan,
+  };
+  const configPath = path.join(input.outputDir, "mantis-http-run.json");
+  fs.writeFileSync(configPath, `${JSON.stringify(configuration, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  const authMode: ScannerAuthMode = "api-key";
+  const hash = recipeHash({
+    engine: "mantis",
+    authMode,
+    model: input.mantisProviderPlan.modelId,
+    effort: input.effort,
+    mode: input.mode,
+    paths: configuration.paths,
+    scannerVersion: MANTIS_SOURCE_REF,
+  });
+  return {
+    engine: "mantis",
+    authMode,
+    provider: input.providerKind,
+    scannerVersion: MANTIS_SOURCE_REF,
+    recipeHash: hash,
+    command: MANTIS_HTTP_WORKER_BIN,
+    args: [MANTIS_HTTP_WORKER_ENTRY, configPath],
+    cwd: ROOT_DIR,
+    // API-key labels are accounting metadata here, never a request to source
+    // an API key from this process. The worker reads its selected vault ref.
+    env: explicitAuthEnvironment("chatgpt", { ...process.env, NO_COLOR: "1", CI: "1" }),
+    displayCommand: `sentinel-mantis-http ${path.basename(configPath)}`,
+  };
+}
+
 function prepareVulnHunter(input: ScannerLaunchInput): ScannerLaunch {
-  const authMode = input.providerPlan === undefined
+  const authMode = input.vulnhunterProviderPlan === undefined
     ? input.request.authMode ?? "chatgpt"
     : "api-key";
   const configuration: VulnHunterRunConfiguration = {
@@ -197,9 +253,9 @@ function prepareVulnHunter(input: ScannerLaunchInput): ScannerLaunch {
       repositoryUrl: VULNHUNTER_REPOSITORY_URL,
       ref: VULNHUNTER_SOURCE_REF,
     },
-    ...(input.providerPlan === undefined
+    ...(input.vulnhunterProviderPlan === undefined
       ? {}
-      : { providerPlan: copyVulnHunterProviderPlan(input.providerPlan) }),
+      : { providerPlan: copyVulnHunterProviderPlan(input.vulnhunterProviderPlan) }),
   };
   const configPath = path.join(input.outputDir, "vulnhunter-run.json");
   fs.writeFileSync(configPath, `${JSON.stringify(configuration, null, 2)}\n`, {
@@ -225,7 +281,7 @@ function prepareVulnHunter(input: ScannerLaunchInput): ScannerLaunch {
     command: VULNHUNTER_WORKER_BIN,
     args,
     cwd: ROOT_DIR,
-    env: input.providerPlan === undefined
+    env: input.vulnhunterProviderPlan === undefined
       ? explicitAuthEnvironment(authMode, workerEnvironment())
       : workerEnvironmentWithoutOpenAiKeys(),
     displayCommand: `sentinel-vulnhunter ${path.basename(configPath)}`,

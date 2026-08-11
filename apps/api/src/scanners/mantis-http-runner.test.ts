@@ -1,0 +1,361 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+import type {
+  CapabilityReport,
+  ModelCapabilities,
+  ProviderModel,
+  ScanConnectionSnapshot,
+} from "@csb/shared";
+
+import type { StoredProviderConnection } from "../connections-store.js";
+import type { AgentSession, AgentSessionSpec } from "../agent/session-types.js";
+import {
+  MantisHttpRunnerError,
+  createSafeMantisProviderPlan,
+  runMantisHttpAgent,
+  type SafeMantisProviderPlan,
+} from "./mantis-http-runner.js";
+
+const NOW = new Date("2026-08-11T12:00:00.000Z");
+
+const CAPABILITIES: ModelCapabilities = {
+  tools: "supported",
+  artifactOutput: "supported",
+  structuredOutput: "supported",
+  boundedExecution: "supported",
+  osIsolation: "supported",
+  streaming: "supported",
+  usage: "supported",
+  cancellation: "supported",
+};
+
+const STAGES = [
+  "architecture",
+  "threat-model",
+  "plan",
+  "researcher",
+  "dedupe",
+  "review",
+  "critic",
+  "calibrate",
+  "report",
+];
+
+function connection(
+  patch: Partial<StoredProviderConnection> = {},
+): StoredProviderConnection {
+  return {
+    id: "connection-a",
+    scopeId: "local",
+    name: "OpenAI API",
+    providerKind: "openai",
+    routeKind: "openai-api",
+    transport: "http-inference",
+    authKind: "api-key",
+    protocol: "openai-responses",
+    status: "ready",
+    credentialRef: "connections/connection-a",
+    modelSelectionMode: "catalog",
+    defaultModelId: null,
+    lastTestedAt: NOW.toISOString(),
+    lastModelSyncAt: NOW.toISOString(),
+    modelCatalogStale: false,
+    display: {
+      providerLabel: "OpenAI",
+      routeLabel: "API",
+      secretConfigured: true,
+      endpointConfigured: false,
+      endpointKind: "preset",
+    },
+    ...patch,
+  };
+}
+
+function model(
+  patch: Partial<ProviderModel> = {},
+): ProviderModel {
+  return {
+    connectionId: "connection-a",
+    id: "model-a",
+    displayName: "Model A",
+    contextWindow: 128_000,
+    capabilities: CAPABILITIES,
+    pricing: null,
+    discoveredAt: NOW.toISOString(),
+    source: "provider-api",
+    ...patch,
+  };
+}
+
+function report(
+  patch: Partial<CapabilityReport> = {},
+): CapabilityReport {
+  return {
+    id: "capability-a",
+    connectionId: "connection-a",
+    modelId: "model-a",
+    protocol: "openai-responses",
+    status: "passed",
+    capabilities: CAPABILITIES,
+    errorCode: null,
+    checkedAt: "2026-08-11T11:55:00.000Z",
+    ...patch,
+  };
+}
+
+function plan(patch: Partial<SafeMantisProviderPlan> = {}): SafeMantisProviderPlan {
+  return {
+    scanId: "scan-a",
+    connectionId: "connection-a",
+    routeKind: "openai-api",
+    protocol: "openai-responses",
+    modelId: "model-a",
+    capabilityCheckId: "capability-a",
+    ...patch,
+  };
+}
+
+function snapshot(patch: Partial<ScanConnectionSnapshot> = {}): ScanConnectionSnapshot {
+  return {
+    scanId: "scan-a",
+    connectionId: "connection-a",
+    routeKind: "openai-api",
+    modelSelectionMode: "catalog",
+    modelId: "model-a",
+    capabilityCheckId: "capability-a",
+    capturedAt: NOW.toISOString(),
+    ...patch,
+  };
+}
+
+test("Mantis HTTP runner executes every bounded stage with chained state and never serializes its vault secret", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-http-runner-"));
+  const repositoryPath = path.join(root, "repository");
+  const outputDir = path.join(root, "output");
+  fs.mkdirSync(repositoryPath);
+  fs.writeFileSync(path.join(repositoryPath, "app.ts"), "export const safe = true;\n");
+  const specs: AgentSessionSpec[] = [];
+  const logs: string[] = [];
+  const secret = "super-secret-http-token";
+  let vaultReads = 0;
+
+  try {
+    const result = await runMantisHttpAgent({
+      outputDir,
+      repositoryPath,
+      paths: ["src"],
+      sourceRef: "a".repeat(40),
+      providerPlan: plan(),
+    }, {
+      getSnapshot: (scanId) => scanId === "scan-a" ? snapshot() : null,
+      getConnection: (connectionId) => connectionId === "connection-a" ? connection() : null,
+      getModel: (connectionId, modelId) =>
+        connectionId === "connection-a" && modelId === "model-a" ? model() : null,
+      getCapabilityCheck: (capabilityCheckId) =>
+        capabilityCheckId === "capability-a" ? report() : null,
+      vault: {
+        available: async () => ({ available: true, backend: "keychain" }),
+        put: async () => undefined,
+        delete: async () => undefined,
+        get: async () => {
+          vaultReads += 1;
+          return { apiKey: secret };
+        },
+      },
+      createSession: async (input) => {
+        specs.push(input.spec);
+        const stage = String(input.spec.instructions.match(/stage_id=([a-z-]+)/)?.[1]);
+        const artifact = `${stage}.json`;
+        fs.writeFileSync(
+          path.join(input.spec.artifactRoot, artifact),
+          JSON.stringify({ stage, findings: stage === "report" ? [] : undefined }),
+        );
+        return fakeSession(stage, artifact);
+      },
+      log: (line) => logs.push(line),
+      now: () => NOW,
+    });
+
+    assert.equal(vaultReads, 1);
+    assert.equal(specs.length, STAGES.length);
+    assert.deepEqual(specs.map((spec) =>
+      String(spec.instructions.match(/stage_id=([a-z-]+)/)?.[1])), STAGES);
+    assert.match(specs[0]!.instructions, /Previous bounded stage state: none\./);
+    assert.match(specs[1]!.instructions, /architecture complete/);
+    assert.equal(result.runtime.status, "completed");
+    assert.equal(result.runtime.usage.inputTokens, STAGES.length * 10);
+    assert.equal(result.runtime.usage.outputTokens, STAGES.length * 4);
+    assert.equal(result.runtime.usage.reported, true);
+    assert.equal(JSON.stringify(result).includes(secret), false);
+    assert.equal(JSON.stringify(specs).includes(secret), false);
+    assert.equal(logs.join("\n").includes(secret), false);
+    assert.equal(fs.existsSync(path.join(outputDir, "findings.json")), true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Mantis HTTP revalidation fails before the vault for a changed snapshot or direct xAI OAuth", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-http-revalidate-"));
+  const repositoryPath = path.join(root, "repository");
+  fs.mkdirSync(repositoryPath);
+  fs.writeFileSync(path.join(repositoryPath, "app.ts"), "export const safe = true;\n");
+  let vaultReads = 0;
+  const baseDependencies = {
+    getConnection: () => connection(),
+    getModel: () => model(),
+    getCapabilityCheck: () => report(),
+    vault: {
+      available: async () => ({ available: true, backend: "keychain" as const }),
+      put: async () => undefined,
+      delete: async () => undefined,
+      get: async () => {
+        vaultReads += 1;
+        return { apiKey: "must-never-be-read" };
+      },
+    },
+    createSession: async () => assert.fail("session must not start"),
+    now: () => NOW,
+  };
+
+  try {
+    await assert.rejects(
+      runMantisHttpAgent({
+        outputDir: path.join(root, "changed-snapshot"),
+        repositoryPath,
+        paths: [],
+        sourceRef: "a".repeat(40),
+        providerPlan: plan(),
+      }, {
+        ...baseDependencies,
+        getSnapshot: () => snapshot({ capabilityCheckId: "other-capability" }),
+      }),
+      (error: unknown) => error instanceof MantisHttpRunnerError &&
+        error.code === "provider_plan_revalidation_failed",
+    );
+
+    await assert.rejects(
+      runMantisHttpAgent({
+        outputDir: path.join(root, "xai-oauth"),
+        repositoryPath,
+        paths: [],
+        sourceRef: "a".repeat(40),
+        providerPlan: plan({
+          routeKind: "xai-oauth",
+          protocol: "xai-oauth-responses",
+        }),
+      }, {
+        ...baseDependencies,
+        getSnapshot: () => snapshot({
+          routeKind: "xai-oauth",
+          capabilityCheckId: "capability-a",
+        }),
+      }),
+      (error: unknown) => error instanceof MantisHttpRunnerError &&
+        error.code === "xai_oauth_runner_unsupported",
+    );
+
+    assert.equal(vaultReads, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Mantis HTTP runner propagates cancellation through the active agent session", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-http-cancel-"));
+  const repositoryPath = path.join(root, "repository");
+  fs.mkdirSync(repositoryPath);
+  fs.writeFileSync(path.join(repositoryPath, "app.ts"), "export const safe = true;\n");
+  const controller = new AbortController();
+  let cancelCalls = 0;
+
+  try {
+    await assert.rejects(
+      runMantisHttpAgent({
+        outputDir: path.join(root, "output"),
+        repositoryPath,
+        paths: [],
+        sourceRef: "a".repeat(40),
+        providerPlan: plan(),
+      }, {
+        getSnapshot: () => snapshot(),
+        getConnection: () => connection(),
+        getModel: () => model(),
+        getCapabilityCheck: () => report(),
+        vault: {
+          available: async () => ({ available: true, backend: "keychain" }),
+          put: async () => undefined,
+          delete: async () => undefined,
+          get: async () => ({ apiKey: "not-in-the-config" }),
+        },
+        createSession: async () => ({
+          async *run() {
+            controller.abort();
+            yield { type: "tool", phase: "requested", callId: "read", name: "workspace.read" } as const;
+          },
+          async cancel() {
+            cancelCalls += 1;
+            return { remote: false };
+          },
+        }),
+        signal: controller.signal,
+        now: () => NOW,
+      }),
+      (error: unknown) => error instanceof MantisHttpRunnerError && error.code === "agent_cancelled",
+    );
+    assert.equal(cancelCalls, 1);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("safe provider plan carries identifiers only", () => {
+  const safe = createSafeMantisProviderPlan({
+    engine: "mantis",
+    connectionId: "connection-a",
+    routeKind: "openai-api",
+    runnerKind: "agent-session",
+    protocol: "openai-responses",
+    model: model(),
+    capabilityCheckId: "capability-a",
+    providerKind: "openai",
+    snapshot: snapshot(),
+  });
+
+  assert.deepEqual(safe, plan());
+  assert.deepEqual(Object.keys(safe).sort(), [
+    "capabilityCheckId",
+    "connectionId",
+    "modelId",
+    "protocol",
+    "routeKind",
+    "scanId",
+  ]);
+});
+
+function fakeSession(stage: string, artifact: string): AgentSession {
+  return {
+    async *run() {
+      yield { type: "tool", phase: "requested", callId: "read", name: "workspace.read" } as const;
+      yield { type: "tool", phase: "consumed", callId: "read", name: "workspace.read" } as const;
+      yield { type: "tool", phase: "requested", callId: "write", name: "results.write" } as const;
+      yield { type: "artifact", path: artifact, bytes: 32 } as const;
+      yield {
+        type: "usage",
+        usage: { inputTokens: 10, cachedInputTokens: 2, outputTokens: 4, reasoningTokens: 1 },
+      } as const;
+      yield {
+        type: "completion",
+        text: null,
+        structured: { stage, summary: `${stage} complete` },
+      } as const;
+    },
+    async cancel() {
+      return { remote: false };
+    },
+  };
+}
