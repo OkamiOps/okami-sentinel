@@ -170,3 +170,30 @@ test("advertises Mantis for the fully pinned xAI OAuth tuple", () => {
   assert.equal(result.eligible, true);
   assert.deepEqual(result.reasons, []);
 });
+
+test("advertises Codex Security OpenAI API only after the exact child-env bridge is wired", () => {
+  const resolver = createScanCompatibilityResolver({
+    getConnection: () => connection({
+      providerKind: "openai",
+      routeKind: "openai-api",
+      transport: "http-inference",
+      authKind: "api-key",
+      protocol: "openai-responses",
+    }),
+    getModel: () => model(),
+    getLatestCapabilityCheck: () => null,
+    now: () => NOW,
+  });
+
+  const result = resolver.resolve({
+    engine: "codex-security",
+    selection: {
+      connectionId: "connection-a",
+      modelSelectionMode: "catalog",
+      modelId: "provider/model-a",
+    },
+  });
+
+  assert.equal(result.eligible, true);
+  assert.deepEqual(result.reasons, []);
+});

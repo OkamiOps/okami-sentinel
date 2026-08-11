@@ -34,13 +34,18 @@ import {
 } from "./progress.js";
 import { validateScannerRequest } from "./scanners/catalog.js";
 import {
+  prepareCodexSecurityApiLaunch,
   prepareMantisHttpLaunch,
   prepareScannerLaunch,
 } from "./scanners/launch.js";
 import { createSafeMantisProviderPlan } from "./scanners/mantis-http-runner.js";
-import { resolveBeforeLaunch } from "./scanners/scan-selection.js";
+import { resolveScanLaunchSelection } from "./scanners/scan-selection.js";
 import type { ScanLaunchPlan } from "./connections/launch-plan.js";
 import type { SafeVulnHunterProviderPlan } from "./scanners/vulnhunter-runtime.js";
+import {
+  isCodexSecurityApiPlan,
+  resolveCodexSecurityApiKey,
+} from "./scanners/codex-security-api-bridge.js";
 import { refreshMantisRunFromDisk } from "./scanners/mantis-reconcile.js";
 import { refreshVulnHunterRunFromDisk } from "./scanners/vulnhunter-reconcile.js";
 import { getProviderRuntime } from "./provider-runtime.js";
@@ -329,48 +334,64 @@ export async function startScan(req: StartScanRequest): Promise<ScanRun> {
   const displayName = req.displayName?.trim() || path.basename(repositoryPath);
   const id = nanoid(12);
   const outputDir = path.join(SCANS_ROOT, safeName(displayName), `csb-${safeName(displayName)}-${id}`);
-  const prepared = resolveBeforeLaunch({
+  const providerRuntime = getProviderRuntime();
+  const selection = resolveScanLaunchSelection({
     request: req,
     scanId: id,
-    launchPlans: getProviderRuntime().launchPlans,
-    prepareLaunch: (selection) => {
-      // No worker config or process exists until the immutable connection snapshot
-      // has been accepted. Unsupported runner kinds fail in the selection boundary.
-      fs.mkdirSync(outputDir, { recursive: true, mode: 0o700 });
-      fs.mkdirSync(RUNS_DIR, { recursive: true });
-
-      const model = selection.model ?? req.model ?? scanner.models[0]?.id ?? "gpt-5.6-sol";
-      const effort = req.effort || "high";
-      const mode = req.mode || "standard";
-      const launch = selection.plan?.runnerKind === "agent-session" &&
-          selection.plan.engine === "mantis"
-        ? prepareMantisHttpLaunch({
-          request: selection.request,
-          repositoryPath,
-          outputDir,
-          model,
-          effort: String(effort),
-          mode,
-          providerKind: selection.plan.providerKind,
-          mantisProviderPlan: createSafeMantisProviderPlan(selection.plan),
-        })
-        : prepareScannerLaunch({
-          request: selection.request,
-          repositoryPath,
-          outputDir,
-          model,
-          effort: String(effort),
-          mode,
-          vulnhunterProviderPlan: vulnhunterProviderPlan(id, selection.plan),
-          providerKind: selection.plan?.engine === "vulnhunter" &&
-              selection.plan.runnerKind === "agent-session"
-            ? selection.plan.providerKind
-            : undefined,
-        });
-      return { model, effort, mode, launch };
-    },
+    launchPlans: providerRuntime.launchPlans,
   });
-  const { model, effort, mode, launch } = prepared.launch;
+  const codexSecurityApiKey = selection.plan !== null && isCodexSecurityApiPlan(selection.plan)
+    ? await resolveCodexSecurityApiKey({
+      plan: selection.plan,
+      connection: providerRuntime.store.get(selection.plan.connectionId),
+      vault: providerRuntime.vault,
+    })
+    : null;
+
+  // No output directory, worker config, or child process exists until the
+  // immutable plan has passed and the exact Codex Security API tuple, when
+  // selected, has resolved its vault credential.
+  fs.mkdirSync(outputDir, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(RUNS_DIR, { recursive: true });
+
+  const model = selection.model ?? req.model ?? scanner.models[0]?.id ?? "gpt-5.6-sol";
+  const effort = req.effort || "high";
+  const mode = req.mode || "standard";
+  const launch = codexSecurityApiKey !== null
+    ? prepareCodexSecurityApiLaunch({
+      request: selection.request,
+      repositoryPath,
+      outputDir,
+      model,
+      effort: String(effort),
+      mode,
+      apiKey: codexSecurityApiKey,
+    })
+    : selection.plan?.runnerKind === "agent-session" &&
+        selection.plan.engine === "mantis"
+      ? prepareMantisHttpLaunch({
+        request: selection.request,
+        repositoryPath,
+        outputDir,
+        model,
+        effort: String(effort),
+        mode,
+        providerKind: selection.plan.providerKind,
+        mantisProviderPlan: createSafeMantisProviderPlan(selection.plan),
+      })
+      : prepareScannerLaunch({
+        request: selection.request,
+        repositoryPath,
+        outputDir,
+        model,
+        effort: String(effort),
+        mode,
+        vulnhunterProviderPlan: vulnhunterProviderPlan(id, selection.plan),
+        providerKind: selection.plan?.engine === "vulnhunter" &&
+            selection.plan.runnerKind === "agent-session"
+          ? selection.plan.providerKind
+          : undefined,
+      });
 
   const startedAt = new Date().toISOString();
   const initialProgress = progressForStatus("running", outputDir, mode, startedAt);
@@ -411,17 +432,6 @@ export async function startScan(req: StartScanRequest): Promise<ScanRun> {
   };
   upsertRun(run);
 
-  const child = spawn(launch.command, launch.args, {
-    cwd: launch.cwd,
-    env: launch.env,
-    // Own process group so an API restart does not SIGTERM long-running scans.
-    detached: true,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-
-  run.pid = child.pid ?? null;
-  upsertRun(run);
-
   const redactionScope = `scan/${id}`;
   globalSecretRedactor.register(redactionScope, processSecretValues(launch.env));
   let redactionScopeReleased = false;
@@ -430,6 +440,23 @@ export async function startScan(req: StartScanRequest): Promise<ScanRun> {
     redactionScopeReleased = true;
     globalSecretRedactor.unregister(redactionScope);
   };
+
+  let child: ChildProcess;
+  try {
+    child = spawn(launch.command, launch.args, {
+      cwd: launch.cwd,
+      env: launch.env,
+      // Own process group so an API restart does not SIGTERM long-running scans.
+      detached: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (error) {
+    releaseRedactionScope();
+    throw error;
+  }
+
+  run.pid = child.pid ?? null;
+  upsertRun(run);
 
   const activeScan: ActiveScan = {
     id,

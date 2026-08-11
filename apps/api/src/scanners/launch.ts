@@ -61,6 +61,13 @@ export interface ScannerLaunchInput {
   providerKind?: string;
 }
 
+export interface CodexSecurityApiLaunchInput extends ScannerLaunchInput {
+  /** Secret material from the selected vault; never serialized into a config or command. */
+  apiKey: string;
+  /** Injectable only to make the child-environment boundary testable. */
+  environment?: NodeJS.ProcessEnv;
+}
+
 export interface MantisHttpLaunchInput extends ScannerLaunchInput {
   /** Trusted runtime metadata, never serialized into the worker config. */
   providerKind: string;
@@ -99,7 +106,10 @@ function recipeHash(input: {
     .digest("hex");
 }
 
-function prepareCodexSecurity(input: ScannerLaunchInput): ScannerLaunch {
+function prepareCodexSecurity(
+  input: ScannerLaunchInput,
+  environment: NodeJS.ProcessEnv = codexSecurityEnvironment(),
+): ScannerLaunch {
   const authMode = input.request.authMode ?? "chatgpt";
   const args = [
     ...CODEX_SECURITY_ARGS_PREFIX,
@@ -141,9 +151,34 @@ function prepareCodexSecurity(input: ScannerLaunchInput): ScannerLaunch {
     command: CODEX_SECURITY_BIN,
     args,
     cwd: input.repositoryPath,
-    env: explicitAuthEnvironment(authMode, codexSecurityEnvironment()),
+    env: explicitAuthEnvironment(authMode, environment),
     displayCommand: `${CODEX_SECURITY_BIN} ${args.join(" ")}`,
   };
+}
+
+/**
+ * Builds the official Codex Security API-key CLI invocation from a secret that
+ * was already resolved from the selected vault. The key is child-env only.
+ */
+export function prepareCodexSecurityApiLaunch(
+  input: CodexSecurityApiLaunchInput,
+): ScannerLaunch {
+  if (!input.apiKey.trim()) throw new Error("Codex Security API credential is unavailable");
+  const environment = { ...(input.environment ?? codexSecurityEnvironment()) };
+  delete environment.CODEX_API_KEY;
+  environment.OPENAI_API_KEY = input.apiKey;
+  return prepareCodexSecurity({
+    request: { ...input.request, authMode: "api-key" },
+    repositoryPath: input.repositoryPath,
+    outputDir: input.outputDir,
+    model: input.model,
+    effort: input.effort,
+    mode: input.mode,
+    ...(input.vulnhunterProviderPlan === undefined
+      ? {}
+      : { vulnhunterProviderPlan: input.vulnhunterProviderPlan }),
+    ...(input.providerKind === undefined ? {} : { providerKind: input.providerKind }),
+  }, environment);
 }
 
 function prepareMantis(input: ScannerLaunchInput): ScannerLaunch {

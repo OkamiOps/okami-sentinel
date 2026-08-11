@@ -311,50 +311,52 @@ test("Mantis accepts direct xAI OAuth only for the pinned xAI route", () => {
   assert.equal(launchPreparationCalls, 1);
 });
 
-test("Codex Security OpenAI API cannot fall through to client or global API-key auth", () => {
+test("Codex Security OpenAI API accepts only the resolved catalog plan, never client or global auth", () => {
   const fixture = resolver(plan({
     engine: "codex-security",
     routeKind: "openai-api",
     runnerKind: "codex-security-contract",
     protocol: "openai-responses",
     scannerAuthMode: "api-key",
-  }));
-  const previousOpenAiKey = process.env.OPENAI_API_KEY;
-  const previousCodexKey = process.env.CODEX_API_KEY;
-  let launchPreparationCalls = 0;
-  process.env.OPENAI_API_KEY = "global-openai-key-must-not-steer";
-  process.env.CODEX_API_KEY = "global-codex-key-must-not-steer";
-
-  try {
-    assert.throws(() => resolveBeforeLaunch({
-      request: {
-        repositoryPath: "/repo",
-        engine: "codex-security",
-        provider: "openai",
-        model: "client-spoofed-model",
-        authMode: "api-key",
-        connection: {
-          connectionId: "openai-session",
-          modelSelectionMode: "catalog",
-          modelId: "gpt-live",
-        },
-      },
+    snapshot: {
       scanId: "scan-codex-api",
-      launchPlans: fixture.resolver,
-      prepareLaunch: () => {
-        launchPreparationCalls += 1;
-        return process.env.OPENAI_API_KEY ?? process.env.CODEX_API_KEY;
+      connectionId: "openai-session",
+      routeKind: "openai-api",
+      modelSelectionMode: "catalog",
+      modelId: "gpt-live",
+      capabilityCheckId: null,
+      capturedAt: "2026-08-11T12:00:00.000Z",
+    },
+  }));
+  let launchPreparationCalls = 0;
+  const result = resolveBeforeLaunch({
+    request: {
+      repositoryPath: "/repo",
+      engine: "codex-security",
+      provider: "openai",
+      model: "client-spoofed-model",
+      authMode: "api-key",
+      connection: {
+        connectionId: "openai-session",
+        modelSelectionMode: "catalog",
+        modelId: "gpt-live",
       },
-    }), (error: unknown) =>
-      error instanceof ScanSelectionError && error.code === "provider_runner_unavailable");
-  } finally {
-    if (previousOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
-    else process.env.OPENAI_API_KEY = previousOpenAiKey;
-    if (previousCodexKey === undefined) delete process.env.CODEX_API_KEY;
-    else process.env.CODEX_API_KEY = previousCodexKey;
-  }
+    },
+    scanId: "scan-codex-api",
+    launchPlans: fixture.resolver,
+    prepareLaunch: (selection) => {
+      launchPreparationCalls += 1;
+      return selection.request;
+    },
+  });
 
-  assert.equal(launchPreparationCalls, 0);
+  assert.equal(result.selection.request.provider, "openai");
+  assert.equal(result.selection.request.model, "gpt-live");
+  assert.equal(result.selection.request.authMode, "api-key");
+  assert.equal(result.launch.model, "gpt-live");
+  assert.equal(result.launch.authMode, "api-key");
+
+  assert.equal(launchPreparationCalls, 1);
 });
 
 test("Codex Security keeps the two scoped local session routes launchable", () => {

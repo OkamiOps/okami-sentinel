@@ -8,6 +8,7 @@ import type {
   ScanLaunchPlan,
 } from "../connections/launch-plan.js";
 import { isHttpAgentRouteProtocolSupported } from "../agent/http-agent-upstream.js";
+import { isCodexSecurityApiPlan } from "./codex-security-api-bridge.js";
 
 const SCOPED_CODEX_SECURITY_SESSION_ROUTES = new Set([
   "openai-codex-local",
@@ -123,7 +124,8 @@ export function resolveScanLaunchSelection(
   }
   if (
     plan.runnerKind === "codex-security-contract" &&
-    !SCOPED_CODEX_SECURITY_SESSION_ROUTES.has(plan.routeKind)
+    !SCOPED_CODEX_SECURITY_SESSION_ROUTES.has(plan.routeKind) &&
+    !isCodexSecurityApiPlan(plan)
   ) {
     throw new ScanSelectionError("provider_runner_unavailable");
   }

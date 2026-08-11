@@ -57,12 +57,6 @@ export interface CompatibilityInput {
 
 export const DEFAULT_CAPABILITY_PROBE_MAX_AGE_MS = 60 * 60 * 1000;
 
-const CODEX_SECURITY_ROUTES = new Set([
-  "openai-codex-local",
-  "openai-chatgpt-app-server",
-  "openai-api",
-]);
-
 /**
  * Resolves only persisted server-side facts. This function never reaches a
  * provider, reads a vault, starts a process, or accepts client capability flags.
@@ -87,7 +81,7 @@ export function resolveCompatibility(
   if (input.engine === "codex-security") {
     if (
       input.connection.providerKind !== "openai" ||
-      !CODEX_SECURITY_ROUTES.has(input.connection.routeKind)
+      !isCodexSecurityRoute(input.connection)
     ) {
       return blocked(base, ["codex_security_provider_unsupported"]);
     }
@@ -141,6 +135,16 @@ export function resolveCompatibility(
       input.probe!.id,
     ),
   );
+}
+
+function isCodexSecurityRoute(connection: ProviderConnection): boolean {
+  if (connection.routeKind === "openai-api") {
+    return connection.transport === "http-inference" &&
+      connection.authKind === "api-key" &&
+      connection.protocol === "openai-responses";
+  }
+  return connection.routeKind === "openai-codex-local" ||
+    connection.routeKind === "openai-chatgpt-app-server";
 }
 
 function selectionReasons(input: CompatibilityInput): CompatibilityReason[] {
