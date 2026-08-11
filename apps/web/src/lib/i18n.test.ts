@@ -27,6 +27,20 @@ test("translates the connection workbench in every supported locale", () => {
   assert.equal(translate("fr", "connections.auth.existing-session"), "Session locale existante");
 });
 
+test("localizes terminal connection errors and their retry action", () => {
+  const retryByLocale = {
+    "pt-BR": "Tentar novamente",
+    en: "Try again",
+    es: "Intentar de nuevo",
+    de: "Erneut versuchen",
+    fr: "Réessayer",
+  } as const;
+  for (const locale of ["pt-BR", "en", "es", "de", "fr"] as const) {
+    assert.notEqual(translate(locale, "connections.error"), "");
+    assert.equal(translate(locale, "common.retry"), retryByLocale[locale]);
+  }
+});
+
 test("localizes every provider preset label and its critical setup guidance", () => {
   const customBundleKeys = [
     "connections.preset.customBundleRequiredHelp",

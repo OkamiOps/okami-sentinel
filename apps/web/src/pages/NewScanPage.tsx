@@ -357,7 +357,7 @@ export function NewScanPage() {
       )}
 
       <form onSubmit={(event) => void submit(event)}>
-        <div className="grid gap-4 2xl:grid-cols-[minmax(18rem,.88fr)_minmax(36rem,1.45fr)_minmax(19rem,.78fr)]">
+        <div className="grid gap-4 xl:grid-cols-[minmax(18rem,.88fr)_minmax(36rem,1.45fr)_minmax(19rem,.78fr)]">
           <Panel label="STAGE 01 / TARGET" title={t("newScan.target")}>
             <div className="border-b p-4">
               <label className="bench-label" htmlFor="repo">
