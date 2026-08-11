@@ -209,14 +209,14 @@ test("OpenAI chat closes tools and enables JSON mode after results.write is cons
   }), { code: "agent_protocol_error" });
 });
 
-test("OpenAI chat rejects a results.write batch before any parallel tool side effect", () => {
+test("OpenAI chat parses a safe workspace read followed by results.write batch", () => {
   const adapter = openAiChat.createOpenAiChatWireAdapter({
     model: model("free-tool-model"),
     instructions: "Write exactly one artifact.",
     routeKind: "openrouter-api",
   });
 
-  assert.throws(() => adapter.readResponse({
+  const normalized = adapter.readResponse({
     choices: [{ message: { tool_calls: [
       {
         id: "read-1",
@@ -232,7 +232,16 @@ test("OpenAI chat rejects a results.write batch before any parallel tool side ef
         },
       },
     ] } }],
-  }), { code: "agent_protocol_error" });
+  });
+
+  assert.deepEqual(normalized.toolCalls, [
+    { id: "read-1", name: "workspace.read", input: { path: "README.md" } },
+    {
+      id: "write-1",
+      name: "results.write",
+      input: { path: "architecture.json", content: { stage: "architecture" } },
+    },
+  ]);
 });
 
 function chatBody(request: AgentWireRequest): {

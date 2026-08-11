@@ -9,7 +9,10 @@ import { probeOpenAiChatSession } from "./openai-chat-session.js";
 import {
   createConstrainedWireSession,
   type AgentSessionTimer,
+  type AgentToolCall,
+  type AgentToolResult,
   type AgentUpstreamRequest,
+  type NormalizedModelReply,
 } from "./session-types.js";
 
 test("a session cannot be created from an unmeasured tool capability", async () => {
@@ -384,6 +387,97 @@ test("a hanging remote cancellation cannot block local session finalization", as
   assert.deepEqual(unhandled, []);
 });
 
+test("the constrained session executes a read before a terminal results.write in one reply", async () => {
+  const toolCalls: Array<{ name: string; input: unknown }> = [];
+  const requestedWith: AgentToolResult[][] = [];
+  const replies: NormalizedModelReply[] = [
+    {
+      toolCalls: [
+        { id: "read-1", name: "workspace.read", input: { path: "index.ts" } },
+        { id: "write-1", name: "results.write", input: { path: "report.json", content: "{}" } },
+      ],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    { toolCalls: [], text: "complete", structured: null, usage: null },
+  ];
+  const adapter = transcriptAdapter(replies, requestedWith);
+  const session = createConstrainedWireSession({
+    limits: DEFAULT_AGENT_LIMITS,
+    signal: new AbortController().signal,
+    host: {
+      minimumOutputBytes() {
+        return 0;
+      },
+      async call(name, input) {
+        toolCalls.push({ name, input });
+        return { content: `${name}-result` };
+      },
+    },
+    upstream: { async request() { return {}; } },
+    adapter,
+  });
+
+  await collect(session.run(), []);
+
+  assert.deepEqual(toolCalls, [
+    { name: "workspace.read", input: { path: "index.ts" } },
+    { name: "results.write", input: { path: "report.json", content: "{}" } },
+  ]);
+  assert.deepEqual(requestedWith, [
+    [],
+    [
+      { callId: "read-1", name: "workspace.read", content: "workspace.read-result" },
+      { callId: "write-1", name: "results.write", content: "results.write-result" },
+    ],
+  ]);
+});
+
+test("the constrained session rejects a call after results.write before host I/O", async () => {
+  const toolCalls: string[] = [];
+  const session = createConstrainedWireSession({
+    limits: DEFAULT_AGENT_LIMITS,
+    signal: new AbortController().signal,
+    host: recordingToolHost(toolCalls),
+    upstream: { async request() { return {}; } },
+    adapter: transcriptAdapter([{
+      toolCalls: [
+        { id: "write-1", name: "results.write", input: { path: "report.json", content: "{}" } },
+        { id: "read-1", name: "workspace.read", input: { path: "index.ts" } },
+      ],
+      text: null,
+      structured: null,
+      usage: null,
+    }]),
+  });
+
+  await assert.rejects(collect(session.run(), []), { code: "agent_protocol_error" });
+  assert.deepEqual(toolCalls, []);
+});
+
+test("the constrained session rejects duplicate results.write calls before host I/O", async () => {
+  const toolCalls: string[] = [];
+  const session = createConstrainedWireSession({
+    limits: DEFAULT_AGENT_LIMITS,
+    signal: new AbortController().signal,
+    host: recordingToolHost(toolCalls),
+    upstream: { async request() { return {}; } },
+    adapter: transcriptAdapter([{
+      toolCalls: [
+        { id: "write-1", name: "results.write", input: { path: "report-one.json", content: "{}" } },
+        { id: "write-2", name: "results.write", input: { path: "report-two.json", content: "{}" } },
+      ],
+      text: null,
+      structured: null,
+      usage: null,
+    }]),
+  });
+
+  await assert.rejects(collect(session.run(), []), { code: "agent_protocol_error" });
+  assert.deepEqual(toolCalls, []);
+});
+
 test("remaining output budget prevents results.write before host I/O", async (t) => {
   const fixture = await fixtureRoots("runner-write-budget");
   t.after(fixture.cleanup);
@@ -648,6 +742,35 @@ function fakeTranscript(replies: unknown[]) {
       const reply = replies.shift();
       if (reply === undefined) throw new Error("fake transcript exhausted");
       return reply;
+    },
+  };
+}
+
+function transcriptAdapter(
+  replies: NormalizedModelReply[],
+  requestedWith: AgentToolResult[][] = [],
+) {
+  return {
+    nextRequest(toolResults: readonly AgentToolResult[]) {
+      requestedWith.push([...toolResults]);
+      return { operation: "chat-completions" as const, body: {} };
+    },
+    readResponse() {
+      const reply = replies.shift();
+      if (reply === undefined) throw new Error("test transcript exhausted");
+      return reply;
+    },
+  };
+}
+
+function recordingToolHost(toolCalls: string[]) {
+  return {
+    minimumOutputBytes() {
+      return 0;
+    },
+    async call(name: AgentToolCall["name"]) {
+      toolCalls.push(name);
+      return { content: `${name}-result` };
     },
   };
 }

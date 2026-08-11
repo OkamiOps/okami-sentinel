@@ -372,6 +372,7 @@ class ConstrainedWireSession implements AgentSession {
           return;
         }
 
+        validateTerminalResultsWrite(reply.toolCalls);
         toolResults = [];
         for (const call of reply.toolCalls) {
           this.#throwIfStopped();
@@ -450,6 +451,17 @@ class ConstrainedWireSession implements AgentSession {
       this.#remoteCancellation = boundedCancellation(operation, this.#timer);
     }
     return this.#remoteCancellation;
+  }
+}
+
+function validateTerminalResultsWrite(toolCalls: readonly AgentToolCall[]): void {
+  let sawResultsWrite = false;
+  for (const [index, call] of toolCalls.entries()) {
+    if (call.name !== "results.write") continue;
+    if (sawResultsWrite || index !== toolCalls.length - 1) {
+      throw new AgentSessionError("agent_protocol_error");
+    }
+    sawResultsWrite = true;
   }
 }
 

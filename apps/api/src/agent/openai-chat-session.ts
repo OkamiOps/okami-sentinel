@@ -91,9 +91,6 @@ export function createOpenAiChatWireAdapter(spec: OpenAiChatSessionSpec): WireSe
       const message = record(choice.message);
       const calls = readOpenAiChatCalls(message.tool_calls);
       if (finalizing && calls.length > 0) throw protocolError();
-      if (calls.length > 1 && calls.some((call) => call.name === "results.write")) {
-        throw protocolError();
-      }
       const text = textValue(message.content);
       const structured = parseStructuredResult(message.parsed ?? root.output_parsed, text);
       const reasoningContent = replayMimoReasoning ? opaqueReasoningContent(message.reasoning_content) : undefined;
