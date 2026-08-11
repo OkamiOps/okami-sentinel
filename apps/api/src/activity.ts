@@ -84,8 +84,62 @@ export function purgeScanArtifacts(
   }
 
   const resolvedScanDir = path.resolve(scanDir);
-  fs.rmSync(resolvedScanDir, { recursive: true, force: true });
+  unlockManagedArtifactTree(resolvedScanDir);
+  fs.rmSync(resolvedScanDir, {
+    recursive: true,
+    force: true,
+    maxRetries: 3,
+    retryDelay: 50,
+  });
   fs.rmSync(cliLogPath(resolvedScanDir), { force: true });
+}
+
+function unlockManagedArtifactTree(candidate: string): void {
+  let metadata: fs.Stats;
+  try {
+    metadata = fs.lstatSync(candidate);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+
+  if (metadata.isSymbolicLink()) return;
+
+  if (metadata.isDirectory()) {
+    chmodEntryWithoutFollowingLinks(candidate, metadata, 0o700);
+    for (const entry of fs.readdirSync(candidate)) {
+      unlockManagedArtifactTree(path.join(candidate, entry));
+    }
+    return;
+  }
+
+  if (metadata.isFile()) {
+    chmodEntryWithoutFollowingLinks(candidate, metadata, 0o600);
+  }
+}
+
+function chmodEntryWithoutFollowingLinks(
+  candidate: string,
+  expected: fs.Stats,
+  mode: number,
+): void {
+  const noFollow = typeof fs.constants.O_NOFOLLOW === "number"
+    ? fs.constants.O_NOFOLLOW
+    : 0;
+  let descriptor: number | null = null;
+  try {
+    descriptor = fs.openSync(candidate, fs.constants.O_RDONLY | noFollow);
+    const opened = fs.fstatSync(descriptor);
+    if (opened.dev !== expected.dev || opened.ino !== expected.ino) {
+      throw new Error("Artefato do scan mudou durante a exclusão; tente novamente.");
+    }
+    fs.fchmodSync(descriptor, mode);
+  } catch (error) {
+    if (["ENOENT", "ELOOP"].includes((error as NodeJS.ErrnoException).code ?? "")) return;
+    throw error;
+  } finally {
+    if (descriptor !== null) fs.closeSync(descriptor);
+  }
 }
 
 export function isManagedScanArtifactDirectory(

@@ -1314,6 +1314,45 @@ test("failed VulnHunter runs preserve normalized findings as incomplete evidence
   }
 });
 
+test("VulnHunter reconciliation closes an orphaned running record without runtime or pid", () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-vulnhunter-orphan-"));
+  const startedAt = "2026-08-11T21:22:28.705Z";
+
+  try {
+    const refreshed = refreshVulnHunterRunFromDisk({
+      id: "orphaned-vulnhunter-run",
+      displayName: "auto-probe-stale-fixture",
+      repositoryPath: fixtureRoot,
+      revision: null,
+      scanDir: fixtureRoot,
+      status: "running",
+      model: "MiniMax-M3",
+      effort: null,
+      mode: "standard",
+      engine: "vulnhunter",
+      provider: "minimax",
+      authMode: null,
+      scannerVersion: null,
+      recipeHash: "fixture",
+      startedAt,
+      completedAt: null,
+      durationMs: null,
+      cost: null,
+      usage: null,
+      severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0, total: 0 },
+      source: "benchmark",
+      pid: null,
+      execution: null,
+    });
+
+    assert.equal(refreshed.status, "failed");
+    assert.equal(refreshed.pid, null);
+    assert.ok(refreshed.completedAt);
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
 test("VulnHunter reconciliation preserves cache-write usage from a legacy reported runtime", () => {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-vulnhunter-cost-"));
   const startedAt = "2026-08-10T18:00:00.000Z";

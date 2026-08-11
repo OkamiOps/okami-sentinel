@@ -69,6 +69,58 @@ test("purges a managed scan directory together with its runtime log", () => {
   }
 });
 
+test("purges a managed Portable snapshot after it was locked read-only", () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "csb-cleanup-readonly-"));
+  const managedRoot = path.join(fixtureRoot, "scans");
+  const scanDir = path.join(managedRoot, "repository", "failed-scan");
+  const snapshotDir = path.join(scanDir, "portable-codex-security-snapshot", "src");
+  const snapshotFile = path.join(snapshotDir, "index.ts");
+
+  fs.mkdirSync(snapshotDir, { recursive: true });
+  fs.writeFileSync(snapshotFile, "export {};\n", "utf8");
+  fs.chmodSync(snapshotFile, 0o400);
+  fs.chmodSync(snapshotDir, 0o500);
+  fs.chmodSync(path.dirname(snapshotDir), 0o500);
+
+  try {
+    purgeScanArtifacts(scanDir, [managedRoot]);
+
+    assert.equal(fs.existsSync(scanDir), false);
+  } finally {
+    if (fs.existsSync(path.dirname(snapshotDir))) fs.chmodSync(path.dirname(snapshotDir), 0o700);
+    if (fs.existsSync(snapshotDir)) fs.chmodSync(snapshotDir, 0o700);
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("purging a managed snapshot never follows a descendant symbolic link", () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "csb-cleanup-link-"));
+  const managedRoot = path.join(fixtureRoot, "scans");
+  const scanDir = path.join(managedRoot, "repository", "failed-scan");
+  const snapshotDir = path.join(scanDir, "portable-codex-security-snapshot");
+  const outsideDir = path.join(fixtureRoot, "outside");
+  const outsideFile = path.join(outsideDir, "keep.txt");
+
+  fs.mkdirSync(snapshotDir, { recursive: true });
+  fs.mkdirSync(outsideDir, { recursive: true });
+  fs.writeFileSync(outsideFile, "keep", "utf8");
+  fs.chmodSync(outsideFile, 0o400);
+  fs.symlinkSync(outsideDir, path.join(snapshotDir, "outside-link"), "dir");
+  fs.chmodSync(snapshotDir, 0o500);
+
+  try {
+    purgeScanArtifacts(scanDir, [managedRoot]);
+
+    assert.equal(fs.existsSync(scanDir), false);
+    assert.equal(fs.readFileSync(outsideFile, "utf8"), "keep");
+    assert.equal(fs.statSync(outsideFile).mode & 0o777, 0o400);
+  } finally {
+    if (fs.existsSync(snapshotDir)) fs.chmodSync(snapshotDir, 0o700);
+    fs.chmodSync(outsideFile, 0o600);
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
 test("refuses to purge a scan directory outside managed roots", () => {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "csb-cleanup-"));
   const managedRoot = path.join(fixtureRoot, "managed-scans");

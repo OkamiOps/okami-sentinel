@@ -6,7 +6,13 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export const ROOT_DIR = path.resolve(__dirname, "../../..");
-export const DATA_DIR = path.join(ROOT_DIR, "data");
+const configuredDataDir = process.env.CSB_DATA_DIR?.trim();
+const testDataDir = process.env.NODE_TEST_CONTEXT
+  ? path.join(os.tmpdir(), `csb-api-test-${process.pid}`)
+  : null;
+export const DATA_DIR = path.resolve(
+  configuredDataDir || testDataDir || path.join(ROOT_DIR, "data"),
+);
 export const BENCHMARK_DB_PATH = path.join(DATA_DIR, "benchmark.db");
 export const RUNS_DIR = path.join(DATA_DIR, "runs");
 export const GATES_DIR = path.join(DATA_DIR, "gates");

@@ -242,6 +242,98 @@ test("uses an exact full OpenRouter model id for a compatible custom provider", 
   assert.equal(estimated.cost?.pricingMatch, "exact");
 });
 
+test("prices an unqualified compatible model when OpenRouter has one unique catalog match", () => {
+  const run = {
+    engine: "mantis",
+    provider: "custom",
+    authMode: "api-key",
+    model: "model-v1",
+    cost: null,
+    usage: {
+      inputTokens: 10_000,
+      cachedInputTokens: null,
+      cacheWriteInputTokens: null,
+      outputTokens: 2_000,
+    },
+    connection: {
+      connectionId: "custom-connection",
+      routeKind: "custom-openai-compatible",
+      protocol: "openai-chat",
+      authKind: "api-key",
+      capabilityCheckId: null,
+    },
+  } as ScanRun;
+  const model: OpenRouterModel = {
+    id: "new-vendor/model-v1",
+    pricing: { prompt: "0.000001", completion: "0.000002" },
+  };
+
+  const estimated = estimateScanWithOpenRouterPricing(run, [model], "2026-08-11");
+  assert.equal(estimated.cost?.estimatedUsd, 0.014);
+  assert.equal(estimated.cost?.pricingModel, "new-vendor/model-v1");
+  assert.equal(estimated.cost?.pricingMatch, "catalog-unique");
+  assert.equal(estimated.cost?.estimateKind, "upper-bound");
+});
+
+test("does not guess a vendor when an unqualified model is ambiguous in OpenRouter", () => {
+  const run = {
+    engine: "vulnhunter",
+    provider: "custom",
+    authMode: "api-key",
+    model: "model-v1",
+    cost: null,
+    usage: {
+      inputTokens: 10_000,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      outputTokens: 2_000,
+    },
+    connection: {
+      connectionId: "custom-connection",
+      routeKind: "custom-anthropic-compatible",
+      protocol: "anthropic-messages",
+      authKind: "api-key",
+      capabilityCheckId: null,
+    },
+  } as ScanRun;
+  const models: OpenRouterModel[] = ["vendor-a", "vendor-b"].map((vendor) => ({
+    id: `${vendor}/model-v1`,
+    pricing: { prompt: "0.000001", completion: "0.000002" },
+  }));
+
+  assert.strictEqual(
+    estimateScanWithOpenRouterPricing(run, models, "2026-08-11"),
+    run,
+  );
+});
+
+test("does not borrow a same-slug price across direct provider namespaces", () => {
+  const run = {
+    engine: "mantis",
+    provider: "openai",
+    authMode: "api-key",
+    model: "model-v1",
+    cost: null,
+    usage: { inputTokens: 10_000, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 2_000 },
+    connection: {
+      connectionId: "openai-connection",
+      routeKind: "openai-api",
+      protocol: "openai-responses",
+      authKind: "api-key",
+      capabilityCheckId: null,
+    },
+  } as ScanRun;
+  const otherVendor: OpenRouterModel = {
+    id: "other-vendor/model-v1",
+    pricing: { prompt: "0.000001", completion: "0.000002" },
+  };
+
+  assert.strictEqual(
+    estimateScanWithOpenRouterPricing(run, [otherVendor], "2026-08-11"),
+    run,
+  );
+});
+
 test("prices reported Codex Security usage with the approved Spark alias and freezes its rates", () => {
   const run = {
     engine: "codex-security",

@@ -47,7 +47,22 @@ function mappedStatus(
 export function refreshVulnHunterRunFromDisk(run: ScanRun): ScanRun {
   if (run.engine !== "vulnhunter") return run;
   const runtime = readVulnHunterRuntime(run.scanDir);
-  if (!runtime) return run;
+  if (!runtime) {
+    if (run.status !== "running" || processAlive(run.pid)) return run;
+    const severity = countSeverity(path.join(run.scanDir, "findings.json"));
+    const completedAt = run.completedAt ?? new Date().toISOString();
+    return {
+      ...run,
+      status: severity.total > 0 ? "incomplete" : "failed",
+      completedAt,
+      durationMs: run.startedAt
+        ? Date.parse(completedAt) - Date.parse(run.startedAt)
+        : run.durationMs,
+      severity,
+      pid: null,
+      progress: null,
+    };
+  }
   const severity = countSeverity(path.join(run.scanDir, "findings.json"));
   const hasFindings = severity.total > 0;
   const status = mappedStatus(runtime.status, hasFindings, run.pid);

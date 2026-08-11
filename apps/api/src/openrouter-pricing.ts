@@ -43,7 +43,7 @@ interface CatalogState {
 
 interface PricingResolution {
   model: OpenRouterModel;
-  pricingMatch: "exact" | "approved-alias";
+  pricingMatch: "exact" | "catalog-unique" | "approved-alias";
   pricingAliasId?: string;
 }
 
@@ -152,20 +152,31 @@ function openRouterModelId(run: ScanRun): string | null {
 function resolvePricing(
   modelId: string,
   models: OpenRouterModel[],
+  allowCatalogUnique: boolean,
 ): PricingResolution | null {
   const normalizedModelId = modelId.toLowerCase();
   const exact = models.find((candidate) => candidate.id.toLowerCase() === normalizedModelId);
   if (exact) return { model: exact, pricingMatch: "exact" };
 
   const alias = approvedModelAliases.find((candidate) => candidate.id === modelId);
-  if (!alias) return null;
-  const target = models.find((candidate) => candidate.id === alias.targetId);
-  if (!target) return null;
-  return {
-    model: target,
-    pricingMatch: "approved-alias",
-    pricingAliasId: alias.aliasId,
-  };
+  if (alias) {
+    const target = models.find((candidate) => candidate.id === alias.targetId);
+    if (!target) return null;
+    return {
+      model: target,
+      pricingMatch: "approved-alias",
+      pricingAliasId: alias.aliasId,
+    };
+  }
+
+  if (!allowCatalogUnique) return null;
+  const modelSlug = normalizedModelId.slice(normalizedModelId.lastIndexOf("/") + 1);
+  const uniqueMatches = models.filter((candidate) =>
+    candidate.id.toLowerCase().endsWith(`/${modelSlug}`)
+  );
+  return uniqueMatches.length === 1
+    ? { model: uniqueMatches[0]!, pricingMatch: "catalog-unique" }
+    : null;
 }
 
 function pricingSnapshot(pricing: OpenRouterPricing, capturedAt: string): NonNullable<ScanCost["pricingSnapshot"]> {
@@ -199,7 +210,11 @@ export function estimateScanWithOpenRouterPricing(
   const reportedTokens = measured.usage.inputTokens + measured.usage.outputTokens;
   if (reportedTokens <= 0) return run;
   const modelId = openRouterModelId(run);
-  const resolution = modelId ? resolvePricing(modelId, models) : null;
+  const compatibleGateway = run.provider === "openrouter" || run.provider === "custom" ||
+    run.connection?.routeKind.startsWith("custom-") === true;
+  const resolution = modelId
+    ? resolvePricing(modelId, models, compatibleGateway)
+    : null;
   if (!resolution) return run;
   const estimate = calculateOpenRouterCost(measured.usage, resolution.model.pricing);
   if (estimate === null) return run;

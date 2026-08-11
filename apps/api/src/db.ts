@@ -656,7 +656,7 @@ function sanitizeScanCost(value: unknown): ScanCost | null {
   if (value.estimateKind === "upper-bound") {
     cost.estimateKind = value.estimateKind;
   }
-  if (value.pricingMatch === "exact") {
+  if (value.pricingMatch === "exact" || value.pricingMatch === "catalog-unique") {
     cost.pricingMatch = value.pricingMatch;
   } else if (
     value.pricingMatch === "approved-alias" &&
