@@ -1,6 +1,7 @@
 import type {
   CapabilityReport,
   CodexSecurityProfilePreference,
+  ModelReasoningEffort,
   ScanExecutionProvenance,
   ProviderModel,
   ProviderProtocol,
@@ -12,6 +13,7 @@ import type {
 
 import type { StoredProviderConnection } from "../connections-store.js";
 import {
+  effectiveReasoningEffort,
   resolveCompatibility,
   type CompatibilityReason,
   type RunnerKind,
@@ -54,6 +56,8 @@ export interface ScanLaunchPlan {
   runnerKind: RunnerKind;
   protocol: ProviderProtocol;
   model: ProviderModel | null;
+  /** Server-owned effective effort metadata for an actionable runner only. */
+  reasoningEffort?: ModelReasoningEffort;
   capabilityCheckId: string | null;
   /** Execution provenance is either pinned for Codex Security or explicitly absent. */
   execution: ScanExecutionProvenance | null;
@@ -112,6 +116,7 @@ export function createLaunchPlanResolver(
       }
 
       const capturedAt = resolvedAt.toISOString();
+      const reasoningEffort = effectiveReasoningEffort(model, connection, compatibility);
       const execution = input.engine === "codex-security" &&
           compatibility.selectedProfile !== undefined &&
           compatibility.selectedProfile !== null &&
@@ -154,6 +159,7 @@ export function createLaunchPlanResolver(
         runnerKind: compatibility.runnerKind,
         protocol: compatibility.protocol,
         model,
+        ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
         capabilityCheckId: compatibility.capabilityCheckId,
         execution,
         ...(compatibility.runnerKind === "codex-security-contract" ||

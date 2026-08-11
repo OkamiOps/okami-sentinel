@@ -43,11 +43,14 @@ export type ReasoningEffortControl =
 /** Lets the viewport shrink instead of inheriting its scrollable grid width. */
 export const reasoningEffortPanelClass = "min-w-0 border-b p-4 md:border-b-0 md:border-r";
 
-/** Keeps overflow inside the control when a provider publishes many long labels. */
-export const reasoningEffortViewportClass = "min-w-0 max-w-full overflow-x-auto overscroll-x-contain";
+/** The grid owns every published option; it never hides controls offscreen. */
+export const reasoningEffortViewportClass = "min-w-0 max-w-full";
 
-/** One equal-width, readable column per provider-published option; no fixed cap. */
-export const reasoningEffortGridClass = "grid w-max min-w-full grid-flow-col auto-cols-[minmax(8rem,1fr)] border border-border";
+/** Three readable columns on mobile, six on desktop; extra provider values wrap. */
+export const reasoningEffortGridClass = "grid w-full grid-cols-3 gap-px border border-border bg-border sm:grid-cols-6";
+
+/** Each wrapped option paints its own cell so the grid gap closes every edge. */
+export const reasoningEffortOptionClass = "relative h-14 w-full min-w-0 truncate bg-background px-2 font-mono text-[8px] uppercase focus-visible:z-10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary";
 
 export function compatibilityReasonKey(
   reasons: readonly string[],
@@ -116,11 +119,11 @@ export async function validateConnectionCapability(
   return { report, compatibility };
 }
 
-export function reasoningEffortForModel(
-  model: ProviderModel | null,
+export function reasoningEffortForCompatibility(
+  compatibility: ConnectionCompatibility | null,
   selectedEffort: string | null,
 ): ReasoningEffortControl {
-  const metadata = model?.reasoningEffort;
+  const metadata = compatibility?.reasoningEffort;
   if (metadata === undefined || metadata.options.length === 0) {
     return { kind: "provider-managed", options: [], selected: null };
   }
@@ -136,14 +139,34 @@ export function reasoningEffortForModel(
   };
 }
 
-/** The model's own catalog default is the only safe reset across model changes. */
-export function defaultReasoningEffortForModel(model: ProviderModel | null): string | null {
-  const metadata = model?.reasoningEffort;
+/** The server-published default is the only safe reset across route changes. */
+export function defaultReasoningEffortForCompatibility(
+  compatibility: ConnectionCompatibility | null,
+): string | null {
+  const metadata = compatibility?.reasoningEffort;
   return metadata !== undefined &&
     metadata.default !== null &&
     metadata.options.includes(metadata.default)
-    ? metadata.default
-    : null;
+      ? metadata.default
+      : null;
+}
+
+/**
+ * A revalidation temporarily clears compatibility. Keep the user's still
+ * valid choice during that gap, then reconcile it only against the returned
+ * server contract.
+ */
+export function reconcileReasoningEffort(
+  currentEffort: string | null,
+  compatibility: ConnectionCompatibility | null,
+): string | null {
+  if (compatibility === null) return currentEffort;
+  const metadata = compatibility.reasoningEffort;
+  if (metadata === undefined || metadata.options.length === 0) return null;
+  if (currentEffort !== null && metadata.options.includes(currentEffort)) {
+    return currentEffort;
+  }
+  return defaultReasoningEffortForCompatibility(compatibility);
 }
 
 type ConnectionAwareStartInput = Omit<StartScanRequest, "connection" | "provider" | "authMode" | "model"> & {

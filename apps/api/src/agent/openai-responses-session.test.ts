@@ -98,6 +98,23 @@ test("OpenAI Responses continuation omits instructions while preserving response
   ]);
 });
 
+test("OpenAI Responses writes reasoning effort only when the exact model publishes it", () => {
+  const published = createOpenAiResponsesWireAdapter({
+    model: model("gpt-5", {
+      reasoningEffort: { options: ["low", "high"], default: "high" },
+    }),
+    instructions: "Inspect the snapshot.",
+    reasoningEffort: "high",
+  });
+  const unmanaged = createOpenAiResponsesWireAdapter({
+    model: model("gpt-5"),
+    instructions: "Inspect the snapshot.",
+  });
+
+  assert.deepEqual(responseBody(published.nextRequest([])).reasoning, { effort: "high" });
+  assert.equal("reasoning" in responseBody(unmanaged.nextRequest([])), false);
+});
+
 test("OpenAI Responses accepts one fenced JSON completion as structured output", () => {
   const adapter = createOpenAiResponsesWireAdapter({
     model: model("grok-4.5"),
@@ -161,7 +178,7 @@ function responseBody(request: AgentWireRequest): Record<string, unknown> {
   return request.body as Record<string, unknown>;
 }
 
-function model(id: string): ProviderModel {
+function model(id: string, patch: Partial<ProviderModel> = {}): ProviderModel {
   return {
     connectionId: "connection-a",
     id,
@@ -180,5 +197,6 @@ function model(id: string): ProviderModel {
     pricing: null,
     discoveredAt: "2026-08-11T00:00:00.000Z",
     source: "provider-api",
+    ...patch,
   };
 }

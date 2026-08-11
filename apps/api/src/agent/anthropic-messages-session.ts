@@ -2,6 +2,7 @@ import type { ProviderModel } from "@csb/shared";
 
 import {
   AgentSessionError,
+  validateAgentSessionReasoningEffort,
   type AgentToolCall,
   type AgentToolResult,
   type AgentWireRequest,
@@ -14,12 +15,14 @@ import { parseStructuredResult } from "./structured-result.js";
 export interface AnthropicMessagesSessionSpec {
   model: ProviderModel;
   instructions: string;
+  reasoningEffort?: string;
 }
 
 /** Translates the four fixed local tools to Anthropic Messages wire objects. */
 export function createAnthropicMessagesWireAdapter(
   spec: AnthropicMessagesSessionSpec,
 ): WireSessionAdapter {
+  validateAgentSessionReasoningEffort(spec.model, spec.reasoningEffort);
   const messages: unknown[] = [{ role: "user", content: spec.instructions }];
   let finalizing = false;
 
@@ -43,6 +46,7 @@ export function createAnthropicMessagesWireAdapter(
           max_tokens: 4_096,
           messages,
           ...(finalizing ? {} : { tools: anthropicTools() }),
+          ...(spec.reasoningEffort === undefined ? {} : { output_config: { effort: spec.reasoningEffort } }),
         },
       };
     },

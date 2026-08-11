@@ -7,14 +7,16 @@ import {
   canResolveConnectionWithEngine,
   compatibilityReasonKey,
   connectionSelectionFor,
-  defaultReasoningEffortForModel,
+  defaultReasoningEffortForCompatibility,
   loadLiveConnectionModels,
   isProbeOnlyCompatibilityBlock,
   validateConnectionCapability,
   reasoningEffortPanelClass,
   reasoningEffortViewportClass,
   reasoningEffortGridClass,
-  reasoningEffortForModel,
+  reasoningEffortOptionClass,
+  reasoningEffortForCompatibility,
+  reconcileReasoningEffort,
 } from "./new-scan-routing.js";
 import type { CapabilityValidationClient } from "./new-scan-routing.js";
 
@@ -170,7 +172,7 @@ test("builds a connection-only scan payload after matching server eligibility", 
     compatibility,
     remoteRepositoryConfirmed: true,
     effort: "high",
-    reasoning: reasoningEffortForModel(selectedModel, "high"),
+    reasoning: reasoningEffortForCompatibility({ ...compatibility, reasoningEffort: selectedModel.reasoningEffort }, "high"),
     mode: "standard",
     maxCostUsd: undefined,
     paths: ["src"],
@@ -200,7 +202,7 @@ test("does not build a scan request from a stale or blocked server compatibility
     compatibility: { ...selection, eligible: false, reasons: ["capability_probe_missing"] },
     remoteRepositoryConfirmed: true,
     effort: undefined,
-    reasoning: reasoningEffortForModel(model("provider-managed"), null),
+    reasoning: reasoningEffortForCompatibility(null, null),
     mode: "standard",
     paths: [],
   });
@@ -213,7 +215,7 @@ test("does not build a scan request from a stale or blocked server compatibility
     compatibility: { ...selection, eligible: false, reasons: ["connection_not_ready"] },
     remoteRepositoryConfirmed: false,
     effort: "high",
-    reasoning: reasoningEffortForModel(model("provider-managed"), "high"),
+    reasoning: reasoningEffortForCompatibility(null, "high"),
     mode: "standard",
     maxCostUsd: undefined,
     paths: [],
@@ -225,7 +227,7 @@ test("does not build a scan request from a stale or blocked server compatibility
     compatibility: { ...selection, eligible: false, reasons: ["capability_probe_missing", "connection_not_ready"] },
     remoteRepositoryConfirmed: true,
     effort: undefined,
-    reasoning: reasoningEffortForModel(model("provider-managed"), null),
+    reasoning: reasoningEffortForCompatibility(null, null),
     mode: "standard",
     paths: [],
   }), null);
@@ -236,7 +238,7 @@ test("does not build a scan request from a stale or blocked server compatibility
     compatibility: { ...selection, eligible: false, reasons: ["provider_runner_unavailable"] },
     remoteRepositoryConfirmed: true,
     effort: undefined,
-    reasoning: reasoningEffortForModel(model("provider-managed"), null),
+    reasoning: reasoningEffortForCompatibility(null, null),
     mode: "standard",
     paths: [],
   }), null);
@@ -247,14 +249,14 @@ test("does not build a scan request from a stale or blocked server compatibility
     compatibility: { connectionId: "other", modelSelectionMode: "catalog", modelId: "live-model", eligible: true, reasons: [] },
     remoteRepositoryConfirmed: false,
     effort: "high",
-    reasoning: reasoningEffortForModel(model("provider-managed"), "high"),
+    reasoning: reasoningEffortForCompatibility(null, "high"),
     mode: "standard",
     maxCostUsd: undefined,
     paths: [],
   }), null);
 });
 
-test("uses only the selected model reasoning metadata and omits provider-managed effort", () => {
+test("uses only the server compatibility reasoning metadata and omits provider-managed effort", () => {
   const configured = {
     ...model("configured-model"),
     reasoningEffort: {
@@ -262,31 +264,37 @@ test("uses only the selected model reasoning metadata and omits provider-managed
       default: "high",
     },
   };
-  assert.deepEqual(reasoningEffortForModel(configured, "minimal"), {
+  const selection = connectionSelectionFor(connection(), [configured], "configured-model")!;
+  const compatibility: ConnectionCompatibility = {
+    ...selection,
+    eligible: true,
+    reasons: [],
+    reasoningEffort: { options: ["low", "high", "max", "ultra"], default: "high" },
+  };
+  assert.deepEqual(reasoningEffortForCompatibility(compatibility, "minimal"), {
     kind: "configurable",
-    options: ["low", "high"],
+    options: ["low", "high", "max", "ultra"],
     selected: "high",
   });
-  assert.deepEqual(reasoningEffortForModel(configured, "low"), {
+  assert.deepEqual(reasoningEffortForCompatibility(compatibility, "ultra"), {
     kind: "configurable",
-    options: ["low", "high"],
-    selected: "low",
+    options: ["low", "high", "max", "ultra"],
+    selected: "ultra",
   });
-  assert.deepEqual(reasoningEffortForModel(model("provider-managed"), "high"), {
+  assert.deepEqual(reasoningEffortForCompatibility({ ...selection, eligible: true, reasons: [] }, "high"), {
     kind: "provider-managed",
     options: [],
     selected: null,
   });
 
-  const selection = connectionSelectionFor(connection(), [model("provider-managed")], "provider-managed")!;
   const request = buildConnectionAwareStartRequest({
     repositoryPath: "/workspace/repository",
     engine: "codex-security",
     selection,
     compatibility: { ...selection, eligible: true, reasons: [] },
     remoteRepositoryConfirmed: true,
-    effort: reasoningEffortForModel(model("provider-managed"), "high").selected ?? undefined,
-    reasoning: reasoningEffortForModel(model("provider-managed"), "high"),
+    effort: reasoningEffortForCompatibility(null, "high").selected ?? undefined,
+    reasoning: reasoningEffortForCompatibility(null, "high"),
     mode: "standard",
     paths: [],
   });
@@ -298,14 +306,14 @@ test("does not invent a default when a provider publishes options without one", 
     ...model("configured-model"),
     reasoningEffort: { options: ["economy", "forensic"], default: null },
   };
-  const reasoning = reasoningEffortForModel(configured, "untrusted-browser-value");
+  const selection = connectionSelectionFor(connection(), [configured], "configured-model")!;
+  const reasoning = reasoningEffortForCompatibility({ ...selection, eligible: true, reasons: [], reasoningEffort: configured.reasoningEffort }, "untrusted-browser-value");
   assert.deepEqual(reasoning, {
     kind: "configurable",
     options: ["economy", "forensic"],
     selected: null,
   });
 
-  const selection = connectionSelectionFor(connection(), [configured], "configured-model")!;
   const request = buildConnectionAwareStartRequest({
     repositoryPath: "/workspace/repository",
     engine: "codex-security",
@@ -320,22 +328,48 @@ test("does not invent a default when a provider publishes options without one", 
   assert.equal("effort" in request!, false);
 });
 
-test("resets a model change to that model's own published default", () => {
-  const first = {
-    ...model("first-model"),
+test("resets a route change to the server-published default", () => {
+  const selection = connectionSelectionFor(connection(), [model("configured")], "configured")!;
+  assert.equal(defaultReasoningEffortForCompatibility({
+    ...selection,
+    eligible: true,
+    reasons: [],
     reasoningEffort: { options: ["low", "high"], default: "low" },
-  };
-  const second = {
-    ...model("second-model"),
+  }), "low");
+  assert.equal(defaultReasoningEffortForCompatibility({
+    ...selection,
+    eligible: true,
+    reasons: [],
     reasoningEffort: { options: ["low", "high", "ultra"], default: "high" },
-  };
-  assert.equal(defaultReasoningEffortForModel(first), "low");
-  assert.equal(defaultReasoningEffortForModel(second), "high");
-  assert.equal(defaultReasoningEffortForModel({
-    ...model("no-default"),
+  }), "high");
+  assert.equal(defaultReasoningEffortForCompatibility({
+    ...selection,
+    eligible: true,
+    reasons: [],
     reasoningEffort: { options: ["economy", "forensic"], default: null },
   }), null);
-  assert.equal(defaultReasoningEffortForModel(model("provider-managed")), null);
+  assert.equal(defaultReasoningEffortForCompatibility(null), null);
+});
+
+test("preserves a selected effort through authorization revalidation until the server contract changes", () => {
+  const selection = connectionSelectionFor(connection(), [model("configured")], "configured")!;
+  const contract: ConnectionCompatibility = {
+    ...selection,
+    eligible: true,
+    reasons: [],
+    reasoningEffort: { options: ["low", "high", "max", "ultra"], default: "high" },
+  };
+
+  assert.equal(reconcileReasoningEffort("ultra", null), "ultra");
+  assert.equal(reconcileReasoningEffort("ultra", contract), "ultra");
+  assert.equal(reconcileReasoningEffort("ultra", {
+    ...contract,
+    reasoningEffort: { options: ["low", "high"], default: "high" },
+  }), "high");
+  assert.equal(reconcileReasoningEffort("ultra", {
+    ...contract,
+    reasoningEffort: undefined,
+  }), null);
 });
 
 test("loads a live model catalog for every connection and falls back to cache safely", async () => {
@@ -368,20 +402,33 @@ test("loads a live model catalog for every connection and falls back to cache sa
   }, "connection-a"), cached);
 });
 
-test("lays out any published reasoning-option count without a fixed column cap", () => {
-  assert.match(reasoningEffortGridClass, /grid-flow-col/);
-  assert.match(reasoningEffortGridClass, /auto-cols-\[/);
-  assert.doesNotMatch(reasoningEffortGridClass, /grid-cols-[35]/);
+test("lays out six published reasoning options without hidden horizontal scroll", () => {
+  assert.match(reasoningEffortGridClass, /grid-cols-3/);
+  assert.match(reasoningEffortGridClass, /sm:grid-cols-6/);
+  assert.match(reasoningEffortGridClass, /gap-px/);
+  assert.match(reasoningEffortGridClass, /bg-border/);
+  assert.doesNotMatch(reasoningEffortGridClass, /grid-flow-col|auto-cols-|w-max|overflow-x/);
+  assert.match(reasoningEffortOptionClass, /bg-background/);
+  assert.match(reasoningEffortOptionClass, /min-w-0/);
+  assert.match(reasoningEffortOptionClass, /truncate/);
+  assert.doesNotMatch(reasoningEffortOptionClass, /border-l/);
 });
 
-test("keeps up to 32-character provider labels inside a 390px viewport without widening the page", () => {
+test("keeps seven provider options and a long label inside the responsive grid", () => {
+  const selection = connectionSelectionFor(connection(), [model("configured")], "configured")!;
+  const options = ["low", "medium", "high", "xhigh", "max", "ultra", "provider-specific-forensic-analysis"];
+  const control = reasoningEffortForCompatibility({
+    ...selection,
+    eligible: true,
+    reasons: [],
+    reasoningEffort: { options, default: "high" },
+  }, "ultra");
+  assert.deepEqual(control, { kind: "configurable", options, selected: "ultra" });
   assert.match(reasoningEffortPanelClass, /min-w-0/);
   assert.match(reasoningEffortViewportClass, /min-w-0/);
   assert.match(reasoningEffortViewportClass, /max-w-full/);
-  assert.match(reasoningEffortViewportClass, /overflow-x-auto/);
-  assert.match(reasoningEffortGridClass, /w-max/);
-  assert.match(reasoningEffortGridClass, /min-w-full/);
-  assert.match(reasoningEffortGridClass, /auto-cols-\[minmax\(8rem,1fr\)\]/);
+  assert.doesNotMatch(reasoningEffortViewportClass, /overflow-x-auto/);
+  assert.match(reasoningEffortGridClass, /w-full/);
 });
 
 test("serializes only a model-published reasoning effort, never the browser value", () => {
@@ -397,7 +444,7 @@ test("serializes only a model-published reasoning effort, never the browser valu
     compatibility: { ...selection, eligible: true, reasons: [] },
     remoteRepositoryConfirmed: true,
     effort: "xhigh",
-    reasoning: reasoningEffortForModel(configured, "low"),
+    reasoning: reasoningEffortForCompatibility({ ...selection, eligible: true, reasons: [], reasoningEffort: configured.reasoningEffort }, "low"),
     mode: "standard",
     paths: [],
   });
@@ -427,7 +474,7 @@ test("pins Codex Security browser requests to the automatic server-resolved prof
     remoteRepositoryConfirmed: true,
     executionProfilePreference: "portable",
     effort: "browser-forged",
-    reasoning: reasoningEffortForModel(configured, "low"),
+    reasoning: reasoningEffortForCompatibility({ ...selection, eligible: true, reasons: [], reasoningEffort: configured.reasoningEffort }, "low"),
     mode: "standard",
     paths: ["src"],
   });

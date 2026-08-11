@@ -15,6 +15,8 @@ const DEFAULT_KEYS = [
 ] as const;
 
 const OPTION_KEYS = ["reasoningEffort", "reasoning_effort", "effort"] as const;
+const NESTED_OPTION_COLLECTION_KEYS = ["supported_efforts"] as const;
+const NESTED_DEFAULT_KEYS = ["default_effort"] as const;
 
 /**
  * Normalizes reasoning metadata only when a runtime/provider catalog publishes
@@ -24,7 +26,9 @@ export function reasoningEffortFromModelRecord(
   record: Record<string, unknown>,
   sensitiveValues: readonly string[] = [],
 ): ModelReasoningEffort | undefined {
-  const collection = firstArray(record, OPTION_COLLECTION_KEYS);
+  const reasoning = isRecord(record.reasoning) ? record.reasoning : undefined;
+  const collection = firstArray(record, OPTION_COLLECTION_KEYS) ??
+    (reasoning === undefined ? undefined : firstArray(reasoning, NESTED_OPTION_COLLECTION_KEYS));
   const options: string[] = [];
   const seen = new Set<string>();
   for (const item of collection ?? []) {
@@ -39,7 +43,8 @@ export function reasoningEffortFromModelRecord(
     }
   }
 
-  const reportedDefault = firstEffort(record, DEFAULT_KEYS);
+  const reportedDefault = firstEffort(record, DEFAULT_KEYS) ??
+    (reasoning === undefined ? undefined : firstEffort(reasoning, NESTED_DEFAULT_KEYS));
   const metadata: ModelReasoningEffort | undefined = options.length === 0
     ? reportedDefault === undefined
       ? undefined

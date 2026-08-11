@@ -2,6 +2,7 @@ import type { ProviderModel } from "@csb/shared";
 
 import {
   AgentSessionError,
+  validateAgentSessionReasoningEffort,
   type AgentToolCall,
   type AgentToolResult,
   type AgentWireRequest,
@@ -14,12 +15,14 @@ import { parseStructuredResult } from "./structured-result.js";
 export interface OpenAiResponsesSessionSpec {
   model: ProviderModel;
   instructions: string;
+  reasoningEffort?: string;
 }
 
 /** Translates the four fixed local tools to OpenAI Responses wire objects. */
 export function createOpenAiResponsesWireAdapter(
   spec: OpenAiResponsesSessionSpec,
 ): WireSessionAdapter {
+  validateAgentSessionReasoningEffort(spec.model, spec.reasoningEffort);
   let previousResponseId: string | undefined;
   let finalizing = false;
 
@@ -41,6 +44,7 @@ export function createOpenAiResponsesWireAdapter(
           input,
           ...(finalizing ? {} : { tools: openAiResponsesTools() }),
           ...(previousResponseId === undefined ? {} : { previous_response_id: previousResponseId }),
+          ...(spec.reasoningEffort === undefined ? {} : { reasoning: { effort: spec.reasoningEffort } }),
         },
       };
     },

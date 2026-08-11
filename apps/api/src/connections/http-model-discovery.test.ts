@@ -56,6 +56,12 @@ test("preserves provider-published reasoning metadata without model or provider 
           { effort: "high" },
         ],
         default_reasoning_level: "high",
+      }, {
+        id: "vendor/openrouter-shape",
+        reasoning: {
+          supported_efforts: ["minimal", "low", "medium", "high", "max"],
+          default_effort: "medium",
+        },
       }],
     }),
   });
@@ -69,6 +75,7 @@ test("preserves provider-published reasoning metadata without model or provider 
     { options: ["economy", "forensic"], default: "forensic" },
     { options: ["brief", "exhaustive"], default: "brief" },
     { options: ["low", "high"], default: "high" },
+    { options: ["minimal", "low", "medium", "high", "max"], default: "medium" },
   ]);
 });
 

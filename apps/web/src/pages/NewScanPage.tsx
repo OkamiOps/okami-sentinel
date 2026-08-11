@@ -44,13 +44,14 @@ import {
   canResolveConnectionWithEngine,
   compatibilityReasonKey,
   connectionSelectionFor,
-  defaultReasoningEffortForModel,
   isProbeOnlyCompatibilityBlock,
   loadLiveConnectionModels,
   reasoningEffortPanelClass,
   reasoningEffortViewportClass,
   reasoningEffortGridClass,
-  reasoningEffortForModel,
+  reasoningEffortOptionClass,
+  reasoningEffortForCompatibility,
+  reconcileReasoningEffort,
   validateConnectionCapability,
 } from "../lib/new-scan-routing";
 
@@ -204,15 +205,9 @@ export function NewScanPage() {
       : null,
     [resolvedSelection, retryIntent],
   );
-  const selectedModel = useMemo(
-    () => selection?.modelId === null || selection === null
-      ? null
-      : selectedConnectionModels.find((model) => model.id === selection.modelId) ?? null,
-    [selectedConnectionModels, selection],
-  );
   const reasoning = useMemo(
-    () => reasoningEffortForModel(selectedModel, effort),
-    [effort, selectedModel],
+    () => reasoningEffortForCompatibility(compatibility, effort),
+    [compatibility, effort],
   );
   const engineReady = catalog !== null && scanner !== undefined && canResolveConnectionWithEngine(scanner);
   const modeReady = scanner?.modes.includes(mode) === true;
@@ -243,6 +238,14 @@ export function NewScanPage() {
     ? [selection.connectionId, selection.modelSelectionMode, selection.modelId ?? "runtime-default", selectedConnection.protocol].join("|")
     : null;
   const selectedRouteKey = `${engine}|${capabilityProbeKey ?? "none"}`;
+  const reasoningEffortContractKey = compatibility === null
+    ? null
+    : JSON.stringify([
+      compatibility.connectionId,
+      compatibility.modelSelectionMode,
+      compatibility.modelId,
+      compatibility.reasoningEffort ?? null,
+    ]);
 
   useEffect(() => {
     void Promise.all([api.health(), api.scanners()])
@@ -300,8 +303,8 @@ export function NewScanPage() {
   }, [catalog, mode, retryIntent, scanner]);
 
   useEffect(() => {
-    setEffort(defaultReasoningEffortForModel(selectedModel));
-  }, [selectedModel?.id, selectedModel?.reasoningEffort]);
+    setEffort((current) => reconcileReasoningEffort(current, compatibility));
+  }, [reasoningEffortContractKey]);
 
   useEffect(() => {
     let active = true;
@@ -684,7 +687,7 @@ export function NewScanPage() {
                 <div className={reasoningEffortViewportClass}>
                   <div className={reasoningEffortGridClass}>
                     {reasoning.options.length === 0 ? (
-                      <div className="flex h-14 items-center px-3 font-mono text-[8px] uppercase text-muted-foreground">
+                      <div className="col-span-full flex h-14 items-center bg-background px-3 font-mono text-[8px] uppercase text-muted-foreground">
                         {t("newScan.providerManagedEffort")}
                       </div>
                     ) : reasoning.options.map((candidate) => (
@@ -696,7 +699,7 @@ export function NewScanPage() {
                         aria-pressed={reasoning.selected === candidate}
                         onClick={() => setEffort(candidate)}
                         className={cx(
-                          "relative h-14 w-full min-w-0 truncate border-l border-border px-2 font-mono text-[8px] uppercase first:border-l-0 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary",
+                          reasoningEffortOptionClass,
                           reasoning.selected === candidate
                             ? "z-10 bg-chart-4/[.06] text-chart-4 after:pointer-events-none after:absolute after:inset-0 after:border after:border-chart-4/60"
                             : "hover:bg-accent",

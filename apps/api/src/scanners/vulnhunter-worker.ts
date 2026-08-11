@@ -12,6 +12,7 @@ import {
 import { getProviderRuntime } from "../provider-runtime.js";
 import {
   createVulnHunterHttpRunner,
+  validateVulnHunterHttpWorkerConfiguration,
 } from "./vulnhunter-http-runner.js";
 import type { AgentEvent } from "../agent/session-types.js";
 import {
@@ -205,6 +206,7 @@ async function runHttpVulnHunter(
   branchLabel: string,
   repositoryUrl: string,
 ): Promise<void> {
+  validateVulnHunterHttpWorkerConfiguration(config);
   const prompt = buildVulnHunterPrompt({
     snapshotRoot,
     resultsDir,
@@ -237,6 +239,7 @@ async function runHttpVulnHunter(
       snapshotRoot,
       resultsDir,
       instructions: prompt,
+      ...(config.effort === undefined ? {} : { reasoningEffort: config.effort }),
       signal: controller.signal,
       onEvent: async (event) => {
         fs.appendFileSync(eventLogPath, `${safeAgentEventLine(event)}\n`, {

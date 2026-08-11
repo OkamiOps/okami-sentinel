@@ -41,6 +41,7 @@ export function readPortableCodexSecurityWorkerConfiguration(
       mode: parsed.mode,
       providerPlan: createSafePortableCodexSecurityProviderPlan(parsed.providerPlan),
       limits: parsed.limits as unknown as PortableCodexSecurityWorkerConfiguration["limits"],
+      ...(parsed.reasoningEffort === undefined ? {} : { reasoningEffort: parsed.reasoningEffort }),
     };
   } catch {
     throw new PortableCodexSecurityRunnerError("provider_plan_invalid");
@@ -130,9 +131,10 @@ function isConfigurationShape(value: unknown): value is Record<string, unknown> 
   mode: "standard" | "deep";
   providerPlan: unknown;
   limits: Record<string, unknown>;
+  reasoningEffort?: string;
 } {
   if (!isRecord(value) || !onlyKeys(value, [
-    "outputDir", "repositoryPath", "paths", "sourceRef", "mode", "providerPlan", "limits",
+    "outputDir", "repositoryPath", "paths", "sourceRef", "mode", "providerPlan", "limits", "reasoningEffort",
   ])) return false;
   if (
     !safeText(value.outputDir, 4_096) ||
@@ -148,7 +150,8 @@ function isConfigurationShape(value: unknown): value is Record<string, unknown> 
     ]) ||
     !Object.values(value.limits).every((item) =>
       typeof item === "number" && Number.isSafeInteger(item) && item > 0,
-    )
+    ) ||
+    (value.reasoningEffort !== undefined && !safeText(value.reasoningEffort, 64))
   ) return false;
   return true;
 }

@@ -3,6 +3,7 @@ import type {
   CodexSecurityExecutionProfile,
   CodexSecurityProfilePreference,
   ConnectionCompatibility,
+  ModelReasoningEffort,
   ProviderConnection,
   ProviderModel,
   ProviderProtocol,
@@ -14,6 +15,7 @@ import {
   PORTABLE_CODEX_SECURITY_PROFILE_VERSION,
   isPortableCodexSecurityRoute,
 } from "../scanners/portable-codex-security-profile.js";
+import { hasAgentSessionReasoningEffortCodec } from "../agent/session-types.js";
 export type RunnerKind =
   | "codex-security-contract"
   | "codex-app-server"
@@ -50,6 +52,40 @@ export interface ResolvedConnectionCompatibility extends ConnectionCompatibility
   runnerKind: RunnerKind | null;
   protocol: ProviderProtocol | null;
   capabilityCheckId: string | null;
+}
+
+/**
+ * The scanner launch boundary, not the browser catalog, owns whether a
+ * provider-published effort value is actionable for this runner.
+ */
+export function effectiveReasoningEffort(
+  model: ProviderModel | null,
+  connection: ProviderConnection,
+  decision: Pick<ResolvedConnectionCompatibility, "eligible" | "runnerKind">,
+): ModelReasoningEffort | undefined {
+  const metadata = model?.reasoningEffort;
+  if (
+    !decision.eligible ||
+    decision.runnerKind === null ||
+    !hasReasoningEffortCodec(connection, decision.runnerKind) ||
+    metadata === undefined ||
+    metadata.options.length === 0
+  ) return undefined;
+  return {
+    options: [...metadata.options],
+    default: metadata.default,
+  };
+}
+
+function hasReasoningEffortCodec(
+  connection: ProviderConnection,
+  runnerKind: RunnerKind,
+): boolean {
+  if (runnerKind === "codex-security-contract" || runnerKind === "codex-app-server") {
+    return isCodexSecurityRoute(connection);
+  }
+  return runnerKind === "agent-session" &&
+    hasAgentSessionReasoningEffortCodec(connection.routeKind, connection.protocol);
 }
 
 export interface CompatibilityInput {

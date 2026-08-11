@@ -100,12 +100,66 @@ export interface AgentSessionSpec {
     | "xai-oauth-responses"
   >;
   model: ProviderModel;
+  /** Optional only when the exact selected model published this value. */
+  reasoningEffort?: string;
   snapshotRoot: string;
   /** Existing, unique 0700 directory reserved by the session owner. */
   artifactRoot: string;
   instructions: string;
   limits: AgentSessionLimits;
   signal: AbortSignal;
+}
+
+/**
+ * Positive registry of provider routes whose exact wire contract can carry an
+ * effort level. A generic compatibility protocol is not proof that an
+ * arbitrary gateway accepts the same field.
+ */
+export function hasAgentSessionReasoningEffortCodec(
+  routeKind: string,
+  protocol: ProviderProtocol,
+): boolean {
+  switch (routeKind) {
+    case "openai-api":
+      return protocol === "openai-responses" || protocol === "openai-chat";
+    case "xai-api":
+      return protocol === "openai-responses";
+    case "xai-oauth":
+      return protocol === "xai-oauth-responses";
+    case "anthropic-api":
+      return protocol === "anthropic-messages";
+    case "openrouter-api":
+    case "gemini-api":
+      return protocol === "openai-chat";
+    default:
+      return false;
+  }
+}
+
+/**
+ * A reasoning value is model metadata, never a provider-name convention. The
+ * session boundary repeats this check so stale or forged worker configs cannot
+ * reach a wire adapter.
+ */
+export function validateAgentSessionReasoningEffort(
+  model: ProviderModel,
+  reasoningEffort: string | undefined,
+  routeKind?: string,
+  protocol?: ProviderProtocol,
+): void {
+  if (reasoningEffort === undefined) return;
+  if (
+    routeKind !== undefined &&
+    (protocol === undefined || !hasAgentSessionReasoningEffortCodec(routeKind, protocol))
+  ) {
+    throw new AgentSessionError("runner_invalid_spec");
+  }
+  if (
+    typeof reasoningEffort !== "string" ||
+    !model.reasoningEffort?.options.includes(reasoningEffort)
+  ) {
+    throw new AgentSessionError("runner_invalid_spec");
+  }
 }
 
 export interface AgentUsage {

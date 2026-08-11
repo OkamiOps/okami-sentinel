@@ -87,7 +87,7 @@ export function resolveScanLaunchSelection(
       ? {}
       : { executionProfilePreference: input.request.executionProfilePreference }),
   });
-  const request = normalizeReasoningEffort(input.request, plan.model);
+  const request = normalizeReasoningEffort(input.request, plan.reasoningEffort);
 
   if (plan.runnerKind === "agent-session") {
     if (isMantisHttpAgentPlan(plan)) {
@@ -226,15 +226,14 @@ function isPortableCodexSecurityPlan(
 
 /**
  * A connection plan is the trust boundary for model capabilities. Browser
- * effort is accepted only when the exact resolved catalog model exposed it;
- * stale/missing values use the provider-published default, while absent model
+ * effort is accepted only when the exact resolved launch plan exposed it;
+ * stale/missing values use the provider-published default, while absent plan
  * metadata leaves effort omitted for provider-managed behavior.
  */
 function normalizeReasoningEffort(
   request: StartScanRequest,
-  model: ScanLaunchPlan["model"],
+  metadata: ScanLaunchPlan["reasoningEffort"],
 ): StartScanRequest {
-  const metadata = model?.reasoningEffort;
   if (metadata === undefined || metadata.options.length === 0) {
     const { effort: _untrustedEffort, ...withoutEffort } = request;
     return withoutEffort;

@@ -7,6 +7,7 @@ import { createWorkspaceToolHost } from "./workspace-tool-host.js";
 import {
   AgentSessionError,
   createConstrainedWireSession,
+  validateAgentSessionReasoningEffort,
   validateAgentSessionLimits,
   type AgentSession,
   type AgentSessionLimits,
@@ -61,6 +62,7 @@ function adapterFor(input: CreateAgentSessionInput): WireSessionAdapter {
         model: input.model,
         instructions: input.instructions,
         routeKind: input.routeKind,
+        ...(input.reasoningEffort === undefined ? {} : { reasoningEffort: input.reasoningEffort }),
       });
     case "openai-responses":
     case "xai-oauth-responses":
@@ -94,6 +96,12 @@ function validateSessionSpec(input: CreateAgentSessionInput): void {
     throw new AgentSessionError("runner_invalid_spec");
   }
   validateAgentSessionLimits(input.limits);
+  validateAgentSessionReasoningEffort(
+    input.model,
+    input.reasoningEffort,
+    input.routeKind,
+    input.protocol,
+  );
 }
 
 function isNonEmptyString(value: unknown): value is string {

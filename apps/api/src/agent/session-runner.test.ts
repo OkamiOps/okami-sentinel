@@ -105,6 +105,40 @@ test("plain chat completion never enters the tool loop", async (t) => {
   assert.equal(events.some((event) => isCompletedTool(event)), false);
 });
 
+test("session runner forwards only a published effort over a proven route codec", async (t) => {
+  const fixture = await fixtureRoots("published-reasoning-effort");
+  t.after(fixture.cleanup);
+  const selected = {
+    ...model("account-visible"),
+    reasoningEffort: { options: ["low", "high"], default: "high" },
+  };
+  const upstream = fakeOpenAiChat([chatFinalText("completed")]);
+  const session = await createAgentSession({
+    ...sessionSpec(fixture, "openai-chat", "gemini-api"),
+    model: selected,
+    reasoningEffort: "high",
+    probe: capability(),
+  }, upstream);
+
+  await collect(session.run(), []);
+  assert.equal((upstream.requests[0]?.body as { reasoning_effort?: unknown }).reasoning_effort, "high");
+  await assert.rejects(createAgentSession({
+    ...sessionSpec(fixture, "openai-chat", "gemini-api"),
+    model: selected,
+    reasoningEffort: "ultra",
+    probe: capability(),
+  }, fakeOpenAiChat([])), { code: "runner_invalid_spec" });
+
+  for (const routeKind of ["deepseek-api", "custom-openai-compatible"]) {
+    await assert.rejects(createAgentSession({
+      ...sessionSpec(fixture, "openai-chat", routeKind),
+      model: selected,
+      reasoningEffort: "high",
+      probe: capability(),
+    }, fakeOpenAiChat([])), { code: "runner_invalid_spec" }, routeKind);
+  }
+});
+
 test("duplicate tool ids and malformed function arguments fail without a follow-on tool", async (t) => {
   const duplicateFixture = await fixtureRoots("duplicate-tool");
   const malformedFixture = await fixtureRoots("malformed-tool");

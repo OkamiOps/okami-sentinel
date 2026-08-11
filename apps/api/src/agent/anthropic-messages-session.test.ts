@@ -57,6 +57,23 @@ test("Anthropic Messages accepts one fenced JSON completion as structured output
   assert.deepEqual(normalized.structured, { ok: true });
 });
 
+test("Anthropic Messages writes output effort only when the exact model publishes it", () => {
+  const published = createAnthropicMessagesWireAdapter({
+    model: model("claude-sonnet", {
+      reasoningEffort: { options: ["low", "high"], default: "high" },
+    }),
+    instructions: "Inspect the snapshot.",
+    reasoningEffort: "high",
+  });
+  const unmanaged = createAnthropicMessagesWireAdapter({
+    model: model("claude-sonnet"),
+    instructions: "Inspect the snapshot.",
+  });
+
+  assert.deepEqual((published.nextRequest([]).body as Record<string, unknown>).output_config, { effort: "high" });
+  assert.equal("output_config" in (unmanaged.nextRequest([]).body as Record<string, unknown>), false);
+});
+
 test("Anthropic Messages closes the tool surface after results.write is consumed", () => {
   const adapter = createAnthropicMessagesWireAdapter({
     model: model("MiniMax-M3"),
@@ -91,7 +108,7 @@ function messagesBody(request: AgentWireRequest): {
   return request.body as { tools: Array<{ name: string }> };
 }
 
-function model(id: string): ProviderModel {
+function model(id: string, patch: Partial<ProviderModel> = {}): ProviderModel {
   return {
     connectionId: "connection-a",
     id,
@@ -110,5 +127,6 @@ function model(id: string): ProviderModel {
     pricing: null,
     discoveredAt: "2026-08-11T00:00:00.000Z",
     source: "provider-api",
+    ...patch,
   };
 }

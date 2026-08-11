@@ -177,6 +177,27 @@ test("eligible HTTP launch writes exactly one immutable snapshot with the exact 
   assert.deepEqual(snapshots, [plan.snapshot]);
 });
 
+test("launch plan carries the full effective effort contract for a wired catalog runner", () => {
+  const reasoningEffort = {
+    options: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    default: "low",
+  };
+  const { resolver } = fixture({ model: model({ reasoningEffort }) });
+
+  const plan = resolver.resolve({
+    scanId: "scan-effort",
+    engine: "mantis",
+    selection: {
+      connectionId: "conn-a",
+      modelSelectionMode: "catalog",
+      modelId: "model-a",
+    },
+  });
+
+  assert.deepEqual(plan.reasoningEffort, reasoningEffort);
+  assert.notEqual(plan.reasoningEffort, reasoningEffort);
+});
+
 test("VulnHunter launch supplies its immutable methodology facts server-side", () => {
   const { resolver } = fixture();
 
@@ -223,6 +244,7 @@ test("Claude Code runtime-default launch persists no browser model fallback", ()
   assert.equal(plan.runnerKind, "local-agent-session");
   assert.equal(plan.model, null);
   assert.equal(plan.capabilityCheckId, null);
+  assert.equal(plan.reasoningEffort, undefined);
   assert.equal(plan.scannerAuthMode, "existing-session");
   assert.deepEqual(plan.snapshot, {
     scanId: "scan-claude-runtime-default",
@@ -355,7 +377,11 @@ test("Codex Security persists its Portable profile and exact capability ID from 
       authKind: "api-key",
       protocol: "openai-chat",
     }),
-    model: model({ id: "mimo-v2.5", displayName: "MiMo V2.5" }),
+    model: model({
+      id: "mimo-v2.5",
+      displayName: "MiMo V2.5",
+      reasoningEffort: { options: ["low", "high", "max"], default: "high" },
+    }),
     probe: probe({ modelId: "mimo-v2.5", protocol: "openai-chat" }),
   });
   const plan = mimo.resolver.resolve({
@@ -370,6 +396,7 @@ test("Codex Security persists its Portable profile and exact capability ID from 
 
   assert.equal(plan.runnerKind, "agent-session");
   assert.equal(plan.capabilityCheckId, "probe-a");
+  assert.equal(plan.reasoningEffort, undefined);
   assert.deepEqual(plan.execution, {
     executionProfile: "portable",
     profileVersion: "sentinel-codex-security-portable-v1",

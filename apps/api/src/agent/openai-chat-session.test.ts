@@ -141,6 +141,39 @@ test("OpenAI chat accepts one fenced JSON completion as structured output", () =
   assert.deepEqual(normalized.structured, { ok: true });
 });
 
+test("OpenAI chat uses the route-specific reasoning field only for a published effort", () => {
+  const selected = model("account-visible", {
+    reasoningEffort: { options: ["low", "high"], default: "high" },
+  });
+  const openRouter = openAiChat.createOpenAiChatWireAdapter({
+    model: selected,
+    instructions: "Inspect the snapshot.",
+    routeKind: "openrouter-api",
+    reasoningEffort: "high",
+  });
+  const mimoManaged = openAiChat.createOpenAiChatWireAdapter({
+    model: selected,
+    instructions: "Inspect the snapshot.",
+    routeKind: "mimo-token-plan",
+  });
+  const unmanaged = openAiChat.createOpenAiChatWireAdapter({
+    model: model("account-visible"),
+    instructions: "Inspect the snapshot.",
+    routeKind: "openrouter-api",
+  });
+
+  assert.deepEqual(chatBody(openRouter.nextRequest([])).reasoning, { effort: "high" });
+  assert.equal("thinking" in chatBody(mimoManaged.nextRequest([])), false);
+  assert.throws(() => openAiChat.createOpenAiChatWireAdapter({
+    model: selected,
+    instructions: "Inspect the snapshot.",
+    routeKind: "mimo-token-plan",
+    reasoningEffort: "high",
+  }), { code: "runner_invalid_spec" });
+  assert.equal("reasoning" in chatBody(unmanaged.nextRequest([])), false);
+  assert.equal("reasoning_effort" in chatBody(unmanaged.nextRequest([])), false);
+});
+
 test("OpenAI chat closes tools and enables JSON mode after results.write is consumed", () => {
   const adapter = openAiChat.createOpenAiChatWireAdapter({
     model: model("cohere/north-mini-code:free"),
@@ -207,6 +240,9 @@ function chatBody(request: AgentWireRequest): {
   messages: unknown[];
   tool_choice?: unknown;
   parallel_tool_calls?: unknown;
+  reasoning?: unknown;
+  reasoning_effort?: unknown;
+  thinking?: unknown;
 } {
   assert.equal(request.operation, "chat-completions");
   return request.body as {
@@ -214,10 +250,13 @@ function chatBody(request: AgentWireRequest): {
     messages: unknown[];
     tool_choice?: unknown;
     parallel_tool_calls?: unknown;
+    reasoning?: unknown;
+    reasoning_effort?: unknown;
+    thinking?: unknown;
   };
 }
 
-function model(id: string): ProviderModel {
+function model(id: string, patch: Partial<ProviderModel> = {}): ProviderModel {
   return {
     connectionId: "connection-a",
     id,
@@ -236,5 +275,6 @@ function model(id: string): ProviderModel {
     pricing: null,
     discoveredAt: "2026-08-11T00:00:00.000Z",
     source: "provider-api",
+    ...patch,
   };
 }

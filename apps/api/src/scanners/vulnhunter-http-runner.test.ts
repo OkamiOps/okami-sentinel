@@ -24,6 +24,7 @@ import { normalizeVulnHunterWorkspace } from "./vulnhunter-normalize.js";
 import { assertVulnHunterNonOperationalArtifacts } from "./vulnhunter-worker-support.js";
 import {
   createVulnHunterHttpRunner,
+  validateVulnHunterHttpWorkerConfiguration,
   VulnHunterHttpRunnerError,
   type SafeVulnHunterProviderPlan,
 } from "./vulnhunter-http-runner.js";
@@ -356,6 +357,26 @@ test("VulnHunter HTTP runner rejects a stale immutable plan before vault or netw
   } finally {
     fs.rmSync(run.root, { recursive: true, force: true });
   }
+});
+
+test("VulnHunter HTTP accepts only its secret-free configuration allowlist", () => {
+  const configuration = {
+    outputDir: "/output",
+    repositoryPath: "/repository",
+    model: "gpt-live",
+    effort: "high",
+    paths: ["src"],
+    readOnly: true as const,
+    profileVersion: "v1",
+    source: { repositoryUrl: "https://example.invalid/vulnhunter", ref: "main" },
+    providerPlan: PLAN,
+  };
+
+  assert.doesNotThrow(() => validateVulnHunterHttpWorkerConfiguration(configuration));
+  assert.throws(
+    () => validateVulnHunterHttpWorkerConfiguration({ ...configuration, apiKey: "must-not-cross" } as never),
+    { code: "provider_plan_invalid" },
+  );
 });
 
 test("VulnHunter HTTP runner rejects a changed capability check before native vault access", async () => {
@@ -787,6 +808,72 @@ test("VulnHunter HTTP runner re-resolves the exact model and probe then forwards
       text: "completed",
       structured: { status: "complete" },
     }]);
+  } finally {
+    fs.rmSync(run.root, { recursive: true, force: true });
+  }
+});
+
+test("VulnHunter HTTP forwards only an effort published by the exact model", async () => {
+  const specs: CreateAgentSessionInput[] = [];
+  const { runner, observed } = fixture({
+    model: model({ reasoningEffort: { options: ["low", "high"], default: "high" } }),
+    sessionFactory: async (spec) => {
+      specs.push(spec);
+      return completedSession();
+    },
+  });
+  const run = input();
+  try {
+    await runner.run({ ...run.value, reasoningEffort: "high" });
+    assert.deepEqual(specs.map((spec) => spec.reasoningEffort), ["high"]);
+    assert.equal(observed.vaultReads, 1);
+  } finally {
+    fs.rmSync(run.root, { recursive: true, force: true });
+  }
+});
+
+test("VulnHunter HTTP rejects an unpublished effort before vault access", async () => {
+  const { runner, observed } = fixture({
+    model: model({ reasoningEffort: { options: ["low", "high"], default: "high" } }),
+  });
+  const run = input();
+  try {
+    await assert.rejects(
+      runner.run({ ...run.value, reasoningEffort: "ultra" }),
+      (error: unknown) => error instanceof VulnHunterHttpRunnerError &&
+        error.code === "provider_plan_invalid",
+    );
+    assert.equal(observed.vaultReads, 0);
+    assert.equal(observed.upstreams, 0);
+    assert.equal(observed.sessions, 0);
+  } finally {
+    fs.rmSync(run.root, { recursive: true, force: true });
+  }
+});
+
+test("VulnHunter HTTP rejects a MiMo effort before vault access", async () => {
+  const mimoPlan: SafeVulnHunterProviderPlan = {
+    ...PLAN,
+    routeKind: "mimo-token-plan",
+    protocol: "openai-chat",
+  };
+  const { runner, observed } = fixture({
+    plan: mimoPlan,
+    snapshot: snapshot({ routeKind: "mimo-token-plan", protocol: "openai-chat" }),
+    connection: connection({ routeKind: "mimo-token-plan", protocol: "openai-chat" }),
+    model: model({ reasoningEffort: { options: ["low", "high"], default: "high" } }),
+    capability: capability({ protocol: "openai-chat" }),
+  });
+  const run = input(mimoPlan);
+  try {
+    await assert.rejects(
+      runner.run({ ...run.value, reasoningEffort: "high" }),
+      (error: unknown) => error instanceof VulnHunterHttpRunnerError &&
+        error.code === "provider_plan_invalid",
+    );
+    assert.equal(observed.vaultReads, 0);
+    assert.equal(observed.upstreams, 0);
+    assert.equal(observed.sessions, 0);
   } finally {
     fs.rmSync(run.root, { recursive: true, force: true });
   }

@@ -79,6 +79,8 @@ export interface ScannerLaunchInput {
 export interface CodexSecurityApiLaunchInput extends ScannerLaunchInput {
   /** Secret material from the selected vault; never serialized into a config or command. */
   apiKey: string;
+  /** Provider-level Codex configuration preserved alongside the Native effort codec. */
+  codexOverrides?: readonly string[];
   /** Injectable only to make the child-environment boundary testable. */
   environment?: NodeJS.ProcessEnv;
 }
@@ -166,6 +168,14 @@ const PORTABLE_DEEP_LIMITS: PortableCodexSecurityExecutionLimits = {
   maxOutputBytes: 1_048_576,
 };
 
+const CODEX_SECURITY_EFFORT_FLAG_VALUES = new Set([
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+]);
+
 /**
  * Portable scans intentionally use a separate local worker, never the Codex
  * Security CLI. Its config contains only revalidatable identifiers and static
@@ -184,6 +194,7 @@ export function preparePortableCodexSecurityLaunch(
       ...input.portableCodexSecurityProviderPlan,
     },
     limits: input.mode === "deep" ? { ...PORTABLE_DEEP_LIMITS } : { ...PORTABLE_STANDARD_LIMITS },
+    ...(input.effort === null ? {} : { reasoningEffort: input.effort }),
   };
   // This happens before the child can make its first provider call. Reconcile
   // reads only this immutable local snapshot, never a current provider catalog.
@@ -231,6 +242,13 @@ function prepareCodexSecurity(
   } = {},
 ): ScannerLaunch {
   const authMode = input.request.authMode ?? "chatgpt";
+  const nativeReasoningOverride = input.effort !== null &&
+    !CODEX_SECURITY_EFFORT_FLAG_VALUES.has(input.effort)
+    ? `model_reasoning_effort=${JSON.stringify(input.effort)}`
+    : null;
+  const providerOverrides = (providerOptions.codexOverrides ?? []).filter((override) =>
+    input.effort === null || !isModelReasoningEffortOverride(override),
+  );
   const args = [
     ...CODEX_SECURITY_ARGS_PREFIX,
     "scan",
@@ -239,15 +257,20 @@ function prepareCodexSecurity(
     authMode,
     "--model",
     input.model,
-    ...(input.effort === null ? [] : ["--effort", input.effort]),
+    ...(input.effort === null || nativeReasoningOverride !== null
+      ? []
+      : ["--effort", input.effort]),
     "--mode",
     input.mode,
     "--output-dir",
     input.outputDir,
     "--json",
   ];
-  for (const override of providerOptions.codexOverrides ?? []) {
+  for (const override of providerOverrides) {
     args.push("--codex", override);
+  }
+  if (nativeReasoningOverride !== null) {
+    args.push("--codex", nativeReasoningOverride);
   }
   if (input.request.maxCostUsd != null && input.request.maxCostUsd > 0) {
     args.push("--max-cost", String(input.request.maxCostUsd));
@@ -281,6 +304,10 @@ function prepareCodexSecurity(
   };
 }
 
+function isModelReasoningEffortOverride(override: string): boolean {
+  return /^model_reasoning_effort\s*=/.test(override);
+}
+
 /**
  * Builds the official Codex Security API-key CLI invocation from a secret that
  * was already resolved from the selected vault. The key is child-env only.
@@ -303,7 +330,9 @@ export function prepareCodexSecurityApiLaunch(
       ? {}
       : { vulnhunterProviderPlan: input.vulnhunterProviderPlan }),
     ...(input.providerKind === undefined ? {} : { providerKind: input.providerKind }),
-  }, environment);
+  }, environment, input.codexOverrides === undefined
+    ? {}
+    : { codexOverrides: input.codexOverrides });
 }
 
 function prepareMantis(input: ScannerLaunchInput): ScannerLaunch {
@@ -366,6 +395,7 @@ export function prepareMantisHttpLaunch(input: MantisHttpLaunchInput): ScannerLa
     paths: (input.request.paths ?? []).map((item) => item.trim()).filter(Boolean),
     sourceRef: MANTIS_SOURCE_REF,
     providerPlan: input.mantisProviderPlan,
+    ...(input.effort === null ? {} : { reasoningEffort: input.effort }),
   };
   const configPath = path.join(input.outputDir, "mantis-http-run.json");
   fs.writeFileSync(configPath, `${JSON.stringify(configuration, null, 2)}\n`, {

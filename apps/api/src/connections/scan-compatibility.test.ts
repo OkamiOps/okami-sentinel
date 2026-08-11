@@ -8,6 +8,9 @@ import type {
 } from "@csb/shared";
 
 import type { StoredProviderConnection } from "../connections-store.js";
+import {
+  effectiveReasoningEffort,
+} from "./compatibility-resolver.js";
 import { createScanCompatibilityResolver } from "./scan-compatibility.js";
 
 const NOW = new Date("2026-08-11T12:00:00.000Z");
@@ -53,7 +56,7 @@ function connection(patch: Partial<StoredProviderConnection> = {}): StoredProvid
   };
 }
 
-function model(): ProviderModel {
+function model(patch: Partial<ProviderModel> = {}): ProviderModel {
   return {
     connectionId: "connection-a",
     id: "provider/model-a",
@@ -63,10 +66,11 @@ function model(): ProviderModel {
     pricing: null,
     discoveredAt: NOW.toISOString(),
     source: "provider-api",
+    ...patch,
   };
 }
 
-function probe(): CapabilityReport {
+function probe(patch: Partial<CapabilityReport> = {}): CapabilityReport {
   return {
     id: "probe-a",
     connectionId: "connection-a",
@@ -76,6 +80,7 @@ function probe(): CapabilityReport {
     capabilities: capabilities(),
     errorCode: null,
     checkedAt: "2026-08-11T11:55:00.000Z",
+    ...patch,
   };
 }
 
@@ -98,6 +103,108 @@ test("resolves one executable scanner decision from persisted model and probe fa
 
   assert.equal(result.eligible, true);
   assert.deepEqual(result.reasons, []);
+});
+
+test("publishes every catalog effort only for an eligible wired runner", () => {
+  const reasoningEffort = {
+    options: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    default: "low",
+  };
+  const cases = [
+    {
+      label: "HTTP AgentSession",
+      engine: "mantis" as const,
+      stored: connection(),
+    },
+    {
+      label: "Codex app-server",
+      engine: "mantis" as const,
+      stored: connection({
+        providerKind: "openai",
+        routeKind: "openai-chatgpt-app-server",
+        transport: "codex-app-server",
+        authKind: "device-code",
+        protocol: "codex-app-server",
+        credentialRef: null,
+      }),
+    },
+    {
+      label: "Codex Security contract",
+      engine: "codex-security" as const,
+      stored: connection({
+        providerKind: "openai",
+        routeKind: "openai-api",
+        transport: "http-inference",
+        authKind: "api-key",
+        protocol: "openai-responses",
+      }),
+    },
+  ];
+
+  for (const candidate of cases) {
+    const result = createScanCompatibilityResolver({
+      getConnection: () => candidate.stored,
+      getModel: () => model({ reasoningEffort }),
+      getLatestCapabilityCheck: () => probe({ protocol: candidate.stored.protocol }),
+      now: () => NOW,
+    }).resolve({
+      engine: candidate.engine,
+      selection: {
+        connectionId: "connection-a",
+        modelSelectionMode: "catalog",
+        modelId: "provider/model-a",
+      },
+    });
+
+    assert.equal(result.eligible, true, candidate.label);
+    assert.deepEqual(result.reasoningEffort, reasoningEffort, candidate.label);
+    assert.notEqual(result.reasoningEffort, reasoningEffort, candidate.label);
+  }
+});
+
+test("omits model effort for blocked and runner kinds without an effort codec", () => {
+  const publishedModel = model({
+    reasoningEffort: { options: ["low", "max", "ultra"], default: "low" },
+  });
+
+  for (const decision of [
+    { eligible: false, runnerKind: "agent-session" as const },
+    { eligible: true, runnerKind: "local-agent-session" as const },
+    { eligible: true, runnerKind: "remote-agent-job" as const },
+  ]) {
+    assert.equal(effectiveReasoningEffort(publishedModel, connection(), decision), undefined);
+  }
+});
+
+test("keeps routes without a proven effort-level codec provider-managed", () => {
+  for (const candidate of [
+    { providerKind: "xiaomi", routeKind: "mimo-token-plan", protocol: "openai-chat" as const },
+    { providerKind: "minimax", routeKind: "minimax-token-plan", protocol: "anthropic-messages" as const },
+    { providerKind: "deepseek", routeKind: "deepseek-api", protocol: "openai-chat" as const },
+    { providerKind: "custom", routeKind: "custom-openai-compatible", protocol: "openai-chat" as const },
+    { providerKind: "custom", routeKind: "custom-anthropic-compatible", protocol: "anthropic-messages" as const },
+  ]) {
+    const resolver = createScanCompatibilityResolver({
+      getConnection: () => connection(candidate),
+      getModel: () => model({
+        reasoningEffort: { options: ["low", "high", "max"], default: "high" },
+      }),
+      getLatestCapabilityCheck: () => probe({ protocol: candidate.protocol }),
+      now: () => NOW,
+    });
+
+    const result = resolver.resolve({
+      engine: "mantis",
+      selection: {
+        connectionId: "connection-a",
+        modelSelectionMode: "catalog",
+        modelId: "provider/model-a",
+      },
+    });
+
+    assert.equal(result.eligible, true, candidate.routeKind);
+    assert.equal(result.reasoningEffort, undefined, candidate.routeKind);
+  }
 });
 
 test("advertises MiMo Token Plan only through its pinned OpenAI chat tuple", () => {

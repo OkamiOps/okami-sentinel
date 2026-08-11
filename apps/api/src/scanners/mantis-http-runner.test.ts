@@ -217,11 +217,14 @@ test("Mantis HTTP runner executes every bounded stage with chained state and nev
       paths: ["src"],
       sourceRef: "a".repeat(40),
       providerPlan: plan(),
+      reasoningEffort: "high",
     }, {
       getSnapshot: (scanId) => scanId === "scan-a" ? snapshot() : null,
       getConnection: (connectionId) => connectionId === "connection-a" ? connection() : null,
       getModel: (connectionId, modelId) =>
-        connectionId === "connection-a" && modelId === "model-a" ? model() : null,
+        connectionId === "connection-a" && modelId === "model-a"
+          ? model({ reasoningEffort: { options: ["low", "high"], default: "high" } })
+          : null,
       getLatestCapabilityCheck: (connectionId, modelId, protocol) =>
         connectionId === "connection-a" && modelId === "model-a" && protocol === "openai-responses"
           ? report()
@@ -253,6 +256,7 @@ test("Mantis HTTP runner executes every bounded stage with chained state and nev
 
     assert.equal(vaultReads, 1);
     assert.equal(specs.length, STAGES.length);
+    assert.deepEqual(specs.map((spec) => spec.reasoningEffort), Array(STAGES.length).fill("high"));
     assert.deepEqual(specs.map((spec) =>
       String(spec.instructions.match(/stage_id=([a-z-]+)/)?.[1])), STAGES);
     for (const spec of specs) {
@@ -305,6 +309,75 @@ test("Mantis HTTP treats cache-write-only usage as reported", async () => {
 
     assert.equal(result.runtime.usage.reported, true);
     assert.equal(result.runtime.usage.cacheWriteInputTokens, STAGES.length * 2);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Mantis HTTP rejects configuration keys outside its secret-free allowlist", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-http-config-"));
+  const repositoryPath = path.join(root, "repository");
+  fs.mkdirSync(repositoryPath);
+  try {
+    await assert.rejects(
+      runMantisHttpAgent({
+        outputDir: path.join(root, "output"),
+        repositoryPath,
+        paths: [],
+        sourceRef: "a".repeat(40),
+        providerPlan: plan(),
+        apiKey: "must-not-cross-the-worker-boundary",
+      } as never, {
+        vault: {
+          available: async () => ({ available: true, backend: "keychain" }),
+          put: async () => undefined,
+          delete: async () => undefined,
+          get: async () => assert.fail("vault must not be read"),
+        },
+      } as never),
+      (error: unknown) => error instanceof MantisHttpRunnerError &&
+        error.code === "provider_plan_invalid",
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Mantis HTTP rejects a MiMo effort before reading the vault", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-http-mimo-effort-"));
+  const repositoryPath = path.join(root, "repository");
+  let vaultReads = 0;
+  fs.mkdirSync(repositoryPath);
+  try {
+    await assert.rejects(
+      runMantisHttpAgent({
+        outputDir: path.join(root, "output"),
+        repositoryPath,
+        paths: [],
+        sourceRef: "a".repeat(40),
+        reasoningEffort: "high",
+        providerPlan: plan({ routeKind: "mimo-token-plan", protocol: "openai-chat" }),
+      }, {
+        getSnapshot: () => snapshot({ routeKind: "mimo-token-plan", protocol: "openai-chat" }),
+        getConnection: () => connection({ routeKind: "mimo-token-plan", protocol: "openai-chat" }),
+        getModel: () => model({ reasoningEffort: { options: ["low", "high"], default: "high" } }),
+        getLatestCapabilityCheck: () => report({ protocol: "openai-chat" }),
+        vault: {
+          available: async () => ({ available: true, backend: "keychain" }),
+          put: async () => undefined,
+          delete: async () => undefined,
+          get: async () => {
+            vaultReads += 1;
+            return { apiKey: "must-not-read" };
+          },
+        },
+        createSession: async () => assert.fail("session must not start"),
+        now: () => NOW,
+      }),
+      (error: unknown) => error instanceof MantisHttpRunnerError &&
+        error.code === "provider_plan_revalidation_failed",
+    );
+    assert.equal(vaultReads, 0);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

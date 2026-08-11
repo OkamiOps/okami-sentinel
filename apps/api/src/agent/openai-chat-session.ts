@@ -3,6 +3,7 @@ import type { ModelCapabilities, ProviderModel } from "@csb/shared";
 import { createWorkspaceToolHost } from "./workspace-tool-host.js";
 import {
   AgentSessionError,
+  validateAgentSessionReasoningEffort,
   createConstrainedWireSession,
   type AgentEvent,
   type AgentSession,
@@ -21,6 +22,7 @@ export interface OpenAiChatSessionSpec {
   model: ProviderModel;
   instructions: string;
   routeKind: string;
+  reasoningEffort?: string;
 }
 
 export interface OpenAiChatProbeSpec {
@@ -50,6 +52,12 @@ export interface AgentProbeMeasurement {
 
 /** Creates the wire translator only; all local side effects remain in the runner. */
 export function createOpenAiChatWireAdapter(spec: OpenAiChatSessionSpec): WireSessionAdapter {
+  validateAgentSessionReasoningEffort(
+    spec.model,
+    spec.reasoningEffort,
+    spec.routeKind,
+    "openai-chat",
+  );
   const messages: unknown[] = [{ role: "system", content: spec.instructions }];
   const replayMimoReasoning = spec.routeKind === "mimo-token-plan";
   let finalizing = false;
@@ -71,6 +79,7 @@ export function createOpenAiChatWireAdapter(spec: OpenAiChatSessionSpec): WireSe
               tools: openAiChatTools(),
               tool_choice: "required",
             }),
+          ...reasoningField(spec.routeKind, spec.reasoningEffort),
         },
       };
     },
@@ -102,6 +111,16 @@ export function createOpenAiChatWireAdapter(spec: OpenAiChatSessionSpec): WireSe
       };
     },
   };
+}
+
+function reasoningField(
+  routeKind: string,
+  reasoningEffort: string | undefined,
+): Record<string, unknown> {
+  if (reasoningEffort === undefined) return {};
+  return routeKind === "openrouter-api"
+    ? { reasoning: { effort: reasoningEffort } }
+    : { reasoning_effort: reasoningEffort };
 }
 
 /**

@@ -453,6 +453,7 @@ test("Mantis HTTP launch serializes only the revalidated provider identifiers", 
     assert.equal(launch.provider, "openai");
     assert.equal(config.model, undefined);
     assert.equal(config.effort, undefined);
+    assert.equal(config.reasoningEffort, "high");
     assert.equal(config.providerPlan instanceof Object, true);
     assert.deepEqual(Object.keys(config.providerPlan as object).sort(), [
       "capabilityCheckId", "connectionId", "modelId", "protocol", "routeKind", "scanId",

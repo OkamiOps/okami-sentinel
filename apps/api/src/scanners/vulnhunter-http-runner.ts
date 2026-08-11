@@ -18,6 +18,7 @@ import {
 } from "../agent/session-runner.js";
 import {
   AgentSessionError,
+  validateAgentSessionReasoningEffort,
   validateAgentSessionLimits,
   type AgentEvent,
   type AgentSession,
@@ -32,7 +33,10 @@ import type {
   ConnectionSecretBundle,
   CredentialVault,
 } from "../credentials/credential-vault.js";
-import type { SafeVulnHunterProviderPlan } from "./vulnhunter-runtime.js";
+import type {
+  SafeVulnHunterProviderPlan,
+  VulnHunterRunConfiguration,
+} from "./vulnhunter-runtime.js";
 
 export type { SafeVulnHunterProviderPlan } from "./vulnhunter-runtime.js";
 
@@ -49,6 +53,38 @@ export class VulnHunterHttpRunnerError extends Error {
     super(code);
     this.name = "VulnHunterHttpRunnerError";
   }
+}
+
+const VULNHUNTER_HTTP_CONFIG_KEYS = new Set([
+  "outputDir", "repositoryPath", "model", "effort", "paths", "readOnly",
+  "profileVersion", "source", "providerPlan",
+]);
+
+/**
+ * The HTTP worker accepts a closed, secret-free manifest only. Credentials and
+ * endpoints are re-resolved from native storage after this returns.
+ */
+export function validateVulnHunterHttpWorkerConfiguration(
+  value: VulnHunterRunConfiguration,
+): void {
+  if (
+    !isRecord(value) ||
+    !onlyKeys(value, VULNHUNTER_HTTP_CONFIG_KEYS) ||
+    !isBoundedText(value.outputDir, 4_096) ||
+    !isBoundedText(value.repositoryPath, 4_096) ||
+    !isBoundedText(value.model, 320) ||
+    (value.effort !== undefined && !isBoundedText(value.effort, 64)) ||
+    !Array.isArray(value.paths) ||
+    !value.paths.every((item) => isSafeRelativePath(item)) ||
+    value.readOnly !== true ||
+    !isBoundedText(value.profileVersion, 256) ||
+    !isRecord(value.source) ||
+    !onlyKeys(value.source, new Set(["repositoryUrl", "ref"])) ||
+    !isBoundedText(value.source.repositoryUrl, 2_048) ||
+    !isBoundedText(value.source.ref, 256) ||
+    value.providerPlan === undefined ||
+    !isSafePlan(value.providerPlan)
+  ) invalidPlan();
 }
 
 export interface VulnHunterHttpPlanStore {
@@ -84,6 +120,8 @@ export interface RunVulnHunterHttpPlanInput {
   snapshotRoot: string;
   resultsDir: string;
   instructions: string;
+  /** Published by the exact selected model; no credential material. */
+  reasoningEffort?: string;
   signal: AbortSignal;
   onEvent?: (event: AgentEvent) => void | Promise<void>;
 }
@@ -122,6 +160,7 @@ export function createVulnHunterHttpRunner(
             dependencies.vault,
             dependencies.xaiOAuth,
             preflight.signal,
+            input.reasoningEffort,
             now(),
             maxProbeAgeMs,
           ),
@@ -142,6 +181,9 @@ export function createVulnHunterHttpRunner(
           routeKind: resolved.connection.routeKind,
           protocol: resolved.protocol,
           model: resolved.model,
+          ...(input.reasoningEffort === undefined
+            ? {}
+            : { reasoningEffort: input.reasoningEffort }),
           snapshotRoot: input.snapshotRoot,
           artifactRoot: input.resultsDir,
           instructions: input.instructions,
@@ -174,6 +216,7 @@ async function resolvePlan(
   vault: Pick<CredentialVault, "get">,
   xaiOAuth: Pick<XaiOAuthFlow, "getAccessToken"> | undefined,
   signal: AbortSignal,
+  reasoningEffort: string | undefined,
   now: Date,
   maxProbeAgeMs: number,
 ): Promise<ResolvedVulnHunterHttpPlan> {
@@ -202,6 +245,16 @@ async function resolvePlan(
 
   const model = store.getModel(plan.connectionId, plan.modelId);
   if (model === null || model.connectionId !== connection.id || model.id !== plan.modelId) {
+    invalidPlan();
+  }
+  try {
+    validateAgentSessionReasoningEffort(
+      model,
+      reasoningEffort,
+      connection.routeKind,
+      connection.protocol,
+    );
+  } catch {
     invalidPlan();
   }
   const capability = store.getLatestCapabilityCheck(
@@ -380,6 +433,23 @@ function isDirectXaiOAuthConnection(connection: StoredProviderConnection): boole
 
 function isNonEmptyText(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function onlyKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function isBoundedText(value: unknown, maxLength: number): value is string {
+  return isNonEmptyText(value) && value.length <= maxLength && !/[\u0000-\u001F\u007F]/.test(value);
+}
+
+function isSafeRelativePath(value: unknown): value is string {
+  return isBoundedText(value, 1_024) && value === value.trim() &&
+    !value.startsWith("/") && !value.split(/[\\/]+/).includes("..");
 }
 
 function isIdentifier(value: unknown): value is string {

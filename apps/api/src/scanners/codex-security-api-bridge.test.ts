@@ -192,6 +192,65 @@ test("provider-managed models do not synthesize a Codex Security effort flag", (
   assert.equal(launch.args.includes("--effort"), false);
 });
 
+test("Codex Security serializes every Native reasoning effort through its supported flag", () => {
+  for (const [effort, expectedFlag] of [
+    ["xhigh", "--effort"],
+    ["max", "--codex"],
+    ["ultra", "--codex"],
+    ["ultra-next", "--codex"],
+    [null, null],
+  ] as const) {
+    const launch = prepareCodexSecurityApiLaunch({
+      request: { repositoryPath: "/repo", engine: "codex-security" },
+      repositoryPath: "/repo",
+      outputDir: "/output",
+      model: "gpt-5.6-sol",
+      effort,
+      mode: "standard",
+      apiKey: "vault-openai-key-not-process-key",
+      environment: { PATH: "/bin" },
+    });
+
+    assert.equal(launch.args.includes("--effort"), expectedFlag === "--effort", effort ?? "null");
+    assert.equal(launch.args.includes("--codex"), expectedFlag === "--codex", effort ?? "null");
+    if (effort !== null && expectedFlag === "--codex") {
+      const codexIndex = launch.args.indexOf("--codex");
+      assert.equal(
+        launch.args[codexIndex + 1],
+        `model_reasoning_effort=${JSON.stringify(effort)}`,
+      );
+    }
+  }
+});
+
+test("Codex Security retains provider overrides without a duplicate reasoning override", () => {
+  const launch = prepareCodexSecurityApiLaunch({
+    request: { repositoryPath: "/repo", engine: "codex-security" },
+    repositoryPath: "/repo",
+    outputDir: "/output",
+    model: "gpt-5.6-sol",
+    effort: "ultra",
+    mode: "standard",
+    apiKey: "vault-openai-key-not-process-key",
+    codexOverrides: [
+      'model_provider="openrouter"',
+      'model_reasoning_effort="high"',
+      "features.multi_agent=true",
+    ],
+    environment: { PATH: "/bin" },
+  });
+
+  const overrides = launch.args.flatMap((value, index) =>
+    value === "--codex" ? [launch.args[index + 1]] : [],
+  );
+  assert.deepEqual(overrides, [
+    'model_provider="openrouter"',
+    "features.multi_agent=true",
+    'model_reasoning_effort="ultra"',
+  ]);
+  assert.equal(launch.args.includes("--effort"), false);
+});
+
 test("an invalid Codex Security API tuple reads zero vault credentials", async () => {
   const selectedPlan = plan();
   const selectedVault = vault();

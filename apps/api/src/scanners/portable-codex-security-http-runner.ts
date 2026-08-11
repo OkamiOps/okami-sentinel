@@ -18,6 +18,7 @@ import {
 import { createAgentSession } from "../agent/session-runner.js";
 import {
   AgentSessionError,
+  validateAgentSessionReasoningEffort,
   validateAgentSessionLimits,
   type AgentSession,
   type AgentSessionLimits,
@@ -77,6 +78,8 @@ export interface PortableCodexSecurityWorkerConfiguration {
   mode: ScanMode;
   providerPlan: SafePortableCodexSecurityProviderPlan;
   limits: PortableCodexSecurityExecutionLimits;
+  /** Published by the exact selected model; no provider credential material. */
+  reasoningEffort?: string;
 }
 
 export type PortableCodexSecurityRunnerErrorCode =
@@ -215,7 +218,12 @@ export async function runPortableCodexSecurity(
   try {
     throwIfStopped(deadline);
     const plan = createSafePortableCodexSecurityProviderPlan(safeConfiguration.providerPlan);
-    let resolved = revalidatePortablePlan(plan, dependencies, now());
+    let resolved = revalidatePortablePlan(
+      plan,
+      safeConfiguration.reasoningEffort,
+      dependencies,
+      now(),
+    );
     const snapshot = createPortableCodexSecuritySnapshot(
       safeConfiguration.repositoryPath,
       outputDir,
@@ -224,7 +232,12 @@ export async function runPortableCodexSecurity(
     throwIfStopped(deadline);
     // Snapshotting is local-only; repeat metadata validation immediately
     // before crossing into the vault/network credential boundary.
-    resolved = revalidatePortablePlan(plan, dependencies, now());
+    resolved = revalidatePortablePlan(
+      plan,
+      safeConfiguration.reasoningEffort,
+      dependencies,
+      now(),
+    );
     throwIfStopped(deadline);
     runtime = {
       ...runtime,
@@ -263,7 +276,12 @@ export async function runPortableCodexSecurity(
     let reportArtifactRoot: string | null = null;
     for (const stage of PORTABLE_CODEX_SECURITY_STAGES) {
       throwIfStopped(deadline);
-      resolved = revalidatePortablePlan(plan, dependencies, now());
+      resolved = revalidatePortablePlan(
+        plan,
+        safeConfiguration.reasoningEffort,
+        dependencies,
+        now(),
+      );
       assertPortableCodexSecuritySnapshot(snapshot);
       const remaining = deadline.remainingMs();
       if (remaining <= 0) throw new PortableCodexSecurityRunnerError("agent_time_limit");
@@ -280,6 +298,9 @@ export async function runPortableCodexSecurity(
         routeKind: resolved.connection.routeKind,
         protocol: resolved.connection.protocol as AgentSessionSpec["protocol"],
         model: resolved.model,
+        ...(safeConfiguration.reasoningEffort === undefined
+          ? {}
+          : { reasoningEffort: safeConfiguration.reasoningEffort }),
         snapshotRoot: snapshot.snapshotRoot,
         artifactRoot,
         instructions: buildPortableCodexSecurityStagePrompt(stage, {
@@ -377,7 +398,7 @@ function validateConfiguration(
   value: PortableCodexSecurityWorkerConfiguration,
 ): PortableCodexSecurityWorkerConfiguration {
   if (!isRecord(value) || !hasOnlyKeys(value, new Set([
-    "outputDir", "repositoryPath", "paths", "sourceRef", "mode", "providerPlan", "limits",
+    "outputDir", "repositoryPath", "paths", "sourceRef", "mode", "providerPlan", "limits", "reasoningEffort",
   ]))) invalidPlan();
   if (
     !isSafeText(value.outputDir, MAX_PATH_LENGTH * 4) ||
@@ -387,7 +408,8 @@ function validateConfiguration(
     !Array.isArray(value.paths) ||
     value.paths.length > MAX_CONFIG_PATHS ||
     !value.paths.every((item) => isSafeRelativePath(item, MAX_PATH_LENGTH)) ||
-    !validLimits(value.limits)
+    !validLimits(value.limits) ||
+    (value.reasoningEffort !== undefined && !isSafeText(value.reasoningEffort, 64))
   ) invalidPlan();
   try {
     return {
@@ -398,6 +420,7 @@ function validateConfiguration(
       mode: value.mode,
       providerPlan: createSafePortableCodexSecurityProviderPlan(value.providerPlan),
       limits: { ...value.limits },
+      ...(value.reasoningEffort === undefined ? {} : { reasoningEffort: value.reasoningEffort }),
     };
   } catch {
     invalidPlan();
@@ -406,6 +429,7 @@ function validateConfiguration(
 
 function revalidatePortablePlan(
   plan: SafePortableCodexSecurityProviderPlan,
+  reasoningEffort: string | undefined,
   dependencies: PortableCodexSecurityRunnerDependencies,
   now: Date,
 ): ResolvedPortablePlan {
@@ -433,6 +457,16 @@ function revalidatePortablePlan(
   }
   const model = dependencies.getModel(connection.id, plan.modelId);
   if (model === null || model.connectionId !== connection.id || model.id !== plan.modelId) {
+    throw new PortableCodexSecurityRunnerError("provider_plan_revalidation_failed");
+  }
+  try {
+    validateAgentSessionReasoningEffort(
+      model,
+      reasoningEffort,
+      connection.routeKind,
+      connection.protocol,
+    );
+  } catch {
     throw new PortableCodexSecurityRunnerError("provider_plan_revalidation_failed");
   }
   const capability = dependencies.getLatestCapabilityCheck(connection.id, model.id, connection.protocol);

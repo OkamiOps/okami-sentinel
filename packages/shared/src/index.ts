@@ -318,6 +318,8 @@ export interface ScanLaunchSelection {
 export interface ConnectionCompatibility extends ScanConnectionSelection {
   eligible: boolean;
   reasons: string[];
+  /** Effective only when the selected eligible runner can encode it at launch. */
+  reasoningEffort?: ModelReasoningEffort;
   selectedProfile?: CodexSecurityExecutionProfile | null;
   availableProfiles?: CodexSecurityExecutionProfile[];
   profileVersion?: string | null;

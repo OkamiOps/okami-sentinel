@@ -17,6 +17,7 @@ import {
 import { createAgentSession, DEFAULT_AGENT_LIMITS } from "../agent/session-runner.js";
 import {
   AgentSessionError,
+  validateAgentSessionReasoningEffort,
   validateAgentSessionLimits,
   type AgentEvent,
   type AgentSession,
@@ -83,6 +84,8 @@ export interface MantisHttpWorkerConfiguration {
   paths: string[];
   sourceRef: string;
   providerPlan: SafeMantisProviderPlan;
+  /** Published by the exact selected model; no provider credential material. */
+  reasoningEffort?: string;
 }
 
 export type MantisHttpRunnerErrorCode =
@@ -225,7 +228,12 @@ export async function runMantisHttpAgent(
 
   try {
     throwIfAborted(signal);
-    const resolved = revalidateProviderPlan(configuration.providerPlan, dependencies, now());
+    const resolved = revalidateProviderPlan(
+      configuration.providerPlan,
+      configuration.reasoningEffort,
+      dependencies,
+      now(),
+    );
     update({ percent: 5, detail: "creating an immutable source snapshot" });
     const snapshotRoot = createMantisSnapshot(configuration.repositoryPath, outputDir);
     const snapshotId = hashMantisSnapshot(snapshotRoot);
@@ -277,6 +285,9 @@ export async function runMantisHttpAgent(
         routeKind: resolved.connection.routeKind,
         protocol: resolved.connection.protocol as HttpAgentProtocol,
         model: resolved.model,
+        ...(configuration.reasoningEffort === undefined
+          ? {}
+          : { reasoningEffort: configuration.reasoningEffort }),
         snapshotRoot,
         artifactRoot,
         instructions: stageInstructions(stage, configuration.paths, priorState, expectedArtifact),
@@ -343,6 +354,7 @@ export async function runMantisHttpAgent(
 
 function revalidateProviderPlan(
   plan: SafeMantisProviderPlan,
+  reasoningEffort: string | undefined,
   dependencies: MantisHttpAgentRunnerDependencies,
   now: Date,
 ): {
@@ -372,6 +384,16 @@ function revalidateProviderPlan(
   }
   const model = dependencies.getModel(connection.id, plan.modelId);
   if (model === null || model.connectionId !== connection.id || model.id !== plan.modelId) {
+    throw new MantisHttpRunnerError("provider_plan_revalidation_failed");
+  }
+  try {
+    validateAgentSessionReasoningEffort(
+      model,
+      reasoningEffort,
+      connection.routeKind,
+      connection.protocol,
+    );
+  } catch {
     throw new MantisHttpRunnerError("provider_plan_revalidation_failed");
   }
   const capability = dependencies.getLatestCapabilityCheck(
@@ -828,14 +850,22 @@ function racePreflight<T>(operation: Promise<T>, guard: PreflightGuard): Promise
 function validateConfiguration(configuration: MantisHttpWorkerConfiguration): void {
   if (
     !isRecord(configuration) ||
+    !hasOnlyKeys(configuration, new Set([
+      "outputDir", "repositoryPath", "paths", "sourceRef", "providerPlan", "reasoningEffort",
+    ])) ||
     !isSafeText(configuration.outputDir, 4_096) ||
     !isSafeText(configuration.repositoryPath, 4_096) ||
     !Array.isArray(configuration.paths) ||
     configuration.paths.some((value) => !isSafeRelativePath(value, 1_024)) ||
     !isSafeText(configuration.sourceRef, 256) ||
+    (configuration.reasoningEffort !== undefined && !isSafeText(configuration.reasoningEffort, 64)) ||
     !isRecord(configuration.providerPlan) ||
     !validPlan(configuration.providerPlan)
   ) throw new MantisHttpRunnerError("provider_plan_invalid");
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
+  return Object.keys(value).every((key) => allowed.has(key));
 }
 
 /** Shared immutable snapshot boundary for every Mantis executor. */

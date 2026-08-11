@@ -8,6 +8,7 @@ import type {
 
 import type { StoredProviderConnection } from "../connections-store.js";
 import {
+  effectiveReasoningEffort,
   resolveCompatibility,
   type ResolvedConnectionCompatibility,
 } from "./compatibility-resolver.js";
@@ -70,9 +71,9 @@ export function createScanCompatibilityResolver(
         remoteRepositoryConfirmed: input.remoteRepositoryConfirmed,
         executionProfilePreference: input.executionProfilePreference,
       });
-      if (!resolved.eligible) return publicDecision(resolved);
+      if (!resolved.eligible) return publicDecision(resolved, connection, model);
       return runnerIsWired(input, connection, resolved)
-        ? publicDecision(resolved)
+        ? publicDecision(resolved, connection, model)
         : blocked(selection, "provider_runner_unavailable");
     },
   };
@@ -144,7 +145,10 @@ function copySelection(input: ResolveScanCompatibilityRequest) {
 
 function publicDecision(
   decision: ResolvedConnectionCompatibility,
+  connection: StoredProviderConnection,
+  model: ProviderModel | null,
 ): ConnectionCompatibility {
+  const reasoningEffort = effectiveReasoningEffort(model, connection, decision);
   const profile = decision.selectedProfile === undefined
     ? {}
     : {
@@ -162,6 +166,7 @@ function publicDecision(
     modelId: decision.modelId,
     eligible: decision.eligible,
     reasons: [...decision.reasons],
+    ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
     ...profile,
   };
 }

@@ -119,18 +119,24 @@ test("connection launch binds the server plan once and ignores client model/auth
   assert.equal(selected.request.provider, "openai");
 });
 
-test("connection launch accepts only reasoning efforts published by the resolved model", () => {
+test("connection launch accepts only reasoning efforts published by the resolved plan", () => {
   const configuredModel: ProviderModel = {
     ...model,
     reasoningEffort: { options: ["low", "high"], default: "high" },
   };
-  const fixture = resolver(plan({ model: configuredModel }));
+  const fixture = resolver(plan({
+    model: configuredModel,
+    reasoningEffort: {
+      options: ["low", "medium", "high", "xhigh", "max", "ultra"],
+      default: "high",
+    },
+  }));
 
   const selected = resolveScanLaunchSelection({
     request: {
       repositoryPath: "/repo",
       engine: "mantis",
-      effort: "xhigh",
+      effort: "browser-untrusted",
       connection: {
         connectionId: "openai-session",
         modelSelectionMode: "catalog",
@@ -158,6 +164,22 @@ test("connection launch accepts only reasoning efforts published by the resolved
   });
   assert.equal(allowed.request.effort, "low");
 
+  const extended = resolveScanLaunchSelection({
+    request: {
+      repositoryPath: "/repo",
+      engine: "mantis",
+      effort: "ultra",
+      connection: {
+        connectionId: "openai-session",
+        modelSelectionMode: "catalog",
+        modelId: "gpt-live",
+      },
+    },
+    scanId: "scan-extended-effort",
+    launchPlans: fixture.resolver,
+  });
+  assert.equal(extended.request.effort, "ultra");
+
   const providerManaged = resolveScanLaunchSelection({
     request: {
       repositoryPath: "/repo",
@@ -170,7 +192,7 @@ test("connection launch accepts only reasoning efforts published by the resolved
       },
     },
     scanId: "scan-125",
-    launchPlans: resolver(plan()).resolver,
+    launchPlans: resolver(plan({ model: configuredModel })).resolver,
   });
   assert.equal("effort" in providerManaged.request, false);
 
