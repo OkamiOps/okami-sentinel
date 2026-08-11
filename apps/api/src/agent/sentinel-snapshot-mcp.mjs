@@ -17,7 +17,11 @@ const ACCESS_DENIED = { code: "snapshot_access_denied" };
 const RESULT_LIMIT = { code: "snapshot_result_limit" };
 const TOOL_UNAVAILABLE = { code: "snapshot_tool_unavailable" };
 
-const root = initializeSnapshotRoot(process.argv.slice(2));
+// The fixed `/usr/bin/env -i` launcher must deliver no inherited variables. macOS
+// injects this non-secret encoding value even for `env -i`; everything else fails closed.
+if (Object.keys(process.env).some((name) => name !== "__CF_USER_TEXT_ENCODING")) process.exit(78);
+
+const { root, audit } = initializeMcp(process.argv.slice(2));
 const tools = [
   {
     name: "list",
@@ -61,9 +65,15 @@ input.on("line", (line) => {
   handle(request);
 });
 
-function initializeSnapshotRoot(argv) {
-  if (argv.length !== 1 || typeof argv[0] !== "string" || argv[0].includes("\0")) process.exit(78);
-  const configured = argv[0];
+function initializeMcp(argv) {
+  if (argv.length !== 3) process.exit(78);
+  const root = initializeSnapshotRoot(argv[0]);
+  const audit = initializeAudit(argv[1], argv[2], root);
+  return { root, audit };
+}
+
+function initializeSnapshotRoot(configured) {
+  if (typeof configured !== "string" || configured.includes("\0")) process.exit(78);
   if (!path.isAbsolute(configured)) process.exit(78);
   const absolute = path.resolve(configured);
   try {
@@ -92,6 +102,43 @@ function initializeSnapshotRoot(argv) {
   }
 }
 
+function initializeAudit(configuredPath, nonce, snapshotRoot) {
+  if (
+    typeof configuredPath !== "string" ||
+    configuredPath.includes("\0") ||
+    !path.isAbsolute(configuredPath) ||
+    !/^[a-f0-9]{64}$/.test(nonce)
+  ) process.exit(78);
+  const absolute = path.resolve(configuredPath);
+  const directory = path.dirname(absolute);
+  try {
+    const metadata = fs.lstatSync(directory);
+    const canonical = fs.realpathSync(directory);
+    if (
+      directory !== canonical ||
+      metadata.isSymbolicLink() ||
+      !metadata.isDirectory() ||
+      metadata.uid !== snapshotRoot.uid ||
+      (metadata.mode & 0o077) !== 0 ||
+      !/^\.sentinel-mcp-audit-[a-f0-9]{64}\.json$/.test(path.basename(absolute)) ||
+      fs.existsSync(absolute) ||
+      inside(snapshotRoot.canonical, absolute)
+    ) process.exit(78);
+    return {
+      absolute,
+      directory,
+      dev: String(metadata.dev),
+      ino: String(metadata.ino),
+      uid: metadata.uid,
+      mode: metadata.mode & 0o777,
+      nonce,
+      recorded: false,
+    };
+  } catch {
+    process.exit(78);
+  }
+}
+
 function handle(request) {
   if (request.method === "notifications/initialized") return;
   if (request.method === "initialize") {
@@ -112,9 +159,16 @@ function handle(request) {
     const args = isRecord(called.arguments) ? called.arguments : {};
     try {
       let result;
-      if (name === "list") result = list(args);
-      else if (name === "read") result = read(args);
-      else if (name === "search") result = search(args);
+      if (name === "list") {
+        result = list(args);
+        recordToolCall();
+      } else if (name === "read") {
+        result = read(args);
+        recordToolCall();
+      } else if (name === "search") {
+        result = search(args);
+        recordToolCall();
+      }
       else throw TOOL_UNAVAILABLE;
       send(request.id, { content: [{ type: "text", text: boundedJson(result) }] });
     } catch (error) {
@@ -126,6 +180,36 @@ function handle(request) {
   if (request.id !== undefined) {
     sendError(request.id, -32601);
   }
+}
+
+function recordToolCall() {
+  if (audit.recorded) return;
+  validateAuditDirectory();
+  fs.writeFileSync(audit.absolute, `${audit.nonce}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
+  const metadata = fs.lstatSync(audit.absolute);
+  if (
+    metadata.isSymbolicLink() ||
+    !metadata.isFile() ||
+    metadata.uid !== audit.uid ||
+    (metadata.mode & 0o077) !== 0 ||
+    fs.readFileSync(audit.absolute, "utf8") !== `${audit.nonce}\n`
+  ) throw ACCESS_DENIED;
+  audit.recorded = true;
+}
+
+function validateAuditDirectory() {
+  const metadata = fs.lstatSync(audit.directory);
+  const canonical = fs.realpathSync(audit.directory);
+  if (
+    metadata.isSymbolicLink() ||
+    !metadata.isDirectory() ||
+    canonical !== audit.directory ||
+    String(metadata.dev) !== audit.dev ||
+    String(metadata.ino) !== audit.ino ||
+    metadata.uid !== audit.uid ||
+    (metadata.mode & 0o777) !== audit.mode ||
+    (metadata.mode & 0o077) !== 0
+  ) throw ACCESS_DENIED;
 }
 
 function list(args) {

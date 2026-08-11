@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile as nativeExecFile } from "node:child_process";
-import { chmod, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   createDefensiveLocalCli,
   DefensiveLocalCliError,
+  SENTINEL_SNAPSHOT_EMPTY_ENV_EXECUTABLE,
   type DefensiveLocalCliChild,
   type DefensiveLocalCliExecOptions,
 } from "./defensive-local-cli.js";
@@ -35,6 +36,7 @@ test("Claude local execution uses the fixed defensive argv and strips API keys",
   const result = await runner.run({
     routeKind: "claude-code-local",
     cwd: "/private/session",
+    snapshotRoot: "/private/snapshot",
     prompt: "Review the pinned snapshot only.",
     model: { kind: "catalog", id: "claude-sonnet-4" },
     modelCatalog: ["claude-sonnet-4"],
@@ -49,15 +51,16 @@ test("Claude local execution uses the fixed defensive argv and strips API keys",
   });
 
   assert.deepEqual(result, { final: { findings: [] }, usage: null });
-  const mcpConfig = calls[0]?.argv[4];
+  const mcpConfig = calls[0]?.argv[3];
   assert.deepEqual(calls, [{
     binary: "claude",
     argv: [
       "--print",
-      "--safe-mode",
       "--strict-mcp-config",
       "--mcp-config",
       mcpConfig,
+      "--setting-sources",
+      "local",
       "--disable-slash-commands",
       "--no-session-persistence",
       "--permission-mode",
@@ -121,11 +124,42 @@ test("Claude local execution disables every built-in and permits only the privat
     mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }>;
   };
   assert.deepEqual(Object.keys(config.mcpServers), ["sentinel_snapshot"]);
-  assert.equal(config.mcpServers.sentinel_snapshot?.command, process.execPath);
-  assert.match(config.mcpServers.sentinel_snapshot?.args[0] ?? "", /sentinel-snapshot-mcp\.mjs$/);
-  assert.deepEqual(config.mcpServers.sentinel_snapshot?.args.slice(1), ["/private/session"]);
+  assert.equal(config.mcpServers.sentinel_snapshot?.command, SENTINEL_SNAPSHOT_EMPTY_ENV_EXECUTABLE);
+  assert.deepEqual(config.mcpServers.sentinel_snapshot?.args.slice(0, 2), ["-i", process.execPath]);
+  assert.match(config.mcpServers.sentinel_snapshot?.args[2] ?? "", /sentinel-snapshot-mcp\.mjs$/);
+  assert.equal(config.mcpServers.sentinel_snapshot?.args[3], "/private/snapshot");
+  assert.match(config.mcpServers.sentinel_snapshot?.args[4] ?? "", /^\/private\/session\/\.sentinel-mcp-audit-[a-f0-9]{64}\.json$/);
+  assert.match(config.mcpServers.sentinel_snapshot?.args[5] ?? "", /^[a-f0-9]{64}$/);
   assert.deepEqual(config.mcpServers.sentinel_snapshot?.env, {});
   assert.equal(JSON.stringify(config).includes("must-not-reach-mcp"), false);
+});
+
+test("Claude runs from a private empty session without safe-mode and exposes the snapshot only through explicit MCP", async () => {
+  let argv: string[] | undefined;
+  let cwd: string | undefined;
+  const runner = createDefensiveLocalCli({
+    ...secureCwdDependency(),
+    approvedCwds: ["/private/session"],
+    execFile: (_binary, receivedArgv, options) => {
+      argv = receivedArgv;
+      cwd = options.cwd;
+      return completedChild({ stdout: '{"findings":[]}', stderr: "" });
+    },
+  });
+
+  await runner.run(claudeInput());
+
+  assert.equal(cwd, "/private/session");
+  assert.equal(argv?.includes("--safe-mode"), false);
+  assert.deepEqual(argv?.slice(argv.indexOf("--setting-sources"), argv.indexOf("--disable-slash-commands")), [
+    "--setting-sources",
+    "local",
+  ]);
+  const config = JSON.parse(argv?.[argv.indexOf("--mcp-config") + 1] ?? "") as {
+    mcpServers: Record<string, { args: string[]; env: Record<string, string> }>;
+  };
+  assert.equal(config.mcpServers.sentinel_snapshot?.args[3], "/private/snapshot");
+  assert.deepEqual(config.mcpServers.sentinel_snapshot?.env, {});
 });
 
 test("Grok local execution fails closed before discovered plugins or hooks can run", async () => {
@@ -143,6 +177,7 @@ test("Grok local execution fails closed before discovered plugins or hooks can r
     runner.run({
       routeKind: "xai-grok-build-local",
       cwd: "/private/session",
+      snapshotRoot: "/private/snapshot",
       prompt: "Inspect only the pinned files.",
       model: { kind: "catalog", id: "grok-4" },
       modelCatalog: ["grok-4"],
@@ -166,6 +201,7 @@ test("local CLI rejects a JSON final that does not satisfy the requested schema"
     runner.run({
       routeKind: "claude-code-local",
       cwd: "/private/session",
+      snapshotRoot: "/private/snapshot",
       prompt: "Inspect only.",
       model: { kind: "runtime-default" },
       modelCatalog: [],
@@ -388,6 +424,7 @@ test("Claude rejects a symlink, non-directory, foreign owner, public mode, or ch
     let calls = 0;
     const runner = createDefensiveLocalCli({
       approvedCwds: ["/private/session"],
+      approvedSnapshotRoots: ["/private/snapshot"],
       cwdInspector: testCwdInspector(state),
       execFile: () => {
         calls += 1;
@@ -405,14 +442,15 @@ test("Claude revalidates the pinned cwd inode immediately before launch", async 
   let execCalls = 0;
   const runner = createDefensiveLocalCli({
     approvedCwds: ["/private/session"],
+    approvedSnapshotRoots: ["/private/snapshot"],
     cwdInspector: {
       getuid: () => 501,
-      async lstat(_cwd: string) {
+      async lstat(cwd: string) {
         lstatCalls += 1;
         return {
           dev: 1,
-          ino: lstatCalls === 1 ? 2 : 3,
-          mode: 0o40_700,
+          ino: cwd === "/private/snapshot" ? 9 : lstatCalls === 1 ? 2 : 3,
+          mode: cwd === "/private/snapshot" ? 0o40_500 : 0o40_700,
           uid: 501,
           isDirectory: () => true,
           isSymbolicLink: () => false,
@@ -429,7 +467,7 @@ test("Claude revalidates the pinned cwd inode immediately before launch", async 
   });
 
   await assert.rejects(runner.run(claudeInput()), { code: "local_cli_isolation_unavailable" });
-  assert.equal(lstatCalls, 2);
+  assert.equal(lstatCalls, 3);
   assert.equal(execCalls, 0);
 });
 
@@ -493,10 +531,11 @@ test("the response schema subset rejects unsupported keywords before launch", as
 
 test("native Node 24 maxBuffer overflow maps to agent_output_byte_limit", async (t) => {
   assert.match(process.versions.node, /^24\./);
-  const cwd = await privateNativeCwd(t);
+  const { cwd, snapshotRoot } = await privateNativeRoots(t);
   let child: (DefensiveLocalCliChild & { closed: Promise<void> }) | undefined;
   const runner = createDefensiveLocalCli({
     approvedCwds: [cwd],
+    approvedSnapshotRoots: [snapshotRoot],
     execFile: (_binary, _argv, options) => {
       child = nativeNodeFixture([
         "-e",
@@ -507,7 +546,7 @@ test("native Node 24 maxBuffer overflow maps to agent_output_byte_limit", async 
   });
 
   const outcome = await settleAsCode(
-    runner.run({ ...claudeInput(), cwd }),
+    runner.run({ ...claudeInput(), cwd, snapshotRoot }),
     1_000,
   );
   await child?.closed;
@@ -517,7 +556,7 @@ test("native Node 24 maxBuffer overflow maps to agent_output_byte_limit", async 
 
 test("native Node 24 ABORT_ERR still escalates SIGTERM to SIGKILL until the process closes", async (t) => {
   assert.match(process.versions.node, /^24\./);
-  const cwd = await privateNativeCwd(t);
+  const { cwd, snapshotRoot } = await privateNativeRoots(t);
   const readyPath = join(cwd, "ready.pid");
   const controller = new AbortController();
   const killSignals: string[] = [];
@@ -526,6 +565,7 @@ test("native Node 24 ABORT_ERR still escalates SIGTERM to SIGKILL until the proc
   let rawChild: ReturnType<typeof nativeExecFile> | undefined;
   const runner = createDefensiveLocalCli({
     approvedCwds: [cwd],
+    approvedSnapshotRoots: [snapshotRoot],
     killGraceMs: 20,
     execFile: (_binary, _argv, options) => {
       const native = nativeNodeFixture([
@@ -557,7 +597,7 @@ test("native Node 24 ABORT_ERR still escalates SIGTERM to SIGKILL until the proc
     await fixture?.closed;
   });
 
-  const running = runner.run({ ...claudeInput(), cwd, signal: controller.signal });
+  const running = runner.run({ ...claudeInput(), cwd, snapshotRoot, signal: controller.signal });
   const pid = Number(await waitForFile(readyPath, 1_000));
   controller.abort();
 
@@ -578,6 +618,7 @@ function claudeInput() {
   return {
     routeKind: "claude-code-local" as const,
     cwd: "/private/session",
+    snapshotRoot: "/private/snapshot",
     prompt: "Inspect only.",
     model: { kind: "runtime-default" as const },
     modelCatalog: [],
@@ -604,13 +645,14 @@ async function settleAsCode(promise: Promise<unknown>, timeoutMs: number): Promi
 
 function secureCwdDependency() {
   return {
+    approvedSnapshotRoots: ["/private/snapshot"],
     cwdInspector: {
       getuid: () => 501,
-      async lstat(_cwd: string) {
+      async lstat(cwd: string) {
         return {
           dev: 1,
-          ino: 2,
-          mode: 0o40_700,
+          ino: cwd === "/private/snapshot" ? 3 : 2,
+          mode: cwd === "/private/snapshot" ? 0o40_500 : 0o40_700,
           uid: 501,
           isDirectory: () => true,
           isSymbolicLink: () => false,
@@ -632,14 +674,14 @@ function testCwdInspector(state: {
 }) {
   return {
     getuid: () => 501,
-    async lstat(_cwd: string) {
+    async lstat(cwd: string) {
       return {
         dev: 1,
-        ino: 2,
-        mode: state.mode ?? 0o40_700,
-        uid: state.uid ?? 501,
-        isDirectory: () => state.directory ?? true,
-        isSymbolicLink: () => state.symbolicLink ?? false,
+        ino: cwd === "/private/snapshot" ? 3 : 2,
+        mode: cwd === "/private/snapshot" ? 0o40_500 : state.mode ?? 0o40_700,
+        uid: cwd === "/private/snapshot" ? 501 : state.uid ?? 501,
+        isDirectory: () => cwd === "/private/snapshot" ? true : state.directory ?? true,
+        isSymbolicLink: () => cwd === "/private/snapshot" ? false : state.symbolicLink ?? false,
       };
     },
     async realpath(cwd: string) {
@@ -656,12 +698,19 @@ function completedChild(output: { stdout: string; stderr: string }) {
   };
 }
 
-async function privateNativeCwd(t: { after(callback: () => Promise<void>): void }): Promise<string> {
+async function privateNativeRoots(t: { after(callback: () => Promise<void>): void }): Promise<{ cwd: string; snapshotRoot: string }> {
   const created = await mkdtemp(join(tmpdir(), "csb-defensive-cli-test-"));
-  const canonical = await realpath(created);
-  await chmod(canonical, 0o700);
-  t.after(async () => rm(canonical, { recursive: true, force: true }));
-  return canonical;
+  const root = await realpath(created);
+  const cwd = join(root, "session");
+  const snapshotRoot = join(root, "snapshot");
+  await mkdir(cwd, { mode: 0o700 });
+  await mkdir(snapshotRoot, { mode: 0o700 });
+  await chmod(snapshotRoot, 0o500);
+  t.after(async () => {
+    await chmod(snapshotRoot, 0o700);
+    await rm(root, { recursive: true, force: true });
+  });
+  return { cwd, snapshotRoot };
 }
 
 function nativeNodeFixture(

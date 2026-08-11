@@ -1,4 +1,6 @@
 import { execFile as nativeExecFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import fs from "node:fs";
 import { lstat as nativeLstat, realpath as nativeRealpath } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,11 +13,14 @@ export const LOCAL_CLI_CLOSE_TIMEOUT_MS = 3_000;
 /** Exact public MCP names derived from server `sentinel_snapshot` plus its three tools. */
 export const SENTINEL_SNAPSHOT_MCP_ALLOWED_TOOLS =
   "mcp__sentinel_snapshot__list,mcp__sentinel_snapshot__read,mcp__sentinel_snapshot__search";
+/** Fixed executable that clears the Sentinel child environment without a shell. */
+export const SENTINEL_SNAPSHOT_EMPTY_ENV_EXECUTABLE = "/usr/bin/env";
 
 export type DefensiveLocalCliRoute = "claude-code-local" | "xai-grok-build-local";
 
 export type DefensiveLocalCliErrorCode =
   | "agent_cancelled"
+  | "agent_mcp_evidence_missing"
   | "agent_output_byte_limit"
   | "agent_protocol_error"
   | "agent_termination_unconfirmed"
@@ -47,6 +52,8 @@ export interface DefensiveLocalCliExecOptions {
 export interface DefensiveLocalCliDependencies {
   /** Private directories that the caller has already provisioned for a session. */
   approvedCwds: readonly string[];
+  /** Immutable snapshot roots that may be exposed only to the Sentinel MCP server. */
+  approvedSnapshotRoots?: readonly string[];
   /** Injectable only for tests. Production uses execFile with no shell. */
   execFile?: (
     binary: "claude",
@@ -100,6 +107,8 @@ export interface DefensiveLocalCliInput {
   routeKind: DefensiveLocalCliRoute;
   /** Caller-provided private, pinned session directory. */
   cwd: string;
+  /** Immutable repository snapshot; never used as Claude's working directory. */
+  snapshotRoot: string;
   prompt: string;
   model: DefensiveLocalModel;
   /** The caller's fresh provider catalog; the requested value must match exactly. */
@@ -129,7 +138,8 @@ export function createDefensiveLocalCli(
   dependencies: DefensiveLocalCliDependencies,
 ): DefensiveLocalCli {
   const approvedCwds = dependencies.approvedCwds.map(approvedPrivateCwd);
-  if (approvedCwds.length === 0) invalid();
+  const approvedSnapshotRoots = (dependencies.approvedSnapshotRoots ?? []).map(approvedPrivateCwd);
+  if (approvedCwds.length === 0 || approvedSnapshotRoots.length === 0) invalid();
   const environment = sanitizeExistingSessionEnvironment(dependencies.environment ?? process.env);
   const execute = dependencies.execFile ?? executeNative;
   const cwdInspector = dependencies.cwdInspector ?? SYSTEM_CWD_INSPECTOR;
@@ -143,13 +153,22 @@ export function createDefensiveLocalCli(
       if (isPlainRecord(input) && input.routeKind === "xai-grok-build-local") {
         throw new DefensiveLocalCliError("local_cli_isolation_unavailable");
       }
-      const request = validateInput(input, approvedCwds);
+      const request = validateInput(input, approvedCwds, approvedSnapshotRoots);
       const scope = createExecutionScope(request.signal, request.timeoutMs ?? LOCAL_CLI_TIMEOUT_MS);
       try {
         const pinnedCwd = await awaitWithin(pinPrivateCwd(request.cwd, approvedCwds, cwdInspector), scope);
+        const pinnedSnapshot = await awaitWithin(
+          pinImmutableSnapshot(request.snapshotRoot, approvedSnapshotRoots, cwdInspector),
+          scope,
+        );
+        const audit = createMcpAudit(request.cwd);
         const schema = serializeSchema(request.jsonSchema);
-        const argv = claudeArgv(request, schema);
+        const argv = claudeArgv(request, schema, audit);
         await awaitWithin(revalidatePrivateCwd(pinnedCwd, cwdInspector), scope);
+        await awaitWithin(revalidatePrivateCwd(pinnedSnapshot, cwdInspector), scope);
+        // The production cwd starts empty, so `--setting-sources local` has no
+        // settings, hooks, project instructions, or extra MCP configuration to load.
+        if (dependencies.execFile === undefined) assertEmptyPrivateSession(pinnedCwd);
         const child = execute("claude", argv, {
           cwd: request.cwd,
           timeout: request.timeoutMs ?? LOCAL_CLI_TIMEOUT_MS,
@@ -165,6 +184,9 @@ export function createDefensiveLocalCli(
         if (!matchesJsonSchema(final, request.jsonSchema)) {
           throw new DefensiveLocalCliError("agent_protocol_error");
         }
+        // Injected children are a test seam. Production must prove that Claude
+        // reached the explicit Sentinel MCP server before its output is accepted.
+        if (dependencies.execFile === undefined) assertMcpAudit(audit, pinnedCwd);
         return { final, usage: null };
       } catch (error) {
         throw normalizeError(error, scope.stopError());
@@ -190,6 +212,16 @@ async function pinPrivateCwd(
 ): Promise<PinnedPrivateCwd> {
   const pinned = await inspectPrivateCwd(cwd, inspector);
   if (!approvedCwds.includes(pinned.realpath)) isolationUnavailable();
+  return pinned;
+}
+
+async function pinImmutableSnapshot(
+  snapshotRoot: string,
+  approvedSnapshots: readonly string[],
+  inspector: DefensiveLocalCwdInspector,
+): Promise<PinnedPrivateCwd> {
+  const pinned = await inspectPrivateCwd(snapshotRoot, inspector);
+  if (!approvedSnapshots.includes(pinned.realpath) || (pinned.mode & 0o222) !== 0) isolationUnavailable();
   return pinned;
 }
 
@@ -244,11 +276,15 @@ function isolationUnavailable(): never {
 function validateInput(
   input: DefensiveLocalCliInput,
   approvedCwds: readonly string[],
-): DefensiveLocalCliInput & { cwd: string } {
+  approvedSnapshots: readonly string[],
+): DefensiveLocalCliInput & { cwd: string; snapshotRoot: string } {
   if (!isPlainRecord(input) || !isRouteKind(input.routeKind)) invalid();
   if (typeof input.cwd !== "string" || input.cwd.includes("\0")) invalid();
   const cwd = path.resolve(input.cwd);
   if (!approvedCwds.includes(cwd)) invalid();
+  if (typeof input.snapshotRoot !== "string" || input.snapshotRoot.includes("\0")) invalid();
+  const snapshotRoot = path.resolve(input.snapshotRoot);
+  if (snapshotRoot === cwd || !approvedSnapshots.includes(snapshotRoot)) invalid();
   if (typeof input.prompt !== "string" || input.prompt.length === 0 || input.prompt.length > 131_072) invalid();
   if (!Number.isSafeInteger(input.maxTurns) || input.maxTurns < 1 || input.maxTurns > 16) invalid();
   if (input.timeoutMs !== undefined && (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs < 1 || input.timeoutMs > LOCAL_CLI_TIMEOUT_MS)) invalid();
@@ -259,7 +295,7 @@ function validateInput(
   if (input.model.kind === "catalog" && !input.modelCatalog.includes(input.model.id)) {
     throw new DefensiveLocalCliError("model_access_denied");
   }
-  return { ...input, cwd };
+  return { ...input, cwd, snapshotRoot };
 }
 
 function isRouteKind(value: unknown): value is DefensiveLocalCliRoute {
@@ -276,12 +312,24 @@ function isModelId(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(value);
 }
 
-function claudeArgv(input: DefensiveLocalCliInput, schema: string): string[] {
+interface McpAudit {
+  path: string;
+  nonce: string;
+}
+
+function claudeArgv(input: DefensiveLocalCliInput, schema: string, audit: McpAudit): string[] {
   const mcpConfig = JSON.stringify({
     mcpServers: {
       sentinel_snapshot: {
-        command: process.execPath,
-        args: [fileURLToPath(new URL("./sentinel-snapshot-mcp.mjs", import.meta.url)), input.cwd],
+        command: SENTINEL_SNAPSHOT_EMPTY_ENV_EXECUTABLE,
+        args: [
+          "-i",
+          process.execPath,
+          fileURLToPath(new URL("./sentinel-snapshot-mcp.mjs", import.meta.url)),
+          input.snapshotRoot,
+          audit.path,
+          audit.nonce,
+        ],
         // The MCP process receives no child environment. Claude itself retains
         // its existing OAuth/keychain login because this is intentionally not --bare.
         env: {},
@@ -290,11 +338,14 @@ function claudeArgv(input: DefensiveLocalCliInput, schema: string): string[] {
   });
   return [
     "--print",
-    "--safe-mode",
     "--strict-mcp-config",
     // Inline config closes the MCP set to the process we own; it contains no secrets.
     "--mcp-config",
     mcpConfig,
+    // `local` is confined to the fresh private session cwd; user/project
+    // settings, hooks, plugins, and settings-file MCP cannot enter.
+    "--setting-sources",
+    "local",
     "--disable-slash-commands",
     "--no-session-persistence",
     "--permission-mode",
@@ -312,6 +363,48 @@ function claudeArgv(input: DefensiveLocalCliInput, schema: string): string[] {
     ...(input.model.kind === "catalog" ? ["--model", input.model.id] : []),
     input.prompt,
   ];
+}
+
+function createMcpAudit(sessionRoot: string): McpAudit {
+  return {
+    path: path.join(sessionRoot, `.sentinel-mcp-audit-${randomBytes(32).toString("hex")}.json`),
+    nonce: randomBytes(32).toString("hex"),
+  };
+}
+
+function assertMcpAudit(
+  audit: McpAudit,
+  pinnedSession: PinnedPrivateCwd,
+): void {
+  try {
+    const parent = fs.lstatSync(pinnedSession.realpath);
+    const current = fs.lstatSync(audit.path);
+    if (
+      path.dirname(audit.path) !== pinnedSession.realpath ||
+      parent.isSymbolicLink() ||
+      !parent.isDirectory() ||
+      String(parent.dev) !== pinnedSession.dev ||
+      String(parent.ino) !== pinnedSession.ino ||
+      parent.uid !== pinnedSession.uid ||
+      (parent.mode & 0o777) !== pinnedSession.mode ||
+      current.isSymbolicLink() ||
+      !current.isFile() ||
+      current.uid !== pinnedSession.uid ||
+      (current.mode & 0o077) !== 0 ||
+      fs.readFileSync(audit.path, "utf8") !== `${audit.nonce}\n`
+    ) throw new Error("invalid MCP audit");
+  } catch {
+    throw new DefensiveLocalCliError("agent_mcp_evidence_missing");
+  }
+}
+
+function assertEmptyPrivateSession(pinnedSession: PinnedPrivateCwd): void {
+  try {
+    if (fs.readdirSync(pinnedSession.realpath).length !== 0) isolationUnavailable();
+  } catch (error) {
+    if (error instanceof DefensiveLocalCliError) throw error;
+    isolationUnavailable();
+  }
 }
 
 function serializeSchema(value: unknown): string {

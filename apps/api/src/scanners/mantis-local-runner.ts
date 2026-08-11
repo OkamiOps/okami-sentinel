@@ -53,6 +53,7 @@ export interface MantisLocalWorkerConfiguration {
 
 export type MantisLocalRunnerErrorCode =
   | "agent_cancelled"
+  | "agent_mcp_evidence_missing"
   | "agent_output_byte_limit"
   | "agent_protocol_error"
   | "agent_termination_unconfirmed"
@@ -79,7 +80,10 @@ export interface MantisLocalRunnerDependencies {
   getConnection(connectionId: string): StoredProviderConnection | null;
   getModel(connectionId: string, modelId: string): ProviderModel | null;
   /** Test seam; production creates the reviewed argv-only CLI boundary. */
-  createCli?(approvedCwds: readonly string[]): DefensiveLocalCli;
+  createCli?(
+    approvedCwds: readonly string[],
+    approvedSnapshotRoots: readonly string[],
+  ): DefensiveLocalCli;
   /** Test seam; production runs argv-only `git -C <root> rev-parse HEAD`. */
   readSourceRevision?(checkoutRoot: string): string | null;
   signal?: AbortSignal;
@@ -152,16 +156,13 @@ export async function runMantisLocalClaude(
     );
 
     update({ percent: 5, detail: "creating an immutable source snapshot" });
-    const snapshotRoot = createMantisSnapshot(configuration.repositoryPath, outputDir);
+    const snapshotRoot = fs.realpathSync(createMantisSnapshot(configuration.repositoryPath, outputDir));
     fs.chmodSync(snapshotRoot, 0o700);
     assertPrivateSnapshot(snapshotRoot);
     const snapshotId = hashMantisSnapshot(snapshotRoot);
     const stateRoot = path.join(outputDir, "mantis");
     initializeMantisState(stateRoot, snapshotRoot, snapshotId, now());
     lockMantisSnapshot(snapshotRoot);
-    const cli = dependencies.createCli?.([snapshotRoot]) ?? createDefensiveLocalCli({
-      approvedCwds: [snapshotRoot],
-    });
 
     update({
       status: "running",
@@ -188,9 +189,15 @@ export async function runMantisLocalClaude(
       if (hashMantisSnapshot(snapshotRoot) !== snapshotId) {
         throw new MantisLocalRunnerError("snapshot_invalid");
       }
+      const sessionRoot = createPrivateMantisSessionRoot(outputDir, stage.id);
+      const cli = dependencies.createCli?.([sessionRoot], [snapshotRoot]) ?? createDefensiveLocalCli({
+        approvedCwds: [sessionRoot],
+        approvedSnapshotRoots: [snapshotRoot],
+      });
       const result = await cli.run({
         routeKind: "claude-code-local",
-        cwd: snapshotRoot,
+        cwd: sessionRoot,
+        snapshotRoot,
         prompt,
         model: current.model === null
           ? { kind: "runtime-default" }
@@ -459,6 +466,39 @@ function lockMantisSnapshot(snapshotRoot: string): void {
   }
 }
 
+function createPrivateMantisSessionRoot(outputDir: string, stageId: string): string {
+  const parent = path.join(outputDir, "mantis-local-sessions");
+  const candidate = path.join(parent, stageId);
+  try {
+    fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
+    fs.chmodSync(parent, 0o700);
+    const parentInfo = fs.lstatSync(parent);
+    const currentUid = typeof process.getuid === "function" ? process.getuid() : undefined;
+    if (
+      !parentInfo.isDirectory() ||
+      parentInfo.isSymbolicLink() ||
+      (parentInfo.mode & 0o077) !== 0 ||
+      (currentUid !== undefined && parentInfo.uid !== currentUid) ||
+      fs.existsSync(candidate)
+    ) throw new Error("invalid session parent");
+    fs.mkdirSync(candidate, { mode: 0o700 });
+    const parentRoot = fs.realpathSync(parent);
+    const root = fs.realpathSync(candidate);
+    const info = fs.lstatSync(root);
+    if (
+      !isInside(parentRoot, root) ||
+      !info.isDirectory() ||
+      info.isSymbolicLink() ||
+      (info.mode & 0o077) !== 0 ||
+      (currentUid !== undefined && info.uid !== currentUid) ||
+      fs.readdirSync(root).length !== 0
+    ) throw new Error("invalid session root");
+    return root;
+  } catch {
+    throw new MantisLocalRunnerError("snapshot_invalid");
+  }
+}
+
 function validateConfiguration(value: MantisLocalWorkerConfiguration): void {
   if (
     !isRecord(value) ||
@@ -521,6 +561,7 @@ function normalizeError(error: unknown, signal: AbortSignal): MantisLocalRunnerE
   if (error instanceof DefensiveLocalCliError) {
     switch (error.code) {
       case "agent_cancelled":
+      case "agent_mcp_evidence_missing":
       case "agent_output_byte_limit":
       case "agent_protocol_error":
       case "agent_termination_unconfirmed":

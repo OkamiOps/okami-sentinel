@@ -164,6 +164,7 @@ test("Mantis local Claude executes exactly nine isolated JSON stages and materia
   const pinnedSource = source(root);
   const calls: DefensiveLocalCliInput[] = [];
   const approved: string[][] = [];
+  const approvedSnapshots: string[][] = [];
   fs.mkdirSync(path.join(repositoryPath, "src"), { recursive: true });
   fs.writeFileSync(
     path.join(repositoryPath, "src", "auth.ts"),
@@ -182,8 +183,9 @@ test("Mantis local Claude executes exactly nine isolated JSON stages and materia
       getSnapshot: () => snapshot(),
       getConnection: () => connection(),
       getModel: () => model(),
-      createCli: (approvedCwds) => {
+      createCli: (approvedCwds, approvedSnapshotRoots) => {
         approved.push([...approvedCwds]);
+        approvedSnapshots.push([...approvedSnapshotRoots]);
         return {
           run: async (input) => {
             calls.push(input);
@@ -195,13 +197,16 @@ test("Mantis local Claude executes exactly nine isolated JSON stages and materia
       now: () => NOW,
     });
 
-    const snapshotRoot = path.join(outputDir, "mantis-snapshot");
+    const snapshotRoot = fs.realpathSync(path.join(outputDir, "mantis-snapshot"));
     assert.equal(fs.statSync(snapshotRoot).mode & 0o777, 0o500);
     assert.equal(fs.statSync(path.join(snapshotRoot, "src")).mode & 0o777, 0o500);
     assert.equal(fs.statSync(path.join(snapshotRoot, "src", "auth.ts")).mode & 0o777, 0o400);
     assert.equal(calls.length, 9);
-    assert.deepEqual(calls.map((input) => input.cwd), Array(9).fill(snapshotRoot));
-    assert.deepEqual(approved, [[snapshotRoot]]);
+    const sessions = STAGES.map((stage) => fs.realpathSync(path.join(outputDir, "mantis-local-sessions", stage)));
+    assert.deepEqual(calls.map((input) => input.cwd), sessions);
+    assert.deepEqual(calls.map((input) => input.snapshotRoot), Array(9).fill(snapshotRoot));
+    assert.deepEqual(approved, sessions.map((session) => [session]));
+    assert.deepEqual(approvedSnapshots, Array(9).fill([snapshotRoot]));
     assert.deepEqual(calls.map((input) => input.model), Array(9).fill({ kind: "catalog", id: "claude-opus-4-1" }));
     assert.deepEqual(calls.map((input) => input.modelCatalog), Array(9).fill(["claude-opus-4-1"]));
     assert.equal(result.runtime.usage.reported, false);
@@ -324,7 +329,7 @@ test("Mantis local detects a snapshot mutation before the next Claude stage", as
           run: async (input) => {
             calls += 1;
             if (calls === 1) {
-              const target = path.join(input.cwd, "src", "auth.ts");
+              const target = path.join(input.snapshotRoot, "src", "auth.ts");
               fs.chmodSync(target, 0o600);
               fs.writeFileSync(target, "export const changed = true;\n");
             }

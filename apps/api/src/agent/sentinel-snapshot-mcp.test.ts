@@ -24,15 +24,20 @@ interface SnapshotMcp {
 test("Sentinel snapshot MCP exposes only bounded read/list/search within its pinned immutable root", async (t) => {
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-snapshot-mcp-"));
   const requestedSnapshot = path.join(fixture, "snapshot");
+  const auditNonce = "a".repeat(64);
+  const requestedSession = path.join(fixture, "session");
   fs.mkdirSync(path.join(requestedSnapshot, "src"), { recursive: true, mode: 0o700 });
+  fs.mkdirSync(requestedSession, { mode: 0o700 });
   const snapshot = fs.realpathSync(requestedSnapshot);
+  const session = fs.realpathSync(requestedSession);
+  const auditPath = path.join(session, `.sentinel-mcp-audit-${auditNonce}.json`);
   const outside = path.join(path.dirname(snapshot), "outside.txt");
   fs.writeFileSync(path.join(snapshot, "src", "app.ts"), "export const safe = true;\n", { mode: 0o400 });
   fs.writeFileSync(outside, "outside-secret\n", { mode: 0o600 });
   fs.symlinkSync(outside, path.join(snapshot, "outside-link"));
   fs.chmodSync(path.join(snapshot, "src"), 0o500);
   fs.chmodSync(snapshot, 0o500);
-  const mcp = await startSnapshotMcp(snapshot);
+  const mcp = await startSnapshotMcp(snapshot, auditPath, auditNonce);
   t.after(async () => {
     await mcp.close();
     unlockFixture(fixture);
@@ -56,7 +61,16 @@ test("Sentinel snapshot MCP exposes only bounded read/list/search within its pin
     SENTINEL_SNAPSHOT_MCP_ALLOWED_TOOLS,
   );
 
+  const deniedBeforeAudit = await mcp.call("tools/call", {
+    name: "read",
+    arguments: { path: "../outside.txt" },
+  });
+  assert.equal(deniedBeforeAudit.result?.isError, true);
+  assert.deepEqual(toolError(deniedBeforeAudit), { code: "snapshot_access_denied" });
+  assert.equal(fs.existsSync(auditPath), false, "a denied call cannot attest to a snapshot read");
+
   const listed = await toolCall(mcp, "list", { path: "src" });
+  assert.equal(fs.readFileSync(auditPath, "utf8"), `${auditNonce}\n`);
   assert.deepEqual(listed, {
     path: "src",
     entries: [{ path: "src/app.ts", kind: "file", size: 26 }],
@@ -92,11 +106,11 @@ test("Sentinel snapshot MCP exposes only bounded read/list/search within its pin
   assert.deepEqual(toolError(swapped), { code: "snapshot_access_denied" });
 });
 
-async function startSnapshotMcp(snapshot: string): Promise<SnapshotMcp> {
+async function startSnapshotMcp(snapshot: string, auditPath: string, auditNonce: string): Promise<SnapshotMcp> {
   const entry = fileURLToPath(new URL("./sentinel-snapshot-mcp.mjs", import.meta.url));
-  const child = spawn(process.execPath, [entry, snapshot], {
+  const child = spawn("/usr/bin/env", ["-i", process.execPath, entry, snapshot, auditPath, auditNonce], {
     cwd: snapshot,
-    env: {},
+    env: { TEST_ONLY_SENTINEL_SECRET: "must-not-reach-mcp" },
     stdio: ["pipe", "pipe", "pipe"],
   });
   let lineBuffer = "";
