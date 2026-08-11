@@ -102,6 +102,7 @@ function writeRecoveryArtifacts(scanDir: string, state: PortableCodexSecurityRun
   writePortableCodexSecurityPricing(scanDir, {
     inputUsdPerMillionTokens: 2,
     cachedInputUsdPerMillionTokens: 0.5,
+    cacheWriteInputUsdPerMillionTokens: null,
     outputUsdPerMillionTokens: 4,
   }, STARTED_AT, "mimo-v2.5");
 }

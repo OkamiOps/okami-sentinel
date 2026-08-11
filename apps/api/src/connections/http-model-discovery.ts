@@ -666,11 +666,13 @@ function openRouterPricing(value: unknown): ModelPricing | null {
   if (pricing === null) return null;
   const input = perMillion(pricing.prompt);
   const cachedInput = perMillion(pricing.input_cache_read ?? pricing.cache_read);
+  const cacheWriteInput = perMillion(pricing.input_cache_write);
   const output = perMillion(pricing.completion);
-  if (input === null && cachedInput === null && output === null) return null;
+  if (input === null && cachedInput === null && cacheWriteInput === null && output === null) return null;
   return {
     inputUsdPerMillionTokens: input,
     cachedInputUsdPerMillionTokens: cachedInput,
+    cacheWriteInputUsdPerMillionTokens: cacheWriteInput,
     outputUsdPerMillionTokens: output,
   };
 }

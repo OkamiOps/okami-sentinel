@@ -414,6 +414,7 @@ test("a probe only records explicit measurements for a selected model owned by t
         pricing: {
           inputUsdPerMillionTokens: 1,
           cachedInputUsdPerMillionTokens: null,
+          cacheWriteInputUsdPerMillionTokens: null,
           outputUsdPerMillionTokens: 2,
         },
       };

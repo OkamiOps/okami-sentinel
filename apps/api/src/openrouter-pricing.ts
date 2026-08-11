@@ -82,17 +82,19 @@ function rate(value: string | undefined, fallback?: number): number {
 export function calculateOpenRouterCost(
   usage: Usage,
   pricing: OpenRouterPricing,
-): OpenRouterCostBreakdown {
+): OpenRouterCostBreakdown | null {
   const inputTokens = Math.max(0, usage.inputTokens);
-  const cachedInputTokens = Math.min(inputTokens, Math.max(0, usage.cachedInputTokens));
-  const uncachedInputTokens = inputTokens - cachedInputTokens;
+  const cachedInputTokens = Math.max(0, usage.cachedInputTokens);
+  const cacheWriteInputTokens = Math.max(0, usage.cacheWriteInputTokens);
+  if (cachedInputTokens + cacheWriteInputTokens > inputTokens) return null;
+  const uncachedInputTokens = inputTokens - cachedInputTokens - cacheWriteInputTokens;
   const promptRate = rate(pricing.prompt);
   const cacheReadRate = rate(pricing.input_cache_read, promptRate);
   const cacheWriteRate = rate(pricing.input_cache_write, promptRate);
   const completionRate = rate(pricing.completion);
   const uncachedInputUsd = usd(uncachedInputTokens * promptRate);
   const cachedInputUsd = usd(cachedInputTokens * cacheReadRate);
-  const cacheWriteInputUsd = usd(Math.max(0, usage.cacheWriteInputTokens) * cacheWriteRate);
+  const cacheWriteInputUsd = usd(cacheWriteInputTokens * cacheWriteRate);
   const outputUsd = usd(Math.max(0, usage.outputTokens) * completionRate);
   const inputUsd = usd(uncachedInputUsd + cachedInputUsd + cacheWriteInputUsd);
   return {
@@ -130,6 +132,7 @@ export function estimateScanWithOpenRouterPricing(
   const model = modelId ? models.find((candidate) => candidate.id === modelId) : undefined;
   if (!model) return run;
   const estimate = calculateOpenRouterCost(run.cost, model.pricing);
+  if (estimate === null) return run;
   const cost: ScanCost = {
     ...run.cost,
     estimatedUsd: estimate.totalUsd,

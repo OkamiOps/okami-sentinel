@@ -985,15 +985,21 @@ function canonicalizePricing(value: unknown): ModelPricing | null {
   if (!isPlainRecord(value)) return null;
   const inputUsdPerMillionTokens = nullableUsd(value.inputUsdPerMillionTokens);
   const cachedInputUsdPerMillionTokens = nullableUsd(value.cachedInputUsdPerMillionTokens);
+  // Catalog rows before cache-write pricing existed have no rate, never an inferred one.
+  const cacheWriteInputUsdPerMillionTokens = value.cacheWriteInputUsdPerMillionTokens === undefined
+    ? null
+    : nullableUsd(value.cacheWriteInputUsdPerMillionTokens);
   const outputUsdPerMillionTokens = nullableUsd(value.outputUsdPerMillionTokens);
   if (
     inputUsdPerMillionTokens === undefined ||
     cachedInputUsdPerMillionTokens === undefined ||
+    cacheWriteInputUsdPerMillionTokens === undefined ||
     outputUsdPerMillionTokens === undefined
   ) return null;
   return {
     inputUsdPerMillionTokens,
     cachedInputUsdPerMillionTokens,
+    cacheWriteInputUsdPerMillionTokens,
     outputUsdPerMillionTokens,
   };
 }

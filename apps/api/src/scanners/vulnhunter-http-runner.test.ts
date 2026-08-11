@@ -732,7 +732,16 @@ test("VulnHunter HTTP runner returns a safe error when direct xAI OAuth refresh 
 
 test("VulnHunter HTTP runner re-resolves the exact model and probe then forwards bounded events", async () => {
   const events: AgentEvent[] = [
-    { type: "usage", usage: { inputTokens: 42, cachedInputTokens: 4, outputTokens: 7, reasoningTokens: 2 } },
+    {
+      type: "usage",
+      usage: {
+        inputTokens: 42,
+        cachedInputTokens: 4,
+        cacheWriteInputTokens: null,
+        outputTokens: 7,
+        reasoningTokens: 2,
+      },
+    },
     { type: "tool", phase: "requested", callId: "tool-1", name: "workspace.read" },
     { type: "artifact", path: "coverage-sweep.md", bytes: 12 },
   ];

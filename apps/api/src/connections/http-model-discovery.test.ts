@@ -176,7 +176,12 @@ test("OpenRouter keeps reported pricing and parameters as unverified hints", asy
         name: "Account visible",
         context_length: 65536,
         supported_parameters: ["tools", "response_format"],
-        pricing: { prompt: "0.000001", input_cache_read: "0.00000025", completion: "0.000002" },
+        pricing: {
+          prompt: "0.000001",
+          input_cache_read: "0.00000025",
+          input_cache_write: "0.000006",
+          completion: "0.000002",
+        },
       }],
     }),
   }));
@@ -184,6 +189,8 @@ test("OpenRouter keeps reported pricing and parameters as unverified hints", asy
   const model = result.models[0];
   assert.equal(model?.pricing?.inputUsdPerMillionTokens, 1);
   assert.equal(model?.pricing?.cachedInputUsdPerMillionTokens, 0.25);
+  assert.equal((model?.pricing as { cacheWriteInputUsdPerMillionTokens?: unknown } | undefined)
+    ?.cacheWriteInputUsdPerMillionTokens, 6);
   assert.equal(model?.pricing?.outputUsdPerMillionTokens, 2);
   assert.deepEqual(model?.unverifiedHints?.supportedParameters, ["tools", "response_format"]);
   assert.equal(model?.capabilities.tools, "unknown");

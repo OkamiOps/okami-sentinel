@@ -484,14 +484,18 @@ async function observeStage(
 
 function collectUsage(runtime: MantisRuntimeState, event: Extract<AgentEvent, { type: "usage" }>): MantisRuntimeState {
   const usage = event.usage;
-  const reported = usage.inputTokens !== null || usage.cachedInputTokens !== null || usage.outputTokens !== null;
+  const reported = usage.inputTokens !== null ||
+    usage.cachedInputTokens !== null ||
+    usage.cacheWriteInputTokens !== null ||
+    usage.outputTokens !== null;
   return {
     ...runtime,
     usage: {
       reported: runtime.usage.reported || reported,
       inputTokens: runtime.usage.inputTokens + (usage.inputTokens ?? 0),
       cachedInputTokens: runtime.usage.cachedInputTokens + (usage.cachedInputTokens ?? 0),
-      cacheWriteInputTokens: runtime.usage.cacheWriteInputTokens ?? 0,
+      cacheWriteInputTokens:
+        (runtime.usage.cacheWriteInputTokens ?? 0) + (usage.cacheWriteInputTokens ?? 0),
       outputTokens: runtime.usage.outputTokens + (usage.outputTokens ?? 0),
     },
   };

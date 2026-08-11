@@ -197,6 +197,7 @@ export interface ModelCapabilities {
 export interface ModelPricing {
   inputUsdPerMillionTokens: number | null;
   cachedInputUsdPerMillionTokens: number | null;
+  cacheWriteInputUsdPerMillionTokens: number | null;
   outputUsdPerMillionTokens: number | null;
 }
 

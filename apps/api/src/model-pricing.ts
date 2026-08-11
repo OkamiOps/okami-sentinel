@@ -11,7 +11,7 @@ export interface FrozenCatalogPricing {
   modelId: string;
   inputUsdPerMillionTokens: number | null;
   cachedInputUsdPerMillionTokens: number | null;
-  cacheWriteInputUsdPerMillionTokens: null;
+  cacheWriteInputUsdPerMillionTokens: number | null;
   outputUsdPerMillionTokens: number | null;
 }
 
@@ -40,6 +40,7 @@ export function freezeCatalogPricing(
   if (
     !nullableRate(pricing.inputUsdPerMillionTokens) ||
     !nullableRate(pricing.cachedInputUsdPerMillionTokens) ||
+    !nullableRate(pricing.cacheWriteInputUsdPerMillionTokens) ||
     !nullableRate(pricing.outputUsdPerMillionTokens)
   ) return null;
   return {
@@ -48,7 +49,7 @@ export function freezeCatalogPricing(
     modelId,
     inputUsdPerMillionTokens: pricing.inputUsdPerMillionTokens,
     cachedInputUsdPerMillionTokens: pricing.cachedInputUsdPerMillionTokens,
-    cacheWriteInputUsdPerMillionTokens: null,
+    cacheWriteInputUsdPerMillionTokens: pricing.cacheWriteInputUsdPerMillionTokens,
     outputUsdPerMillionTokens: pricing.outputUsdPerMillionTokens,
   };
 }
@@ -130,27 +131,33 @@ export function estimateFrozenCatalogUsageCost(
     usage.inputTokensKnown !== true ||
     usage.cachedInputTokensKnown !== true ||
     usage.cacheWriteInputTokensKnown !== true ||
-    usage.outputTokensKnown !== true ||
-    pricing.inputUsdPerMillionTokens === null ||
-    pricing.outputUsdPerMillionTokens === null
+    usage.outputTokensKnown !== true
   ) return null;
+
+  const cacheWriteInputTokens = usage.cacheWriteInputTokens ?? 0;
+  const uncachedInputTokens = usage.inputTokens - usage.cachedInputTokens - cacheWriteInputTokens;
+  if (uncachedInputTokens < 0) return null;
 
   if (
+    (uncachedInputTokens > 0 && pricing.inputUsdPerMillionTokens === null) ||
     (usage.cachedInputTokens > 0 && pricing.cachedInputUsdPerMillionTokens === null) ||
-    ((usage.cacheWriteInputTokens ?? 0) > 0 &&
-      pricing.cacheWriteInputUsdPerMillionTokens === null)
+    (cacheWriteInputTokens > 0 && pricing.cacheWriteInputUsdPerMillionTokens === null) ||
+    (usage.outputTokens > 0 && pricing.outputUsdPerMillionTokens === null)
   ) return null;
 
-  const inputUsd = tokenCost(usage.inputTokens, pricing.inputUsdPerMillionTokens);
-  const outputUsd = tokenCost(usage.outputTokens, pricing.outputUsdPerMillionTokens);
+  const inputUsd = tokenCost(uncachedInputTokens, pricing.inputUsdPerMillionTokens ?? 0);
+  const outputUsd = tokenCost(usage.outputTokens, pricing.outputUsdPerMillionTokens ?? 0);
   const cachedInputUsd = pricing.cachedInputUsdPerMillionTokens !== null
     ? tokenCost(usage.cachedInputTokens, pricing.cachedInputUsdPerMillionTokens)
     : null;
+  const cacheWriteInputUsd = pricing.cacheWriteInputUsdPerMillionTokens !== null
+    ? tokenCost(cacheWriteInputTokens, pricing.cacheWriteInputUsdPerMillionTokens)
+    : null;
   const cost: ScanCost = {
-    estimatedUsd: inputUsd + outputUsd + (cachedInputUsd ?? 0),
+    estimatedUsd: inputUsd + outputUsd + (cachedInputUsd ?? 0) + (cacheWriteInputUsd ?? 0),
     inputTokens: usage.inputTokens,
     cachedInputTokens: usage.cachedInputTokens,
-    cacheWriteInputTokens: usage.cacheWriteInputTokens ?? 0,
+    cacheWriteInputTokens,
     outputTokens: usage.outputTokens,
     model: pricing.modelId,
     pricingSource: "provider-catalog",
@@ -159,7 +166,7 @@ export function estimateFrozenCatalogUsageCost(
       capturedAt: pricing.capturedAt,
       inputUsdPerMillionTokens: pricing.inputUsdPerMillionTokens,
       cachedInputUsdPerMillionTokens: pricing.cachedInputUsdPerMillionTokens,
-      cacheWriteInputUsdPerMillionTokens: null,
+      cacheWriteInputUsdPerMillionTokens: pricing.cacheWriteInputUsdPerMillionTokens,
       outputUsdPerMillionTokens: pricing.outputUsdPerMillionTokens,
     },
     pricingModel: pricing.modelId,
@@ -168,6 +175,7 @@ export function estimateFrozenCatalogUsageCost(
     outputUsd,
   };
   if (cachedInputUsd !== null) cost.cachedInputUsd = cachedInputUsd;
+  if (cacheWriteInputUsd !== null) cost.cacheWriteInputUsd = cacheWriteInputUsd;
   return cost;
 }
 
@@ -203,7 +211,7 @@ function isFrozenCatalogPricing(value: unknown): value is FrozenCatalogPricing {
     safeModelId(value.modelId) &&
     nullableRate(value.inputUsdPerMillionTokens) &&
     nullableRate(value.cachedInputUsdPerMillionTokens) &&
-    value.cacheWriteInputUsdPerMillionTokens === null &&
+    nullableRate(value.cacheWriteInputUsdPerMillionTokens) &&
     nullableRate(value.outputUsdPerMillionTokens);
 }
 

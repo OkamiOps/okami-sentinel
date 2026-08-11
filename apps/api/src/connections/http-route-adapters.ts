@@ -640,12 +640,14 @@ function validPricing(value: ModelPricing | null | undefined): ModelPricing | nu
   const fields = [
     value.inputUsdPerMillionTokens,
     value.cachedInputUsdPerMillionTokens,
+    value.cacheWriteInputUsdPerMillionTokens,
     value.outputUsdPerMillionTokens,
   ];
   if (!fields.every((field) => field === null || Number.isFinite(field) && field >= 0)) return null;
   return {
     inputUsdPerMillionTokens: value.inputUsdPerMillionTokens,
     cachedInputUsdPerMillionTokens: value.cachedInputUsdPerMillionTokens,
+    cacheWriteInputUsdPerMillionTokens: value.cacheWriteInputUsdPerMillionTokens,
     outputUsdPerMillionTokens: value.outputUsdPerMillionTokens,
   };
 }

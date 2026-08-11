@@ -108,12 +108,36 @@ function readToolUse(value: Record<string, unknown>): AgentToolCall {
 
 function anthropicUsage(value: unknown) {
   const usage = optionalRecord(value);
+  const uncachedInputTokens = finiteNumber(usage?.input_tokens);
+  const cachedInputTokens = finiteNumber(usage?.cache_read_input_tokens);
+  const cacheWriteInputTokens = finiteNumber(usage?.cache_creation_input_tokens);
   return {
-    inputTokens: finiteNumber(usage?.input_tokens),
-    cachedInputTokens: finiteNumber(usage?.cache_read_input_tokens),
+    inputTokens: normalizedAnthropicInputTokens(
+      uncachedInputTokens,
+      cachedInputTokens,
+      cacheWriteInputTokens,
+    ),
+    cachedInputTokens,
+    cacheWriteInputTokens,
     outputTokens: finiteNumber(usage?.output_tokens),
     reasoningTokens: finiteNumber(usage?.reasoning_tokens),
   };
+}
+
+/**
+ * Anthropic's input_tokens is only uncached input. When both optional cache
+ * counters are present, normalize to total input. If either is absent, retain
+ * the raw counter and leave the missing cache bucket null so pricing remains
+ * unavailable instead of treating unknown cache use as zero.
+ */
+function normalizedAnthropicInputTokens(
+  uncachedInputTokens: number | null,
+  cachedInputTokens: number | null,
+  cacheWriteInputTokens: number | null,
+): number | null {
+  if (uncachedInputTokens === null) return null;
+  if (cachedInputTokens === null || cacheWriteInputTokens === null) return uncachedInputTokens;
+  return uncachedInputTokens + cachedInputTokens + cacheWriteInputTokens;
 }
 
 function structuredValue(value: unknown, text: string | null): unknown | null {

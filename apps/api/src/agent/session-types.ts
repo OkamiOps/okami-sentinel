@@ -109,8 +109,10 @@ export interface AgentSessionSpec {
 }
 
 export interface AgentUsage {
+  /** Total input tokens, including cache-read and cache-write tokens when reported. */
   inputTokens: number | null;
   cachedInputTokens: number | null;
+  cacheWriteInputTokens: number | null;
   outputTokens: number | null;
   reasoningTokens: number | null;
 }
@@ -473,6 +475,7 @@ function emptyUsage(): AgentUsage {
   return {
     inputTokens: null,
     cachedInputTokens: null,
+    cacheWriteInputTokens: null,
     outputTokens: null,
     reasoningTokens: null,
   };

@@ -135,6 +135,7 @@ function responseUsage(value: unknown) {
   return {
     inputTokens: finiteNumber(usage?.input_tokens),
     cachedInputTokens: finiteNumber(inputDetails?.cached_tokens),
+    cacheWriteInputTokens: finiteNumber(inputDetails?.cache_write_tokens),
     outputTokens: finiteNumber(usage?.output_tokens),
     reasoningTokens: finiteNumber(outputDetails?.reasoning_tokens),
   };

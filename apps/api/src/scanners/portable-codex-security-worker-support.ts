@@ -288,12 +288,11 @@ export function addPortableCodexSecurityUsage(
   current: ScannerUsage,
   usage: AgentUsage,
 ): ScannerUsage {
-  const extension = usage as AgentUsage & { cacheWriteInputTokens?: unknown };
   const incoming = {
     inputTokens: validTokenCount(usage.inputTokens) ? usage.inputTokens : null,
     cachedInputTokens: validTokenCount(usage.cachedInputTokens) ? usage.cachedInputTokens : null,
-    cacheWriteInputTokens: validTokenCount(extension.cacheWriteInputTokens)
-      ? extension.cacheWriteInputTokens
+    cacheWriteInputTokens: validTokenCount(usage.cacheWriteInputTokens)
+      ? usage.cacheWriteInputTokens
       : null,
     outputTokens: validTokenCount(usage.outputTokens) ? usage.outputTokens : null,
   };

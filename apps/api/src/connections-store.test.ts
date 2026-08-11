@@ -365,6 +365,7 @@ test("canonicalizes capability and pricing metadata at the store boundary", () =
       pricing: Object.assign({
         inputUsdPerMillionTokens: 1,
         cachedInputUsdPerMillionTokens: null,
+        cacheWriteInputUsdPerMillionTokens: null,
         outputUsdPerMillionTokens: 2,
       }, {
         endpoint: privateUrl,
@@ -401,6 +402,7 @@ test("canonicalizes capability and pricing metadata at the store boundary", () =
       JSON.stringify({
         inputUsdPerMillionTokens: 1,
         cachedInputUsdPerMillionTokens: null,
+        cacheWriteInputUsdPerMillionTokens: 3,
         outputUsdPerMillionTokens: 2,
         endpoint: privateUrl,
       }),
@@ -419,8 +421,20 @@ test("canonicalizes capability and pricing metadata at the store boundary", () =
       "streaming", "structuredOutput", "tools", "usage",
     ]);
     assert.deepEqual(Object.keys(model.pricing!).sort(), [
-      "cachedInputUsdPerMillionTokens", "inputUsdPerMillionTokens", "outputUsdPerMillionTokens",
+      "cacheWriteInputUsdPerMillionTokens", "cachedInputUsdPerMillionTokens",
+      "inputUsdPerMillionTokens", "outputUsdPerMillionTokens",
     ]);
+    assert.equal(model.pricing?.cacheWriteInputUsdPerMillionTokens, 3);
+
+    db.prepare("UPDATE provider_models SET pricing_json = ? WHERE model_id = ?").run(
+      JSON.stringify({
+        inputUsdPerMillionTokens: 1,
+        cachedInputUsdPerMillionTokens: null,
+        outputUsdPerMillionTokens: 2,
+      }),
+      "model-safe",
+    );
+    assert.equal(store.getModel("conn-1", "model-safe")?.pricing?.cacheWriteInputUsdPerMillionTokens, null);
     assert.deepEqual(Object.keys(check.capabilities).sort(), [
       "artifactOutput", "boundedExecution", "cancellation", "osIsolation",
       "streaming", "structuredOutput", "tools", "usage",

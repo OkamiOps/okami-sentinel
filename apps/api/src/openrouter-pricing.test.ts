@@ -31,13 +31,22 @@ test("calculates uncached input, cache reads, cache writes, and output separatel
     sol.pricing,
   );
 
-  assert.equal(cost.uncachedInputTokens, 898_236);
-  assert.equal(cost.uncachedInputUsd, 4.49118);
-  assert.equal(cost.cachedInputUsd, 8.567552);
-  assert.equal(cost.cacheWriteInputUsd, 0.0625);
-  assert.equal(cost.outputUsd, 5.08128);
-  assert.equal(cost.inputUsd, 13.121232);
-  assert.equal(cost.totalUsd, 18.202512);
+  assert.equal(cost?.uncachedInputTokens, 888_236);
+  assert.equal(cost?.uncachedInputUsd, 4.44118);
+  assert.equal(cost?.cachedInputUsd, 8.567552);
+  assert.equal(cost?.cacheWriteInputUsd, 0.0625);
+  assert.equal(cost?.outputUsd, 5.08128);
+  assert.equal(cost?.inputUsd, 13.071232);
+  assert.equal(cost?.totalUsd, 18.152512);
+});
+
+test("rejects OpenRouter cache buckets that exceed reported total input", () => {
+  assert.equal(calculateOpenRouterCost({
+    inputTokens: 100,
+    cachedInputTokens: 70,
+    cacheWriteInputTokens: 40,
+    outputTokens: 10,
+  }, sol.pricing), null);
 });
 
 test("annotates ChatGPT Mantis usage as an OpenRouter estimate for the exact model", () => {

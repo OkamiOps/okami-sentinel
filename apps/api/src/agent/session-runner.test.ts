@@ -397,7 +397,13 @@ test("malformed frames fail safely and absent usage stays null", async (t) => {
   await collect(usageSession.run(), usageEvents);
   assert.deepEqual(usageEvents.find(isUsage), {
     type: "usage",
-    usage: { inputTokens: 10, cachedInputTokens: 3, outputTokens: 5, reasoningTokens: 2 },
+    usage: {
+      inputTokens: 10,
+      cachedInputTokens: 3,
+      cacheWriteInputTokens: null,
+      outputTokens: 5,
+      reasoningTokens: 2,
+    },
   });
 });
 

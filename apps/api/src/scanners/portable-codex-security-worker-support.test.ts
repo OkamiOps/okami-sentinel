@@ -127,6 +127,7 @@ test("Portable Codex Security usage preserves missing counters and aggregates ca
   const partial = addPortableCodexSecurityUsage(empty, {
     inputTokens: null,
     cachedInputTokens: 3,
+    cacheWriteInputTokens: null,
     outputTokens: null,
     reasoningTokens: null,
   });

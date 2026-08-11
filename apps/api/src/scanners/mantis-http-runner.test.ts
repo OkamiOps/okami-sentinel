@@ -12,7 +12,7 @@ import type {
 } from "@csb/shared";
 
 import type { StoredProviderConnection } from "../connections-store.js";
-import type { AgentSession, AgentSessionSpec } from "../agent/session-types.js";
+import type { AgentSession, AgentSessionSpec, AgentUsage } from "../agent/session-types.js";
 import type { XaiOAuthFlow } from "../connections/xai-oauth-flow.js";
 import {
   MantisHttpRunnerError,
@@ -265,12 +265,39 @@ test("Mantis HTTP runner executes every bounded stage with chained state and nev
     });
     assert.equal(result.runtime.status, "completed");
     assert.equal(result.runtime.usage.inputTokens, STAGES.length * 10);
+    assert.equal(result.runtime.usage.cacheWriteInputTokens, STAGES.length * 2);
     assert.equal(result.runtime.usage.outputTokens, STAGES.length * 4);
     assert.equal(result.runtime.usage.reported, true);
     assert.equal(JSON.stringify(result).includes(secret), false);
     assert.equal(JSON.stringify(specs).includes(secret), false);
     assert.equal(logs.join("\n").includes(secret), false);
     assert.equal(fs.existsSync(path.join(outputDir, "findings.json")), true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Mantis HTTP treats cache-write-only usage as reported", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-http-cache-write-"));
+  const repositoryPath = path.join(root, "repository");
+  fs.mkdirSync(repositoryPath);
+  fs.writeFileSync(path.join(repositoryPath, "app.ts"), "export const safe = true;\n");
+  try {
+    const result = await runMantisFixture(root, repositoryPath, {
+      schemaVersion: 1,
+      engine: "mantis",
+      stage: "report",
+      findings: [],
+    }, undefined, {
+      inputTokens: null,
+      cachedInputTokens: null,
+      cacheWriteInputTokens: 2,
+      outputTokens: null,
+      reasoningTokens: null,
+    });
+
+    assert.equal(result.runtime.usage.reported, true);
+    assert.equal(result.runtime.usage.cacheWriteInputTokens, STAGES.length * 2);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -1027,6 +1054,7 @@ function stageSessionFactory(
   summaries: Record<string, string> = {},
   specs?: AgentSessionSpec[],
   onCreate?: () => void,
+  usage?: AgentUsage,
 ) {
   return async (input: { spec: AgentSessionSpec }) => {
     onCreate?.();
@@ -1037,7 +1065,7 @@ function stageSessionFactory(
       path.join(input.spec.artifactRoot, artifact),
       JSON.stringify(stage === "report" ? reportArtifact : { stage }),
     );
-    return fakeSession(stage, artifact, summaries[stage] ?? `${stage} complete`);
+    return fakeSession(stage, artifact, summaries[stage] ?? `${stage} complete`, usage);
   };
 }
 
@@ -1046,6 +1074,7 @@ function runMantisFixture(
   repositoryPath: string,
   reportArtifact: Record<string, unknown>,
   specs?: AgentSessionSpec[],
+  usage?: AgentUsage,
 ) {
   return runMantisHttpAgent({
     outputDir: path.join(root, "output"),
@@ -1055,7 +1084,7 @@ function runMantisFixture(
     providerPlan: plan(),
   }, {
     ...validDependencies(),
-    createSession: stageSessionFactory(reportArtifact, {}, specs),
+    createSession: stageSessionFactory(reportArtifact, {}, specs, undefined, usage),
     now: () => NOW,
   });
 }
@@ -1064,6 +1093,13 @@ function fakeSession(
   stage: string,
   artifact: string,
   summary: string = `${stage} complete`,
+  usage: AgentUsage = {
+    inputTokens: 10,
+    cachedInputTokens: 2,
+    cacheWriteInputTokens: 2,
+    outputTokens: 4,
+    reasoningTokens: 1,
+  },
 ): AgentSession {
   return {
     async *run() {
@@ -1073,7 +1109,7 @@ function fakeSession(
       yield { type: "artifact", path: artifact, bytes: 32 } as const;
       yield {
         type: "usage",
-        usage: { inputTokens: 10, cachedInputTokens: 2, outputTokens: 4, reasoningTokens: 1 },
+        usage,
       } as const;
       yield {
         type: "completion",
