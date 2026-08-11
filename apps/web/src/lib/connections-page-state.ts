@@ -7,3 +7,11 @@ export function connectionsLoadState(
   if (connections === null) return error ? "error" : "loading";
   return connections.length === 0 ? "empty" : "ready";
 }
+
+export function createMonotonicRequestGuard(): () => () => boolean {
+  let latestRequest = 0;
+  return () => {
+    const request = ++latestRequest;
+    return () => request === latestRequest;
+  };
+}

@@ -10,7 +10,7 @@ import { SettingsSectionNav } from "../components/settings/SettingsSectionNav";
 import { AlertBanner, EmptyState, Loading, PageHeader } from "../components/ui";
 import { Button } from "@/components/ui/button";
 import { selectConnection } from "../lib/connections";
-import { connectionsLoadState } from "../lib/connections-page-state";
+import { connectionsLoadState, createMonotonicRequestGuard } from "../lib/connections-page-state";
 import { useI18n } from "../i18n";
 
 type EditorState = { open: false } | { open: true; connection: ProviderConnection | null };
@@ -23,18 +23,22 @@ export function ConnectionsPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [editor, setEditor] = useState<EditorState>({ open: false });
+  const [beginLoadRequest] = useState(createMonotonicRequestGuard);
 
   const load = useCallback(async () => {
+    const isLatest = beginLoadRequest();
     setError(null);
     try {
       const next = await api.listConnections();
+      if (!isLatest()) return;
       setConnections(next);
       setSelectedId((current) => selectConnection(next, current)?.id ?? null);
       setError(null);
     } catch {
+      if (!isLatest()) return;
       setError(t("connections.error"));
     }
-  }, [t]);
+  }, [beginLoadRequest, t]);
 
   useEffect(() => { void load(); }, [load]);
 
