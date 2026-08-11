@@ -76,6 +76,10 @@ const RUNTIME_KEYS = new Set([
 ]);
 const USAGE_KEYS = new Set([
   "reported",
+  "inputTokensKnown",
+  "cachedInputTokensKnown",
+  "cacheWriteInputTokensKnown",
+  "outputTokensKnown",
   "inputTokens",
   "cachedInputTokens",
   "cacheWriteInputTokens",
@@ -104,6 +108,11 @@ function validUsage(value: unknown): value is ScannerUsage {
   if (!isRecord(value) || !hasOnlyKeys(value, USAGE_KEYS)) return false;
   return (
     (value.reported === undefined || typeof value.reported === "boolean") &&
+    (value.inputTokensKnown === undefined || typeof value.inputTokensKnown === "boolean") &&
+    (value.cachedInputTokensKnown === undefined || typeof value.cachedInputTokensKnown === "boolean") &&
+    (value.cacheWriteInputTokensKnown === undefined ||
+      typeof value.cacheWriteInputTokensKnown === "boolean") &&
+    (value.outputTokensKnown === undefined || typeof value.outputTokensKnown === "boolean") &&
     nonNegativeSafeInteger(value.inputTokens) &&
     nonNegativeSafeInteger(value.cachedInputTokens) &&
     (value.cacheWriteInputTokens === undefined ||

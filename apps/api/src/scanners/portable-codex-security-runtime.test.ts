@@ -43,6 +43,10 @@ function runtimeState(
     findings: 2,
     usage: {
       reported: true,
+      inputTokensKnown: true,
+      cachedInputTokensKnown: true,
+      cacheWriteInputTokensKnown: true,
+      outputTokensKnown: true,
       inputTokens: 120,
       cachedInputTokens: 10,
       cacheWriteInputTokens: 2,

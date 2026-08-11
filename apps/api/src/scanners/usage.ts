@@ -4,6 +4,15 @@ export interface ScannerUsage {
    * record. Older artifacts omit it, so their non-zero counters remain valid.
    */
   reported?: boolean;
+  /**
+   * Optional durable presence bits for providers that can omit individual
+   * counters. A numeric zero is only authoritative when its matching bit is
+   * true. Legacy scanner artifacts omit these fields.
+   */
+  inputTokensKnown?: boolean;
+  cachedInputTokensKnown?: boolean;
+  cacheWriteInputTokensKnown?: boolean;
+  outputTokensKnown?: boolean;
   inputTokens: number;
   cachedInputTokens: number;
   cacheWriteInputTokens?: number;
