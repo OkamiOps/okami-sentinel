@@ -125,6 +125,63 @@ test("advertises MiMo Token Plan only through its pinned OpenAI chat tuple", () 
   assert.deepEqual(result.reasons, []);
 });
 
+test("advertises every scanner for a centrally supported HTTP AgentSession route after a fresh full probe", () => {
+  for (const engine of ["mantis", "vulnhunter", "codex-security"] as const) {
+    const resolver = createScanCompatibilityResolver({
+      getConnection: () => connection({
+        providerKind: "openai",
+        routeKind: "openai-api",
+        protocol: "openai-chat",
+      }),
+      getModel: () => model(),
+      getLatestCapabilityCheck: () => probe(),
+      now: () => NOW,
+    });
+
+    const result = resolver.resolve({
+      engine,
+      selection: {
+        connectionId: "connection-a",
+        modelSelectionMode: "catalog",
+        modelId: "provider/model-a",
+      },
+      ...(engine === "codex-security"
+        ? { executionProfilePreference: "portable" as const }
+        : {}),
+    });
+
+    assert.equal(result.eligible, true, engine);
+    assert.deepEqual(result.reasons, [], engine);
+    if (engine === "codex-security") {
+      assert.equal(result.selectedProfile, "portable");
+    }
+  }
+});
+
+test("keeps protocol mismatches and unknown HTTP routes blocked before launch", () => {
+  for (const patch of [
+    { routeKind: "openai-api", protocol: "anthropic-messages" as const },
+    { routeKind: "unregistered-http-route", protocol: "openai-chat" as const },
+  ]) {
+    const result = createScanCompatibilityResolver({
+      getConnection: () => connection(patch),
+      getModel: () => model(),
+      getLatestCapabilityCheck: () => ({ ...probe(), protocol: patch.protocol }),
+      now: () => NOW,
+    }).resolve({
+      engine: "mantis",
+      selection: {
+        connectionId: "connection-a",
+        modelSelectionMode: "catalog",
+        modelId: "provider/model-a",
+      },
+    });
+
+    assert.equal(result.eligible, false, `${patch.routeKind}/${patch.protocol}`);
+    assert.deepEqual(result.reasons, ["provider_runner_unavailable"]);
+  }
+});
+
 test("fails closed for unknown connections and runner kinds that are not wired", () => {
   const missing = createScanCompatibilityResolver({
     getConnection: () => null,

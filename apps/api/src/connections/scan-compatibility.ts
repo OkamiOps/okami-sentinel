@@ -11,9 +11,9 @@ import {
   resolveCompatibility,
   type ResolvedConnectionCompatibility,
 } from "./compatibility-resolver.js";
+import { isHttpAgentRouteProtocolSupported } from "../agent/http-agent-upstream.js";
 import { isCodexSecurityApiConnection } from "../scanners/codex-security-api-bridge.js";
 import {
-  isPortableCodexSecurityRoute,
   PORTABLE_CODEX_SECURITY_METHODOLOGY_REF,
   PORTABLE_CODEX_SECURITY_PROFILE_VERSION,
 } from "../scanners/portable-codex-security-profile.js";
@@ -96,7 +96,7 @@ function runnerIsWired(
       resolved.methodologyRef === PORTABLE_CODEX_SECURITY_METHODOLOGY_REF &&
       resolved.capabilityCheckId !== null &&
       connection.transport === "http-inference" &&
-      isPortableCodexSecurityRoute(connection.routeKind, connection.protocol);
+      isHttpAgentRouteProtocolSupported(connection.routeKind, connection.protocol);
   }
   if (resolved.runnerKind === "codex-app-server") {
     return connection.routeKind === "openai-codex-local" ||
@@ -112,49 +112,26 @@ function runnerIsWired(
       connection.credentialRef === null;
   }
   if (resolved.runnerKind !== "agent-session") return false;
-  if (input.engine === "mantis") {
-    if (connection.routeKind === "xai-oauth" || connection.protocol === "xai-oauth-responses") {
-      return connection.providerKind === "xai" &&
-        connection.routeKind === "xai-oauth" &&
-        connection.transport === "http-inference" &&
-        connection.authKind === "device-code" &&
-        connection.protocol === "xai-oauth-responses" &&
-        connection.credentialRef === null;
-    }
-    return isWiredHttpRoute(connection.routeKind, connection.protocol);
-  }
-  if (input.engine === "vulnhunter") {
-    return isWiredHttpRoute(connection.routeKind, connection.protocol) ||
-      (connection.providerKind === "xai" &&
-        connection.routeKind === "xai-oauth" &&
-        connection.transport === "http-inference" &&
-        connection.authKind === "device-code" &&
-        connection.protocol === "xai-oauth-responses");
+  if (input.engine === "mantis" || input.engine === "vulnhunter") {
+    return isWiredHttpAgentSession(connection);
   }
   return false;
 }
 
-function isWiredHttpRoute(routeKind: string, protocol: ProviderProtocol): boolean {
-  if (protocol === "openai-responses") {
-    return routeKind === "openai-api" || routeKind === "xai-api";
+function isWiredHttpAgentSession(connection: StoredProviderConnection): boolean {
+  if (connection.routeKind === "xai-oauth" || connection.protocol === "xai-oauth-responses") {
+    return isExactXaiOAuthAgentSession(connection);
   }
-  if (protocol === "openai-chat") {
-    return [
-      "openrouter-api",
-      "gemini-api",
-      "deepseek-api",
-      "mimo-token-plan",
-      "custom-openai-compatible",
-    ].includes(routeKind);
-  }
-  if (protocol === "anthropic-messages") {
-    return [
-      "anthropic-api",
-      "minimax-token-plan",
-      "custom-anthropic-compatible",
-    ].includes(routeKind);
-  }
-  return protocol === "xai-oauth-responses" && routeKind === "xai-oauth";
+  return isHttpAgentRouteProtocolSupported(connection.routeKind, connection.protocol);
+}
+
+function isExactXaiOAuthAgentSession(connection: StoredProviderConnection): boolean {
+  return connection.providerKind === "xai" &&
+    connection.routeKind === "xai-oauth" &&
+    connection.transport === "http-inference" &&
+    connection.authKind === "device-code" &&
+    connection.protocol === "xai-oauth-responses" &&
+    connection.credentialRef === null;
 }
 
 function copySelection(input: ResolveScanCompatibilityRequest) {

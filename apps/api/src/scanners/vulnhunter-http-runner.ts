@@ -8,6 +8,8 @@ import type {
 
 import {
   createHttpAgentUpstream,
+  isHttpAgentRouteProtocolSupported,
+  type HttpAgentProtocol,
   type HttpAgentUpstreamOptions,
 } from "../agent/http-agent-upstream.js";
 import {
@@ -90,20 +92,6 @@ export interface VulnHunterHttpRunner {
   run(input: RunVulnHunterHttpPlanInput): Promise<void>;
 }
 
-type SupportedHttpAgentProtocol = Extract<ProviderProtocol,
-  | "openai-responses"
-  | "openai-chat"
-  | "anthropic-messages"
-  | "xai-oauth-responses"
->;
-
-const SUPPORTED_PROTOCOLS = new Set<SupportedHttpAgentProtocol>([
-  "openai-responses",
-  "openai-chat",
-  "anthropic-messages",
-  "xai-oauth-responses",
-]);
-
 /**
  * Resolves the immutable connection snapshot again inside the child process.
  * xAI OAuth uses its isolated credential store only after this validation.
@@ -176,12 +164,7 @@ interface ResolvedVulnHunterHttpPlan {
   connection: StoredProviderConnection;
   model: ProviderModel;
   capability: CapabilityReport;
-  protocol: Extract<ProviderProtocol,
-    | "openai-responses"
-    | "openai-chat"
-    | "anthropic-messages"
-    | "xai-oauth-responses"
-  >;
+  protocol: HttpAgentProtocol;
   credentials: ConnectionSecretBundle;
 }
 
@@ -194,7 +177,9 @@ async function resolvePlan(
   now: Date,
   maxProbeAgeMs: number,
 ): Promise<ResolvedVulnHunterHttpPlan> {
-  if (!isSafePlan(plan) || !isSupportedHttpProtocol(plan.protocol)) invalidPlan();
+  if (!isSafePlan(plan) || !isHttpAgentRouteProtocolSupported(plan.routeKind, plan.protocol)) {
+    invalidPlan();
+  }
   const snapshot = store.getSnapshot(plan.scanId);
   if (!matchesSnapshot(plan, snapshot)) invalidPlan();
 
@@ -207,7 +192,7 @@ async function resolvePlan(
     connection.protocol !== plan.protocol ||
     connection.modelCatalogStale === true
   ) invalidPlan();
-  if (!isSupportedHttpProtocol(connection.protocol)) invalidPlan();
+  if (!isHttpAgentRouteProtocolSupported(connection.routeKind, connection.protocol)) invalidPlan();
   const directXaiOAuth = isDirectXaiOAuthConnection(connection);
   if (
     (connection.routeKind === "xai-oauth" || connection.protocol === "xai-oauth-responses") &&
@@ -382,10 +367,6 @@ function isCurrentCapability(
     maxProbeAgeMs > 0 &&
     checkedAt <= nowMs &&
     nowMs - checkedAt <= maxProbeAgeMs;
-}
-
-function isSupportedHttpProtocol(value: ProviderProtocol): value is SupportedHttpAgentProtocol {
-  return SUPPORTED_PROTOCOLS.has(value as SupportedHttpAgentProtocol);
 }
 
 function isDirectXaiOAuthConnection(connection: StoredProviderConnection): boolean {

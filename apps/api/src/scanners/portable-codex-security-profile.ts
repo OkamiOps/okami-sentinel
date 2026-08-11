@@ -96,32 +96,15 @@ export interface PortableCodexSecurityStagePromptInput {
 }
 
 /**
- * Closed Portable contract. HTTP support alone does not authorize a route for
- * the Portable Codex Security methodology.
+ * Portable Codex Security uses the same closed HTTP AgentSession contract as
+ * the workers. Credential, model, and capability evidence are revalidated
+ * separately at launch.
  */
 export function isPortableCodexSecurityRoute(
   routeKind: string,
   protocol: ProviderProtocol,
 ): protocol is SafePortableCodexSecurityProviderPlan["protocol"] {
-  if (!isHttpAgentRouteProtocolSupported(routeKind, protocol)) return false;
-  switch (routeKind) {
-    case "openrouter-api":
-    case "gemini-api":
-    case "deepseek-api":
-    case "mimo-token-plan":
-    case "custom-openai-compatible":
-      return protocol === "openai-chat";
-    case "anthropic-api":
-    case "minimax-token-plan":
-    case "custom-anthropic-compatible":
-      return protocol === "anthropic-messages";
-    case "xai-api":
-      return protocol === "openai-responses";
-    case "xai-oauth":
-      return protocol === "xai-oauth-responses";
-    default:
-      return false;
-  }
+  return isHttpAgentRouteProtocolSupported(routeKind, protocol);
 }
 
 export class PortableCodexSecurityProviderPlanError extends Error {

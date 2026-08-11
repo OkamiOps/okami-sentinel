@@ -372,8 +372,9 @@ test("Codex Security fails closed for unproven Portable routes and never substit
   }
 });
 
-test("Codex Security does not expose Portable outside its approved tuple matrix", () => {
+test("Codex Security exposes Portable for centrally supported HTTP AgentSession tuples", () => {
   for (const candidate of [
+    ["openai-api", "openai-chat"],
     ["openai-api", "openai-responses"],
     ["custom-openai-compatible", "openai-responses"],
   ] as const satisfies ReadonlyArray<readonly [string, ProviderProtocol]>) {
@@ -391,8 +392,10 @@ test("Codex Security does not expose Portable outside its approved tuple matrix"
       executionProfilePreference: "portable",
       now: NOW,
     });
-    assert.equal(decision.eligible, false, `${routeKind}/${protocol}`);
-    assert.deepEqual(decision.reasons, ["codex_security_provider_unsupported"]);
+    assert.equal(decision.eligible, true, `${routeKind}/${protocol}`);
+    assert.equal(decision.runnerKind, "agent-session", `${routeKind}/${protocol}`);
+    assert.equal(decision.selectedProfile, "portable", `${routeKind}/${protocol}`);
+    assert.deepEqual(decision.reasons, [], `${routeKind}/${protocol}`);
   }
 });
 
@@ -445,7 +448,7 @@ test("Portable provider plans copy only a complete, pinned server tuple", () => 
     { ...source, scanId: "" },
     { ...source, protocol: "codex-app-server" },
     { ...source, protocol: "anthropic-messages" },
-    { ...source, routeKind: "openai-api", protocol: "openai-responses" },
+    { ...source, routeKind: "openai-api", protocol: "anthropic-messages" },
     { ...source, capabilityCheckId: "" },
     { ...source, profileVersion: "browser-forged" },
     { ...source, methodologyRef: "browser-forged" },
