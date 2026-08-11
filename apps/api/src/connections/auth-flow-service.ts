@@ -1,4 +1,4 @@
-import type { SafeProviderErrorCode } from "@csb/shared";
+import type { ConnectionAuthKind, SafeProviderErrorCode } from "@csb/shared";
 import type { StoredProviderConnection } from "../connections-store.js";
 import type { RouteAdapter, SafeAuthFlow } from "./route-adapter.js";
 
@@ -8,6 +8,19 @@ export interface AuthFlowConnectionStore {
 
 export interface AuthFlowRouteRegistry {
   get(routeKind: string): RouteAdapter | undefined;
+  getManifest(routeKind: string): AuthFlowRouteManifest | undefined;
+}
+
+/**
+ * The auth coordinator depends on this small registered-route view instead of
+ * trusting a route adapter selected only by a connection-controlled string.
+ */
+export interface AuthFlowRouteManifest {
+  routeKind: string;
+  providerKind: string;
+  transport: RouteAdapter["transport"];
+  protocol: RouteAdapter["protocol"];
+  authKinds: readonly ConnectionAuthKind[];
 }
 
 export interface DisconnectResult {
@@ -44,8 +57,8 @@ export function createAuthFlowService(dependencies: {
 
   return {
     async start(connectionId, mode) {
-      const { connection, adapter } = resolveConnection(connectionId, dependencies);
-      if (connection.authKind !== mode || adapter.startAuth === undefined) {
+      const { connection, adapter } = resolveConnection(connectionId, dependencies, mode);
+      if (adapter.startAuth === undefined) {
         throw new AuthFlowServiceError("protocol_unsupported");
       }
       try {
@@ -114,12 +127,26 @@ export function createAuthFlowService(dependencies: {
 function resolveConnection(
   connectionId: string,
   dependencies: { connections: AuthFlowConnectionStore; routes: AuthFlowRouteRegistry },
+  mode?: "browser-oauth" | "device-code",
 ): { connection: StoredProviderConnection; adapter: RouteAdapter } {
   if (!isIdentifier(connectionId)) throw new AuthFlowServiceError("protocol_unsupported");
   const connection = dependencies.connections.get(connectionId);
   if (connection === null) throw new AuthFlowServiceError("protocol_unsupported");
   const adapter = dependencies.routes.get(connection.routeKind);
-  if (adapter === undefined || adapter.routeKind !== connection.routeKind) {
+  const manifest = dependencies.routes.getManifest(connection.routeKind);
+  if (
+    adapter === undefined ||
+    manifest === undefined ||
+    manifest.routeKind !== connection.routeKind ||
+    manifest.providerKind !== connection.providerKind ||
+    manifest.transport !== connection.transport ||
+    manifest.protocol !== connection.protocol ||
+    !manifest.authKinds.includes(connection.authKind) ||
+    adapter.routeKind !== manifest.routeKind ||
+    adapter.transport !== manifest.transport ||
+    adapter.protocol !== manifest.protocol ||
+    (mode !== undefined && (connection.authKind !== mode || !manifest.authKinds.includes(mode)))
+  ) {
     throw new AuthFlowServiceError("protocol_unsupported");
   }
   return { connection, adapter };

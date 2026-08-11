@@ -6,6 +6,7 @@ import {
   XaiOAuthFlowError,
   createXaiOAuthFlow,
   type XaiOAuthCredentialStore,
+  type XaiOAuthFlowDependencies,
   type XaiOAuthTransport,
 } from "./xai-oauth-flow.js";
 
@@ -418,6 +419,291 @@ test("expired xAI credentials refresh once, rotate before use, and keep the bear
     expiresAt: credentialStore.values.get("conn-xai")?.expiresAt ?? null,
   });
 });
+
+test("disconnect rejects a stale refresh and preserves a newer device login", async () => {
+  const credentialStore = new MemoryCredentialStore();
+  await credentialStore.put("conn-xai", {
+    accessToken: "expired-access-token",
+    refreshToken: "old-refresh-token",
+    expiresAt: "2026-08-10T00:00:00.000Z",
+  });
+  const refreshRequested = deferred<void>();
+  const refreshResult = deferred<{
+    accessToken: string;
+    refreshToken: string;
+    expiresIn: number;
+  }>();
+  const flow = createXaiOAuthFlow({
+    credentialStore,
+    now: () => new Date("2026-08-11T00:00:00.000Z"),
+    sleep: async () => undefined,
+    transport: {
+      async requestDeviceCode() {
+        return {
+          deviceCode: "new-device-code",
+          verificationUri: "https://auth.x.ai/activate",
+          userCode: "XAI-NEW",
+          expiresIn: 300,
+        };
+      },
+      async requestToken(input) {
+        if (input.grantType === "refresh_token") {
+          refreshRequested.resolve();
+          return refreshResult.promise;
+        }
+        return {
+          accessToken: "new-access-token",
+          refreshToken: "new-refresh-token",
+          expiresIn: 3600,
+        };
+      },
+      async revoke() {
+        return undefined;
+      },
+    },
+  });
+
+  const refreshing = flow.getAccessToken("conn-xai");
+  await refreshRequested.promise;
+  await flow.disconnect("conn-xai");
+
+  const replacement = await flow.start("conn-xai");
+  await flow.waitForTerminal("conn-xai", replacement.flowId);
+  refreshResult.resolve({
+    accessToken: "stale-access-token",
+    refreshToken: "stale-refresh-token",
+    expiresIn: 3600,
+  });
+
+  await assert.rejects(refreshing, { code: "credential_expired" });
+  assert.deepEqual(credentialStore.values.get("conn-xai"), {
+    accessToken: "new-access-token",
+    refreshToken: "new-refresh-token",
+    expiresAt: credentialStore.values.get("conn-xai")?.expiresAt ?? null,
+  });
+});
+
+test("disconnect followed by a new login keeps credentials when a stale device write completes late", async () => {
+  const firstWriteStarted = deferred<void>();
+  const releaseFirstWrite = deferred<void>();
+  class DelayedCredentialStore extends MemoryCredentialStore {
+    override async put(connectionId: string, value: {
+      accessToken: string;
+      refreshToken: string;
+      expiresAt: string | null;
+    }) {
+      if (value.accessToken === "first-access-token") {
+        firstWriteStarted.resolve();
+        await releaseFirstWrite.promise;
+      }
+      await super.put(connectionId, value);
+    }
+  }
+  const credentialStore = new DelayedCredentialStore();
+  let deviceNumber = 0;
+  const flow = createXaiOAuthFlow({
+    credentialStore,
+    sleep: async () => undefined,
+    transport: {
+      async requestDeviceCode() {
+        deviceNumber += 1;
+        return {
+          deviceCode: `device-${deviceNumber}`,
+          verificationUri: "https://auth.x.ai/activate",
+          userCode: `XAI-${deviceNumber}`,
+          expiresIn: 300,
+        };
+      },
+      async requestToken(input) {
+        return {
+          accessToken: input.deviceCode === "device-1"
+            ? "first-access-token"
+            : "replacement-access-token",
+          refreshToken: input.deviceCode === "device-1"
+            ? "first-refresh-token"
+            : "replacement-refresh-token",
+          expiresIn: 3600,
+        };
+      },
+      async revoke() {
+        return undefined;
+      },
+    },
+  });
+
+  const first = await flow.start("conn-xai");
+  await firstWriteStarted.promise;
+  const disconnecting = flow.disconnect("conn-xai");
+
+  const replacement = await flow.start("conn-xai");
+  releaseFirstWrite.resolve();
+  await disconnecting;
+  await flow.waitForTerminal("conn-xai", replacement.flowId);
+  await flow.waitForTerminal("conn-xai", first.flowId);
+
+  assert.deepEqual(credentialStore.values.get("conn-xai"), {
+    accessToken: "replacement-access-token",
+    refreshToken: "replacement-refresh-token",
+    expiresAt: credentialStore.values.get("conn-xai")?.expiresAt ?? null,
+  });
+});
+
+test("disconnect aborts an uncooperative device-code request before any flow id is allocated", async () => {
+  const deviceRequested = deferred<void>();
+  let ids = 0;
+  const flow = createXaiOAuthFlow({
+    credentialStore: new MemoryCredentialStore(),
+    createId: () => {
+      ids += 1;
+      return `flow-${ids}`;
+    },
+    transport: {
+      async requestDeviceCode() {
+        deviceRequested.resolve();
+        return new Promise(() => undefined);
+      },
+      async requestToken() {
+        throw new Error("not used");
+      },
+      async revoke() {
+        return undefined;
+      },
+    },
+  });
+
+  const starting = flow.start("conn-xai");
+  await deviceRequested.promise;
+  await flow.disconnect("conn-xai");
+  const result = await Promise.race([
+    starting.then(
+      () => "started" as const,
+      (error: unknown) => error instanceof XaiOAuthFlowError ? error.code : "unexpected-error",
+    ),
+    delay(100).then(() => "timed-out" as const),
+  ]);
+
+  assert.notEqual(result, "timed-out");
+  assert.equal(ids, 0);
+  assert.equal(result, "oauth_flow_expired");
+});
+
+test("an uncooperative device-code request expires before allocating a flow id", async () => {
+  let ids = 0;
+  const dependencies: XaiOAuthFlowDependencies & { operationTimeoutMs: number } = {
+    credentialStore: new MemoryCredentialStore(),
+    operationTimeoutMs: 10,
+    createId: () => {
+      ids += 1;
+      return `flow-${ids}`;
+    },
+    transport: {
+      async requestDeviceCode() {
+        return new Promise(() => undefined);
+      },
+      async requestToken() {
+        throw new Error("not used");
+      },
+      async revoke() {
+        return undefined;
+      },
+    },
+  };
+  const flow = createXaiOAuthFlow(dependencies);
+
+  const result = await Promise.race([
+    flow.start("conn-xai").then(
+      () => "started" as const,
+      (error: unknown) => error instanceof XaiOAuthFlowError ? error.code : "unexpected-error",
+    ),
+    delay(100).then(() => "timed-out" as const),
+  ]);
+
+  assert.equal(result, "provider_unreachable");
+  assert.equal(ids, 0);
+});
+
+test("disconnect settles an uncooperative refresh without allowing its late result to write", async () => {
+  const credentialStore = new MemoryCredentialStore();
+  await credentialStore.put("conn-xai", {
+    accessToken: "expired-access-token",
+    refreshToken: "old-refresh-token",
+    expiresAt: "2026-08-10T00:00:00.000Z",
+  });
+  const refreshRequested = deferred<void>();
+  const flow = createXaiOAuthFlow({
+    credentialStore,
+    now: () => new Date("2026-08-11T00:00:00.000Z"),
+    transport: {
+      async requestDeviceCode() {
+        throw new Error("not used");
+      },
+      async requestToken() {
+        refreshRequested.resolve();
+        return new Promise(() => undefined);
+      },
+      async revoke() {
+        return undefined;
+      },
+    },
+  });
+
+  const refreshing = flow.getAccessToken("conn-xai");
+  await refreshRequested.promise;
+  await flow.disconnect("conn-xai");
+  const result = await Promise.race([
+    refreshing.then(
+      () => "refreshed" as const,
+      (error: unknown) => error instanceof XaiOAuthFlowError ? error.code : "unexpected-error",
+    ),
+    delay(100).then(() => "timed-out" as const),
+  ]);
+
+  assert.equal(result, "credential_expired");
+  assert.equal(credentialStore.values.has("conn-xai"), false);
+});
+
+test("disconnect returns revoke_pending when revocation ignores cancellation past its deadline", async () => {
+  const credentialStore = new MemoryCredentialStore();
+  await credentialStore.put("conn-xai", {
+    accessToken: "access-token",
+    refreshToken: "refresh-token",
+    expiresAt: null,
+  });
+  const dependencies: XaiOAuthFlowDependencies & { operationTimeoutMs: number } = {
+    credentialStore,
+    operationTimeoutMs: 10,
+    transport: {
+      async requestDeviceCode() {
+        throw new Error("not used");
+      },
+      async requestToken() {
+        throw new Error("not used");
+      },
+      async revoke() {
+        return new Promise(() => undefined);
+      },
+    },
+  };
+  const flow = createXaiOAuthFlow(dependencies);
+
+  const result = await Promise.race([
+    flow.disconnect("conn-xai"),
+    delay(100).then(() => "timed-out" as const),
+  ]);
+
+  assert.equal(result, "revoke_pending");
+  assert.equal(credentialStore.values.has("conn-xai"), false);
+});
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolve!: (value: T) => void;
+  return {
+    promise: new Promise<T>((next) => {
+      resolve = next;
+    }),
+    resolve,
+  };
+}
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));

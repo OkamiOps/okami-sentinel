@@ -30,6 +30,7 @@ const OAUTH_RESPONSE_LIMIT_BYTES = 1_024 * 1_024;
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
 const SLOW_DOWN_INCREMENT_MS = 5_000;
 const REFRESH_SKEW_MS = 30_000;
+const DEFAULT_OPERATION_TIMEOUT_MS = OAUTH_HTTP_TIMEOUT_MS;
 
 export type XaiOAuthFlowStatus =
   | "pending-device"
@@ -120,6 +121,8 @@ export interface XaiOAuthFlowDependencies {
   openExternal?: (url: string) => Promise<void> | void;
   createId?: () => string;
   redactor?: SecretRedactorRegistry;
+  /** Server-side guard for uncooperative OAuth transports; never UI-configurable. */
+  operationTimeoutMs?: number;
 }
 
 export interface XaiOAuthHttpTransportDependencies {
@@ -154,6 +157,7 @@ class OAuthOperationDeadlineError extends Error {}
 interface PrivateFlow {
   id: string;
   connectionId: string;
+  generation: number;
   deviceCode: string;
   verificationUrl: string;
   verificationUriComplete: string | null;
@@ -173,6 +177,18 @@ interface PrivateFlow {
 interface TerminalFlow {
   connectionId: string;
   value: XaiOAuthFlowPublic;
+}
+
+interface ConnectionState {
+  generation: number;
+  mutations: Promise<void>;
+  pendingStarts: Set<AbortController>;
+}
+
+interface RefreshOperation {
+  generation: number;
+  controller: AbortController;
+  promise: Promise<string>;
 }
 
 export function createXaiOAuthFlow(
@@ -272,9 +288,11 @@ class ManagedXaiOAuthFlow implements XaiOAuthFlow {
   readonly #openExternal: ((url: string) => Promise<void> | void) | undefined;
   readonly #createId: () => string;
   readonly #redactor: SecretRedactorRegistry;
+  readonly #operationTimeoutMs: number;
   readonly #flows = new Map<string, PrivateFlow>();
   readonly #terminalFlows = new Map<string, TerminalFlow>();
-  readonly #refreshes = new Map<string, Promise<string>>();
+  readonly #connectionStates = new Map<string, ConnectionState>();
+  readonly #refreshes = new Map<string, RefreshOperation>();
 
   constructor(dependencies: XaiOAuthFlowDependencies) {
     this.#transport = dependencies.transport;
@@ -284,22 +302,34 @@ class ManagedXaiOAuthFlow implements XaiOAuthFlow {
     this.#openExternal = dependencies.openExternal;
     this.#createId = dependencies.createId ?? randomUUID;
     this.#redactor = dependencies.redactor ?? globalSecretRedactor;
+    this.#operationTimeoutMs = validOperationTimeout(dependencies.operationTimeoutMs);
   }
 
   async start(connectionId: string): Promise<XaiOAuthFlowPublic> {
     const safeConnectionId = requiredConnectionId(connectionId);
+    const generation = this.#invalidateConnection(safeConnectionId);
     const controller = new AbortController();
+    const state = this.#stateFor(safeConnectionId);
+    state.pendingStarts.add(controller);
     let device: XaiDeviceCodeResponse;
     try {
-      device = await this.#transport.requestDeviceCode({
+      device = await this.#awaitTransportOperation(controller, () => this.#transport.requestDeviceCode({
         url: XAI_DEVICE_AUTHORIZATION_URL,
         clientId: XAI_PUBLIC_OAUTH_PRESET.clientId,
         scope: XAI_PUBLIC_OAUTH_PRESET.scopes,
         signal: controller.signal,
-      });
+      }));
     } catch (error) {
+      if (!this.#isCurrentGeneration(safeConnectionId, generation)) {
+        throw new XaiOAuthFlowError("oauth_flow_expired");
+      }
       if (error instanceof XaiOAuthFlowError) throw error;
       throw new XaiOAuthFlowError("provider_unreachable");
+    } finally {
+      state.pendingStarts.delete(controller);
+    }
+    if (!this.#isCurrentGeneration(safeConnectionId, generation)) {
+      throw new XaiOAuthFlowError("oauth_flow_expired");
     }
 
     const normalized = normalizeDeviceResponse(device);
@@ -313,6 +343,7 @@ class ManagedXaiOAuthFlow implements XaiOAuthFlow {
     const flow: PrivateFlow = {
       id,
       connectionId: safeConnectionId,
+      generation,
       deviceCode: normalized.deviceCode,
       verificationUrl: normalized.verificationUri,
       verificationUriComplete: normalized.verificationUriComplete,
@@ -349,8 +380,12 @@ class ManagedXaiOAuthFlow implements XaiOAuthFlow {
   async cancel(connectionId: string, flowId: string): Promise<void> {
     const flow = this.#flow(connectionId, flowId);
     if (flow === null || isTerminal(flow.status)) return;
-    flow.status = "cancelled";
-    flow.controller.abort();
+    if (this.#isCurrentGeneration(flow.connectionId, flow.generation)) {
+      this.#invalidateConnection(flow.connectionId);
+    } else {
+      flow.status = "cancelled";
+      flow.controller.abort();
+    }
     await flow.completion;
   }
 
@@ -374,60 +409,82 @@ class ManagedXaiOAuthFlow implements XaiOAuthFlow {
 
   async getAccessToken(connectionId: string): Promise<string> {
     const safeConnectionId = requiredConnectionId(connectionId);
+    const generation = this.#generationFor(safeConnectionId);
     const credentials = await this.#safeReadCredentials(safeConnectionId);
+    if (!this.#isCurrentGeneration(safeConnectionId, generation)) {
+      throw new XaiOAuthFlowError("credential_expired");
+    }
     if (credentials === null) throw new XaiOAuthFlowError("credential_rejected");
     if (!isExpiring(credentials.expiresAt, this.#now())) return credentials.accessToken;
 
     const current = this.#refreshes.get(safeConnectionId);
-    if (current !== undefined) return current;
-    const refresh = this.#refreshCredentials(safeConnectionId, credentials);
+    if (current !== undefined && current.generation === generation) return current.promise;
+    const controller = new AbortController();
+    const refresh: RefreshOperation = {
+      generation,
+      controller,
+      promise: this.#refreshCredentials(safeConnectionId, credentials, generation, controller),
+    };
     this.#refreshes.set(safeConnectionId, refresh);
     try {
-      return await refresh;
+      return await refresh.promise;
     } finally {
-      this.#refreshes.delete(safeConnectionId);
+      if (this.#refreshes.get(safeConnectionId) === refresh) {
+        this.#refreshes.delete(safeConnectionId);
+      }
     }
   }
 
   async disconnect(connectionId: string): Promise<XaiOAuthDisconnectResult> {
     const safeConnectionId = requiredConnectionId(connectionId);
-    for (const flow of this.#flows.values()) {
-      if (flow.connectionId === safeConnectionId && !isTerminal(flow.status)) {
-        flow.status = "cancelled";
-        flow.controller.abort();
+    // Start both operations before yielding: the deletion barrier is ordered
+    // behind every already-started credential write and ahead of every later
+    // login/refresh write for this connection.
+    const credentialsSnapshot = this.#safeReadCredentials(safeConnectionId);
+    const generation = this.#invalidateConnection(safeConnectionId);
+    const removal = this.#queueDisconnectDeletion(safeConnectionId);
+    const credentials = await credentialsSnapshot;
+    if (!this.#isCurrentGeneration(safeConnectionId, generation) || credentials === null) {
+      try {
+        await removal;
+      } catch {
+        throw new XaiOAuthFlowError("secure_storage_unavailable");
       }
+      return "local_removed";
     }
-
-    const credentials = await this.#safeReadCredentials(safeConnectionId);
-    if (credentials === null) return "local_removed";
     let result: XaiOAuthDisconnectResult = "revoked";
+    const controller = new AbortController();
     await this.#withRedaction(
       `connections/xai-oauth/revoke/${safeConnectionId}`,
       [credentials.accessToken, credentials.refreshToken],
       async () => {
         try {
-          await this.#transport.revoke({
+          await this.#awaitTransportOperation(controller, () => this.#transport.revoke({
             url: XAI_REVOCATION_URL,
             clientId: XAI_PUBLIC_OAUTH_PRESET.clientId,
             token: credentials.refreshToken,
-            signal: new AbortController().signal,
-          });
+            signal: controller.signal,
+          }));
         } catch {
           result = "revoke_pending";
         }
       },
     );
     try {
-      await this.#credentialStore.delete(safeConnectionId);
+      await removal;
+      return result;
     } catch {
       throw new XaiOAuthFlowError("secure_storage_unavailable");
     }
-    return result;
   }
 
   async #poll(flow: PrivateFlow): Promise<void> {
     try {
       while (flow.status === "pending-device") {
+        if (!this.#isCurrentGeneration(flow.connectionId, flow.generation)) {
+          flow.status = "cancelled";
+          return;
+        }
         const remaining = flow.expiresAtMs - this.#now().getTime();
         if (remaining <= 0) {
           flow.status = "expired";
@@ -437,13 +494,14 @@ class ManagedXaiOAuthFlow implements XaiOAuthFlow {
           await this.#awaitFlowOperation(
             flow,
             this.#sleep(Math.min(flow.intervalMs, remaining), flow.controller.signal),
+            remaining,
           );
         } catch (error) {
           if (this.#finishForPollingLimit(flow, error)) return;
           flow.intervalMs += SLOW_DOWN_INCREMENT_MS;
           continue;
         }
-        if (flow.controller.signal.aborted) {
+        if (flow.controller.signal.aborted || !this.#isCurrentGeneration(flow.connectionId, flow.generation)) {
           flow.status = "cancelled";
           return;
         }
@@ -454,19 +512,23 @@ class ManagedXaiOAuthFlow implements XaiOAuthFlow {
 
         let token: XaiTokenResult;
         try {
-          token = await this.#awaitFlowOperation(flow, this.#transport.requestToken({
+          token = await this.#awaitFlowOperation(flow, Promise.resolve().then(() => this.#transport.requestToken({
             url: XAI_TOKEN_URL,
             clientId: XAI_PUBLIC_OAUTH_PRESET.clientId,
             grantType: DEVICE_GRANT,
             deviceCode: flow.deviceCode,
             signal: flow.controller.signal,
-          }));
+          })));
         } catch (error) {
           if (this.#finishForPollingLimit(flow, error)) return;
           flow.intervalMs += SLOW_DOWN_INCREMENT_MS;
           continue;
         }
-        if (flow.controller.signal.aborted || flow.status !== "pending-device") {
+        if (
+          flow.controller.signal.aborted ||
+          flow.status !== "pending-device" ||
+          !this.#isCurrentGeneration(flow.connectionId, flow.generation)
+        ) {
           flow.status = "cancelled";
           return;
         }
@@ -491,15 +553,21 @@ class ManagedXaiOAuthFlow implements XaiOAuthFlow {
         }
         flow.status = "exchanging";
         try {
-          await this.#writeCredentials(flow.connectionId, credentials);
-          if (flow.controller.signal.aborted || flow.status !== "exchanging") {
-            await this.#deleteAfterFailedRotation(flow.connectionId);
+          const committed = await this.#writeCredentials(flow.connectionId, credentials, flow.generation);
+          if (
+            !committed ||
+            flow.controller.signal.aborted ||
+            flow.status !== "exchanging" ||
+            !this.#isCurrentGeneration(flow.connectionId, flow.generation)
+          ) {
             flow.status = "cancelled";
             return;
           }
           flow.status = "completed";
         } catch {
-          flow.status = "failed";
+          flow.status = this.#isCurrentGeneration(flow.connectionId, flow.generation)
+            ? "failed"
+            : "cancelled";
         }
         return;
       }
@@ -518,29 +586,34 @@ class ManagedXaiOAuthFlow implements XaiOAuthFlow {
   async #refreshCredentials(
     connectionId: string,
     existing: XaiOAuthCredentials,
+    generation: number,
+    controller: AbortController,
   ): Promise<string> {
     let token: XaiTokenResult;
     try {
       token = await this.#withRedaction(
         `connections/xai-oauth/refresh/${connectionId}`,
         [existing.accessToken, existing.refreshToken],
-        async () => this.#transport.requestToken({
+        async () => this.#awaitTransportOperation(controller, () => this.#transport.requestToken({
           url: XAI_TOKEN_URL,
           clientId: XAI_PUBLIC_OAUTH_PRESET.clientId,
           grantType: "refresh_token",
           refreshToken: existing.refreshToken,
-          signal: new AbortController().signal,
-        }),
+          signal: controller.signal,
+        })),
       );
     } catch {
       // A network error after the upstream accepted a refresh can leave the
       // server-side refresh token rotated. Never retry the old pair.
-      await this.#deleteAfterFailedRotation(connectionId);
+      await this.#deleteAfterFailedRotation(connectionId, generation);
+      throw new XaiOAuthFlowError("credential_expired");
+    }
+    if (!this.#isCurrentGeneration(connectionId, generation)) {
       throw new XaiOAuthFlowError("credential_expired");
     }
     if (isTokenError(token) || !isNonEmptyText(token.accessToken)) {
       if (isTokenError(token) && token.error === "invalid_grant") {
-        await this.#deleteAfterFailedRotation(connectionId);
+        await this.#deleteAfterFailedRotation(connectionId, generation);
         throw new XaiOAuthFlowError("credential_expired");
       }
       throw new XaiOAuthFlowError("credential_expired");
@@ -548,28 +621,82 @@ class ManagedXaiOAuthFlow implements XaiOAuthFlow {
     const credentials = credentialsFromToken(token, this.#now(), existing.refreshToken);
     if (credentials === null) throw new XaiOAuthFlowError("credential_expired");
     try {
-      await this.#writeCredentials(connectionId, credentials);
+      const committed = await this.#writeCredentials(connectionId, credentials, generation);
+      if (!committed || !this.#isCurrentGeneration(connectionId, generation)) {
+        throw new XaiOAuthFlowError("credential_expired");
+      }
     } catch {
-      await this.#deleteAfterFailedRotation(connectionId);
+      await this.#deleteAfterFailedRotation(connectionId, generation);
       throw new XaiOAuthFlowError("credential_expired");
     }
     return credentials.accessToken;
   }
 
-  async #writeCredentials(connectionId: string, credentials: XaiOAuthCredentials): Promise<void> {
-    await this.#withRedaction(
-      `connections/xai-oauth/credentials/${connectionId}`,
-      [credentials.accessToken, credentials.refreshToken],
-      async () => this.#credentialStore.put(connectionId, { ...credentials }),
+  async #writeCredentials(
+    connectionId: string,
+    credentials: XaiOAuthCredentials,
+    generation: number,
+  ): Promise<boolean> {
+    return this.#queueCredentialMutation(connectionId, generation, async () => {
+      await this.#withRedaction(
+        `connections/xai-oauth/credentials/${connectionId}`,
+        [credentials.accessToken, credentials.refreshToken],
+        async () => this.#credentialStore.put(connectionId, { ...credentials }),
+      );
+    });
+  }
+
+  async #deleteCredentialsIfCurrent(connectionId: string, generation: number): Promise<boolean> {
+    return this.#queueCredentialMutation(
+      connectionId,
+      generation,
+      async () => this.#credentialStore.delete(connectionId),
     );
   }
 
-  async #deleteAfterFailedRotation(connectionId: string): Promise<void> {
+  /**
+   * A disconnect barrier intentionally does not re-check generation. It is
+   * inserted synchronously before a future login can queue its first write,
+   * so it clears any earlier stale write without being able to delete a later
+   * generation's credential.
+   */
+  async #queueDisconnectDeletion(connectionId: string): Promise<void> {
+    const state = this.#stateFor(connectionId);
+    const operation = state.mutations.then(
+      async () => this.#credentialStore.delete(connectionId),
+    );
+    state.mutations = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    await operation;
+  }
+
+  async #deleteAfterFailedRotation(connectionId: string, generation: number): Promise<void> {
     try {
-      await this.#credentialStore.delete(connectionId);
+      await this.#deleteCredentialsIfCurrent(connectionId, generation);
     } catch {
       // A failed cleanup must not make a failed refresh appear usable.
     }
+  }
+
+  async #queueCredentialMutation(
+    connectionId: string,
+    generation: number,
+    mutation: () => Promise<void>,
+  ): Promise<boolean> {
+    const state = this.#stateFor(connectionId);
+    const previous = state.mutations;
+    const operation = previous.then(async () => {
+      if (!this.#isCurrentGeneration(connectionId, generation)) return false;
+      await mutation();
+      return this.#isCurrentGeneration(connectionId, generation);
+    });
+    state.mutations = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    return operation;
   }
 
   async #safeReadCredentials(connectionId: string): Promise<XaiOAuthCredentials | null> {
@@ -591,6 +718,60 @@ class ManagedXaiOAuthFlow implements XaiOAuthFlow {
       return await callback();
     } finally {
       this.#redactor.unregister(scope);
+    }
+  }
+
+  #stateFor(connectionId: string): ConnectionState {
+    const existing = this.#connectionStates.get(connectionId);
+    if (existing !== undefined) return existing;
+    const state: ConnectionState = {
+      generation: 0,
+      mutations: Promise.resolve(),
+      pendingStarts: new Set(),
+    };
+    this.#connectionStates.set(connectionId, state);
+    return state;
+  }
+
+  #generationFor(connectionId: string): number {
+    return this.#stateFor(connectionId).generation;
+  }
+
+  #isCurrentGeneration(connectionId: string, generation: number): boolean {
+    return this.#generationFor(connectionId) === generation;
+  }
+
+  /**
+   * A new auth journey, cancellation, or disconnect invalidates every prior
+   * credential mutation before it can enter the per-connection write queue.
+   */
+  #invalidateConnection(connectionId: string): number {
+    const state = this.#stateFor(connectionId);
+    state.generation += 1;
+    for (const controller of state.pendingStarts) controller.abort();
+    const refresh = this.#refreshes.get(connectionId);
+    if (refresh !== undefined) refresh.controller.abort();
+    for (const flow of this.#flows.values()) {
+      if (flow.connectionId === connectionId && !isTerminal(flow.status)) {
+        flow.status = "cancelled";
+        flow.controller.abort();
+      }
+    }
+    return state.generation;
+  }
+
+  async #awaitTransportOperation<T>(
+    controller: AbortController,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await raceWithLimits(Promise.resolve().then(operation), {
+        signal: controller.signal,
+        deadlineMs: this.#operationTimeoutMs,
+      });
+    } catch (error) {
+      if (error instanceof OAuthOperationDeadlineError) controller.abort();
+      throw error;
     }
   }
 
@@ -618,12 +799,16 @@ class ManagedXaiOAuthFlow implements XaiOAuthFlow {
     flow.verificationUriComplete = null;
   }
 
-  async #awaitFlowOperation<T>(flow: PrivateFlow, operation: Promise<T>): Promise<T> {
+  async #awaitFlowOperation<T>(
+    flow: PrivateFlow,
+    operation: Promise<T>,
+    operationTimeoutMs = this.#operationTimeoutMs,
+  ): Promise<T> {
     const remaining = flow.expiresAtMs - this.#now().getTime();
     try {
       return await raceWithLimits(operation, {
         signal: flow.controller.signal,
-        deadlineMs: remaining,
+        deadlineMs: Math.min(remaining, operationTimeoutMs),
       });
     } catch (error) {
       if (error instanceof OAuthOperationDeadlineError) flow.controller.abort();
@@ -859,6 +1044,12 @@ function validHttpTimeout(value: number | undefined): number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0
     ? Math.min(value, OAUTH_HTTP_TIMEOUT_MS)
     : OAUTH_HTTP_TIMEOUT_MS;
+}
+
+function validOperationTimeout(value: number | undefined): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? Math.min(value, DEFAULT_OPERATION_TIMEOUT_MS)
+    : DEFAULT_OPERATION_TIMEOUT_MS;
 }
 
 function safeHttpError(status: number): SafeProviderErrorCode {

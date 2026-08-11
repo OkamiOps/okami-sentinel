@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type { ConnectionAuthKind } from "@csb/shared";
 import type { StoredProviderConnection } from "../connections-store.js";
 import type { RouteAdapter, SafeAuthFlow } from "./route-adapter.js";
 import {
@@ -67,6 +68,30 @@ function adapter(overrides: Partial<RouteAdapter> = {}): RouteAdapter {
   };
 }
 
+function registry(
+  route: RouteAdapter,
+  overrides: Partial<{
+    providerKind: string;
+    transport: RouteAdapter["transport"];
+    protocol: RouteAdapter["protocol"];
+    authKinds: readonly ConnectionAuthKind[];
+  }> = {},
+) {
+  return {
+    get: (routeKind: string) => routeKind === route.routeKind ? route : undefined,
+    getManifest: (routeKind: string) => routeKind === route.routeKind
+      ? {
+        routeKind: route.routeKind,
+        providerKind: "openai",
+        transport: route.transport,
+        protocol: route.protocol,
+        authKinds: ["device-code"] as const,
+        ...overrides,
+      }
+      : undefined,
+  };
+}
+
 test("OpenAI device flow delegates to the app-server adapter and never retains a token", async () => {
   const calls: Array<{ connectionId: string; mode: string }> = [];
   const appServer = adapter({
@@ -81,7 +106,7 @@ test("OpenAI device flow delegates to the app-server adapter and never retains a
   });
   const service = createAuthFlowService({
     connections: { get: (id) => id === "conn-openai" ? connection() : null },
-    routes: { get: (routeKind) => routeKind === "openai-chatgpt-app-server" ? appServer : undefined },
+    routes: registry(appServer),
   });
 
   const result = await service.start("conn-openai", "device-code");
@@ -103,7 +128,7 @@ test("auth flow service keeps safe state in memory and delegates cancellation", 
   });
   const service = createAuthFlowService({
     connections: { get: () => connection() },
-    routes: { get: () => appServer },
+    routes: registry(appServer),
   });
 
   await service.start("conn-openai", "device-code");
@@ -124,7 +149,7 @@ test("OpenAI app-server flow derives completion from a fresh safe runtime inspec
   });
   const service = createAuthFlowService({
     connections: { get: () => connection() },
-    routes: { get: () => appServer },
+    routes: registry(appServer),
   });
 
   await service.start("conn-openai", "device-code");
@@ -136,13 +161,11 @@ test("auth flow service rejects unsupported routes and redacts dependency failur
   const marker = "access-token-not-for-public-output";
   const service = createAuthFlowService({
     connections: { get: () => connection() },
-    routes: {
-      get: () => adapter({
-        async startAuth() {
-          throw new Error(`provider says Bearer ${marker}`);
-        },
-      }),
-    },
+    routes: registry(adapter({
+      async startAuth() {
+        throw new Error(`provider says Bearer ${marker}`);
+      },
+    })),
   });
 
   await assert.rejects(service.start("conn-openai", "device-code"), (error: unknown) => {
@@ -154,9 +177,37 @@ test("auth flow service rejects unsupported routes and redacts dependency failur
 
   const unsupported = createAuthFlowService({
     connections: { get: () => connection() },
-    routes: { get: () => adapter() },
+    routes: registry(adapter()),
   });
   await assert.rejects(unsupported.start("conn-openai", "browser-oauth"), {
     code: "protocol_unsupported",
   });
+});
+
+test("auth flow service rejects an unregistered manifest mismatch before delegating provider auth", async () => {
+  let delegated = 0;
+  const appServer = adapter({
+    async startAuth() {
+      delegated += 1;
+      return safeFlow();
+    },
+  });
+  const mismatches = [
+    { providerKind: "xai" },
+    { transport: "local-cli" as const },
+    { protocol: "grok-build-cli" as const },
+    { authKinds: ["browser-oauth"] as const },
+  ];
+
+  for (const manifest of mismatches) {
+    const service = createAuthFlowService({
+      connections: { get: () => connection() },
+      routes: registry(appServer, manifest),
+    });
+    await assert.rejects(service.start("conn-openai", "device-code"), {
+      code: "protocol_unsupported",
+    });
+  }
+
+  assert.equal(delegated, 0);
 });
