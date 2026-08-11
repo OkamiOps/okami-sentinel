@@ -23,6 +23,7 @@ const STAGES = [
   "architecture", "threat-model", "plan", "researcher", "dedupe",
   "review", "critic", "calibrate", "report",
 ];
+const SOURCE_REF = "a".repeat(40);
 
 function connection(patch: Partial<StoredProviderConnection> = {}): StoredProviderConnection {
   return {
@@ -100,13 +101,19 @@ function snapshot(patch: Partial<ScanConnectionSnapshot> = {}): ScanConnectionSn
   };
 }
 
-function source(root: string): string {
+function source(
+  root: string,
+  sizes: Partial<Record<(typeof STAGES)[number], number>> = {},
+): { sourceCacheDir: string; skillsRoot: string } {
+  const sourceCacheDir = path.join(root, "mantis-cache");
+  const skillsRoot = path.join(sourceCacheDir, SOURCE_REF.slice(0, 12));
   for (const stage of STAGES) {
-    const skillDir = path.join(root, stage === "report" ? "mantis-report" : `mantis-${stage}`);
+    const skillDir = path.join(skillsRoot, stage === "report" ? "mantis-report" : `mantis-${stage}`);
     fs.mkdirSync(skillDir, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(path.join(skillDir, "SKILL.md"), `# ${stage}\nTrusted defensive stage.\n`, { mode: 0o600 });
+    const content = `# ${stage}\n${"T".repeat(Math.max(0, (sizes[stage] ?? 32) - stage.length - 4))}\n`;
+    fs.writeFileSync(path.join(skillDir, "SKILL.md"), content, { mode: 0o600 });
   }
-  return root;
+  return { sourceCacheDir, skillsRoot };
 }
 
 function finalFor(input: DefensiveLocalCliInput): unknown {
@@ -133,11 +140,28 @@ function finalFor(input: DefensiveLocalCliInput): unknown {
   return { stage, summary: `${stage} complete` };
 }
 
+function removeFixture(root: string): void {
+  const unlock = (candidate: string) => {
+    for (const entry of fs.readdirSync(candidate, { withFileTypes: true })) {
+      const child = path.join(candidate, entry.name);
+      if (entry.isDirectory()) {
+        unlock(child);
+        fs.chmodSync(child, 0o700);
+      } else {
+        fs.chmodSync(child, 0o600);
+      }
+    }
+  };
+  unlock(root);
+  fs.chmodSync(root, 0o700);
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
 test("Mantis local Claude executes exactly nine isolated JSON stages and materializes Inspector evidence", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-local-runner-"));
   const repositoryPath = path.join(root, "repository");
   const outputDir = path.join(root, "output");
-  const skillsRoot = source(path.join(root, "skills"));
+  const pinnedSource = source(root);
   const calls: DefensiveLocalCliInput[] = [];
   const approved: string[][] = [];
   fs.mkdirSync(path.join(repositoryPath, "src"), { recursive: true });
@@ -151,8 +175,8 @@ test("Mantis local Claude executes exactly nine isolated JSON stages and materia
       outputDir,
       repositoryPath,
       paths: [],
-      sourceRef: "a".repeat(40),
-      skillsRoot,
+      sourceRef: SOURCE_REF,
+      ...pinnedSource,
       providerPlan: plan(),
     }, {
       getSnapshot: () => snapshot(),
@@ -167,10 +191,14 @@ test("Mantis local Claude executes exactly nine isolated JSON stages and materia
           },
         } satisfies DefensiveLocalCli;
       },
+      readSourceRevision: () => SOURCE_REF,
       now: () => NOW,
     });
 
     const snapshotRoot = path.join(outputDir, "mantis-snapshot");
+    assert.equal(fs.statSync(snapshotRoot).mode & 0o777, 0o700);
+    assert.equal(fs.statSync(path.join(snapshotRoot, "src")).mode & 0o777, 0o500);
+    assert.equal(fs.statSync(path.join(snapshotRoot, "src", "auth.ts")).mode & 0o777, 0o400);
     assert.equal(calls.length, 9);
     assert.deepEqual(calls.map((input) => input.cwd), Array(9).fill(snapshotRoot));
     assert.deepEqual(approved, [[snapshotRoot]]);
@@ -189,7 +217,128 @@ test("Mantis local Claude executes exactly nine isolated JSON stages and materia
     assert.equal(normalized.findings[0]?.codeEvidence[0]?.code,
       "export const users = db.users.findMany();\nexport const count = users.length;");
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    removeFixture(root);
+  }
+});
+
+test("Mantis local accepts a 41,402-byte pinned Mantis skill while every CLI prompt stays bounded", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-local-large-skill-"));
+  const repositoryPath = path.join(root, "repository");
+  const pinnedSource = source(root, { calibrate: 41_402 });
+  const calls: DefensiveLocalCliInput[] = [];
+  fs.mkdirSync(path.join(repositoryPath, "src"), { recursive: true });
+  fs.writeFileSync(path.join(repositoryPath, "app.ts"), "export const safe = true;\n");
+  fs.writeFileSync(path.join(repositoryPath, "src", "auth.ts"), "export const users = db.users.findMany();\nexport const count = users.length;\n");
+  assert.equal(fs.statSync(path.join(pinnedSource.skillsRoot, "mantis-calibrate", "SKILL.md")).size, 41_402);
+
+  try {
+    await runMantisLocalClaude({
+      outputDir: path.join(root, "output"),
+      repositoryPath,
+      paths: [],
+      sourceRef: SOURCE_REF,
+      ...pinnedSource,
+      providerPlan: plan(),
+    }, {
+      getSnapshot: () => snapshot(),
+      getConnection: () => connection(),
+      getModel: () => model(),
+      createCli: () => ({
+        run: async (input) => {
+          calls.push(input);
+          return { final: finalFor(input), usage: null };
+        },
+      }),
+      readSourceRevision: () => SOURCE_REF,
+      now: () => NOW,
+    });
+
+    assert.equal(calls.length, 9);
+    assert.ok(calls.every((input) => Buffer.byteLength(input.prompt, "utf8") <= 131_072));
+    assert.match(calls.find((input) => input.prompt.includes("stage_id=calibrate"))!.prompt, /T{100}/);
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test("Mantis local rejects an oversized final prompt before invoking Claude", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-local-prompt-cap-"));
+  const repositoryPath = path.join(root, "repository");
+  const pinnedSource = source(root, { architecture: 64 * 1024 });
+  const paths = Array.from({ length: 64 }, (_, index) =>
+    `${"p".repeat(1_019)}${String(index).padStart(4, "0")}`,
+  );
+  let calls = 0;
+  fs.mkdirSync(repositoryPath);
+  try {
+    await assert.rejects(
+      runMantisLocalClaude({
+        outputDir: path.join(root, "output"),
+        repositoryPath,
+        paths,
+        sourceRef: SOURCE_REF,
+        ...pinnedSource,
+        providerPlan: plan(),
+      }, {
+        getSnapshot: () => snapshot(),
+        getConnection: () => connection(),
+        getModel: () => model(),
+        createCli: () => ({
+          run: async () => {
+            calls += 1;
+            return { final: { stage: "architecture", summary: "must not run" }, usage: null };
+          },
+        }),
+        readSourceRevision: () => SOURCE_REF,
+        now: () => NOW,
+      }),
+      (error: unknown) => error instanceof MantisLocalRunnerError && error.code === "source_invalid",
+    );
+    assert.equal(calls, 0);
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test("Mantis local detects a snapshot mutation before the next Claude stage", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-local-snapshot-mutation-"));
+  const repositoryPath = path.join(root, "repository");
+  const pinnedSource = source(root);
+  let calls = 0;
+  fs.mkdirSync(path.join(repositoryPath, "src"), { recursive: true });
+  fs.writeFileSync(path.join(repositoryPath, "src", "auth.ts"), "export const safe = true;\n");
+  try {
+    await assert.rejects(
+      runMantisLocalClaude({
+        outputDir: path.join(root, "output"),
+        repositoryPath,
+        paths: [],
+        sourceRef: SOURCE_REF,
+        ...pinnedSource,
+        providerPlan: plan(),
+      }, {
+        getSnapshot: () => snapshot(),
+        getConnection: () => connection(),
+        getModel: () => model(),
+        createCli: () => ({
+          run: async (input) => {
+            calls += 1;
+            if (calls === 1) {
+              const target = path.join(input.cwd, "src", "auth.ts");
+              fs.chmodSync(target, 0o600);
+              fs.writeFileSync(target, "export const changed = true;\n");
+            }
+            return { final: finalFor(input), usage: null };
+          },
+        }),
+        readSourceRevision: () => SOURCE_REF,
+        now: () => NOW,
+      }),
+      (error: unknown) => error instanceof MantisLocalRunnerError && error.code === "snapshot_invalid",
+    );
+    assert.equal(calls, 1);
+  } finally {
+    removeFixture(root);
   }
 });
 
@@ -203,6 +352,7 @@ test("Mantis local rejects Grok and Cursor plans before creating a CLI", async (
       created += 1;
       throw new Error("must not create CLI");
     },
+    readSourceRevision: () => SOURCE_REF,
     now: () => NOW,
   };
   for (const denied of [
@@ -214,7 +364,8 @@ test("Mantis local rejects Grok and Cursor plans before creating a CLI", async (
         outputDir: "/private/tmp/not-created",
         repositoryPath: "/private/tmp/not-created",
         paths: [],
-        sourceRef: "a".repeat(40),
+        sourceRef: SOURCE_REF,
+        sourceCacheDir: "/private/tmp/not-created-cache",
         skillsRoot: "/private/tmp/not-created",
         providerPlan: denied,
       }, dependencies),
@@ -234,7 +385,8 @@ test("Mantis local fails before CLI execution when its pinned source is incomple
         outputDir: path.join(root, "output"),
         repositoryPath: path.join(root, "repository"),
         paths: [],
-        sourceRef: "a".repeat(40),
+        sourceRef: SOURCE_REF,
+        sourceCacheDir: path.join(root, "mantis-cache"),
         skillsRoot: path.join(root, "missing-skills"),
         providerPlan: plan(),
       }, {
@@ -245,13 +397,48 @@ test("Mantis local fails before CLI execution when its pinned source is incomple
           created += 1;
           throw new Error("must not create CLI");
         },
+        readSourceRevision: () => SOURCE_REF,
         now: () => NOW,
       }),
       (error: unknown) => error instanceof MantisLocalRunnerError && error.code === "source_invalid",
     );
     assert.equal(created, 0);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    removeFixture(root);
+  }
+});
+
+test("Mantis local rejects a checkout whose resolved Git revision differs from sourceRef", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-local-source-pin-"));
+  const repositoryPath = path.join(root, "repository");
+  const pinnedSource = source(root);
+  let created = 0;
+  fs.mkdirSync(repositoryPath);
+  try {
+    await assert.rejects(
+      runMantisLocalClaude({
+        outputDir: path.join(root, "output"),
+        repositoryPath,
+        paths: [],
+        sourceRef: SOURCE_REF,
+        ...pinnedSource,
+        providerPlan: plan(),
+      }, {
+        getSnapshot: () => snapshot(),
+        getConnection: () => connection(),
+        getModel: () => model(),
+        createCli: () => {
+          created += 1;
+          throw new Error("must not create CLI");
+        },
+        readSourceRevision: () => "b".repeat(40),
+        now: () => NOW,
+      }),
+      (error: unknown) => error instanceof MantisLocalRunnerError && error.code === "source_invalid",
+    );
+    assert.equal(created, 0);
+  } finally {
+    removeFixture(root);
   }
 });
 
@@ -265,8 +452,8 @@ test("Mantis local rejects an invalid final report without writing normalized fi
         outputDir: path.join(root, "output"),
         repositoryPath,
         paths: [],
-        sourceRef: "a".repeat(40),
-        skillsRoot: source(path.join(root, "skills")),
+        sourceRef: SOURCE_REF,
+        ...source(root),
         providerPlan: plan(),
       }, {
         getSnapshot: () => snapshot(),
@@ -280,12 +467,13 @@ test("Mantis local rejects an invalid final report without writing normalized fi
             usage: null,
           }),
         }),
+        readSourceRevision: () => SOURCE_REF,
         now: () => NOW,
       }),
       (error: unknown) => error instanceof MantisLocalRunnerError && error.code === "stage_artifact_invalid",
     );
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    removeFixture(root);
   }
 });
 
@@ -299,8 +487,8 @@ test("Mantis local propagates cancellation and deadline failures from the defens
           outputDir: path.join(root, `output-${code}`),
           repositoryPath: path.join(root, "repository"),
           paths: [],
-          sourceRef: "a".repeat(40),
-          skillsRoot: source(path.join(root, "skills")),
+          sourceRef: SOURCE_REF,
+          ...source(root),
           providerPlan: plan(),
         }, {
           getSnapshot: () => snapshot(),
@@ -309,12 +497,13 @@ test("Mantis local propagates cancellation and deadline failures from the defens
           createCli: () => ({
             run: async () => { throw new DefensiveLocalCliError(code); },
           }),
+          readSourceRevision: () => SOURCE_REF,
           now: () => NOW,
         }),
         (error: unknown) => error instanceof MantisLocalRunnerError && error.code === code,
       );
     }
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    removeFixture(root);
   }
 });

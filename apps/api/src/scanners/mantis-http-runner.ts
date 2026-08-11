@@ -856,7 +856,12 @@ export function hashMantisSnapshot(root: string): string {
       const absolute = path.join(directory, entry.name);
       if (entry.isDirectory()) visit(absolute);
       else if (entry.isFile()) {
-        hash.update(path.relative(root, absolute));
+        const relative = path.relative(root, absolute);
+        // The marker records this content hash. It is intentionally metadata,
+        // not snapshot content, otherwise writing it immediately invalidates
+        // every immutable snapshot.
+        if (relative === ".mantis_snapshot_id") continue;
+        hash.update(relative);
         hash.update("\0");
         hash.update(fs.readFileSync(absolute));
         hash.update("\0");

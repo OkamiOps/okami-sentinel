@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -43,6 +44,8 @@ export interface MantisLocalWorkerConfiguration {
   repositoryPath: string;
   paths: string[];
   sourceRef: string;
+  /** Server-managed cache root; skillsRoot must be the exact ref-derived child. */
+  sourceCacheDir: string;
   /** A server-pinned checkout containing precisely the required nine skills. */
   skillsRoot: string;
   providerPlan: MantisLocalProviderPlan;
@@ -78,6 +81,8 @@ export interface MantisLocalRunnerDependencies {
   getModel(connectionId: string, modelId: string): ProviderModel | null;
   /** Test seam; production creates the reviewed argv-only CLI boundary. */
   createCli?(approvedCwds: readonly string[]): DefensiveLocalCli;
+  /** Test seam; production runs argv-only `git -C <root> rev-parse HEAD`. */
+  readSourceRevision?(checkoutRoot: string): string | null;
   signal?: AbortSignal;
   log?: (line: string) => void;
   now?: () => Date;
@@ -87,8 +92,11 @@ export interface MantisLocalRunResult {
   runtime: MantisRuntimeState;
 }
 
-const MAX_SKILL_BYTES = 24 * 1024;
-const SOURCE_REF_PATTERN = /^[a-f0-9]{7,64}$/i;
+const MAX_SKILL_BYTES = 64 * 1024;
+const MAX_STAGE_PROMPT_BYTES = 128 * 1024;
+const MAX_SCOPE_PATHS = 128;
+const MAX_SCOPE_BYTES = 64 * 1024;
+const SOURCE_REF_PATTERN = /^[a-f0-9]{40}$/;
 
 /**
  * Executes the only currently defensible local Mantis route: Claude Code in
@@ -137,8 +145,13 @@ export async function runMantisLocalClaude(
 
   try {
     throwIfAborted(signal);
-    const resolved = revalidatePlan(configuration.providerPlan, dependencies);
-    const pinnedSkills = loadPinnedSkills(configuration.skillsRoot, configuration.sourceRef);
+    revalidatePlan(configuration.providerPlan, dependencies);
+    const pinnedSkills = loadPinnedSkills(
+      configuration.skillsRoot,
+      configuration.sourceCacheDir,
+      configuration.sourceRef,
+      dependencies.readSourceRevision,
+    );
 
     update({ percent: 5, detail: "creating an immutable source snapshot" });
     const snapshotRoot = createMantisSnapshot(configuration.repositoryPath, outputDir);
@@ -147,6 +160,7 @@ export async function runMantisLocalClaude(
     const snapshotId = hashMantisSnapshot(snapshotRoot);
     const stateRoot = path.join(outputDir, "mantis");
     initializeMantisState(stateRoot, snapshotRoot, snapshotId, now());
+    lockMantisSnapshot(snapshotRoot);
     const cli = dependencies.createCli?.([snapshotRoot]) ?? createDefensiveLocalCli({
       approvedCwds: [snapshotRoot],
     });
@@ -168,14 +182,22 @@ export async function runMantisLocalClaude(
         percent: stage.startPercent,
         detail: `running ${stage.skill}`,
       });
+      const prompt = stagePrompt(stage, pinnedSkills.get(stage.id)!, configuration.paths, priorState);
+      // Recheck both mutable server facts and the immutable snapshot at the
+      // execution boundary, rather than trusting preparation-time state.
+      throwIfAborted(signal);
+      const current = revalidatePlan(configuration.providerPlan, dependencies);
+      if (hashMantisSnapshot(snapshotRoot) !== snapshotId) {
+        throw new MantisLocalRunnerError("snapshot_invalid");
+      }
       const result = await cli.run({
         routeKind: "claude-code-local",
         cwd: snapshotRoot,
-        prompt: stagePrompt(stage, pinnedSkills.get(stage.id)!, configuration.paths, priorState),
-        model: resolved.model === null
+        prompt,
+        model: current.model === null
           ? { kind: "runtime-default" }
-          : { kind: "catalog", id: resolved.model.id },
-        modelCatalog: resolved.model === null ? [] : [resolved.model.id],
+          : { kind: "catalog", id: current.model.id },
+        modelCatalog: current.model === null ? [] : [current.model.id],
         jsonSchema: stageSchema(stage.id),
         maxTurns: 4,
         timeoutMs: configuration.stageTimeoutMs ?? LOCAL_CLI_TIMEOUT_MS,
@@ -254,13 +276,34 @@ function revalidatePlan(
   return { model };
 }
 
-function loadPinnedSkills(skillsRoot: string, sourceRef: string): Map<string, string> {
+function loadPinnedSkills(
+  skillsRoot: string,
+  sourceCacheDir: string,
+  sourceRef: string,
+  readSourceRevision: ((checkoutRoot: string) => string | null) | undefined,
+): Map<string, string> {
   if (!SOURCE_REF_PATTERN.test(sourceRef)) throw new MantisLocalRunnerError("source_invalid");
   let root: string;
   try {
-    root = fs.realpathSync(skillsRoot);
-    const info = fs.lstatSync(root);
-    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("not directory");
+    const cacheRoot = fs.realpathSync(sourceCacheDir);
+    const cacheInfo = fs.statSync(cacheRoot);
+    if (!cacheInfo.isDirectory()) throw new Error("invalid cache");
+    const expectedRoot = path.resolve(sourceCacheDir, sourceRef.slice(0, 12));
+    if (path.resolve(skillsRoot) !== expectedRoot) throw new Error("source not derived from pin");
+    const info = fs.lstatSync(expectedRoot);
+    const currentUid = typeof process.getuid === "function" ? process.getuid() : undefined;
+    if (
+      !info.isDirectory() ||
+      info.isSymbolicLink() ||
+      (info.mode & 0o077) !== 0 ||
+      (currentUid !== undefined && info.uid !== currentUid)
+    ) throw new Error("not private directory");
+    root = fs.realpathSync(expectedRoot);
+    if (fs.realpathSync(skillsRoot) !== root || !isInside(cacheRoot, root)) {
+      throw new Error("source root changed");
+    }
+    const revision = (readSourceRevision ?? readPinnedSourceRevision)(root);
+    if (revision !== sourceRef) throw new Error("source revision mismatch");
   } catch {
     throw new MantisLocalRunnerError("source_invalid");
   }
@@ -282,6 +325,23 @@ function loadPinnedSkills(skillsRoot: string, sourceRef: string): Map<string, st
     }
   }
   return skills;
+}
+
+function readPinnedSourceRevision(checkoutRoot: string): string | null {
+  try {
+    const result = spawnSync("git", ["-C", checkoutRoot, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+      shell: false,
+      windowsHide: true,
+      timeout: 5_000,
+      maxBuffer: 1_024,
+    });
+    if (result.error || result.status !== 0 || typeof result.stdout !== "string") return null;
+    const revision = result.stdout.trim();
+    return SOURCE_REF_PATTERN.test(revision) ? revision : null;
+  } catch {
+    return null;
+  }
 }
 
 function stagePrompt(
@@ -306,7 +366,7 @@ function stagePrompt(
       "findings is required (an empty array is valid). Every finding requires non-empty id, title, severity from CRITICAL, HIGH, MEDIUM, LOW, or INFO, and a non-empty code_paths array of bounded source locators.",
     ]
     : [];
-  return [
+  const prompt = [
     "Sentinel Mantis authorized defensive static-analysis stage.",
     `stage_id=${stage.id}`,
     `Apply the pinned ${stage.skill} methodology below exactly once.`,
@@ -320,6 +380,10 @@ function stagePrompt(
     "Return a concise defensive summary for the next stage.",
     ...priorBlock,
   ].join("\n");
+  if (Buffer.byteLength(prompt, "utf8") > MAX_STAGE_PROMPT_BYTES) {
+    throw new MantisLocalRunnerError("source_invalid");
+  }
+  return prompt;
 }
 
 function stageSchema(stage: string): Record<string, unknown> {
@@ -369,14 +433,41 @@ function assertPrivateSnapshot(snapshotRoot: string): void {
   }
 }
 
+function lockMantisSnapshot(snapshotRoot: string): void {
+  try {
+    const files: string[] = [];
+    const directories: string[] = [];
+    const visit = (directory: string) => {
+      directories.push(directory);
+      for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        const candidate = path.join(directory, entry.name);
+        if (entry.isDirectory()) visit(candidate);
+        else if (entry.isFile()) files.push(candidate);
+        else throw new Error("unexpected snapshot entry");
+      }
+    };
+    visit(snapshotRoot);
+    for (const file of files) fs.chmodSync(file, 0o400);
+    for (const directory of directories) {
+      fs.chmodSync(directory, directory === snapshotRoot ? 0o700 : 0o500);
+    }
+    assertPrivateSnapshot(snapshotRoot);
+  } catch {
+    throw new MantisLocalRunnerError("snapshot_invalid");
+  }
+}
+
 function validateConfiguration(value: MantisLocalWorkerConfiguration): void {
   if (
     !isRecord(value) ||
     !safeText(value.outputDir, 4_096) ||
     !safeText(value.repositoryPath, 4_096) ||
     !safeText(value.sourceRef, 64) ||
+    !safeText(value.sourceCacheDir, 4_096) ||
     !safeText(value.skillsRoot, 4_096) ||
     !Array.isArray(value.paths) ||
+    value.paths.length > MAX_SCOPE_PATHS ||
+    Buffer.byteLength(value.paths.join("\n"), "utf8") > MAX_SCOPE_BYTES ||
     value.paths.some((item) => !safeRelativePath(item, 1_024)) ||
     !isRecord(value.providerPlan) ||
     !validPlan(value.providerPlan) ||

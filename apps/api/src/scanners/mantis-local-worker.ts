@@ -2,6 +2,7 @@ import fs from "node:fs";
 
 import { getProviderRuntime } from "../provider-runtime.js";
 import {
+  MantisLocalRunnerError,
   runMantisLocalClaude,
   type MantisLocalWorkerConfiguration,
 } from "./mantis-local-runner.js";
@@ -26,7 +27,7 @@ async function main(): Promise<void> {
 }
 
 void main().catch((error) => {
-  const code = error instanceof Error ? error.message : "agent_session_failed";
+  const code = error instanceof MantisLocalRunnerError ? error.code : "agent_session_failed";
   process.stderr.write(`[mantis-local] ${code}\n`);
   process.exitCode = controller.signal.aborted ? 143 : 1;
 });
