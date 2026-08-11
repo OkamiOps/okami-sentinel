@@ -27,6 +27,11 @@ import {
   type HttpRouteAdapterDependencies,
   type HttpRouteKind,
 } from "./http-route-adapters.js";
+import { createCursorBackgroundAgentsAdapter } from "./cursor-background-agents-adapter.js";
+import {
+  createCursorRouteAdapter,
+  type CursorCatalogClient,
+} from "./cursor-route-adapter.js";
 import type {
   DiscoveryResult,
   RouteAdapter,
@@ -144,6 +149,16 @@ const HTTP_ROUTE_MANIFESTS: Readonly<Record<HttpRouteKind, RouteManifest>> = Obj
   }),
 });
 
+const REMOTE_ROUTE_MANIFESTS: readonly RouteManifest[] = Object.freeze([
+  immutableRouteManifest({
+    routeKind: "cursor-background-agents",
+    providerKind: "cursor",
+    transport: "remote-agent-api",
+    protocol: "cursor-background-agents",
+    authKinds: ["api-key"],
+  }),
+]);
+
 export interface RouteRegistry {
   readonly manifests: readonly RouteManifest[];
   get(routeKind: string): RouteAdapter | undefined;
@@ -159,6 +174,7 @@ export interface RouteRegistryDependencies {
   vault?: HttpRouteAdapterDependencies["vault"];
   resolveModel?: HttpRouteAdapterDependencies["resolveModel"];
   http?: Omit<HttpRouteAdapterDependencies, "vault" | "resolveModel" | "now">;
+  cursor?: CursorCatalogClient;
 }
 
 export function createRouteRegistry(
@@ -170,6 +186,7 @@ export function createRouteRegistry(
     : Object.freeze([
       ...LOCAL_ROUTE_MANIFESTS,
       ...HTTP_ROUTE_KINDS.map((routeKind) => HTTP_ROUTE_MANIFESTS[routeKind]),
+      ...REMOTE_ROUTE_MANIFESTS,
     ]);
   const manifests = new Map<string, RouteManifest>(
     availableManifests.map((manifest) => [manifest.routeKind, manifest]),
@@ -206,6 +223,11 @@ export function createRouteRegistry(
       resolveModel: dependencies.resolveModel,
       now,
     });
+    registry.register(createCursorRouteAdapter({
+      vault: dependencies.vault,
+      client: dependencies.cursor ?? createCursorBackgroundAgentsAdapter(),
+      now,
+    }));
   }
   return registry;
 }
