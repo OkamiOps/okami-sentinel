@@ -9,6 +9,7 @@ import {
   type WireSessionAdapter,
 } from "./session-types.js";
 import { WORKSPACE_TOOL_WIRE_CODEC } from "./workspace-tool-wire-codec.js";
+import { parseStructuredResult } from "./structured-result.js";
 
 export interface OpenAiResponsesSessionSpec {
   model: ProviderModel;
@@ -20,9 +21,11 @@ export function createOpenAiResponsesWireAdapter(
   spec: OpenAiResponsesSessionSpec,
 ): WireSessionAdapter {
   let previousResponseId: string | undefined;
+  let finalizing = false;
 
   return {
     nextRequest(toolResults: readonly AgentToolResult[]): AgentWireRequest {
+      if (toolResults.some((result) => result.name === "results.write")) finalizing = true;
       const input = toolResults.length === 0
         ? [{ role: "user", content: spec.instructions }]
         : toolResults.map((result) => ({
@@ -36,7 +39,7 @@ export function createOpenAiResponsesWireAdapter(
           model: spec.model.id,
           ...(previousResponseId === undefined ? { instructions: spec.instructions } : {}),
           input,
-          tools: openAiResponsesTools(),
+          ...(finalizing ? {} : { tools: openAiResponsesTools() }),
           ...(previousResponseId === undefined ? {} : { previous_response_id: previousResponseId }),
         },
       };
@@ -56,11 +59,12 @@ export function createOpenAiResponsesWireAdapter(
         }
         if (item.type === "message") textParts.push(...responseMessageText(item.content));
       }
+      if (finalizing && toolCalls.length > 0) throw protocolError();
       const text = textParts.join("") || optionalText(root.output_text);
       return {
         toolCalls,
         text,
-        structured: structuredValue(root.output_parsed ?? root.parsed, text),
+        structured: parseStructuredResult(root.output_parsed ?? root.parsed, text),
         usage: responseUsage(root.usage),
       };
     },
@@ -141,17 +145,6 @@ function responseUsage(value: unknown) {
     outputTokens: finiteNumber(usage?.output_tokens),
     reasoningTokens: finiteNumber(outputDetails?.reasoning_tokens),
   };
-}
-
-function structuredValue(value: unknown, text: string | null): unknown | null {
-  if (value !== undefined && value !== null && (Array.isArray(value) || isPlainRecord(value))) return value;
-  if (text === null) return null;
-  try {
-    const parsed: unknown = JSON.parse(text);
-    return Array.isArray(parsed) || isPlainRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
 }
 
 function optionalText(value: unknown): string | null {

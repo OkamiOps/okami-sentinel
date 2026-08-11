@@ -538,10 +538,24 @@ function stageInstructions(
 }
 
 export function boundedMantisStageState(stage: string, value: unknown): MantisBoundedStageState {
-  if (!isRecord(value) || value.stage !== stage || typeof value.summary !== "string" || value.summary.trim().length === 0) {
+  if (!isRecord(value) || value.stage !== stage) {
     throw new MantisHttpRunnerError("stage_evidence_incomplete");
   }
-  const state = { stage, summary: value.summary.trim().slice(0, 8_000) };
+  const rawSummary = value.summary;
+  let summary = "";
+  if (typeof rawSummary === "string") {
+    summary = rawSummary.trim();
+  } else if (isRecord(rawSummary) || Array.isArray(rawSummary)) {
+    try {
+      summary = JSON.stringify(rawSummary);
+    } catch {
+      throw new MantisHttpRunnerError("stage_evidence_incomplete");
+    }
+  }
+  if (summary.length === 0) {
+    throw new MantisHttpRunnerError("stage_evidence_incomplete");
+  }
+  const state = { stage, summary: summary.slice(0, 8_000) };
   if (Buffer.byteLength(JSON.stringify(state), "utf8") > MAX_PRIOR_STATE_BYTES) {
     throw new MantisHttpRunnerError("stage_evidence_incomplete");
   }

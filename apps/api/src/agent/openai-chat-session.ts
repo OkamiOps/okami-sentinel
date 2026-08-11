@@ -15,6 +15,7 @@ import {
   type WireSessionAdapter,
 } from "./session-types.js";
 import { WORKSPACE_TOOL_WIRE_CODEC } from "./workspace-tool-wire-codec.js";
+import { parseStructuredResult } from "./structured-result.js";
 
 export interface OpenAiChatSessionSpec {
   model: ProviderModel;
@@ -51,9 +52,11 @@ export interface AgentProbeMeasurement {
 export function createOpenAiChatWireAdapter(spec: OpenAiChatSessionSpec): WireSessionAdapter {
   const messages: unknown[] = [{ role: "system", content: spec.instructions }];
   const replayMimoReasoning = spec.routeKind === "mimo-token-plan";
+  let finalizing = false;
 
   return {
     nextRequest(toolResults: readonly AgentToolResult[]): AgentWireRequest {
+      if (toolResults.some((result) => result.name === "results.write")) finalizing = true;
       for (const result of toolResults) {
         messages.push({ role: "tool", tool_call_id: result.callId, content: result.content });
       }
@@ -62,7 +65,12 @@ export function createOpenAiChatWireAdapter(spec: OpenAiChatSessionSpec): WireSe
         body: {
           model: spec.model.id,
           messages,
-          tools: openAiChatTools(),
+          ...(finalizing
+            ? { response_format: { type: "json_object" } }
+            : {
+              tools: openAiChatTools(),
+              tool_choice: "required",
+            }),
         },
       };
     },
@@ -73,8 +81,12 @@ export function createOpenAiChatWireAdapter(spec: OpenAiChatSessionSpec): WireSe
       const choice = record(choices[0]);
       const message = record(choice.message);
       const calls = readOpenAiChatCalls(message.tool_calls);
+      if (finalizing && calls.length > 0) throw protocolError();
+      if (calls.length > 1 && calls.some((call) => call.name === "results.write")) {
+        throw protocolError();
+      }
       const text = textValue(message.content);
-      const structured = structuredValue(message.parsed ?? root.output_parsed, text);
+      const structured = parseStructuredResult(message.parsed ?? root.output_parsed, text);
       const reasoningContent = replayMimoReasoning ? opaqueReasoningContent(message.reasoning_content) : undefined;
       messages.push({
         role: "assistant",
@@ -277,17 +289,6 @@ function textValue(value: unknown): string | null {
     return text.length === 0 ? null : text;
   }
   throw protocolError();
-}
-
-function structuredValue(value: unknown, text: string | null): unknown | null {
-  if (value !== undefined && value !== null && (Array.isArray(value) || isPlainRecord(value))) return value;
-  if (text === null) return null;
-  try {
-    const parsed: unknown = JSON.parse(text);
-    return Array.isArray(parsed) || isPlainRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
 }
 
 function record(value: unknown): Record<string, unknown> {

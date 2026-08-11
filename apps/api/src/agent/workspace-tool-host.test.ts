@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, chmod, lstat, mkdtemp, mkdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, lstat, mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -49,6 +49,24 @@ test("workspace listing defaults to the snapshot root and exposes no extra tool 
   });
 });
 
+test("results.write serializes a structured JSON content value inside the private artifact root", async (t) => {
+  const root = await mkdtemp(join(process.cwd(), ".test-agent-host-structured-write-"));
+  const snapshotRoot = join(root, "snapshot");
+  const artifactRoot = join(root, "artifacts");
+  await mkdir(snapshotRoot);
+  await mkdir(artifactRoot, { mode: 0o700 });
+  t.after(async () => rm(root, { recursive: true, force: true }));
+
+  const host = await createWorkspaceToolHost({ snapshotRoot, artifactRoot });
+  const result = await host.call("results.write", {
+    path: "probe.json",
+    content: { ok: true },
+  });
+
+  assert.deepEqual(result.artifact, { path: "probe.json", bytes: 11 });
+  assert.equal(await readFile(join(artifactRoot, "probe.json"), "utf8"), '{"ok":true}');
+});
+
 test("optional empty workspace paths normalize to the snapshot root while required and traversal paths remain denied", async (t) => {
   const root = await mkdtemp(join(process.cwd(), ".test-agent-host-empty-root-"));
   const snapshotRoot = join(root, "snapshot");
@@ -62,11 +80,36 @@ test("optional empty workspace paths normalize to the snapshot root while requir
 
   const listing = await host.call("workspace.list", { path: "" });
   const search = await host.call("workspace.search", { query: "needle", path: "" });
+  const slashListing = await host.call("workspace.list", { path: "/" });
 
   assert.equal(listing.content.includes("visible.txt"), true);
   assert.equal(search.content.includes("visible.txt"), true);
+  assert.equal(slashListing.content.includes("visible.txt"), true);
   await assert.rejects(host.call("workspace.read", { path: "" }), { code: "tool_path_denied" });
+  await assert.rejects(host.call("workspace.read", { path: "/" }), { code: "tool_path_denied" });
   await assert.rejects(host.call("workspace.list", { path: "../" }), { code: "tool_path_denied" });
+});
+
+test("provider-requested workspace limits are capped at the private host ceilings", async (t) => {
+  const root = await mkdtemp(join(process.cwd(), ".test-agent-host-provider-limits-"));
+  const snapshotRoot = join(root, "snapshot");
+  const artifactRoot = join(root, "artifacts");
+  const deepDirectory = join(snapshotRoot, "1", "2", "3", "4", "5", "6", "7");
+  await mkdir(deepDirectory, { recursive: true });
+  await mkdir(artifactRoot, { mode: 0o700 });
+  await writeFile(join(snapshotRoot, "visible.txt"), "visible");
+  await writeFile(join(deepDirectory, "too-deep.txt"), "hidden by the host ceiling");
+  t.after(async () => rm(root, { recursive: true, force: true }));
+
+  const host = await createWorkspaceToolHost({ snapshotRoot, artifactRoot });
+  const listing = await host.call("workspace.list", {
+    path: ".",
+    maxEntries: 10_000,
+    maxDepth: 10,
+  });
+
+  assert.equal(listing.content.includes("visible.txt"), true);
+  assert.equal(listing.content.includes("too-deep.txt"), false);
 });
 
 test("each read-only tool applies its remaining output budget before filesystem work", async (t) => {

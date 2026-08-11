@@ -98,6 +98,57 @@ test("OpenAI Responses continuation omits instructions while preserving response
   ]);
 });
 
+test("OpenAI Responses accepts one fenced JSON completion as structured output", () => {
+  const adapter = createOpenAiResponsesWireAdapter({
+    model: model("grok-4.5"),
+    instructions: "Return the final result as JSON.",
+  });
+
+  const normalized = adapter.readResponse({
+    id: "response-final",
+    output: [{
+      type: "message",
+      content: [{ type: "output_text", text: "```json\n{\"ok\":true}\n```" }],
+    }],
+  });
+
+  assert.deepEqual(normalized.structured, { ok: true });
+});
+
+test("OpenAI Responses closes the tool surface after results.write is consumed", () => {
+  const adapter = createOpenAiResponsesWireAdapter({
+    model: model("grok-4.5"),
+    instructions: "Write one artifact, then return JSON.",
+  });
+  adapter.readResponse({
+    id: "response-write",
+    output: [{
+      type: "function_call",
+      call_id: "write-1",
+      name: "results_write",
+      arguments: '{"path":"architecture.json","content":{"stage":"architecture"}}',
+    }],
+  });
+
+  const finalRequest = adapter.nextRequest([{
+    callId: "write-1",
+    name: "results.write",
+    content: '{"path":"architecture.json","bytes":24}',
+  }]);
+
+  const body = finalRequest.body as Record<string, unknown>;
+  assert.equal("tools" in body, false);
+  assert.throws(() => adapter.readResponse({
+    id: "response-late-tool",
+    output: [{
+      type: "function_call",
+      call_id: "late-list",
+      name: "workspace_list",
+      arguments: "{}",
+    }],
+  }), { code: "agent_protocol_error" });
+});
+
 function responsesBody(request: AgentWireRequest): {
   tools: Array<{ name: string }>;
 } {

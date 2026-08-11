@@ -13,6 +13,8 @@ test("MiMo replays an opaque reasoning field and wire-safe tool call from its fi
   });
 
   const firstRequest = chatBody(adapter.nextRequest([]));
+  assert.equal(firstRequest.tool_choice, "required");
+  assert.equal("parallel_tool_calls" in firstRequest, false);
   assert.deepEqual(firstRequest.tools.map((tool) => tool.function.name), [
     "workspace_list",
     "workspace_read",
@@ -125,14 +127,93 @@ test("non-MiMo OpenAI chat uses portable wire names and never replays provider r
   assert.equal(JSON.stringify(secondRequest).includes(reasoning), false);
 });
 
+test("OpenAI chat accepts one fenced JSON completion as structured output", () => {
+  const adapter = openAiChat.createOpenAiChatWireAdapter({
+    model: model("openrouter/free"),
+    instructions: "Return the final result as JSON.",
+    routeKind: "openrouter-api",
+  });
+
+  const normalized = adapter.readResponse({
+    choices: [{ message: { content: "```json\n{\"ok\":true}\n```" } }],
+  });
+
+  assert.deepEqual(normalized.structured, { ok: true });
+});
+
+test("OpenAI chat closes tools and enables JSON mode after results.write is consumed", () => {
+  const adapter = openAiChat.createOpenAiChatWireAdapter({
+    model: model("cohere/north-mini-code:free"),
+    instructions: "Write one artifact, then return JSON.",
+    routeKind: "openrouter-api",
+  });
+  adapter.readResponse({
+    choices: [{ message: { tool_calls: [{
+      id: "write-1",
+      type: "function",
+      function: {
+        name: "results_write",
+        arguments: '{"path":"architecture.json","content":{"stage":"architecture"}}',
+      },
+    }] } }],
+  });
+
+  const finalRequest = adapter.nextRequest([{
+    callId: "write-1",
+    name: "results.write",
+    content: '{"path":"architecture.json","bytes":24}',
+  }]);
+
+  const body = finalRequest.body as Record<string, unknown>;
+  assert.equal("tools" in body, false);
+  assert.deepEqual(body.response_format, { type: "json_object" });
+  assert.throws(() => adapter.readResponse({
+    choices: [{ message: { tool_calls: [{
+      id: "late-list",
+      type: "function",
+      function: { name: "workspace_list", arguments: "{}" },
+    }] } }],
+  }), { code: "agent_protocol_error" });
+});
+
+test("OpenAI chat rejects a results.write batch before any parallel tool side effect", () => {
+  const adapter = openAiChat.createOpenAiChatWireAdapter({
+    model: model("free-tool-model"),
+    instructions: "Write exactly one artifact.",
+    routeKind: "openrouter-api",
+  });
+
+  assert.throws(() => adapter.readResponse({
+    choices: [{ message: { tool_calls: [
+      {
+        id: "read-1",
+        type: "function",
+        function: { name: "workspace_read", arguments: '{"path":"README.md"}' },
+      },
+      {
+        id: "write-1",
+        type: "function",
+        function: {
+          name: "results_write",
+          arguments: '{"path":"architecture.json","content":{"stage":"architecture"}}',
+        },
+      },
+    ] } }],
+  }), { code: "agent_protocol_error" });
+});
+
 function chatBody(request: AgentWireRequest): {
   tools: Array<{ function: { name: string } }>;
   messages: unknown[];
+  tool_choice?: unknown;
+  parallel_tool_calls?: unknown;
 } {
   assert.equal(request.operation, "chat-completions");
   return request.body as {
     tools: Array<{ function: { name: string } }>;
     messages: unknown[];
+    tool_choice?: unknown;
+    parallel_tool_calls?: unknown;
   };
 }
 

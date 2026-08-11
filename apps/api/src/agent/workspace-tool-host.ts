@@ -150,7 +150,7 @@ function minimumToolOutputBytes(
       return serializedBytes({ matches: [], truncated: false });
     case "results.write": {
       const path = requiredPath(value.path);
-      const content = stringInput(value.content);
+      const content = artifactContent(value.content);
       return serializedBytes({ path, bytes: Buffer.byteLength(content, "utf8") });
     }
     default:
@@ -292,7 +292,7 @@ async function writeArtifact(
 ): Promise<WorkspaceToolResult> {
   const value = objectInput(input);
   const artifactPath = requiredPath(value.path);
-  const content = stringInput(value.content);
+  const content = artifactContent(value.content);
   const bytes = Buffer.byteLength(content, "utf8");
   if (bytes > limits.maxWriteBytes) throw new AgentSessionError("tool_output_limit");
   const result = textResult({ path: artifactPath, bytes }, maxOutputBytes);
@@ -696,7 +696,7 @@ function requiredPath(value: unknown): string {
 function optionalPath(value: unknown, allowRoot: boolean): string {
   if (value === undefined) return ".";
   if (typeof value !== "string") throw new AgentSessionError("tool_argument_invalid");
-  if (value === "") return ".";
+  if (value === "" || (allowRoot && value === "/")) return ".";
   return normalizeRelativePath(value, allowRoot);
 }
 
@@ -705,9 +705,19 @@ function objectInput(value: unknown): Record<string, unknown> {
   return value;
 }
 
-function stringInput(value: unknown): string {
-  if (typeof value !== "string") throw new AgentSessionError("tool_argument_invalid");
-  return value;
+function artifactContent(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!Array.isArray(value) && !isRecord(value)) {
+    throw new AgentSessionError("tool_argument_invalid");
+  }
+  try {
+    const content = JSON.stringify(value);
+    const parsed: unknown = JSON.parse(content);
+    if (!Array.isArray(parsed) && !isRecord(parsed)) throw new Error("not a JSON container");
+    return content;
+  } catch {
+    throw new AgentSessionError("tool_argument_invalid");
+  }
 }
 
 function nonEmptyString(value: unknown): string {
@@ -719,10 +729,10 @@ function nonEmptyString(value: unknown): string {
 
 function boundedPositive(value: unknown, fallback: number, code: "tool_argument_invalid"): number {
   if (value === undefined) return fallback;
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0 || value > fallback) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
     throw new AgentSessionError(code);
   }
-  return value;
+  return Math.min(value, fallback);
 }
 
 function limitsFor(options: WorkspaceToolHostOptions): ToolHostLimits {

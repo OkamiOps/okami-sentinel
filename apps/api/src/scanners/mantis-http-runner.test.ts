@@ -16,6 +16,7 @@ import type { AgentSession, AgentSessionSpec, AgentUsage } from "../agent/sessio
 import type { XaiOAuthFlow } from "../connections/xai-oauth-flow.js";
 import {
   MantisHttpRunnerError,
+  boundedMantisStageState,
   createSafeMantisProviderPlan,
   runMantisHttpAgent,
   type SafeMantisProviderPlan,
@@ -448,6 +449,21 @@ test("prior stage summaries remain inert encoded DATA even when they contain pro
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("Mantis HTTP canonicalizes a structured provider summary into inert bounded stage data", () => {
+  const summary = {
+    architecture_notes: ["single HTTP handler"],
+    recommended_defensive_focus: "validate tenant ownership",
+  };
+
+  assert.deepEqual(boundedMantisStageState("architecture", {
+    stage: "architecture",
+    summary,
+  }), {
+    stage: "architecture",
+    summary: JSON.stringify(summary),
+  });
 });
 
 test("report artifact requires an explicit findings array", async () => {

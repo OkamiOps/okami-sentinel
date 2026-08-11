@@ -9,6 +9,7 @@ import {
   type WireSessionAdapter,
 } from "./session-types.js";
 import { WORKSPACE_TOOL_WIRE_CODEC } from "./workspace-tool-wire-codec.js";
+import { parseStructuredResult } from "./structured-result.js";
 
 export interface AnthropicMessagesSessionSpec {
   model: ProviderModel;
@@ -20,9 +21,11 @@ export function createAnthropicMessagesWireAdapter(
   spec: AnthropicMessagesSessionSpec,
 ): WireSessionAdapter {
   const messages: unknown[] = [{ role: "user", content: spec.instructions }];
+  let finalizing = false;
 
   return {
     nextRequest(toolResults: readonly AgentToolResult[]): AgentWireRequest {
+      if (toolResults.some((result) => result.name === "results.write")) finalizing = true;
       if (toolResults.length > 0) {
         messages.push({
           role: "user",
@@ -39,7 +42,7 @@ export function createAnthropicMessagesWireAdapter(
           model: spec.model.id,
           max_tokens: 4_096,
           messages,
-          tools: anthropicTools(),
+          ...(finalizing ? {} : { tools: anthropicTools() }),
         },
       };
     },
@@ -57,12 +60,13 @@ export function createAnthropicMessagesWireAdapter(
           textParts.push(block.text);
         }
       }
+      if (finalizing && toolCalls.length > 0) throw protocolError();
       messages.push({ role: "assistant", content });
       const text = textParts.join("") || null;
       return {
         toolCalls,
         text,
-        structured: structuredValue(root.structured_output ?? root.parsed, text),
+        structured: parseStructuredResult(root.structured_output ?? root.parsed, text),
         usage: anthropicUsage(root.usage),
       };
     },
@@ -140,17 +144,6 @@ function normalizedAnthropicInputTokens(
   if (uncachedInputTokens === null) return null;
   if (cachedInputTokens === null || cacheWriteInputTokens === null) return uncachedInputTokens;
   return uncachedInputTokens + cachedInputTokens + cacheWriteInputTokens;
-}
-
-function structuredValue(value: unknown, text: string | null): unknown | null {
-  if (value !== undefined && value !== null && (Array.isArray(value) || isPlainRecord(value))) return value;
-  if (text === null) return null;
-  try {
-    const parsed: unknown = JSON.parse(text);
-    return Array.isArray(parsed) || isPlainRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
 }
 
 function record(value: unknown): Record<string, unknown> {
