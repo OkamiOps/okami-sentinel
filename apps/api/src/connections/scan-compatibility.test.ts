@@ -8,6 +8,7 @@ import type {
 } from "@csb/shared";
 
 import type { StoredProviderConnection } from "../connections-store.js";
+import { CURRENT_AGENT_SESSION_CONTRACT_VERSION } from "../agent/session-types.js";
 import {
   effectiveReasoningEffort,
 } from "./compatibility-resolver.js";
@@ -76,6 +77,7 @@ function probe(patch: Partial<CapabilityReport> = {}): CapabilityReport {
     connectionId: "connection-a",
     modelId: "provider/model-a",
     protocol: "openai-chat",
+    agentContractVersion: CURRENT_AGENT_SESSION_CONTRACT_VERSION,
     status: "passed",
     capabilities: capabilities(),
     errorCode: null,

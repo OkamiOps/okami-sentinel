@@ -10,6 +10,7 @@ import {
   type AgentSessionLimits,
   type AgentToolCall,
   type AgentToolResult,
+  type AgentWireRequestControl,
   type AgentUpstream,
   type AgentWireRequest,
   type NormalizedModelReply,
@@ -72,7 +73,10 @@ export function createOpenAiChatWireAdapter(spec: OpenAiChatSessionSpec): WireSe
   let finalizing = false;
 
   return {
-    nextRequest(toolResults: readonly AgentToolResult[]): AgentWireRequest {
+    nextRequest(
+      toolResults: readonly AgentToolResult[],
+      control?: AgentWireRequestControl,
+    ): AgentWireRequest {
       if (toolResults.some((result) => result.name === "results.write" && result.ok !== false)) finalizing = true;
       for (const result of toolResults) {
         messages.push({ role: "tool", tool_call_id: result.callId, content: result.content });
@@ -85,7 +89,10 @@ export function createOpenAiChatWireAdapter(spec: OpenAiChatSessionSpec): WireSe
           ...(finalizing
             ? { response_format: { type: "json_object" } }
             : {
-              tools: openAiChatTools(spec.resultArtifactContract),
+              tools: openAiChatTools(
+                spec.resultArtifactContract,
+                control?.finalizationRequired === true,
+              ),
               tool_choice: "required",
             }),
           ...reasoningField(spec.routeKind, spec.reasoningEffort),
@@ -198,7 +205,7 @@ function advanceProbeEvidence(
     return;
   }
   if (event.type === "tool" && event.phase === "consumed" &&
-      event.name !== "results.write" && stage === 1) {
+      event.ok !== false && event.name !== "results.write" && stage === 1) {
     evidence.workspaceToolResultConsumed = true;
     setStage(2);
     return;
@@ -220,8 +227,11 @@ function advanceProbeEvidence(
   }
 }
 
-function openAiChatTools(resultArtifactContract?: AgentResultArtifactContract): readonly unknown[] {
-  return [
+function openAiChatTools(
+  resultArtifactContract?: AgentResultArtifactContract,
+  resultsWriteOnly = false,
+): readonly unknown[] {
+  const tools = [
     {
       type: "function",
       function: {
@@ -258,6 +268,7 @@ function openAiChatTools(resultArtifactContract?: AgentResultArtifactContract): 
       },
     },
   ];
+  return resultsWriteOnly ? [tools[3]!] : tools;
 }
 
 function readOpenAiChatCalls(value: unknown): AgentToolCall[] {

@@ -266,6 +266,8 @@ export interface CapabilityReport {
   connectionId: string;
   modelId: string | null;
   protocol: ProviderProtocol;
+  /** Version of the bounded AgentSession wire contract exercised by this probe. */
+  agentContractVersion?: number;
   status: "passed" | "failed";
   capabilities: ModelCapabilities;
   errorCode: SafeProviderErrorCode | null;

@@ -12,7 +12,10 @@ import {
   type ScanConnectionSelection,
 } from "@csb/shared";
 import type { StoredProviderConnection } from "../connections-store.js";
-import { AgentSessionError } from "../agent/session-types.js";
+import {
+  AgentSessionError,
+  CURRENT_AGENT_SESSION_CONTRACT_VERSION,
+} from "../agent/session-types.js";
 import {
   VaultError,
   type ConnectionSecretBundle,
@@ -165,6 +168,7 @@ export function createHttpProbeResult(input: {
       connectionId: input.connectionId,
       modelId: model.id,
       protocol: input.protocol,
+      agentContractVersion: CURRENT_AGENT_SESSION_CONTRACT_VERSION,
       status: "passed",
       capabilities: measuredCapabilities(measurement),
       errorCode: null,
@@ -696,6 +700,7 @@ function failedHttpProbeResult(
         ? input.selection.modelId
         : null,
       protocol: input.protocol,
+      agentContractVersion: CURRENT_AGENT_SESSION_CONTRACT_VERSION,
       status: "failed",
       capabilities: unknownCapabilities(),
       errorCode,

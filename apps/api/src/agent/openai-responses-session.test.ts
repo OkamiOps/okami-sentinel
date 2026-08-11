@@ -170,6 +170,21 @@ test("OpenAI Responses closes the tool surface after results.write is consumed",
   }), { code: "agent_protocol_error" });
 });
 
+test("OpenAI Responses exposes only the required artifact tool during reserved finalization", () => {
+  const adapter = createOpenAiResponsesWireAdapter({
+    model: model("portable-model"),
+    instructions: "Write the required artifact before completing.",
+  });
+  const request = responseBody((adapter.nextRequest as (
+    results: readonly [],
+    control: { finalizationRequired: true },
+  ) => AgentWireRequest)([], { finalizationRequired: true }));
+  const tools = request.tools as Array<{ name: string }>;
+
+  assert.deepEqual(tools.map((tool) => tool.name), ["results_write"]);
+  assert.equal(request.tool_choice, "required");
+});
+
 test("OpenAI Responses keeps the VulnHunter result tool on the strict string contract", () => {
   const structured = createOpenAiResponsesWireAdapter({
     model: model("generic-responses-model"),

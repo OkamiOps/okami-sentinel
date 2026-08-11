@@ -14,6 +14,7 @@ import type {
 import type { StoredProviderConnection } from "../connections-store.js";
 import { redactErrorMessage } from "../redaction.js";
 import {
+  CURRENT_AGENT_SESSION_CONTRACT_VERSION,
   type AgentSession,
   type AgentSessionErrorCode,
   type AgentSessionSpec,
@@ -107,6 +108,7 @@ function report(
     connectionId: "connection-a",
     modelId: "model-a",
     protocol: "openai-responses",
+    agentContractVersion: CURRENT_AGENT_SESSION_CONTRACT_VERSION,
     status: "passed",
     capabilities: CAPABILITIES,
     errorCode: null,

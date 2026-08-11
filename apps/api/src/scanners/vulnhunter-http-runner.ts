@@ -18,6 +18,7 @@ import {
 } from "../agent/session-runner.js";
 import {
   AgentSessionError,
+  CURRENT_AGENT_SESSION_CONTRACT_VERSION,
   validateAgentSessionReasoningEffort,
   validateAgentSessionLimits,
   type AgentEvent,
@@ -407,6 +408,7 @@ function matchesCapability(
     capability.connectionId === plan.connectionId &&
     capability.modelId === plan.modelId &&
     capability.protocol === protocol &&
+    capability.agentContractVersion === CURRENT_AGENT_SESSION_CONTRACT_VERSION &&
     capability.status === "passed" &&
     supportsBoundedAgent(capability.capabilities);
 }

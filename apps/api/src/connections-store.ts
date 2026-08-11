@@ -61,6 +61,7 @@ interface CapabilityReportRow {
   connection_id: string;
   model_id: string | null;
   protocol: CapabilityReport["protocol"];
+  agent_contract_version: number;
   status: CapabilityReport["status"];
   capabilities_json: string;
   error_code: string | null;
@@ -370,10 +371,12 @@ export class ConnectionStore {
     this.database
       .prepare(
         `INSERT INTO connection_capability_checks (
-          id, connection_id, model_id, protocol, status, capabilities_json,
+          id, connection_id, model_id, protocol, agent_contract_version,
+          status, capabilities_json,
           error_code, checked_at
         ) VALUES (
-          @id, @connection_id, @model_id, @protocol, @status, @capabilities_json,
+          @id, @connection_id, @model_id, @protocol, @agent_contract_version,
+          @status, @capabilities_json,
           @error_code, @checked_at
         )`,
       )
@@ -383,7 +386,8 @@ export class ConnectionStore {
   getCapabilityCheck(id: string): CapabilityReport | null {
     const row = this.database
       .prepare(
-        `SELECT id, connection_id, model_id, protocol, status, capabilities_json,
+        `SELECT id, connection_id, model_id, protocol, agent_contract_version,
+          status, capabilities_json,
           error_code, checked_at
          FROM connection_capability_checks
          WHERE id = ?`,
@@ -399,13 +403,14 @@ export class ConnectionStore {
   ): CapabilityReport | null {
     const row = this.database
       .prepare(
-        `SELECT id, connection_id, model_id, protocol, status, capabilities_json,
+        `SELECT id, connection_id, model_id, protocol, agent_contract_version,
+          status, capabilities_json,
           error_code, checked_at
          FROM connection_capability_checks
          WHERE connection_id = ?
            AND model_id IS ?
            AND protocol = ?
-         ORDER BY checked_at DESC, id DESC
+         ORDER BY checked_at DESC, rowid DESC
          LIMIT 1`,
       )
       .get(connectionId, modelId, protocol) as CapabilityReportRow | undefined;
@@ -553,6 +558,7 @@ function ensureCapabilityChecksSchema(database: Database.Database): void {
         connection_id TEXT NOT NULL,
         model_id TEXT,
         protocol TEXT NOT NULL,
+        agent_contract_version INTEGER NOT NULL DEFAULT 0,
         status TEXT NOT NULL,
         capabilities_json TEXT NOT NULL,
         error_code TEXT,
@@ -573,6 +579,7 @@ function ensureCapabilityChecksSchema(database: Database.Database): void {
           connection_id TEXT NOT NULL,
           model_id TEXT,
           protocol TEXT NOT NULL,
+          agent_contract_version INTEGER NOT NULL DEFAULT 0,
           status TEXT NOT NULL,
           capabilities_json TEXT NOT NULL,
           error_code TEXT,
@@ -580,10 +587,11 @@ function ensureCapabilityChecksSchema(database: Database.Database): void {
           FOREIGN KEY (connection_id) REFERENCES provider_connections(id) ON DELETE CASCADE
         );
         INSERT INTO connection_capability_checks (
-          id, connection_id, model_id, protocol, status, capabilities_json,
+          id, connection_id, model_id, protocol, agent_contract_version,
+          status, capabilities_json,
           error_code, checked_at
         )
-        SELECT legacy.id, legacy.connection_id, NULL, connection.protocol,
+        SELECT legacy.id, legacy.connection_id, NULL, connection.protocol, 0,
           legacy.status, '{}', NULL, legacy.checked_at
         FROM connection_capability_checks_legacy AS legacy
         INNER JOIN provider_connections AS connection
@@ -592,6 +600,12 @@ function ensureCapabilityChecksSchema(database: Database.Database): void {
       `);
     })();
   }
+  addColumnIfMissing(
+    database,
+    "connection_capability_checks",
+    "agent_contract_version",
+    "INTEGER NOT NULL DEFAULT 0",
+  );
   database.exec(`
     CREATE INDEX IF NOT EXISTS connection_capability_checks_by_connection
       ON connection_capability_checks(connection_id, checked_at DESC, id DESC);
@@ -802,6 +816,7 @@ function capabilityReportToParams(report: CapabilityReport): Record<string, unkn
     connection_id: report.connectionId,
     model_id: report.modelId,
     protocol: report.protocol,
+    agent_contract_version: capabilityContractVersion(report.agentContractVersion),
     status: report.status,
     capabilities_json: JSON.stringify(canonicalizeCapabilities(report.capabilities)),
     error_code: requireSafeCapabilityErrorCode(report.errorCode),
@@ -815,11 +830,20 @@ function rowToCapabilityReport(row: CapabilityReportRow): CapabilityReport {
     connectionId: row.connection_id,
     modelId: row.model_id,
     protocol: row.protocol,
+    agentContractVersion: row.agent_contract_version,
     status: row.status,
     capabilities: parseCapabilities(row.capabilities_json),
     errorCode: safeCapabilityErrorCode(row.error_code),
     checkedAt: row.checked_at,
   };
+}
+
+function capabilityContractVersion(value: unknown): number {
+  if (value === undefined) return 0;
+  if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > 2_147_483_647) {
+    throw new Error("Invalid capability agent contract version");
+  }
+  return value as number;
 }
 
 function snapshotToParams(snapshot: ScanConnectionSnapshot): Record<string, unknown> {

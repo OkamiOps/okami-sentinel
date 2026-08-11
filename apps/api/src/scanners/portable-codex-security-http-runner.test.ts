@@ -12,7 +12,11 @@ import type {
 } from "@csb/shared";
 
 import type { StoredProviderConnection } from "../connections-store.js";
-import type { AgentSession, AgentSessionSpec } from "../agent/session-types.js";
+import {
+  CURRENT_AGENT_SESSION_CONTRACT_VERSION,
+  type AgentSession,
+  type AgentSessionSpec,
+} from "../agent/session-types.js";
 import type { XaiOAuthFlow } from "../connections/xai-oauth-flow.js";
 import {
   PortableCodexSecurityRunnerError,
@@ -90,6 +94,7 @@ function report(patch: Partial<CapabilityReport> = {}): CapabilityReport {
     connectionId: "connection-a",
     modelId: "model-a",
     protocol: "openai-chat",
+    agentContractVersion: CURRENT_AGENT_SESSION_CONTRACT_VERSION,
     status: "passed",
     capabilities: CAPABILITIES,
     errorCode: null,
@@ -502,6 +507,53 @@ test("Portable Codex Security cancels a hung stage at the total deadline, never 
     assert.equal(creates, 1);
     assert.equal(cancelCalls, 1);
     assert.deepEqual(unhandled, []);
+  } finally {
+    remove(root);
+  }
+});
+
+test("Portable Codex Security persists usage emitted by a stage before it fails", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-failed-usage-"));
+  const config = configuration(root);
+  try {
+    await assert.rejects(
+      runPortableCodexSecurity(config, dependencies({
+        createSession: async () => ({
+          async *run() {
+            yield {
+              type: "usage",
+              usage: {
+                inputTokens: 660_820,
+                cachedInputTokens: 586_860,
+                cacheWriteInputTokens: 0,
+                outputTokens: 1_989,
+                reasoningTokens: null,
+              },
+            } as const;
+            yield { type: "failure", code: "agent_turn_limit" } as const;
+          },
+          async cancel() { return { remote: false }; },
+        }),
+      })),
+      (error: unknown) => error instanceof PortableCodexSecurityRunnerError &&
+        error.code === "agent_turn_limit",
+    );
+    const runtime = JSON.parse(fs.readFileSync(
+      path.join(config.outputDir, "portable-codex-security-runtime.json"),
+      "utf8",
+    )) as { usage: { inputTokens: number; cachedInputTokens: number; outputTokens: number } };
+    assert.deepEqual(runtime.usage, {
+      reported: true,
+      inputTokensKnown: true,
+      cachedInputTokensKnown: true,
+      cacheWriteInputTokensKnown: true,
+      outputTokensKnown: true,
+      maximumInputTokensPerRequest: 660_820,
+      inputTokens: 660_820,
+      cachedInputTokens: 586_860,
+      cacheWriteInputTokens: 0,
+      outputTokens: 1_989,
+    });
   } finally {
     remove(root);
   }

@@ -8,6 +8,7 @@ import type {
   ProviderModel,
   ProviderProtocol,
 } from "@csb/shared";
+import { CURRENT_AGENT_SESSION_CONTRACT_VERSION } from "../agent/session-types.js";
 
 import { resolveCompatibility } from "./compatibility-resolver.js";
 import {
@@ -104,6 +105,7 @@ function probe(
     connectionId: "conn-a",
     modelId: "model-a",
     protocol,
+    agentContractVersion: CURRENT_AGENT_SESSION_CONTRACT_VERSION,
     status: "passed",
     capabilities: capabilities({
       tools: "supported",
@@ -303,6 +305,24 @@ test("Codex Security resolves every visible Portable route from a fresh complete
     assert.equal(decision.methodologyRef, "sentinel/codex-security-methodology@v1");
     assert.equal(decision.capabilityCheckId, "probe-a");
   }
+});
+
+test("HTTP agent compatibility treats a legacy wire-contract probe as stale", () => {
+  const decision = resolveCompatibility({
+    engine: "mantis",
+    connection: connection("custom-openai-compatible", { protocol: "openai-responses" }),
+    selection: {
+      connectionId: "conn-a",
+      modelSelectionMode: "catalog",
+      modelId: "model-a",
+    },
+    model: model(),
+    probe: probe("openai-responses", { agentContractVersion: 0 }),
+    now: NOW,
+  });
+
+  assert.equal(decision.eligible, false);
+  assert.deepEqual(decision.reasons, ["capability_probe_stale"]);
 });
 
 test("Codex Security fails closed for unproven Portable routes and never substitutes Portable for Native", () => {

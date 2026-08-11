@@ -15,6 +15,7 @@ import type { ConnectionSecretBundle } from "../credentials/credential-vault.js"
 import type { XaiOAuthFlow } from "../connections/xai-oauth-flow.js";
 import {
   AgentSessionError,
+  CURRENT_AGENT_SESSION_CONTRACT_VERSION,
   type AgentEvent,
   type AgentSession,
   type AgentUpstream,
@@ -145,6 +146,7 @@ function capability(
     connectionId: PLAN.connectionId,
     modelId: PLAN.modelId,
     protocol: PLAN.protocol,
+    agentContractVersion: CURRENT_AGENT_SESSION_CONTRACT_VERSION,
     status: "passed",
     capabilities: CAPABILITIES,
     errorCode: null,
@@ -407,6 +409,26 @@ test("VulnHunter HTTP runner rejects a changed capability check before native va
         error.code === "provider_plan_invalid",
     );
     assert.equal(observed.vaultReads, 0);
+    assert.equal(observed.upstreams, 0);
+    assert.equal(observed.sessions, 0);
+  } finally {
+    fs.rmSync(run.root, { recursive: true, force: true });
+  }
+});
+
+test("VulnHunter HTTP runner rejects an old AgentSession contract probe before credential access", async () => {
+  const { runner, observed } = fixture({
+    capability: capability({ agentContractVersion: 0 }),
+  });
+  const run = input();
+  try {
+    await assert.rejects(
+      runner.run(run.value),
+      (error: unknown) => error instanceof VulnHunterHttpRunnerError &&
+        error.code === "provider_plan_invalid",
+    );
+    assert.equal(observed.vaultReads, 0);
+    assert.equal(observed.xaiReads, 0);
     assert.equal(observed.upstreams, 0);
     assert.equal(observed.sessions, 0);
   } finally {

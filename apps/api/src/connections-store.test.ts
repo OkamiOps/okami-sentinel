@@ -380,6 +380,7 @@ test("canonicalizes capability and pricing metadata at the store boundary", () =
       connectionId: "conn-1",
       modelId: "model-safe",
       protocol: "openai-responses",
+      agentContractVersion: 1,
       status: "passed",
       capabilities: Object.assign({
         tools: "supported", artifactOutput: "unknown", structuredOutput: "unknown",
@@ -400,6 +401,7 @@ test("canonicalizes capability and pricing metadata at the store boundary", () =
     assert.equal(persisted.includes(privateUrl), false);
     assert.equal(store.getModel("conn-1", "model-safe")?.pricing?.pricingBasis, "payg-equivalent");
     assert.equal(store.getModel("conn-1", "model-safe")?.pricing?.billingMode, "subscription");
+    assert.equal(store.getCapabilityCheck("check-safe")?.agentContractVersion, 1);
 
     db.prepare("UPDATE provider_models SET capabilities_json = ?, pricing_json = ? WHERE model_id = ?").run(
       JSON.stringify({ tools: "supported", ignored: "supported" }),
@@ -486,7 +488,7 @@ test("rejects secret and unknown capability error codes before persistence", () 
   }
 });
 
-test("resolves only the newest capability check for the exact connection, model, and protocol", () => {
+test("resolves the last inserted capability check when exact checks share a timestamp", () => {
   const db = new Database(":memory:");
   const unknown = {
     tools: "unknown", artifactOutput: "unknown", structuredOutput: "unknown",
@@ -514,6 +516,14 @@ test("resolves only the newest capability check for the exact connection, model,
         id: "newest-exact", connectionId: "conn-1", modelId: "model-1",
         protocol: "openai-responses" as const, checkedAt: "2026-08-11T11:00:00.000Z",
       },
+      {
+        id: "z-same-time-older", connectionId: "conn-1", modelId: "model-1",
+        protocol: "openai-responses" as const, checkedAt: "2026-08-11T13:00:00.000Z",
+      },
+      {
+        id: "a-same-time-newer", connectionId: "conn-1", modelId: "model-1",
+        protocol: "openai-responses" as const, checkedAt: "2026-08-11T13:00:00.000Z",
+      },
     ]) {
       store.writeCapabilityCheck({
         ...report,
@@ -525,7 +535,7 @@ test("resolves only the newest capability check for the exact connection, model,
 
     assert.equal(
       store.getLatestCapabilityCheck("conn-1", "model-1", "openai-responses")?.id,
-      "newest-exact",
+      "a-same-time-newer",
     );
     assert.equal(
       store.getLatestCapabilityCheck("conn-1", "missing", "openai-responses"),

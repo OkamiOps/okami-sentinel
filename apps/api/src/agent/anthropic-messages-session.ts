@@ -5,6 +5,7 @@ import {
   validateAgentSessionReasoningEffort,
   type AgentToolCall,
   type AgentToolResult,
+  type AgentWireRequestControl,
   type AgentWireRequest,
   type NormalizedModelReply,
   type WireSessionAdapter,
@@ -36,7 +37,10 @@ export function createAnthropicMessagesWireAdapter(
   let finalizing = false;
 
   return {
-    nextRequest(toolResults: readonly AgentToolResult[]): AgentWireRequest {
+    nextRequest(
+      toolResults: readonly AgentToolResult[],
+      control?: AgentWireRequestControl,
+    ): AgentWireRequest {
       if (toolResults.some((result) => result.name === "results.write" && result.ok !== false)) finalizing = true;
       if (toolResults.length > 0) {
         messages.push({
@@ -54,7 +58,17 @@ export function createAnthropicMessagesWireAdapter(
           model: spec.model.id,
           max_tokens: 4_096,
           messages,
-          ...(finalizing ? {} : { tools: anthropicTools(spec.resultArtifactContract) }),
+          ...(finalizing
+            ? {}
+            : {
+              tools: anthropicTools(
+                spec.resultArtifactContract,
+                control?.finalizationRequired === true,
+              ),
+              ...(control?.finalizationRequired === true
+                ? { tool_choice: { type: "any" } }
+                : {}),
+            }),
           ...(spec.reasoningEffort === undefined ? {} : { output_config: { effort: spec.reasoningEffort } }),
         },
       };
@@ -86,8 +100,11 @@ export function createAnthropicMessagesWireAdapter(
   };
 }
 
-function anthropicTools(resultArtifactContract?: AgentResultArtifactContract): readonly unknown[] {
-  return [
+function anthropicTools(
+  resultArtifactContract?: AgentResultArtifactContract,
+  resultsWriteOnly = false,
+): readonly unknown[] {
+  const tools = [
     anthropicTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.list"), WORKSPACE_TOOL_WIRE_DESCRIPTIONS["workspace.list"], {
       path: stringSchema(), maxEntries: integerSchema(), maxDepth: integerSchema(),
     }),
@@ -102,6 +119,7 @@ function anthropicTools(resultArtifactContract?: AgentResultArtifactContract): r
       content: resultArtifactContentSchema(resultArtifactContract),
     }, ["path", "content"]),
   ];
+  return resultsWriteOnly ? [tools[3]!] : tools;
 }
 
 function anthropicTool(

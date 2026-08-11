@@ -14,6 +14,7 @@ import {
   type AgentToolResult,
   type AgentUpstreamRequest,
   type NormalizedModelReply,
+  type WireSessionAdapter,
 } from "./session-types.js";
 
 test("a session cannot be created from an unmeasured tool capability", async () => {
@@ -50,6 +51,90 @@ test("an endless valid tool transcript stops before an N+1 model or tool call", 
   await assert.rejects(collect(session.run(), events), { code: "agent_tool_limit" });
   assert.equal(upstream.modelCalls, 2);
   assert.equal(events.filter(isCompletedTool).length, 2);
+});
+
+test("the shared session reserves its final turns for artifact write and completion", async () => {
+  const requestedTools: string[] = [];
+  const controls: Array<{ finalizationRequired?: boolean } | undefined> = [];
+  let reply: NormalizedModelReply = {
+    toolCalls: [],
+    text: null,
+    structured: null,
+    usage: null,
+  };
+  const adapter = {
+    nextRequest(
+      toolResults: readonly AgentToolResult[],
+      control?: { finalizationRequired?: boolean },
+    ) {
+      controls.push(control);
+      if (toolResults.some((result) => result.name === "results.write" && result.ok !== false)) {
+        reply = {
+          toolCalls: [],
+          text: '{"status":"completed"}',
+          structured: { status: "completed" },
+          usage: null,
+        };
+      } else if (control?.finalizationRequired === true) {
+        reply = {
+          toolCalls: [{
+            id: "write-final",
+            name: "results.write",
+            input: { path: "result.json", content: "{}" },
+          }],
+          text: null,
+          structured: null,
+          usage: null,
+        };
+      } else {
+        reply = {
+          toolCalls: [{
+            id: `search-${controls.length}`,
+            name: "workspace.search",
+            input: { query: `candidate-${controls.length}` },
+          }],
+          text: null,
+          structured: null,
+          usage: null,
+        };
+      }
+      return { operation: "messages" as const, body: {} };
+    },
+    readResponse() {
+      return reply;
+    },
+  } as WireSessionAdapter;
+  const session = createConstrainedWireSession({
+    limits: {
+      maxModelTurns: 6,
+      maxToolCalls: 12,
+      maxInputBytes: 1_048_576,
+      maxOutputBytes: 1_048_576,
+      timeoutMs: 60_000,
+    },
+    signal: new AbortController().signal,
+    host: {
+      minimumOutputBytes() { return 0; },
+      async call(name) {
+        requestedTools.push(name);
+        return name === "results.write"
+          ? { content: "artifact-written", artifact: { path: "result.json", bytes: 2 } }
+          : { content: "[]" };
+      },
+    },
+    upstream: { async request() { return {}; } },
+    adapter,
+  });
+
+  const events: unknown[] = [];
+  await collect(session.run(), events);
+
+  assert.equal(controls.some((control) => control?.finalizationRequired === true), true);
+  assert.equal(requestedTools.at(-1), "results.write");
+  assert.equal(requestedTools.filter((name) => name === "results.write").length, 1);
+  assert.equal(events.some((event) =>
+    typeof event === "object" && event !== null &&
+    (event as { type?: unknown }).type === "completion"), true);
 });
 
 test("a Gemini OpenAI chat probe proves agent facts only after the complete artifact loop", async (t) => {
@@ -433,6 +518,48 @@ test("the constrained session executes a read before a terminal results.write in
       { callId: "write-1", name: "results.write", content: "results.write-result" },
     ],
   ]);
+});
+
+test("a terminal results.write batch may use the last tool slot before completion", async () => {
+  const requestedWith: AgentToolResult[][] = [];
+  const replies: NormalizedModelReply[] = [
+    {
+      toolCalls: [
+        { id: "read-last", name: "workspace.read", input: { path: "index.ts" } },
+        { id: "write-last", name: "results.write", input: { path: "report.json", content: "{}" } },
+      ],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    { toolCalls: [], text: "complete", structured: { status: "complete" }, usage: null },
+  ];
+  const session = createConstrainedWireSession({
+    limits: {
+      ...DEFAULT_AGENT_LIMITS,
+      maxModelTurns: 3,
+      maxToolCalls: 2,
+    },
+    signal: new AbortController().signal,
+    host: {
+      minimumOutputBytes() { return 0; },
+      async call(name) {
+        return name === "results.write"
+          ? { content: "artifact-written", artifact: { path: "report.json", bytes: 2 } }
+          : { content: "safe read" };
+      },
+    },
+    upstream: { async request() { return {}; } },
+    adapter: transcriptAdapter(replies, requestedWith),
+  });
+
+  const events: unknown[] = [];
+  await collect(session.run(), events);
+
+  assert.equal(requestedWith.length, 2);
+  assert.equal(events.some((event) =>
+    typeof event === "object" && event !== null &&
+    (event as { type?: unknown }).type === "completion"), true);
 });
 
 test("the constrained session returns a safe workspace path error so the model can correct it", async () => {

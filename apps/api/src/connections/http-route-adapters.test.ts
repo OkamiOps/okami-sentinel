@@ -13,6 +13,7 @@ import {
   probeHttpRoute,
   refreshConnectionModels,
 } from "./http-route-adapters.js";
+import { CURRENT_AGENT_SESSION_CONTRACT_VERSION } from "../agent/session-types.js";
 import { createRouteRegistry } from "./route-registry.js";
 
 function json(status: number, value: unknown): Response {
@@ -423,6 +424,7 @@ test("a probe only records explicit measurements for a selected model owned by t
   });
 
   assert.equal(result.report.status, "passed");
+  assert.equal(result.report.agentContractVersion, CURRENT_AGENT_SESSION_CONTRACT_VERSION);
   assert.equal(result.report.capabilities.tools, "supported");
   assert.equal(result.report.capabilities.streaming, "supported");
   assert.equal(result.report.capabilities.artifactOutput, "unknown");

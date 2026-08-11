@@ -15,7 +15,10 @@ import {
   PORTABLE_CODEX_SECURITY_PROFILE_VERSION,
   isPortableCodexSecurityRoute,
 } from "../scanners/portable-codex-security-profile.js";
-import { hasAgentSessionReasoningEffortCodec } from "../agent/session-types.js";
+import {
+  CURRENT_AGENT_SESSION_CONTRACT_VERSION,
+  hasAgentSessionReasoningEffortCodec,
+} from "../agent/session-types.js";
 export type RunnerKind =
   | "codex-security-contract"
   | "codex-app-server"
@@ -353,6 +356,10 @@ function validateAgentProbe(input: CompatibilityInput): CompatibilityReason[] {
     report.modelId !== input.selection.modelId ||
     report.protocol !== input.connection.protocol
   ) return ["capability_probe_mismatch"];
+
+  if (report.agentContractVersion !== CURRENT_AGENT_SESSION_CONTRACT_VERSION) {
+    return ["capability_probe_stale"];
+  }
 
   const checkedAt = Date.parse(report.checkedAt);
   const now = (input.now ?? new Date()).getTime();

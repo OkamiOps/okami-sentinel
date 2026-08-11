@@ -603,6 +603,7 @@ async function collectProbeMeasurement(
       continue;
     }
     if (event.type === "tool" && event.phase === "consumed" &&
+        event.ok !== false &&
         (event.name === "workspace.list" || event.name === "workspace.read") && stage === 1) {
       evidence.workspaceToolResultConsumed = true;
       stage = 2;

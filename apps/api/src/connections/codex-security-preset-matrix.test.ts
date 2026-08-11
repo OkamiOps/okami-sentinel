@@ -12,6 +12,7 @@ import {
 } from "@csb/shared";
 
 import { resolveCompatibility } from "./compatibility-resolver.js";
+import { CURRENT_AGENT_SESSION_CONTRACT_VERSION } from "../agent/session-types.js";
 
 const NOW = new Date("2026-08-11T12:00:00.000Z");
 
@@ -170,6 +171,7 @@ function capabilityProbe(
     connectionId: scenario === "mismatched" ? "other-connection" : connection.id,
     modelId,
     protocol: connection.protocol,
+    agentContractVersion: CURRENT_AGENT_SESSION_CONTRACT_VERSION,
     status: scenario === "failed" ? "failed" : "passed",
     capabilities: supportedCapabilities(),
     errorCode: null,

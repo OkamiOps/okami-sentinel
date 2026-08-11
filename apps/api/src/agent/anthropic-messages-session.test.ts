@@ -108,6 +108,22 @@ test("Anthropic Messages closes the tool surface after results.write is consumed
   }), { code: "agent_protocol_error" });
 });
 
+test("Anthropic Messages exposes only the required artifact tool during reserved finalization", () => {
+  const adapter = createAnthropicMessagesWireAdapter({
+    model: model("portable-model"),
+    instructions: "Write the required artifact before completing.",
+  });
+  const request = (adapter.nextRequest as (
+    results: readonly [],
+    control: { finalizationRequired: true },
+  ) => AgentWireRequest)([], { finalizationRequired: true });
+  const body = request.body as Record<string, unknown>;
+  const tools = body.tools as Array<{ name: string }>;
+
+  assert.deepEqual(tools.map((tool) => tool.name), ["results_write"]);
+  assert.deepEqual(body.tool_choice, { type: "any" });
+});
+
 test("Anthropic Messages keeps the VulnHunter result tool on the universal string contract", () => {
   const structured = createAnthropicMessagesWireAdapter({
     model: model("generic-messages-model"),

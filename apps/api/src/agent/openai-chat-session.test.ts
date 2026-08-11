@@ -213,6 +213,21 @@ test("OpenAI chat closes tools and enables JSON mode after results.write is cons
   }), { code: "agent_protocol_error" });
 });
 
+test("OpenAI chat exposes only the required artifact tool during reserved finalization", () => {
+  const adapter = openAiChat.createOpenAiChatWireAdapter({
+    model: model("portable-model"),
+    instructions: "Write the required artifact before completing.",
+    routeKind: "openrouter-api",
+  });
+  const request = chatBody((adapter.nextRequest as (
+    results: readonly [],
+    control: { finalizationRequired: true },
+  ) => AgentWireRequest)([], { finalizationRequired: true }));
+
+  assert.deepEqual(request.tools.map((tool) => tool.function.name), ["results_write"]);
+  assert.equal(request.tool_choice, "required");
+});
+
 test("OpenAI chat parses a safe workspace read followed by results.write batch", () => {
   const adapter = openAiChat.createOpenAiChatWireAdapter({
     model: model("free-tool-model"),

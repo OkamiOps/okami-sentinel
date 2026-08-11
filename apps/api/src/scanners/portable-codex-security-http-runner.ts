@@ -336,6 +336,10 @@ export async function runPortableCodexSecurity(
         signal: deadline.signal,
         redact: globalSecretRedactor.redactText.bind(globalSecretRedactor),
         onEvent: (safeEvent) => log(safeEvent),
+        onUsage: (usage) => {
+          runtime = { ...runtime, usage, updatedAt: now().toISOString() };
+          if (runtimeWritable) writePortableCodexSecurityRuntime(outputDir, runtime);
+        },
       });
       activeSession = null;
       sessionCancelled = false;

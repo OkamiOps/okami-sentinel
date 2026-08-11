@@ -500,7 +500,7 @@ async function observeStage(
       case "tool":
         if ((event.name === "workspace.list" || event.name === "workspace.read" || event.name === "workspace.search")) {
           if (event.phase === "requested") snapshotToolRequested = true;
-          if (event.phase === "consumed") snapshotToolConsumed = true;
+          if (event.phase === "consumed" && event.ok !== false) snapshotToolConsumed = true;
         }
         if (event.name === "results.write" && event.phase === "requested") resultsWriteRequested = true;
         break;

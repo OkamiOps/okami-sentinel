@@ -113,6 +113,37 @@ test("Portable Codex Security stage evidence rejects unexpected files outside it
   }
 });
 
+test("Portable Codex Security does not count a rejected workspace result as consumed evidence", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-rejected-evidence-"));
+  const stage = PORTABLE_CODEX_SECURITY_STAGES[0]!;
+  try {
+    fs.writeFileSync(
+      path.join(root, stage.artifact),
+      JSON.stringify({ schemaVersion: 1, stage: "inventory" }),
+    );
+    const events = readyEvents(stage.artifact).map((event) => {
+      const tool = event as { type?: string; phase?: string; name?: string };
+      return tool.type === "tool" && tool.phase === "consumed" && tool.name === "workspace.read"
+        ? { ...tool, ok: false }
+        : event;
+    });
+
+    await assert.rejects(
+      observePortableCodexSecurityStage({
+        session: stageSession(events),
+        stage,
+        artifactRoot: root,
+        usage: { reported: false, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+        redact: (value) => value,
+      }),
+      (error: unknown) => error instanceof PortableCodexSecurityStageError &&
+        error.code === "stage_evidence_incomplete",
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("Portable Codex Security preserves a safe session limit failure code", async () => {
   const stage = PORTABLE_CODEX_SECURITY_STAGES[0]!;
   await assert.rejects(

@@ -60,6 +60,8 @@ export interface PortableCodexSecurityStageObservationInput {
   redact: (value: string) => string;
   signal?: AbortSignal;
   onEvent?: (safeEvent: string) => void;
+  /** Persists usage as it arrives so a later stage failure cannot erase it. */
+  onUsage?: (usage: ScannerUsage) => void;
 }
 
 export interface PortableCodexSecurityStageObservation {
@@ -227,7 +229,7 @@ export async function observePortableCodexSecurityStage(
             if (event.phase === "requested") resultsWriteRequested += 1;
           } else {
             if (event.phase === "requested") snapshotToolRequested = true;
-            if (event.phase === "consumed") snapshotToolConsumed = true;
+            if (event.phase === "consumed" && event.ok !== false) snapshotToolConsumed = true;
           }
           break;
         }
@@ -239,6 +241,7 @@ export async function observePortableCodexSecurityStage(
           break;
         case "usage":
           usage = addPortableCodexSecurityUsage(usage, event.usage);
+          input.onUsage?.(usage);
           break;
         case "completion":
           if (completion !== null || !isStructuredCompletion(event.structured, input.stage)) {

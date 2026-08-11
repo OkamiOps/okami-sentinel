@@ -179,7 +179,14 @@ export interface AgentUsage {
 }
 
 export type AgentEvent =
-  | { type: "tool"; phase: "requested" | "result" | "consumed"; callId: string; name: WorkspaceToolName }
+  | {
+    type: "tool";
+    phase: "requested" | "result" | "consumed";
+    callId: string;
+    name: WorkspaceToolName;
+    /** False only when the tool result is a safe local rejection, not host evidence. */
+    ok?: boolean;
+  }
   | { type: "artifact"; path: string; bytes: number }
   | { type: "usage"; usage: AgentUsage }
   | { type: "completion"; text: string | null; structured: unknown | null }
@@ -246,10 +253,21 @@ export interface NormalizedModelReply {
   usage: AgentUsage | null;
 }
 
+export interface AgentWireRequestControl {
+  /** Exploration is closed; the provider must write the declared artifact now. */
+  finalizationRequired: boolean;
+}
+
 export interface WireSessionAdapter {
-  nextRequest(toolResults: readonly AgentToolResult[]): AgentWireRequest;
+  nextRequest(
+    toolResults: readonly AgentToolResult[],
+    control?: AgentWireRequestControl,
+  ): AgentWireRequest;
   readResponse(response: unknown): NormalizedModelReply;
 }
+
+/** Bump whenever a fresh provider probe must prove a changed wire/session contract. */
+export const CURRENT_AGENT_SESSION_CONTRACT_VERSION = 1;
 
 export interface ConstrainedWireSessionOptions {
   limits: AgentSessionLimits;
@@ -340,25 +358,43 @@ class ConstrainedWireSession implements AgentSession {
     let inputBytes = 0;
     let outputBytes = 0;
     let toolResults: AgentToolResult[] = [];
+    let artifactWritten = false;
 
     try {
       for (;;) {
         this.#throwIfStopped();
-        if (toolResults.length > 0 && toolCalls >= this.#options.limits.maxToolCalls) {
+        if (
+          toolResults.length > 0 &&
+          toolCalls >= this.#options.limits.maxToolCalls &&
+          !artifactWritten
+        ) {
           throw new AgentSessionError("agent_tool_limit");
         }
         if (modelTurns >= this.#options.limits.maxModelTurns) {
           throw new AgentSessionError("agent_turn_limit");
         }
 
-        const request = this.#options.adapter.nextRequest(toolResults);
+        const finalizationRequired = !artifactWritten && (
+          this.#options.limits.maxModelTurns - modelTurns <= 3 ||
+          this.#options.limits.maxToolCalls - toolCalls <= 2
+        );
+        const request = this.#options.adapter.nextRequest(
+          toolResults,
+          finalizationRequired ? { finalizationRequired: true } : undefined,
+        );
         const requestBytes = serializedByteLength(request.body);
         if (inputBytes + requestBytes > this.#options.limits.maxInputBytes) {
           throw new AgentSessionError("agent_input_byte_limit");
         }
         inputBytes += requestBytes;
         for (const result of toolResults) {
-          yield { type: "tool", phase: "consumed", callId: result.callId, name: result.name };
+          yield {
+            type: "tool",
+            phase: "consumed",
+            callId: result.callId,
+            name: result.name,
+            ...(result.ok === false ? { ok: false } : {}),
+          };
         }
         modelTurns += 1;
         const response = await raceWithAbort(
@@ -379,6 +415,9 @@ class ConstrainedWireSession implements AgentSession {
         yield { type: "usage", usage };
 
         if (reply.toolCalls.length === 0) {
+          if (finalizationRequired && !artifactWritten) {
+            throw new AgentSessionError("agent_protocol_error");
+          }
           yield { type: "completion", text: reply.text, structured: reply.structured };
           this.#completed = true;
           return;
@@ -401,21 +440,26 @@ class ConstrainedWireSession implements AgentSession {
           let recoveredBeforeIo = false;
           let hostCallStarted = false;
           try {
-            const normalizedInput = call.name === "results.write"
-              ? normalizeResultArtifactInput(
-                call.input,
-                this.#options.resultArtifactContract,
-                this.#options.resultArtifactSnapshotRoot,
-              )
-              : call.input;
-            if (normalizedInput === null) throw new AgentSessionError("tool_argument_invalid");
-            if (this.#options.host.minimumOutputBytes(call.name, normalizedInput) > remainingOutputBytes) {
-              throw new AgentSessionError("agent_output_byte_limit");
+            if (finalizationRequired && call.name !== "results.write") {
+              result = terminalArtifactRequiredResult();
+              recoveredBeforeIo = true;
+            } else {
+              const normalizedInput = call.name === "results.write"
+                ? normalizeResultArtifactInput(
+                  call.input,
+                  this.#options.resultArtifactContract,
+                  this.#options.resultArtifactSnapshotRoot,
+                )
+                : call.input;
+              if (normalizedInput === null) throw new AgentSessionError("tool_argument_invalid");
+              if (this.#options.host.minimumOutputBytes(call.name, normalizedInput) > remainingOutputBytes) {
+                throw new AgentSessionError("agent_output_byte_limit");
+              }
+              hostCallStarted = true;
+              result = await this.#options.host.call(call.name, normalizedInput, {
+                maxOutputBytes: remainingOutputBytes,
+              });
             }
-            hostCallStarted = true;
-            result = await this.#options.host.call(call.name, normalizedInput, {
-              maxOutputBytes: remainingOutputBytes,
-            });
           } catch (error) {
             const recovered = recoverableWorkspaceToolFailure(call, error, !hostCallStarted);
             if (recovered === null) throw error;
@@ -434,8 +478,15 @@ class ConstrainedWireSession implements AgentSession {
             content: result.content,
             ...(recoveredBeforeIo ? { ok: false } : {}),
           });
-          yield { type: "tool", phase: "result", callId: call.id, name: call.name };
+          yield {
+            type: "tool",
+            phase: "result",
+            callId: call.id,
+            name: call.name,
+            ...(recoveredBeforeIo ? { ok: false } : {}),
+          };
           if (result.artifact !== undefined) {
+            if (call.name === "results.write" && !recoveredBeforeIo) artifactWritten = true;
             yield { type: "artifact", path: result.artifact.path, bytes: result.artifact.bytes };
           }
         }
@@ -488,6 +539,15 @@ class ConstrainedWireSession implements AgentSession {
     }
     return this.#remoteCancellation;
   }
+}
+
+function terminalArtifactRequiredResult(): WorkspaceToolResult {
+  return {
+    content: JSON.stringify({
+      error: "finalization_required",
+      hint: "Exploration is closed. Call results.write with the declared artifact now.",
+    }),
+  };
 }
 
 function validateTerminalResultsWrite(toolCalls: readonly AgentToolCall[]): void {

@@ -294,12 +294,12 @@ test("startScan probes a custom OpenAI-compatible route and launches Portable Co
   }
 });
 
-test("startScan refreshes stale capability evidence before launching a HTTP scanner", async () => {
+test("startScan refreshes an old AgentSession contract probe before launching a HTTP scanner", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "auto-probe-stale-"));
   const repositoryPath = path.join(root, "repository");
   const database = new Database(":memory:");
   const vault = new MemoryVault();
-  let now = new Date("2026-08-11T10:00:00.000Z");
+  const now = new Date("2026-08-11T10:00:00.000Z");
   let probeCalls = 0;
   let run: ScanRun | undefined;
   let child: ChildProcess | undefined;
@@ -338,7 +338,9 @@ test("startScan refreshes stale capability evidence before launching a HTTP scan
       modelId: selected.id,
     };
     assert.equal((await runtime.connections.probe(connection.id, selection))?.report.status, "passed");
-    now = new Date("2026-08-11T11:01:00.000Z");
+    database.prepare(
+      "UPDATE connection_capability_checks SET agent_contract_version = 0 WHERE connection_id = ?",
+    ).run(connection.id);
     assert.deepEqual(
       runtime.compatibility.resolve({ engine: "vulnhunter", selection }).reasons,
       ["capability_probe_stale"],

@@ -9,6 +9,7 @@ import type {
 } from "@csb/shared";
 
 import type { StoredProviderConnection } from "../connections-store.js";
+import { CURRENT_AGENT_SESSION_CONTRACT_VERSION } from "../agent/session-types.js";
 import {
   LaunchPlanError,
   createLaunchPlanResolver,
@@ -77,6 +78,7 @@ function probe(patch: Partial<CapabilityReport> = {}): CapabilityReport {
     connectionId: "conn-a",
     modelId: "model-a",
     protocol: "openai-responses",
+    agentContractVersion: CURRENT_AGENT_SESSION_CONTRACT_VERSION,
     status: "passed",
     capabilities: supportedCapabilities,
     errorCode: null,
