@@ -373,6 +373,49 @@ test("resolves only the newest capability check for the exact connection, model,
   }
 });
 
+test("migrates legacy MiMo Token Plan rows to OpenAI chat and invalidates their old probe", () => {
+  const db = new Database(":memory:");
+
+  try {
+    const store = new ConnectionStore(db);
+    store.insert(connectionFixture({
+      id: "conn-mimo-legacy",
+      name: "MiMo Token Plan",
+      providerKind: "xiaomi",
+      routeKind: "mimo-token-plan",
+      protocol: "anthropic-messages",
+      status: "ready",
+      lastTestedAt: "2026-08-11T10:00:00.000Z",
+      credentialRef: "connection/conn-mimo-legacy",
+    }));
+    store.writeCapabilityCheck({
+      id: "check-mimo-legacy",
+      connectionId: "conn-mimo-legacy",
+      modelId: "account-visible",
+      protocol: "anthropic-messages",
+      status: "passed",
+      capabilities: {
+        tools: "supported", artifactOutput: "supported", structuredOutput: "supported",
+        boundedExecution: "supported", osIsolation: "supported", streaming: "supported",
+        usage: "supported", cancellation: "supported",
+      },
+      errorCode: null,
+      checkedAt: "2026-08-11T10:00:00.000Z",
+    });
+
+    ensureConnectionSchema(db);
+    ensureConnectionSchema(db);
+
+    const migrated = store.get("conn-mimo-legacy");
+    assert.equal(migrated?.protocol, "openai-chat");
+    assert.equal(migrated?.status, "testing");
+    assert.equal(migrated?.lastTestedAt, null);
+    assert.equal(store.getCapabilityCheck("check-mimo-legacy"), null);
+  } finally {
+    db.close();
+  }
+});
+
 test("migrates legacy catalog, check, and snapshot tables idempotently", () => {
   const db = new Database(":memory:");
 

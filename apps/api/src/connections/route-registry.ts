@@ -138,7 +138,7 @@ const HTTP_ROUTE_MANIFESTS: Readonly<Record<HttpRouteKind, RouteManifest>> = Obj
   }),
   "mimo-token-plan": immutableRouteManifest({
     routeKind: "mimo-token-plan", providerKind: "xiaomi", transport: "http-inference",
-    protocol: "anthropic-messages", authKinds: ["api-key"],
+    protocol: "openai-chat", authKinds: ["api-key"],
   }),
   "custom-openai-compatible": immutableRouteManifest({
     routeKind: "custom-openai-compatible", providerKind: "custom", transport: "http-inference",

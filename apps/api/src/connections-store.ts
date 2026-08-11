@@ -143,6 +143,31 @@ export function ensureConnectionSchema(
   ensureCapabilityChecksSchema(database);
   ensureSnapshotsSchema(database);
   ensureCodexAppServerStateSchema(database);
+  migrateMimoTokenPlanProtocol(database);
+}
+
+/**
+ * Token Plan moved from a legacy Anthropic tuple to its pinned OpenAI-chat
+ * contract. Existing catalog rows remain safe, but an Anthropic probe cannot
+ * prove the new wire protocol, so force a fresh check before the route is used.
+ */
+function migrateMimoTokenPlanProtocol(database: Database.Database): void {
+  database.transaction(() => {
+    const migrated = database.prepare(
+      `UPDATE provider_connections
+       SET protocol = 'openai-chat', status = 'testing', last_tested_at = NULL, updated_at = ?
+       WHERE route_kind = 'mimo-token-plan' AND protocol = 'anthropic-messages'`,
+    ).run(new Date().toISOString());
+    if (migrated.changes === 0) return;
+    database.prepare(
+      `DELETE FROM connection_capability_checks
+       WHERE protocol = 'anthropic-messages'
+         AND connection_id IN (
+           SELECT id FROM provider_connections
+           WHERE route_kind = 'mimo-token-plan' AND protocol = 'openai-chat'
+         )`,
+    ).run();
+  })();
 }
 
 /** Narrow persistence boundary for safe connection metadata and immutable snapshots. */

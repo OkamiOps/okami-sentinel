@@ -107,14 +107,11 @@ test("safe HTTP fetch rejects remote HTTP and response bodies over one MiB", asy
   assert.deepEqual(local, { data: { data: [] } });
 });
 
-test("Gemini stores only API-returned baseModelId values across page tokens", async () => {
+test("Gemini discovers only API-returned OpenAI-compatible models with its inference auth", async () => {
   const transport = fakeFetch({
-    "GET https://generativelanguage.googleapis.com/v1beta/models": json(200, {
-      models: [{ name: "models/not-the-wire-id", baseModelId: "account-visible", inputTokenLimit: 128000 }],
-      nextPageToken: "next-page",
-    }),
-    "GET https://generativelanguage.googleapis.com/v1beta/models?pageToken=next-page": json(200, {
-      models: [{ name: "models/no-base-id" }],
+    "GET https://generativelanguage.googleapis.com/v1beta/openai/models": json(200, {
+      object: "list",
+      data: [{ id: "account-visible", context_window: 128000 }],
     }),
   });
 
@@ -126,7 +123,11 @@ test("Gemini stores only API-returned baseModelId values across page tokens", as
   assert.deepEqual(result.models.map((model) => model.id), ["account-visible"]);
   assert.equal(result.models[0]?.contextWindow, 128000);
   assert.equal(result.models[0]?.capabilities.tools, "unknown");
-  assert.equal(transport.calls[0]?.init.headers?.["x-goog-api-key"], "gemini-secret");
+  assert.deepEqual(transport.calls.map((call) => call.url), [
+    "https://generativelanguage.googleapis.com/v1beta/openai/models",
+  ]);
+  assert.equal(transport.calls[0]?.init.headers?.Authorization, "Bearer gemini-secret");
+  assert.equal(transport.calls[0]?.init.headers?.["x-goog-api-key"], undefined);
   assert.equal(JSON.stringify(result).includes("gemini-secret"), false);
 });
 

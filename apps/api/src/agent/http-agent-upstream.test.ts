@@ -71,7 +71,7 @@ test("AgentUpstream pins official origins and the documented MiniMax Token Plan 
   }
 });
 
-test("AgentUpstream validates custom bases and rejects MiMo until its execution contract is provided", async () => {
+test("AgentUpstream preserves the approved MiMo Token Plan region for OpenAI chat execution", async () => {
   const customTransport = transcript([json(200, {})]);
   const custom = createHttpAgentUpstream({
     routeKind: "custom-openai-compatible",
@@ -95,16 +95,22 @@ test("AgentUpstream validates custom bases and rejects MiMo until its execution 
   );
   assert.deepEqual(insecureTransport.calls, []);
 
+  const mimoTransport = transcript([json(200, {})]);
   const mimo = createHttpAgentUpstream({
     routeKind: "mimo-token-plan",
-    protocol: "anthropic-messages",
-    credentials: { apiKey: "mimo-secret", baseUrl: "https://regional.mimo.example" },
-    transport: transcript([]).fetch,
+    protocol: "openai-chat",
+    credentials: {
+      apiKey: "tp-mimo-secret",
+      baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1",
+      discoveryUrl: "https://attacker.example/models",
+    },
+    transport: mimoTransport.fetch,
   });
-  await assert.rejects(
-    mimo.request({ operation: "messages", body: {}, signal: new AbortController().signal }),
-    { code: "protocol_unsupported" },
-  );
+  await mimo.request({ operation: "chat-completions", body: {}, signal: new AbortController().signal });
+  assert.equal(mimoTransport.calls[0]?.url, "https://token-plan-sgp.xiaomimimo.com/v1/chat/completions");
+  assert.equal(mimoTransport.calls[0]?.headers.get("api-key"), "tp-mimo-secret");
+  assert.equal(mimoTransport.calls[0]?.headers.get("authorization"), null);
+  assert.equal(JSON.stringify(mimoTransport.calls).includes("attacker.example"), false);
 });
 
 test("custom HTTPS rejects deterministic local, private, link-local, and reserved targets", async () => {
@@ -274,7 +280,7 @@ test("AgentUpstream stops locally when a response reader ignores abort", async (
   await assert.rejects(pending, { code: "agent_cancelled" });
 });
 
-test("HttpProbeSession uses the real three protocol loops, records usage, and removes only its private temporary directory", async (t) => {
+test("HttpProbeSession uses each supported protocol loop, records usage, and removes only its private temporary directory", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "csb-http-probe-test-"));
   t.after(async () => rm(root, { recursive: true, force: true }));
 
@@ -293,6 +299,17 @@ test("HttpProbeSession uses the real three protocol loops, records usage, and re
       routeKind: "gemini-api",
       protocol: "openai-chat" as const,
       expectedUrl: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+      replies: [
+        chatTool("workspace.list", { path: "." }, "list-1"),
+        chatTool("results.write", { path: "probe.json", content: "{\"ok\":true}" }, "write-1"),
+        chatFinal({ ok: true }),
+      ],
+    },
+    {
+      routeKind: "mimo-token-plan",
+      protocol: "openai-chat" as const,
+      baseUrl: "https://token-plan-ams.xiaomimimo.com/v1",
+      expectedUrl: "https://token-plan-ams.xiaomimimo.com/v1/chat/completions",
       replies: [
         chatTool("workspace.list", { path: "." }, "list-1"),
         chatTool("results.write", { path: "probe.json", content: "{\"ok\":true}" }, "write-1"),
@@ -320,7 +337,10 @@ test("HttpProbeSession uses the real three protocol loops, records usage, and re
       protocol: candidate.protocol,
       inferencePath: "/untrusted-client-path",
       model: model(candidate.protocol),
-      credentials: { apiKey: `${candidate.protocol}-secret` },
+      credentials: {
+        apiKey: candidate.routeKind === "mimo-token-plan" ? "tp-mimo-secret" : `${candidate.protocol}-secret`,
+        ...("baseUrl" in candidate ? { baseUrl: candidate.baseUrl } : {}),
+      },
     });
 
     assert.equal(transport.calls[0]?.url, candidate.expectedUrl);
@@ -338,7 +358,7 @@ test("HttpProbeSession uses the real three protocol loops, records usage, and re
       closedToolSurfaceEnforced: true,
     });
     assert.equal(result.capabilities?.usage, "supported");
-    assert.equal(JSON.stringify(result).includes(`${candidate.protocol}-secret`), false);
+    assert.equal(JSON.stringify(result).includes(candidate.routeKind === "mimo-token-plan" ? "tp-mimo-secret" : `${candidate.protocol}-secret`), false);
   }
 
   assert.deepEqual(await readdir(root), []);

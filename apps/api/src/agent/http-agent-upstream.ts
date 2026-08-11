@@ -11,6 +11,10 @@ import type {
   SafeProviderErrorCode,
 } from "@csb/shared";
 import type { ConnectionSecretBundle } from "../credentials/credential-vault.js";
+import {
+  isMimoTokenPlanApiKey,
+  mimoTokenPlanOpenAiBase,
+} from "../connections/http-model-discovery.js";
 import { DEFAULT_AGENT_LIMITS, createAgentSession } from "./session-runner.js";
 import { createWorkspaceToolHost } from "./workspace-tool-host.js";
 import {
@@ -60,8 +64,8 @@ export function isHttpAgentRouteProtocolSupported(
       return protocol === "openai-chat";
     case "custom-openai-compatible":
       return protocol === "openai-responses" || protocol === "openai-chat";
-    // MiMo remains discovery-only until it receives its own execution route.
     case "mimo-token-plan":
+      return protocol === "openai-chat";
     default:
       return false;
   }
@@ -345,9 +349,23 @@ function resolveRoute(
         ? null
         : { endpoint, headers: anthropicHeaders, operation: "messages" };
     }
-    // MiMo's regional execution base/protocol must be supplied by a dedicated
-    // route contract. Never infer one from a discovery-only bundle.
-    case "mimo-token-plan":
+    case "mimo-token-plan": {
+      const baseUrl = mimoTokenPlanOpenAiBase(credentials.baseUrl);
+      const apiKey = credentials.apiKey;
+      if (
+        protocol !== "openai-chat" ||
+        baseUrl === null ||
+        apiKey === undefined ||
+        !isMimoTokenPlanApiKey(apiKey)
+      ) return null;
+      return {
+        endpoint: `${baseUrl}/chat/completions`,
+        // Token Plan is OpenAI-compatible but requires its documented API-key
+        // header. Route credentials never inherit arbitrary stored headers.
+        headers: jsonHeaders(undefined, { "api-key": apiKey }),
+        operation: "chat-completions",
+      };
+    }
     default:
       return null;
   }

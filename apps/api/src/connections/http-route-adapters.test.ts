@@ -12,6 +12,7 @@ import {
   probeHttpRoute,
   refreshConnectionModels,
 } from "./http-route-adapters.js";
+import { createRouteRegistry } from "./route-registry.js";
 
 function json(status: number, value: unknown): Response {
   return new Response(JSON.stringify(value), {
@@ -33,12 +34,12 @@ test("Gemini preset exposes the official OpenAI chat wire path without inferring
 
 test("Gemini and DeepSeek presets discover only live authenticated catalogs", async () => {
   const geminiTransport = fakeFetch({
-    "GET https://generativelanguage.googleapis.com/v1beta/models": json(200, {
-      models: [{ name: "models/visible", baseModelId: "account-visible", displayName: "Visible" }],
-      nextPageToken: "page-2",
-    }),
-    "GET https://generativelanguage.googleapis.com/v1beta/models?pageToken=page-2": json(200, {
-      models: [{ name: "models/other", baseModelId: "account-visible-2" }],
+    "GET https://generativelanguage.googleapis.com/v1beta/openai/models": json(200, {
+      object: "list",
+      data: [
+        { id: "account-visible", name: "Visible" },
+        { id: "account-visible-2" },
+      ],
     }),
   });
   const deepSeekTransport = fakeFetch({
@@ -56,7 +57,8 @@ test("Gemini and DeepSeek presets discover only live authenticated catalogs", as
 
   assert.deepEqual(gemini.models.map((model) => model.id), ["account-visible", "account-visible-2"]);
   assert.deepEqual(deepseek.models.map((model) => model.id), ["account-visible"]);
-  assert.equal(geminiTransport.calls[0]?.init.headers?.["x-goog-api-key"], "gemini-secret");
+  assert.equal(geminiTransport.calls[0]?.init.headers?.Authorization, "Bearer gemini-secret");
+  assert.equal(geminiTransport.calls[0]?.init.headers?.["x-goog-api-key"], undefined);
   assert.equal(deepSeekTransport.calls[0]?.init.headers?.Authorization, "Bearer deepseek-secret");
   assert.equal(JSON.stringify([gemini, deepseek]).includes("fallbackModel"), false);
   assert.equal(JSON.stringify([gemini, deepseek]).includes("gemini-secret"), false);
@@ -103,6 +105,38 @@ test("OpenAI API adapter exposes the Responses protocol required by its route co
   });
 
   assert.equal(adapter.protocol, "openai-responses");
+});
+
+test("MiMo Token Plan is registered only for its pinned OpenAI chat tuple", async () => {
+  const vault = fakeVault({
+    apiKey: "tp-mimo-secret",
+    baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+  });
+  const adapter = createHttpRouteAdapter("mimo-token-plan", { vault });
+  const registry = createRouteRegistry({ vault });
+  const configured = {
+    ...connection("mimo-token-plan"),
+    protocol: "openai-chat" as const,
+  };
+  const legacyProtocol = {
+    ...configured,
+    protocol: "anthropic-messages" as const,
+  };
+
+  const inspection = await inspectHttpRoute(configured, vault);
+  const legacyInspection = await inspectHttpRoute(legacyProtocol, vault);
+
+  assert.equal(adapter.protocol, "openai-chat");
+  assert.equal(registry.get("mimo-token-plan")?.protocol, "openai-chat");
+  assert.equal(inspection.available, true);
+  assert.equal(inspection.reason, null);
+  assert.equal(inspection.protocol, "openai-chat");
+  assert.equal(inspection.inferencePath, "/chat/completions");
+  assert.equal(inspection.endpointConfigured, true);
+  assert.equal(inspection.endpointKind, "preset");
+  assert.equal(inspection.capabilities.tools, "unknown");
+  assert.equal(legacyInspection.available, false);
+  assert.equal(legacyInspection.reason, "protocol_unsupported");
 });
 
 test("failed refresh preserves stale rows and never supplies a fallback model", async () => {
@@ -306,41 +340,6 @@ test("MiMo discovers exactly one authenticated catalog from the selected OpenAI 
   assert.deepEqual(empty.models, []);
   assert.equal(empty.safeError, undefined);
   assert.equal(empty.pageCount, 1);
-});
-
-test("MiMo derives the paired OpenAI catalog from an Anthropic Token Plan base", async () => {
-  const tokenPlanKey = "tp-mimo-secret";
-  const transport = fakeFetch({
-    "GET https://token-plan-ams.xiaomimimo.com/v1/models": json(200, {
-      object: "list",
-      data: [{ id: "account-visible" }],
-    }),
-  });
-  const anthropicConnection = {
-    ...connection("mimo-token-plan"),
-    protocol: "anthropic-messages" as const,
-  };
-
-  const result = await discoverModels(anthropicConnection, {
-    vault: fakeVault({
-      apiKey: tokenPlanKey,
-      baseUrl: "https://token-plan-ams.xiaomimimo.com/v1/anthropic",
-      discoveryUrl: "https://attacker.example/models",
-    }),
-    transport,
-  });
-  const inspection = await inspectHttpRoute(anthropicConnection, fakeVault({
-    apiKey: tokenPlanKey,
-    baseUrl: "https://token-plan-ams.xiaomimimo.com/v1/anthropic",
-  }));
-
-  assert.deepEqual(result.models.map((model) => model.id), ["account-visible"]);
-  assert.deepEqual(transport.calls.map((call) => call.url), [
-    "https://token-plan-ams.xiaomimimo.com/v1/models",
-  ]);
-  assert.equal(transport.calls[0]?.init.headers?.["api-key"], tokenPlanKey);
-  assert.equal(inspection.inferencePath, "/v1/messages");
-  assert.equal(JSON.stringify([result, inspection]).includes(tokenPlanKey), false);
 });
 
 test("MiMo fails closed for non-plan keys, unapproved regions, and invalid catalog shapes", async () => {

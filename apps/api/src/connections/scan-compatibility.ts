@@ -129,6 +129,7 @@ function isWiredHttpRoute(routeKind: string, protocol: ProviderProtocol): boolea
       "openrouter-api",
       "gemini-api",
       "deepseek-api",
+      "mimo-token-plan",
       "custom-openai-compatible",
     ].includes(routeKind);
   }
@@ -136,7 +137,6 @@ function isWiredHttpRoute(routeKind: string, protocol: ProviderProtocol): boolea
     return [
       "anthropic-api",
       "minimax-token-plan",
-      "mimo-token-plan",
       "custom-anthropic-compatible",
     ].includes(routeKind);
   }

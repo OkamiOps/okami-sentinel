@@ -293,13 +293,9 @@ export async function inspectHttpRoute(
   if (metadata === null) return unavailableInspection("protocol_unsupported");
   const bundle = await readBundle(connection, vault);
   if ("safeError" in bundle) return unavailableInspection(bundle.safeError.code, metadata);
-  if (connection.routeKind === "mimo-token-plan") {
-    if (!isMimoTokenPlanApiKey(bundle.bundle.apiKey)) {
-      return unavailableInspection("credential_rejected", metadata);
-    }
-    if (mimoTokenPlanOpenAiBase(bundle.bundle.baseUrl) === null) {
-      return unavailableInspection("model_discovery_unsupported", metadata);
-    }
+  const mimoError = mimoTokenPlanError(connection, bundle.bundle);
+  if (mimoError !== null) {
+    return unavailableInspection(mimoError, metadata);
   }
   if (!hasCredential(bundle.bundle)) return unavailableInspection("credential_rejected", metadata);
   if (metadata.endpointKind === "custom" && !hasCustomEndpoint(bundle.bundle)) {
@@ -355,6 +351,15 @@ export async function probeHttpRoute(
     selection,
     selectedModel,
     errorCode: bundle.safeError.code,
+    now: deps.now,
+  });
+  const mimoError = mimoTokenPlanError(connection, bundle.bundle);
+  if (mimoError !== null) return createHttpProbeResult({
+    connectionId: connection.id,
+    protocol: metadata.protocol,
+    selection,
+    selectedModel,
+    errorCode: mimoError,
     now: deps.now,
   });
   if (!hasCredential(bundle.bundle)) return createHttpProbeResult({
@@ -448,7 +453,6 @@ function defaultProtocolForRoute(routeKind: HttpRouteKind): ProviderProtocol {
     case "anthropic-api":
     case "custom-anthropic-compatible":
     case "minimax-token-plan":
-    case "mimo-token-plan":
       return "anthropic-messages";
     default:
       return "openai-chat";
@@ -522,17 +526,9 @@ function routeMetadataFor(
     case "minimax-token-plan":
       return { protocol: "anthropic-messages", inferencePath: "/v1/messages", endpointKind: "preset" };
     case "mimo-token-plan":
-      if (connectionProtocol === "anthropic-messages") {
-        return { protocol: "anthropic-messages", inferencePath: "/v1/messages", endpointKind: "preset" };
-      }
-      if (connectionProtocol === "openai-chat" || connectionProtocol === "openai-responses") {
-        return {
-          protocol: connectionProtocol,
-          inferencePath: connectionProtocol === "openai-responses" ? "/responses" : "/chat/completions",
-          endpointKind: "preset",
-        };
-      }
-      return null;
+      return connectionProtocol === "openai-chat"
+        ? { protocol: "openai-chat", inferencePath: "/chat/completions", endpointKind: "preset" }
+        : null;
     default:
       return null;
   }
@@ -541,6 +537,17 @@ function routeMetadataFor(
 function hasCredential(bundle: ConnectionSecretBundle): boolean {
   return typeof bundle.apiKey === "string" && bundle.apiKey.length > 0 ||
     Object.keys(bundle.headers ?? {}).length > 0;
+}
+
+function mimoTokenPlanError(
+  connection: StoredProviderConnection,
+  bundle: ConnectionSecretBundle,
+): SafeProviderErrorCode | null {
+  if (connection.routeKind !== "mimo-token-plan") return null;
+  if (!isMimoTokenPlanApiKey(bundle.apiKey)) return "credential_rejected";
+  return mimoTokenPlanOpenAiBase(bundle.baseUrl) === null
+    ? "model_discovery_unsupported"
+    : null;
 }
 
 function hasCustomEndpoint(bundle: ConnectionSecretBundle): boolean {

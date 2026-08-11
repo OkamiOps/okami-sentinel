@@ -100,6 +100,31 @@ test("resolves one executable scanner decision from persisted model and probe fa
   assert.deepEqual(result.reasons, []);
 });
 
+test("advertises MiMo Token Plan only through its pinned OpenAI chat tuple", () => {
+  const resolver = createScanCompatibilityResolver({
+    getConnection: () => connection({
+      providerKind: "xiaomi",
+      routeKind: "mimo-token-plan",
+      protocol: "openai-chat",
+    }),
+    getModel: () => model(),
+    getLatestCapabilityCheck: () => probe(),
+    now: () => NOW,
+  });
+
+  const result = resolver.resolve({
+    engine: "mantis",
+    selection: {
+      connectionId: "connection-a",
+      modelSelectionMode: "catalog",
+      modelId: "provider/model-a",
+    },
+  });
+
+  assert.equal(result.eligible, true);
+  assert.deepEqual(result.reasons, []);
+});
+
 test("fails closed for unknown connections and runner kinds that are not wired", () => {
   const missing = createScanCompatibilityResolver({
     getConnection: () => null,

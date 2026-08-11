@@ -106,7 +106,7 @@ const UNKNOWN_CAPABILITIES: ModelCapabilities = Object.freeze({
   cancellation: "unknown",
 });
 
-const OFFICIAL_GEMINI_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models";
+const OFFICIAL_GEMINI_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/openai/models";
 const OFFICIAL_OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 const OFFICIAL_XAI_MODELS_URL = "https://api.x.ai/v1/models";
 const OFFICIAL_DEEPSEEK_MODELS_URL = "https://api.deepseek.com/models";
@@ -224,8 +224,8 @@ export async function discoverOpenAiModels(
 
 /**
  * MiMo Token Plan publishes a one-page OpenAI-compatible catalog for the
- * region selected by the user. Its Anthropic base is inference-only, so this
- * derives the paired OpenAI base without ever accepting a custom host.
+ * region selected by the user. The selected base remains exact: this route
+ * never derives a second protocol base or accepts a custom host.
  */
 export async function discoverMimoTokenPlanModels(
   credentials: DiscoveryCredentials,
@@ -279,10 +279,7 @@ export async function discoverMimoTokenPlanModels(
 /** Returns the canonical OpenAI base for an allowed MiMo Token Plan region. */
 export function mimoTokenPlanOpenAiBase(baseUrl: string | undefined): string | null {
   if (baseUrl === undefined) return null;
-  const openAiBase = baseUrl.endsWith("/anthropic")
-    ? baseUrl.slice(0, -"/anthropic".length)
-    : baseUrl;
-  return MIMO_TOKEN_PLAN_OPENAI_BASES.has(openAiBase) ? openAiBase : null;
+  return MIMO_TOKEN_PLAN_OPENAI_BASES.has(baseUrl) ? baseUrl : null;
 }
 
 export function isMimoTokenPlanApiKey(apiKey: string | undefined): boolean {
@@ -346,7 +343,7 @@ export async function discoverAnthropicModels(
   }, credentials.redactor);
 }
 
-/** Gemini's `baseModelId` is the upstream-selected identifier sent to generation. */
+/** Gemini's OpenAI-compatible catalog uses the same bearer contract as inference. */
 export async function discoverGeminiModels(
   credentials: DiscoveryCredentials,
   transport: HttpFetch = fetch,
@@ -354,18 +351,16 @@ export async function discoverGeminiModels(
   const bundle = bundleFromCredentials(credentials);
   return withBundleRedaction(bundle, async (secretValues) => discoverCatalog({
     url: OFFICIAL_GEMINI_MODELS_URL,
-    headers: mergeHeaders(credentials.headers, credentials.apiKey === undefined
-      ? {}
-      : { "x-goog-api-key": credentials.apiKey }),
+    headers: bearerHeaders(credentials.headers, credentials.apiKey),
     connectionId: credentials.connectionId ?? "unbound",
     allowInsecureLocalhost: false,
     now: credentials.now ?? (() => new Date()),
     redactor: credentials.redactor,
     secretValues,
     transport,
-    cursorQuery: "pageToken",
-    readPage: readGeminiPage,
-    normalize: (rows, discoveredAt, sensitiveValues) => normalizeGeminiRows(rows, {
+    cursorQuery: "after",
+    readPage: readOpenAiPage,
+    normalize: (rows, discoveredAt, sensitiveValues) => normalizeOpenAiRows(rows, {
       connectionId: credentials.connectionId ?? "unbound",
       discoveredAt,
     }, sensitiveValues),
@@ -527,16 +522,6 @@ function readAnthropicPage(payload: unknown): PageResult | null {
   return { rows, next: cursorFromHasMore(record, "last_id") };
 }
 
-function readGeminiPage(payload: unknown): PageResult | null {
-  const record = recordOf(payload);
-  if (record === null) return null;
-  const rows = record.models;
-  if (!Array.isArray(rows)) return null;
-  const token = record.nextPageToken;
-  if (token === undefined || token === null || token === "") return { rows, next: { kind: "done" } };
-  return typeof token === "string" ? { rows, next: { kind: "next", value: token } } : null;
-}
-
 function readOpenRouterPage(payload: unknown): PageResult | null {
   const record = recordOf(payload);
   if (record === null) return null;
@@ -579,19 +564,6 @@ function normalizeAnthropicRows(
     id: stringAt(row, "id"),
     displayName: stringAt(row, "display_name") ?? stringAt(row, "id"),
     contextWindow: null,
-    pricing: null,
-  }), sensitiveValues);
-}
-
-function normalizeGeminiRows(
-  rows: readonly unknown[],
-  metadata: { connectionId: string; discoveredAt: string },
-  sensitiveValues: readonly string[],
-): DiscoveredProviderModel[] {
-  return normalizeRows(rows, metadata, (row) => ({
-    id: stringAt(row, "baseModelId"),
-    displayName: stringAt(row, "displayName") ?? stringAt(row, "baseModelId"),
-    contextWindow: numberAt(row, "inputTokenLimit"),
     pricing: null,
   }), sensitiveValues);
 }
