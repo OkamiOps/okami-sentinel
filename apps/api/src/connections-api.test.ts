@@ -481,3 +481,97 @@ test("the root app mounts connections and permits PATCH with the CSRF header", a
   assert.match(preflight.headers.get("Access-Control-Allow-Methods") ?? "", /PATCH/);
   assert.match(preflight.headers.get("Access-Control-Allow-Headers") ?? "", /X-CSRF-Token/i);
 });
+
+test("managed authentication routes are CSRF protected and expose only safe flow state", async () => {
+  const { api: _unused, db } = fixture();
+  const service: ConnectionsService = {
+    list: () => [runtimeConnection()],
+    get: () => runtimeConnection(),
+    create: async () => runtimeConnection(),
+    update: async () => runtimeConnection(),
+    remove: async () => true,
+    inspect: async () => ({
+      connection: runtimeConnection(),
+      inspection: { available: true, reason: null, supportsRuntimeDefault: false },
+    }),
+    listModels: () => [],
+    refreshModels: async () => null,
+    probe: async () => null,
+  };
+  const calls: string[] = [];
+  const authFlows = {
+    async start(connectionId: string, mode: "browser-oauth" | "device-code") {
+      calls.push(`start:${connectionId}:${mode}`);
+      return {
+        flowId: "flow-1",
+        status: "pending" as const,
+        authUrl: null,
+        verificationUrl: "https://auth.x.ai/activate",
+        userCode: "XAI-ABCD",
+        expiresAt: "2026-08-11T03:00:00.000Z",
+      };
+    },
+    async get(connectionId: string, flowId: string) {
+      calls.push(`get:${connectionId}:${flowId}`);
+      return {
+        flowId,
+        status: "completed" as const,
+        authUrl: null,
+        verificationUrl: "https://auth.x.ai/activate",
+        userCode: "XAI-ABCD",
+        expiresAt: "2026-08-11T03:00:00.000Z",
+      };
+    },
+    async cancel(connectionId: string, flowId: string) {
+      calls.push(`cancel:${connectionId}:${flowId}`);
+    },
+    async disconnect(connectionId: string) {
+      calls.push(`disconnect:${connectionId}`);
+      return { status: "revoked" as const };
+    },
+  };
+  const api = createConnectionsApp({ service, authFlows });
+  try {
+    const denied = await api.request("/connections/conn-local/auth/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "device-code" }),
+    });
+    assert.equal(denied.status, 403);
+
+    const token = await csrfToken(api);
+    const started = await api.request("/connections/conn-local/auth/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": token },
+      body: JSON.stringify({ mode: "device-code" }),
+    });
+    assert.equal(started.status, 201);
+    const startedBody = await started.json();
+    assert.equal(JSON.stringify(startedBody).includes("token"), false);
+
+    const current = await api.request("/connections/conn-local/auth/flow-1");
+    assert.equal(current.status, 200);
+    assert.equal((await current.json() as { flow: { status: string } }).flow.status, "completed");
+
+    const cancelled = await api.request("/connections/conn-local/auth/flow-1/cancel", {
+      method: "POST",
+      headers: { "X-CSRF-Token": token },
+    });
+    assert.equal(cancelled.status, 200);
+
+    const disconnected = await api.request("/connections/conn-local/auth/disconnect", {
+      method: "POST",
+      headers: { "X-CSRF-Token": token },
+    });
+    assert.equal(disconnected.status, 200);
+    assert.deepEqual(await disconnected.json(), { result: { status: "revoked" } });
+    assert.deepEqual(calls, [
+      "start:conn-local:device-code",
+      "get:conn-local:flow-1",
+      "cancel:conn-local:flow-1",
+      "disconnect:conn-local",
+    ]);
+  } finally {
+    db.close();
+  }
+});

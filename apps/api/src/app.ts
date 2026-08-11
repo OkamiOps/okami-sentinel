@@ -75,6 +75,7 @@ import { buildRegressionSummary, markScanAsRepositoryBaseline, updateFindingTria
 import { isRemovableScanStatus } from "./lifecycle.js";
 import { MAX_CONCURRENT_SCANS } from "./config.js";
 import { createConnectionsApp } from "./connections-api.js";
+import { getProviderRuntime } from "./provider-runtime.js";
 import { getScannerCatalog } from "./scanners/catalog.js";
 import {
   cancelScan,
@@ -390,7 +391,11 @@ export function createGuardrailsApp(
 }
 
 app.route("/", createGuardrailsApp());
-app.route("/", createConnectionsApp());
+const providerRuntime = getProviderRuntime();
+app.route("/", createConnectionsApp({
+  service: providerRuntime.connections,
+  authFlows: providerRuntime.authFlows,
+}));
 
 app.get("/health", async (c) => {
   const codexInfo = await getCodexInfo();

@@ -12,9 +12,14 @@ import {
   type ConnectionsService,
 } from "./connections-service.js";
 import { createSystemCredentialVault } from "./credentials/system-credential-vault.js";
+import {
+  AuthFlowServiceError,
+  type AuthFlowService,
+} from "./connections/auth-flow-service.js";
 
 export interface ConnectionsApiDependencies {
   service: ConnectionsService;
+  authFlows?: AuthFlowService;
 }
 
 export function createConnectionsApp(
@@ -24,6 +29,7 @@ export function createConnectionsApp(
     service: supplied?.service ?? createConnectionsService({
       vault: createSystemCredentialVault({ redactor: globalSecretRedactor }),
     }),
+    authFlows: supplied?.authFlows,
   };
   const csrfToken = randomBytes(32).toString("base64url");
   const connections = new Hono();
@@ -55,6 +61,67 @@ export function createConnectionsApp(
       const models = deps.service.listModels(connectionId(c.req.param("id")));
       if (models === null) return c.json({ error: "connection_not_found" }, 404);
       return c.json({ models });
+    } catch (error) {
+      return connectionError(c, error);
+    }
+  });
+
+  connections.post("/connections/:id/auth/start", async (c) => {
+    if (!hasValidCsrfToken(c.req.header("X-CSRF-Token"), csrfToken)) {
+      return c.json({ error: "csrf_invalid" }, 403);
+    }
+    try {
+      if (deps.authFlows === undefined) throw new AuthFlowServiceError("protocol_unsupported");
+      const body = await requestJson<{ mode?: unknown }>(c.req.raw);
+      if (body.mode !== "browser-oauth" && body.mode !== "device-code") {
+        throw new AuthFlowServiceError("protocol_unsupported");
+      }
+      const flow = await deps.authFlows.start(connectionId(c.req.param("id")), body.mode);
+      return c.json({ flow }, 201);
+    } catch (error) {
+      return connectionError(c, error);
+    }
+  });
+
+  connections.get("/connections/:id/auth/:flowId", async (c) => {
+    try {
+      if (deps.authFlows === undefined) throw new AuthFlowServiceError("protocol_unsupported");
+      const id = connectionId(c.req.param("id"));
+      const flow = await deps.authFlows.get(id, connectionId(c.req.param("flowId")));
+      if (flow === null) return c.json({ error: "oauth_flow_expired" }, 404);
+      if (flow.status === "completed") await deps.service.inspect(id);
+      return c.json({ flow });
+    } catch (error) {
+      return connectionError(c, error);
+    }
+  });
+
+  connections.post("/connections/:id/auth/:flowId/cancel", async (c) => {
+    if (!hasValidCsrfToken(c.req.header("X-CSRF-Token"), csrfToken)) {
+      return c.json({ error: "csrf_invalid" }, 403);
+    }
+    try {
+      if (deps.authFlows === undefined) throw new AuthFlowServiceError("protocol_unsupported");
+      await deps.authFlows.cancel(
+        connectionId(c.req.param("id")),
+        connectionId(c.req.param("flowId")),
+      );
+      return c.json({ ok: true });
+    } catch (error) {
+      return connectionError(c, error);
+    }
+  });
+
+  connections.post("/connections/:id/auth/disconnect", async (c) => {
+    if (!hasValidCsrfToken(c.req.header("X-CSRF-Token"), csrfToken)) {
+      return c.json({ error: "csrf_invalid" }, 403);
+    }
+    try {
+      if (deps.authFlows === undefined) throw new AuthFlowServiceError("protocol_unsupported");
+      const id = connectionId(c.req.param("id"));
+      const result = await deps.authFlows.disconnect(id);
+      await deps.service.inspect(id);
+      return c.json({ result });
     } catch (error) {
       return connectionError(c, error);
     }
@@ -183,11 +250,22 @@ function connectionError(c: Context, error: unknown): Response {
   const safeMessage = redactErrorMessage(error);
   const code = error instanceof ConnectionServiceError
     ? error.code
+    : error instanceof AuthFlowServiceError
+      ? error.code
     : safeMessage === "credential_not_found"
       ? "connection_not_found"
       : "secure_storage_unavailable";
   if (code === "connection_not_found") return c.json({ error: code }, 404);
   if (code === "connection_state_inconsistent") return c.json({ error: code }, 409);
+  if (code === "oauth_flow_expired") return c.json({ error: code }, 410);
+  if (code === "oauth_access_denied" || code === "credential_rejected") {
+    return c.json({ error: code }, 401);
+  }
+  if (code === "rate_limited") return c.json({ error: code }, 429);
+  if (code === "provider_unreachable") return c.json({ error: code }, 503);
+  if (code === "protocol_unsupported" || code === "oauth_metadata_invalid") {
+    return c.json({ error: code }, 400);
+  }
   if (code === "secure_storage_unavailable") return c.json({ error: code }, 503);
   return c.json({ error: code }, 400);
 }
