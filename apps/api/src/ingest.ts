@@ -91,8 +91,14 @@ export function recoverFindingsJsonFromMarkdown(
     try {
       const existing = JSON.parse(fs.readFileSync(findingsPath, "utf8")) as {
         findings?: unknown[];
+        schemaVersion?: unknown;
       };
-      if ((existing.findings?.length ?? 0) > 0) return existing.findings!.length;
+      const needsSessionEvidenceUpgrade =
+        existing.schemaVersion === "recovered-session-1" ||
+        existing.schemaVersion === "recovered-session-2";
+      if ((existing.findings?.length ?? 0) > 0 && !needsSessionEvidenceUpgrade) {
+        return existing.findings!.length;
+      }
     } catch {
       // rewrite below
     }
@@ -250,7 +256,7 @@ export function recoverFindingsJsonFromMarkdown(
     JSON.stringify(
       {
         documentType: "codex-security.findings",
-        schemaVersion: sessionRecovery ? "recovered-session-1" : "recovered-1",
+        schemaVersion: sessionRecovery ? "recovered-session-3" : "recovered-1",
         recovered: true,
         recovery: sessionRecovery
           ? {
@@ -470,7 +476,37 @@ function normalizeSessionFinding(
     : Array.isArray(raw.cwe)
       ? raw.cwe.filter((value): value is string => typeof value === "string")
       : [];
-  const locations = normalizeSessionLocations(raw.locations);
+  const recoveredEvidence = normalizeSessionEvidence(raw.evidence);
+  const locations = dedupeSessionLocations([
+    ...normalizeSessionLocations(raw.locations),
+    ...normalizeSessionLocations(raw.location),
+    ...normalizeSessionLocations(raw.files),
+    ...recoveredEvidence.locations,
+  ]);
+  const recoveredLocationKeys = new Set(
+    recoveredEvidence.locations.map(sessionLocationKey),
+  );
+  const textualEvidence = typeof raw.evidence === "string" && raw.evidence.trim()
+    ? raw.evidence.trim()
+    : null;
+  const codeEvidence = [
+    ...recoveredEvidence.codeEvidence,
+    ...locations
+      .filter((location) => !recoveredLocationKeys.has(sessionLocationKey(location)))
+      .map((location) => ({
+        ...location,
+        role: "evidence",
+        code: null,
+        language: languageForRecoveredPath(String(location.path)),
+        explanation:
+          textualEvidence ??
+          "Recovered from the worker result without a sealed source snippet.",
+      })),
+  ].map((item, evidenceIndex) => ({
+    ...item,
+    id: `evidence-${evidenceIndex + 1}`,
+    label: `Recovered evidence at ${sessionLocationLabel(item)}`,
+  }));
   const summary = firstString(
     raw.summary,
     raw.concrete_impact,
@@ -478,6 +514,16 @@ function normalizeSessionFinding(
     raw.source_to_sink_explanation,
     raw.source_to_sink,
   );
+  const sourceToSink = firstString(
+    raw.source_to_sink_explanation,
+    raw.source_to_sink,
+  );
+  const requestSurface = firstString(raw.request_surface);
+  const attackSummary = sourceToSink ?? requestSurface;
+  const impact = firstString(raw.concrete_impact, raw.impact);
+  const evidenceRefs = codeEvidence.map((item) => String(item.id));
+  const rootCause = firstString(raw.root_cause, raw.violated_invariant);
+  const attacker = firstString(raw.attacker, raw.attacker_position);
   const id = `recovered-session-${sessionId}-${index + 1}`;
 
   return {
@@ -494,10 +540,39 @@ function normalizeSessionFinding(
     ruleId: `session-recovery/${cwe[0] ?? "unclassified"}`,
     remediation: firstString(raw.recommended_remediation, raw.remediation),
     locations,
-    codeEvidence: [],
-    taxonomy: { category: "Recovered worker finding", cwe },
+    codeEvidence,
+    taxonomy: {
+      category: firstString(raw.category) ?? "Recovered worker finding",
+      cwe,
+    },
+    attackPath: attackSummary
+      ? {
+          summary: attackSummary,
+          evidenceRefs,
+          ...(attacker || requestSurface
+            ? {
+                reachability: {
+                  attacker,
+                  preconditions: requestSurface,
+                },
+              }
+            : {}),
+          dataflow: {
+            summary: attackSummary,
+            outcome: impact,
+            evidenceRefs,
+          },
+        }
+      : null,
+    rootCause: rootCause ? { summary: rootCause } : null,
     validation: {
-      supportingEvidence: raw.supporting_evidence ?? raw.supporting_source_evidence ?? null,
+      summary: evidenceRefs.length > 0
+        ? "Recovered from worker-provided static evidence references; source snippets were not sealed."
+        : null,
+      supportingEvidence:
+        raw.supporting_evidence ?? raw.supporting_source_evidence ??
+        textualEvidence ??
+        (evidenceRefs.length > 0 ? evidenceRefs : null),
       counterEvidence: raw.counterevidence ?? null,
     },
     provenance: {
@@ -509,26 +584,123 @@ function normalizeSessionFinding(
 }
 
 function normalizeSessionLocations(value: unknown): Array<Record<string, unknown>> {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((location) => {
+  if (value == null) return [];
+  const entries = Array.isArray(value) ? value : [value];
+  return entries.flatMap((location) => {
     if (typeof location === "string") {
-      const match = location.match(/^(.*?):(\d+(?:-\d+)?)$/);
-      return [{
-        path: match?.[1] ?? location,
-        lines: match?.[2] ?? null,
-        role: "primary",
-      }];
+      const normalized = normalizeSessionLocator(location);
+      return normalized ? [{ ...normalized, role: "primary" }] : [];
     }
     if (!location || typeof location !== "object") return [];
     const record = location as Record<string, unknown>;
     const locationPath = firstString(record.path, record.file);
     if (!locationPath) return [];
-    return [{
-      path: locationPath,
-      lines: typeof record.lines === "string" ? record.lines : null,
-      role: "primary",
-    }];
+    const normalized = normalizeSessionLocator(locationPath, record.lines);
+    return normalized ? [{ ...normalized, role: "primary" }] : [];
   });
+}
+
+function normalizeSessionEvidence(value: unknown): {
+  locations: Array<Record<string, unknown>>;
+  codeEvidence: Array<Record<string, unknown>>;
+} {
+  if (!Array.isArray(value)) return { locations: [], codeEvidence: [] };
+  const codeEvidence: Array<Record<string, unknown>> = value.flatMap(
+    (entry): Array<Record<string, unknown>> => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+      const record = entry as Record<string, unknown>;
+      const locator = firstString(record.file, record.path, record.location);
+      if (!locator) return [];
+      const normalized = normalizeSessionLocator(locator, record.lines);
+      if (!normalized) return [];
+      return [{
+        ...normalized,
+        role: "evidence",
+        code: null,
+        language: languageForRecoveredPath(String(normalized.path)),
+        explanation:
+          firstString(record.notes, record.explanation, record.description) ??
+          "Recovered from the worker result without a sealed source snippet.",
+      }];
+    },
+  );
+  return {
+    codeEvidence,
+    locations: codeEvidence.map((item) => ({
+      path: item.path,
+      startLine: item.startLine,
+      endLine: item.endLine,
+      lines: item.lines,
+      role: "primary",
+    })),
+  };
+}
+
+function normalizeSessionLocator(
+  value: string,
+  explicitLines?: unknown,
+): Record<string, unknown> | null {
+  const locator = value.trim();
+  if (!locator) return null;
+  const inline = locator.match(/^(.*):(\d+)(?:-(\d+))?$/);
+  const pathValue = (inline?.[1] ?? locator).trim();
+  if (!pathValue) return null;
+  const explicit = typeof explicitLines === "string"
+    ? explicitLines.trim().match(/^(\d+)(?:-(\d+))?$/)
+    : null;
+  const startLine = Number(explicit?.[1] ?? inline?.[2]);
+  const endLine = Number(explicit?.[2] ?? inline?.[3] ?? explicit?.[1] ?? inline?.[2]);
+  const hasLines = Number.isInteger(startLine) && startLine > 0 &&
+    Number.isInteger(endLine) && endLine >= startLine;
+  return {
+    path: pathValue,
+    ...(hasLines
+      ? {
+          startLine,
+          endLine,
+          lines: startLine === endLine ? String(startLine) : `${startLine}-${endLine}`,
+        }
+      : { lines: null }),
+  };
+}
+
+function dedupeSessionLocations(
+  locations: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  const seen = new Set<string>();
+  return locations.filter((location) => {
+    const key = sessionLocationKey(location);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function sessionLocationKey(location: Record<string, unknown>): string {
+  return `${String(location.path ?? "")}::${String(location.lines ?? "")}`;
+}
+
+function sessionLocationLabel(location: Record<string, unknown>): string {
+  const pathValue = String(location.path ?? "unknown");
+  return typeof location.lines === "string" && location.lines
+    ? `${pathValue}:${location.lines}`
+    : pathValue;
+}
+
+function languageForRecoveredPath(filePath: string): string {
+  return ({
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".py": "python",
+    ".go": "go",
+    ".rs": "rust",
+    ".java": "java",
+    ".rb": "ruby",
+    ".php": "php",
+    ".sql": "sql",
+  } as Record<string, string>)[path.extname(filePath).toLowerCase()] ?? "text";
 }
 
 function firstString(...values: unknown[]): string | null {
@@ -538,20 +710,28 @@ function firstString(...values: unknown[]): string | null {
   return null;
 }
 
-export function readFindingsFile(scanDir: string): FindingDetail[] {
+export function readFindingsFile(
+  scanDir: string,
+  sessionsRoot = CODEX_SECURITY_SESSIONS_DIR,
+): FindingDetail[] {
   const findingsPath = path.join(scanDir, "findings.json");
   if (!fs.existsSync(findingsPath)) {
-    recoverFindingsJsonFromMarkdown(scanDir);
+    recoverFindingsJsonFromMarkdown(scanDir, sessionsRoot);
   } else {
     try {
       const existing = JSON.parse(fs.readFileSync(findingsPath, "utf8")) as {
         findings?: unknown[];
+        schemaVersion?: unknown;
       };
-      if ((existing.findings?.length ?? 0) === 0) {
-        recoverFindingsJsonFromMarkdown(scanDir);
+      if (
+        (existing.findings?.length ?? 0) === 0 ||
+        existing.schemaVersion === "recovered-session-1" ||
+        existing.schemaVersion === "recovered-session-2"
+      ) {
+        recoverFindingsJsonFromMarkdown(scanDir, sessionsRoot);
       }
     } catch {
-      recoverFindingsJsonFromMarkdown(scanDir);
+      recoverFindingsJsonFromMarkdown(scanDir, sessionsRoot);
     }
   }
   if (!fs.existsSync(findingsPath)) return [];
