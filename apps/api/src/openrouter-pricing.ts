@@ -1,6 +1,6 @@
 import type { ScanCost, ScanRun } from "@csb/shared";
 
-const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models?model_authors=openai";
+const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 const PRICING_TTL_MS = 6 * 60 * 60 * 1000;
 const FAILURE_RETRY_MS = 5 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 5_000;
@@ -130,18 +130,31 @@ export function calculateOpenRouterCost(
   };
 }
 
+function openRouterProviderNamespace(provider: string | null): string {
+  if (provider === "xai") return "x-ai";
+  return provider ?? "openai";
+}
+
 function openRouterModelId(run: ScanRun): string | null {
   const model = run.cost?.model ?? run.model;
   if (!model) return null;
-  if (model.includes("/")) return model;
-  return `${run.provider ?? "openai"}/${model}`;
+  const namespace = openRouterProviderNamespace(run.provider);
+  if (model.includes("/")) {
+    const declaredNamespace = model.slice(0, model.indexOf("/")).toLowerCase();
+    const compatibleGateway = run.provider === "openrouter" ||
+      run.connection?.routeKind.startsWith("custom-") === true;
+    if (!compatibleGateway && declaredNamespace !== namespace.toLowerCase()) return null;
+    return model;
+  }
+  return `${namespace}/${model}`;
 }
 
 function resolvePricing(
   modelId: string,
   models: OpenRouterModel[],
 ): PricingResolution | null {
-  const exact = models.find((candidate) => candidate.id === modelId);
+  const normalizedModelId = modelId.toLowerCase();
+  const exact = models.find((candidate) => candidate.id.toLowerCase() === normalizedModelId);
   if (exact) return { model: exact, pricingMatch: "exact" };
 
   const alias = approvedModelAliases.find((candidate) => candidate.id === modelId);
@@ -180,27 +193,28 @@ export function estimateScanWithOpenRouterPricing(
   models: OpenRouterModel[],
   pricingUpdatedAt: string,
 ): ScanRun {
-  const subscriptionScanner =
-    (run.engine === "mantis" || run.engine === "vulnhunter") && run.authMode === "chatgpt";
-  const reportedCodexSecurityUsage = run.engine === "codex-security" && run.provider === "openai";
-  if (!run.cost || (!subscriptionScanner && !reportedCodexSecurityUsage)) return run;
-  if (run.provider !== "openai") return run;
-  if (run.cost.pricingSource !== undefined || run.cost.pricingSnapshot !== undefined) return run;
-  const reportedTokens =
-    run.cost.inputTokens +
-    run.cost.cachedInputTokens +
-    run.cost.cacheWriteInputTokens +
-    run.cost.outputTokens;
+  if (run.cost?.pricingSource !== undefined || run.cost?.pricingSnapshot !== undefined) return run;
+  const measured = measuredUsage(run);
+  if (measured === null) return run;
+  const reportedTokens = measured.usage.inputTokens + measured.usage.outputTokens;
   if (reportedTokens <= 0) return run;
   const modelId = openRouterModelId(run);
   const resolution = modelId ? resolvePricing(modelId, models) : null;
   if (!resolution) return run;
-  const estimate = calculateOpenRouterCost(run.cost, resolution.model.pricing);
+  const estimate = calculateOpenRouterCost(measured.usage, resolution.model.pricing);
   if (estimate === null) return run;
+  const directOpenRouter = run.provider === "openrouter" &&
+    run.connection?.routeKind === "openrouter-api";
   const cost: ScanCost = {
-    ...run.cost,
     estimatedUsd: estimate.totalUsd,
+    inputTokens: measured.usage.inputTokens,
+    cachedInputTokens: measured.usage.cachedInputTokens,
+    cacheWriteInputTokens: measured.usage.cacheWriteInputTokens,
+    outputTokens: measured.usage.outputTokens,
+    model: run.cost?.model ?? run.model ?? resolution.model.id,
     pricingSource: "openrouter",
+    pricingBasis: directOpenRouter ? "metered" : "payg-equivalent",
+    billingMode: directOpenRouter ? "metered" : "unknown",
     pricingMatch: resolution.pricingMatch,
     pricingSnapshot: pricingSnapshot(
       resolution.model.pricing,
@@ -212,9 +226,40 @@ export function estimateScanWithOpenRouterPricing(
     cachedInputUsd: estimate.cachedInputUsd,
     cacheWriteInputUsd: estimate.cacheWriteInputUsd,
     outputUsd: estimate.outputUsd,
+    pricingTiming: "post-hoc",
   };
+  if (!measured.cacheCoverageComplete) cost.estimateKind = "upper-bound";
   if (resolution.pricingAliasId !== undefined) cost.pricingAliasId = resolution.pricingAliasId;
   return { ...run, cost };
+}
+
+function measuredUsage(run: ScanRun): {
+  usage: Usage;
+  cacheCoverageComplete: boolean;
+} | null {
+  if (run.usage !== null && run.usage !== undefined) {
+    if (run.usage.inputTokens === null || run.usage.outputTokens === null) return null;
+    return {
+      usage: {
+        inputTokens: run.usage.inputTokens,
+        cachedInputTokens: run.usage.cachedInputTokens ?? 0,
+        cacheWriteInputTokens: run.usage.cacheWriteInputTokens ?? 0,
+        outputTokens: run.usage.outputTokens,
+      },
+      cacheCoverageComplete: run.usage.cachedInputTokens !== null &&
+        run.usage.cacheWriteInputTokens !== null,
+    };
+  }
+  if (run.cost === null || run.cost === undefined) return null;
+  return {
+    usage: {
+      inputTokens: run.cost.inputTokens,
+      cachedInputTokens: run.cost.cachedInputTokens,
+      cacheWriteInputTokens: run.cost.cacheWriteInputTokens,
+      outputTokens: run.cost.outputTokens,
+    },
+    cacheCoverageComplete: true,
+  };
 }
 
 export function withOpenRouterPricingEstimate(run: ScanRun): ScanRun {

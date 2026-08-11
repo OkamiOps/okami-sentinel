@@ -12,12 +12,11 @@ import {
 import { processAlive } from "../activity.js";
 import {
   estimateFrozenCatalogUsageCost,
-  estimateFrozenScannerUsageCost,
   readPortableCodexSecurityPricing,
   readScannerPricingQuote,
-  scannerPricingQuoteMatchesRun,
   scannerPricingQuotePath,
 } from "../model-pricing.js";
+import { resolveReconciledScannerCost } from "../provider-pricing.js";
 import {
   portableCodexSecurityRuntimeProgress,
   readPortableCodexSecurityRuntime,
@@ -80,9 +79,11 @@ export function refreshPortableCodexSecurityRunFromDisk(run: ScanRun): ScanRun {
     : run.durationMs;
   const scannerPricing = readScannerPricingQuote(run.scanDir);
   const scannerQuoteExists = fs.existsSync(scannerPricingQuotePath(run.scanDir));
-  const scannerCost = scannerPricing !== null && scannerPricingQuoteMatchesRun(scannerPricing, run)
-    ? estimateFrozenScannerUsageCost(runtime.usage, scannerPricing)
-    : null;
+  const providerCost = resolveReconciledScannerCost({
+    run,
+    usage: runtime.usage,
+    pricing: scannerPricing,
+  });
   return {
     ...run,
     revision: runtime.snapshotId ?? run.revision,
@@ -90,8 +91,8 @@ export function refreshPortableCodexSecurityRunFromDisk(run: ScanRun): ScanRun {
     completedAt,
     durationMs,
     cost: scannerQuoteExists
-      ? scannerCost
-      : estimateFrozenCatalogUsageCost(
+      ? providerCost
+      : providerCost ?? estimateFrozenCatalogUsageCost(
           runtime.usage,
           readPortableCodexSecurityPricing(run.scanDir),
         ),

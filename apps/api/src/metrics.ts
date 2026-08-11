@@ -7,6 +7,7 @@ export function buildMetricsSummary(): MetricsSummary {
   const severity = emptySeverityCounts();
   let totalEstimatedUsd = 0;
   let pricedScans = 0;
+  let hasUpperBoundCost = false;
   let completedScans = 0;
   let runningScans = 0;
   let durationSum = 0;
@@ -38,6 +39,7 @@ export function buildMetricsSummary(): MetricsSummary {
     if (estimatedUsd != null) {
       totalEstimatedUsd += estimatedUsd;
       pricedScans += 1;
+      if (run.cost?.estimateKind === "upper-bound") hasUpperBoundCost = true;
     }
     const measuredTokens = measuredTokenCounts(run);
     totalInputTokens += measuredTokens.inputTokens;
@@ -112,6 +114,7 @@ export function buildMetricsSummary(): MetricsSummary {
     findingsTotal: r.severity.total,
     model: r.model,
     effort: r.effort,
+    estimateKind: r.cost?.estimateKind === "upper-bound" ? "upper-bound" as const : null,
   }));
 
   const topCategories = [...categoryMap.entries()]
@@ -125,6 +128,7 @@ export function buildMetricsSummary(): MetricsSummary {
     runningScans,
     totalEstimatedUsd,
     avgUsdPerScan: pricedScans > 0 ? totalEstimatedUsd / pricedScans : 0,
+    hasUpperBoundCost,
     avgDurationMs: durationN > 0 ? durationSum / durationN : null,
     totalInputTokens,
     totalOutputTokens,

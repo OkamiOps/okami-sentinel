@@ -3,11 +3,11 @@ import { Link } from "react-router-dom";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowRight01Icon, PlusSignIcon, RefreshIcon } from "@hugeicons/core-free-icons";
 import { Bar, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { scanEstimatedUsd, type MetricsSummary, type ScanRun } from "@csb/shared";
+import type { MetricsSummary, ScanRun } from "@csb/shared";
 import { api } from "../api";
 import { AlertBanner, EmptyState, LiveDuration, Loading, PageHeader, Panel, Readout, SeverityStrip, StatusBadge, cx } from "../components/ui";
 import { Button } from "@/components/ui/button";
-import { formatDate, formatUsd, shortId } from "../format";
+import { formatDate, formatScanUsd, formatUsd, shortId } from "../format";
 import { useI18n } from "../i18n";
 
 export function DashboardPage() {
@@ -57,7 +57,7 @@ export function DashboardPage() {
             <h2 className="mt-2 text-lg font-semibold leading-tight">{selected.displayName}</h2>
             <p className="mt-1 truncate font-mono text-[9px] text-muted-foreground">{selected.repositoryPath ?? selected.scanDir}</p>
             <div className="mt-5"><SeverityStrip counts={selected.severity} total={selected.severity.total} /></div>
-            <div className="mt-5 grid grid-cols-2 gap-x-4 gap-y-5"><Readout label="HIGH+" value={selected.severity.critical + selected.severity.high} tone="risk" /><Readout label="TOTAL" value={selected.severity.total} /><Readout label={t("dashboard.cost")} value={formatUsd(scanEstimatedUsd(selected))} tone="signal" /><Readout label={t("dashboard.duration")} value={<LiveDuration startedAt={selected.startedAt} completedAt={selected.completedAt} status={selected.status} durationMs={selected.durationMs} showDot={false} />} /></div>
+            <div className="mt-5 grid grid-cols-2 gap-x-4 gap-y-5"><Readout label="HIGH+" value={selected.severity.critical + selected.severity.high} tone="risk" /><Readout label="TOTAL" value={selected.severity.total} /><Readout label={t("dashboard.cost")} value={formatScanUsd(selected)} tone="signal" /><Readout label={t("dashboard.duration")} value={<LiveDuration startedAt={selected.startedAt} completedAt={selected.completedAt} status={selected.status} durationMs={selected.durationMs} showDot={false} />} /></div>
             <Button asChild variant="outline" size="sm" className="mt-6 w-full justify-between"><Link to={`/scans/${selected.id}`}>{t("dashboard.openChannel")} <HugeiconsIcon icon={ArrowRight01Icon} size={12} /></Link></Button>
           </div> : <EmptyState title={t("dashboard.noSample")} />}
         </div>
@@ -66,10 +66,10 @@ export function DashboardPage() {
       <div className="grid grid-cols-2 border-b sm:grid-cols-4 lg:grid-cols-6">
         <GlobalReadout label={t("dashboard.exposure")} value={highPlus} tone="risk" />
         <GlobalReadout label={t("dashboard.evidence")} value={data.severity.total} />
-        <GlobalReadout label={t("dashboard.totalCost")} value={formatUsd(data.totalEstimatedUsd)} tone="signal" />
+        <GlobalReadout label={t("dashboard.totalCost")} value={formatUsd(data.totalEstimatedUsd, data.hasUpperBoundCost)} tone="signal" />
         <GlobalReadout label={t("dashboard.runsComplete")} value={`${data.completedScans}/${data.totalScans}`} />
         <GlobalReadout label={t("dashboard.highPerUsd")} value={data.highPerDollar?.toFixed(3) ?? "—"} tone="good" />
-        <GlobalReadout label={t("dashboard.avgPerRun")} value={formatUsd(data.avgUsdPerScan)} />
+        <GlobalReadout label={t("dashboard.avgPerRun")} value={formatUsd(data.avgUsdPerScan, data.hasUpperBoundCost)} />
       </div>
     </div>
 
@@ -82,7 +82,7 @@ export function DashboardPage() {
     </div>
 
     <Panel className="mt-4" label="RUN LEDGER" title={t("dashboard.latestRuns")} aside={<Button asChild variant="ghost" size="sm"><Link to="/scans">{t("dashboard.openLedger")} <HugeiconsIcon icon={ArrowRight01Icon} size={12} /></Link></Button>}>
-      <div className="overflow-x-auto"><table className="table table-sm min-w-[48rem]"><thead><tr className="font-mono text-[9px] uppercase text-muted-foreground"><th>Channel</th><th>Run</th><th>Status</th><th>Engine / model</th><th>{t("dashboard.exposure")}</th><th className="text-right">{t("dashboard.cost")}</th><th>{t("dashboard.started")}</th></tr></thead><tbody>{channels.slice(0, 6).map((scan, i) => <tr key={scan.id} className="border-border hover:bg-accent"><td className="font-mono text-[9px] text-primary">CH-{String(i + 1).padStart(2, "0")}</td><td><Link className="font-medium hover:text-primary" to={`/scans/${scan.id}`}>{scan.displayName}</Link></td><td><StatusBadge status={scan.status} /></td><td className="font-mono text-[9px] text-muted-foreground">{scan.engine} · {scan.model}/{scan.effort}</td><td className="font-mono">{scan.severity.critical + scan.severity.high} / {scan.severity.total}</td><td className="text-right font-mono tabular-nums text-primary">{formatUsd(scanEstimatedUsd(scan))}</td><td className="font-mono text-[9px] text-muted-foreground">{formatDate(scan.startedAt)}</td></tr>)}</tbody></table></div>
+      <div className="overflow-x-auto"><table className="table table-sm min-w-[48rem]"><thead><tr className="font-mono text-[9px] uppercase text-muted-foreground"><th>Channel</th><th>Run</th><th>Status</th><th>Engine / model</th><th>{t("dashboard.exposure")}</th><th className="text-right">{t("dashboard.cost")}</th><th>{t("dashboard.started")}</th></tr></thead><tbody>{channels.slice(0, 6).map((scan, i) => <tr key={scan.id} className="border-border hover:bg-accent"><td className="font-mono text-[9px] text-primary">CH-{String(i + 1).padStart(2, "0")}</td><td><Link className="font-medium hover:text-primary" to={`/scans/${scan.id}`}>{scan.displayName}</Link></td><td><StatusBadge status={scan.status} /></td><td className="font-mono text-[9px] text-muted-foreground">{scan.engine} · {scan.model}/{scan.effort}</td><td className="font-mono">{scan.severity.critical + scan.severity.high} / {scan.severity.total}</td><td className="text-right font-mono tabular-nums text-primary">{formatScanUsd(scan)}</td><td className="font-mono text-[9px] text-muted-foreground">{formatDate(scan.startedAt)}</td></tr>)}</tbody></table></div>
     </Panel>
   </div>;
 }
@@ -196,4 +196,4 @@ function ComparisonLane({ scan, index, focused, onSelect }: { scan: ScanRun; ind
 }
 
 function GlobalReadout({ label, value, tone }: { label: string; value: string | number; tone?: "signal" | "risk" | "good" }) { return <div className="border-r border-t p-3 first:border-t-0 sm:border-t-0"><Readout label={label} value={value} tone={tone} /></div>; }
-function TraceTooltip({ active, payload }: { active?: boolean; payload?: Array<{ payload: { displayName: string; estimatedUsd: number; findingsTotal: number; findingsHigh: number } }> }) { const { t } = useI18n(); const p = payload?.[0]?.payload; if (!active || !p) return null; return <div className="border bg-popover p-3 text-xs"><div className="font-semibold">{p.displayName}</div><div className="mt-2 grid grid-cols-2 gap-6 font-mono text-[10px]"><span className="text-muted-foreground">{t("dashboard.cost")}<strong className="mt-1 block text-primary">{formatUsd(p.estimatedUsd)}</strong></span><span className="text-muted-foreground">{t("dashboard.evidence")}<strong className="mt-1 block text-chart-2">{p.findingsTotal} / {p.findingsHigh} high+</strong></span></div></div>; }
+function TraceTooltip({ active, payload }: { active?: boolean; payload?: Array<{ payload: { displayName: string; estimatedUsd: number; findingsTotal: number; findingsHigh: number; estimateKind: "upper-bound" | null } }> }) { const { t } = useI18n(); const p = payload?.[0]?.payload; if (!active || !p) return null; return <div className="border bg-popover p-3 text-xs"><div className="font-semibold">{p.displayName}</div><div className="mt-2 grid grid-cols-2 gap-6 font-mono text-[10px]"><span className="text-muted-foreground">{t("dashboard.cost")}<strong className="mt-1 block text-primary">{formatUsd(p.estimatedUsd, p.estimateKind === "upper-bound")}</strong></span><span className="text-muted-foreground">{t("dashboard.evidence")}<strong className="mt-1 block text-chart-2">{p.findingsTotal} / {p.findingsHigh} high+</strong></span></div></div>; }

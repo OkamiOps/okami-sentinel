@@ -53,10 +53,12 @@ test("maps historical subscription rows without reported tokens to unavailable u
   assert.equal(run.usage, null);
 });
 
-test("keeps historical subscription usage when the provider reported tokens", () => {
+test("keeps historical subscription usage and adds a matching OpenRouter estimate", () => {
   const run = rowToScanRun(subscriptionRow({ input_tokens: 120, output_tokens: 30 }));
 
-  assert.equal(run.cost, null);
+  assert.equal(run.cost?.estimatedUsd, 0.0015);
+  assert.equal(run.cost?.pricingSource, "openrouter");
+  assert.equal(run.cost?.pricingBasis, "payg-equivalent");
   assert.equal(run.usage?.inputTokens, 120);
   assert.equal(run.usage?.outputTokens, 30);
 });
@@ -131,6 +133,33 @@ test("restores official PAYG-equivalent provenance without calling it an invoice
   assert.equal(run.cost?.pricingRateCardId, "minimax.m3.payg.2026-08-11");
   assert.equal(run.cost?.pricingTiming, "post-hoc");
   assert.equal(scanEstimatedUsd(run), 0.01815396);
+});
+
+test("restores a MiMo PAYG-equivalent upper bound with its audited rate card", () => {
+  const run = rowToScanRun({
+    ...subscriptionRow({ input_tokens: 170_680, cached_input_tokens: 121_344, output_tokens: 5_267 }),
+    engine: "codex-security",
+    provider: "xiaomi",
+    auth_mode: null,
+    model: "mimo-v2.5-pro",
+    cost_json: JSON.stringify({
+      estimatedUsd: 0.07882809,
+      inputTokens: 170_680,
+      cachedInputTokens: 121_344,
+      cacheWriteInputTokens: 0,
+      outputTokens: 5_267,
+      model: "mimo-v2.5-pro",
+      pricingSource: "official-rate-card",
+      pricingBasis: "payg-equivalent",
+      billingMode: "subscription",
+      pricingRateCardId: "xiaomi.mimo-v2.5-pro.payg.2026-08-06",
+      pricingTiming: "post-hoc",
+      estimateKind: "upper-bound",
+    }),
+  } as BenchmarkRow);
+
+  assert.equal(run.cost?.pricingRateCardId, "xiaomi.mimo-v2.5-pro.payg.2026-08-06");
+  assert.equal(run.cost?.estimateKind, "upper-bound");
 });
 
 test("never assigns OpenRouter-like cost to a local existing-session scan", () => {

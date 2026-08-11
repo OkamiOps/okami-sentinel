@@ -645,12 +645,16 @@ function sanitizeScanCost(value: unknown): ScanCost | null {
   }
   if (
     value.pricingRateCardId === "xai.grok-4.5.2026-07-03" ||
-    value.pricingRateCardId === "minimax.m3.payg.2026-08-11"
+    value.pricingRateCardId === "minimax.m3.payg.2026-08-11" ||
+    value.pricingRateCardId === "xiaomi.mimo-v2.5-pro.payg.2026-08-06"
   ) {
     cost.pricingRateCardId = value.pricingRateCardId;
   }
   if (value.pricingTiming === "launch" || value.pricingTiming === "post-hoc") {
     cost.pricingTiming = value.pricingTiming;
+  }
+  if (value.estimateKind === "upper-bound") {
+    cost.estimateKind = value.estimateKind;
   }
   if (value.pricingMatch === "exact") {
     cost.pricingMatch = value.pricingMatch;

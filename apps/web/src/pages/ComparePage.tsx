@@ -55,7 +55,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { formatDate, formatDuration, formatTokens, formatUsd, shortId } from "../format";
+import { formatDate, formatDuration, formatScanUsd, formatTokens, formatUsd, shortId } from "../format";
 import {
   buildDecisionRanking,
   buildMarginalEconomics,
@@ -204,7 +204,7 @@ export function ComparePage() {
                 <span className="mt-1 flex flex-wrap items-center gap-1 font-mono text-[9px] text-muted-foreground"><span className="truncate">{scan.engine} · {scan.model}/{scan.effort}/{scan.mode}</span><ExecutionProfileTag scan={scan} /></span>
                 <span className="mt-4 block"><SeverityStrip counts={scan.severity} total={scan.severity.total} /></span>
                 <span className="mt-2 grid grid-cols-3 font-mono text-[9px]">
-                  <span>{formatUsd(scanEstimatedUsd(scan))}</span>
+                  <span>{formatScanUsd(scan)}</span>
                   <span className="text-destructive">{scan.severity.critical + scan.severity.high} high+</span>
                   <span className="text-right text-muted-foreground">{scan.severity.total} {t("compare.total")}</span>
                 </span>
@@ -430,9 +430,9 @@ function DecisionCockpit({ ranking, objective, onObjectiveChange }: { ranking: S
           <DecisionMetric label={t("compare.result")} value={decisionValue(winner, objective)} accent />
           <DecisionMetric label="TOTAL" value={String(winner.total)} />
           <DecisionMetric label="HIGH+" value={String(winner.highPlus)} />
-          <DecisionMetric label={t("dashboard.cost")} value={formatUsd(winner.costUsd)} />
-          <DecisionMetric label="$ / FINDING" value={formatUsd(winner.costPerFinding)} />
-          <DecisionMetric label="$ / HIGH+" value={formatUsd(winner.costPerHighPlus)} />
+          <DecisionMetric label={t("dashboard.cost")} value={formatUsd(winner.costUsd, isUpperBound(winner.scan))} />
+          <DecisionMetric label="$ / FINDING" value={formatUsd(winner.costPerFinding, isUpperBound(winner.scan))} />
+          <DecisionMetric label="$ / HIGH+" value={formatUsd(winner.costPerHighPlus, isUpperBound(winner.scan))} />
           <DecisionMetric label="FINDINGS / H" value={formatRate(winner.findingsPerHour)} />
           <DecisionMetric label={t("dashboard.duration")} value={formatDuration(winner.durationMs)} />
         </div>
@@ -468,8 +468,8 @@ function UnitEconomicsSummary({ rows, baselineScanId }: { rows: ScanDecisionRow[
   const bestMarginalHighScan = rows.find((row) => row.scan.id === bestMarginalHigh?.scanId);
   return <Panel className="mt-4" label="UNIT ECONOMICS" title="Quem extraiu mais sinal de cada dólar e de cada hora" aside={<span className="font-mono text-[8px] text-muted-foreground">MENOR CUSTO UNITÁRIO = MELHOR</span>} wrapTitle>
     <div className="grid sm:grid-cols-2 xl:grid-cols-5">
-      <EconomicsLeader label="MENOR $ / FINDING" row={bestFinding} value={formatUsd(bestFinding?.costPerFinding)} detail={bestFinding ? `${bestFinding.total} achados por ${formatUsd(bestFinding.costUsd)}` : "Sem custo mensurado"} />
-      <EconomicsLeader label="MENOR $ / HIGH+" row={bestHigh} value={formatUsd(bestHigh?.costPerHighPlus)} detail={bestHigh ? `${bestHigh.highPlus} High+ por ${formatUsd(bestHigh.costUsd)}` : "Nenhum High+ com custo"} />
+      <EconomicsLeader label="MENOR $ / FINDING" row={bestFinding} value={formatUsd(bestFinding?.costPerFinding, isUpperBound(bestFinding?.scan))} detail={bestFinding ? `${bestFinding.total} achados por ${formatUsd(bestFinding.costUsd, isUpperBound(bestFinding.scan))}` : "Sem custo mensurado"} />
+      <EconomicsLeader label="MENOR $ / HIGH+" row={bestHigh} value={formatUsd(bestHigh?.costPerHighPlus, isUpperBound(bestHigh?.scan))} detail={bestHigh ? `${bestHigh.highPlus} High+ por ${formatUsd(bestHigh.costUsd, isUpperBound(bestHigh.scan))}` : "Nenhum High+ com custo"} />
       <EconomicsLeader label="MENOR $ MARGINAL" row={bestMarginalScan} value={formatUsd(bestMarginal?.costPerExtraFinding)} detail={bestMarginal ? `+${bestMarginal.extraFindings} achados por ${formatUsd(bestMarginal.extraCostUsd)} vs baseline` : "Sem ganho adicional mensurável"} />
       <EconomicsLeader label="MENOR $ / HIGH+ EXTRA" row={bestMarginalHighScan} value={formatUsd(bestMarginalHigh?.costPerExtraHighPlus)} detail={bestMarginalHigh ? `+${bestMarginalHigh.extraHighPlus} High+ por ${formatUsd(bestMarginalHigh.extraCostUsd)} vs baseline` : "Sem High+ adicional mensurável"} />
       <EconomicsLeader label="MAIOR THROUGHPUT" row={bestThroughput} value={bestThroughput ? `${formatRate(bestThroughput.findingsPerHour)} / h` : "—"} detail={bestThroughput ? `${bestThroughput.total} achados em ${formatDuration(bestThroughput.durationMs)}` : "Sem duração mensurada"} />
@@ -508,6 +508,7 @@ function ComparisonCharts({ result, rows, activeCandidateId, onSelectCandidate }
       total: scan.severity.total,
       highPlus: scan.severity.critical + scan.severity.high,
       color: scanChartColors[index % scanChartColors.length],
+      upperBound: isUpperBound(scan),
     }];
   });
   const agreementData = result.comparisons.map((comparison) => {
@@ -557,7 +558,7 @@ function ComparisonCharts({ result, rows, activeCandidateId, onSelectCandidate }
       </div>
     </Panel>
     <Panel label="COST × COVERAGE" title="Quanto de cobertura foi comprado" aside={<span className="font-mono text-[8px] text-muted-foreground">MELHOR ZONA: ALTO E À ESQUERDA</span>} wrapTitle>
-      <div className="grid border-b sm:grid-cols-2 xl:grid-cols-3">{scatterData.map((point) => <button key={point.scanId} type="button" disabled={point.scanId === result.baselineScanId} onClick={() => onSelectCandidate(point.scanId)} className={cx("flex min-w-0 items-center gap-2 border-b border-r px-3 py-2 text-left hover:bg-accent/60 disabled:cursor-default", point.scanId === activeCandidateId && "bg-accent")}><span className="size-2 shrink-0" style={{ background: point.color }} /><span className="min-w-0"><span className="block truncate font-mono text-[8px] text-foreground">{point.label}</span><span className="mt-0.5 block font-mono text-[7px] text-muted-foreground">{formatUsd(point.cost)} · {point.total} achados · {point.highPlus} High+</span></span></button>)}</div>
+      <div className="grid border-b sm:grid-cols-2 xl:grid-cols-3">{scatterData.map((point) => <button key={point.scanId} type="button" disabled={point.scanId === result.baselineScanId} onClick={() => onSelectCandidate(point.scanId)} className={cx("flex min-w-0 items-center gap-2 border-b border-r px-3 py-2 text-left hover:bg-accent/60 disabled:cursor-default", point.scanId === activeCandidateId && "bg-accent")}><span className="size-2 shrink-0" style={{ background: point.color }} /><span className="min-w-0"><span className="block truncate font-mono text-[8px] text-foreground">{point.label}</span><span className="mt-0.5 block font-mono text-[7px] text-muted-foreground">{formatUsd(point.cost, point.upperBound)} · {point.total} achados · {point.highPlus} High+</span></span></button>)}</div>
       <div className="h-[22rem] px-2 py-4">
         <ResponsiveContainer width="100%" height="100%"><ScatterChart margin={{ top: 18, right: 24, bottom: 12, left: 0 }}>
           <CartesianGrid strokeDasharray="2 5" />
@@ -649,9 +650,9 @@ function DetectionScoreboard({ ranking, objective, baselineScanId, activeCandida
             <td className="font-mono text-chart-3">{scan.severity.medium}</td>
             <td className="font-mono text-chart-5">{scan.severity.low}</td>
             <td className="font-mono text-destructive">{row.highPlus}</td>
-            <td className="font-mono">{formatUsd(row.costUsd)}</td>
-            <td className="font-mono text-primary">{formatUsd(row.costPerFinding)}</td>
-            <td className="font-mono text-chart-3">{formatUsd(row.costPerHighPlus)}</td>
+            <td className="font-mono">{formatUsd(row.costUsd, isUpperBound(scan))}</td>
+            <td className="font-mono text-primary">{formatUsd(row.costPerFinding, isUpperBound(scan))}</td>
+            <td className="font-mono text-chart-3">{formatUsd(row.costPerHighPlus, isUpperBound(scan))}</td>
             <td className="font-mono">{formatRate(row.findingsPerHour)}</td>
             <td className="font-mono">{formatRate(row.highPerHour)}</td>
             <td className="font-mono">{formatSignedUsd(marginal?.extraCostUsd)}</td>
@@ -707,14 +708,16 @@ function OperationalLedger({ result, baseline, candidate }: { result: CompareRes
   const candidateCostPerFinding = unitCost(candidateCost, candidate.severity.total);
   const baselineCostPerHigh = unitCost(baselineCost, baselineHigh);
   const candidateCostPerHigh = unitCost(candidateCost, candidateHigh);
+  const comparableBaselineCost = isUpperBound(baseline) ? null : baselineCost;
+  const comparableCandidateCost = isUpperBound(candidate) ? null : candidateCost;
   const baselineFindingsPerHour = hourlyRate(baseline.severity.total, baseline.durationMs);
   const candidateFindingsPerHour = hourlyRate(candidate.severity.total, candidate.durationMs);
   const baselineUsage = scanTokenUsage(baseline);
   const candidateUsage = scanTokenUsage(candidate);
   const rows: Array<[string, ReactNode, ReactNode, ReactNode]> = [
-    ["Custo estimado", formatUsd(baselineCost), moneyDelta(baselineCost, candidateCost), formatUsd(candidateCost)],
-    ["USD / finding", formatUsd(baselineCostPerFinding), moneyDelta(baselineCostPerFinding, candidateCostPerFinding), formatUsd(candidateCostPerFinding)],
-    ["USD / High+", formatUsd(baselineCostPerHigh), moneyDelta(baselineCostPerHigh, candidateCostPerHigh), formatUsd(candidateCostPerHigh)],
+    ["Custo estimado", formatUsd(baselineCost, isUpperBound(baseline)), moneyDelta(comparableBaselineCost, comparableCandidateCost), formatUsd(candidateCost, isUpperBound(candidate))],
+    ["USD / finding", formatUsd(baselineCostPerFinding, isUpperBound(baseline)), moneyDelta(unitCost(comparableBaselineCost, baseline.severity.total), unitCost(comparableCandidateCost, candidate.severity.total)), formatUsd(candidateCostPerFinding, isUpperBound(candidate))],
+    ["USD / High+", formatUsd(baselineCostPerHigh, isUpperBound(baseline)), moneyDelta(unitCost(comparableBaselineCost, baselineHigh), unitCost(comparableCandidateCost, candidateHigh)), formatUsd(candidateCostPerHigh, isUpperBound(candidate))],
     ["Duração", <LiveDuration startedAt={baseline.startedAt} completedAt={baseline.completedAt} status={baseline.status} durationMs={baseline.durationMs} showDot={false} />, durationDelta(baseline.durationMs, candidate.durationMs), <LiveDuration startedAt={candidate.startedAt} completedAt={candidate.completedAt} status={candidate.status} durationMs={candidate.durationMs} showDot={false} />],
     ["Findings / hora", formatRate(baselineFindingsPerHour), decimalDelta(baselineFindingsPerHour, candidateFindingsPerHour), formatRate(candidateFindingsPerHour)],
     ["Input tokens", formatTokens(baselineUsage.inputTokens), compactDelta(baselineUsage.inputTokens, candidateUsage.inputTokens), formatTokens(candidateUsage.inputTokens)],
@@ -727,6 +730,10 @@ function OperationalLedger({ result, baseline, candidate }: { result: CompareRes
     <div>{rows.map(([label, before, delta, after]) => <div key={label} className="grid min-h-12 grid-cols-[minmax(5rem,1fr)_4.5rem_4.5rem_4.5rem] items-center border-b px-4 py-2 font-mono text-[10px] tabular-nums sm:grid-cols-[minmax(7rem,1fr)_7rem_7rem_7rem]"><span className="text-muted-foreground">{label}</span><span className="text-right">{before}</span><span className="text-right text-primary">{delta}</span><span className="text-right font-semibold">{after}</span></div>)}</div>
     <div className="grid border-t sm:grid-cols-2"><ProfileCell label="PROFILE" before={`${baseline.engine} · ${baseline.model}/${baseline.effort}/${baseline.mode}`} after={`${candidate.engine} · ${candidate.model}/${candidate.effort}/${candidate.mode}`} /><ProfileCell label={t("scanDetail.executionProfile")} before={executionProfileLabel(baseline, t) ?? "—"} after={executionProfileLabel(candidate, t) ?? "—"} /><ProfileCell label={t("scanDetail.profileVersion")} before={baseline.execution?.profileVersion ?? "—"} after={candidate.execution?.profileVersion ?? "—"} /><ProfileCell label={t("scanDetail.methodologyRef")} before={baseline.execution?.methodologyRef ?? "—"} after={candidate.execution?.methodologyRef ?? "—"} /><ProfileCell label={t("scanDetail.protocol")} before={baseline.execution?.protocol ?? "—"} after={candidate.execution?.protocol ?? "—"} /><ProfileCell label={t("scanDetail.connectionAuth")} before={baseline.execution?.authKind ?? "—"} after={candidate.execution?.authKind ?? "—"} /><ProfileCell label="REVISION" before={baseline.revision ? shortId(baseline.revision) : "unversioned"} after={candidate.revision ? shortId(candidate.revision) : "unversioned"} /></div>
   </Panel>;
+}
+
+function isUpperBound(scan: Pick<ScanRun, "cost"> | null | undefined): boolean {
+  return scan?.cost?.estimateKind === "upper-bound";
 }
 
 function ProfileCell({ label, before, after }: { label: string; before: string; after: string }) {
@@ -803,8 +810,8 @@ function chartProfile(scan: ScanRun): string {
 function decisionValue(row: ScanDecisionRow, objective: CompareObjective): string {
   if (objective === "coverage") return `${row.total} achados`;
   if (objective === "high_plus") return `${row.highPlus} High+`;
-  if (objective === "cost_per_finding") return row.costPerFinding == null ? "sem custo" : `${formatUsd(row.costPerFinding)} / finding`;
-  if (objective === "cost_per_high") return row.costPerHighPlus == null ? "sem High+" : `${formatUsd(row.costPerHighPlus)} / High+`;
+  if (objective === "cost_per_finding") return row.costPerFinding == null ? "sem custo" : `${formatUsd(row.costPerFinding, isUpperBound(row.scan))} / finding`;
+  if (objective === "cost_per_high") return row.costPerHighPlus == null ? "sem High+" : `${formatUsd(row.costPerHighPlus, isUpperBound(row.scan))} / High+`;
   if (objective === "speed") return formatDuration(row.durationMs);
   return `${row.score.toFixed(0)} / 100`;
 }
@@ -814,8 +821,8 @@ function decisionReason(row: ScanDecisionRow, objective: CompareObjective, t: (k
   const partial = isPartialComparableScan(row.scan) ? t("compare.reason.partial") : "";
   if (objective === "coverage") return t("compare.reason.coverage", { profile, count: row.total, partial });
   if (objective === "high_plus") return t("compare.reason.highPlus", { profile, count: row.highPlus, partial });
-  if (objective === "cost_per_finding") return t("compare.reason.costFinding", { profile, cost: formatUsd(row.costPerFinding), partial });
-  if (objective === "cost_per_high") return t("compare.reason.costHigh", { profile, cost: formatUsd(row.costPerHighPlus), partial });
+  if (objective === "cost_per_finding") return t("compare.reason.costFinding", { profile, cost: formatUsd(row.costPerFinding, isUpperBound(row.scan)), partial });
+  if (objective === "cost_per_high") return t("compare.reason.costHigh", { profile, cost: formatUsd(row.costPerHighPlus, isUpperBound(row.scan)), partial });
   if (objective === "speed") return t("compare.reason.speed", { profile, duration: formatDuration(row.durationMs), partial });
   return t("compare.reason.balanced", { profile, partial });
 }

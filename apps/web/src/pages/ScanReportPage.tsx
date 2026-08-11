@@ -5,7 +5,7 @@ import { ArrowLeft01Icon, PrinterIcon, RefreshIcon } from "@hugeicons/core-free-
 import { scanEstimatedUsd, type FindingDetail, type FindingLifecycle, type LifecycleFinding, type Severity } from "@csb/shared";
 import { api, type ScanReportData } from "../api";
 import { Kicker, MetaCell, Metric, ReportBrand, ReportFooter, ReportHeader, ReportSheet, ReportText } from "../components/report/ReportPrimitives";
-import { formatDate, formatDuration, formatTokens, formatUsd, shortId } from "../format";
+import { formatDate, formatDuration, formatScanUsd, formatTokens, formatUsd, shortId } from "../format";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "../i18n";
 import { executionProfileLabel } from "../lib/execution-profile";
@@ -133,8 +133,8 @@ export function ScanReportPage() {
           <section className="grid grid-cols-2 border border-border">
             <Metric label="FINDINGS" value={scan.severity.total} />
             <Metric label="HIGH+" value={highPlus} tone="text-chart-4" />
-            <Metric label={t(costCopy.labelKey)} value={formatUsd(estimatedUsd)} tone="text-chart-1" />
-            <Metric label="$ / FINDING" value={formatUsd(usdPerFinding)} tone="text-primary" />
+            <Metric label={t(costCopy.labelKey)} value={formatScanUsd(scan)} tone="text-chart-1" />
+            <Metric label="$ / FINDING" value={formatUsd(usdPerFinding, scan.cost?.estimateKind === "upper-bound")} tone="text-primary" />
           </section>
         </div>
 

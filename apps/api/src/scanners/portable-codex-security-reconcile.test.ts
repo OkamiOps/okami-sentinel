@@ -213,6 +213,40 @@ test("a mismatched scanner quote blocks legacy fallback instead of crossing conn
   }
 });
 
+test("repairs an exact historical MiMo run with an explicit PAYG-equivalent upper bound", () => {
+  const scanDir = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-mimo-posthoc-"));
+  try {
+    writePortableCodexSecurityRuntime(scanDir, runtime({
+      status: "failed",
+      completedAt: CAPTURED_AT,
+      usage: {
+        reported: true,
+        inputTokensKnown: true,
+        cachedInputTokensKnown: false,
+        cacheWriteInputTokensKnown: false,
+        outputTokensKnown: true,
+        maximumInputTokensPerRequest: 26_023,
+        inputTokens: 170_680,
+        cachedInputTokens: 121_344,
+        cacheWriteInputTokens: 0,
+        outputTokens: 5_267,
+      },
+    }));
+    fs.writeFileSync(path.join(scanDir, "findings.json"), JSON.stringify({ findings: [] }));
+    writeScannerPricingQuote(scanDir, null);
+    const historicalRun = { ...run(scanDir), model: "mimo-v2.5-pro" };
+
+    const refreshed = refreshPortableCodexSecurityRunFromDisk(historicalRun);
+    assert.equal(refreshed.status, "failed");
+    assert.equal(refreshed.cost?.estimatedUsd, 0.07882809);
+    assert.equal(refreshed.cost?.estimateKind, "upper-bound");
+    assert.equal(refreshed.cost?.pricingTiming, "post-hoc");
+    assert.equal(refreshed.cost?.pricingRateCardId, "xiaomi.mimo-v2.5-pro.payg.2026-08-06");
+  } finally {
+    fs.rmSync(scanDir, { recursive: true, force: true });
+  }
+});
+
 test("progressForStatus recovers Portable stage telemetry directly from disk after restart", () => {
   const scanDir = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-progress-"));
   try {

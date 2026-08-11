@@ -510,6 +510,8 @@ export interface ScanCost {
   pricingRateCardId?: string;
   /** Launch quotes are immutable; post-hoc marks an explicitly audited historical repair. */
   pricingTiming?: "launch" | "post-hoc";
+  /** A partial provider usage envelope can only support a conservative maximum. */
+  estimateKind?: "upper-bound";
   /** Whether OpenRouter pricing used the reported model or a reviewed model alias. */
   pricingMatch?: "exact" | "approved-alias";
   /** Present only when an approved OpenRouter model alias supplied the price. */
@@ -605,7 +607,9 @@ export interface ScanRun {
  * Returns a comparable USD estimate only when the adapter reports one or when
  * subscription-scanner usage has been explicitly priced from the OpenRouter catalog.
  */
-export function scanEstimatedUsd(scan: ScanRun): number | null {
+export function scanEstimatedUsd(
+  scan: Pick<ScanRun, "engine" | "authMode" | "cost">,
+): number | null {
   if (scan.engine === "mantis" && scan.authMode === "existing-session") {
     return null;
   }
@@ -738,6 +742,7 @@ export interface MetricsSummary {
   runningScans: number;
   totalEstimatedUsd: number;
   avgUsdPerScan: number;
+  hasUpperBoundCost: boolean;
   avgDurationMs: number | null;
   totalInputTokens: number;
   totalOutputTokens: number;
@@ -764,6 +769,7 @@ export interface MetricsSummary {
     findingsTotal: number;
     model: string | null;
     effort: string | null;
+    estimateKind: "upper-bound" | null;
   }>;
   topCategories: Array<{
     category: string;

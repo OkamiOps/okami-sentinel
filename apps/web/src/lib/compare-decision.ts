@@ -95,7 +95,11 @@ export function buildMarginalEconomics(rows: ScanDecisionRow[], baselineScanId: 
   const baseline = rows.find((row) => row.scan.id === baselineScanId);
   if (!baseline) return [];
   return rows.filter((row) => row.scan.id !== baselineScanId).map((row) => {
-    const extraCostUsd = row.costUsd == null || baseline.costUsd == null ? null : row.costUsd - baseline.costUsd;
+    const hasUpperBound = row.scan.cost?.estimateKind === "upper-bound" ||
+      baseline.scan.cost?.estimateKind === "upper-bound";
+    const extraCostUsd = hasUpperBound || row.costUsd == null || baseline.costUsd == null
+      ? null
+      : row.costUsd - baseline.costUsd;
     const extraFindings = row.total - baseline.total;
     const extraHighPlus = row.highPlus - baseline.highPlus;
     return {

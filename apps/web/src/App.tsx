@@ -2,13 +2,13 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Activity01Icon, Analytics01Icon, ArrowRight01Icon, Menu01Icon, PlusSignIcon, RefreshIcon } from "@hugeicons/core-free-icons";
-import { scanEstimatedUsd, type ScanRun } from "@csb/shared";
+import type { ScanRun } from "@csb/shared";
 import { api } from "./api";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuShortcut, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { LiveDuration, cx } from "./components/ui";
-import { formatUsd } from "./format";
+import { formatScanUsd } from "./format";
 import { ActivityPage } from "./pages/ActivityPage";
 import { AttackPathPage } from "./pages/AttackPathPage";
 import { ComparePage } from "./pages/ComparePage";
@@ -117,7 +117,7 @@ function CommandDock({ current, open, onOpenChange, syncing, onReindex, onNaviga
         </DropdownMenuContent>
       </DropdownMenu>
 
-      {current ? <Link to={`/scans/${current.id}`} className="flex min-w-0 flex-1 items-center gap-2 px-3 text-xs transition hover:bg-accent"><span className="live-dot shrink-0 text-primary" /><span className="hidden shrink-0 font-mono text-[8px] uppercase text-primary sm:inline">{t("common.live")}</span><span className="min-w-0 flex-1 truncate">{current.displayName}</span><LiveDuration startedAt={current.startedAt} status={current.status} showDot={false} /><span className="hidden font-mono text-[9px] text-primary md:block">{formatUsd(scanEstimatedUsd(current))}</span><HugeiconsIcon icon={ArrowRight01Icon} size={12} className="shrink-0" /></Link> : <div className="flex min-w-0 flex-1 items-center gap-2 px-3" aria-label={`${t("shell.engineReady")}, ${t("shell.noActiveScan")}`}><span className="size-1.5 shrink-0 rounded-full bg-chart-2" /><span className="font-mono text-[8px] uppercase tracking-wider text-chart-2">{t("shell.engineReady")}</span><span className="hidden truncate text-[10px] text-muted-foreground sm:block">{t("shell.noActiveScan")}</span></div>}
+      {current ? <Link to={`/scans/${current.id}`} className="flex min-w-0 flex-1 items-center gap-2 px-3 text-xs transition hover:bg-accent"><span className="live-dot shrink-0 text-primary" /><span className="hidden shrink-0 font-mono text-[8px] uppercase text-primary sm:inline">{t("common.live")}</span><span className="min-w-0 flex-1 truncate">{current.displayName}</span><LiveDuration startedAt={current.startedAt} status={current.status} showDot={false} /><span className="hidden font-mono text-[9px] text-primary md:block">{formatScanUsd(current)}</span><HugeiconsIcon icon={ArrowRight01Icon} size={12} className="shrink-0" /></Link> : <div className="flex min-w-0 flex-1 items-center gap-2 px-3" aria-label={`${t("shell.engineReady")}, ${t("shell.noActiveScan")}`}><span className="size-1.5 shrink-0 rounded-full bg-chart-2" /><span className="font-mono text-[8px] uppercase tracking-wider text-chart-2">{t("shell.engineReady")}</span><span className="hidden truncate text-[10px] text-muted-foreground sm:block">{t("shell.noActiveScan")}</span></div>}
 
       <DockLink to="/scans" label={t("nav.runs")} icon={Activity01Icon} className="hidden sm:flex" />
       <DockLink to="/compare" label={t("nav.compare")} icon={Analytics01Icon} className="hidden md:flex" />

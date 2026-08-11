@@ -9,10 +9,9 @@ import {
 } from "@csb/shared";
 import { processAlive } from "../activity.js";
 import {
-  estimateFrozenScannerUsageCost,
   readScannerPricingQuote,
-  scannerPricingQuoteMatchesRun,
 } from "../model-pricing.js";
+import { resolveReconciledScannerCost } from "../provider-pricing.js";
 import { readVulnHunterRuntime } from "./vulnhunter-runtime.js";
 import { scannerUsageSummary } from "./usage.js";
 
@@ -56,9 +55,11 @@ export function refreshVulnHunterRunFromDisk(run: ScanRun): ScanRun {
     ? null
     : runtime.completedAt ?? run.completedAt ?? new Date().toISOString();
   const pricing = readScannerPricingQuote(run.scanDir);
-  const pricedCost = pricing !== null && scannerPricingQuoteMatchesRun(pricing, run)
-    ? estimateFrozenScannerUsageCost(runtime.usage, pricing)
-    : null;
+  const pricedCost = resolveReconciledScannerCost({
+    run,
+    usage: runtime.usage,
+    pricing,
+  });
   return {
     ...run,
     revision: runtime.snapshotId ?? run.revision,

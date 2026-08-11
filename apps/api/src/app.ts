@@ -65,6 +65,7 @@ import {
 import {
   importExternalScans,
   readFindingsFile,
+  refreshRunFromDisk,
   toFindingSummaries,
 } from "./ingest.js";
 import { buildMetricsSummary } from "./metrics.js";
@@ -422,12 +423,13 @@ app.post("/ingest", (c) => {
 
 app.get("/metrics/summary", async (c) => {
   await refreshOpenRouterPricing();
+  readRunsWithEngineRefresh();
   return c.json(buildMetricsSummary());
 });
 
 app.get("/scans", async (c) => {
   await refreshOpenRouterPricing();
-  return c.json({ scans: withProgressMany(listRuns()) });
+  return c.json({ scans: withProgressMany(readRunsWithEngineRefresh()) });
 });
 
 app.delete("/scans/:id", (c) => {
@@ -452,7 +454,8 @@ app.delete("/scans/:id", (c) => {
 
 app.get("/scans/:id", async (c) => {
   await refreshOpenRouterPricing();
-  const run = getRun(c.req.param("id"));
+  const id = c.req.param("id");
+  const run = readRunWithEngineRefresh(id);
   if (!run) return c.json({ error: "Scan não encontrado" }, 404);
   const findings = toFindingSummaries(readFindingsFile(run.scanDir));
   return c.json({ scan: withProgress(run), findings });
@@ -468,9 +471,22 @@ app.get("/scans/:id/telemetry", (c) => {
   return c.json(readCliLogSnapshot(run.scanDir, limit));
 });
 
+function readRunsWithEngineRefresh() {
+  return listRuns().map((run) => readRunWithEngineRefresh(run.id) ?? run);
+}
+
+function readRunWithEngineRefresh(id: string) {
+  const stored = getRun(id);
+  const artifactManaged = stored?.engine === "mantis" || stored?.engine === "vulnhunter" ||
+    (stored?.engine === "codex-security" && stored.execution?.executionProfile === "portable");
+  return artifactManaged
+    ? refreshRunFromDisk(id) ?? stored
+    : stored;
+}
+
 app.get("/scans/:id/report", async (c) => {
   await refreshOpenRouterPricing();
-  const run = getRun(c.req.param("id"));
+  const run = readRunWithEngineRefresh(c.req.param("id"));
   if (!run) return c.json({ error: "Scan não encontrado" }, 404);
   try {
     return c.json({
@@ -597,6 +613,7 @@ app.get("/scans/:id/events", (c) => {
 app.post("/compare", async (c) => {
   const body = (await c.req.json()) as CompareRequest;
   try {
+    for (const id of body.scanIds ?? []) readRunWithEngineRefresh(id);
     return c.json(compareScans(body.scanIds ?? []));
   } catch (err) {
     return c.json(

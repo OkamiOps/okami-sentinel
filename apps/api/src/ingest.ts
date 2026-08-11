@@ -1360,8 +1360,20 @@ export function importExternalScans(): { imported: number; pruned: number } {
 
 export function refreshRunFromDisk(id: string): ScanRun | null {
   const stored = getRun(id);
+  if (stored?.engine === "mantis") {
+    const refreshed = withOpenRouterPricingEstimate(refreshMantisRunFromDisk(stored));
+    upsertRun(refreshed);
+    return refreshed;
+  }
+  if (stored?.engine === "vulnhunter") {
+    const refreshed = withOpenRouterPricingEstimate(refreshVulnHunterRunFromDisk(stored));
+    upsertRun(refreshed);
+    return refreshed;
+  }
   if (stored && isPortableCodexSecurityRun(stored)) {
-    const refreshed = refreshPortableCodexSecurityRunFromDisk(stored);
+    const refreshed = withOpenRouterPricingEstimate(
+      refreshPortableCodexSecurityRunFromDisk(stored),
+    );
     upsertRun(refreshed);
     return refreshed;
   }

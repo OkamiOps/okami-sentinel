@@ -20,6 +20,15 @@ const sol: OpenRouterModel = {
   },
 };
 
+const minimaxM3: OpenRouterModel = {
+  id: "minimax/minimax-m3",
+  pricing: {
+    prompt: "0.0000003",
+    completion: "0.0000012",
+    input_cache_read: "0.00000006",
+  },
+};
+
 test("calculates uncached input, cache reads, cache writes, and output separately", () => {
   const cost = calculateOpenRouterCost(
     {
@@ -164,6 +173,73 @@ test("does not label unreported zero usage as a zero-dollar OpenRouter estimate"
     estimateScanWithOpenRouterPricing(run, [sol], "2026-08-10T18:00:00.000Z"),
     run,
   );
+});
+
+test("estimates any engine from measured usage and the matching OpenRouter model", () => {
+  const run = {
+    engine: "mantis",
+    provider: "minimax",
+    authMode: "api-key",
+    model: "MiniMax-M3",
+    cost: null,
+    usage: {
+      inputTokens: 1_899_206,
+      cachedInputTokens: null,
+      cacheWriteInputTokens: null,
+      outputTokens: 24_962,
+    },
+    connection: {
+      connectionId: "minimax-connection",
+      routeKind: "minimax-token-plan",
+      protocol: "anthropic-messages",
+      authKind: "api-key",
+      capabilityCheckId: null,
+    },
+  } as ScanRun;
+
+  const estimated = estimateScanWithOpenRouterPricing(
+    run,
+    [minimaxM3],
+    "2026-08-11T20:36:24.291Z",
+  );
+
+  assert.equal(estimated.cost?.estimatedUsd, 0.5997162);
+  assert.equal(estimated.cost?.pricingSource, "openrouter");
+  assert.equal(estimated.cost?.pricingBasis, "payg-equivalent");
+  assert.equal(estimated.cost?.pricingModel, "minimax/minimax-m3");
+  assert.equal(estimated.cost?.estimateKind, "upper-bound");
+});
+
+test("uses an exact full OpenRouter model id for a compatible custom provider", () => {
+  const run = {
+    engine: "vulnhunter",
+    provider: "custom",
+    authMode: "api-key",
+    model: "vendor/model-v1",
+    cost: null,
+    usage: {
+      inputTokens: 10_000,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      outputTokens: 2_000,
+    },
+    connection: {
+      connectionId: "custom-connection",
+      routeKind: "custom-openai-compatible",
+      protocol: "openai-chat",
+      authKind: "api-key",
+      capabilityCheckId: null,
+    },
+  } as ScanRun;
+  const model: OpenRouterModel = {
+    id: "vendor/model-v1",
+    pricing: { prompt: "0.000001", completion: "0.000002" },
+  };
+
+  const estimated = estimateScanWithOpenRouterPricing(run, [model], "2026-08-11");
+  assert.equal(estimated.cost?.estimatedUsd, 0.014);
+  assert.equal(estimated.cost?.pricingModel, "vendor/model-v1");
+  assert.equal(estimated.cost?.pricingMatch, "exact");
 });
 
 test("prices reported Codex Security usage with the approved Spark alias and freezes its rates", () => {

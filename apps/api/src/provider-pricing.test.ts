@@ -85,6 +85,67 @@ test("freezes MiniMax Token Plan as a PAYG equivalent rather than an invoiced sc
   assert.equal(cost?.estimatedUsd, 0.01815396);
   assert.equal(cost?.pricingBasis, "payg-equivalent");
   assert.equal(cost?.pricingTiming, "launch");
+
+  const partialUsageUpperBound = estimateFrozenScannerUsageCost({
+    reported: true,
+    inputTokens: 1_899_206,
+    inputTokensKnown: true,
+    cachedInputTokens: 1_212_800,
+    cachedInputTokensKnown: false,
+    cacheWriteInputTokens: 0,
+    cacheWriteInputTokensKnown: false,
+    outputTokens: 24_962,
+    outputTokensKnown: true,
+    maximumInputTokensPerRequest: 64_706,
+  }, quote);
+
+  assert.equal(quote?.cacheWriteInputUsdPerMillionTokens, 0);
+  assert.equal(partialUsageUpperBound?.estimatedUsd, 0.5997162);
+  assert.equal(partialUsageUpperBound?.estimateKind, "upper-bound");
+});
+
+test("freezes MiMo Token Plan and exposes only an explicit upper bound for partial cache usage", () => {
+  const quote = resolveScannerPricingQuote({
+    connectionId: "mimo-connection",
+    providerKind: "xiaomi",
+    routeKind: "mimo-token-plan",
+    protocol: "openai-chat",
+    modelId: "mimo-v2.5-pro",
+    modelPricing: null,
+    capturedAt: CAPTURED_AT,
+  });
+
+  assert.equal(quote?.pricingSource, "official-rate-card");
+  assert.equal(quote?.pricingBasis, "payg-equivalent");
+  assert.equal(quote?.billingMode, "subscription");
+  assert.equal(quote?.pricingRateCardId, "xiaomi.mimo-v2.5-pro.payg.2026-08-06");
+
+  const cost = estimateFrozenScannerUsageCost({
+    reported: true,
+    inputTokens: 170_680,
+    inputTokensKnown: true,
+    cachedInputTokens: 121_344,
+    cachedInputTokensKnown: false,
+    cacheWriteInputTokens: 0,
+    cacheWriteInputTokensKnown: false,
+    outputTokens: 5_267,
+    outputTokensKnown: true,
+  }, quote);
+
+  assert.equal(cost?.estimatedUsd, 0.07882809);
+  assert.equal(cost?.estimateKind, "upper-bound");
+  assert.equal(cost?.pricingBasis, "payg-equivalent");
+  assert.equal(cost?.pricingTiming, "launch");
+
+  assert.equal(resolveScannerPricingQuote({
+    connectionId: "mimo-connection",
+    providerKind: "xiaomi",
+    routeKind: "mimo-token-plan",
+    protocol: "openai-chat",
+    modelId: "mimo-v2.5-pro-preview",
+    modelPricing: null,
+    capturedAt: CAPTURED_AT,
+  }), null);
 });
 
 test("prices multiple short requests by their maximum request size, not their scan total", () => {

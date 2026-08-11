@@ -1,8 +1,9 @@
-import type { ModelPricing, ProviderProtocol, ScanCost } from "@csb/shared";
+import type { ModelPricing, ProviderProtocol, ScanCost, ScanRun } from "@csb/shared";
 
 import {
   estimateFrozenScannerUsageCost,
   freezeCatalogPricing,
+  scannerPricingQuoteMatchesRun,
   type FrozenScannerPricing,
 } from "./model-pricing.js";
 import type { ScannerUsage } from "./scanners/usage.js";
@@ -37,8 +38,17 @@ const XAI_GROK_45_RATES: ModelPricing = {
 const MINIMAX_M3_PAYG_RATES: ModelPricing = {
   inputUsdPerMillionTokens: 0.3,
   cachedInputUsdPerMillionTokens: 0.06,
-  cacheWriteInputUsdPerMillionTokens: null,
+  // MiniMax M3 passive prompt caching has no additional cache-write charge.
+  cacheWriteInputUsdPerMillionTokens: 0,
   outputUsdPerMillionTokens: 1.2,
+};
+
+const MIMO_V25_PRO_PAYG_RATES: ModelPricing = {
+  inputUsdPerMillionTokens: 0.435,
+  cachedInputUsdPerMillionTokens: 0.0036,
+  // Xiaomi's published rate card currently lists cache writes as free.
+  cacheWriteInputUsdPerMillionTokens: 0,
+  outputUsdPerMillionTokens: 0.87,
 };
 
 /**
@@ -69,6 +79,17 @@ export function resolveScannerPricingQuote(
       rateCardUpdatedAt: "2026-08-11T17:03:00.000Z",
       // The higher PAYG tier applies only above 512k input tokens per request.
       maximumInputTokensInclusive: 512_000,
+    });
+  }
+
+  if (isExactMimoV25ProTokenPlan(input)) {
+    return freezeQuote(input, MIMO_V25_PRO_PAYG_RATES, {
+      pricingSource: "official-rate-card",
+      pricingBasis: "payg-equivalent",
+      billingMode: "subscription",
+      pricingRateCardId: "xiaomi.mimo-v2.5-pro.payg.2026-08-06",
+      rateCardUpdatedAt: "2026-08-06T00:00:00.000Z",
+      maximumInputTokensInclusive: null,
     });
   }
 
@@ -113,6 +134,40 @@ export function resolveHistoricalOfficialCost(
   return cost === null ? null : { ...cost, pricingTiming: "post-hoc" };
 }
 
+/**
+ * Applies the same frozen-quote and exact official-rate-card rules to every
+ * provider-backed scanner engine. A mismatched frozen quote always blocks
+ * fallback instead of borrowing a price from another connection.
+ */
+export function resolveReconciledScannerCost(input: {
+  run: Pick<
+    ScanRun,
+    "connection" | "model" | "provider" | "startedAt"
+  >;
+  usage: ScannerUsage;
+  pricing: FrozenScannerPricing | null;
+}): ScanCost | null {
+  if (input.pricing !== null) {
+    return scannerPricingQuoteMatchesRun(input.pricing, input.run)
+      ? estimateFrozenScannerUsageCost(input.usage, input.pricing)
+      : null;
+  }
+  const { connection, model, provider, startedAt } = input.run;
+  if (connection === null || connection === undefined || model === null || provider === null) {
+    return null;
+  }
+  return resolveHistoricalOfficialCost({
+    connectionId: connection.connectionId,
+    providerKind: provider,
+    routeKind: connection.routeKind,
+    protocol: connection.protocol,
+    modelId: model,
+    modelPricing: null,
+    capturedAt: startedAt ?? new Date(0).toISOString(),
+    usage: input.usage,
+  });
+}
+
 function freezeQuote(
   input: ResolveScannerPricingQuoteInput,
   pricing: ModelPricing,
@@ -153,6 +208,13 @@ function isExactMiniMaxM3TokenPlan(input: ResolveScannerPricingQuoteInput): bool
     input.routeKind === "minimax-token-plan" &&
     input.protocol === "anthropic-messages" &&
     input.modelId === "MiniMax-M3";
+}
+
+function isExactMimoV25ProTokenPlan(input: ResolveScannerPricingQuoteInput): boolean {
+  return input.providerKind === "xiaomi" &&
+    input.routeKind === "mimo-token-plan" &&
+    input.protocol === "openai-chat" &&
+    input.modelId === "mimo-v2.5-pro";
 }
 
 function safeIdentifier(value: string): boolean {

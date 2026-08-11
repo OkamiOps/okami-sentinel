@@ -6,6 +6,7 @@ import {
   WORKSPACE_TOOL_NAMES,
   type AgentEvent,
   type AgentSession,
+  type AgentSessionErrorCode,
   type AgentUsage,
 } from "../agent/session-types.js";
 import type { ScannerUsage } from "./usage.js";
@@ -29,6 +30,11 @@ const READ_NO_FOLLOW = fs.constants.O_RDONLY | NO_FOLLOW;
 
 export type PortableCodexSecurityStageErrorCode =
   | "agent_cancelled"
+  | "agent_turn_limit"
+  | "agent_tool_limit"
+  | "agent_input_byte_limit"
+  | "agent_output_byte_limit"
+  | "agent_time_limit"
   | "stage_evidence_incomplete"
   | "stage_artifact_invalid"
   | "agent_session_failed"
@@ -242,7 +248,7 @@ export async function observePortableCodexSecurityStage(
           break;
         case "failure":
           throw new PortableCodexSecurityStageError(
-            event.code === "agent_cancelled" ? "agent_cancelled" : "agent_session_failed",
+            portableAgentFailureCode(event.code),
           );
         case "cancellation":
           throw new PortableCodexSecurityStageError("agent_cancelled");
@@ -281,6 +287,22 @@ export async function observePortableCodexSecurityStage(
       "utf8",
     ).toString("base64"),
   };
+}
+
+function portableAgentFailureCode(
+  code: AgentSessionErrorCode,
+): PortableCodexSecurityStageErrorCode {
+  switch (code) {
+    case "agent_cancelled":
+    case "agent_turn_limit":
+    case "agent_tool_limit":
+    case "agent_input_byte_limit":
+    case "agent_output_byte_limit":
+    case "agent_time_limit":
+      return code;
+    default:
+      return "agent_session_failed";
+  }
 }
 
 /** Preserves the unknown-vs-zero distinction by omitting cache-write usage until observed. */

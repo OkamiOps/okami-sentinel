@@ -162,7 +162,7 @@ const PORTABLE_STANDARD_LIMITS: PortableCodexSecurityExecutionLimits = {
   totalTimeoutMs: 900_000,
   maxModelTurns: 24,
   maxToolCalls: 96,
-  maxInputBytes: 1_048_576,
+  maxInputBytes: 67_108_864,
   maxOutputBytes: 1_048_576,
 };
 
@@ -170,7 +170,7 @@ const PORTABLE_DEEP_LIMITS: PortableCodexSecurityExecutionLimits = {
   totalTimeoutMs: 1_800_000,
   maxModelTurns: 48,
   maxToolCalls: 192,
-  maxInputBytes: 1_048_576,
+  maxInputBytes: 67_108_864,
   maxOutputBytes: 1_048_576,
 };
 

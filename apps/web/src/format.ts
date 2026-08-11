@@ -1,14 +1,21 @@
 import { getIntlLocale } from "./i18n";
-import type { ScanProgress } from "@csb/shared";
+import { scanEstimatedUsd, type ScanProgress, type ScanRun } from "@csb/shared";
 
-export function formatUsd(value: number | null | undefined): string {
+export function formatUsd(value: number | null | undefined, upperBound = false): string {
   if (value == null || Number.isNaN(value)) return "—";
-  return new Intl.NumberFormat(getIntlLocale(), {
+  const formatted = new Intl.NumberFormat(getIntlLocale(), {
     style: "currency",
     currency: "USD",
     currencyDisplay: "code",
     maximumFractionDigits: 2,
   }).format(value);
+  return upperBound ? `≤ ${formatted}` : formatted;
+}
+
+export function formatScanUsd(
+  scan: Pick<ScanRun, "engine" | "authMode" | "cost">,
+): string {
+  return formatUsd(scanEstimatedUsd(scan), scan.cost?.estimateKind === "upper-bound");
 }
 
 export function formatDuration(ms: number | null | undefined): string {

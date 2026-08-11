@@ -17,7 +17,9 @@ import type {
 import type { StoredProviderConnection } from "./connections-store.js";
 import { deleteRun, getRun } from "./db.js";
 import type { ScanLaunchPlan } from "./connections/launch-plan.js";
+import { readScannerPricingQuote } from "./model-pricing.js";
 import { startScan } from "./runner.js";
+import { preparePortableCodexSecurityLaunch } from "./scanners/launch.js";
 
 const capabilities: ModelCapabilities = {
   tools: "supported",
@@ -49,8 +51,8 @@ const scanner: ScannerCapability = {
 
 const model: ProviderModel = {
   connectionId: "mimo-connection",
-  id: "mimo-v2.5",
-  displayName: "MiMo V2.5",
+  id: "mimo-v2.5-pro",
+  displayName: "MiMo V2.5 Pro",
   contextWindow: 262_144,
   capabilities,
   pricing: null,
@@ -208,6 +210,10 @@ test("startScan dispatches only the Portable worker for a resolved Portable Code
       paths: [],
     });
     assert.deepEqual(getRun(run.id)?.launchSelection, run.launchSelection);
+    const frozenPricing = readScannerPricingQuote(run.scanDir);
+    assert.equal(frozenPricing?.pricingRateCardId, "xiaomi.mimo-v2.5-pro.payg.2026-08-06");
+    assert.equal(frozenPricing?.pricingBasis, "payg-equivalent");
+    assert.equal(frozenPricing?.billingMode, "subscription");
     assert.match(run.recipeHash ?? "", /^[a-f0-9]{64}$/);
     assert.equal(launches.length, 1);
     const launch = launches[0]!;
@@ -237,6 +243,46 @@ test("startScan dispatches only the Portable worker for a resolved Portable Code
     launch.child.emit("close", 0);
   } finally {
     if (runId !== null) deleteRun(runId);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Portable Standard and Deep keep a bounded scan-sized cumulative input budget", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-limits-"));
+  try {
+    for (const mode of ["standard", "deep"] as const) {
+      const outputDir = path.join(root, mode);
+      fs.mkdirSync(outputDir, { mode: 0o700 });
+      preparePortableCodexSecurityLaunch({
+        request: { repositoryPath: "/repository", mode },
+        repositoryPath: "/repository",
+        outputDir,
+        model: model.id,
+        effort: null,
+        mode,
+        providerKind: "xiaomi",
+        portableCodexSecurityProviderPlan: {
+          scanId: `scan-${mode}`,
+          connectionId: connection.id,
+          routeKind: "mimo-token-plan",
+          protocol: "openai-chat",
+          modelId: model.id,
+          capabilityCheckId: "probe-mimo",
+          profileVersion: "sentinel-codex-security-portable-v1",
+          methodologyRef: "sentinel/codex-security-methodology@v1",
+        },
+        pricing: null,
+        capturedAt: "2026-08-11T12:00:00.000Z",
+        environment: { PATH: "/private/portable-worker-bin" },
+      });
+      const config = JSON.parse(fs.readFileSync(
+        path.join(outputDir, "portable-codex-security-run.json"),
+        "utf8",
+      )) as { limits: { maxInputBytes: number; maxOutputBytes: number } };
+      assert.equal(config.limits.maxInputBytes, 67_108_864);
+      assert.equal(config.limits.maxOutputBytes, 1_048_576);
+    }
+  } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

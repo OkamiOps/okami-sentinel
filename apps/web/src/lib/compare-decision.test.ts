@@ -106,6 +106,18 @@ test("does not represent a cheaper candidate as negative marginal cost", () => {
   assert.equal(marginal.costPerExtraHighPlus, null);
 });
 
+test("does not invent a marginal delta from an upper-bound estimate", () => {
+  const baseline = scan("baseline", 10, 2, 5, 1_800_000);
+  const candidate = scan("candidate", 20, 7, 12, 2_400_000);
+  candidate.cost = { ...candidate.cost!, estimateKind: "upper-bound" };
+  const rows = buildDecisionRanking([baseline, candidate], "coverage");
+  const marginal = buildMarginalEconomics(rows, "baseline")[0];
+
+  assert.equal(marginal.extraCostUsd, null);
+  assert.equal(marginal.costPerExtraFinding, null);
+  assert.equal(marginal.costPerExtraHighPlus, null);
+});
+
 test("keeps the balanced score bounded and ordered", () => {
   const ranking = buildDecisionRanking([scan("wide", 30, 12, 30, 30_000), scan("efficient", 15, 8, 4, 20_000)], "balanced");
   assert.ok(ranking[0].score >= ranking[1].score);

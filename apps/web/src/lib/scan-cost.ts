@@ -21,7 +21,9 @@ export function scanCostPresentation(cost: ScanCost | null): ScanCostPresentatio
       labelKey: "scanCost.paygEquivalent",
       rateKey: cost.pricingSource === "official-rate-card"
         ? "scanCost.officialRate"
-        : "scanCost.providerRate",
+        : cost.pricingSource === "openrouter"
+          ? "scanCost.openrouterRate"
+          : "scanCost.providerRate",
       disclaimerKey: "scanCost.planDisclaimer",
     };
   }
@@ -48,11 +50,13 @@ export function scanCostPresentation(cost: ScanCost | null): ScanCostPresentatio
 export function scanTokenUsage(
   scan: Pick<ScanRun, "cost" | "usage">,
 ): ScanUsageSummary {
+  if (scan.usage !== null && scan.usage !== undefined) {
+    return scan.usage;
+  }
   return {
-    inputTokens: scan.usage?.inputTokens ?? scan.cost?.inputTokens ?? null,
-    cachedInputTokens: scan.usage?.cachedInputTokens ?? scan.cost?.cachedInputTokens ?? null,
-    cacheWriteInputTokens:
-      scan.usage?.cacheWriteInputTokens ?? scan.cost?.cacheWriteInputTokens ?? null,
-    outputTokens: scan.usage?.outputTokens ?? scan.cost?.outputTokens ?? null,
+    inputTokens: scan.cost?.inputTokens ?? null,
+    cachedInputTokens: scan.cost?.cachedInputTokens ?? null,
+    cacheWriteInputTokens: scan.cost?.cacheWriteInputTokens ?? null,
+    outputTokens: scan.cost?.outputTokens ?? null,
   };
 }

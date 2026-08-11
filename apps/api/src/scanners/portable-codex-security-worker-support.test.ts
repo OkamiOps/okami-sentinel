@@ -113,6 +113,21 @@ test("Portable Codex Security stage evidence rejects unexpected files outside it
   }
 });
 
+test("Portable Codex Security preserves a safe session limit failure code", async () => {
+  const stage = PORTABLE_CODEX_SECURITY_STAGES[0]!;
+  await assert.rejects(
+    observePortableCodexSecurityStage({
+      session: stageSession([{ type: "failure", code: "agent_input_byte_limit" }]),
+      stage,
+      artifactRoot: os.tmpdir(),
+      usage: { reported: false, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+      redact: (value) => value,
+    }),
+    (error: unknown) => error instanceof PortableCodexSecurityStageError &&
+      error.code === "agent_input_byte_limit",
+  );
+});
+
 test("Portable Codex Security usage preserves missing counters and aggregates cache-write only when reported", () => {
   const empty = {
     reported: false,

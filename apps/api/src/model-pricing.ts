@@ -252,8 +252,6 @@ function estimateFrozenUsageCost(
     pricing === null ||
     usage.reported !== true ||
     usage.inputTokensKnown !== true ||
-    usage.cachedInputTokensKnown !== true ||
-    usage.cacheWriteInputTokensKnown !== true ||
     usage.outputTokensKnown !== true
   ) return null;
 
@@ -264,6 +262,37 @@ function estimateFrozenUsageCost(
   ) return null;
 
   const cacheWriteInputTokens = usage.cacheWriteInputTokens ?? 0;
+  if (usage.cachedInputTokens + cacheWriteInputTokens > usage.inputTokens) return null;
+  const cacheCoverageComplete = usage.cachedInputTokensKnown === true &&
+    usage.cacheWriteInputTokensKnown === true;
+  if (!cacheCoverageComplete) {
+    const inputRate = pricing.inputUsdPerMillionTokens;
+    const cachedRate = pricing.cachedInputUsdPerMillionTokens;
+    const cacheWriteRate = pricing.cacheWriteInputUsdPerMillionTokens;
+    const outputRate = pricing.outputUsdPerMillionTokens;
+    if (
+      provenance.pricingSource !== "official-rate-card" ||
+      inputRate === null ||
+      cachedRate === null ||
+      cacheWriteRate === null ||
+      outputRate === null ||
+      inputRate < cachedRate ||
+      inputRate < cacheWriteRate
+    ) return null;
+    const inputUsd = tokenCost(usage.inputTokens, inputRate);
+    const outputUsd = tokenCost(usage.outputTokens, outputRate);
+    const cost = baseScanCost(
+      usage,
+      pricing,
+      provenance,
+      cacheWriteInputTokens,
+      inputUsd,
+      outputUsd,
+    );
+    cost.estimateKind = "upper-bound";
+    return cost;
+  }
+
   const uncachedInputTokens = usage.inputTokens - usage.cachedInputTokens - cacheWriteInputTokens;
   if (uncachedInputTokens < 0) return null;
 
@@ -282,8 +311,39 @@ function estimateFrozenUsageCost(
   const cacheWriteInputUsd = pricing.cacheWriteInputUsdPerMillionTokens !== null
     ? tokenCost(cacheWriteInputTokens, pricing.cacheWriteInputUsdPerMillionTokens)
     : null;
+  const cost = baseScanCost(
+    usage,
+    pricing,
+    provenance,
+    cacheWriteInputTokens,
+    inputUsd,
+    outputUsd,
+    (cachedInputUsd ?? 0) + (cacheWriteInputUsd ?? 0),
+  );
+  if (cachedInputUsd !== null) cost.cachedInputUsd = cachedInputUsd;
+  if (cacheWriteInputUsd !== null) cost.cacheWriteInputUsd = cacheWriteInputUsd;
+  return cost;
+}
+
+function baseScanCost(
+  usage: ScannerUsage,
+  pricing: FrozenCatalogPricing,
+  provenance: Pick<
+    FrozenScannerPricing,
+    | "pricingSource"
+    | "pricingBasis"
+    | "billingMode"
+    | "pricingRateCardId"
+    | "rateCardUpdatedAt"
+    | "maximumInputTokensInclusive"
+  >,
+  cacheWriteInputTokens: number,
+  inputUsd: number,
+  outputUsd: number,
+  cacheUsd = 0,
+): ScanCost {
   const cost: ScanCost = {
-    estimatedUsd: inputUsd + outputUsd + (cachedInputUsd ?? 0) + (cacheWriteInputUsd ?? 0),
+    estimatedUsd: inputUsd + outputUsd + cacheUsd,
     inputTokens: usage.inputTokens,
     cachedInputTokens: usage.cachedInputTokens,
     cacheWriteInputTokens,
@@ -306,8 +366,6 @@ function estimateFrozenUsageCost(
     inputUsd,
     outputUsd,
   };
-  if (cachedInputUsd !== null) cost.cachedInputUsd = cachedInputUsd;
-  if (cacheWriteInputUsd !== null) cost.cacheWriteInputUsd = cacheWriteInputUsd;
   if (provenance.pricingRateCardId !== null) {
     cost.pricingRateCardId = provenance.pricingRateCardId;
   }
