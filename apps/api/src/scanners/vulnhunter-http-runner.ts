@@ -14,12 +14,14 @@ import {
   DEFAULT_AGENT_LIMITS,
   createAgentSession,
 } from "../agent/session-runner.js";
-import type {
-  AgentEvent,
-  AgentSession,
-  AgentSessionLimits,
-  AgentUpstream,
-  CreateAgentSessionInput,
+import {
+  AgentSessionError,
+  validateAgentSessionLimits,
+  type AgentEvent,
+  type AgentSession,
+  type AgentSessionLimits,
+  type AgentUpstream,
+  type CreateAgentSessionInput,
 } from "../agent/session-types.js";
 import type { StoredProviderConnection } from "../connections-store.js";
 import { DEFAULT_CAPABILITY_PROBE_MAX_AGE_MS } from "../connections/compatibility-resolver.js";
@@ -120,34 +122,51 @@ export function createVulnHunterHttpRunner(
 
   return {
     async run(input) {
-      const resolved = await resolvePlan(
-        input.plan,
-        dependencies.store,
-        dependencies.vault,
-        dependencies.xaiOAuth,
-        now(),
-        maxProbeAgeMs,
-      );
-      const upstream = createUpstream({
-        routeKind: resolved.connection.routeKind,
-        protocol: resolved.protocol,
-        credentials: resolved.credentials,
-      });
-      const session = await createSession({
-        connectionId: resolved.connection.id,
-        routeKind: resolved.connection.routeKind,
-        protocol: resolved.protocol,
-        model: resolved.model,
-        snapshotRoot: input.snapshotRoot,
-        artifactRoot: input.resultsDir,
-        instructions: input.instructions,
-        limits,
-        signal: input.signal,
-        probe: resolved.capability.capabilities,
-      }, upstream);
+      validateAgentSessionLimits(limits);
+      const startedAt = Date.now();
+      const preflight = createPreflightGuard(input.signal, limits.timeoutMs);
+      try {
+        if (preflight.signal.aborted) throw preflight.stopError();
+        const resolved = await racePreflight(
+          resolvePlan(
+            input.plan,
+            dependencies.store,
+            dependencies.vault,
+            dependencies.xaiOAuth,
+            preflight.signal,
+            now(),
+            maxProbeAgeMs,
+          ),
+          preflight,
+        );
+        if (preflight.signal.aborted || input.signal.aborted) throw preflight.stopError();
+        const remainingTimeoutMs = limits.timeoutMs - (Date.now() - startedAt);
+        if (remainingTimeoutMs <= 0) throw new AgentSessionError("agent_time_limit");
+        preflight.dispose();
 
-      for await (const event of session.run()) {
-        await input.onEvent?.(event);
+        const upstream = createUpstream({
+          routeKind: resolved.connection.routeKind,
+          protocol: resolved.protocol,
+          credentials: resolved.credentials,
+        });
+        const session = await createSession({
+          connectionId: resolved.connection.id,
+          routeKind: resolved.connection.routeKind,
+          protocol: resolved.protocol,
+          model: resolved.model,
+          snapshotRoot: input.snapshotRoot,
+          artifactRoot: input.resultsDir,
+          instructions: input.instructions,
+          limits: { ...limits, timeoutMs: remainingTimeoutMs },
+          signal: input.signal,
+          probe: resolved.capability.capabilities,
+        }, upstream);
+
+        for await (const event of session.run()) {
+          await input.onEvent?.(event);
+        }
+      } finally {
+        preflight.dispose();
       }
     },
   };
@@ -171,6 +190,7 @@ async function resolvePlan(
   store: VulnHunterHttpPlanStore,
   vault: Pick<CredentialVault, "get">,
   xaiOAuth: Pick<XaiOAuthFlow, "getAccessToken"> | undefined,
+  signal: AbortSignal,
   now: Date,
   maxProbeAgeMs: number,
 ): Promise<ResolvedVulnHunterHttpPlan> {
@@ -189,7 +209,10 @@ async function resolvePlan(
   ) invalidPlan();
   if (!isSupportedHttpProtocol(connection.protocol)) invalidPlan();
   const directXaiOAuth = isDirectXaiOAuthConnection(connection);
-  if (connection.protocol === "xai-oauth-responses" && !directXaiOAuth) invalidPlan();
+  if (
+    (connection.routeKind === "xai-oauth" || connection.protocol === "xai-oauth-responses") &&
+    !directXaiOAuth
+  ) invalidPlan();
   if (!directXaiOAuth && connection.credentialRef === null) invalidPlan();
 
   const model = store.getModel(plan.connectionId, plan.modelId);
@@ -204,7 +227,7 @@ async function resolvePlan(
   if (!matchesCapability(plan, capability, connection.protocol, now, maxProbeAgeMs)) invalidPlan();
 
   const credentials = directXaiOAuth
-    ? await resolveXaiOAuthCredentials(connection, xaiOAuth)
+    ? await resolveXaiOAuthCredentials(connection, xaiOAuth, signal)
     : await resolveVaultCredentials(connection.credentialRef!, vault);
   return {
     connection,
@@ -218,15 +241,73 @@ async function resolvePlan(
 async function resolveXaiOAuthCredentials(
   connection: StoredProviderConnection,
   xaiOAuth: Pick<XaiOAuthFlow, "getAccessToken"> | undefined,
+  signal: AbortSignal,
 ): Promise<ConnectionSecretBundle> {
   if (xaiOAuth === undefined) invalidPlan();
   try {
-    const accessToken = await xaiOAuth.getAccessToken(connection.id);
+    const accessToken = await xaiOAuth.getAccessToken(connection.id, signal);
     if (!isNonEmptyText(accessToken)) invalidPlan();
     return { apiKey: accessToken };
   } catch {
     invalidPlan();
   }
+}
+
+interface PreflightGuard {
+  signal: AbortSignal;
+  stopError(): AgentSessionError;
+  dispose(): void;
+}
+
+function createPreflightGuard(signal: AbortSignal, timeoutMs: number): PreflightGuard {
+  const controller = new AbortController();
+  let timedOut = false;
+  let disposed = false;
+  const abort = () => controller.abort();
+  if (signal.aborted) abort();
+  else signal.addEventListener("abort", abort, { once: true });
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  timeout.unref();
+  return {
+    signal: controller.signal,
+    stopError: () => new AgentSessionError(timedOut ? "agent_time_limit" : "agent_cancelled"),
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      clearTimeout(timeout);
+      signal.removeEventListener("abort", abort);
+    },
+  };
+}
+
+function racePreflight<T>(operation: Promise<T>, guard: PreflightGuard): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const stop = () => {
+      if (settled) return;
+      settled = true;
+      reject(guard.stopError());
+    };
+    if (guard.signal.aborted) stop();
+    else guard.signal.addEventListener("abort", stop, { once: true });
+    void operation.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        guard.signal.removeEventListener("abort", stop);
+        resolve(value);
+      },
+      (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        guard.signal.removeEventListener("abort", stop);
+        reject(error);
+      },
+    );
+  });
 }
 
 async function resolveVaultCredentials(

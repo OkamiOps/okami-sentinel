@@ -120,7 +120,7 @@ export function createProviderRuntime(
     authFlows,
     launchPlans,
     xaiOAuthTokenResolver: {
-      getAccessToken: (connectionId) => xaiFlow.getAccessToken(connectionId),
+      getAccessToken: (connectionId, signal) => xaiFlow.getAccessToken(connectionId, signal),
     },
   };
 }

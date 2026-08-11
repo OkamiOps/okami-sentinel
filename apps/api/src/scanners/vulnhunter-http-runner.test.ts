@@ -200,6 +200,7 @@ interface FixtureOverrides {
   maxProbeAgeMs?: number;
   xaiToken?: string;
   xaiError?: Error;
+  xaiAccessToken?: (connectionId: string, signal?: AbortSignal) => Promise<string>;
   sessionFactory?: (input: CreateAgentSessionInput) => Promise<AgentSession>;
 }
 
@@ -207,6 +208,7 @@ function fixture(overrides: FixtureOverrides = {}) {
   const observed = {
     vaultReads: 0,
     xaiReads: 0,
+    xaiSignals: [] as Array<AbortSignal | undefined>,
     upstreams: 0,
     sessions: 0,
     upstreamCredentials: null as ConnectionSecretBundle | null,
@@ -243,8 +245,12 @@ function fixture(overrides: FixtureOverrides = {}) {
       },
     },
     xaiOAuth: {
-      getAccessToken: async () => {
+      getAccessToken: async (connectionId, signal) => {
         observed.xaiReads += 1;
+        observed.xaiSignals.push(signal);
+        if (overrides.xaiAccessToken !== undefined) {
+          return overrides.xaiAccessToken(connectionId, signal);
+        }
         if (overrides.xaiError !== undefined) throw overrides.xaiError;
         return overrides.xaiToken ?? "private-xai-oauth-token";
       },
@@ -286,6 +292,22 @@ function completedSession(events: AgentEvent[] = []): AgentSession {
   };
 }
 
+function withTestDeadline<T>(operation: Promise<T>, timeoutMs = 250): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("test_deadline_exceeded")), timeoutMs);
+    void operation.then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
+
 function input(plan: SafeVulnHunterProviderPlan = PLAN) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-vulnhunter-http-"));
   const snapshotRoot = path.join(root, "snapshot");
@@ -317,6 +339,7 @@ test("VulnHunter HTTP runner rejects a stale immutable plan before vault or netw
     assert.deepEqual(observed, {
       vaultReads: 0,
       xaiReads: 0,
+      xaiSignals: [],
       upstreams: 0,
       sessions: 0,
       upstreamCredentials: null,
@@ -493,6 +516,162 @@ test("VulnHunter HTTP runner resolves direct xAI OAuth internally without an API
     assert.equal(observed.upstreams, 1);
     assert.deepEqual(observed.upstreamCredentials, { apiKey: token });
     assert.equal(JSON.stringify(run.value).includes(token), false);
+  } finally {
+    fs.rmSync(run.root, { recursive: true, force: true });
+  }
+});
+
+test("VulnHunter direct xAI OAuth rejects a pre-aborted run before credential access", async () => {
+  const { runner, observed } = fixture({
+    plan: XAI_PLAN,
+    snapshot: xaiSnapshot(),
+    connection: xaiConnection(),
+    model: xaiModel(),
+    capability: xaiCapability(),
+  });
+  const run = input(XAI_PLAN);
+  const controller = new AbortController();
+  controller.abort();
+  try {
+    await assert.rejects(
+      runner.run({ ...run.value, signal: controller.signal }),
+      (error: unknown) => error instanceof AgentSessionError && error.code === "agent_cancelled",
+    );
+    assert.equal(observed.xaiReads, 0);
+    assert.equal(observed.vaultReads, 0);
+    assert.equal(observed.upstreams, 0);
+    assert.equal(observed.sessions, 0);
+  } finally {
+    fs.rmSync(run.root, { recursive: true, force: true });
+  }
+});
+
+test("VulnHunter direct xAI OAuth bounds a hung token resolver and consumes its late rejection", async (t) => {
+  let rejectLate: ((error: Error) => void) | undefined;
+  const unhandled: unknown[] = [];
+  const onUnhandled = (error: unknown) => unhandled.push(error);
+  process.on("unhandledRejection", onUnhandled);
+  t.after(() => process.off("unhandledRejection", onUnhandled));
+  const { runner, observed } = fixture({
+    plan: XAI_PLAN,
+    snapshot: xaiSnapshot(),
+    connection: xaiConnection(),
+    model: xaiModel(),
+    capability: xaiCapability(),
+    timeoutMs: 10,
+    xaiAccessToken: async () => new Promise<string>((_resolve, reject) => {
+      rejectLate = reject;
+    }),
+  });
+  const run = input(XAI_PLAN);
+  try {
+    await assert.rejects(
+      withTestDeadline(runner.run(run.value)),
+      (error: unknown) => error instanceof AgentSessionError && error.code === "agent_time_limit",
+    );
+    assert.equal(observed.xaiReads, 1);
+    assert.equal(observed.vaultReads, 0);
+    assert.equal(observed.sessions, 0);
+    rejectLate?.(new Error("private-late-refresh-rejection"));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    fs.rmSync(run.root, { recursive: true, force: true });
+  }
+});
+
+test("VulnHunter direct xAI OAuth charges preflight time against the session deadline", async () => {
+  let sessionTimeoutMs: number | null = null;
+  const { runner } = fixture({
+    plan: XAI_PLAN,
+    snapshot: xaiSnapshot(),
+    connection: xaiConnection(),
+    model: xaiModel(),
+    capability: xaiCapability(),
+    timeoutMs: 100,
+    xaiAccessToken: async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
+      return "private-xai-oauth-token";
+    },
+    sessionFactory: async (sessionInput) => {
+      sessionTimeoutMs = sessionInput.limits.timeoutMs;
+      return completedSession();
+    },
+  });
+  const run = input(XAI_PLAN);
+  try {
+    await runner.run(run.value);
+    assert.equal(typeof sessionTimeoutMs, "number");
+    assert.ok(sessionTimeoutMs! > 0 && sessionTimeoutMs! < 100);
+  } finally {
+    fs.rmSync(run.root, { recursive: true, force: true });
+  }
+});
+
+test("VulnHunter direct xAI OAuth aborts during refresh without starting a session", async () => {
+  let markStarted: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const { runner, observed } = fixture({
+    plan: XAI_PLAN,
+    snapshot: xaiSnapshot(),
+    connection: xaiConnection(),
+    model: xaiModel(),
+    capability: xaiCapability(),
+    timeoutMs: 10_000,
+    xaiAccessToken: async () => {
+      markStarted?.();
+      return new Promise<string>(() => undefined);
+    },
+  });
+  const run = input(XAI_PLAN);
+  const controller = new AbortController();
+  try {
+    const pending = runner.run({ ...run.value, signal: controller.signal });
+    await started;
+    controller.abort();
+    await assert.rejects(
+      withTestDeadline(pending),
+      (error: unknown) => error instanceof AgentSessionError && error.code === "agent_cancelled",
+    );
+    assert.equal(observed.xaiReads, 1);
+    assert.equal(observed.xaiSignals[0]?.aborted, true);
+    assert.equal(observed.vaultReads, 0);
+    assert.equal(observed.sessions, 0);
+  } finally {
+    fs.rmSync(run.root, { recursive: true, force: true });
+  }
+});
+
+test("VulnHunter rejects an API-key record that impersonates the xAI OAuth route before credential access", async () => {
+  const tamperedPlan: SafeVulnHunterProviderPlan = {
+    ...PLAN,
+    scanId: "scan-tampered-xai-route",
+    routeKind: "xai-oauth",
+  };
+  const { runner, observed } = fixture({
+    plan: tamperedPlan,
+    snapshot: snapshot({
+      scanId: tamperedPlan.scanId,
+      routeKind: tamperedPlan.routeKind,
+    }),
+    connection: connection({
+      providerKind: "xai",
+      routeKind: "xai-oauth",
+      authKind: "api-key",
+      protocol: "openai-responses",
+    }),
+  });
+  const run = input(tamperedPlan);
+  try {
+    await assert.rejects(
+      runner.run(run.value),
+      (error: unknown) => error instanceof VulnHunterHttpRunnerError &&
+        error.code === "provider_plan_invalid",
+    );
+    assert.equal(observed.vaultReads, 0);
+    assert.equal(observed.xaiReads, 0);
+    assert.equal(observed.upstreams, 0);
+    assert.equal(observed.sessions, 0);
   } finally {
     fs.rmSync(run.root, { recursive: true, force: true });
   }

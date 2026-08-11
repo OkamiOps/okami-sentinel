@@ -139,7 +139,7 @@ export interface XaiOAuthFlow {
   cancel(connectionId: string, flowId: string): Promise<void>;
   waitForTerminal(connectionId: string, flowId: string): Promise<XaiOAuthFlowPublic>;
   credentialStatus(connectionId: string): Promise<XaiOAuthCredentialStatus>;
-  getAccessToken(connectionId: string): Promise<string>;
+  getAccessToken(connectionId: string, signal?: AbortSignal): Promise<string>;
   disconnect(connectionId: string): Promise<XaiOAuthDisconnectResult>;
 }
 
@@ -408,7 +408,21 @@ class ManagedXaiOAuthFlow implements XaiOAuthFlow {
     return isExpiring(credentials.expiresAt, this.#now()) ? "expired" : "ready";
   }
 
-  async getAccessToken(connectionId: string): Promise<string> {
+  async getAccessToken(connectionId: string, signal?: AbortSignal): Promise<string> {
+    if (signal?.aborted) throw new XaiOAuthFlowError("credential_expired");
+    const operation = this.#resolveAccessToken(connectionId);
+    if (signal === undefined) return operation;
+    try {
+      return await raceWithLimits(operation, { signal });
+    } catch (error) {
+      if (error instanceof OAuthOperationAbortedError) {
+        throw new XaiOAuthFlowError("credential_expired");
+      }
+      throw error;
+    }
+  }
+
+  async #resolveAccessToken(connectionId: string): Promise<string> {
     const safeConnectionId = requiredConnectionId(connectionId);
     while (true) {
       const state = this.#stateFor(safeConnectionId);
