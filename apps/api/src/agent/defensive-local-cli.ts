@@ -1,10 +1,10 @@
 import { execFile as nativeExecFile } from "node:child_process";
+import { lstat as nativeLstat, realpath as nativeRealpath } from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 
 export const LOCAL_CLI_OUTPUT_CAP_BYTES = 512 * 1024;
 export const LOCAL_CLI_TIMEOUT_MS = 60_000;
-const GROK_DEFENSIVE_SYSTEM_PROMPT = "You are a defensive, read-only security analyst. Inspect only the caller-provided pinned workspace. Do not execute commands, edit files, access network, invoke plugins, MCP tools, web, subagents, or memory. Use only Read and Grep. Return only JSON matching the supplied schema.";
+export const LOCAL_CLI_KILL_GRACE_MS = 250;
 
 export type DefensiveLocalCliRoute = "claude-code-local" | "xai-grok-build-local";
 
@@ -13,6 +13,7 @@ export type DefensiveLocalCliErrorCode =
   | "agent_output_byte_limit"
   | "agent_protocol_error"
   | "agent_time_limit"
+  | "local_cli_isolation_unavailable"
   | "model_access_denied"
   | "protocol_unsupported"
   | "provider_unreachable"
@@ -41,13 +42,44 @@ export interface DefensiveLocalCliDependencies {
   approvedCwds: readonly string[];
   /** Injectable only for tests. Production uses execFile with no shell. */
   execFile?: (
-    binary: "claude" | "grok",
+    binary: "claude",
     argv: string[],
     options: DefensiveLocalCliExecOptions,
-  ) => Promise<{ stdout: string; stderr: string }>;
+  ) => DefensiveLocalCliChild;
   /** Existing-session environment; API-key variables are stripped before spawn. */
   environment?: NodeJS.ProcessEnv;
+  /** Injectable filesystem boundary used to pin and revalidate the private cwd. */
+  cwdInspector?: DefensiveLocalCwdInspector;
+  /** Test seam for bounded escalation from SIGTERM to this exact child process. */
+  killGraceMs?: number;
 }
+
+export interface DefensiveLocalCliChild {
+  result: Promise<{ stdout: string; stderr: string }>;
+  /** Signals this exact process only. No process-tree guarantee is implied. */
+  kill(signal: "SIGTERM" | "SIGKILL"): boolean;
+}
+
+export interface DefensiveLocalCwdStat {
+  dev: number | bigint;
+  ino: number | bigint;
+  mode: number;
+  uid: number;
+  isDirectory(): boolean;
+  isSymbolicLink(): boolean;
+}
+
+export interface DefensiveLocalCwdInspector {
+  getuid(): number | undefined;
+  lstat(cwd: string): Promise<DefensiveLocalCwdStat>;
+  realpath(cwd: string): Promise<string>;
+}
+
+const SYSTEM_CWD_INSPECTOR: DefensiveLocalCwdInspector = {
+  getuid: () => typeof process.getuid === "function" ? process.getuid() : undefined,
+  lstat: nativeLstat,
+  realpath: nativeRealpath,
+};
 
 export type DefensiveLocalModel =
   | { kind: "catalog"; id: string }
@@ -89,17 +121,23 @@ export function createDefensiveLocalCli(
   if (approvedCwds.length === 0) invalid();
   const environment = sanitizeExistingSessionEnvironment(dependencies.environment ?? process.env);
   const execute = dependencies.execFile ?? executeNative;
+  const cwdInspector = dependencies.cwdInspector ?? SYSTEM_CWD_INSPECTOR;
+  const killGraceMs = dependencies.killGraceMs ?? LOCAL_CLI_KILL_GRACE_MS;
+  if (!Number.isSafeInteger(killGraceMs) || killGraceMs < 1 || killGraceMs > 5_000) invalid();
 
   return {
     async run(input) {
+      if (isPlainRecord(input) && input.routeKind === "xai-grok-build-local") {
+        throw new DefensiveLocalCliError("local_cli_isolation_unavailable");
+      }
       const request = validateInput(input, approvedCwds);
-      const schema = serializeSchema(request.jsonSchema);
-      const binary = request.routeKind === "claude-code-local" ? "claude" : "grok";
-      const argv = binary === "claude" ? claudeArgv(request, schema) : grokArgv(request, schema);
       const scope = createExecutionScope(request.signal, request.timeoutMs ?? LOCAL_CLI_TIMEOUT_MS);
       try {
-        if (scope.signal.aborted) throw scope.stopError();
-        const pending = execute(binary, argv, {
+        const pinnedCwd = await awaitWithin(pinPrivateCwd(request.cwd, approvedCwds, cwdInspector), scope);
+        const schema = serializeSchema(request.jsonSchema);
+        const argv = claudeArgv(request, schema);
+        await awaitWithin(revalidatePrivateCwd(pinnedCwd, cwdInspector), scope);
+        const child = execute("claude", argv, {
           cwd: request.cwd,
           timeout: request.timeoutMs ?? LOCAL_CLI_TIMEOUT_MS,
           maxBuffer: LOCAL_CLI_OUTPUT_CAP_BYTES,
@@ -108,7 +146,7 @@ export function createDefensiveLocalCli(
           env: { ...environment },
           signal: scope.signal,
         });
-        const output = await awaitWithin(pending, scope);
+        const output = await awaitChildWithin(child, scope, killGraceMs);
         const stdout = boundedStdout(output.stdout);
         const final = parseFinalJson(stdout);
         if (!matchesJsonSchema(final, request.jsonSchema)) {
@@ -122,6 +160,72 @@ export function createDefensiveLocalCli(
       }
     },
   };
+}
+
+interface PinnedPrivateCwd {
+  realpath: string;
+  dev: string;
+  ino: string;
+  uid: number;
+  mode: number;
+}
+
+async function pinPrivateCwd(
+  cwd: string,
+  approvedCwds: readonly string[],
+  inspector: DefensiveLocalCwdInspector,
+): Promise<PinnedPrivateCwd> {
+  const pinned = await inspectPrivateCwd(cwd, inspector);
+  if (!approvedCwds.includes(pinned.realpath)) isolationUnavailable();
+  return pinned;
+}
+
+async function revalidatePrivateCwd(
+  pinned: PinnedPrivateCwd,
+  inspector: DefensiveLocalCwdInspector,
+): Promise<void> {
+  const current = await inspectPrivateCwd(pinned.realpath, inspector);
+  if (
+    current.realpath !== pinned.realpath ||
+    current.dev !== pinned.dev ||
+    current.ino !== pinned.ino ||
+    current.uid !== pinned.uid ||
+    current.mode !== pinned.mode
+  ) isolationUnavailable();
+}
+
+async function inspectPrivateCwd(
+  cwd: string,
+  inspector: DefensiveLocalCwdInspector,
+): Promise<PinnedPrivateCwd> {
+  try {
+    const currentUid = inspector.getuid();
+    if (!Number.isSafeInteger(currentUid) || currentUid! < 0) isolationUnavailable();
+    const metadata = await inspector.lstat(cwd);
+    if (
+      metadata.isSymbolicLink() ||
+      !metadata.isDirectory() ||
+      metadata.uid !== currentUid ||
+      !Number.isSafeInteger(metadata.mode) ||
+      (metadata.mode & 0o077) !== 0
+    ) isolationUnavailable();
+    const canonical = path.resolve(await inspector.realpath(cwd));
+    if (canonical !== cwd) isolationUnavailable();
+    return {
+      realpath: canonical,
+      dev: String(metadata.dev),
+      ino: String(metadata.ino),
+      uid: metadata.uid,
+      mode: metadata.mode & 0o777,
+    };
+  } catch (error) {
+    if (error instanceof DefensiveLocalCliError) throw error;
+    isolationUnavailable();
+  }
+}
+
+function isolationUnavailable(): never {
+  throw new DefensiveLocalCliError("local_cli_isolation_unavailable");
 }
 
 function validateInput(
@@ -184,53 +288,101 @@ function claudeArgv(input: DefensiveLocalCliInput, schema: string): string[] {
   ];
 }
 
-function grokArgv(input: DefensiveLocalCliInput, schema: string): string[] {
-  if (input.model.kind !== "catalog") invalid();
-  return [
-    "--single",
-    "--permission-mode",
-    "dontAsk",
-    "--allow",
-    "Read",
-    "--allow",
-    "Grep",
-    "--deny",
-    "Bash",
-    "--deny",
-    "Edit",
-    "--deny",
-    "WebFetch",
-    "--deny",
-    "WebSearch",
-    "--deny",
-    "MCPTool",
-    "--sandbox",
-    "strict",
-    "--disable-web-search",
-    "--no-subagents",
-    "--no-memory",
-    "--system-prompt-override",
-    GROK_DEFENSIVE_SYSTEM_PROMPT,
-    "--max-turns",
-    String(input.maxTurns),
-    "--output-format",
-    "json",
-    "--json-schema",
-    schema,
-    "--model",
-    input.model.id,
-    input.prompt,
-  ];
-}
-
 function serializeSchema(value: unknown): string {
   try {
+    if (!isClosedJsonSchema(value)) invalid();
     const schema = JSON.stringify(value);
     if (schema === undefined || Buffer.byteLength(schema, "utf8") > 64 * 1024) invalid();
     return schema;
   } catch {
     invalid();
   }
+}
+
+const CLOSED_SCHEMA_KEYS = new Set([
+  "type",
+  "const",
+  "enum",
+  "allOf",
+  "anyOf",
+  "oneOf",
+  "not",
+  "properties",
+  "required",
+  "additionalProperties",
+  "items",
+  "minItems",
+  "maxItems",
+  "minLength",
+  "maxLength",
+  "pattern",
+  "minimum",
+  "maximum",
+]);
+const CLOSED_SCHEMA_TYPES = new Set([
+  "null",
+  "boolean",
+  "string",
+  "number",
+  "integer",
+  "array",
+  "object",
+]);
+
+function isClosedJsonSchema(schema: unknown, depth = 0): boolean {
+  if (schema === true || schema === false) return true;
+  if (depth > 32 || !isPlainRecord(schema)) return false;
+  if (Object.keys(schema).some((key) => !CLOSED_SCHEMA_KEYS.has(key))) return false;
+  if (!isClosedSchemaType(schema.type)) return false;
+  if ("const" in schema && !isJsonValue(schema.const, depth + 1)) return false;
+  if (schema.enum !== undefined && (!Array.isArray(schema.enum) || schema.enum.length === 0 ||
+    !schema.enum.every((item) => isJsonValue(item, depth + 1)))) return false;
+  for (const keyword of ["allOf", "anyOf", "oneOf"] as const) {
+    const branch = schema[keyword];
+    if (branch !== undefined && (!Array.isArray(branch) ||
+      !branch.every((item) => isClosedJsonSchema(item, depth + 1)))) return false;
+  }
+  if (schema.not !== undefined && !isClosedJsonSchema(schema.not, depth + 1)) return false;
+  if (schema.properties !== undefined && (!isPlainRecord(schema.properties) ||
+    !Object.values(schema.properties).every((item) => isClosedJsonSchema(item, depth + 1)))) return false;
+  if (schema.required !== undefined && (!Array.isArray(schema.required) ||
+    !schema.required.every((key) => typeof key === "string") ||
+    new Set(schema.required).size !== schema.required.length)) return false;
+  if (schema.additionalProperties !== undefined && typeof schema.additionalProperties !== "boolean") return false;
+  if (schema.items !== undefined && !isClosedJsonSchema(schema.items, depth + 1)) return false;
+  for (const keyword of ["minItems", "maxItems", "minLength", "maxLength"] as const) {
+    const boundary = schema[keyword];
+    if (boundary !== undefined && (!Number.isSafeInteger(boundary) || (boundary as number) < 0)) return false;
+  }
+  for (const keyword of ["minimum", "maximum"] as const) {
+    const boundary = schema[keyword];
+    if (boundary !== undefined && (typeof boundary !== "number" || !Number.isFinite(boundary))) return false;
+  }
+  if (schema.pattern !== undefined) {
+    if (typeof schema.pattern !== "string" || schema.pattern.length > 256) return false;
+    try {
+      new RegExp(schema.pattern, "u");
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isClosedSchemaType(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (typeof value === "string") return CLOSED_SCHEMA_TYPES.has(value);
+  return Array.isArray(value) && value.length > 0 &&
+    value.every((item) => typeof item === "string" && CLOSED_SCHEMA_TYPES.has(item)) &&
+    new Set(value).size === value.length;
+}
+
+function isJsonValue(value: unknown, depth: number): boolean {
+  if (depth > 32) return false;
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every((item) => isJsonValue(item, depth + 1));
+  return isPlainRecord(value) && Object.values(value).every((item) => isJsonValue(item, depth + 1));
 }
 
 function boundedStdout(stdout: unknown): string {
@@ -308,8 +460,17 @@ function matchesArraySchema(value: unknown[], schema: Record<string, unknown>): 
 }
 
 function matchesStringSchema(value: string, schema: Record<string, unknown>): boolean {
-  return !(typeof schema.minLength === "number" && value.length < schema.minLength) &&
-    !(typeof schema.maxLength === "number" && value.length > schema.maxLength);
+  if (typeof schema.minLength === "number" && value.length < schema.minLength) return false;
+  if (typeof schema.maxLength === "number" && value.length > schema.maxLength) return false;
+  if (schema.pattern !== undefined) {
+    if (typeof schema.pattern !== "string" || schema.pattern.length > 256) return false;
+    try {
+      if (!new RegExp(schema.pattern, "u").test(value)) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
 }
 
 function matchesNumberSchema(value: number, schema: Record<string, unknown>): boolean {
@@ -352,14 +513,27 @@ function invalid(): never {
   throw new DefensiveLocalCliError("protocol_unsupported");
 }
 
-async function executeNative(
-  binary: "claude" | "grok",
+function executeNative(
+  binary: "claude",
   argv: string[],
   options: DefensiveLocalCliExecOptions,
-): Promise<{ stdout: string; stderr: string }> {
-  const execFile = promisify(nativeExecFile);
-  const output = await execFile(binary, argv, options);
-  return { stdout: String(output.stdout), stderr: String(output.stderr) };
+): DefensiveLocalCliChild {
+  let child!: ReturnType<typeof nativeExecFile>;
+  const result = new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+    child = nativeExecFile(binary, argv, options, (error, stdout, stderr) => {
+      if (error !== null) {
+        reject(error);
+        return;
+      }
+      resolve({ stdout: String(stdout), stderr: String(stderr) });
+    });
+  });
+  return {
+    result,
+    kill(signal) {
+      return child.kill(signal);
+    },
+  };
 }
 
 function normalizeError(
@@ -431,6 +605,58 @@ function awaitWithin<T>(operation: Promise<T>, scope: ExecutionScope): Promise<T
     void operation.then(
       (value) => finish(() => resolve(value)),
       (error: unknown) => finish(() => reject(error)),
+    );
+  });
+}
+
+function awaitChildWithin<T extends { stdout: string; stderr: string }>(
+  child: DefensiveLocalCliChild,
+  scope: ExecutionScope,
+  killGraceMs: number,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let locallySettled = false;
+    let childSettled = false;
+    let forceKillTimer: NodeJS.Timeout | undefined;
+    const finishLocally = (callback: () => void): void => {
+      if (locallySettled) return;
+      locallySettled = true;
+      scope.signal.removeEventListener("abort", onAbort);
+      callback();
+    };
+    const markChildSettled = (): void => {
+      childSettled = true;
+      if (forceKillTimer !== undefined) clearTimeout(forceKillTimer);
+    };
+    const signalChild = (signal: "SIGTERM" | "SIGKILL"): void => {
+      try {
+        child.kill(signal);
+      } catch {
+        // Local cancellation remains authoritative. The closed result does not
+        // claim that this exact child, let alone a process tree, has exited.
+      }
+    };
+    const onAbort = (): void => {
+      signalChild("SIGTERM");
+      if (!childSettled && forceKillTimer === undefined) {
+        forceKillTimer = setTimeout(() => {
+          if (!childSettled) signalChild("SIGKILL");
+        }, killGraceMs);
+        forceKillTimer.unref();
+      }
+      finishLocally(() => reject(scope.stopError() ?? new DefensiveLocalCliError("agent_cancelled")));
+    };
+    if (scope.signal.aborted) onAbort();
+    else scope.signal.addEventListener("abort", onAbort, { once: true });
+    void child.result.then(
+      (value) => {
+        markChildSettled();
+        finishLocally(() => resolve(value as T));
+      },
+      (error: unknown) => {
+        markChildSettled();
+        finishLocally(() => reject(error));
+      },
     );
   });
 }

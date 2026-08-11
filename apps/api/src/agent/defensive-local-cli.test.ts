@@ -6,6 +6,7 @@ import { createDefensiveLocalCli, DefensiveLocalCliError } from "./defensive-loc
 test("Claude local execution uses the fixed defensive argv and strips API keys", async () => {
   const calls: Array<{ binary: string; argv: string[]; options: Record<string, unknown> }> = [];
   const runner = createDefensiveLocalCli({
+    ...secureCwdDependency(),
     approvedCwds: ["/private/session"],
     environment: {
       PATH: "/usr/bin",
@@ -16,9 +17,9 @@ test("Claude local execution uses the fixed defensive argv and strips API keys",
       CURSOR_API_KEY: "cursor-secret",
       PRESERVED_SESSION_VALUE: "session-only",
     },
-    execFile: async (binary, argv, options) => {
+    execFile: (binary, argv, options) => {
       calls.push({ binary, argv, options: options as unknown as Record<string, unknown> });
-      return { stdout: '{"findings":[]}', stderr: "" };
+      return completedChild({ stdout: '{"findings":[]}', stderr: "" });
     },
   });
 
@@ -79,75 +80,38 @@ test("Claude local execution uses the fixed defensive argv and strips API keys",
   assert.equal((calls[0]?.options.signal as AbortSignal).aborted, false);
 });
 
-test("Grok local execution uses only its defensive read and grep contract", async () => {
-  const calls: Array<{ binary: string; argv: string[] }> = [];
+test("Grok local execution fails closed before discovered plugins or hooks can run", async () => {
+  let calls = 0;
   const runner = createDefensiveLocalCli({
+    ...secureCwdDependency(),
     approvedCwds: ["/private/session"],
-    execFile: async (binary, argv) => {
-      calls.push({ binary, argv });
-      return { stdout: '{"findings":[]}', stderr: "" };
+    execFile: () => {
+      calls += 1;
+      return completedChild({ stdout: '{"findings":[]}', stderr: "" });
     },
   });
 
-  await runner.run({
-    routeKind: "xai-grok-build-local",
-    cwd: "/private/session",
-    prompt: "Inspect only the pinned files.",
-    model: { kind: "catalog", id: "grok-4" },
-    modelCatalog: ["grok-4"],
-    jsonSchema: { type: "object", required: ["findings"], properties: { findings: { type: "array" } } },
-    maxTurns: 2,
-    signal: new AbortController().signal,
-  });
-
-  assert.deepEqual(calls, [{
-    binary: "grok",
-    argv: [
-      "--single",
-      "--permission-mode",
-      "dontAsk",
-      "--allow",
-      "Read",
-      "--allow",
-      "Grep",
-      "--deny",
-      "Bash",
-      "--deny",
-      "Edit",
-      "--deny",
-      "WebFetch",
-      "--deny",
-      "WebSearch",
-      "--deny",
-      "MCPTool",
-      "--sandbox",
-      "strict",
-      "--disable-web-search",
-      "--no-subagents",
-      "--no-memory",
-      "--system-prompt-override",
-      "You are a defensive, read-only security analyst. Inspect only the caller-provided pinned workspace. Do not execute commands, edit files, access network, invoke plugins, MCP tools, web, subagents, or memory. Use only Read and Grep. Return only JSON matching the supplied schema.",
-      "--max-turns",
-      "2",
-      "--output-format",
-      "json",
-      "--json-schema",
-      '{"type":"object","required":["findings"],"properties":{"findings":{"type":"array"}}}',
-      "--model",
-      "grok-4",
-      "Inspect only the pinned files.",
-    ],
-  }]);
-  const argv = calls[0]?.argv ?? [];
-  for (const banned of ["--dangerously-skip-permissions", "--allow-dangerous", "--yolo", "--config"]) {
-    assert.equal(argv.includes(banned), false, banned);
-  }
+  await assert.rejects(
+    runner.run({
+      routeKind: "xai-grok-build-local",
+      cwd: "/private/session",
+      prompt: "Inspect only the pinned files.",
+      model: { kind: "catalog", id: "grok-4" },
+      modelCatalog: ["grok-4"],
+      jsonSchema: { type: "object" },
+      maxTurns: 2,
+      signal: new AbortController().signal,
+    }),
+    { code: "local_cli_isolation_unavailable" },
+  );
+  assert.equal(calls, 0);
 });
 
 test("local CLI rejects a JSON final that does not satisfy the requested schema", async () => {
   const runner = createDefensiveLocalCli({
+    ...secureCwdDependency(),
     approvedCwds: ["/private/session"],
-    execFile: async () => ({ stdout: '{"findings":"not-an-array"}', stderr: "" }),
+    execFile: () => completedChild({ stdout: '{"findings":"not-an-array"}', stderr: "" }),
   });
 
   await assert.rejects(
@@ -173,21 +137,35 @@ test("local CLI rejects a JSON final that does not satisfy the requested schema"
 test("an external abort settles despite an uncooperative local CLI and consumes its late rejection", async () => {
   let rejectLate: ((reason?: unknown) => void) | undefined;
   let childSignal: AbortSignal | undefined;
+  const killCalls: string[] = [];
+  let markStarted: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
   const unhandled: unknown[] = [];
   const onUnhandled = (reason: unknown) => unhandled.push(reason);
   process.on("unhandledRejection", onUnhandled);
   const runner = createDefensiveLocalCli({
+    ...secureCwdDependency(),
     approvedCwds: ["/private/session"],
-    execFile: async (_binary, _argv, options) => {
+    killGraceMs: 1,
+    execFile: (_binary, _argv, options) => {
       childSignal = options.signal;
-      return new Promise<{ stdout: string; stderr: string }>((_resolve, reject) => { rejectLate = reject; });
+      markStarted?.();
+      return {
+        result: new Promise<{ stdout: string; stderr: string }>((_resolve, reject) => { rejectLate = reject; }),
+        kill(signal: string) {
+          killCalls.push(signal);
+          return true;
+        },
+      };
     },
   });
   const controller = new AbortController();
   const running = runner.run({ ...claudeInput(), signal: controller.signal });
+  await started;
   controller.abort();
 
   const outcome = await settleAsCode(running, 30);
+  await new Promise<void>((resolve) => setTimeout(resolve, 5));
   rejectLate?.(new Error("late CLI failure must not escape"));
   await assert.rejects(running, { code: "agent_cancelled" });
   await new Promise<void>((resolve) => setImmediate(resolve));
@@ -195,27 +173,45 @@ test("an external abort settles despite an uncooperative local CLI and consumes 
 
   assert.equal(outcome, "agent_cancelled");
   assert.equal(childSignal?.aborted, true);
+  assert.deepEqual(killCalls, ["SIGTERM", "SIGKILL"]);
   assert.deepEqual(unhandled, []);
 });
 
 test("the local timeout settles despite an uncooperative local CLI and consumes its late rejection", async () => {
   let rejectLate: ((reason?: unknown) => void) | undefined;
+  let markStarted: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const killCalls: string[] = [];
   const unhandled: unknown[] = [];
   const onUnhandled = (reason: unknown) => unhandled.push(reason);
   process.on("unhandledRejection", onUnhandled);
   const runner = createDefensiveLocalCli({
+    ...secureCwdDependency(),
     approvedCwds: ["/private/session"],
-    execFile: async () => new Promise<{ stdout: string; stderr: string }>((_resolve, reject) => { rejectLate = reject; }),
+    killGraceMs: 1,
+    execFile: () => {
+      markStarted?.();
+      return {
+        result: new Promise<{ stdout: string; stderr: string }>((_resolve, reject) => { rejectLate = reject; }),
+        kill(signal: string) {
+          killCalls.push(signal);
+          return true;
+        },
+      };
+    },
   });
-  const running = runner.run({ ...claudeInput(), timeoutMs: 1 });
+  const running = runner.run({ ...claudeInput(), timeoutMs: 10 });
+  await started;
 
-  const outcome = await settleAsCode(running, 30);
+  const outcome = await settleAsCode(running, 50);
+  await new Promise<void>((resolve) => setTimeout(resolve, 5));
   rejectLate?.(new Error("late CLI failure must not escape"));
   await assert.rejects(running, { code: "agent_time_limit" });
   await new Promise<void>((resolve) => setImmediate(resolve));
   process.off("unhandledRejection", onUnhandled);
 
   assert.equal(outcome, "agent_time_limit");
+  assert.deepEqual(killCalls, ["SIGTERM", "SIGKILL"]);
   assert.deepEqual(unhandled, []);
 });
 
@@ -225,8 +221,9 @@ test("local CLI rejects oversized and malformed stdout without retaining child d
     ["not-json", "agent_protocol_error"],
   ] as const) {
     const runner = createDefensiveLocalCli({
+      ...secureCwdDependency(),
       approvedCwds: ["/private/session"],
-      execFile: async () => ({ stdout, stderr: "upstream-secret-must-not-escape" }),
+      execFile: () => completedChild({ stdout, stderr: "upstream-secret-must-not-escape" }),
     });
     await assert.rejects(
       runner.run(claudeInput()),
@@ -239,10 +236,11 @@ test("local CLI rejects oversized and malformed stdout without retaining child d
 test("local CLI rejects an arbitrary route and never falls back from the exact catalog model", async () => {
   let calls = 0;
   const runner = createDefensiveLocalCli({
+    ...secureCwdDependency(),
     approvedCwds: ["/private/session"],
-    execFile: async () => {
+    execFile: () => {
       calls += 1;
-      return { stdout: '{"findings":[]}', stderr: "" };
+      return completedChild({ stdout: '{"findings":[]}', stderr: "" });
     },
   });
 
@@ -256,7 +254,7 @@ test("local CLI rejects an arbitrary route and never falls back from the exact c
   );
   await assert.rejects(
     runner.run({ ...claudeInput(), routeKind: "xai-grok-build-local", model: { kind: "runtime-default" } }),
-    { code: "protocol_unsupported" },
+    { code: "local_cli_isolation_unavailable" },
   );
   assert.equal(calls, 0);
 });
@@ -264,10 +262,11 @@ test("local CLI rejects an arbitrary route and never falls back from the exact c
 test("Claude alone may use the explicit runtime default, which omits the model flag", async () => {
   let argv: string[] | undefined;
   const runner = createDefensiveLocalCli({
+    ...secureCwdDependency(),
     approvedCwds: ["/private/session"],
-    execFile: async (_binary, receivedArgv) => {
+    execFile: (_binary, receivedArgv) => {
       argv = receivedArgv;
-      return { stdout: '{"findings":[]}', stderr: "" };
+      return completedChild({ stdout: '{"findings":[]}', stderr: "" });
     },
   });
 
@@ -279,15 +278,132 @@ test("Claude alone may use the explicit runtime default, which omits the model f
 test("local CLI accepts only the caller-pinned private cwd, not a descendant path", async () => {
   let calls = 0;
   const runner = createDefensiveLocalCli({
+    ...secureCwdDependency(),
     approvedCwds: ["/private/session"],
-    execFile: async () => {
+    execFile: () => {
       calls += 1;
-      return { stdout: '{"findings":[]}', stderr: "" };
+      return completedChild({ stdout: '{"findings":[]}', stderr: "" });
     },
   });
 
   await assert.rejects(
     runner.run({ ...claudeInput(), cwd: "/private/session/untrusted-descendant" }),
+    { code: "protocol_unsupported" },
+  );
+  assert.equal(calls, 0);
+});
+
+test("Claude rejects a symlink, non-directory, foreign owner, public mode, or changed realpath", async () => {
+  const unsafe = [
+    { symbolicLink: true },
+    { directory: false },
+    { uid: 777 },
+    { mode: 0o40_750 },
+    { realpath: "/private/other-session" },
+  ];
+
+  for (const state of unsafe) {
+    let calls = 0;
+    const runner = createDefensiveLocalCli({
+      approvedCwds: ["/private/session"],
+      cwdInspector: testCwdInspector(state),
+      execFile: () => {
+        calls += 1;
+        return completedChild({ stdout: '{"findings":[]}', stderr: "" });
+      },
+    });
+
+    await assert.rejects(runner.run(claudeInput()), { code: "local_cli_isolation_unavailable" });
+    assert.equal(calls, 0);
+  }
+});
+
+test("Claude revalidates the pinned cwd inode immediately before launch", async () => {
+  let lstatCalls = 0;
+  let execCalls = 0;
+  const runner = createDefensiveLocalCli({
+    approvedCwds: ["/private/session"],
+    cwdInspector: {
+      getuid: () => 501,
+      async lstat(_cwd: string) {
+        lstatCalls += 1;
+        return {
+          dev: 1,
+          ino: lstatCalls === 1 ? 2 : 3,
+          mode: 0o40_700,
+          uid: 501,
+          isDirectory: () => true,
+          isSymbolicLink: () => false,
+        };
+      },
+      async realpath(cwd: string) {
+        return cwd;
+      },
+    },
+    execFile: () => {
+      execCalls += 1;
+      return completedChild({ stdout: '{"findings":[]}', stderr: "" });
+    },
+  });
+
+  await assert.rejects(runner.run(claudeInput()), { code: "local_cli_isolation_unavailable" });
+  assert.equal(lstatCalls, 2);
+  assert.equal(execCalls, 0);
+});
+
+test("the closed response schema enforces pattern, required, and additionalProperties", async () => {
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    required: ["id"],
+    properties: {
+      id: { type: "string", pattern: "^SAFE-[0-9]+$" },
+    },
+  };
+
+  for (const stdout of [
+    '{"id":"unsafe"}',
+    '{"id":"SAFE-1","extra":true}',
+    "{}",
+  ]) {
+    const runner = createDefensiveLocalCli({
+      ...secureCwdDependency(),
+      approvedCwds: ["/private/session"],
+      execFile: () => completedChild({ stdout, stderr: "" }),
+    });
+    await assert.rejects(
+      runner.run({ ...claudeInput(), jsonSchema: schema }),
+      { code: "agent_protocol_error" },
+    );
+  }
+
+  const accepted = createDefensiveLocalCli({
+    ...secureCwdDependency(),
+    approvedCwds: ["/private/session"],
+    execFile: () => completedChild({ stdout: '{"id":"SAFE-42"}', stderr: "" }),
+  });
+  assert.deepEqual(
+    await accepted.run({ ...claudeInput(), jsonSchema: schema }),
+    { final: { id: "SAFE-42" }, usage: null },
+  );
+});
+
+test("the response schema subset rejects unsupported keywords before launch", async () => {
+  let calls = 0;
+  const runner = createDefensiveLocalCli({
+    ...secureCwdDependency(),
+    approvedCwds: ["/private/session"],
+    execFile: () => {
+      calls += 1;
+      return completedChild({ stdout: "{}", stderr: "" });
+    },
+  });
+
+  await assert.rejects(
+    runner.run({
+      ...claudeInput(),
+      jsonSchema: { type: "object", unevaluatedProperties: false },
+    }),
     { code: "protocol_unsupported" },
   );
   assert.equal(calls, 0);
@@ -319,4 +435,57 @@ async function settleAsCode(promise: Promise<unknown>, timeoutMs: number): Promi
     ),
     new Promise<string>((resolve) => setTimeout(() => resolve("test_timeout"), timeoutMs)),
   ]);
+}
+
+function secureCwdDependency() {
+  return {
+    cwdInspector: {
+      getuid: () => 501,
+      async lstat(_cwd: string) {
+        return {
+          dev: 1,
+          ino: 2,
+          mode: 0o40_700,
+          uid: 501,
+          isDirectory: () => true,
+          isSymbolicLink: () => false,
+        };
+      },
+      async realpath(cwd: string) {
+        return cwd;
+      },
+    },
+  };
+}
+
+function testCwdInspector(state: {
+  symbolicLink?: boolean;
+  directory?: boolean;
+  uid?: number;
+  mode?: number;
+  realpath?: string;
+}) {
+  return {
+    getuid: () => 501,
+    async lstat(_cwd: string) {
+      return {
+        dev: 1,
+        ino: 2,
+        mode: state.mode ?? 0o40_700,
+        uid: state.uid ?? 501,
+        isDirectory: () => state.directory ?? true,
+        isSymbolicLink: () => state.symbolicLink ?? false,
+      };
+    },
+    async realpath(cwd: string) {
+      return state.realpath ?? cwd;
+    },
+  };
+}
+
+function completedChild(output: { stdout: string; stderr: string }) {
+  return {
+    result: Promise.resolve(output),
+    kill: (_signal: "SIGTERM" | "SIGKILL") => true,
+  };
 }
