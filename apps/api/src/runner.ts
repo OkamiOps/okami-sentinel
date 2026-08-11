@@ -57,6 +57,7 @@ import {
   type SafePortableCodexSecurityProviderPlan,
 } from "./scanners/portable-codex-security-profile.js";
 import type { SafeVulnHunterProviderPlan } from "./scanners/vulnhunter-runtime.js";
+import { isHttpAgentRouteProtocolSupported } from "./agent/http-agent-upstream.js";
 import {
   CodexSecurityApiBridgeError,
   isCodexSecurityApiPlan,
@@ -770,12 +771,11 @@ function launchSelectionForRun(
 function isVulnHunterProviderProtocol(
   plan: ScanLaunchPlan,
 ): plan is ScanLaunchPlan & { protocol: SafeVulnHunterProviderPlan["protocol"] } {
-  return plan.protocol === "openai-responses" ||
-    plan.protocol === "openai-chat" ||
-    plan.protocol === "anthropic-messages" ||
-    (plan.protocol === "xai-oauth-responses" &&
-      plan.providerKind === "xai" &&
-      plan.routeKind === "xai-oauth");
+  const directXaiOAuth = plan.providerKind === "xai" &&
+    plan.routeKind === "xai-oauth" &&
+    plan.protocol === "xai-oauth-responses";
+  return isHttpAgentRouteProtocolSupported(plan.routeKind, plan.protocol) &&
+    (directXaiOAuth || (plan.routeKind !== "xai-oauth" && plan.protocol !== "xai-oauth-responses"));
 }
 
 function progressKey(p: ScanProgress): string {

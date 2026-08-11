@@ -20,14 +20,6 @@ const SCOPED_CODEX_SECURITY_SESSION_ROUTES = new Set([
   "openai-chatgpt-app-server",
 ]);
 
-const VULNHUNTER_HTTP_PROTOCOLS = new Set([
-  "openai-responses",
-  "openai-chat",
-  "anthropic-messages",
-]);
-
-const VULNHUNTER_XAI_OAUTH_PROTOCOL = "xai-oauth-responses";
-
 /** Safe, stable launch boundary errors. They intentionally reveal no route or credential details. */
 export type ScanSelectionErrorCode =
   | "provider_runner_unavailable"
@@ -332,6 +324,9 @@ function isVulnHunterHttpPlan(
   request: StartScanRequest,
   plan: ScanLaunchPlan,
 ): boolean {
+  const directXaiOAuth = plan.providerKind === "xai" &&
+    plan.routeKind === "xai-oauth" &&
+    plan.protocol === "xai-oauth-responses";
   return (request.engine ?? "codex-security") === "vulnhunter" &&
     plan.model !== null &&
     plan.capabilityCheckId !== null &&
@@ -340,10 +335,8 @@ function isVulnHunterHttpPlan(
     plan.snapshot.capabilityCheckId === plan.capabilityCheckId &&
     plan.snapshot.connectionId === plan.connectionId &&
     plan.snapshot.routeKind === plan.routeKind &&
-    (VULNHUNTER_HTTP_PROTOCOLS.has(plan.protocol) ||
-      (plan.protocol === VULNHUNTER_XAI_OAUTH_PROTOCOL &&
-        plan.providerKind === "xai" &&
-        plan.routeKind === "xai-oauth"));
+    isHttpAgentRouteProtocolSupported(plan.routeKind, plan.protocol) &&
+    (directXaiOAuth || (plan.routeKind !== "xai-oauth" && plan.protocol !== "xai-oauth-responses"));
 }
 
 /**

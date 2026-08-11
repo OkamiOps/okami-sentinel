@@ -503,6 +503,30 @@ test("VulnHunter HTTP runner rejects an invalid xAI OAuth connection before OAut
   }
 });
 
+test("VulnHunter rejects direct xAI OAuth with a vault credential reference before credential access", async () => {
+  const { runner, observed } = fixture({
+    plan: XAI_PLAN,
+    snapshot: xaiSnapshot(),
+    connection: xaiConnection({ credentialRef: "connection/xai-oauth-impostor" }),
+    model: xaiModel(),
+    capability: xaiCapability(),
+  });
+  const run = input(XAI_PLAN);
+  try {
+    await assert.rejects(
+      runner.run(run.value),
+      (error: unknown) => error instanceof VulnHunterHttpRunnerError &&
+        error.code === "provider_plan_invalid",
+    );
+    assert.equal(observed.xaiReads, 0);
+    assert.equal(observed.vaultReads, 0);
+    assert.equal(observed.upstreams, 0);
+    assert.equal(observed.sessions, 0);
+  } finally {
+    fs.rmSync(run.root, { recursive: true, force: true });
+  }
+});
+
 test("VulnHunter HTTP runner resolves direct xAI OAuth internally without an API-key vault read", async () => {
   const token = "private-xai-oauth-token";
   const { runner, observed } = fixture({

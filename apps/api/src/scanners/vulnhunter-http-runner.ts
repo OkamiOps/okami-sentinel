@@ -374,7 +374,8 @@ function isDirectXaiOAuthConnection(connection: StoredProviderConnection): boole
     connection.routeKind === "xai-oauth" &&
     connection.transport === "http-inference" &&
     connection.authKind === "device-code" &&
-    connection.protocol === "xai-oauth-responses";
+    connection.protocol === "xai-oauth-responses" &&
+    connection.credentialRef === null;
 }
 
 function isNonEmptyText(value: unknown): value is string {

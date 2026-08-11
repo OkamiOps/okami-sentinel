@@ -320,6 +320,52 @@ test("VulnHunter accepts only a verified HTTP agent-session plan for its dedicat
   assert.equal(selected.request.authMode, undefined);
 });
 
+test("VulnHunter rejects a central-false HTTP tuple before launch preparation", () => {
+  const fixture = resolver(plan({
+    engine: "vulnhunter",
+    routeKind: "openai-api",
+    runnerKind: "agent-session",
+    protocol: "anthropic-messages",
+    scannerAuthMode: undefined,
+    snapshot: {
+      scanId: "scan-vulnhunter-protocol-mismatch",
+      connectionId: "openai-session",
+      routeKind: "openai-api",
+      modelSelectionMode: "catalog",
+      modelId: "gpt-live",
+      capabilityCheckId: "probe-protocol-mismatch",
+      executionProfile: null,
+      profileVersion: null,
+      methodologyRef: null,
+      protocol: "anthropic-messages",
+      authKind: "api-key",
+      capturedAt: "2026-08-11T12:00:00.000Z",
+    },
+    capabilityCheckId: "probe-protocol-mismatch",
+  }));
+  let launchPreparationCalls = 0;
+
+  assert.throws(() => resolveBeforeLaunch({
+    request: {
+      repositoryPath: "/repo",
+      engine: "vulnhunter",
+      connection: {
+        connectionId: "openai-session",
+        modelSelectionMode: "catalog",
+        modelId: "gpt-live",
+      },
+    },
+    scanId: "scan-vulnhunter-protocol-mismatch",
+    launchPlans: fixture.resolver,
+    prepareLaunch: () => {
+      launchPreparationCalls += 1;
+      return "would-spawn-vulnhunter";
+    },
+  }), (error: unknown) =>
+    error instanceof ScanSelectionError && error.code === "provider_runner_unavailable");
+  assert.equal(launchPreparationCalls, 0);
+});
+
 test("VulnHunter accepts direct xAI OAuth only for the pinned xAI route", () => {
   const xaiModel: ProviderModel = {
     ...model,
