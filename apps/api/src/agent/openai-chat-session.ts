@@ -16,6 +16,11 @@ import {
   type WireSessionAdapter,
 } from "./session-types.js";
 import {
+  resultArtifactContentSchema,
+  resultArtifactPathSchema,
+  type AgentResultArtifactContract,
+} from "./result-artifact-contract.js";
+import {
   WORKSPACE_TOOL_WIRE_CODEC,
   WORKSPACE_TOOL_WIRE_DESCRIPTIONS,
 } from "./workspace-tool-wire-codec.js";
@@ -26,6 +31,7 @@ export interface OpenAiChatSessionSpec {
   instructions: string;
   routeKind: string;
   reasoningEffort?: string;
+  resultArtifactContract?: AgentResultArtifactContract;
 }
 
 export interface OpenAiChatProbeSpec {
@@ -67,7 +73,7 @@ export function createOpenAiChatWireAdapter(spec: OpenAiChatSessionSpec): WireSe
 
   return {
     nextRequest(toolResults: readonly AgentToolResult[]): AgentWireRequest {
-      if (toolResults.some((result) => result.name === "results.write")) finalizing = true;
+      if (toolResults.some((result) => result.name === "results.write" && result.ok !== false)) finalizing = true;
       for (const result of toolResults) {
         messages.push({ role: "tool", tool_call_id: result.callId, content: result.content });
       }
@@ -79,7 +85,7 @@ export function createOpenAiChatWireAdapter(spec: OpenAiChatSessionSpec): WireSe
           ...(finalizing
             ? { response_format: { type: "json_object" } }
             : {
-              tools: openAiChatTools(),
+              tools: openAiChatTools(spec.resultArtifactContract),
               tool_choice: "required",
             }),
           ...reasoningField(spec.routeKind, spec.reasoningEffort),
@@ -214,7 +220,7 @@ function advanceProbeEvidence(
   }
 }
 
-function openAiChatTools(): readonly unknown[] {
+function openAiChatTools(resultArtifactContract?: AgentResultArtifactContract): readonly unknown[] {
   return [
     {
       type: "function",
@@ -245,7 +251,10 @@ function openAiChatTools(): readonly unknown[] {
       function: {
         name: WORKSPACE_TOOL_WIRE_CODEC.toWire("results.write"),
         description: WORKSPACE_TOOL_WIRE_DESCRIPTIONS["results.write"],
-        parameters: objectSchema({ path: requiredStringSchema(), content: requiredStringSchema() }, ["path", "content"]),
+        parameters: objectSchema({
+          path: resultArtifactPathSchema(resultArtifactContract),
+          content: resultArtifactContentSchema(resultArtifactContract),
+        }, ["path", "content"]),
       },
     },
   ];

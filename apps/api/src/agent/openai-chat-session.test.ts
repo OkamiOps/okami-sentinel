@@ -248,8 +248,40 @@ test("OpenAI chat parses a safe workspace read followed by results.write batch",
   ]);
 });
 
+test("OpenAI chat keeps the VulnHunter result tool on the universal string contract", () => {
+  const structured = openAiChat.createOpenAiChatWireAdapter({
+    model: model("generic-tool-model"),
+    instructions: "Submit one structured result artifact.",
+    routeKind: "custom-openai-compatible",
+    resultArtifactContract: "vulnhunter-report-v1",
+  });
+  const legacy = openAiChat.createOpenAiChatWireAdapter({
+    model: model("generic-tool-model"),
+    instructions: "Submit one text result artifact.",
+    routeKind: "custom-openai-compatible",
+  });
+
+  const structuredTool = chatBody(structured.nextRequest([])).tools[3]!.function as Record<string, unknown>;
+  const legacyTool = chatBody(legacy.nextRequest([])).tools[3]!.function as Record<string, unknown>;
+  const structuredProperties = (structuredTool.parameters as { properties: Record<string, unknown> }).properties;
+  const legacyProperties = (legacyTool.parameters as { properties: Record<string, unknown> }).properties;
+
+  assert.deepEqual(structuredProperties.content, { type: "string", minLength: 1 });
+  assert.deepEqual(
+    ((structuredTool.parameters as { properties: Record<string, unknown> }).properties.path),
+    { type: "string", minLength: 1 },
+  );
+  assert.deepEqual(legacyProperties.content, { type: "string", minLength: 1 });
+  assert.equal(chatBody(structured.nextRequest([{
+    callId: "invalid-write",
+    name: "results.write",
+    content: JSON.stringify({ error: "tool_argument_invalid" }),
+    ok: false,
+  }])).tools.length, 4);
+});
+
 function chatBody(request: AgentWireRequest): {
-  tools: Array<{ function: { name: string; description: string } }>;
+  tools: Array<{ function: { name: string; description: string; parameters?: unknown } }>;
   messages: unknown[];
   tool_choice?: unknown;
   parallel_tool_calls?: unknown;
@@ -259,7 +291,7 @@ function chatBody(request: AgentWireRequest): {
 } {
   assert.equal(request.operation, "chat-completions");
   return request.body as {
-    tools: Array<{ function: { name: string; description: string } }>;
+    tools: Array<{ function: { name: string; description: string; parameters?: unknown } }>;
     messages: unknown[];
     tool_choice?: unknown;
     parallel_tool_calls?: unknown;

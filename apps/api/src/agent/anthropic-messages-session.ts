@@ -10,6 +10,11 @@ import {
   type WireSessionAdapter,
 } from "./session-types.js";
 import {
+  resultArtifactContentSchema,
+  resultArtifactPathSchema,
+  type AgentResultArtifactContract,
+} from "./result-artifact-contract.js";
+import {
   WORKSPACE_TOOL_WIRE_CODEC,
   WORKSPACE_TOOL_WIRE_DESCRIPTIONS,
 } from "./workspace-tool-wire-codec.js";
@@ -19,6 +24,7 @@ export interface AnthropicMessagesSessionSpec {
   model: ProviderModel;
   instructions: string;
   reasoningEffort?: string;
+  resultArtifactContract?: AgentResultArtifactContract;
 }
 
 /** Translates the four fixed local tools to Anthropic Messages wire objects. */
@@ -31,7 +37,7 @@ export function createAnthropicMessagesWireAdapter(
 
   return {
     nextRequest(toolResults: readonly AgentToolResult[]): AgentWireRequest {
-      if (toolResults.some((result) => result.name === "results.write")) finalizing = true;
+      if (toolResults.some((result) => result.name === "results.write" && result.ok !== false)) finalizing = true;
       if (toolResults.length > 0) {
         messages.push({
           role: "user",
@@ -48,7 +54,7 @@ export function createAnthropicMessagesWireAdapter(
           model: spec.model.id,
           max_tokens: 4_096,
           messages,
-          ...(finalizing ? {} : { tools: anthropicTools() }),
+          ...(finalizing ? {} : { tools: anthropicTools(spec.resultArtifactContract) }),
           ...(spec.reasoningEffort === undefined ? {} : { output_config: { effort: spec.reasoningEffort } }),
         },
       };
@@ -80,7 +86,7 @@ export function createAnthropicMessagesWireAdapter(
   };
 }
 
-function anthropicTools(): readonly unknown[] {
+function anthropicTools(resultArtifactContract?: AgentResultArtifactContract): readonly unknown[] {
   return [
     anthropicTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.list"), WORKSPACE_TOOL_WIRE_DESCRIPTIONS["workspace.list"], {
       path: stringSchema(), maxEntries: integerSchema(), maxDepth: integerSchema(),
@@ -92,7 +98,8 @@ function anthropicTools(): readonly unknown[] {
       query: requiredStringSchema(), path: stringSchema(), maxResults: integerSchema(), maxBytes: integerSchema(),
     }, ["query"]),
     anthropicTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("results.write"), WORKSPACE_TOOL_WIRE_DESCRIPTIONS["results.write"], {
-      path: requiredStringSchema(), content: requiredStringSchema(),
+      path: resultArtifactPathSchema(resultArtifactContract),
+      content: resultArtifactContentSchema(resultArtifactContract),
     }, ["path", "content"]),
   ];
 }

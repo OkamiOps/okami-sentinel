@@ -189,6 +189,7 @@ export function createVulnHunterHttpRunner(
           ...(input.reasoningEffort === undefined
             ? {}
             : { reasoningEffort: input.reasoningEffort }),
+          resultArtifactContract: "vulnhunter-report-v1",
           snapshotRoot: input.snapshotRoot,
           artifactRoot: handoffRoot,
           instructions: input.instructions,
@@ -202,7 +203,11 @@ export function createVulnHunterHttpRunner(
           if (event.type === "cancellation") sessionCancelled = true;
           await input.onEvent?.(event);
         }
-        if (!sessionCancelled) materializeVulnHunterHttpBundle(handoffRoot, input.resultsDir);
+        if (!sessionCancelled) {
+          materializeVulnHunterHttpBundle(handoffRoot, input.resultsDir, {
+            snapshotRoot: input.snapshotRoot,
+          });
+        }
       } finally {
         preflight.dispose();
       }

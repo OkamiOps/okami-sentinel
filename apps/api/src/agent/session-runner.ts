@@ -52,6 +52,12 @@ export async function createAgentSession(
     host,
     upstream,
     adapter: adapterFor(input),
+    ...(input.resultArtifactContract === undefined
+      ? {}
+      : {
+        resultArtifactContract: input.resultArtifactContract,
+        resultArtifactSnapshotRoot: input.snapshotRoot,
+      }),
   });
 }
 
@@ -63,6 +69,9 @@ function adapterFor(input: CreateAgentSessionInput): WireSessionAdapter {
         instructions: input.instructions,
         routeKind: input.routeKind,
         ...(input.reasoningEffort === undefined ? {} : { reasoningEffort: input.reasoningEffort }),
+        ...(input.resultArtifactContract === undefined
+          ? {}
+          : { resultArtifactContract: input.resultArtifactContract }),
       });
     case "openai-responses":
     case "xai-oauth-responses":
@@ -92,7 +101,9 @@ function validateSessionSpec(input: CreateAgentSessionInput): void {
   if (!isNonEmptyString(input.connectionId) || !isNonEmptyString(input.routeKind) ||
       !isNonEmptyString(input.instructions) || !isNonEmptyString(input.snapshotRoot) ||
       !isNonEmptyString(input.artifactRoot) || !isAbortSignal(input.signal) ||
-      !isNonEmptyString(input.model?.id) || input.model.connectionId !== input.connectionId) {
+      !isNonEmptyString(input.model?.id) || input.model.connectionId !== input.connectionId ||
+      (input.resultArtifactContract !== undefined &&
+        input.resultArtifactContract !== "vulnhunter-report-v1")) {
     throw new AgentSessionError("runner_invalid_spec");
   }
   validateAgentSessionLimits(input.limits);

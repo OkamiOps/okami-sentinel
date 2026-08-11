@@ -1,59 +1,74 @@
 import fs from "node:fs";
 import path from "node:path";
 
-export const VULNHUNTER_HTTP_BUNDLE_NAME = "vulnhunter-bundle.json";
+import {
+  MAX_VULNHUNTER_RESULT_REPORT_BYTES,
+  normalizeVulnHunterResultReport,
+  VULNHUNTER_RESULT_ARTIFACT_NAMES,
+  VULNHUNTER_RESULT_ARTIFACT_PATH,
+} from "../agent/result-artifact-contract.js";
 
-export const VULNHUNTER_HTTP_BUNDLE_ARTIFACTS = [
-  "reconnaissance.md",
-  "trace-review.md",
-  "verification.md",
-  "validation-notes.md",
-  "coverage-sweep.md",
-  "README.md",
-  "sentinel-findings.json",
-] as const;
+export const VULNHUNTER_HTTP_BUNDLE_NAME = VULNHUNTER_RESULT_ARTIFACT_PATH;
+export const VULNHUNTER_HTTP_BUNDLE_ARTIFACTS = VULNHUNTER_RESULT_ARTIFACT_NAMES;
 
 type BundleArtifactName = (typeof VULNHUNTER_HTTP_BUNDLE_ARTIFACTS)[number];
 
-const MARKDOWN_ARTIFACTS = new Set<BundleArtifactName>([
-  "reconnaissance.md",
-  "trace-review.md",
-  "verification.md",
-  "validation-notes.md",
-  "coverage-sweep.md",
-  "README.md",
-]);
-const BUNDLE_KEYS = new Set(["schemaVersion", "artifacts"]);
-const ARTIFACT_KEYS = new Set(["name", "content"]);
-const SENTINEL_KEYS = new Set(["schemaVersion", "findings"]);
-const FINDING_KEYS = new Set([
-  "id", "title", "severity", "confidence", "cwe", "summary", "rootCause", "entryPoint",
-  "dataFlow", "impact", "remediation", "severityRationale", "validation", "evidence",
-]);
-const VALIDATION_KEYS = new Set(["summary", "limitations"]);
-const EVIDENCE_KEYS = new Set(["path", "startLine", "endLine", "role", "explanation"]);
-const VALID_EVIDENCE_ROLES = new Set(["source", "entrypoint", "control", "sink", "evidence"]);
-const MAX_BUNDLE_BYTES = 8 * 1024 * 1024;
-const MAX_MARKDOWN_BYTES = 1 * 1024 * 1024;
-const MAX_SENTINEL_BYTES = 2 * 1024 * 1024;
-const MAX_FINDINGS = 1_000;
+interface ValidatedEvidence {
+  path: string;
+  startLine: number;
+  endLine: number;
+  role: string;
+  explanation: string;
+}
+
+interface ValidatedFinding {
+  id: string;
+  title: string;
+  severity: string;
+  confidence: string;
+  cwe: string[];
+  summary: string;
+  rootCause: string;
+  entryPoint: string;
+  dataFlow: string;
+  impact: string;
+  remediation: string;
+  severityRationale: string;
+  validation: { summary: string; limitations: string[] };
+  evidence: ValidatedEvidence[];
+}
+
+interface ValidatedReport {
+  schemaVersion: 1;
+  findings: ValidatedFinding[];
+}
+
+interface MaterializedArtifact {
+  name: BundleArtifactName;
+  content: string;
+}
+
+export interface VulnHunterHttpBundleMaterializationOptions {
+  /** Same immutable snapshot used by the session; required for non-empty reports. */
+  snapshotRoot?: string;
+  /** Test-only observation point while the unpublished staging tree is written. */
+  afterStageWrite?: (name: string) => void;
+}
+
+const MAX_REPORT_BYTES = MAX_VULNHUNTER_RESULT_REPORT_BYTES;
+const MAX_MARKDOWN_BYTES = 3 * 1024 * 1024;
 const NO_FOLLOW = typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
 const READ_NO_FOLLOW = fs.constants.O_RDONLY | NO_FOLLOW;
 const WRITE_NEW_NO_FOLLOW = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | NO_FOLLOW;
 
 export type VulnHunterHttpBundleErrorCode = "bundle_invalid";
 
-/** Stable, secret-free validation failure for the provider's one terminal artifact. */
+/** Stable, secret-free validation failure for the provider's terminal report. */
 export class VulnHunterHttpBundleError extends Error {
   constructor(readonly code: VulnHunterHttpBundleErrorCode = "bundle_invalid") {
     super(code);
     this.name = "VulnHunterHttpBundleError";
   }
-}
-
-interface MaterializedArtifact {
-  name: BundleArtifactName;
-  content: string;
 }
 
 /**
@@ -77,23 +92,35 @@ export function createVulnHunterHttpHandoffRoot(resultsDir: string): string {
 }
 
 /**
- * Validates all bundle bytes before creating any legacy file. The normalizer
- * therefore receives the unchanged seven-file VulnHunter handoff contract.
+ * The provider submits one canonical findings report. Only after the complete
+ * report is validated do we materialize the seven legacy files expected by the
+ * existing VulnHunter normalizer. The generated Markdown never claims coverage
+ * or reconnaissance that the provider did not report.
  */
 export function materializeVulnHunterHttpBundle(
   handoffRoot: string,
   resultsDir: string,
+  options: VulnHunterHttpBundleMaterializationOptions = {},
 ): readonly BundleArtifactName[] {
-  const bundle = readExactBundle(handoffRoot);
-  const artifacts = parseBundle(bundle);
+  const report = readExactReport(handoffRoot, options.snapshotRoot);
+  const artifacts = materializedArtifacts(report);
   assertPrivateDirectory(resultsDir);
   assertEmptyDirectory(resultsDir);
-
-  for (const artifact of artifacts) writeNewPrivateFile(resultsDir, artifact);
-  return artifacts.map((artifact) => artifact.name);
+  const stagingDir = createPrivateStagingDirectory(resultsDir);
+  try {
+    for (const artifact of artifacts) {
+      writeNewPrivateFile(stagingDir, artifact);
+      options.afterStageWrite?.(artifact.name);
+    }
+    publishStagedArtifacts(stagingDir, resultsDir);
+    return artifacts.map((artifact) => artifact.name);
+  } catch {
+    discardPrivateStagingDirectory(stagingDir);
+    invalidBundle();
+  }
 }
 
-function readExactBundle(handoffRoot: string): string {
+function readExactReport(handoffRoot: string, snapshotRoot: string | undefined): ValidatedReport {
   assertPrivateDirectory(handoffRoot);
   let entries: fs.Dirent[];
   try {
@@ -104,95 +131,92 @@ function readExactBundle(handoffRoot: string): string {
   if (entries.length !== 1 || entries[0]?.name !== VULNHUNTER_HTTP_BUNDLE_NAME || !entries[0].isFile()) {
     return invalidBundle();
   }
-  return readPinnedFile(path.join(handoffRoot, VULNHUNTER_HTTP_BUNDLE_NAME), MAX_BUNDLE_BYTES);
-}
-
-function parseBundle(raw: string): readonly MaterializedArtifact[] {
-  let value: unknown;
+  const raw = readPinnedFile(path.join(handoffRoot, VULNHUNTER_HTTP_BUNDLE_NAME), MAX_REPORT_BYTES);
+  let parsed: unknown;
   try {
-    value = JSON.parse(raw);
+    parsed = JSON.parse(raw);
   } catch {
     return invalidBundle();
   }
-  const bundle = object(value);
-  if (bundle === null || !hasOnlyKeys(bundle, BUNDLE_KEYS) || bundle.schemaVersion !== 1 || !Array.isArray(bundle.artifacts)) {
-    return invalidBundle();
-  }
-  if (bundle.artifacts.length !== VULNHUNTER_HTTP_BUNDLE_ARTIFACTS.length) return invalidBundle();
-
-  const names = new Set<string>();
-  const materialized: MaterializedArtifact[] = [];
-  for (const value of bundle.artifacts) {
-    const artifact = object(value);
-    if (artifact === null || !hasOnlyKeys(artifact, ARTIFACT_KEYS) || typeof artifact.name !== "string") {
-      return invalidBundle();
-    }
-    const name = artifact.name as BundleArtifactName;
-    if (!VULNHUNTER_HTTP_BUNDLE_ARTIFACTS.includes(name) || names.has(name)) return invalidBundle();
-    names.add(name);
-    if (MARKDOWN_ARTIFACTS.has(name)) {
-      if (!nonEmptyText(artifact.content, MAX_MARKDOWN_BYTES)) return invalidBundle();
-      materialized.push({ name, content: artifact.content });
-      continue;
-    }
-    if (name !== "sentinel-findings.json") return invalidBundle();
-    const handoff = assertSentinelHandoff(artifact.content);
-    const content = `${JSON.stringify(handoff, null, 2)}\n`;
-    if (Buffer.byteLength(content, "utf8") > MAX_SENTINEL_BYTES) return invalidBundle();
-    materialized.push({ name, content });
-  }
-  if (names.size !== VULNHUNTER_HTTP_BUNDLE_ARTIFACTS.length ||
-      VULNHUNTER_HTTP_BUNDLE_ARTIFACTS.some((name) => !names.has(name))) {
-    return invalidBundle();
-  }
-  return materialized;
+  const report = normalizeVulnHunterResultReport(parsed, snapshotRoot);
+  return report === null ? invalidBundle() : report as unknown as ValidatedReport;
 }
 
-function assertSentinelHandoff(value: unknown): Record<string, unknown> {
-  const handoff = object(value);
-  if (handoff === null || !hasOnlyKeys(handoff, SENTINEL_KEYS) ||
-      (handoff.schemaVersion !== undefined && handoff.schemaVersion !== 1) ||
-      !Array.isArray(handoff.findings)) {
-    return invalidBundle();
-  }
-  if (handoff.findings.length > MAX_FINDINGS) return invalidBundle();
-  const ids = new Set<string>();
-  for (const value of handoff.findings) {
-    const finding = object(value);
-    if (finding === null || !hasOnlyKeys(finding, FINDING_KEYS)) return invalidBundle();
-    const id = requiredText(finding.id, 256);
-    if (ids.has(id)) return invalidBundle();
-    ids.add(id);
-    if (!nonEmptyText(finding.title, 4_096) || !isSeverity(finding.severity) ||
-        !isConfidence(finding.confidence) || !stringArray(finding.cwe, 128, 128, /^CWE-\d+$/i) ||
-        !nonEmptyText(finding.summary, 32_768) || !nonEmptyText(finding.rootCause, 32_768) ||
-        !nonEmptyText(finding.entryPoint, 16_384) || !nonEmptyText(finding.dataFlow, 32_768) ||
-        !nonEmptyText(finding.impact, 32_768) || !nonEmptyText(finding.remediation, 32_768) ||
-        !nonEmptyText(finding.severityRationale, 32_768)) return invalidBundle();
-    assertValidation(finding.validation);
-    assertEvidence(finding.evidence);
-  }
-  return { schemaVersion: 1, findings: handoff.findings };
-}
+function materializedArtifacts(report: ValidatedReport): readonly MaterializedArtifact[] {
+  const canonical = `${JSON.stringify(report)}\n`;
+  if (Buffer.byteLength(canonical, "utf8") > MAX_REPORT_BYTES) invalidBundle();
 
-function assertValidation(value: unknown): void {
-  const validation = object(value);
-  if (validation === null || !hasOnlyKeys(validation, VALIDATION_KEYS) ||
-      !nonEmptyText(validation.summary, 32_768) || !stringArray(validation.limitations, 128, 8_192)) {
+  const counts = new Map<string, number>();
+  for (const finding of report.findings) {
+    const severity = finding.severity.toLowerCase();
+    counts.set(severity, (counts.get(severity) ?? 0) + 1);
+  }
+  const countLine = ["critical", "high", "medium", "low"]
+    .map((severity) => `${severity}: ${counts.get(severity) ?? 0}`)
+    .join(", ");
+  const inventory = report.findings.length === 0
+    ? "- No evidence-backed finding was retained. This is not proof that the repository is vulnerability-free."
+    : report.findings.map((finding) => `- ${inline(finding.id)} — ${inline(finding.title)} (${inline(finding.severity)})`).join("\n");
+  const traces = report.findings.length === 0
+    ? "- No retained finding supplied a source-to-operation trace."
+    : report.findings.flatMap((finding) => [
+      `## ${inline(finding.id)} — ${inline(finding.title)}`,
+      ...finding.evidence.map((evidence) =>
+        `- \`${inline(evidence.path)}:${evidence.startLine}-${evidence.endLine}\` (${inline(evidence.role)}): ${inline(evidence.explanation)}`
+      ),
+    ]).join("\n");
+  const verification = report.findings.length === 0
+    ? "- No candidate survived the provider's static verification. Coverage was not asserted."
+    : report.findings.flatMap((finding) => [
+      `## ${inline(finding.id)} — ${inline(finding.title)}`,
+      `- Root cause: ${inline(finding.rootCause)}`,
+      `- Entry point: ${inline(finding.entryPoint)}`,
+      `- Data flow: ${inline(finding.dataFlow)}`,
+      `- Validation: ${inline(finding.validation.summary)}`,
+    ]).join("\n");
+  const limitations = report.findings.length === 0
+    ? "- Static read-only review only; no runtime validation was performed."
+    : report.findings.flatMap((finding) => [
+      `## ${inline(finding.id)}`,
+      ...finding.validation.limitations.map((limitation) => `- ${inline(limitation)}`),
+    ]).join("\n");
+
+  const artifacts: MaterializedArtifact[] = [
+    {
+      name: "reconnaissance.md",
+      content: "# Reconnaissance\n\nCompatibility artifact generated from the canonical findings report. No independent reconnaissance inventory or trust-boundary coverage claim was supplied by this contract.\n\n" + inventory + "\n",
+    },
+    {
+      name: "trace-review.md",
+      content: "# Trace review\n\nDeterministic projection of evidence attached to retained findings.\n\n" + traces + "\n",
+    },
+    {
+      name: "verification.md",
+      content: "# Verification\n\nDeterministic projection of retained static verification fields.\n\n" + verification + "\n",
+    },
+    {
+      name: "validation-notes.md",
+      content: "# Validation notes\n\nThis was a static, read-only review. No target code, generated code, build, test, exploit, or network validation was executed.\n\n" + limitations + "\n",
+    },
+    {
+      name: "coverage-sweep.md",
+      content: "# Coverage sweep\n\nCoverage was not asserted by the universal HTTP report contract. Zero findings is not a pass, and unreported paths must not be interpreted as reviewed.\n\n" + inventory + "\n",
+    },
+    {
+      name: "README.md",
+      content: `# VulnHunter defensive review\n\nContract: vulnhunter-report-v1\n\nRetained findings: ${report.findings.length} (${countLine}).\n\nThe six Markdown files are server-generated compatibility views of sentinel-findings.json, not independent model artifacts.\n`,
+    },
+    { name: "sentinel-findings.json", content: canonical },
+  ];
+  if (artifacts.some((artifact) => Buffer.byteLength(artifact.content, "utf8") >
+      (artifact.name === "sentinel-findings.json" ? MAX_REPORT_BYTES : MAX_MARKDOWN_BYTES))) {
     invalidBundle();
   }
+  return artifacts;
 }
 
-function assertEvidence(value: unknown): void {
-  if (!Array.isArray(value) || value.length === 0 || value.length > 256) invalidBundle();
-  for (const item of value) {
-    const evidence = object(item);
-    if (evidence === null || !hasOnlyKeys(evidence, EVIDENCE_KEYS) ||
-        !isRepositoryRelativePath(evidence.path) || !positiveInteger(evidence.startLine) ||
-        !positiveInteger(evidence.endLine) || (evidence.endLine as number) < (evidence.startLine as number) ||
-        typeof evidence.role !== "string" || !VALID_EVIDENCE_ROLES.has(evidence.role) ||
-        !nonEmptyText(evidence.explanation, 32_768)) invalidBundle();
-  }
+function inline(value: string): string {
+  return value.replace(/[\r\n\t]+/g, " ").replace(/`/g, "'").trim();
 }
 
 function readPinnedFile(target: string, maxBytes: number): string {
@@ -212,9 +236,8 @@ function readPinnedFile(target: string, maxBytes: number): string {
     }
     const afterRead = fs.fstatSync(descriptor);
     const afterPath = fs.lstatSync(target);
-    if (!sameVersion(opened, afterRead) || !sameVersion(expected, afterPath) || !safeRegularFile(afterPath, maxBytes)) {
-      return invalidBundle();
-    }
+    if (!sameVersion(opened, afterRead) || !sameVersion(expected, afterPath) ||
+        !safeRegularFile(afterPath, maxBytes)) return invalidBundle();
     return content.toString("utf8");
   } catch {
     return invalidBundle();
@@ -250,6 +273,54 @@ function writeNewPrivateFile(resultsDir: string, artifact: MaterializedArtifact)
   }
 }
 
+/**
+ * A directory rename publishes the complete artifact set at once. The target
+ * is a pre-existing empty, private per-scan results directory on the same
+ * filesystem, so a failed staging write or failed rename never exposes a
+ * partial legacy handoff at resultsDir.
+ */
+function publishStagedArtifacts(stagingDir: string, resultsDir: string): void {
+  assertPrivateDirectory(stagingDir);
+  assertPrivateDirectory(resultsDir);
+  assertEmptyDirectory(resultsDir);
+  fs.renameSync(stagingDir, resultsDir);
+  assertPrivateDirectory(resultsDir);
+  const entries = fs.readdirSync(resultsDir, { withFileTypes: true });
+  if (entries.length !== VULNHUNTER_HTTP_BUNDLE_ARTIFACTS.length ||
+      entries.some((entry) => !entry.isFile() || entry.isSymbolicLink() ||
+        !VULNHUNTER_HTTP_BUNDLE_ARTIFACTS.includes(entry.name as BundleArtifactName))) {
+    invalidBundle();
+  }
+}
+
+function createPrivateStagingDirectory(resultsDir: string): string {
+  const resolvedResultsDir = path.resolve(resultsDir);
+  const parent = path.dirname(resolvedResultsDir);
+  assertPrivateDirectory(parent);
+  try {
+    const stagingDir = fs.mkdtempSync(path.join(parent, `.${path.basename(resolvedResultsDir)}.publish-`));
+    fs.chmodSync(stagingDir, 0o700);
+    assertPrivateDirectory(stagingDir);
+    return stagingDir;
+  } catch {
+    return invalidBundle();
+  }
+}
+
+/** Remove only the known files from a private directory we just created. */
+function discardPrivateStagingDirectory(stagingDir: string): void {
+  try {
+    assertPrivateDirectory(stagingDir);
+    const entries = fs.readdirSync(stagingDir, { withFileTypes: true });
+    if (entries.some((entry) => !entry.isFile() || entry.isSymbolicLink() ||
+        !VULNHUNTER_HTTP_BUNDLE_ARTIFACTS.includes(entry.name as BundleArtifactName))) return;
+    for (const entry of entries) fs.unlinkSync(path.join(stagingDir, entry.name));
+    fs.rmdirSync(stagingDir);
+  } catch {
+    // Cleanup must never turn a rejected report into a partial final publish.
+  }
+}
+
 function assertPrivateDirectory(target: string): void {
   try {
     const info = fs.lstatSync(target);
@@ -274,56 +345,6 @@ function safeRegularFile(info: fs.Stats, maxBytes: number): boolean {
 function sameVersion(left: fs.Stats, right: fs.Stats): boolean {
   return left.dev === right.dev && left.ino === right.ino && left.size === right.size &&
     left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
-}
-
-function object(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
-}
-
-function hasOnlyKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
-  return Object.keys(value).every((key) => allowed.has(key));
-}
-
-function requiredText(value: unknown, maxBytes: number): string {
-  if (!nonEmptyText(value, maxBytes)) invalidBundle();
-  return value;
-}
-
-function nonEmptyText(value: unknown, maxBytes: number): value is string {
-  return typeof value === "string" && value.trim().length > 0 &&
-    Buffer.byteLength(value, "utf8") <= maxBytes && !value.includes("\u0000");
-}
-
-function stringArray(
-  value: unknown,
-  maxItems: number,
-  maxTextBytes: number,
-  pattern?: RegExp,
-): value is string[] {
-  return Array.isArray(value) && value.length <= maxItems && value.every((item) =>
-    nonEmptyText(item, maxTextBytes) && (pattern === undefined || pattern.test(item)),
-  );
-}
-
-function isSeverity(value: unknown): boolean {
-  return typeof value === "string" && /^(?:critical|high|medium|low)$/i.test(value);
-}
-
-function isConfidence(value: unknown): boolean {
-  return typeof value === "string" && /^(?:high|medium|low)$/i.test(value);
-}
-
-function positiveInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
-}
-
-function isRepositoryRelativePath(value: unknown): boolean {
-  if (!nonEmptyText(value, 4_096)) return false;
-  const normalized = value.replaceAll("\\", "/");
-  return !normalized.startsWith("/") && !/^[A-Za-z]:\//.test(normalized) &&
-    !normalized.split("/").some((part) => part === "" || part === "." || part === "..");
 }
 
 function invalidBundle(): never {

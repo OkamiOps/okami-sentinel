@@ -170,11 +170,42 @@ test("OpenAI Responses closes the tool surface after results.write is consumed",
   }), { code: "agent_protocol_error" });
 });
 
+test("OpenAI Responses keeps the VulnHunter result tool on the strict string contract", () => {
+  const structured = createOpenAiResponsesWireAdapter({
+    model: model("generic-responses-model"),
+    instructions: "Submit one structured result artifact.",
+    resultArtifactContract: "vulnhunter-report-v1",
+  });
+  const legacy = createOpenAiResponsesWireAdapter({
+    model: model("generic-responses-model"),
+    instructions: "Submit one text result artifact.",
+  });
+
+  const structuredTool = responsesBody(structured.nextRequest([])).tools[3]!;
+  const legacyTool = responsesBody(legacy.nextRequest([])).tools[3]!;
+  const structuredProperties = (structuredTool.parameters as { properties: Record<string, unknown> }).properties;
+  const legacyProperties = (legacyTool.parameters as { properties: Record<string, unknown> }).properties;
+
+  assert.equal(structuredTool.strict, true);
+  assert.deepEqual(structuredProperties.content, { type: "string", minLength: 1 });
+  assert.deepEqual(structuredProperties.path, { type: "string", minLength: 1 });
+  assert.equal(legacyTool.strict, true);
+  assert.deepEqual(legacyProperties.content, { type: "string", minLength: 1 });
+  assert.equal(responsesBody(structured.nextRequest([{
+    callId: "invalid-write",
+    name: "results.write",
+    content: JSON.stringify({ error: "tool_argument_invalid" }),
+    ok: false,
+  }])).tools.length, 4);
+});
+
 function responsesBody(request: AgentWireRequest): {
-  tools: Array<{ name: string; description: string }>;
+  tools: Array<{ name: string; description: string; strict?: boolean; parameters?: unknown }>;
 } {
   assert.equal(request.operation, "responses");
-  return request.body as { tools: Array<{ name: string; description: string }> };
+  return request.body as {
+    tools: Array<{ name: string; description: string; strict?: boolean; parameters?: unknown }>;
+  };
 }
 
 function responseBody(request: AgentWireRequest): Record<string, unknown> {

@@ -5,6 +5,11 @@ import type {
   SafeProviderErrorCode,
 } from "@csb/shared";
 
+import {
+  normalizeResultArtifactInput,
+  type AgentResultArtifactContract,
+} from "./result-artifact-contract.js";
+
 export const WORKSPACE_TOOL_NAMES = [
   "workspace.list",
   "workspace.read",
@@ -102,6 +107,8 @@ export interface AgentSessionSpec {
   model: ProviderModel;
   /** Optional only when the exact selected model published this value. */
   reasoningEffort?: string;
+  /** Server-selected artifact contract; never inferred from provider/model. */
+  resultArtifactContract?: AgentResultArtifactContract;
   snapshotRoot: string;
   /** Existing, unique 0700 directory reserved by the session owner. */
   artifactRoot: string;
@@ -228,6 +235,8 @@ export interface AgentToolResult {
   callId: string;
   name: WorkspaceToolName;
   content: string;
+  /** False only for a safe pre-I/O validation failure the model may correct. */
+  ok?: boolean;
 }
 
 export interface NormalizedModelReply {
@@ -248,6 +257,9 @@ export interface ConstrainedWireSessionOptions {
   host: WorkspaceToolHost;
   upstream: AgentUpstream;
   adapter: WireSessionAdapter;
+  resultArtifactContract?: AgentResultArtifactContract;
+  /** Snapshot boundary used to prove report evidence before artifact I/O. */
+  resultArtifactSnapshotRoot?: string;
   now?: () => number;
   timer?: AgentSessionTimer;
 }
@@ -386,17 +398,29 @@ class ConstrainedWireSession implements AgentSession {
           yield { type: "tool", phase: "requested", callId: call.id, name: call.name };
           const remainingOutputBytes = this.#options.limits.maxOutputBytes - outputBytes;
           let result: WorkspaceToolResult;
+          let recoveredBeforeIo = false;
+          let hostCallStarted = false;
           try {
-            if (this.#options.host.minimumOutputBytes(call.name, call.input) > remainingOutputBytes) {
+            const normalizedInput = call.name === "results.write"
+              ? normalizeResultArtifactInput(
+                call.input,
+                this.#options.resultArtifactContract,
+                this.#options.resultArtifactSnapshotRoot,
+              )
+              : call.input;
+            if (normalizedInput === null) throw new AgentSessionError("tool_argument_invalid");
+            if (this.#options.host.minimumOutputBytes(call.name, normalizedInput) > remainingOutputBytes) {
               throw new AgentSessionError("agent_output_byte_limit");
             }
-            result = await this.#options.host.call(call.name, call.input, {
+            hostCallStarted = true;
+            result = await this.#options.host.call(call.name, normalizedInput, {
               maxOutputBytes: remainingOutputBytes,
             });
           } catch (error) {
-            const recovered = recoverableWorkspaceToolFailure(call, error);
+            const recovered = recoverableWorkspaceToolFailure(call, error, !hostCallStarted);
             if (recovered === null) throw error;
             result = recovered;
+            recoveredBeforeIo = true;
           }
           this.#throwIfStopped();
           const resultBytes = Buffer.byteLength(result.content, "utf8");
@@ -404,7 +428,12 @@ class ConstrainedWireSession implements AgentSession {
             throw new AgentSessionError("agent_output_byte_limit");
           }
           outputBytes += resultBytes;
-          toolResults.push({ callId: call.id, name: call.name, content: result.content });
+          toolResults.push({
+            callId: call.id,
+            name: call.name,
+            content: result.content,
+            ...(recoveredBeforeIo ? { ok: false } : {}),
+          });
           yield { type: "tool", phase: "result", callId: call.id, name: call.name };
           if (result.artifact !== undefined) {
             yield { type: "artifact", path: result.artifact.path, bytes: result.artifact.bytes };
@@ -482,11 +511,14 @@ const RECOVERABLE_WORKSPACE_TOOL_ERRORS = new Set<AgentSessionErrorCode>([
 function recoverableWorkspaceToolFailure(
   call: AgentToolCall,
   error: unknown,
+  beforeHostIo = false,
 ): WorkspaceToolResult | null {
-  if (call.name === "results.write" || !(error instanceof AgentSessionError) ||
+  if ((call.name === "results.write" && !beforeHostIo) || !(error instanceof AgentSessionError) ||
       !RECOVERABLE_WORKSPACE_TOOL_ERRORS.has(error.code)) return null;
   const hint = error.code === "tool_path_denied"
     ? "Use '.' for the virtual root or a repository-relative path."
+    : call.name === "results.write"
+      ? "Use the declared result path and pass one JSON string matching the declared findings report."
     : "Correct the tool arguments and stay within the declared read limits.";
   return { content: JSON.stringify({ error: error.code, hint }) };
 }

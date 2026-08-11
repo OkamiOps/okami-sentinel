@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -477,6 +477,217 @@ test("the constrained session returns a safe workspace path error so the model c
   assert.equal(requestedWith[2]![0]!.content, "safe read");
 });
 
+test("the constrained session corrects a malformed terminal report before any artifact I/O", async () => {
+  const requestedWith: AgentToolResult[][] = [];
+  const validReport = {
+    schemaVersion: 1,
+    findings: [],
+  };
+  const replies: NormalizedModelReply[] = [
+    {
+      toolCalls: [{
+        id: "write-invalid",
+        name: "results.write",
+        input: { path: "sentinel-findings.json", content: "{malformed" },
+      }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    {
+      toolCalls: [{
+        id: "write-valid",
+        name: "results.write",
+        input: { path: "sentinel-findings.json", content: JSON.stringify(validReport) },
+      }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    { toolCalls: [], text: "complete", structured: { status: "complete" }, usage: null },
+  ];
+  const hostInputs: unknown[] = [];
+  const session = createConstrainedWireSession({
+    limits: DEFAULT_AGENT_LIMITS,
+    signal: new AbortController().signal,
+    resultArtifactContract: "vulnhunter-report-v1",
+    host: {
+      minimumOutputBytes() {
+        return 0;
+      },
+      async call(_name, input) {
+        hostInputs.push(input);
+        return { content: "artifact-written" };
+      },
+    },
+    upstream: { async request() { return {}; } },
+    adapter: transcriptAdapter(replies, requestedWith),
+  });
+
+  await collect(session.run(), []);
+
+  assert.equal(hostInputs.length, 1);
+  assert.deepEqual(hostInputs[0], {
+    path: "sentinel-findings.json",
+    content: JSON.stringify(validReport),
+  });
+  assert.equal(requestedWith[1]![0]!.ok, false);
+  assert.match(requestedWith[1]![0]!.content, /tool_argument_invalid/);
+  assert.equal(requestedWith[1]![0]!.content.includes("{malformed"), false);
+  assert.equal(requestedWith[2]![0]!.ok, undefined);
+});
+
+test("the constrained session rejects nonexistent and out-of-range evidence before artifact I/O", async (t) => {
+  const fixture = await fixtureRoots("runner-vulnhunter-evidence");
+  t.after(fixture.cleanup);
+  const report = (path: string, startLine: number, endLine = startLine) => ({
+    schemaVersion: 1,
+    findings: [{
+      id: "VULN-001",
+      title: "Synthetic evidence boundary",
+      severity: "high",
+      confidence: "medium",
+      cwe: ["CWE-20"],
+      summary: "Synthetic finding used to verify the evidence boundary.",
+      rootCause: "Unvalidated input reaches a sensitive operation.",
+      entryPoint: "HTTP request field",
+      dataFlow: "request -> validation -> sink",
+      impact: "Unexpected behavior.",
+      remediation: "Validate the input before the sink.",
+      severityRationale: "A reachable sensitive operation is affected.",
+      validation: {
+        summary: "Static trace retained after defensive review.",
+        limitations: ["Static inspection only."],
+      },
+      evidence: [{
+        path,
+        startLine,
+        endLine,
+        role: "sink",
+        explanation: "The synthetic sink is reached here.",
+      }],
+    }],
+  });
+  const requestedWith: AgentToolResult[][] = [];
+  const replies: NormalizedModelReply[] = [
+    {
+      toolCalls: [{
+        id: "write-missing",
+        name: "results.write",
+        input: {
+          path: "sentinel-findings.json",
+          content: JSON.stringify(report("src/missing.ts", 1)),
+        },
+      }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    {
+      toolCalls: [{
+        id: "write-out-of-range",
+        name: "results.write",
+        input: {
+          path: "sentinel-findings.json",
+          content: JSON.stringify(report("index.ts", 99)),
+        },
+      }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    {
+      toolCalls: [{
+        id: "write-valid-evidence",
+        name: "results.write",
+        input: {
+          path: "sentinel-findings.json",
+          content: JSON.stringify(report("index.ts", 1)),
+        },
+      }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    { toolCalls: [], text: "complete", structured: { status: "complete" }, usage: null },
+  ];
+  const hostInputs: unknown[] = [];
+  const session = createConstrainedWireSession({
+    limits: DEFAULT_AGENT_LIMITS,
+    signal: new AbortController().signal,
+    resultArtifactContract: "vulnhunter-report-v1",
+    resultArtifactSnapshotRoot: fixture.snapshotRoot,
+    host: {
+      minimumOutputBytes() {
+        return 0;
+      },
+      async call(_name, input) {
+        hostInputs.push(input);
+        return { content: "artifact-written" };
+      },
+    },
+    upstream: { async request() { return {}; } },
+    adapter: transcriptAdapter(replies, requestedWith),
+  });
+
+  await collect(session.run(), []);
+
+  assert.equal(hostInputs.length, 1);
+  assert.deepEqual(hostInputs[0], {
+    path: "sentinel-findings.json",
+    content: JSON.stringify(report("index.ts", 1)),
+  });
+  assert.equal(requestedWith[1]![0]!.ok, false);
+  assert.equal(requestedWith[2]![0]!.ok, false);
+  assert.equal(requestedWith[3]![0]!.ok, undefined);
+});
+
+test("the constrained session rejects an unapproved report path before artifact I/O", async () => {
+  const requestedWith: AgentToolResult[][] = [];
+  const replies: NormalizedModelReply[] = [
+    {
+      toolCalls: [{
+        id: "write-wrong-path",
+        name: "results.write",
+        input: {
+          path: "other-report.json",
+          content: JSON.stringify({ schemaVersion: 1, findings: [] }),
+        },
+      }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    { toolCalls: [], text: "complete", structured: { status: "complete" }, usage: null },
+  ];
+  let minimumOutputCalls = 0;
+  let hostCalls = 0;
+  const session = createConstrainedWireSession({
+    limits: DEFAULT_AGENT_LIMITS,
+    signal: new AbortController().signal,
+    resultArtifactContract: "vulnhunter-report-v1",
+    host: {
+      minimumOutputBytes() {
+        minimumOutputCalls += 1;
+        return 0;
+      },
+      async call() {
+        hostCalls += 1;
+        return { content: "artifact-written" };
+      },
+    },
+    upstream: { async request() { return {}; } },
+    adapter: transcriptAdapter(replies, requestedWith),
+  });
+
+  await collect(session.run(), []);
+
+  assert.equal(minimumOutputCalls, 0);
+  assert.equal(hostCalls, 0);
+  assert.equal(requestedWith[1]![0]!.ok, false);
+  assert.match(requestedWith[1]![0]!.content, /tool_argument_invalid/);
+});
+
 test("the constrained session rejects a call after results.write before host I/O", async () => {
   const toolCalls: string[] = [];
   const session = createConstrainedWireSession({
@@ -609,6 +820,38 @@ test("OpenAI Responses and Anthropic Messages complete the same constrained arti
   const anthropicEvents: unknown[] = [];
   await collect(anthropicSession.run(), anthropicEvents);
   assert.equal(anthropicEvents.some((event) => isArtifact(event, "report.json")), true);
+});
+
+test("Anthropic Messages retries a malformed report and writes only the corrected JSON string", async (t) => {
+  const fixture = await fixtureRoots("anthropic-vulnhunter-report");
+  t.after(fixture.cleanup);
+  const report = {
+    schemaVersion: 1,
+    findings: [],
+  };
+  const upstream = fakeTranscript([
+    anthropicToolCall("results.write", {
+      path: "sentinel-findings.json",
+      content: "{malformed",
+    }, "write-invalid"),
+    anthropicToolCall("results.write", {
+      path: "sentinel-findings.json",
+      content: JSON.stringify(report),
+    }, "write-valid"),
+    anthropicFinalStructured({ status: "ok" }),
+  ]);
+  const session = await createAgentSession({
+    ...sessionSpec(fixture, "anthropic-messages", "anthropic-api"),
+    resultArtifactContract: "vulnhunter-report-v1",
+    probe: capability(),
+  }, upstream);
+
+  await collect(session.run(), []);
+
+  const written = JSON.parse(
+    await readFile(join(fixture.artifactRoot, "sentinel-findings.json"), "utf8"),
+  ) as unknown;
+  assert.deepEqual(written, report);
 });
 
 test("wire operations are route-agnostic for custom, MiMo, and xAI OAuth sessions", async (t) => {

@@ -10,6 +10,11 @@ import {
   type WireSessionAdapter,
 } from "./session-types.js";
 import {
+  resultArtifactContentSchema,
+  resultArtifactPathSchema,
+  type AgentResultArtifactContract,
+} from "./result-artifact-contract.js";
+import {
   WORKSPACE_TOOL_WIRE_CODEC,
   WORKSPACE_TOOL_WIRE_DESCRIPTIONS,
 } from "./workspace-tool-wire-codec.js";
@@ -19,6 +24,7 @@ export interface OpenAiResponsesSessionSpec {
   model: ProviderModel;
   instructions: string;
   reasoningEffort?: string;
+  resultArtifactContract?: AgentResultArtifactContract;
 }
 
 /** Translates the four fixed local tools to OpenAI Responses wire objects. */
@@ -31,7 +37,7 @@ export function createOpenAiResponsesWireAdapter(
 
   return {
     nextRequest(toolResults: readonly AgentToolResult[]): AgentWireRequest {
-      if (toolResults.some((result) => result.name === "results.write")) finalizing = true;
+      if (toolResults.some((result) => result.name === "results.write" && result.ok !== false)) finalizing = true;
       const input = toolResults.length === 0
         ? [{ role: "user", content: spec.instructions }]
         : toolResults.map((result) => ({
@@ -45,7 +51,7 @@ export function createOpenAiResponsesWireAdapter(
           model: spec.model.id,
           ...(previousResponseId === undefined ? { instructions: spec.instructions } : {}),
           input,
-          ...(finalizing ? {} : { tools: openAiResponsesTools() }),
+          ...(finalizing ? {} : { tools: openAiResponsesTools(spec.resultArtifactContract) }),
           ...(previousResponseId === undefined ? {} : { previous_response_id: previousResponseId }),
           ...(spec.reasoningEffort === undefined ? {} : { reasoning: { effort: spec.reasoningEffort } }),
         },
@@ -78,7 +84,7 @@ export function createOpenAiResponsesWireAdapter(
   };
 }
 
-function openAiResponsesTools(): readonly unknown[] {
+function openAiResponsesTools(resultArtifactContract?: AgentResultArtifactContract): readonly unknown[] {
   return [
     responseTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.list"), WORKSPACE_TOOL_WIRE_DESCRIPTIONS["workspace.list"], {
       path: stringSchema(), maxEntries: integerSchema(), maxDepth: integerSchema(),
@@ -90,7 +96,8 @@ function openAiResponsesTools(): readonly unknown[] {
       query: requiredStringSchema(), path: stringSchema(), maxResults: integerSchema(), maxBytes: integerSchema(),
     }, ["query"]),
     responseTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("results.write"), WORKSPACE_TOOL_WIRE_DESCRIPTIONS["results.write"], {
-      path: requiredStringSchema(), content: requiredStringSchema(),
+      path: resultArtifactPathSchema(resultArtifactContract),
+      content: resultArtifactContentSchema(resultArtifactContract),
     }, ["path", "content"]),
   ];
 }

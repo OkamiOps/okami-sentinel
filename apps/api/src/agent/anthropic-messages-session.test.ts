@@ -105,11 +105,40 @@ test("Anthropic Messages closes the tool surface after results.write is consumed
   }), { code: "agent_protocol_error" });
 });
 
+test("Anthropic Messages keeps the VulnHunter result tool on the universal string contract", () => {
+  const structured = createAnthropicMessagesWireAdapter({
+    model: model("generic-messages-model"),
+    instructions: "Submit one structured result artifact.",
+    resultArtifactContract: "vulnhunter-report-v1",
+  });
+  const legacy = createAnthropicMessagesWireAdapter({
+    model: model("generic-messages-model"),
+    instructions: "Submit one text result artifact.",
+  });
+
+  const structuredTool = messagesBody(structured.nextRequest([])).tools[3]!;
+  const legacyTool = messagesBody(legacy.nextRequest([])).tools[3]!;
+  const structuredProperties = (structuredTool.input_schema as { properties: Record<string, unknown> }).properties;
+  const legacyProperties = (legacyTool.input_schema as { properties: Record<string, unknown> }).properties;
+
+  assert.deepEqual(structuredProperties.content, { type: "string", minLength: 1 });
+  assert.deepEqual(structuredProperties.path, { type: "string", minLength: 1 });
+  assert.deepEqual(legacyProperties.content, { type: "string", minLength: 1 });
+  assert.equal(messagesBody(structured.nextRequest([{
+    callId: "invalid-write",
+    name: "results.write",
+    content: JSON.stringify({ error: "tool_argument_invalid" }),
+    ok: false,
+  }])).tools.length, 4);
+});
+
 function messagesBody(request: AgentWireRequest): {
-  tools: Array<{ name: string; description: string }>;
+  tools: Array<{ name: string; description: string; input_schema?: unknown }>;
 } {
   assert.equal(request.operation, "messages");
-  return request.body as { tools: Array<{ name: string; description: string }> };
+  return request.body as {
+    tools: Array<{ name: string; description: string; input_schema?: unknown }>;
+  };
 }
 
 function model(id: string, patch: Partial<ProviderModel> = {}): ProviderModel {

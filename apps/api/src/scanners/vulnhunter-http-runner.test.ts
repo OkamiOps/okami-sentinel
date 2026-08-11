@@ -303,17 +303,7 @@ function completedSession(events: AgentEvent[] = []): AgentSession {
 function writeValidBundle(artifactRoot: string): void {
   fs.writeFileSync(path.join(artifactRoot, VULNHUNTER_HTTP_BUNDLE_NAME), JSON.stringify({
     schemaVersion: 1,
-    artifacts: [
-      ...[
-        "reconnaissance.md",
-        "trace-review.md",
-        "verification.md",
-        "validation-notes.md",
-        "coverage-sweep.md",
-        "README.md",
-      ].map((name) => ({ name, content: `# ${name}\nDefensive static evidence.` })),
-      { name: "sentinel-findings.json", content: { schemaVersion: 1, findings: [] } },
-    ],
+    findings: [],
   }), { mode: 0o600 });
 }
 
@@ -1001,7 +991,7 @@ test("VulnHunter direct xAI OAuth preserves bounded external cancellation", asyn
   }
 });
 
-test("VulnHunter HTTP accepts a generic tool transcript with one terminal bundle and keeps legacy normalization", async () => {
+test("VulnHunter HTTP accepts one universal findings report and keeps legacy normalization", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-vulnhunter-http-artifacts-"));
   const snapshotRoot = path.join(root, "vulnhunter-snapshot");
   const resultsDir = path.join(root, "vulnhunter", "results");
@@ -1015,6 +1005,7 @@ test("VulnHunter HTTP accepts a generic tool transcript with one terminal bundle
       assert.match(spec.instructions, /workspace root.*"\."/i);
       assert.match(spec.instructions, /results\.write exactly once/i);
       assert.match(spec.instructions, new RegExp(VULNHUNTER_HTTP_BUNDLE_NAME));
+      assert.equal(spec.resultArtifactContract, "vulnhunter-report-v1");
       writeValidBundle(spec.artifactRoot);
       return completedSession([
         { type: "tool", phase: "requested", callId: "list-1", name: "workspace.list" },
