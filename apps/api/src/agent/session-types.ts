@@ -385,12 +385,19 @@ class ConstrainedWireSession implements AgentSession {
           toolCalls += 1;
           yield { type: "tool", phase: "requested", callId: call.id, name: call.name };
           const remainingOutputBytes = this.#options.limits.maxOutputBytes - outputBytes;
-          if (this.#options.host.minimumOutputBytes(call.name, call.input) > remainingOutputBytes) {
-            throw new AgentSessionError("agent_output_byte_limit");
+          let result: WorkspaceToolResult;
+          try {
+            if (this.#options.host.minimumOutputBytes(call.name, call.input) > remainingOutputBytes) {
+              throw new AgentSessionError("agent_output_byte_limit");
+            }
+            result = await this.#options.host.call(call.name, call.input, {
+              maxOutputBytes: remainingOutputBytes,
+            });
+          } catch (error) {
+            const recovered = recoverableWorkspaceToolFailure(call, error);
+            if (recovered === null) throw error;
+            result = recovered;
           }
-          const result = await this.#options.host.call(call.name, call.input, {
-            maxOutputBytes: remainingOutputBytes,
-          });
           this.#throwIfStopped();
           const resultBytes = Buffer.byteLength(result.content, "utf8");
           if (outputBytes + resultBytes > this.#options.limits.maxOutputBytes) {
@@ -463,6 +470,25 @@ function validateTerminalResultsWrite(toolCalls: readonly AgentToolCall[]): void
     }
     sawResultsWrite = true;
   }
+}
+
+const RECOVERABLE_WORKSPACE_TOOL_ERRORS = new Set<AgentSessionErrorCode>([
+  "tool_path_denied",
+  "tool_argument_invalid",
+  "tool_read_limit",
+  "tool_output_limit",
+]);
+
+function recoverableWorkspaceToolFailure(
+  call: AgentToolCall,
+  error: unknown,
+): WorkspaceToolResult | null {
+  if (call.name === "results.write" || !(error instanceof AgentSessionError) ||
+      !RECOVERABLE_WORKSPACE_TOOL_ERRORS.has(error.code)) return null;
+  const hint = error.code === "tool_path_denied"
+    ? "Use '.' for the virtual root or a repository-relative path."
+    : "Correct the tool arguments and stay within the declared read limits.";
+  return { content: JSON.stringify({ error: error.code, hint }) };
 }
 
 const REMOTE_CANCELLATION_GRACE_MS = 100;

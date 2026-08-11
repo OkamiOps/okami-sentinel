@@ -7,6 +7,7 @@ import type { ModelCapabilities, ProviderModel } from "@csb/shared";
 import { createAgentSession, DEFAULT_AGENT_LIMITS } from "./session-runner.js";
 import { probeOpenAiChatSession } from "./openai-chat-session.js";
 import {
+  AgentSessionError,
   createConstrainedWireSession,
   type AgentSessionTimer,
   type AgentToolCall,
@@ -432,6 +433,48 @@ test("the constrained session executes a read before a terminal results.write in
       { callId: "write-1", name: "results.write", content: "results.write-result" },
     ],
   ]);
+});
+
+test("the constrained session returns a safe workspace path error so the model can correct it", async () => {
+  const requestedWith: AgentToolResult[][] = [];
+  const replies: NormalizedModelReply[] = [
+    {
+      toolCalls: [{ id: "read-invalid", name: "workspace.read", input: { path: "/private/secret.ts" } }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    {
+      toolCalls: [{ id: "read-valid", name: "workspace.read", input: { path: "index.ts" } }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    { toolCalls: [], text: "complete", structured: null, usage: null },
+  ];
+  let hostCalls = 0;
+  const session = createConstrainedWireSession({
+    limits: DEFAULT_AGENT_LIMITS,
+    signal: new AbortController().signal,
+    host: {
+      minimumOutputBytes() {
+        return 0;
+      },
+      async call() {
+        hostCalls += 1;
+        if (hostCalls === 1) throw new AgentSessionError("tool_path_denied");
+        return { content: "safe read" };
+      },
+    },
+    upstream: { async request() { return {}; } },
+    adapter: transcriptAdapter(replies, requestedWith),
+  });
+
+  await collect(session.run(), []);
+  assert.equal(hostCalls, 2);
+  assert.match(requestedWith[1]![0]!.content, /tool_path_denied/);
+  assert.equal(requestedWith[1]![0]!.content.includes("/private/secret.ts"), false);
+  assert.equal(requestedWith[2]![0]!.content, "safe read");
 });
 
 test("the constrained session rejects a call after results.write before host I/O", async () => {
