@@ -283,6 +283,24 @@ test("Portable Codex Security rejects the whole handoff for every unsafe primary
   }
 });
 
+test("Portable Codex Security rejects a lexical snapshot root symlink before following it", () => {
+  const fixture = createFixture();
+  const outsideRoot = path.join(fixture.root, "outside-snapshot");
+  try {
+    fs.renameSync(fixture.snapshotRoot, outsideRoot);
+    fs.symlinkSync(outsideRoot, fixture.snapshotRoot, "dir");
+    writeHandoff(fixture, [validFinding()]);
+
+    assert.throws(
+      () => normalizePortableCodexSecurityWorkspace(fixture.resultsDir, fixture.outputDir),
+      /snapshot root symlink/i,
+    );
+    assert.equal(fs.existsSync(path.join(fixture.outputDir, "findings.json")), false);
+  } finally {
+    removeFixture(fixture.root);
+  }
+});
+
 test("Portable Codex Security rejects a handoff above its byte limit before parsing", () => {
   const fixture = createFixture();
   try {
@@ -394,6 +412,51 @@ test("Portable Codex Security rejects normalized output beyond its cumulative by
       () => normalizePortableCodexSecurityWorkspace(fixture.resultsDir, fixture.outputDir),
       /output byte budget/i,
     );
+    assert.equal(fs.existsSync(path.join(fixture.outputDir, "findings.json")), false);
+  } finally {
+    removeFixture(fixture.root);
+  }
+});
+
+test("Portable Codex Security debits output budget while hydrating instead of retaining every snippet", () => {
+  const fixture = createFixture();
+  const readCeiling = 80;
+  let evidenceReads = 0;
+  try {
+    fs.writeFileSync(
+      path.join(fixture.snapshotRoot, "src", "max-snippet.ts"),
+      "x".repeat(MAX_SNIPPET_BYTES),
+    );
+    const findings = Array.from({ length: MAX_FINDINGS }, (_, findingIndex) => ({
+      ...validFinding(),
+      id: `PCS-BUDGET-${findingIndex + 1}`,
+      anchors: Array.from({ length: MAX_ANCHORS_PER_FINDING }, () => ({
+        path: "src/max-snippet.ts",
+        startLine: 1,
+        endLine: 1,
+      })),
+    }));
+    writeHandoff(fixture, findings);
+
+    assert.throws(
+      () => normalizePortableCodexSecurityWorkspace(fixture.resultsDir, fixture.outputDir, {
+        fileSystem: {
+          openSync: fs.openSync,
+          fstatSync: fs.fstatSync,
+          lstatSync: fs.lstatSync,
+          closeSync: fs.closeSync,
+          readSync: ((...args: unknown[]) => {
+            evidenceReads += 1;
+            if (evidenceReads > readCeiling) {
+              throw new Error("read past incremental output budget");
+            }
+            return Reflect.apply(fs.readSync, fs, args) as number;
+          }) as typeof fs.readSync,
+        },
+      }),
+      /output byte budget/i,
+    );
+    assert.ok(evidenceReads <= readCeiling);
     assert.equal(fs.existsSync(path.join(fixture.outputDir, "findings.json")), false);
   } finally {
     removeFixture(fixture.root);

@@ -83,10 +83,32 @@ interface CanonicalAnchor {
   code: string;
 }
 
+interface PinnedSnapshotRoot {
+  lexicalPath: string;
+  canonicalPath: string;
+  lexicalInfo: fs.Stats;
+  canonicalInfo: fs.Stats;
+}
+
 export class PortableCodexSecurityArtifactError extends Error {
   constructor(reason: string) {
     super(`Portable Codex Security artifact rejected: ${reason}`);
     this.name = "PortableCodexSecurityArtifactError";
+  }
+}
+
+class PortableCodexSecurityOutputBudget {
+  private usedBytes = 0;
+
+  debit(value: string): void {
+    const bytes = Buffer.byteLength(value, "utf8");
+    if (
+      bytes >
+        PORTABLE_CODEX_SECURITY_NORMALIZATION_LIMITS.maxOutputBytes - this.usedBytes
+    ) {
+      throw new PortableCodexSecurityArtifactError("output byte budget exceeded");
+    }
+    this.usedBytes += bytes;
   }
 }
 
@@ -121,6 +143,7 @@ function redactPublicText(
   value: string,
   field: string,
   redactor: Pick<SecretRedactor, "redactText">,
+  outputBudget: PortableCodexSecurityOutputBudget,
   byteLimit: number = PORTABLE_CODEX_SECURITY_NORMALIZATION_LIMITS.maxTextFieldBytes,
 ): string {
   let redacted: string;
@@ -135,6 +158,7 @@ function redactPublicText(
   ) {
     throw new PortableCodexSecurityArtifactError(`redacted ${field} exceeds its byte limit`);
   }
+  outputBudget.debit(redacted);
   return redacted;
 }
 
@@ -142,9 +166,12 @@ function redactOptionalText(
   value: unknown,
   field: string,
   redactor: Pick<SecretRedactor, "redactText">,
+  outputBudget: PortableCodexSecurityOutputBudget,
 ): string | null {
   const bounded = boundedText(value, field);
-  return bounded === null ? null : redactPublicText(bounded, field, redactor);
+  return bounded === null
+    ? null
+    : redactPublicText(bounded, field, redactor, outputBudget);
 }
 
 function positiveInteger(value: unknown, field: string): number {
@@ -217,6 +244,68 @@ function sameVersion(first: fs.Stats, second: fs.Stats): boolean {
   return first.dev === second.dev && first.ino === second.ino &&
     first.size === second.size && first.mtimeMs === second.mtimeMs &&
     first.ctimeMs === second.ctimeMs;
+}
+
+function pinSnapshotRoot(snapshotRoot: string): PinnedSnapshotRoot {
+  let lexicalInfo: fs.Stats;
+  try {
+    lexicalInfo = fs.lstatSync(snapshotRoot);
+  } catch {
+    throw new PortableCodexSecurityArtifactError("snapshot root is missing");
+  }
+  if (lexicalInfo.isSymbolicLink()) {
+    throw new PortableCodexSecurityArtifactError("snapshot root symlink");
+  }
+  if (!lexicalInfo.isDirectory()) {
+    throw new PortableCodexSecurityArtifactError("snapshot root is missing");
+  }
+
+  let canonicalPath: string;
+  let canonicalInfo: fs.Stats;
+  try {
+    canonicalPath = fs.realpathSync(snapshotRoot);
+    canonicalInfo = fs.lstatSync(canonicalPath);
+  } catch {
+    throw new PortableCodexSecurityArtifactError("snapshot root is missing");
+  }
+  if (
+    canonicalInfo.isSymbolicLink() ||
+    !canonicalInfo.isDirectory() ||
+    !sameVersion(lexicalInfo, canonicalInfo)
+  ) {
+    throw new PortableCodexSecurityArtifactError("snapshot root identity changed");
+  }
+  return {
+    lexicalPath: snapshotRoot,
+    canonicalPath,
+    lexicalInfo,
+    canonicalInfo,
+  };
+}
+
+function assertSnapshotRootUnchanged(root: PinnedSnapshotRoot): void {
+  let lexicalInfo: fs.Stats;
+  let canonicalPath: string;
+  let canonicalInfo: fs.Stats;
+  try {
+    lexicalInfo = fs.lstatSync(root.lexicalPath);
+    canonicalPath = fs.realpathSync(root.lexicalPath);
+    canonicalInfo = fs.lstatSync(canonicalPath);
+  } catch {
+    throw new PortableCodexSecurityArtifactError("snapshot root identity changed");
+  }
+  if (
+    lexicalInfo.isSymbolicLink() ||
+    !lexicalInfo.isDirectory() ||
+    canonicalInfo.isSymbolicLink() ||
+    !canonicalInfo.isDirectory() ||
+    canonicalPath !== root.canonicalPath ||
+    !sameVersion(root.lexicalInfo, lexicalInfo) ||
+    !sameVersion(root.canonicalInfo, canonicalInfo) ||
+    !sameVersion(lexicalInfo, canonicalInfo)
+  ) {
+    throw new PortableCodexSecurityArtifactError("snapshot root identity changed");
+  }
 }
 
 function readPinnedRegularFile(
@@ -292,17 +381,8 @@ function lineSnippet(
     throw new PortableCodexSecurityArtifactError("range over 200 lines");
   }
 
-  let root: string;
-  let rootInfo: fs.Stats;
-  try {
-    root = fs.realpathSync(snapshotRoot);
-    rootInfo = fs.lstatSync(root);
-  } catch {
-    throw new PortableCodexSecurityArtifactError("snapshot root is missing");
-  }
-  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
-    throw new PortableCodexSecurityArtifactError("snapshot root is missing");
-  }
+  const pinnedRoot = pinSnapshotRoot(snapshotRoot);
+  const root = pinnedRoot.canonicalPath;
 
   const target = path.resolve(root, anchor.path);
   const relative = path.relative(root, target);
@@ -352,15 +432,7 @@ function lineSnippet(
     "evidence identity changed",
     fileSystem,
   );
-  let rootAfterRead: fs.Stats;
-  try {
-    rootAfterRead = fs.lstatSync(root);
-  } catch {
-    throw new PortableCodexSecurityArtifactError("evidence identity changed");
-  }
-  if (!sameVersion(rootInfo, rootAfterRead)) {
-    throw new PortableCodexSecurityArtifactError("evidence identity changed");
-  }
+  assertSnapshotRootUnchanged(pinnedRoot);
 
   const lines = content.toString("utf8").split(/\r?\n/);
   if (anchor.startLine > lines.length || anchor.endLine > lines.length) {
@@ -430,10 +502,16 @@ function normalizeFinding(
   snapshotRoot: string,
   redactor: Pick<SecretRedactor, "redactText">,
   fileSystem: PortableCodexSecurityPinnedFileSystem,
+  outputBudget: PortableCodexSecurityOutputBudget,
 ): Record<string, unknown> {
   const rawId = requiredText(finding, "id");
-  const id = redactPublicText(rawId, "id", redactor);
-  const title = redactPublicText(requiredText(finding, "title"), "title", redactor);
+  const id = redactPublicText(rawId, "id", redactor, outputBudget);
+  const title = redactPublicText(
+    requiredText(finding, "title"),
+    "title",
+    redactor,
+    outputBudget,
+  );
   const requestedSeverity = requiredText(finding, "severity");
   const severity = normalizeSeverity(requestedSeverity);
   if (severity === "unknown") {
@@ -444,11 +522,13 @@ function normalizeFinding(
     requiredText(finding, "category"),
     "category",
     redactor,
+    outputBudget,
   );
   const remediation = redactPublicText(
     requiredText(finding, "remediation"),
     "remediation",
     redactor,
+    outputBudget,
   );
   if (!Array.isArray(finding.anchors) || finding.anchors.length === 0) {
     throw new PortableCodexSecurityArtifactError(`finding ${id} has no path:line[-line] anchor`);
@@ -459,22 +539,30 @@ function normalizeFinding(
   ) {
     throw new PortableCodexSecurityArtifactError(`finding ${id} exceeds the anchor limit`);
   }
-  const rawAnchors = finding.anchors.map((anchor) =>
-    lineSnippet(snapshotRoot, parseAnchor(anchor), fileSystem)
-  );
-  const anchors = rawAnchors.map((anchor) => ({
-    ...anchor,
-    path: redactPublicText(anchor.path, "anchor path", redactor),
-    explanation: anchor.explanation === null
-      ? null
-      : redactPublicText(anchor.explanation, "anchor explanation", redactor),
-    code: redactPublicText(
-      anchor.code,
-      "source snippet",
-      redactor,
-      PORTABLE_CODEX_SECURITY_NORMALIZATION_LIMITS.maxSnippetBytes,
-    ),
-  }));
+  const languages: string[] = [];
+  const anchors = finding.anchors.map((rawAnchor) => {
+    const anchor = lineSnippet(snapshotRoot, parseAnchor(rawAnchor), fileSystem);
+    languages.push(languageForPath(anchor.path));
+    return {
+      ...anchor,
+      path: redactPublicText(anchor.path, "anchor path", redactor, outputBudget),
+      explanation: anchor.explanation === null
+        ? null
+        : redactPublicText(
+          anchor.explanation,
+          "anchor explanation",
+          redactor,
+          outputBudget,
+        ),
+      code: redactPublicText(
+        anchor.code,
+        "source snippet",
+        redactor,
+        outputBudget,
+        PORTABLE_CODEX_SECURITY_NORMALIZATION_LIMITS.maxSnippetBytes,
+      ),
+    };
+  });
   const evidenceRefs = anchors.map((_, index) => `evidence-${index + 1}`);
   if (finding.cwe !== undefined && !Array.isArray(finding.cwe)) {
     throw new PortableCodexSecurityArtifactError(`finding ${id} has invalid cwe data`);
@@ -482,16 +570,22 @@ function normalizeFinding(
   const cwe = (finding.cwe ?? []).flatMap((value) => {
     const bounded = boundedText(value, "cwe");
     if (bounded === null || !/^CWE-\d+$/i.test(bounded)) return [];
-    const redacted = redactPublicText(bounded, "cwe", redactor);
+    const redacted = redactPublicText(bounded, "cwe", redactor, outputBudget);
     return /^CWE-\d+$/i.test(redacted) ? [redacted] : [];
   });
-  const summary = redactOptionalText(finding.summary, "summary", redactor);
-  const impact = redactOptionalText(finding.impact, "impact", redactor);
-  const rootCause = redactOptionalText(finding.rootCause, "rootCause", redactor);
+  const summary = redactOptionalText(finding.summary, "summary", redactor, outputBudget);
+  const impact = redactOptionalText(finding.impact, "impact", redactor, outputBudget);
+  const rootCause = redactOptionalText(
+    finding.rootCause,
+    "rootCause",
+    redactor,
+    outputBudget,
+  );
   const severityRationale = redactOptionalText(
     finding.severityRationale,
     "severityRationale",
     redactor,
+    outputBudget,
   );
   const primary = fingerprint(id, severity, category, anchors);
 
@@ -530,7 +624,7 @@ function normalizeFinding(
         : `${anchor.startLine}-${anchor.endLine}`,
       role: anchor.role,
       code: anchor.code,
-      language: languageForPath(rawAnchors[index]!.path),
+      language: languages[index]!,
       explanation: anchor.explanation ?? "Reported by the Portable Codex Security static review.",
     })),
     taxonomy: {
@@ -650,8 +744,9 @@ export function normalizePortableCodexSecurityWorkspace(
   const snapshotRoot = path.join(outputDir, "portable-codex-security-snapshot");
   const redactor = dependencies.redactor ?? globalSecretRedactor;
   const fileSystem = dependencies.fileSystem ?? fs;
+  const outputBudget = new PortableCodexSecurityOutputBudget();
   const findings = raw.map((finding) =>
-    normalizeFinding(finding, snapshotRoot, redactor, fileSystem)
+    normalizeFinding(finding, snapshotRoot, redactor, fileSystem, outputBudget)
   );
   const payload = {
     schemaVersion: 1,
