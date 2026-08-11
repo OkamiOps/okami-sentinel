@@ -25,6 +25,27 @@ export interface ConnectionDraft {
 
 export type ConnectionDraftError = "name" | "provider" | "route" | "headers" | "secret" | null;
 
+export type ConnectionSaveErrorKey =
+  | "connections.saveError"
+  | "connections.saveError.sessionExpired"
+  | "connections.saveError.secureStorageUnavailable"
+  | "connections.saveError.credentialWriteFailed"
+  | "connections.saveError.stateInconsistent"
+  | "connections.saveError.invalidConnection";
+
+/** Maps only the server's closed error vocabulary; upstream diagnostics stay hidden. */
+export function connectionSaveErrorKey(error: unknown): ConnectionSaveErrorKey {
+  const code = error instanceof Error ? error.message : null;
+  if (code === "csrf_invalid") return "connections.saveError.sessionExpired";
+  if (code === "secure_storage_unavailable") return "connections.saveError.secureStorageUnavailable";
+  if (code === "credential_write_failed" || code === "connection_write_failed") {
+    return "connections.saveError.credentialWriteFailed";
+  }
+  if (code === "connection_state_inconsistent") return "connections.saveError.stateInconsistent";
+  if (code === "invalid_connection") return "connections.saveError.invalidConnection";
+  return "connections.saveError";
+}
+
 export function blankConnectionDraft(connection?: ProviderConnection): ConnectionDraft {
   return {
     name: connection?.name ?? "",

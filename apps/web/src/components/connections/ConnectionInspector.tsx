@@ -43,6 +43,10 @@ type MessageKey =
   | "connections.operations.authMetadataInvalid"
   | "connections.operations.secureStorageUnavailable"
   | "connections.operations.providerUnavailable"
+  | "connections.operations.protocolUnsupported"
+  | "connections.operations.sessionExpired"
+  | "connections.operations.authExpired"
+  | "connections.operations.authDenied"
   | "connections.operations.error";
 
 const statusLabels: Record<ProviderConnection["status"], TranslationKey> = {
@@ -114,12 +118,12 @@ export function ConnectionInspector({ connection, onConnectionChange, onEdit, on
         cancelAuth: api.cancelConnectionAuth,
       },
       onFlow(flow) { if (alive) setAuthFlow(flow); },
-      onError() { if (alive) setMessage({ key: "connections.operations.error", tone: "error" }); },
+      onError(error) { if (alive) setMessage({ key: connectionOperationErrorKey(error), tone: "error" }); },
       onTerminal(flow) {
         if (!alive || connectionId === null || flow.status !== "completed") return;
         void api.inspectConnection(connectionId)
           .then(({ connection: updated }) => { if (alive) onConnectionChangeRef.current(updated); })
-          .catch(() => { if (alive) setMessage({ key: "connections.operations.error", tone: "error" }); });
+          .catch((error) => { if (alive) setMessage({ key: connectionOperationErrorKey(error), tone: "error" }); });
       },
     });
     pollerRef.current = poller;
@@ -231,7 +235,7 @@ export function ConnectionInspector({ connection, onConnectionChange, onEdit, on
     </div>
     <section aria-label={t("connections.operations.title")} className="space-y-4 border-t border-border px-4 py-4">
       <div className="flex flex-wrap items-center gap-2"><Button size="sm" variant="outline" onClick={inspect} disabled={busyElsewhere}><ShieldCheck aria-hidden="true" className="size-3" />{actionBusy("inspect") ? `${t("connections.operations.inspect")}…` : t("connections.operations.inspect")}</Button>{canAuthenticate && !isPendingAuth && <Button size="sm" variant="outline" onClick={startAuth} disabled={busyElsewhere}><LogIn aria-hidden="true" className="size-3" />{actionBusy("auth") ? `${t("connections.operations.authenticate")}…` : t("connections.operations.authenticate")}</Button>}{canAuthenticate && !isPendingAuth && <Button size="sm" variant="outline" onClick={disconnect} disabled={busyElsewhere}><Unplug aria-hidden="true" className="size-3" />{actionBusy("disconnect") ? `${t("connections.operations.disconnect")}…` : t("connections.operations.disconnect")}</Button>}</div>
-      {message && <div role="status" aria-live="polite" className={message.tone === "error" ? "border border-destructive/50 bg-destructive/10 px-3 py-2 text-xs text-destructive" : message.tone === "success" ? "border border-chart-2/40 bg-chart-2/10 px-3 py-2 text-xs text-chart-2" : "border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground"}>{t(message.key)}</div>}
+      {message && <div role={message.tone === "error" ? "alert" : "status"} aria-live={message.tone === "error" ? "assertive" : "polite"} className={message.tone === "error" ? "border border-destructive/50 bg-destructive/10 px-3 py-2 text-xs text-destructive" : message.tone === "success" ? "border border-chart-2/40 bg-chart-2/10 px-3 py-2 text-xs text-chart-2" : "border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground"}>{t(message.key)}</div>}
       {authFlow && <AuthFlowPanel flow={authFlow} busy={busy} onCancel={cancelAuth} />}
       <div className="border-t border-border pt-4"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="bench-label">{t("connections.operations.modelCatalog")}</p><p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{t("connections.operations.modelCatalogHelp")}</p></div><Button size="sm" variant="outline" onClick={refreshModels} disabled={busyElsewhere}><RefreshCw aria-hidden="true" className="size-3" />{actionBusy("refresh") ? `${t("connections.operations.refreshModels")}…` : t("connections.operations.refreshModels")}</Button></div><div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]"><Select value={selectedModelId ?? ""} onValueChange={setSelectedModelId} disabled={models.length === 0 || busyElsewhere}><SelectTrigger aria-label={t("connections.operations.selectModel")} className="w-full"><SelectValue placeholder={t("connections.operations.noModels")} /></SelectTrigger><SelectContent>{models.map((model) => <SelectItem key={model.id} value={model.id}>{model.displayName || model.id}</SelectItem>)}</SelectContent></Select><Button size="sm" onClick={probe} disabled={!canProbe || busyElsewhere}><Play aria-hidden="true" className="size-3" />{actionBusy("probe") ? `${t("connections.operations.probe")}…` : t("connections.operations.probe")}</Button></div></div>
     </section>

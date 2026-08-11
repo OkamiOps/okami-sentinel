@@ -6,11 +6,22 @@ import type { ProviderConnection } from "@csb/shared";
 import {
   blankConnectionDraft,
   changeConnectionTransport,
+  connectionSaveErrorKey,
   createConnectionRequest,
   selectConnection,
   updateConnectionRequest,
   validateConnectionDraft,
 } from "./connections.js";
+
+test("maps only safe connection write codes to actionable localized messages", () => {
+  assert.equal(connectionSaveErrorKey(new Error("csrf_invalid")), "connections.saveError.sessionExpired");
+  assert.equal(connectionSaveErrorKey(new Error("secure_storage_unavailable")), "connections.saveError.secureStorageUnavailable");
+  assert.equal(connectionSaveErrorKey(new Error("credential_write_failed")), "connections.saveError.credentialWriteFailed");
+  assert.equal(connectionSaveErrorKey(new Error("connection_write_failed")), "connections.saveError.credentialWriteFailed");
+  assert.equal(connectionSaveErrorKey(new Error("connection_state_inconsistent")), "connections.saveError.stateInconsistent");
+  assert.equal(connectionSaveErrorKey(new Error("invalid_connection")), "connections.saveError.invalidConnection");
+  assert.equal(connectionSaveErrorKey(new Error("private upstream diagnostics")), "connections.saveError");
+});
 
 function connectionFixture(id: string, name = "Local Codex"): ProviderConnection {
   return {

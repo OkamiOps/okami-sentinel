@@ -308,6 +308,17 @@ function createCodexRouteAdapter(
         cancelAuth: async (_connection: StoredProviderConnection, flowId: string) => {
           await bridge.cancelLogin(flowId);
         },
+        getAuth: async (_connection: StoredProviderConnection, flowId: string): Promise<SafeAuthFlow | null> => {
+          const flow = bridge.getLoginFlow(flowId);
+          return flow === null ? null : {
+            flowId: flow.flowId,
+            status: flow.status,
+            authUrl: null,
+            verificationUrl: null,
+            userCode: null,
+            expiresAt: null,
+          };
+        },
       }
       : {}),
     async discoverModels(connection): Promise<DiscoveryResult> {

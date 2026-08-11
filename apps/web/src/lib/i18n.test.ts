@@ -85,6 +85,8 @@ test("localizes every connection inspector operation without falling back to Por
     "connections.operations.probePassed",
     "connections.operations.probeFailed",
     "connections.operations.noModels",
+    "connections.operations.protocolUnsupported",
+    "connections.operations.sessionExpired",
     "connections.operations.error",
     "connections.operations.authCompleted",
     "connections.operations.authExpired",
@@ -107,6 +109,22 @@ test("localizes every connection inspector operation without falling back to Por
   assert.equal(translate("es", "connections.operations.modelCatalog"), "Catálogo de modelos");
   assert.equal(translate("de", "connections.operations.authFailed"), "Authentifizierung fehlgeschlagen.");
   assert.equal(translate("fr", "connections.operations.openAuth"), "Ouvrir la page d’authentification sécurisée");
+});
+
+test("localizes safe connection save failures in every supported locale", () => {
+  const saveErrorKeys = [
+    "connections.saveError.sessionExpired",
+    "connections.saveError.secureStorageUnavailable",
+    "connections.saveError.credentialWriteFailed",
+    "connections.saveError.stateInconsistent",
+    "connections.saveError.invalidConnection",
+  ] as const;
+  for (const locale of ["pt-BR", "en", "es", "de", "fr"] as const) {
+    for (const key of saveErrorKeys) {
+      assert.notEqual(translate(locale, key), "");
+      if (locale !== "pt-BR") assert.notEqual(translate(locale, key), translate("pt-BR", key));
+    }
+  }
 });
 
 test("localizes connection-aware scan routing in every supported locale", () => {

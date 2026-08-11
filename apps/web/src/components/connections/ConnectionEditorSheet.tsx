@@ -30,9 +30,11 @@ import {
 } from "../../lib/connection-presets";
 import {
   blankConnectionDraft,
+  connectionSaveErrorKey,
   createConnectionRequest,
   type ConnectionDraft,
   type ConnectionDraftError,
+  type ConnectionSaveErrorKey,
   updateConnectionRequest,
   validateConnectionDraft,
 } from "../../lib/connections";
@@ -47,6 +49,17 @@ type Props = {
 
 const editorErrorId = "connection-editor-error";
 const initialPresetId: ConnectionPresetId = "openai-local-codex";
+const draftErrorKeys: Record<Exclude<ConnectionDraftError, null>, TranslationKey> = {
+  name: "connections.draftError.name",
+  provider: "connections.draftError.provider",
+  route: "connections.draftError.route",
+  headers: "connections.draftError.headers",
+  secret: "connections.draftError.secret",
+};
+
+function isConnectionSaveErrorKey(value: string): value is ConnectionSaveErrorKey {
+  return value === "connections.saveError" || value.startsWith("connections.saveError.");
+}
 
 const providerOptions = [
   { id: "openai", label: "OpenAI" },
@@ -82,7 +95,7 @@ export function ConnectionEditorSheet({ open, connection, onOpenChange, onCreate
   const [draft, setDraft] = useState<ConnectionDraft>(() => blankConnectionDraft(connection ?? undefined));
   const [presetId, setPresetId] = useState<ConnectionPresetId>(initialPresetId);
   const [mimoRegion, setMimoRegion] = useState<MimoTokenPlanRegionId | null>("cn");
-  const [error, setError] = useState<ConnectionDraftError | "mimo-region" | "custom-endpoint" | "custom-replacement" | "request" | null>(null);
+  const [error, setError] = useState<ConnectionDraftError | ConnectionSaveErrorKey | "mimo-region" | "custom-endpoint" | "custom-replacement" | null>(null);
   const [saving, setSaving] = useState(false);
 
   const storedPreset = useMemo(() => presetForConnection(connection), [connection]);
@@ -159,18 +172,18 @@ export function ConnectionEditorSheet({ open, connection, onOpenChange, onCreate
         await onCreate(request);
       }
       close();
-    } catch {
-      setError("request");
+    } catch (error) {
+      setError(connectionSaveErrorKey(error));
     } finally {
       setSaving(false);
     }
   }
 
-  const errorMessage = error === "request" ? t("connections.saveError")
+  const errorMessage = error !== null && isConnectionSaveErrorKey(error) ? t(error)
     : error === "mimo-region" ? t("connections.draftError.mimoRegion")
       : error === "custom-endpoint" ? t("connections.draftError.customEndpoint")
         : error === "custom-replacement" ? t("connections.draftError.customReplacement")
-          : error ? t(`connections.draftError.${error}`) : null;
+          : error ? t(draftErrorKeys[error]) : null;
   const secretInvalid = error === "secret" || error === "custom-endpoint" || error === "custom-replacement";
 
   return <Sheet open={open} onOpenChange={(next) => next ? onOpenChange(true) : close()}>

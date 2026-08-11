@@ -28,7 +28,6 @@ export interface DisconnectResult {
 }
 
 interface ManagedAuthRouteAdapter extends RouteAdapter {
-  getAuth?(connection: StoredProviderConnection, flowId: string): Promise<SafeAuthFlow | null>;
   disconnectAuth?(connection: StoredProviderConnection): Promise<DisconnectResult>;
 }
 
@@ -71,30 +70,24 @@ export function createAuthFlowService(dependencies: {
     },
     async get(connectionId, flowId) {
       const { connection, adapter } = resolveConnection(connectionId, dependencies);
-      const managed = adapter as ManagedAuthRouteAdapter;
-      if (managed.getAuth !== undefined) {
+      if (adapter.getAuth !== undefined) {
         try {
-          const flow = await managed.getAuth(connection, flowId);
+          const flow = await adapter.getAuth(connection, flowId);
           if (flow === null) return null;
           const safe = sanitizeFlow(flow);
-          flows.set(flowKey(connection.id, safe.flowId), safe);
-          return { ...safe };
+          const current = preservePendingHandoff(
+            flows.get(flowKey(connection.id, safe.flowId)),
+            safe,
+          );
+          flows.set(flowKey(connection.id, current.flowId), current);
+          return { ...current };
         } catch (error) {
           throw normalizedError(error);
         }
       }
       const flow = flows.get(flowKey(connection.id, flowId));
       if (flow === undefined) return null;
-      if (flow.status !== "pending") return { ...flow };
-      try {
-        const inspection = await adapter.inspect(connection);
-        const status = statusFromInspection(inspection);
-        const current = status === "pending" ? flow : { ...flow, status };
-        flows.set(flowKey(connection.id, flowId), current);
-        return { ...current };
-      } catch (error) {
-        throw normalizedError(error);
-      }
+      return { ...flow };
     },
     async cancel(connectionId, flowId) {
       const { connection, adapter } = resolveConnection(connectionId, dependencies);
@@ -206,14 +199,23 @@ function isSafeErrorCode(value: unknown): value is SafeProviderErrorCode {
   ].includes(value);
 }
 
-function statusFromInspection(value: {
-  available: boolean;
-  reason: string | null;
-}): SafeAuthFlow["status"] {
-  if (value.available) return "completed";
-  if (value.reason === "credential_expired") return "expired";
-  if (value.reason === "credential_rejected") return "denied";
-  return "pending";
+function preservePendingHandoff(
+  previous: SafeAuthFlow | undefined,
+  current: SafeAuthFlow,
+): SafeAuthFlow {
+  if (
+    previous === undefined ||
+    previous.flowId !== current.flowId ||
+    previous.status !== "pending" ||
+    current.status !== "pending"
+  ) return current;
+  return {
+    ...current,
+    authUrl: current.authUrl ?? previous.authUrl ?? null,
+    verificationUrl: current.verificationUrl ?? previous.verificationUrl,
+    userCode: current.userCode ?? previous.userCode,
+    expiresAt: current.expiresAt ?? previous.expiresAt,
+  };
 }
 
 function flowKey(connectionId: string, flowId: string): string {

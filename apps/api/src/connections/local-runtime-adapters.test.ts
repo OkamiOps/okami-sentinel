@@ -206,6 +206,7 @@ test("local route registry has fixed route contracts without a bundled model cat
   ]);
   assert.equal(registry.get("openai-codex-local")?.transport, "codex-app-server");
   assert.equal(registry.get("openai-chatgpt-app-server")?.protocol, "codex-app-server");
+  assert.equal("getAuth" in (registry.get("openai-chatgpt-app-server") ?? {}), true);
   assert.equal(JSON.stringify(registry.manifests).includes("defaultModel"), false);
   assert.equal(JSON.stringify(registry.manifests).includes("runtime-visible-grok"), false);
 });

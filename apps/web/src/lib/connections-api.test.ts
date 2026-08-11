@@ -66,6 +66,75 @@ test("acquires one in-memory csrf token before connection writes", async () => {
   assert.equal(calls[1].body?.includes("credentialRef"), false);
 });
 
+test("refreshes a stale csrf session once and retries the same mutation", async () => {
+  const calls: Array<{ method: string; path: string; csrf: string | null }> = [];
+  let sessions = 0;
+  let writes = 0;
+  const client = createConnectionsClient(async (input, init) => {
+    const request = new Request(`http://sentinel.local${String(input)}`, init);
+    const path = new URL(request.url).pathname;
+    calls.push({ method: request.method, path, csrf: request.headers.get("x-csrf-token") });
+    if (path.endsWith("/security-session")) {
+      sessions += 1;
+      return Response.json({ csrfToken: sessions === 1 ? "stale-token" : "fresh-token" });
+    }
+    writes += 1;
+    if (writes === 1) return Response.json({ error: "csrf_invalid" }, { status: 403 });
+    return Response.json({ connection });
+  });
+
+  const result = await client.update("conn-1", { name: "Renamed" });
+
+  assert.deepEqual(result, connection);
+  assert.deepEqual(calls, [
+    { method: "GET", path: "/api/connections/security-session", csrf: null },
+    { method: "PATCH", path: "/api/connections/conn-1", csrf: "stale-token" },
+    { method: "GET", path: "/api/connections/security-session", csrf: null },
+    { method: "PATCH", path: "/api/connections/conn-1", csrf: "fresh-token" },
+  ]);
+});
+
+test("does not retry a mutation for an unrelated server error", async () => {
+  const calls: string[] = [];
+  const client = createConnectionsClient(async (input, init) => {
+    const request = new Request(`http://sentinel.local${String(input)}`, init);
+    const path = new URL(request.url).pathname;
+    calls.push(`${request.method} ${path}`);
+    if (path.endsWith("/security-session")) return Response.json({ csrfToken: "valid-token" });
+    return Response.json({ error: "invalid_connection" }, { status: 400 });
+  });
+
+  await assert.rejects(client.update("conn-1", { name: "Renamed" }), /invalid_connection/);
+  assert.deepEqual(calls, [
+    "GET /api/connections/security-session",
+    "PATCH /api/connections/conn-1",
+  ]);
+});
+
+test("does not cache a failed csrf acquisition across later user actions", async () => {
+  const calls: string[] = [];
+  let sessions = 0;
+  const client = createConnectionsClient(async (input, init) => {
+    const request = new Request(`http://sentinel.local${String(input)}`, init);
+    const path = new URL(request.url).pathname;
+    calls.push(`${request.method} ${path}`);
+    if (path.endsWith("/security-session")) {
+      sessions += 1;
+      if (sessions === 1) return Response.json({ error: "provider_unreachable" }, { status: 503 });
+      return Response.json({ csrfToken: "recovered-token" });
+    }
+    return Response.json({ connection });
+  });
+
+  await assert.rejects(client.update("conn-1", { name: "First attempt" }), /provider_unreachable/);
+  assert.deepEqual(await client.update("conn-1", { name: "Second attempt" }), connection);
+  assert.deepEqual(calls, [
+    "GET /api/connections/security-session",
+    "GET /api/connections/security-session",
+    "PATCH /api/connections/conn-1",
+  ]);
+});
+
 test("accepts an empty 204 response after deleting a connection", async () => {
   const calls: string[] = [];
   const client = createConnectionsClient(async (input, init) => {

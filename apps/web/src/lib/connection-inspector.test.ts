@@ -24,6 +24,22 @@ test("maps safe provider auth errors to actionable localized messages", () => {
     "connections.operations.providerUnavailable",
   );
   assert.equal(
+    connectionOperationErrorKey(new Error("protocol_unsupported")),
+    "connections.operations.protocolUnsupported",
+  );
+  assert.equal(
+    connectionOperationErrorKey(new Error("csrf_invalid")),
+    "connections.operations.sessionExpired",
+  );
+  assert.equal(
+    connectionOperationErrorKey(new Error("oauth_flow_expired")),
+    "connections.operations.authExpired",
+  );
+  assert.equal(
+    connectionOperationErrorKey(new Error("oauth_access_denied")),
+    "connections.operations.authDenied",
+  );
+  assert.equal(
     connectionOperationErrorKey(new Error("private upstream diagnostics")),
     "connections.operations.error",
   );
@@ -154,7 +170,7 @@ test("does not report cancellation when remote cancellation fails and resumes po
 test("converts a polling error into a visible terminal failure", async () => {
   const scheduler = manualScheduler();
   const observed: ProviderAuthFlow[] = [];
-  let errors = 0;
+  const errors: unknown[] = [];
   const poller = createAuthFlowPoller({
     client: {
       async startAuth() { return flow(); },
@@ -162,7 +178,7 @@ test("converts a polling error into a visible terminal failure", async () => {
       async cancelAuth() {},
     },
     onFlow(next) { if (next) observed.push(next); },
-    onError() { errors += 1; },
+    onError(error) { errors.push(error); },
     schedule: scheduler.schedule,
     clearSchedule: scheduler.clear,
   });
@@ -171,7 +187,8 @@ test("converts a polling error into a visible terminal failure", async () => {
   await scheduler.runNext();
 
   assert.equal(observed.at(-1)?.status, "failed");
-  assert.equal(errors, 1);
+  assert.equal(errors.length, 1);
+  assert.equal((errors[0] as Error).message, "network unavailable");
   assert.equal(scheduler.size, 0);
 });
 

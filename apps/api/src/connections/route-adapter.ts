@@ -46,6 +46,7 @@ export interface RouteAdapter {
     connection: StoredProviderConnection,
     mode: "browser-oauth" | "device-code",
   ): Promise<SafeAuthFlow>;
+  getAuth?(connection: StoredProviderConnection, flowId: string): Promise<SafeAuthFlow | null>;
   cancelAuth?(connection: StoredProviderConnection, flowId: string): Promise<void>;
   discoverModels(connection: StoredProviderConnection): Promise<DiscoveryResult>;
   probe(

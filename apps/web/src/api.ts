@@ -82,33 +82,47 @@ export function createConnectionsClient(fetcher: Fetcher = fetch): {
 } {
   let csrfToken: Promise<string> | null = null;
   const getCsrfToken = () => {
-    csrfToken ??= fetcher(`${BASE}/connections/security-session`, { headers: { Accept: "application/json" } })
-      .then((response) => parseApiResponse<{ csrfToken: string }>(response))
-      .then(({ csrfToken: token }) => token);
+    if (csrfToken === null) {
+      const pending = fetcher(`${BASE}/connections/security-session`, { headers: { Accept: "application/json" } })
+        .then((response) => parseApiResponse<{ csrfToken: string }>(response))
+        .then(({ csrfToken: token }) => token);
+      csrfToken = pending;
+      void pending.catch(() => {
+        if (csrfToken === pending) csrfToken = null;
+      });
+    }
     return csrfToken;
+  };
+  const withCsrfRetry = async <T>(operation: (token: string) => Promise<T>): Promise<T> => {
+    try {
+      return await operation(await getCsrfToken());
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== "csrf_invalid") throw error;
+      csrfToken = null;
+      return operation(await getCsrfToken());
+    }
   };
   const read = async <T>(path: string): Promise<T> =>
     parseApiResponse<T>(await fetcher(`${BASE}${path}`, { headers: { Accept: "application/json" } }));
-  const write = async <T>(path: string, method: "POST" | "PATCH" | "DELETE", body?: unknown): Promise<T> => {
-    const token = await getCsrfToken();
-    return parseApiResponse<T>(await fetcher(`${BASE}${path}`, {
+  const write = async <T>(path: string, method: "POST" | "PATCH" | "DELETE", body?: unknown): Promise<T> =>
+    withCsrfRetry(async (token) => parseApiResponse<T>(await fetcher(`${BASE}${path}`, {
       method,
       headers: { Accept: "application/json", "Content-Type": "application/json", "X-CSRF-Token": token },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    }));
-  };
+    })));
   return {
     async list() { return (await read<ProviderConnectionsResponse>("/connections")).connections; },
     async create(body) { return (await write<ProviderConnectionResponse>("/connections", "POST", body)).connection; },
     async update(id, body) { return (await write<ProviderConnectionResponse>(`/connections/${encodeURIComponent(id)}`, "PATCH", body)).connection; },
     async remove(id) {
-      const token = await getCsrfToken();
-      const response = await fetcher(`${BASE}/connections/${encodeURIComponent(id)}`, {
-        method: "DELETE",
-        headers: { Accept: "application/json", "X-CSRF-Token": token },
+      await withCsrfRetry(async (token) => {
+        const response = await fetcher(`${BASE}/connections/${encodeURIComponent(id)}`, {
+          method: "DELETE",
+          headers: { Accept: "application/json", "X-CSRF-Token": token },
+        });
+        if (response.status === 204) return;
+        await parseApiResponse<unknown>(response);
       });
-      if (response.status === 204) return;
-      await parseApiResponse<unknown>(response);
     },
     async listModels(id) {
       return (await read<ProviderModelsResponse>(`/connections/${encodeURIComponent(id)}/models`)).models;

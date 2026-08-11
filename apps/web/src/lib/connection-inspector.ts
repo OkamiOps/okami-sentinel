@@ -6,6 +6,10 @@ export type ConnectionOperationErrorKey =
   | "connections.operations.authMetadataInvalid"
   | "connections.operations.secureStorageUnavailable"
   | "connections.operations.providerUnavailable"
+  | "connections.operations.protocolUnsupported"
+  | "connections.operations.sessionExpired"
+  | "connections.operations.authExpired"
+  | "connections.operations.authDenied"
   | "connections.operations.error";
 
 /** Maps only server-approved codes; arbitrary upstream text stays hidden. */
@@ -14,6 +18,10 @@ export function connectionOperationErrorKey(error: unknown): ConnectionOperation
   if (code === "oauth_metadata_invalid") return "connections.operations.authMetadataInvalid";
   if (code === "secure_storage_unavailable") return "connections.operations.secureStorageUnavailable";
   if (code === "provider_unreachable") return "connections.operations.providerUnavailable";
+  if (code === "protocol_unsupported") return "connections.operations.protocolUnsupported";
+  if (code === "csrf_invalid") return "connections.operations.sessionExpired";
+  if (code === "oauth_flow_expired") return "connections.operations.authExpired";
+  if (code === "oauth_access_denied" || code === "credential_rejected") return "connections.operations.authDenied";
   return "connections.operations.error";
 }
 
@@ -30,7 +38,7 @@ export interface AuthFlowPollerOptions {
   client: AuthFlowClient;
   onFlow(flow: ProviderAuthFlow | null): void;
   onTerminal?(flow: ProviderAuthFlow): void;
-  onError?(): void;
+  onError?(error: unknown): void;
   schedule?: Schedule;
   clearSchedule?: ClearSchedule;
   now?: () => Date;
@@ -131,10 +139,10 @@ export function createAuthFlowPoller(options: AuthFlowPollerOptions) {
       }
       options.onFlow(next);
       schedulePoll(active);
-    } catch {
+    } catch (error) {
       if (disposed || active === null || active.generation !== expectedGeneration) return;
       terminal({ ...current.flow, status: "failed" });
-      options.onError?.();
+      options.onError?.(error);
     }
   };
 
@@ -144,9 +152,9 @@ export function createAuthFlowPoller(options: AuthFlowPollerOptions) {
     if (current === null) return true;
     try {
       await options.client.cancelAuth(current.connectionId, current.flow.flowId);
-    } catch {
+    } catch (error) {
       if (!disposed && active === current) schedulePoll(current);
-      options.onError?.();
+      options.onError?.(error);
       return false;
     }
     if (active !== current) return true;

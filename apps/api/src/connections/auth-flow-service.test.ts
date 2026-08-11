@@ -50,7 +50,11 @@ function safeFlow(overrides: Partial<SafeAuthFlow> = {}): SafeAuthFlow {
   };
 }
 
-function adapter(overrides: Partial<RouteAdapter> = {}): RouteAdapter {
+type ManagedTestAdapter = RouteAdapter & {
+  getAuth?(connection: StoredProviderConnection, flowId: string): Promise<SafeAuthFlow | null>;
+};
+
+function adapter(overrides: Partial<ManagedTestAdapter> = {}): ManagedTestAdapter {
   return {
     routeKind: "openai-chatgpt-app-server",
     transport: "codex-app-server",
@@ -138,7 +142,7 @@ test("auth flow service keeps safe state in memory and delegates cancellation", 
   assert.deepEqual(await service.get("conn-openai", "login-1"), safeFlow({ status: "cancelled" }));
 });
 
-test("OpenAI app-server flow derives completion from a fresh safe runtime inspection", async () => {
+test("an existing account inspection cannot complete a new device flow", async () => {
   const appServer = adapter({
     async startAuth() {
       return safeFlow();
@@ -154,7 +158,33 @@ test("OpenAI app-server flow derives completion from a fresh safe runtime inspec
 
   await service.start("conn-openai", "device-code");
 
-  assert.deepEqual(await service.get("conn-openai", "login-1"), safeFlow({ status: "completed" }));
+  assert.deepEqual(await service.get("conn-openai", "login-1"), safeFlow());
+});
+
+test("provider-scoped polling preserves the pending device handoff until that login completes", async () => {
+  let status: SafeAuthFlow["status"] = "pending";
+  const appServer = adapter({
+    async startAuth() {
+      return safeFlow();
+    },
+    async getAuth() {
+      return safeFlow({ status, verificationUrl: null, userCode: null });
+    },
+  });
+  const service = createAuthFlowService({
+    connections: { get: () => connection() },
+    routes: registry(appServer),
+  });
+
+  await service.start("conn-openai", "device-code");
+
+  assert.deepEqual(await service.get("conn-openai", "login-1"), safeFlow());
+
+  status = "completed";
+  assert.deepEqual(
+    await service.get("conn-openai", "login-1"),
+    safeFlow({ status: "completed", verificationUrl: null, userCode: null }),
+  );
 });
 
 test("auth flow service rejects unsupported routes and redacts dependency failures", async () => {
