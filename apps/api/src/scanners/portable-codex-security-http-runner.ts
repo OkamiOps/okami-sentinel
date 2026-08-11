@@ -15,6 +15,7 @@ import {
   isHttpAgentRouteProtocolSupported,
   type HttpAgentUpstreamOptions,
 } from "../agent/http-agent-upstream.js";
+import { PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT } from "../agent/result-artifact-contract.js";
 import { createAgentSession } from "../agent/session-runner.js";
 import {
   AgentSessionError,
@@ -306,6 +307,7 @@ export async function runPortableCodexSecurity(
           ? {}
           : { reasoningEffort: safeConfiguration.reasoningEffort }),
         terminalMode: "artifact-write",
+        resultArtifactContract: PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT,
         snapshotRoot: snapshot.snapshotRoot,
         artifactRoot,
         instructions: buildPortableCodexSecurityStagePrompt(stage, {

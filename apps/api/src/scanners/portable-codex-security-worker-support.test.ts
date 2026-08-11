@@ -28,6 +28,7 @@ function readyEvents(artifact: string): unknown[] {
     { type: "tool", phase: "requested", callId: "read", name: "workspace.read" },
     { type: "tool", phase: "consumed", callId: "read", name: "workspace.read" },
     { type: "tool", phase: "requested", callId: "write", name: "results.write" },
+    { type: "tool", phase: "result", callId: "write", name: "results.write" },
     { type: "artifact", path: artifact, bytes: 1 },
     { type: "completion", text: null, structured: { stage: "inventory", artifact, status: "completed", summary: "ok" } },
   ];
@@ -131,6 +132,7 @@ test("Portable Codex Security accepts a validated terminal artifact without a pr
         { type: "tool", phase: "requested", callId: "read", name: "workspace.read" },
         { type: "tool", phase: "consumed", callId: "read", name: "workspace.read" },
         { type: "tool", phase: "requested", callId: "write", name: "results.write" },
+        { type: "tool", phase: "result", callId: "write", name: "results.write" },
         { type: "artifact", path: stage.artifact, bytes: 1 },
       ]),
       stage,
@@ -142,6 +144,50 @@ test("Portable Codex Security accepts a validated terminal artifact without a pr
     assert.deepEqual(
       JSON.parse(Buffer.from(observed.previousStageStateBase64, "base64").toString("utf8")),
       { stage: stage.id, summary: "Inventory artifact validated" },
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Portable Codex Security accepts one corrected write after a rejected artifact attempt", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-corrected-artifact-"));
+  const stage = PORTABLE_CODEX_SECURITY_STAGES[0]!;
+  try {
+    fs.writeFileSync(
+      path.join(root, stage.artifact),
+      JSON.stringify({
+        schemaVersion: 1,
+        stage: stage.id,
+        summary: "Corrected inventory artifact",
+        observations: [],
+      }),
+    );
+    const observed = await observePortableCodexSecurityStage({
+      session: stageSession([
+        { type: "tool", phase: "requested", callId: "read", name: "workspace.read" },
+        { type: "tool", phase: "consumed", callId: "read", name: "workspace.read" },
+        { type: "tool", phase: "requested", callId: "write-invalid", name: "results.write" },
+        {
+          type: "tool",
+          phase: "result",
+          callId: "write-invalid",
+          name: "results.write",
+          ok: false,
+        },
+        { type: "tool", phase: "requested", callId: "write-valid", name: "results.write" },
+        { type: "tool", phase: "result", callId: "write-valid", name: "results.write" },
+        { type: "artifact", path: stage.artifact, bytes: 1 },
+      ]),
+      stage,
+      artifactRoot: root,
+      usage: { reported: false, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+      redact: (value) => value,
+    });
+
+    assert.deepEqual(
+      JSON.parse(Buffer.from(observed.previousStageStateBase64, "base64").toString("utf8")),
+      { stage: stage.id, summary: "Corrected inventory artifact" },
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

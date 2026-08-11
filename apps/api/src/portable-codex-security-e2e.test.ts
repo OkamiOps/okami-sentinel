@@ -334,6 +334,7 @@ function completedStageSession(stage: string, artifact: string) {
           reasoningTokens: 0,
         },
       } as const;
+      yield { type: "tool", phase: "result", callId: "write", name: "results.write" } as const;
       yield { type: "artifact", path: artifact, bytes: 32 } as const;
       yield {
         type: "completion",

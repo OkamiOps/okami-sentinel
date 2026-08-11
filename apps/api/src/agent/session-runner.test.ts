@@ -752,6 +752,81 @@ test("the constrained session corrects a malformed terminal report before any ar
   assert.equal(requestedWith[2]![0]!.ok, undefined);
 });
 
+test("an artifact-terminal session retries malformed JSON before creating an artifact", async () => {
+  const requestedWith: AgentToolResult[][] = [];
+  const replies: NormalizedModelReply[] = [
+    {
+      toolCalls: [{
+        id: "write-truncated",
+        name: "results.write",
+        input: {
+          path: "01-inventory.json",
+          content: '{"schemaVersion":1,"stage":"inventory","summary":"truncated',
+        },
+      }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    {
+      toolCalls: [{
+        id: "write-complete",
+        name: "results.write",
+        input: {
+          path: "01-inventory.json",
+          content: JSON.stringify({
+            schemaVersion: 1,
+            stage: "inventory",
+            summary: "complete",
+            observations: [],
+          }),
+        },
+      }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+  ];
+  const hostInputs: unknown[] = [];
+  const session = createConstrainedWireSession({
+    limits: DEFAULT_AGENT_LIMITS,
+    signal: new AbortController().signal,
+    terminalMode: "artifact-write",
+    host: {
+      minimumOutputBytes() {
+        return 0;
+      },
+      async call(_name, input) {
+        hostInputs.push(input);
+        return {
+          content: "artifact-written",
+          artifact: { path: "01-inventory.json", bytes: 96 },
+        };
+      },
+    },
+    upstream: { async request() { return {}; } },
+    adapter: transcriptAdapter(replies, requestedWith),
+  });
+
+  const events: unknown[] = [];
+  await collect(session.run(), events);
+
+  assert.equal(hostInputs.length, 1);
+  assert.deepEqual(hostInputs[0], {
+    path: "01-inventory.json",
+    content: JSON.stringify({
+      schemaVersion: 1,
+      stage: "inventory",
+      summary: "complete",
+      observations: [],
+    }),
+  });
+  assert.equal(requestedWith[1]![0]!.ok, false);
+  assert.match(requestedWith[1]![0]!.content, /tool_argument_invalid/);
+  assert.equal(requestedWith[1]![0]!.content.includes("truncated"), false);
+  assert.equal(events.filter((event) => isArtifact(event, "01-inventory.json")).length, 1);
+});
+
 test("the constrained session rejects nonexistent and out-of-range evidence before artifact I/O", async (t) => {
   const fixture = await fixtureRoots("runner-vulnhunter-evidence");
   t.after(fixture.cleanup);

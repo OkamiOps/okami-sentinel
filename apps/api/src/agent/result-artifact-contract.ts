@@ -3,6 +3,7 @@ import { validateVulnHunterReportEvidence } from "./result-artifact-evidence.js"
 
 export const VULNHUNTER_RESULT_ARTIFACT_PATH = "sentinel-findings.json";
 export const MAX_VULNHUNTER_RESULT_REPORT_BYTES = 2 * 1024 * 1024;
+export const PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT = "portable-stage-json-v1" as const;
 
 export const VULNHUNTER_RESULT_ARTIFACT_NAMES = [
   "reconnaissance.md",
@@ -14,7 +15,19 @@ export const VULNHUNTER_RESULT_ARTIFACT_NAMES = [
   "sentinel-findings.json",
 ] as const;
 
-export type AgentResultArtifactContract = "vulnhunter-report-v1";
+export type AgentResultArtifactContract =
+  | typeof PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT
+  | "vulnhunter-report-v1";
+
+const PORTABLE_STAGE_BY_ARTIFACT = new Map<string, string>([
+  ["01-inventory.json", "inventory"],
+  ["02-threat-model.json", "threat-model"],
+  ["03-discovery.json", "discovery"],
+  ["04-dataflow.json", "dataflow"],
+  ["05-validation.json", "validation"],
+  ["sentinel-findings.json", "report"],
+]);
+const MAX_PORTABLE_STAGE_SUMMARY_BYTES = 16_384;
 
 const REPORT_KEYS = new Set(["schemaVersion", "findings"]);
 const FINDING_KEYS = new Set([
@@ -91,15 +104,36 @@ export function normalizeResultArtifactInput(
   contract: AgentResultArtifactContract | undefined,
   snapshotRoot?: string,
 ): Record<string, unknown> | null {
-  if (contract === undefined) return input;
-  if (input.path !== VULNHUNTER_RESULT_ARTIFACT_PATH) return null;
   const parsed = typeof input.content === "string"
     ? parseStructuredResult(undefined, input.content)
-    : input.content;
+    : parseStructuredResult(input.content, null);
+  if (parsed === null) return null;
+  if (contract === undefined) {
+    return { ...input, content: JSON.stringify(parsed) };
+  }
+  if (contract === PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT) {
+    return normalizePortableStageArtifact(input.path, parsed);
+  }
+  if (input.path !== VULNHUNTER_RESULT_ARTIFACT_PATH) return null;
   const report = normalizeVulnHunterResultReport(parsed, snapshotRoot);
   return report === null
     ? null
     : { path: VULNHUNTER_RESULT_ARTIFACT_PATH, content: JSON.stringify(report) };
+}
+
+function normalizePortableStageArtifact(path: unknown, value: unknown): Record<string, unknown> | null {
+  if (typeof path !== "string") return null;
+  const expectedStage = PORTABLE_STAGE_BY_ARTIFACT.get(path);
+  const artifact = record(value);
+  if (expectedStage === undefined || artifact === null || artifact.schemaVersion !== 1) return null;
+  if (expectedStage === "report") {
+    if ((artifact.stage !== undefined && artifact.stage !== "report") ||
+        !Array.isArray(artifact.findings)) return null;
+  } else if (artifact.stage !== expectedStage || !Array.isArray(artifact.observations) ||
+      boundedText(artifact.summary, MAX_PORTABLE_STAGE_SUMMARY_BYTES) === null) {
+    return null;
+  }
+  return { path, content: JSON.stringify(artifact) };
 }
 
 function validValidation(value: unknown): boolean {

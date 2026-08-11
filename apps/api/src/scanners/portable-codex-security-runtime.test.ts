@@ -103,6 +103,8 @@ test("Portable Codex Security fixes six frozen bounded stages and prompts each s
       assert.match(prompt, new RegExp(`"stage":"${stage.id}"`));
     }
     assert.match(prompt, /artifact is terminal/i);
+    assert.match(prompt, /complete in one tool call/i);
+    assert.match(prompt, /never exhaust the model output limit/i);
     assert.doesNotMatch(prompt, /structured completion/i);
     assert.doesNotMatch(prompt, /(?:workspace|results)\./);
     assert.match(prompt, /workspace_(?:list|read|search)/);

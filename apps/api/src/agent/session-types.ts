@@ -600,8 +600,8 @@ function recoverableWorkspaceToolFailure(
   const hint = error.code === "tool_path_denied"
     ? "Use '.' for the virtual root or a repository-relative path."
     : call.name === "results.write"
-      ? "Use the declared result path and pass one JSON string matching the declared findings report."
-    : "Correct the tool arguments and stay within the declared read limits.";
+      ? "Use the declared result path and pass one complete compact JSON artifact matching the declared stage contract."
+      : "Correct the tool arguments and stay within the declared read limits.";
   return { content: JSON.stringify({ error: error.code, hint }) };
 }
 

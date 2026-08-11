@@ -3,6 +3,7 @@ import type { ModelCapabilities } from "@csb/shared";
 import { createAnthropicMessagesWireAdapter } from "./anthropic-messages-session.js";
 import { createOpenAiChatWireAdapter } from "./openai-chat-session.js";
 import { createOpenAiResponsesWireAdapter } from "./openai-responses-session.js";
+import { PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT } from "./result-artifact-contract.js";
 import { createWorkspaceToolHost } from "./workspace-tool-host.js";
 import {
   AgentSessionError,
@@ -106,7 +107,8 @@ function validateSessionSpec(input: CreateAgentSessionInput): void {
       (input.terminalMode !== undefined &&
         input.terminalMode !== "provider-completion" && input.terminalMode !== "artifact-write") ||
       (input.resultArtifactContract !== undefined &&
-        input.resultArtifactContract !== "vulnhunter-report-v1")) {
+        input.resultArtifactContract !== "vulnhunter-report-v1" &&
+        input.resultArtifactContract !== PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT)) {
     throw new AgentSessionError("runner_invalid_spec");
   }
   validateAgentSessionLimits(input.limits);

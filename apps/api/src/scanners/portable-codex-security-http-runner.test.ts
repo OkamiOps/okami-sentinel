@@ -203,6 +203,7 @@ function completedStageSession(stage: string, artifact: string, summary: string)
       yield { type: "tool", phase: "requested", callId: "read", name: "workspace.read" } as const;
       yield { type: "tool", phase: "consumed", callId: "read", name: "workspace.read" } as const;
       yield { type: "tool", phase: "requested", callId: "write", name: "results.write" } as const;
+      yield { type: "tool", phase: "result", callId: "write", name: "results.write" } as const;
       yield { type: "artifact", path: artifact, bytes: 32 } as const;
       yield {
         type: "completion",
@@ -467,6 +468,10 @@ test("Portable Codex Security runs six ordered isolated stages using the four cl
     assert.equal(new Set(specs.map(({ spec }) => spec.artifactRoot)).size, 6);
     assert.deepEqual(specs.map(({ spec }) => spec.reasoningEffort), Array(6).fill("high"));
     assert.deepEqual(specs.map(({ spec }) => spec.terminalMode), Array(6).fill("artifact-write"));
+    assert.deepEqual(
+      specs.map(({ spec }) => spec.resultArtifactContract),
+      Array(6).fill("portable-stage-json-v1"),
+    );
     assert.equal(specs[1]!.spec.instructions.includes(injection), false);
     const prior = specs[1]!.spec.instructions.match(/BEGIN_PREVIOUS_STAGE_STATE_BASE64\n([A-Za-z0-9+/=]+)\nEND_PREVIOUS_STAGE_STATE_BASE64/)?.[1];
     assert.ok(prior);

@@ -208,7 +208,7 @@ export async function observePortableCodexSecurityStage(
 ): Promise<PortableCodexSecurityStageObservation> {
   let snapshotToolRequested = false;
   let snapshotToolConsumed = false;
-  let resultsWriteRequested = 0;
+  let resultsWriteAccepted = 0;
   let artifactEvents = 0;
   let completion: Record<string, unknown> | null = null;
   let usage = input.usage;
@@ -226,7 +226,7 @@ export async function observePortableCodexSecurityStage(
             throw new PortableCodexSecurityStageError("stage_evidence_incomplete");
           }
           if (event.name === "results.write") {
-            if (event.phase === "requested") resultsWriteRequested += 1;
+            if (event.phase === "result" && event.ok !== false) resultsWriteAccepted += 1;
           } else {
             if (event.phase === "requested") snapshotToolRequested = true;
             if (event.phase === "consumed" && event.ok !== false) snapshotToolConsumed = true;
@@ -269,7 +269,7 @@ export async function observePortableCodexSecurityStage(
   if (
     !snapshotToolRequested ||
     !snapshotToolConsumed ||
-    resultsWriteRequested !== 1 ||
+    resultsWriteAccepted !== 1 ||
     artifactEvents !== 1
   ) {
     throw new PortableCodexSecurityStageError("stage_evidence_incomplete");
