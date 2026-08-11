@@ -56,6 +56,130 @@ export type ProviderProtocol =
 
 export type ModelSelectionMode = "catalog" | "runtime-default";
 
+/** Credential treatment required by a visible connection preset. */
+export type ConnectionPresetCredentialMode =
+  | "none"
+  | "api-key"
+  | "token-plan"
+  | "custom"
+  | "managed-oauth";
+
+/** Endpoint fields exposed by a visible connection preset. */
+export type ConnectionPresetEndpointMode = "none" | "preset" | "custom" | "mimo-region";
+
+/** Availability is explicit so a visible route cannot silently become create-invalid. */
+export type ConnectionPresetAvailability = "available" | "unavailable" | "disabled";
+
+export type ConnectionPresetLabelKey =
+  | "connections.preset.openai-local-codex"
+  | "connections.preset.openai-chatgpt-browser-oauth"
+  | "connections.preset.openai-chatgpt-device-code"
+  | "connections.preset.openai-api"
+  | "connections.preset.xai-grok-local"
+  | "connections.preset.xai-direct-device-oauth"
+  | "connections.preset.xai-api"
+  | "connections.preset.claude-code-local"
+  | "connections.preset.anthropic-api"
+  | "connections.preset.cursor-local"
+  | "connections.preset.cursor-cloud-api"
+  | "connections.preset.openrouter-api"
+  | "connections.preset.gemini-api"
+  | "connections.preset.deepseek-api"
+  | "connections.preset.minimax-token-plan"
+  | "connections.preset.mimo-token-plan"
+  | "connections.preset.custom-openai-compatible"
+  | "connections.preset.custom-anthropic-compatible";
+
+/**
+ * The create-time contract shared by the visible editor presets and the
+ * service-boundary regression matrix. Routes marked unavailable or disabled
+ * must be intentional; available routes are required to create locally.
+ */
+export interface ConnectionPreset {
+  readonly id: string;
+  readonly labelKey: ConnectionPresetLabelKey;
+  readonly providerKind: string;
+  readonly routeKind: string;
+  readonly transport: ConnectionTransport;
+  readonly authKind: ConnectionAuthKind;
+  readonly protocol: ProviderProtocol;
+  readonly modelSelectionMode: ModelSelectionMode;
+  readonly credentialMode: ConnectionPresetCredentialMode;
+  readonly endpointMode: ConnectionPresetEndpointMode;
+  readonly availability: ConnectionPresetAvailability;
+}
+
+export const VISIBLE_CONNECTION_PRESET_IDS = [
+  "openai-local-codex",
+  "openai-chatgpt-browser-oauth",
+  "openai-chatgpt-device-code",
+  "openai-api",
+  "xai-grok-local",
+  "xai-direct-device-oauth",
+  "xai-api",
+  "claude-code-local",
+  "anthropic-api",
+  "cursor-local",
+  "cursor-cloud-api",
+  "openrouter-api",
+  "gemini-api",
+  "deepseek-api",
+  "minimax-token-plan",
+  "mimo-token-plan",
+  "custom-openai-compatible",
+  "custom-anthropic-compatible",
+] as const;
+
+export const VISIBLE_CONNECTION_PRESET_COUNT = VISIBLE_CONNECTION_PRESET_IDS.length;
+
+export const VISIBLE_CONNECTION_PRESETS: readonly ConnectionPreset[] = Object.freeze([
+  connectionPreset("openai-local-codex", "connections.preset.openai-local-codex", "openai", "openai-codex-local", "codex-app-server", "existing-session", "codex-app-server", "catalog", "none", "none"),
+  connectionPreset("openai-chatgpt-browser-oauth", "connections.preset.openai-chatgpt-browser-oauth", "openai", "openai-chatgpt-app-server", "codex-app-server", "browser-oauth", "codex-app-server", "catalog", "managed-oauth", "preset"),
+  connectionPreset("openai-chatgpt-device-code", "connections.preset.openai-chatgpt-device-code", "openai", "openai-chatgpt-app-server", "codex-app-server", "device-code", "codex-app-server", "catalog", "managed-oauth", "preset"),
+  connectionPreset("openai-api", "connections.preset.openai-api", "openai", "openai-api", "http-inference", "api-key", "openai-responses", "catalog", "api-key", "preset"),
+  connectionPreset("xai-grok-local", "connections.preset.xai-grok-local", "xai", "xai-grok-build-local", "local-cli", "existing-session", "grok-build-cli", "catalog", "none", "none"),
+  connectionPreset("xai-direct-device-oauth", "connections.preset.xai-direct-device-oauth", "xai", "xai-oauth", "http-inference", "device-code", "xai-oauth-responses", "catalog", "managed-oauth", "preset"),
+  connectionPreset("xai-api", "connections.preset.xai-api", "xai", "xai-api", "http-inference", "api-key", "openai-responses", "catalog", "api-key", "preset"),
+  connectionPreset("claude-code-local", "connections.preset.claude-code-local", "anthropic", "claude-code-local", "local-cli", "existing-session", "claude-code-cli", "runtime-default", "none", "none"),
+  connectionPreset("anthropic-api", "connections.preset.anthropic-api", "anthropic", "anthropic-api", "http-inference", "api-key", "anthropic-messages", "catalog", "api-key", "preset"),
+  connectionPreset("cursor-local", "connections.preset.cursor-local", "cursor", "cursor-agent-local", "local-cli", "existing-session", "cursor-agent-cli", "catalog", "none", "none"),
+  connectionPreset("cursor-cloud-api", "connections.preset.cursor-cloud-api", "cursor", "cursor-background-agents", "remote-agent-api", "api-key", "cursor-background-agents", "catalog", "api-key", "preset"),
+  connectionPreset("openrouter-api", "connections.preset.openrouter-api", "openrouter", "openrouter-api", "http-inference", "api-key", "openai-chat", "catalog", "api-key", "preset"),
+  connectionPreset("gemini-api", "connections.preset.gemini-api", "google", "gemini-api", "http-inference", "api-key", "openai-chat", "catalog", "api-key", "preset"),
+  connectionPreset("deepseek-api", "connections.preset.deepseek-api", "deepseek", "deepseek-api", "http-inference", "api-key", "openai-chat", "catalog", "api-key", "preset"),
+  connectionPreset("minimax-token-plan", "connections.preset.minimax-token-plan", "minimax", "minimax-token-plan", "http-inference", "api-key", "anthropic-messages", "catalog", "token-plan", "preset"),
+  connectionPreset("mimo-token-plan", "connections.preset.mimo-token-plan", "xiaomi", "mimo-token-plan", "http-inference", "api-key", "anthropic-messages", "catalog", "token-plan", "mimo-region"),
+  connectionPreset("custom-openai-compatible", "connections.preset.custom-openai-compatible", "custom", "custom-openai-compatible", "http-inference", "api-key", "openai-chat", "catalog", "custom", "custom"),
+  connectionPreset("custom-anthropic-compatible", "connections.preset.custom-anthropic-compatible", "custom", "custom-anthropic-compatible", "http-inference", "api-key", "anthropic-messages", "catalog", "custom", "custom"),
+]);
+
+function connectionPreset(
+  id: string,
+  labelKey: ConnectionPresetLabelKey,
+  providerKind: string,
+  routeKind: string,
+  transport: ConnectionTransport,
+  authKind: ConnectionAuthKind,
+  protocol: ProviderProtocol,
+  modelSelectionMode: ModelSelectionMode,
+  credentialMode: ConnectionPresetCredentialMode,
+  endpointMode: ConnectionPresetEndpointMode,
+): ConnectionPreset {
+  return Object.freeze({
+    id,
+    labelKey,
+    providerKind,
+    routeKind,
+    transport,
+    authKind,
+    protocol,
+    modelSelectionMode,
+    credentialMode,
+    endpointMode,
+    availability: "available",
+  });
+}
+
 export type CapabilityState = "supported" | "unsupported" | "unknown";
 
 export interface ModelCapabilities {

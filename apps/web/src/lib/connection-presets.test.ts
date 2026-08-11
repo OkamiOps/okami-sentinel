@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { VISIBLE_CONNECTION_PRESETS } from "@csb/shared";
+
 import { blankConnectionDraft, validateConnectionDraft } from "./connections.js";
 import {
   CONNECTION_PRESETS,
@@ -18,6 +20,7 @@ import {
 
 test("maps every supported provider route preset to its registered transport contract", () => {
   assert.equal(CONNECTION_PRESETS.length, 18);
+  assert.equal(CONNECTION_PRESETS, VISIBLE_CONNECTION_PRESETS);
 
   assert.deepEqual(getConnectionPreset("openai-chatgpt-browser-oauth"), {
     id: "openai-chatgpt-browser-oauth",
@@ -30,6 +33,7 @@ test("maps every supported provider route preset to its registered transport con
     modelSelectionMode: "catalog",
     credentialMode: "managed-oauth",
     endpointMode: "preset",
+    availability: "available",
   });
 
   assert.deepEqual(getConnectionPreset("cursor-cloud-api"), {
@@ -43,6 +47,7 @@ test("maps every supported provider route preset to its registered transport con
     modelSelectionMode: "catalog",
     credentialMode: "api-key",
     endpointMode: "preset",
+    availability: "available",
   });
 
   assert.equal(getConnectionPreset("openai-local-codex").modelSelectionMode, "catalog");
