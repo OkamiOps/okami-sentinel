@@ -56,6 +56,8 @@ export interface DefensiveLocalCliDependencies {
 
 export interface DefensiveLocalCliChild {
   result: Promise<{ stdout: string; stderr: string }>;
+  /** Resolves only after the exact child process emits `close`. */
+  closed: Promise<void>;
   /** Signals this exact process only. No process-tree guarantee is implied. */
   kill(signal: "SIGTERM" | "SIGKILL"): boolean;
 }
@@ -519,17 +521,26 @@ function executeNative(
   options: DefensiveLocalCliExecOptions,
 ): DefensiveLocalCliChild {
   let child!: ReturnType<typeof nativeExecFile>;
+  let markClosed: (() => void) | undefined;
+  const closed = new Promise<void>((resolve) => { markClosed = resolve; });
   const result = new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-    child = nativeExecFile(binary, argv, options, (error, stdout, stderr) => {
-      if (error !== null) {
-        reject(error);
-        return;
-      }
-      resolve({ stdout: String(stdout), stderr: String(stderr) });
-    });
+    try {
+      child = nativeExecFile(binary, argv, options, (error, stdout, stderr) => {
+        if (error !== null) {
+          reject(error);
+          return;
+        }
+        resolve({ stdout: String(stdout), stderr: String(stderr) });
+      });
+      child.once("close", () => markClosed?.());
+    } catch (error) {
+      markClosed?.();
+      reject(error);
+    }
   });
   return {
     result,
+    closed,
     kill(signal) {
       return child.kill(signal);
     },
@@ -542,6 +553,9 @@ function normalizeError(
 ): DefensiveLocalCliError {
   if (error instanceof DefensiveLocalCliError) return error;
   if (stopped !== null) return stopped;
+  if (isErrno(error, "ERR_CHILD_PROCESS_STDIO_MAXBUFFER")) {
+    return new DefensiveLocalCliError("agent_output_byte_limit");
+  }
   if (isErrno(error, "ENOENT")) return new DefensiveLocalCliError("runtime_missing");
   return new DefensiveLocalCliError("provider_unreachable");
 }
@@ -616,7 +630,7 @@ function awaitChildWithin<T extends { stdout: string; stderr: string }>(
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     let locallySettled = false;
-    let childSettled = false;
+    let childClosed = false;
     let forceKillTimer: NodeJS.Timeout | undefined;
     const finishLocally = (callback: () => void): void => {
       if (locallySettled) return;
@@ -624,8 +638,8 @@ function awaitChildWithin<T extends { stdout: string; stderr: string }>(
       scope.signal.removeEventListener("abort", onAbort);
       callback();
     };
-    const markChildSettled = (): void => {
-      childSettled = true;
+    const markChildClosed = (): void => {
+      childClosed = true;
       if (forceKillTimer !== undefined) clearTimeout(forceKillTimer);
     };
     const signalChild = (signal: "SIGTERM" | "SIGKILL"): void => {
@@ -638,25 +652,20 @@ function awaitChildWithin<T extends { stdout: string; stderr: string }>(
     };
     const onAbort = (): void => {
       signalChild("SIGTERM");
-      if (!childSettled && forceKillTimer === undefined) {
+      if (!childClosed && forceKillTimer === undefined) {
         forceKillTimer = setTimeout(() => {
-          if (!childSettled) signalChild("SIGKILL");
+          if (!childClosed) signalChild("SIGKILL");
         }, killGraceMs);
         forceKillTimer.unref();
       }
       finishLocally(() => reject(scope.stopError() ?? new DefensiveLocalCliError("agent_cancelled")));
     };
+    void child.closed.then(markChildClosed, () => undefined);
     if (scope.signal.aborted) onAbort();
     else scope.signal.addEventListener("abort", onAbort, { once: true });
     void child.result.then(
-      (value) => {
-        markChildSettled();
-        finishLocally(() => resolve(value as T));
-      },
-      (error: unknown) => {
-        markChildSettled();
-        finishLocally(() => reject(error));
-      },
+      (value) => finishLocally(() => resolve(value as T)),
+      (error: unknown) => finishLocally(() => reject(error)),
     );
   });
 }

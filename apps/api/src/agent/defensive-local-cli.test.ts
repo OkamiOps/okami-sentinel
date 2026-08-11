@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
+import { execFile as nativeExecFile } from "node:child_process";
+import { chmod, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
-import { createDefensiveLocalCli, DefensiveLocalCliError } from "./defensive-local-cli.js";
+import {
+  createDefensiveLocalCli,
+  DefensiveLocalCliError,
+  type DefensiveLocalCliChild,
+  type DefensiveLocalCliExecOptions,
+} from "./defensive-local-cli.js";
 
 test("Claude local execution uses the fixed defensive argv and strips API keys", async () => {
   const calls: Array<{ binary: string; argv: string[]; options: Record<string, unknown> }> = [];
@@ -152,6 +161,7 @@ test("an external abort settles despite an uncooperative local CLI and consumes 
       markStarted?.();
       return {
         result: new Promise<{ stdout: string; stderr: string }>((_resolve, reject) => { rejectLate = reject; }),
+        closed: new Promise<void>(() => undefined),
         kill(signal: string) {
           killCalls.push(signal);
           return true;
@@ -193,6 +203,7 @@ test("the local timeout settles despite an uncooperative local CLI and consumes 
       markStarted?.();
       return {
         result: new Promise<{ stdout: string; stderr: string }>((_resolve, reject) => { rejectLate = reject; }),
+        closed: new Promise<void>(() => undefined),
         kill(signal: string) {
           killCalls.push(signal);
           return true;
@@ -409,6 +420,89 @@ test("the response schema subset rejects unsupported keywords before launch", as
   assert.equal(calls, 0);
 });
 
+test("native Node 24 maxBuffer overflow maps to agent_output_byte_limit", async (t) => {
+  assert.match(process.versions.node, /^24\./);
+  const cwd = await privateNativeCwd(t);
+  let child: (DefensiveLocalCliChild & { closed: Promise<void> }) | undefined;
+  const runner = createDefensiveLocalCli({
+    approvedCwds: [cwd],
+    execFile: (_binary, _argv, options) => {
+      child = nativeNodeFixture([
+        "-e",
+        `process.stdout.write("x".repeat(${512 * 1024 + 1}))`,
+      ], options);
+      return child;
+    },
+  });
+
+  const outcome = await settleAsCode(
+    runner.run({ ...claudeInput(), cwd }),
+    1_000,
+  );
+  await child?.closed;
+
+  assert.equal(outcome, "agent_output_byte_limit");
+});
+
+test("native Node 24 ABORT_ERR still escalates SIGTERM to SIGKILL until the process closes", async (t) => {
+  assert.match(process.versions.node, /^24\./);
+  const cwd = await privateNativeCwd(t);
+  const readyPath = join(cwd, "ready.pid");
+  const controller = new AbortController();
+  const killSignals: string[] = [];
+  let callbackCode: unknown;
+  let fixture: (DefensiveLocalCliChild & { closed: Promise<void> }) | undefined;
+  let rawChild: ReturnType<typeof nativeExecFile> | undefined;
+  const runner = createDefensiveLocalCli({
+    approvedCwds: [cwd],
+    killGraceMs: 20,
+    execFile: (_binary, _argv, options) => {
+      const native = nativeNodeFixture([
+        "-e",
+        [
+          'const fs = require("node:fs")',
+          'process.on("SIGTERM", () => {})',
+          'fs.writeFileSync(process.argv[1], String(process.pid))',
+          'setInterval(() => {}, 1_000)',
+        ].join(";"),
+        readyPath,
+      ], options, (child) => { rawChild = child; });
+      fixture = {
+        ...native,
+        result: native.result.catch((error: unknown) => {
+          callbackCode = (error as { code?: unknown }).code;
+          throw error;
+        }),
+        kill(signal) {
+          killSignals.push(signal);
+          return native.kill(signal);
+        },
+      };
+      return fixture;
+    },
+  });
+  t.after(async () => {
+    if (rawChild?.exitCode === null && rawChild.signalCode === null) rawChild.kill("SIGKILL");
+    await fixture?.closed;
+  });
+
+  const running = runner.run({ ...claudeInput(), cwd, signal: controller.signal });
+  const pid = Number(await waitForFile(readyPath, 1_000));
+  controller.abort();
+
+  const outcome = await settleAsCode(running, 500);
+  const closedBeforeCleanup = await settleAsBoolean(fixture!.closed, 300);
+  if (!closedBeforeCleanup) rawChild?.kill("SIGKILL");
+  await fixture!.closed;
+
+  assert.equal(outcome, "agent_cancelled");
+  assert.equal(callbackCode, "ABORT_ERR");
+  assert.equal(closedBeforeCleanup, true);
+  assert.deepEqual(killSignals, ["SIGTERM", "SIGKILL"]);
+  assert.equal(rawChild?.signalCode, "SIGKILL");
+  assert.equal(processExists(pid), false);
+});
+
 function claudeInput() {
   return {
     routeKind: "claude-code-local" as const,
@@ -486,6 +580,69 @@ function testCwdInspector(state: {
 function completedChild(output: { stdout: string; stderr: string }) {
   return {
     result: Promise.resolve(output),
+    closed: Promise.resolve(),
     kill: (_signal: "SIGTERM" | "SIGKILL") => true,
   };
+}
+
+async function privateNativeCwd(t: { after(callback: () => Promise<void>): void }): Promise<string> {
+  const created = await mkdtemp(join(tmpdir(), "csb-defensive-cli-test-"));
+  const canonical = await realpath(created);
+  await chmod(canonical, 0o700);
+  t.after(async () => rm(canonical, { recursive: true, force: true }));
+  return canonical;
+}
+
+function nativeNodeFixture(
+  argv: string[],
+  options: DefensiveLocalCliExecOptions,
+  onProcess?: (child: ReturnType<typeof nativeExecFile>) => void,
+): DefensiveLocalCliChild & { closed: Promise<void> } {
+  let child!: ReturnType<typeof nativeExecFile>;
+  let markClosed: (() => void) | undefined;
+  const closed = new Promise<void>((resolve) => { markClosed = resolve; });
+  const result = new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+    child = nativeExecFile(process.execPath, argv, options, (error, stdout, stderr) => {
+      if (error !== null) {
+        reject(error);
+        return;
+      }
+      resolve({ stdout: String(stdout), stderr: String(stderr) });
+    });
+    child.once("close", () => markClosed?.());
+    onProcess?.(child);
+  });
+  return {
+    result,
+    closed,
+    kill: (signal) => child.kill(signal),
+  };
+}
+
+async function waitForFile(path: string, timeoutMs: number): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      return await readFile(path, "utf8");
+    } catch {
+      if (Date.now() >= deadline) throw new Error("native fixture did not become ready");
+      await new Promise<void>((resolve) => setTimeout(resolve, 2));
+    }
+  }
+}
+
+async function settleAsBoolean(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  return Promise.race([
+    promise.then(() => true),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), timeoutMs)),
+  ]);
+}
+
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as { code?: unknown }).code !== "ESRCH";
+  }
 }
