@@ -14,6 +14,8 @@ import {
   MANTIS_CACHE_DIR,
   MANTIS_HTTP_WORKER_BIN,
   MANTIS_HTTP_WORKER_ENTRY,
+  MANTIS_LOCAL_WORKER_BIN,
+  MANTIS_LOCAL_WORKER_ENTRY,
   MANTIS_REPOSITORY_URL,
   MANTIS_SOURCE_REF,
   MANTIS_WORKER_BIN,
@@ -30,6 +32,7 @@ import type {
   MantisHttpWorkerConfiguration,
   SafeMantisProviderPlan,
 } from "./mantis-http-runner.js";
+import type { MantisLocalProviderPlan } from "./mantis-local-runner.js";
 import type {
   SafeVulnHunterProviderPlan,
   VulnHunterRunConfiguration,
@@ -72,6 +75,22 @@ export interface MantisHttpLaunchInput extends ScannerLaunchInput {
   /** Trusted runtime metadata, never serialized into the worker config. */
   providerKind: string;
   mantisProviderPlan: SafeMantisProviderPlan;
+}
+
+/**
+ * The local Claude worker receives no secret and no browser-owned model data.
+ * Its source checkout is resolved before this function is called.
+ */
+export interface MantisLocalLaunchInput {
+  request: StartScanRequest;
+  repositoryPath: string;
+  outputDir: string;
+  effort: string;
+  mode: ScanMode;
+  skillsRoot: string;
+  mantisLocalProviderPlan: MantisLocalProviderPlan;
+  /** Private test seam; production inherits the existing Claude session. */
+  environment?: NodeJS.ProcessEnv;
 }
 
 export function explicitAuthEnvironment(
@@ -274,6 +293,48 @@ export function prepareMantisHttpLaunch(input: MantisHttpLaunchInput): ScannerLa
   };
 }
 
+/**
+ * Writes the identifier-only contract for the argv-locked Claude worker.
+ * The exact source ref has already been checked by the launch preflight.
+ */
+export function prepareMantisLocalLaunch(input: MantisLocalLaunchInput): ScannerLaunch {
+  const plan = copyMantisLocalProviderPlan(input.mantisLocalProviderPlan);
+  const configuration = {
+    outputDir: input.outputDir,
+    repositoryPath: input.repositoryPath,
+    paths: (input.request.paths ?? []).map((item) => item.trim()).filter(Boolean),
+    sourceRef: MANTIS_SOURCE_REF,
+    skillsRoot: input.skillsRoot,
+    providerPlan: plan,
+  };
+  const configPath = path.join(input.outputDir, "mantis-local-run.json");
+  fs.writeFileSync(configPath, `${JSON.stringify(configuration, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  const hash = recipeHash({
+    engine: "mantis",
+    authMode: "existing-session",
+    model: plan.modelId ?? "runtime-default",
+    effort: input.effort,
+    mode: input.mode,
+    paths: configuration.paths,
+    scannerVersion: MANTIS_SOURCE_REF,
+  });
+  return {
+    engine: "mantis",
+    authMode: "existing-session",
+    provider: "anthropic",
+    scannerVersion: MANTIS_SOURCE_REF,
+    recipeHash: hash,
+    command: MANTIS_LOCAL_WORKER_BIN,
+    args: [MANTIS_LOCAL_WORKER_ENTRY, configPath],
+    cwd: ROOT_DIR,
+    env: localMantisWorkerEnvironment(input.environment),
+    displayCommand: `sentinel-mantis-local ${path.basename(configPath)}`,
+  };
+}
+
 function prepareVulnHunter(input: ScannerLaunchInput): ScannerLaunch {
   const authMode = input.vulnhunterProviderPlan === undefined
     ? input.request.authMode ?? "chatgpt"
@@ -331,6 +392,49 @@ function workerEnvironment(): NodeJS.ProcessEnv {
     NO_COLOR: "1",
     CI: "1",
   };
+}
+
+/** Existing Claude session variables remain; every API-key path is blocked. */
+export function localMantisWorkerEnvironment(
+  source: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...source, NO_COLOR: "1", CI: "1" };
+  for (const key of [
+    "OPENAI_API_KEY",
+    "CODEX_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "XAI_API_KEY",
+    "GROK_API_KEY",
+    "CURSOR_API_KEY",
+  ]) delete env[key];
+  return env;
+}
+
+function copyMantisLocalProviderPlan(
+  plan: MantisLocalProviderPlan,
+): MantisLocalProviderPlan {
+  if (
+    !safeIdentifier(plan.scanId) ||
+    !safeIdentifier(plan.connectionId) ||
+    plan.routeKind !== "claude-code-local" ||
+    plan.protocol !== "claude-code-cli" ||
+    (plan.modelSelectionMode !== "catalog" && plan.modelSelectionMode !== "runtime-default") ||
+    (plan.modelSelectionMode === "catalog"
+      ? !safeIdentifier(plan.modelId)
+      : plan.modelId !== null)
+  ) throw new Error("Mantis local provider plan is invalid");
+  return {
+    scanId: plan.scanId,
+    connectionId: plan.connectionId,
+    routeKind: plan.routeKind,
+    protocol: plan.protocol,
+    modelSelectionMode: plan.modelSelectionMode,
+    modelId: plan.modelId,
+  };
+}
+
+function safeIdentifier(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/.test(value);
 }
 
 /** HTTP credentials are read by the child from the native vault, never inherited. */

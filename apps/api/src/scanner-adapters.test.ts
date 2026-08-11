@@ -10,6 +10,7 @@ import { readFindingsFile } from "./ingest.js";
 import { buildScannerCatalog } from "./scanners/catalog.js";
 import {
   explicitAuthEnvironment,
+  prepareMantisLocalLaunch,
   prepareMantisHttpLaunch,
   prepareScannerLaunch,
 } from "./scanners/launch.js";
@@ -109,6 +110,79 @@ test("ChatGPT authentication never inherits API credentials", () => {
     () => explicitAuthEnvironment("api-key", { PATH: "/bin" }),
     /OPENAI_API_KEY\/CODEX_API_KEY/,
   );
+});
+
+test("Mantis local launch writes only the pinned Claude session identifiers and strips every API-key route", () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-mantis-local-launch-"));
+  const repositoryPath = path.join(fixtureRoot, "repository");
+  const outputDir = path.join(fixtureRoot, "output");
+  const skillsRoot = path.join(fixtureRoot, "skills");
+  fs.mkdirSync(repositoryPath);
+  fs.mkdirSync(outputDir);
+  fs.mkdirSync(skillsRoot);
+  const apiKeys = {
+    OPENAI_API_KEY: "openai-key-must-not-reach-local-worker",
+    CODEX_API_KEY: "codex-key-must-not-reach-local-worker",
+    ANTHROPIC_API_KEY: "anthropic-key-must-not-reach-local-worker",
+    XAI_API_KEY: "xai-key-must-not-reach-local-worker",
+    CURSOR_API_KEY: "cursor-key-must-not-reach-local-worker",
+    CLAUDE_CONFIG_DIR: "/private/session-kept-for-existing-login",
+  };
+
+  try {
+    const launch = prepareMantisLocalLaunch({
+      request: {
+        repositoryPath,
+        engine: "mantis",
+        provider: "browser-injected-provider",
+        model: "browser-injected-model",
+        authMode: "api-key",
+        paths: ["src"],
+      },
+      repositoryPath,
+      outputDir,
+      effort: "high",
+      mode: "standard",
+      skillsRoot,
+      environment: apiKeys,
+      mantisLocalProviderPlan: {
+        scanId: "scan-local",
+        connectionId: "claude-local",
+        routeKind: "claude-code-local",
+        protocol: "claude-code-cli",
+        modelSelectionMode: "runtime-default",
+        modelId: null,
+      },
+    });
+    const configPath = path.join(outputDir, "mantis-local-run.json");
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
+
+    assert.equal(launch.engine, "mantis");
+    assert.equal(launch.provider, "anthropic");
+    assert.equal(launch.authMode, "existing-session");
+    assert.match(launch.displayCommand, /^sentinel-mantis-local /);
+    assert.equal(launch.args.at(-1), configPath);
+    assert.deepEqual(Object.keys(config).sort(), [
+      "outputDir", "paths", "providerPlan", "repositoryPath", "skillsRoot", "sourceRef",
+    ]);
+    assert.equal(config.skillsRoot, skillsRoot);
+    assert.deepEqual(config.providerPlan, {
+      scanId: "scan-local",
+      connectionId: "claude-local",
+      routeKind: "claude-code-local",
+      protocol: "claude-code-cli",
+      modelSelectionMode: "runtime-default",
+      modelId: null,
+    });
+    assert.equal("model" in config, false);
+    assert.equal(fs.statSync(configPath).mode & 0o077, 0);
+    for (const key of ["OPENAI_API_KEY", "CODEX_API_KEY", "ANTHROPIC_API_KEY", "XAI_API_KEY", "CURSOR_API_KEY"] as const) {
+      assert.equal(launch.env[key], undefined, `${key} must not reach local worker`);
+    }
+    assert.equal(launch.env.CLAUDE_CONFIG_DIR, apiKeys.CLAUDE_CONFIG_DIR);
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
 });
 
 test("launch adapters produce explicit, reproducible recipes without executing a scanner", () => {

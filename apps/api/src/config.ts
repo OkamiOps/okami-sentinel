@@ -106,6 +106,30 @@ export const MANTIS_HTTP_WORKER_ENTRY = path.join(
   "mantis-http-worker.ts",
 );
 
+export const MANTIS_LOCAL_WORKER_BIN =
+  process.env.MANTIS_LOCAL_WORKER_BIN?.trim() ||
+  path.join(ROOT_DIR, "apps", "api", "node_modules", ".bin", "tsx");
+
+export const MANTIS_LOCAL_WORKER_ENTRY = path.join(
+  ROOT_DIR,
+  "apps",
+  "api",
+  "src",
+  "scanners",
+  "mantis-local-worker.ts",
+);
+
+const configuredMantisLocalSourceTimeout = Number(
+  process.env.CSB_MANTIS_LOCAL_SOURCE_TIMEOUT_MS,
+);
+
+/** Bounded upstream checkout preflight; a local source cache must never hang a scan launch. */
+export const MANTIS_LOCAL_SOURCE_TIMEOUT_MS =
+  Number.isSafeInteger(configuredMantisLocalSourceTimeout) &&
+      configuredMantisLocalSourceTimeout > 0
+    ? Math.min(configuredMantisLocalSourceTimeout, 60_000)
+    : 20_000;
+
 export const VULNHUNTER_REPOSITORY_URL =
   process.env.VULNHUNTER_REPOSITORY_URL?.trim() ||
   "https://github.com/capitalone/vulnhunter.git";
