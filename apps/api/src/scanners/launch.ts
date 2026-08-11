@@ -394,19 +394,31 @@ function workerEnvironment(): NodeJS.ProcessEnv {
   };
 }
 
-/** Existing Claude session variables remain; every API-key path is blocked. */
+const LOCAL_MANTIS_CHILD_ENV_KEYS = [
+  "PATH",
+  "HOME",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "XDG_CONFIG_HOME",
+  "CLAUDE_CONFIG_DIR",
+  "CLAUDE_CODE_CONFIG_DIR",
+] as const;
+
+/**
+ * A local Claude session authenticates through its private config directory.
+ * The child receives only OS paths needed to find that session; all provider
+ * credentials, endpoint overrides, preload hooks, and unrelated runtime
+ * knobs are absent by construction.
+ */
 export function localMantisWorkerEnvironment(
   source: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...source, NO_COLOR: "1", CI: "1" };
-  for (const key of [
-    "OPENAI_API_KEY",
-    "CODEX_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "XAI_API_KEY",
-    "GROK_API_KEY",
-    "CURSOR_API_KEY",
-  ]) delete env[key];
+  const env: NodeJS.ProcessEnv = { NO_COLOR: "1", CI: "1" };
+  for (const key of LOCAL_MANTIS_CHILD_ENV_KEYS) {
+    const value = source[key];
+    if (typeof value === "string" && value.length > 0) env[key] = value;
+  }
   return env;
 }
 

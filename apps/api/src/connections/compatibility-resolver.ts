@@ -45,7 +45,8 @@ export interface ResolvedConnectionCompatibility extends ConnectionCompatibility
 
 export interface CompatibilityInput {
   engine: ScannerEngine;
-  connection: ProviderConnection;
+  /** Stored callers supply the vault reference; generic HTTP callers may omit it. */
+  connection: ProviderConnection & { credentialRef?: string | null };
   selection: ScanConnectionSelection;
   model: ProviderModel | null;
   probe?: CapabilityReport | null;
@@ -159,7 +160,8 @@ function isClaudeCodeLocalMantisSession(input: CompatibilityInput): boolean {
     connection.routeKind === "claude-code-local" &&
     connection.transport === "local-cli" &&
     connection.authKind === "existing-session" &&
-    connection.protocol === "claude-code-cli";
+    connection.protocol === "claude-code-cli" &&
+    connection.credentialRef === null;
 }
 
 function isCodexSecurityRoute(connection: ProviderConnection): boolean {
@@ -182,6 +184,7 @@ function selectionReasons(input: CompatibilityInput): CompatibilityReason[] {
       ? []
       : ["invalid_model_selection"];
   }
+  if (connection.modelSelectionMode !== "catalog") return ["invalid_model_selection"];
   if (connection.modelCatalogStale) return ["model_catalog_stale"];
   if (
     selection.modelId === null ||

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -8,6 +9,9 @@ const EXACT_GIT_REF = /^[a-f0-9]{40}$/i;
 const MAX_GIT_OUTPUT_BYTES = 128 * 1024;
 const MAX_SKILL_BYTES = 64 * 1024;
 const GIT_KILL_GRACE_MS = 250;
+const CACHE_LOCK_WAIT_MS = 60_000;
+const CACHE_LOCK_POLL_MS = 25;
+const RECOVERY_ENTRIES_PER_REF = 2;
 
 export type MantisSourceErrorCode = "source_cancelled" | "source_invalid";
 
@@ -71,26 +75,203 @@ export async function resolveMantisLocalSource(
   ensurePrivateDirectory(cacheDir);
 
   const skillsRoot = path.join(cacheDir, ref.slice(0, 12));
-  if (!fs.existsSync(skillsRoot)) {
+  const releaseLock = await acquireCacheLock(cacheDir, ref, timeout, signal);
+  let stagingRoot: string | null = null;
+  try {
+    if (await isValidCachedCheckout(command, cacheDir, skillsRoot, ref, timeout, signal)) {
+      return { sourceCacheDir: cacheDir, skillsRoot, ref };
+    }
+    if (fs.existsSync(skillsRoot)) retireCacheEntry(cacheDir, skillsRoot, ref, "invalid");
+
+    stagingRoot = privateStagingRoot(cacheDir, ref);
     await git(command, [
       "clone",
       "--filter=blob:none",
       "--no-checkout",
       repositoryUrl,
-      skillsRoot,
+      stagingRoot,
     ], cacheDir, timeout, signal);
-    ensurePrivateDirectory(skillsRoot);
-    await git(command, ["-C", skillsRoot, "checkout", "--detach", ref], cacheDir, timeout, signal);
-  }
-
-  ensurePrivateDirectory(skillsRoot);
-  const head = (await git(command, ["-C", skillsRoot, "rev-parse", "HEAD"], cacheDir, timeout, signal))
-    .stdout.trim();
-  if (head.toLowerCase() !== ref.toLowerCase() || !hasRequiredSkills(skillsRoot)) {
+    ensurePrivateDirectory(stagingRoot);
+    await git(command, ["-C", stagingRoot, "checkout", "--detach", ref], cacheDir, timeout, signal);
+    if (!await isValidCachedCheckout(command, cacheDir, stagingRoot, ref, timeout, signal)) {
+      throw new MantisSourceError("source_invalid");
+    }
+    throwIfAborted(signal);
+    fs.renameSync(stagingRoot, skillsRoot);
+    stagingRoot = null;
+    return { sourceCacheDir: cacheDir, skillsRoot, ref };
+  } catch (error) {
+    if (stagingRoot !== null && fs.existsSync(stagingRoot)) {
+      retireCacheEntry(cacheDir, stagingRoot, ref, "interrupted");
+    }
+    if (error instanceof MantisSourceError) throw error;
+    if (signal.aborted) throw new MantisSourceError("source_cancelled");
     throw new MantisSourceError("source_invalid");
+  } finally {
+    releaseLock();
   }
-  throwIfAborted(signal);
-  return { sourceCacheDir: cacheDir, skillsRoot, ref };
+}
+
+async function isValidCachedCheckout(
+  command: MantisSourceCommand,
+  cacheDir: string,
+  checkoutRoot: string,
+  ref: string,
+  timeout: number,
+  signal: AbortSignal,
+): Promise<boolean> {
+  try {
+    assertPrivateDirectory(checkoutRoot);
+    const head = (await git(
+      command,
+      ["-C", checkoutRoot, "rev-parse", "HEAD"],
+      cacheDir,
+      timeout,
+      signal,
+    )).stdout.trim();
+    return head.toLowerCase() === ref.toLowerCase() && hasRequiredSkills(checkoutRoot);
+  } catch (error) {
+    if (signal.aborted || error instanceof MantisSourceError && error.code === "source_cancelled") {
+      throw new MantisSourceError("source_cancelled");
+    }
+    return false;
+  }
+}
+
+async function acquireCacheLock(
+  cacheDir: string,
+  ref: string,
+  timeout: number,
+  signal: AbortSignal,
+): Promise<() => void> {
+  const lockRoot = path.join(cacheDir, `.mantis-source-${ref}.lock`);
+  const staleAfterMs = Math.max(CACHE_LOCK_WAIT_MS, (timeout * 3) + GIT_KILL_GRACE_MS);
+  const deadline = Date.now() + staleAfterMs;
+  for (;;) {
+    throwIfAborted(signal);
+    try {
+      fs.mkdirSync(lockRoot, { mode: 0o700 });
+      assertPrivateDirectory(lockRoot);
+      return () => releaseCacheLock(lockRoot);
+    } catch (error) {
+      if (!isAlreadyExists(error)) throw new MantisSourceError("source_invalid");
+      try {
+        assertPrivateDirectory(lockRoot);
+      } catch {
+        throw new MantisSourceError("source_invalid");
+      }
+      if (isStaleCacheLock(lockRoot, staleAfterMs)) {
+        reclaimStaleCacheLock(cacheDir, lockRoot, ref);
+        continue;
+      }
+      if (Date.now() >= deadline) throw new MantisSourceError("source_invalid");
+      await waitForCacheLock(signal, Math.min(CACHE_LOCK_POLL_MS, deadline - Date.now()));
+    }
+  }
+}
+
+function releaseCacheLock(lockRoot: string): void {
+  try {
+    const info = fs.lstatSync(lockRoot);
+    if (info.isDirectory() && !info.isSymbolicLink()) fs.rmdirSync(lockRoot);
+  } catch {
+    // A stale private lock fails closed on the next launch instead of deleting an unknown path.
+  }
+}
+
+function isStaleCacheLock(lockRoot: string, staleAfterMs: number): boolean {
+  try {
+    const info = fs.lstatSync(lockRoot);
+    return info.isDirectory() && !info.isSymbolicLink() && Date.now() - info.mtimeMs >= staleAfterMs;
+  } catch {
+    return false;
+  }
+}
+
+function reclaimStaleCacheLock(cacheDir: string, lockRoot: string, ref: string): void {
+  const recovery = path.join(
+    cacheDir,
+    `.mantis-source-${ref.slice(0, 12)}-abandoned-lock-${Date.now()}-${randomUUID()}`,
+  );
+  try {
+    assertDirectCacheChild(cacheDir, lockRoot);
+    fs.renameSync(lockRoot, recovery);
+    pruneRecoveryEntries(cacheDir, ref);
+  } catch {
+    // Another waiting process may have won the atomic recovery rename.
+  }
+}
+
+function waitForCacheLock(signal: AbortSignal, durationMs: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new MantisSourceError("source_cancelled"));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, Math.max(1, durationMs));
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function privateStagingRoot(cacheDir: string, ref: string): string {
+  return path.join(cacheDir, `.mantis-source-${ref.slice(0, 12)}-stage-${process.pid}-${randomUUID()}`);
+}
+
+function retireCacheEntry(
+  cacheDir: string,
+  entry: string,
+  ref: string,
+  reason: "invalid" | "interrupted",
+): void {
+  const recovery = path.join(
+    cacheDir,
+    `.mantis-source-${ref.slice(0, 12)}-${reason}-${Date.now()}-${randomUUID()}`,
+  );
+  try {
+    assertDirectCacheChild(cacheDir, entry);
+    fs.renameSync(entry, recovery);
+    pruneRecoveryEntries(cacheDir, ref);
+  } catch {
+    // The cache is private. Leaving an unreachable staging directory is safer
+    // than deleting a path that failed our bounded rename check.
+  }
+}
+
+function pruneRecoveryEntries(cacheDir: string, ref: string): void {
+  const prefix = `.mantis-source-${ref.slice(0, 12)}-`;
+  const recovery = fs.readdirSync(cacheDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink() && entry.name.startsWith(prefix) &&
+      (entry.name.includes("-invalid-") ||
+        entry.name.includes("-interrupted-") ||
+        entry.name.includes("-abandoned-lock-")))
+    .map((entry) => ({
+      path: path.join(cacheDir, entry.name),
+      mtimeMs: fs.lstatSync(path.join(cacheDir, entry.name)).mtimeMs,
+    }))
+    .sort((left, right) => right.mtimeMs - left.mtimeMs);
+  for (const entry of recovery.slice(RECOVERY_ENTRIES_PER_REF)) {
+    try {
+      assertDirectCacheChild(cacheDir, entry.path);
+      fs.rmSync(entry.path, { recursive: true, force: true, maxRetries: 1 });
+    } catch {
+      // A later locked launch may retry only this private cache entry.
+    }
+  }
+}
+
+function assertDirectCacheChild(cacheDir: string, candidate: string): void {
+  if (path.dirname(path.resolve(candidate)) !== path.resolve(cacheDir)) {
+    throw new Error("cache entry escapes root");
+  }
+  const info = fs.lstatSync(candidate);
+  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("cache entry is unsafe");
+}
+
+function isAlreadyExists(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | undefined)?.code === "EEXIST";
 }
 
 async function nativeGit(
@@ -222,18 +403,22 @@ function ensurePrivateDirectory(directory: string): void {
   try {
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
     fs.chmodSync(directory, 0o700);
-    const info = fs.lstatSync(directory);
-    const owner = typeof process.getuid === "function" ? process.getuid() : undefined;
-    if (
-      !info.isDirectory() ||
-      info.isSymbolicLink() ||
-      (info.mode & 0o077) !== 0 ||
-      (owner !== undefined && info.uid !== owner)
-    ) throw new Error("cache is not private");
+    assertPrivateDirectory(directory);
   } catch (error) {
     if (error instanceof MantisSourceError) throw error;
     throw new MantisSourceError("source_invalid");
   }
+}
+
+function assertPrivateDirectory(directory: string): void {
+  const info = fs.lstatSync(directory);
+  const owner = typeof process.getuid === "function" ? process.getuid() : undefined;
+  if (
+    !info.isDirectory() ||
+    info.isSymbolicLink() ||
+    (info.mode & 0o077) !== 0 ||
+    (owner !== undefined && info.uid !== owner)
+  ) throw new Error("cache is not private");
 }
 
 function hasRequiredSkills(skillsRoot: string): boolean {

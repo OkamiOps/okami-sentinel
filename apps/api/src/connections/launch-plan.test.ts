@@ -230,6 +230,47 @@ test("Claude Code runtime-default launch persists no browser model fallback", ()
   assert.deepEqual(snapshots, [plan.snapshot]);
 });
 
+test("Claude Code local rejects an incomplete tuple before it writes a snapshot", () => {
+  const claude = connection({
+    providerKind: "anthropic",
+    routeKind: "claude-code-local",
+    transport: "local-cli",
+    authKind: "existing-session",
+    protocol: "claude-code-cli",
+    credentialRef: null,
+    modelSelectionMode: "runtime-default",
+    modelCatalogStale: false,
+  });
+  for (const candidate of [
+    { ...claude, credentialRef: "connection/claude-local" },
+    { ...claude, providerKind: "openai" },
+  ]) {
+    const { resolver, snapshots } = fixture({ connection: candidate, model: null, probe: null });
+    assert.throws(() => resolver.resolve({
+      scanId: "scan-incomplete-claude",
+      engine: "mantis",
+      selection: {
+        connectionId: "conn-a",
+        modelSelectionMode: "runtime-default",
+        modelId: null,
+      },
+    }));
+    assert.deepEqual(snapshots, []);
+  }
+
+  const catalogSelection = fixture({ connection: claude, model: model(), probe: probe() });
+  assert.throws(() => catalogSelection.resolver.resolve({
+    scanId: "scan-claude-catalog-mismatch",
+    engine: "mantis",
+    selection: {
+      connectionId: "conn-a",
+      modelSelectionMode: "catalog",
+      modelId: "model-a",
+    },
+  }));
+  assert.deepEqual(catalogSelection.snapshots, []);
+});
+
 test("missing connection and stale probe fail without a snapshot", () => {
   const missing = fixture({ connection: null });
   assert.throws(() => missing.resolver.resolve({

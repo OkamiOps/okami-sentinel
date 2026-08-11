@@ -253,6 +253,7 @@ function revalidatePlan(
     connection === null ||
     connection.id !== plan.connectionId ||
     connection.status !== "ready" ||
+    connection.providerKind !== "anthropic" ||
     connection.routeKind !== "claude-code-local" ||
     connection.routeKind !== plan.routeKind ||
     connection.transport !== "local-cli" ||
@@ -492,7 +493,8 @@ function matchesSnapshot(plan: MantisLocalProviderPlan, snapshot: ScanConnection
     snapshot.connectionId === plan.connectionId &&
     snapshot.routeKind === plan.routeKind &&
     snapshot.modelSelectionMode === plan.modelSelectionMode &&
-    snapshot.modelId === plan.modelId;
+    snapshot.modelId === plan.modelId &&
+    snapshot.capabilityCheckId === null;
 }
 
 function invalidPlan(): never {

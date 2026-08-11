@@ -71,8 +71,12 @@ test("Mantis local source clones argv-only, verifies the exact revision, and ret
     assert.deepEqual(calls.map((call) => call.command), ["git", "git", "git"]);
     assert.deepEqual(calls.map((call) => call.shell), [false, false, false]);
     assert.deepEqual(calls[0]?.args.slice(0, 4), ["clone", "--filter=blob:none", "--no-checkout", "https://example.test/google/mantis.git"]);
-    assert.deepEqual(calls[1]?.args.slice(0, 5), ["-C", source.skillsRoot, "checkout", "--detach", REF]);
-    assert.deepEqual(calls[2]?.args, ["-C", source.skillsRoot, "rev-parse", "HEAD"]);
+    assert.deepEqual(calls[1]?.args.slice(0, 1), ["-C"]);
+    assert.notEqual(calls[1]?.args[1], source.skillsRoot);
+    assert.deepEqual(calls[1]?.args.slice(2), ["checkout", "--detach", REF]);
+    assert.deepEqual(calls[2]?.args.slice(0, 1), ["-C"]);
+    assert.equal(calls[2]?.args[1], calls[1]?.args[1]);
+    assert.deepEqual(calls[2]?.args.slice(2), ["rev-parse", "HEAD"]);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -103,6 +107,124 @@ test("Mantis local source rejects a missing or mismatched exact checkout before 
       (error: unknown) => error instanceof MantisSourceError && error.code === "source_invalid",
     );
     assert.equal(calls, 3);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Mantis local source serializes one cold clone per SHA and atomically shares its validated checkout", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-source-concurrent-"));
+  const cacheDir = path.join(root, "cache");
+  let cloneCalls = 0;
+  const command: MantisSourceCommand = async (_binary, args) => {
+    if (args[0] === "clone") {
+      cloneCalls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      fs.mkdirSync(args.at(-1)!, { recursive: true, mode: 0o700 });
+      return { stdout: "", stderr: "" };
+    }
+    if (args.includes("checkout")) {
+      populateSkills(args[1]!);
+      return { stdout: "", stderr: "" };
+    }
+    if (args.includes("rev-parse")) return { stdout: `${REF}\n`, stderr: "" };
+    throw new Error(`unexpected git argv: ${args.join(" ")}`);
+  };
+
+  try {
+    const [first, second] = await Promise.all([
+      resolveMantisLocalSource({
+        repositoryUrl: "https://example.test/google/mantis.git",
+        ref: REF,
+        cacheDir,
+        command,
+      }),
+      resolveMantisLocalSource({
+        repositoryUrl: "https://example.test/google/mantis.git",
+        ref: REF,
+        cacheDir,
+        command,
+      }),
+    ]);
+
+    assert.equal(cloneCalls, 1);
+    assert.equal(first.skillsRoot, second.skillsRoot);
+    assert.equal(first.skillsRoot, path.join(cacheDir, REF.slice(0, 12)));
+    assert.equal(fs.existsSync(first.skillsRoot), true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Mantis local source never publishes a checkout aborted during its cold clone", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-source-aborted-clone-"));
+  const cacheDir = path.join(root, "cache");
+  const controller = new AbortController();
+  try {
+    await assert.rejects(
+      resolveMantisLocalSource({
+        repositoryUrl: "https://example.test/google/mantis.git",
+        ref: REF,
+        cacheDir,
+        signal: controller.signal,
+        command: async (_binary, args) => {
+          if (args[0] === "clone") {
+            fs.mkdirSync(args.at(-1)!, { recursive: true, mode: 0o700 });
+            controller.abort();
+            throw new Error("clone interrupted");
+          }
+          throw new Error("checkout must not run after abort");
+        },
+      }),
+      (error: unknown) => error instanceof MantisSourceError && error.code === "source_cancelled",
+    );
+    assert.equal(fs.existsSync(path.join(cacheDir, REF.slice(0, 12))), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Mantis local source reclaims an abandoned SHA lock instead of waiting forever", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-source-stale-lock-"));
+  const cacheDir = path.join(root, "cache");
+  const lockRoot = path.join(cacheDir, `.mantis-source-${REF}.lock`);
+  const controller = new AbortController();
+  fs.mkdirSync(lockRoot, { recursive: true, mode: 0o700 });
+  fs.utimesSync(lockRoot, new Date(0), new Date(0));
+  const command: MantisSourceCommand = async (_binary, args) => {
+    if (args[0] === "clone") {
+      fs.mkdirSync(args.at(-1)!, { recursive: true, mode: 0o700 });
+      return { stdout: "", stderr: "" };
+    }
+    if (args.includes("checkout")) {
+      populateSkills(args[1]!);
+      return { stdout: "", stderr: "" };
+    }
+    if (args.includes("rev-parse")) return { stdout: `${REF}\n`, stderr: "" };
+    throw new Error(`unexpected git argv: ${args.join(" ")}`);
+  };
+
+  try {
+    const source = await new Promise<Awaited<ReturnType<typeof resolveMantisLocalSource>>>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error("stale Mantis cache lock was not reclaimed"));
+      }, 100);
+      void resolveMantisLocalSource({
+        repositoryUrl: "https://example.test/google/mantis.git",
+        ref: REF,
+        cacheDir,
+        signal: controller.signal,
+        command,
+      }).then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      }, (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+    });
+    assert.equal(source.skillsRoot, path.join(cacheDir, REF.slice(0, 12)));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

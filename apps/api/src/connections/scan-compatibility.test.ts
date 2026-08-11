@@ -202,6 +202,39 @@ test("advertises Mantis local execution only for the exact Claude Code session t
     reasons: [],
   });
 
+  for (const [label, patch] of [
+    ["provider", { providerKind: "openai" }],
+    ["transport", { transport: "http-inference" }],
+    ["auth", { authKind: "api-key" }],
+    ["protocol", { protocol: "openai-responses" }],
+    ["credential", { credentialRef: "connection/claude-local" }],
+    ["model-selection", { modelSelectionMode: "catalog" }],
+  ] as const) {
+    const decision = createScanCompatibilityResolver({
+      getConnection: () => ({ ...claude, ...patch }),
+      getModel: () => null,
+      getLatestCapabilityCheck: () => null,
+      now: () => NOW,
+    }).resolve({ engine: "mantis", selection });
+    assert.equal(decision.eligible, false, label);
+    assert.notDeepEqual(decision.reasons, [], label);
+  }
+
+  const catalogAgainstRuntimeDefault = createScanCompatibilityResolver({
+    getConnection: () => claude,
+    getModel: () => model(),
+    getLatestCapabilityCheck: () => probe(),
+    now: () => NOW,
+  }).resolve({
+    engine: "mantis",
+    selection: {
+      connectionId: "connection-a",
+      modelSelectionMode: "catalog",
+      modelId: "provider/model-a",
+    },
+  });
+  assert.equal(catalogAgainstRuntimeDefault.eligible, false);
+
   for (const blockedConnection of [
     connection({
       providerKind: "xai",

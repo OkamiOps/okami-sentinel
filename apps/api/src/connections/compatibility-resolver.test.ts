@@ -31,8 +31,8 @@ function capabilities(
 
 function connection(
   routeKind: string,
-  patch: Partial<ProviderConnection> = {},
-): ProviderConnection {
+  patch: Partial<ProviderConnection & { credentialRef: string | null }> = {},
+): ProviderConnection & { credentialRef: string | null } {
   return {
     id: "conn-a",
     scopeId: "local",
@@ -48,6 +48,7 @@ function connection(
     lastTestedAt: NOW.toISOString(),
     lastModelSyncAt: NOW.toISOString(),
     modelCatalogStale: false,
+    credentialRef: null,
     display: {
       providerLabel: "Test",
       routeLabel: routeKind,

@@ -94,7 +94,8 @@ function runnerIsWired(
       connection.routeKind === "claude-code-local" &&
       connection.transport === "local-cli" &&
       connection.authKind === "existing-session" &&
-      connection.protocol === "claude-code-cli";
+      connection.protocol === "claude-code-cli" &&
+      connection.credentialRef === null;
   }
   if (resolved.runnerKind !== "agent-session") return false;
   if (input.engine === "mantis") {

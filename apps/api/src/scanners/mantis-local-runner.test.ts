@@ -374,6 +374,45 @@ test("Mantis local rejects Grok and Cursor plans before creating a CLI", async (
   assert.equal(created, 0);
 });
 
+test("Mantis local rejects a mismatched persisted Claude tuple before model lookup or CLI creation", async () => {
+  let modelReads = 0;
+  let cliCreates = 0;
+  const dependencies = (candidate: Partial<StoredProviderConnection>, snapshotPatch: Partial<ScanConnectionSnapshot> = {}) => ({
+    getSnapshot: () => snapshot(snapshotPatch),
+    getConnection: () => connection(candidate),
+    getModel: () => {
+      modelReads += 1;
+      return model();
+    },
+    createCli: () => {
+      cliCreates += 1;
+      throw new Error("must not create CLI");
+    },
+    readSourceRevision: () => SOURCE_REF,
+    now: () => NOW,
+  });
+
+  for (const [candidate, snapshotPatch] of [
+    [{ providerKind: "openai" }, {}],
+    [{ credentialRef: "connection/claude-local" }, {}],
+    [{}, { capabilityCheckId: "unexpected-local-probe" }],
+  ] as const) {
+    await assert.rejects(
+      runMantisLocalClaude({
+        outputDir: "/private/tmp/not-created",
+        repositoryPath: "/private/tmp/not-created",
+        paths: [],
+        sourceRef: SOURCE_REF,
+        sourceCacheDir: "/private/tmp/not-created-cache",
+        providerPlan: plan(),
+      }, dependencies(candidate, snapshotPatch)),
+      (error: unknown) => error instanceof MantisLocalRunnerError && error.code === "provider_plan_revalidation_failed",
+    );
+  }
+  assert.equal(modelReads, 0);
+  assert.equal(cliCreates, 0);
+});
+
 test("Mantis local fails before CLI execution when its pinned source is incomplete", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-local-source-"));
   let created = 0;

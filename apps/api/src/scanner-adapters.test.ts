@@ -112,7 +112,7 @@ test("ChatGPT authentication never inherits API credentials", () => {
   );
 });
 
-test("Mantis local launch writes only the pinned Claude session identifiers and strips every API-key route", () => {
+test("Mantis local launch permits only the minimal existing-session environment", () => {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-mantis-local-launch-"));
   const repositoryPath = path.join(fixtureRoot, "repository");
   const outputDir = path.join(fixtureRoot, "output");
@@ -120,12 +120,35 @@ test("Mantis local launch writes only the pinned Claude session identifiers and 
   fs.mkdirSync(repositoryPath);
   fs.mkdirSync(outputDir);
   fs.mkdirSync(sourceCacheDir, { mode: 0o700 });
-  const apiKeys = {
+  const environment = {
+    PATH: "/private/claude-bin",
+    HOME: "/private/claude-home",
+    TMPDIR: "/private/claude-tmp",
+    XDG_CONFIG_HOME: "/private/claude-config",
     OPENAI_API_KEY: "openai-key-must-not-reach-local-worker",
     CODEX_API_KEY: "codex-key-must-not-reach-local-worker",
     ANTHROPIC_API_KEY: "anthropic-key-must-not-reach-local-worker",
     XAI_API_KEY: "xai-key-must-not-reach-local-worker",
     CURSOR_API_KEY: "cursor-key-must-not-reach-local-worker",
+    OPENROUTER_API_KEY: "openrouter-key-must-not-reach-local-worker",
+    GOOGLE_API_KEY: "google-key-must-not-reach-local-worker",
+    GEMINI_API_KEY: "gemini-key-must-not-reach-local-worker",
+    DEEPSEEK_API_KEY: "deepseek-key-must-not-reach-local-worker",
+    MINIMAX_API_KEY: "minimax-key-must-not-reach-local-worker",
+    MIMO_API_KEY: "mimo-key-must-not-reach-local-worker",
+    CUSTOM_API_KEY: "custom-key-must-not-reach-local-worker",
+    ANTHROPIC_AUTH_TOKEN: "anthropic-token-must-not-reach-local-worker",
+    GOOGLE_TOKEN: "google-token-must-not-reach-local-worker",
+    CUSTOM_TOKEN: "custom-token-must-not-reach-local-worker",
+    OPENAI_BASE_URL: "https://openai.example.invalid",
+    ANTHROPIC_BASE_URL: "https://anthropic.example.invalid",
+    OPENROUTER_BASE_URL: "https://openrouter.example.invalid",
+    GOOGLE_BASE_URL: "https://google.example.invalid",
+    GEMINI_BASE_URL: "https://gemini.example.invalid",
+    DEEPSEEK_BASE_URL: "https://deepseek.example.invalid",
+    MINIMAX_BASE_URL: "https://minimax.example.invalid",
+    MIMO_BASE_URL: "https://mimo.example.invalid",
+    NODE_OPTIONS: "--require /private/untrusted-hook.cjs",
     CLAUDE_CONFIG_DIR: "/private/session-kept-for-existing-login",
   };
 
@@ -144,7 +167,7 @@ test("Mantis local launch writes only the pinned Claude session identifiers and 
       effort: "high",
       mode: "standard",
       sourceCacheDir,
-      environment: apiKeys,
+      environment,
       mantisLocalProviderPlan: {
         scanId: "scan-local",
         connectionId: "claude-local",
@@ -176,10 +199,19 @@ test("Mantis local launch writes only the pinned Claude session identifiers and 
     });
     assert.equal("model" in config, false);
     assert.equal(fs.statSync(configPath).mode & 0o077, 0);
-    for (const key of ["OPENAI_API_KEY", "CODEX_API_KEY", "ANTHROPIC_API_KEY", "XAI_API_KEY", "CURSOR_API_KEY"] as const) {
+    for (const key of Object.keys(environment).filter((key) =>
+      key.endsWith("_API_KEY") || key.endsWith("_TOKEN") || key.endsWith("_BASE_URL") || key === "NODE_OPTIONS",
+    )) {
       assert.equal(launch.env[key], undefined, `${key} must not reach local worker`);
     }
-    assert.equal(launch.env.CLAUDE_CONFIG_DIR, apiKeys.CLAUDE_CONFIG_DIR);
+    assert.deepEqual(Object.keys(launch.env).sort(), [
+      "CI", "CLAUDE_CONFIG_DIR", "HOME", "NO_COLOR", "PATH", "TMPDIR", "XDG_CONFIG_HOME",
+    ]);
+    assert.equal(launch.env.PATH, environment.PATH);
+    assert.equal(launch.env.HOME, environment.HOME);
+    assert.equal(launch.env.TMPDIR, environment.TMPDIR);
+    assert.equal(launch.env.XDG_CONFIG_HOME, environment.XDG_CONFIG_HOME);
+    assert.equal(launch.env.CLAUDE_CONFIG_DIR, environment.CLAUDE_CONFIG_DIR);
   } finally {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }
