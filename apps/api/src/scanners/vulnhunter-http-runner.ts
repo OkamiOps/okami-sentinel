@@ -37,6 +37,10 @@ import type {
   SafeVulnHunterProviderPlan,
   VulnHunterRunConfiguration,
 } from "./vulnhunter-runtime.js";
+import {
+  createVulnHunterHttpHandoffRoot,
+  materializeVulnHunterHttpBundle,
+} from "./vulnhunter-http-bundle.js";
 
 export type { SafeVulnHunterProviderPlan } from "./vulnhunter-runtime.js";
 
@@ -170,6 +174,7 @@ export function createVulnHunterHttpRunner(
         const remainingTimeoutMs = limits.timeoutMs - (Date.now() - startedAt);
         if (remainingTimeoutMs <= 0) throw new AgentSessionError("agent_time_limit");
         preflight.dispose();
+        const handoffRoot = createVulnHunterHttpHandoffRoot(input.resultsDir);
 
         const upstream = createUpstream({
           routeKind: resolved.connection.routeKind,
@@ -185,16 +190,19 @@ export function createVulnHunterHttpRunner(
             ? {}
             : { reasoningEffort: input.reasoningEffort }),
           snapshotRoot: input.snapshotRoot,
-          artifactRoot: input.resultsDir,
+          artifactRoot: handoffRoot,
           instructions: input.instructions,
           limits: { ...limits, timeoutMs: remainingTimeoutMs },
           signal: input.signal,
           probe: resolved.capability.capabilities,
         }, upstream);
 
+        let sessionCancelled = false;
         for await (const event of session.run()) {
+          if (event.type === "cancellation") sessionCancelled = true;
           await input.onEvent?.(event);
         }
+        if (!sessionCancelled) materializeVulnHunterHttpBundle(handoffRoot, input.resultsDir);
       } finally {
         preflight.dispose();
       }

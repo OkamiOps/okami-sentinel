@@ -102,6 +102,21 @@ test("Portable Codex Security fixes six frozen bounded stages and prompts each s
   }
 });
 
+test("Portable Codex Security stage prompts never disclose host snapshot or artifact roots", () => {
+  const snapshotRoot = "/private/sentinel/portable-snapshot-never-send";
+  const artifactRoot = "/private/sentinel/portable-artifacts-never-send";
+  const prompt = buildPortableCodexSecurityStagePrompt(PORTABLE_CODEX_SECURITY_STAGES[0]!, {
+    snapshotRoot,
+    artifactRoot,
+  });
+
+  assert.equal(prompt.includes(snapshotRoot), false);
+  assert.equal(prompt.includes(artifactRoot), false);
+  assert.match(prompt, /workspace root.*"\."/i);
+  assert.match(prompt, /repository-relative paths to workspace\.(?:read|search)/i);
+  assert.match(prompt, /fixed result-relative name.*01-inventory\.json/i);
+});
+
 test("Portable Codex Security runtime writes atomically, round-trips, and maps bounded progress", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-runtime-"));
   try {

@@ -22,12 +22,14 @@ import {
 } from "../agent/session-types.js";
 import { normalizeVulnHunterWorkspace } from "./vulnhunter-normalize.js";
 import { assertVulnHunterNonOperationalArtifacts } from "./vulnhunter-worker-support.js";
+import { buildVulnHunterPrompt } from "./vulnhunter-runtime.js";
 import {
   createVulnHunterHttpRunner,
   validateVulnHunterHttpWorkerConfiguration,
   VulnHunterHttpRunnerError,
   type SafeVulnHunterProviderPlan,
 } from "./vulnhunter-http-runner.js";
+import { VULNHUNTER_HTTP_BUNDLE_NAME } from "./vulnhunter-http-bundle.js";
 
 const CAPABILITIES: ModelCapabilities = {
   tools: "supported",
@@ -272,7 +274,7 @@ function fixture(overrides: FixtureOverrides = {}) {
         createSession: async (input) => {
           observed.sessions += 1;
           if (overrides.sessionFactory !== undefined) return overrides.sessionFactory(input);
-          return overrides.session ?? completedSession();
+          return overrides.session ?? bundledSession(input);
         },
       }),
     ...(overrides.timeoutMs === undefined ? {} : { limits: { timeoutMs: overrides.timeoutMs } }),
@@ -296,6 +298,28 @@ function completedSession(events: AgentEvent[] = []): AgentSession {
       return { remote: false };
     },
   };
+}
+
+function writeValidBundle(artifactRoot: string): void {
+  fs.writeFileSync(path.join(artifactRoot, VULNHUNTER_HTTP_BUNDLE_NAME), JSON.stringify({
+    schemaVersion: 1,
+    artifacts: [
+      ...[
+        "reconnaissance.md",
+        "trace-review.md",
+        "verification.md",
+        "validation-notes.md",
+        "coverage-sweep.md",
+        "README.md",
+      ].map((name) => ({ name, content: `# ${name}\nDefensive static evidence.` })),
+      { name: "sentinel-findings.json", content: { schemaVersion: 1, findings: [] } },
+    ],
+  }), { mode: 0o600 });
+}
+
+function bundledSession(input: CreateAgentSessionInput, events: AgentEvent[] = []): AgentSession {
+  writeValidBundle(input.artifactRoot);
+  return completedSession(events);
 }
 
 function withTestDeadline<T>(operation: Promise<T>, timeoutMs = 250): Promise<T> {
@@ -645,7 +669,7 @@ test("VulnHunter direct xAI OAuth charges preflight time against the session dea
     },
     sessionFactory: async (sessionInput) => {
       sessionTimeoutMs = sessionInput.limits.timeoutMs;
-      return completedSession();
+      return bundledSession(sessionInput);
     },
   });
   const run = input(XAI_PLAN);
@@ -787,10 +811,14 @@ test("VulnHunter HTTP runner re-resolves the exact model and probe then forwards
         reasoningTokens: 2,
       },
     },
-    { type: "tool", phase: "requested", callId: "tool-1", name: "workspace.read" },
-    { type: "artifact", path: "coverage-sweep.md", bytes: 12 },
+    { type: "tool", phase: "requested", callId: "tool-1", name: "workspace.list" },
+    { type: "tool", phase: "consumed", callId: "tool-1", name: "workspace.list" },
+    { type: "tool", phase: "requested", callId: "tool-2", name: "results.write" },
+    { type: "artifact", path: VULNHUNTER_HTTP_BUNDLE_NAME, bytes: 12 },
   ];
-  const { runner, observed } = fixture({ session: completedSession(events) });
+  const { runner, observed } = fixture({
+    sessionFactory: async (spec) => bundledSession(spec, events),
+  });
   const run = input();
   const observedEvents: AgentEvent[] = [];
   try {
@@ -819,7 +847,7 @@ test("VulnHunter HTTP forwards only an effort published by the exact model", asy
     model: model({ reasoningEffort: { options: ["low", "high"], default: "high" } }),
     sessionFactory: async (spec) => {
       specs.push(spec);
-      return completedSession();
+      return bundledSession(spec);
     },
   });
   const run = input();
@@ -973,7 +1001,7 @@ test("VulnHunter direct xAI OAuth preserves bounded external cancellation", asyn
   }
 });
 
-test("VulnHunter HTTP session keeps the defensive artifact allowlist normalizable", async () => {
+test("VulnHunter HTTP accepts a generic tool transcript with one terminal bundle and keeps legacy normalization", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-vulnhunter-http-artifacts-"));
   const snapshotRoot = path.join(root, "vulnhunter-snapshot");
   const resultsDir = path.join(root, "vulnhunter", "results");
@@ -982,19 +1010,19 @@ test("VulnHunter HTTP session keeps the defensive artifact allowlist normalizabl
   fs.writeFileSync(path.join(snapshotRoot, "src", "app.ts"), "export const safe = true;\n");
   const { runner } = fixture({
     sessionFactory: async (spec) => {
-      for (const name of [
-        "reconnaissance.md",
-        "trace-review.md",
-        "verification.md",
-        "validation-notes.md",
-        "coverage-sweep.md",
-        "README.md",
-      ]) fs.writeFileSync(path.join(spec.artifactRoot, name), "# Defensive artifact\n");
-      fs.writeFileSync(path.join(spec.artifactRoot, "sentinel-findings.json"), JSON.stringify({
-        schemaVersion: 1,
-        findings: [],
-      }));
-      return completedSession([{ type: "artifact", path: "coverage-sweep.md", bytes: 21 }]);
+      assert.equal(spec.instructions.includes(snapshotRoot), false);
+      assert.equal(spec.instructions.includes(resultsDir), false);
+      assert.match(spec.instructions, /workspace root.*"\."/i);
+      assert.match(spec.instructions, /results\.write exactly once/i);
+      assert.match(spec.instructions, new RegExp(VULNHUNTER_HTTP_BUNDLE_NAME));
+      writeValidBundle(spec.artifactRoot);
+      return completedSession([
+        { type: "tool", phase: "requested", callId: "list-1", name: "workspace.list" },
+        { type: "tool", phase: "result", callId: "list-1", name: "workspace.list" },
+        { type: "tool", phase: "consumed", callId: "list-1", name: "workspace.list" },
+        { type: "tool", phase: "requested", callId: "write-1", name: "results.write" },
+        { type: "artifact", path: VULNHUNTER_HTTP_BUNDLE_NAME, bytes: 21 },
+      ]);
     },
   });
   try {
@@ -1002,10 +1030,27 @@ test("VulnHunter HTTP session keeps the defensive artifact allowlist normalizabl
       plan: PLAN,
       snapshotRoot,
       resultsDir,
-      instructions: "Defensive static review only.",
+      instructions: buildVulnHunterPrompt({
+        snapshotRoot,
+        resultsDir,
+        branchLabel: "main [abc1234]",
+        repositoryUrl: "https://github.com/example/repo",
+        model: "generic-model",
+        scopePaths: [],
+        pathMode: "agent-session",
+      }),
       signal: new AbortController().signal,
     });
     assert.doesNotThrow(() => assertVulnHunterNonOperationalArtifacts(resultsDir));
+    assert.deepEqual(fs.readdirSync(resultsDir).sort(), [
+      "README.md",
+      "coverage-sweep.md",
+      "reconnaissance.md",
+      "sentinel-findings.json",
+      "trace-review.md",
+      "validation-notes.md",
+      "verification.md",
+    ]);
     assert.equal(normalizeVulnHunterWorkspace(resultsDir, root), 0);
     assert.equal(fs.existsSync(path.join(root, "findings.json")), true);
   } finally {
