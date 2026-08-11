@@ -222,6 +222,10 @@ async function runHttpVulnHunter(
   httpAbortController = controller;
   let aggregateUsage: VulnHunterRuntimeState["usage"] = {
     reported: false,
+    inputTokensKnown: false,
+    cachedInputTokensKnown: false,
+    cacheWriteInputTokensKnown: false,
+    outputTokensKnown: false,
     inputTokens: 0,
     cachedInputTokens: 0,
     cacheWriteInputTokens: 0,

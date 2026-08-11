@@ -35,6 +35,45 @@ test("normalizes only models returned by the authenticated endpoint", async () =
   assert.equal(result.models.some((model) => model.id === "fallbackModel"), false);
 });
 
+test("keeps an explicit USD-per-million pricing manifest from a compatible catalog", async () => {
+  const transport = fakeFetch({
+    "GET https://gateway.example/v1/models": json(200, {
+      data: [{
+        id: "vendor/priced-model",
+        pricing: {
+          currency: "USD",
+          unit: "per-million-tokens",
+          pricingBasis: "payg-equivalent",
+          billingMode: "subscription",
+          inputUsdPerMillionTokens: 1.25,
+          cachedInputUsdPerMillionTokens: 0.25,
+          cacheWriteInputUsdPerMillionTokens: null,
+          outputUsdPerMillionTokens: 5,
+        },
+      }, {
+        id: "vendor/ambiguous-model",
+        pricing: { prompt: "0.000001", completion: "0.000005" },
+      }],
+    }),
+  });
+
+  const result = await discoverOpenAiModels({
+    baseUrl: "https://gateway.example/v1",
+    apiKey: "secret-value",
+  }, transport);
+
+  assert.deepEqual(result.models[0]?.pricing, {
+    inputUsdPerMillionTokens: 1.25,
+    cachedInputUsdPerMillionTokens: 0.25,
+    cacheWriteInputUsdPerMillionTokens: null,
+    outputUsdPerMillionTokens: 5,
+    pricingBasis: "payg-equivalent",
+    billingMode: "subscription",
+  });
+  assert.equal(result.models[1]?.pricing, null);
+  assert.equal(JSON.stringify(result).includes("secret-value"), false);
+});
+
 test("preserves provider-published reasoning metadata without model or provider hardcodes", async () => {
   const transport = fakeFetch({
     "GET https://gateway.example/v1/models": json(200, {

@@ -12,12 +12,17 @@ import {
 import { processAlive } from "../activity.js";
 import {
   estimateFrozenCatalogUsageCost,
+  estimateFrozenScannerUsageCost,
   readPortableCodexSecurityPricing,
+  readScannerPricingQuote,
+  scannerPricingQuoteMatchesRun,
+  scannerPricingQuotePath,
 } from "../model-pricing.js";
 import {
   portableCodexSecurityRuntimeProgress,
   readPortableCodexSecurityRuntime,
 } from "./portable-codex-security-runtime.js";
+import { scannerUsageSummary } from "./usage.js";
 
 function countSeverity(findingsPath: string): SeverityCounts {
   const counts = emptySeverityCounts();
@@ -73,16 +78,24 @@ export function refreshPortableCodexSecurityRunFromDisk(run: ScanRun): ScanRun {
   const durationMs = completedAt !== null && run.startedAt !== null
     ? durationBetween(run.startedAt, completedAt) ?? run.durationMs
     : run.durationMs;
+  const scannerPricing = readScannerPricingQuote(run.scanDir);
+  const scannerQuoteExists = fs.existsSync(scannerPricingQuotePath(run.scanDir));
+  const scannerCost = scannerPricing !== null && scannerPricingQuoteMatchesRun(scannerPricing, run)
+    ? estimateFrozenScannerUsageCost(runtime.usage, scannerPricing)
+    : null;
   return {
     ...run,
     revision: runtime.snapshotId ?? run.revision,
     status,
     completedAt,
     durationMs,
-    cost: estimateFrozenCatalogUsageCost(
-      runtime.usage,
-      readPortableCodexSecurityPricing(run.scanDir),
-    ),
+    cost: scannerQuoteExists
+      ? scannerCost
+      : estimateFrozenCatalogUsageCost(
+          runtime.usage,
+          readPortableCodexSecurityPricing(run.scanDir),
+        ),
+    usage: scannerUsageSummary(runtime.usage),
     severity,
     scannerVersion: runtime.profileVersion,
     pid: status === "running" ? run.pid : null,

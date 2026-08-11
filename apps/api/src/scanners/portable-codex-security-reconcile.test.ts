@@ -6,7 +6,11 @@ import test from "node:test";
 
 import type { ScanRun } from "@csb/shared";
 
-import { portableCodexSecurityPricingPath } from "../model-pricing.js";
+import {
+  portableCodexSecurityPricingPath,
+  writeScannerPricingQuote,
+} from "../model-pricing.js";
+import { resolveScannerPricingQuote } from "../provider-pricing.js";
 import { progressForStatus } from "../progress.js";
 import {
   refreshPortableCodexSecurityRunFromDisk,
@@ -50,6 +54,13 @@ function run(scanDir: string): ScanRun {
       routeKind: "mimo-token-plan",
       protocol: "openai-chat",
       authKind: "api-key",
+    },
+    connection: {
+      connectionId: "mimo-connection",
+      routeKind: "mimo-token-plan",
+      protocol: "openai-chat",
+      authKind: "api-key",
+      capabilityCheckId: "capability-mimo",
     },
   };
 }
@@ -168,6 +179,35 @@ test("failed Portable runtime keeps valid findings as incomplete and never price
     const failed = refreshPortableCodexSecurityRunFromDisk(run(scanDir));
     assert.equal(failed.status, "failed");
     assert.equal(failed.cost, null);
+  } finally {
+    fs.rmSync(scanDir, { recursive: true, force: true });
+  }
+});
+
+test("a mismatched scanner quote blocks legacy fallback instead of crossing connection tuples", () => {
+  const scanDir = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-pricing-mismatch-"));
+  try {
+    writePortableCodexSecurityRuntime(scanDir, runtime());
+    fs.writeFileSync(path.join(scanDir, "findings.json"), JSON.stringify({ findings: [] }));
+    writeFrozenPricing(scanDir, frozenPricing);
+    writeScannerPricingQuote(scanDir, resolveScannerPricingQuote({
+      connectionId: "other-connection",
+      providerKind: "xiaomi",
+      routeKind: "mimo-token-plan",
+      protocol: "openai-chat",
+      modelId: "mimo-v2.5",
+      modelPricing: {
+        inputUsdPerMillionTokens: 2,
+        cachedInputUsdPerMillionTokens: 0.5,
+        cacheWriteInputUsdPerMillionTokens: null,
+        outputUsdPerMillionTokens: 4,
+      },
+      capturedAt: CAPTURED_AT,
+    }));
+
+    const refreshed = refreshPortableCodexSecurityRunFromDisk(run(scanDir));
+    assert.equal(refreshed.cost, null);
+    assert.equal(refreshed.usage?.inputTokens, 1_000_000);
   } finally {
     fs.rmSync(scanDir, { recursive: true, force: true });
   }

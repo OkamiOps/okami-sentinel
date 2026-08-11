@@ -367,6 +367,8 @@ test("canonicalizes capability and pricing metadata at the store boundary", () =
         cachedInputUsdPerMillionTokens: null,
         cacheWriteInputUsdPerMillionTokens: null,
         outputUsdPerMillionTokens: 2,
+        pricingBasis: "payg-equivalent" as const,
+        billingMode: "subscription" as const,
       }, {
         endpoint: privateUrl,
       }),
@@ -396,6 +398,8 @@ test("canonicalizes capability and pricing metadata at the store boundary", () =
     });
     assert.equal(persisted.includes(privateMarker), false);
     assert.equal(persisted.includes(privateUrl), false);
+    assert.equal(store.getModel("conn-1", "model-safe")?.pricing?.pricingBasis, "payg-equivalent");
+    assert.equal(store.getModel("conn-1", "model-safe")?.pricing?.billingMode, "subscription");
 
     db.prepare("UPDATE provider_models SET capabilities_json = ?, pricing_json = ? WHERE model_id = ?").run(
       JSON.stringify({ tools: "supported", ignored: "supported" }),

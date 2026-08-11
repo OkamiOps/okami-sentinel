@@ -21,6 +21,7 @@ import type {
 } from "./credentials/credential-vault.js";
 import { deleteRun } from "./db.js";
 import { createProviderRuntime } from "./provider-runtime.js";
+import { readScannerPricingQuote } from "./model-pricing.js";
 import { startScan } from "./runner.js";
 import { LaunchPlanError } from "./connections/launch-plan.js";
 
@@ -193,6 +194,7 @@ test("startScan probes a ready MiniMax route missing only capability evidence, t
     assert.deepEqual(probeModels, ["MiniMax-M3"]);
     assert.equal(run.provider, "minimax");
     assert.equal(run.model, "MiniMax-M3");
+    assert.equal(readScannerPricingQuote(run.scanDir)?.pricingRateCardId, "minimax.m3.payg.2026-08-11");
     assert.equal(runtime.compatibility.resolve({ engine: "mantis", selection }).eligible, true);
   } finally {
     if (run !== undefined && child !== undefined) closeAndRemove(child, run);

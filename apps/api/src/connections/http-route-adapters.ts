@@ -656,11 +656,26 @@ function validPricing(value: ModelPricing | null | undefined): ModelPricing | nu
     value.outputUsdPerMillionTokens,
   ];
   if (!fields.every((field) => field === null || Number.isFinite(field) && field >= 0)) return null;
+  const hasBasis = value.pricingBasis !== undefined;
+  const hasMode = value.billingMode !== undefined;
+  if (hasBasis !== hasMode) return null;
+  if (
+    hasBasis && !(
+      value.pricingBasis === "metered" && value.billingMode === "metered" ||
+      value.pricingBasis === "payg-equivalent" &&
+        (value.billingMode === "subscription" || value.billingMode === "credits" ||
+          value.billingMode === "unknown")
+    )
+  ) return null;
   return {
     inputUsdPerMillionTokens: value.inputUsdPerMillionTokens,
     cachedInputUsdPerMillionTokens: value.cachedInputUsdPerMillionTokens,
     cacheWriteInputUsdPerMillionTokens: value.cacheWriteInputUsdPerMillionTokens,
     outputUsdPerMillionTokens: value.outputUsdPerMillionTokens,
+    ...(hasBasis ? {
+      pricingBasis: value.pricingBasis,
+      billingMode: value.billingMode,
+    } : {}),
   };
 }
 

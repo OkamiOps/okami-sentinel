@@ -7,6 +7,8 @@ import test from "node:test";
 import type { ScanProgress, ScanRun } from "@csb/shared";
 import * as config from "./config.js";
 import { readFindingsFile } from "./ingest.js";
+import { readScannerPricingQuote, writeScannerPricingQuote } from "./model-pricing.js";
+import { resolveScannerPricingQuote } from "./provider-pricing.js";
 import { buildScannerCatalog } from "./scanners/catalog.js";
 import {
   explicitAuthEnvironment,
@@ -338,7 +340,7 @@ test("VulnHunter direct xAI OAuth launch serializes only the immutable provider 
     connectionId: "connection-xai",
     routeKind: "xai-oauth",
     protocol: "xai-oauth-responses" as const,
-    modelId: "grok-live",
+    modelId: "grok-4.5",
     capabilityCheckId: "capability-xai",
   };
   const oauthToken = "private-xai-oauth-token-must-not-reach-worker-config";
@@ -355,16 +357,25 @@ test("VulnHunter direct xAI OAuth launch serializes only the immutable provider 
         connection: {
           connectionId: "connection-xai",
           modelSelectionMode: "catalog",
-          modelId: "grok-live",
+          modelId: "grok-4.5",
         },
       },
       repositoryPath,
       outputDir,
-      model: "grok-live",
+      model: "grok-4.5",
       effort: "high",
       mode: "standard",
       vulnhunterProviderPlan: providerPlan,
       providerKind: "xai",
+      pricingQuote: resolveScannerPricingQuote({
+        connectionId: "connection-xai",
+        providerKind: "xai",
+        routeKind: "xai-oauth",
+        protocol: "xai-oauth-responses",
+        modelId: "grok-4.5",
+        modelPricing: null,
+        capturedAt: "2026-08-11T12:00:00.000Z",
+      }),
     });
     const config = JSON.parse(
       fs.readFileSync(path.join(outputDir, "vulnhunter-run.json"), "utf8"),
@@ -381,6 +392,7 @@ test("VulnHunter direct xAI OAuth launch serializes only the immutable provider 
     assert.equal(launch.authMode, "api-key");
     assert.equal(launch.env.OPENAI_API_KEY, undefined);
     assert.equal(launch.env.CODEX_API_KEY, undefined);
+    assert.equal(readScannerPricingQuote(outputDir)?.modelId, "grok-4.5");
   } finally {
     if (previousOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = previousOpenAiKey;
@@ -415,7 +427,12 @@ test("Mantis HTTP launch serializes only the revalidated provider identifiers", 
           boundedExecution: "supported", osIsolation: "supported", streaming: "supported",
           usage: "supported", cancellation: "supported",
         },
-        pricing: null,
+        pricing: {
+          inputUsdPerMillionTokens: 1,
+          cachedInputUsdPerMillionTokens: 0.1,
+          cacheWriteInputUsdPerMillionTokens: null,
+          outputUsdPerMillionTokens: 2,
+        },
         discoveredAt: "2026-08-11T12:00:00.000Z",
         source: "provider-api",
       },
@@ -445,6 +462,20 @@ test("Mantis HTTP launch serializes only the revalidated provider identifiers", 
       mode: "standard",
       providerKind: "openai",
       mantisProviderPlan: providerPlan,
+      pricingQuote: resolveScannerPricingQuote({
+        connectionId: "connection-a",
+        providerKind: "openai",
+        routeKind: "openai-api",
+        protocol: "openai-responses",
+        modelId: "gpt-live",
+        modelPricing: {
+          inputUsdPerMillionTokens: 1,
+          cachedInputUsdPerMillionTokens: 0.1,
+          cacheWriteInputUsdPerMillionTokens: null,
+          outputUsdPerMillionTokens: 2,
+        },
+        capturedAt: "2026-08-11T12:00:00.000Z",
+      }),
     });
     const config = JSON.parse(fs.readFileSync(path.join(outputDir, "mantis-http-run.json"), "utf8")) as Record<string, unknown>;
 
@@ -460,6 +491,7 @@ test("Mantis HTTP launch serializes only the revalidated provider identifiers", 
     ]);
     assert.equal(JSON.stringify(config).includes("apiKey"), false);
     assert.equal(JSON.stringify(config).includes("secret"), false);
+    assert.equal(readScannerPricingQuote(outputDir)?.pricingSource, "provider-catalog");
   } finally {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }
@@ -987,7 +1019,8 @@ test("failed Mantis runs with normalized findings remain explicit partial result
     const refreshed = refreshMantisRunFromDisk(run);
     assert.equal(refreshed.status, "incomplete");
     assert.equal(refreshed.severity.critical, 1);
-    assert.equal(refreshed.cost?.inputTokens, 10);
+    assert.equal(refreshed.cost, null);
+    assert.equal(refreshed.usage?.inputTokens, 10);
     assert.equal(refreshed.revision, "content:abc");
   } finally {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
@@ -1044,7 +1077,87 @@ test("Mantis reconciliation preserves cache-write usage from a legacy reported r
       execution: null,
     });
 
-    assert.equal(refreshed.cost?.cacheWriteInputTokens, 15);
+    assert.equal(refreshed.cost, null);
+    assert.equal(refreshed.usage?.cacheWriteInputTokens, 15);
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("Mantis reconciliation applies the frozen exact Grok quote instead of inventing zero", () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-mantis-priced-"));
+  const startedAt = "2026-08-11T15:00:00.000Z";
+  try {
+    writeMantisRuntime(fixtureRoot, {
+      engine: "mantis",
+      status: "completed",
+      stage: "report",
+      stageLabel: "Evidence report",
+      percent: 100,
+      detail: null,
+      startedAt,
+      updatedAt: "2026-08-11T15:03:00.000Z",
+      completedAt: "2026-08-11T15:03:00.000Z",
+      snapshotId: "content:grok",
+      sourceRef: "a".repeat(40),
+      findings: 0,
+      usage: {
+        reported: true,
+        inputTokensKnown: true,
+        cachedInputTokensKnown: true,
+        cacheWriteInputTokensKnown: true,
+        outputTokensKnown: true,
+        inputTokens: 75_312,
+        cachedInputTokens: 45_056,
+        cacheWriteInputTokens: 0,
+        outputTokens: 5_498,
+      },
+      error: null,
+    });
+    writeScannerPricingQuote(fixtureRoot, resolveScannerPricingQuote({
+      connectionId: "xai-connection",
+      providerKind: "xai",
+      routeKind: "xai-oauth",
+      protocol: "xai-oauth-responses",
+      modelId: "grok-4.5",
+      modelPricing: null,
+      capturedAt: startedAt,
+    }));
+    const refreshed = refreshMantisRunFromDisk({
+      id: "mantis-grok-priced",
+      displayName: "fixture",
+      repositoryPath: fixtureRoot,
+      revision: null,
+      scanDir: fixtureRoot,
+      status: "running",
+      model: "grok-4.5",
+      effort: null,
+      mode: "standard",
+      engine: "mantis",
+      provider: "xai",
+      authMode: "api-key",
+      scannerVersion: null,
+      recipeHash: "fixture",
+      startedAt,
+      completedAt: null,
+      durationMs: null,
+      cost: null,
+      severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0, total: 0 },
+      source: "benchmark",
+      pid: null,
+      execution: null,
+      connection: {
+        connectionId: "xai-connection",
+        routeKind: "xai-oauth",
+        protocol: "xai-oauth-responses",
+        authKind: "device-code",
+        capabilityCheckId: "probe-xai",
+      },
+    });
+
+    assert.equal(refreshed.cost?.estimatedUsd, 0.1070168);
+    assert.equal(refreshed.cost?.pricingSource, "official-rate-card");
+    assert.equal(refreshed.cost?.pricingBasis, "payg-equivalent");
   } finally {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }
@@ -1163,9 +1276,10 @@ test("failed VulnHunter runs preserve normalized findings as incomplete evidence
     const refreshed = reconciler.refreshVulnHunterRunFromDisk(run);
     assert.equal(refreshed.status, "incomplete");
     assert.equal(refreshed.severity.high, 1);
-    assert.equal(refreshed.cost?.inputTokens, 120);
-    assert.equal(refreshed.cost?.cachedInputTokens, 80);
-    assert.equal(refreshed.cost?.outputTokens, 30);
+    assert.equal(refreshed.cost, null);
+    assert.equal(refreshed.usage?.inputTokens, 120);
+    assert.equal(refreshed.usage?.cachedInputTokens, 80);
+    assert.equal(refreshed.usage?.outputTokens, 30);
     assert.equal(refreshed.revision, "content:def");
   } finally {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
@@ -1222,7 +1336,87 @@ test("VulnHunter reconciliation preserves cache-write usage from a legacy report
       execution: null,
     });
 
-    assert.equal(refreshed.cost?.cacheWriteInputTokens, 15);
+    assert.equal(refreshed.cost, null);
+    assert.equal(refreshed.usage?.cacheWriteInputTokens, 15);
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("VulnHunter reconciliation labels a frozen MiniMax Token Plan amount as PAYG equivalent", () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-vulnhunter-priced-"));
+  const startedAt = "2026-08-11T15:15:00.000Z";
+  try {
+    writeVulnHunterRuntime(fixtureRoot, {
+      engine: "vulnhunter",
+      status: "completed",
+      stage: "report",
+      stageLabel: "Evidence report",
+      percent: 100,
+      detail: null,
+      startedAt,
+      updatedAt: "2026-08-11T15:18:00.000Z",
+      completedAt: "2026-08-11T15:18:00.000Z",
+      snapshotId: "content:minimax",
+      sourceRef: "b".repeat(40),
+      findings: 0,
+      usage: {
+        reported: true,
+        inputTokensKnown: true,
+        cachedInputTokensKnown: true,
+        cacheWriteInputTokensKnown: true,
+        outputTokensKnown: true,
+        inputTokens: 70_306,
+        cachedInputTokens: 39_296,
+        cacheWriteInputTokens: 0,
+        outputTokens: 5_411,
+      },
+      error: null,
+    });
+    writeScannerPricingQuote(fixtureRoot, resolveScannerPricingQuote({
+      connectionId: "minimax-connection",
+      providerKind: "minimax",
+      routeKind: "minimax-token-plan",
+      protocol: "anthropic-messages",
+      modelId: "MiniMax-M3",
+      modelPricing: null,
+      capturedAt: startedAt,
+    }));
+    const refreshed = refreshVulnHunterRunFromDisk({
+      id: "vulnhunter-minimax-priced",
+      displayName: "fixture",
+      repositoryPath: fixtureRoot,
+      revision: null,
+      scanDir: fixtureRoot,
+      status: "running",
+      model: "MiniMax-M3",
+      effort: null,
+      mode: "standard",
+      engine: "vulnhunter",
+      provider: "minimax",
+      authMode: "api-key",
+      scannerVersion: null,
+      recipeHash: "fixture",
+      startedAt,
+      completedAt: null,
+      durationMs: null,
+      cost: null,
+      severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0, total: 0 },
+      source: "benchmark",
+      pid: null,
+      execution: null,
+      connection: {
+        connectionId: "minimax-connection",
+        routeKind: "minimax-token-plan",
+        protocol: "anthropic-messages",
+        authKind: "api-key",
+        capabilityCheckId: "probe-minimax",
+      },
+    });
+
+    assert.equal(refreshed.cost?.estimatedUsd, 0.01815396);
+    assert.equal(refreshed.cost?.pricingBasis, "payg-equivalent");
+    assert.equal(refreshed.cost?.billingMode, "subscription");
   } finally {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }

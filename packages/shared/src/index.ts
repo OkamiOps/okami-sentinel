@@ -199,6 +199,9 @@ export interface ModelPricing {
   cachedInputUsdPerMillionTokens: number | null;
   cacheWriteInputUsdPerMillionTokens: number | null;
   outputUsdPerMillionTokens: number | null;
+  /** Optional provider-declared billing semantics for compatible catalogs. */
+  pricingBasis?: "metered" | "payg-equivalent";
+  billingMode?: "metered" | "subscription" | "credits" | "unknown";
 }
 
 /**
@@ -283,6 +286,15 @@ export interface ScanExecutionProvenance {
   routeKind: string | null;
   protocol: ProviderProtocol | null;
   authKind: ConnectionAuthKind | null;
+}
+
+/** Exact connection tuple selected by the server for any connection-aware scan. */
+export interface ScanConnectionProvenance {
+  connectionId: string;
+  routeKind: string;
+  protocol: ProviderProtocol;
+  authKind: ConnectionAuthKind | null;
+  capabilityCheckId: string | null;
 }
 
 /** Legacy snapshots without a model choice are historical-only and cannot start a scan. */
@@ -482,7 +494,15 @@ export interface ScanCost {
   outputTokens: number;
   model?: string;
   /** Identifies response-side estimates that are not an invoiced scanner cost. */
-  pricingSource?: "openrouter" | "provider-catalog";
+  pricingSource?: "openrouter" | "provider-catalog" | "official-rate-card";
+  /** Whether USD represents metered billing or only a comparable PAYG equivalent. */
+  pricingBasis?: "metered" | "payg-equivalent";
+  /** The billing contract of the selected connection, kept separate from token rates. */
+  billingMode?: "metered" | "subscription" | "credits" | "unknown";
+  /** Versioned exact rate-card identifier; never inferred from a fuzzy model match. */
+  pricingRateCardId?: string;
+  /** Launch quotes are immutable; post-hoc marks an explicitly audited historical repair. */
+  pricingTiming?: "launch" | "post-hoc";
   /** Whether OpenRouter pricing used the reported model or a reviewed model alias. */
   pricingMatch?: "exact" | "approved-alias";
   /** Present only when an approved OpenRouter model alias supplied the price. */
@@ -503,6 +523,14 @@ export interface ScanCost {
   cachedInputUsd?: number;
   cacheWriteInputUsd?: number;
   outputUsd?: number;
+}
+
+/** Provider usage is independent from whether an auditable USD rate exists. */
+export interface ScanUsageSummary {
+  inputTokens: number | null;
+  cachedInputTokens: number | null;
+  cacheWriteInputTokens: number | null;
+  outputTokens: number | null;
 }
 
 export type ScanPhase =
@@ -553,10 +581,14 @@ export interface ScanRun {
   completedAt: string | null;
   durationMs: number | null;
   cost: ScanCost | null;
+  /** Measured token buckets remain visible even when cost is unavailable. */
+  usage?: ScanUsageSummary | null;
   severity: SeverityCounts;
   source: "workbench" | "benchmark" | "filesystem";
   pid: number | null;
   execution: ScanExecutionProvenance | null;
+  /** Exact server-resolved route identity. Historical rows may not have one. */
+  connection?: ScanConnectionProvenance | null;
   /** Absent only on historical rows created before retry-safe launch records. */
   launchSelection?: ScanLaunchSelection | null;
   progress?: ScanProgress | null;
@@ -576,6 +608,7 @@ export function scanEstimatedUsd(scan: ScanRun): number | null {
     scan.cost?.pricingSource !== "openrouter"
   ) return null;
   const value = scan.cost?.estimatedUsd;
+  if (value === 0 && scan.cost?.pricingSource === undefined) return null;
   return value != null && Number.isFinite(value) ? value : null;
 }
 

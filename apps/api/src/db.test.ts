@@ -80,6 +80,13 @@ test("round-trips frozen provider-catalog pricing and null costs", () => {
       protocol: "openai-chat",
       authKind: "api-key",
     },
+    connection: {
+      connectionId: "connection-1",
+      routeKind: "mimo-token-plan",
+      protocol: "openai-chat",
+      authKind: "api-key",
+      capabilityCheckId: "cap-1",
+    },
     launchSelection: {
       modelSelectionMode: "catalog",
       modelId: "mimo-v2.5",
@@ -90,6 +97,12 @@ test("round-trips frozen provider-catalog pricing and null costs", () => {
     ...pricedRun,
     id: "portable-null-cost-round-trip",
     cost: null,
+    usage: {
+      inputTokens: 321,
+      cachedInputTokens: null,
+      cacheWriteInputTokens: 0,
+      outputTokens: 45,
+    },
   };
 
   try {
@@ -98,8 +111,10 @@ test("round-trips frozen provider-catalog pricing and null costs", () => {
 
     assert.deepEqual(getRun(pricedRun.id)?.cost, pricedRun.cost);
     assert.deepEqual(getRun(pricedRun.id)?.execution, pricedRun.execution);
+    assert.deepEqual(getRun(pricedRun.id)?.connection, pricedRun.connection);
     assert.deepEqual(getRun(pricedRun.id)?.launchSelection, pricedRun.launchSelection);
     assert.equal(getRun(nullCostRun.id)?.cost, null);
+    assert.deepEqual(getRun(nullCostRun.id)?.usage, nullCostRun.usage);
   } finally {
     deleteRun(pricedRun.id);
     deleteRun(nullCostRun.id);

@@ -8,11 +8,13 @@ import {
   type SeverityCounts,
 } from "@csb/shared";
 import { processAlive } from "../activity.js";
-import { readMantisRuntime } from "./mantis-runtime.js";
 import {
-  scannerCacheWriteInputTokens,
-  scannerUsageWasReported,
-} from "./usage.js";
+  estimateFrozenScannerUsageCost,
+  readScannerPricingQuote,
+  scannerPricingQuoteMatchesRun,
+} from "../model-pricing.js";
+import { readMantisRuntime } from "./mantis-runtime.js";
+import { scannerUsageSummary } from "./usage.js";
 
 function countSeverity(findingsPath: string): SeverityCounts {
   const counts = emptySeverityCounts();
@@ -54,6 +56,10 @@ export function refreshMantisRunFromDisk(run: ScanRun): ScanRun {
   const completedAt = status === "running"
     ? null
     : runtime.completedAt ?? run.completedAt ?? new Date().toISOString();
+  const pricing = readScannerPricingQuote(run.scanDir);
+  const pricedCost = pricing !== null && scannerPricingQuoteMatchesRun(pricing, run)
+    ? estimateFrozenScannerUsageCost(runtime.usage, pricing)
+    : null;
   return {
     ...run,
     revision: runtime.snapshotId ?? run.revision,
@@ -63,16 +69,8 @@ export function refreshMantisRunFromDisk(run: ScanRun): ScanRun {
       completedAt && run.startedAt
         ? Date.parse(completedAt) - Date.parse(run.startedAt)
         : run.durationMs,
-    cost: scannerUsageWasReported(runtime.usage)
-      ? {
-        estimatedUsd: 0,
-        inputTokens: runtime.usage.inputTokens,
-        cachedInputTokens: runtime.usage.cachedInputTokens,
-        cacheWriteInputTokens: scannerCacheWriteInputTokens(runtime.usage),
-        outputTokens: runtime.usage.outputTokens,
-        model: run.model ?? undefined,
-      }
-      : null,
+    cost: pricedCost,
+    usage: scannerUsageSummary(runtime.usage),
     severity,
     scannerVersion: runtime.sourceRef,
     pid: status === "running" ? run.pid : null,

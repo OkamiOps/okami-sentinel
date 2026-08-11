@@ -9,6 +9,7 @@ import { formatDate, formatDuration, formatTokens, formatUsd, shortId } from "..
 import { Button } from "@/components/ui/button";
 import { useI18n } from "../i18n";
 import { executionProfileLabel } from "../lib/execution-profile";
+import { scanCostPresentation, scanTokenUsage } from "../lib/scan-cost";
 
 const severityOrder: Severity[] = ["critical", "high", "medium", "low", "info", "unknown"];
 const severityLabel: Record<Severity, string> = {
@@ -83,6 +84,8 @@ export function ScanReportPage() {
   const partial = (scan.status === "failed" || scan.status === "incomplete") && scan.severity.total > 0;
   const highPlus = scan.severity.critical + scan.severity.high;
   const estimatedUsd = scanEstimatedUsd(scan);
+  const costCopy = scanCostPresentation(scan.cost);
+  const tokenUsage = scanTokenUsage(scan);
   const usdPerFinding = estimatedUsd != null && scan.severity.total ? estimatedUsd / scan.severity.total : null;
   const reportId = `SNT-${scan.id.toUpperCase()}`;
   const resolvedExecutionProfileLabel = executionProfileLabel(scan, t);
@@ -130,7 +133,7 @@ export function ScanReportPage() {
           <section className="grid grid-cols-2 border border-border">
             <Metric label="FINDINGS" value={scan.severity.total} />
             <Metric label="HIGH+" value={highPlus} tone="text-chart-4" />
-            <Metric label={scan.cost?.pricingSource === "openrouter" ? "EST. COST" : "COST"} value={formatUsd(estimatedUsd)} tone="text-chart-1" />
+            <Metric label={t(costCopy.labelKey)} value={formatUsd(estimatedUsd)} tone="text-chart-1" />
             <Metric label="$ / FINDING" value={formatUsd(usdPerFinding)} tone="text-primary" />
           </section>
         </div>
@@ -152,8 +155,8 @@ export function ScanReportPage() {
 
         <section className="mt-5 grid border border-border sm:grid-cols-2 lg:grid-cols-4">
           <MetaCell label="DURATION" value={formatDuration(scan.durationMs)} />
-          <MetaCell label="INPUT TOKENS" value={formatTokens(scan.cost?.inputTokens)} />
-          <MetaCell label="OUTPUT TOKENS" value={formatTokens(scan.cost?.outputTokens)} />
+          <MetaCell label="INPUT TOKENS" value={formatTokens(tokenUsage.inputTokens)} />
+          <MetaCell label="OUTPUT TOKENS" value={formatTokens(tokenUsage.outputTokens)} />
           <MetaCell label="BASELINE" value={regression.baseline ? `${regression.baseline.displayName} / ${shortId(regression.baseline.id)}` : "sem baseline"} />
         </section>
         <ReportFooter reportId={reportId} />

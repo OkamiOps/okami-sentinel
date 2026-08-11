@@ -80,6 +80,7 @@ const USAGE_KEYS = new Set([
   "cachedInputTokensKnown",
   "cacheWriteInputTokensKnown",
   "outputTokensKnown",
+  "maximumInputTokensPerRequest",
   "inputTokens",
   "cachedInputTokens",
   "cacheWriteInputTokens",
@@ -113,6 +114,8 @@ function validUsage(value: unknown): value is ScannerUsage {
     (value.cacheWriteInputTokensKnown === undefined ||
       typeof value.cacheWriteInputTokensKnown === "boolean") &&
     (value.outputTokensKnown === undefined || typeof value.outputTokensKnown === "boolean") &&
+    (value.maximumInputTokensPerRequest === undefined ||
+      nonNegativeSafeInteger(value.maximumInputTokensPerRequest)) &&
     nonNegativeSafeInteger(value.inputTokens) &&
     nonNegativeSafeInteger(value.cachedInputTokens) &&
     (value.cacheWriteInputTokens === undefined ||

@@ -557,12 +557,16 @@ function normalizeOpenAiRows(
   metadata: { connectionId: string; discoveredAt: string },
   sensitiveValues: readonly string[],
 ): DiscoveredProviderModel[] {
-  return normalizeRows(rows, metadata, (row) => ({
-    id: stringAt(row, "id"),
-    displayName: stringAt(row, "name") ?? stringAt(row, "id"),
-    contextWindow: numberAt(row, "context_window") ?? numberAt(row, "context_length"),
-    pricing: null,
-  }), sensitiveValues);
+  return normalizeRows(rows, metadata, (row) => {
+    const pricing = explicitCatalogPricing(row.pricing);
+    return {
+      id: stringAt(row, "id"),
+      displayName: stringAt(row, "name") ?? stringAt(row, "id"),
+      contextWindow: numberAt(row, "context_window") ?? numberAt(row, "context_length"),
+      pricing,
+      unverifiedHints: pricing === null ? undefined : { supportedParameters: [], pricingReported: true },
+    };
+  }, sensitiveValues);
 }
 
 function normalizeAnthropicRows(
@@ -570,12 +574,16 @@ function normalizeAnthropicRows(
   metadata: { connectionId: string; discoveredAt: string },
   sensitiveValues: readonly string[],
 ): DiscoveredProviderModel[] {
-  return normalizeRows(rows, metadata, (row) => ({
-    id: stringAt(row, "id"),
-    displayName: stringAt(row, "display_name") ?? stringAt(row, "id"),
-    contextWindow: null,
-    pricing: null,
-  }), sensitiveValues);
+  return normalizeRows(rows, metadata, (row) => {
+    const pricing = explicitCatalogPricing(row.pricing);
+    return {
+      id: stringAt(row, "id"),
+      displayName: stringAt(row, "display_name") ?? stringAt(row, "id"),
+      contextWindow: null,
+      pricing,
+      unverifiedHints: pricing === null ? undefined : { supportedParameters: [], pricingReported: true },
+    };
+  }, sensitiveValues);
 }
 
 function normalizeOpenRouterRows(
@@ -675,6 +683,66 @@ function openRouterPricing(value: unknown): ModelPricing | null {
     cacheWriteInputUsdPerMillionTokens: cacheWriteInput,
     outputUsdPerMillionTokens: output,
   };
+}
+
+/**
+ * Optional extension for compatible catalogs. Explicit currency, unit, and
+ * per-million field names avoid guessing whether an arbitrary number is per
+ * token, per request, or a different currency.
+ */
+function explicitCatalogPricing(value: unknown): ModelPricing | null {
+  const pricing = recordOf(value);
+  if (
+    pricing === null ||
+    pricing.currency !== "USD" ||
+    pricing.unit !== "per-million-tokens"
+  ) return null;
+  const rate = (field: string): number | null | undefined => {
+    const raw = pricing[field];
+    if (raw === null || raw === undefined) return null;
+    return typeof raw === "number" && Number.isFinite(raw) && raw >= 0 ? raw : undefined;
+  };
+  const input = rate("inputUsdPerMillionTokens");
+  const cachedInput = rate("cachedInputUsdPerMillionTokens");
+  const cacheWriteInput = rate("cacheWriteInputUsdPerMillionTokens");
+  const output = rate("outputUsdPerMillionTokens");
+  const billing = explicitBillingContract(pricing);
+  if (
+    input === undefined || cachedInput === undefined ||
+    cacheWriteInput === undefined || output === undefined ||
+    billing === undefined ||
+    (input === null && cachedInput === null && cacheWriteInput === null && output === null)
+  ) return null;
+  return {
+    inputUsdPerMillionTokens: input,
+    cachedInputUsdPerMillionTokens: cachedInput,
+    cacheWriteInputUsdPerMillionTokens: cacheWriteInput,
+    outputUsdPerMillionTokens: output,
+    ...billing,
+  };
+}
+
+function explicitBillingContract(
+  pricing: Record<string, unknown>,
+): Pick<ModelPricing, "pricingBasis" | "billingMode"> | Record<string, never> | undefined {
+  const hasBasis = Object.hasOwn(pricing, "pricingBasis");
+  const hasMode = Object.hasOwn(pricing, "billingMode");
+  if (!hasBasis && !hasMode) return {};
+  if (!hasBasis || !hasMode) return undefined;
+  if (pricing.pricingBasis === "metered" && pricing.billingMode === "metered") {
+    return { pricingBasis: "metered", billingMode: "metered" };
+  }
+  if (
+    pricing.pricingBasis === "payg-equivalent" &&
+    (pricing.billingMode === "subscription" || pricing.billingMode === "credits" ||
+      pricing.billingMode === "unknown")
+  ) {
+    return {
+      pricingBasis: "payg-equivalent",
+      billingMode: pricing.billingMode,
+    };
+  }
+  return undefined;
 }
 
 function perMillion(value: unknown): number | null {

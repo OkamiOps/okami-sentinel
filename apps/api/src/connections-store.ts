@@ -990,18 +990,41 @@ function canonicalizePricing(value: unknown): ModelPricing | null {
     ? null
     : nullableUsd(value.cacheWriteInputUsdPerMillionTokens);
   const outputUsdPerMillionTokens = nullableUsd(value.outputUsdPerMillionTokens);
+  const billing = canonicalizePricingBilling(value);
   if (
     inputUsdPerMillionTokens === undefined ||
     cachedInputUsdPerMillionTokens === undefined ||
     cacheWriteInputUsdPerMillionTokens === undefined ||
-    outputUsdPerMillionTokens === undefined
+    outputUsdPerMillionTokens === undefined ||
+    billing === undefined
   ) return null;
   return {
     inputUsdPerMillionTokens,
     cachedInputUsdPerMillionTokens,
     cacheWriteInputUsdPerMillionTokens,
     outputUsdPerMillionTokens,
+    ...billing,
   };
+}
+
+function canonicalizePricingBilling(
+  value: Record<string, unknown>,
+): Pick<ModelPricing, "pricingBasis" | "billingMode"> | Record<string, never> | undefined {
+  const hasBasis = Object.hasOwn(value, "pricingBasis");
+  const hasMode = Object.hasOwn(value, "billingMode");
+  if (!hasBasis && !hasMode) return {};
+  if (!hasBasis || !hasMode) return undefined;
+  if (value.pricingBasis === "metered" && value.billingMode === "metered") {
+    return { pricingBasis: "metered", billingMode: "metered" };
+  }
+  if (
+    value.pricingBasis === "payg-equivalent" &&
+    (value.billingMode === "subscription" || value.billingMode === "credits" ||
+      value.billingMode === "unknown")
+  ) {
+    return { pricingBasis: "payg-equivalent", billingMode: value.billingMode };
+  }
+  return undefined;
 }
 
 function nullableUsd(value: unknown): number | null | undefined {

@@ -1,4 +1,4 @@
-import { emptySeverityCounts, scanEstimatedUsd, type MetricsSummary, type SeverityCounts } from "@csb/shared";
+import { emptySeverityCounts, scanEstimatedUsd, type MetricsSummary, type ScanRun, type SeverityCounts } from "@csb/shared";
 import { listRuns } from "./db.js";
 import { readFindingsFile } from "./ingest.js";
 
@@ -39,8 +39,9 @@ export function buildMetricsSummary(): MetricsSummary {
       totalEstimatedUsd += estimatedUsd;
       pricedScans += 1;
     }
-    totalInputTokens += run.cost?.inputTokens ?? 0;
-    totalOutputTokens += run.cost?.outputTokens ?? 0;
+    const measuredTokens = measuredTokenCounts(run);
+    totalInputTokens += measuredTokens.inputTokens;
+    totalOutputTokens += measuredTokens.outputTokens;
     if (estimatedUsd != null) {
       findingsHighAll += run.severity.high + run.severity.critical;
       findingsTotalAll += run.severity.total;
@@ -134,6 +135,16 @@ export function buildMetricsSummary(): MetricsSummary {
     costTrend,
     topCategories,
     recent: runs.slice(0, 8),
+  };
+}
+
+/** Token telemetry is independent from whether a trustworthy USD quote exists. */
+export function measuredTokenCounts(
+  run: Pick<ScanRun, "cost" | "usage">,
+): { inputTokens: number; outputTokens: number } {
+  return {
+    inputTokens: run.usage?.inputTokens ?? run.cost?.inputTokens ?? 0,
+    outputTokens: run.usage?.outputTokens ?? run.cost?.outputTokens ?? 0,
   };
 }
 

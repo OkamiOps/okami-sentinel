@@ -70,6 +70,7 @@ import { refreshMantisRunFromDisk } from "./scanners/mantis-reconcile.js";
 import { refreshPortableCodexSecurityRunFromDisk } from "./scanners/portable-codex-security-reconcile.js";
 import { refreshVulnHunterRunFromDisk } from "./scanners/vulnhunter-reconcile.js";
 import { getProviderRuntime, type ProviderRuntime } from "./provider-runtime.js";
+import { resolveScannerPricingQuote } from "./provider-pricing.js";
 import {
   globalSecretRedactor,
   processSecretValues,
@@ -562,6 +563,17 @@ export async function startScan(
   // or persisted value may be introduced after selection normalization.
   const effort = selection.request.effort ?? (selection.connectionAware ? null : "high");
   const mode = req.mode || "standard";
+  const pricingQuote = selection.plan?.model === null || selection.plan === null
+    ? null
+    : resolveScannerPricingQuote({
+      connectionId: selection.plan.connectionId,
+      providerKind: selection.plan.providerKind,
+      routeKind: selection.plan.routeKind,
+      protocol: selection.plan.protocol,
+      modelId: selection.plan.model.id,
+      modelPricing: selection.plan.model.pricing,
+      capturedAt: startedAt,
+    });
   const requiredModel = (): string => {
     if (model === null) throw new Error("Selected scanner route requires an exact provider model");
     return model;
@@ -589,6 +601,7 @@ export async function startScan(
       portableCodexSecurityProviderPlan: portablePlan,
       pricing: selection.plan!.model!.pricing,
       capturedAt: startedAt,
+      pricingQuote,
       ...(dependencies.environment === undefined ? {} : { environment: dependencies.environment }),
     })
     : codexSecurityApiKey !== null
@@ -612,6 +625,7 @@ export async function startScan(
         mode,
         providerKind: selection.plan.providerKind,
         mantisProviderPlan: createSafeMantisProviderPlan(selection.plan),
+        pricingQuote,
       })
       : prepareScannerLaunch({
         request: selection.request,
@@ -624,6 +638,10 @@ export async function startScan(
         providerKind: selection.plan?.engine === "vulnhunter" &&
             selection.plan.runnerKind === "agent-session"
           ? selection.plan.providerKind
+          : undefined,
+        pricingQuote: selection.plan?.engine === "vulnhunter" &&
+            selection.plan.runnerKind === "agent-session"
+          ? pricingQuote
           : undefined,
       });
 
@@ -647,6 +665,7 @@ export async function startScan(
     completedAt: null,
     durationMs: null,
     cost:
+      selection.connectionAware ||
       launch.authMode === null ||
       ((launch.engine === "mantis" || launch.engine === "vulnhunter") &&
         (launch.authMode === "chatgpt" || launch.authMode === "existing-session")
@@ -664,6 +683,15 @@ export async function startScan(
     source: "benchmark",
     pid: null,
     execution: selection.plan?.execution ?? null,
+    connection: selection.plan === null
+      ? null
+      : {
+        connectionId: selection.plan.connectionId,
+        routeKind: selection.plan.routeKind,
+        protocol: selection.plan.protocol,
+        authKind: selection.plan.snapshot.authKind,
+        capabilityCheckId: selection.plan.capabilityCheckId,
+      },
     launchSelection: launchSelectionForRun(selection.plan, selection.request.paths),
     progress: initialProgress ? sanitizeScanProgress(initialProgress) : null,
   };

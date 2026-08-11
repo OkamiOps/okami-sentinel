@@ -313,6 +313,14 @@ export function addPortableCodexSecurityUsage(
       incoming.cacheWriteInputTokens !== null,
     ),
     outputTokensKnown: knownAfter(current.outputTokensKnown, incoming.outputTokens !== null),
+    ...(incoming.inputTokens === null
+      ? {}
+      : {
+        maximumInputTokensPerRequest: Math.max(
+          current.maximumInputTokensPerRequest ?? 0,
+          incoming.inputTokens,
+        ),
+      }),
     inputTokens: current.inputTokens + (incoming.inputTokens ?? 0),
     cachedInputTokens: current.cachedInputTokens + (incoming.cachedInputTokens ?? 0),
     ...(incoming.cacheWriteInputTokens === null && current.cacheWriteInputTokens === undefined

@@ -42,6 +42,7 @@ import {
   type MantisRuntimeState,
 } from "./mantis-runtime.js";
 import type { ScanLaunchPlan } from "../connections/launch-plan.js";
+import { addScannerUsage } from "./usage.js";
 
 export interface MantisStageDefinition {
   id: string;
@@ -506,21 +507,9 @@ async function observeStage(
 }
 
 function collectUsage(runtime: MantisRuntimeState, event: Extract<AgentEvent, { type: "usage" }>): MantisRuntimeState {
-  const usage = event.usage;
-  const reported = usage.inputTokens !== null ||
-    usage.cachedInputTokens !== null ||
-    usage.cacheWriteInputTokens !== null ||
-    usage.outputTokens !== null;
   return {
     ...runtime,
-    usage: {
-      reported: runtime.usage.reported || reported,
-      inputTokens: runtime.usage.inputTokens + (usage.inputTokens ?? 0),
-      cachedInputTokens: runtime.usage.cachedInputTokens + (usage.cachedInputTokens ?? 0),
-      cacheWriteInputTokens:
-        (runtime.usage.cacheWriteInputTokens ?? 0) + (usage.cacheWriteInputTokens ?? 0),
-      outputTokens: runtime.usage.outputTokens + (usage.outputTokens ?? 0),
-    },
+    usage: addScannerUsage(runtime.usage, event.usage),
   };
 }
 
@@ -709,6 +698,10 @@ function stageLimits(overrides: Partial<AgentSessionLimits> = {}): AgentSessionL
 function emptyUsage(): MantisRuntimeState["usage"] {
   return {
     reported: false,
+    inputTokensKnown: false,
+    cachedInputTokensKnown: false,
+    cacheWriteInputTokensKnown: false,
+    outputTokensKnown: false,
     inputTokens: 0,
     cachedInputTokens: 0,
     cacheWriteInputTokens: 0,

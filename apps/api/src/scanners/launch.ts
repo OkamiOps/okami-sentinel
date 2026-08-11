@@ -30,7 +30,11 @@ import {
   VULNHUNTER_WORKER_BIN,
   VULNHUNTER_WORKER_ENTRY,
 } from "../config.js";
-import { writePortableCodexSecurityPricing } from "../model-pricing.js";
+import {
+  writePortableCodexSecurityPricing,
+  writeScannerPricingQuote,
+  type FrozenScannerPricing,
+} from "../model-pricing.js";
 import type { MantisRunConfiguration } from "./mantis-runtime.js";
 import type {
   MantisHttpWorkerConfiguration,
@@ -74,6 +78,8 @@ export interface ScannerLaunchInput {
   vulnhunterProviderPlan?: SafeVulnHunterProviderPlan;
   /** Run metadata only; never written into the child configuration. */
   providerKind?: string;
+  /** Frozen, secret-free quote scoped to the already resolved connection and model. */
+  pricingQuote?: FrozenScannerPricing | null;
 }
 
 export interface CodexSecurityApiLaunchInput extends ScannerLaunchInput {
@@ -213,6 +219,9 @@ export function preparePortableCodexSecurityLaunch(
     input.capturedAt,
     input.portableCodexSecurityProviderPlan.modelId,
   );
+  if (input.pricingQuote !== undefined) {
+    writeScannerPricingQuote(input.outputDir, input.pricingQuote);
+  }
   const configPath = path.join(input.outputDir, "portable-codex-security-run.json");
   fs.writeFileSync(configPath, `${JSON.stringify(configuration, null, 2)}\n`, {
     encoding: "utf8",
@@ -419,6 +428,9 @@ export function prepareMantisHttpLaunch(input: MantisHttpLaunchInput): ScannerLa
     encoding: "utf8",
     mode: 0o600,
   });
+  if (input.pricingQuote !== undefined) {
+    writeScannerPricingQuote(input.outputDir, input.pricingQuote);
+  }
   const authMode: ScannerAuthMode = "api-key";
   const hash = recipeHash({
     engine: "mantis",
@@ -513,6 +525,9 @@ function prepareVulnHunter(input: ScannerLaunchInput): ScannerLaunch {
     encoding: "utf8",
     mode: 0o600,
   });
+  if (input.vulnhunterProviderPlan !== undefined && input.pricingQuote !== undefined) {
+    writeScannerPricingQuote(input.outputDir, input.pricingQuote);
+  }
   const hash = recipeHash({
     engine: "vulnhunter",
     authMode,

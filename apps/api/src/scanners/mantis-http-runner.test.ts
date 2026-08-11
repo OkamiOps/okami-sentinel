@@ -279,6 +279,10 @@ test("Mantis HTTP runner executes every bounded stage with chained state and nev
     assert.equal(result.runtime.usage.cacheWriteInputTokens, STAGES.length * 2);
     assert.equal(result.runtime.usage.outputTokens, STAGES.length * 4);
     assert.equal(result.runtime.usage.reported, true);
+    assert.equal(result.runtime.usage.inputTokensKnown, true);
+    assert.equal(result.runtime.usage.cachedInputTokensKnown, true);
+    assert.equal(result.runtime.usage.cacheWriteInputTokensKnown, true);
+    assert.equal(result.runtime.usage.outputTokensKnown, true);
     assert.equal(JSON.stringify(result).includes(secret), false);
     assert.equal(JSON.stringify(specs).includes(secret), false);
     assert.equal(logs.join("\n").includes(secret), false);
@@ -309,6 +313,10 @@ test("Mantis HTTP treats cache-write-only usage as reported", async () => {
 
     assert.equal(result.runtime.usage.reported, true);
     assert.equal(result.runtime.usage.cacheWriteInputTokens, STAGES.length * 2);
+    assert.equal(result.runtime.usage.inputTokensKnown, false);
+    assert.equal(result.runtime.usage.cachedInputTokensKnown, false);
+    assert.equal(result.runtime.usage.cacheWriteInputTokensKnown, true);
+    assert.equal(result.runtime.usage.outputTokensKnown, false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

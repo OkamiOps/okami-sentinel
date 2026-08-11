@@ -65,6 +65,7 @@ import {
   type ScanDecisionRow,
 } from "../lib/compare-decision";
 import { executionProfileLabel, hasExecutionProfileMismatch } from "../lib/execution-profile";
+import { scanTokenUsage } from "../lib/scan-cost";
 import { useI18n, type TranslationKey } from "../i18n";
 
 const changeOrder: CompareFindingChange[] = [
@@ -708,14 +709,16 @@ function OperationalLedger({ result, baseline, candidate }: { result: CompareRes
   const candidateCostPerHigh = unitCost(candidateCost, candidateHigh);
   const baselineFindingsPerHour = hourlyRate(baseline.severity.total, baseline.durationMs);
   const candidateFindingsPerHour = hourlyRate(candidate.severity.total, candidate.durationMs);
+  const baselineUsage = scanTokenUsage(baseline);
+  const candidateUsage = scanTokenUsage(candidate);
   const rows: Array<[string, ReactNode, ReactNode, ReactNode]> = [
     ["Custo estimado", formatUsd(baselineCost), moneyDelta(baselineCost, candidateCost), formatUsd(candidateCost)],
     ["USD / finding", formatUsd(baselineCostPerFinding), moneyDelta(baselineCostPerFinding, candidateCostPerFinding), formatUsd(candidateCostPerFinding)],
     ["USD / High+", formatUsd(baselineCostPerHigh), moneyDelta(baselineCostPerHigh, candidateCostPerHigh), formatUsd(candidateCostPerHigh)],
     ["Duração", <LiveDuration startedAt={baseline.startedAt} completedAt={baseline.completedAt} status={baseline.status} durationMs={baseline.durationMs} showDot={false} />, durationDelta(baseline.durationMs, candidate.durationMs), <LiveDuration startedAt={candidate.startedAt} completedAt={candidate.completedAt} status={candidate.status} durationMs={candidate.durationMs} showDot={false} />],
     ["Findings / hora", formatRate(baselineFindingsPerHour), decimalDelta(baselineFindingsPerHour, candidateFindingsPerHour), formatRate(candidateFindingsPerHour)],
-    ["Input tokens", formatTokens(baseline.cost?.inputTokens), compactDelta(baseline.cost?.inputTokens, candidate.cost?.inputTokens), formatTokens(candidate.cost?.inputTokens)],
-    ["Output tokens", formatTokens(baseline.cost?.outputTokens), compactDelta(baseline.cost?.outputTokens, candidate.cost?.outputTokens), formatTokens(candidate.cost?.outputTokens)],
+    ["Input tokens", formatTokens(baselineUsage.inputTokens), compactDelta(baselineUsage.inputTokens, candidateUsage.inputTokens), formatTokens(candidateUsage.inputTokens)],
+    ["Output tokens", formatTokens(baselineUsage.outputTokens), compactDelta(baselineUsage.outputTokens, candidateUsage.outputTokens), formatTokens(candidateUsage.outputTokens)],
     ["High+ / USD", metric(beforeRank?.highPerDollar), decimalDelta(beforeRank?.highPerDollar, afterRank?.highPerDollar), metric(afterRank?.highPerDollar)],
     ["Findings / USD", metric(beforeRank?.totalPerDollar), decimalDelta(beforeRank?.totalPerDollar, afterRank?.totalPerDollar), metric(afterRank?.totalPerDollar)],
   ];

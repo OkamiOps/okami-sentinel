@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { SecretRedactor } from "../redaction.js";
-import { serializeVulnHunterHttpEvent } from "./vulnhunter-http-worker-support.js";
+import {
+  addVulnHunterHttpUsage,
+  serializeVulnHunterHttpEvent,
+} from "./vulnhunter-http-worker-support.js";
 
 test("HTTP VulnHunter telemetry redacts provider credentials and endpoints before JSONL persistence", () => {
   const redactor = new SecretRedactor();
@@ -23,4 +26,42 @@ test("HTTP VulnHunter telemetry redacts provider credentials and endpoints befor
   assert.equal(line.includes(header), false);
   assert.equal(line.includes(oauthToken), false);
   assert.match(line, /\[REDACTED\]/);
+});
+
+test("HTTP VulnHunter preserves unknown versus reported-zero usage for pricing", () => {
+  const initial = {
+    reported: false,
+    inputTokensKnown: false,
+    cachedInputTokensKnown: false,
+    cacheWriteInputTokensKnown: false,
+    outputTokensKnown: false,
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    outputTokens: 0,
+  };
+  const first = addVulnHunterHttpUsage(initial, {
+    inputTokens: 100,
+    cachedInputTokens: 40,
+    cacheWriteInputTokens: 0,
+    outputTokens: 20,
+    reasoningTokens: null,
+  });
+  assert.equal(first.inputTokensKnown, true);
+  assert.equal(first.cachedInputTokensKnown, true);
+  assert.equal(first.cacheWriteInputTokensKnown, true);
+  assert.equal(first.outputTokensKnown, true);
+
+  const second = addVulnHunterHttpUsage(first, {
+    inputTokens: 50,
+    cachedInputTokens: null,
+    cacheWriteInputTokens: null,
+    outputTokens: 10,
+    reasoningTokens: null,
+  });
+  assert.equal(second.inputTokens, 150);
+  assert.equal(second.inputTokensKnown, true);
+  assert.equal(second.cachedInputTokensKnown, false);
+  assert.equal(second.cacheWriteInputTokensKnown, false);
+  assert.equal(second.outputTokensKnown, true);
 });

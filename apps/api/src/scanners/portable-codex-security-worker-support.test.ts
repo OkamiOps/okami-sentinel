@@ -154,6 +154,7 @@ test("Portable Codex Security usage preserves missing counters and aggregates ca
     cachedInputTokensKnown: false,
     cacheWriteInputTokensKnown: false,
     outputTokensKnown: false,
+    maximumInputTokensPerRequest: 4,
     inputTokens: 4,
     cachedInputTokens: 3,
     cacheWriteInputTokens: 7,

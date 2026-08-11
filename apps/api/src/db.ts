@@ -6,8 +6,10 @@ import {
   type FindingTriage,
   type FindingTriageStatus,
   type ScanCost,
+  type ScanConnectionProvenance,
   type ScanLaunchSelection,
   type ScanRun,
+  type ScanUsageSummary,
   type ScanStatus,
   type ScannerAuthMode,
   type ScannerEngine,
@@ -193,7 +195,8 @@ export function rowToScanRun(row: BenchmarkRow): ScanRun {
     row.engine === "mantis" && row.auth_mode === "existing-session";
   const cost: ScanCost | null =
     row.cost_json == null
-      ? row.estimated_usd != null && !subscriptionUsageUnavailable && !localSessionUsageUnreported
+      ? row.estimated_usd != null && row.estimated_usd > 0 &&
+          !subscriptionUsageUnavailable && !localSessionUsageUnreported
         ? {
             estimatedUsd: row.estimated_usd,
             inputTokens: row.input_tokens ?? 0,
@@ -204,7 +207,11 @@ export function rowToScanRun(row: BenchmarkRow): ScanRun {
           }
         : null
       : parseCostJson(row.cost_json);
+  const usage = subscriptionUsageUnavailable || localSessionUsageUnreported
+    ? null
+    : rowToUsageSummary(row);
   const execution = rowToExecutionProvenance(row);
+  const connection = rowToConnectionProvenance(row);
   const launchSelection = parseLaunchSelection(row.launch_selection_json);
 
   return withOpenRouterPricingEstimate({
@@ -226,10 +233,12 @@ export function rowToScanRun(row: BenchmarkRow): ScanRun {
     completedAt: row.completed_at,
     durationMs: row.duration_ms,
     cost,
+    usage,
     severity,
     source: row.source as ScanRun["source"],
     pid: row.pid,
     execution,
+    connection,
     launchSelection,
   });
 }
@@ -237,7 +246,14 @@ export function rowToScanRun(row: BenchmarkRow): ScanRun {
 export function upsertRun(run: ScanRun): void {
   const now = new Date().toISOString();
   const cost = run.cost === null ? null : sanitizeScanCost(run.cost);
+  const usage = sanitizeUsageSummary(run.usage) ?? (cost === null ? null : {
+    inputTokens: cost.inputTokens,
+    cachedInputTokens: cost.cachedInputTokens,
+    cacheWriteInputTokens: cost.cacheWriteInputTokens,
+    outputTokens: cost.outputTokens,
+  });
   const execution = run.execution;
+  const connection = run.connection ?? null;
   const launchSelection = sanitizeLaunchSelection(run.launchSelection);
   getDb()
     .prepare(
@@ -322,20 +338,20 @@ export function upsertRun(run: ScanRun): void {
       profile_version: execution?.profileVersion ?? null,
       methodology_ref: execution?.methodologyRef ?? null,
       capability_check_id: execution?.capabilityCheckId ?? null,
-      connection_id: execution?.connectionId ?? null,
-      route_kind: execution?.routeKind ?? null,
-      protocol: execution?.protocol ?? null,
-      auth_kind: execution?.authKind ?? null,
+      connection_id: connection?.connectionId ?? execution?.connectionId ?? null,
+      route_kind: connection?.routeKind ?? execution?.routeKind ?? null,
+      protocol: connection?.protocol ?? execution?.protocol ?? null,
+      auth_kind: connection?.authKind ?? execution?.authKind ?? null,
       launch_selection_json: launchSelection === null ? null : JSON.stringify(launchSelection),
       cost_json: cost === null ? null : JSON.stringify(cost),
       started_at: run.startedAt,
       completed_at: run.completedAt,
       duration_ms: run.durationMs,
       estimated_usd: cost?.estimatedUsd ?? null,
-      input_tokens: cost?.inputTokens ?? null,
-      cached_input_tokens: cost?.cachedInputTokens ?? null,
-      cache_write_tokens: cost?.cacheWriteInputTokens ?? null,
-      output_tokens: cost?.outputTokens ?? null,
+      input_tokens: usage?.inputTokens ?? null,
+      cached_input_tokens: usage?.cachedInputTokens ?? null,
+      cache_write_tokens: usage?.cacheWriteInputTokens ?? null,
+      output_tokens: usage?.outputTokens ?? null,
       severity_critical: run.severity.critical,
       severity_high: run.severity.high,
       severity_medium: run.severity.medium,
@@ -504,6 +520,34 @@ function safeLaunchPath(value: unknown): value is string {
     !value.split(/[\\/]+/).includes("..");
 }
 
+function rowToUsageSummary(row: BenchmarkRow): ScanUsageSummary | null {
+  const usage: ScanUsageSummary = {
+    inputTokens: row.input_tokens,
+    cachedInputTokens: row.cached_input_tokens,
+    cacheWriteInputTokens: row.cache_write_tokens,
+    outputTokens: row.output_tokens,
+  };
+  return Object.values(usage).some((value) => value !== null) ? usage : null;
+}
+
+function sanitizeUsageSummary(value: unknown): ScanUsageSummary | null {
+  if (!isRecord(value)) return null;
+  const fields = [
+    "inputTokens", "cachedInputTokens", "cacheWriteInputTokens", "outputTokens",
+  ] as const;
+  const usage = {} as ScanUsageSummary;
+  for (const field of fields) {
+    const raw = value[field];
+    if (raw === null) usage[field] = null;
+    else {
+      const count = nonNegativeNumber(raw);
+      if (count === null || !Number.isSafeInteger(count)) return null;
+      usage[field] = count;
+    }
+  }
+  return usage;
+}
+
 function rowToExecutionProvenance(row: BenchmarkRow): ScanRun["execution"] {
   if (
     (row.execution_profile !== "native" && row.execution_profile !== "portable") ||
@@ -521,6 +565,32 @@ function rowToExecutionProvenance(row: BenchmarkRow): ScanRun["execution"] {
     routeKind: row.route_kind ?? null,
     protocol: (row.protocol ?? null) as NonNullable<ScanRun["execution"]>["protocol"],
     authKind: (row.auth_kind ?? null) as NonNullable<ScanRun["execution"]>["authKind"],
+  };
+}
+
+function rowToConnectionProvenance(row: BenchmarkRow): ScanConnectionProvenance | null {
+  const protocols = new Set([
+    "codex-cli", "codex-app-server", "claude-code-cli", "cursor-agent-cli",
+    "grok-build-cli", "xai-oauth-responses", "openai-responses", "openai-chat",
+    "anthropic-messages", "cursor-background-agents",
+  ]);
+  const authKinds = new Set([
+    "existing-session", "browser-oauth", "device-code", "api-key", "custom-headers",
+  ]);
+  if (
+    !safeLaunchIdentifier(row.connection_id) ||
+    !safeLaunchIdentifier(row.route_kind) ||
+    !protocols.has(row.protocol ?? "") ||
+    !(row.auth_kind === null || row.auth_kind === undefined || authKinds.has(row.auth_kind))
+  ) return null;
+  return {
+    connectionId: row.connection_id,
+    routeKind: row.route_kind,
+    protocol: row.protocol as ScanConnectionProvenance["protocol"],
+    authKind: (row.auth_kind ?? null) as ScanConnectionProvenance["authKind"],
+    capabilityCheckId: safeLaunchIdentifier(row.capability_check_id)
+      ? row.capability_check_id
+      : null,
   };
 }
 
@@ -549,8 +619,32 @@ function sanitizeScanCost(value: unknown): ScanCost | null {
     outputTokens,
   };
   if (typeof value.model === "string") cost.model = value.model;
-  if (value.pricingSource === "openrouter" || value.pricingSource === "provider-catalog") {
+  if (
+    value.pricingSource === "openrouter" ||
+    value.pricingSource === "provider-catalog" ||
+    value.pricingSource === "official-rate-card"
+  ) {
     cost.pricingSource = value.pricingSource;
+  }
+  if (value.pricingBasis === "metered" || value.pricingBasis === "payg-equivalent") {
+    cost.pricingBasis = value.pricingBasis;
+  }
+  if (
+    value.billingMode === "metered" ||
+    value.billingMode === "subscription" ||
+    value.billingMode === "credits" ||
+    value.billingMode === "unknown"
+  ) {
+    cost.billingMode = value.billingMode;
+  }
+  if (
+    value.pricingRateCardId === "xai.grok-4.5.2026-07-03" ||
+    value.pricingRateCardId === "minimax.m3.payg.2026-08-11"
+  ) {
+    cost.pricingRateCardId = value.pricingRateCardId;
+  }
+  if (value.pricingTiming === "launch" || value.pricingTiming === "post-hoc") {
+    cost.pricingTiming = value.pricingTiming;
   }
   if (value.pricingMatch === "exact") {
     cost.pricingMatch = value.pricingMatch;
@@ -569,6 +663,7 @@ function sanitizeScanCost(value: unknown): ScanCost | null {
   }
   const pricingSnapshot = sanitizePricingSnapshot(value.pricingSnapshot);
   if (pricingSnapshot !== null) cost.pricingSnapshot = pricingSnapshot;
+  if (cost.estimatedUsd === 0 && cost.pricingSource === undefined) return null;
   return cost;
 }
 

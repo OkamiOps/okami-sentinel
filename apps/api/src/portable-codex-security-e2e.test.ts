@@ -204,6 +204,7 @@ test("Portable Codex Security completes a local API-key HTTP route through launc
       cachedInputTokensKnown: true,
       cacheWriteInputTokensKnown: true,
       outputTokensKnown: true,
+      maximumInputTokensPerRequest: 3,
       inputTokens: 18,
       cachedInputTokens: 6,
       cacheWriteInputTokens: 12,

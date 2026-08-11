@@ -15,6 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { formatActivityState, formatDate, formatProgressMetric, formatTokens, formatUsd, shortId } from "../format";
 import { attackPathHref } from "../lib/attack-path";
 import { executionProfileLabel, portableRetryHref } from "../lib/execution-profile";
+import { scanCostPresentation, scanTokenUsage } from "../lib/scan-cost";
 import { appendTelemetryEvent, mergeTelemetrySnapshot, telemetrySnapshot } from "../lib/telemetry";
 import { useI18n } from "../i18n";
 
@@ -51,10 +52,15 @@ export function ScanDetailPage() {
   if (!scan && !error) return <Loading />;
   if (!scan) return <AlertBanner>{error}</AlertBanner>;
   const highPlus = scan.severity.critical + scan.severity.high;
-  const isOpenRouterEstimate = scan.cost?.pricingSource === "openrouter";
-  const costDetail = isOpenRouterEstimate
+  const costCopy = scanCostPresentation(scan.cost);
+  const tokenUsage = scanTokenUsage(scan);
+  const hasTrustedPricing = scan.cost?.pricingSource !== undefined;
+  const costDetail = hasTrustedPricing
     ? `IN ${formatUsd(scan.cost?.inputUsd)} · OUT ${formatUsd(scan.cost?.outputUsd)}`
     : undefined;
+  const rateDetail = costCopy.rateKey === null
+    ? undefined
+    : `${t(costCopy.rateKey)}${costCopy.disclaimerKey === null ? "" : ` · ${t(costCopy.disclaimerKey)}`}`;
   const resolvedExecutionProfileLabel = executionProfileLabel(scan, t);
   const retryHref = portableRetryHref(scan);
   return <div>
@@ -68,7 +74,7 @@ export function ScanDetailPage() {
           <div className="mt-5"><SeverityStrip counts={scan.severity} total={scan.severity.total} /></div>
           <div className="mt-5 flex flex-wrap gap-2"><Button asChild variant="outline" size="sm"><Link to={`/compare?ids=${scan.id}`}><HugeiconsIcon icon={Analytics01Icon} size={12} />{t("scanDetail.compare")}</Link></Button>{retryHref && <Button asChild variant="outline" size="sm"><Link to={retryHref} className="focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background"><HugeiconsIcon icon={RefreshIcon} size={12} />{t("scanDetail.repeat")}</Link></Button>}{scan.status === "completed" && <Button variant="outline" size="sm" onClick={() => void setBaseline()} disabled={baselineBusy || regression?.isRepositoryBaseline}><HugeiconsIcon icon={SecurityCheckIcon} size={12} />{regression?.isRepositoryBaseline ? t("scanDetail.repoBaseline") : baselineBusy ? t("scanDetail.settingBaseline") : t("scanDetail.setBaseline")}</Button>}{scan.status === "running" && <Button variant="destructive" size="sm" onClick={() => void cancel()}><HugeiconsIcon icon={StopIcon} size={12} />{t("scanDetail.cancel")}</Button>}<DeleteScanButton scan={scan} onDeleted={() => navigate("/scans")} /></div>
         </div>
-        <div className="grid grid-cols-2 gap-x-4 gap-y-5 p-5"><Readout label="HIGH+" value={highPlus} tone="risk" /><Readout label="TOTAL" value={scan.severity.total} /><Readout label={isOpenRouterEstimate ? "EST. COST" : "COST"} value={formatUsd(scanEstimatedUsd(scan))} detail={costDetail} tone="signal" /><Readout label="DURATION" value={<LiveDuration startedAt={scan.startedAt} completedAt={scan.completedAt} status={scan.status} durationMs={scan.durationMs} showDot={false} />} /><Readout label="INPUT" value={formatTokens(scan.cost?.inputTokens)} detail={isOpenRouterEstimate ? `CACHE ${formatTokens(scan.cost?.cachedInputTokens)}` : undefined} /><Readout label="OUTPUT" value={formatTokens(scan.cost?.outputTokens)} detail={isOpenRouterEstimate ? <span title={scan.cost?.pricingModel}>OPENROUTER RATE</span> : undefined} /><Button asChild className="col-span-2 h-auto justify-between border-chart-1 bg-chart-1 px-4 py-3 text-[#060609] hover:bg-chart-1/90"><Link to={`/scans/${scan.id}/report`} target="_blank"><span className="flex items-center gap-3"><HugeiconsIcon icon={DocumentValidationIcon} size={18} /><span className="text-left"><strong className="block text-xs uppercase tracking-[.08em]">{t("scanDetail.report")}</strong><span className="mt-0.5 block font-mono text-[8px] font-normal uppercase opacity-75">{scan.severity.total} findings · {t("scanDetail.print")}</span></span></span><HugeiconsIcon icon={ArrowRight01Icon} size={15} /></Link></Button></div>
+        <div className="grid grid-cols-2 gap-x-4 gap-y-5 p-5"><Readout label="HIGH+" value={highPlus} tone="risk" /><Readout label="TOTAL" value={scan.severity.total} /><Readout label={t(costCopy.labelKey)} value={formatUsd(scanEstimatedUsd(scan))} detail={costDetail} tone="signal" /><Readout label="DURATION" value={<LiveDuration startedAt={scan.startedAt} completedAt={scan.completedAt} status={scan.status} durationMs={scan.durationMs} showDot={false} />} /><Readout label="INPUT" value={formatTokens(tokenUsage.inputTokens)} detail={tokenUsage.cachedInputTokens === null ? undefined : `CACHE ${formatTokens(tokenUsage.cachedInputTokens)}`} /><Readout label="OUTPUT" value={formatTokens(tokenUsage.outputTokens)} detail={rateDetail ? <span title={rateDetail}>{rateDetail}</span> : undefined} wrap /><Button asChild className="col-span-2 h-auto justify-between border-chart-1 bg-chart-1 px-4 py-3 text-[#060609] hover:bg-chart-1/90"><Link to={`/scans/${scan.id}/report`} target="_blank"><span className="flex items-center gap-3"><HugeiconsIcon icon={DocumentValidationIcon} size={18} /><span className="text-left"><strong className="block text-xs uppercase tracking-[.08em]">{t("scanDetail.report")}</strong><span className="mt-0.5 block font-mono text-[8px] font-normal uppercase opacity-75">{scan.severity.total} findings · {t("scanDetail.print")}</span></span></span><HugeiconsIcon icon={ArrowRight01Icon} size={15} /></Link></Button></div>
       </div>
       {regression && <RegressionRail regression={regression} active={lifecycle} onSelect={(value) => { setLifecycle((current) => current === value ? "" : value); setView("evidence"); }} />}
       {scan.progress && <div className="border-t px-4 py-3"><div className="mb-2 flex items-center justify-between gap-4 font-mono text-[9px]"><span className="truncate">{scan.progress.phaseLabel}{scan.progress.detail ? ` / ${scan.progress.detail}` : ""}</span><span className="shrink-0 text-primary">{formatProgressMetric(scan.progress)}</span></div><ProgressTrack value={scan.progress.percent} indeterminate={scan.progress.indeterminate} /></div>}

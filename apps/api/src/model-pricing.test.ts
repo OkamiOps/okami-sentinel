@@ -94,6 +94,8 @@ test("frozen catalog pricing calculates only fully known zero cache-write usage"
     outputTokens: 2_000_000,
     model: MODEL_ID,
     pricingSource: "provider-catalog",
+    pricingBasis: "payg-equivalent",
+    billingMode: "unknown",
     pricingSnapshot: {
       currency: "USD",
       capturedAt: CAPTURED_AT,
@@ -104,6 +106,7 @@ test("frozen catalog pricing calculates only fully known zero cache-write usage"
     },
     pricingModel: MODEL_ID,
     pricingUpdatedAt: CAPTURED_AT,
+    pricingTiming: "launch",
     inputUsd: 1,
     cachedInputUsd: 0.25,
     outputUsd: 8,
