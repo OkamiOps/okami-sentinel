@@ -12,7 +12,13 @@ import type {
 } from "@csb/shared";
 
 import type { StoredProviderConnection } from "../connections-store.js";
-import type { AgentSession, AgentSessionSpec, AgentUsage } from "../agent/session-types.js";
+import { redactErrorMessage } from "../redaction.js";
+import {
+  type AgentSession,
+  type AgentSessionErrorCode,
+  type AgentSessionSpec,
+  type AgentUsage,
+} from "../agent/session-types.js";
 import type { XaiOAuthFlow } from "../connections/xai-oauth-flow.js";
 import {
   MantisHttpRunnerError,
@@ -922,7 +928,7 @@ test("Mantis direct xAI OAuth bounds a hung refresh, consumes its late rejection
         limits: { timeoutMs: 10 },
         now: () => NOW,
       } as Parameters<typeof runMantisHttpAgent>[1])),
-      (error: unknown) => error instanceof MantisHttpRunnerError && error.code === "agent_session_failed",
+      (error: unknown) => error instanceof MantisHttpRunnerError && error.code === "agent_time_limit",
     );
     assert.equal(vaultReads, 0);
     rejectLate?.(new Error("private-late-refresh-rejection"));
@@ -1112,6 +1118,83 @@ test("Mantis HTTP runner propagates cancellation through the active agent sessio
   }
 });
 
+test("Mantis HTTP preserves closed agent-session failure codes in the runtime", async (t) => {
+  const codes = [
+    "agent_protocol_error",
+    "tool_path_denied",
+    "tool_argument_invalid",
+    "agent_time_limit",
+    "agent_turn_limit",
+    "agent_tool_limit",
+    "provider_unreachable",
+  ] as const satisfies readonly AgentSessionErrorCode[];
+
+  for (const code of codes) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `mantis-http-safe-error-${code}-`));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const repositoryPath = path.join(root, "repository");
+    const outputDir = path.join(root, "output");
+    fs.mkdirSync(repositoryPath);
+    fs.writeFileSync(path.join(repositoryPath, "app.ts"), "export const safe = true;\n");
+
+    const failure = await runMantisHttpAgent({
+      outputDir,
+      repositoryPath,
+      paths: [],
+      sourceRef: "a".repeat(40),
+      providerPlan: plan(),
+    }, {
+      ...validDependencies(),
+      createSession: async () => failingSession(code),
+      now: () => NOW,
+    }).then(
+      () => assert.fail("expected the injected AgentSession failure"),
+      (error: unknown) => error,
+    );
+
+    assert.ok(failure instanceof MantisHttpRunnerError);
+    assert.equal(failure.code, code);
+    const runtime = JSON.parse(fs.readFileSync(path.join(outputDir, "mantis-runtime.json"), "utf8"));
+    assert.equal(runtime.status, "failed");
+    assert.equal(runtime.error, code);
+    assert.equal(runtime.detail, code);
+    assert.equal(failure.message, code);
+    assert.equal(`[mantis-http] ${redactErrorMessage(failure)}`, `[mantis-http] ${code}`);
+  }
+});
+
+test("Mantis HTTP falls back for a session code outside its closed safe vocabulary", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-http-unknown-safe-error-"));
+  const repositoryPath = path.join(root, "repository");
+  const outputDir = path.join(root, "output");
+  fs.mkdirSync(repositoryPath);
+  fs.writeFileSync(path.join(repositoryPath, "app.ts"), "export const safe = true;\n");
+
+  try {
+    const failure = await runMantisHttpAgent({
+      outputDir,
+      repositoryPath,
+      paths: [],
+      sourceRef: "a".repeat(40),
+      providerPlan: plan(),
+    }, {
+      ...validDependencies(),
+      createSession: async () => failingSession("not-a-safe-agent-session-code" as AgentSessionErrorCode),
+      now: () => NOW,
+    }).then(
+      () => assert.fail("expected the injected AgentSession failure"),
+      (error: unknown) => error,
+    );
+
+    assert.ok(failure instanceof MantisHttpRunnerError);
+    assert.equal(failure.code, "agent_session_failed");
+    const runtime = JSON.parse(fs.readFileSync(path.join(outputDir, "mantis-runtime.json"), "utf8"));
+    assert.equal(runtime.error, "agent_session_failed");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("safe provider plan carries identifiers only", () => {
   const safe = createSafeMantisProviderPlan({
     engine: "mantis",
@@ -1219,6 +1302,17 @@ function fakeSession(
         text: null,
         structured: { stage, summary },
       } as const;
+    },
+    async cancel() {
+      return { remote: false };
+    },
+  };
+}
+
+function failingSession(code: AgentSessionErrorCode): AgentSession {
+  return {
+    async *run() {
+      yield { type: "failure", code } as const;
     },
     async cancel() {
       return { remote: false };

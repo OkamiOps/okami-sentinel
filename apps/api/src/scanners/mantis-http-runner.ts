@@ -8,6 +8,7 @@ import type {
   ProviderProtocol,
   ScanConnectionSnapshot,
 } from "@csb/shared";
+import { SAFE_PROVIDER_ERROR_CODES } from "@csb/shared";
 
 import {
   createHttpAgentUpstream,
@@ -21,6 +22,7 @@ import {
   validateAgentSessionLimits,
   type AgentEvent,
   type AgentSession,
+  type AgentSessionErrorCode,
   type AgentSessionLimits,
   type AgentSessionSpec,
 } from "../agent/session-types.js";
@@ -98,7 +100,8 @@ export type MantisHttpRunnerErrorCode =
   | "agent_session_failed"
   | "stage_evidence_incomplete"
   | "stage_artifact_invalid"
-  | "snapshot_invalid";
+  | "snapshot_invalid"
+  | AgentSessionErrorCode;
 
 export class MantisHttpRunnerError extends Error {
   constructor(readonly code: MantisHttpRunnerErrorCode) {
@@ -145,6 +148,26 @@ const SNAPSHOT_EXCLUDES = new Set([
   ".git", ".hg", ".svn", "node_modules", ".next", ".nuxt", ".turbo",
   "dist", "build", "coverage", ".cache",
 ]);
+const SAFE_MANTIS_AGENT_SESSION_ERROR_CODES = Object.freeze([
+  "agent_turn_limit",
+  "agent_tool_limit",
+  "agent_input_byte_limit",
+  "agent_output_byte_limit",
+  "agent_time_limit",
+  "agent_protocol_error",
+  "agent_cancelled",
+  "runner_capability_missing",
+  "runner_protocol_unsupported",
+  "runner_invalid_spec",
+  "runner_upstream_required",
+  "tool_path_denied",
+  "tool_name_denied",
+  "tool_argument_invalid",
+  "tool_read_limit",
+  "tool_output_limit",
+  "tool_write_denied",
+  ...SAFE_PROVIDER_ERROR_CODES,
+] as const satisfies readonly AgentSessionErrorCode[]);
 const MAX_PRIOR_STATE_BYTES = 16 * 1024;
 const MAX_REPORT_BYTES = 512 * 1024;
 const MAX_REPORT_FINDINGS = 256;
@@ -496,7 +519,7 @@ async function observeStage(
       case "cancellation":
         throw new MantisHttpRunnerError("agent_cancelled");
       case "failure":
-        throw new MantisHttpRunnerError(event.code === "agent_cancelled" ? "agent_cancelled" : "agent_session_failed");
+        throw normalizeAgentSessionFailure(event.code);
     }
   }
   if (!snapshotToolRequested || !snapshotToolConsumed || !resultsWriteRequested || !artifactObserved || state === null) {
@@ -943,8 +966,15 @@ function throwIfAborted(signal: AbortSignal): void {
 function normalizeRunnerError(error: unknown, signal: AbortSignal): MantisHttpRunnerError {
   if (signal.aborted) return new MantisHttpRunnerError("agent_cancelled");
   if (error instanceof MantisHttpRunnerError) return error;
-  if (error instanceof AgentSessionError && error.code === "agent_cancelled") {
-    return new MantisHttpRunnerError("agent_cancelled");
+  if (error instanceof AgentSessionError) {
+    return normalizeAgentSessionFailure(error.code);
+  }
+  return new MantisHttpRunnerError("agent_session_failed");
+}
+
+function normalizeAgentSessionFailure(code: unknown): MantisHttpRunnerError {
+  if ((SAFE_MANTIS_AGENT_SESSION_ERROR_CODES as readonly unknown[]).includes(code)) {
+    return new MantisHttpRunnerError(code as AgentSessionErrorCode);
   }
   return new MantisHttpRunnerError("agent_session_failed");
 }
