@@ -14,6 +14,12 @@ import {
   discoverXaiModels,
   type HttpFetch,
 } from "./http-model-discovery.js";
+import {
+  createHttpProbeResult,
+  isExactHttpCatalogSelection,
+  safeHttpProbeErrorCode,
+  type HttpProbeSession,
+} from "./http-route-adapters.js";
 import type {
   DiscoveryResult,
   RouteAdapter,
@@ -46,6 +52,12 @@ export interface XaiOAuthAdapterDependencies {
   now?: () => Date;
   transport?: HttpFetch;
   redactor?: SecretRedactorRegistry;
+  resolveModel?: (
+    connectionId: string,
+    modelId: string,
+  ) => ProviderModel | null | Promise<ProviderModel | null>;
+  /** The same trusted bounded probe factory used by regular HTTP API routes. */
+  probeSession?: HttpProbeSession;
 }
 
 export interface XaiOAuthRouteAdapter extends RouteAdapter {
@@ -144,16 +156,87 @@ export function createXaiOAuthAdapter(
     },
     async probe(connection, selection): Promise<CapabilityReport> {
       requireXaiOAuthConnection(connection);
-      return {
-        id: randomUUID(),
-        connectionId: connection.id,
-        modelId: selection.modelId,
-        protocol: "xai-oauth-responses",
-        status: "failed",
-        capabilities: unknownCapabilities(),
-        errorCode: "protocol_unsupported",
-        checkedAt: now().toISOString(),
-      };
+      let selectedModel: ProviderModel | null = null;
+      try {
+        selectedModel = selection.modelId === null || dependencies.resolveModel === undefined
+          ? null
+          : await dependencies.resolveModel(connection.id, selection.modelId);
+      } catch (error) {
+        return createHttpProbeResult({
+          connectionId: connection.id,
+          protocol: "xai-oauth-responses",
+          selection,
+          selectedModel,
+          errorCode: safeHttpProbeErrorCode(error),
+          now,
+        }).report;
+      }
+      if (!isExactHttpCatalogSelection(connection.id, selection, selectedModel)) {
+        return createHttpProbeResult({
+          connectionId: connection.id,
+          protocol: "xai-oauth-responses",
+          selection,
+          selectedModel,
+          errorCode: "model_access_denied",
+          now,
+        }).report;
+      }
+      if (dependencies.probeSession === undefined) {
+        return createHttpProbeResult({
+          connectionId: connection.id,
+          protocol: "xai-oauth-responses",
+          selection,
+          selectedModel,
+          errorCode: "protocol_unsupported",
+          now,
+        }).report;
+      }
+
+      let accessToken: string;
+      try {
+        accessToken = await dependencies.flow.getAccessToken(connection.id);
+      } catch (error) {
+        return createHttpProbeResult({
+          connectionId: connection.id,
+          protocol: "xai-oauth-responses",
+          selection,
+          selectedModel,
+          errorCode: safeHttpProbeErrorCode(error),
+          now,
+        }).report;
+      }
+
+      const scope = `connections/xai-oauth/probe/${randomUUID()}`;
+      redactor.register(scope, [accessToken]);
+      try {
+        const measurement = await dependencies.probeSession({
+          connectionId: connection.id,
+          routeKind: "xai-oauth",
+          protocol: "xai-oauth-responses",
+          inferencePath: "/v1/responses",
+          model: selectedModel,
+          credentials: { apiKey: accessToken },
+        });
+        return createHttpProbeResult({
+          connectionId: connection.id,
+          protocol: "xai-oauth-responses",
+          selection,
+          selectedModel,
+          measurement,
+          now,
+        }).report;
+      } catch (error) {
+        return createHttpProbeResult({
+          connectionId: connection.id,
+          protocol: "xai-oauth-responses",
+          selection,
+          selectedModel,
+          errorCode: safeHttpProbeErrorCode(error),
+          now,
+        }).report;
+      } finally {
+        redactor.unregister(scope);
+      }
     },
   };
 }

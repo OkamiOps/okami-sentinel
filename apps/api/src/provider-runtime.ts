@@ -18,6 +18,7 @@ import {
   type RouteRegistry,
   type RouteRegistryDependencies,
 } from "./connections/route-registry.js";
+import { createHttpProbeSession } from "./agent/http-agent-upstream.js";
 import { createXaiOAuthAdapter } from "./connections/xai-oauth-adapter.js";
 import {
   createXaiOAuthFlow,
@@ -69,10 +70,16 @@ export function createProviderRuntime(
     now: dependencies.now,
     sleep: dependencies.oauthSleep,
   });
+  const configuredHttp = dependencies.routeDependencies?.http;
+  const probeSession = configuredHttp?.probeSession ?? createHttpProbeSession({
+    transport: configuredHttp?.transport,
+  });
   const xaiOAuth = createXaiOAuthAdapter({
     flow: xaiFlow,
     redactor,
     now: dependencies.now,
+    resolveModel: (connectionId, modelId) => store.getModel(connectionId, modelId),
+    probeSession,
   });
   const routes = createRouteRegistry({
     ...dependencies.routeDependencies,
@@ -81,8 +88,9 @@ export function createProviderRuntime(
     now: dependencies.now,
     xaiOAuth,
     http: {
-      ...dependencies.routeDependencies?.http,
+      ...configuredHttp,
       redactor,
+      probeSession,
     },
   });
   const connections = createConnectionsService({

@@ -31,6 +31,7 @@ type HttpAgentProtocol = Extract<ProviderProtocol,
   | "openai-responses"
   | "openai-chat"
   | "anthropic-messages"
+  | "xai-oauth-responses"
 >;
 
 export interface HttpAgentUpstreamOptions {
@@ -259,6 +260,18 @@ function resolveRoute(
     case "xai-api":
       return protocol === "openai-responses"
         ? { endpoint: "https://api.x.ai/v1/responses", headers: openAiHeaders, operation: "responses" }
+        : null;
+    case "xai-oauth":
+      return protocol === "xai-oauth-responses"
+        ? {
+          endpoint: "https://api.x.ai/v1/responses",
+          // Direct OAuth never accepts caller-supplied endpoint or headers.
+          // The adapter obtains this bearer from the native OAuth store only.
+          headers: jsonHeaders(undefined, credentials.apiKey === undefined
+            ? {}
+            : { Authorization: `Bearer ${credentials.apiKey}` }),
+          operation: "responses",
+        }
         : null;
     case "anthropic-api":
       return protocol === "anthropic-messages"
@@ -742,7 +755,8 @@ function usageHasTokens(usage: AgentUsage | null): boolean {
 }
 
 function isHttpAgentProtocol(value: ProviderProtocol): value is HttpAgentProtocol {
-  return value === "openai-responses" || value === "openai-chat" || value === "anthropic-messages";
+  return value === "openai-responses" || value === "openai-chat" ||
+    value === "anthropic-messages" || value === "xai-oauth-responses";
 }
 
 async function createPrivateProbeRoot(parent: string | undefined): Promise<string> {

@@ -44,6 +44,7 @@ test("AgentUpstream resolves the official route on the server and never accepts 
 test("AgentUpstream pins official origins and the documented MiniMax Token Plan header", async () => {
   const cases = [
     ["xai-api", "openai-responses", "responses", "https://api.x.ai/v1/responses", "authorization", "Bearer xai-secret"],
+    ["xai-oauth", "xai-oauth-responses", "responses", "https://api.x.ai/v1/responses", "authorization", "Bearer xai-oauth-secret"],
     ["anthropic-api", "anthropic-messages", "messages", "https://api.anthropic.com/v1/messages", "x-api-key", "anthropic-secret"],
     ["openrouter-api", "openai-chat", "chat-completions", "https://openrouter.ai/api/v1/chat/completions", "authorization", "Bearer openrouter-secret"],
     ["gemini-api", "openai-chat", "chat-completions", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", "authorization", "Bearer gemini-secret"],

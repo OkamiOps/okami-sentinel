@@ -133,6 +133,76 @@ export interface HttpProbeResult {
   pricing: ModelPricing | null;
 }
 
+/**
+ * Produces a capability report only from one exact catalog selection and a
+ * complete local agent measurement. Both HTTP API routes and direct OAuth
+ * routes use this boundary so a provider identity can never promote itself.
+ */
+export function createHttpProbeResult(input: {
+  connectionId: string;
+  protocol: ProviderProtocol;
+  selection: ScanConnectionSelection;
+  selectedModel: ProviderModel | null | undefined;
+  measurement?: HttpProbeMeasurement;
+  errorCode?: SafeProviderErrorCode;
+  now?: () => Date;
+}): HttpProbeResult {
+  if (!isExactHttpCatalogSelection(input.connectionId, input.selection, input.selectedModel)) {
+    return failedHttpProbeResult(input, "model_access_denied");
+  }
+  if (input.errorCode !== undefined) return failedHttpProbeResult(input, input.errorCode);
+  if (input.measurement === undefined || !hasCompleteAgentEvidence(input.measurement)) {
+    return failedHttpProbeResult(input, "protocol_unsupported");
+  }
+  const measurement = input.measurement;
+  const model = input.selectedModel;
+  return {
+    report: {
+      id: randomUUID(),
+      connectionId: input.connectionId,
+      modelId: model.id,
+      protocol: input.protocol,
+      status: "passed",
+      capabilities: measuredCapabilities(measurement),
+      errorCode: null,
+      checkedAt: (input.now ?? (() => new Date()))().toISOString(),
+    },
+    contextWindow: validContextWindow(measurement.contextWindow),
+    pricing: validPricing(measurement.pricing),
+  };
+}
+
+/** This check intentionally runs before any direct OAuth credential read. */
+export function isExactHttpCatalogSelection(
+  connectionId: string,
+  selection: ScanConnectionSelection,
+  model: ProviderModel | null | undefined,
+): model is ProviderModel {
+  return selection.connectionId === connectionId &&
+    selection.modelSelectionMode === "catalog" &&
+    typeof selection.modelId === "string" &&
+    selection.modelId.length > 0 &&
+    model !== null &&
+    model !== undefined &&
+    model.connectionId === connectionId &&
+    model.id === selection.modelId;
+}
+
+/** Maps untrusted upstream failures to the sole persisted probe vocabulary. */
+export function safeHttpProbeErrorCode(error: unknown): SafeProviderErrorCode {
+  if (typeof error === "object" && error !== null) {
+    const candidate = error as { code?: unknown; status?: unknown };
+    if (isSafeProviderErrorCode(candidate.code)) return candidate.code;
+    if (typeof candidate.status === "number") {
+      if (candidate.status === 401) return "credential_rejected";
+      if (candidate.status === 403) return "model_access_denied";
+      if (candidate.status === 429) return "rate_limited";
+      if (candidate.status >= 500) return "provider_unreachable";
+    }
+  }
+  return "protocol_unsupported";
+}
+
 export interface HttpRouteAdapterDependencies {
   vault: CredentialVault;
   transport?: HttpFetch;
@@ -258,17 +328,52 @@ export async function probeHttpRoute(
 ): Promise<HttpProbeResult> {
   const metadata = routeMetadata(connection);
   if (metadata === null || metadata.inferencePath === null || metadata.protocol === null) {
-    return failedProbe(connection, selection, "protocol_unsupported", deps.now);
+    return createHttpProbeResult({
+      connectionId: connection.id,
+      protocol: connection.protocol,
+      selection,
+      selectedModel: deps.selectedModel,
+      errorCode: "protocol_unsupported",
+      now: deps.now,
+    });
   }
   const selectedModel = deps.selectedModel;
-  if (!isOwnedCatalogSelection(connection, selection, selectedModel)) {
-    return failedProbe(connection, selection, "model_access_denied", deps.now);
+  if (!isExactHttpCatalogSelection(connection.id, selection, selectedModel)) {
+    return createHttpProbeResult({
+      connectionId: connection.id,
+      protocol: metadata.protocol,
+      selection,
+      selectedModel,
+      errorCode: "model_access_denied",
+      now: deps.now,
+    });
   }
   const bundle = await readBundle(connection, deps.vault);
-  if ("safeError" in bundle) return failedProbe(connection, selection, bundle.safeError.code, deps.now);
-  if (!hasCredential(bundle.bundle)) return failedProbe(connection, selection, "credential_rejected", deps.now);
+  if ("safeError" in bundle) return createHttpProbeResult({
+    connectionId: connection.id,
+    protocol: metadata.protocol,
+    selection,
+    selectedModel,
+    errorCode: bundle.safeError.code,
+    now: deps.now,
+  });
+  if (!hasCredential(bundle.bundle)) return createHttpProbeResult({
+    connectionId: connection.id,
+    protocol: metadata.protocol,
+    selection,
+    selectedModel,
+    errorCode: "credential_rejected",
+    now: deps.now,
+  });
   const probeSession = deps.probeSession;
-  if (probeSession === undefined) return failedProbe(connection, selection, "protocol_unsupported", deps.now);
+  if (probeSession === undefined) return createHttpProbeResult({
+    connectionId: connection.id,
+    protocol: metadata.protocol,
+    selection,
+    selectedModel,
+    errorCode: "protocol_unsupported",
+    now: deps.now,
+  });
 
   try {
     const measurement = await withBundleRedaction(bundle.bundle, async () => probeSession({
@@ -279,26 +384,23 @@ export async function probeHttpRoute(
       model: selectedModel,
       credentials: bundle.bundle,
     }), deps.redactor);
-    if (!hasCompleteAgentEvidence(measurement)) {
-      return failedProbe(connection, selection, "protocol_unsupported", deps.now);
-    }
-    const capabilities = measuredCapabilities(measurement);
-    return {
-      report: {
-        id: randomUUID(),
-        connectionId: connection.id,
-        modelId: selectedModel.id,
-        protocol: metadata.protocol,
-        status: "passed",
-        capabilities,
-        errorCode: null,
-        checkedAt: (deps.now ?? (() => new Date()))().toISOString(),
-      },
-      contextWindow: validContextWindow(measurement.contextWindow),
-      pricing: validPricing(measurement.pricing),
-    };
+    return createHttpProbeResult({
+      connectionId: connection.id,
+      protocol: metadata.protocol,
+      selection,
+      selectedModel,
+      measurement,
+      now: deps.now,
+    });
   } catch (error) {
-    return failedProbe(connection, selection, errorCodeForProbe(error), deps.now);
+    return createHttpProbeResult({
+      connectionId: connection.id,
+      protocol: metadata.protocol,
+      selection,
+      selectedModel,
+      errorCode: safeHttpProbeErrorCode(error),
+      now: deps.now,
+    });
   }
 }
 
@@ -485,21 +587,6 @@ function unavailableInspection(
   };
 }
 
-function isOwnedCatalogSelection(
-  connection: StoredProviderConnection,
-  selection: ScanConnectionSelection,
-  model: ProviderModel | null | undefined,
-): model is ProviderModel {
-  return selection.connectionId === connection.id &&
-    selection.modelSelectionMode === "catalog" &&
-    typeof selection.modelId === "string" &&
-    selection.modelId.length > 0 &&
-    model !== null &&
-    model !== undefined &&
-    model.connectionId === connection.id &&
-    model.id === selection.modelId;
-}
-
 function hasCompleteAgentEvidence(measurement: HttpProbeMeasurement): boolean {
   const evidence = measurement.agentLoop;
   const runtime = measurement.runtimeEvidence;
@@ -556,39 +643,27 @@ function validPricing(value: ModelPricing | null | undefined): ModelPricing | nu
   };
 }
 
-function errorCodeForProbe(error: unknown): SafeProviderErrorCode {
-  if (typeof error === "object" && error !== null) {
-    const candidate = error as { code?: unknown; status?: unknown };
-    if (isSafeProviderErrorCode(candidate.code)) return candidate.code;
-    if (typeof candidate.status === "number") {
-      if (candidate.status === 401) return "credential_rejected";
-      if (candidate.status === 403) return "model_access_denied";
-      if (candidate.status === 429) return "rate_limited";
-      if (candidate.status >= 500) return "provider_unreachable";
-    }
-  }
-  return "protocol_unsupported";
-}
-
-function failedProbe(
-  connection: StoredProviderConnection,
-  selection: ScanConnectionSelection,
+function failedHttpProbeResult(
+  input: {
+    connectionId: string;
+    protocol: ProviderProtocol;
+    selection: ScanConnectionSelection;
+    now?: () => Date;
+  },
   errorCode: SafeProviderErrorCode,
-  now: (() => Date) | undefined,
 ): HttpProbeResult {
-  const metadata = routeMetadata(connection);
   return {
     report: {
       id: randomUUID(),
-      connectionId: connection.id,
-      modelId: selection.connectionId === connection.id && selection.modelSelectionMode === "catalog"
-        ? selection.modelId
+      connectionId: input.connectionId,
+      modelId: input.selection.connectionId === input.connectionId && input.selection.modelSelectionMode === "catalog"
+        ? input.selection.modelId
         : null,
-      protocol: metadata?.protocol ?? connection.protocol,
+      protocol: input.protocol,
       status: "failed",
       capabilities: unknownCapabilities(),
       errorCode,
-      checkedAt: (now ?? (() => new Date()))().toISOString(),
+      checkedAt: (input.now ?? (() => new Date()))().toISOString(),
     },
     contextWindow: null,
     pricing: null,
