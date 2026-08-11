@@ -8,10 +8,18 @@ export function connectionsLoadState(
   return connections.length === 0 ? "empty" : "ready";
 }
 
-export function createMonotonicRequestGuard(): () => () => boolean {
+export type MonotonicRequestGuard = {
+  (): () => boolean;
+  invalidate(): void;
+};
+
+export function createMonotonicRequestGuard(): MonotonicRequestGuard {
   let latestRequest = 0;
-  return () => {
+  const beginRequest = (() => {
     const request = ++latestRequest;
     return () => request === latestRequest;
-  };
+  }) as MonotonicRequestGuard;
+
+  beginRequest.invalidate = () => { latestRequest += 1; };
+  return beginRequest;
 }

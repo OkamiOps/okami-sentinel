@@ -40,7 +40,10 @@ export function ConnectionsPage() {
     }
   }, [beginLoadRequest, t]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+    return () => beginLoadRequest.invalidate();
+  }, [beginLoadRequest, load]);
 
   const selected = selectConnection(connections ?? [], selectedId);
   const loadState = connectionsLoadState(connections, error);

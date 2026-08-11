@@ -70,3 +70,35 @@ test("ignores an older success after the latest request fails", async () => {
 
   assert.equal(result, "error-b");
 });
+
+test("ignores resolve and reject settlements after invalidation", async () => {
+  const beginRequest = createMonotonicRequestGuard();
+  const resolved = deferred<string>();
+  const rejected = deferred<string>();
+  let successes = 0;
+  let errors = 0;
+
+  const resolveLoad = applyWhenLatest(
+    beginRequest,
+    resolved.promise,
+    () => { successes += 1; },
+    () => { errors += 1; },
+  );
+
+  beginRequest.invalidate();
+  resolved.resolve("late success");
+  await resolveLoad;
+
+  const rejectLoad = applyWhenLatest(
+    beginRequest,
+    rejected.promise,
+    () => { successes += 1; },
+    () => { errors += 1; },
+  );
+
+  beginRequest.invalidate();
+  rejected.reject(new Error("late failure"));
+  await rejectLoad;
+
+  assert.deepEqual({ successes, errors }, { successes: 0, errors: 0 });
+});
