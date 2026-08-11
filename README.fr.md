@@ -81,6 +81,19 @@ L’adapter Mantis utilise une révision auditée et épinglée. Il n’écrit p
 
 VulnHunter utilise lui aussi une révision auditée et épinglée. Son flux upstream étant conçu pour Claude, Sentinel l’exécute comme un port Codex expérimental : l’analyse reste confinée à un snapshot séparé, la reproduction devient des notes de validation non opérationnelles et une seconde session isolée ne produit que le handoff défensif. Aucun payload, code PoC ou test d’exploit n’est généré ni exécuté ; les findings retenus sont normalisés vers le contrat canonique de l’Inspector.
 
+## Profils d’exécution Codex Security
+
+Codex Security propose deux profils d’exécution explicites. Ce ne sont pas des alias : le détail et le rapport du run conservent le profil, la route, le protocole, le modèle et l’identifiant de vérification de capacité sélectionnés.
+
+| Profil | Routes exactes | Exécution |
+|---|---|---|
+| **Native** | Codex local, OAuth ChatGPT dans le navigateur, code d’appareil ChatGPT ou API OpenAI | Le contrat upstream de `@openai/codex-security`. |
+| **Portable** | OAuth/API xAI directe, API Anthropic, OpenRouter, Gemini, DeepSeek, MiniMax Token Plan, MiMo Token Plan ou API compatible OpenAI/Anthropic | La méthodologie défensive versionnée de Sentinel dans l’hôte AgentSession borné. |
+
+Portable ne prétend pas qu’un fournisseur autre qu’OpenAI exécute le scanner upstream. Il exécute `sentinel/codex-security-methodology@v1` : six étapes défensives, uniquement statiques, sur un snapshot immuable, avec outils de lecture/recherche limités, artefacts structurés, annulation et isolation obligatoires. Avant le lancement, le tuple persistant exact connexion/modèle/protocole doit avoir une capability probe fraîche et réussie. Une probe absente, périmée, échouée ou non correspondante bloque le run ; Sentinel ne bascule jamais silencieusement vers Native, une autre route, une CLI ou un autre modèle.
+
+Le coût est traité avec la même prudence. Sentinel ne consigne une estimation que lorsque le fournisseur rapporte l’usage et que toutes les données de prix correspondantes sont disponibles. Si l’usage ou le tarif est incomplet, le coût reste `null`/indisponible — jamais un `$0` inventé ni une facture d’abonnement.
+
 ## Architecture
 
 ```mermaid

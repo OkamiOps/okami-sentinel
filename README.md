@@ -85,6 +85,19 @@ VulnHunter's upstream workflow is Claude-oriented and intentionally includes ope
 > [!NOTE]
 > Subscription, OAuth, Token Plan, and API billing are separate routes. Sentinel binds every scan to one persisted connection and one live-discovered model, revalidates that tuple before credential access, and never silently falls from one route into another.
 
+## Codex Security execution profiles
+
+Codex Security has two explicit execution profiles. They are intentionally not aliases: the run detail and report retain the selected profile, route, protocol, model, and capability-check identifier.
+
+| Profile | Exact routes | What executes |
+|---|---|---|
+| **Native** | Local Codex, ChatGPT browser OAuth, ChatGPT device code, or OpenAI API | The upstream `@openai/codex-security` contract. |
+| **Portable** | xAI direct OAuth/API, Anthropic API, OpenRouter, Gemini, DeepSeek, MiniMax Token Plan, MiMo Token Plan, or a compatible OpenAI/Anthropic API | Sentinel's versioned defensive methodology over its bounded AgentSession host. |
+
+Portable is not a claim that a non-OpenAI provider runs the upstream scanner. It runs `sentinel/codex-security-methodology@v1`: six defensive, static-only stages against an immutable snapshot, with bounded read/search tools, structured artifacts, cancellation, and isolated execution required. Before launch, the exact persisted connection/model/protocol tuple must have a fresh passing capability probe. A missing, stale, failed, or mismatched probe blocks the run; Sentinel never falls back to Native, another route, CLI, or a different model.
+
+Cost is equally conservative. Sentinel records a cost estimate only when the provider reports usage and the complete matching price data is available. If usage or pricing is incomplete, the cost is `null`/unavailable — never an invented `$0` or a subscription invoice.
+
 ## Architecture
 
 ```mermaid

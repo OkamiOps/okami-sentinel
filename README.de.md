@@ -81,6 +81,19 @@ Der Mantis-Adapter verwendet eine fest angeheftete, geprüfte Revision. Er schre
 
 VulnHunter verwendet ebenfalls eine geprüfte, fest angeheftete Revision. Da der Upstream-Ablauf für Claude entwickelt wurde, führt Sentinel ihn als experimentellen Codex-Port aus: Die Analyse bleibt in einem getrennten Snapshot, Reproduktion wird durch nicht operative Validierungsnotizen ersetzt und eine zweite isolierte Sitzung erstellt nur den defensiven Handoff. Payloads, PoC-Code und Exploit-Tests werden weder erzeugt noch ausgeführt; bestätigte Findings werden in den kanonischen Inspector-Vertrag normalisiert.
 
+## Codex-Security-Ausführungsprofile
+
+Codex Security hat zwei explizite Ausführungsprofile. Sie sind keine Aliasse: Scan-Detail und Bericht bewahren das gewählte Profil, Route, Protokoll, Modell und die Kennung der Fähigkeitsprüfung.
+
+| Profil | Exakte Routen | Ausführung |
+|---|---|---|
+| **Native** | Lokales Codex, ChatGPT Browser-OAuth, ChatGPT Gerätecode oder OpenAI API | Der Upstream-Vertrag von `@openai/codex-security`. |
+| **Portable** | Direkte xAI-OAuth/API, Anthropic API, OpenRouter, Gemini, DeepSeek, MiniMax Token Plan, MiMo Token Plan oder eine kompatible OpenAI-/Anthropic-API | Sentinels versionierte defensive Methodik im begrenzten AgentSession-Host. |
+
+Portable behauptet nicht, dass ein Nicht-OpenAI-Provider den Upstream-Scanner ausführt. Es verwendet `sentinel/codex-security-methodology@v1`: sechs defensive, ausschließlich statische Stufen auf einem unveränderlichen Snapshot, mit begrenzten Lese-/Suchwerkzeugen, strukturierten Artefakten, Abbruch und Isolation als Pflicht. Vor dem Start muss das exakt gespeicherte Tupel aus Verbindung/Modell/Protokoll eine frische erfolgreiche Fähigkeitsprüfung besitzen. Eine fehlende, abgelaufene, fehlgeschlagene oder nicht passende Prüfung blockiert den Lauf; Sentinel fällt niemals still auf Native, eine andere Route, CLI oder ein anderes Modell zurück.
+
+Auch Kosten werden konservativ behandelt. Sentinel speichert eine Schätzung nur, wenn der Provider Usage meldet und die vollständigen passenden Preisdaten vorliegen. Bei unvollständiger Usage oder Preisangaben bleibt der Betrag `null`/nicht verfügbar — niemals ein erfundenes `$0` oder eine Abo-Rechnung.
+
 ## Architektur
 
 ```mermaid
