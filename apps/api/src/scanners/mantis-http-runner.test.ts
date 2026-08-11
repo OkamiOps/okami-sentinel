@@ -216,8 +216,10 @@ test("Mantis HTTP runner executes every bounded stage with chained state and nev
       getConnection: (connectionId) => connectionId === "connection-a" ? connection() : null,
       getModel: (connectionId, modelId) =>
         connectionId === "connection-a" && modelId === "model-a" ? model() : null,
-      getCapabilityCheck: (capabilityCheckId) =>
-        capabilityCheckId === "capability-a" ? report() : null,
+      getLatestCapabilityCheck: (connectionId, modelId, protocol) =>
+        connectionId === "connection-a" && modelId === "model-a" && protocol === "openai-responses"
+          ? report()
+          : null,
       vault: {
         available: async () => ({ available: true, backend: "keychain" }),
         put: async () => undefined,
@@ -289,7 +291,7 @@ test("Mantis HTTP pins and initializes the repository snapshot before vault, red
       getSnapshot: () => { order.push("metadata:snapshot"); return snapshot(); },
       getConnection: () => { order.push("metadata:connection"); return connection(); },
       getModel: () => { order.push("metadata:model"); return model(); },
-      getCapabilityCheck: () => { order.push("metadata:capability"); return report(); },
+      getLatestCapabilityCheck: () => { order.push("metadata:capability"); return report(); },
       vault: {
         available: async () => ({ available: true, backend: "keychain" }),
         put: async () => undefined,
@@ -347,7 +349,7 @@ test("an invalid repository snapshot fails without reading the vault", async () 
         getSnapshot: () => snapshot(),
         getConnection: () => connection(),
         getModel: () => model(),
-        getCapabilityCheck: () => report(),
+        getLatestCapabilityCheck: () => report(),
         vault: {
           available: async () => ({ available: true, backend: "keychain" }),
           put: async () => undefined,
@@ -577,7 +579,7 @@ test("Mantis HTTP resolves pinned direct xAI OAuth without an API-key vault read
       getSnapshot: () => xaiSnapshot(),
       getConnection: () => xaiConnection(),
       getModel: () => xaiModel(),
-      getCapabilityCheck: () => xaiReport(),
+      getLatestCapabilityCheck: () => xaiReport(),
       vault: {
         available: async () => ({ available: true, backend: "keychain" as const }),
         put: async () => undefined,
@@ -632,6 +634,61 @@ test("Mantis HTTP resolves pinned direct xAI OAuth without an API-key vault read
   }
 });
 
+test("Mantis rejects a historically pinned passed probe when the latest exact probe failed before credential access", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-http-xai-latest-probe-"));
+  const repositoryPath = path.join(root, "repository");
+  let xaiReads = 0;
+  let vaultReads = 0;
+  fs.mkdirSync(repositoryPath);
+  fs.writeFileSync(path.join(repositoryPath, "app.ts"), "export const safe = true;\n");
+  try {
+    await assert.rejects(
+      runMantisHttpAgent({
+        outputDir: path.join(root, "output"),
+        repositoryPath,
+        paths: [],
+        sourceRef: "a".repeat(40),
+        providerPlan: xaiPlan(),
+      }, {
+        getSnapshot: () => xaiSnapshot(),
+        getConnection: () => xaiConnection(),
+        getModel: () => xaiModel(),
+        // The plan/snapshot still pin the historical passed id, but this exact
+        // tuple has since produced a newer failed report.
+        getLatestCapabilityCheck: () => xaiReport({
+          id: "capability-xai-newer",
+          status: "failed",
+          errorCode: "provider_unreachable",
+          checkedAt: "2026-08-11T11:59:00.000Z",
+        }),
+        vault: {
+          available: async () => ({ available: true, backend: "keychain" as const }),
+          put: async () => undefined,
+          delete: async () => undefined,
+          get: async () => {
+            vaultReads += 1;
+            return { apiKey: "must-not-be-read" };
+          },
+        },
+        xaiOAuth: {
+          getAccessToken: async () => {
+            xaiReads += 1;
+            return "must-not-be-read";
+          },
+        } satisfies Pick<XaiOAuthFlow, "getAccessToken">,
+        createSession: async () => assert.fail("session must not start"),
+        now: () => NOW,
+      } as Parameters<typeof runMantisHttpAgent>[1]),
+      (error: unknown) => error instanceof MantisHttpRunnerError &&
+        error.code === "provider_plan_revalidation_failed",
+    );
+    assert.equal(xaiReads, 0);
+    assert.equal(vaultReads, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("Mantis direct xAI OAuth revalidates the exact tuple and snapshot before either credential read", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-http-xai-revalidate-"));
   const repositoryPath = path.join(root, "repository");
@@ -641,7 +698,7 @@ test("Mantis direct xAI OAuth revalidates the exact tuple and snapshot before ei
   fs.writeFileSync(path.join(repositoryPath, "app.ts"), "export const safe = true;\n");
   const dependencies = {
     getModel: () => xaiModel(),
-    getCapabilityCheck: () => xaiReport(),
+    getLatestCapabilityCheck: () => xaiReport(),
     vault: {
       available: async () => ({ available: true, backend: "keychain" as const }),
       put: async () => undefined,
@@ -712,7 +769,7 @@ test("Mantis direct xAI OAuth bounds a hung refresh, consumes its late rejection
         getSnapshot: () => xaiSnapshot(),
         getConnection: () => xaiConnection(),
         getModel: () => xaiModel(),
-        getCapabilityCheck: () => xaiReport(),
+        getLatestCapabilityCheck: () => xaiReport(),
         vault: {
           available: async () => ({ available: true, backend: "keychain" as const }),
           put: async () => undefined,
@@ -754,7 +811,7 @@ test("Mantis direct xAI OAuth rejects a pre-aborted or missing bearer without a 
     getSnapshot: () => xaiSnapshot(),
     getConnection: () => xaiConnection(),
     getModel: () => xaiModel(),
-    getCapabilityCheck: () => xaiReport(),
+    getLatestCapabilityCheck: () => xaiReport(),
     vault: {
       available: async () => ({ available: true, backend: "keychain" as const }),
       put: async () => undefined,
@@ -836,7 +893,7 @@ test("Mantis HTTP revalidation fails before the vault for a changed snapshot", a
   const baseDependencies = {
     getConnection: () => connection(),
     getModel: () => model(),
-    getCapabilityCheck: () => report(),
+    getLatestCapabilityCheck: () => report(),
     vault: {
       available: async () => ({ available: true, backend: "keychain" as const }),
       put: async () => undefined,
@@ -892,7 +949,7 @@ test("Mantis HTTP runner propagates cancellation through the active agent sessio
         getSnapshot: () => snapshot(),
         getConnection: () => connection(),
         getModel: () => model(),
-        getCapabilityCheck: () => report(),
+        getLatestCapabilityCheck: () => report(),
         vault: {
           available: async () => ({ available: true, backend: "keychain" }),
           put: async () => undefined,
@@ -949,7 +1006,7 @@ function validDependencies() {
     getSnapshot: () => snapshot(),
     getConnection: () => connection(),
     getModel: () => model(),
-    getCapabilityCheck: () => report(),
+    getLatestCapabilityCheck: () => report(),
     vault: {
       available: async () => ({ available: true, backend: "keychain" as const }),
       put: async () => undefined,

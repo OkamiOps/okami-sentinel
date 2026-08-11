@@ -114,7 +114,11 @@ export interface MantisHttpAgentRunnerDependencies {
   getSnapshot(scanId: string): ScanConnectionSnapshot | null;
   getConnection(connectionId: string): StoredProviderConnection | null;
   getModel(connectionId: string, modelId: string): ProviderModel | null;
-  getCapabilityCheck(capabilityCheckId: string): CapabilityReport | null;
+  getLatestCapabilityCheck(
+    connectionId: string,
+    modelId: string | null,
+    protocol: ProviderProtocol,
+  ): CapabilityReport | null;
   vault: CredentialVault;
   /** xAI OAuth remains in its dedicated native credential namespace. */
   xaiOAuth?: Pick<XaiOAuthFlow, "getAccessToken">;
@@ -352,8 +356,6 @@ function revalidateProviderPlan(
   }
   const snapshot = dependencies.getSnapshot(plan.scanId);
   const connection = dependencies.getConnection(plan.connectionId);
-  const model = dependencies.getModel(plan.connectionId, plan.modelId);
-  const capability = dependencies.getCapabilityCheck(plan.capabilityCheckId);
   const directXaiOAuth = connection !== null && isDirectXaiOAuthConnection(connection);
   if (
     !snapshotMatches(snapshot, plan) ||
@@ -363,13 +365,20 @@ function revalidateProviderPlan(
     connection.protocol !== plan.protocol ||
     connection.transport !== "http-inference" ||
     ((plan.routeKind === "xai-oauth" || plan.protocol === "xai-oauth-responses") && !directXaiOAuth) ||
-    (!directXaiOAuth && connection.credentialRef === null) ||
-    model === null ||
-    model.connectionId !== plan.connectionId ||
-    model.id !== plan.modelId ||
-    capability === null ||
-    capability.id !== plan.capabilityCheckId
+    (!directXaiOAuth && connection.credentialRef === null)
   ) {
+    throw new MantisHttpRunnerError("provider_plan_revalidation_failed");
+  }
+  const model = dependencies.getModel(connection.id, plan.modelId);
+  if (model === null || model.connectionId !== connection.id || model.id !== plan.modelId) {
+    throw new MantisHttpRunnerError("provider_plan_revalidation_failed");
+  }
+  const capability = dependencies.getLatestCapabilityCheck(
+    connection.id,
+    model.id,
+    connection.protocol,
+  );
+  if (capability === null || capability.id !== plan.capabilityCheckId) {
     throw new MantisHttpRunnerError("provider_plan_revalidation_failed");
   }
   const compatibility = resolveCompatibility({
