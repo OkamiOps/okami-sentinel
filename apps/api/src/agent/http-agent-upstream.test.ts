@@ -374,6 +374,48 @@ test("HttpProbeSession completes each supported protocol loop, including MiniMax
   assert.deepEqual(await readdir(root), []);
 });
 
+test("HttpProbeSession propagates caller cancellation into the live provider transport", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "csb-http-probe-abort-"));
+  t.after(async () => rm(root, { recursive: true, force: true }));
+  const started = deferred<AbortSignal>();
+  let cooperativelyStopped = false;
+  const transport = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const signal = init?.signal;
+    assert.ok(signal instanceof AbortSignal);
+    started.resolve(signal);
+    return await new Promise<Response>((resolve, reject) => {
+      const fallback = setTimeout(() => resolve(json(200, responsesFinal({ ok: true }))), 25);
+      const stop = () => {
+        cooperativelyStopped = true;
+        clearTimeout(fallback);
+        reject(new DOMException("aborted", "AbortError"));
+      };
+      if (signal.aborted) stop();
+      else signal.addEventListener("abort", stop, { once: true });
+    });
+  }) as typeof fetch;
+  const probe = createHttpProbeSession({ transport, temporaryParent: root });
+  const controller = new AbortController();
+  const pending = probe({
+    connectionId: "connection-a",
+    routeKind: "openai-api",
+    protocol: "openai-responses",
+    inferencePath: "/v1/responses",
+    model: model("openai-responses"),
+    credentials: { apiKey: "openai-secret" },
+    signal: controller.signal,
+  });
+
+  const transportSignal = await started.promise;
+  controller.abort();
+  const result = await pending;
+
+  assert.equal(transportSignal.aborted, true);
+  assert.equal(cooperativelyStopped, true);
+  assert.equal(result.agentLoop.structuredResultProduced, false);
+  assert.deepEqual(await readdir(root), []);
+});
+
 test("a real HttpProbeSession report makes the exact Gemini model eligible for Mantis", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "csb-http-probe-e2e-"));
   t.after(async () => rm(root, { recursive: true, force: true }));

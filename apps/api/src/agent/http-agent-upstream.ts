@@ -107,6 +107,7 @@ export interface HttpAgentProbeInput {
   inferencePath: string;
   model: ProviderModel;
   credentials: ConnectionSecretBundle;
+  signal?: AbortSignal;
 }
 
 export interface HttpAgentProbeMeasurement {
@@ -194,7 +195,7 @@ export function createHttpProbeSession(
         artifactRoot,
         instructions: PROBE_INSTRUCTIONS,
         limits,
-        signal: new AbortController().signal,
+        signal: input.signal ?? new AbortController().signal,
         // This gate enables the measurement session itself. The returned facts
         // below are derived only from events observed in this fresh run.
         probe: provisionalProbeCapabilities(),

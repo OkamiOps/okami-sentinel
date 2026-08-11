@@ -181,7 +181,9 @@ export function createConnectionsApp(
         c.req.raw,
       );
       if (selection.connectionId !== id) throw new ConnectionServiceError("invalid_model_selection");
-      const result = await deps.service.probe(id, selection as never);
+      const result = await deps.service.probe(id, selection as never, {
+        signal: c.req.raw.signal,
+      });
       if (result === null) return c.json({ error: "connection_not_found" }, 404);
       return c.json(result);
     } catch (error) {

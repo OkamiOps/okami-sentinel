@@ -49,7 +49,10 @@ import { createSafeMantisProviderPlan } from "./scanners/mantis-http-runner.js";
 import type { MantisLocalProviderPlan } from "./scanners/mantis-local-runner.js";
 import { resolveMantisLocalSource } from "./scanners/mantis-source.js";
 import { ScanSelectionError, resolveScanLaunchSelection } from "./scanners/scan-selection.js";
-import type { ScanLaunchPlan } from "./connections/launch-plan.js";
+import {
+  LaunchPlanError,
+  type ScanLaunchPlan,
+} from "./connections/launch-plan.js";
 import {
   createSafePortableCodexSecurityProviderPlan,
   PORTABLE_CODEX_SECURITY_METHODOLOGY_REF,
@@ -343,6 +346,9 @@ export interface StartScanOptions {
 
 type StartScanProviderRuntime = Pick<ProviderRuntime, "launchPlans" | "vault"> & {
   store: Pick<ProviderRuntime["store"], "get" | "getSnapshot" | "getModel">;
+  /** Optional only for narrow deterministic launch tests. Production always supplies both. */
+  compatibility?: Pick<ProviderRuntime["compatibility"], "resolve">;
+  connections?: Pick<ProviderRuntime["connections"], "probe">;
 };
 
 interface StartScanDependencies {
@@ -364,6 +370,116 @@ type ScannerSpawn = (
     stdio: ["ignore", "pipe", "pipe"];
   },
 ) => ChildProcess;
+
+const REPROBE_ON_LAUNCH_REASONS = new Set([
+  "capability_probe_missing",
+  "capability_probe_stale",
+]);
+
+/**
+ * The UI performs the normal, visible capability probe before authorization.
+ * This narrow retry closes only the race where its fresh report disappears or
+ * expires before the POST reaches the launch boundary. It never chooses a
+ * provider, model, or runner; the normal immutable resolver still owns that.
+ */
+async function resolveScanLaunchSelectionAfterCapabilityProbe(input: {
+  request: StartScanRequest;
+  scanId: string;
+  providerRuntime: StartScanProviderRuntime;
+  signal: AbortSignal | undefined;
+}) {
+  const resolve = () => resolveScanLaunchSelection({
+    request: input.request,
+    scanId: input.scanId,
+    launchPlans: input.providerRuntime.launchPlans,
+  });
+
+  try {
+    return resolve();
+  } catch (error) {
+    if (!shouldReprobeAtLaunch(error, input)) throw error;
+  }
+
+  const selection = input.request.connection!;
+  throwIfLaunchAborted(input.signal);
+  let probe;
+  try {
+    probe = await awaitCapabilityProbe(
+      Promise.resolve().then(() => input.providerRuntime.connections!.probe(
+        selection.connectionId,
+        selection,
+        { signal: input.signal },
+      )),
+      input.signal,
+    );
+  } catch (error) {
+    if (input.signal?.aborted) throw error;
+    // Route adapters deliberately return a safe failed report for provider
+    // failures. This catch is only for an unexpected service boundary error.
+    throw new LaunchPlanError("capability_probe_failed");
+  }
+  throwIfLaunchAborted(input.signal);
+  if (probe === null) throw new LaunchPlanError("connection_not_found");
+  if (probe.report.status !== "passed") {
+    throw new LaunchPlanError("capability_probe_failed");
+  }
+  return resolve();
+}
+
+function shouldReprobeAtLaunch(
+  error: unknown,
+  input: {
+    request: StartScanRequest;
+    providerRuntime: StartScanProviderRuntime;
+  },
+): boolean {
+  if (
+    !(error instanceof LaunchPlanError) ||
+    !REPROBE_ON_LAUNCH_REASONS.has(error.code) ||
+    input.request.connection?.modelSelectionMode !== "catalog" ||
+    input.request.connection.modelId === null ||
+    input.providerRuntime.compatibility === undefined ||
+    input.providerRuntime.connections === undefined
+  ) return false;
+
+  const connection = input.providerRuntime.store.get(input.request.connection.connectionId);
+  if (connection === null || connection.transport !== "http-inference") return false;
+
+  const compatibility = input.providerRuntime.compatibility.resolve({
+    engine: input.request.engine ?? "codex-security",
+    selection: input.request.connection,
+    ...(input.request.remoteRepositoryConfirmed === undefined
+      ? {}
+      : { remoteRepositoryConfirmed: input.request.remoteRepositoryConfirmed }),
+    ...(input.request.executionProfilePreference === undefined
+      ? {}
+      : { executionProfilePreference: input.request.executionProfilePreference }),
+  });
+  return compatibility.reasons.length > 0 &&
+    compatibility.reasons.every((reason) => REPROBE_ON_LAUNCH_REASONS.has(reason));
+}
+
+/** Keep a late provider rejection observed while an HTTP client aborts. */
+function awaitCapabilityProbe<T>(operation: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return operation;
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      callback();
+    };
+    const onAbort = () => finish(() =>
+      reject(new CodexSecurityApiBridgeError("credential_unavailable")));
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+    void operation.then(
+      (value) => finish(() => resolve(value)),
+      (error) => finish(() => reject(error)),
+    );
+  });
+}
 
 export async function startScan(
   req: StartScanRequest,
@@ -390,10 +506,11 @@ export async function startScan(
   const id = nanoid(12);
   const outputDir = path.join(SCANS_ROOT, safeName(displayName), `csb-${safeName(displayName)}-${id}`);
   const providerRuntime = dependencies.providerRuntime ?? getProviderRuntime();
-  const selection = resolveScanLaunchSelection({
+  const selection = await resolveScanLaunchSelectionAfterCapabilityProbe({
     request: req,
     scanId: id,
-    launchPlans: providerRuntime.launchPlans,
+    providerRuntime,
+    signal: options.signal,
   });
   // This repeats the server-side immutable selection check before any vault or
   // network-facing preflight. A Portable child will repeat it once more before

@@ -38,7 +38,7 @@ export interface XaiOAuthAdapterFlow {
   get(connectionId: string, flowId: string): XaiOAuthFlowPublic | null;
   cancel(connectionId: string, flowId: string): Promise<void>;
   credentialStatus(connectionId: string): Promise<XaiOAuthCredentialStatus>;
-  getAccessToken(connectionId: string): Promise<string>;
+  getAccessToken(connectionId: string, signal?: AbortSignal): Promise<string>;
   disconnect(connectionId: string): Promise<XaiOAuthDisconnectResult>;
 }
 
@@ -154,7 +154,7 @@ export function createXaiOAuthAdapter(
         redactor.unregister(scope);
       }
     },
-    async probe(connection, selection): Promise<CapabilityReport> {
+    async probe(connection, selection, options): Promise<CapabilityReport> {
       requireXaiOAuthConnection(connection);
       let selectedModel: ProviderModel | null = null;
       try {
@@ -194,7 +194,7 @@ export function createXaiOAuthAdapter(
 
       let accessToken: string;
       try {
-        accessToken = await dependencies.flow.getAccessToken(connection.id);
+        accessToken = await dependencies.flow.getAccessToken(connection.id, options?.signal);
       } catch (error) {
         return createHttpProbeResult({
           connectionId: connection.id,
@@ -216,6 +216,7 @@ export function createXaiOAuthAdapter(
           inferencePath: "/v1/responses",
           model: selectedModel,
           credentials: { apiKey: accessToken },
+          signal: options?.signal,
         });
         return createHttpProbeResult({
           connectionId: connection.id,

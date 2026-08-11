@@ -145,6 +145,11 @@ export interface ConnectionProbeResult {
   report: CapabilityReport;
 }
 
+export interface ConnectionProbeOptions {
+  /** Prevents a late adapter result from mutating capability or connection state. */
+  signal?: AbortSignal;
+}
+
 export interface ConnectionsService {
   list(): ProviderConnection[];
   get(id: string): ProviderConnection | null;
@@ -160,6 +165,7 @@ export interface ConnectionsService {
   probe(
     id: string,
     selection: ScanConnectionSelection,
+    options?: ConnectionProbeOptions,
   ): Promise<ConnectionProbeResult | null>;
 }
 
@@ -432,11 +438,13 @@ export function createConnectionsService(
       const updated = store.update(connection.id, { status: "ready" });
       return { connection: toPublicConnection(updated), discovery };
     },
-    async probe(id, selection) {
+    async probe(id, selection, options = {}) {
+      throwIfProbeAborted(options.signal);
       const connection = store.get(id);
       if (connection === null) return null;
       const adapter = adapterFor(connection, routes);
       const inspection = await adapter.inspect(connection);
+      throwIfProbeAborted(options.signal);
       validateScanConnectionSelection(selection, {
         routeKind: connection.routeKind,
         transport: connection.transport,
@@ -444,7 +452,10 @@ export function createConnectionsService(
         model: selection.modelId === null ? null : catalog.getModel(connection.id, selection.modelId),
         modelCatalogStale: connection.modelCatalogStale,
       });
-      const report = await adapter.probe(connection, selection);
+      const report = await adapter.probe(connection, selection, { signal: options.signal });
+      // Adapter work may settle after its HTTP request was cancelled. Keep the
+      // entire persistence section synchronous and gated by the live request.
+      throwIfProbeAborted(options.signal);
       catalog.writeCapabilityCheck(report);
       const updated = store.update(connection.id, {
         status: report.status === "passed" ? "ready" : "degraded",
@@ -453,6 +464,10 @@ export function createConnectionsService(
       return { connection: toPublicConnection(updated), report };
     },
   };
+}
+
+function throwIfProbeAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new ConnectionServiceError("provider_unreachable");
 }
 
 const sqliteConnectionsStore: ConnectionsStore = {

@@ -44,6 +44,7 @@ function connection(): StoredProviderConnection {
 
 class FakeXaiFlow implements XaiOAuthAdapterFlow {
   readonly calls: string[] = [];
+  readonly tokenSignals: Array<AbortSignal | undefined> = [];
   readonly executedCommands: string[] = [];
   readonly readPaths: string[] = [];
 
@@ -71,8 +72,9 @@ class FakeXaiFlow implements XaiOAuthAdapterFlow {
     return "ready" as const;
   }
 
-  async getAccessToken(connectionId: string) {
+  async getAccessToken(connectionId: string, signal?: AbortSignal) {
     this.calls.push(`token:${connectionId}`);
+    this.tokenSignals.push(signal);
     return "private-xai-oauth-token";
   }
 
@@ -197,7 +199,13 @@ test("xAI model discovery has an authoritative deadline when its transport ignor
 
 test("xAI OAuth probes the exact selected catalog model through the direct bearer route", async () => {
   const flow = new FakeXaiFlow();
-  const calls: Array<{ routeKind: string; protocol: string; modelId: string; bearer: string | undefined }> = [];
+  const calls: Array<{
+    routeKind: string;
+    protocol: string;
+    modelId: string;
+    bearer: string | undefined;
+    signal: AbortSignal | undefined;
+  }> = [];
   const redactor = new SecretRedactor();
   const selected = providerModel("conn-xai", "grok-account-model");
   const probeSession: HttpProbeSession = async (input) => {
@@ -206,6 +214,7 @@ test("xAI OAuth probes the exact selected catalog model through the direct beare
       protocol: input.protocol,
       modelId: input.model.id,
       bearer: input.credentials.apiKey,
+      signal: input.signal,
     });
     assert.equal(redactor.redactText("private-xai-oauth-token"), "[REDACTED]");
     return completeProbeMeasurement();
@@ -222,8 +231,9 @@ test("xAI OAuth probes the exact selected catalog model through the direct beare
     modelSelectionMode: "catalog" as const,
     modelId: "grok-account-model",
   };
+  const controller = new AbortController();
 
-  const report = await adapter.probe(connection(), selection);
+  const report = await adapter.probe(connection(), selection, { signal: controller.signal });
   const compatibility = resolveCompatibility({
     engine: "mantis",
     connection: { ...connection(), status: "ready" },
@@ -240,7 +250,9 @@ test("xAI OAuth probes the exact selected catalog model through the direct beare
     protocol: "xai-oauth-responses",
     modelId: "grok-account-model",
     bearer: "private-xai-oauth-token",
+    signal: controller.signal,
   }]);
+  assert.deepEqual(flow.tokenSignals, [controller.signal]);
   assert.deepEqual(flow.calls, ["token:conn-xai"]);
   assert.equal(JSON.stringify({ report, compatibility }).includes("private-xai-oauth-token"), false);
   assert.equal(redactor.redactText("private-xai-oauth-token"), "private-xai-oauth-token");

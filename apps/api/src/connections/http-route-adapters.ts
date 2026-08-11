@@ -113,6 +113,7 @@ export interface HttpProbeSessionInput {
   inferencePath: string;
   model: ProviderModel;
   credentials: ConnectionSecretBundle;
+  signal?: AbortSignal;
 }
 
 export type HttpProbeSession = (
@@ -125,6 +126,7 @@ export interface HttpProbeDependencies {
   probeSession?: HttpProbeSession;
   now?: () => Date;
   redactor?: SecretRedactorRegistry;
+  signal?: AbortSignal;
 }
 
 export interface HttpProbeResult {
@@ -388,6 +390,7 @@ export async function probeHttpRoute(
       inferencePath: metadata.inferencePath,
       model: selectedModel,
       credentials: bundle.bundle,
+      signal: deps.signal,
     }), deps.redactor);
     return createHttpProbeResult({
       connectionId: connection.id,
@@ -430,7 +433,7 @@ export function createHttpRouteAdapter(
         now: deps.now,
       });
     },
-    async probe(connection, selection) {
+    async probe(connection, selection, options) {
       const selectedModel = selection.modelId === null || deps.resolveModel === undefined
         ? null
         : await deps.resolveModel(connection.id, selection.modelId);
@@ -440,6 +443,7 @@ export function createHttpRouteAdapter(
         probeSession: deps.probeSession,
         now: deps.now,
         redactor: deps.redactor,
+        signal: options?.signal,
       })).report;
     },
   };

@@ -33,6 +33,11 @@ export interface DiscoveryResult {
   safeError?: SafeProviderError;
 }
 
+export interface RouteProbeOptions {
+  /** Cancels cooperative provider work; callers must still gate late settlement. */
+  signal?: AbortSignal;
+}
+
 /**
  * Protocol-only adapter boundary. Implementations access vault data internally;
  * this contract never carries endpoints, headers, credentials, or model manifests.
@@ -52,5 +57,6 @@ export interface RouteAdapter {
   probe(
     connection: StoredProviderConnection,
     selection: ScanConnectionSelection,
+    options?: RouteProbeOptions,
   ): Promise<CapabilityReport>;
 }
