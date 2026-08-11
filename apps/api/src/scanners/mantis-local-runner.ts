@@ -55,6 +55,7 @@ export type MantisLocalRunnerErrorCode =
   | "agent_cancelled"
   | "agent_output_byte_limit"
   | "agent_protocol_error"
+  | "agent_termination_unconfirmed"
   | "agent_session_failed"
   | "agent_time_limit"
   | "local_cli_isolation_unavailable"
@@ -450,7 +451,7 @@ function lockMantisSnapshot(snapshotRoot: string): void {
     visit(snapshotRoot);
     for (const file of files) fs.chmodSync(file, 0o400);
     for (const directory of directories) {
-      fs.chmodSync(directory, directory === snapshotRoot ? 0o700 : 0o500);
+      fs.chmodSync(directory, 0o500);
     }
     assertPrivateSnapshot(snapshotRoot);
   } catch {
@@ -522,6 +523,7 @@ function normalizeError(error: unknown, signal: AbortSignal): MantisLocalRunnerE
       case "agent_cancelled":
       case "agent_output_byte_limit":
       case "agent_protocol_error":
+      case "agent_termination_unconfirmed":
       case "agent_time_limit":
       case "local_cli_isolation_unavailable":
       case "model_access_denied":

@@ -196,7 +196,7 @@ test("Mantis local Claude executes exactly nine isolated JSON stages and materia
     });
 
     const snapshotRoot = path.join(outputDir, "mantis-snapshot");
-    assert.equal(fs.statSync(snapshotRoot).mode & 0o777, 0o700);
+    assert.equal(fs.statSync(snapshotRoot).mode & 0o777, 0o500);
     assert.equal(fs.statSync(path.join(snapshotRoot, "src")).mode & 0o777, 0o500);
     assert.equal(fs.statSync(path.join(snapshotRoot, "src", "auth.ts")).mode & 0o777, 0o400);
     assert.equal(calls.length, 9);

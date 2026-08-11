@@ -49,6 +49,7 @@ test("Claude local execution uses the fixed defensive argv and strips API keys",
   });
 
   assert.deepEqual(result, { final: { findings: [] }, usage: null });
+  const mcpConfig = calls[0]?.argv[4];
   assert.deepEqual(calls, [{
     binary: "claude",
     argv: [
@@ -56,13 +57,15 @@ test("Claude local execution uses the fixed defensive argv and strips API keys",
       "--safe-mode",
       "--strict-mcp-config",
       "--mcp-config",
-      '{"mcpServers":{}}',
+      mcpConfig,
       "--disable-slash-commands",
       "--no-session-persistence",
       "--permission-mode",
       "plan",
       "--tools",
-      "Read,Glob,Grep",
+      "",
+      "--allowedTools",
+      "mcp__sentinel_snapshot__list,mcp__sentinel_snapshot__read,mcp__sentinel_snapshot__search",
       "--max-turns",
       "3",
       "--output-format",
@@ -87,6 +90,42 @@ test("Claude local execution uses the fixed defensive argv and strips API keys",
     },
   }]);
   assert.equal((calls[0]?.options.signal as AbortSignal).aborted, false);
+});
+
+test("Claude local execution disables every built-in and permits only the private Sentinel MCP tools", async () => {
+  let argv: string[] | undefined;
+  const runner = createDefensiveLocalCli({
+    ...secureCwdDependency(),
+    approvedCwds: ["/private/session"],
+    environment: {
+      PATH: "/usr/bin",
+      ANTHROPIC_API_KEY: "must-not-reach-mcp",
+      PRESERVED_SESSION_VALUE: "kept-for-claude-oauth",
+    },
+    execFile: (_binary, receivedArgv) => {
+      argv = receivedArgv;
+      return completedChild({ stdout: '{"findings":[]}', stderr: "" });
+    },
+  });
+
+  await runner.run(claudeInput());
+
+  assert.equal(argv?.includes("--bare"), false);
+  assert.deepEqual(argv?.slice(argv.indexOf("--tools"), argv.indexOf("--max-turns")), [
+    "--tools",
+    "",
+    "--allowedTools",
+    "mcp__sentinel_snapshot__list,mcp__sentinel_snapshot__read,mcp__sentinel_snapshot__search",
+  ]);
+  const config = JSON.parse(argv?.[argv.indexOf("--mcp-config") + 1] ?? "") as {
+    mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }>;
+  };
+  assert.deepEqual(Object.keys(config.mcpServers), ["sentinel_snapshot"]);
+  assert.equal(config.mcpServers.sentinel_snapshot?.command, process.execPath);
+  assert.match(config.mcpServers.sentinel_snapshot?.args[0] ?? "", /sentinel-snapshot-mcp\.mjs$/);
+  assert.deepEqual(config.mcpServers.sentinel_snapshot?.args.slice(1), ["/private/session"]);
+  assert.deepEqual(config.mcpServers.sentinel_snapshot?.env, {});
+  assert.equal(JSON.stringify(config).includes("must-not-reach-mcp"), false);
 });
 
 test("Grok local execution fails closed before discovered plugins or hooks can run", async () => {
@@ -156,6 +195,7 @@ test("an external abort settles despite an uncooperative local CLI and consumes 
     ...secureCwdDependency(),
     approvedCwds: ["/private/session"],
     killGraceMs: 1,
+    closeTimeoutMs: 1,
     execFile: (_binary, _argv, options) => {
       childSignal = options.signal;
       markStarted?.();
@@ -177,11 +217,11 @@ test("an external abort settles despite an uncooperative local CLI and consumes 
   const outcome = await settleAsCode(running, 30);
   await new Promise<void>((resolve) => setTimeout(resolve, 5));
   rejectLate?.(new Error("late CLI failure must not escape"));
-  await assert.rejects(running, { code: "agent_cancelled" });
+  await assert.rejects(running, { code: "agent_termination_unconfirmed" });
   await new Promise<void>((resolve) => setImmediate(resolve));
   process.off("unhandledRejection", onUnhandled);
 
-  assert.equal(outcome, "agent_cancelled");
+  assert.equal(outcome, "agent_termination_unconfirmed");
   assert.equal(childSignal?.aborted, true);
   assert.deepEqual(killCalls, ["SIGTERM", "SIGKILL"]);
   assert.deepEqual(unhandled, []);
@@ -199,6 +239,7 @@ test("the local timeout settles despite an uncooperative local CLI and consumes 
     ...secureCwdDependency(),
     approvedCwds: ["/private/session"],
     killGraceMs: 1,
+    closeTimeoutMs: 1,
     execFile: () => {
       markStarted?.();
       return {
@@ -217,13 +258,43 @@ test("the local timeout settles despite an uncooperative local CLI and consumes 
   const outcome = await settleAsCode(running, 50);
   await new Promise<void>((resolve) => setTimeout(resolve, 5));
   rejectLate?.(new Error("late CLI failure must not escape"));
-  await assert.rejects(running, { code: "agent_time_limit" });
+  await assert.rejects(running, { code: "agent_termination_unconfirmed" });
   await new Promise<void>((resolve) => setImmediate(resolve));
   process.off("unhandledRejection", onUnhandled);
 
-  assert.equal(outcome, "agent_time_limit");
+  assert.equal(outcome, "agent_termination_unconfirmed");
   assert.deepEqual(killCalls, ["SIGTERM", "SIGKILL"]);
   assert.deepEqual(unhandled, []);
+});
+
+test("local cancellation waits through its final close budget and fails closed when the child persists", async () => {
+  let markStarted: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const killCalls: string[] = [];
+  const runner = createDefensiveLocalCli({
+    ...secureCwdDependency(),
+    approvedCwds: ["/private/session"],
+    killGraceMs: 1,
+    closeTimeoutMs: 3,
+    execFile: () => {
+      markStarted?.();
+      return {
+        result: new Promise<{ stdout: string; stderr: string }>(() => undefined),
+        closed: new Promise<void>(() => undefined),
+        kill(signal: string) {
+          killCalls.push(signal);
+          return true;
+        },
+      };
+    },
+  } as Parameters<typeof createDefensiveLocalCli>[0]);
+  const controller = new AbortController();
+  const running = runner.run({ ...claudeInput(), signal: controller.signal });
+  await started;
+  controller.abort();
+
+  assert.equal(await settleAsCode(running, 50), "agent_termination_unconfirmed");
+  assert.deepEqual(killCalls, ["SIGTERM", "SIGKILL"]);
 });
 
 test("local CLI rejects oversized and malformed stdout without retaining child diagnostics", async () => {

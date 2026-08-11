@@ -1,10 +1,16 @@
 import { execFile as nativeExecFile } from "node:child_process";
 import { lstat as nativeLstat, realpath as nativeRealpath } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const LOCAL_CLI_OUTPUT_CAP_BYTES = 512 * 1024;
 export const LOCAL_CLI_TIMEOUT_MS = 60_000;
 export const LOCAL_CLI_KILL_GRACE_MS = 250;
+/** Final close wait after SIGKILL; no local result is terminal before this expires. */
+export const LOCAL_CLI_CLOSE_TIMEOUT_MS = 3_000;
+/** Exact public MCP names derived from server `sentinel_snapshot` plus its three tools. */
+export const SENTINEL_SNAPSHOT_MCP_ALLOWED_TOOLS =
+  "mcp__sentinel_snapshot__list,mcp__sentinel_snapshot__read,mcp__sentinel_snapshot__search";
 
 export type DefensiveLocalCliRoute = "claude-code-local" | "xai-grok-build-local";
 
@@ -12,6 +18,7 @@ export type DefensiveLocalCliErrorCode =
   | "agent_cancelled"
   | "agent_output_byte_limit"
   | "agent_protocol_error"
+  | "agent_termination_unconfirmed"
   | "agent_time_limit"
   | "local_cli_isolation_unavailable"
   | "model_access_denied"
@@ -52,6 +59,8 @@ export interface DefensiveLocalCliDependencies {
   cwdInspector?: DefensiveLocalCwdInspector;
   /** Test seam for bounded escalation from SIGTERM to this exact child process. */
   killGraceMs?: number;
+  /** Test seam for the bounded close confirmation after SIGKILL. */
+  closeTimeoutMs?: number;
 }
 
 export interface DefensiveLocalCliChild {
@@ -125,7 +134,9 @@ export function createDefensiveLocalCli(
   const execute = dependencies.execFile ?? executeNative;
   const cwdInspector = dependencies.cwdInspector ?? SYSTEM_CWD_INSPECTOR;
   const killGraceMs = dependencies.killGraceMs ?? LOCAL_CLI_KILL_GRACE_MS;
+  const closeTimeoutMs = dependencies.closeTimeoutMs ?? LOCAL_CLI_CLOSE_TIMEOUT_MS;
   if (!Number.isSafeInteger(killGraceMs) || killGraceMs < 1 || killGraceMs > 5_000) invalid();
+  if (!Number.isSafeInteger(closeTimeoutMs) || closeTimeoutMs < 1 || closeTimeoutMs > 10_000) invalid();
 
   return {
     async run(input) {
@@ -148,7 +159,7 @@ export function createDefensiveLocalCli(
           env: { ...environment },
           signal: scope.signal,
         });
-        const output = await awaitChildWithin(child, scope, killGraceMs);
+        const output = await awaitChildWithin(child, scope, killGraceMs, closeTimeoutMs);
         const stdout = boundedStdout(output.stdout);
         const final = parseFinalJson(stdout);
         if (!matchesJsonSchema(final, request.jsonSchema)) {
@@ -266,19 +277,32 @@ function isModelId(value: unknown): value is string {
 }
 
 function claudeArgv(input: DefensiveLocalCliInput, schema: string): string[] {
+  const mcpConfig = JSON.stringify({
+    mcpServers: {
+      sentinel_snapshot: {
+        command: process.execPath,
+        args: [fileURLToPath(new URL("./sentinel-snapshot-mcp.mjs", import.meta.url)), input.cwd],
+        // The MCP process receives no child environment. Claude itself retains
+        // its existing OAuth/keychain login because this is intentionally not --bare.
+        env: {},
+      },
+    },
+  });
   return [
     "--print",
     "--safe-mode",
     "--strict-mcp-config",
-    // Inline empty config avoids reading a file and closes the MCP set.
+    // Inline config closes the MCP set to the process we own; it contains no secrets.
     "--mcp-config",
-    '{"mcpServers":{}}',
+    mcpConfig,
     "--disable-slash-commands",
     "--no-session-persistence",
     "--permission-mode",
     "plan",
     "--tools",
-    "Read,Glob,Grep",
+    "",
+    "--allowedTools",
+    SENTINEL_SNAPSHOT_MCP_ALLOWED_TOOLS,
     "--max-turns",
     String(input.maxTurns),
     "--output-format",
@@ -627,20 +651,29 @@ function awaitChildWithin<T extends { stdout: string; stderr: string }>(
   child: DefensiveLocalCliChild,
   scope: ExecutionScope,
   killGraceMs: number,
+  closeTimeoutMs: number,
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     let locallySettled = false;
     let childClosed = false;
+    let terminationStarted = false;
     let forceKillTimer: NodeJS.Timeout | undefined;
+    let closeBudgetTimer: NodeJS.Timeout | undefined;
     const finishLocally = (callback: () => void): void => {
       if (locallySettled) return;
       locallySettled = true;
       scope.signal.removeEventListener("abort", onAbort);
+      if (forceKillTimer !== undefined) clearTimeout(forceKillTimer);
+      if (closeBudgetTimer !== undefined) clearTimeout(closeBudgetTimer);
       callback();
     };
     const markChildClosed = (): void => {
       childClosed = true;
       if (forceKillTimer !== undefined) clearTimeout(forceKillTimer);
+      if (closeBudgetTimer !== undefined) clearTimeout(closeBudgetTimer);
+      if (terminationStarted) {
+        finishLocally(() => reject(scope.stopError() ?? new DefensiveLocalCliError("agent_cancelled")));
+      }
     };
     const signalChild = (signal: "SIGTERM" | "SIGKILL"): void => {
       try {
@@ -651,21 +684,38 @@ function awaitChildWithin<T extends { stdout: string; stderr: string }>(
       }
     };
     const onAbort = (): void => {
+      if (terminationStarted) return;
+      terminationStarted = true;
       signalChild("SIGTERM");
       if (!childClosed && forceKillTimer === undefined) {
         forceKillTimer = setTimeout(() => {
-          if (!childClosed) signalChild("SIGKILL");
+          if (childClosed) return;
+          signalChild("SIGKILL");
+          closeBudgetTimer = setTimeout(() => {
+            if (!childClosed) {
+              finishLocally(() => reject(new DefensiveLocalCliError("agent_termination_unconfirmed")));
+            }
+          }, closeTimeoutMs);
         }, killGraceMs);
-        forceKillTimer.unref();
       }
-      finishLocally(() => reject(scope.stopError() ?? new DefensiveLocalCliError("agent_cancelled")));
     };
-    void child.closed.then(markChildClosed, () => undefined);
+    void child.closed.then(
+      markChildClosed,
+      () => {
+        if (terminationStarted) {
+          finishLocally(() => reject(new DefensiveLocalCliError("agent_termination_unconfirmed")));
+        }
+      },
+    );
     if (scope.signal.aborted) onAbort();
     else scope.signal.addEventListener("abort", onAbort, { once: true });
     void child.result.then(
-      (value) => finishLocally(() => resolve(value as T)),
-      (error: unknown) => finishLocally(() => reject(error)),
+      (value) => {
+        if (!terminationStarted) finishLocally(() => resolve(value as T));
+      },
+      (error: unknown) => {
+        if (!terminationStarted) finishLocally(() => reject(error));
+      },
     );
   });
 }
