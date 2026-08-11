@@ -14,7 +14,7 @@ Développeurs, professionnels DevSecOps, analystes sécurité et AI Engineers ut
 
 ## Finalité du produit
 
-OKAMI Sentinel est un workbench local pour lancer des scans `@openai/codex-security`, suivre leur exécution, inspecter les findings, mesurer le coût estimé et comparer les combinaisons modèle/effort. Le succès consiste à trouver un risque pertinent avec assez de contexte pour agir, tout en comprenant le coût de chaque stratégie.
+OKAMI Sentinel est un workbench local pour exécuter des scans Codex Security, Google Mantis et Capital One VulnHunter, suivre leur exécution, inspecter les findings, mesurer le coût estimé et comparer les combinaisons modèle/effort. Avant le lancement, Codex Security résout soit le contrat upstream Native, soit le profil défensif Portable maintenu par Sentinel. Le succès consiste à trouver un risque pertinent avec assez de contexte pour agir, tout en comprenant le coût et la limite d’exécution de chaque stratégie.
 
 ## Positionnement
 
@@ -27,14 +27,18 @@ Le produit est utilisé pendant le développement et la revue de sécurité de d
 ## Capacités et limites
 
 - Interface React/Vite locale, API Hono et métadonnées reflétées dans SQLite.
-- Indexation des scans compatibles présents dans l’état Codex Security.
+- Indexation des scans compatibles présents dans l’état local configuré des scanners et dans les sorties gérées par Sentinel.
+- Moteur, connexion, protocole, profil d’exécution et sélection de modèle sont résolus et épinglés avant le lancement. Un scan fixe soit un modèle du catalogue en direct, soit, uniquement lorsque l’adapter le déclare, un runtime par défaut explicite. Un tuple qui exige une capability probe n’est éligible qu’après la réussite d’une probe fraîche et correspondante ; Sentinel ne bascule jamais silencieusement vers une autre route, un autre modèle ou profil.
+- Les modèles et options d’effort de raisonnement proviennent du catalogue du runtime/provider sélectionné. Lorsqu’un provider ne publie pas de métadonnées d’effort, Sentinel laisse l’effort géré par le provider au lieu d’inventer des options.
 - Interface en PT-BR, anglais, espagnol, allemand et français avec détection et persistance locale.
 - Une baseline et jusqu’à cinq candidats par comparaison.
 - Les scans interrompus ayant conservé des findings restent disponibles comme résultats partiels clairement identifiés.
 - Les rapports individuels et comparatifs réutilisent le même modèle de preuves, coût et efficacité et peuvent être imprimés ou exportés en PDF.
-- Les coûts sont des estimations fondées sur les tokens, pas une facturation confirmée.
+- Le coût n’apparaît que lorsque l’usage rapporté et un prix correspondant sont disponibles ; sinon il reste indisponible, jamais un zéro inventé ou une facture d’abonnement.
 - High par dollar est une heuristique, pas une preuve d’exactitude.
 - Les preuves du scanner restent dans leur langue source pour préserver le sens technique.
+- Le registre des runs expose l’identité du moteur et du modèle, ainsi que High+ et le total des findings, afin qu’une ligne soit compréhensible sans ouvrir son détail.
+- Seuls les scans terminalisés peuvent être retirés explicitement après confirmation. Sentinel retire l’enregistrement local et, le cas échéant, ses artefacts gérés ; jamais le dépôt analysé ni des chemins externes.
 - Desktop, mobile, clavier, focus visible et reduced motion sont des exigences.
 
 ## Engagements de marque

@@ -21,7 +21,7 @@
   </p>
 </div>
 
-![Visão geral do OKAMI Sentinel com canais de execução, composição de severidade, custo e duração](docs/assets/okami-sentinel-overview.png)
+![Sequenciador de lançamento do OKAMI Sentinel com Codex Security, Google Mantis, Capital One VulnHunter, modelo ao vivo do provider e autorização por preflight](docs/assets/okami-sentinel-overview.png)
 
 > [!IMPORTANT]
 > O OKAMI Sentinel compara **evidências reportadas**, não precisão contra ground truth. Mais findings não significam automaticamente um scan melhor, e um finding ausente não comprova correção. Confirme os findings e faça a triagem de falsos positivos antes de usar precisão, recall ou F1.
@@ -59,10 +59,13 @@ Foi criado para desenvolvedores, profissionais de DevSecOps, revisores de segura
 ## Principais recursos
 
 - **Roteamento por capacidades** — escolha a metodologia; a interface exibe apenas combinações de autenticação, modelo, effort e modo que o adapter consegue executar.
-- **Assinatura ou API** — use uma sessão Codex/ChatGPT local ou uma rota `OPENAI_API_KEY` cobrada separadamente quando o scanner oferecer suporte.
+- **Conexões de provider** — configure sessões locais, autenticação gerenciada por navegador/dispositivo, chaves de API, endpoints Token Plan ou APIs compatíveis sem colocar credenciais no manifesto do scan.
+- **Catálogo de modelos ao vivo** — escolha somente modelos retornados pela conexão autenticada; o Sentinel não inventa um catálogo de fallback.
+- **Controles de runtime dinâmicos** — modelo, níveis de effort suportados, modo do scan e limite de execução são resolvidos pelas capacidades da conexão e do motor selecionados; valores não suportados não são hard-coded no formulário.
 - **Navegador de diretórios** — selecione pastas locais sem copiar caminhos absolutos manualmente.
 - **Telemetria ao vivo** — acompanhe estado, fase, eventos SSE, duração, tokens, custo estimado e saída preservada.
-- **Inspeção orientada por evidência** — filtre severidade e lifecycle, leia resumos e localizações e percorra attack paths.
+- **Inspeção orientada por evidência** — filtre severidade e lifecycle, leia resumos e localizações, percorra attack paths e veja explicitamente quando um finding não trouxe evidência estruturada.
+- **Ledger de runs legível** — cada run mostra badges de motor e modelo, além de `High+` e do total de vulnerabilidades; apenas runs terminalizados podem ser removidos do ledger.
 - **Resultados parciais honestos** — scans falhos que preservaram findings continuam comparáveis com badges `FAILED` e `PARTIAL`.
 - **Comparação de seis runs** — um baseline e até cinco candidatos, com diff de severidade, economia unitária, throughput e objetivos explícitos.
 - **Relatórios para impressão** — relatórios individuais e comparativos com marca e exportação em PDF.
@@ -71,15 +74,18 @@ Foi criado para desenvolvedores, profissionais de DevSecOps, revisores de segura
 
 ## Motores de scan
 
-| Motor | Estado na fase 1 | Autenticação | Limite de execução |
-|---|---|---|---|
-| [`@openai/codex-security`](https://github.com/openai/codex-security) | Estável | Assinatura ChatGPT/Codex ou API OpenAI | Standard/deep, com teto explícito em USD |
-| [Google Mantis](https://github.com/google/mantis) | Preview | Assinatura ChatGPT/Codex | Nove etapas scan-only sobre snapshot imutável |
-| [Capital One VulnHunter](https://github.com/capitalone/vulnhunter) | Experimental | Assinatura ChatGPT/Codex | Seis etapas agent-driven sobre snapshot imutável; payloads, código PoC e testes de exploit não são gerados nem executados |
+| Motor | Estado | Rotas de conexão executáveis | Modelos | Limite de execução |
+|---|---|---|---|---|
+| [`@openai/codex-security`](https://github.com/openai/codex-security) | Estável | Sessão local Codex/ChatGPT da OpenAI ou API OpenAI | Catálogo autenticado ao vivo | Scan standard ou deep; teto explícito em USD suportado |
+| [Google Mantis](https://github.com/google/mantis) | Preview | Sessão Codex/ChatGPT, sessão local Claude Code, OAuth direto da xAI e providers HTTP aprovados por capability | Catálogo autenticado ao vivo; Claude pode usar seu default explícito de runtime | Nove etapas determinísticas scan-only em snapshot imutável |
+| [Capital One VulnHunter](https://github.com/capitalone/vulnhunter) | Experimental | Sessão Codex/ChatGPT, OAuth direto da xAI e providers HTTP aprovados por capability | Catálogo autenticado ao vivo | Perfil de compatibilidade estático, somente leitura, com seis etapas derivado da metodologia VulnHunter revisada |
 
-O adapter Mantis usa uma revisão fixa e auditada. Ele não escreve no repositório-alvo e exclui deliberadamente `mantis-reproduce`, `mantis-chain` e `mantis-patch`. Assinatura ChatGPT e faturamento da API são rotas diferentes; o Sentinel remove chaves de API do processo filho quando a assinatura é selecionada e nunca troca silenciosamente de uma rota para outra.
+O Mantis é obtido em um commit revisado, validado e publicado atomicamente em um cache local privado. A primeira fase exclui deliberadamente `mantis-reproduce`, `mantis-chain` e `mantis-patch`: o adapter não escreve no repositório-alvo e não executa código de exploit gerado. Rotas HTTP passam pelo host de ferramentas limitado do Sentinel. Runs da assinatura Claude Code usam um diretório de sessão vazio e separado, sem ferramentas integradas, com um único servidor MCP privado e somente leitura que expõe operações limitadas de listar, ler e buscar sobre o snapshot imutável. O estado bruto do Mantis permanece ao lado das evidências normalizadas do Sentinel para auditoria.
 
-O VulnHunter também usa uma revisão fixa e auditada. Como o fluxo upstream foi criado para Claude, o Sentinel o executa como um port Codex experimental: a análise ocorre em um snapshot separado, a reprodução é substituída por notas de validação não operacionais e uma segunda sessão isolada apenas fecha o handoff defensivo. Nenhum payload, código PoC ou teste de exploit é gerado ou executado, e os findings retidos são normalizados para o Inspector canônico.
+O workflow upstream do VulnHunter é orientado a Claude e inclui etapas de verificação operacionais que podem acionar salvaguardas cibernéticas do provider. Por isso o Sentinel registra a revisão upstream como proveniência para seu perfil local versionado, mas **não** busca nem envia a skill upstream ou seus prompts de fase ao Codex em runtime. O perfil experimental de compatibilidade preserva o formato útil — reconhecimento, rastros estáticos para frente, falsificação adversarial, varredura de cobertura e remediação com evidência — em uma única sessão somente leitura sobre snapshot imutável. Findings retidos são normalizados para o mesmo contrato de evidência do Inspector usado pelos demais motores. Uma política do provider ainda pode recusar a revisão; nesse caso o Sentinel preserva o log completo, retém o uso de tokens já informado e reporta a exigência de Trusted Access sem fingir que o scan foi concluído. Sem usage reportado, o custo permanece indisponível, nunca um falso zero.
+
+> [!NOTE]
+> Assinatura, OAuth, Token Plan e cobrança por API são rotas separadas. O Sentinel vincula cada scan a uma conexão persistida e a um modelo descoberto ao vivo ou default de runtime declarado pelo adapter, revalida essa seleção antes de acessar credenciais e nunca faz fallback silencioso entre rotas.
 
 ## Perfis de execução do Codex Security
 
@@ -136,11 +142,13 @@ flowchart LR
 - Python `3.10+` para o Codex Security
 - GitHub CLI (`gh`) para diagnóstico, baseline remoto e publicação opcional de Checks
 - GitHub Actions nos repositórios que usarão o gate remoto
-- Ao menos uma rota de acesso:
-  - **Codex Security por assinatura:** login ativo em `npx @openai/codex-security login status`;
-  - **Mantis por assinatura:** `codex login status` exibindo `Logged in using ChatGPT`;
-  - **VulnHunter por assinatura:** a mesma sessão genérica do Codex, com `gpt-5.6-sol` disponível;
-  - **Codex Security por API:** `OPENAI_API_KEY` ou `CODEX_API_KEY` no processo local da API, ou `OPENAI_API_KEY` como secret do Actions.
+- Um cofre de credenciais do sistema operacional compatível com o adapter de keychain local para conexões com secrets
+- Ao menos uma rota configurada em **Configurações → Conexões**. Presets disponíveis incluem:
+  - Codex local da OpenAI, autenticação ChatGPT por navegador/dispositivo e API OpenAI;
+  - detecção local do Grok da xAI, OAuth de dispositivo orquestrado localmente pelo Sentinel e API xAI;
+  - sessão local Claude Code e API Anthropic;
+  - detecção local do Cursor e Cursor Background Agents API;
+  - OpenRouter, Gemini, DeepSeek, MiniMax Token Plan, Xiaomi MiMo Token Plan e APIs compatíveis OpenAI ou Anthropic customizadas.
 
 ## Início rápido
 
@@ -165,15 +173,18 @@ Abra:
 - Interface: <http://127.0.0.1:5173>
 - API local: <http://127.0.0.1:8787>
 
-Faça login no scanner quando necessário:
+Abra **Configurações → Conexões** para adicionar uma rota, autenticá-la e atualizar seu catálogo de modelos. Rotas de assinatura local continuam usando o login oficial:
 
 ```bash
 npx @openai/codex-security login
 # ou
 npx @openai/codex-security login --device-auth
 
-# Mantis e VulnHunter usam a sessão genérica do Codex
+# Mantis e VulnHunter hospedados pelo Codex usam a sessão genérica do Codex
 codex login
+
+# Mantis local pelo Claude usa a sessão Claude Code existente
+claude auth login
 ```
 
 Na inicialização, a API indexa scans compatíveis já existentes no state configurado do Codex Security.
@@ -187,14 +198,17 @@ Na inicialização, a API indexa scans compatíveis já existentes no state conf
 5. **Relatório** — gere o relatório individual no detalhe ou o comparativo após executar o diff.
 6. **Guardrails** — avalie um changeset local e publique opcionalmente a decisão como GitHub Check.
 
-## Modos de autenticação
+## Conexões de provider
 
-| Rota | Motores compatíveis | Melhor uso | Exige `OPENAI_API_KEY`? | Actions autônomo? |
-|---|---|---|---:|---:|
-| **Assinatura ChatGPT** | Codex Security, Mantis, VulnHunter | Uso local e interativo | Não | Não |
-| **API OpenAI** | Codex Security | CI, pull requests e gates autônomos | Sim | Sim |
+| Família de provider | Rotas de conexão | Disponibilidade de scanner |
+|---|---|---|
+| **OpenAI** | Codex local, OAuth ChatGPT no navegador, código de dispositivo ChatGPT, chave de API | Codex Security, Mantis e VulnHunter de acordo com a rota resolvida |
+| **xAI** | OAuth de dispositivo orquestrado localmente pelo Sentinel, chave de API, detecção local do Grok | OAuth/API pode executar Mantis e VulnHunter após prova de capability. Scan local do Grok permanece bloqueado até que a superfície de execução de plugin/hook possa ser isolada. |
+| **Anthropic** | Sessão existente Claude Code, API Anthropic | Claude local executa Mantis pela fronteira MCP-only do snapshot. Modelos de API exigem capability probe aprovada. |
+| **Cursor** | Detecção de CLI local, Background Agents API | Conexão e catálogo ao vivo disponíveis; execução de scanner não é anunciada até que o contrato de artefatos remoto/local esteja completo. |
+| **Outros HTTP** | OpenRouter, Gemini, DeepSeek, MiniMax Token Plan, MiMo Token Plan, URLs compatíveis customizadas | Mantis/VulnHunter somente quando o modelo exato passa a probe limitada de ferramentas, artefatos, cancelamento e snapshot do Sentinel. |
 
-A aplicação nunca lê ou armazena o valor do secret do repositório. Ela apenas diagnostica se a capability necessária está disponível.
+Os modelos e os níveis de effort válidos vêm do catálogo autenticado e das capacidades ao vivo do provider. A única exceção de default de runtime é uma sessão local Claude Code configurada explicitamente. Secrets e tokens OAuth são write-only pela API, armazenados no cofre de credenciais do sistema operacional e representados no SQLite apenas por referências opacas. O Sentinel orquestra localmente o device flow público da xAI e não depende da CLI do Grok; o acesso ao modelo é aceito somente após catálogo ao vivo e verificações de capability aprovadas.
 
 ## Guardrails locais
 
@@ -328,11 +342,11 @@ okami-sentinel/
 ## Notas de custo e segurança
 
 > [!WARNING]
-> Scans podem ser caros. O envelope do Codex Security mapeia para `--max-cost`. Mantis e VulnHunter usam a assinatura ChatGPT; seus valores em USD são estimativas equivalentes calculadas com os preços públicos do OpenRouter, não cobrança ou fatura. Tokens, franquia do plano, créditos e cobrança final da API são medidas diferentes.
+> Scans podem ser caros. O envelope do Codex Security mapeia para a proteção `--max-cost`. Quando um provider informa uso de tokens e há preço exato disponível, o Sentinel pode mostrar uma estimativa explicitamente referenciada; ela não é uma fatura. Rotas de assinatura e sessão local permanecem **indisponíveis**, nunca `$0`, quando o provider não reporta uso faturável. Para uma correspondência exata de modelo, OpenRouter estima separadamente input sem cache, leituras de cache, escritas de cache e output. Franquia do plano, créditos e cobrança final do provider continuam sendo medidas diferentes.
 
-- Dados e evidências permanecem locais, exceto quando você publica um GitHub Check ou executa o workflow com API.
+- Dados e evidências normalizadas permanecem locais. Credenciais de provider são armazenadas localmente e usadas apenas para autenticar requests da conexão selecionada. Essa rota de inferência recebe os prompts e evidências de repositório necessários ao scan; publicar um GitHub Check é uma ação explícita separada.
 - Falhas operacionais nunca se transformam em decisão de segurança aprovada.
-- A exclusão de um scan é explícita e pode remover o registro e o diretório gerenciado associado.
+- A exclusão de um scan é explícita e fica disponível apenas após estado terminal. Ela pode remover o registro e o diretório do scan associado **somente se esse diretório for gerenciado pelo Sentinel**; nunca apaga o repositório-alvo.
 - Trate findings gerados como evidência de segurança não confiável até a revisão.
 
 ## Documentação do projeto

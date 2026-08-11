@@ -27,7 +27,7 @@ Laissez le temps nécessaire à la validation avant toute divulgation publique. 
 - Une erreur opérationnelle ne doit jamais devenir une décision de sécurité positive.
 - Les secrets de fournisseurs et jetons OAuth sont accessibles uniquement en écriture via l’API locale et stockés dans le coffre de credentials du système. SQLite ne conserve que des références opaques et les DTO publics ne renvoient jamais de credential.
 - Manifestes de scan, télémétrie, événements SSE et logs persistés passent par la frontière de rédaction partagée. Les processus locaux par abonnement reçoivent un environnement minimal.
-- Les endpoints compatibles personnalisés sont une configuration non fiable et doivent réussir les contrôles d’URL, de transport, de redirection, de taille et de capacité avant qu’un modèle soit éligible au scan.
-- La suppression d’un scan géré peut retirer sa sortie locale ; la cible et l’effet doivent rester explicites dans l’interface.
+- Les endpoints compatibles personnalisés sont une configuration non fiable. Le tuple persistant exact connexion, modèle et protocole doit réussir les contrôles d’URL, de transport, de redirection, de taille et de capacité avant que ce modèle soit éligible au scan ; Sentinel ne substitue jamais silencieusement un autre tuple.
+- La suppression d’un scan géré est disponible uniquement pour les runs terminalisés. Elle peut retirer l’enregistrement local et un répertoire d’artefacts géré par Sentinel, mais jamais le dépôt analysé ni un chemin externe ; la cible et l’effet doivent rester explicites dans l’interface.
 
 Ne joignez jamais de secrets réels, de code privé, d’état complet du scanner, de base de données ou de chemins personnels à une issue publique. Expurgez les logs et fournissez le plus petit artefact permettant de reproduire le problème.

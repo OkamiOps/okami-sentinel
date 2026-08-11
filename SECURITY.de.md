@@ -27,7 +27,7 @@ Vor öffentlicher Veröffentlichung muss Zeit für die Validierung bleiben. Sola
 - Operative Fehler dürfen nie zu einer positiven Sicherheitsentscheidung werden.
 - Provider-Secrets und OAuth-Tokens sind über die lokale API nur schreibbar und werden im Credential Vault des Betriebssystems gespeichert. SQLite enthält nur undurchsichtige Referenzen; öffentliche DTOs geben keine Credentials zurück.
 - Scanner-Manifeste, Telemetrie, SSE-Ereignisse und persistierte Logs durchlaufen die gemeinsame Redaktionsgrenze. Lokale Subscription-Prozesse erhalten nur eine minimale Umgebung.
-- Benutzerdefinierte kompatible Endpunkte sind nicht vertrauenswürdige Konfiguration und müssen URL-, Transport-, Redirect-, Größen- und Capability-Prüfungen bestehen, bevor ein Modell für Scans freigegeben wird.
-- Das Löschen verwalteter Scans kann lokale Ausgaben entfernen; Ziel und Wirkung müssen in der UI explizit sein.
+- Benutzerdefinierte kompatible Endpunkte sind nicht vertrauenswürdige Konfiguration. Das exakt gespeicherte Tupel aus Verbindung, Modell und Protokoll muss URL-, Transport-, Redirect-, Größen- und Capability-Prüfungen bestehen, bevor dieses Modell für Scans freigegeben wird; Sentinel ersetzt das Tupel nicht stillschweigend.
+- Das Löschen verwalteter Scans steht nur für terminale Läufe zur Verfügung. Es kann den lokalen Datensatz und ein von Sentinel verwaltetes Artefaktverzeichnis entfernen, niemals jedoch das analysierte Repository oder einen externen Pfad; Ziel und Wirkung müssen in der UI explizit sein.
 
 Keine echten Secrets, privaten Quellen, vollständigen Scanner-States, Datenbanken oder persönlichen Pfade an öffentliche Issues anhängen. Logs redigieren und nur das kleinste reproduzierbare Artefakt bereitstellen.

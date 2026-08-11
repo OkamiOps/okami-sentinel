@@ -37,7 +37,7 @@ La couleur ne porte jamais seule le sens ; statut et sévérité disposent toujo
 ## Routes
 
 - **Vue d’ensemble :** index des canaux, Evidence Spectrum, sample readout et traces coût/preuves.
-- **Runs :** registre dense ; les runs annulés ou en échec sont filtrés délibérément, jamais supprimés silencieusement.
+- **Runs :** registre dense avec badges visibles de moteur et de modèle, ainsi que High+ et le total des findings. Les runs annulés ou en échec sont filtrés délibérément ; seuls les runs terminalisés peuvent être retirés explicitement après confirmation destructive, jamais supprimés silencieusement.
 - **Exécuter :** séquenceur connecté de target, strategy et authorization.
 - **Comparer :** bibliothèque de runs, baseline/candidats, plan d’efficacité, cockpit de décision et diff.
 - **Rapports :** lecture éditoriale print/PDF avec identité OKAMI, synthèse, métriques et détail borné des findings.

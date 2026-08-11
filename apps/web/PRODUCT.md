@@ -14,7 +14,7 @@ Developers, DevSecOps professionals, security reviewers, and AI Engineers use th
 
 ## Product purpose
 
-OKAMI Sentinel is a local workbench for launching `@openai/codex-security` scans, following execution, inspecting findings, measuring estimated cost, and comparing model/effort combinations. Success means finding relevant risk with enough context to act while understanding the cost of each scan strategy.
+OKAMI Sentinel is a local workbench for running Codex Security, Google Mantis, and Capital One VulnHunter scans; following execution; inspecting findings; measuring estimated cost; and comparing model/effort combinations. Codex Security resolves a Native upstream contract or a Sentinel-owned Portable defensive profile before launch. Success means finding relevant risk with enough context to act while understanding the cost and execution boundary of each scan strategy.
 
 ## Positioning
 
@@ -27,14 +27,18 @@ The product is used during development and security review against local reposit
 ## Capabilities and constraints
 
 - Local React/Vite interface, Hono API, and metadata mirrored in SQLite.
-- Existing compatible scans are indexed from Codex Security state.
+- Existing compatible scans are indexed from configured local scanner state and Sentinel-managed outputs.
+- Engine, connection, protocol, execution profile, and model selection are resolved and pinned before launch. A scan pins either a live-catalog model or, only when the adapter declares it, an explicit runtime default. A tuple that requires a capability probe is not eligible until its fresh matching probe succeeds; Sentinel never silently falls back to a different route, model, or profile.
+- Models and reasoning-effort choices come from the selected runtime/provider catalog. When a provider does not publish effort metadata, Sentinel leaves effort provider-managed instead of inventing options.
 - The UI supports PT-BR, English, Spanish, German, and French; browser locale is detected and the selection persists locally.
 - Comparisons accept one baseline and up to five candidates.
 - Interrupted scans that preserved findings remain available as explicitly labeled partial results.
 - Individual and comparison reports reuse the evidence, cost, and efficiency model shown in the product and can be printed or exported as PDF.
-- Cost values are token-based estimates, not confirmed billing.
+- Cost appears only when reported usage and matching pricing data are available; otherwise it is unavailable, never an invented zero or a subscription invoice.
 - High-per-dollar comparisons are heuristics, not proof of accuracy.
 - Scanner-generated evidence remains in its source language to preserve technical meaning.
+- The run ledger exposes engine and model identity alongside High+ and total findings, so a row can be understood without opening its detail view.
+- Only terminal scans can be explicitly removed after confirmation. Sentinel removes the local record and, when applicable, its managed artifacts; it never removes the analyzed repository or external paths.
 - Desktop, mobile, keyboard, visible focus, and reduced-motion support are product requirements.
 
 ## Brand commitments

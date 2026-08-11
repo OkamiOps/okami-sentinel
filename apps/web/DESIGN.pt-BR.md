@@ -37,7 +37,7 @@ Cor nunca carrega significado sozinha; status e severidade sempre têm label tex
 ## Rotas
 
 - **Visão:** índice de canais, Evidence Spectrum, sample readout e traces de custo/evidência.
-- **Runs:** ledger denso; cancelados e falhos são filtrados deliberadamente, nunca destruídos silenciosamente.
+- **Runs:** ledger denso com badges visíveis de motor e modelo, além de High+ e total de findings. Cancelados e falhos são filtrados deliberadamente; apenas runs terminalizados podem ser removidos após confirmação destrutiva, nunca destruídos silenciosamente.
 - **Operar:** sequenciador conectado de target, strategy e authorization.
 - **Comparar:** biblioteca de runs, baseline/candidatos, plano de eficiência, cockpit de decisão e diff.
 - **Relatórios:** leitura editorial para print/PDF com identidade OKAMI, resumo executivo, métricas e detalhe limitado de findings.

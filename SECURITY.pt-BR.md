@@ -27,7 +27,7 @@ Permita tempo para validação antes da divulgação pública. Enquanto o projet
 - Falhas operacionais nunca podem virar decisões de segurança aprovadas.
 - Secrets de providers e tokens OAuth são write-only na API local e ficam no cofre de credenciais do sistema operacional. O SQLite guarda apenas referências opacas e os DTOs públicos nunca retornam credenciais.
 - Manifests, telemetria, SSE e logs persistidos passam pela fronteira compartilhada de redação. Processos locais por assinatura recebem um ambiente mínimo.
-- Endpoints compatíveis customizados são configuração não confiável e precisam passar pelas validações de URL, transporte, redirect, tamanho e capacidade antes de liberar um modelo para scan.
-- A exclusão gerenciada pode remover saída local do scan; alvo e efeito devem permanecer explícitos na interface.
+- Endpoints compatíveis customizados são configuração não confiável. A tupla persistida exata de conexão, modelo e protocolo precisa passar pelas validações de URL, transporte, redirect, tamanho e capacidade antes de liberar esse modelo para scan; o Sentinel não substitui silenciosamente a tupla.
+- A exclusão gerenciada só está disponível para scans terminalizados. Ela pode remover o registro local e um diretório de artefatos gerenciado pelo Sentinel, mas nunca o repositório analisado ou um caminho externo; alvo e efeito devem permanecer explícitos na interface.
 
 Nunca anexe secrets reais, código privado, state completo, bancos ou caminhos pessoais em issues públicas. Redija logs e forneça o menor artefato capaz de reproduzir o problema.

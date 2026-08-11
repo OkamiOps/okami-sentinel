@@ -55,7 +55,7 @@ Color never carries meaning alone; status and severity always have a text label.
 ## Routes
 
 - **Overview:** channel index, Evidence Spectrum, sample readout, and cost/evidence traces.
-- **Runs:** dense ledger; canceled and failed runs are filtered deliberately, never silently destroyed.
+- **Runs:** dense ledger with visible engine and model badges plus High+ and total findings. Canceled and failed runs are filtered deliberately; only terminal runs can be explicitly removed after a destructive confirmation, never silently destroyed.
 - **Operate:** connected target, strategy, and authorization sequencer.
 - **Compare:** run library, baseline/candidates, efficiency plane, decision cockpit, and evidence diff.
 - **Reports:** editorial print/PDF reading with OKAMI identity, executive summary, comparable metrics, and bounded finding detail.

@@ -21,7 +21,7 @@
   </p>
 </div>
 
-![OKAMI Sentinel overview showing run channels, severity composition, cost, and duration](docs/assets/okami-sentinel-overview.png)
+![OKAMI Sentinel launch sequencer showing Codex Security, Google Mantis, Capital One VulnHunter, a live provider model, and preflight authorization](docs/assets/okami-sentinel-overview.png)
 
 > [!IMPORTANT]
 > OKAMI Sentinel compares **reported evidence**, not ground-truth accuracy. More findings do not automatically mean a better scan, and a missing finding does not prove remediation. Confirm findings and triage false positives before using precision, recall, or F1.
@@ -61,9 +61,11 @@ It is built for developers, DevSecOps engineers, security reviewers, and AI engi
 - **Capability-aware scanner routing** — choose a methodology first; the UI then exposes only authentication, model, effort, and mode combinations the adapter can actually run.
 - **Provider connections** — configure local sessions, managed browser/device authentication, API keys, Token Plan endpoints, or compatible custom APIs without putting credentials in scan manifests.
 - **Live model discovery** — choose only models returned by the selected authenticated connection; Sentinel does not invent a fallback catalog.
+- **Dynamic runtime controls** — model, supported reasoning-effort levels, scan mode, and execution boundary are resolved from the selected connection and engine capabilities; unsupported values are not hard-coded into the launch form.
 - **Directory browser** — navigate local folders instead of manually copying absolute paths.
 - **Live execution telemetry** — follow status, phase, SSE events, duration, tokens, estimated cost, and preserved output.
-- **Evidence-first inspection** — filter by severity and lifecycle, inspect summaries and locations, and trace attack paths.
+- **Evidence-first inspection** — filter by severity and lifecycle, inspect summaries and locations, trace attack paths, and explicitly mark a finding when structured evidence was not attached.
+- **Readable run ledger** — each run shows engine and model badges plus both `High+` and total findings; only terminal runs can be removed from the ledger.
 - **Honest partial results** — failed scans that preserved findings remain comparable with explicit `FAILED` and `PARTIAL` labels.
 - **Six-run comparison** — one baseline plus up to five candidates, with severity diff, unit economics, throughput, and explicit decision objectives.
 - **Print-ready reporting** — branded individual and comparison reports designed for browser printing and PDF export.
@@ -83,7 +85,7 @@ Mantis is fetched at a reviewed commit, validated, and atomically published into
 VulnHunter's upstream workflow is Claude-oriented and intentionally includes operational verification stages that can trigger provider cyber safeguards. Sentinel therefore records the reviewed upstream revision as provenance for its separately versioned local profile, but does **not** fetch or send the upstream skill or its phase prompts to Codex at runtime. Its experimental compatibility profile keeps the useful shape—reconnaissance, forward static traces, adversarial falsification, coverage sweep, and evidence-backed remediation—inside one read-only session over an immutable snapshot. Retained findings are normalized into the same Inspector evidence contract used by the other engines. Provider policy can still reject a repository review; when that happens Sentinel preserves the full run log, retains any token usage already reported by the Codex app-server, and reports the Trusted Access requirement instead of pretending the scanner completed. If the provider stops before reporting usage, cost remains unavailable rather than appearing as a false zero-dollar run.
 
 > [!NOTE]
-> Subscription, OAuth, Token Plan, and API billing are separate routes. Sentinel binds every scan to one persisted connection and one live-discovered model, revalidates that tuple before credential access, and never silently falls from one route into another.
+> Subscription, OAuth, Token Plan, and API billing are separate routes. Sentinel binds every scan to one persisted connection and either one live-discovered model or an adapter-declared runtime default, revalidates that selection before credential access, and never silently falls from one route into another.
 
 ## Codex Security execution profiles
 
@@ -354,7 +356,7 @@ okami-sentinel/
 
 - Metadata and normalized evidence remain local. Provider credentials are stored locally and used only to authenticate requests for the selected connection. That inference route receives the prompts and repository evidence needed for the scan; publishing a GitHub Check is a separate explicit action.
 - Operational failures never become a passing security decision.
-- Deleting a scan is explicit and can remove both the application record and the associated managed scan directory.
+- Deleting a scan is explicit and available only after it reaches a terminal state. It can remove the application record and its associated scan directory **only when that directory is Sentinel-managed**; it never deletes the target repository.
 - Treat generated findings as untrusted security evidence until reviewed.
 
 ## Project documentation

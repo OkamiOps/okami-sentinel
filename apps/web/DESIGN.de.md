@@ -37,7 +37,7 @@ Farbe trägt nie allein Bedeutung; Status und Schweregrad haben immer ein Textla
 ## Routen
 
 - **Übersicht:** Kanalindex, Evidence Spectrum, Sample Readout und Kosten-/Beleg-Traces.
-- **Runs:** dichtes Ledger; abgebrochene und fehlgeschlagene Läufe werden bewusst gefiltert, nie still gelöscht.
+- **Runs:** dichtes Ledger mit sichtbaren Engine- und Modell-Badges sowie High+ und Gesamtzahl der Findings. Abgebrochene und fehlgeschlagene Läufe werden bewusst gefiltert; nur terminale Läufe können nach einer destruktiven Bestätigung explizit entfernt werden, nie still gelöscht.
 - **Ausführen:** verbundener Target-, Strategy- und Authorization-Sequencer.
 - **Vergleichen:** Run-Bibliothek, Baseline/Kandidaten, Effizienzebene, Entscheidungscockpit und Diff.
 - **Berichte:** redaktionelle Print/PDF-Ansicht mit OKAMI-Identität, Summary, Metriken und begrenztem Finding-Detail.
