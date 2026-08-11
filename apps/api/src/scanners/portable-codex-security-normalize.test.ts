@@ -6,6 +6,12 @@ import test from "node:test";
 
 import { normalizePortableCodexSecurityWorkspace } from "./portable-codex-security-normalize.js";
 
+const MAX_HANDOFF_BYTES = 1_048_576;
+const MAX_FINDINGS = 100;
+const MAX_ANCHORS_PER_FINDING = 20;
+const MAX_TEXT_FIELD_BYTES = 16_384;
+const MAX_SNIPPET_BYTES = 65_536;
+
 interface Fixture {
   root: string;
   resultsDir: string;
@@ -117,6 +123,63 @@ test("Portable Codex Security normalizes valid confined anchors with hydrated sn
   }
 });
 
+test("Portable Codex Security redacts every public text field, evidence path, and source snippet", () => {
+  const fixture = createFixture();
+  const secret = "fake-secret-987654321";
+  const cweSecret = "987654321";
+  try {
+    const secretRelativePath = `src/${secret}.ts`;
+    fs.writeFileSync(
+      path.join(fixture.snapshotRoot, secretRelativePath),
+      `export const apiKey = "${secret}";\n`,
+      { mode: 0o600 },
+    );
+    writeHandoff(fixture, [{
+      ...validFinding({
+        path: secretRelativePath,
+        startLine: 1,
+        endLine: 1,
+        explanation: `Evidence contains ${secret}`,
+      }),
+      id: `PCS-${secret}`,
+      title: `Title ${secret}`,
+      category: `Category ${secret}`,
+      remediation: `Remove ${secret}`,
+      summary: `Summary ${secret}`,
+      rootCause: `Root cause ${secret}`,
+      impact: `Impact ${secret}`,
+      severityRationale: `Rationale ${secret}`,
+      cwe: [`CWE-${cweSecret}`],
+    }]);
+
+    normalizePortableCodexSecurityWorkspace(fixture.resultsDir, fixture.outputDir, {
+      redactor: {
+        redactText: (value: string) => value
+          .replaceAll(secret, "[REDACTED]")
+          .replaceAll(cweSecret, "[REDACTED]"),
+      },
+    });
+
+    const serialized = fs.readFileSync(path.join(fixture.outputDir, "findings.json"), "utf8");
+    assert.equal(serialized.includes(secret), false);
+    assert.equal(serialized.includes(cweSecret), false);
+    assert.match(serialized, /\[REDACTED\]/);
+    const normalized = JSON.parse(serialized) as {
+      findings: Array<{
+        locations: Array<{ path: string }>;
+        codeEvidence: Array<{ code: string; explanation: string }>;
+        taxonomy: { cwe: string[] };
+      }>;
+    };
+    assert.equal(normalized.findings[0]?.locations[0]?.path, "src/[REDACTED].ts");
+    assert.equal(normalized.findings[0]?.codeEvidence[0]?.code.includes(secret), false);
+    assert.equal(normalized.findings[0]?.codeEvidence[0]?.explanation.includes(secret), false);
+    assert.deepEqual(normalized.findings[0]?.taxonomy.cwe, []);
+  } finally {
+    removeFixture(fixture.root);
+  }
+});
+
 test("Portable Codex Security rejects each missing required finding field before writing findings", () => {
   for (const field of ["id", "title", "severity", "confidence", "category", "remediation"] as const) {
     const fixture = createFixture();
@@ -217,5 +280,157 @@ test("Portable Codex Security rejects the whole handoff for every unsafe primary
     } finally {
       removeFixture(fixture.root);
     }
+  }
+});
+
+test("Portable Codex Security rejects a handoff above its byte limit before parsing", () => {
+  const fixture = createFixture();
+  try {
+    fs.writeFileSync(
+      path.join(fixture.resultsDir, "sentinel-findings.json"),
+      Buffer.alloc(MAX_HANDOFF_BYTES + 1, 0x20),
+    );
+    assert.throws(
+      () => normalizePortableCodexSecurityWorkspace(fixture.resultsDir, fixture.outputDir),
+      /handoff byte limit/i,
+    );
+    assert.equal(fs.existsSync(path.join(fixture.outputDir, "findings.json")), false);
+  } finally {
+    removeFixture(fixture.root);
+  }
+});
+
+test("Portable Codex Security bounds findings and anchors before normalization", () => {
+  const findingFixture = createFixture();
+  try {
+    const findings = Array.from({ length: MAX_FINDINGS + 1 }, (_, index) => ({
+      ...validFinding(),
+      id: `PCS-${String(index + 1).padStart(3, "0")}`,
+    }));
+    writeHandoff(findingFixture, findings);
+    assert.throws(
+      () => normalizePortableCodexSecurityWorkspace(
+        findingFixture.resultsDir,
+        findingFixture.outputDir,
+      ),
+      /finding limit/i,
+    );
+  } finally {
+    removeFixture(findingFixture.root);
+  }
+
+  const anchorFixture = createFixture();
+  try {
+    const finding = validFinding();
+    finding.anchors = Array.from({ length: MAX_ANCHORS_PER_FINDING + 1 }, () => ({
+      path: "src/auth.ts",
+      startLine: 2,
+      endLine: 2,
+    }));
+    writeHandoff(anchorFixture, [finding]);
+    assert.throws(
+      () => normalizePortableCodexSecurityWorkspace(
+        anchorFixture.resultsDir,
+        anchorFixture.outputDir,
+      ),
+      /anchor limit/i,
+    );
+  } finally {
+    removeFixture(anchorFixture.root);
+  }
+});
+
+test("Portable Codex Security bounds text fields and individual hydrated snippets", () => {
+  const textFixture = createFixture();
+  try {
+    writeHandoff(textFixture, [{
+      ...validFinding(),
+      title: "t".repeat(MAX_TEXT_FIELD_BYTES + 1),
+    }]);
+    assert.throws(
+      () => normalizePortableCodexSecurityWorkspace(textFixture.resultsDir, textFixture.outputDir),
+      /text field byte limit/i,
+    );
+  } finally {
+    removeFixture(textFixture.root);
+  }
+
+  const snippetFixture = createFixture();
+  try {
+    fs.writeFileSync(
+      path.join(snippetFixture.snapshotRoot, "src", "large-line.ts"),
+      "x".repeat(MAX_SNIPPET_BYTES + 1),
+    );
+    writeHandoff(snippetFixture, [validFinding({
+      path: "src/large-line.ts",
+      startLine: 1,
+      endLine: 1,
+    })]);
+    assert.throws(
+      () => normalizePortableCodexSecurityWorkspace(
+        snippetFixture.resultsDir,
+        snippetFixture.outputDir,
+      ),
+      /snippet byte limit/i,
+    );
+  } finally {
+    removeFixture(snippetFixture.root);
+  }
+});
+
+test("Portable Codex Security rejects normalized output beyond its cumulative byte budget", () => {
+  const fixture = createFixture();
+  try {
+    fs.writeFileSync(
+      path.join(fixture.snapshotRoot, "src", "wide.ts"),
+      `export const wide = "${"x".repeat(60 * 1024)}";`,
+    );
+    const findings = Array.from({ length: 70 }, (_, index) => ({
+      ...validFinding({ path: "src/wide.ts", startLine: 1, endLine: 1 }),
+      id: `PCS-WIDE-${index + 1}`,
+    }));
+    writeHandoff(fixture, findings);
+    assert.throws(
+      () => normalizePortableCodexSecurityWorkspace(fixture.resultsDir, fixture.outputDir),
+      /output byte budget/i,
+    );
+    assert.equal(fs.existsSync(path.join(fixture.outputDir, "findings.json")), false);
+  } finally {
+    removeFixture(fixture.root);
+  }
+});
+
+test("Portable Codex Security rejects an evidence path swapped after its descriptor is opened", () => {
+  const fixture = createFixture();
+  const target = path.join(fixture.snapshotRoot, "src", "auth.ts");
+  const originalTarget = path.join(fixture.snapshotRoot, "src", "auth-original.ts");
+  let swapped = false;
+  try {
+    writeHandoff(fixture, [validFinding()]);
+
+    assert.throws(
+      () => normalizePortableCodexSecurityWorkspace(fixture.resultsDir, fixture.outputDir, {
+        fileSystem: {
+          openSync: fs.openSync,
+          fstatSync: fs.fstatSync,
+          lstatSync: fs.lstatSync,
+          closeSync: fs.closeSync,
+          readSync: ((...args: unknown[]) => {
+            const bytesRead = Reflect.apply(fs.readSync, fs, args) as number;
+            if (!swapped) {
+              swapped = true;
+              fs.renameSync(target, originalTarget);
+              fs.writeFileSync(target, "export const swapped = true;\n", { mode: 0o600 });
+            }
+            return bytesRead;
+          }) as typeof fs.readSync,
+        },
+      }),
+      /evidence identity changed/i,
+    );
+    assert.equal(swapped, true);
+    assert.equal(fs.existsSync(path.join(fixture.outputDir, "findings.json")), false);
+  } finally {
+    removeFixture(fixture.root);
   }
 });

@@ -150,3 +150,53 @@ test("Portable Codex Security runtime writes atomically, round-trips, and maps b
     removeFixture(root);
   }
 });
+
+test("Portable Codex Security runtime rejects every malformed persisted field", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-runtime-invalid-"));
+  const target = portableCodexSecurityRuntimePath(root);
+  const cases: Array<[string, Record<string, unknown>]> = [
+    ["profileVersion", { ...runtimeState(), profileVersion: "wrong-profile" }],
+    ["methodologyRef", { ...runtimeState(), methodologyRef: "wrong-methodology" }],
+    ["status", { ...runtimeState(), status: "unknown" }],
+    ["stage", { ...runtimeState(), stage: "unknown" }],
+    ["percent", { ...runtimeState(), percent: "56" }],
+    ["detail", { ...runtimeState(), detail: 42 }],
+    ["startedAt", { ...runtimeState(), startedAt: "not-a-date" }],
+    ["updatedAt", { ...runtimeState(), updatedAt: "not-a-date" }],
+    ["lastActivityAt", { ...runtimeState(), lastActivityAt: "not-a-date" }],
+    ["activitySequence", { ...runtimeState(), activitySequence: -1 }],
+    ["completedAt", { ...runtimeState(), completedAt: "not-a-date" }],
+    ["snapshotId", { ...runtimeState(), snapshotId: 42 }],
+    ["sourceRef", { ...runtimeState(), sourceRef: "" }],
+    ["findings", { ...runtimeState(), findings: 1.5 }],
+    ["usage", {
+      ...runtimeState(),
+      usage: { inputTokens: -1, cachedInputTokens: 0, outputTokens: 0 },
+    }],
+    ["error", { ...runtimeState(), error: 42 }],
+    ["errorCode", { ...runtimeState(), errorCode: "provider-secret-detail" }],
+  ];
+
+  try {
+    for (const [field, value] of cases) {
+      fs.writeFileSync(target, JSON.stringify(value));
+      assert.equal(readPortableCodexSecurityRuntime(root), null, field);
+    }
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test("Portable Codex Security normalize progress marks all six methodology stages complete", () => {
+  const progress = portableCodexSecurityRuntimeProgress(runtimeState({
+    stage: "normalize",
+    stageLabel: "Normalizing findings",
+    percent: 99,
+  }));
+
+  assert.equal(progress.phase, "reporting");
+  assert.equal(progress.itemsCompleted, 6);
+  assert.equal(progress.currentItem, 6);
+  assert.equal(progress.itemsTotal, 6);
+  assert.equal(progress.indeterminate, true);
+});

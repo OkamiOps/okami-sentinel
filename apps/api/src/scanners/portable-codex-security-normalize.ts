@@ -3,10 +3,40 @@ import fs from "node:fs";
 import path from "node:path";
 import { normalizeSeverity } from "@csb/shared";
 
-import { PORTABLE_CODEX_SECURITY_NAMESPACE } from "./portable-codex-security-profile.js";
+import {
+  globalSecretRedactor,
+  type SecretRedactor,
+} from "../redaction.js";
+import {
+  PORTABLE_CODEX_SECURITY_METHODOLOGY_REF,
+  PORTABLE_CODEX_SECURITY_NAMESPACE,
+} from "./portable-codex-security-profile.js";
 
-const MAX_EVIDENCE_FILE_BYTES = 2 * 1024 * 1024;
-const MAX_ANCHOR_LINES = 200;
+export const PORTABLE_CODEX_SECURITY_NORMALIZATION_LIMITS = Object.freeze({
+  maxHandoffBytes: 1_048_576,
+  maxFindings: 100,
+  maxAnchorsPerFinding: 20,
+  maxTextFieldBytes: 16_384,
+  maxSnippetBytes: 65_536,
+  maxEvidenceFileBytes: 2_097_152,
+  maxAnchorLines: 200,
+  maxOutputBytes: 4_194_304,
+} as const);
+
+export type PortableCodexSecurityPinnedFileSystem = Pick<
+  typeof fs,
+  "openSync" | "fstatSync" | "readSync" | "lstatSync" | "closeSync"
+>;
+
+const NO_FOLLOW = typeof fs.constants.O_NOFOLLOW === "number"
+  ? fs.constants.O_NOFOLLOW
+  : 0;
+const READ_NO_FOLLOW = fs.constants.O_RDONLY | NO_FOLLOW;
+
+export interface PortableCodexSecurityNormalizationDependencies {
+  redactor?: Pick<SecretRedactor, "redactText">;
+  fileSystem?: PortableCodexSecurityPinnedFileSystem;
+}
 
 type PortableCodexSecurityEvidenceRole =
   | "source"
@@ -64,15 +94,57 @@ function text(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function boundedText(value: unknown, field: string): string | null {
+  const result = text(value);
+  if (
+    result !== null &&
+    Buffer.byteLength(result, "utf8") >
+      PORTABLE_CODEX_SECURITY_NORMALIZATION_LIMITS.maxTextFieldBytes
+  ) {
+    throw new PortableCodexSecurityArtifactError(`text field byte limit exceeded for ${field}`);
+  }
+  return result;
+}
+
 function requiredText(
   finding: PortableCodexSecurityFindingRecord,
   field: "id" | "title" | "severity" | "confidence" | "category" | "remediation",
 ): string {
-  const value = text(finding[field]);
+  const value = boundedText(finding[field], field);
   if (!value) {
     throw new PortableCodexSecurityArtifactError(`finding is missing required ${field}`);
   }
   return value;
+}
+
+function redactPublicText(
+  value: string,
+  field: string,
+  redactor: Pick<SecretRedactor, "redactText">,
+  byteLimit: number = PORTABLE_CODEX_SECURITY_NORMALIZATION_LIMITS.maxTextFieldBytes,
+): string {
+  let redacted: string;
+  try {
+    redacted = redactor.redactText(value);
+  } catch {
+    throw new PortableCodexSecurityArtifactError("redaction failed");
+  }
+  if (
+    typeof redacted !== "string" ||
+    Buffer.byteLength(redacted, "utf8") > byteLimit
+  ) {
+    throw new PortableCodexSecurityArtifactError(`redacted ${field} exceeds its byte limit`);
+  }
+  return redacted;
+}
+
+function redactOptionalText(
+  value: unknown,
+  field: string,
+  redactor: Pick<SecretRedactor, "redactText">,
+): string | null {
+  const bounded = boundedText(value, field);
+  return bounded === null ? null : redactPublicText(bounded, field, redactor);
 }
 
 function positiveInteger(value: unknown, field: string): number {
@@ -84,7 +156,7 @@ function positiveInteger(value: unknown, field: string): number {
 }
 
 function repositoryRelativePath(value: unknown): string {
-  const raw = text(value)?.replaceAll("\\", "/");
+  const raw = boundedText(value, "anchor path")?.replaceAll("\\", "/");
   if (!raw) throw new PortableCodexSecurityArtifactError("anchor path is missing");
   if (raw.includes("\0")) throw new PortableCodexSecurityArtifactError("anchor path contains NUL");
   if (raw.startsWith("/") || /^[A-Za-z]:\//.test(raw)) {
@@ -137,72 +209,171 @@ function parseAnchor(raw: PortableCodexSecurityAnchorRecord | string): {
     startLine,
     endLine,
     role,
-    explanation: text(raw.explanation),
+    explanation: boundedText(raw.explanation, "anchor explanation"),
   };
+}
+
+function sameVersion(first: fs.Stats, second: fs.Stats): boolean {
+  return first.dev === second.dev && first.ino === second.ino &&
+    first.size === second.size && first.mtimeMs === second.mtimeMs &&
+    first.ctimeMs === second.ctimeMs;
+}
+
+function readPinnedRegularFile(
+  target: string,
+  expected: fs.Stats,
+  maxBytes: number,
+  byteLimitReason: string,
+  identityReason: string,
+  fileSystem: PortableCodexSecurityPinnedFileSystem = fs,
+): Buffer {
+  let descriptor: number | undefined;
+  try {
+    descriptor = fileSystem.openSync(target, READ_NO_FOLLOW);
+    const opened = fileSystem.fstatSync(descriptor);
+    if (
+      !expected.isFile() ||
+      expected.isSymbolicLink() ||
+      !opened.isFile() ||
+      opened.isSymbolicLink() ||
+      !sameVersion(expected, opened)
+    ) {
+      throw new PortableCodexSecurityArtifactError(identityReason);
+    }
+    if (opened.size > maxBytes) {
+      throw new PortableCodexSecurityArtifactError(byteLimitReason);
+    }
+
+    const content = Buffer.alloc(opened.size);
+    let offset = 0;
+    while (offset < content.length) {
+      const bytesRead = fileSystem.readSync(
+        descriptor,
+        content,
+        offset,
+        content.length - offset,
+        offset,
+      );
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+
+    const afterRead = fileSystem.fstatSync(descriptor);
+    const afterPath = fileSystem.lstatSync(target);
+    if (
+      offset !== content.length ||
+      afterPath.isSymbolicLink() ||
+      !sameVersion(opened, afterRead) ||
+      !sameVersion(opened, afterPath)
+    ) {
+      throw new PortableCodexSecurityArtifactError(identityReason);
+    }
+    return content;
+  } catch (error) {
+    if (error instanceof PortableCodexSecurityArtifactError) throw error;
+    throw new PortableCodexSecurityArtifactError(identityReason);
+  } finally {
+    if (descriptor !== undefined) fileSystem.closeSync(descriptor);
+  }
 }
 
 function lineSnippet(
   snapshotRoot: string,
   anchor: ReturnType<typeof parseAnchor>,
+  fileSystem: PortableCodexSecurityPinnedFileSystem,
 ): CanonicalAnchor {
   if (anchor.endLine < anchor.startLine) {
     throw new PortableCodexSecurityArtifactError("reversed range");
   }
-  if (anchor.endLine - anchor.startLine + 1 > MAX_ANCHOR_LINES) {
+  if (
+    anchor.endLine - anchor.startLine + 1 >
+      PORTABLE_CODEX_SECURITY_NORMALIZATION_LIMITS.maxAnchorLines
+  ) {
     throw new PortableCodexSecurityArtifactError("range over 200 lines");
   }
 
   let root: string;
+  let rootInfo: fs.Stats;
   try {
     root = fs.realpathSync(snapshotRoot);
+    rootInfo = fs.lstatSync(root);
   } catch {
     throw new PortableCodexSecurityArtifactError("snapshot root is missing");
   }
-
-  const segments = anchor.path.split("/");
-  let candidate = root;
-  for (const segment of segments) {
-    candidate = path.join(candidate, segment);
-    let stat: fs.Stats;
-    try {
-      stat = fs.lstatSync(candidate);
-    } catch {
-      throw new PortableCodexSecurityArtifactError(`missing file ${anchor.path}`);
-    }
-    if (stat.isSymbolicLink()) {
-      throw new PortableCodexSecurityArtifactError(`symlink ${anchor.path}`);
-    }
+  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
+    throw new PortableCodexSecurityArtifactError("snapshot root is missing");
   }
 
   const target = path.resolve(root, anchor.path);
   const relative = path.relative(root, target);
-  if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+  if (
+    relative === "" ||
+    relative === ".." ||
+    relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative)
+  ) {
     throw new PortableCodexSecurityArtifactError("traversal");
   }
-  let stat: fs.Stats;
-  try {
-    stat = fs.statSync(target);
-  } catch {
+
+  let candidate = root;
+  let targetInfo: fs.Stats | undefined;
+  for (const segment of anchor.path.split("/")) {
+    candidate = path.join(candidate, segment);
+    try {
+      targetInfo = fs.lstatSync(candidate);
+    } catch {
+      throw new PortableCodexSecurityArtifactError(`missing file ${anchor.path}`);
+    }
+    if (targetInfo.isSymbolicLink()) {
+      throw new PortableCodexSecurityArtifactError(`symlink ${anchor.path}`);
+    }
+  }
+  if (targetInfo === undefined) {
     throw new PortableCodexSecurityArtifactError(`missing file ${anchor.path}`);
   }
-  if (stat.isDirectory()) {
+  if (targetInfo.isDirectory()) {
     throw new PortableCodexSecurityArtifactError(`directory ${anchor.path}`);
   }
-  if (!stat.isFile()) {
+  if (!targetInfo.isFile()) {
     throw new PortableCodexSecurityArtifactError(`non-file ${anchor.path}`);
   }
-  if (stat.size > MAX_EVIDENCE_FILE_BYTES) {
+  if (
+    targetInfo.size >
+      PORTABLE_CODEX_SECURITY_NORMALIZATION_LIMITS.maxEvidenceFileBytes
+  ) {
     throw new PortableCodexSecurityArtifactError(`oversized file ${anchor.path}`);
   }
 
-  const lines = fs.readFileSync(target, "utf8").split(/\r?\n/);
+  const content = readPinnedRegularFile(
+    target,
+    targetInfo,
+    PORTABLE_CODEX_SECURITY_NORMALIZATION_LIMITS.maxEvidenceFileBytes,
+    `oversized file ${anchor.path}`,
+    "evidence identity changed",
+    fileSystem,
+  );
+  let rootAfterRead: fs.Stats;
+  try {
+    rootAfterRead = fs.lstatSync(root);
+  } catch {
+    throw new PortableCodexSecurityArtifactError("evidence identity changed");
+  }
+  if (!sameVersion(rootInfo, rootAfterRead)) {
+    throw new PortableCodexSecurityArtifactError("evidence identity changed");
+  }
+
+  const lines = content.toString("utf8").split(/\r?\n/);
   if (anchor.startLine > lines.length || anchor.endLine > lines.length) {
     throw new PortableCodexSecurityArtifactError("out-of-range line");
   }
-  return {
-    ...anchor,
-    code: lines.slice(anchor.startLine - 1, anchor.endLine).join("\n"),
-  };
+  const code = lines.slice(anchor.startLine - 1, anchor.endLine).join("\n");
+  if (
+    Buffer.byteLength(code, "utf8") >
+      PORTABLE_CODEX_SECURITY_NORMALIZATION_LIMITS.maxSnippetBytes
+  ) {
+    throw new PortableCodexSecurityArtifactError("snippet byte limit exceeded");
+  }
+  return { ...anchor, code };
 }
 
 function languageForPath(filePath: string): string {
@@ -257,24 +428,70 @@ function fingerprint(
 function normalizeFinding(
   finding: PortableCodexSecurityFindingRecord,
   snapshotRoot: string,
+  redactor: Pick<SecretRedactor, "redactText">,
+  fileSystem: PortableCodexSecurityPinnedFileSystem,
 ): Record<string, unknown> {
-  const id = requiredText(finding, "id");
-  const title = requiredText(finding, "title");
+  const rawId = requiredText(finding, "id");
+  const id = redactPublicText(rawId, "id", redactor);
+  const title = redactPublicText(requiredText(finding, "title"), "title", redactor);
   const requestedSeverity = requiredText(finding, "severity");
   const severity = normalizeSeverity(requestedSeverity);
   if (severity === "unknown") {
     throw new PortableCodexSecurityArtifactError("severity is invalid");
   }
   const confidence = normalizeConfidence(requiredText(finding, "confidence"));
-  const category = requiredText(finding, "category");
-  const remediation = requiredText(finding, "remediation");
+  const category = redactPublicText(
+    requiredText(finding, "category"),
+    "category",
+    redactor,
+  );
+  const remediation = redactPublicText(
+    requiredText(finding, "remediation"),
+    "remediation",
+    redactor,
+  );
   if (!Array.isArray(finding.anchors) || finding.anchors.length === 0) {
     throw new PortableCodexSecurityArtifactError(`finding ${id} has no path:line[-line] anchor`);
   }
-  const anchors = finding.anchors.map((anchor) => lineSnippet(snapshotRoot, parseAnchor(anchor)));
+  if (
+    finding.anchors.length >
+      PORTABLE_CODEX_SECURITY_NORMALIZATION_LIMITS.maxAnchorsPerFinding
+  ) {
+    throw new PortableCodexSecurityArtifactError(`finding ${id} exceeds the anchor limit`);
+  }
+  const rawAnchors = finding.anchors.map((anchor) =>
+    lineSnippet(snapshotRoot, parseAnchor(anchor), fileSystem)
+  );
+  const anchors = rawAnchors.map((anchor) => ({
+    ...anchor,
+    path: redactPublicText(anchor.path, "anchor path", redactor),
+    explanation: anchor.explanation === null
+      ? null
+      : redactPublicText(anchor.explanation, "anchor explanation", redactor),
+    code: redactPublicText(
+      anchor.code,
+      "source snippet",
+      redactor,
+      PORTABLE_CODEX_SECURITY_NORMALIZATION_LIMITS.maxSnippetBytes,
+    ),
+  }));
   const evidenceRefs = anchors.map((_, index) => `evidence-${index + 1}`);
-  const cwe = (finding.cwe ?? []).filter(
-    (value): value is string => typeof value === "string" && /^CWE-\d+$/i.test(value),
+  if (finding.cwe !== undefined && !Array.isArray(finding.cwe)) {
+    throw new PortableCodexSecurityArtifactError(`finding ${id} has invalid cwe data`);
+  }
+  const cwe = (finding.cwe ?? []).flatMap((value) => {
+    const bounded = boundedText(value, "cwe");
+    if (bounded === null || !/^CWE-\d+$/i.test(bounded)) return [];
+    const redacted = redactPublicText(bounded, "cwe", redactor);
+    return /^CWE-\d+$/i.test(redacted) ? [redacted] : [];
+  });
+  const summary = redactOptionalText(finding.summary, "summary", redactor);
+  const impact = redactOptionalText(finding.impact, "impact", redactor);
+  const rootCause = redactOptionalText(finding.rootCause, "rootCause", redactor);
+  const severityRationale = redactOptionalText(
+    finding.severityRationale,
+    "severityRationale",
+    redactor,
   );
   const primary = fingerprint(id, severity, category, anchors);
 
@@ -282,10 +499,10 @@ function normalizeFinding(
     findingId: `portable-codex-security-${id}`,
     occurrenceId: id,
     title,
-    summary: text(finding.summary) ?? text(finding.impact) ?? title,
+    summary: summary ?? impact ?? title,
     severity: {
       level: severity,
-      rationale: text(finding.severityRationale),
+      rationale: severityRationale,
     },
     confidence: {
       level: confidence,
@@ -313,7 +530,7 @@ function normalizeFinding(
         : `${anchor.startLine}-${anchor.endLine}`,
       role: anchor.role,
       code: anchor.code,
-      language: languageForPath(anchor.path),
+      language: languageForPath(rawAnchors[index]!.path),
       explanation: anchor.explanation ?? "Reported by the Portable Codex Security static review.",
     })),
     taxonomy: {
@@ -321,24 +538,24 @@ function normalizeFinding(
       cwe,
     },
     attackPath: {
-      summary: text(finding.summary),
+      summary,
       evidenceRefs,
       reachability: {
         attacker: "Untrusted caller",
         preconditions: null,
       },
       dataflow: {
-        summary: text(finding.rootCause),
-        outcome: text(finding.impact),
+        summary: rootCause,
+        outcome: impact,
         evidenceRefs,
       },
     },
     rootCause: {
-      summary: text(finding.rootCause),
+      summary: rootCause,
     },
     validation: {
       status: "STATIC_REVIEW",
-      summary: text(finding.summary),
+      summary,
       method: "Portable Codex Security static validation; no target code, exploit payload, or PoC was executed.",
       supportingEvidence: evidenceRefs,
     },
@@ -358,12 +575,31 @@ export function readPortableCodexSecurityFindingRecords(
   resultsDir: string,
 ): PortableCodexSecurityFindingRecord[] {
   const handoffPath = path.join(resultsDir, "sentinel-findings.json");
-  if (!fs.existsSync(handoffPath)) {
+  let handoffInfo: fs.Stats;
+  try {
+    handoffInfo = fs.lstatSync(handoffPath);
+  } catch {
     throw new PortableCodexSecurityArtifactError("missing sentinel-findings.json");
   }
+  if (handoffInfo.isSymbolicLink() || !handoffInfo.isFile()) {
+    throw new PortableCodexSecurityArtifactError("sentinel-findings.json is not a regular file");
+  }
+  if (
+    handoffInfo.size >
+      PORTABLE_CODEX_SECURITY_NORMALIZATION_LIMITS.maxHandoffBytes
+  ) {
+    throw new PortableCodexSecurityArtifactError("handoff byte limit exceeded");
+  }
+  const handoffBytes = readPinnedRegularFile(
+    handoffPath,
+    handoffInfo,
+    PORTABLE_CODEX_SECURITY_NORMALIZATION_LIMITS.maxHandoffBytes,
+    "handoff byte limit exceeded",
+    "handoff identity changed",
+  );
   let handoff: PortableCodexSecurityHandoff;
   try {
-    handoff = JSON.parse(fs.readFileSync(handoffPath, "utf8")) as PortableCodexSecurityHandoff;
+    handoff = JSON.parse(handoffBytes.toString("utf8")) as PortableCodexSecurityHandoff;
   } catch {
     throw new PortableCodexSecurityArtifactError("sentinel-findings.json is not valid JSON");
   }
@@ -372,6 +608,12 @@ export function readPortableCodexSecurityFindingRecords(
   }
   if (handoff.stage !== undefined && handoff.stage !== "report") {
     throw new PortableCodexSecurityArtifactError("sentinel-findings.json has an invalid stage");
+  }
+  if (
+    handoff.findings.length >
+      PORTABLE_CODEX_SECURITY_NORMALIZATION_LIMITS.maxFindings
+  ) {
+    throw new PortableCodexSecurityArtifactError("finding limit exceeded");
   }
   const ids = new Set<string>();
   handoff.findings.forEach((finding, index) => {
@@ -384,6 +626,13 @@ export function readPortableCodexSecurityFindingRecords(
     requiredText(finding, "confidence");
     requiredText(finding, "category");
     requiredText(finding, "remediation");
+    if (
+      Array.isArray(finding.anchors) &&
+      finding.anchors.length >
+        PORTABLE_CODEX_SECURITY_NORMALIZATION_LIMITS.maxAnchorsPerFinding
+    ) {
+      throw new PortableCodexSecurityArtifactError(`finding ${id} exceeds the anchor limit`);
+    }
     if (ids.has(id)) {
       throw new PortableCodexSecurityArtifactError(`duplicate finding id ${id}`);
     }
@@ -395,23 +644,35 @@ export function readPortableCodexSecurityFindingRecords(
 export function normalizePortableCodexSecurityWorkspace(
   resultsDir: string,
   outputDir: string,
+  dependencies: PortableCodexSecurityNormalizationDependencies = {},
 ): number {
   const raw = readPortableCodexSecurityFindingRecords(resultsDir);
   const snapshotRoot = path.join(outputDir, "portable-codex-security-snapshot");
-  const findings = raw.map((finding) => normalizeFinding(finding, snapshotRoot));
+  const redactor = dependencies.redactor ?? globalSecretRedactor;
+  const fileSystem = dependencies.fileSystem ?? fs;
+  const findings = raw.map((finding) =>
+    normalizeFinding(finding, snapshotRoot, redactor, fileSystem)
+  );
   const payload = {
     schemaVersion: 1,
     engine: "codex-security",
     executionProfile: "portable",
-    methodologyRef: "sentinel/codex-security-methodology@v1",
+    methodologyRef: PORTABLE_CODEX_SECURITY_METHODOLOGY_REF,
     generatedAt: new Date().toISOString(),
     sourceFindings: raw.length,
     findings,
   };
+  const serialized = `${JSON.stringify(payload, null, 2)}\n`;
+  if (
+    Buffer.byteLength(serialized, "utf8") >
+      PORTABLE_CODEX_SECURITY_NORMALIZATION_LIMITS.maxOutputBytes
+  ) {
+    throw new PortableCodexSecurityArtifactError("output byte budget exceeded");
+  }
   fs.mkdirSync(outputDir, { recursive: true, mode: 0o700 });
   const target = path.join(outputDir, "findings.json");
   const temporary = `${target}.tmp-${process.pid}-${Date.now()}`;
-  fs.writeFileSync(temporary, `${JSON.stringify(payload, null, 2)}\n`, {
+  fs.writeFileSync(temporary, serialized, {
     encoding: "utf8",
     mode: 0o600,
   });

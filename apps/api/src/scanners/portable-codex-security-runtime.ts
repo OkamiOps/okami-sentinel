@@ -1,8 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { SafeProviderErrorCode, ScanProgress } from "@csb/shared";
+import {
+  isSafeProviderErrorCode,
+  type SafeProviderErrorCode,
+  type ScanProgress,
+} from "@csb/shared";
 
 import {
+  PORTABLE_CODEX_SECURITY_METHODOLOGY_REF,
+  PORTABLE_CODEX_SECURITY_PROFILE_VERSION,
   PORTABLE_CODEX_SECURITY_STAGES,
   type PortableCodexSecurityStage,
 } from "./portable-codex-security-profile.js";
@@ -35,16 +41,122 @@ export function portableCodexSecurityRuntimePath(scanDir: string): string {
   return path.join(scanDir, "portable-codex-security-runtime.json");
 }
 
+const RUNTIME_STATUSES = new Set([
+  "preparing",
+  "running",
+  "completed",
+  "failed",
+  "cancelled",
+]);
+const RUNTIME_STAGES = new Set([
+  ...PORTABLE_CODEX_SECURITY_STAGES.map((stage) => stage.id),
+  "normalize",
+]);
+const RUNTIME_KEYS = new Set([
+  "engine",
+  "executionProfile",
+  "profileVersion",
+  "methodologyRef",
+  "status",
+  "stage",
+  "stageLabel",
+  "percent",
+  "detail",
+  "startedAt",
+  "updatedAt",
+  "lastActivityAt",
+  "activitySequence",
+  "completedAt",
+  "snapshotId",
+  "sourceRef",
+  "findings",
+  "usage",
+  "error",
+  "errorCode",
+]);
+const USAGE_KEYS = new Set([
+  "reported",
+  "inputTokens",
+  "cachedInputTokens",
+  "cacheWriteInputTokens",
+  "outputTokens",
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: Set<string>): boolean {
+  return Object.keys(value).every((key) => keys.has(key));
+}
+
+function nonNegativeSafeInteger(value: unknown): boolean {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function canonicalTimestamp(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+}
+
+function validUsage(value: unknown): value is ScannerUsage {
+  if (!isRecord(value) || !hasOnlyKeys(value, USAGE_KEYS)) return false;
+  return (
+    (value.reported === undefined || typeof value.reported === "boolean") &&
+    nonNegativeSafeInteger(value.inputTokens) &&
+    nonNegativeSafeInteger(value.cachedInputTokens) &&
+    (value.cacheWriteInputTokens === undefined ||
+      nonNegativeSafeInteger(value.cacheWriteInputTokens)) &&
+    nonNegativeSafeInteger(value.outputTokens)
+  );
+}
+
+function validPortableCodexSecurityRuntime(
+  value: unknown,
+): value is PortableCodexSecurityRuntimeState {
+  if (!isRecord(value) || !hasOnlyKeys(value, RUNTIME_KEYS)) return false;
+  return (
+    value.engine === "codex-security" &&
+    value.executionProfile === "portable" &&
+    value.profileVersion === PORTABLE_CODEX_SECURITY_PROFILE_VERSION &&
+    value.methodologyRef === PORTABLE_CODEX_SECURITY_METHODOLOGY_REF &&
+    typeof value.status === "string" &&
+    RUNTIME_STATUSES.has(value.status) &&
+    typeof value.stage === "string" &&
+    RUNTIME_STAGES.has(value.stage) &&
+    typeof value.stageLabel === "string" &&
+    value.stageLabel.trim().length > 0 &&
+    typeof value.percent === "number" &&
+    Number.isFinite(value.percent) &&
+    value.percent >= 0 &&
+    value.percent <= 100 &&
+    (value.detail === null || typeof value.detail === "string") &&
+    canonicalTimestamp(value.startedAt) &&
+    canonicalTimestamp(value.updatedAt) &&
+    (value.lastActivityAt === undefined || value.lastActivityAt === null ||
+      canonicalTimestamp(value.lastActivityAt)) &&
+    (value.activitySequence === undefined || nonNegativeSafeInteger(value.activitySequence)) &&
+    (value.completedAt === null || canonicalTimestamp(value.completedAt)) &&
+    (value.snapshotId === null ||
+      (typeof value.snapshotId === "string" && value.snapshotId.length > 0)) &&
+    typeof value.sourceRef === "string" &&
+    value.sourceRef.length > 0 &&
+    nonNegativeSafeInteger(value.findings) &&
+    validUsage(value.usage) &&
+    (value.error === null || typeof value.error === "string") &&
+    (value.errorCode === null || isSafeProviderErrorCode(value.errorCode))
+  );
+}
+
 export function readPortableCodexSecurityRuntime(
   scanDir: string,
 ): PortableCodexSecurityRuntimeState | null {
   const target = portableCodexSecurityRuntimePath(scanDir);
   if (!fs.existsSync(target)) return null;
   try {
-    const parsed = JSON.parse(fs.readFileSync(target, "utf8")) as PortableCodexSecurityRuntimeState;
-    return parsed.engine === "codex-security" && parsed.executionProfile === "portable"
-      ? parsed
-      : null;
+    const parsed: unknown = JSON.parse(fs.readFileSync(target, "utf8"));
+    return validPortableCodexSecurityRuntime(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -98,9 +210,14 @@ export function portableCodexSecurityRuntimeProgress(
     (stage) => stage.id === state.stage,
   );
   const completed = state.status === "completed";
+  const methodologyCompleted = completed || state.stage === "normalize";
   const itemsTotal = PORTABLE_CODEX_SECURITY_STAGES.length;
-  const itemsCompleted = completed ? itemsTotal : Math.max(0, stageIndex);
-  const currentItem = completed ? itemsTotal : stageIndex >= 0 ? stageIndex + 1 : 0;
+  const itemsCompleted = methodologyCompleted ? itemsTotal : Math.max(0, stageIndex);
+  const currentItem = methodologyCompleted
+    ? itemsTotal
+    : stageIndex >= 0
+      ? stageIndex + 1
+      : 0;
 
   return {
     percent: boundedPercent(state),
