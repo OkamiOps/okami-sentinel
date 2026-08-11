@@ -316,6 +316,78 @@ test("Codex app-server stays eligible for local Mantis without an HTTP probe", (
   assert.equal(decision.capabilityCheckId, null);
 });
 
+test("Mantis accepts only the exact Claude Code local existing-session contract", () => {
+  const claude = connection("claude-code-local", {
+    providerKind: "anthropic",
+    transport: "local-cli",
+    authKind: "existing-session",
+    protocol: "claude-code-cli",
+    modelSelectionMode: "runtime-default",
+  });
+  const runtimeDefault = resolveCompatibility({
+    engine: "mantis",
+    connection: claude,
+    selection: {
+      connectionId: "conn-a",
+      modelSelectionMode: "runtime-default",
+      modelId: null,
+    },
+    model: null,
+    probe: null,
+    now: NOW,
+  });
+
+  assert.deepEqual(runtimeDefault, {
+    connectionId: "conn-a",
+    modelSelectionMode: "runtime-default",
+    modelId: null,
+    eligible: true,
+    reasons: [],
+    runnerKind: "local-agent-session",
+    protocol: "claude-code-cli",
+    capabilityCheckId: null,
+  });
+
+  const catalog = resolveCompatibility({
+    engine: "mantis",
+    connection: { ...claude, modelSelectionMode: "catalog", modelCatalogStale: false },
+    selection: {
+      connectionId: "conn-a",
+      modelSelectionMode: "catalog",
+      modelId: "claude-visible",
+    },
+    model: model("claude-visible", { source: "runtime" }),
+    probe: null,
+    now: NOW,
+  });
+  assert.equal(catalog.eligible, true);
+  assert.equal(catalog.runnerKind, "local-agent-session");
+
+  const mismatches: ProviderConnection[] = [
+    { ...claude, providerKind: "xai" },
+    { ...claude, routeKind: "xai-grok-build-local", protocol: "grok-build-cli" },
+    { ...claude, routeKind: "cursor-agent-local", protocol: "cursor-agent-cli" },
+    { ...claude, authKind: "browser-oauth" as const },
+    { ...claude, transport: "http-inference" as const },
+  ];
+  for (const candidate of mismatches) {
+    const decision = resolveCompatibility({
+      engine: "mantis",
+      connection: candidate,
+      selection: {
+        connectionId: "conn-a",
+        modelSelectionMode: "runtime-default",
+        modelId: null,
+      },
+      model: null,
+      probe: null,
+      now: NOW,
+    });
+    assert.equal(decision.eligible, false, `${candidate.routeKind}/${candidate.providerKind}`);
+    assert.notDeepEqual(decision.reasons, [], `${candidate.routeKind}/${candidate.providerKind}`);
+  }
+});
+
 test("a remote Cursor job never silently substitutes a local snapshot", () => {
   const decision = resolveCompatibility({
     engine: "mantis",

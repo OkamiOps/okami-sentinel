@@ -119,6 +119,9 @@ export function resolveScanLaunchSelection(
     }
     throw new ScanSelectionError("provider_runner_unavailable");
   }
+  if (plan.runnerKind === "local-agent-session") {
+    return selectClaudeCodeLocalMantis(input.request, plan);
+  }
   if (plan.runnerKind === "remote-agent-job") {
     throw new ScanSelectionError("provider_runner_unavailable");
   }
@@ -144,6 +147,61 @@ export function resolveScanLaunchSelection(
     plan,
     connectionAware: true,
   };
+}
+
+/**
+ * The browser never chooses local-session metadata. A runtime-default plan
+ * intentionally omits `model`, preserving the CLI's own selected default.
+ */
+function selectClaudeCodeLocalMantis(
+  request: StartScanRequest,
+  plan: ScanLaunchPlan,
+): ResolvedScanLaunchSelection {
+  if (!isClaudeCodeLocalMantisPlan(plan)) {
+    throw new ScanSelectionError("provider_runner_unavailable");
+  }
+  const { provider: _provider, model: _model, authMode: _authMode, ...safeRequest } = request;
+  if (plan.snapshot.modelSelectionMode === "runtime-default") {
+    if (plan.model !== null || plan.snapshot.modelId !== null || plan.capabilityCheckId !== null) {
+      throw new ScanSelectionError("provider_model_unavailable");
+    }
+    return {
+      request: {
+        ...safeRequest,
+        provider: "anthropic",
+        authMode: "existing-session",
+      },
+      model: null,
+      plan,
+      connectionAware: true,
+    };
+  }
+  if (
+    plan.model === null ||
+    plan.snapshot.modelId !== plan.model.id ||
+    plan.capabilityCheckId !== null
+  ) {
+    throw new ScanSelectionError("provider_model_unavailable");
+  }
+  return {
+    request: {
+      ...safeRequest,
+      provider: "anthropic",
+      model: plan.model.id,
+      authMode: "existing-session",
+    },
+    model: plan.model.id,
+    plan,
+    connectionAware: true,
+  };
+}
+
+function isClaudeCodeLocalMantisPlan(plan: ScanLaunchPlan): boolean {
+  return plan.engine === "mantis" &&
+    plan.providerKind === "anthropic" &&
+    plan.routeKind === "claude-code-local" &&
+    plan.protocol === "claude-code-cli" &&
+    plan.scannerAuthMode === "existing-session";
 }
 
 function isMantisHttpAgentPlan(plan: ScanLaunchPlan): boolean {

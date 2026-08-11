@@ -12,6 +12,7 @@ export type RunnerKind =
   | "codex-security-contract"
   | "codex-app-server"
   | "agent-session"
+  | "local-agent-session"
   | "remote-agent-job";
 
 export type CompatibilityReason =
@@ -119,6 +120,15 @@ export function resolveCompatibility(
     );
   }
 
+  if (isClaudeCodeLocalMantisSession(input)) {
+    return eligible(
+      base,
+      "local-agent-session",
+      input.connection.protocol,
+      null,
+    );
+  }
+
   if (input.connection.transport !== "http-inference") {
     return blocked(base, ["runner_capability_missing"]);
   }
@@ -135,6 +145,21 @@ export function resolveCompatibility(
       input.probe!.id,
     ),
   );
+}
+
+/**
+ * Local-agent eligibility is deliberately narrower than local route
+ * registration. The defensive execution seam currently reviews only this
+ * exact Claude Code session; Grok and Cursor remain fail-closed.
+ */
+function isClaudeCodeLocalMantisSession(input: CompatibilityInput): boolean {
+  const { connection } = input;
+  return input.engine === "mantis" &&
+    connection.providerKind === "anthropic" &&
+    connection.routeKind === "claude-code-local" &&
+    connection.transport === "local-cli" &&
+    connection.authKind === "existing-session" &&
+    connection.protocol === "claude-code-cli";
 }
 
 function isCodexSecurityRoute(connection: ProviderConnection): boolean {

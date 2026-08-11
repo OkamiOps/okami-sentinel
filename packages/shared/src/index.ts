@@ -21,7 +21,11 @@ export type ScanMode = "standard" | "deep";
 
 export type ScannerEngine = "codex-security" | "mantis" | "vulnhunter";
 
-export type ScannerAuthMode = "chatgpt" | "api-key";
+/**
+ * `existing-session` identifies a provider-owned local CLI session. It is not
+ * interchangeable with a ChatGPT subscription or an API credential.
+ */
+export type ScannerAuthMode = "chatgpt" | "api-key" | "existing-session";
 
 export type ScannerMaturity = "stable" | "preview" | "experimental";
 

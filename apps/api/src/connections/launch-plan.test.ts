@@ -188,6 +188,48 @@ test("VulnHunter launch supplies its immutable methodology facts server-side", (
   assert.equal(plan.capabilityCheckId, "probe-a");
 });
 
+test("Claude Code runtime-default launch persists no browser model fallback", () => {
+  const { resolver, snapshots } = fixture({
+    connection: connection({
+      providerKind: "anthropic",
+      routeKind: "claude-code-local",
+      transport: "local-cli",
+      authKind: "existing-session",
+      protocol: "claude-code-cli",
+      credentialRef: null,
+      modelSelectionMode: "runtime-default",
+      modelCatalogStale: false,
+    }),
+    model: null,
+    probe: null,
+  });
+
+  const plan = resolver.resolve({
+    scanId: "scan-claude-runtime-default",
+    engine: "mantis",
+    selection: {
+      connectionId: "conn-a",
+      modelSelectionMode: "runtime-default",
+      modelId: null,
+    },
+  });
+
+  assert.equal(plan.runnerKind, "local-agent-session");
+  assert.equal(plan.model, null);
+  assert.equal(plan.capabilityCheckId, null);
+  assert.equal(plan.scannerAuthMode, "existing-session");
+  assert.deepEqual(plan.snapshot, {
+    scanId: "scan-claude-runtime-default",
+    connectionId: "conn-a",
+    routeKind: "claude-code-local",
+    modelSelectionMode: "runtime-default",
+    modelId: null,
+    capabilityCheckId: null,
+    capturedAt: NOW.toISOString(),
+  });
+  assert.deepEqual(snapshots, [plan.snapshot]);
+});
+
 test("missing connection and stale probe fail without a snapshot", () => {
   const missing = fixture({ connection: null });
   assert.throws(() => missing.resolver.resolve({

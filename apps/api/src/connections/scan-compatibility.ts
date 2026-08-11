@@ -88,6 +88,14 @@ function runnerIsWired(
     return connection.routeKind === "openai-codex-local" ||
       connection.routeKind === "openai-chatgpt-app-server";
   }
+  if (resolved.runnerKind === "local-agent-session") {
+    return input.engine === "mantis" &&
+      connection.providerKind === "anthropic" &&
+      connection.routeKind === "claude-code-local" &&
+      connection.transport === "local-cli" &&
+      connection.authKind === "existing-session" &&
+      connection.protocol === "claude-code-cli";
+  }
   if (resolved.runnerKind !== "agent-session") return false;
   if (input.engine === "mantis") {
     if (connection.routeKind === "xai-oauth" || connection.protocol === "xai-oauth-responses") {

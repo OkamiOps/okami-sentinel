@@ -156,8 +156,12 @@ export function rowToScanRun(row: BenchmarkRow): ScanRun {
     (row.cached_input_tokens ?? 0) <= 0 &&
     (row.cache_write_tokens ?? 0) <= 0 &&
     (row.output_tokens ?? 0) <= 0;
+  // A local existing-session CLI exposes no billable/token accounting contract.
+  // Its output must never be re-priced from the OpenRouter catalog.
+  const localSessionUsageUnreported =
+    row.engine === "mantis" && row.auth_mode === "existing-session";
   const cost: ScanCost | null =
-    row.estimated_usd != null && !subscriptionUsageUnavailable
+    row.estimated_usd != null && !subscriptionUsageUnavailable && !localSessionUsageUnreported
       ? {
           estimatedUsd: row.estimated_usd,
           inputTokens: row.input_tokens ?? 0,

@@ -55,3 +55,15 @@ test("keeps historical subscription usage when the provider reported tokens", ()
   assert.equal(run.cost?.inputTokens, 120);
   assert.equal(run.cost?.outputTokens, 30);
 });
+
+test("never assigns OpenRouter-like cost to a local existing-session scan", () => {
+  const run = rowToScanRun({
+    ...subscriptionRow({ input_tokens: 120, output_tokens: 30 }),
+    engine: "mantis",
+    provider: "anthropic",
+    auth_mode: "existing-session",
+    model: null,
+  });
+
+  assert.equal(run.cost, null);
+});

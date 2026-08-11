@@ -127,7 +127,8 @@ export function createLaunchPlanResolver(
         model,
         capabilityCheckId: compatibility.capabilityCheckId,
         ...(compatibility.runnerKind === "codex-security-contract" ||
-          compatibility.runnerKind === "codex-app-server"
+          compatibility.runnerKind === "codex-app-server" ||
+          compatibility.runnerKind === "local-agent-session"
           ? { scannerAuthMode: scannerAuthMode(connection.routeKind) }
           : {}),
         snapshot,
@@ -137,5 +138,6 @@ export function createLaunchPlanResolver(
 }
 
 function scannerAuthMode(routeKind: string): ScannerAuthMode {
+  if (routeKind === "claude-code-local") return "existing-session";
   return routeKind === "openai-api" ? "api-key" : "chatgpt";
 }

@@ -142,6 +142,52 @@ test("Mantis HTTP agent sessions retain the server plan instead of mapping to th
   assert.equal(selected.plan?.runnerKind, "agent-session");
 });
 
+test("Claude local runtime-default strips browser provider, model, and auth injection", () => {
+  const fixture = resolver(plan({
+    connectionId: "claude-local-session",
+    providerKind: "anthropic",
+    routeKind: "claude-code-local",
+    runnerKind: "local-agent-session" as ScanLaunchPlan["runnerKind"],
+    protocol: "claude-code-cli",
+    model: null,
+    capabilityCheckId: null,
+    scannerAuthMode: "existing-session" as ScanLaunchPlan["scannerAuthMode"],
+    snapshot: {
+      scanId: "scan-claude-local",
+      connectionId: "claude-local-session",
+      routeKind: "claude-code-local",
+      modelSelectionMode: "runtime-default",
+      modelId: null,
+      capabilityCheckId: null,
+      capturedAt: "2026-08-11T12:00:00.000Z",
+    },
+  }));
+
+  const selected = resolveScanLaunchSelection({
+    request: {
+      repositoryPath: "/repo",
+      engine: "mantis",
+      provider: "browser-injected-provider",
+      model: "browser-injected-model",
+      authMode: "api-key",
+      connection: {
+        connectionId: "claude-local-session",
+        modelSelectionMode: "runtime-default",
+        modelId: null,
+      },
+    },
+    scanId: "scan-claude-local",
+    launchPlans: fixture.resolver,
+  });
+
+  assert.equal(selected.connectionAware, true);
+  assert.equal(selected.model, null);
+  assert.equal(selected.request.provider, "anthropic");
+  assert.equal(selected.request.authMode, "existing-session");
+  assert.equal("model" in selected.request, false);
+  assert.equal(selected.plan?.runnerKind, "local-agent-session");
+});
+
 test("VulnHunter accepts only a verified HTTP agent-session plan for its dedicated runner", () => {
   const fixture = resolver(plan({
     engine: "vulnhunter",

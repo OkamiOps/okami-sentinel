@@ -171,6 +171,73 @@ test("advertises Mantis for the fully pinned xAI OAuth tuple", () => {
   assert.deepEqual(result.reasons, []);
 });
 
+test("advertises Mantis local execution only for the exact Claude Code session tuple", () => {
+  const selection = {
+    connectionId: "connection-a",
+    modelSelectionMode: "runtime-default" as const,
+    modelId: null,
+  };
+  const claude = connection({
+    providerKind: "anthropic",
+    routeKind: "claude-code-local",
+    transport: "local-cli",
+    authKind: "existing-session",
+    protocol: "claude-code-cli",
+    modelSelectionMode: "runtime-default",
+    credentialRef: null,
+  });
+  const resolver = createScanCompatibilityResolver({
+    getConnection: () => claude,
+    getModel: () => {
+      throw new Error("runtime default must not load a catalog model");
+    },
+    getLatestCapabilityCheck: () => {
+      throw new Error("runtime default must not load a model probe");
+    },
+    now: () => NOW,
+  });
+  assert.deepEqual(resolver.resolve({ engine: "mantis", selection }), {
+    ...selection,
+    eligible: true,
+    reasons: [],
+  });
+
+  for (const blockedConnection of [
+    connection({
+      providerKind: "xai",
+      routeKind: "xai-grok-build-local",
+      transport: "local-cli",
+      authKind: "existing-session",
+      protocol: "grok-build-cli",
+      modelSelectionMode: "catalog",
+    }),
+    connection({
+      providerKind: "cursor",
+      routeKind: "cursor-agent-local",
+      transport: "local-cli",
+      authKind: "existing-session",
+      protocol: "cursor-agent-cli",
+      modelSelectionMode: "catalog",
+    }),
+  ]) {
+    const decision = createScanCompatibilityResolver({
+      getConnection: () => blockedConnection,
+      getModel: () => model(),
+      getLatestCapabilityCheck: () => probe(),
+      now: () => NOW,
+    }).resolve({
+      engine: "mantis",
+      selection: {
+        connectionId: "connection-a",
+        modelSelectionMode: "catalog",
+        modelId: "provider/model-a",
+      },
+    });
+    assert.equal(decision.eligible, false, blockedConnection.routeKind);
+    assert.deepEqual(decision.reasons, ["runner_capability_missing"]);
+  }
+});
+
 test("advertises Codex Security OpenAI API only after the exact child-env bridge is wired", () => {
   const resolver = createScanCompatibilityResolver({
     getConnection: () => connection({
