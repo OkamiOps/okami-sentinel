@@ -48,14 +48,17 @@ test("Anthropic Messages encodes declared tool names and decodes only portable w
   }), { code: "agent_protocol_error" });
 });
 
-test("Anthropic Messages accepts one fenced JSON completion as structured output", () => {
+test("Anthropic Messages accepts one fenced JSON completion surrounded by provider prose", () => {
   const adapter = createAnthropicMessagesWireAdapter({
     model: model("MiniMax-M3"),
     instructions: "Return the final result as JSON.",
   });
 
   const normalized = adapter.readResponse({
-    content: [{ type: "text", text: "```json\n{\"ok\":true}\n```" }],
+    content: [{
+      type: "text",
+      text: "Artifact written. Structured completion follows.\n```json\n{\"ok\":true}\n```",
+    }],
   });
 
   assert.deepEqual(normalized.structured, { ok: true });

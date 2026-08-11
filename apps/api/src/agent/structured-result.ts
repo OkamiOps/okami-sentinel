@@ -1,7 +1,7 @@
 /**
- * Accepts provider-native structured output, raw JSON text, or one exact JSON
- * code fence. Leading prose, trailing prose, nested fences, and scalar JSON
- * remain unstructured.
+ * Accepts provider-native structured output, raw JSON text, or one unambiguous
+ * JSON code fence. Provider prose may surround that single fence;
+ * multiple/nested fences and scalar JSON remain unstructured.
  */
 export function parseStructuredResult(value: unknown, text: string | null): unknown | null {
   if (value !== undefined && value !== null && (Array.isArray(value) || isPlainRecord(value))) {
@@ -10,8 +10,21 @@ export function parseStructuredResult(value: unknown, text: string | null): unkn
   if (text === null) return null;
 
   const trimmed = text.trim();
-  const fenced = /^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/i.exec(trimmed);
-  const candidate = fenced?.[1] ?? trimmed;
+  const direct = parseObjectOrArray(trimmed);
+  if (direct !== null) return direct;
+
+  const fences = [...trimmed.matchAll(/```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```/gi)];
+  if (fences.length !== 1) return null;
+  const fence = fences[0]!;
+  const start = fence.index ?? -1;
+  if (start < 0) return null;
+  const outsideFence = trimmed.slice(0, start) + trimmed.slice(start + fence[0].length);
+  if (outsideFence.includes("```")) return null;
+
+  return parseObjectOrArray(fence[1] ?? "");
+}
+
+function parseObjectOrArray(candidate: string): unknown | null {
   try {
     const parsed: unknown = JSON.parse(candidate);
     return Array.isArray(parsed) || isPlainRecord(parsed) ? parsed : null;
