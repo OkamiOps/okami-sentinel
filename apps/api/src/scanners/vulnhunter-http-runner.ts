@@ -23,6 +23,7 @@ import type {
 } from "../agent/session-types.js";
 import type { StoredProviderConnection } from "../connections-store.js";
 import { DEFAULT_CAPABILITY_PROBE_MAX_AGE_MS } from "../connections/compatibility-resolver.js";
+import type { XaiOAuthFlow } from "../connections/xai-oauth-flow.js";
 import type {
   ConnectionSecretBundle,
   CredentialVault,
@@ -60,6 +61,8 @@ export interface VulnHunterHttpPlanStore {
 export interface VulnHunterHttpRunnerDependencies {
   store: VulnHunterHttpPlanStore;
   vault: Pick<CredentialVault, "get">;
+  /** xAI OAuth stays in its dedicated native credential namespace. */
+  xaiOAuth?: Pick<XaiOAuthFlow, "getAccessToken">;
   createUpstream?: (options: HttpAgentUpstreamOptions) => AgentUpstream;
   createSession?: (
     input: CreateAgentSessionInput,
@@ -89,18 +92,19 @@ type SupportedHttpAgentProtocol = Extract<ProviderProtocol,
   | "openai-responses"
   | "openai-chat"
   | "anthropic-messages"
+  | "xai-oauth-responses"
 >;
 
 const SUPPORTED_PROTOCOLS = new Set<SupportedHttpAgentProtocol>([
   "openai-responses",
   "openai-chat",
   "anthropic-messages",
+  "xai-oauth-responses",
 ]);
 
 /**
  * Resolves the immutable connection snapshot again inside the child process.
- * xAI OAuth is deliberately excluded in this sprint: it has an isolated
- * credential store, not an API-key vault bundle accepted by HTTP upstream.
+ * xAI OAuth uses its isolated credential store only after this validation.
  */
 export function createVulnHunterHttpRunner(
   dependencies: VulnHunterHttpRunnerDependencies,
@@ -120,6 +124,7 @@ export function createVulnHunterHttpRunner(
         input.plan,
         dependencies.store,
         dependencies.vault,
+        dependencies.xaiOAuth,
         now(),
         maxProbeAgeMs,
       );
@@ -156,6 +161,7 @@ interface ResolvedVulnHunterHttpPlan {
     | "openai-responses"
     | "openai-chat"
     | "anthropic-messages"
+    | "xai-oauth-responses"
   >;
   credentials: ConnectionSecretBundle;
 }
@@ -164,6 +170,7 @@ async function resolvePlan(
   plan: SafeVulnHunterProviderPlan,
   store: VulnHunterHttpPlanStore,
   vault: Pick<CredentialVault, "get">,
+  xaiOAuth: Pick<XaiOAuthFlow, "getAccessToken"> | undefined,
   now: Date,
   maxProbeAgeMs: number,
 ): Promise<ResolvedVulnHunterHttpPlan> {
@@ -178,10 +185,12 @@ async function resolvePlan(
     connection.transport !== "http-inference" ||
     connection.routeKind !== plan.routeKind ||
     connection.protocol !== plan.protocol ||
-    connection.credentialRef === null ||
     connection.modelCatalogStale === true
   ) invalidPlan();
   if (!isSupportedHttpProtocol(connection.protocol)) invalidPlan();
+  const directXaiOAuth = isDirectXaiOAuthConnection(connection);
+  if (connection.protocol === "xai-oauth-responses" && !directXaiOAuth) invalidPlan();
+  if (!directXaiOAuth && connection.credentialRef === null) invalidPlan();
 
   const model = store.getModel(plan.connectionId, plan.modelId);
   if (model === null || model.connectionId !== connection.id || model.id !== plan.modelId) {
@@ -194,12 +203,9 @@ async function resolvePlan(
   );
   if (!matchesCapability(plan, capability, connection.protocol, now, maxProbeAgeMs)) invalidPlan();
 
-  let credentials: ConnectionSecretBundle;
-  try {
-    credentials = await vault.get(connection.credentialRef);
-  } catch {
-    invalidPlan();
-  }
+  const credentials = directXaiOAuth
+    ? await resolveXaiOAuthCredentials(connection, xaiOAuth)
+    : await resolveVaultCredentials(connection.credentialRef!, vault);
   return {
     connection,
     model,
@@ -207,6 +213,31 @@ async function resolvePlan(
     protocol: connection.protocol,
     credentials,
   };
+}
+
+async function resolveXaiOAuthCredentials(
+  connection: StoredProviderConnection,
+  xaiOAuth: Pick<XaiOAuthFlow, "getAccessToken"> | undefined,
+): Promise<ConnectionSecretBundle> {
+  if (xaiOAuth === undefined) invalidPlan();
+  try {
+    const accessToken = await xaiOAuth.getAccessToken(connection.id);
+    if (!isNonEmptyText(accessToken)) invalidPlan();
+    return { apiKey: accessToken };
+  } catch {
+    invalidPlan();
+  }
+}
+
+async function resolveVaultCredentials(
+  credentialRef: string,
+  vault: Pick<CredentialVault, "get">,
+): Promise<ConnectionSecretBundle> {
+  try {
+    return await vault.get(credentialRef);
+  } catch {
+    invalidPlan();
+  }
 }
 
 function isSafePlan(value: SafeVulnHunterProviderPlan): boolean {
@@ -274,6 +305,18 @@ function isCurrentCapability(
 
 function isSupportedHttpProtocol(value: ProviderProtocol): value is SupportedHttpAgentProtocol {
   return SUPPORTED_PROTOCOLS.has(value as SupportedHttpAgentProtocol);
+}
+
+function isDirectXaiOAuthConnection(connection: StoredProviderConnection): boolean {
+  return connection.providerKind === "xai" &&
+    connection.routeKind === "xai-oauth" &&
+    connection.transport === "http-inference" &&
+    connection.authKind === "device-code" &&
+    connection.protocol === "xai-oauth-responses";
+}
+
+function isNonEmptyText(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function isIdentifier(value: unknown): value is string {

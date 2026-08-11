@@ -23,6 +23,7 @@ import { createXaiOAuthAdapter } from "./connections/xai-oauth-adapter.js";
 import {
   createXaiOAuthFlow,
   createXaiOAuthHttpTransport,
+  type XaiOAuthFlow,
   type XaiOAuthCredentialStore,
   type XaiOAuthTransport,
 } from "./connections/xai-oauth-flow.js";
@@ -38,6 +39,8 @@ export interface ProviderRuntime {
   connections: ConnectionsService;
   authFlows: AuthFlowService;
   launchPlans: LaunchPlanResolver;
+  /** Server-internal only: the worker uses it after immutable-plan validation. */
+  xaiOAuthTokenResolver: Pick<XaiOAuthFlow, "getAccessToken">;
 }
 
 export interface ProviderRuntimeDependencies {
@@ -109,7 +112,17 @@ export function createProviderRuntime(
     now: dependencies.now,
   });
 
-  return { vault, store, routes, connections, authFlows, launchPlans };
+  return {
+    vault,
+    store,
+    routes,
+    connections,
+    authFlows,
+    launchPlans,
+    xaiOAuthTokenResolver: {
+      getAccessToken: (connectionId) => xaiFlow.getAccessToken(connectionId),
+    },
+  };
 }
 
 let processRuntime: ProviderRuntime | undefined;

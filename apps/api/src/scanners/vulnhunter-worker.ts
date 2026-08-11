@@ -230,6 +230,7 @@ async function runHttpVulnHunter(
     const runner = createVulnHunterHttpRunner({
       store: provider.store,
       vault: provider.vault,
+      xaiOAuth: provider.xaiOAuthTokenResolver,
     });
     await runner.run({
       plan: config.providerPlan!,

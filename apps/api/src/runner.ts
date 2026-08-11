@@ -522,9 +522,7 @@ function vulnhunterProviderPlan(
     plan.runnerKind !== "agent-session" ||
     plan.model === null ||
     plan.capabilityCheckId === null ||
-    (plan.protocol !== "openai-responses" &&
-      plan.protocol !== "openai-chat" &&
-      plan.protocol !== "anthropic-messages")
+    !isVulnHunterProviderProtocol(plan)
   ) return undefined;
   return {
     scanId,
@@ -534,6 +532,17 @@ function vulnhunterProviderPlan(
     modelId: plan.model.id,
     capabilityCheckId: plan.capabilityCheckId,
   };
+}
+
+function isVulnHunterProviderProtocol(
+  plan: ScanLaunchPlan,
+): plan is ScanLaunchPlan & { protocol: SafeVulnHunterProviderPlan["protocol"] } {
+  return plan.protocol === "openai-responses" ||
+    plan.protocol === "openai-chat" ||
+    plan.protocol === "anthropic-messages" ||
+    (plan.protocol === "xai-oauth-responses" &&
+      plan.providerKind === "xai" &&
+      plan.routeKind === "xai-oauth");
 }
 
 function progressKey(p: ScanProgress): string {

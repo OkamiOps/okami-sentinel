@@ -9,16 +9,18 @@ test("HTTP VulnHunter telemetry redacts provider credentials and endpoints befor
   const apiKey = "secret-api-key-12345";
   const baseUrl = "https://private-provider.example.invalid/v1";
   const header = "custom-header-secret-67890";
-  redactor.register("test", [apiKey, baseUrl, header]);
+  const oauthToken = "private-xai-oauth-token";
+  redactor.register("test", [apiKey, baseUrl, header, oauthToken]);
 
   const line = serializeVulnHunterHttpEvent({
     type: "completion",
-    text: `${apiKey} ${baseUrl} ${header}`,
-    structured: { authorization: `Bearer ${apiKey}` },
+    text: `${apiKey} ${baseUrl} ${header} ${oauthToken}`,
+    structured: { authorization: `Bearer ${oauthToken}` },
   }, redactor.redactText.bind(redactor));
 
   assert.equal(line.includes(apiKey), false);
   assert.equal(line.includes(baseUrl), false);
   assert.equal(line.includes(header), false);
+  assert.equal(line.includes(oauthToken), false);
   assert.match(line, /\[REDACTED\]/);
 });

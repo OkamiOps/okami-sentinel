@@ -219,20 +219,21 @@ test("launch adapters produce explicit, reproducible recipes without executing a
   }
 });
 
-test("VulnHunter HTTP launch serializes only the immutable provider reference", () => {
+test("VulnHunter direct xAI OAuth launch serializes only the immutable provider reference", () => {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-vulnhunter-http-launch-"));
   const repositoryPath = path.join(fixtureRoot, "repository");
   const outputDir = path.join(fixtureRoot, "output");
   fs.mkdirSync(repositoryPath);
   fs.mkdirSync(outputDir);
   const providerPlan = {
-    scanId: "scan-vulnhunter-http",
-    connectionId: "connection-a",
-    routeKind: "openai-api",
-    protocol: "openai-responses" as const,
-    modelId: "gpt-live",
-    capabilityCheckId: "capability-a",
+    scanId: "scan-vulnhunter-xai",
+    connectionId: "connection-xai",
+    routeKind: "xai-oauth",
+    protocol: "xai-oauth-responses" as const,
+    modelId: "grok-live",
+    capabilityCheckId: "capability-xai",
   };
+  const oauthToken = "private-xai-oauth-token-must-not-reach-worker-config";
   const previousOpenAiKey = process.env.OPENAI_API_KEY;
   const previousCodexKey = process.env.CODEX_API_KEY;
   process.env.OPENAI_API_KEY = "global-openai-key-must-not-reach-vulnhunter";
@@ -244,18 +245,18 @@ test("VulnHunter HTTP launch serializes only the immutable provider reference", 
         repositoryPath,
         engine: "vulnhunter",
         connection: {
-          connectionId: "connection-a",
+          connectionId: "connection-xai",
           modelSelectionMode: "catalog",
-          modelId: "gpt-live",
+          modelId: "grok-live",
         },
       },
       repositoryPath,
       outputDir,
-      model: "gpt-live",
+      model: "grok-live",
       effort: "high",
       mode: "standard",
       providerPlan,
-      providerKind: "anthropic",
+      providerKind: "xai",
     });
     const config = JSON.parse(
       fs.readFileSync(path.join(outputDir, "vulnhunter-run.json"), "utf8"),
@@ -265,9 +266,10 @@ test("VulnHunter HTTP launch serializes only the immutable provider reference", 
     assert.equal(serialized.includes("apiKey"), false);
     assert.equal(serialized.includes("baseUrl"), false);
     assert.equal(serialized.includes("headers"), false);
+    assert.equal(serialized.includes(oauthToken), false);
     assert.equal(serialized.includes("global-openai-key-must-not-reach-vulnhunter"), false);
     assert.equal(serialized.includes("global-codex-key-must-not-reach-vulnhunter"), false);
-    assert.equal(launch.provider, "anthropic");
+    assert.equal(launch.provider, "xai");
     assert.equal(launch.authMode, "api-key");
     assert.equal(launch.env.OPENAI_API_KEY, undefined);
     assert.equal(launch.env.CODEX_API_KEY, undefined);

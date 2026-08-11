@@ -176,6 +176,87 @@ test("VulnHunter accepts only a verified HTTP agent-session plan for its dedicat
   assert.equal(selected.request.authMode, undefined);
 });
 
+test("VulnHunter accepts direct xAI OAuth only for the pinned xAI route", () => {
+  const xaiModel: ProviderModel = {
+    ...model,
+    connectionId: "xai-oauth-session",
+    id: "grok-live",
+  };
+  const fixture = resolver(plan({
+    engine: "vulnhunter",
+    connectionId: "xai-oauth-session",
+    providerKind: "xai",
+    routeKind: "xai-oauth",
+    runnerKind: "agent-session",
+    protocol: "xai-oauth-responses",
+    model: xaiModel,
+    scannerAuthMode: undefined,
+    snapshot: {
+      scanId: "scan-vulnhunter-xai",
+      connectionId: "xai-oauth-session",
+      routeKind: "xai-oauth",
+      modelSelectionMode: "catalog",
+      modelId: "grok-live",
+      capabilityCheckId: "probe-xai",
+      capturedAt: "2026-08-11T12:00:00.000Z",
+    },
+    capabilityCheckId: "probe-xai",
+  }));
+
+  const selected = resolveScanLaunchSelection({
+    request: {
+      repositoryPath: "/repo",
+      engine: "vulnhunter",
+      connection: {
+        connectionId: "xai-oauth-session",
+        modelSelectionMode: "catalog",
+        modelId: "grok-live",
+      },
+    },
+    scanId: "scan-vulnhunter-xai",
+    launchPlans: fixture.resolver,
+  });
+
+  assert.equal(selected.plan?.providerKind, "xai");
+  assert.equal(selected.plan?.protocol, "xai-oauth-responses");
+});
+
+test("VulnHunter rejects xAI OAuth plans without the pinned xAI provider", () => {
+  const fixture = resolver(plan({
+    engine: "vulnhunter",
+    providerKind: "openai",
+    routeKind: "xai-oauth",
+    runnerKind: "agent-session",
+    protocol: "xai-oauth-responses",
+    scannerAuthMode: undefined,
+    snapshot: {
+      scanId: "scan-vulnhunter-xai-invalid",
+      connectionId: "openai-session",
+      routeKind: "xai-oauth",
+      modelSelectionMode: "catalog",
+      modelId: "gpt-live",
+      capabilityCheckId: "probe-xai-invalid",
+      capturedAt: "2026-08-11T12:00:00.000Z",
+    },
+    capabilityCheckId: "probe-xai-invalid",
+  }));
+
+  assert.throws(() => resolveScanLaunchSelection({
+    request: {
+      repositoryPath: "/repo",
+      engine: "vulnhunter",
+      connection: {
+        connectionId: "openai-session",
+        modelSelectionMode: "catalog",
+        modelId: "gpt-live",
+      },
+    },
+    scanId: "scan-vulnhunter-xai-invalid",
+    launchPlans: fixture.resolver,
+  }), (error: unknown) =>
+    error instanceof ScanSelectionError && error.code === "provider_runner_unavailable");
+});
+
 test("unsupported HTTP runner stops before the launch callback can create output, config, or spawn", () => {
   const fixture = resolver(plan({
     routeKind: "openai-api",

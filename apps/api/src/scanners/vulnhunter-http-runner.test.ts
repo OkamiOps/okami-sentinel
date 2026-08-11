@@ -12,6 +12,7 @@ import type {
 } from "@csb/shared";
 import type { StoredProviderConnection } from "../connections-store.js";
 import type { ConnectionSecretBundle } from "../credentials/credential-vault.js";
+import type { XaiOAuthFlow } from "../connections/xai-oauth-flow.js";
 import {
   AgentSessionError,
   type AgentEvent,
@@ -47,6 +48,15 @@ const PLAN: SafeVulnHunterProviderPlan = {
   capabilityCheckId: "capability-a",
 };
 
+const XAI_PLAN: SafeVulnHunterProviderPlan = {
+  scanId: "scan-xai",
+  connectionId: "connection-xai",
+  routeKind: "xai-oauth",
+  protocol: "xai-oauth-responses",
+  modelId: "grok-live",
+  capabilityCheckId: "capability-xai",
+};
+
 function connection(
   patch: Partial<StoredProviderConnection> = {},
 ): StoredProviderConnection {
@@ -77,6 +87,30 @@ function connection(
   };
 }
 
+function xaiConnection(
+  patch: Partial<StoredProviderConnection> = {},
+): StoredProviderConnection {
+  return {
+    ...connection({
+      id: XAI_PLAN.connectionId,
+      name: "xAI OAuth",
+      providerKind: "xai",
+      routeKind: XAI_PLAN.routeKind,
+      authKind: "device-code",
+      protocol: XAI_PLAN.protocol,
+      credentialRef: null,
+      display: {
+        providerLabel: "xAI",
+        routeLabel: "OAuth",
+        secretConfigured: true,
+        endpointConfigured: false,
+        endpointKind: "preset",
+      },
+    }),
+    ...patch,
+  };
+}
+
 function model(patch: Partial<ProviderModel> = {}): ProviderModel {
   return {
     connectionId: PLAN.connectionId,
@@ -89,6 +123,15 @@ function model(patch: Partial<ProviderModel> = {}): ProviderModel {
     source: "provider-api",
     ...patch,
   };
+}
+
+function xaiModel(patch: Partial<ProviderModel> = {}): ProviderModel {
+  return model({
+    connectionId: XAI_PLAN.connectionId,
+    id: XAI_PLAN.modelId,
+    displayName: "Grok Live",
+    ...patch,
+  });
 }
 
 function capability(
@@ -107,6 +150,16 @@ function capability(
   };
 }
 
+function xaiCapability(patch: Partial<CapabilityReport> = {}): CapabilityReport {
+  return capability({
+    id: XAI_PLAN.capabilityCheckId,
+    connectionId: XAI_PLAN.connectionId,
+    modelId: XAI_PLAN.modelId,
+    protocol: XAI_PLAN.protocol,
+    ...patch,
+  });
+}
+
 function snapshot(
   patch: Partial<ScanConnectionSnapshot> = {},
 ): ScanConnectionSnapshot {
@@ -122,6 +175,17 @@ function snapshot(
   };
 }
 
+function xaiSnapshot(patch: Partial<ScanConnectionSnapshot> = {}): ScanConnectionSnapshot {
+  return snapshot({
+    scanId: XAI_PLAN.scanId,
+    connectionId: XAI_PLAN.connectionId,
+    routeKind: XAI_PLAN.routeKind,
+    modelId: XAI_PLAN.modelId,
+    capabilityCheckId: XAI_PLAN.capabilityCheckId,
+    ...patch,
+  });
+}
+
 interface FixtureOverrides {
   plan?: SafeVulnHunterProviderPlan;
   snapshot?: ScanConnectionSnapshot | null;
@@ -134,14 +198,18 @@ interface FixtureOverrides {
   timeoutMs?: number;
   now?: () => Date;
   maxProbeAgeMs?: number;
+  xaiToken?: string;
+  xaiError?: Error;
   sessionFactory?: (input: CreateAgentSessionInput) => Promise<AgentSession>;
 }
 
 function fixture(overrides: FixtureOverrides = {}) {
   const observed = {
     vaultReads: 0,
+    xaiReads: 0,
     upstreams: 0,
     sessions: 0,
+    upstreamCredentials: null as ConnectionSecretBundle | null,
     plan: overrides.plan ?? PLAN,
   };
   const storedConnection = overrides.connection === undefined ? connection() : overrides.connection;
@@ -174,8 +242,16 @@ function fixture(overrides: FixtureOverrides = {}) {
         return secret;
       },
     },
-    createUpstream: () => {
+    xaiOAuth: {
+      getAccessToken: async () => {
+        observed.xaiReads += 1;
+        if (overrides.xaiError !== undefined) throw overrides.xaiError;
+        return overrides.xaiToken ?? "private-xai-oauth-token";
+      },
+    } satisfies Pick<XaiOAuthFlow, "getAccessToken">,
+    createUpstream: (options) => {
       observed.upstreams += 1;
+      observed.upstreamCredentials = options.credentials;
       return overrides.upstream ?? { request: async () => ({}) };
     },
     ...(overrides.useDefaultSession === true
@@ -240,8 +316,10 @@ test("VulnHunter HTTP runner rejects a stale immutable plan before vault or netw
     );
     assert.deepEqual(observed, {
       vaultReads: 0,
+      xaiReads: 0,
       upstreams: 0,
       sessions: 0,
+      upstreamCredentials: null,
       plan: tampered,
     });
     assert.equal(JSON.stringify(run.value).includes(secret.apiKey!), false);
@@ -373,17 +451,14 @@ test("VulnHunter HTTP runner revalidates cancellation and isolation support befo
   }
 });
 
-test("VulnHunter HTTP runner rejects xAI OAuth and unsupported protocols before reading native credentials", async () => {
-  const blocked = {
-    ...PLAN,
-    routeKind: "xai-oauth",
-    protocol: "xai-oauth-responses" as const,
-  };
+test("VulnHunter HTTP runner rejects an invalid xAI OAuth connection before OAuth access", async () => {
+  const blocked = XAI_PLAN;
   const { runner, observed } = fixture({
     plan: blocked,
-    snapshot: snapshot({ routeKind: blocked.routeKind }),
-    connection: connection({ routeKind: blocked.routeKind, protocol: blocked.protocol }),
-    capability: capability({ protocol: blocked.protocol }),
+    snapshot: xaiSnapshot(),
+    connection: xaiConnection({ providerKind: "openai" }),
+    model: xaiModel(),
+    capability: xaiCapability(),
   });
   const run = input(blocked);
   try {
@@ -392,6 +467,78 @@ test("VulnHunter HTTP runner rejects xAI OAuth and unsupported protocols before 
       (error: unknown) => error instanceof VulnHunterHttpRunnerError &&
         error.code === "provider_plan_invalid",
     );
+    assert.equal(observed.vaultReads, 0);
+    assert.equal(observed.xaiReads, 0);
+    assert.equal(observed.upstreams, 0);
+  } finally {
+    fs.rmSync(run.root, { recursive: true, force: true });
+  }
+});
+
+test("VulnHunter HTTP runner resolves direct xAI OAuth internally without an API-key vault read", async () => {
+  const token = "private-xai-oauth-token";
+  const { runner, observed } = fixture({
+    plan: XAI_PLAN,
+    snapshot: xaiSnapshot(),
+    connection: xaiConnection(),
+    model: xaiModel(),
+    capability: xaiCapability(),
+    xaiToken: token,
+  });
+  const run = input(XAI_PLAN);
+  try {
+    await runner.run(run.value);
+    assert.equal(observed.xaiReads, 1);
+    assert.equal(observed.vaultReads, 0);
+    assert.equal(observed.upstreams, 1);
+    assert.deepEqual(observed.upstreamCredentials, { apiKey: token });
+    assert.equal(JSON.stringify(run.value).includes(token), false);
+  } finally {
+    fs.rmSync(run.root, { recursive: true, force: true });
+  }
+});
+
+test("VulnHunter HTTP runner rejects stale xAI OAuth plans before OAuth access", async () => {
+  const { runner, observed } = fixture({
+    plan: XAI_PLAN,
+    snapshot: xaiSnapshot(),
+    connection: xaiConnection({ modelCatalogStale: true }),
+    model: xaiModel(),
+    capability: xaiCapability(),
+  });
+  const run = input(XAI_PLAN);
+  try {
+    await assert.rejects(
+      runner.run(run.value),
+      (error: unknown) => error instanceof VulnHunterHttpRunnerError &&
+        error.code === "provider_plan_invalid",
+    );
+    assert.equal(observed.xaiReads, 0);
+    assert.equal(observed.vaultReads, 0);
+    assert.equal(observed.upstreams, 0);
+  } finally {
+    fs.rmSync(run.root, { recursive: true, force: true });
+  }
+});
+
+test("VulnHunter HTTP runner returns a safe error when direct xAI OAuth refresh fails", async () => {
+  const privateRefreshFailure = "private-xai-refresh-failure";
+  const { runner, observed } = fixture({
+    plan: XAI_PLAN,
+    snapshot: xaiSnapshot(),
+    connection: xaiConnection(),
+    model: xaiModel(),
+    capability: xaiCapability(),
+    xaiError: new Error(privateRefreshFailure),
+  });
+  const run = input(XAI_PLAN);
+  try {
+    await assert.rejects(
+      runner.run(run.value),
+      (error: unknown) => error instanceof VulnHunterHttpRunnerError &&
+        error.code === "provider_plan_invalid" && !error.message.includes(privateRefreshFailure),
+    );
+    assert.equal(observed.xaiReads, 1);
     assert.equal(observed.vaultReads, 0);
     assert.equal(observed.upstreams, 0);
   } finally {
@@ -463,6 +610,60 @@ test("VulnHunter HTTP runner turns an external abort into a bounded local cancel
     const pending = runner.run({ ...run.value, signal: controller.signal });
     setTimeout(() => controller.abort(), 10);
     await pending;
+  } finally {
+    fs.rmSync(run.root, { recursive: true, force: true });
+  }
+});
+
+test("VulnHunter direct xAI OAuth preserves the bounded deadline", async () => {
+  const { runner, observed } = fixture({
+    plan: XAI_PLAN,
+    snapshot: xaiSnapshot(),
+    connection: xaiConnection(),
+    model: xaiModel(),
+    capability: xaiCapability(),
+    useDefaultSession: true,
+    timeoutMs: 10,
+    upstream: {
+      request: async () => new Promise<unknown>(() => undefined),
+      cancel: async () => new Promise<boolean>(() => undefined),
+    },
+  });
+  const run = input(XAI_PLAN);
+  try {
+    await assert.rejects(
+      runner.run(run.value),
+      (error: unknown) => error instanceof AgentSessionError && error.code === "agent_time_limit",
+    );
+    assert.equal(observed.xaiReads, 1);
+    assert.equal(observed.vaultReads, 0);
+  } finally {
+    fs.rmSync(run.root, { recursive: true, force: true });
+  }
+});
+
+test("VulnHunter direct xAI OAuth preserves bounded external cancellation", async () => {
+  const { runner, observed } = fixture({
+    plan: XAI_PLAN,
+    snapshot: xaiSnapshot(),
+    connection: xaiConnection(),
+    model: xaiModel(),
+    capability: xaiCapability(),
+    useDefaultSession: true,
+    timeoutMs: 10_000,
+    upstream: {
+      request: async () => new Promise<unknown>(() => undefined),
+      cancel: async () => new Promise<boolean>(() => undefined),
+    },
+  });
+  const run = input(XAI_PLAN);
+  const controller = new AbortController();
+  try {
+    const pending = runner.run({ ...run.value, signal: controller.signal });
+    setTimeout(() => controller.abort(), 10);
+    await pending;
+    assert.equal(observed.xaiReads, 1);
+    assert.equal(observed.vaultReads, 0);
   } finally {
     fs.rmSync(run.root, { recursive: true, force: true });
   }

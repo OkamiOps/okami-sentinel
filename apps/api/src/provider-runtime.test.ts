@@ -20,6 +20,22 @@ class MemoryOAuthStore implements XaiOAuthCredentialStore {
   delete() { return Promise.resolve(); }
 }
 
+class AccessTokenOAuthStore implements XaiOAuthCredentialStore {
+  reads = 0;
+
+  get() {
+    this.reads += 1;
+    return Promise.resolve({
+      accessToken: "private-runtime-xai-token",
+      refreshToken: "private-runtime-xai-refresh",
+      expiresAt: null,
+    });
+  }
+
+  put() { return Promise.resolve(); }
+  delete() { return Promise.resolve(); }
+}
+
 const oauthTransport: XaiOAuthTransport = {
   requestDeviceCode: async () => ({
     deviceCode: "private-device-code",
@@ -61,6 +77,26 @@ test("one runtime composes connection metadata, direct OAuth, catalogs, and scan
     assert.equal(runtime.store.get(connection.id)?.routeKind, "xai-oauth");
 
     await runtime.authFlows.cancel(connection.id, flow.flowId);
+  } finally {
+    database.close();
+  }
+});
+
+test("the provider runtime exposes only an internal xAI OAuth token resolver", async () => {
+  const database = new Database(":memory:");
+  const xaiCredentialStore = new AccessTokenOAuthStore();
+  try {
+    const runtime = createProviderRuntime({
+      database,
+      vault: new MemoryVault(),
+      xaiCredentialStore,
+      xaiTransport: oauthTransport,
+    });
+
+    const token = await runtime.xaiOAuthTokenResolver.getAccessToken("connection-xai");
+
+    assert.equal(token, "private-runtime-xai-token");
+    assert.equal(xaiCredentialStore.reads, 1);
   } finally {
     database.close();
   }
