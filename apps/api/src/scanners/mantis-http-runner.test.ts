@@ -25,6 +25,7 @@ import {
   MantisHttpRunnerError,
   boundedMantisStageState,
   createSafeMantisProviderPlan,
+  hashMantisSnapshot,
   runMantisHttpAgent,
   type SafeMantisProviderPlan,
 } from "./mantis-http-runner.js";
@@ -661,6 +662,31 @@ test("reportable findings require bounded source code paths for Inspector eviden
   }
 });
 
+test("reportable findings require a non-empty remediation direction", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-http-report-remediation-"));
+  const repositoryPath = path.join(root, "repository");
+  fs.mkdirSync(path.join(repositoryPath, "src"), { recursive: true });
+  fs.writeFileSync(path.join(repositoryPath, "src", "auth.ts"), "export const safe = true;\n");
+  try {
+    await assert.rejects(
+      runMantisFixture(root, repositoryPath, {
+        schemaVersion: 1,
+        engine: "mantis",
+        stage: "report",
+        findings: [{
+          id: "missing-remediation",
+          title: "Finding without a correction",
+          severity: "HIGH",
+          code_paths: ["src/auth.ts:1"],
+        }],
+      }),
+      (error: unknown) => error instanceof MantisHttpRunnerError && error.code === "stage_artifact_invalid",
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 for (const [label, locator] of [
   ["traversal", "../../etc/passwd:1"],
   ["missing file", "src/missing.ts:1"],
@@ -714,6 +740,7 @@ test("valid report schema produces normalized Inspector evidence", async () => {
         severity: "HIGH",
         status: "VALID",
         reasoning: "The handler lacks an ownership predicate.",
+        remediation: "Require an ownership predicate before returning account data.",
         code_paths: ["src/auth.ts:1-2"],
       }],
     }, reportSpec);
@@ -728,6 +755,10 @@ test("valid report schema produces normalized Inspector evidence", async () => {
     assert.equal(result.runtime.findings, 1);
     assert.equal(normalized.findings[0]?.findingId, "mantis-authz-users");
     assert.equal(normalized.findings[0]?.title, "Authenticated users can enumerate every account");
+    assert.equal(
+      (normalized.findings[0] as { remediation?: string })?.remediation,
+      "Require an ownership predicate before returning account data.",
+    );
     assert.equal(normalized.findings[0]?.codeEvidence.length, 1);
     assert.equal(
       normalized.findings[0]?.codeEvidence[0]?.code,
@@ -737,6 +768,25 @@ test("valid report schema produces normalized Inspector evidence", async () => {
     assert.match(reportSpec.find((spec) => spec.instructions.includes("stage_id=report"))!.instructions, /findings.*required/i);
     assert.match(reportSpec.find((spec) => spec.instructions.includes("stage_id=report"))!.instructions, /relative\/path\.ext:line/);
   } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Mantis snapshot hashes do not depend on directory enumeration order", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-http-hash-order-"));
+  fs.writeFileSync(path.join(root, "a.txt"), "alpha\n");
+  fs.writeFileSync(path.join(root, "z.txt"), "omega\n");
+  const canonical = hashMantisSnapshot(root);
+  const originalReadDir = fs.readdirSync;
+
+  try {
+    (fs as typeof fs & { readdirSync: typeof fs.readdirSync }).readdirSync = ((...args: Parameters<typeof fs.readdirSync>) => {
+      const entries = originalReadDir(...args as Parameters<typeof originalReadDir>);
+      return Array.isArray(entries) ? [...entries].reverse() : entries;
+    }) as typeof fs.readdirSync;
+    assert.equal(hashMantisSnapshot(root), canonical);
+  } finally {
+    fs.readdirSync = originalReadDir;
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

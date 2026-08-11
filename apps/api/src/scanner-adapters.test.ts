@@ -559,6 +559,10 @@ test("Mantis normalization keeps reportable evidence and preserves raw pipeline 
     assert.deepEqual(payload.findings[0]?.rootCause, {
       summary: "The handler reads all tenants without an ownership predicate.",
     });
+    assert.equal(
+      payload.findings[0]?.remediation,
+      "Enforce the tenant boundary before data access.",
+    );
     assert.deepEqual(payload.findings[0]?.validation, {
       status: "VALID",
       summary: "The handler reads all tenants without an ownership predicate.",
@@ -763,11 +767,30 @@ test("VulnHunter normalization hydrates Inspector evidence without claiming runt
     );
     fs.writeFileSync(handoffPath, JSON.stringify({
       schemaVersion: 1,
-      findings: [{ id: "VULN-001", title: "Missing evidence", severity: "High", evidence: [] }],
+      findings: [{
+        id: "VULN-001",
+        title: "Missing evidence",
+        severity: "High",
+        remediation: "Add the missing defensive control.",
+        evidence: [],
+      }],
     }));
     assert.throws(
       () => normalizer.normalizeVulnHunterWorkspace(resultsDir, outputDir),
       /has no confined line-level evidence/,
+    );
+    fs.writeFileSync(handoffPath, JSON.stringify({
+      schemaVersion: 1,
+      findings: [{
+        id: "VULN-002",
+        title: "Missing remediation",
+        severity: "High",
+        evidence: [{ path: "src/login.ts", startLine: 2, endLine: 2 }],
+      }],
+    }));
+    assert.throws(
+      () => normalizer.normalizeVulnHunterWorkspace(resultsDir, outputDir),
+      /missing remediation/,
     );
   } finally {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });

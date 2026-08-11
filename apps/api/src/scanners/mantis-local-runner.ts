@@ -372,7 +372,7 @@ function stagePrompt(
     ? [
       "For the report field use this exact final schema:",
       '{"schemaVersion":1,"engine":"mantis","stage":"report","findings":[]}',
-      "findings is required (an empty array is valid). Every finding requires non-empty id, title, severity from CRITICAL, HIGH, MEDIUM, LOW, or INFO, and a non-empty code_paths array of bounded source locators.",
+      "findings is required (an empty array is valid). Every finding requires non-empty id, title, remediation, severity from CRITICAL, HIGH, MEDIUM, LOW, or INFO, and a non-empty code_paths array of bounded source locators. Remediation must state the concrete defensive correction.",
     ]
     : [];
   const prompt = [
@@ -408,7 +408,22 @@ function stageSchema(stage: string): Record<string, unknown> {
         schemaVersion: { const: 1 },
         engine: { const: "mantis" },
         stage: { const: "report" },
-        findings: { type: "array", maxItems: 256, items: { type: "object" } },
+        findings: {
+          type: "array",
+          maxItems: 256,
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string", minLength: 1 },
+              title: { type: "string", minLength: 1 },
+              severity: { enum: ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"] },
+              remediation: { type: "string", minLength: 1 },
+              code_paths: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
+            },
+            required: ["id", "title", "severity", "remediation", "code_paths"],
+            additionalProperties: true,
+          },
+        },
       },
       required: ["schemaVersion", "engine", "stage", "findings"],
       additionalProperties: true,

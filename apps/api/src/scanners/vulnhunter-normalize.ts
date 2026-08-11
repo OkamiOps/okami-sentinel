@@ -306,6 +306,9 @@ export function readVulnHunterFindingRecords(resultsDir: string): VulnHunterFind
     }
     if (ids.has(id)) throw new Error(`VulnHunter handoff contains duplicate id ${id}.`);
     ids.add(id);
+    if (!text(finding.remediation)) {
+      throw new Error(`VulnHunter finding ${id} is missing remediation.`);
+    }
     const validEvidence = Array.isArray(finding.evidence)
       && finding.evidence.some((item) =>
         repositoryRelativePath(item?.path) && positiveLine(item?.startLine)

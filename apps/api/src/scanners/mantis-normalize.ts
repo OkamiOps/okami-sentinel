@@ -9,6 +9,7 @@ export interface MantisFindingRecord extends Record<string, unknown> {
   code_paths?: string[];
   impact?: string;
   severity?: string;
+  remediation?: string;
   mitigation?: string;
   status?: string;
   reasoning?: string;
@@ -186,7 +187,7 @@ export function normalizeMantisFinding(
     },
     confidence,
     ruleId: finding.cwe ? `mantis/${finding.cwe}` : "mantis/agentic-review",
-    remediation: finding.mitigation ?? null,
+    remediation: text(finding.remediation) ?? text(finding.mitigation),
     locations,
     codeEvidence: locations.map((location, index) => ({
       id: evidenceRefs[index],

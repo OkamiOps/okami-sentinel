@@ -555,7 +555,7 @@ function stageInstructions(
     ? [
       "The report artifact uses this exact final schema:",
       '{"schemaVersion":1,"engine":"mantis","stage":"report","findings":[]}',
-      "findings is required (an empty array is valid). Every finding requires non-empty id, title, severity from CRITICAL, HIGH, MEDIUM, LOW, or INFO, and a non-empty code_paths array. Every locator must use the exact repository-relative form relative/path.ext:line or relative/path.ext:start-end with positive line numbers; symbols and absolute paths are invalid.",
+      "findings is required (an empty array is valid). Every finding requires non-empty id, title, remediation, severity from CRITICAL, HIGH, MEDIUM, LOW, or INFO, and a non-empty code_paths array. Remediation must state the concrete defensive correction. Every locator must use the exact repository-relative form relative/path.ext:line or relative/path.ext:start-end with positive line numbers; symbols and absolute paths are invalid.",
     ]
     : [
       "The stage artifact uses this exact bounded-state schema:",
@@ -701,8 +701,10 @@ function validReportFinding(
   snapshotRoot: string,
 ): value is Record<string, unknown> {
   if (!isRecord(value)) return false;
+  const remediation = value.remediation ?? value.mitigation;
   return isSafeText(value.id, 240) &&
     isSafeText(value.title, 2_000) &&
+    isSafeText(remediation, 8_000) &&
     typeof value.severity === "string" &&
     ["critical", "high", "medium", "low", "info"].includes(value.severity.toLowerCase()) &&
     Array.isArray(value.code_paths) &&
@@ -950,7 +952,9 @@ export function createMantisSnapshot(repositoryPath: string, outputDir: string):
 export function hashMantisSnapshot(root: string): string {
   const hash = createHash("sha256");
   const visit = (directory: string) => {
-    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const entries = fs.readdirSync(directory, { withFileTypes: true })
+      .sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
       const absolute = path.join(directory, entry.name);
       if (entry.isDirectory()) visit(absolute);
       else if (entry.isFile()) {

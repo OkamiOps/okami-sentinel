@@ -702,6 +702,7 @@ export interface FindingDetail extends FindingSummary {
   confidenceRationale: string | null;
 }
 
+/** `fixed` is reserved for an explicit incremental contract; standard/deep scans never emit it. */
 export type FindingLifecycle = "new" | "persisting" | "fixed" | "regressed";
 
 export type FindingTriageStatus =
@@ -720,7 +721,7 @@ export interface LifecycleFinding extends FindingSummary {
   identity: string;
   lifecycle: FindingLifecycle;
   triage: FindingTriage;
-  /** Scan containing the evidence. Fixed findings point to the baseline scan. */
+  /** Scan containing the evidence. Standard/deep summaries contain current-scan evidence only. */
   sourceScanId: string;
 }
 
@@ -730,6 +731,7 @@ export interface RegressionSummary {
   baselineSource: "explicit" | "automatic" | "none";
   isRepositoryBaseline: boolean;
   counts: Record<FindingLifecycle, number>;
+  /** Current-scan findings only. Baseline-only findings require a future explicit incremental mode. */
   findings: LifecycleFinding[];
 }
 

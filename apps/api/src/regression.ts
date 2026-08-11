@@ -31,7 +31,6 @@ export function buildRegressionSummary(scanId: string): RegressionSummary {
   const current = toFindingSummaries(readFindingsFile(scan.scanDir));
   const baselineFindings = baseline ? toFindingSummaries(readFindingsFile(baseline.scanDir)) : [];
   const baselineKeys = new Set(baselineFindings.map(findingIdentity));
-  const currentKeys = new Set(current.map(findingIdentity));
   const historicalKeys = historicalFindingKeys(scan, repositoryRuns);
   const triage = getFindingTriage(repositoryKey);
 
@@ -45,20 +44,6 @@ export function buildRegressionSummary(scanId: string): RegressionSummary {
       sourceScanId: scan.id,
     };
   });
-
-  const fixedKeys = new Set<string>();
-  for (const finding of baselineFindings) {
-    const identity = findingIdentity(finding);
-    if (currentKeys.has(identity) || fixedKeys.has(identity)) continue;
-    fixedKeys.add(identity);
-    findings.push({
-      ...finding,
-      identity,
-      lifecycle: "fixed",
-      triage: triage.get(identity) ?? { ...unreviewed },
-      sourceScanId: baseline!.id,
-    });
-  }
 
   const counts: Record<FindingLifecycle, number> = { new: 0, persisting: 0, fixed: 0, regressed: 0 };
   for (const finding of findings) counts[finding.lifecycle] += 1;
@@ -102,7 +87,11 @@ function resolveBaseline(
 ): { baseline: ScanRun | null; source: RegressionSummary["baselineSource"] } {
   if (explicitBaselineId) {
     const explicit = getRun(explicitBaselineId);
-    if (explicit && repositoryKeyFor(explicit) === repositoryKeyFor(scan)) {
+    if (
+      explicit &&
+      repositoryKeyFor(explicit) === repositoryKeyFor(scan) &&
+      comparableAnalysisLineage(scan, explicit)
+    ) {
       if (explicit.id === scan.id || runTime(explicit) <= runTime(scan)) {
         return { baseline: explicit, source: "explicit" };
       }
@@ -110,7 +99,12 @@ function resolveBaseline(
   }
 
   const automatic = repositoryRuns
-    .filter((run) => run.id !== scan.id && run.status === "completed" && runTime(run) < runTime(scan))
+    .filter((run) =>
+      run.id !== scan.id &&
+      run.status === "completed" &&
+      runTime(run) < runTime(scan) &&
+      comparableAnalysisLineage(scan, run)
+    )
     .sort((a, b) => runTime(b) - runTime(a))[0] ?? null;
   return automatic ? { baseline: automatic, source: "automatic" } : { baseline: null, source: "none" };
 }
@@ -118,12 +112,47 @@ function resolveBaseline(
 function historicalFindingKeys(scan: ScanRun, repositoryRuns: ScanRun[]): Set<string> {
   const keys = new Set<string>();
   for (const run of repositoryRuns) {
-    if (run.id === scan.id || run.status !== "completed" || runTime(run) >= runTime(scan)) continue;
+    if (
+      run.id === scan.id ||
+      run.status !== "completed" ||
+      runTime(run) >= runTime(scan) ||
+      !comparableAnalysisLineage(scan, run) ||
+      !knownRevisionChanged(run, scan)
+    ) continue;
     for (const finding of toFindingSummaries(readFindingsFile(run.scanDir))) {
       keys.add(findingIdentity(finding));
     }
   }
   return keys;
+}
+
+function knownRevisionChanged(previous: ScanRun, current: ScanRun): boolean {
+  const before = previous.revision?.trim();
+  const after = current.revision?.trim();
+  return Boolean(before && after && before !== after);
+}
+
+/**
+ * Lifecycle is an observation within one scanner lineage, not a cross-engine
+ * comparison. Cross-engine/model comparisons belong to the explicit Compare
+ * workflow. A missing recipe hash is historical ambiguity and fails closed.
+ */
+export function comparableAnalysisLineage(current: ScanRun, candidate: ScanRun): boolean {
+  if (!current.recipeHash || !candidate.recipeHash) return false;
+  return current.engine === candidate.engine &&
+    current.provider === candidate.provider &&
+    current.model === candidate.model &&
+    current.mode === candidate.mode &&
+    current.effort === candidate.effort &&
+    current.scannerVersion === candidate.scannerVersion &&
+    current.recipeHash === candidate.recipeHash &&
+    (current.execution?.executionProfile ?? null) === (candidate.execution?.executionProfile ?? null) &&
+    (current.execution?.profileVersion ?? null) === (candidate.execution?.profileVersion ?? null) &&
+    (current.execution?.methodologyRef ?? null) === (candidate.execution?.methodologyRef ?? null) &&
+    (current.connection?.routeKind ?? current.execution?.routeKind ?? null) ===
+      (candidate.connection?.routeKind ?? candidate.execution?.routeKind ?? null) &&
+    (current.connection?.protocol ?? current.execution?.protocol ?? null) ===
+      (candidate.connection?.protocol ?? candidate.execution?.protocol ?? null);
 }
 
 function repositoryKeyFor(scan: ScanRun): string {

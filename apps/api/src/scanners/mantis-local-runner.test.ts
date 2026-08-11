@@ -136,6 +136,7 @@ function finalFor(input: DefensiveLocalCliInput): unknown {
           title: "Authenticated users can enumerate every account",
           severity: "HIGH",
           code_paths: ["src/auth.ts:1-2"],
+          remediation: "Require an ownership predicate before returning account data.",
           status: "VALID",
           reasoning: "The handler lacks an ownership predicate.",
         }],

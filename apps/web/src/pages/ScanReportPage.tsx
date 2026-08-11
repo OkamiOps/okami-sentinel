@@ -128,7 +128,7 @@ export function ScanReportPage() {
             <Kicker>Decision signal</Kicker>
             <h2 className="mt-3 font-heading text-3xl font-semibold tracking-[-.045em]">{partial ? "Resultado parcial com evidência preservada" : scan.status === "completed" ? "Cobertura concluída pelo motor" : `Execução ${scan.status}`}</h2>
             <p className="mt-4 max-w-2xl text-sm leading-7 text-muted-foreground">{partial ? `O scan foi interrompido depois de produzir ${scan.severity.total} findings. Esses resultados são úteis para investigação, mas não representam cobertura concluída nem equivalem a uma execução bem-sucedida.` : `A execução reportou ${scan.severity.total} findings, sendo ${highPlus} classificados como critical ou high. A severidade é a classificação produzida pelo scan e ainda exige triagem técnica.`}</p>
-            <div className="mt-6 border-l-2 border-chart-3 bg-chart-3/5 px-4 py-3 text-xs leading-6"><strong>Limite da leitura:</strong> o relatório não afirma taxa de precisão, falso positivo ou correção sem validação humana. Lifecycle compara fingerprints observadas; não prova remediação.</div>
+            <div className="mt-6 border-l-2 border-chart-3 bg-chart-3/5 px-4 py-3 text-xs leading-6"><strong>Limite da leitura:</strong> o relatório contém somente findings desta execução. O baseline classifica sinais atuais coincidentes; uma ausência não é apresentada como correção nem prova remediação.</div>
           </section>
           <section className="grid grid-cols-2 border border-border">
             <Metric label="FINDINGS" value={scan.severity.total} />
@@ -144,11 +144,10 @@ export function ScanReportPage() {
             <div className="p-5">
               {severityOrder.slice(0, 5).map((severity) => <SeverityRow key={severity} severity={severity} count={scan.severity[severity]} total={scan.severity.total} />)}
             </div>
-            <div className="grid grid-cols-2 border-t border-border md:border-l md:border-t-0">
+            <div className="grid grid-cols-3 border-t border-border md:border-l md:border-t-0">
               <Metric label="NEW" value={regression.counts.new} tone="text-primary" />
               <Metric label="REGRESSED" value={regression.counts.regressed} tone="text-destructive" />
               <Metric label="PERSISTING" value={regression.counts.persisting} tone="text-chart-3" />
-              <Metric label="FIXED*" value={regression.counts.fixed} tone="text-chart-2" />
             </div>
           </div>
         </section>
