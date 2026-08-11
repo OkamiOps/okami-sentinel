@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import type { ProviderModel } from "@csb/shared";
+import type { ProviderModel, ScanConnectionSelection } from "@csb/shared";
+import type { StoredProviderConnection } from "../connections-store.js";
+import type { ConnectionSecretBundle, CredentialVault } from "../credentials/credential-vault.js";
+import { resolveCompatibility } from "../connections/compatibility-resolver.js";
+import { probeHttpRoute } from "../connections/http-route-adapters.js";
 import {
   HTTP_AGENT_BODY_LIMIT_BYTES,
   HttpAgentUpstreamError,
@@ -100,6 +104,81 @@ test("AgentUpstream validates custom bases and rejects MiMo until its execution 
     mimo.request({ operation: "messages", body: {}, signal: new AbortController().signal }),
     { code: "protocol_unsupported" },
   );
+});
+
+test("custom HTTPS rejects deterministic local, private, link-local, and reserved targets", async () => {
+  const blocked = [
+    "https://127.0.0.1/v1",
+    "https://[::1]/v1",
+    "https://[fc00::1]/v1",
+    "https://[fe80::1]/v1",
+    "https://[fec0::1]/v1",
+    "https://[2001:db8::1]/v1",
+    "https://10.0.0.8/v1",
+    "https://172.16.4.2/v1",
+    "https://192.168.1.9/v1",
+    "https://169.254.169.254/v1",
+    "https://192.0.2.4/v1",
+    "https://localhost/v1",
+    "https://service.localhost/v1",
+    "https://intranet/v1",
+  ];
+
+  for (const baseUrl of blocked) {
+    const transport = transcript([]);
+    const upstream = createHttpAgentUpstream({
+      routeKind: "custom-openai-compatible",
+      protocol: "openai-chat",
+      credentials: { apiKey: "custom-secret", baseUrl },
+      transport: transport.fetch,
+    });
+    await assert.rejects(
+      upstream.request({ operation: "chat-completions", body: {}, signal: new AbortController().signal }),
+      { code: "protocol_unsupported" },
+      baseUrl,
+    );
+    assert.deepEqual(transport.calls, [], baseUrl);
+  }
+});
+
+test("the exact local override allows only loopback while public HTTPS remains available", async () => {
+  for (const baseUrl of ["https://127.0.0.1/v1", "https://[::1]/v1", "http://localhost:7331/v1"]) {
+    const transport = transcript([json(200, {})]);
+    const upstream = createHttpAgentUpstream({
+      routeKind: "custom-openai-compatible",
+      protocol: "openai-chat",
+      credentials: { apiKey: "local-secret", baseUrl, allowInsecureLocalhost: true },
+      transport: transport.fetch,
+    });
+    await upstream.request({ operation: "chat-completions", body: {}, signal: new AbortController().signal });
+    assert.equal(transport.calls.length, 1, baseUrl);
+  }
+
+  for (const baseUrl of ["https://10.1.2.3/v1", "https://169.254.169.254/v1"]) {
+    const transport = transcript([]);
+    const upstream = createHttpAgentUpstream({
+      routeKind: "custom-openai-compatible",
+      protocol: "openai-chat",
+      credentials: { apiKey: "local-secret", baseUrl, allowInsecureLocalhost: true },
+      transport: transport.fetch,
+    });
+    await assert.rejects(
+      upstream.request({ operation: "chat-completions", body: {}, signal: new AbortController().signal }),
+      { code: "protocol_unsupported" },
+      baseUrl,
+    );
+    assert.deepEqual(transport.calls, [], baseUrl);
+  }
+
+  const publicTransport = transcript([json(200, {})]);
+  const publicUpstream = createHttpAgentUpstream({
+    routeKind: "custom-openai-compatible",
+    protocol: "openai-chat",
+    credentials: { apiKey: "public-secret", baseUrl: "https://api.public-provider.com/v1" },
+    transport: publicTransport.fetch,
+  });
+  await publicUpstream.request({ operation: "chat-completions", body: {}, signal: new AbortController().signal });
+  assert.equal(publicTransport.calls[0]?.url, "https://api.public-provider.com/v1/chat/completions");
 });
 
 test("AgentUpstream maps HTTP statuses to safe errors and does not retain provider diagnostics", async () => {
@@ -241,11 +320,90 @@ test("HttpProbeSession uses the real three protocol loops, records usage, and re
       artifactProduced: true,
       structuredResultProduced: true,
     });
+    assert.deepEqual(result.runtimeEvidence, {
+      authoritativeDeadlineEnforced: true,
+      authoritativeCancellationEnforced: true,
+      privatePinnedRootsEnforced: true,
+      closedToolSurfaceEnforced: true,
+    });
     assert.equal(result.capabilities?.usage, "supported");
     assert.equal(JSON.stringify(result).includes(`${candidate.protocol}-secret`), false);
   }
 
   assert.deepEqual(await readdir(root), []);
+});
+
+test("a real HttpProbeSession report makes the exact Gemini model eligible for Mantis", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "csb-http-probe-e2e-"));
+  t.after(async () => rm(root, { recursive: true, force: true }));
+  const selected = model("model-a");
+  const connection = httpConnection();
+  const selection = httpSelection();
+  const transport = transcript([
+    json(200, chatTool("workspace.read", { path: "probe-input.txt" }, "read-1")),
+    json(200, chatTool("results.write", { path: "probe.json", content: "{\"ok\":true}" }, "write-1")),
+    json(200, chatFinal({ ok: true })),
+  ]);
+
+  const result = await probeHttpRoute(connection, selection, {
+    vault: fakeVault({ apiKey: "gemini-secret" }),
+    selectedModel: selected,
+    probeSession: createHttpProbeSession({ transport: transport.fetch, temporaryParent: root }),
+    now: () => new Date("2026-08-11T12:00:00.000Z"),
+  });
+  const decision = resolveCompatibility({
+    engine: "mantis",
+    connection,
+    selection,
+    model: selected,
+    probe: result.report,
+    now: new Date("2026-08-11T12:00:01.000Z"),
+  });
+
+  assert.equal(result.report.capabilities.cancellation, "supported");
+  assert.equal(result.report.capabilities.osIsolation, "supported");
+  assert.equal(decision.eligible, true);
+  assert.equal(decision.runnerKind, "agent-session");
+});
+
+test("capability flags without runtime cancellation and isolation evidence stay blocked", async () => {
+  const connection = httpConnection();
+  const selection = httpSelection();
+  const selected = model("model-a");
+  const result = await probeHttpRoute(connection, selection, {
+    vault: fakeVault({ apiKey: "gemini-secret" }),
+    selectedModel: selected,
+    probeSession: async () => ({
+      capabilities: {
+        tools: "supported",
+        artifactOutput: "supported",
+        structuredOutput: "supported",
+        boundedExecution: "supported",
+        cancellation: "supported",
+        osIsolation: "supported",
+      },
+      limitsEnforced: true,
+      agentLoop: {
+        workspaceToolRequested: true,
+        workspaceToolResultConsumed: true,
+        resultsWriteRequested: true,
+        artifactProduced: true,
+        structuredResultProduced: true,
+      },
+    }),
+    now: () => new Date("2026-08-11T12:00:00.000Z"),
+  });
+  const decision = resolveCompatibility({
+    engine: "mantis",
+    connection,
+    selection,
+    model: selected,
+    probe: result.report,
+    now: new Date("2026-08-11T12:00:01.000Z"),
+  });
+
+  assert.equal(result.report.status, "failed");
+  assert.equal(decision.eligible, false);
 });
 
 function model(id: string): ProviderModel {
@@ -261,6 +419,54 @@ function model(id: string): ProviderModel {
     pricing: null,
     discoveredAt: "2026-08-11T00:00:00.000Z",
     source: "provider-api",
+  };
+}
+
+function httpConnection(): StoredProviderConnection {
+  return {
+    id: "connection-a",
+    scopeId: "local",
+    name: "Gemini test",
+    providerKind: "google",
+    routeKind: "gemini-api",
+    transport: "http-inference",
+    authKind: "api-key",
+    protocol: "openai-chat",
+    status: "ready",
+    modelSelectionMode: "catalog",
+    defaultModelId: null,
+    lastTestedAt: "2026-08-11T12:00:00.000Z",
+    lastModelSyncAt: "2026-08-11T12:00:00.000Z",
+    modelCatalogStale: false,
+    display: {
+      providerLabel: "Google",
+      routeLabel: "Gemini API",
+      secretConfigured: true,
+      endpointConfigured: true,
+      endpointKind: "preset",
+    },
+    credentialRef: "connection/connection-a",
+  };
+}
+
+function httpSelection(): ScanConnectionSelection {
+  return {
+    connectionId: "connection-a",
+    modelSelectionMode: "catalog",
+    modelId: "model-a",
+  };
+}
+
+function fakeVault(bundle: ConnectionSecretBundle): CredentialVault {
+  return {
+    async available() {
+      return { available: true, backend: "keychain" } as const;
+    },
+    async put() {},
+    async get() {
+      return bundle;
+    },
+    async delete() {},
   };
 }
 

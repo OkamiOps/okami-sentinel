@@ -85,6 +85,13 @@ export interface AgentLoopEvidence {
   structuredResultProduced: boolean;
 }
 
+export interface HttpProbeRuntimeEvidence {
+  authoritativeDeadlineEnforced: boolean;
+  authoritativeCancellationEnforced: boolean;
+  privatePinnedRootsEnforced: boolean;
+  closedToolSurfaceEnforced: boolean;
+}
+
 /** Facts supplied by Task 5's bounded, user-triggered session probe. */
 export interface HttpProbeMeasurement {
   capabilities?: Partial<ModelCapabilities>;
@@ -92,6 +99,8 @@ export interface HttpProbeMeasurement {
   limitsEnforced?: boolean;
   /** Required for a positive API-agent result; a chat reply alone is insufficient. */
   agentLoop?: AgentLoopEvidence;
+  /** Local runtime facts measured by the same probe, never inferred from provider identity. */
+  runtimeEvidence?: HttpProbeRuntimeEvidence;
   contextWindow?: number | null;
   pricing?: ModelPricing | null;
 }
@@ -273,7 +282,7 @@ export async function probeHttpRoute(
     if (!hasCompleteAgentEvidence(measurement)) {
       return failedProbe(connection, selection, "protocol_unsupported", deps.now);
     }
-    const capabilities = measuredCapabilities(measurement.capabilities);
+    const capabilities = measuredCapabilities(measurement);
     return {
       report: {
         id: randomUUID(),
@@ -493,20 +502,37 @@ function isOwnedCatalogSelection(
 
 function hasCompleteAgentEvidence(measurement: HttpProbeMeasurement): boolean {
   const evidence = measurement.agentLoop;
+  const runtime = measurement.runtimeEvidence;
   return measurement.limitsEnforced === true && evidence !== undefined &&
     evidence.workspaceToolRequested === true &&
     evidence.workspaceToolResultConsumed === true &&
     evidence.resultsWriteRequested === true &&
     evidence.artifactProduced === true &&
-    evidence.structuredResultProduced === true;
+    evidence.structuredResultProduced === true &&
+    runtime !== undefined &&
+    runtime.authoritativeDeadlineEnforced === true &&
+    runtime.authoritativeCancellationEnforced === true &&
+    runtime.privatePinnedRootsEnforced === true &&
+    runtime.closedToolSurfaceEnforced === true;
 }
 
-function measuredCapabilities(partial: Partial<ModelCapabilities> | undefined): ModelCapabilities {
+function measuredCapabilities(measurement: HttpProbeMeasurement): ModelCapabilities {
   const result = unknownCapabilities();
+  const partial = measurement.capabilities;
   if (partial === undefined) return result;
   for (const key of Object.keys(result) as Array<keyof ModelCapabilities>) {
+    if (key === "cancellation" || key === "osIsolation") continue;
     const value = partial[key];
     if (value === "supported" || value === "unsupported" || value === "unknown") result[key] = value;
+  }
+  const runtime = measurement.runtimeEvidence;
+  if (runtime?.authoritativeDeadlineEnforced === true &&
+      runtime.authoritativeCancellationEnforced === true) {
+    result.cancellation = "supported";
+  }
+  if (runtime?.privatePinnedRootsEnforced === true &&
+      runtime.closedToolSurfaceEnforced === true) {
+    result.osIsolation = "supported";
   }
   return result;
 }

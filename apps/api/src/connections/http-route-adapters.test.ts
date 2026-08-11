@@ -410,6 +410,7 @@ test("a probe only records explicit measurements for a selected model owned by t
           artifactProduced: true,
           structuredResultProduced: true,
         },
+        runtimeEvidence: completeRuntimeEvidence(),
         contextWindow: 128_000,
         pricing: {
           inputUsdPerMillionTokens: 1,
@@ -574,6 +575,16 @@ function completeProbeMeasurement() {
       artifactProduced: true,
       structuredResultProduced: true,
     },
+    runtimeEvidence: completeRuntimeEvidence(),
+  };
+}
+
+function completeRuntimeEvidence() {
+  return {
+    authoritativeDeadlineEnforced: true,
+    authoritativeCancellationEnforced: true,
+    privatePinnedRootsEnforced: true,
+    closedToolSurfaceEnforced: true,
   };
 }
 

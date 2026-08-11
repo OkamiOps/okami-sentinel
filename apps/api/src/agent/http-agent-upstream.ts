@@ -1,4 +1,6 @@
+import type { Stats } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,8 +12,10 @@ import type {
 } from "@csb/shared";
 import type { ConnectionSecretBundle } from "../credentials/credential-vault.js";
 import { DEFAULT_AGENT_LIMITS, createAgentSession } from "./session-runner.js";
+import { createWorkspaceToolHost } from "./workspace-tool-host.js";
 import {
   AgentSessionError,
+  WORKSPACE_TOOL_NAMES,
   type AgentEvent,
   type AgentSessionLimits,
   type AgentUpstream,
@@ -77,8 +81,16 @@ export interface HttpAgentProbeMeasurement {
     artifactProduced: boolean;
     structuredResultProduced: boolean;
   };
+  runtimeEvidence: HttpAgentRuntimeEvidence;
   /** Last upstream-reported token usage, if the selected model returned it. */
   usage: AgentUsage | null;
+}
+
+export interface HttpAgentRuntimeEvidence {
+  authoritativeDeadlineEnforced: boolean;
+  authoritativeCancellationEnforced: boolean;
+  privatePinnedRootsEnforced: boolean;
+  closedToolSurfaceEnforced: boolean;
 }
 
 export interface HttpProbeSessionOptions {
@@ -105,13 +117,34 @@ export function createHttpProbeSession(
     try {
       const snapshotRoot = join(root, "snapshot");
       const artifactRoot = join(root, "artifacts");
+      const boundaryArtifactRoot = join(root, "boundary-artifacts");
+      const deadlineArtifactRoot = join(root, "deadline-artifacts");
+      const cancellationArtifactRoot = join(root, "cancellation-artifacts");
       await mkdir(snapshotRoot, { mode: 0o700 });
       await mkdir(artifactRoot, { mode: 0o700 });
+      await mkdir(boundaryArtifactRoot, { mode: 0o700 });
+      await mkdir(deadlineArtifactRoot, { mode: 0o700 });
+      await mkdir(cancellationArtifactRoot, { mode: 0o700 });
       await chmod(snapshotRoot, 0o700);
       await chmod(artifactRoot, 0o700);
+      await chmod(boundaryArtifactRoot, 0o700);
+      await chmod(deadlineArtifactRoot, 0o700);
+      await chmod(cancellationArtifactRoot, 0o700);
       await writeFile(join(snapshotRoot, "probe-input.txt"), "Sentinel HTTP probe fixture.\n", {
         encoding: "utf8",
         mode: 0o600,
+      });
+
+      const runtimeEvidence = await collectRuntimeEvidence({
+        connectionId: input.connectionId,
+        routeKind: input.routeKind,
+        protocol: input.protocol,
+        model: input.model,
+        snapshotRoot,
+        artifactRoot,
+        boundaryArtifactRoot,
+        deadlineArtifactRoot,
+        cancellationArtifactRoot,
       });
 
       const session = await createAgentSession({
@@ -134,7 +167,7 @@ export function createHttpProbeSession(
         transport: options.transport,
       }));
 
-      return await collectProbeMeasurement(session.run());
+      return await collectProbeMeasurement(session.run(), runtimeEvidence);
     } finally {
       await removePrivateProbeRoot(root);
     }
@@ -302,10 +335,121 @@ function customEndpoint(credentials: ConnectionSecretBundle, path: string): stri
 }
 
 function isPermittedCustomUrl(url: URL, allowInsecureLocalhost: boolean): boolean {
-  if (url.protocol === "https:") return true;
-  if (url.protocol !== "http:" || !allowInsecureLocalhost) return false;
-  const host = url.hostname.toLowerCase();
-  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+  const scope = deterministicHostScope(url.hostname);
+  if (scope === "blocked") return false;
+  if (scope === "loopback") return allowInsecureLocalhost;
+  return url.protocol === "https:";
+}
+
+type DeterministicHostScope = "public" | "loopback" | "blocked";
+
+/**
+ * This is deliberately deterministic and performs no DNS lookup. Public
+ * custom hostnames remain susceptible to DNS rebinding unless a later
+ * transport pins resolution; callers must not treat this check as DNS pinning.
+ */
+function deterministicHostScope(value: string): DeterministicHostScope {
+  const host = value.toLowerCase().replace(/^\[/, "").replace(/\]$/, "").replace(/\.$/, "");
+  const version = isIP(host);
+  if (version === 4) return ipv4Scope(host);
+  if (version === 6) return ipv6Scope(host);
+  if (host === "localhost") return "loopback";
+  if (isObviousLocalHostname(host)) return "blocked";
+  return "public";
+}
+
+function isObviousLocalHostname(host: string): boolean {
+  if (!host.includes(".")) return true;
+  return [
+    ".localhost",
+    ".local",
+    ".localdomain",
+    ".internal",
+    ".lan",
+    ".home",
+    ".home.arpa",
+    ".svc",
+    ".cluster.local",
+  ].some((suffix) => host.endsWith(suffix));
+}
+
+function ipv4Scope(value: string): DeterministicHostScope {
+  const octets = value.split(".").map(Number);
+  if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) {
+    return "blocked";
+  }
+  const [a, b, c] = octets as [number, number, number, number];
+  if (a === 127) return "loopback";
+  if (
+    a === 0 ||
+    a === 10 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 192 && b === 0) ||
+    (a === 192 && b === 88 && c === 99) ||
+    (a === 192 && b === 0 && c === 2) ||
+    (a === 198 && (b === 18 || b === 19)) ||
+    (a === 198 && b === 51 && c === 100) ||
+    (a === 203 && b === 0 && c === 113) ||
+    a >= 224
+  ) return "blocked";
+  return "public";
+}
+
+function ipv6Scope(value: string): DeterministicHostScope {
+  const words = ipv6Words(value);
+  if (words === null) return "blocked";
+  if (words.slice(0, 7).every((word) => word === 0) && words[7] === 1) return "loopback";
+  if (words.every((word) => word === 0)) return "blocked";
+
+  const mappedIpv4 = embeddedIpv4(words);
+  if (mappedIpv4 !== null) return ipv4Scope(mappedIpv4);
+
+  const first = words[0] as number;
+  if (
+    (first & 0xfe00) === 0xfc00 ||
+    (first & 0xffc0) === 0xfe80 ||
+    (first & 0xffc0) === 0xfec0 ||
+    (first & 0xff00) === 0xff00 ||
+    (first === 0x2001 && words[1] === 0x0db8) ||
+    (first === 0x0100 && words.slice(1, 4).every((word) => word === 0)) ||
+    (first === 0x0064 && words[1] === 0xff9b && words[2] === 1)
+  ) return "blocked";
+
+  if (first === 0x2002) {
+    const embedded = `${words[1]! >> 8}.${words[1]! & 0xff}.${words[2]! >> 8}.${words[2]! & 0xff}`;
+    return ipv4Scope(embedded) === "public" ? "public" : "blocked";
+  }
+  return "public";
+}
+
+function embeddedIpv4(words: readonly number[]): string | null {
+  const compatible = words.slice(0, 6).every((word) => word === 0);
+  const mapped = words.slice(0, 5).every((word) => word === 0) && words[5] === 0xffff;
+  if (!compatible && !mapped) return null;
+  return `${words[6]! >> 8}.${words[6]! & 0xff}.${words[7]! >> 8}.${words[7]! & 0xff}`;
+}
+
+function ipv6Words(value: string): number[] | null {
+  let normalized = value;
+  const ipv4Tail = normalized.match(/(?:^|:)(\d+\.\d+\.\d+\.\d+)$/)?.[1];
+  if (ipv4Tail !== undefined) {
+    if (isIP(ipv4Tail) !== 4) return null;
+    const octets = ipv4Tail.split(".").map(Number);
+    const replacement = `${((octets[0]! << 8) | octets[1]!).toString(16)}:${((octets[2]! << 8) | octets[3]!).toString(16)}`;
+    normalized = `${normalized.slice(0, -ipv4Tail.length)}${replacement}`;
+  }
+  const halves = normalized.split("::");
+  if (halves.length > 2) return null;
+  const head = halves[0] === "" ? [] : halves[0]!.split(":");
+  const tail = halves.length === 1 || halves[1] === "" ? [] : halves[1]!.split(":");
+  const zeroCount = halves.length === 2 ? 8 - head.length - tail.length : 0;
+  if (zeroCount < 0 || (halves.length === 1 && head.length !== 8)) return null;
+  const parts = [...head, ...Array.from({ length: zeroCount }, () => "0"), ...tail];
+  if (parts.length !== 8 || parts.some((part) => !/^[0-9a-f]{1,4}$/i.test(part))) return null;
+  return parts.map((part) => Number.parseInt(part, 16));
 }
 
 function jsonHeaders(
@@ -446,7 +590,10 @@ function provisionalProbeCapabilities(): ModelCapabilities {
   };
 }
 
-async function collectProbeMeasurement(events: AsyncIterable<AgentEvent>): Promise<HttpAgentProbeMeasurement> {
+async function collectProbeMeasurement(
+  events: AsyncIterable<AgentEvent>,
+  runtimeEvidence: HttpAgentRuntimeEvidence,
+): Promise<HttpAgentProbeMeasurement> {
   const evidence = {
     workspaceToolRequested: false,
     workspaceToolResultConsumed: false,
@@ -496,11 +643,178 @@ async function collectProbeMeasurement(events: AsyncIterable<AgentEvent>): Promi
       structuredOutput: complete ? "supported" : "unknown",
       boundedExecution: "supported",
       usage: usageHasTokens(usage) ? "supported" : "unknown",
+      cancellation: complete && runtimeEvidence.authoritativeDeadlineEnforced &&
+          runtimeEvidence.authoritativeCancellationEnforced
+        ? "supported"
+        : "unknown",
+      osIsolation: complete && runtimeEvidence.privatePinnedRootsEnforced &&
+          runtimeEvidence.closedToolSurfaceEnforced
+        ? "supported"
+        : "unknown",
     },
     limitsEnforced: true,
     agentLoop: evidence,
+    runtimeEvidence,
     usage,
   };
+}
+
+interface RuntimeEvidenceSpec {
+  connectionId: string;
+  routeKind: string;
+  protocol: HttpAgentProtocol;
+  model: ProviderModel;
+  snapshotRoot: string;
+  artifactRoot: string;
+  boundaryArtifactRoot: string;
+  deadlineArtifactRoot: string;
+  cancellationArtifactRoot: string;
+}
+
+async function collectRuntimeEvidence(spec: RuntimeEvidenceSpec): Promise<HttpAgentRuntimeEvidence> {
+  const workspace = await proveWorkspaceBoundary(spec.snapshotRoot, [
+    spec.artifactRoot,
+    spec.boundaryArtifactRoot,
+    spec.deadlineArtifactRoot,
+    spec.cancellationArtifactRoot,
+  ], spec.boundaryArtifactRoot);
+  const deadline = await proveAuthoritativeDeadline(spec);
+  const cancellation = await proveAuthoritativeCancellation(spec);
+  return {
+    authoritativeDeadlineEnforced: deadline,
+    authoritativeCancellationEnforced: cancellation,
+    privatePinnedRootsEnforced: workspace.privatePinnedRootsEnforced,
+    closedToolSurfaceEnforced: workspace.closedToolSurfaceEnforced,
+  };
+}
+
+async function proveWorkspaceBoundary(
+  snapshotRoot: string,
+  privateArtifactRoots: readonly string[],
+  boundaryArtifactRoot: string,
+): Promise<Pick<HttpAgentRuntimeEvidence, "privatePinnedRootsEnforced" | "closedToolSurfaceEnforced">> {
+  try {
+    const privatePinnedRootsEnforced = (await Promise.all([
+      lstat(join(boundaryArtifactRoot, "..")),
+      lstat(snapshotRoot),
+      ...privateArtifactRoots.map((root) => lstat(root)),
+    ])).every(isPrivateOwnedDirectory);
+    const host = await createWorkspaceToolHost({ snapshotRoot, artifactRoot: boundaryArtifactRoot });
+    await host.call("workspace.list", { path: ".", maxEntries: 4, maxDepth: 1 });
+    await host.call("results.write", { path: "runtime-boundary.json", content: "{}" });
+    let extraToolDenied = false;
+    try {
+      await host.call("shell.exec" as never, {});
+    } catch (error) {
+      extraToolDenied = error instanceof AgentSessionError && error.code === "tool_name_denied";
+    }
+    const closedToolSurfaceEnforced = extraToolDenied &&
+      WORKSPACE_TOOL_NAMES.length === 4 &&
+      WORKSPACE_TOOL_NAMES.join("|") === "workspace.list|workspace.read|workspace.search|results.write";
+    return { privatePinnedRootsEnforced, closedToolSurfaceEnforced };
+  } catch {
+    return { privatePinnedRootsEnforced: false, closedToolSurfaceEnforced: false };
+  }
+}
+
+async function proveAuthoritativeCancellation(spec: RuntimeEvidenceSpec): Promise<boolean> {
+  const started = deferred<void>();
+  const events: AgentEvent[] = [];
+  try {
+    const session = await createRuntimeEvidenceSession(spec, {
+      request() {
+        started.resolve();
+        return new Promise(() => undefined);
+      },
+      async cancel() {
+        return false;
+      },
+    }, { timeoutMs: 1_000 }, spec.cancellationArtifactRoot);
+    const running = collectRuntimeEvents(session.run(), events);
+    await withinLocalEvidenceDeadline(started.promise);
+    const cancellation = await withinLocalEvidenceDeadline(session.cancel());
+    await withinLocalEvidenceDeadline(running);
+    return cancellation.remote === false && events.some((event) =>
+      event.type === "cancellation" && event.remote === false);
+  } catch {
+    return false;
+  }
+}
+
+async function proveAuthoritativeDeadline(spec: RuntimeEvidenceSpec): Promise<boolean> {
+  const events: AgentEvent[] = [];
+  try {
+    const session = await createRuntimeEvidenceSession(spec, {
+      request() {
+        return new Promise(() => undefined);
+      },
+      async cancel() {
+        return false;
+      },
+    }, { timeoutMs: 1 }, spec.deadlineArtifactRoot);
+    await withinLocalEvidenceDeadline(collectRuntimeEvents(session.run(), events));
+    return false;
+  } catch (error) {
+    return error instanceof AgentSessionError && error.code === "agent_time_limit" &&
+      events.some((event) => event.type === "failure" && event.code === "agent_time_limit") &&
+      events.some((event) => event.type === "cancellation" && event.remote === false);
+  }
+}
+
+function createRuntimeEvidenceSession(
+  spec: RuntimeEvidenceSpec,
+  upstream: AgentUpstream,
+  limits: Partial<AgentSessionLimits>,
+  artifactRoot: string,
+) {
+  return createAgentSession({
+    connectionId: spec.connectionId,
+    routeKind: spec.routeKind,
+    protocol: spec.protocol,
+    model: spec.model,
+    snapshotRoot: spec.snapshotRoot,
+    artifactRoot,
+    instructions: PROBE_INSTRUCTIONS,
+    limits: { ...PROBE_LIMITS, ...limits },
+    signal: new AbortController().signal,
+    probe: provisionalProbeCapabilities(),
+  }, upstream);
+}
+
+async function collectRuntimeEvents(
+  events: AsyncIterable<AgentEvent>,
+  output: AgentEvent[],
+): Promise<void> {
+  for await (const event of events) output.push(event);
+}
+
+async function withinLocalEvidenceDeadline<T>(promise: Promise<T>): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timeout = setTimeout(
+          () => reject(new AgentSessionError("agent_time_limit")),
+          250,
+        );
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
+function isPrivateOwnedDirectory(info: Stats): boolean {
+  return info.isDirectory() && !info.isSymbolicLink() &&
+    (info.mode & 0o777) === 0o700 &&
+    (typeof process.getuid !== "function" || info.uid === process.getuid());
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise; });
+  return { promise, resolve };
 }
 
 function usageHasTokens(usage: AgentUsage | null): boolean {
