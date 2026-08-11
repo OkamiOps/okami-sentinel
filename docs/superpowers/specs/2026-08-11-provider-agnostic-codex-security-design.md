@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-11
 
-**Status:** Approved in conversation; written specification pending user review
+**Status:** Approved by the user on 2026-08-11
 
 **Scope:** Let the existing Codex Security scanner card run with every configured provider/model that proves the required capabilities, without mislabeling a Sentinel-owned runtime as the upstream CLI.
 
@@ -154,6 +154,10 @@ interface CodexSecurityProfileProvenance {
   methodologyRef: string;
   recipeHash: string;
   capabilityCheckId: string | null;
+  connectionId: string | null;
+  routeKind: string | null;
+  protocol: ProviderProtocol | null;
+  authKind: ConnectionAuthKind | null;
 }
 ```
 
