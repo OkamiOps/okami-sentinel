@@ -1,10 +1,22 @@
 import type {
+  CapabilityReport,
   ConnectionCompatibility,
   ProviderConnection,
   ProviderModel,
+  ResolveScanCompatibilityRequest,
   ScanConnectionSelection,
+  ScannerEngine,
   StartScanRequest,
 } from "@csb/shared";
+
+const CAPABILITY_PROBE_REASONS = new Set([
+  "capability_probe_missing",
+  "capability_probe_stale",
+  "capability_probe_failed",
+  "codex_portable_capability_required",
+  "codex_portable_capability_stale",
+  "codex_portable_capability_failed",
+]);
 
 /** Legacy runtime discovery is informational; server compatibility owns route eligibility. */
 export function canResolveConnectionWithEngine(engine: Pick<{ enabled: boolean; available: boolean }, "enabled" | "available">): boolean {
@@ -55,6 +67,53 @@ export function compatibilityReasonKey(
   return reasons.includes("codex_security_gateway_feature_unproven")
     ? "newScan.compatibilityCodexGatewayUnproven"
     : "newScan.compatibilityBlocked";
+}
+
+/**
+ * A capability-only block is the one preflight state that can be resolved by
+ * a short, selected-model proof. Every other server reason remains blocked.
+ */
+export function isProbeOnlyCompatibilityBlock(
+  compatibility: ConnectionCompatibility | null,
+): boolean {
+  return compatibility !== null &&
+    !compatibility.eligible &&
+    compatibility.reasons.length > 0 &&
+    compatibility.reasons.every((reason) => CAPABILITY_PROBE_REASONS.has(reason));
+}
+
+export interface CapabilityValidationClient {
+  probeConnection(connectionId: string, selection: ScanConnectionSelection): Promise<{
+    report: CapabilityReport;
+  }>;
+  resolveScanCompatibility(request: ResolveScanCompatibilityRequest): Promise<ConnectionCompatibility>;
+}
+
+export interface CapabilityValidationInput {
+  engine: ScannerEngine;
+  selection: ScanConnectionSelection;
+  remoteRepositoryConfirmed: boolean;
+}
+
+/**
+ * This deliberately has no scan client: preflight can prove only one selected
+ * provider model, then asks the server to recompute the route eligibility.
+ */
+export async function validateConnectionCapability(
+  client: CapabilityValidationClient,
+  input: CapabilityValidationInput,
+): Promise<{ report: CapabilityReport; compatibility: ConnectionCompatibility }> {
+  if (input.selection.modelSelectionMode !== "catalog" || input.selection.modelId === null) {
+    throw new Error("invalid_model_selection");
+  }
+  const { report } = await client.probeConnection(input.selection.connectionId, input.selection);
+  const compatibility = await client.resolveScanCompatibility({
+    engine: input.engine,
+    selection: input.selection,
+    remoteRepositoryConfirmed: input.remoteRepositoryConfirmed,
+    ...(input.engine === "codex-security" ? { executionProfilePreference: "auto" } : {}),
+  });
+  return { report, compatibility };
 }
 
 export function reasoningEffortForModel(

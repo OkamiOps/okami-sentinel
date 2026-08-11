@@ -9,11 +9,14 @@ import {
   connectionSelectionFor,
   defaultReasoningEffortForModel,
   loadLiveConnectionModels,
+  isProbeOnlyCompatibilityBlock,
+  validateConnectionCapability,
   reasoningEffortPanelClass,
   reasoningEffortViewportClass,
   reasoningEffortGridClass,
   reasoningEffortForModel,
 } from "./new-scan-routing.js";
+import type { CapabilityValidationClient } from "./new-scan-routing.js";
 
 test("explains an unproven Codex Security gateway contract instead of a generic block", () => {
   assert.equal(
@@ -40,6 +43,53 @@ test("explains an unproven Codex Security gateway contract instead of a generic 
     compatibilityReasonKey(["provider_runner_unavailable"]),
     "newScan.compatibilityPortableRunnerUnavailable",
   );
+});
+
+test("recognizes a selected model blocked only by a missing, stale, or failed capability probe", () => {
+  const selection = { connectionId: "connection-a", modelSelectionMode: "catalog" as const, modelId: "live-model" };
+  assert.equal(isProbeOnlyCompatibilityBlock({ ...selection, eligible: false, reasons: ["capability_probe_missing"] }), true);
+  assert.equal(isProbeOnlyCompatibilityBlock({ ...selection, eligible: false, reasons: ["capability_probe_stale"] }), true);
+  assert.equal(isProbeOnlyCompatibilityBlock({ ...selection, eligible: false, reasons: ["capability_probe_failed"] }), true);
+  assert.equal(isProbeOnlyCompatibilityBlock({ ...selection, eligible: false, reasons: ["codex_portable_capability_required"] }), true);
+  assert.equal(isProbeOnlyCompatibilityBlock({ ...selection, eligible: false, reasons: ["codex_portable_capability_stale"] }), true);
+  assert.equal(isProbeOnlyCompatibilityBlock({ ...selection, eligible: false, reasons: ["codex_portable_capability_failed"] }), true);
+  assert.equal(isProbeOnlyCompatibilityBlock({ ...selection, eligible: false, reasons: ["capability_probe_missing", "capability_probe_stale"] }), true);
+  assert.equal(isProbeOnlyCompatibilityBlock({ ...selection, eligible: false, reasons: ["capability_probe_missing", "connection_not_ready"] }), false);
+  assert.equal(isProbeOnlyCompatibilityBlock({ ...selection, eligible: true, reasons: [] }), false);
+});
+
+test("validates one selected provider model before compatibility and never starts a scan", async () => {
+  const selection = { connectionId: "connection-a", modelSelectionMode: "catalog" as const, modelId: "live-model" };
+  const calls: string[] = [];
+  const client: CapabilityValidationClient & { startScan(): Promise<never> } = {
+    async probeConnection(connectionId, probeSelection) {
+      calls.push(`probe:${connectionId}:${probeSelection.modelId}`);
+      return {
+        connection: connection(),
+        report: {
+          id: "probe-1", connectionId, modelId: "live-model", protocol: "openai-chat", status: "passed",
+          capabilities: model("live-model").capabilities, errorCode: null, checkedAt: "2026-08-11T18:00:00.000Z",
+        },
+      };
+    },
+    async resolveScanCompatibility(request) {
+      calls.push(`compatibility:${request.engine}:${request.selection.modelId}:${request.executionProfilePreference}`);
+      return { ...selection, eligible: true, reasons: [], selectedProfile: "portable" };
+    },
+    async startScan() {
+      calls.push("scan");
+      throw new Error("The preflight must not launch a scan");
+    },
+  };
+  const result = await validateConnectionCapability(client, {
+    engine: "codex-security",
+    selection,
+    remoteRepositoryConfirmed: true,
+  });
+
+  assert.deepEqual(calls, ["probe:connection-a:live-model", "compatibility:codex-security:live-model:auto"]);
+  assert.equal(result.report.status, "passed");
+  assert.equal(result.compatibility.eligible, true);
 });
 
 function connection(modelSelectionMode: ProviderConnection["modelSelectionMode"] = "catalog"): ProviderConnection {
@@ -143,6 +193,19 @@ test("builds a connection-only scan payload after matching server eligibility", 
 
 test("does not build a scan request from a stale or blocked server compatibility result", () => {
   const selection = connectionSelectionFor(connection(), [model("live-model")], "live-model")!;
+  const capabilityPreflight = buildConnectionAwareStartRequest({
+    repositoryPath: "/workspace/repository",
+    engine: "codex-security",
+    selection,
+    compatibility: { ...selection, eligible: false, reasons: ["capability_probe_missing"] },
+    remoteRepositoryConfirmed: true,
+    effort: undefined,
+    reasoning: reasoningEffortForModel(model("provider-managed"), null),
+    mode: "standard",
+    paths: [],
+  });
+  assert.equal(capabilityPreflight, null);
+
   assert.equal(buildConnectionAwareStartRequest({
     repositoryPath: "/workspace/repository",
     engine: "mantis",
@@ -153,6 +216,28 @@ test("does not build a scan request from a stale or blocked server compatibility
     reasoning: reasoningEffortForModel(model("provider-managed"), "high"),
     mode: "standard",
     maxCostUsd: undefined,
+    paths: [],
+  }), null);
+  assert.equal(buildConnectionAwareStartRequest({
+    repositoryPath: "/workspace/repository",
+    engine: "codex-security",
+    selection,
+    compatibility: { ...selection, eligible: false, reasons: ["capability_probe_missing", "connection_not_ready"] },
+    remoteRepositoryConfirmed: true,
+    effort: undefined,
+    reasoning: reasoningEffortForModel(model("provider-managed"), null),
+    mode: "standard",
+    paths: [],
+  }), null);
+  assert.equal(buildConnectionAwareStartRequest({
+    repositoryPath: "/workspace/repository",
+    engine: "codex-security",
+    selection,
+    compatibility: { ...selection, eligible: false, reasons: ["provider_runner_unavailable"] },
+    remoteRepositoryConfirmed: true,
+    effort: undefined,
+    reasoning: reasoningEffortForModel(model("provider-managed"), null),
+    mode: "standard",
     paths: [],
   }), null);
   assert.equal(buildConnectionAwareStartRequest({

@@ -1,6 +1,7 @@
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   type FormEvent,
 } from "react";
@@ -44,11 +45,13 @@ import {
   compatibilityReasonKey,
   connectionSelectionFor,
   defaultReasoningEffortForModel,
+  isProbeOnlyCompatibilityBlock,
   loadLiveConnectionModels,
   reasoningEffortPanelClass,
   reasoningEffortViewportClass,
   reasoningEffortGridClass,
   reasoningEffortForModel,
+  validateConnectionCapability,
 } from "../lib/new-scan-routing";
 
 const PREFS = "csb-bench-launch-v2";
@@ -170,6 +173,7 @@ export function NewScanPage() {
   const [compatibility, setCompatibility] = useState<ConnectionCompatibility | null>(null);
   const [compatibilityLoading, setCompatibilityLoading] = useState(false);
   const [compatibilityError, setCompatibilityError] = useState(false);
+  const [providerValidation, setProviderValidation] = useState<"validating" | "ready" | "failed" | "error" | null>(null);
   const [effort, setEffort] = useState<string | null>(initial.effort ?? null);
   const [mode, setMode] = useState<ScanMode>(initial.mode ?? "standard");
   const [maxCostUsd, setMaxCostUsd] = useState(initial.maxCostUsd ?? "100");
@@ -179,6 +183,9 @@ export function NewScanPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [started, setStarted] = useState<string | null>(null);
+  const compatibilityRequestRef = useRef(0);
+  const capabilityAttemptRef = useRef<string | null>(null);
+  const selectedRouteRef = useRef<string | null>(null);
 
   const scanners = catalog?.scanners ?? placeholderScanners;
   const scanner = scanners.find((candidate) => candidate.engine === engine) ?? scanners[0];
@@ -231,6 +238,11 @@ export function NewScanPage() {
     : executionProfile === "portable"
       ? t("newScan.profile.portableMethodology")
       : "—";
+  const capabilityProbeOnlyBlock = isProbeOnlyCompatibilityBlock(compatibility);
+  const capabilityProbeKey = selection !== null && selectedConnection !== null
+    ? [selection.connectionId, selection.modelSelectionMode, selection.modelId ?? "runtime-default", selectedConnection.protocol].join("|")
+    : null;
+  const selectedRouteKey = `${engine}|${capabilityProbeKey ?? "none"}`;
 
   useEffect(() => {
     void Promise.all([api.health(), api.scanners()])
@@ -271,6 +283,15 @@ export function NewScanPage() {
       }),
     );
   }, [repositoryPath, engine, connectionId, selectedModelId, effort, mode, maxCostUsd, unlimited, paths]);
+
+  useEffect(() => {
+    if (selectedRouteRef.current !== null && selectedRouteRef.current !== selectedRouteKey) {
+      setAuthorized(false);
+    }
+    selectedRouteRef.current = selectedRouteKey;
+    capabilityAttemptRef.current = null;
+    setProviderValidation(null);
+  }, [selectedRouteKey]);
 
   useEffect(() => {
     if (!catalog || !scanner) return;
@@ -318,6 +339,7 @@ export function NewScanPage() {
 
   useEffect(() => {
     let active = true;
+    const requestId = ++compatibilityRequestRef.current;
     setCompatibility(null);
     setCompatibilityError(false);
     if (selection === null) {
@@ -331,11 +353,53 @@ export function NewScanPage() {
       remoteRepositoryConfirmed: authorized,
       ...(engine === "codex-security" ? { executionProfilePreference: "auto" } : {}),
     })
-      .then((result) => { if (active) setCompatibility(result); })
-      .catch(() => { if (active) setCompatibilityError(true); })
-      .finally(() => { if (active) setCompatibilityLoading(false); });
+      .then((result) => {
+        if (active && compatibilityRequestRef.current === requestId) setCompatibility(result);
+      })
+      .catch(() => {
+        if (active && compatibilityRequestRef.current === requestId) setCompatibilityError(true);
+      })
+      .finally(() => {
+        if (active && compatibilityRequestRef.current === requestId) setCompatibilityLoading(false);
+      });
     return () => { active = false; };
   }, [authorized, engine, selection?.connectionId, selection?.modelId, selection?.modelSelectionMode]);
+
+  useEffect(() => {
+    if (
+      !authorized ||
+      selectedConnection === null ||
+      selection === null ||
+      selection.modelSelectionMode !== "catalog" ||
+      selection.modelId === null ||
+      !capabilityProbeOnlyBlock ||
+      capabilityProbeKey === null ||
+      capabilityAttemptRef.current === capabilityProbeKey
+    ) return;
+
+    capabilityAttemptRef.current = capabilityProbeKey;
+    const requestId = ++compatibilityRequestRef.current;
+    setProviderValidation("validating");
+    setCompatibilityLoading(true);
+    setCompatibilityError(false);
+    void validateConnectionCapability(api, {
+      engine,
+      selection,
+      remoteRepositoryConfirmed: true,
+    })
+      .then(({ report, compatibility: refreshed }) => {
+        if (compatibilityRequestRef.current !== requestId) return;
+        setCompatibility(refreshed);
+        setProviderValidation(report.status === "passed" && refreshed.eligible ? "ready" : "failed");
+      })
+      .catch(() => {
+        if (compatibilityRequestRef.current !== requestId) return;
+        setProviderValidation("error");
+      })
+      .finally(() => {
+        if (compatibilityRequestRef.current === requestId) setCompatibilityLoading(false);
+      });
+  }, [authorized, capabilityProbeKey, capabilityProbeOnlyBlock, engine, selectedConnection, selection]);
 
   async function open(directory: string) {
     try {
@@ -606,7 +670,7 @@ export function NewScanPage() {
                 ) : selectedConnectionModels.length === 0 ? (
                   <div className="border border-dashed p-3 text-[10px] leading-relaxed text-muted-foreground"><p>{t("newScan.modelEmpty")}</p><Link to="/settings/connections" className="mt-2 inline-block text-primary underline underline-offset-4">{t("newScan.manageConnections")}</Link></div>
                 ) : (
-                  <Select value={selectedModelId ?? ""} onValueChange={setSelectedModelId}>
+                  <Select value={selectedModelId ?? ""} onValueChange={(next) => { setSelectedModelId(next); setAuthorized(false); }}>
                     <SelectTrigger aria-label={t("newScan.selectModel")} className="w-full min-w-0 max-w-full overflow-hidden *:data-[slot=select-value]:min-w-0 *:data-[slot=select-value]:truncate"><SelectValue placeholder={t("newScan.selectModel")} /></SelectTrigger>
                     <SelectContent>{selectedConnectionModels.map((candidate) => <SelectItem key={candidate.id} value={candidate.id}>{candidate.displayName ? `${candidate.displayName} · ${candidate.id}` : candidate.id}</SelectItem>)}</SelectContent>
                   </Select>
@@ -792,7 +856,15 @@ export function NewScanPage() {
                   id="authorize-scan"
                   className="mt-0.5"
                   checked={authorized}
-                  onCheckedChange={(checked) => setAuthorized(checked === true)}
+                  onCheckedChange={(checked) => {
+                    const next = checked === true;
+                    if (!next) {
+                      capabilityAttemptRef.current = null;
+                      compatibilityRequestRef.current += 1;
+                      setProviderValidation(null);
+                    }
+                    setAuthorized(next);
+                  }}
                 />
                 <span>
                   <span className="block text-sm font-semibold">{t("newScan.authorizeExecution")}</span>
@@ -809,7 +881,31 @@ export function NewScanPage() {
                   {scanner.reason}
                 </p>
               )}
-              {!compatibilityLoading && selectedConnection !== null && (compatibilityError || compatibility?.eligible === false) && (
+              {(capabilityProbeOnlyBlock || providerValidation !== null) && (
+                <p
+                  role={providerValidation === "error" ? "alert" : providerValidation === "validating" ? "status" : undefined}
+                  aria-live={providerValidation === "error" ? "assertive" : "polite"}
+                  className={cx(
+                    "mb-3 border p-2 text-[10px] leading-relaxed",
+                    providerValidation === "ready"
+                      ? "border-chart-2/30 bg-chart-2/[.04] text-chart-2"
+                      : providerValidation === "failed" || providerValidation === "error"
+                        ? "border-chart-3/30 bg-chart-3/[.04] text-chart-3"
+                        : "border-primary/30 bg-primary/[.04] text-primary",
+                  )}
+                >
+                  {providerValidation === "validating"
+                    ? t("newScan.providerValidating")
+                    : providerValidation === "ready"
+                      ? t("newScan.providerValidationReady")
+                      : providerValidation === "failed"
+                        ? t("newScan.providerValidationFailed")
+                        : providerValidation === "error"
+                          ? t("newScan.providerValidationError")
+                          : t("newScan.providerValidationHelp")}
+                </p>
+              )}
+              {!compatibilityLoading && selectedConnection !== null && (compatibilityError || (compatibility?.eligible === false && !capabilityProbeOnlyBlock)) && (
                 <p className="mb-3 border border-chart-3/30 bg-chart-3/[.04] p-2 text-[10px] leading-relaxed text-chart-3">{compatibilityError ? t("newScan.compatibilityError") : t(compatibilityReasonKey(compatibility?.reasons ?? []))} <Link to="/settings/connections" className="underline underline-offset-4">{t("newScan.manageConnections")}</Link></p>
               )}
               {compatibilityLoading && <p role="status" className="mb-3 border border-dashed p-2 text-[10px] text-muted-foreground">{t("newScan.compatibilityLoading")}</p>}
@@ -819,7 +915,7 @@ export function NewScanPage() {
                 disabled={busy || !authorized || !routeReady}
                 className="w-full justify-between"
               >
-                {busy ? t("newScan.starting") : t("newScan.submit")}
+                {providerValidation === "validating" ? t("newScan.providerValidating") : busy ? t("newScan.starting") : t("newScan.submit")}
                 <HugeiconsIcon icon={ArrowRight01Icon} size={13} />
               </Button>
               <div className="mt-3 flex items-center justify-between gap-3 font-mono text-[8px] text-muted-foreground">
