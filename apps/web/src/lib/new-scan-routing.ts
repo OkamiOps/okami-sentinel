@@ -39,7 +39,19 @@ export const reasoningEffortGridClass = "grid w-max min-w-full grid-flow-col aut
 
 export function compatibilityReasonKey(
   reasons: readonly string[],
-): "newScan.compatibilityCodexGatewayUnproven" | "newScan.compatibilityBlocked" {
+): "newScan.compatibilityCodexGatewayUnproven" | "newScan.compatibilityPortableRequired" | "newScan.compatibilityPortableStale" | "newScan.compatibilityPortableFailed" | "newScan.compatibilityPortableRunnerUnavailable" | "newScan.compatibilityBlocked" {
+  if (reasons.includes("provider_runner_unavailable")) {
+    return "newScan.compatibilityPortableRunnerUnavailable";
+  }
+  if (reasons.includes("capability_probe_missing") || reasons.includes("codex_portable_capability_required")) {
+    return "newScan.compatibilityPortableRequired";
+  }
+  if (reasons.includes("capability_probe_stale") || reasons.includes("codex_portable_capability_stale")) {
+    return "newScan.compatibilityPortableStale";
+  }
+  if (reasons.includes("capability_probe_failed") || reasons.includes("codex_portable_capability_failed")) {
+    return "newScan.compatibilityPortableFailed";
+  }
   return reasons.includes("codex_security_gateway_feature_unproven")
     ? "newScan.compatibilityCodexGatewayUnproven"
     : "newScan.compatibilityBlocked";
@@ -82,7 +94,14 @@ type ConnectionAwareStartInput = Omit<StartScanRequest, "connection" | "provider
 };
 
 export function buildConnectionAwareStartRequest(input: ConnectionAwareStartInput): StartScanRequest | null {
-  const { selection, compatibility, effort: _untrustedEffort, reasoning, ...request } = input;
+  const {
+    selection,
+    compatibility,
+    effort: _untrustedEffort,
+    executionProfilePreference: _untrustedProfilePreference,
+    reasoning,
+    ...request
+  } = input;
   if (
     compatibility === null ||
     !compatibility.eligible ||
@@ -92,6 +111,7 @@ export function buildConnectionAwareStartRequest(input: ConnectionAwareStartInpu
   ) return null;
   return {
     ...request,
+    ...(request.engine === "codex-security" ? { executionProfilePreference: "auto" as const } : {}),
     ...(reasoning.kind === "configurable" && reasoning.selected !== null
       ? { effort: reasoning.selected }
       : {}),

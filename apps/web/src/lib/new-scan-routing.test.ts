@@ -24,6 +24,22 @@ test("explains an unproven Codex Security gateway contract instead of a generic 
     compatibilityReasonKey(["connection_not_ready"]),
     "newScan.compatibilityBlocked",
   );
+  assert.equal(
+    compatibilityReasonKey(["capability_probe_missing"]),
+    "newScan.compatibilityPortableRequired",
+  );
+  assert.equal(
+    compatibilityReasonKey(["capability_probe_stale"]),
+    "newScan.compatibilityPortableStale",
+  );
+  assert.equal(
+    compatibilityReasonKey(["capability_probe_failed"]),
+    "newScan.compatibilityPortableFailed",
+  );
+  assert.equal(
+    compatibilityReasonKey(["provider_runner_unavailable"]),
+    "newScan.compatibilityPortableRunnerUnavailable",
+  );
 });
 
 function connection(modelSelectionMode: ProviderConnection["modelSelectionMode"] = "catalog"): ProviderConnection {
@@ -301,6 +317,49 @@ test("serializes only a model-published reasoning effort, never the browser valu
     paths: [],
   });
   assert.equal(request?.effort, "low");
+});
+
+test("pins Codex Security browser requests to the automatic server-resolved profile", () => {
+  const configured = {
+    ...model("configured-model"),
+    reasoningEffort: { options: ["low", "high"], default: "high" },
+  };
+  const selection = connectionSelectionFor(connection(), [configured], "configured-model")!;
+  const request = buildConnectionAwareStartRequest({
+    repositoryPath: "/workspace/repository",
+    engine: "codex-security",
+    selection,
+    compatibility: {
+      ...selection,
+      eligible: true,
+      reasons: [],
+      selectedProfile: "portable",
+      availableProfiles: ["portable"],
+      profileVersion: "sentinel-codex-security-portable-v1",
+      methodologyRef: "sentinel/codex-security-methodology@v1",
+      capabilityCheckId: "probe-1",
+    },
+    remoteRepositoryConfirmed: true,
+    executionProfilePreference: "portable",
+    effort: "browser-forged",
+    reasoning: reasoningEffortForModel(configured, "low"),
+    mode: "standard",
+    paths: ["src"],
+  });
+
+  assert.deepEqual(request, {
+    repositoryPath: "/workspace/repository",
+    engine: "codex-security",
+    connection: selection,
+    remoteRepositoryConfirmed: true,
+    executionProfilePreference: "auto",
+    effort: "low",
+    mode: "standard",
+    paths: ["src"],
+  });
+  assert.equal("execution" in request!, false);
+  assert.equal("profileVersion" in request!, false);
+  assert.equal("methodologyRef" in request!, false);
 });
 
 test("keeps an enabled methodology selectable when its legacy local runtime is unavailable", () => {

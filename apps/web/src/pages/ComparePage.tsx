@@ -64,6 +64,7 @@ import {
   type CompareObjective,
   type ScanDecisionRow,
 } from "../lib/compare-decision";
+import { executionProfileLabel, hasExecutionProfileMismatch } from "../lib/execution-profile";
 import { useI18n, type TranslationKey } from "../i18n";
 
 const changeOrder: CompareFindingChange[] = [
@@ -199,7 +200,7 @@ export function ComparePage() {
                     {active && <span className="font-mono text-[8px] uppercase text-primary">{position === 0 ? t("compare.baseline") : t("compare.candidate", { index: String(position).padStart(2, "0") })}</span>}
                   </span>
                 </span>
-                <span className="mt-1 block truncate font-mono text-[9px] text-muted-foreground">{scan.engine} · {scan.model}/{scan.effort}/{scan.mode}</span>
+                <span className="mt-1 flex flex-wrap items-center gap-1 font-mono text-[9px] text-muted-foreground"><span className="truncate">{scan.engine} · {scan.model}/{scan.effort}/{scan.mode}</span><ExecutionProfileTag scan={scan} /></span>
                 <span className="mt-4 block"><SeverityStrip counts={scan.severity} total={scan.severity.total} /></span>
                 <span className="mt-2 grid grid-cols-3 font-mono text-[9px]">
                   <span>{formatUsd(scanEstimatedUsd(scan))}</span>
@@ -236,7 +237,7 @@ function CompareSlot({ role, scan, onRemove, onPromote }: { role: string; scan?:
     <div className="bench-label text-primary">{role}</div>
     {scan ? <div className="mt-2">
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0"><div className="truncate text-sm font-semibold">{scan.displayName}</div><div className="mt-1 truncate font-mono text-[8px] text-muted-foreground">{shortId(scan.id)} · {formatDate(scan.startedAt)}</div><PartialScanBadges scan={scan} /></div>
+        <div className="min-w-0"><div className="truncate text-sm font-semibold">{scan.displayName}</div><div className="mt-1 flex flex-wrap items-center gap-1 font-mono text-[8px] text-muted-foreground"><span className="truncate">{shortId(scan.id)} · {formatDate(scan.startedAt)}</span><ExecutionProfileTag scan={scan} /></div><PartialScanBadges scan={scan} /></div>
         <div className="flex shrink-0 flex-col items-end gap-1">{onPromote && <button type="button" onClick={onPromote} className="font-mono text-[7px] uppercase text-primary hover:text-foreground">{t("compare.useBaseline")}</button>}<button type="button" onClick={onRemove} className="font-mono text-[8px] uppercase text-muted-foreground hover:text-destructive">{t("compare.remove")}</button></div>
       </div>
     </div> : <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{t("compare.selectLibrary")}</p>}
@@ -285,6 +286,7 @@ function ComparisonOutput({ result }: { result: CompareResult }) {
   const highDelta = candidateHigh - baselineHigh;
   const sameRepository = normalizePath(baseline.repositoryPath) === normalizePath(candidate.repositoryPath);
   const partialScans = result.scans.filter(isPartialComparableScan);
+  const executionProfileMismatch = hasExecutionProfileMismatch(result.scans);
   function selectCandidate(id: string) {
     setActiveCandidateId(id);
     setChange("all");
@@ -297,6 +299,7 @@ function ComparisonOutput({ result }: { result: CompareResult }) {
   return <section className="mt-6">
     <div className="mb-4 flex flex-wrap items-center gap-3"><span className="bench-label text-primary">SECURITY CHANGESET / {partialScans.length ? "PARTIAL INPUT" : "READY"}</span><span className="h-px min-w-8 flex-1 bg-border" /><span className="font-mono text-[8px] text-muted-foreground">{result.scans.length} SCANS · 1 BASELINE · {result.candidateScanIds.length} CANDIDATES · {partialScans.length} PARTIAL</span><Button asChild variant="outline" size="sm" className="h-11 shrink-0 gap-3 border-primary/60 bg-primary/[.10] px-4 text-[10px] font-semibold uppercase tracking-[.08em] text-foreground shadow-[inset_3px_0_0_var(--primary)] hover:bg-primary/[.16] hover:text-foreground"><Link to={reportHref} target="_blank" aria-label={t("compare.openReport", { count: result.scans.length })}><HugeiconsIcon icon={DocumentValidationIcon} size={16} className="text-primary" /><span>{t("compare.report")}</span><span className="border-l border-primary/30 pl-3 font-mono text-[8px] font-medium text-primary">{objectiveLabel} · PDF</span><HugeiconsIcon icon={ArrowRight01Icon} size={12} className="text-primary" /></Link></Button></div>
     <AlertBanner tone="info"><strong>{t("compare.coverageWarning")}</strong> {t("compare.coverageExplanation")}</AlertBanner>
+    {executionProfileMismatch && <AlertBanner tone="warning">{t("compare.profileMismatch")}</AlertBanner>}
     {partialScans.length > 0 && <AlertBanner tone="warning"><strong>{partialScans.length === 1 ? t("compare.outputPartialTitleOne") : t("compare.outputPartialTitle", { count: partialScans.length })}</strong> {t("compare.outputPartialExplanation")}</AlertBanner>}
     {!sameRepository && <AlertBanner tone="warning">{t("compare.differentTargets")}</AlertBanner>}
     <DecisionCockpit ranking={decisionRanking} objective={objective} onObjectiveChange={setObjective} />
@@ -361,7 +364,7 @@ function CandidateRail({ result, activeCandidateId, onSelect }: { result: Compar
         return <button key={id} type="button" aria-pressed={activeCandidateId === id} onClick={() => onSelect(id)} className={cx("min-w-0 border-b border-r p-4 text-left transition hover:bg-accent/60", activeCandidateId === id && "bg-accent shadow-[inset_0_-2px_0_var(--primary)]")}>
           <div className="flex items-center justify-between gap-2"><span className="font-mono text-[8px] text-primary">C-{String(index + 1).padStart(2, "0")}</span><span className={cx("font-mono text-[9px]", highDelta > 0 ? "text-destructive" : highDelta < 0 ? "text-chart-2" : "text-muted-foreground")}>{signed(highDelta)} high+</span></div>
           <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2"><span className="truncate text-xs font-semibold">{scan.displayName}</span><PartialScanBadges scan={scan} compact /></div>
-          <div className="mt-1 truncate font-mono text-[8px] text-muted-foreground">{scan.engine} · {scan.model}/{scan.effort}/{scan.mode}</div>
+          <div className="mt-1 flex flex-wrap items-center gap-1 font-mono text-[8px] text-muted-foreground"><span className="truncate">{scan.engine} · {scan.model}/{scan.effort}/{scan.mode}</span><ExecutionProfileTag scan={scan} /></div>
           <div className="mt-3 flex gap-3 font-mono text-[8px]"><span className="text-primary">{comparison.counts.candidate_only} só candidato</span><span className="text-chart-3">{comparison.counts.baseline_only} só baseline</span></div>
         </button>;
       })}
@@ -666,7 +669,7 @@ function RunReadout({ role, scan }: { role: string; scan: ScanRun }) {
   return <div className="min-w-0 p-5">
     <div className="bench-label text-primary">{role} / {shortId(scan.id)}</div>
     <div className="mt-2 truncate font-heading text-xl font-semibold tracking-[-.035em]">{scan.displayName}</div>
-    <div className="mt-1 truncate font-mono text-[9px] text-muted-foreground">{scan.engine} · {scan.model}/{scan.effort}/{scan.mode}</div>
+    <div className="mt-1 flex flex-wrap items-center gap-1 font-mono text-[9px] text-muted-foreground"><span className="truncate">{scan.engine} · {scan.model}/{scan.effort}/{scan.mode}</span><ExecutionProfileTag scan={scan} /></div>
     <PartialScanBadges scan={scan} />
     <div className="mt-5"><SeverityStrip counts={scan.severity} total={scan.severity.total} /></div>
     <div className="mt-2 flex items-center justify-between gap-3 font-mono text-[9px]"><span>{scan.severity.total} findings</span><span className="text-muted-foreground">{formatDate(scan.startedAt)}</span></div>
@@ -692,6 +695,7 @@ function SeverityLedger({ baseline, candidate }: { baseline: ScanRun; candidate:
 }
 
 function OperationalLedger({ result, baseline, candidate }: { result: CompareResult; baseline: ScanRun; candidate: ScanRun }) {
+  const { t } = useI18n();
   const beforeRank = result.ranking.find((row) => row.scanId === baseline.id);
   const afterRank = result.ranking.find((row) => row.scanId === candidate.id);
   const baselineHigh = baseline.severity.critical + baseline.severity.high;
@@ -718,7 +722,7 @@ function OperationalLedger({ result, baseline, candidate }: { result: CompareRes
   return <Panel label="OPERATIONAL DELTA" title="Custo, tempo e eficiência observada">
     <div className="grid grid-cols-[minmax(5rem,1fr)_4.5rem_4.5rem_4.5rem] border-b px-4 py-2 font-mono text-[8px] uppercase tracking-wider text-muted-foreground sm:grid-cols-[minmax(7rem,1fr)_7rem_7rem_7rem]"><span>Métrica</span><span className="text-right">Antes</span><span className="text-right">Δ</span><span className="text-right">Depois</span></div>
     <div>{rows.map(([label, before, delta, after]) => <div key={label} className="grid min-h-12 grid-cols-[minmax(5rem,1fr)_4.5rem_4.5rem_4.5rem] items-center border-b px-4 py-2 font-mono text-[10px] tabular-nums sm:grid-cols-[minmax(7rem,1fr)_7rem_7rem_7rem]"><span className="text-muted-foreground">{label}</span><span className="text-right">{before}</span><span className="text-right text-primary">{delta}</span><span className="text-right font-semibold">{after}</span></div>)}</div>
-    <div className="grid border-t sm:grid-cols-2"><ProfileCell label="PROFILE" before={`${baseline.engine} · ${baseline.model}/${baseline.effort}/${baseline.mode}`} after={`${candidate.engine} · ${candidate.model}/${candidate.effort}/${candidate.mode}`} /><ProfileCell label="REVISION" before={baseline.revision ? shortId(baseline.revision) : "unversioned"} after={candidate.revision ? shortId(candidate.revision) : "unversioned"} /></div>
+    <div className="grid border-t sm:grid-cols-2"><ProfileCell label="PROFILE" before={`${baseline.engine} · ${baseline.model}/${baseline.effort}/${baseline.mode}`} after={`${candidate.engine} · ${candidate.model}/${candidate.effort}/${candidate.mode}`} /><ProfileCell label={t("scanDetail.executionProfile")} before={executionProfileLabel(baseline, t) ?? "—"} after={executionProfileLabel(candidate, t) ?? "—"} /><ProfileCell label={t("scanDetail.profileVersion")} before={baseline.execution?.profileVersion ?? "—"} after={candidate.execution?.profileVersion ?? "—"} /><ProfileCell label={t("scanDetail.methodologyRef")} before={baseline.execution?.methodologyRef ?? "—"} after={candidate.execution?.methodologyRef ?? "—"} /><ProfileCell label={t("scanDetail.protocol")} before={baseline.execution?.protocol ?? "—"} after={candidate.execution?.protocol ?? "—"} /><ProfileCell label={t("scanDetail.connectionAuth")} before={baseline.execution?.authKind ?? "—"} after={candidate.execution?.authKind ?? "—"} /><ProfileCell label="REVISION" before={baseline.revision ? shortId(baseline.revision) : "unversioned"} after={candidate.revision ? shortId(candidate.revision) : "unversioned"} /></div>
   </Panel>;
 }
 
@@ -774,6 +778,14 @@ function ChangeBadge({ change }: { change: CompareFindingChange }) {
 function Presence({ active, label }: { active: boolean; label: string }) {
   return <span className={cx("flex size-5 items-center justify-center border font-mono text-[8px]", active ? "border-primary/50 bg-primary/10 text-primary" : "border-border text-muted-foreground/35")}>{label}</span>;
 }
+
+function ExecutionProfileTag({ scan }: { scan: ScanRun }) {
+  const { t } = useI18n();
+  const profile = executionProfileLabel(scan, t);
+  if (profile === null) return null;
+  return <span aria-label={`${t("scanDetail.executionProfile")}: ${profile}`} className="shrink-0 border border-primary/35 bg-primary/[.04] px-1.5 py-0.5 font-mono text-[7px] uppercase text-primary">{profile}</span>;
+}
+
 
 function decisionProfile(scan: ScanRun): string {
   const model = scan.model?.replace(/^gpt-5\.6-/, "") ?? "modelo desconhecido";

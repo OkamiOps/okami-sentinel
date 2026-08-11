@@ -9,6 +9,7 @@ import { buildDecisionRanking, buildMarginalEconomics, isPartialComparableScan, 
 import { formatDuration, formatUsd, shortId } from "../format";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "../i18n";
+import { executionProfileLabel, hasExecutionProfileMismatch } from "../lib/execution-profile";
 
 const objectiveMeta: Record<CompareObjective, { label: string; description: string }> = {
   balanced: { label: "Equilíbrio", description: "Cobertura 30% · High+ 25% · $/finding 20% · $/High+ 15% · velocidade 10%" },
@@ -165,6 +166,7 @@ function SeverityProfiles({ scans }: { scans: ScanRun[] }) {
 }
 
 function PairSummarySheet({ result, comparison, index, reportId }: { result: CompareResult; comparison: ComparePairResult; index: number; reportId: string }) {
+  const { t } = useI18n();
   const baseline = result.scans.find((scan) => scan.id === result.baselineScanId)!;
   const candidate = result.scans.find((scan) => scan.id === comparison.candidateScanId)!;
   const baselineHigh = baseline.severity.critical + baseline.severity.high;
@@ -186,16 +188,19 @@ function PairSummarySheet({ result, comparison, index, reportId }: { result: Com
     <section className="report-keep mt-4 grid grid-cols-2 border border-border sm:grid-cols-4"><Metric label="Δ TOTAL" value={signed(candidate.severity.total - baseline.severity.total)} tone="text-primary" /><Metric label="Δ HIGH+" value={signed(candidateHigh - baselineHigh)} tone="text-chart-4" /><Metric label="Δ COST" value={formatSignedUsd(costDelta)} tone="text-chart-1" /><Metric label="AGREEMENT" value={`${agreement}%`} tone="text-chart-2" /></section>
     <section className="report-keep mt-4 border border-border p-4"><Kicker>Operational reading</Kicker><p className="mt-3 text-[11px] leading-5 text-muted-foreground">O candidato {direction}, com {signed(candidateHigh - baselineHigh)} High+ e custo {formatSignedUsd(costDelta)} contra o baseline. O custo unitário mudou de <strong className="text-foreground">{formatUsd(baselineCostPerFinding)}</strong> para <strong className="text-foreground">{formatUsd(candidateCostPerFinding)}</strong> por finding e de <strong className="text-foreground">{formatUsd(baselineCostPerHigh)}</strong> para <strong className="text-foreground">{formatUsd(candidateCostPerHigh)}</strong> por High+.</p><div className="mt-3 flex h-3 bg-muted">{(["candidate_only", "severity_changed", "both", "baseline_only"] as CompareFindingChange[]).map((change) => <span key={change} className={change === "candidate_only" ? "bg-primary" : change === "severity_changed" ? "bg-chart-4" : change === "both" ? "bg-chart-2" : "bg-chart-3"} style={{ width: `${(comparison.counts[change] / total) * 100}%` }} />)}</div><div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">{(["candidate_only", "severity_changed", "both", "baseline_only"] as CompareFindingChange[]).map((change) => <div key={change} className="flex items-center justify-between border border-border px-2 py-2"><span className={`font-mono text-[6px] uppercase ${changeTone[change]}`}>{changeLabel[change]}</span><strong className="font-mono text-[10px]">{comparison.counts[change]}</strong></div>)}</div></section>
     <section className="mt-4 border border-border"><div className="report-keep border-b border-border px-4 py-3"><Kicker>Priority divergences / technical detail</Kicker></div><div className="report-findings-grid grid md:grid-cols-3">{priority.map((finding) => <DetailedFinding key={finding.key} finding={finding} />)}{!priority.length && <div className="report-keep p-6 text-xs text-muted-foreground">Nenhuma divergência de presença ou severidade neste par.</div>}</div></section>
+    {hasExecutionProfileMismatch([baseline, candidate]) && <div className="report-keep mt-5 border-l-2 border-chart-3 bg-chart-3/5 px-4 py-3 text-[10px] leading-5">{t("compare.profileMismatch")}</div>}
     {(isPartialComparableScan(baseline) || isPartialComparableScan(candidate)) && <div className="report-keep mt-5 border-l-2 border-chart-3 bg-chart-3/5 px-4 py-3 text-[10px] leading-5"><strong>Entrada parcial:</strong> pelo menos um scan foi interrompido depois de produzir findings; os números não representam cobertura concluída.</div>}
     <ReportFooter reportId={reportId} />
   </ReportSheet>;
 }
 
 function RunCard({ role, scan }: { role: string; scan: ScanRun }) {
+  const { t } = useI18n();
   const highPlus = scan.severity.critical + scan.severity.high;
   const estimatedUsd = scanEstimatedUsd(scan);
   const costPerFinding = estimatedUsd != null && scan.severity.total ? estimatedUsd / scan.severity.total : null;
-  return <div className="border border-border p-4"><Kicker>{role}</Kicker><div className="mt-2 flex items-start justify-between gap-3"><div className="min-w-0"><h3 className="break-words font-heading text-base font-semibold">{profile(scan)}</h3><p className="mt-1 font-mono text-[7px] text-muted-foreground">{shortId(scan.id)} · {scan.status} · {formatDuration(scan.durationMs)}</p></div>{isPartialComparableScan(scan) && <span className="border border-chart-3/50 px-2 py-1 font-mono text-[7px] uppercase text-chart-3">partial</span>}</div><div className="mt-3 grid grid-cols-4 border border-border"><SmallMetric label="Total" value={scan.severity.total} /><SmallMetric label="High+" value={highPlus} /><SmallMetric label="Cost" value={formatUsd(estimatedUsd)} /><SmallMetric label="$/F" value={formatUsd(costPerFinding)} /></div></div>;
+  const executionProfile = executionProfileLabel(scan, t);
+  return <div className="border border-border p-4"><Kicker>{role}</Kicker><div className="mt-2 flex items-start justify-between gap-3"><div className="min-w-0"><h3 className="break-words font-heading text-base font-semibold">{profile(scan)}</h3><p className="mt-1 font-mono text-[7px] text-muted-foreground">{shortId(scan.id)} · {scan.status} · {formatDuration(scan.durationMs)}</p></div>{isPartialComparableScan(scan) && <span className="border border-chart-3/50 px-2 py-1 font-mono text-[7px] uppercase text-chart-3">partial</span>}</div>{scan.execution && <div className="mt-3 grid border border-border sm:grid-cols-2"><SmallMetric label={t("report.executionProfile")} value={executionProfile ?? "—"} /><SmallMetric label={t("report.profileVersion")} value={scan.execution.profileVersion} /><SmallMetric label={t("report.methodologyRef")} value={scan.execution.methodologyRef} /><SmallMetric label={t("report.protocol")} value={scan.execution.protocol ?? "—"} /><SmallMetric label={t("report.connectionAuth")} value={scan.execution.authKind ?? "—"} /></div>}{scan.execution?.executionProfile === "portable" && <p className="mt-3 text-[8px] leading-4 text-muted-foreground">{t("report.portableDisclosure")}</p>}<div className="mt-3 grid grid-cols-4 border border-border"><SmallMetric label="Total" value={scan.severity.total} /><SmallMetric label="High+" value={highPlus} /><SmallMetric label="Cost" value={formatUsd(estimatedUsd)} /><SmallMetric label="$/F" value={formatUsd(costPerFinding)} /></div></div>;
 }
 
 function SmallMetric({ label, value }: { label: string; value: ReactNode }) {

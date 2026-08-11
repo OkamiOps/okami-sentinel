@@ -8,6 +8,7 @@ import { Kicker, MetaCell, Metric, ReportBrand, ReportFooter, ReportHeader, Repo
 import { formatDate, formatDuration, formatTokens, formatUsd, shortId } from "../format";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "../i18n";
+import { executionProfileLabel } from "../lib/execution-profile";
 
 const severityOrder: Severity[] = ["critical", "high", "medium", "low", "info", "unknown"];
 const severityLabel: Record<Severity, string> = {
@@ -84,6 +85,7 @@ export function ScanReportPage() {
   const estimatedUsd = scanEstimatedUsd(scan);
   const usdPerFinding = estimatedUsd != null && scan.severity.total ? estimatedUsd / scan.severity.total : null;
   const reportId = `SNT-${scan.id.toUpperCase()}`;
+  const resolvedExecutionProfileLabel = executionProfileLabel(scan, t);
 
   return <div className="report-root min-h-screen bg-[#040407] pb-16 text-foreground">
     <div className="report-toolbar report-no-print sticky top-0 z-50 border-b border-border bg-background/95 backdrop-blur-md">
@@ -109,7 +111,7 @@ export function ScanReportPage() {
           <div className="mt-auto grid border-y border-border sm:grid-cols-2">
             <MetaCell label="TARGET" value={scan.displayName} />
             <MetaCell label="REPORT ID" value={reportId} />
-            <MetaCell label="SCAN CHANNEL" value={`${scan.engine} · ${scan.model ?? "—"}/${scan.effort ?? "—"}/${scan.mode ?? "—"}`} />
+            <MetaCell label="SCAN CHANNEL" value={`${scan.engine}${resolvedExecutionProfileLabel ? ` · ${resolvedExecutionProfileLabel}` : ""} · ${scan.model ?? "—"}/${scan.effort ?? "—"}/${scan.mode ?? "—"}`} />
             <MetaCell label="GENERATED" value={formatDate(generatedAt)} />
           </div>
           <div className="mt-7 flex items-center justify-between gap-4 font-mono text-[8px] uppercase tracking-[.16em] text-muted-foreground"><span>Confidential / local evidence</span><span>{scan.status.toUpperCase()}</span></div>
@@ -166,6 +168,13 @@ export function ScanReportPage() {
           <MetaCell label="REVISION" value={scan.revision ?? "—"} />
           <MetaCell label="ENGINE" value={scan.engine} />
           <MetaCell label="AUTHENTICATION" value={scan.authMode ?? "—"} />
+          {scan.execution && <>
+            <MetaCell label={t("report.executionProfile")} value={resolvedExecutionProfileLabel ?? "—"} />
+            <MetaCell label={t("report.profileVersion")} value={scan.execution.profileVersion} />
+            <MetaCell label={t("report.methodologyRef")} value={scan.execution.methodologyRef} />
+            <MetaCell label={t("report.protocol")} value={scan.execution.protocol ?? "—"} />
+            <MetaCell label={t("report.connectionAuth")} value={scan.execution.authKind ?? "—"} />
+          </>}
           <MetaCell label="MODEL" value={scan.model ?? "—"} />
           <MetaCell label="REASONING EFFORT" value={scan.effort ?? "—"} />
           <MetaCell label="SCAN MODE" value={scan.mode ?? "—"} />
@@ -176,6 +185,7 @@ export function ScanReportPage() {
           <MetaCell label="COMPLETED" value={formatDate(scan.completedAt)} />
         </div>
         <section className="mt-6 grid gap-5 md:grid-cols-2">
+          {scan.execution?.executionProfile === "portable" && <ReportText title={t("report.executionProfile")}>{t("report.portableDisclosure")}</ReportText>}
           <ReportText title="Como ler este documento">O índice contém todos os findings reportados por esta execução. Evidências detalhadas são apresentadas para itens critical e high; os demais continuam visíveis no inventário para triagem e rastreabilidade.</ReportText>
           <ReportText title="O que este documento não prova">Uma diferença entre scans pode resultar de cobertura, modelo, esforço, interrupção ou não determinismo. “Ausente nesta execução” não é sinônimo automático de corrigido.</ReportText>
           <ReportText title="Método">Análise estática assistida por modelo no repositório informado, com consolidação local de evidências, classificação de severidade, custo estimado e fingerprint de lifecycle.</ReportText>

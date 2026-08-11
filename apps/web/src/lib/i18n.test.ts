@@ -161,3 +161,45 @@ test("localizes connection-aware scan routing in every supported locale", () => 
   assert.equal(translate("de", "newScan.runtimeDefault"), "RUNTIME-STANDARD");
   assert.equal(translate("fr", "newScan.manageConnections"), "Gérer les connexions");
 });
+
+test("localizes Codex Security execution provenance and fail-closed Portable states", () => {
+  const profileKeys = [
+    "newScan.executionProfile",
+    "newScan.profile.auto",
+    "newScan.profile.native",
+    "newScan.profile.portable",
+    "newScan.profile.nativeReason",
+    "newScan.profile.portableReason",
+    "newScan.compatibilityPortableRequired",
+    "newScan.compatibilityPortableStale",
+    "newScan.compatibilityPortableFailed",
+    "newScan.compatibilityPortableRunnerUnavailable",
+    "scanDetail.executionProfile",
+    "scanDetail.profileVersion",
+    "scanDetail.methodologyRef",
+    "scanDetail.protocol",
+    "scanDetail.connectionAuth",
+    "scanDetail.portableDisclosure",
+    "report.executionProfile",
+    "report.profileVersion",
+    "report.methodologyRef",
+    "report.protocol",
+    "report.connectionAuth",
+    "report.portableDisclosure",
+    "compare.profileMismatch",
+  ] as const;
+  for (const locale of ["pt-BR", "en", "es", "de", "fr"] as const) {
+    for (const key of profileKeys) {
+      assert.notEqual(translate(locale, key), "");
+    }
+    if (locale !== "pt-BR") {
+      assert.notEqual(translate(locale, "newScan.profile.auto"), translate("pt-BR", "newScan.profile.auto"));
+      assert.notEqual(translate(locale, "newScan.profile.portableReason"), translate("pt-BR", "newScan.profile.portableReason"));
+      assert.notEqual(translate(locale, "newScan.compatibilityPortableRunnerUnavailable"), translate("pt-BR", "newScan.compatibilityPortableRunnerUnavailable"));
+    }
+  }
+  assert.equal(translate("en", "newScan.profile.native"), "Native");
+  assert.equal(translate("en", "newScan.profile.portable"), "Portable");
+  assert.match(translate("en", "newScan.profile.portableReason"), /Sentinel/);
+  assert.match(translate("en", "newScan.compatibilityPortableRunnerUnavailable"), /not available/i);
+});

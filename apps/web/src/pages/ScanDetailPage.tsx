@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { formatActivityState, formatDate, formatProgressMetric, formatTokens, formatUsd, shortId } from "../format";
 import { attackPathHref } from "../lib/attack-path";
+import { executionProfileLabel } from "../lib/execution-profile";
 import { appendTelemetryEvent, mergeTelemetrySnapshot, telemetrySnapshot } from "../lib/telemetry";
 import { useI18n } from "../i18n";
 
@@ -54,12 +55,13 @@ export function ScanDetailPage() {
   const costDetail = isOpenRouterEstimate
     ? `IN ${formatUsd(scan.cost?.inputUsd)} · OUT ${formatUsd(scan.cost?.outputUsd)}`
     : undefined;
+  const resolvedExecutionProfileLabel = executionProfileLabel(scan, t);
   return <div>
     <header className="bench-panel bench-corners mb-4">
       <div className="flex h-8 items-center justify-between border-b px-3 font-mono text-[8px] uppercase tracking-[.13em] text-muted-foreground"><span className="text-primary">CHANNEL / {shortId(scan.id)}</span><span>{scan.status === "running" ? "LIVE TELEMETRY" : "ARCHIVED EVIDENCE"}</span></div>
       <div className="grid lg:grid-cols-[minmax(0,1fr)_24rem]">
         <div className="min-w-0 border-b p-5 lg:border-b-0 lg:border-r">
-          <div className="flex flex-wrap items-center gap-2"><Button asChild variant="ghost" size="sm"><Link to="/scans"><HugeiconsIcon icon={ArrowLeft01Icon} size={12} />{t("scanDetail.ledger")}</Link></Button><StatusBadge status={scan.status} /><span className="border border-primary/35 bg-primary/5 px-2 py-1 font-mono text-[9px] uppercase text-primary">{scan.engine}</span><span className="border px-2 py-1 font-mono text-[9px] text-muted-foreground">{scan.model}/{scan.effort}/{scan.mode}</span></div>
+          <div className="flex flex-wrap items-center gap-2"><Button asChild variant="ghost" size="sm"><Link to="/scans"><HugeiconsIcon icon={ArrowLeft01Icon} size={12} />{t("scanDetail.ledger")}</Link></Button><StatusBadge status={scan.status} /><span className="border border-primary/35 bg-primary/5 px-2 py-1 font-mono text-[9px] uppercase text-primary">{scan.engine}</span>{resolvedExecutionProfileLabel && <span aria-label={`${t("scanDetail.executionProfile")}: ${resolvedExecutionProfileLabel}`} className="border border-primary/35 bg-primary/[.04] px-2 py-1 font-mono text-[9px] uppercase text-primary">{resolvedExecutionProfileLabel}</span>}<span className="border px-2 py-1 font-mono text-[9px] text-muted-foreground">{scan.model}/{scan.effort}/{scan.mode}</span></div>
           <h1 className="mt-5 truncate font-heading text-3xl font-semibold tracking-[-.045em] sm:text-4xl">{scan.displayName}</h1>
           <button type="button" onClick={() => void navigator.clipboard.writeText(scan.repositoryPath ?? scan.scanDir)} className="mt-2 flex max-w-full items-center gap-2 truncate font-mono text-[10px] text-muted-foreground hover:text-primary"><HugeiconsIcon icon={Copy01Icon} size={11} />{scan.repositoryPath ?? scan.scanDir}</button>
           <div className="mt-5"><SeverityStrip counts={scan.severity} total={scan.severity.total} /></div>
@@ -105,7 +107,26 @@ function FilterButton({ label, count, active, onClick, tone }: { label: string; 
 }
 
 function Telemetry({ scan, logs, logRef }: { scan: ScanRun; logs: string[]; logRef: React.RefObject<HTMLPreElement | null> }) { const activity = scan.progress?.activityState; const activityTone = activity === "active" ? "good" : activity === "stale" ? "risk" : "signal"; return <div className="grid gap-4 lg:grid-cols-[17rem_minmax(0,1fr)]"><Panel label="PROCESS" title="Runtime telemetry"><div className="grid gap-5 p-4"><Readout label="STATUS" value={scan.status.toUpperCase()} tone={scan.status === "running" ? "signal" : "good"} /><Readout label="ACTIVITY" value={formatActivityState(activity)} tone={activity ? activityTone : undefined} detail={activity === "stale" ? "No scanner events for 5m+" : activity === "quiet" ? "No scanner events for 30s+" : activity === "active" ? "Codex events are arriving" : undefined} /><Readout label="LAST EVENT" value={scan.progress?.lastActivityAt ? <LiveDuration startedAt={scan.progress.lastActivityAt} status={scan.status} showDot={false} /> : "—"} detail={scan.progress?.lastActivityAt ? formatDate(scan.progress.lastActivityAt) : undefined} /><Readout label="STAGE" value={formatProgressMetric(scan.progress)} /><Readout label="PHASE" value={scan.progress?.phaseLabel ?? "—"} /><Readout label="PID" value={scan.pid ?? "—"} /><Readout label="STARTED" value={formatDate(scan.startedAt)} /></div></Panel><Panel label="STDOUT / EVENT STREAM" title="Motor local"><pre ref={logRef} className="h-[34rem] overflow-auto whitespace-pre-wrap bg-[#060609] p-4 font-mono text-[10px] leading-5 text-[#b9bac8]">{logs.length ? logs.join("\n") : scan.status === "running" ? "Aguardando eventos do processo…" : "O stream desta execução não está mais ativo."}</pre></Panel></div>; }
-function Profile({ scan }: { scan: ScanRun }) { const rows = [["scan id", scan.id], ["engine", scan.engine], ["provider", scan.provider], ["authentication", scan.authMode], ["pricing source", scan.cost?.pricingSource ?? "scanner"], ["pricing model", scan.cost?.pricingModel ?? scan.cost?.model ?? "—"], ["pricing updated", scan.cost?.pricingUpdatedAt ? formatDate(scan.cost.pricingUpdatedAt) : "—"], ["scanner version", scan.scannerVersion ?? "—"], ["recipe hash", scan.recipeHash ?? "—"], ["source", scan.source], ["repository", scan.repositoryPath ?? "—"], ["revision", scan.revision ?? "—"], ["scan dir", scan.scanDir], ["model", scan.model ?? "—"], ["effort", scan.effort ?? "—"], ["mode", scan.mode ?? "—"], ["started", formatDate(scan.startedAt)], ["completed", formatDate(scan.completedAt)]]; return <Panel label="MANIFEST" title="Execution profile"><div className="grid sm:grid-cols-2">{rows.map(([label, value]) => <div key={label} className="min-w-0 border-b p-4 sm:border-r"><div className="bench-label">{label}</div><div className="mt-2 break-all font-mono text-[10px]">{value}</div></div>)}</div></Panel>; }
+function Profile({ scan }: { scan: ScanRun }) {
+  const { t } = useI18n();
+  const execution = scan.execution;
+  const executionProfile = executionProfileLabel(scan, t) ?? "—";
+  const rows = [
+    ["scan id", scan.id], ["engine", scan.engine], ["provider", scan.provider ?? "—"], ["authentication", scan.authMode ?? "—"],
+    ...(execution ? [
+      [t("scanDetail.executionProfile"), executionProfile],
+      [t("scanDetail.profileVersion"), execution.profileVersion],
+      [t("scanDetail.methodologyRef"), execution.methodologyRef],
+      [t("scanDetail.protocol"), execution.protocol ?? "—"],
+      [t("scanDetail.connectionAuth"), execution.authKind ?? "—"],
+    ] : []),
+    ["pricing source", scan.cost?.pricingSource ?? "scanner"], ["pricing model", scan.cost?.pricingModel ?? scan.cost?.model ?? "—"], ["pricing updated", scan.cost?.pricingUpdatedAt ? formatDate(scan.cost.pricingUpdatedAt) : "—"], ["scanner version", scan.scannerVersion ?? "—"], ["recipe hash", scan.recipeHash ?? "—"], ["source", scan.source], ["repository", scan.repositoryPath ?? "—"], ["revision", scan.revision ?? "—"], ["scan dir", scan.scanDir], ["model", scan.model ?? "—"], ["effort", scan.effort ?? "—"], ["mode", scan.mode ?? "—"], ["started", formatDate(scan.startedAt)], ["completed", formatDate(scan.completedAt)],
+  ];
+  return <Panel label="MANIFEST" title="Execution profile">
+    {execution?.executionProfile === "portable" && <div className="border-b border-chart-3/40 bg-chart-3/[.04] px-4 py-3 text-[10px] leading-relaxed text-muted-foreground">{t("scanDetail.portableDisclosure")}</div>}
+    <div className="grid sm:grid-cols-2">{rows.map(([label, value]) => <div key={label} className="min-w-0 border-b p-4 sm:border-r"><div className="bench-label">{label}</div><div className="mt-2 break-all font-mono text-[10px]">{value}</div></div>)}</div>
+  </Panel>;
+}
 
 type InspectorView = "brief" | "flow" | "evidence" | "fix";
 type DataRecord = Record<string, unknown>;

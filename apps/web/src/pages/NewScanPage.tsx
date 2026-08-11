@@ -190,6 +190,22 @@ export function NewScanPage() {
     compatibility.modelId === selection.modelId;
   const usesCostEnvelope = engine === "codex-security";
   const cost = Math.max(100, Number(maxCostUsd) || 100);
+  const executionProfile = engine === "codex-security" ? compatibility?.selectedProfile ?? null : null;
+  const executionProfileLabel = executionProfile === "native"
+    ? t("newScan.profile.native")
+    : executionProfile === "portable"
+      ? t("newScan.profile.portable")
+      : t("newScan.profile.pending");
+  const executionProfileReason = executionProfile === "native"
+    ? t("newScan.profile.nativeReason")
+    : executionProfile === "portable"
+      ? t("newScan.profile.portableReason")
+      : null;
+  const executionMethodology = executionProfile === "native"
+    ? t("newScan.profile.nativeMethodology")
+    : executionProfile === "portable"
+      ? t("newScan.profile.portableMethodology")
+      : "—";
 
   useEffect(() => {
     void Promise.all([api.health(), api.scanners()])
@@ -271,7 +287,12 @@ export function NewScanPage() {
       return () => { active = false; };
     }
     setCompatibilityLoading(true);
-    void api.resolveScanCompatibility({ engine, selection, remoteRepositoryConfirmed: authorized })
+    void api.resolveScanCompatibility({
+      engine,
+      selection,
+      remoteRepositoryConfirmed: authorized,
+      ...(engine === "codex-security" ? { executionProfilePreference: "auto" } : {}),
+    })
       .then((result) => { if (active) setCompatibility(result); })
       .catch(() => { if (active) setCompatibilityError(true); })
       .finally(() => { if (active) setCompatibilityLoading(false); });
@@ -619,6 +640,10 @@ export function NewScanPage() {
                 <span className="max-w-40 truncate border px-2 py-1">{selectedConnection?.display.routeLabel ?? t("newScan.connectionRequired")}</span>
                 <HugeiconsIcon icon={ArrowRight01Icon} size={11} className="text-muted-foreground" />
                 <span className="max-w-40 truncate border px-2 py-1">{selection?.modelId ?? (selection ? t("newScan.runtimeDefault") : "—")}</span>
+                {engine === "codex-security" && <>
+                  <HugeiconsIcon icon={ArrowRight01Icon} size={11} className="text-muted-foreground" />
+                  <span aria-label={`${t("newScan.executionProfile")}: ${executionProfileLabel}`} className="max-w-40 truncate border border-primary/35 bg-primary/[.04] px-2 py-1 text-primary">{executionProfileLabel}</span>
+                </>}
                 <span className="ml-auto text-muted-foreground">
                   {paths ? `${paths.split(",").filter(Boolean).length} paths` : t("newScan.fullScope")}
                 </span>
@@ -691,6 +716,26 @@ export function NewScanPage() {
                   </div>
                 </div>
               </>
+            )}
+
+            {engine === "codex-security" && (
+              <div className="border-b">
+                <div className="grid grid-cols-2 p-4">
+                  <Readout
+                    label={t("newScan.executionProfile")}
+                    value={executionProfileLabel}
+                    detail={executionProfile === null ? undefined : `${t("newScan.profile.auto")} · ${compatibility?.profileVersion ?? "—"}`}
+                    tone={executionProfile === "native" ? "good" : executionProfile === "portable" ? "signal" : undefined}
+                  />
+                  <Readout
+                    label={t("newScan.profile.methodology")}
+                    value={executionMethodology}
+                    detail={compatibility?.methodologyRef ?? undefined}
+                    wrap
+                  />
+                </div>
+                {executionProfileReason && <p className="border-t px-4 py-3 text-[10px] leading-relaxed text-muted-foreground">{executionProfileReason}</p>}
+              </div>
             )}
 
             <div className="border-b p-4">
