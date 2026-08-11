@@ -541,16 +541,16 @@ export function NewScanPage() {
             <div className="grid border-b md:grid-cols-[1.25fr_.75fr]">
               <div className="border-b p-4 md:border-b-0 md:border-r">
                 <div className="bench-label mb-3">{t("newScan.reasoningEffort")}</div>
-                <div className={cx("grid", (scanner?.efforts.length ?? 0) > 3 ? "grid-cols-5" : "grid-cols-3")}>
+                <div className={cx("grid border border-border", (scanner?.efforts.length ?? 0) > 3 ? "grid-cols-5" : "grid-cols-3")}>
                   {scanner?.efforts.map((candidate) => (
                     <button
                       key={candidate}
                       type="button"
                       onClick={() => setEffort(candidate)}
                       className={cx(
-                        "h-14 border border-r-0 px-1 font-mono text-[8px] uppercase last:border-r focus-visible:z-10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary",
+                        "relative h-14 border-l border-border px-1 font-mono text-[8px] uppercase first:border-l-0 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary",
                         effort === candidate
-                          ? "border-chart-4/60 bg-chart-4/[.06] text-chart-4"
+                          ? "z-10 bg-chart-4/[.06] text-chart-4 after:pointer-events-none after:absolute after:inset-0 after:border after:border-chart-4/60"
                           : "hover:bg-accent",
                       )}
                     >
@@ -561,17 +561,17 @@ export function NewScanPage() {
               </div>
               <div className="p-4">
                 <div className="bench-label mb-3">{t("newScan.scanMode")}</div>
-                <div className="grid grid-cols-2">
+                <div className="grid grid-cols-2 border border-border">
                   {scanner?.modes.map((candidate) => (
                     <button
                       key={candidate}
                       type="button"
                       onClick={() => setMode(candidate)}
                       className={cx(
-                        "border px-3 py-3 font-mono text-[9px] uppercase first:border-r-0 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary",
+                        "relative border-l border-border px-3 py-3 font-mono text-[9px] uppercase first:border-l-0 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary",
                         mode === candidate
-                          ? "border-primary bg-primary/8 text-primary"
-                          : "border-border hover:bg-accent",
+                          ? "z-10 bg-primary/8 text-primary after:pointer-events-none after:absolute after:inset-0 after:border after:border-primary"
+                          : "hover:bg-accent",
                       )}
                     >
                       {candidate}
