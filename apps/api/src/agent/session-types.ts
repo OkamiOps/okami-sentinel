@@ -1,4 +1,9 @@
-import type { ModelCapabilities, ProviderModel, ProviderProtocol } from "@csb/shared";
+import type {
+  ModelCapabilities,
+  ProviderModel,
+  ProviderProtocol,
+  SafeProviderErrorCode,
+} from "@csb/shared";
 
 export const WORKSPACE_TOOL_NAMES = [
   "workspace.list",
@@ -31,7 +36,9 @@ export type AgentSessionErrorCode =
   | "tool_argument_invalid"
   | "tool_read_limit"
   | "tool_output_limit"
-  | "tool_write_denied";
+  | "tool_write_denied"
+  /** A sanitized upstream status can safely cross the agent boundary. */
+  | SafeProviderErrorCode;
 
 export class AgentSessionError extends Error {
   constructor(readonly code: AgentSessionErrorCode) {
