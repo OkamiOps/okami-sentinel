@@ -7,6 +7,7 @@ import type {
   ScannerEngine,
   ScanConnectionSelection,
 } from "@csb/shared";
+import { isMimoTokenPlanResponsesModel } from "./http-model-discovery.js";
 
 export type RunnerKind =
   | "codex-security-contract"
@@ -81,10 +82,7 @@ export function resolveCompatibility(
   if (reasons.length > 0) return blocked(base, unique(reasons));
 
   if (input.engine === "codex-security") {
-    if (
-      input.connection.providerKind !== "openai" ||
-      !isCodexSecurityRoute(input.connection)
-    ) {
+    if (!isCodexSecurityRoute(input.connection, input.model)) {
       return blocked(base, ["codex_security_provider_unsupported"]);
     }
     return eligible(
@@ -164,14 +162,31 @@ function isClaudeCodeLocalMantisSession(input: CompatibilityInput): boolean {
     connection.credentialRef === null;
 }
 
-function isCodexSecurityRoute(connection: ProviderConnection): boolean {
-  if (connection.routeKind === "openai-api") {
+function isCodexSecurityRoute(
+  connection: ProviderConnection,
+  model: ProviderModel | null,
+): boolean {
+  if (
+    connection.providerKind === "openai" &&
+    connection.routeKind === "openai-api"
+  ) {
     return connection.transport === "http-inference" &&
       connection.authKind === "api-key" &&
       connection.protocol === "openai-responses";
   }
-  return connection.routeKind === "openai-codex-local" ||
-    connection.routeKind === "openai-chatgpt-app-server";
+  if (connection.providerKind === "openai") {
+    return connection.transport === "codex-app-server" &&
+      connection.protocol === "codex-app-server" &&
+      (connection.routeKind === "openai-codex-local" ||
+        connection.routeKind === "openai-chatgpt-app-server");
+  }
+  return connection.providerKind === "xiaomi" &&
+    connection.routeKind === "mimo-token-plan" &&
+    connection.transport === "http-inference" &&
+    connection.authKind === "api-key" &&
+    connection.protocol === "openai-chat" &&
+    model !== null &&
+    isMimoTokenPlanResponsesModel(model.id);
 }
 
 function selectionReasons(input: CompatibilityInput): CompatibilityReason[] {

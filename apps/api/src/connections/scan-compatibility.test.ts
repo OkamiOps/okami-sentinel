@@ -322,3 +322,34 @@ test("advertises Codex Security OpenAI API only after the exact child-env bridge
   assert.equal(result.eligible, true);
   assert.deepEqual(result.reasons, []);
 });
+
+test("advertises Codex Security for only the exact MiMo Token Plan child-env bridge", () => {
+  const resolver = createScanCompatibilityResolver({
+    getConnection: () => connection({
+      providerKind: "xiaomi",
+      routeKind: "mimo-token-plan",
+      transport: "http-inference",
+      authKind: "api-key",
+      protocol: "openai-chat",
+    }),
+    getModel: () => ({
+      ...model(),
+      id: "mimo-v2.5",
+      displayName: "MiMo V2.5",
+    }),
+    getLatestCapabilityCheck: () => null,
+    now: () => NOW,
+  });
+
+  const result = resolver.resolve({
+    engine: "codex-security",
+    selection: {
+      connectionId: "connection-a",
+      modelSelectionMode: "catalog",
+      modelId: "mimo-v2.5",
+    },
+  });
+
+  assert.equal(result.eligible, true);
+  assert.deepEqual(result.reasons, []);
+});

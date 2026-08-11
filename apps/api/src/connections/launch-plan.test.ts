@@ -301,7 +301,7 @@ test("missing connection and stale probe fail without a snapshot", () => {
   assert.deepEqual(stale.snapshots, []);
 });
 
-test("OpenAI Codex Security maps route authentication without reading a vault", () => {
+test("Codex Security maps each supported route authentication without reading a vault", () => {
   const chatgpt = fixture({
     connection: connection({
       routeKind: "openai-chatgpt-app-server",
@@ -330,6 +330,27 @@ test("OpenAI Codex Security maps route authentication without reading a vault", 
       connectionId: "conn-a",
       modelSelectionMode: "catalog",
       modelId: "model-a",
+    },
+  }).scannerAuthMode, "api-key");
+
+  const mimo = fixture({
+    connection: connection({
+      providerKind: "xiaomi",
+      routeKind: "mimo-token-plan",
+      transport: "http-inference",
+      authKind: "api-key",
+      protocol: "openai-chat",
+    }),
+    model: model({ id: "mimo-v2.5", displayName: "MiMo V2.5" }),
+    probe: null,
+  });
+  assert.equal(mimo.resolver.resolve({
+    scanId: "scan-mimo",
+    engine: "codex-security",
+    selection: {
+      connectionId: "conn-a",
+      modelSelectionMode: "catalog",
+      modelId: "mimo-v2.5",
     },
   }).scannerAuthMode, "api-key");
 });

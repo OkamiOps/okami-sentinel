@@ -117,6 +117,10 @@ const MIMO_TOKEN_PLAN_OPENAI_BASES = new Set([
   "https://token-plan-sgp.xiaomimimo.com/v1",
   "https://token-plan-ams.xiaomimimo.com/v1",
 ]);
+const MIMO_RESPONSES_AGENT_MODELS = new Set([
+  "mimo-v2.5",
+  "mimo-v2.5-pro",
+]);
 
 /**
  * Fetches a JSON response with the provider boundary's non-negotiable safety
@@ -284,6 +288,11 @@ export function mimoTokenPlanOpenAiBase(baseUrl: string | undefined): string | n
 
 export function isMimoTokenPlanApiKey(apiKey: string | undefined): boolean {
   return typeof apiKey === "string" && /^tp-\S+$/.test(apiKey);
+}
+
+/** Models currently documented by Xiaomi for the Responses agent contract. */
+export function isMimoTokenPlanResponsesModel(modelId: string): boolean {
+  return MIMO_RESPONSES_AGENT_MODELS.has(modelId);
 }
 
 /** xAI's API may return OpenAI-style `data` or a top-level `models` array. */

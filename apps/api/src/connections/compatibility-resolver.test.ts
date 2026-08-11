@@ -224,7 +224,7 @@ test("VulnHunter additionally requires a read-only snapshot and static profile",
   assert.equal(decision.eligible, false);
 });
 
-test("Codex Security accepts only the three verified OpenAI contracts", () => {
+test("Codex Security accepts its verified OpenAI contracts and the exact MiMo Token Plan bridge", () => {
   for (const candidate of [
     connection("openai-codex-local", {
       providerKind: "openai",
@@ -258,6 +258,40 @@ test("Codex Security accepts only the three verified OpenAI contracts", () => {
     assert.equal(decision.runnerKind, "codex-security-contract");
   }
 
+  const mimoConnection = connection("mimo-token-plan", {
+    providerKind: "xiaomi",
+    transport: "http-inference",
+    authKind: "api-key",
+    protocol: "openai-chat",
+    credentialRef: "connection/conn-a",
+  });
+  const mimo = resolveCompatibility({
+    engine: "codex-security",
+    connection: mimoConnection,
+    selection: {
+      connectionId: "conn-a",
+      modelSelectionMode: "catalog",
+      modelId: "mimo-v2.5",
+    },
+    model: model("mimo-v2.5"),
+    now: NOW,
+  });
+  assert.equal(mimo.eligible, true);
+  assert.equal(mimo.runnerKind, "codex-security-contract");
+
+  const mimoSpeech = resolveCompatibility({
+    engine: "codex-security",
+    connection: mimoConnection,
+    selection: {
+      connectionId: "conn-a",
+      modelSelectionMode: "catalog",
+      modelId: "mimo-v2.5-asr",
+    },
+    model: model("mimo-v2.5-asr"),
+    now: NOW,
+  });
+  assert.deepEqual(mimoSpeech.reasons, ["codex_security_provider_unsupported"]);
+
   const xai = resolveCompatibility({
     engine: "codex-security",
     connection: connection("xai-oauth", {
@@ -274,6 +308,23 @@ test("Codex Security accepts only the three verified OpenAI contracts", () => {
     now: NOW,
   });
   assert.deepEqual(xai.reasons, ["codex_security_provider_unsupported"]);
+
+  const malformedMimo = resolveCompatibility({
+    engine: "codex-security",
+    connection: connection("mimo-token-plan", {
+      providerKind: "xiaomi",
+      protocol: "anthropic-messages",
+      authKind: "api-key",
+    }),
+    selection: {
+      connectionId: "conn-a",
+      modelSelectionMode: "catalog",
+      modelId: "model-a",
+    },
+    model: model(),
+    now: NOW,
+  });
+  assert.deepEqual(malformedMimo.reasons, ["codex_security_provider_unsupported"]);
 });
 
 test("a model owned by another connection is blocked before runner selection", () => {

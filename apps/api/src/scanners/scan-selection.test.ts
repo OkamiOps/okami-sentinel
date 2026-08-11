@@ -461,6 +461,56 @@ test("Codex Security OpenAI API accepts only the resolved catalog plan, never cl
   assert.equal(launchPreparationCalls, 1);
 });
 
+test("Codex Security MiMo uses only the resolved Token Plan model and API-key metadata", () => {
+  const mimoModel: ProviderModel = {
+    ...model,
+    connectionId: "mimo-session",
+    id: "mimo-v2.5",
+    displayName: "MiMo V2.5",
+  };
+  const fixture = resolver(plan({
+    engine: "codex-security",
+    connectionId: "mimo-session",
+    providerKind: "xiaomi",
+    routeKind: "mimo-token-plan",
+    runnerKind: "codex-security-contract",
+    protocol: "openai-chat",
+    model: mimoModel,
+    scannerAuthMode: "api-key",
+    snapshot: {
+      scanId: "scan-codex-mimo",
+      connectionId: "mimo-session",
+      routeKind: "mimo-token-plan",
+      modelSelectionMode: "catalog",
+      modelId: "mimo-v2.5",
+      capabilityCheckId: null,
+      capturedAt: "2026-08-11T12:00:00.000Z",
+    },
+  }));
+
+  const result = resolveBeforeLaunch({
+    request: {
+      repositoryPath: "/repo",
+      engine: "codex-security",
+      provider: "attacker-provider",
+      model: "attacker-model",
+      authMode: "chatgpt",
+      connection: {
+        connectionId: "mimo-session",
+        modelSelectionMode: "catalog",
+        modelId: "mimo-v2.5",
+      },
+    },
+    scanId: "scan-codex-mimo",
+    launchPlans: fixture.resolver,
+    prepareLaunch: (selection) => selection.request,
+  });
+
+  assert.equal(result.launch.provider, "xiaomi");
+  assert.equal(result.launch.model, "mimo-v2.5");
+  assert.equal(result.launch.authMode, "api-key");
+});
+
 test("Codex Security keeps the two scoped local session routes launchable", () => {
   for (const routeKind of [
     "openai-codex-local",
