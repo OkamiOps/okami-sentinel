@@ -150,7 +150,9 @@ function parseBundle(raw: string): readonly MaterializedArtifact[] {
 
 function assertSentinelHandoff(value: unknown): Record<string, unknown> {
   const handoff = object(value);
-  if (handoff === null || !hasOnlyKeys(handoff, SENTINEL_KEYS) || handoff.schemaVersion !== 1 || !Array.isArray(handoff.findings)) {
+  if (handoff === null || !hasOnlyKeys(handoff, SENTINEL_KEYS) ||
+      (handoff.schemaVersion !== undefined && handoff.schemaVersion !== 1) ||
+      !Array.isArray(handoff.findings)) {
     return invalidBundle();
   }
   if (handoff.findings.length > MAX_FINDINGS) return invalidBundle();
@@ -170,7 +172,7 @@ function assertSentinelHandoff(value: unknown): Record<string, unknown> {
     assertValidation(finding.validation);
     assertEvidence(finding.evidence);
   }
-  return handoff;
+  return { schemaVersion: 1, findings: handoff.findings };
 }
 
 function assertValidation(value: unknown): void {

@@ -79,6 +79,27 @@ test("VulnHunter HTTP materializes exactly the defensive legacy artifacts from o
   }
 });
 
+test("VulnHunter HTTP derives the nested handoff version from the validated outer bundle", () => {
+  const { root, handoffRoot, resultsDir } = fixture();
+  try {
+    const bundle = validBundle();
+    bundle.artifacts[bundle.artifacts.length - 1] = {
+      name: "sentinel-findings.json",
+      content: { findings: [] },
+    };
+    writeBundle(handoffRoot, bundle);
+
+    materializeVulnHunterHttpBundle(handoffRoot, resultsDir);
+
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(path.join(resultsDir, "sentinel-findings.json"), "utf8")),
+      { schemaVersion: 1, findings: [] },
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("VulnHunter HTTP rejects malformed, missing, extra, or duplicate bundle artifacts before materialization", () => {
   const cases: Array<[string, unknown, (handoffRoot: string) => void]> = [
     ["malformed", "{not-json", () => undefined],
