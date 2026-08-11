@@ -26,6 +26,7 @@ import {
   upsertRun,
 } from "./db.js";
 import { normalizeAttackPath } from "./attack-path.js";
+import { withOpenRouterPricingEstimate } from "./openrouter-pricing.js";
 import { dirsMatch } from "./progress.js";
 import { refreshMantisRunFromDisk } from "./scanners/mantis-reconcile.js";
 import { refreshPortableCodexSecurityRunFromDisk } from "./scanners/portable-codex-security-reconcile.js";
@@ -398,6 +399,230 @@ function readSessionMeta(file: string): CodexSessionMeta | null {
   } finally {
     if (descriptor !== null) fs.closeSync(descriptor);
   }
+}
+
+interface CodexTokenSnapshot {
+  inputTokens: number;
+  cachedInputTokens: number;
+  cacheWriteInputTokens: number;
+  outputTokens: number;
+}
+
+/**
+ * Recovers attributable Codex usage when the upstream workbench lost its root
+ * thread id. Cumulative snapshots are converted to deltas inside the exact scan
+ * window; final snapshots and last-token snapshots are never summed directly.
+ */
+export function recoverCodexSessionUsage(
+  scanDir: string,
+  sessionsRoot: string,
+  startedAt: string | null,
+  completedAt: string | null,
+  model: string | null,
+): ScanRun["cost"] {
+  const startedAtMs = timestampMs(startedAt);
+  const completedAtMs = timestampMs(completedAt);
+  if (
+    startedAtMs === null ||
+    completedAtMs === null ||
+    completedAtMs < startedAtMs ||
+    !model ||
+    !fs.existsSync(sessionsRoot)
+  ) return null;
+
+  const resolvedScanDir = path.resolve(scanDir);
+  const sessions = listJsonlFiles(sessionsRoot)
+    .map(readSessionMeta)
+    .filter((meta): meta is CodexSessionMeta => meta !== null);
+  const roots = sessions.filter((session) => {
+    const sessionAtMs = timestampMs(session.timestamp);
+    return session.parentId === null &&
+      path.resolve(session.cwd) === resolvedScanDir &&
+      sessionAtMs !== null &&
+      sessionAtMs >= startedAtMs &&
+      sessionAtMs <= completedAtMs;
+  });
+  if (roots.length !== 1) return null;
+
+  const root = roots[0]!;
+  const byParent = new Map<string, CodexSessionMeta[]>();
+  for (const session of sessions) {
+    if (session.parentId === null) continue;
+    const children = byParent.get(session.parentId) ?? [];
+    children.push(session);
+    byParent.set(session.parentId, children);
+  }
+  const scoped: CodexSessionMeta[] = [];
+  const queue = [root];
+  const seen = new Set<string>();
+  while (queue.length > 0) {
+    const session = queue.shift()!;
+    if (seen.has(session.id)) return null;
+    seen.add(session.id);
+    scoped.push(session);
+    queue.push(...(byParent.get(session.id) ?? []));
+  }
+
+  const total: CodexTokenSnapshot = {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    outputTokens: 0,
+  };
+  for (const session of scoped) {
+    const usage = readCodexSessionUsage(
+      session,
+      startedAtMs,
+      completedAtMs,
+    );
+    if (usage === null) return null;
+    total.inputTokens += usage.inputTokens;
+    total.cachedInputTokens += usage.cachedInputTokens;
+    total.cacheWriteInputTokens += usage.cacheWriteInputTokens;
+    total.outputTokens += usage.outputTokens;
+  }
+  if (
+    !Object.values(total).every(Number.isSafeInteger) ||
+    total.inputTokens + total.outputTokens <= 0 ||
+    total.cachedInputTokens + total.cacheWriteInputTokens > total.inputTokens
+  ) return null;
+  return {
+    estimatedUsd: 0,
+    ...total,
+    model,
+  };
+}
+
+function readCodexSessionUsage(
+  session: CodexSessionMeta,
+  startedAtMs: number,
+  completedAtMs: number,
+): CodexTokenSnapshot | null {
+  let body: string;
+  try {
+    body = fs.readFileSync(session.file, "utf8");
+  } catch {
+    return null;
+  }
+  if (!body.endsWith("\n")) return null;
+  const total: CodexTokenSnapshot = {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    outputTokens: 0,
+  };
+  let previous: CodexTokenSnapshot = {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    outputTokens: 0,
+  };
+  let boundaryReached = session.parentId === null;
+  for (const line of body.split(/\r?\n/)) {
+    if (!line) continue;
+    let row: {
+      type?: unknown;
+      timestamp?: unknown;
+      payload?: Record<string, unknown>;
+    };
+    try {
+      row = JSON.parse(line) as typeof row;
+    } catch {
+      if (boundaryReached) return null;
+      continue;
+    }
+    const payload = row.payload;
+    if (!payload || typeof payload !== "object") continue;
+    if (!boundaryReached) {
+      if (
+        row.type === "event_msg" &&
+        payload.type === "task_started" &&
+        typeof payload.turn_id === "string" &&
+        payload.turn_id.length > 0
+      ) {
+        const taskStartedAtMs = timestampMs(row.timestamp);
+        if (
+          taskStartedAtMs === null ||
+          taskStartedAtMs < startedAtMs ||
+          taskStartedAtMs > completedAtMs
+        ) return null;
+        boundaryReached = true;
+      } else if (row.type === "event_msg" && payload.type === "token_count") {
+        const inherited = codexTokenSnapshot(payload);
+        if (inherited !== null) previous = inherited;
+      }
+      continue;
+    }
+    if (row.type !== "event_msg" || payload.type !== "token_count") continue;
+    const snapshotAtMs = timestampMs(row.timestamp);
+    const snapshot = codexTokenSnapshot(payload);
+    if (snapshotAtMs === null || snapshot === null) return null;
+    const delta: CodexTokenSnapshot = {
+      inputTokens: monotonicDelta(snapshot.inputTokens, previous.inputTokens),
+      cachedInputTokens: monotonicDelta(
+        snapshot.cachedInputTokens,
+        previous.cachedInputTokens,
+      ),
+      cacheWriteInputTokens: monotonicDelta(
+        snapshot.cacheWriteInputTokens,
+        previous.cacheWriteInputTokens,
+      ),
+      outputTokens: monotonicDelta(snapshot.outputTokens, previous.outputTokens),
+    };
+    previous = snapshot;
+    if (snapshotAtMs < startedAtMs || snapshotAtMs > completedAtMs) continue;
+    if (delta.inputTokens + delta.outputTokens <= 0) continue;
+    total.inputTokens += delta.inputTokens;
+    total.cachedInputTokens += delta.cachedInputTokens;
+    total.cacheWriteInputTokens += delta.cacheWriteInputTokens;
+    total.outputTokens += delta.outputTokens;
+  }
+  return boundaryReached ? total : null;
+}
+
+function codexTokenSnapshot(
+  payload: Record<string, unknown>,
+): CodexTokenSnapshot | null {
+  const info = payload.info;
+  if (!info || typeof info !== "object" || Array.isArray(info)) return null;
+  const usage = (info as Record<string, unknown>).total_token_usage;
+  if (!usage || typeof usage !== "object" || Array.isArray(usage)) return null;
+  const values = usage as Record<string, unknown>;
+  const inputTokens = tokenCount(values.input_tokens);
+  const cachedInputTokens = tokenCount(values.cached_input_tokens ?? 0);
+  const cacheWriteInputTokens = tokenCount(
+    values.cache_write_input_tokens ?? values.cache_write_tokens ?? 0,
+  );
+  const outputTokens = tokenCount(values.output_tokens);
+  if (
+    inputTokens === null ||
+    cachedInputTokens === null ||
+    cacheWriteInputTokens === null ||
+    outputTokens === null ||
+    cachedInputTokens + cacheWriteInputTokens > inputTokens
+  ) return null;
+  return {
+    inputTokens,
+    cachedInputTokens,
+    cacheWriteInputTokens,
+    outputTokens,
+  };
+}
+
+function tokenCount(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : null;
+}
+
+function monotonicDelta(current: number, previous: number): number {
+  return current >= previous ? current - previous : current;
+}
+
+function timestampMs(value: unknown): number | null {
+  if (typeof value !== "string" || value.length === 0) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function readLastSessionFindings(file: string): Array<Record<string, unknown>> {
@@ -875,11 +1100,17 @@ function cryptoRandom(): string {
 
 function workbenchRowToScanRun(row: WorkbenchScanRow): ScanRun {
   const recipe = parseRecipe(row.recipe_json);
-  const cost = parseCostJson(row.cost_json);
+  const cost = parseCostJson(row.cost_json) ?? recoverCodexSessionUsage(
+    row.scan_dir,
+    CODEX_SECURITY_SESSIONS_DIR,
+    row.started_at,
+    row.completed_at,
+    recipe.model,
+  );
   recoverFindingsJsonFromMarkdown(row.scan_dir);
   const findingsPath = path.join(row.scan_dir, "findings.json");
   const severity = countSeverityFromFindings(findingsPath);
-  return {
+  return withOpenRouterPricingEstimate({
     id: row.id,
     displayName: displayNameFromPaths(row.target_path, row.scan_dir),
     repositoryPath: recipe.repository ?? row.target_path,
@@ -902,7 +1133,7 @@ function workbenchRowToScanRun(row: WorkbenchScanRow): ScanRun {
     source: "workbench",
     pid: null,
     execution: null,
-  };
+  });
 }
 
 export function readWorkbenchScans(): ScanRun[] {
@@ -1045,6 +1276,8 @@ function pickCost(
   a: ScanRun["cost"],
   b: ScanRun["cost"],
 ): ScanRun["cost"] {
+  if (a?.pricingSnapshot) return a;
+  if (b?.pricingSnapshot) return b;
   const au = a?.estimatedUsd ?? 0;
   const bu = b?.estimatedUsd ?? 0;
   if (au <= 0 && bu <= 0) return a ?? b;

@@ -483,7 +483,11 @@ export interface ScanCost {
   model?: string;
   /** Identifies response-side estimates that are not an invoiced scanner cost. */
   pricingSource?: "openrouter" | "provider-catalog";
-  /** Immutable provider rates used for a provider-catalog estimate. */
+  /** Whether OpenRouter pricing used the reported model or a reviewed model alias. */
+  pricingMatch?: "exact" | "approved-alias";
+  /** Present only when an approved OpenRouter model alias supplied the price. */
+  pricingAliasId?: string;
+  /** Immutable catalog rates used for a response-side estimate. */
   pricingSnapshot?: {
     currency: "USD";
     capturedAt: string;

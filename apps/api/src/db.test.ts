@@ -3,7 +3,7 @@ import test from "node:test";
 import Database from "better-sqlite3";
 
 import * as dbModule from "./db.js";
-import { deleteRun, getRun, hideRun, upsertRun } from "./db.js";
+import { deleteRun, getRun, hideRun, parseCostJson, upsertRun } from "./db.js";
 import type { ScanRun } from "@csb/shared";
 
 test("hides a run from the ledger without deleting its record", () => {
@@ -103,6 +103,69 @@ test("round-trips frozen provider-catalog pricing and null costs", () => {
   } finally {
     deleteRun(pricedRun.id);
     deleteRun(nullCostRun.id);
+  }
+});
+
+test("round-trips approved OpenRouter alias provenance safely", () => {
+  const aliasRun: ScanRun = {
+    id: "openrouter-alias-round-trip",
+    displayName: "OpenRouter alias fixture",
+    repositoryPath: "/repo",
+    revision: "abc123",
+    scanDir: "/scan",
+    status: "completed",
+    model: "gpt-5.3-codex-spark",
+    effort: "high",
+    mode: "standard",
+    engine: "codex-security",
+    provider: "openai",
+    authMode: "api-key",
+    scannerVersion: "fixture",
+    recipeHash: "fixture",
+    startedAt: "2026-08-11T09:00:00.000Z",
+    completedAt: "2026-08-11T09:01:00.000Z",
+    durationMs: 60_000,
+    cost: {
+      estimatedUsd: 15.75,
+      inputTokens: 1_000_000,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      outputTokens: 1_000_000,
+      model: "gpt-5.3-codex-spark",
+      pricingSource: "openrouter",
+      pricingMatch: "approved-alias",
+      pricingAliasId: "openai.spark-to-gpt-5.3-codex.v1",
+      pricingSnapshot: {
+        currency: "USD",
+        capturedAt: "2026-08-11T16:49:02.000Z",
+        inputUsdPerMillionTokens: 1.75,
+        cachedInputUsdPerMillionTokens: 0.175,
+        cacheWriteInputUsdPerMillionTokens: null,
+        outputUsdPerMillionTokens: 14,
+      },
+      pricingModel: "openai/gpt-5.3-codex",
+      pricingUpdatedAt: "2026-08-11T16:49:02.000Z",
+      inputUsd: 1.75,
+      outputUsd: 14,
+    },
+    severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0, total: 0 },
+    source: "benchmark",
+    pid: null,
+    execution: null,
+  };
+
+  try {
+    upsertRun(aliasRun);
+
+    assert.deepEqual(getRun(aliasRun.id)?.cost, aliasRun.cost);
+    const unreviewedAlias = parseCostJson(JSON.stringify({
+      ...aliasRun.cost,
+      pricingAliasId: "openai.unreviewed-alias.v1",
+    }));
+    assert.equal(unreviewedAlias?.pricingMatch, undefined);
+    assert.equal(unreviewedAlias?.pricingAliasId, undefined);
+  } finally {
+    deleteRun(aliasRun.id);
   }
 });
 

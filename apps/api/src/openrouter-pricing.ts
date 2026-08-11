@@ -4,7 +4,7 @@ const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models?model_authors
 const PRICING_TTL_MS = 6 * 60 * 60 * 1000;
 const FAILURE_RETRY_MS = 5 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 5_000;
-const FALLBACK_UPDATED_AT = "2026-08-10T16:51:49.000Z";
+const FALLBACK_UPDATED_AT = "2026-08-11T16:49:02.000Z";
 
 export interface OpenRouterPricing {
   prompt: string;
@@ -41,6 +41,20 @@ interface CatalogState {
   refreshedAtMs: number;
 }
 
+interface PricingResolution {
+  model: OpenRouterModel;
+  pricingMatch: "exact" | "approved-alias";
+  pricingAliasId?: string;
+}
+
+const approvedModelAliases = [
+  {
+    aliasId: "openai.spark-to-gpt-5.3-codex.v1",
+    id: "openai/gpt-5.3-codex-spark",
+    targetId: "openai/gpt-5.3-codex",
+  },
+] as const;
+
 const fallbackModels: OpenRouterModel[] = [
   {
     id: "openai/gpt-5.6-sol",
@@ -58,6 +72,14 @@ const fallbackModels: OpenRouterModel[] = [
       completion: "0.000006",
       input_cache_read: "0.0000001",
       input_cache_write: "0.00000125",
+    },
+  },
+  {
+    id: "openai/gpt-5.3-codex",
+    pricing: {
+      prompt: "0.00000175",
+      completion: "0.000014",
+      input_cache_read: "0.000000175",
     },
   },
 ];
@@ -115,13 +137,55 @@ function openRouterModelId(run: ScanRun): string | null {
   return `${run.provider ?? "openai"}/${model}`;
 }
 
+function resolvePricing(
+  modelId: string,
+  models: OpenRouterModel[],
+): PricingResolution | null {
+  const exact = models.find((candidate) => candidate.id === modelId);
+  if (exact) return { model: exact, pricingMatch: "exact" };
+
+  const alias = approvedModelAliases.find((candidate) => candidate.id === modelId);
+  if (!alias) return null;
+  const target = models.find((candidate) => candidate.id === alias.targetId);
+  if (!target) return null;
+  return {
+    model: target,
+    pricingMatch: "approved-alias",
+    pricingAliasId: alias.aliasId,
+  };
+}
+
+function pricingSnapshot(pricing: OpenRouterPricing, capturedAt: string): NonNullable<ScanCost["pricingSnapshot"]> {
+  const promptRate = rate(pricing.prompt);
+  return {
+    currency: "USD",
+    capturedAt,
+    inputUsdPerMillionTokens: perMillion(promptRate),
+    cachedInputUsdPerMillionTokens: perMillion(
+      rate(pricing.input_cache_read, promptRate),
+    ),
+    cacheWriteInputUsdPerMillionTokens: perMillion(
+      rate(pricing.input_cache_write, promptRate),
+    ),
+    outputUsdPerMillionTokens: perMillion(rate(pricing.completion)),
+  };
+}
+
+function perMillion(perTokenRate: number): number {
+  return usd(perTokenRate * 1_000_000);
+}
+
 export function estimateScanWithOpenRouterPricing(
   run: ScanRun,
   models: OpenRouterModel[],
   pricingUpdatedAt: string,
 ): ScanRun {
-  const subscriptionScanner = run.engine === "mantis" || run.engine === "vulnhunter";
-  if (!subscriptionScanner || run.authMode !== "chatgpt" || !run.cost) return run;
+  const subscriptionScanner =
+    (run.engine === "mantis" || run.engine === "vulnhunter") && run.authMode === "chatgpt";
+  const reportedCodexSecurityUsage = run.engine === "codex-security" && run.provider === "openai";
+  if (!run.cost || (!subscriptionScanner && !reportedCodexSecurityUsage)) return run;
+  if (run.provider !== "openai") return run;
+  if (run.cost.pricingSource !== undefined || run.cost.pricingSnapshot !== undefined) return run;
   const reportedTokens =
     run.cost.inputTokens +
     run.cost.cachedInputTokens +
@@ -129,21 +193,27 @@ export function estimateScanWithOpenRouterPricing(
     run.cost.outputTokens;
   if (reportedTokens <= 0) return run;
   const modelId = openRouterModelId(run);
-  const model = modelId ? models.find((candidate) => candidate.id === modelId) : undefined;
-  if (!model) return run;
-  const estimate = calculateOpenRouterCost(run.cost, model.pricing);
+  const resolution = modelId ? resolvePricing(modelId, models) : null;
+  if (!resolution) return run;
+  const estimate = calculateOpenRouterCost(run.cost, resolution.model.pricing);
   if (estimate === null) return run;
   const cost: ScanCost = {
     ...run.cost,
     estimatedUsd: estimate.totalUsd,
     pricingSource: "openrouter",
-    pricingModel: model.id,
+    pricingMatch: resolution.pricingMatch,
+    pricingSnapshot: pricingSnapshot(
+      resolution.model.pricing,
+      pricingUpdatedAt,
+    ),
+    pricingModel: resolution.model.id,
     pricingUpdatedAt,
     inputUsd: estimate.inputUsd,
     cachedInputUsd: estimate.cachedInputUsd,
     cacheWriteInputUsd: estimate.cacheWriteInputUsd,
     outputUsd: estimate.outputUsd,
   };
+  if (resolution.pricingAliasId !== undefined) cost.pricingAliasId = resolution.pricingAliasId;
   return { ...run, cost };
 }
 
@@ -183,10 +253,12 @@ export async function refreshOpenRouterPricing(
       });
       if (!response.ok) return false;
       const payload = await response.json() as { data?: unknown[] };
-      const models = (payload.data ?? []).filter(validModel);
-      if (!models.length) return false;
+      const refreshedModels = (payload.data ?? [])
+        .filter(validModel)
+        .map((model) => ({ id: model.id, pricing: model.pricing }));
+      if (!refreshedModels.length) return false;
       catalog = {
-        models,
+        models: refreshedModels,
         updatedAt: new Date(now).toISOString(),
         refreshedAtMs: now,
       };

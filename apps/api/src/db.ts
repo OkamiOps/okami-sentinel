@@ -552,6 +552,15 @@ function sanitizeScanCost(value: unknown): ScanCost | null {
   if (value.pricingSource === "openrouter" || value.pricingSource === "provider-catalog") {
     cost.pricingSource = value.pricingSource;
   }
+  if (value.pricingMatch === "exact") {
+    cost.pricingMatch = value.pricingMatch;
+  } else if (
+    value.pricingMatch === "approved-alias" &&
+    value.pricingAliasId === "openai.spark-to-gpt-5.3-codex.v1"
+  ) {
+    cost.pricingMatch = value.pricingMatch;
+    cost.pricingAliasId = value.pricingAliasId;
+  }
   if (typeof value.pricingModel === "string") cost.pricingModel = value.pricingModel;
   if (typeof value.pricingUpdatedAt === "string") cost.pricingUpdatedAt = value.pricingUpdatedAt;
   for (const field of ["inputUsd", "cachedInputUsd", "cacheWriteInputUsd", "outputUsd"] as const) {
