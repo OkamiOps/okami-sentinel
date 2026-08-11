@@ -145,13 +145,15 @@ export function resolveScanLaunchSelection(
 }
 
 function isMantisHttpAgentPlan(plan: ScanLaunchPlan): boolean {
+  const directXaiOAuth = plan.providerKind === "xai" &&
+    plan.routeKind === "xai-oauth" &&
+    plan.protocol === "xai-oauth-responses";
   return plan.engine === "mantis" &&
     plan.model !== null &&
     typeof plan.capabilityCheckId === "string" &&
     plan.capabilityCheckId.length > 0 &&
-    plan.routeKind !== "xai-oauth" &&
-    plan.protocol !== "xai-oauth-responses" &&
-    isHttpAgentRouteProtocolSupported(plan.routeKind, plan.protocol);
+    isHttpAgentRouteProtocolSupported(plan.routeKind, plan.protocol) &&
+    (directXaiOAuth || (plan.routeKind !== "xai-oauth" && plan.protocol !== "xai-oauth-responses"));
 }
 
 /**

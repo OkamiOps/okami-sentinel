@@ -13,6 +13,7 @@ import type {
 
 import type { StoredProviderConnection } from "../connections-store.js";
 import type { AgentSession, AgentSessionSpec } from "../agent/session-types.js";
+import type { XaiOAuthFlow } from "../connections/xai-oauth-flow.js";
 import {
   MantisHttpRunnerError,
   createSafeMantisProviderPlan,
@@ -130,6 +131,66 @@ function snapshot(patch: Partial<ScanConnectionSnapshot> = {}): ScanConnectionSn
     capturedAt: NOW.toISOString(),
     ...patch,
   };
+}
+
+function xaiConnection(
+  patch: Partial<StoredProviderConnection> = {},
+): StoredProviderConnection {
+  return connection({
+    id: "connection-xai",
+    name: "xAI OAuth",
+    providerKind: "xai",
+    routeKind: "xai-oauth",
+    transport: "http-inference",
+    authKind: "device-code",
+    protocol: "xai-oauth-responses",
+    credentialRef: null,
+    display: {
+      providerLabel: "xAI",
+      routeLabel: "OAuth",
+      secretConfigured: true,
+      endpointConfigured: false,
+      endpointKind: "preset",
+    },
+    ...patch,
+  });
+}
+
+function xaiModel(patch: Partial<ProviderModel> = {}): ProviderModel {
+  return model({ connectionId: "connection-xai", id: "grok-live", ...patch });
+}
+
+function xaiReport(patch: Partial<CapabilityReport> = {}): CapabilityReport {
+  return report({
+    id: "capability-xai",
+    connectionId: "connection-xai",
+    modelId: "grok-live",
+    protocol: "xai-oauth-responses",
+    ...patch,
+  });
+}
+
+function xaiPlan(patch: Partial<SafeMantisProviderPlan> = {}): SafeMantisProviderPlan {
+  return plan({
+    scanId: "scan-xai",
+    connectionId: "connection-xai",
+    routeKind: "xai-oauth",
+    protocol: "xai-oauth-responses",
+    modelId: "grok-live",
+    capabilityCheckId: "capability-xai",
+    ...patch,
+  });
+}
+
+function xaiSnapshot(patch: Partial<ScanConnectionSnapshot> = {}): ScanConnectionSnapshot {
+  return snapshot({
+    scanId: "scan-xai",
+    connectionId: "connection-xai",
+    routeKind: "xai-oauth",
+    modelId: "grok-live",
+    capabilityCheckId: "capability-xai",
+    ...patch,
+  });
 }
 
 test("Mantis HTTP runner executes every bounded stage with chained state and never serializes its vault secret", async () => {
@@ -492,6 +553,253 @@ test("valid report schema produces normalized Inspector evidence", async () => {
   }
 });
 
+test("Mantis HTTP resolves pinned direct xAI OAuth without an API-key vault read", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-http-xai-oauth-"));
+  const repositoryPath = path.join(root, "repository");
+  const outputDir = path.join(root, "output");
+  const oauthToken = "private-mantis-xai-oauth-token";
+  const specs: AgentSessionSpec[] = [];
+  const registered: string[][] = [];
+  const logs: string[] = [];
+  let xaiReads = 0;
+  let vaultReads = 0;
+  fs.mkdirSync(repositoryPath);
+  fs.writeFileSync(path.join(repositoryPath, "app.ts"), "export const safe = true;\n");
+
+  try {
+    const result = await runMantisHttpAgent({
+      outputDir,
+      repositoryPath,
+      paths: [],
+      sourceRef: "a".repeat(40),
+      providerPlan: xaiPlan(),
+    }, {
+      getSnapshot: () => xaiSnapshot(),
+      getConnection: () => xaiConnection(),
+      getModel: () => xaiModel(),
+      getCapabilityCheck: () => xaiReport(),
+      vault: {
+        available: async () => ({ available: true, backend: "keychain" as const }),
+        put: async () => undefined,
+        delete: async () => undefined,
+        get: async () => {
+          vaultReads += 1;
+          return { apiKey: "must-not-be-read" };
+        },
+      },
+      xaiOAuth: {
+        getAccessToken: async (connectionId) => {
+          xaiReads += 1;
+          assert.equal(connectionId, "connection-xai");
+          await new Promise<void>((resolve) => setTimeout(resolve, 10));
+          return oauthToken;
+        },
+      } satisfies Pick<XaiOAuthFlow, "getAccessToken">,
+      redactor: {
+        register(_scope, values) { registered.push([...values]); },
+        unregister() {},
+      },
+      createSession: stageSessionFactory({
+        schemaVersion: 1,
+        engine: "mantis",
+        stage: "report",
+        findings: [],
+      }, {}, specs),
+      limits: { timeoutMs: 100 },
+      log: (line) => logs.push(line),
+      now: () => NOW,
+    } as Parameters<typeof runMantisHttpAgent>[1]);
+
+    assert.equal(xaiReads, 1);
+    assert.equal(vaultReads, 0);
+    assert.equal(specs.length, STAGES.length);
+    assert.ok(specs[0]!.limits.timeoutMs > 0 && specs[0]!.limits.timeoutMs < 100);
+    assert.equal(specs.slice(1).every((spec) => spec.limits.timeoutMs === 100), true);
+    assert.equal(result.runtime.status, "completed");
+    assert.equal(fs.existsSync(path.join(outputDir, "findings.json")), true);
+    assert.equal(registered.some((values) => values.includes(oauthToken)), true);
+    assert.equal(JSON.stringify({ specs, result }).includes(oauthToken), false);
+    assert.equal(logs.join("\n").includes(oauthToken), false);
+    assert.equal(JSON.stringify({
+      outputDir,
+      repositoryPath,
+      paths: [],
+      sourceRef: "a".repeat(40),
+      providerPlan: xaiPlan(),
+    }).includes(oauthToken), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Mantis direct xAI OAuth revalidates the exact tuple and snapshot before either credential read", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-http-xai-revalidate-"));
+  const repositoryPath = path.join(root, "repository");
+  let xaiReads = 0;
+  let vaultReads = 0;
+  fs.mkdirSync(repositoryPath);
+  fs.writeFileSync(path.join(repositoryPath, "app.ts"), "export const safe = true;\n");
+  const dependencies = {
+    getModel: () => xaiModel(),
+    getCapabilityCheck: () => xaiReport(),
+    vault: {
+      available: async () => ({ available: true, backend: "keychain" as const }),
+      put: async () => undefined,
+      delete: async () => undefined,
+      get: async () => {
+        vaultReads += 1;
+        return { apiKey: "must-not-be-read" };
+      },
+    },
+    xaiOAuth: {
+      getAccessToken: async () => {
+        xaiReads += 1;
+        return "must-not-be-read";
+      },
+    } satisfies Pick<XaiOAuthFlow, "getAccessToken">,
+    now: () => NOW,
+  };
+  try {
+    for (const invalid of [
+      {
+        getSnapshot: () => xaiSnapshot({ capabilityCheckId: "stale-capability" }),
+        getConnection: () => xaiConnection(),
+      },
+      {
+        getSnapshot: () => xaiSnapshot(),
+        getConnection: () => xaiConnection({ authKind: "api-key", credentialRef: "connections/connection-xai" }),
+      },
+    ]) {
+      await assert.rejects(
+        runMantisHttpAgent({
+          outputDir: path.join(root, `output-${vaultReads}`),
+          repositoryPath,
+          paths: [],
+          sourceRef: "a".repeat(40),
+          providerPlan: xaiPlan(),
+        }, { ...dependencies, ...invalid } as Parameters<typeof runMantisHttpAgent>[1]),
+        (error: unknown) => error instanceof MantisHttpRunnerError &&
+          error.code === "provider_plan_revalidation_failed",
+      );
+    }
+    assert.equal(xaiReads, 0);
+    assert.equal(vaultReads, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Mantis direct xAI OAuth bounds a hung refresh, consumes its late rejection, and charges the first stage deadline", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-http-xai-preflight-"));
+  const repositoryPath = path.join(root, "repository");
+  const unhandled: unknown[] = [];
+  let rejectLate: ((error: Error) => void) | undefined;
+  let vaultReads = 0;
+  const onUnhandled = (error: unknown) => unhandled.push(error);
+  process.on("unhandledRejection", onUnhandled);
+  t.after(() => process.off("unhandledRejection", onUnhandled));
+  fs.mkdirSync(repositoryPath);
+  fs.writeFileSync(path.join(repositoryPath, "app.ts"), "export const safe = true;\n");
+  try {
+    await assert.rejects(
+      withTestDeadline(runMantisHttpAgent({
+        outputDir: path.join(root, "output"),
+        repositoryPath,
+        paths: [],
+        sourceRef: "a".repeat(40),
+        providerPlan: xaiPlan(),
+      }, {
+        getSnapshot: () => xaiSnapshot(),
+        getConnection: () => xaiConnection(),
+        getModel: () => xaiModel(),
+        getCapabilityCheck: () => xaiReport(),
+        vault: {
+          available: async () => ({ available: true, backend: "keychain" as const }),
+          put: async () => undefined,
+          delete: async () => undefined,
+          get: async () => {
+            vaultReads += 1;
+            return { apiKey: "must-not-be-read" };
+          },
+        },
+        xaiOAuth: {
+          getAccessToken: async () => new Promise<string>((_resolve, reject) => {
+            rejectLate = reject;
+          }),
+        } satisfies Pick<XaiOAuthFlow, "getAccessToken">,
+        limits: { timeoutMs: 10 },
+        now: () => NOW,
+      } as Parameters<typeof runMantisHttpAgent>[1])),
+      (error: unknown) => error instanceof MantisHttpRunnerError && error.code === "agent_session_failed",
+    );
+    assert.equal(vaultReads, 0);
+    rejectLate?.(new Error("private-late-refresh-rejection"));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Mantis direct xAI OAuth rejects a pre-aborted or missing bearer without a vault fallback", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-http-xai-credential-"));
+  const repositoryPath = path.join(root, "repository");
+  const controller = new AbortController();
+  let xaiReads = 0;
+  let vaultReads = 0;
+  controller.abort();
+  fs.mkdirSync(repositoryPath);
+  fs.writeFileSync(path.join(repositoryPath, "app.ts"), "export const safe = true;\n");
+  const dependencies = {
+    getSnapshot: () => xaiSnapshot(),
+    getConnection: () => xaiConnection(),
+    getModel: () => xaiModel(),
+    getCapabilityCheck: () => xaiReport(),
+    vault: {
+      available: async () => ({ available: true, backend: "keychain" as const }),
+      put: async () => undefined,
+      delete: async () => undefined,
+      get: async () => {
+        vaultReads += 1;
+        return { apiKey: "must-not-be-read" };
+      },
+    },
+    xaiOAuth: {
+      getAccessToken: async () => {
+        xaiReads += 1;
+        return "";
+      },
+    } satisfies Pick<XaiOAuthFlow, "getAccessToken">,
+    now: () => NOW,
+  };
+  try {
+    await assert.rejects(
+      runMantisHttpAgent({
+        outputDir: path.join(root, "pre-aborted"),
+        repositoryPath,
+        paths: [],
+        sourceRef: "a".repeat(40),
+        providerPlan: xaiPlan(),
+      }, { ...dependencies, signal: controller.signal } as Parameters<typeof runMantisHttpAgent>[1]),
+      (error: unknown) => error instanceof MantisHttpRunnerError && error.code === "agent_cancelled",
+    );
+    await assert.rejects(
+      runMantisHttpAgent({
+        outputDir: path.join(root, "missing-bearer"),
+        repositoryPath,
+        paths: [],
+        sourceRef: "a".repeat(40),
+        providerPlan: xaiPlan(),
+      }, dependencies as Parameters<typeof runMantisHttpAgent>[1]),
+      (error: unknown) => error instanceof MantisHttpRunnerError && error.code === "credential_rejected",
+    );
+    assert.equal(xaiReads, 1);
+    assert.equal(vaultReads, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 for (const unsafePath of ["../outside", "/absolute/path"] as const) {
   test(`Mantis HTTP rejects unsafe configured scope ${unsafePath} before interpolation`, async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-http-scope-"));
@@ -519,7 +827,7 @@ for (const unsafePath of ["../outside", "/absolute/path"] as const) {
   });
 }
 
-test("Mantis HTTP revalidation fails before the vault for a changed snapshot or direct xAI OAuth", async () => {
+test("Mantis HTTP revalidation fails before the vault for a changed snapshot", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-http-revalidate-"));
   const repositoryPath = path.join(root, "repository");
   fs.mkdirSync(repositoryPath);
@@ -556,27 +864,6 @@ test("Mantis HTTP revalidation fails before the vault for a changed snapshot or 
       }),
       (error: unknown) => error instanceof MantisHttpRunnerError &&
         error.code === "provider_plan_revalidation_failed",
-    );
-
-    await assert.rejects(
-      runMantisHttpAgent({
-        outputDir: path.join(root, "xai-oauth"),
-        repositoryPath,
-        paths: [],
-        sourceRef: "a".repeat(40),
-        providerPlan: plan({
-          routeKind: "xai-oauth",
-          protocol: "xai-oauth-responses",
-        }),
-      }, {
-        ...baseDependencies,
-        getSnapshot: () => snapshot({
-          routeKind: "xai-oauth",
-          capabilityCheckId: "capability-a",
-        }),
-      }),
-      (error: unknown) => error instanceof MantisHttpRunnerError &&
-        error.code === "xai_oauth_runner_unsupported",
     );
 
     assert.equal(vaultReads, 0);
@@ -735,4 +1022,20 @@ function fakeSession(
       return { remote: false };
     },
   };
+}
+
+function withTestDeadline<T>(operation: Promise<T>, timeoutMs = 250): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("test_deadline_exceeded")), timeoutMs);
+    void operation.then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
 }

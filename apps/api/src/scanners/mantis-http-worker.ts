@@ -23,6 +23,7 @@ async function main(): Promise<void> {
     getModel: (connectionId, modelId) => runtime.store.getModel(connectionId, modelId),
     getCapabilityCheck: (capabilityCheckId) => runtime.store.getCapabilityCheck(capabilityCheckId),
     vault: runtime.vault,
+    xaiOAuth: runtime.xaiOAuthTokenResolver,
     signal: controller.signal,
     redactor: globalSecretRedactor,
     log: (line) => process.stdout.write(`${globalSecretRedactor.redactText(line)}\n`),

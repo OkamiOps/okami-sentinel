@@ -88,9 +88,15 @@ function runnerIsWired(
   }
   if (resolved.runnerKind !== "agent-session") return false;
   if (input.engine === "mantis") {
-    return connection.routeKind !== "xai-oauth" &&
-      connection.protocol !== "xai-oauth-responses" &&
-      isWiredHttpRoute(connection.routeKind, connection.protocol);
+    if (connection.routeKind === "xai-oauth" || connection.protocol === "xai-oauth-responses") {
+      return connection.providerKind === "xai" &&
+        connection.routeKind === "xai-oauth" &&
+        connection.transport === "http-inference" &&
+        connection.authKind === "device-code" &&
+        connection.protocol === "xai-oauth-responses" &&
+        connection.credentialRef === null;
+    }
+    return isWiredHttpRoute(connection.routeKind, connection.protocol);
   }
   if (input.engine === "vulnhunter") {
     return isWiredHttpRoute(connection.routeKind, connection.protocol) ||

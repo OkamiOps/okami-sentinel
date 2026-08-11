@@ -140,7 +140,7 @@ test("fails closed for unknown connections and runner kinds that are not wired",
   assert.deepEqual(remote.reasons, ["provider_runner_unavailable"]);
 });
 
-test("does not advertise xAI OAuth for Mantis before that worker is wired", () => {
+test("advertises Mantis for the fully pinned xAI OAuth tuple", () => {
   const resolver = createScanCompatibilityResolver({
     getConnection: () => connection({
       providerKind: "xai",
@@ -167,6 +167,6 @@ test("does not advertise xAI OAuth for Mantis before that worker is wired", () =
     },
   });
 
-  assert.equal(result.eligible, false);
-  assert.deepEqual(result.reasons, ["provider_runner_unavailable"]);
+  assert.equal(result.eligible, true);
+  assert.deepEqual(result.reasons, []);
 });

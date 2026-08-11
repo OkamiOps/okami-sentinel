@@ -262,35 +262,53 @@ test("VulnHunter rejects xAI OAuth plans without the pinned xAI provider", () =>
     error instanceof ScanSelectionError && error.code === "provider_runner_unavailable");
 });
 
-test("unsupported xAI OAuth Mantis runner stops before launch side effects", () => {
+test("Mantis accepts direct xAI OAuth only for the pinned xAI route", () => {
+  const xaiModel: ProviderModel = {
+    ...model,
+    connectionId: "xai-oauth-session",
+    id: "grok-live",
+  };
   const fixture = resolver(plan({
+    connectionId: "xai-oauth-session",
+    providerKind: "xai",
     routeKind: "xai-oauth",
     runnerKind: "agent-session",
     protocol: "xai-oauth-responses",
     capabilityCheckId: "capability-a",
+    model: xaiModel,
+    snapshot: {
+      scanId: "scan-xai-mantis",
+      connectionId: "xai-oauth-session",
+      routeKind: "xai-oauth",
+      modelSelectionMode: "catalog",
+      modelId: "grok-live",
+      capabilityCheckId: "capability-a",
+      capturedAt: "2026-08-11T12:00:00.000Z",
+    },
   }));
   let launchPreparationCalls = 0;
 
-  assert.throws(() => resolveBeforeLaunch({
+  const selected = resolveBeforeLaunch({
     request: {
       repositoryPath: "/repo",
       engine: "mantis",
       connection: {
-        connectionId: "openai-session",
+        connectionId: "xai-oauth-session",
         modelSelectionMode: "catalog",
-        modelId: "gpt-live",
+        modelId: "grok-live",
       },
     },
-    scanId: "scan-123",
+    scanId: "scan-xai-mantis",
     launchPlans: fixture.resolver,
     prepareLaunch: () => {
       launchPreparationCalls += 1;
       return "would-write-output-config-and-spawn";
     },
-  }), (error: unknown) =>
-    error instanceof ScanSelectionError && error.code === "provider_runner_unavailable");
+  });
 
-  assert.equal(launchPreparationCalls, 0);
+  assert.equal(selected.selection.plan?.providerKind, "xai");
+  assert.equal(selected.selection.plan?.protocol, "xai-oauth-responses");
+  assert.equal(launchPreparationCalls, 1);
 });
 
 test("Codex Security OpenAI API cannot fall through to client or global API-key auth", () => {

@@ -17,11 +17,14 @@ import {
 import { createAgentSession, DEFAULT_AGENT_LIMITS } from "../agent/session-runner.js";
 import {
   AgentSessionError,
+  validateAgentSessionLimits,
   type AgentEvent,
   type AgentSession,
+  type AgentSessionLimits,
   type AgentSessionSpec,
 } from "../agent/session-types.js";
 import type { StoredProviderConnection } from "../connections-store.js";
+import type { XaiOAuthFlow } from "../connections/xai-oauth-flow.js";
 import {
   VaultError,
   connectionSecretValues,
@@ -29,6 +32,7 @@ import {
   type CredentialVault,
   type SecretRedactorRegistry,
 } from "../credentials/credential-vault.js";
+import { globalSecretRedactor } from "../redaction.js";
 import { resolveCompatibility } from "../connections/compatibility-resolver.js";
 import { normalizeMantisWorkspace } from "./mantis-normalize.js";
 import {
@@ -83,7 +87,6 @@ export interface MantisHttpWorkerConfiguration {
 export type MantisHttpRunnerErrorCode =
   | "provider_plan_invalid"
   | "provider_plan_revalidation_failed"
-  | "xai_oauth_runner_unsupported"
   | "credential_rejected"
   | "secure_storage_unavailable"
   | "agent_cancelled"
@@ -113,12 +116,16 @@ export interface MantisHttpAgentRunnerDependencies {
   getModel(connectionId: string, modelId: string): ProviderModel | null;
   getCapabilityCheck(capabilityCheckId: string): CapabilityReport | null;
   vault: CredentialVault;
+  /** xAI OAuth remains in its dedicated native credential namespace. */
+  xaiOAuth?: Pick<XaiOAuthFlow, "getAccessToken">;
   /** Kept injectable for deterministic E2E tests; production is HTTP-only. */
   createSession?(input: MantisHttpSessionInput): Promise<AgentSession>;
   signal?: AbortSignal;
   log?: (line: string) => void;
   now?: () => Date;
   redactor?: SecretRedactorRegistry;
+  /** Private test seam; production uses bounded Mantis stage limits. */
+  limits?: Partial<AgentSessionLimits>;
 }
 
 export interface MantisHttpRunResult {
@@ -166,6 +173,8 @@ export async function runMantisHttpAgent(
   const now = dependencies.now ?? (() => new Date());
   const signal = dependencies.signal ?? new AbortController().signal;
   const log = dependencies.log ?? (() => undefined);
+  const limits = stageLimits(dependencies.limits);
+  validateAgentSessionLimits(limits);
   const outputDir = path.resolve(configuration.outputDir);
   const startedAt = now().toISOString();
   let runtime: MantisRuntimeState = {
@@ -220,10 +229,20 @@ export async function runMantisHttpAgent(
 
     // Metadata and the immutable source snapshot are both pinned before this
     // worker may read a secret or construct a network-capable session.
-    const credentials = await readCredentials(resolved.connection, dependencies.vault);
+    let firstStageTimeoutMs = limits.timeoutMs;
+    const credentials = resolved.directXaiOAuth
+      ? await readBoundedXaiOAuthCredentials(
+        resolved.connection,
+        dependencies.xaiOAuth,
+        signal,
+        limits.timeoutMs,
+        (remaining) => { firstStageTimeoutMs = remaining; },
+      )
+      : await readCredentials(resolved.connection, dependencies.vault);
     const redactionScope = `mantis-http/${configuration.providerPlan.scanId}`;
-    dependencies.redactor?.register(redactionScope, connectionSecretValues(credentials));
-    releaseRedaction = () => dependencies.redactor?.unregister(redactionScope);
+    const redactor = dependencies.redactor ?? globalSecretRedactor;
+    redactor.register(redactionScope, connectionSecretValues(credentials));
+    releaseRedaction = () => redactor.unregister(redactionScope);
 
     const artifactsRoot = path.join(outputDir, "mantis-agent-artifacts");
     fs.mkdirSync(artifactsRoot, { recursive: true, mode: 0o700 });
@@ -256,7 +275,10 @@ export async function runMantisHttpAgent(
         snapshotRoot,
         artifactRoot,
         instructions: stageInstructions(stage, configuration.paths, priorState, expectedArtifact),
-        limits: stageLimits(),
+        limits: {
+          ...limits,
+          timeoutMs: stage === MANTIS_STAGES[0] ? firstStageTimeoutMs : limits.timeoutMs,
+        },
         signal,
       };
       activeSession = await createSession({
@@ -318,11 +340,13 @@ function revalidateProviderPlan(
   plan: SafeMantisProviderPlan,
   dependencies: MantisHttpAgentRunnerDependencies,
   now: Date,
-): { connection: StoredProviderConnection; model: ProviderModel; capability: CapabilityReport } {
+): {
+  connection: StoredProviderConnection;
+  model: ProviderModel;
+  capability: CapabilityReport;
+  directXaiOAuth: boolean;
+} {
   if (!validPlan(plan)) throw new MantisHttpRunnerError("provider_plan_invalid");
-  if (plan.routeKind === "xai-oauth" || plan.protocol === "xai-oauth-responses") {
-    throw new MantisHttpRunnerError("xai_oauth_runner_unsupported");
-  }
   if (!isHttpAgentRouteProtocolSupported(plan.routeKind, plan.protocol)) {
     throw new MantisHttpRunnerError("provider_plan_revalidation_failed");
   }
@@ -330,6 +354,7 @@ function revalidateProviderPlan(
   const connection = dependencies.getConnection(plan.connectionId);
   const model = dependencies.getModel(plan.connectionId, plan.modelId);
   const capability = dependencies.getCapabilityCheck(plan.capabilityCheckId);
+  const directXaiOAuth = connection !== null && isDirectXaiOAuthConnection(connection);
   if (
     !snapshotMatches(snapshot, plan) ||
     connection === null ||
@@ -337,7 +362,8 @@ function revalidateProviderPlan(
     connection.routeKind !== plan.routeKind ||
     connection.protocol !== plan.protocol ||
     connection.transport !== "http-inference" ||
-    connection.credentialRef === null ||
+    ((plan.routeKind === "xai-oauth" || plan.protocol === "xai-oauth-responses") && !directXaiOAuth) ||
+    (!directXaiOAuth && connection.credentialRef === null) ||
     model === null ||
     model.connectionId !== plan.connectionId ||
     model.id !== plan.modelId ||
@@ -366,7 +392,16 @@ function revalidateProviderPlan(
   ) {
     throw new MantisHttpRunnerError("provider_plan_revalidation_failed");
   }
-  return { connection, model, capability };
+  return { connection, model, capability, directXaiOAuth };
+}
+
+function isDirectXaiOAuthConnection(connection: StoredProviderConnection): boolean {
+  return connection.providerKind === "xai" &&
+    connection.routeKind === "xai-oauth" &&
+    connection.transport === "http-inference" &&
+    connection.authKind === "device-code" &&
+    connection.protocol === "xai-oauth-responses" &&
+    connection.credentialRef === null;
 }
 
 async function createProductionSession(input: MantisHttpSessionInput): Promise<AgentSession> {
@@ -608,7 +643,7 @@ function validEvidenceLocator(value: unknown, snapshotRoot: string): value is st
   }
 }
 
-function stageLimits() {
+function stageLimits(overrides: Partial<AgentSessionLimits> = {}): AgentSessionLimits {
   return {
     ...DEFAULT_AGENT_LIMITS,
     maxModelTurns: 16,
@@ -616,6 +651,7 @@ function stageLimits() {
     maxInputBytes: 4 * 1024 * 1024,
     maxOutputBytes: 1 * 1024 * 1024,
     timeoutMs: 5 * 60_000,
+    ...overrides,
   };
 }
 
@@ -660,6 +696,104 @@ async function readCredentials(
     }
     throw new MantisHttpRunnerError("credential_rejected");
   }
+}
+
+async function readXaiOAuthCredentials(
+  connection: StoredProviderConnection,
+  xaiOAuth: Pick<XaiOAuthFlow, "getAccessToken"> | undefined,
+  signal: AbortSignal,
+): Promise<ConnectionSecretBundle> {
+  if (xaiOAuth === undefined) throw new MantisHttpRunnerError("credential_rejected");
+  try {
+    const accessToken = await xaiOAuth.getAccessToken(connection.id, signal);
+    if (!isSafeText(accessToken, 16_384)) throw new MantisHttpRunnerError("credential_rejected");
+    return { apiKey: accessToken };
+  } catch (error) {
+    if (error instanceof MantisHttpRunnerError) throw error;
+    throw new MantisHttpRunnerError("credential_rejected");
+  }
+}
+
+async function readBoundedXaiOAuthCredentials(
+  connection: StoredProviderConnection,
+  xaiOAuth: Pick<XaiOAuthFlow, "getAccessToken"> | undefined,
+  signal: AbortSignal,
+  timeoutMs: number,
+  setRemaining: (timeoutMs: number) => void,
+): Promise<ConnectionSecretBundle> {
+  const startedAt = Date.now();
+  const preflight = createPreflightGuard(signal, timeoutMs);
+  try {
+    if (preflight.signal.aborted) throw preflight.stopError();
+    const credentials = await racePreflight(
+      readXaiOAuthCredentials(connection, xaiOAuth, preflight.signal),
+      preflight,
+    );
+    if (preflight.signal.aborted || signal.aborted) throw preflight.stopError();
+    const remainingTimeoutMs = timeoutMs - (Date.now() - startedAt);
+    if (remainingTimeoutMs <= 0) throw new AgentSessionError("agent_time_limit");
+    setRemaining(remainingTimeoutMs);
+    return credentials;
+  } finally {
+    preflight.dispose();
+  }
+}
+
+interface PreflightGuard {
+  signal: AbortSignal;
+  stopError(): AgentSessionError;
+  dispose(): void;
+}
+
+function createPreflightGuard(signal: AbortSignal, timeoutMs: number): PreflightGuard {
+  const controller = new AbortController();
+  let timedOut = false;
+  let disposed = false;
+  const abort = () => controller.abort();
+  if (signal.aborted) abort();
+  else signal.addEventListener("abort", abort, { once: true });
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  timeout.unref();
+  return {
+    signal: controller.signal,
+    stopError: () => new AgentSessionError(timedOut ? "agent_time_limit" : "agent_cancelled"),
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      clearTimeout(timeout);
+      signal.removeEventListener("abort", abort);
+    },
+  };
+}
+
+function racePreflight<T>(operation: Promise<T>, guard: PreflightGuard): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const stop = () => {
+      if (settled) return;
+      settled = true;
+      reject(guard.stopError());
+    };
+    if (guard.signal.aborted) stop();
+    else guard.signal.addEventListener("abort", stop, { once: true });
+    void operation.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        guard.signal.removeEventListener("abort", stop);
+        resolve(value);
+      },
+      (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        guard.signal.removeEventListener("abort", stop);
+        reject(error);
+      },
+    );
+  });
 }
 
 function validateConfiguration(configuration: MantisHttpWorkerConfiguration): void {

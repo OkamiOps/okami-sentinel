@@ -196,7 +196,8 @@ function prepareMantis(input: ScannerLaunchInput): ScannerLaunch {
 /**
  * HTTP agent sessions run in their own worker. Its config has no provider
  * secret or mutable model data; it receives only the server-originated plan
- * and re-resolves the snapshot, catalog, capability report, and vault later.
+ * and re-resolves the snapshot, catalog, capability report, and native
+ * credential boundary later (vault or the dedicated xAI OAuth resolver).
  */
 export function prepareMantisHttpLaunch(input: MantisHttpLaunchInput): ScannerLaunch {
   const configuration: MantisHttpWorkerConfiguration = {
@@ -231,7 +232,8 @@ export function prepareMantisHttpLaunch(input: MantisHttpLaunchInput): ScannerLa
     args: [MANTIS_HTTP_WORKER_ENTRY, configPath],
     cwd: ROOT_DIR,
     // API-key labels are accounting metadata here, never a request to source
-    // an API key from this process. The worker reads its selected vault ref.
+    // an API key from this process. The worker reads either its selected vault
+    // ref or the dedicated xAI OAuth resolver after plan revalidation.
     env: explicitAuthEnvironment("chatgpt", { ...process.env, NO_COLOR: "1", CI: "1" }),
     displayCommand: `sentinel-mantis-http ${path.basename(configPath)}`,
   };
