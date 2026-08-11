@@ -518,7 +518,7 @@ test("Codex Security OpenAI API accepts only the resolved catalog plan, never cl
   assert.equal(launchPreparationCalls, 1);
 });
 
-test("Codex Security accepts only an immutable Portable plan with its exact model and capability", () => {
+test("Codex Security Portable fails before launch preparation until its worker is wired", () => {
   const mimoModel: ProviderModel = {
     ...model,
     connectionId: "mimo-session",
@@ -562,7 +562,7 @@ test("Codex Security accepts only an immutable Portable plan with its exact mode
   }));
 
   let launchPreparationCalls = 0;
-  const result = resolveBeforeLaunch({
+  assert.throws(() => resolveBeforeLaunch({
     request: {
       repositoryPath: "/repo",
       engine: "codex-security",
@@ -582,12 +582,9 @@ test("Codex Security accepts only an immutable Portable plan with its exact mode
       launchPreparationCalls += 1;
       return selection.request;
     },
-  });
-  assert.equal(launchPreparationCalls, 1);
-  assert.equal(result.selection.request.provider, "xiaomi");
-  assert.equal(result.selection.request.model, "mimo-v2.5");
-  assert.equal("authMode" in result.selection.request, false);
-  assert.equal(result.selection.plan?.execution?.executionProfile, "portable");
+  }), (error: unknown) =>
+    error instanceof ScanSelectionError && error.code === "provider_runner_unavailable");
+  assert.equal(launchPreparationCalls, 0);
 
   const forged = resolver(plan({
     engine: "codex-security",

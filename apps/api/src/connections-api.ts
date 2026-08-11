@@ -270,7 +270,11 @@ function compatibilityRequest(value: ResolveScanCompatibilityRequest): ResolveSc
         value.selection.modelId.length > 320 ||
         /[\u0000-\u001F\u007F]/.test(value.selection.modelId))) ||
     (value.remoteRepositoryConfirmed !== undefined &&
-      typeof value.remoteRepositoryConfirmed !== "boolean")
+      typeof value.remoteRepositoryConfirmed !== "boolean") ||
+    (value.executionProfilePreference !== undefined &&
+      value.executionProfilePreference !== "auto" &&
+      value.executionProfilePreference !== "native" &&
+      value.executionProfilePreference !== "portable")
   ) throw new ConnectionServiceError("invalid_model_selection");
   return {
     engine: value.engine,
@@ -282,6 +286,9 @@ function compatibilityRequest(value: ResolveScanCompatibilityRequest): ResolveSc
     ...(value.remoteRepositoryConfirmed === undefined
       ? {}
       : { remoteRepositoryConfirmed: value.remoteRepositoryConfirmed }),
+    ...(value.executionProfilePreference === undefined
+      ? {}
+      : { executionProfilePreference: value.executionProfilePreference }),
   };
 }
 

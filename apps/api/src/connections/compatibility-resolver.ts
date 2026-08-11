@@ -29,6 +29,7 @@ export type CompatibilityReason =
   | "codex_security_provider_unsupported"
   | "codex_security_gateway_feature_unproven"
   | "codex_native_contract_unavailable"
+  | "invalid_execution_profile_preference"
   | "capability_probe_missing"
   | "capability_probe_mismatch"
   | "capability_probe_stale"
@@ -68,6 +69,12 @@ export interface CompatibilityInput {
 
 export const DEFAULT_CAPABILITY_PROBE_MAX_AGE_MS = 60 * 60 * 1000;
 
+function isExecutionProfilePreference(
+  value: unknown,
+): value is CodexSecurityProfilePreference | undefined {
+  return value === undefined || value === "auto" || value === "native" || value === "portable";
+}
+
 /**
  * Resolves only persisted server-side facts. This function never reaches a
  * provider, reads a vault, starts a process, or accepts client capability flags.
@@ -84,6 +91,9 @@ export function resolveCompatibility(
 
   if (input.connection.id !== input.selection.connectionId) {
     return blocked(base, ["invalid_model_selection"]);
+  }
+  if (!isExecutionProfilePreference(input.executionProfilePreference)) {
+    return blocked(base, ["invalid_execution_profile_preference"]);
   }
   if (input.connection.status !== "ready") reasons.push("connection_not_ready");
   reasons.push(...selectionReasons(input));

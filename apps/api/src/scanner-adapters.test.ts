@@ -420,6 +420,7 @@ test("Mantis HTTP launch serializes only the revalidated provider identifiers", 
         source: "provider-api",
       },
       capabilityCheckId: "capability-a",
+      execution: null,
       snapshot: {
         scanId: "scan-a",
         connectionId: "connection-a",

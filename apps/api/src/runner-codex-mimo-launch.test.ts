@@ -85,21 +85,30 @@ function plan(scanId: string): ScanLaunchPlan {
     connectionId: connection.id,
     providerKind: "xiaomi",
     routeKind: "mimo-token-plan",
-    runnerKind: "codex-security-contract",
+    runnerKind: "agent-session",
     protocol: "openai-chat",
     model,
-    capabilityCheckId: null,
-    scannerAuthMode: "api-key",
+    capabilityCheckId: "probe-mimo",
+    execution: {
+      executionProfile: "portable",
+      profileVersion: "sentinel-codex-security-portable-v1",
+      methodologyRef: "sentinel/codex-security-methodology@v1",
+      capabilityCheckId: "probe-mimo",
+      connectionId: connection.id,
+      routeKind: "mimo-token-plan",
+      protocol: "openai-chat",
+      authKind: "api-key",
+    },
     snapshot: {
       scanId,
       connectionId: connection.id,
       routeKind: "mimo-token-plan",
       modelSelectionMode: "catalog",
       modelId: model.id,
-      capabilityCheckId: null,
-      executionProfile: null,
-      profileVersion: null,
-      methodologyRef: null,
+      capabilityCheckId: "probe-mimo",
+      executionProfile: "portable",
+      profileVersion: "sentinel-codex-security-portable-v1",
+      methodologyRef: "sentinel/codex-security-methodology@v1",
       protocol: "openai-chat",
       authKind: "api-key",
       capturedAt: "2026-08-11T12:00:00.000Z",
@@ -107,7 +116,7 @@ function plan(scanId: string): ScanLaunchPlan {
   };
 }
 
-test("startScan rejects an injected MiMo Codex plan before vault access or spawn", async () => {
+test("startScan rejects a resolved Portable Codex plan before vault access or spawn", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "runner-codex-mimo-"));
   const repositoryPath = path.join(root, "repository");
   fs.mkdirSync(repositoryPath);
@@ -122,6 +131,7 @@ test("startScan rejects an injected MiMo Codex plan before vault access or spawn
         repositoryPath,
         displayName,
         engine: "codex-security",
+        executionProfilePreference: "portable",
         connection: {
           connectionId: connection.id,
           modelSelectionMode: "catalog",

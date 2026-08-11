@@ -77,6 +77,7 @@ function plan(patch: Partial<ScanLaunchPlan> = {}): ScanLaunchPlan {
     protocol: "openai-responses",
     model,
     capabilityCheckId: null,
+    execution: null,
     scannerAuthMode: "api-key",
     snapshot: {
       scanId: "scan-codex-api",

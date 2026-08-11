@@ -991,6 +991,7 @@ test("safe provider plan carries identifiers only", () => {
     protocol: "openai-responses",
     model: model(),
     capabilityCheckId: "capability-a",
+    execution: null,
     providerKind: "openai",
     snapshot: snapshot(),
   });

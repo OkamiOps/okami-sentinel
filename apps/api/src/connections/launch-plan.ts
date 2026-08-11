@@ -55,8 +55,8 @@ export interface ScanLaunchPlan {
   protocol: ProviderProtocol;
   model: ProviderModel | null;
   capabilityCheckId: string | null;
-  /** Optional while legacy in-memory plan fixtures migrate to provenance. */
-  execution?: ScanExecutionProvenance | null;
+  /** Execution provenance is either pinned for Codex Security or explicitly absent. */
+  execution: ScanExecutionProvenance | null;
   scannerAuthMode?: ScannerAuthMode;
   snapshot: ScanConnectionSnapshot;
 }

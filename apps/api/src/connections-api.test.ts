@@ -580,7 +580,7 @@ test("managed authentication routes are CSRF protected and expose only safe flow
   }
 });
 
-test("scan compatibility is a read-only server decision and never needs a CSRF token", async () => {
+test("scan compatibility validates and forwards the selected execution profile without a CSRF token", async () => {
   const { db } = fixture();
   const service: ConnectionsService = {
     list: () => [runtimeConnection()],
@@ -610,6 +610,7 @@ test("scan compatibility is a read-only server decision and never needs a CSRF t
   try {
     const request: ResolveScanCompatibilityRequest = {
       engine: "mantis",
+      executionProfilePreference: "portable",
       selection: {
         connectionId: "conn-local",
         modelSelectionMode: "catalog",
@@ -630,6 +631,18 @@ test("scan compatibility is a read-only server decision and never needs a CSRF t
       eligible: false,
       reasons: ["capability_probe_missing"],
     });
+    assert.deepEqual(calls, [request]);
+
+    const forged = await api.request("/connections/compatibility", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...request,
+        executionProfilePreference: "browser-forged",
+      }),
+    });
+    assert.equal(forged.status, 400);
+    assert.deepEqual(await forged.json(), { error: "invalid_model_selection" });
     assert.deepEqual(calls, [request]);
   } finally {
     db.close();

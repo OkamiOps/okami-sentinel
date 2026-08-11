@@ -317,6 +317,7 @@ export interface ConnectionCompatibility extends ScanConnectionSelection {
 export interface ResolveScanCompatibilityRequest {
   engine: ScannerEngine;
   selection: ScanConnectionSelection;
+  executionProfilePreference?: CodexSecurityProfilePreference;
   remoteRepositoryConfirmed?: boolean;
 }
 

@@ -12,7 +12,6 @@ import {
   type ResolvedConnectionCompatibility,
 } from "./compatibility-resolver.js";
 import { isCodexSecurityApiConnection } from "../scanners/codex-security-api-bridge.js";
-import { isPortableCodexSecurityRoute } from "../scanners/portable-codex-security-profile.js";
 
 export interface ScanCompatibilityStore {
   getConnection(id: string): StoredProviderConnection | null;
@@ -64,6 +63,7 @@ export function createScanCompatibilityResolver(
         snapshotReadOnly: input.engine === "vulnhunter",
         staticAnalysisProfile: input.engine === "vulnhunter",
         remoteRepositoryConfirmed: input.remoteRepositoryConfirmed,
+        executionProfilePreference: input.executionProfilePreference,
       });
       if (!resolved.eligible) return publicDecision(resolved);
       return runnerIsWired(input, connection, resolved)
@@ -85,12 +85,7 @@ function runnerIsWired(
         connection.routeKind === "openai-chatgpt-app-server" ||
         isCodexSecurityApiConnection(connection);
     }
-    return resolved.runnerKind === "agent-session" &&
-      resolved.selectedProfile === "portable" &&
-      resolved.modelId !== null &&
-      typeof resolved.capabilityCheckId === "string" &&
-      resolved.capabilityCheckId.length > 0 &&
-      isPortableCodexSecurityRoute(connection.routeKind, connection.protocol);
+    return false;
   }
   if (resolved.runnerKind === "codex-app-server") {
     return connection.routeKind === "openai-codex-local" ||

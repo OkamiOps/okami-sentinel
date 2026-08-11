@@ -9,11 +9,6 @@ import type {
 } from "../connections/launch-plan.js";
 import { isHttpAgentRouteProtocolSupported } from "../agent/http-agent-upstream.js";
 import { isCodexSecurityApiPlan } from "./codex-security-api-bridge.js";
-import {
-  PORTABLE_CODEX_SECURITY_METHODOLOGY_REF,
-  PORTABLE_CODEX_SECURITY_PROFILE_VERSION,
-  isPortableCodexSecurityRoute,
-} from "./portable-codex-security-profile.js";
 
 const SCOPED_CODEX_SECURITY_SESSION_ROUTES = new Set([
   "openai-codex-local",
@@ -98,9 +93,6 @@ export function resolveScanLaunchSelection(
   const request = normalizeReasoningEffort(input.request, plan.model);
 
   if (plan.runnerKind === "agent-session") {
-    if (isPortableCodexSecurityPlan(plan)) {
-      return selectPortableCodexSecurity(request, plan);
-    }
     if (isMantisHttpAgentPlan(plan)) {
       return {
         request: {
@@ -159,51 +151,6 @@ export function resolveScanLaunchSelection(
     plan,
     connectionAware: true,
   };
-}
-
-function selectPortableCodexSecurity(
-  request: StartScanRequest,
-  plan: ScanLaunchPlan,
-): ResolvedScanLaunchSelection {
-  const { provider: _provider, model: _model, authMode: _authMode, ...safeRequest } = request;
-  return {
-    request: {
-      ...safeRequest,
-      provider: plan.providerKind,
-      model: plan.model!.id,
-    },
-    model: plan.model!.id,
-    plan,
-    connectionAware: true,
-  };
-}
-
-function isPortableCodexSecurityPlan(plan: ScanLaunchPlan): boolean {
-  const execution = plan.execution;
-  return plan.engine === "codex-security" &&
-    plan.model !== null &&
-    typeof plan.capabilityCheckId === "string" &&
-    plan.capabilityCheckId.length > 0 &&
-    isPortableCodexSecurityRoute(plan.routeKind, plan.protocol) &&
-    execution !== undefined &&
-    execution !== null &&
-    execution.executionProfile === "portable" &&
-    execution.profileVersion === PORTABLE_CODEX_SECURITY_PROFILE_VERSION &&
-    execution.methodologyRef === PORTABLE_CODEX_SECURITY_METHODOLOGY_REF &&
-    execution.capabilityCheckId === plan.capabilityCheckId &&
-    execution.connectionId === plan.connectionId &&
-    execution.routeKind === plan.routeKind &&
-    execution.protocol === plan.protocol &&
-    execution.authKind === plan.snapshot.authKind &&
-    plan.snapshot.modelSelectionMode === "catalog" &&
-    plan.snapshot.connectionId === plan.connectionId &&
-    plan.snapshot.routeKind === plan.routeKind &&
-    plan.snapshot.modelId === plan.model.id &&
-    plan.snapshot.capabilityCheckId === plan.capabilityCheckId &&
-    plan.snapshot.executionProfile === execution.executionProfile &&
-    plan.snapshot.profileVersion === execution.profileVersion &&
-    plan.snapshot.methodologyRef === execution.methodologyRef &&
-    plan.snapshot.protocol === plan.protocol;
 }
 
 /**

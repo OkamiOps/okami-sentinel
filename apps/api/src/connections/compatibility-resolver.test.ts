@@ -396,6 +396,25 @@ test("Codex Security does not expose Portable outside its approved tuple matrix"
   }
 });
 
+test("Codex Security rejects a forged profile preference instead of treating it as Auto", () => {
+  const decision = resolveCompatibility({
+    engine: "codex-security",
+    connection: connection("mimo-token-plan", { protocol: "openai-chat" }),
+    selection: {
+      connectionId: "conn-a",
+      modelSelectionMode: "catalog",
+      modelId: "model-a",
+    },
+    model: model(),
+    probe: probe("openai-chat"),
+    executionProfilePreference: "browser-forged" as never,
+    now: NOW,
+  });
+
+  assert.equal(decision.eligible, false);
+  assert.deepEqual(decision.reasons, ["invalid_execution_profile_preference"]);
+});
+
 test("Portable provider plans copy only a complete, pinned server tuple", () => {
   const source = {
     scanId: "scan-a",

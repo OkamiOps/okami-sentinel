@@ -323,7 +323,7 @@ test("advertises Codex Security OpenAI API only after the exact child-env bridge
   assert.deepEqual(result.reasons, []);
 });
 
-test("advertises Codex Security Portable only from the persisted, complete MiMo capability probe", () => {
+test("keeps resolved Portable Codex Security unavailable until its dedicated worker is wired", () => {
   const resolver = createScanCompatibilityResolver({
     getConnection: () => connection({
       providerKind: "xiaomi",
@@ -344,7 +344,7 @@ test("advertises Codex Security Portable only from the persisted, complete MiMo 
     now: () => NOW,
   });
 
-  const result = resolver.resolve({
+  const auto = resolver.resolve({
     engine: "codex-security",
     selection: {
       connectionId: "connection-a",
@@ -353,11 +353,30 @@ test("advertises Codex Security Portable only from the persisted, complete MiMo 
     },
   });
 
-  assert.equal(result.eligible, true);
-  assert.deepEqual(result.reasons, []);
-  assert.equal(result.selectedProfile, "portable");
-  assert.deepEqual(result.availableProfiles, ["portable"]);
-  assert.equal(result.profileVersion, "sentinel-codex-security-portable-v1");
-  assert.equal(result.methodologyRef, "sentinel/codex-security-methodology@v1");
-  assert.equal(result.capabilityCheckId, "probe-a");
+  assert.equal(auto.eligible, false);
+  assert.deepEqual(auto.reasons, ["provider_runner_unavailable"]);
+
+  const portable = resolver.resolve({
+    engine: "codex-security",
+    selection: {
+      connectionId: "connection-a",
+      modelSelectionMode: "catalog",
+      modelId: "mimo-v2.5",
+    },
+    executionProfilePreference: "portable",
+  });
+  assert.equal(portable.eligible, false);
+  assert.deepEqual(portable.reasons, ["provider_runner_unavailable"]);
+
+  const native = resolver.resolve({
+    engine: "codex-security",
+    selection: {
+      connectionId: "connection-a",
+      modelSelectionMode: "catalog",
+      modelId: "mimo-v2.5",
+    },
+    executionProfilePreference: "native",
+  });
+  assert.equal(native.eligible, false);
+  assert.deepEqual(native.reasons, ["codex_native_contract_unavailable"]);
 });

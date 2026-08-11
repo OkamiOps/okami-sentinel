@@ -437,4 +437,17 @@ test("Codex Security ignores browser-forged provenance and rejects an unavailabl
     executionProfilePreference: "native",
   }), (error: unknown) =>
     error instanceof LaunchPlanError && error.code === "codex_native_contract_unavailable");
+
+  assert.throws(() => portable.resolver.resolve({
+    scanId: "scan-invalid-preference",
+    engine: "codex-security",
+    selection: {
+      connectionId: "conn-a",
+      modelSelectionMode: "catalog",
+      modelId: "mimo-v2.5",
+    },
+    executionProfilePreference: "browser-forged" as never,
+  }), (error: unknown) =>
+    error instanceof LaunchPlanError && error.code === "invalid_execution_profile_preference");
+  assert.equal(portable.snapshots.length, 1);
 });

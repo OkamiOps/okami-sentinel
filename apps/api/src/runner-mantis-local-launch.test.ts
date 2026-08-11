@@ -49,6 +49,7 @@ function localPlan(scanId: string): ScanLaunchPlan {
     protocol: "claude-code-cli",
     model: null,
     capabilityCheckId: null,
+    execution: null,
     scannerAuthMode: "existing-session",
     snapshot: {
       scanId,
