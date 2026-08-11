@@ -110,10 +110,15 @@ test("custom HTTPS rejects deterministic local, private, link-local, and reserve
   const blocked = [
     "https://127.0.0.1/v1",
     "https://[::1]/v1",
+    "https://[100:0:0:1::1]/v1",
+    "https://[2001:2::1]/v1",
+    "https://[3fff::1]/v1",
+    "https://[5f00::1]/v1",
     "https://[fc00::1]/v1",
     "https://[fe80::1]/v1",
     "https://[fec0::1]/v1",
     "https://[2001:db8::1]/v1",
+    "https://8.8.8.8/v1",
     "https://10.0.0.8/v1",
     "https://172.16.4.2/v1",
     "https://192.168.1.9/v1",
@@ -142,7 +147,12 @@ test("custom HTTPS rejects deterministic local, private, link-local, and reserve
 });
 
 test("the exact local override allows only loopback while public HTTPS remains available", async () => {
-  for (const baseUrl of ["https://127.0.0.1/v1", "https://[::1]/v1", "http://localhost:7331/v1"]) {
+  for (const baseUrl of [
+    "https://127.0.0.1/v1",
+    "https://[::1]/v1",
+    "http://localhost:7331/v1",
+    "https://service.localhost/v1",
+  ]) {
     const transport = transcript([json(200, {})]);
     const upstream = createHttpAgentUpstream({
       routeKind: "custom-openai-compatible",

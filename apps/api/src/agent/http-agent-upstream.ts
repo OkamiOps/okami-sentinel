@@ -351,9 +351,9 @@ type DeterministicHostScope = "public" | "loopback" | "blocked";
 function deterministicHostScope(value: string): DeterministicHostScope {
   const host = value.toLowerCase().replace(/^\[/, "").replace(/\]$/, "").replace(/\.$/, "");
   const version = isIP(host);
-  if (version === 4) return ipv4Scope(host);
-  if (version === 6) return ipv6Scope(host);
-  if (host === "localhost") return "loopback";
+  if (version === 4) return host.startsWith("127.") ? "loopback" : "blocked";
+  if (version === 6) return host === "::1" ? "loopback" : "blocked";
+  if (host === "localhost" || host.endsWith(".localhost")) return "loopback";
   if (isObviousLocalHostname(host)) return "blocked";
   return "public";
 }
@@ -361,7 +361,6 @@ function deterministicHostScope(value: string): DeterministicHostScope {
 function isObviousLocalHostname(host: string): boolean {
   if (!host.includes(".")) return true;
   return [
-    ".localhost",
     ".local",
     ".localdomain",
     ".internal",
@@ -371,85 +370,6 @@ function isObviousLocalHostname(host: string): boolean {
     ".svc",
     ".cluster.local",
   ].some((suffix) => host.endsWith(suffix));
-}
-
-function ipv4Scope(value: string): DeterministicHostScope {
-  const octets = value.split(".").map(Number);
-  if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) {
-    return "blocked";
-  }
-  const [a, b, c] = octets as [number, number, number, number];
-  if (a === 127) return "loopback";
-  if (
-    a === 0 ||
-    a === 10 ||
-    (a === 100 && b >= 64 && b <= 127) ||
-    (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) ||
-    (a === 192 && b === 0) ||
-    (a === 192 && b === 88 && c === 99) ||
-    (a === 192 && b === 0 && c === 2) ||
-    (a === 198 && (b === 18 || b === 19)) ||
-    (a === 198 && b === 51 && c === 100) ||
-    (a === 203 && b === 0 && c === 113) ||
-    a >= 224
-  ) return "blocked";
-  return "public";
-}
-
-function ipv6Scope(value: string): DeterministicHostScope {
-  const words = ipv6Words(value);
-  if (words === null) return "blocked";
-  if (words.slice(0, 7).every((word) => word === 0) && words[7] === 1) return "loopback";
-  if (words.every((word) => word === 0)) return "blocked";
-
-  const mappedIpv4 = embeddedIpv4(words);
-  if (mappedIpv4 !== null) return ipv4Scope(mappedIpv4);
-
-  const first = words[0] as number;
-  if (
-    (first & 0xfe00) === 0xfc00 ||
-    (first & 0xffc0) === 0xfe80 ||
-    (first & 0xffc0) === 0xfec0 ||
-    (first & 0xff00) === 0xff00 ||
-    (first === 0x2001 && words[1] === 0x0db8) ||
-    (first === 0x0100 && words.slice(1, 4).every((word) => word === 0)) ||
-    (first === 0x0064 && words[1] === 0xff9b && words[2] === 1)
-  ) return "blocked";
-
-  if (first === 0x2002) {
-    const embedded = `${words[1]! >> 8}.${words[1]! & 0xff}.${words[2]! >> 8}.${words[2]! & 0xff}`;
-    return ipv4Scope(embedded) === "public" ? "public" : "blocked";
-  }
-  return "public";
-}
-
-function embeddedIpv4(words: readonly number[]): string | null {
-  const compatible = words.slice(0, 6).every((word) => word === 0);
-  const mapped = words.slice(0, 5).every((word) => word === 0) && words[5] === 0xffff;
-  if (!compatible && !mapped) return null;
-  return `${words[6]! >> 8}.${words[6]! & 0xff}.${words[7]! >> 8}.${words[7]! & 0xff}`;
-}
-
-function ipv6Words(value: string): number[] | null {
-  let normalized = value;
-  const ipv4Tail = normalized.match(/(?:^|:)(\d+\.\d+\.\d+\.\d+)$/)?.[1];
-  if (ipv4Tail !== undefined) {
-    if (isIP(ipv4Tail) !== 4) return null;
-    const octets = ipv4Tail.split(".").map(Number);
-    const replacement = `${((octets[0]! << 8) | octets[1]!).toString(16)}:${((octets[2]! << 8) | octets[3]!).toString(16)}`;
-    normalized = `${normalized.slice(0, -ipv4Tail.length)}${replacement}`;
-  }
-  const halves = normalized.split("::");
-  if (halves.length > 2) return null;
-  const head = halves[0] === "" ? [] : halves[0]!.split(":");
-  const tail = halves.length === 1 || halves[1] === "" ? [] : halves[1]!.split(":");
-  const zeroCount = halves.length === 2 ? 8 - head.length - tail.length : 0;
-  if (zeroCount < 0 || (halves.length === 1 && head.length !== 8)) return null;
-  const parts = [...head, ...Array.from({ length: zeroCount }, () => "0"), ...tail];
-  if (parts.length !== 8 || parts.some((part) => !/^[0-9a-f]{1,4}$/i.test(part))) return null;
-  return parts.map((part) => Number.parseInt(part, 16));
 }
 
 function jsonHeaders(
