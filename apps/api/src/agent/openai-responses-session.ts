@@ -34,7 +34,7 @@ export function createOpenAiResponsesWireAdapter(
         operation: "responses",
         body: {
           model: spec.model.id,
-          instructions: spec.instructions,
+          ...(previousResponseId === undefined ? { instructions: spec.instructions } : {}),
           input,
           tools: openAiResponsesTools(),
           ...(previousResponseId === undefined ? {} : { previous_response_id: previousResponseId }),

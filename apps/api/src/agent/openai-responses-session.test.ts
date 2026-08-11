@@ -46,11 +46,68 @@ test("OpenAI Responses encodes declared tool names and decodes only portable wir
   }), { code: "agent_protocol_error" });
 });
 
+test("OpenAI Responses continuation omits instructions while preserving response and tool-call state", () => {
+  const adapter = createOpenAiResponsesWireAdapter({
+    model: model("grok-4.5"),
+    instructions: "Inspect only the supplied workspace snapshot.",
+  });
+
+  const firstRequest = responseBody(adapter.nextRequest([]));
+  assert.equal(firstRequest.instructions, "Inspect only the supplied workspace snapshot.");
+  assert.deepEqual(firstRequest.input, [{
+    role: "user",
+    content: "Inspect only the supplied workspace snapshot.",
+  }]);
+
+  adapter.readResponse({
+    id: "response-turn-1",
+    output: [
+      {
+        type: "function_call",
+        call_id: "call-list-1",
+        name: "workspace_list",
+        arguments: "{}",
+      },
+      {
+        type: "function_call",
+        call_id: "call-read-1",
+        name: "workspace_read",
+        arguments: '{"path":"package.json"}',
+      },
+    ],
+  });
+
+  const continuation = responseBody(adapter.nextRequest([
+    { callId: "call-list-1", name: "workspace.list", content: "package.json" },
+    { callId: "call-read-1", name: "workspace.read", content: "{\"name\":\"fixture\"}" },
+  ]));
+
+  assert.equal("instructions" in continuation, false);
+  assert.equal(continuation.previous_response_id, "response-turn-1");
+  assert.deepEqual(continuation.input, [
+    {
+      type: "function_call_output",
+      call_id: "call-list-1",
+      output: "package.json",
+    },
+    {
+      type: "function_call_output",
+      call_id: "call-read-1",
+      output: "{\"name\":\"fixture\"}",
+    },
+  ]);
+});
+
 function responsesBody(request: AgentWireRequest): {
   tools: Array<{ name: string }>;
 } {
   assert.equal(request.operation, "responses");
   return request.body as { tools: Array<{ name: string }> };
+}
+
+function responseBody(request: AgentWireRequest): Record<string, unknown> {
+  assert.equal(request.operation, "responses");
+  return request.body as Record<string, unknown>;
 }
 
 function model(id: string): ProviderModel {
