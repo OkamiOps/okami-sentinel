@@ -562,6 +562,94 @@ test("a terminal results.write batch may use the last tool slot before completio
     (event as { type?: unknown }).type === "completion"), true);
 });
 
+test("an artifact-terminal session ends after the accepted artifact without another provider request", async () => {
+  const requestedWith: AgentToolResult[][] = [];
+  let providerRequests = 0;
+  const replies: NormalizedModelReply[] = [
+    {
+      toolCalls: [{ id: "read-terminal", name: "workspace.read", input: { path: "index.ts" } }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    {
+      toolCalls: [{
+        id: "write-terminal",
+        name: "results.write",
+        input: { path: "report.json", content: "{}" },
+      }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+  ];
+  const session = createConstrainedWireSession({
+    limits: DEFAULT_AGENT_LIMITS,
+    signal: new AbortController().signal,
+    terminalMode: "artifact-write",
+    host: {
+      minimumOutputBytes() { return 0; },
+      async call(name) {
+        return name === "results.write"
+          ? { content: "artifact-written", artifact: { path: "report.json", bytes: 2 } }
+          : { content: "safe read" };
+      },
+    },
+    upstream: {
+      async request() {
+        providerRequests += 1;
+        return {};
+      },
+    },
+    adapter: transcriptAdapter(replies, requestedWith),
+  });
+
+  const events: unknown[] = [];
+  await collect(session.run(), events);
+
+  assert.equal(providerRequests, 2);
+  assert.equal(requestedWith.length, 2);
+  assert.equal(events.some((event) =>
+    typeof event === "object" && event !== null &&
+    (event as { type?: unknown }).type === "tool" &&
+    (event as { phase?: unknown }).phase === "consumed" &&
+    (event as { name?: unknown }).name === "workspace.read"), true);
+  assert.equal(events.some((event) => isArtifact(event, "report.json")), true);
+  assert.equal(events.some((event) =>
+    typeof event === "object" && event !== null &&
+    (event as { type?: unknown }).type === "completion"), false);
+});
+
+test("an artifact-terminal session rejects an unconsumed read and write batch before host I/O", async () => {
+  let hostCalls = 0;
+  const session = createConstrainedWireSession({
+    limits: DEFAULT_AGENT_LIMITS,
+    signal: new AbortController().signal,
+    terminalMode: "artifact-write",
+    host: {
+      minimumOutputBytes() { return 0; },
+      async call() {
+        hostCalls += 1;
+        return { content: "unexpected" };
+      },
+    },
+    upstream: { async request() { return {}; } },
+    adapter: transcriptAdapter([{
+      toolCalls: [
+        { id: "read-unconsumed", name: "workspace.read", input: { path: "index.ts" } },
+        { id: "write-unconsumed", name: "results.write", input: { path: "report.json", content: "{}" } },
+      ],
+      text: null,
+      structured: null,
+      usage: null,
+    }], []),
+  });
+
+  await assert.rejects(collect(session.run(), []), (error: unknown) =>
+    error instanceof AgentSessionError && error.code === "agent_protocol_error");
+  assert.equal(hostCalls, 0);
+});
+
 test("the constrained session returns a safe workspace path error so the model can correct it", async () => {
   const requestedWith: AgentToolResult[][] = [];
   const replies: NormalizedModelReply[] = [

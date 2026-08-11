@@ -466,10 +466,13 @@ test("Portable Codex Security runs six ordered isolated stages using the four cl
       Array.from({ length: 6 }, () => ["workspace.list", "workspace.read", "workspace.search", "results.write"]));
     assert.equal(new Set(specs.map(({ spec }) => spec.artifactRoot)).size, 6);
     assert.deepEqual(specs.map(({ spec }) => spec.reasoningEffort), Array(6).fill("high"));
+    assert.deepEqual(specs.map(({ spec }) => spec.terminalMode), Array(6).fill("artifact-write"));
     assert.equal(specs[1]!.spec.instructions.includes(injection), false);
     const prior = specs[1]!.spec.instructions.match(/BEGIN_PREVIOUS_STAGE_STATE_BASE64\n([A-Za-z0-9+/=]+)\nEND_PREVIOUS_STAGE_STATE_BASE64/)?.[1];
     assert.ok(prior);
-    assert.match(Buffer.from(prior!, "base64").toString("utf8"), /IGNORE ALL PRIOR SAFETY RULES/);
+    const decodedPrior = Buffer.from(prior!, "base64").toString("utf8");
+    assert.deepEqual(JSON.parse(decodedPrior), { stage: "inventory", summary: "ok" });
+    assert.equal(decodedPrior.includes(injection), false);
   } finally {
     remove(root);
   }

@@ -829,7 +829,10 @@ test("VulnHunter HTTP runner re-resolves the exact model and probe then forwards
     { type: "artifact", path: VULNHUNTER_HTTP_BUNDLE_NAME, bytes: 12 },
   ];
   const { runner, observed } = fixture({
-    sessionFactory: async (spec) => bundledSession(spec, events),
+    sessionFactory: async (spec) => {
+      assert.equal(spec.terminalMode, "artifact-write");
+      return bundledSession(spec, events);
+    },
   });
   const run = input();
   const observedEvents: AgentEvent[] = [];
@@ -1025,9 +1028,12 @@ test("VulnHunter HTTP accepts one universal findings report and keeps legacy nor
       assert.equal(spec.instructions.includes(snapshotRoot), false);
       assert.equal(spec.instructions.includes(resultsDir), false);
       assert.match(spec.instructions, /workspace root.*"\."/i);
-      assert.match(spec.instructions, /results\.write exactly once/i);
+      assert.match(spec.instructions, /results_write exactly once/i);
+      assert.match(spec.instructions, /only tool call in its turn/i);
+      assert.doesNotMatch(spec.instructions, /(?:workspace|results)\./);
       assert.match(spec.instructions, new RegExp(VULNHUNTER_HTTP_BUNDLE_NAME));
       assert.equal(spec.resultArtifactContract, "vulnhunter-report-v1");
+      assert.equal(spec.terminalMode, "artifact-write");
       writeValidBundle(spec.artifactRoot);
       return completedSession([
         { type: "tool", phase: "requested", callId: "list-1", name: "workspace.list" },

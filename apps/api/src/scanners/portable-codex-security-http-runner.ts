@@ -305,6 +305,7 @@ export async function runPortableCodexSecurity(
         ...(safeConfiguration.reasoningEffort === undefined
           ? {}
           : { reasoningEffort: safeConfiguration.reasoningEffort }),
+        terminalMode: "artifact-write",
         snapshotRoot: snapshot.snapshotRoot,
         artifactRoot,
         instructions: buildPortableCodexSecurityStagePrompt(stage, {

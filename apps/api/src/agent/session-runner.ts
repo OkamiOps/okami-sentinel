@@ -52,6 +52,7 @@ export async function createAgentSession(
     host,
     upstream,
     adapter: adapterFor(input),
+    ...(input.terminalMode === undefined ? {} : { terminalMode: input.terminalMode }),
     ...(input.resultArtifactContract === undefined
       ? {}
       : {
@@ -102,6 +103,8 @@ function validateSessionSpec(input: CreateAgentSessionInput): void {
       !isNonEmptyString(input.instructions) || !isNonEmptyString(input.snapshotRoot) ||
       !isNonEmptyString(input.artifactRoot) || !isAbortSignal(input.signal) ||
       !isNonEmptyString(input.model?.id) || input.model.connectionId !== input.connectionId ||
+      (input.terminalMode !== undefined &&
+        input.terminalMode !== "provider-completion" && input.terminalMode !== "artifact-write") ||
       (input.resultArtifactContract !== undefined &&
         input.resultArtifactContract !== "vulnhunter-report-v1")) {
     throw new AgentSessionError("runner_invalid_spec");

@@ -927,8 +927,10 @@ test("VulnHunter agent-session prompt uses only canonical virtual paths", async 
   assert.equal(prompt.includes(snapshotRoot), false);
   assert.equal(prompt.includes(resultsDir), false);
   assert.match(prompt, /workspace root.*"\."/i);
-  assert.match(prompt, /repository-relative paths to workspace\.(?:read|search)/i);
-  assert.match(prompt, /results\.write exactly once/i);
+  assert.match(prompt, /repository-relative paths to workspace_(?:read|search)/i);
+  assert.match(prompt, /results_write exactly once/i);
+  assert.match(prompt, /only tool call in its turn/i);
+  assert.doesNotMatch(prompt, /(?:workspace|results)\./);
   assert.match(prompt, /sentinel-findings\.json/i);
   assert.doesNotMatch(prompt, /artifacts\s*:\s*\[/i);
   assert.doesNotMatch(prompt, /reconnaissance\.md|trace-review\.md|coverage-sweep\.md/);

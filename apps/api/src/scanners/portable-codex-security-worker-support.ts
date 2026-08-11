@@ -270,13 +270,14 @@ export async function observePortableCodexSecurityStage(
     !snapshotToolRequested ||
     !snapshotToolConsumed ||
     resultsWriteRequested !== 1 ||
-    artifactEvents !== 1 ||
-    completion === null
+    artifactEvents !== 1
   ) {
     throw new PortableCodexSecurityStageError("stage_evidence_incomplete");
   }
-  assertExactStageArtifact(input.artifactRoot, input.stage);
-  const summary = completion.summary;
+  const artifact = assertExactStageArtifact(input.artifactRoot, input.stage);
+  const summary = artifact.summary === undefined
+    ? completion?.summary ?? (input.stage.id === "report" ? "Report artifact written" : undefined)
+    : artifact.summary;
   const summaryText = typeof summary === "string" && summary.trim().length > 0
     ? summary.trim()
     : null;
@@ -372,7 +373,10 @@ export function materializePortableCodexSecurityReportArtifact(
   fs.chmodSync(target, 0o600);
 }
 
-function assertExactStageArtifact(artifactRoot: string, stage: Pick<PortableCodexSecurityStage, "artifact">): void {
+function assertExactStageArtifact(
+  artifactRoot: string,
+  stage: Pick<PortableCodexSecurityStage, "artifact">,
+): Record<string, unknown> {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(artifactRoot, { withFileTypes: true });
@@ -404,6 +408,7 @@ function assertExactStageArtifact(artifactRoot: string, stage: Pick<PortableCode
   } else if (parsed.stage !== stageNameForArtifact(stage.artifact)) {
     throw new PortableCodexSecurityStageError("stage_artifact_invalid");
   }
+  return parsed;
 }
 
 function stageNameForArtifact(artifact: string): string {

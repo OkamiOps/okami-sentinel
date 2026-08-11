@@ -97,8 +97,16 @@ test("Portable Codex Security fixes six frozen bounded stages and prompts each s
     assert.match(prompt, /do not generate.*PoC/i);
     assert.match(prompt, /do not publish/i);
     assert.match(prompt, new RegExp(stage.artifact.replace(".", "\\.")));
-    assert.match(prompt, new RegExp(`"stage":"${stage.id}"`));
-    assert.match(prompt, /structured completion/i);
+    if (stage.id === "report") {
+      assert.match(prompt, /"findings":/);
+    } else {
+      assert.match(prompt, new RegExp(`"stage":"${stage.id}"`));
+    }
+    assert.match(prompt, /artifact is terminal/i);
+    assert.doesNotMatch(prompt, /structured completion/i);
+    assert.doesNotMatch(prompt, /(?:workspace|results)\./);
+    assert.match(prompt, /workspace_(?:list|read|search)/);
+    assert.match(prompt, /results_write/);
   }
 });
 
@@ -113,7 +121,7 @@ test("Portable Codex Security stage prompts never disclose host snapshot or arti
   assert.equal(prompt.includes(snapshotRoot), false);
   assert.equal(prompt.includes(artifactRoot), false);
   assert.match(prompt, /workspace root.*"\."/i);
-  assert.match(prompt, /repository-relative paths to workspace\.(?:read|search)/i);
+  assert.match(prompt, /repository-relative paths to workspace_(?:read|search)/i);
   assert.match(prompt, /fixed result-relative name.*01-inventory\.json/i);
 });
 

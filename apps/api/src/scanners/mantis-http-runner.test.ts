@@ -254,7 +254,7 @@ test("Mantis HTTP runner executes every bounded stage with chained state and nev
           path.join(input.spec.artifactRoot, artifact),
           JSON.stringify(stage === "report"
             ? { schemaVersion: 1, engine: "mantis", stage, findings: [] }
-            : { stage }),
+            : { stage, summary: `${stage} complete` }),
         );
         return fakeSession(stage, artifact);
       },
@@ -265,6 +265,7 @@ test("Mantis HTTP runner executes every bounded stage with chained state and nev
     assert.equal(vaultReads, 1);
     assert.equal(specs.length, STAGES.length);
     assert.deepEqual(specs.map((spec) => spec.reasoningEffort), Array(STAGES.length).fill("high"));
+    assert.deepEqual(specs.map((spec) => spec.terminalMode), Array(STAGES.length).fill("artifact-write"));
     assert.deepEqual(specs.map((spec) =>
       String(spec.instructions.match(/stage_id=([a-z-]+)/)?.[1])), STAGES);
     for (const spec of specs) {
@@ -276,7 +277,9 @@ test("Mantis HTTP runner executes every bounded stage with chained state and nev
       assert.match(spec.instructions, /repository-relative/i);
       assert.match(spec.instructions, /result-relative/i);
       assert.match(spec.instructions, /must first call.*workspace_/i);
+      assert.match(spec.instructions, /artifact is terminal/i);
     }
+    assert.match(specs[0]!.instructions, /"stage":"architecture","summary":/);
     assert.match(specs[0]!.instructions, /Previous bounded stage state: none\./);
     const encodedPrior = specs[1]!.instructions.match(
       /BEGIN_PREVIOUS_STAGE_DATA\n([A-Za-z0-9+/=]+)\nEND_PREVIOUS_STAGE_DATA/,
@@ -1291,7 +1294,7 @@ function stageSessionFactory(
     const artifact = `${stage}.json`;
     fs.writeFileSync(
       path.join(input.spec.artifactRoot, artifact),
-      JSON.stringify(stage === "report" ? reportArtifact : { stage }),
+      JSON.stringify(stage === "report" ? reportArtifact : { stage, summary: summaries[stage] ?? `${stage} complete` }),
     );
     return fakeSession(stage, artifact, summaries[stage] ?? `${stage} complete`, usage);
   };

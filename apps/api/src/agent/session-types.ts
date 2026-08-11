@@ -95,6 +95,8 @@ export interface AgentSessionLimits {
   timeoutMs: number;
 }
 
+export type AgentSessionTerminalMode = "provider-completion" | "artifact-write";
+
 export interface AgentSessionSpec {
   connectionId: string;
   routeKind: string;
@@ -109,6 +111,8 @@ export interface AgentSessionSpec {
   reasoningEffort?: string;
   /** Server-selected artifact contract; never inferred from provider/model. */
   resultArtifactContract?: AgentResultArtifactContract;
+  /** Scanner sessions may finish on a locally accepted artifact; probes still verify provider completion. */
+  terminalMode?: AgentSessionTerminalMode;
   snapshotRoot: string;
   /** Existing, unique 0700 directory reserved by the session owner. */
   artifactRoot: string;
@@ -275,6 +279,7 @@ export interface ConstrainedWireSessionOptions {
   host: WorkspaceToolHost;
   upstream: AgentUpstream;
   adapter: WireSessionAdapter;
+  terminalMode?: AgentSessionTerminalMode;
   resultArtifactContract?: AgentResultArtifactContract;
   /** Snapshot boundary used to prove report evidence before artifact I/O. */
   resultArtifactSnapshotRoot?: string;
@@ -424,6 +429,9 @@ class ConstrainedWireSession implements AgentSession {
         }
 
         validateTerminalResultsWrite(reply.toolCalls);
+        if (this.#options.terminalMode === "artifact-write") {
+          validateArtifactTerminalWrite(reply.toolCalls);
+        }
         toolResults = [];
         for (const call of reply.toolCalls) {
           this.#throwIfStopped();
@@ -489,6 +497,10 @@ class ConstrainedWireSession implements AgentSession {
             if (call.name === "results.write" && !recoveredBeforeIo) artifactWritten = true;
             yield { type: "artifact", path: result.artifact.path, bytes: result.artifact.bytes };
           }
+        }
+        if (artifactWritten && this.#options.terminalMode === "artifact-write") {
+          this.#completed = true;
+          return;
         }
       }
     } catch (error) {
@@ -558,6 +570,16 @@ function validateTerminalResultsWrite(toolCalls: readonly AgentToolCall[]): void
       throw new AgentSessionError("agent_protocol_error");
     }
     sawResultsWrite = true;
+  }
+}
+
+/** A terminal artifact cannot rely on a tool result the provider has not consumed. */
+function validateArtifactTerminalWrite(toolCalls: readonly AgentToolCall[]): void {
+  if (
+    toolCalls.some((call) => call.name === "results.write") &&
+    toolCalls.length !== 1
+  ) {
+    throw new AgentSessionError("agent_protocol_error");
   }
 }
 

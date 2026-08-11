@@ -190,6 +190,7 @@ export function createVulnHunterHttpRunner(
           ...(input.reasoningEffort === undefined
             ? {}
             : { reasoningEffort: input.reasoningEffort }),
+          terminalMode: "artifact-write",
           resultArtifactContract: "vulnhunter-report-v1",
           snapshotRoot: input.snapshotRoot,
           artifactRoot: handoffRoot,

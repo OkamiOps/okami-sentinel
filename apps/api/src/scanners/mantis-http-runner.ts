@@ -312,6 +312,7 @@ export async function runMantisHttpAgent(
         ...(configuration.reasoningEffort === undefined
           ? {}
           : { reasoningEffort: configuration.reasoningEffort }),
+        terminalMode: "artifact-write",
         snapshotRoot,
         artifactRoot,
         instructions: stageInstructions(stage, configuration.paths, priorState, expectedArtifact),
@@ -493,7 +494,6 @@ async function observeStage(
   let snapshotToolConsumed = false;
   let resultsWriteRequested = false;
   let artifactObserved = false;
-  let state: MantisBoundedStageState | null = null;
   let nextRuntime = runtime;
   for await (const event of session.run()) {
     switch (event.type) {
@@ -514,9 +514,6 @@ async function observeStage(
         nextRuntime = collectUsage(nextRuntime, event);
         break;
       case "completion":
-        if (event.structured !== null && event.structured !== undefined) {
-          state = boundedMantisStageState(stage.id, event.structured);
-        }
         break;
       case "cancellation":
         throw new MantisHttpRunnerError("agent_cancelled");
@@ -528,7 +525,7 @@ async function observeStage(
     throw new MantisHttpRunnerError("stage_evidence_incomplete");
   }
   assertExpectedArtifact(artifactRoot, expectedArtifact);
-  state ??= stageStateFromArtifact(artifactRoot, expectedArtifact, stage.id);
+  const state = stageStateFromArtifact(artifactRoot, expectedArtifact, stage.id);
   return { runtime: nextRuntime, state };
 }
 
@@ -554,24 +551,27 @@ function stageInstructions(
       Buffer.from(JSON.stringify(priorState), "utf8").toString("base64"),
       "END_PREVIOUS_STAGE_DATA",
     ];
-  const reportSchema = stage.id === "report"
+  const artifactSchema = stage.id === "report"
     ? [
       "The report artifact uses this exact final schema:",
       '{"schemaVersion":1,"engine":"mantis","stage":"report","findings":[]}',
       "findings is required (an empty array is valid). Every finding requires non-empty id, title, severity from CRITICAL, HIGH, MEDIUM, LOW, or INFO, and a non-empty code_paths array. Every locator must use the exact repository-relative form relative/path.ext:line or relative/path.ext:start-end with positive line numbers; symbols and absolute paths are invalid.",
     ]
-    : [];
+    : [
+      "The stage artifact uses this exact bounded-state schema:",
+      `{"stage":${JSON.stringify(stage.id)},"summary":"concise defensive analysis state"}`,
+    ];
   return [
     "Sentinel Mantis authorized defensive static-analysis stage.",
     `stage_id=${stage.id}`,
     `Apply skill ${stage.skill}: ${stage.label}.`,
     `Read only the immutable snapshot using ${WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.list")}, ${WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.read")}, or ${WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.search")}. Focus: ${scope}.`,
     "The virtual workspace root is .; use repository-relative paths for files. Physical and absolute paths are invalid.",
-    `Before writing a result, you must first call and consume at least one ${WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.list")}, ${WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.read")}, or ${WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.search")} result.`,
+    `Before writing a result, you must first call and consume at least one ${WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.list")}, ${WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.read")}, or ${WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.search")} result in an earlier model turn.`,
     "Do not use network access, shell commands, external tools, generated code, payloads, PoCs, patches, reproduction, or publishing.",
     `Write exactly one compact JSON artifact with ${WORKSPACE_TOOL_WIRE_CODEC.toWire("results.write")} at the result-relative path ${expectedArtifact}. No other artifact is permitted.`,
-    ...reportSchema,
-    "Return structured JSON exactly {stage, summary}; summary must be a concise defensive analysis state for the next stage.",
+    ...artifactSchema,
+    `The ${WORKSPACE_TOOL_WIRE_CODEC.toWire("results.write")} call must be the only tool call in its model turn. The artifact summary is the bounded analysis state for the next stage. The accepted artifact is terminal.`,
     ...priorStateBlock,
   ].join("\n");
 }
@@ -617,7 +617,7 @@ function stageStateFromArtifact(
     if (stage !== "report") return boundedMantisStageState(stage, artifact);
     if (!isRecord(artifact) || artifact.schemaVersion !== 1 || artifact.engine !== "mantis" ||
         artifact.stage !== "report" || !Array.isArray(artifact.findings)) {
-      throw new MantisHttpRunnerError("stage_evidence_incomplete");
+      throw new MantisHttpRunnerError("stage_artifact_invalid");
     }
     return boundedMantisStageState(stage, {
       stage,
