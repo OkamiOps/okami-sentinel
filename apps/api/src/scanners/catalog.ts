@@ -193,15 +193,35 @@ export async function getScannerCatalog(
 
 export async function validateScannerRequest(req: StartScanRequest): Promise<ScannerCapability> {
   const engine = req.engine ?? "codex-security";
-  const authMode = req.authMode ?? "chatgpt";
-  const catalog = await getScannerCatalog();
+  // Connection-aware launches obtain availability/auth/model facts from the
+  // persisted connection plan after a scan ID exists. Do not preflight the
+  // legacy process environment first.
+  const catalog = req.connection === undefined
+    ? await getScannerCatalog()
+    : buildScannerCatalog({
+      codexSecurityReady: false,
+      codexSecurityChatGpt: false,
+      codexReady: false,
+      codexChatGpt: false,
+      apiKeyAvailable: false,
+    });
   const scanner = catalog.scanners.find((candidate) => candidate.engine === engine);
   if (!scanner || !scanner.enabled) {
     throw new Error(`Scanner não suportado: ${engine}`);
   }
+
+  // A selected connection is resolved immediately after the scan ID exists.
+  // Its immutable route/model plan, rather than browser-supplied legacy fields
+  // or this host's legacy CLI probe, decides authentication and availability.
+  if (req.connection !== undefined) {
+    validateMethodologyRequest(scanner, req);
+    return scanner;
+  }
+
   if (!scanner.available) {
     throw new Error(scanner.reason ?? `${scanner.name} não está disponível neste host.`);
   }
+  const authMode = req.authMode ?? "chatgpt";
   const auth = scanner.authModes.find((candidate) => candidate.id === authMode);
   if (!auth?.available) {
     throw new Error(auth?.reason ?? `${scanner.name} não aceita autenticação ${authMode}.`);
@@ -212,18 +232,25 @@ export async function validateScannerRequest(req: StartScanRequest): Promise<Sca
   if (req.model && !scanner.models.some((candidate) => candidate.id === req.model)) {
     throw new Error(`Modelo ${req.model} não é válido para ${scanner.name}.`);
   }
+  validateMethodologyRequest(scanner, req);
+  return scanner;
+}
+
+function validateMethodologyRequest(
+  scanner: ScannerCapability,
+  req: StartScanRequest,
+): void {
   if (req.effort && !scanner.efforts.some((candidate) => candidate === req.effort)) {
     throw new Error(`Effort ${req.effort} não é válido para ${scanner.name}.`);
   }
   if (req.mode && !scanner.modes.includes(req.mode)) {
     throw new Error(`Modo ${req.mode} não é válido para ${scanner.name}.`);
   }
-  if (["mantis", "vulnhunter"].includes(engine) && req.maxCostUsd != null) {
+  if (["mantis", "vulnhunter"].includes(scanner.engine) && req.maxCostUsd != null) {
     throw new Error(
-      `${scanner.name} usa a assinatura Codex e não promete um teto USD falso; remova maxCostUsd.`,
+      `${scanner.name} não consegue aplicar um teto USD neste runner; remova maxCostUsd.`,
     );
   }
-  return scanner;
 }
 
 export const MANTIS_VERSION = MANTIS_SOURCE_REF;

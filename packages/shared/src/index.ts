@@ -529,6 +529,14 @@ export interface MetricsSummary {
 export interface StartScanRequest {
   repositoryPath: string;
   engine?: ScannerEngine;
+  /**
+   * Server-resolved connection/model selection. When supplied, legacy model,
+   * provider and auth fields are compatibility input only and cannot steer the
+   * launched process.
+   */
+  connection?: ScanConnectionSelection;
+  /** Explicit acknowledgement required before a provider can use a remote repo. */
+  remoteRepositoryConfirmed?: boolean;
   authMode?: ScannerAuthMode;
   provider?: string;
   model?: string;

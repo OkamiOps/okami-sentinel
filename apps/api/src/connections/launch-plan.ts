@@ -126,7 +126,8 @@ export function createLaunchPlanResolver(
         protocol: compatibility.protocol,
         model,
         capabilityCheckId: compatibility.capabilityCheckId,
-        ...(input.engine === "codex-security"
+        ...(compatibility.runnerKind === "codex-security-contract" ||
+          compatibility.runnerKind === "codex-app-server"
           ? { scannerAuthMode: scannerAuthMode(connection.routeKind) }
           : {}),
         snapshot,

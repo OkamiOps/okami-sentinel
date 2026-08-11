@@ -34,8 +34,10 @@ import {
 } from "./progress.js";
 import { validateScannerRequest } from "./scanners/catalog.js";
 import { prepareScannerLaunch } from "./scanners/launch.js";
+import { resolveBeforeLaunch } from "./scanners/scan-selection.js";
 import { refreshMantisRunFromDisk } from "./scanners/mantis-reconcile.js";
 import { refreshVulnHunterRunFromDisk } from "./scanners/vulnhunter-reconcile.js";
+import { getProviderRuntime } from "./provider-runtime.js";
 import {
   globalSecretRedactor,
   processSecretValues,
@@ -321,20 +323,31 @@ export async function startScan(req: StartScanRequest): Promise<ScanRun> {
   const displayName = req.displayName?.trim() || path.basename(repositoryPath);
   const id = nanoid(12);
   const outputDir = path.join(SCANS_ROOT, safeName(displayName), `csb-${safeName(displayName)}-${id}`);
-  fs.mkdirSync(outputDir, { recursive: true, mode: 0o700 });
-  fs.mkdirSync(RUNS_DIR, { recursive: true });
-
-  const model = req.model || scanner.models[0]?.id || "gpt-5.6-sol";
-  const effort = req.effort || "high";
-  const mode = req.mode || "standard";
-  const launch = prepareScannerLaunch({
+  const prepared = resolveBeforeLaunch({
     request: req,
-    repositoryPath,
-    outputDir,
-    model,
-    effort: String(effort),
-    mode,
+    scanId: id,
+    launchPlans: getProviderRuntime().launchPlans,
+    prepareLaunch: (selection) => {
+      // No worker config or process exists until the immutable connection snapshot
+      // has been accepted. Unsupported runner kinds fail in the selection boundary.
+      fs.mkdirSync(outputDir, { recursive: true, mode: 0o700 });
+      fs.mkdirSync(RUNS_DIR, { recursive: true });
+
+      const model = selection.model ?? req.model ?? scanner.models[0]?.id ?? "gpt-5.6-sol";
+      const effort = req.effort || "high";
+      const mode = req.mode || "standard";
+      const launch = prepareScannerLaunch({
+        request: selection.request,
+        repositoryPath,
+        outputDir,
+        model,
+        effort: String(effort),
+        mode,
+      });
+      return { model, effort, mode, launch };
+    },
   });
+  const { model, effort, mode, launch } = prepared.launch;
 
   const startedAt = new Date().toISOString();
   const initialProgress = progressForStatus("running", outputDir, mode, startedAt);

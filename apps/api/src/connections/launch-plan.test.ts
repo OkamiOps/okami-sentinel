@@ -135,7 +135,7 @@ test("launch rejects a model owned by another connection before persisting a sna
   assert.deepEqual(snapshots, []);
 });
 
-test("eligible HTTP launch binds the exact model, protocol, probe and immutable snapshot", () => {
+test("eligible HTTP launch writes exactly one immutable snapshot with the exact model and probe", () => {
   const { resolver, snapshots } = fixture();
 
   const plan = resolver.resolve({
@@ -167,6 +167,7 @@ test("eligible HTTP launch binds the exact model, protocol, probe and immutable 
       capturedAt: NOW.toISOString(),
     },
   });
+  assert.equal(snapshots.length, 1);
   assert.deepEqual(snapshots, [plan.snapshot]);
 });
 
