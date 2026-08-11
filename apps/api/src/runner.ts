@@ -11,6 +11,7 @@ import type {
 } from "@csb/shared";
 import { emptySeverityCounts } from "@csb/shared";
 import {
+  CODEX_SECURITY_API_VAULT_TIMEOUT_MS,
   MAX_CONCURRENT_SCANS,
   RUNS_DIR,
   SCANS_ROOT,
@@ -342,9 +343,14 @@ export async function startScan(req: StartScanRequest): Promise<ScanRun> {
   });
   const codexSecurityApiKey = selection.plan !== null && isCodexSecurityApiPlan(selection.plan)
     ? await resolveCodexSecurityApiKey({
+      scanId: id,
       plan: selection.plan,
-      connection: providerRuntime.store.get(selection.plan.connectionId),
+      getConnection: (connectionId) => providerRuntime.store.get(connectionId),
+      getSnapshot: (scanId) => providerRuntime.store.getSnapshot(scanId),
+      getModel: (connectionId, modelId) =>
+        providerRuntime.store.getModel(connectionId, modelId),
       vault: providerRuntime.vault,
+      timeoutMs: CODEX_SECURITY_API_VAULT_TIMEOUT_MS,
     })
     : null;
 

@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { ModelCapabilities, ProviderModel } from "@csb/shared";
+import type {
+  ModelCapabilities,
+  ProviderModel,
+  ScanConnectionSnapshot,
+} from "@csb/shared";
 
 import type { StoredProviderConnection } from "../connections-store.js";
 import type { ScanLaunchPlan } from "../connections/launch-plan.js";
@@ -101,11 +105,39 @@ function vault(apiKey = "vault-openai-key-not-process-key") {
   return { value, reads: () => reads };
 }
 
+function currentSnapshot(selectedPlan: ScanLaunchPlan): ScanConnectionSnapshot {
+  return { ...selectedPlan.snapshot };
+}
+
+function currentModel(selectedPlan: ScanLaunchPlan): ProviderModel | null {
+  return selectedPlan.model === null ? null : { ...selectedPlan.model };
+}
+
+function withTestDeadline<T>(operation: Promise<T>, timeoutMs = 250): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("test_deadline_exceeded")), timeoutMs);
+    void operation.then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
+
 test("selected OpenAI API vault key launches Codex Security without a global key", async () => {
+  const selectedPlan = plan();
   const selectedVault = vault();
   const key = await resolveCodexSecurityApiKey({
-    plan: plan(),
-    connection: connection(),
+    scanId: selectedPlan.snapshot.scanId,
+    plan: selectedPlan,
+    getConnection: () => connection(),
+    getSnapshot: () => currentSnapshot(selectedPlan),
+    getModel: () => currentModel(selectedPlan),
     vault: selectedVault.value,
   });
   const launch = prepareCodexSecurityApiLaunch({
@@ -141,12 +173,16 @@ test("selected OpenAI API vault key launches Codex Security without a global key
 });
 
 test("an invalid Codex Security API tuple reads zero vault credentials", async () => {
+  const selectedPlan = plan();
   const selectedVault = vault();
 
   await assert.rejects(
     resolveCodexSecurityApiKey({
-      plan: plan(),
-      connection: connection({ transport: "local-cli" }),
+      scanId: selectedPlan.snapshot.scanId,
+      plan: selectedPlan,
+      getConnection: () => connection({ transport: "local-cli" }),
+      getSnapshot: () => currentSnapshot(selectedPlan),
+      getModel: () => currentModel(selectedPlan),
       vault: selectedVault.value,
     }),
     (error: unknown) =>
@@ -155,4 +191,144 @@ test("an invalid Codex Security API tuple reads zero vault credentials", async (
   );
 
   assert.equal(selectedVault.reads(), 0);
+});
+
+test("a stale persisted snapshot is rejected before reading the vault", async () => {
+  const selectedPlan = plan();
+  const selectedVault = vault();
+
+  await assert.rejects(
+    resolveCodexSecurityApiKey({
+      scanId: selectedPlan.snapshot.scanId,
+      plan: selectedPlan,
+      getConnection: () => connection(),
+      getSnapshot: () => ({
+        ...currentSnapshot(selectedPlan),
+        capturedAt: "2026-08-11T12:00:01.000Z",
+      }),
+      getModel: () => currentModel(selectedPlan),
+      vault: selectedVault.value,
+    }),
+    (error: unknown) =>
+      error instanceof CodexSecurityApiBridgeError &&
+      error.code === "provider_runner_unavailable",
+  );
+
+  assert.equal(selectedVault.reads(), 0);
+});
+
+test("a stale catalog or removed current model is rejected before reading the vault", async () => {
+  for (const state of ["stale-catalog", "removed-model"] as const) {
+    const selectedPlan = plan();
+    const selectedVault = vault();
+
+    await assert.rejects(
+      resolveCodexSecurityApiKey({
+        scanId: selectedPlan.snapshot.scanId,
+        plan: selectedPlan,
+        getConnection: () => connection({ modelCatalogStale: state === "stale-catalog" }),
+        getSnapshot: () => currentSnapshot(selectedPlan),
+        getModel: () => state === "removed-model" ? null : currentModel(selectedPlan),
+        vault: selectedVault.value,
+      }),
+      (error: unknown) =>
+        error instanceof CodexSecurityApiBridgeError &&
+        error.code === "provider_runner_unavailable",
+      state,
+    );
+
+    assert.equal(selectedVault.reads(), 0, state);
+  }
+});
+
+test("a hung vault read settles on the authoritative deadline without spawning", async (t) => {
+  const selectedPlan = plan();
+  let reads = 0;
+  let spawns = 0;
+  let rejectLate: ((error: Error) => void) | undefined;
+  const unhandled: unknown[] = [];
+  const onUnhandled = (error: unknown) => unhandled.push(error);
+  process.on("unhandledRejection", onUnhandled);
+  t.after(() => process.off("unhandledRejection", onUnhandled));
+  const hungVault: CredentialVault = {
+    available: async () => ({ available: true, backend: "keychain" }),
+    put: async () => undefined,
+    get: async () => {
+      reads += 1;
+      return new Promise((_resolve, reject) => {
+        rejectLate = reject;
+      });
+    },
+    delete: async () => undefined,
+  };
+
+  const operation = (async () => {
+    await resolveCodexSecurityApiKey({
+      scanId: selectedPlan.snapshot.scanId,
+      plan: selectedPlan,
+      getConnection: () => connection(),
+      getSnapshot: () => currentSnapshot(selectedPlan),
+      getModel: () => currentModel(selectedPlan),
+      vault: hungVault,
+      timeoutMs: 10,
+    });
+    spawns += 1;
+  })();
+
+  try {
+    await assert.rejects(
+      withTestDeadline(operation),
+      (error: unknown) =>
+        error instanceof CodexSecurityApiBridgeError &&
+        error.code === "credential_unavailable",
+    );
+  } finally {
+    rejectLate?.(new Error("late private vault rejection"));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+
+  assert.equal(reads, 1);
+  assert.equal(spawns, 0);
+  assert.deepEqual(unhandled, []);
+});
+
+test("an aborted launch stops a hung vault read without spawning", async () => {
+  const selectedPlan = plan();
+  const controller = new AbortController();
+  let reads = 0;
+  let spawns = 0;
+  const hungVault: CredentialVault = {
+    available: async () => ({ available: true, backend: "keychain" }),
+    put: async () => undefined,
+    get: async () => {
+      reads += 1;
+      return new Promise(() => undefined);
+    },
+    delete: async () => undefined,
+  };
+  const operation = (async () => {
+    await resolveCodexSecurityApiKey({
+      scanId: selectedPlan.snapshot.scanId,
+      plan: selectedPlan,
+      getConnection: () => connection(),
+      getSnapshot: () => currentSnapshot(selectedPlan),
+      getModel: () => currentModel(selectedPlan),
+      vault: hungVault,
+      signal: controller.signal,
+      timeoutMs: 10_000,
+    });
+    spawns += 1;
+  })();
+
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  controller.abort();
+
+  await assert.rejects(
+    withTestDeadline(operation),
+    (error: unknown) =>
+      error instanceof CodexSecurityApiBridgeError &&
+      error.code === "credential_unavailable",
+  );
+  assert.equal(reads, 1);
+  assert.equal(spawns, 0);
 });

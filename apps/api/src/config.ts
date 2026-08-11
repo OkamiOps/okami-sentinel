@@ -148,6 +148,15 @@ export const CODEX_SECURITY_ARGS_PREFIX =
     ? []
     : ["--yes", "@openai/codex-security"];
 
+const configuredCodexSecurityVaultTimeout = Number(
+  process.env.CSB_CODEX_SECURITY_VAULT_TIMEOUT_MS,
+);
+export const CODEX_SECURITY_API_VAULT_TIMEOUT_MS =
+  Number.isSafeInteger(configuredCodexSecurityVaultTimeout) &&
+      configuredCodexSecurityVaultTimeout > 0
+    ? Math.min(configuredCodexSecurityVaultTimeout, 10_000)
+    : 2_000;
+
 export function codexSecurityEnvironment(
   source: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {

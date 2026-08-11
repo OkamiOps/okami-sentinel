@@ -1,5 +1,9 @@
-import type { ProviderModel } from "@csb/shared";
+import type {
+  ProviderModel,
+  ScanConnectionSnapshot,
+} from "@csb/shared";
 
+import { CODEX_SECURITY_API_VAULT_TIMEOUT_MS } from "../config.js";
 import type { StoredProviderConnection } from "../connections-store.js";
 import type { ScanLaunchPlan } from "../connections/launch-plan.js";
 import type { CredentialVault } from "../credentials/credential-vault.js";
@@ -46,19 +50,49 @@ export function isCodexSecurityApiPlan(
  * the current persisted connection prove the exact OpenAI API tuple.
  */
 export async function resolveCodexSecurityApiKey(input: {
+  scanId: string;
   plan: ScanLaunchPlan;
-  connection: StoredProviderConnection | null;
+  getConnection: (connectionId: string) => StoredProviderConnection | null;
+  getSnapshot: (scanId: string) => ScanConnectionSnapshot | null;
+  getModel: (connectionId: string, modelId: string) => ProviderModel | null;
   vault: CredentialVault;
+  signal?: AbortSignal;
+  timeoutMs?: number;
 }): Promise<string> {
-  if (!isCodexSecurityApiPlan(input.plan) || !isCodexSecurityApiConnection(input.connection)) {
+  if (!isCodexSecurityApiPlan(input.plan) || input.plan.snapshot.scanId !== input.scanId) {
     throw new CodexSecurityApiBridgeError("provider_runner_unavailable");
   }
-  if (input.connection.id !== input.plan.connectionId) {
+
+  let connection: StoredProviderConnection | null;
+  let snapshot: ScanConnectionSnapshot | null;
+  let model: ProviderModel | null;
+  try {
+    connection = input.getConnection(input.plan.connectionId);
+    snapshot = input.getSnapshot(input.scanId);
+    model = input.getModel(input.plan.connectionId, input.plan.model.id);
+  } catch {
+    throw new CodexSecurityApiBridgeError("provider_runner_unavailable");
+  }
+
+  if (
+    !isCodexSecurityApiConnection(connection) ||
+    connection.id !== input.plan.connectionId ||
+    !sameSnapshot(snapshot, input.plan.snapshot) ||
+    model === null ||
+    model.connectionId !== connection.id ||
+    model.id !== input.plan.model.id ||
+    input.plan.model.connectionId !== connection.id
+  ) {
     throw new CodexSecurityApiBridgeError("provider_runner_unavailable");
   }
 
   try {
-    const credential = await input.vault.get(input.connection.credentialRef);
+    const credential = await boundedVaultRead(
+      input.vault,
+      connection.credentialRef,
+      input.signal,
+      validTimeout(input.timeoutMs),
+    );
     if (!credential.apiKey?.trim()) {
       throw new CodexSecurityApiBridgeError("credential_unavailable");
     }
@@ -79,6 +113,63 @@ export function isCodexSecurityApiConnection(
     connection.authKind === "api-key" &&
     connection.protocol === "openai-responses" &&
     connection.modelSelectionMode === "catalog" &&
+    connection.modelCatalogStale === false &&
     typeof connection.credentialRef === "string" &&
     connection.credentialRef.length > 0;
+}
+
+function sameSnapshot(
+  persisted: ScanConnectionSnapshot | null,
+  planned: ScanConnectionSnapshot,
+): boolean {
+  return persisted !== null &&
+    persisted.scanId === planned.scanId &&
+    persisted.connectionId === planned.connectionId &&
+    persisted.routeKind === planned.routeKind &&
+    persisted.modelSelectionMode === planned.modelSelectionMode &&
+    persisted.modelId === planned.modelId &&
+    persisted.capabilityCheckId === planned.capabilityCheckId &&
+    persisted.capturedAt === planned.capturedAt;
+}
+
+function validTimeout(value: number | undefined): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? Math.min(value, 10_000)
+    : CODEX_SECURITY_API_VAULT_TIMEOUT_MS;
+}
+
+function boundedVaultRead(
+  vault: CredentialVault,
+  credentialRef: string,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+): Promise<Awaited<ReturnType<CredentialVault["get"]>>> {
+  if (signal?.aborted) {
+    return Promise.reject(new CodexSecurityApiBridgeError("credential_unavailable"));
+  }
+
+  const operation = Promise.resolve().then(() => vault.get(credentialRef));
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", onAbort);
+      callback();
+    };
+    const fail = (): void => finish(() =>
+      reject(new CodexSecurityApiBridgeError("credential_unavailable"))
+    );
+    const onAbort = (): void => fail();
+    const timeout = setTimeout(fail, timeoutMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+
+    // Both handlers remain attached after timeout/abort so a backend that
+    // ignores cancellation cannot create an unhandled late rejection.
+    void operation.then(
+      (value) => finish(() => resolve(value)),
+      () => fail(),
+    );
+  });
 }
