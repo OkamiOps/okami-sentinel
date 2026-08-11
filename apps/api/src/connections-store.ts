@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { isSafeProviderErrorCode } from "@csb/shared";
 import type {
   CapabilityReport,
+  CodexSecurityExecutionProfile,
   ConnectionDisplay,
   ConnectionStatus,
   ModelCapabilities,
@@ -73,6 +74,11 @@ interface SnapshotRow {
   model_selection_mode: ScanConnectionSnapshot["modelSelectionMode"];
   model_id: string | null;
   capability_check_id: string | null;
+  execution_profile: CodexSecurityExecutionProfile | null;
+  profile_version: string | null;
+  methodology_ref: string | null;
+  protocol: ScanConnectionSnapshot["protocol"];
+  auth_kind: ScanConnectionSnapshot["authKind"];
   captured_at: string;
 }
 
@@ -411,10 +417,12 @@ export class ConnectionStore {
       .prepare(
         `INSERT INTO scan_connection_snapshots (
           scan_id, connection_id, route_kind, model_selection_mode, model_id,
-          capability_check_id, captured_at
+          capability_check_id, execution_profile, profile_version, methodology_ref,
+          protocol, auth_kind, captured_at
         ) VALUES (
           @scan_id, @connection_id, @route_kind, @model_selection_mode, @model_id,
-          @capability_check_id, @captured_at
+          @capability_check_id, @execution_profile, @profile_version, @methodology_ref,
+          @protocol, @auth_kind, @captured_at
         )`,
       )
       .run(snapshotToParams(snapshot));
@@ -424,7 +432,8 @@ export class ConnectionStore {
     const row = this.database
       .prepare(
         `SELECT scan_id, connection_id, route_kind, model_selection_mode, model_id,
-          capability_check_id, captured_at
+          capability_check_id, execution_profile, profile_version, methodology_ref,
+          protocol, auth_kind, captured_at
          FROM scan_connection_snapshots
          WHERE scan_id = ?`,
       )
@@ -592,26 +601,29 @@ function ensureCapabilityChecksSchema(database: Database.Database): void {
 function ensureSnapshotsSchema(database: Database.Database): void {
   if (!tableExists(database, "scan_connection_snapshots")) {
     createSnapshotsTable(database);
-    createSnapshotsIndex(database);
-    return;
-  }
-  if (!hasColumn(database, "scan_connection_snapshots", "model_selection_mode")) {
+  } else if (!hasColumn(database, "scan_connection_snapshots", "model_selection_mode")) {
     database.transaction(() => {
       database.exec("ALTER TABLE scan_connection_snapshots RENAME TO scan_connection_snapshots_legacy");
       createSnapshotsTable(database);
       database.exec(`
         INSERT INTO scan_connection_snapshots (
           scan_id, connection_id, route_kind, model_selection_mode, model_id,
-          capability_check_id, captured_at
+          capability_check_id, execution_profile, profile_version, methodology_ref,
+          protocol, auth_kind, captured_at
         )
         SELECT scan_id, connection_id, route_kind,
           CASE WHEN model_id IS NULL THEN 'legacy-unknown' ELSE 'catalog' END,
-          model_id, NULL, created_at
+          model_id, NULL, NULL, NULL, NULL, protocol, auth_kind, created_at
         FROM scan_connection_snapshots_legacy;
         DROP TABLE scan_connection_snapshots_legacy;
       `);
     })();
   }
+  addColumnIfMissing(database, "scan_connection_snapshots", "execution_profile", "TEXT");
+  addColumnIfMissing(database, "scan_connection_snapshots", "profile_version", "TEXT");
+  addColumnIfMissing(database, "scan_connection_snapshots", "methodology_ref", "TEXT");
+  addColumnIfMissing(database, "scan_connection_snapshots", "protocol", "TEXT");
+  addColumnIfMissing(database, "scan_connection_snapshots", "auth_kind", "TEXT");
   createSnapshotsIndex(database);
 }
 
@@ -637,6 +649,11 @@ function createSnapshotsTable(database: Database.Database): void {
       model_selection_mode TEXT NOT NULL,
       model_id TEXT,
       capability_check_id TEXT,
+      execution_profile TEXT,
+      profile_version TEXT,
+      methodology_ref TEXT,
+      protocol TEXT,
+      auth_kind TEXT,
       captured_at TEXT NOT NULL
     )
   `);
@@ -813,6 +830,11 @@ function snapshotToParams(snapshot: ScanConnectionSnapshot): Record<string, unkn
     model_selection_mode: snapshot.modelSelectionMode,
     model_id: snapshot.modelId,
     capability_check_id: snapshot.capabilityCheckId,
+    execution_profile: snapshot.executionProfile ?? null,
+    profile_version: snapshot.profileVersion ?? null,
+    methodology_ref: snapshot.methodologyRef ?? null,
+    protocol: snapshot.protocol ?? null,
+    auth_kind: snapshot.authKind ?? null,
     captured_at: snapshot.capturedAt,
   };
 }
@@ -873,6 +895,11 @@ function rowToSnapshot(row: SnapshotRow): ScanConnectionSnapshot {
     modelSelectionMode: row.model_selection_mode,
     modelId: row.model_id,
     capabilityCheckId: row.capability_check_id,
+    executionProfile: row.execution_profile,
+    profileVersion: row.profile_version,
+    methodologyRef: row.methodology_ref,
+    protocol: row.protocol,
+    authKind: row.auth_kind,
     capturedAt: row.captured_at,
   };
 }

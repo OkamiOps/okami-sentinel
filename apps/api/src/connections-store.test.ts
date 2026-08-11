@@ -157,6 +157,56 @@ test("model rows and snapshots never serialize a vault bundle", () => {
   }
 });
 
+test("round-trips Portable snapshot provenance without secrets or endpoints", () => {
+  const db = new Database(":memory:");
+  const provenance = {
+    executionProfile: "portable",
+    profileVersion: "sentinel-codex-security-portable-v1",
+    methodologyRef: "sentinel/codex-security-methodology@v1",
+    capabilityCheckId: "cap-1",
+  } as const;
+
+  try {
+    const store = new ConnectionStore(db);
+    store.writeSnapshot({
+      scanId: "scan-1",
+      connectionId: "connection-1",
+      routeKind: "mimo-token-plan",
+      modelSelectionMode: "catalog",
+      modelId: "mimo-v2.5",
+      capabilityCheckId: provenance.capabilityCheckId,
+      executionProfile: provenance.executionProfile,
+      profileVersion: provenance.profileVersion,
+      methodologyRef: provenance.methodologyRef,
+      protocol: "openai-chat",
+      authKind: "api-key",
+      capturedAt: "2026-08-11T09:00:00.000Z",
+    });
+
+    const expectedSnapshot = {
+      scanId: "scan-1",
+      connectionId: "connection-1",
+      routeKind: "mimo-token-plan",
+      modelSelectionMode: "catalog",
+      modelId: "mimo-v2.5",
+      capabilityCheckId: "cap-1",
+      executionProfile: "portable",
+      profileVersion: "sentinel-codex-security-portable-v1",
+      methodologyRef: "sentinel/codex-security-methodology@v1",
+      protocol: "openai-chat",
+      authKind: "api-key",
+      capturedAt: "2026-08-11T09:00:00.000Z",
+    };
+    const snapshot = store.getSnapshot("scan-1");
+
+    assert.deepEqual(snapshot, expectedSnapshot);
+    assert.equal(JSON.stringify(snapshot).includes("secret"), false);
+    assert.equal(JSON.stringify(snapshot).includes("endpoint"), false);
+  } finally {
+    db.close();
+  }
+});
+
 test("model refreshes are atomic and only a failed refresh marks the catalog stale", () => {
   const db = new Database(":memory:");
 
@@ -561,6 +611,8 @@ test("migrates legacy catalog, check, and snapshot tables idempotently", () => {
     assert.equal(store.getModel("conn-legacy", "legacy-model")?.displayName, "Legacy model");
     assert.equal(store.getSnapshot("scan-legacy")?.modelSelectionMode, "catalog");
     assert.equal(store.getSnapshot("scan-legacy-http-null")?.modelSelectionMode, "legacy-unknown");
+    assert.equal(store.getSnapshot("scan-legacy")?.protocol, "openai-responses");
+    assert.equal(store.getSnapshot("scan-legacy")?.authKind, "api-key");
     assert.equal(store.getCapabilityCheck("check-legacy")?.modelId, null);
     assert.equal(store.getCapabilityCheck("check-legacy")?.protocol, "openai-responses");
   } finally {

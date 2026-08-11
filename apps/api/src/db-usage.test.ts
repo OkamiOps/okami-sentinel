@@ -58,6 +58,49 @@ test("keeps historical subscription usage when the provider reported tokens", ()
   assert.equal(run.cost?.outputTokens, 30);
 });
 
+test("restores frozen provider-catalog pricing without substituting OpenRouter rates", () => {
+  const run = rowToScanRun({
+    ...subscriptionRow({ input_tokens: 1_000, cached_input_tokens: 200, output_tokens: 100 }),
+    engine: "codex-security",
+    auth_mode: "api-key",
+    cost_json: JSON.stringify({
+      estimatedUsd: 0.0014,
+      inputTokens: 1_000,
+      cachedInputTokens: 200,
+      cacheWriteInputTokens: 50,
+      outputTokens: 100,
+      model: "mimo-v2.5",
+      pricingSource: "provider-catalog",
+      pricingSnapshot: {
+        currency: "USD",
+        capturedAt: "2026-08-11T08:59:00.000Z",
+        inputUsdPerMillionTokens: 1,
+        cachedInputUsdPerMillionTokens: 0.25,
+        cacheWriteInputUsdPerMillionTokens: null,
+        outputUsdPerMillionTokens: 4,
+      },
+    }),
+  } as BenchmarkRow);
+
+  assert.deepEqual(run.cost, {
+    estimatedUsd: 0.0014,
+    inputTokens: 1_000,
+    cachedInputTokens: 200,
+    cacheWriteInputTokens: 50,
+    outputTokens: 100,
+    model: "mimo-v2.5",
+    pricingSource: "provider-catalog",
+    pricingSnapshot: {
+      currency: "USD",
+      capturedAt: "2026-08-11T08:59:00.000Z",
+      inputUsdPerMillionTokens: 1,
+      cachedInputUsdPerMillionTokens: 0.25,
+      cacheWriteInputUsdPerMillionTokens: null,
+      outputUsdPerMillionTokens: 4,
+    },
+  });
+});
+
 test("never assigns OpenRouter-like cost to a local existing-session scan", () => {
   const run = rowToScanRun({
     ...subscriptionRow({ input_tokens: 120, output_tokens: 30 }),

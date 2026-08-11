@@ -30,6 +30,11 @@ export interface BenchmarkRow {
   auth_mode: string | null;
   scanner_version: string | null;
   recipe_hash: string | null;
+  execution_profile?: string | null;
+  profile_version?: string | null;
+  methodology_ref?: string | null;
+  capability_check_id?: string | null;
+  cost_json?: string | null;
   started_at: string | null;
   completed_at: string | null;
   duration_ms: number | null;
@@ -74,6 +79,11 @@ export function getDb(): Database.Database {
       auth_mode TEXT,
       scanner_version TEXT,
       recipe_hash TEXT,
+      execution_profile TEXT,
+      profile_version TEXT,
+      methodology_ref TEXT,
+      capability_check_id TEXT,
+      cost_json TEXT,
       started_at TEXT,
       completed_at TEXT,
       duration_ms INTEGER,
@@ -132,6 +142,11 @@ function ensureRunMetadataColumns(database: Database.Database): void {
     ["auth_mode", "TEXT"],
     ["scanner_version", "TEXT"],
     ["recipe_hash", "TEXT"],
+    ["execution_profile", "TEXT"],
+    ["profile_version", "TEXT"],
+    ["methodology_ref", "TEXT"],
+    ["capability_check_id", "TEXT"],
+    ["cost_json", "TEXT"],
   ] as const;
   for (const [name, definition] of additions) {
     if (!columns.has(name)) database.exec(`ALTER TABLE runs ADD COLUMN ${name} ${definition}`);
@@ -161,16 +176,19 @@ export function rowToScanRun(row: BenchmarkRow): ScanRun {
   const localSessionUsageUnreported =
     row.engine === "mantis" && row.auth_mode === "existing-session";
   const cost: ScanCost | null =
-    row.estimated_usd != null && !subscriptionUsageUnavailable && !localSessionUsageUnreported
-      ? {
-          estimatedUsd: row.estimated_usd,
-          inputTokens: row.input_tokens ?? 0,
-          cachedInputTokens: row.cached_input_tokens ?? 0,
-          cacheWriteInputTokens: row.cache_write_tokens ?? 0,
-          outputTokens: row.output_tokens ?? 0,
-          model: row.model ?? undefined,
-        }
-      : null;
+    row.cost_json == null
+      ? row.estimated_usd != null && !subscriptionUsageUnavailable && !localSessionUsageUnreported
+        ? {
+            estimatedUsd: row.estimated_usd,
+            inputTokens: row.input_tokens ?? 0,
+            cachedInputTokens: row.cached_input_tokens ?? 0,
+            cacheWriteInputTokens: row.cache_write_tokens ?? 0,
+            outputTokens: row.output_tokens ?? 0,
+            model: row.model ?? undefined,
+          }
+        : null
+      : parseCostJson(row.cost_json);
+  const execution = rowToExecutionProvenance(row);
 
   return withOpenRouterPricingEstimate({
     id: row.id,
@@ -194,16 +212,20 @@ export function rowToScanRun(row: BenchmarkRow): ScanRun {
     severity,
     source: row.source as ScanRun["source"],
     pid: row.pid,
+    execution,
   });
 }
 
 export function upsertRun(run: ScanRun): void {
   const now = new Date().toISOString();
+  const cost = run.cost === null ? null : sanitizeScanCost(run.cost);
+  const execution = run.execution ?? null;
   getDb()
     .prepare(
       `INSERT INTO runs (
         id, display_name, repository_path, revision, scan_dir, status,
         model, effort, mode, engine, provider, auth_mode, scanner_version, recipe_hash,
+        execution_profile, profile_version, methodology_ref, capability_check_id, cost_json,
         started_at, completed_at, duration_ms,
         estimated_usd, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens,
         severity_critical, severity_high, severity_medium, severity_low, severity_info, severity_unknown, severity_total,
@@ -211,6 +233,7 @@ export function upsertRun(run: ScanRun): void {
       ) VALUES (
         @id, @display_name, @repository_path, @revision, @scan_dir, @status,
         @model, @effort, @mode, @engine, @provider, @auth_mode, @scanner_version, @recipe_hash,
+        @execution_profile, @profile_version, @methodology_ref, @capability_check_id, @cost_json,
         @started_at, @completed_at, @duration_ms,
         @estimated_usd, @input_tokens, @cached_input_tokens, @cache_write_tokens, @output_tokens,
         @severity_critical, @severity_high, @severity_medium, @severity_low, @severity_info, @severity_unknown, @severity_total,
@@ -230,6 +253,11 @@ export function upsertRun(run: ScanRun): void {
         auth_mode=excluded.auth_mode,
         scanner_version=excluded.scanner_version,
         recipe_hash=excluded.recipe_hash,
+        execution_profile=excluded.execution_profile,
+        profile_version=excluded.profile_version,
+        methodology_ref=excluded.methodology_ref,
+        capability_check_id=excluded.capability_check_id,
+        cost_json=excluded.cost_json,
         started_at=excluded.started_at,
         completed_at=excluded.completed_at,
         duration_ms=excluded.duration_ms,
@@ -264,14 +292,19 @@ export function upsertRun(run: ScanRun): void {
       auth_mode: run.authMode,
       scanner_version: run.scannerVersion,
       recipe_hash: run.recipeHash,
+      execution_profile: execution?.executionProfile ?? null,
+      profile_version: execution?.profileVersion ?? null,
+      methodology_ref: execution?.methodologyRef ?? null,
+      capability_check_id: execution?.capabilityCheckId ?? null,
+      cost_json: cost === null ? null : JSON.stringify(cost),
       started_at: run.startedAt,
       completed_at: run.completedAt,
       duration_ms: run.durationMs,
-      estimated_usd: run.cost?.estimatedUsd ?? null,
-      input_tokens: run.cost?.inputTokens ?? null,
-      cached_input_tokens: run.cost?.cachedInputTokens ?? null,
-      cache_write_tokens: run.cost?.cacheWriteInputTokens ?? null,
-      output_tokens: run.cost?.outputTokens ?? null,
+      estimated_usd: cost?.estimatedUsd ?? null,
+      input_tokens: cost?.inputTokens ?? null,
+      cached_input_tokens: cost?.cachedInputTokens ?? null,
+      cache_write_tokens: cost?.cacheWriteInputTokens ?? null,
+      output_tokens: cost?.outputTokens ?? null,
       severity_critical: run.severity.critical,
       severity_high: run.severity.high,
       severity_medium: run.severity.medium,
@@ -389,18 +422,114 @@ export function hideRun(
 export function parseCostJson(raw: string | null | undefined): ScanCost | null {
   if (!raw) return null;
   try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    return {
-      estimatedUsd: Number(parsed.estimatedUsd ?? 0),
-      inputTokens: Number(parsed.inputTokens ?? 0),
-      cachedInputTokens: Number(parsed.cachedInputTokens ?? 0),
-      cacheWriteInputTokens: Number(parsed.cacheWriteInputTokens ?? 0),
-      outputTokens: Number(parsed.outputTokens ?? 0),
-      model: typeof parsed.model === "string" ? parsed.model : undefined,
-    };
+    return sanitizeScanCost(JSON.parse(raw));
   } catch {
     return null;
   }
+}
+
+function rowToExecutionProvenance(row: BenchmarkRow): ScanRun["execution"] {
+  if (
+    (row.execution_profile !== "native" && row.execution_profile !== "portable") ||
+    typeof row.profile_version !== "string" ||
+    typeof row.methodology_ref !== "string"
+  ) {
+    return null;
+  }
+  return {
+    executionProfile: row.execution_profile,
+    profileVersion: row.profile_version,
+    methodologyRef: row.methodology_ref,
+    capabilityCheckId: row.capability_check_id ?? null,
+    connectionId: null,
+    routeKind: null,
+    protocol: null,
+    authKind: null,
+  };
+}
+
+function sanitizeScanCost(value: unknown): ScanCost | null {
+  if (!isRecord(value)) return null;
+  const estimatedUsd = nonNegativeNumber(value.estimatedUsd);
+  const inputTokens = nonNegativeNumber(value.inputTokens);
+  const cachedInputTokens = nonNegativeNumber(value.cachedInputTokens);
+  const cacheWriteInputTokens = nonNegativeNumber(value.cacheWriteInputTokens);
+  const outputTokens = nonNegativeNumber(value.outputTokens);
+  if (
+    estimatedUsd === null ||
+    inputTokens === null ||
+    cachedInputTokens === null ||
+    cacheWriteInputTokens === null ||
+    outputTokens === null
+  ) {
+    return null;
+  }
+
+  const cost: ScanCost = {
+    estimatedUsd,
+    inputTokens,
+    cachedInputTokens,
+    cacheWriteInputTokens,
+    outputTokens,
+  };
+  if (typeof value.model === "string") cost.model = value.model;
+  if (value.pricingSource === "openrouter" || value.pricingSource === "provider-catalog") {
+    cost.pricingSource = value.pricingSource;
+  }
+  if (typeof value.pricingModel === "string") cost.pricingModel = value.pricingModel;
+  if (typeof value.pricingUpdatedAt === "string") cost.pricingUpdatedAt = value.pricingUpdatedAt;
+  for (const field of ["inputUsd", "cachedInputUsd", "cacheWriteInputUsd", "outputUsd"] as const) {
+    const amount = nonNegativeNumber(value[field]);
+    if (amount !== null) cost[field] = amount;
+  }
+  const pricingSnapshot = sanitizePricingSnapshot(value.pricingSnapshot);
+  if (pricingSnapshot !== null) cost.pricingSnapshot = pricingSnapshot;
+  return cost;
+}
+
+function sanitizePricingSnapshot(
+  value: unknown,
+): NonNullable<ScanCost["pricingSnapshot"]> | null {
+  if (!isRecord(value) || value.currency !== "USD" || typeof value.capturedAt !== "string") {
+    return null;
+  }
+  const inputUsdPerMillionTokens = nullableNonNegativeNumber(value.inputUsdPerMillionTokens);
+  const cachedInputUsdPerMillionTokens = nullableNonNegativeNumber(
+    value.cachedInputUsdPerMillionTokens,
+  );
+  const cacheWriteInputUsdPerMillionTokens = nullableNonNegativeNumber(
+    value.cacheWriteInputUsdPerMillionTokens,
+  );
+  const outputUsdPerMillionTokens = nullableNonNegativeNumber(value.outputUsdPerMillionTokens);
+  if (
+    inputUsdPerMillionTokens === undefined ||
+    cachedInputUsdPerMillionTokens === undefined ||
+    cacheWriteInputUsdPerMillionTokens === undefined ||
+    outputUsdPerMillionTokens === undefined
+  ) {
+    return null;
+  }
+  return {
+    currency: "USD",
+    capturedAt: value.capturedAt,
+    inputUsdPerMillionTokens,
+    cachedInputUsdPerMillionTokens,
+    cacheWriteInputUsdPerMillionTokens,
+    outputUsdPerMillionTokens,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function nonNegativeNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function nullableNonNegativeNumber(value: unknown): number | null | undefined {
+  if (value === null) return null;
+  return nonNegativeNumber(value) ?? undefined;
 }
 
 export function parseRecipe(raw: string | null | undefined): {

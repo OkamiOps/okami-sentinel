@@ -267,6 +267,23 @@ export interface ScanConnectionSelection {
   modelId: string | null;
 }
 
+export type CodexSecurityExecutionProfile = "native" | "portable";
+
+export type CodexSecurityProfilePreference =
+  | "auto"
+  | CodexSecurityExecutionProfile;
+
+export interface ScanExecutionProvenance {
+  executionProfile: CodexSecurityExecutionProfile;
+  profileVersion: string;
+  methodologyRef: string;
+  capabilityCheckId: string | null;
+  connectionId: string | null;
+  routeKind: string | null;
+  protocol: ProviderProtocol | null;
+  authKind: ConnectionAuthKind | null;
+}
+
 /** Legacy snapshots without a model choice are historical-only and cannot start a scan. */
 export type SnapshotModelSelectionMode = ModelSelectionMode | "legacy-unknown";
 
@@ -277,6 +294,12 @@ export interface ScanConnectionSnapshot {
   modelId: string | null;
   routeKind: string;
   capabilityCheckId: string | null;
+  /** Optional only while legacy snapshot writers are migrated to the profile contract. */
+  executionProfile?: CodexSecurityExecutionProfile | null;
+  profileVersion?: string | null;
+  methodologyRef?: string | null;
+  protocol?: ProviderProtocol | null;
+  authKind?: ConnectionAuthKind | null;
   capturedAt: string;
 }
 
@@ -284,6 +307,11 @@ export interface ScanConnectionSnapshot {
 export interface ConnectionCompatibility extends ScanConnectionSelection {
   eligible: boolean;
   reasons: string[];
+  selectedProfile?: CodexSecurityExecutionProfile | null;
+  availableProfiles?: CodexSecurityExecutionProfile[];
+  profileVersion?: string | null;
+  methodologyRef?: string | null;
+  capabilityCheckId?: string | null;
 }
 
 /** Server-owned eligibility request for a scanner engine and registered connection. */
@@ -440,7 +468,17 @@ export interface ScanCost {
   outputTokens: number;
   model?: string;
   /** Identifies response-side estimates that are not an invoiced scanner cost. */
-  pricingSource?: "openrouter";
+  pricingSource?: "openrouter" | "provider-catalog";
+  /** Immutable provider rates used for a provider-catalog estimate. */
+  pricingSnapshot?: {
+    currency: "USD";
+    capturedAt: string;
+    inputUsdPerMillionTokens: number | null;
+    cachedInputUsdPerMillionTokens: number | null;
+    /** Null until the provider catalog publishes a cache-write rate. */
+    cacheWriteInputUsdPerMillionTokens: number | null;
+    outputUsdPerMillionTokens: number | null;
+  };
   pricingModel?: string;
   pricingUpdatedAt?: string;
   inputUsd?: number;
@@ -500,6 +538,8 @@ export interface ScanRun {
   severity: SeverityCounts;
   source: "workbench" | "benchmark" | "filesystem";
   pid: number | null;
+  /** Absent only on legacy in-memory producers while they adopt provenance. */
+  execution?: ScanExecutionProvenance | null;
   progress?: ScanProgress | null;
 }
 
@@ -677,6 +717,7 @@ export interface MetricsSummary {
 export interface StartScanRequest {
   repositoryPath: string;
   engine?: ScannerEngine;
+  executionProfilePreference?: CodexSecurityProfilePreference;
   /**
    * Server-resolved connection/model selection. When supplied, legacy model,
    * provider and auth fields are compatibility input only and cannot steer the
