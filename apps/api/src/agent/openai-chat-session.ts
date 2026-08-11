@@ -5,6 +5,7 @@ import {
   AgentSessionError,
   createConstrainedWireSession,
   isWorkspaceToolName,
+  WORKSPACE_TOOL_NAMES,
   type AgentEvent,
   type AgentSession,
   type AgentSessionLimits,
@@ -14,11 +15,22 @@ import {
   type AgentWireRequest,
   type NormalizedModelReply,
   type WireSessionAdapter,
+  type WorkspaceToolName,
 } from "./session-types.js";
+
+const WIRE_SAFE_TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+const MIMO_OPENAI_CHAT_TOOL_WIRE_NAMES = [
+  ["workspace.list", "workspace_list"],
+  ["workspace.read", "workspace_read"],
+  ["workspace.search", "workspace_search"],
+  ["results.write", "results_write"],
+] as const satisfies readonly (readonly [WorkspaceToolName, string])[];
+const MIMO_OPENAI_CHAT_TOOL_NAME_CODEC = createMimoOpenAiChatToolNameCodec();
 
 export interface OpenAiChatSessionSpec {
   model: ProviderModel;
   instructions: string;
+  routeKind: string;
 }
 
 export interface OpenAiChatProbeSpec {
@@ -49,6 +61,9 @@ export interface AgentProbeMeasurement {
 /** Creates the wire translator only; all local side effects remain in the runner. */
 export function createOpenAiChatWireAdapter(spec: OpenAiChatSessionSpec): WireSessionAdapter {
   const messages: unknown[] = [{ role: "system", content: spec.instructions }];
+  const mimoToolNameCodec = spec.routeKind === "mimo-token-plan"
+    ? MIMO_OPENAI_CHAT_TOOL_NAME_CODEC
+    : null;
 
   return {
     nextRequest(toolResults: readonly AgentToolResult[]): AgentWireRequest {
@@ -60,7 +75,7 @@ export function createOpenAiChatWireAdapter(spec: OpenAiChatSessionSpec): WireSe
         body: {
           model: spec.model.id,
           messages,
-          tools: openAiChatTools(),
+          tools: openAiChatTools(mimoToolNameCodec),
         },
       };
     },
@@ -70,12 +85,16 @@ export function createOpenAiChatWireAdapter(spec: OpenAiChatSessionSpec): WireSe
       if (!Array.isArray(choices) || choices.length === 0) throw protocolError();
       const choice = record(choices[0]);
       const message = record(choice.message);
-      const calls = readOpenAiChatCalls(message.tool_calls);
+      const calls = readOpenAiChatCalls(message.tool_calls, mimoToolNameCodec);
       const text = textValue(message.content);
       const structured = structuredValue(message.parsed ?? root.output_parsed, text);
+      const reasoningContent = mimoToolNameCodec === null
+        ? undefined
+        : opaqueReasoningContent(message.reasoning_content);
       messages.push({
         role: "assistant",
         content: text,
+        ...(reasoningContent === undefined ? {} : { reasoning_content: reasoningContent }),
         ...(calls.length === 0 ? {} : { tool_calls: message.tool_calls }),
       });
       return {
@@ -122,6 +141,7 @@ export async function probeOpenAiChatSession(
       adapter: createOpenAiChatWireAdapter({
         model,
         instructions: spec.instructions,
+        routeKind: route.routeKind,
       }),
     });
     limitsEnforced = true;
@@ -178,12 +198,12 @@ function advanceProbeEvidence(
   }
 }
 
-function openAiChatTools(): readonly unknown[] {
+function openAiChatTools(mimoToolNameCodec: MimoOpenAiChatToolNameCodec | null): readonly unknown[] {
   return [
     {
       type: "function",
       function: {
-        name: "workspace.list",
+        name: wireToolName("workspace.list", mimoToolNameCodec),
         description: "List read-only files from the supplied workspace snapshot.",
         parameters: objectSchema({ path: stringSchema(), maxEntries: integerSchema(), maxDepth: integerSchema() }),
       },
@@ -191,7 +211,7 @@ function openAiChatTools(): readonly unknown[] {
     {
       type: "function",
       function: {
-        name: "workspace.read",
+        name: wireToolName("workspace.read", mimoToolNameCodec),
         description: "Read a file from the supplied workspace snapshot.",
         parameters: objectSchema({ path: requiredStringSchema(), maxBytes: integerSchema() }, ["path"]),
       },
@@ -199,7 +219,7 @@ function openAiChatTools(): readonly unknown[] {
     {
       type: "function",
       function: {
-        name: "workspace.search",
+        name: wireToolName("workspace.search", mimoToolNameCodec),
         description: "Search read-only workspace files for literal text.",
         parameters: objectSchema({ query: requiredStringSchema(), path: stringSchema(), maxResults: integerSchema(), maxBytes: integerSchema() }, ["query"]),
       },
@@ -207,7 +227,7 @@ function openAiChatTools(): readonly unknown[] {
     {
       type: "function",
       function: {
-        name: "results.write",
+        name: wireToolName("results.write", mimoToolNameCodec),
         description: "Write a result artifact below the run artifact directory.",
         parameters: objectSchema({ path: requiredStringSchema(), content: requiredStringSchema() }, ["path", "content"]),
       },
@@ -215,21 +235,72 @@ function openAiChatTools(): readonly unknown[] {
   ];
 }
 
-function readOpenAiChatCalls(value: unknown): AgentToolCall[] {
+function readOpenAiChatCalls(
+  value: unknown,
+  mimoToolNameCodec: MimoOpenAiChatToolNameCodec | null,
+): AgentToolCall[] {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) throw protocolError();
   return value.map((candidate) => {
     const call = record(candidate);
     const functionCall = record(call.function);
-    if (typeof call.id !== "string" || call.id.length === 0 || !isWorkspaceToolName(functionCall.name)) {
+    if (typeof call.id !== "string" || call.id.length === 0 || typeof functionCall.name !== "string") {
       throw protocolError();
     }
+    const name = mimoToolNameCodec === null
+      ? functionCall.name
+      : mimoToolNameCodec.toInternal(functionCall.name);
+    if (name === null || !isWorkspaceToolName(name)) throw protocolError();
     return {
       id: call.id,
-      name: functionCall.name,
+      name,
       input: objectArguments(functionCall.arguments),
     };
   });
+}
+
+interface MimoOpenAiChatToolNameCodec {
+  toWire(internalName: WorkspaceToolName): string;
+  toInternal(wireName: string): WorkspaceToolName | null;
+}
+
+/** Creates the closed, explicit MiMo-only bijection for its restricted wire alphabet. */
+function createMimoOpenAiChatToolNameCodec(): MimoOpenAiChatToolNameCodec {
+  const toWire = new Map<WorkspaceToolName, string>();
+  const toInternal = new Map<string, WorkspaceToolName>();
+  for (const [internalName, wireName] of MIMO_OPENAI_CHAT_TOOL_WIRE_NAMES) {
+    if (!WIRE_SAFE_TOOL_NAME.test(wireName) || toWire.has(internalName) || toInternal.has(wireName)) {
+      throw new AgentSessionError("runner_invalid_spec");
+    }
+    toWire.set(internalName, wireName);
+    toInternal.set(wireName, internalName);
+  }
+  if (toWire.size !== WORKSPACE_TOOL_NAMES.length ||
+      WORKSPACE_TOOL_NAMES.some((name) => !toWire.has(name))) {
+    throw new AgentSessionError("runner_invalid_spec");
+  }
+  return {
+    toWire(internalName: WorkspaceToolName): string {
+      const wireName = toWire.get(internalName);
+      if (wireName === undefined) throw new AgentSessionError("runner_invalid_spec");
+      return wireName;
+    },
+    toInternal(wireName: string): WorkspaceToolName | null {
+      return toInternal.get(wireName) ?? null;
+    },
+  };
+}
+
+function wireToolName(
+  internalName: WorkspaceToolName,
+  mimoToolNameCodec: MimoOpenAiChatToolNameCodec | null,
+): string {
+  return mimoToolNameCodec === null ? internalName : mimoToolNameCodec.toWire(internalName);
+}
+
+/** Returns provider reasoning only for opaque replay in the next wire request. */
+function opaqueReasoningContent(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
 }
 
 function openAiUsage(value: unknown) {

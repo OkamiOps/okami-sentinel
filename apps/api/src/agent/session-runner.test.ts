@@ -453,9 +453,9 @@ test("wire operations are route-agnostic for custom, MiMo, and xAI OAuth session
     },
     {
       routeKind: "mimo-token-plan",
-      protocol: "openai-responses",
-      operation: "responses",
-      response: responsesFinalStructured({ status: "ok" }),
+      protocol: "openai-chat",
+      operation: "chat-completions",
+      response: chatFinalText("done"),
     },
     {
       routeKind: "xai-oauth",
@@ -472,7 +472,7 @@ test("wire operations are route-agnostic for custom, MiMo, and xAI OAuth session
       protocol: candidate.protocol,
       model: selected,
       probe: capability(),
-    } as never, {
+    }, {
       async request(request) {
         requests.push(request);
         return candidate.response;
@@ -529,7 +529,7 @@ async function fixtureRoots(name: string) {
 
 function sessionSpec(
   fixture: Awaited<ReturnType<typeof fixtureRoots>>,
-  protocol: "openai-responses" | "openai-chat" | "anthropic-messages",
+  protocol: "openai-responses" | "openai-chat" | "anthropic-messages" | "xai-oauth-responses",
   routeKind: string,
   limits: Partial<typeof DEFAULT_AGENT_LIMITS> = {},
 ) {

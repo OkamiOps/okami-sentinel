@@ -311,8 +311,8 @@ test("HttpProbeSession uses each supported protocol loop, records usage, and rem
       baseUrl: "https://token-plan-ams.xiaomimimo.com/v1",
       expectedUrl: "https://token-plan-ams.xiaomimimo.com/v1/chat/completions",
       replies: [
-        chatTool("workspace.list", { path: "." }, "list-1"),
-        chatTool("results.write", { path: "probe.json", content: "{\"ok\":true}" }, "write-1"),
+        mimoChatTool("workspace.list", { path: "." }, "list-1"),
+        mimoChatTool("results.write", { path: "probe.json", content: "{\"ok\":true}" }, "write-1"),
         chatFinal({ ok: true }),
       ],
     },
@@ -528,6 +528,17 @@ function responsesFinal(value: Record<string, unknown>) {
 
 function chatTool(name: string, input: Record<string, unknown>, id: string) {
   return { choices: [{ message: { tool_calls: [{ id, type: "function", function: { name, arguments: JSON.stringify(input) } }] } }], usage: { prompt_tokens: 1, completion_tokens: 1 } };
+}
+
+function mimoChatTool(name: string, input: Record<string, unknown>, id: string) {
+  const wireName = ({
+    "workspace.list": "workspace_list",
+    "workspace.read": "workspace_read",
+    "workspace.search": "workspace_search",
+    "results.write": "results_write",
+  } as Record<string, string>)[name];
+  if (wireName === undefined) throw new Error("unknown MiMo test tool");
+  return chatTool(wireName, input, id);
 }
 
 function chatFinal(value: Record<string, unknown>) {

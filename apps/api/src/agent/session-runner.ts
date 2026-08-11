@@ -57,7 +57,11 @@ export async function createAgentSession(
 function adapterFor(input: CreateAgentSessionInput): WireSessionAdapter {
   switch (input.protocol) {
     case "openai-chat":
-      return createOpenAiChatWireAdapter(input);
+      return createOpenAiChatWireAdapter({
+        model: input.model,
+        instructions: input.instructions,
+        routeKind: input.routeKind,
+      });
     case "openai-responses":
     case "xai-oauth-responses":
       return createOpenAiResponsesWireAdapter(input);
