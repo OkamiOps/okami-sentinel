@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 
 import type {
@@ -12,6 +15,7 @@ import type {
 } from "@csb/shared";
 
 import type { StoredProviderConnection } from "./connections-store.js";
+import { deleteRun } from "./db.js";
 import type { ScanLaunchPlan } from "./connections/launch-plan.js";
 import { startScan } from "./runner.js";
 
@@ -116,18 +120,33 @@ function plan(scanId: string): ScanLaunchPlan {
   };
 }
 
-test("startScan rejects a resolved Portable Codex plan before vault access or spawn", async () => {
+function fakeChild(): ChildProcess {
+  const child = new EventEmitter() as ChildProcess;
+  Object.assign(child, {
+    pid: 91_338,
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+  });
+  return child;
+}
+
+test("startScan dispatches only the Portable worker for a resolved Portable Codex plan", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "runner-codex-mimo-"));
   const repositoryPath = path.join(root, "repository");
   fs.mkdirSync(repositoryPath);
   const displayName = `codex-mimo-${randomUUID()}`;
   let selectedPlan: ScanLaunchPlan | null = null;
   let vaultReads = 0;
-  let launches = 0;
+  const launches: Array<{
+    command: string;
+    args: readonly string[];
+    env: NodeJS.ProcessEnv;
+    child: ChildProcess;
+  }> = [];
+  let runId: string | null = null;
 
   try {
-    await assert.rejects(
-      () => startScan({
+    const run = await startScan({
         repositoryPath,
         displayName,
         engine: "codex-security",
@@ -162,17 +181,56 @@ test("startScan rejects a resolved Portable Codex plan before vault access or sp
               delete: async () => undefined,
             },
           },
-          spawn: () => {
-            launches += 1;
-            throw new Error("scanner must not be spawned");
+          spawn: (command, args, options) => {
+            const child = fakeChild();
+            launches.push({ command, args: [...args], env: { ...options.env }, child });
+            return child;
+          },
+          environment: {
+            PATH: "/private/portable-worker-bin",
+            HOME: "/private/portable-worker-home",
+            MIMO_API_KEY: "mimo-api-key-must-not-reach-worker",
+            MIMO_BASE_URL: "https://private.mimo.example/v1",
+            CUSTOM_TOKEN: "custom-token-must-not-reach-worker",
+            NODE_OPTIONS: "--require /private/untrusted-hook.cjs",
           },
         },
-      }),
-      /provider_runner_unavailable/,
-    );
+      });
+    runId = run.id;
+
     assert.equal(vaultReads, 0);
-    assert.equal(launches, 0);
+    assert.equal(run.authMode, null);
+    assert.equal(run.cost, null);
+    assert.deepEqual(run.execution, selectedPlan!.execution);
+    assert.match(run.recipeHash ?? "", /^[a-f0-9]{64}$/);
+    assert.equal(launches.length, 1);
+    const launch = launches[0]!;
+    assert.doesNotMatch(launch.command, /(?:^|\/)npx$/);
+    assert.doesNotMatch(launch.args.join(" "), /@openai\/codex-security/);
+    assert.match(launch.args[0] ?? "", /portable-codex-security-worker\.ts$/);
+    const configPath = launch.args[1];
+    assert.equal(typeof configPath, "string");
+    const config = JSON.parse(fs.readFileSync(configPath!, "utf8")) as Record<string, unknown>;
+    const text = JSON.stringify({ config, args: launch.args, env: launch.env });
+    assert.deepEqual(Object.keys(config).sort(), [
+      "limits", "mode", "outputDir", "paths", "providerPlan", "repositoryPath", "sourceRef",
+    ]);
+    assert.equal(config.mode, "standard");
+    assert.deepEqual(config.paths, []);
+    assert.equal(fs.statSync(configPath!).mode & 0o077, 0);
+    for (const secret of [
+      "mimo-api-key-must-not-reach-worker",
+      "https://private.mimo.example/v1",
+      "custom-token-must-not-reach-worker",
+    ]) {
+      assert.equal(text.includes(secret), false);
+    }
+    for (const key of ["MIMO_API_KEY", "MIMO_BASE_URL", "CUSTOM_TOKEN", "NODE_OPTIONS"] as const) {
+      assert.equal(launch.env[key], undefined, `${key} must not reach the Portable worker`);
+    }
+    launch.child.emit("close", 0);
   } finally {
+    if (runId !== null) deleteRun(runId);
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

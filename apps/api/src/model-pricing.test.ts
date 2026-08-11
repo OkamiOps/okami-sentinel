@@ -1,0 +1,134 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+import type { ModelPricing } from "@csb/shared";
+
+import {
+  estimateCatalogUsageCost,
+  portableCodexSecurityPricingPath,
+  readPortableCodexSecurityPricing,
+  writePortableCodexSecurityPricing,
+} from "./model-pricing.js";
+import type { ScannerUsage } from "./scanners/usage.js";
+
+const CAPTURED_AT = "2026-08-11T16:30:00.000Z";
+const MODEL_ID = "mimo-v2.5";
+
+const pricing: ModelPricing = {
+  inputUsdPerMillionTokens: 2,
+  cachedInputUsdPerMillionTokens: 0.5,
+  outputUsdPerMillionTokens: 4,
+};
+
+test("frozen catalog pricing refuses a positive cache-write count without a published rate", () => {
+  const cost = estimateCatalogUsageCost({
+    reported: true,
+    inputTokens: 1_000_000,
+    inputTokensKnown: true,
+    cachedInputTokens: 500_000,
+    cachedInputTokensKnown: true,
+    cacheWriteInputTokens: 2_000_000,
+    cacheWriteInputTokensKnown: true,
+    outputTokens: 2_000_000,
+    outputTokensKnown: true,
+  } satisfies ScannerUsage, pricing, CAPTURED_AT, MODEL_ID);
+
+  assert.equal(cost, null);
+});
+
+test("frozen catalog pricing calculates only fully known zero cache-write usage", () => {
+  const cost = estimateCatalogUsageCost({
+    reported: true,
+    inputTokens: 1_000_000,
+    inputTokensKnown: true,
+    cachedInputTokens: 500_000,
+    cachedInputTokensKnown: true,
+    cacheWriteInputTokens: 0,
+    cacheWriteInputTokensKnown: true,
+    outputTokens: 2_000_000,
+    outputTokensKnown: true,
+  } satisfies ScannerUsage, pricing, CAPTURED_AT, MODEL_ID);
+
+  assert.deepEqual(cost, {
+    estimatedUsd: 10.25,
+    inputTokens: 1_000_000,
+    cachedInputTokens: 500_000,
+    cacheWriteInputTokens: 0,
+    outputTokens: 2_000_000,
+    model: MODEL_ID,
+    pricingSource: "provider-catalog",
+    pricingSnapshot: {
+      currency: "USD",
+      capturedAt: CAPTURED_AT,
+      inputUsdPerMillionTokens: 2,
+      cachedInputUsdPerMillionTokens: 0.5,
+      cacheWriteInputUsdPerMillionTokens: null,
+      outputUsdPerMillionTokens: 4,
+    },
+    pricingModel: MODEL_ID,
+    pricingUpdatedAt: CAPTURED_AT,
+    inputUsd: 2,
+    cachedInputUsd: 0.25,
+    outputUsd: 8,
+  });
+  assert.equal(cost?.cacheWriteInputUsd, undefined);
+});
+
+test("missing usage or either required frozen rate keeps Portable cost unavailable", () => {
+  const completeUsage: ScannerUsage = {
+    reported: true,
+    inputTokens: 1,
+    inputTokensKnown: true,
+    cachedInputTokens: 0,
+    cachedInputTokensKnown: true,
+    cacheWriteInputTokens: 0,
+    cacheWriteInputTokensKnown: true,
+    outputTokens: 1,
+    outputTokensKnown: true,
+  };
+
+  assert.equal(estimateCatalogUsageCost({
+    ...completeUsage,
+    reported: false,
+  }, pricing, CAPTURED_AT, MODEL_ID), null);
+  assert.equal(estimateCatalogUsageCost({
+    ...completeUsage,
+    outputTokensKnown: false,
+  }, pricing, CAPTURED_AT, MODEL_ID), null);
+  assert.equal(estimateCatalogUsageCost(completeUsage, null, CAPTURED_AT, MODEL_ID), null);
+  assert.equal(estimateCatalogUsageCost(completeUsage, {
+    ...pricing,
+    inputUsdPerMillionTokens: null,
+  }, CAPTURED_AT, MODEL_ID), null);
+  assert.equal(estimateCatalogUsageCost(completeUsage, {
+    ...pricing,
+    outputUsdPerMillionTokens: null,
+  }, CAPTURED_AT, MODEL_ID), null);
+
+  assert.equal(estimateCatalogUsageCost({
+    ...completeUsage,
+    cachedInputTokensKnown: false,
+  }, pricing, CAPTURED_AT, MODEL_ID), null);
+  assert.equal(estimateCatalogUsageCost({
+    ...completeUsage,
+    cacheWriteInputTokensKnown: false,
+  }, pricing, CAPTURED_AT, MODEL_ID), null);
+});
+
+test("pricing sidecar is private and ignores files opened beyond owner access", () => {
+  const scanDir = fs.mkdtempSync(path.join(os.tmpdir(), "portable-pricing-"));
+  try {
+    writePortableCodexSecurityPricing(scanDir, pricing, CAPTURED_AT, MODEL_ID);
+    const target = portableCodexSecurityPricingPath(scanDir);
+    assert.equal(fs.statSync(target).mode & 0o777, 0o600);
+    assert.equal(readPortableCodexSecurityPricing(scanDir)?.modelId, MODEL_ID);
+
+    fs.chmodSync(target, 0o644);
+    assert.equal(readPortableCodexSecurityPricing(scanDir), null);
+  } finally {
+    fs.rmSync(scanDir, { recursive: true, force: true });
+  }
+});

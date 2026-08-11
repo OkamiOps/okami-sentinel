@@ -42,13 +42,20 @@ import {
   prepareCodexSecurityApiLaunch,
   prepareMantisHttpLaunch,
   prepareMantisLocalLaunch,
+  preparePortableCodexSecurityLaunch,
   prepareScannerLaunch,
 } from "./scanners/launch.js";
 import { createSafeMantisProviderPlan } from "./scanners/mantis-http-runner.js";
 import type { MantisLocalProviderPlan } from "./scanners/mantis-local-runner.js";
 import { resolveMantisLocalSource } from "./scanners/mantis-source.js";
-import { resolveScanLaunchSelection } from "./scanners/scan-selection.js";
+import { ScanSelectionError, resolveScanLaunchSelection } from "./scanners/scan-selection.js";
 import type { ScanLaunchPlan } from "./connections/launch-plan.js";
+import {
+  createSafePortableCodexSecurityProviderPlan,
+  PORTABLE_CODEX_SECURITY_METHODOLOGY_REF,
+  PORTABLE_CODEX_SECURITY_PROFILE_VERSION,
+  type SafePortableCodexSecurityProviderPlan,
+} from "./scanners/portable-codex-security-profile.js";
 import type { SafeVulnHunterProviderPlan } from "./scanners/vulnhunter-runtime.js";
 import {
   CodexSecurityApiBridgeError,
@@ -56,6 +63,7 @@ import {
   resolveCodexSecurityApiKey,
 } from "./scanners/codex-security-api-bridge.js";
 import { refreshMantisRunFromDisk } from "./scanners/mantis-reconcile.js";
+import { refreshPortableCodexSecurityRunFromDisk } from "./scanners/portable-codex-security-reconcile.js";
 import { refreshVulnHunterRunFromDisk } from "./scanners/vulnhunter-reconcile.js";
 import { getProviderRuntime, type ProviderRuntime } from "./provider-runtime.js";
 import {
@@ -386,6 +394,10 @@ export async function startScan(
     scanId: id,
     launchPlans: providerRuntime.launchPlans,
   });
+  // This repeats the server-side immutable selection check before any vault or
+  // network-facing preflight. A Portable child will repeat it once more before
+  // it opens its credential boundary.
+  const portablePlan = portableCodexSecurityProviderPlan(id, selection.plan);
   const codexSecurityApiKey = selection.plan !== null && isCodexSecurityApiPlan(selection.plan)
     ? await resolveCodexSecurityApiKey({
       scanId: id,
@@ -418,6 +430,7 @@ export async function startScan(
   // No output directory, worker config, or child process exists until the
   // immutable plan has passed and the exact Codex Security API tuple, when
   // selected, has resolved its vault credential.
+  const startedAt = new Date().toISOString();
   fs.mkdirSync(outputDir, { recursive: true, mode: 0o700 });
   fs.mkdirSync(RUNS_DIR, { recursive: true });
 
@@ -444,6 +457,20 @@ export async function startScan(
       mode,
       sourceCacheDir: localMantisSource.sourceCacheDir,
       mantisLocalProviderPlan: localMantisPlan,
+      ...(dependencies.environment === undefined ? {} : { environment: dependencies.environment }),
+    })
+    : portablePlan !== undefined
+    ? preparePortableCodexSecurityLaunch({
+      request: selection.request,
+      repositoryPath,
+      outputDir,
+      model: requiredModel(),
+      effort,
+      mode,
+      providerKind: selection.plan!.providerKind,
+      portableCodexSecurityProviderPlan: portablePlan,
+      pricing: selection.plan!.model!.pricing,
+      capturedAt: startedAt,
       ...(dependencies.environment === undefined ? {} : { environment: dependencies.environment }),
     })
     : codexSecurityApiKey !== null
@@ -482,7 +509,6 @@ export async function startScan(
           : undefined,
       });
 
-  const startedAt = new Date().toISOString();
   const initialProgress = progressForStatus("running", outputDir, mode, startedAt);
   const run: ScanRun = {
     id,
@@ -503,8 +529,10 @@ export async function startScan(
     completedAt: null,
     durationMs: null,
     cost:
-      (launch.engine === "mantis" || launch.engine === "vulnhunter") &&
+      launch.authMode === null ||
+      ((launch.engine === "mantis" || launch.engine === "vulnhunter") &&
         (launch.authMode === "chatgpt" || launch.authMode === "existing-session")
+      )
         ? null
         : {
           estimatedUsd: 0,
@@ -517,7 +545,7 @@ export async function startScan(
     severity: emptySeverityCounts(),
     source: "benchmark",
     pid: null,
-    execution: null,
+    execution: selection.plan?.execution ?? null,
     progress: initialProgress ? sanitizeScanProgress(initialProgress) : null,
   };
   upsertRun(run);
@@ -626,7 +654,9 @@ export async function startScan(
     refreshed.pid = null;
     const completedProgress = refreshed.status === "completed"
       ? progressForStatus("completed", refreshed.scanDir, refreshed.mode)
-      : null;
+      : isPortableCodexSecurityRun(refreshed)
+        ? refreshed.progress ?? null
+        : null;
     refreshed.progress = completedProgress
       ? sanitizeScanProgress(completedProgress)
       : null;
@@ -666,6 +696,61 @@ function vulnhunterProviderPlan(
     modelId: plan.model.id,
     capabilityCheckId: plan.capabilityCheckId,
   };
+}
+
+/** Converts only the exact already-resolved Portable provenance into worker ids. */
+function portableCodexSecurityProviderPlan(
+  scanId: string,
+  plan: ScanLaunchPlan | null,
+): SafePortableCodexSecurityProviderPlan | undefined {
+  if (
+    plan?.engine !== "codex-security" ||
+    plan.runnerKind !== "agent-session" ||
+    plan.model === null ||
+    plan.capabilityCheckId === null ||
+    plan.execution?.executionProfile !== "portable" ||
+    plan.execution.profileVersion !== PORTABLE_CODEX_SECURITY_PROFILE_VERSION ||
+    plan.execution.methodologyRef !== PORTABLE_CODEX_SECURITY_METHODOLOGY_REF ||
+    plan.execution.capabilityCheckId !== plan.capabilityCheckId ||
+    plan.execution.connectionId !== plan.connectionId ||
+    plan.execution.routeKind !== plan.routeKind ||
+    plan.execution.protocol !== plan.protocol ||
+    plan.snapshot.scanId !== scanId ||
+    plan.snapshot.connectionId !== plan.connectionId ||
+    plan.snapshot.routeKind !== plan.routeKind ||
+    plan.snapshot.modelSelectionMode !== "catalog" ||
+    plan.snapshot.modelId !== plan.model.id ||
+    plan.snapshot.capabilityCheckId !== plan.capabilityCheckId ||
+    plan.snapshot.executionProfile !== "portable" ||
+    plan.snapshot.profileVersion !== PORTABLE_CODEX_SECURITY_PROFILE_VERSION ||
+    plan.snapshot.methodologyRef !== PORTABLE_CODEX_SECURITY_METHODOLOGY_REF ||
+    plan.snapshot.protocol !== plan.protocol ||
+    plan.snapshot.authKind !== plan.execution.authKind
+  ) {
+    if (plan?.execution?.executionProfile === "portable") {
+      throw new ScanSelectionError("provider_runner_unavailable");
+    }
+    return undefined;
+  }
+  try {
+    return createSafePortableCodexSecurityProviderPlan({
+      scanId,
+      connectionId: plan.connectionId,
+      routeKind: plan.routeKind,
+      protocol: plan.protocol,
+      modelId: plan.model.id,
+      capabilityCheckId: plan.capabilityCheckId,
+      profileVersion: plan.execution.profileVersion,
+      methodologyRef: plan.execution.methodologyRef,
+    });
+  } catch {
+    throw new ScanSelectionError("provider_runner_unavailable");
+  }
+}
+
+function isPortableCodexSecurityRun(run: ScanRun): boolean {
+  return run.engine === "codex-security" &&
+    run.execution?.executionProfile === "portable";
 }
 
 function isVulnHunterProviderProtocol(
@@ -818,6 +903,9 @@ export function refreshAfterClose(
   fallback: ScanRun,
   dependencies: RunRefreshDependencies = runRefreshDependencies,
 ): ScanRun {
+  if (isPortableCodexSecurityRun(fallback)) {
+    return refreshPortableCodexSecurityRunFromDisk(getRun(fallback.id) ?? fallback);
+  }
   if (fallback.engine === "mantis") {
     return refreshMantisRunFromDisk(getRun(fallback.id) ?? fallback);
   }

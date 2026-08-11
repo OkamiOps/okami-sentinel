@@ -9,6 +9,11 @@ import type {
 } from "../connections/launch-plan.js";
 import { isHttpAgentRouteProtocolSupported } from "../agent/http-agent-upstream.js";
 import { isCodexSecurityApiPlan } from "./codex-security-api-bridge.js";
+import {
+  createSafePortableCodexSecurityProviderPlan,
+  PORTABLE_CODEX_SECURITY_METHODOLOGY_REF,
+  PORTABLE_CODEX_SECURITY_PROFILE_VERSION,
+} from "./portable-codex-security-profile.js";
 
 const SCOPED_CODEX_SECURITY_SESSION_ROUTES = new Set([
   "openai-codex-local",
@@ -121,6 +126,24 @@ export function resolveScanLaunchSelection(
         connectionAware: true,
       };
     }
+    if (isPortableCodexSecurityPlan(request, plan)) {
+      const {
+        authMode: _untrustedAuthMode,
+        provider: _untrustedProvider,
+        model: _untrustedModel,
+        ...safeRequest
+      } = request;
+      return {
+        request: {
+          ...safeRequest,
+          provider: plan.providerKind,
+          model: plan.model!.id,
+        },
+        model: plan.model!.id,
+        plan,
+        connectionAware: true,
+      };
+    }
     throw new ScanSelectionError("provider_runner_unavailable");
   }
   if (plan.runnerKind === "local-agent-session") {
@@ -151,6 +174,62 @@ export function resolveScanLaunchSelection(
     plan,
     connectionAware: true,
   };
+}
+
+/**
+ * This is intentionally narrower than generic HTTP compatibility: a Portable
+ * worker is available only for its fully pinned Codex Security execution
+ * contract. The child repeats this check before it reads vault/network state.
+ */
+function isPortableCodexSecurityPlan(
+  request: StartScanRequest,
+  plan: ScanLaunchPlan,
+): boolean {
+  if (
+    (request.engine ?? "codex-security") !== "codex-security" ||
+    plan.engine !== "codex-security" ||
+    plan.runnerKind !== "agent-session" ||
+    plan.model === null ||
+    plan.capabilityCheckId === null ||
+    plan.execution?.executionProfile !== "portable" ||
+    plan.execution.profileVersion !== PORTABLE_CODEX_SECURITY_PROFILE_VERSION ||
+    plan.execution.methodologyRef !== PORTABLE_CODEX_SECURITY_METHODOLOGY_REF ||
+    plan.execution.capabilityCheckId !== plan.capabilityCheckId ||
+    plan.execution.connectionId !== plan.connectionId ||
+    plan.execution.routeKind !== plan.routeKind ||
+    plan.execution.protocol !== plan.protocol ||
+    plan.snapshot.scanId.length === 0 ||
+    plan.snapshot.connectionId !== plan.connectionId ||
+    plan.snapshot.routeKind !== plan.routeKind ||
+    plan.snapshot.modelSelectionMode !== "catalog" ||
+    plan.snapshot.modelId !== plan.model.id ||
+    plan.snapshot.capabilityCheckId !== plan.capabilityCheckId ||
+    plan.snapshot.executionProfile !== "portable" ||
+    plan.snapshot.profileVersion !== PORTABLE_CODEX_SECURITY_PROFILE_VERSION ||
+    plan.snapshot.methodologyRef !== PORTABLE_CODEX_SECURITY_METHODOLOGY_REF ||
+    plan.snapshot.protocol !== plan.protocol ||
+    plan.snapshot.authKind !== plan.execution.authKind
+  ) return false;
+  try {
+    const safe = createSafePortableCodexSecurityProviderPlan({
+      scanId: plan.snapshot.scanId,
+      connectionId: plan.connectionId,
+      routeKind: plan.routeKind,
+      protocol: plan.protocol,
+      modelId: plan.model.id,
+      capabilityCheckId: plan.capabilityCheckId,
+      profileVersion: plan.execution.profileVersion,
+      methodologyRef: plan.execution.methodologyRef,
+    });
+    return safe.scanId === plan.snapshot.scanId &&
+      safe.connectionId === plan.execution.connectionId &&
+      safe.routeKind === plan.execution.routeKind &&
+      safe.protocol === plan.execution.protocol &&
+      safe.modelId === plan.snapshot.modelId &&
+      safe.capabilityCheckId === plan.execution.capabilityCheckId;
+  } catch {
+    return false;
+  }
 }
 
 /**

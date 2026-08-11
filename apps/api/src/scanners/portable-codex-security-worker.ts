@@ -38,6 +38,7 @@ export function readPortableCodexSecurityWorkerConfiguration(
       repositoryPath: parsed.repositoryPath,
       paths: [...parsed.paths],
       sourceRef: parsed.sourceRef,
+      mode: parsed.mode,
       providerPlan: createSafePortableCodexSecurityProviderPlan(parsed.providerPlan),
       limits: parsed.limits as unknown as PortableCodexSecurityWorkerConfiguration["limits"],
     };
@@ -126,16 +127,18 @@ function isConfigurationShape(value: unknown): value is Record<string, unknown> 
   repositoryPath: string;
   paths: string[];
   sourceRef: string;
+  mode: "standard" | "deep";
   providerPlan: unknown;
   limits: Record<string, unknown>;
 } {
   if (!isRecord(value) || !onlyKeys(value, [
-    "outputDir", "repositoryPath", "paths", "sourceRef", "providerPlan", "limits",
+    "outputDir", "repositoryPath", "paths", "sourceRef", "mode", "providerPlan", "limits",
   ])) return false;
   if (
     !safeText(value.outputDir, 4_096) ||
     !safeText(value.repositoryPath, 4_096) ||
     !safeText(value.sourceRef, 256) ||
+    (value.mode !== "standard" && value.mode !== "deep") ||
     !Array.isArray(value.paths) ||
     value.paths.length > 256 ||
     !value.paths.every((item) => safeRelativePath(item)) ||

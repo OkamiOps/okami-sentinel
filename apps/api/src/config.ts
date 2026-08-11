@@ -106,6 +106,25 @@ export const MANTIS_HTTP_WORKER_ENTRY = path.join(
   "mantis-http-worker.ts",
 );
 
+/** Portable Codex Security is always a bundled local worker, never npx/native CLI. */
+export const PORTABLE_CODEX_SECURITY_WORKER_BIN = path.join(
+  ROOT_DIR,
+  "apps",
+  "api",
+  "node_modules",
+  ".bin",
+  "tsx",
+);
+
+export const PORTABLE_CODEX_SECURITY_WORKER_ENTRY = path.join(
+  ROOT_DIR,
+  "apps",
+  "api",
+  "src",
+  "scanners",
+  "portable-codex-security-worker.ts",
+);
+
 export const MANTIS_LOCAL_WORKER_BIN =
   process.env.MANTIS_LOCAL_WORKER_BIN?.trim() ||
   path.join(ROOT_DIR, "apps", "api", "node_modules", ".bin", "tsx");

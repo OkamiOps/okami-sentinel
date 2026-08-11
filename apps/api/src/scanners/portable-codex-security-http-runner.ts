@@ -7,6 +7,7 @@ import type {
   ProviderProtocol,
   SafeProviderErrorCode,
   ScanConnectionSnapshot,
+  ScanMode,
 } from "@csb/shared";
 
 import {
@@ -73,6 +74,7 @@ export interface PortableCodexSecurityWorkerConfiguration {
   repositoryPath: string;
   paths: string[];
   sourceRef: string;
+  mode: ScanMode;
   providerPlan: SafePortableCodexSecurityProviderPlan;
   limits: PortableCodexSecurityExecutionLimits;
 }
@@ -322,7 +324,7 @@ export async function runPortableCodexSecurity(
       resultsDir,
       outputDir,
       {
-      redactor: globalSecretRedactor,
+        redactor: globalSecretRedactor,
       },
     );
     throwIfStopped(deadline);
@@ -361,12 +363,13 @@ function validateConfiguration(
   value: PortableCodexSecurityWorkerConfiguration,
 ): PortableCodexSecurityWorkerConfiguration {
   if (!isRecord(value) || !hasOnlyKeys(value, new Set([
-    "outputDir", "repositoryPath", "paths", "sourceRef", "providerPlan", "limits",
+    "outputDir", "repositoryPath", "paths", "sourceRef", "mode", "providerPlan", "limits",
   ]))) invalidPlan();
   if (
     !isSafeText(value.outputDir, MAX_PATH_LENGTH * 4) ||
     !isSafeText(value.repositoryPath, MAX_PATH_LENGTH * 4) ||
     !isSafeText(value.sourceRef, 256) ||
+    (value.mode !== "standard" && value.mode !== "deep") ||
     !Array.isArray(value.paths) ||
     value.paths.length > MAX_CONFIG_PATHS ||
     !value.paths.every((item) => isSafeRelativePath(item, MAX_PATH_LENGTH)) ||
@@ -378,6 +381,7 @@ function validateConfiguration(
       repositoryPath: value.repositoryPath,
       paths: [...value.paths],
       sourceRef: value.sourceRef,
+      mode: value.mode,
       providerPlan: createSafePortableCodexSecurityProviderPlan(value.providerPlan),
       limits: { ...value.limits },
     };

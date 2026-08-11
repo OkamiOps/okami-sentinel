@@ -13,6 +13,10 @@ import {
   readVulnHunterRuntime,
   vulnhunterRuntimeProgress,
 } from "./scanners/vulnhunter-runtime.js";
+import {
+  portableCodexSecurityRuntimeProgress,
+  readPortableCodexSecurityRuntime,
+} from "./scanners/portable-codex-security-runtime.js";
 
 const PHASES: ScanPhase[] = [
   "preflight",
@@ -295,6 +299,9 @@ export function progressForStatus(
       latestVulnHunterActivityAt(scanDir, vulnhunter),
     );
   }
+
+  const portable = readPortableCodexSecurityRuntime(scanDir);
+  if (portable) return portableCodexSecurityRuntimeProgress(portable);
 
   const fromWb = readProgressForScanDir(scanDir);
   const age = elapsedMs(startedAt);

@@ -146,6 +146,7 @@ function configuration(
     repositoryPath,
     paths: ["src"],
     sourceRef: "a".repeat(40),
+    mode: "standard",
     providerPlan,
     limits: {
       totalTimeoutMs: 2_000,

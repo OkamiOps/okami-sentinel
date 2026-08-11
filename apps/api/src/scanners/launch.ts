@@ -6,6 +6,7 @@ import type {
   ScannerEngine,
   ScanMode,
   StartScanRequest,
+  ModelPricing,
 } from "@csb/shared";
 import {
   CODEX_SECURITY_ARGS_PREFIX,
@@ -20,6 +21,8 @@ import {
   MANTIS_SOURCE_REF,
   MANTIS_WORKER_BIN,
   MANTIS_WORKER_ENTRY,
+  PORTABLE_CODEX_SECURITY_WORKER_BIN,
+  PORTABLE_CODEX_SECURITY_WORKER_ENTRY,
   ROOT_DIR,
   VULNHUNTER_PROFILE_VERSION,
   VULNHUNTER_REPOSITORY_URL,
@@ -27,6 +30,7 @@ import {
   VULNHUNTER_WORKER_BIN,
   VULNHUNTER_WORKER_ENTRY,
 } from "../config.js";
+import { writePortableCodexSecurityPricing } from "../model-pricing.js";
 import type { MantisRunConfiguration } from "./mantis-runtime.js";
 import type {
   MantisHttpWorkerConfiguration,
@@ -34,13 +38,21 @@ import type {
 } from "./mantis-http-runner.js";
 import type { MantisLocalProviderPlan } from "./mantis-local-runner.js";
 import type {
+  PortableCodexSecurityExecutionLimits,
+  PortableCodexSecurityWorkerConfiguration,
+} from "./portable-codex-security-http-runner.js";
+import {
+  PORTABLE_CODEX_SECURITY_PROFILE_VERSION,
+  type SafePortableCodexSecurityProviderPlan,
+} from "./portable-codex-security-profile.js";
+import type {
   SafeVulnHunterProviderPlan,
   VulnHunterRunConfiguration,
 } from "./vulnhunter-runtime.js";
 
 export interface ScannerLaunch {
   engine: ScannerEngine;
-  authMode: ScannerAuthMode;
+  authMode: ScannerAuthMode | null;
   provider: string;
   scannerVersion: string | null;
   recipeHash: string;
@@ -75,6 +87,18 @@ export interface MantisHttpLaunchInput extends ScannerLaunchInput {
   /** Trusted runtime metadata, never serialized into the worker config. */
   providerKind: string;
   mantisProviderPlan: SafeMantisProviderPlan;
+}
+
+export interface PortableCodexSecurityLaunchInput extends ScannerLaunchInput {
+  /** Safe identifiers only; the worker repeats this revalidation before vault/network access. */
+  portableCodexSecurityProviderPlan: SafePortableCodexSecurityProviderPlan;
+  /** Run metadata only; never written as a provider body. */
+  providerKind: string;
+  /** Catalog rate snapshot written before the worker is spawned. */
+  pricing: ModelPricing | null;
+  capturedAt: string;
+  /** Injectable only to make the child-environment boundary testable. */
+  environment?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -113,7 +137,7 @@ export function explicitAuthEnvironment(
 
 function recipeHash(input: {
   engine: ScannerEngine;
-  authMode: ScannerAuthMode;
+  authMode: ScannerAuthMode | null;
   model: string;
   effort: string | null;
   mode: string;
@@ -124,6 +148,78 @@ function recipeHash(input: {
   return createHash("sha256")
     .update(JSON.stringify(input))
     .digest("hex");
+}
+
+const PORTABLE_STANDARD_LIMITS: PortableCodexSecurityExecutionLimits = {
+  totalTimeoutMs: 900_000,
+  maxModelTurns: 24,
+  maxToolCalls: 96,
+  maxInputBytes: 1_048_576,
+  maxOutputBytes: 1_048_576,
+};
+
+const PORTABLE_DEEP_LIMITS: PortableCodexSecurityExecutionLimits = {
+  totalTimeoutMs: 1_800_000,
+  maxModelTurns: 48,
+  maxToolCalls: 192,
+  maxInputBytes: 1_048_576,
+  maxOutputBytes: 1_048_576,
+};
+
+/**
+ * Portable scans intentionally use a separate local worker, never the Codex
+ * Security CLI. Its config contains only revalidatable identifiers and static
+ * execution limits; credential material stays in the backend vault.
+ */
+export function preparePortableCodexSecurityLaunch(
+  input: PortableCodexSecurityLaunchInput,
+): ScannerLaunch {
+  const configuration: PortableCodexSecurityWorkerConfiguration = {
+    outputDir: input.outputDir,
+    repositoryPath: input.repositoryPath,
+    paths: (input.request.paths ?? []).map((item) => item.trim()).filter(Boolean),
+    sourceRef: PORTABLE_CODEX_SECURITY_PROFILE_VERSION,
+    mode: input.mode,
+    providerPlan: {
+      ...input.portableCodexSecurityProviderPlan,
+    },
+    limits: input.mode === "deep" ? { ...PORTABLE_DEEP_LIMITS } : { ...PORTABLE_STANDARD_LIMITS },
+  };
+  // This happens before the child can make its first provider call. Reconcile
+  // reads only this immutable local snapshot, never a current provider catalog.
+  writePortableCodexSecurityPricing(
+    input.outputDir,
+    input.pricing,
+    input.capturedAt,
+    input.portableCodexSecurityProviderPlan.modelId,
+  );
+  const configPath = path.join(input.outputDir, "portable-codex-security-run.json");
+  fs.writeFileSync(configPath, `${JSON.stringify(configuration, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  fs.chmodSync(configPath, 0o600);
+  return {
+    engine: "codex-security",
+    authMode: null,
+    provider: input.providerKind,
+    scannerVersion: PORTABLE_CODEX_SECURITY_PROFILE_VERSION,
+    recipeHash: recipeHash({
+      engine: "codex-security",
+      authMode: null,
+      model: input.portableCodexSecurityProviderPlan.modelId,
+      effort: input.effort,
+      mode: input.mode,
+      paths: configuration.paths,
+      scannerVersion: PORTABLE_CODEX_SECURITY_PROFILE_VERSION,
+      provider: input.providerKind,
+    }),
+    command: PORTABLE_CODEX_SECURITY_WORKER_BIN,
+    args: [PORTABLE_CODEX_SECURITY_WORKER_ENTRY, configPath],
+    cwd: ROOT_DIR,
+    env: portableCodexSecurityWorkerEnvironment(input.environment),
+    displayCommand: `sentinel-portable-codex-security ${path.basename(configPath)}`,
+  };
 }
 
 function prepareCodexSecurity(
@@ -414,6 +510,31 @@ const LOCAL_MANTIS_CHILD_ENV_KEYS = [
   "CLAUDE_CONFIG_DIR",
   "CLAUDE_CODE_CONFIG_DIR",
 ] as const;
+
+const PORTABLE_CODEX_SECURITY_CHILD_ENV_KEYS = [
+  "PATH",
+  "HOME",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "XDG_CONFIG_HOME",
+] as const;
+
+/**
+ * Portable worker configuration and all provider credentials are server-owned.
+ * Start from an allowlist so endpoint overrides, provider secrets, preload
+ * hooks, and future ambient variables cannot silently cross the child boundary.
+ */
+export function portableCodexSecurityWorkerEnvironment(
+  source: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { NO_COLOR: "1", CI: "1" };
+  for (const key of PORTABLE_CODEX_SECURITY_CHILD_ENV_KEYS) {
+    const value = source[key];
+    if (typeof value === "string" && value.length > 0) env[key] = value;
+  }
+  return env;
+}
 
 /**
  * A local Claude session authenticates through its private config directory.
