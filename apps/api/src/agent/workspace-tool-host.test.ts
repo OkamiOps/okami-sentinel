@@ -49,6 +49,26 @@ test("workspace listing defaults to the snapshot root and exposes no extra tool 
   });
 });
 
+test("optional empty workspace paths normalize to the snapshot root while required and traversal paths remain denied", async (t) => {
+  const root = await mkdtemp(join(process.cwd(), ".test-agent-host-empty-root-"));
+  const snapshotRoot = join(root, "snapshot");
+  const artifactRoot = join(root, "artifacts");
+  await mkdir(snapshotRoot);
+  await mkdir(artifactRoot, { mode: 0o700 });
+  await writeFile(join(snapshotRoot, "visible.txt"), "visible needle");
+  t.after(async () => rm(root, { recursive: true, force: true }));
+
+  const host = await createWorkspaceToolHost({ snapshotRoot, artifactRoot });
+
+  const listing = await host.call("workspace.list", { path: "" });
+  const search = await host.call("workspace.search", { query: "needle", path: "" });
+
+  assert.equal(listing.content.includes("visible.txt"), true);
+  assert.equal(search.content.includes("visible.txt"), true);
+  await assert.rejects(host.call("workspace.read", { path: "" }), { code: "tool_path_denied" });
+  await assert.rejects(host.call("workspace.list", { path: "../" }), { code: "tool_path_denied" });
+});
+
 test("each read-only tool applies its remaining output budget before filesystem work", async (t) => {
   const root = await mkdtemp(join(process.cwd(), ".test-agent-host-budget-"));
   const snapshotRoot = join(root, "snapshot");

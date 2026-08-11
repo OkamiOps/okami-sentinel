@@ -27,6 +27,7 @@ import {
   type AgentUsage,
   type AgentWireOperation,
 } from "./session-types.js";
+import { WORKSPACE_TOOL_WIRE_CODEC } from "./workspace-tool-wire-codec.js";
 
 /** The provider body limit is independent from an agent-run output budget. */
 export const HTTP_AGENT_BODY_LIMIT_BYTES = 1_048_576;
@@ -553,8 +554,8 @@ const PROBE_LIMITS: Readonly<AgentSessionLimits> = Object.freeze({
 
 const PROBE_INSTRUCTIONS = [
   "This is a bounded Sentinel capability probe.",
-  "First read probe-input.txt or list the workspace.",
-  "Then write results.write path probe.json with a compact JSON result.",
+  `First use ${WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.read")} for probe-input.txt or ${WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.list")} for the workspace.`,
+  `Then use ${WORKSPACE_TOOL_WIRE_CODEC.toWire("results.write")} with path probe.json and a compact JSON result.`,
   "Finally return a JSON object as the completion.",
 ].join(" ");
 

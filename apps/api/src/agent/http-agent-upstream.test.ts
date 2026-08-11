@@ -280,7 +280,7 @@ test("AgentUpstream stops locally when a response reader ignores abort", async (
   await assert.rejects(pending, { code: "agent_cancelled" });
 });
 
-test("HttpProbeSession completes each supported protocol loop, including MiniMax, and removes only its private temporary directory", async (t) => {
+test("HttpProbeSession completes each supported protocol loop, including MiniMax and OpenRouter, and removes only its private temporary directory", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "csb-http-probe-test-"));
   t.after(async () => rm(root, { recursive: true, force: true }));
 
@@ -301,6 +301,16 @@ test("HttpProbeSession completes each supported protocol loop, including MiniMax
       expectedUrl: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
       replies: [
         chatTool("workspace.list", { path: "." }, "list-1"),
+        chatTool("results.write", { path: "probe.json", content: "{\"ok\":true}" }, "write-1"),
+        chatFinal({ ok: true }),
+      ],
+    },
+    {
+      routeKind: "openrouter-api",
+      protocol: "openai-chat" as const,
+      expectedUrl: "https://openrouter.ai/api/v1/chat/completions",
+      replies: [
+        chatTool("workspace.list", { path: "", maxDepth: 2, maxEntries: 100 }, "list-root-1"),
         chatTool("results.write", { path: "probe.json", content: "{\"ok\":true}" }, "write-1"),
         chatFinal({ ok: true }),
       ],
@@ -354,6 +364,8 @@ test("HttpProbeSession completes each supported protocol loop, including MiniMax
     });
 
     assert.equal(transport.calls[0]?.url, candidate.expectedUrl);
+    assert.equal(transport.calls.length, 3);
+    assert.equal(containsInternalToolName(String(transport.calls[0]?.init.body)), false, candidate.routeKind);
     assert.deepEqual(result.agentLoop, {
       workspaceToolRequested: true,
       workspaceToolResultConsumed: true,
@@ -603,6 +615,10 @@ function portableWireToolName(name: string): string {
   } as Record<string, string>)[name];
   if (wireName === undefined) throw new Error("unknown test tool");
   return wireName;
+}
+
+function containsInternalToolName(value: string): boolean {
+  return /(?:workspace|results)\.(?:list|read|search|write)\b/.test(value);
 }
 
 function anthropicFinal(value: Record<string, unknown>) {

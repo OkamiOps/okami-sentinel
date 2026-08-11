@@ -3,6 +3,8 @@ import test from "node:test";
 import Database from "better-sqlite3";
 
 import type { ConnectionSecretBundle, CredentialVault } from "./credentials/credential-vault.js";
+import { WORKSPACE_TOOL_WIRE_CODEC } from "./agent/workspace-tool-wire-codec.js";
+import type { WorkspaceToolName } from "./agent/session-types.js";
 import type { XaiOAuthCredentialStore, XaiOAuthTransport } from "./connections/xai-oauth-flow.js";
 import { createProviderRuntime } from "./provider-runtime.js";
 
@@ -253,10 +255,15 @@ function transcript(replies: unknown[]) {
   };
 }
 
-function responseTool(name: string, input: Record<string, unknown>, id: string) {
+function responseTool(name: WorkspaceToolName, input: Record<string, unknown>, id: string) {
   return {
     id: `response-${id}`,
-    output: [{ type: "function_call", call_id: id, name, arguments: JSON.stringify(input) }],
+    output: [{
+      type: "function_call",
+      call_id: id,
+      name: WORKSPACE_TOOL_WIRE_CODEC.toWire(name),
+      arguments: JSON.stringify(input),
+    }],
     usage: { input_tokens: 1, output_tokens: 1 },
   };
 }

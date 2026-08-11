@@ -696,6 +696,7 @@ function requiredPath(value: unknown): string {
 function optionalPath(value: unknown, allowRoot: boolean): string {
   if (value === undefined) return ".";
   if (typeof value !== "string") throw new AgentSessionError("tool_argument_invalid");
+  if (value === "") return ".";
   return normalizeRelativePath(value, allowRoot);
 }
 

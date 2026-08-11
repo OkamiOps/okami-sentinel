@@ -254,6 +254,12 @@ test("Mantis HTTP runner executes every bounded stage with chained state and nev
     assert.equal(specs.length, STAGES.length);
     assert.deepEqual(specs.map((spec) =>
       String(spec.instructions.match(/stage_id=([a-z-]+)/)?.[1])), STAGES);
+    for (const spec of specs) {
+      assert.equal(spec.instructions.includes("workspace."), false);
+      assert.equal(spec.instructions.includes("results."), false);
+      assert.match(spec.instructions, /workspace_(?:list|read|search)/);
+      assert.match(spec.instructions, /results_write/);
+    }
     assert.match(specs[0]!.instructions, /Previous bounded stage state: none\./);
     const encodedPrior = specs[1]!.instructions.match(
       /BEGIN_PREVIOUS_STAGE_DATA\n([A-Za-z0-9+/=]+)\nEND_PREVIOUS_STAGE_DATA/,

@@ -23,6 +23,7 @@ import {
   type AgentSessionLimits,
   type AgentSessionSpec,
 } from "../agent/session-types.js";
+import { WORKSPACE_TOOL_WIRE_CODEC } from "../agent/workspace-tool-wire-codec.js";
 import type { StoredProviderConnection } from "../connections-store.js";
 import type { XaiOAuthFlow } from "../connections/xai-oauth-flow.js";
 import {
@@ -527,9 +528,9 @@ function stageInstructions(
     "Sentinel Mantis authorized defensive static-analysis stage.",
     `stage_id=${stage.id}`,
     `Apply skill ${stage.skill}: ${stage.label}.`,
-    `Read only the immutable snapshot using workspace.list, workspace.read, or workspace.search. Focus: ${scope}.`,
+    `Read only the immutable snapshot using ${WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.list")}, ${WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.read")}, or ${WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.search")}. Focus: ${scope}.`,
     "Do not use network access, shell commands, external tools, generated code, payloads, PoCs, patches, reproduction, or publishing.",
-    `Write exactly one compact JSON artifact with results.write at ${expectedArtifact}. No other artifact is permitted.`,
+    `Write exactly one compact JSON artifact with ${WORKSPACE_TOOL_WIRE_CODEC.toWire("results.write")} at ${expectedArtifact}. No other artifact is permitted.`,
     ...reportSchema,
     "Return structured JSON exactly {stage, summary}; summary must be a concise defensive analysis state for the next stage.",
     ...priorStateBlock,
