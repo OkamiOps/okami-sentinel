@@ -176,6 +176,15 @@ const CODEX_SECURITY_EFFORT_FLAG_VALUES = new Set([
   "xhigh",
 ]);
 
+// Codex Security 0.1.9 defaults every private runtime to a detailed reasoning
+// summary. Some valid Codex models reject the resulting `reasoning.summary`
+// request field. Sentinel does not consume reasoning summaries, so the Native
+// boundary disables this optional field while preserving the selected effort.
+const CODEX_SECURITY_REASONING_SUMMARY_OVERRIDES = [
+  "model_supports_reasoning_summaries=false",
+  'model_reasoning_summary="none"',
+] as const;
+
 /**
  * Portable scans intentionally use a separate local worker, never the Codex
  * Security CLI. Its config contains only revalidatable identifiers and static
@@ -247,7 +256,8 @@ function prepareCodexSecurity(
     ? `model_reasoning_effort=${JSON.stringify(input.effort)}`
     : null;
   const providerOverrides = (providerOptions.codexOverrides ?? []).filter((override) =>
-    input.effort === null || !isModelReasoningEffortOverride(override),
+    !isModelReasoningSummaryOverride(override) &&
+    (input.effort === null || !isModelReasoningEffortOverride(override))
   );
   const args = [
     ...CODEX_SECURITY_ARGS_PREFIX,
@@ -267,6 +277,9 @@ function prepareCodexSecurity(
     "--json",
   ];
   for (const override of providerOverrides) {
+    args.push("--codex", override);
+  }
+  for (const override of CODEX_SECURITY_REASONING_SUMMARY_OVERRIDES) {
     args.push("--codex", override);
   }
   if (nativeReasoningOverride !== null) {
@@ -306,6 +319,10 @@ function prepareCodexSecurity(
 
 function isModelReasoningEffortOverride(override: string): boolean {
   return /^model_reasoning_effort\s*=/.test(override);
+}
+
+function isModelReasoningSummaryOverride(override: string): boolean {
+  return /^(?:model_reasoning_summary|model_supports_reasoning_summaries)\s*=/.test(override);
 }
 
 /**

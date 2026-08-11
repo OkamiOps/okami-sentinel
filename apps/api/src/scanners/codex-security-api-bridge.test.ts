@@ -192,6 +192,37 @@ test("provider-managed models do not synthesize a Codex Security effort flag", (
   assert.equal(launch.args.includes("--effort"), false);
 });
 
+test("Codex Security disables reasoning summaries without changing the selected effort", () => {
+  const launch = prepareCodexSecurityApiLaunch({
+    request: { repositoryPath: "/repo", engine: "codex-security" },
+    repositoryPath: "/repo",
+    outputDir: "/output",
+    model: "gpt-5.3-codex-spark",
+    effort: "high",
+    mode: "standard",
+    apiKey: "vault-openai-key-not-process-key",
+    codexOverrides: [
+      'model_reasoning_summary="detailed"',
+      "model_supports_reasoning_summaries=true",
+      "features.multi_agent=true",
+    ],
+    environment: { PATH: "/bin" },
+  });
+
+  const overrides = launch.args.flatMap((value, index) =>
+    value === "--codex" ? [launch.args[index + 1]] : [],
+  );
+  assert.deepEqual(overrides, [
+    "features.multi_agent=true",
+    "model_supports_reasoning_summaries=false",
+    'model_reasoning_summary="none"',
+  ]);
+  assert.deepEqual(launch.args.slice(launch.args.indexOf("--effort"), launch.args.indexOf("--effort") + 2), [
+    "--effort",
+    "high",
+  ]);
+});
+
 test("Codex Security serializes every Native reasoning effort through its supported flag", () => {
   for (const [effort, expectedFlag] of [
     ["xhigh", "--effort"],
@@ -212,13 +243,18 @@ test("Codex Security serializes every Native reasoning effort through its suppor
     });
 
     assert.equal(launch.args.includes("--effort"), expectedFlag === "--effort", effort ?? "null");
-    assert.equal(launch.args.includes("--codex"), expectedFlag === "--codex", effort ?? "null");
+    const overrides = launch.args.flatMap((value, index) =>
+      value === "--codex" ? [launch.args[index + 1]] : [],
+    );
+    assert.equal(overrides.includes("model_supports_reasoning_summaries=false"), true);
+    assert.equal(overrides.includes('model_reasoning_summary="none"'), true);
+    const effortOverrides = overrides.filter((override) =>
+      override.startsWith("model_reasoning_effort=")
+    );
     if (effort !== null && expectedFlag === "--codex") {
-      const codexIndex = launch.args.indexOf("--codex");
-      assert.equal(
-        launch.args[codexIndex + 1],
-        `model_reasoning_effort=${JSON.stringify(effort)}`,
-      );
+      assert.deepEqual(effortOverrides, [`model_reasoning_effort=${JSON.stringify(effort)}`]);
+    } else {
+      assert.deepEqual(effortOverrides, []);
     }
   }
 });
@@ -246,6 +282,8 @@ test("Codex Security retains provider overrides without a duplicate reasoning ov
   assert.deepEqual(overrides, [
     'model_provider="openrouter"',
     "features.multi_agent=true",
+    "model_supports_reasoning_summaries=false",
+    'model_reasoning_summary="none"',
     'model_reasoning_effort="ultra"',
   ]);
   assert.equal(launch.args.includes("--effort"), false);
