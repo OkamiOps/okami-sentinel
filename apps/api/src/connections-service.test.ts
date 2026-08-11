@@ -192,6 +192,24 @@ const TEST_ROUTES = testRouteRegistry(
     providerKind: "anthropic",
     authKinds: ["existing-session"],
   },
+  {
+    adapter: runtimeRoute({
+      routeKind: "xai-oauth",
+      transport: "http-inference",
+      protocol: "xai-oauth-responses",
+    }),
+    providerKind: "xai",
+    authKinds: ["device-code"],
+  },
+  {
+    adapter: runtimeRoute({
+      routeKind: "cursor-background-agents",
+      transport: "remote-agent-api",
+      protocol: "cursor-background-agents",
+    }),
+    providerKind: "cursor",
+    authKinds: ["api-key"],
+  },
 );
 
 function createConnectionsService(deps: ConnectionsServiceDependencies) {
@@ -383,6 +401,53 @@ test("permits an existing local CLI session without a vault secret", async () =>
     assert.equal(connection.display.secretConfigured, false);
     assert.equal(getConnection(connection.id, db)?.credentialRef, null);
     assert.equal(vault.values.size, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test("permits a managed device flow without inventing an API key", async () => {
+  const db = new Database(":memory:");
+  try {
+    const vault = new FakeVault();
+    const service = createConnectionsService({ vault, store: storeFor(db) });
+
+    const connection = await service.create({
+      name: "xAI subscription",
+      providerKind: "xai",
+      routeKind: "xai-oauth",
+      transport: "http-inference",
+      authKind: "device-code",
+      protocol: "xai-oauth-responses",
+      modelSelectionMode: "catalog",
+    });
+
+    assert.equal(connection.status, "authentication-required");
+    assert.equal(connection.display.secretConfigured, false);
+    assert.equal(getConnection(connection.id, db)?.credentialRef, null);
+    assert.equal(vault.values.size, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test("still requires a vault secret for API-key HTTP and remote routes", async () => {
+  const db = new Database(":memory:");
+  try {
+    const service = createConnectionsService({ vault: new FakeVault(), store: storeFor(db) });
+    const withoutSecret = apiConnectionInput();
+    delete withoutSecret.secret;
+
+    await assert.rejects(() => service.create(withoutSecret), { code: "invalid_connection" });
+    await assert.rejects(() => service.create({
+      name: "Cursor Cloud",
+      providerKind: "cursor",
+      routeKind: "cursor-background-agents",
+      transport: "remote-agent-api",
+      authKind: "api-key",
+      protocol: "cursor-background-agents",
+      modelSelectionMode: "catalog",
+    }), { code: "invalid_connection" });
   } finally {
     db.close();
   }

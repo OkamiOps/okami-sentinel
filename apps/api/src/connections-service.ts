@@ -577,9 +577,15 @@ function validateCombination(input: {
   protocol: ProviderProtocol;
   secret: ConnectionSecretBundle | undefined;
 }): void {
-  if (input.transport === "http-inference" && input.secret === undefined) {
+  const managedOAuth = input.authKind === "browser-oauth" || input.authKind === "device-code";
+  if (
+    (input.transport === "http-inference" || input.transport === "remote-agent-api") &&
+    input.secret === undefined &&
+    !managedOAuth
+  ) {
     invalidConnection();
   }
+  if (managedOAuth && input.secret !== undefined) invalidConnection();
   if (
     input.authKind === "existing-session" &&
     input.transport !== "local-cli" &&
@@ -674,7 +680,10 @@ function connectionName(value: unknown): string {
 
 function connectionIdentifier(value: unknown): string {
   const identifier = requiredText(value);
-  if (!IDENTIFIER.test(identifier) || CREDENTIAL_SHAPED.test(identifier)) {
+  // Provider and route identifiers are subsequently matched against the
+  // closed server-side registry. Treating every `xai-*` identifier as a
+  // credential made the legitimate `xai-oauth` route impossible to create.
+  if (!IDENTIFIER.test(identifier)) {
     invalidConnection();
   }
   return identifier;
