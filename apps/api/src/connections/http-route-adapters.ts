@@ -194,6 +194,10 @@ export function isExactHttpCatalogSelection(
 export function safeHttpProbeErrorCode(error: unknown): SafeProviderErrorCode {
   if (typeof error === "object" && error !== null) {
     const candidate = error as { code?: unknown; status?: unknown };
+    // A locally enforced session deadline means the upstream did not complete
+    // the bounded probe in time. It is operationally unreachable, not proof
+    // that this route or protocol is unsupported.
+    if (candidate.code === "agent_time_limit") return "provider_unreachable";
     if (isSafeProviderErrorCode(candidate.code)) return candidate.code;
     if (typeof candidate.status === "number") {
       if (candidate.status === 401) return "credential_rejected";

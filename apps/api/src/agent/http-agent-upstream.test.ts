@@ -386,6 +386,46 @@ test("HttpProbeSession completes each supported protocol loop, including MiniMax
   assert.deepEqual(await readdir(root), []);
 });
 
+test("HttpProbeSession gives a four-turn provider loop a ninety-second total deadline", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "csb-http-probe-slow-turns-"));
+  t.after(async () => rm(root, { recursive: true, force: true }));
+
+  // Each provider turn consumes 22 seconds of virtual elapsed time. This
+  // complete loop uses all four allowed turns (88 seconds): it must not be cut
+  // off by the former 30-second probe deadline, while still staying within 90.
+  let elapsedMs = 0;
+  const transport = slowTranscript([
+    json(200, chatTool("workspace.read", { path: "probe-input.txt" }, "read-1")),
+    json(200, chatTool("workspace.list", { path: "." }, "list-1")),
+    json(200, chatTool("results.write", { path: "probe.json", content: "{\"ok\":true}" }, "write-1")),
+    json(200, chatFinal({ ok: true })),
+  ], () => { elapsedMs += 22_000; });
+  const probe = createHttpProbeSession({
+    transport: transport.fetch,
+    temporaryParent: root,
+  });
+
+  const realNow = Date.now;
+  Date.now = () => elapsedMs;
+  let result;
+  try {
+    result = await probe({
+      connectionId: "connection-a",
+      routeKind: "gemini-api",
+      protocol: "openai-chat",
+      inferencePath: "/v1beta/openai/chat/completions",
+      model: model("openai-chat"),
+      credentials: { apiKey: "gemini-secret" },
+    });
+  } finally {
+    Date.now = realNow;
+  }
+
+  assert.equal(elapsedMs, 88_000);
+  assert.equal(transport.calls.length, 4);
+  assert.equal(result!.agentLoop.structuredResultProduced, true);
+});
+
 test("HttpProbeSession propagates caller cancellation into the live provider transport", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "csb-http-probe-abort-"));
   t.after(async () => rm(root, { recursive: true, force: true }));
@@ -573,6 +613,20 @@ function transcript(replies: Response[]) {
       const response = replies.shift();
       if (response === undefined) throw new Error("unexpected fetch");
       calls.push({ url: String(url), init: init ?? {}, headers: new Headers(init?.headers) });
+      return response;
+    }) as typeof fetch,
+  };
+}
+
+function slowTranscript(replies: Response[], onResponse: () => void) {
+  const calls: Array<{ url: string; init: RequestInit; headers: Headers }> = [];
+  return {
+    calls,
+    fetch: (async (url: string | URL | Request, init?: RequestInit) => {
+      const response = replies.shift();
+      if (response === undefined) throw new Error("unexpected fetch");
+      calls.push({ url: String(url), init: init ?? {}, headers: new Headers(init?.headers) });
+      onResponse();
       return response;
     }) as typeof fetch,
   };

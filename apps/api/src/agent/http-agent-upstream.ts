@@ -549,7 +549,9 @@ const PROBE_LIMITS: Readonly<AgentSessionLimits> = Object.freeze({
   maxToolCalls: 4,
   maxInputBytes: 1_048_576,
   maxOutputBytes: 1_048_576,
-  timeoutMs: 30_000,
+  // The bounded probe may require read, write, and completion turns. Keep one
+  // global deadline (no retry) while allowing a slow provider 22.5 s per turn.
+  timeoutMs: 90_000,
 });
 
 const PROBE_INSTRUCTIONS = [

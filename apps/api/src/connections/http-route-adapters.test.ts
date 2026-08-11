@@ -4,6 +4,7 @@ import test from "node:test";
 import type { ProviderModel, ScanConnectionSelection } from "@csb/shared";
 import type { StoredProviderConnection } from "../connections-store.js";
 import type { ConnectionSecretBundle, CredentialVault } from "../credentials/credential-vault.js";
+import { AgentSessionError } from "../agent/session-types.js";
 import type { HttpFetch } from "./http-model-discovery.js";
 import {
   createHttpRouteAdapter,
@@ -476,6 +477,24 @@ test("a partial agent loop or model 403 keeps all probe facts unknown", async ()
   });
   assert.equal(denied.report.errorCode, "model_access_denied");
   assert.equal(denied.report.capabilities.structuredOutput, "unknown");
+});
+
+test("an exhausted HTTP probe deadline records provider_unreachable instead of protocol_unsupported", async () => {
+  const selection: ScanConnectionSelection = {
+    connectionId: "conn-a",
+    modelSelectionMode: "catalog",
+    modelId: "account-visible",
+  };
+  const result = await probeHttpRoute(connection("minimax-token-plan"), selection, {
+    vault: fakeVault({ apiKey: "minimax-secret" }),
+    selectedModel: model("conn-a", "account-visible"),
+    probeSession: async () => {
+      throw new AgentSessionError("agent_time_limit");
+    },
+  });
+
+  assert.equal(result.report.status, "failed");
+  assert.equal(result.report.errorCode, "provider_unreachable");
 });
 
 test("probe keeps the bundle redactor active through the complete session callback", async () => {
