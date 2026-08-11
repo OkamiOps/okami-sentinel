@@ -265,8 +265,8 @@ test("xAI OAuth completes the trusted HTTP probe over only the pinned responses 
   t.after(async () => rm(root, { recursive: true, force: true }));
   const selected = providerModel("conn-xai", "grok-account-model");
   const transport = transcript([
-    responseTool("workspace.read", { path: "probe-input.txt" }, "read-1"),
-    responseTool("results.write", { path: "probe.json", content: "{\"ok\":true}" }, "write-1"),
+    responseTool("workspace_read", { path: "probe-input.txt" }, "read-1"),
+    responseTool("results_write", { path: "probe.json", content: "{\"ok\":true}" }, "write-1"),
     responseFinal({ ok: true }),
   ]);
   const adapter = createXaiOAuthAdapter({
