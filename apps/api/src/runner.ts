@@ -44,6 +44,7 @@ import { resolveScanLaunchSelection } from "./scanners/scan-selection.js";
 import type { ScanLaunchPlan } from "./connections/launch-plan.js";
 import type { SafeVulnHunterProviderPlan } from "./scanners/vulnhunter-runtime.js";
 import {
+  CodexSecurityApiBridgeError,
   isCodexSecurityApiPlan,
   resolveCodexSecurityApiKey,
 } from "./scanners/codex-security-api-bridge.js";
@@ -318,7 +319,18 @@ function safeName(input: string): string {
   return input.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "repo";
 }
 
-export async function startScan(req: StartScanRequest): Promise<ScanRun> {
+export interface StartScanOptions {
+  signal?: AbortSignal;
+}
+
+export async function startScan(
+  req: StartScanRequest,
+  options: StartScanOptions = {},
+): Promise<ScanRun> {
+  if (options.signal?.aborted) {
+    throw new CodexSecurityApiBridgeError("credential_unavailable");
+  }
+
   if (active.size >= MAX_CONCURRENT_SCANS) {
     throw new Error(
       `Limite de scans simultâneos atingido (${MAX_CONCURRENT_SCANS}). Cancele um ou aumente CSB_MAX_CONCURRENT_SCANS.`,
@@ -350,6 +362,7 @@ export async function startScan(req: StartScanRequest): Promise<ScanRun> {
       getModel: (connectionId, modelId) =>
         providerRuntime.store.getModel(connectionId, modelId),
       vault: providerRuntime.vault,
+      signal: options.signal,
       timeoutMs: CODEX_SECURITY_API_VAULT_TIMEOUT_MS,
     })
     : null;

@@ -25,7 +25,6 @@ import type {
   GuardrailPolicy,
   GuardrailRepository,
   HealthResponse,
-  StartScanRequest,
   UpdateFindingTriageRequest,
 } from "@csb/shared";
 import { purgeScanArtifacts, readCliLogSnapshot } from "./activity.js";
@@ -76,6 +75,7 @@ import { isRemovableScanStatus } from "./lifecycle.js";
 import { MAX_CONCURRENT_SCANS } from "./config.js";
 import { createConnectionsApp } from "./connections-api.js";
 import { getProviderRuntime } from "./provider-runtime.js";
+import { createScanStartApp } from "./scan-start-api.js";
 import { getScannerCatalog } from "./scanners/catalog.js";
 import {
   cancelScan,
@@ -547,18 +547,7 @@ app.post("/scans/:id/findings/:findingId/triage", async (c) => {
   }
 });
 
-app.post("/scans", async (c) => {
-  const body = (await c.req.json()) as StartScanRequest;
-  try {
-    const scan = await startScan(body);
-    return c.json({ scan }, 201);
-  } catch (err) {
-    return c.json(
-      { error: err instanceof Error ? err.message : "Falha ao iniciar scan" },
-      400,
-    );
-  }
-});
+app.route("/", createScanStartApp({ startScan }));
 
 app.post("/scans/:id/cancel", (c) => {
   const ok = cancelScan(c.req.param("id"));

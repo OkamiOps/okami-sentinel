@@ -1,9 +1,42 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import type { ScanRun } from "@csb/shared";
+import type { ScanRun, StartScanRequest } from "@csb/shared";
+
+import { CodexSecurityApiBridgeError } from "./scanners/codex-security-api-bridge.js";
+
+test("startScan honors an already-aborted request before output or child creation", async () => {
+  const missingRepository = path.join(
+    os.tmpdir(),
+    `csb-aborted-scan-${randomUUID()}`,
+  );
+  const runner = await import("./runner.js");
+  const startScan = runner.startScan as (
+    request: StartScanRequest,
+    options?: { signal?: AbortSignal },
+  ) => Promise<ScanRun>;
+  const activeBefore = runner.getActiveScanIds();
+  const controller = new AbortController();
+  controller.abort();
+  const startedAt = Date.now();
+
+  await assert.rejects(
+    startScan(
+      { repositoryPath: missingRepository, engine: "codex-security" },
+      { signal: controller.signal },
+    ),
+    (error: unknown) =>
+      error instanceof CodexSecurityApiBridgeError &&
+      error.code === "credential_unavailable",
+  );
+
+  assert.ok(Date.now() - startedAt < 500, "pre-aborted launch must settle promptly");
+  assert.equal(fs.existsSync(missingRepository), false);
+  assert.deepEqual(runner.getActiveScanIds(), activeBefore);
+});
 
 test("closing a scan enriches the launch record without creating an official-id record", async () => {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "csb-run-identity-"));
