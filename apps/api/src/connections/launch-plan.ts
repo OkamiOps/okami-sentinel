@@ -1,5 +1,7 @@
 import type {
   CapabilityReport,
+  CodexSecurityProfilePreference,
+  ScanExecutionProvenance,
   ProviderModel,
   ProviderProtocol,
   ScannerAuthMode,
@@ -41,6 +43,7 @@ export interface ResolveLaunchPlanInput {
   selection: ScanConnectionSelection;
   /** Required only for the explicitly remote Cursor route. */
   remoteRepositoryConfirmed?: boolean;
+  executionProfilePreference?: CodexSecurityProfilePreference;
 }
 
 export interface ScanLaunchPlan {
@@ -52,6 +55,8 @@ export interface ScanLaunchPlan {
   protocol: ProviderProtocol;
   model: ProviderModel | null;
   capabilityCheckId: string | null;
+  /** Optional while legacy in-memory plan fixtures migrate to provenance. */
+  execution?: ScanExecutionProvenance | null;
   scannerAuthMode?: ScannerAuthMode;
   snapshot: ScanConnectionSnapshot;
 }
@@ -96,6 +101,7 @@ export function createLaunchPlanResolver(
         snapshotReadOnly: input.engine === "vulnhunter",
         staticAnalysisProfile: input.engine === "vulnhunter",
         remoteRepositoryConfirmed: input.remoteRepositoryConfirmed,
+        executionProfilePreference: input.executionProfilePreference,
       });
       if (
         !compatibility.eligible ||
@@ -106,6 +112,24 @@ export function createLaunchPlanResolver(
       }
 
       const capturedAt = resolvedAt.toISOString();
+      const execution = input.engine === "codex-security" &&
+          compatibility.selectedProfile !== undefined &&
+          compatibility.selectedProfile !== null &&
+          compatibility.profileVersion !== undefined &&
+          compatibility.profileVersion !== null &&
+          compatibility.methodologyRef !== undefined &&
+          compatibility.methodologyRef !== null
+        ? {
+          executionProfile: compatibility.selectedProfile,
+          profileVersion: compatibility.profileVersion,
+          methodologyRef: compatibility.methodologyRef,
+          capabilityCheckId: compatibility.capabilityCheckId,
+          connectionId: connection.id,
+          routeKind: connection.routeKind,
+          protocol: compatibility.protocol,
+          authKind: connection.authKind,
+        }
+        : null;
       const snapshot: ScanConnectionSnapshot = {
         scanId: input.scanId,
         connectionId: connection.id,
@@ -113,9 +137,9 @@ export function createLaunchPlanResolver(
         modelSelectionMode: input.selection.modelSelectionMode,
         modelId: input.selection.modelId,
         capabilityCheckId: compatibility.capabilityCheckId,
-        executionProfile: null,
-        profileVersion: null,
-        methodologyRef: null,
+        executionProfile: execution?.executionProfile ?? null,
+        profileVersion: execution?.profileVersion ?? null,
+        methodologyRef: execution?.methodologyRef ?? null,
         protocol: compatibility.protocol,
         authKind: connection.authKind,
         capturedAt,
@@ -131,6 +155,7 @@ export function createLaunchPlanResolver(
         protocol: compatibility.protocol,
         model,
         capabilityCheckId: compatibility.capabilityCheckId,
+        execution,
         ...(compatibility.runnerKind === "codex-security-contract" ||
           compatibility.runnerKind === "codex-app-server" ||
           compatibility.runnerKind === "local-agent-session"

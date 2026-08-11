@@ -157,6 +157,7 @@ test("eligible HTTP launch writes exactly one immutable snapshot with the exact 
     protocol: "openai-responses",
     model: model(),
     capabilityCheckId: "probe-a",
+    execution: null,
     snapshot: {
       scanId: "scan-a",
       connectionId: "conn-a",
@@ -311,7 +312,7 @@ test("missing connection and stale probe fail without a snapshot", () => {
   assert.deepEqual(stale.snapshots, []);
 });
 
-test("Codex Security maps each supported route authentication without reading a vault", () => {
+test("Codex Security maps existing Native routes without reading a vault", () => {
   const chatgpt = fixture({
     connection: connection({
       routeKind: "openai-chatgpt-app-server",
@@ -343,6 +344,9 @@ test("Codex Security maps each supported route authentication without reading a 
     },
   }).scannerAuthMode, "api-key");
 
+});
+
+test("Codex Security persists its Portable profile and exact capability ID from server facts", () => {
   const mimo = fixture({
     connection: connection({
       providerKind: "xiaomi",
@@ -352,9 +356,9 @@ test("Codex Security maps each supported route authentication without reading a 
       protocol: "openai-chat",
     }),
     model: model({ id: "mimo-v2.5", displayName: "MiMo V2.5" }),
-    probe: null,
+    probe: probe({ modelId: "mimo-v2.5", protocol: "openai-chat" }),
   });
-  assert.throws(() => mimo.resolver.resolve({
+  const plan = mimo.resolver.resolve({
     scanId: "scan-mimo",
     engine: "codex-security",
     selection: {
@@ -362,8 +366,75 @@ test("Codex Security maps each supported route authentication without reading a 
       modelSelectionMode: "catalog",
       modelId: "mimo-v2.5",
     },
+  });
+
+  assert.equal(plan.runnerKind, "agent-session");
+  assert.equal(plan.capabilityCheckId, "probe-a");
+  assert.deepEqual(plan.execution, {
+    executionProfile: "portable",
+    profileVersion: "sentinel-codex-security-portable-v1",
+    methodologyRef: "sentinel/codex-security-methodology@v1",
+    capabilityCheckId: "probe-a",
+    connectionId: "conn-a",
+    routeKind: "mimo-token-plan",
+    protocol: "openai-chat",
+    authKind: "api-key",
+  });
+  assert.deepEqual(plan.snapshot, {
+    scanId: "scan-mimo",
+    connectionId: "conn-a",
+    routeKind: "mimo-token-plan",
+    modelSelectionMode: "catalog",
+    modelId: "mimo-v2.5",
+    capabilityCheckId: "probe-a",
+    executionProfile: "portable",
+    profileVersion: "sentinel-codex-security-portable-v1",
+    methodologyRef: "sentinel/codex-security-methodology@v1",
+    protocol: "openai-chat",
+    authKind: "api-key",
+    capturedAt: NOW.toISOString(),
+  });
+  assert.deepEqual(mimo.snapshots, [plan.snapshot]);
+});
+
+test("Codex Security ignores browser-forged provenance and rejects an unavailable requested profile", () => {
+  const portable = fixture({
+    connection: connection({
+      providerKind: "xiaomi",
+      routeKind: "mimo-token-plan",
+      transport: "http-inference",
+      authKind: "api-key",
+      protocol: "openai-chat",
+    }),
+    model: model({ id: "mimo-v2.5", displayName: "MiMo V2.5" }),
+    probe: probe({ modelId: "mimo-v2.5", protocol: "openai-chat" }),
+  });
+  const plan = portable.resolver.resolve({
+    scanId: "scan-forged",
+    engine: "codex-security",
+    selection: {
+      connectionId: "conn-a",
+      modelSelectionMode: "catalog",
+      modelId: "mimo-v2.5",
+    },
+    executionProfilePreference: "portable",
+    executionProfile: "native",
+    profileVersion: "browser-forged",
+    methodologyRef: "browser-forged",
+    capabilityCheckId: "browser-forged",
+  } as unknown as Parameters<typeof portable.resolver.resolve>[0]);
+  assert.equal(plan.execution?.executionProfile, "portable");
+  assert.equal(plan.execution?.capabilityCheckId, "probe-a");
+
+  assert.throws(() => portable.resolver.resolve({
+    scanId: "scan-native-only",
+    engine: "codex-security",
+    selection: {
+      connectionId: "conn-a",
+      modelSelectionMode: "catalog",
+      modelId: "mimo-v2.5",
+    },
+    executionProfilePreference: "native",
   }), (error: unknown) =>
-    error instanceof LaunchPlanError &&
-    error.code === "codex_security_gateway_feature_unproven");
-  assert.deepEqual(mimo.snapshots, []);
+    error instanceof LaunchPlanError && error.code === "codex_native_contract_unavailable");
 });

@@ -62,6 +62,7 @@ function plan(
     protocol: "codex-app-server",
     model,
     capabilityCheckId: null,
+    execution: null,
     scannerAuthMode: "chatgpt",
     snapshot,
     ...patch,
@@ -517,7 +518,7 @@ test("Codex Security OpenAI API accepts only the resolved catalog plan, never cl
   assert.equal(launchPreparationCalls, 1);
 });
 
-test("Codex Security rejects an injected MiMo plan before launch preparation", () => {
+test("Codex Security accepts only an immutable Portable plan with its exact model and capability", () => {
   const mimoModel: ProviderModel = {
     ...model,
     connectionId: "mimo-session",
@@ -529,20 +530,31 @@ test("Codex Security rejects an injected MiMo plan before launch preparation", (
     connectionId: "mimo-session",
     providerKind: "xiaomi",
     routeKind: "mimo-token-plan",
-    runnerKind: "codex-security-contract",
     protocol: "openai-chat",
     model: mimoModel,
-    scannerAuthMode: "api-key",
+    runnerKind: "agent-session",
+    scannerAuthMode: undefined,
+    capabilityCheckId: "probe-mimo",
+    execution: {
+      executionProfile: "portable",
+      profileVersion: "sentinel-codex-security-portable-v1",
+      methodologyRef: "sentinel/codex-security-methodology@v1",
+      capabilityCheckId: "probe-mimo",
+      connectionId: "mimo-session",
+      routeKind: "mimo-token-plan",
+      protocol: "openai-chat",
+      authKind: "api-key",
+    },
     snapshot: {
       scanId: "scan-codex-mimo",
       connectionId: "mimo-session",
       routeKind: "mimo-token-plan",
       modelSelectionMode: "catalog",
       modelId: "mimo-v2.5",
-      capabilityCheckId: null,
-      executionProfile: null,
-      profileVersion: null,
-      methodologyRef: null,
+      capabilityCheckId: "probe-mimo",
+      executionProfile: "portable",
+      profileVersion: "sentinel-codex-security-portable-v1",
+      methodologyRef: "sentinel/codex-security-methodology@v1",
       protocol: "openai-chat",
       authKind: "api-key",
       capturedAt: "2026-08-11T12:00:00.000Z",
@@ -550,31 +562,58 @@ test("Codex Security rejects an injected MiMo plan before launch preparation", (
   }));
 
   let launchPreparationCalls = 0;
-  assert.throws(
-    () => resolveBeforeLaunch({
-      request: {
-        repositoryPath: "/repo",
-        engine: "codex-security",
-        provider: "attacker-provider",
-        model: "attacker-model",
-        authMode: "chatgpt",
-        connection: {
-          connectionId: "mimo-session",
-          modelSelectionMode: "catalog",
-          modelId: "mimo-v2.5",
-        },
+  const result = resolveBeforeLaunch({
+    request: {
+      repositoryPath: "/repo",
+      engine: "codex-security",
+      executionProfilePreference: "portable",
+      provider: "attacker-provider",
+      model: "attacker-model",
+      authMode: "chatgpt",
+      connection: {
+        connectionId: "mimo-session",
+        modelSelectionMode: "catalog",
+        modelId: "mimo-v2.5",
       },
-      scanId: "scan-codex-mimo",
-      launchPlans: fixture.resolver,
-      prepareLaunch: (selection) => {
-        launchPreparationCalls += 1;
-        return selection.request;
+    },
+    scanId: "scan-codex-mimo",
+    launchPlans: fixture.resolver,
+    prepareLaunch: (selection) => {
+      launchPreparationCalls += 1;
+      return selection.request;
+    },
+  });
+  assert.equal(launchPreparationCalls, 1);
+  assert.equal(result.selection.request.provider, "xiaomi");
+  assert.equal(result.selection.request.model, "mimo-v2.5");
+  assert.equal("authMode" in result.selection.request, false);
+  assert.equal(result.selection.plan?.execution?.executionProfile, "portable");
+
+  const forged = resolver(plan({
+    engine: "codex-security",
+    connectionId: "mimo-session",
+    providerKind: "xiaomi",
+    routeKind: "mimo-token-plan",
+    runnerKind: "agent-session",
+    protocol: "openai-chat",
+    model: mimoModel,
+    capabilityCheckId: "browser-forged",
+    execution: null,
+  }));
+  assert.throws(() => resolveScanLaunchSelection({
+    request: {
+      repositoryPath: "/repo",
+      engine: "codex-security",
+      connection: {
+        connectionId: "mimo-session",
+        modelSelectionMode: "catalog",
+        modelId: "mimo-v2.5",
       },
-    }),
-    (error: unknown) =>
-      error instanceof ScanSelectionError && error.code === "provider_runner_unavailable",
-  );
-  assert.equal(launchPreparationCalls, 0);
+    },
+    scanId: "scan-codex-forged",
+    launchPlans: forged.resolver,
+  }), (error: unknown) =>
+    error instanceof ScanSelectionError && error.code === "provider_runner_unavailable");
 });
 
 test("Codex Security keeps the two scoped local session routes launchable", () => {

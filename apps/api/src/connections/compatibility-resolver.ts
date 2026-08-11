@@ -1,5 +1,7 @@
 import type {
   CapabilityReport,
+  CodexSecurityExecutionProfile,
+  CodexSecurityProfilePreference,
   ConnectionCompatibility,
   ProviderConnection,
   ProviderModel,
@@ -7,6 +9,11 @@ import type {
   ScannerEngine,
   ScanConnectionSelection,
 } from "@csb/shared";
+import {
+  PORTABLE_CODEX_SECURITY_METHODOLOGY_REF,
+  PORTABLE_CODEX_SECURITY_PROFILE_VERSION,
+  isPortableCodexSecurityRoute,
+} from "../scanners/portable-codex-security-profile.js";
 export type RunnerKind =
   | "codex-security-contract"
   | "codex-app-server"
@@ -21,6 +28,7 @@ export type CompatibilityReason =
   | "model_not_found"
   | "codex_security_provider_unsupported"
   | "codex_security_gateway_feature_unproven"
+  | "codex_native_contract_unavailable"
   | "capability_probe_missing"
   | "capability_probe_mismatch"
   | "capability_probe_stale"
@@ -55,6 +63,7 @@ export interface CompatibilityInput {
   snapshotReadOnly?: boolean;
   staticAnalysisProfile?: boolean;
   remoteRepositoryConfirmed?: boolean;
+  executionProfilePreference?: CodexSecurityProfilePreference;
 }
 
 export const DEFAULT_CAPABILITY_PROBE_MAX_AGE_MS = 60 * 60 * 1000;
@@ -81,18 +90,17 @@ export function resolveCompatibility(
   if (reasons.length > 0) return blocked(base, unique(reasons));
 
   if (input.engine === "codex-security") {
-    if (isUnprovenCodexSecurityGateway(input.connection)) {
-      return blocked(base, ["codex_security_gateway_feature_unproven"]);
+    const profiles = resolveCodexSecurityProfiles(input);
+    if (!profiles.eligible || profiles.runnerKind === null || profiles.protocol === null) {
+      return blockedWithProfiles(base, profiles);
     }
-    if (!isCodexSecurityRoute(input.connection)) {
-      return blocked(base, ["codex_security_provider_unsupported"]);
-    }
-    return eligible(
-      base,
-      "codex-security-contract",
-      input.connection.protocol,
-      null,
-    );
+    return {
+      ...eligible(base, profiles.runnerKind, profiles.protocol, profiles.capabilityCheckId),
+      selectedProfile: profiles.selectedProfile,
+      availableProfiles: profiles.availableProfiles,
+      profileVersion: profiles.profileVersion,
+      methodologyRef: profiles.methodologyRef,
+    };
   }
 
   if (input.connection.transport === "remote-agent-api") {
@@ -148,6 +156,85 @@ export function resolveCompatibility(
   );
 }
 
+export interface CodexSecurityProfileResolution {
+  eligible: boolean;
+  selectedProfile: CodexSecurityExecutionProfile | null;
+  availableProfiles: CodexSecurityExecutionProfile[];
+  reasons: CompatibilityReason[];
+  runnerKind: RunnerKind | null;
+  protocol: ProviderProtocol | null;
+  capabilityCheckId: string | null;
+  profileVersion: string | null;
+  methodologyRef: string | null;
+}
+
+/**
+ * Resolves execution profile solely from persisted connection, catalog, and
+ * probe facts. It does not read a credential or make a network request.
+ */
+export function resolveCodexSecurityProfiles(
+  input: CompatibilityInput,
+): CodexSecurityProfileResolution {
+  const native = isCodexSecurityRoute(input.connection);
+  const portableReasons = validateAgentProbe(input);
+  const portable = input.connection.transport === "http-inference" &&
+    portableReasons.length === 0 &&
+    isPortableCodexSecurityRoute(input.connection.routeKind, input.connection.protocol);
+  const availableProfiles: CodexSecurityExecutionProfile[] = [
+    ...(native ? ["native" as const] : []),
+    ...(portable ? ["portable" as const] : []),
+  ];
+  const preference = input.executionProfilePreference ?? "auto";
+  const selectedProfile = preference === "native"
+    ? native ? "native" : null
+    : preference === "portable"
+    ? portable ? "portable" : null
+    : native ? "native" : portable ? "portable" : null;
+
+  if (selectedProfile === "native") {
+    return {
+      eligible: true,
+      selectedProfile,
+      availableProfiles,
+      reasons: [],
+      runnerKind: "codex-security-contract",
+      protocol: input.connection.protocol,
+      capabilityCheckId: null,
+      profileVersion: "openai-codex-security-native-v1",
+      methodologyRef: "@openai/codex-security",
+    };
+  }
+  if (selectedProfile === "portable") {
+    return {
+      eligible: true,
+      selectedProfile,
+      availableProfiles,
+      reasons: [],
+      runnerKind: "agent-session",
+      protocol: input.connection.protocol,
+      capabilityCheckId: input.probe!.id,
+      profileVersion: PORTABLE_CODEX_SECURITY_PROFILE_VERSION,
+      methodologyRef: PORTABLE_CODEX_SECURITY_METHODOLOGY_REF,
+    };
+  }
+
+  return {
+    eligible: false,
+    selectedProfile: null,
+    availableProfiles,
+    reasons: preference === "native"
+      ? ["codex_native_contract_unavailable"]
+      : portableReasons.length > 0
+      ? portableReasons
+      : ["codex_security_provider_unsupported"],
+    runnerKind: null,
+    protocol: null,
+    capabilityCheckId: null,
+    profileVersion: null,
+    methodologyRef: null,
+  };
+}
+
 /**
  * Local-agent eligibility is deliberately narrower than local route
  * registration. The defensive execution seam currently reviews only this
@@ -189,20 +276,6 @@ function isCodexSecurityRoute(
     }
   }
   return false;
-}
-
-/**
- * MiMo is proven for Sentinel's OpenAI Chat session, not for the Codex
- * Security multi-agent Responses item `agent_message`.
- */
-function isUnprovenCodexSecurityGateway(
-  connection: ProviderConnection,
-): boolean {
-  return connection.providerKind === "xiaomi" &&
-    connection.routeKind === "mimo-token-plan" &&
-    connection.transport === "http-inference" &&
-    connection.authKind === "api-key" &&
-    connection.protocol === "openai-chat";
 }
 
 function selectionReasons(input: CompatibilityInput): CompatibilityReason[] {
@@ -302,6 +375,19 @@ function blocked(
     runnerKind: null,
     protocol: null,
     capabilityCheckId: null,
+  };
+}
+
+function blockedWithProfiles(
+  selection: ScanConnectionSelection,
+  profiles: CodexSecurityProfileResolution,
+): ResolvedConnectionCompatibility {
+  return {
+    ...blocked(selection, profiles.reasons),
+    selectedProfile: profiles.selectedProfile,
+    availableProfiles: profiles.availableProfiles,
+    profileVersion: profiles.profileVersion,
+    methodologyRef: profiles.methodologyRef,
   };
 }
 

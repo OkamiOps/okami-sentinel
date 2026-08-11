@@ -12,6 +12,7 @@ import {
   type ResolvedConnectionCompatibility,
 } from "./compatibility-resolver.js";
 import { isCodexSecurityApiConnection } from "../scanners/codex-security-api-bridge.js";
+import { isPortableCodexSecurityRoute } from "../scanners/portable-codex-security-profile.js";
 
 export interface ScanCompatibilityStore {
   getConnection(id: string): StoredProviderConnection | null;
@@ -79,10 +80,17 @@ function runnerIsWired(
 ): boolean {
   if (resolved.runnerKind === "remote-agent-job") return false;
   if (input.engine === "codex-security") {
-    return resolved.runnerKind === "codex-security-contract" &&
-      (connection.routeKind === "openai-codex-local" ||
+    if (resolved.runnerKind === "codex-security-contract") {
+      return connection.routeKind === "openai-codex-local" ||
         connection.routeKind === "openai-chatgpt-app-server" ||
-        isCodexSecurityApiConnection(connection));
+        isCodexSecurityApiConnection(connection);
+    }
+    return resolved.runnerKind === "agent-session" &&
+      resolved.selectedProfile === "portable" &&
+      resolved.modelId !== null &&
+      typeof resolved.capabilityCheckId === "string" &&
+      resolved.capabilityCheckId.length > 0 &&
+      isPortableCodexSecurityRoute(connection.routeKind, connection.protocol);
   }
   if (resolved.runnerKind === "codex-app-server") {
     return connection.routeKind === "openai-codex-local" ||
@@ -154,12 +162,24 @@ function copySelection(input: ResolveScanCompatibilityRequest) {
 function publicDecision(
   decision: ResolvedConnectionCompatibility,
 ): ConnectionCompatibility {
+  const profile = decision.selectedProfile === undefined
+    ? {}
+    : {
+      selectedProfile: decision.selectedProfile,
+      availableProfiles: decision.availableProfiles === undefined
+        ? []
+        : [...decision.availableProfiles],
+      profileVersion: decision.profileVersion ?? null,
+      methodologyRef: decision.methodologyRef ?? null,
+      capabilityCheckId: decision.capabilityCheckId ?? null,
+    };
   return {
     connectionId: decision.connectionId,
     modelSelectionMode: decision.modelSelectionMode,
     modelId: decision.modelId,
     eligible: decision.eligible,
     reasons: [...decision.reasons],
+    ...profile,
   };
 }
 

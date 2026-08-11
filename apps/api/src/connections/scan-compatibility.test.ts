@@ -323,7 +323,7 @@ test("advertises Codex Security OpenAI API only after the exact child-env bridge
   assert.deepEqual(result.reasons, []);
 });
 
-test("does not advertise Codex Security when MiMo agent-message support is unproven", () => {
+test("advertises Codex Security Portable only from the persisted, complete MiMo capability probe", () => {
   const resolver = createScanCompatibilityResolver({
     getConnection: () => connection({
       providerKind: "xiaomi",
@@ -337,7 +337,10 @@ test("does not advertise Codex Security when MiMo agent-message support is unpro
       id: "mimo-v2.5",
       displayName: "MiMo V2.5",
     }),
-    getLatestCapabilityCheck: () => null,
+    getLatestCapabilityCheck: () => ({
+      ...probe(),
+      modelId: "mimo-v2.5",
+    }),
     now: () => NOW,
   });
 
@@ -350,6 +353,11 @@ test("does not advertise Codex Security when MiMo agent-message support is unpro
     },
   });
 
-  assert.equal(result.eligible, false);
-  assert.deepEqual(result.reasons, ["codex_security_gateway_feature_unproven"]);
+  assert.equal(result.eligible, true);
+  assert.deepEqual(result.reasons, []);
+  assert.equal(result.selectedProfile, "portable");
+  assert.deepEqual(result.availableProfiles, ["portable"]);
+  assert.equal(result.profileVersion, "sentinel-codex-security-portable-v1");
+  assert.equal(result.methodologyRef, "sentinel/codex-security-methodology@v1");
+  assert.equal(result.capabilityCheckId, "probe-a");
 });

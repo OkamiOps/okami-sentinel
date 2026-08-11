@@ -8,11 +8,28 @@ import type {
   ProviderModel,
   ProviderProtocol,
 } from "@csb/shared";
-import { VISIBLE_CONNECTION_PRESETS } from "@csb/shared";
 
 import { resolveCompatibility } from "./compatibility-resolver.js";
+import {
+  PORTABLE_CODEX_SECURITY_METHODOLOGY_REF,
+  PORTABLE_CODEX_SECURITY_PROFILE_VERSION,
+  createSafePortableCodexSecurityProviderPlan,
+} from "../scanners/portable-codex-security-profile.js";
 
 const NOW = new Date("2026-08-11T12:00:00.000Z");
+
+const PORTABLE_ROUTES = [
+  ["openrouter-api", "openai-chat"],
+  ["gemini-api", "openai-chat"],
+  ["deepseek-api", "openai-chat"],
+  ["mimo-token-plan", "openai-chat"],
+  ["custom-openai-compatible", "openai-chat"],
+  ["anthropic-api", "anthropic-messages"],
+  ["minimax-token-plan", "anthropic-messages"],
+  ["custom-anthropic-compatible", "anthropic-messages"],
+  ["xai-api", "openai-responses"],
+  ["xai-oauth", "xai-oauth-responses"],
+] as const satisfies ReadonlyArray<readonly [string, ProviderProtocol]>;
 
 function capabilities(
   patch: Partial<ModelCapabilities> = {},
@@ -225,7 +242,7 @@ test("VulnHunter additionally requires a read-only snapshot and static profile",
   assert.equal(decision.eligible, false);
 });
 
-test("Codex Security accepts verified OpenAI contracts and blocks unproven MiMo agent messages", () => {
+test("Codex Security resolves the existing OpenAI contracts as Native", () => {
   for (const candidate of [
     connection("openai-codex-local", {
       providerKind: "openai",
@@ -257,128 +274,164 @@ test("Codex Security accepts verified OpenAI contracts and blocks unproven MiMo 
     });
     assert.equal(decision.eligible, true, candidate.routeKind);
     assert.equal(decision.runnerKind, "codex-security-contract");
+    assert.equal(decision.selectedProfile, "native");
+    assert.deepEqual(decision.availableProfiles, ["native"]);
+    assert.equal(decision.capabilityCheckId, null);
   }
-
-  const mimoConnection = connection("mimo-token-plan", {
-    providerKind: "xiaomi",
-    transport: "http-inference",
-    authKind: "api-key",
-    protocol: "openai-chat",
-    credentialRef: "connection/conn-a",
-  });
-  const mimo = resolveCompatibility({
-    engine: "codex-security",
-    connection: mimoConnection,
-    selection: {
-      connectionId: "conn-a",
-      modelSelectionMode: "catalog",
-      modelId: "mimo-v2.5",
-    },
-    model: model("mimo-v2.5"),
-    now: NOW,
-  });
-  assert.equal(mimo.eligible, false);
-  assert.deepEqual(mimo.reasons, ["codex_security_gateway_feature_unproven"]);
-
-  const mimoSpeech = resolveCompatibility({
-    engine: "codex-security",
-    connection: mimoConnection,
-    selection: {
-      connectionId: "conn-a",
-      modelSelectionMode: "catalog",
-      modelId: "mimo-v2.5-asr",
-    },
-    model: model("mimo-v2.5-asr"),
-    now: NOW,
-  });
-  assert.deepEqual(mimoSpeech.reasons, ["codex_security_gateway_feature_unproven"]);
-
-  const xai = resolveCompatibility({
-    engine: "codex-security",
-    connection: connection("xai-oauth", {
-      providerKind: "xai",
-      protocol: "xai-oauth-responses",
-      authKind: "device-code",
-    }),
-    selection: {
-      connectionId: "conn-a",
-      modelSelectionMode: "catalog",
-      modelId: "model-a",
-    },
-    model: model(),
-    now: NOW,
-  });
-  assert.deepEqual(xai.reasons, ["codex_security_provider_unsupported"]);
-
-  const malformedMimo = resolveCompatibility({
-    engine: "codex-security",
-    connection: connection("mimo-token-plan", {
-      providerKind: "xiaomi",
-      protocol: "anthropic-messages",
-      authKind: "api-key",
-    }),
-    selection: {
-      connectionId: "conn-a",
-      modelSelectionMode: "catalog",
-      modelId: "model-a",
-    },
-    model: model(),
-    now: NOW,
-  });
-  assert.deepEqual(malformedMimo.reasons, ["codex_security_provider_unsupported"]);
 });
 
-test("Codex Security rejects every visible non-OpenAI route and malformed OpenAI auth", () => {
-  for (const preset of VISIBLE_CONNECTION_PRESETS.filter(
-    (candidate) => candidate.providerKind !== "openai",
-  )) {
+test("Codex Security resolves every visible Portable route from a fresh complete probe", () => {
+  for (const [routeKind, protocol] of PORTABLE_ROUTES) {
     const decision = resolveCompatibility({
       engine: "codex-security",
-      connection: connection(preset.routeKind, {
-        providerKind: preset.providerKind,
-        transport: preset.transport,
-        authKind: preset.authKind,
-        protocol: preset.protocol,
-      }),
+      connection: connection(routeKind, { protocol }),
       selection: {
         connectionId: "conn-a",
         modelSelectionMode: "catalog",
         modelId: "model-a",
       },
       model: model(),
+      probe: probe(protocol),
       now: NOW,
     });
 
-    assert.equal(decision.eligible, false, preset.id);
+    assert.equal(decision.eligible, true, `${routeKind}/${protocol}`);
+    assert.equal(decision.runnerKind, "agent-session", `${routeKind}/${protocol}`);
+    assert.equal(decision.selectedProfile, "portable", `${routeKind}/${protocol}`);
+    assert.deepEqual(decision.availableProfiles, ["portable"], `${routeKind}/${protocol}`);
+    assert.equal(decision.profileVersion, "sentinel-codex-security-portable-v1");
+    assert.equal(decision.methodologyRef, "sentinel/codex-security-methodology@v1");
+    assert.equal(decision.capabilityCheckId, "probe-a");
   }
+});
+
+test("Codex Security fails closed for unproven Portable routes and never substitutes Portable for Native", () => {
+  const invalidProbes: Array<{
+    name: string;
+    report: (protocol: ProviderProtocol) => CapabilityReport | null;
+    reason: string;
+  }> = [
+    {
+      name: "missing",
+      report: () => null,
+      reason: "capability_probe_missing",
+    },
+    {
+      name: "stale",
+      report: (protocol) => probe(protocol, { checkedAt: "2026-08-11T10:00:00.000Z" }),
+      reason: "capability_probe_stale",
+    },
+    {
+      name: "failed",
+      report: (protocol) => probe(protocol, { status: "failed" }),
+      reason: "capability_probe_failed",
+    },
+    {
+      name: "mismatched",
+      report: (protocol) => probe(protocol, { modelId: "other-model" }),
+      reason: "capability_probe_mismatch",
+    },
+  ];
+
+  for (const [routeKind, protocol] of PORTABLE_ROUTES) {
+    for (const invalid of invalidProbes) {
+      const decision = resolveCompatibility({
+        engine: "codex-security",
+        connection: connection(routeKind, { protocol }),
+        selection: {
+          connectionId: "conn-a",
+          modelSelectionMode: "catalog",
+          modelId: "model-a",
+        },
+        model: model(),
+        probe: invalid.report(protocol),
+        now: NOW,
+      });
+
+      assert.equal(decision.eligible, false, `${routeKind}/${invalid.name}`);
+      assert.deepEqual(decision.reasons, [invalid.reason], `${routeKind}/${invalid.name}`);
+      assert.equal(decision.selectedProfile, null, `${routeKind}/${invalid.name}`);
+    }
+
+    const nativeOnly = resolveCompatibility({
+      engine: "codex-security",
+      connection: connection(routeKind, { protocol }),
+      selection: {
+        connectionId: "conn-a",
+        modelSelectionMode: "catalog",
+        modelId: "model-a",
+      },
+      model: model(),
+      probe: probe(protocol),
+      executionProfilePreference: "native",
+      now: NOW,
+    });
+
+    assert.equal(nativeOnly.eligible, false, `${routeKind}/native`);
+    assert.deepEqual(nativeOnly.reasons, ["codex_native_contract_unavailable"]);
+  }
+});
+
+test("Codex Security does not expose Portable outside its approved tuple matrix", () => {
+  for (const candidate of [
+    ["openai-api", "openai-responses"],
+    ["custom-openai-compatible", "openai-responses"],
+  ] as const satisfies ReadonlyArray<readonly [string, ProviderProtocol]>) {
+    const [routeKind, protocol] = candidate;
+    const decision = resolveCompatibility({
+      engine: "codex-security",
+      connection: connection(routeKind, { protocol }),
+      selection: {
+        connectionId: "conn-a",
+        modelSelectionMode: "catalog",
+        modelId: "model-a",
+      },
+      model: model(),
+      probe: probe(protocol),
+      executionProfilePreference: "portable",
+      now: NOW,
+    });
+    assert.equal(decision.eligible, false, `${routeKind}/${protocol}`);
+    assert.deepEqual(decision.reasons, ["codex_security_provider_unsupported"]);
+  }
+});
+
+test("Portable provider plans copy only a complete, pinned server tuple", () => {
+  const source = {
+    scanId: "scan-a",
+    connectionId: "conn-a",
+    routeKind: "mimo-token-plan",
+    protocol: "openai-chat" as const,
+    modelId: "mimo-v2.5",
+    capabilityCheckId: "probe-a",
+    profileVersion: PORTABLE_CODEX_SECURITY_PROFILE_VERSION,
+    methodologyRef: PORTABLE_CODEX_SECURITY_METHODOLOGY_REF,
+    browserInjected: "must-not-cross-the-boundary",
+  };
+  const safe = createSafePortableCodexSecurityProviderPlan(source);
+
+  assert.deepEqual(safe, {
+    scanId: "scan-a",
+    connectionId: "conn-a",
+    routeKind: "mimo-token-plan",
+    protocol: "openai-chat",
+    modelId: "mimo-v2.5",
+    capabilityCheckId: "probe-a",
+    profileVersion: PORTABLE_CODEX_SECURITY_PROFILE_VERSION,
+    methodologyRef: PORTABLE_CODEX_SECURITY_METHODOLOGY_REF,
+  });
+  assert.notEqual(safe, source);
 
   for (const candidate of [
-    connection("openai-codex-local", {
-      providerKind: "openai",
-      transport: "codex-app-server",
-      authKind: "api-key",
-      protocol: "codex-app-server",
-    }),
-    connection("openai-chatgpt-app-server", {
-      providerKind: "openai",
-      transport: "codex-app-server",
-      authKind: "existing-session",
-      protocol: "codex-app-server",
-    }),
+    { ...source, scanId: "" },
+    { ...source, protocol: "codex-app-server" },
+    { ...source, protocol: "anthropic-messages" },
+    { ...source, routeKind: "openai-api", protocol: "openai-responses" },
+    { ...source, capabilityCheckId: "" },
+    { ...source, profileVersion: "browser-forged" },
+    { ...source, methodologyRef: "browser-forged" },
   ]) {
-    const decision = resolveCompatibility({
-      engine: "codex-security",
-      connection: candidate,
-      selection: {
-        connectionId: "conn-a",
-        modelSelectionMode: "catalog",
-        modelId: "model-a",
-      },
-      model: model(),
-      now: NOW,
-    });
-
-    assert.equal(decision.eligible, false, `${candidate.routeKind}/${candidate.authKind}`);
+    assert.throws(() => createSafePortableCodexSecurityProviderPlan(candidate));
   }
 });
 
