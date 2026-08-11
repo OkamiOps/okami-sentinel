@@ -23,9 +23,11 @@ Please allow time for validation before public disclosure. No response-time SLA 
 ## Security boundaries
 
 - Scanner output, findings, paths, logs, and repository content are untrusted input.
-- The default product is local-first. Data leaves the machine only through an explicitly requested integration such as GitHub Checks or an API-backed GitHub Actions run.
+- The default product is local-first. Starting a scan explicitly authorizes the selected provider connection to receive the prompts and bounded repository evidence required by that methodology. GitHub publication remains a separate explicit action.
 - Operational failures must never become passing security decisions.
-- `OPENAI_API_KEY` is a GitHub Actions secret. The application diagnoses its presence but does not read or persist its value.
+- Provider secrets and OAuth tokens are write-only through the local API and stored through the OS credential vault. SQLite stores opaque credential references, never secret values, and public connection DTOs never return a credential.
+- Scanner manifests, telemetry, SSE events, and persisted logs must pass through the shared redaction boundary. Local subscription children receive a minimal environment rather than the API process environment.
+- Custom compatible endpoints are untrusted configuration. They must pass the fixed URL, transport, redirect, response-size, and capability checks before a model becomes scanner-eligible.
 - Managed scan deletion may remove local scan output; the target and effect must remain explicit in the UI.
 
 ## Sensitive data

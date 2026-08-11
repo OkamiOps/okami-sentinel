@@ -23,9 +23,11 @@ Vor öffentlicher Veröffentlichung muss Zeit für die Validierung bleiben. Sola
 ## Sicherheitsgrenzen
 
 - Scanner-Ausgabe, Findings, Pfade, Logs und Repository-Inhalte sind nicht vertrauenswürdige Eingaben.
-- Das Produkt ist standardmäßig local-first. Daten verlassen den Rechner nur durch ausdrücklich angeforderte Integrationen wie GitHub Checks oder API-gestützte Actions-Läufe.
+- Das Produkt ist standardmäßig local-first. Der Start eines Scans autorisiert die ausgewählte Provider-Verbindung ausdrücklich, die für die Methodik benötigten Prompts und begrenzten Repository-Belege zu empfangen. Eine GitHub-Veröffentlichung bleibt eine separate Aktion.
 - Operative Fehler dürfen nie zu einer positiven Sicherheitsentscheidung werden.
-- `OPENAI_API_KEY` ist ein GitHub-Actions-Secret. Die Anwendung prüft nur die Verfügbarkeit und speichert den Wert nicht.
+- Provider-Secrets und OAuth-Tokens sind über die lokale API nur schreibbar und werden im Credential Vault des Betriebssystems gespeichert. SQLite enthält nur undurchsichtige Referenzen; öffentliche DTOs geben keine Credentials zurück.
+- Scanner-Manifeste, Telemetrie, SSE-Ereignisse und persistierte Logs durchlaufen die gemeinsame Redaktionsgrenze. Lokale Subscription-Prozesse erhalten nur eine minimale Umgebung.
+- Benutzerdefinierte kompatible Endpunkte sind nicht vertrauenswürdige Konfiguration und müssen URL-, Transport-, Redirect-, Größen- und Capability-Prüfungen bestehen, bevor ein Modell für Scans freigegeben wird.
 - Das Löschen verwalteter Scans kann lokale Ausgaben entfernen; Ziel und Wirkung müssen in der UI explizit sein.
 
 Keine echten Secrets, privaten Quellen, vollständigen Scanner-States, Datenbanken oder persönlichen Pfade an öffentliche Issues anhängen. Logs redigieren und nur das kleinste reproduzierbare Artefakt bereitstellen.

@@ -23,9 +23,11 @@ Permita tempo para validação antes da divulgação pública. Enquanto o projet
 ## Fronteiras de segurança
 
 - Saída do scanner, findings, caminhos, logs e conteúdo do repositório são entradas não confiáveis.
-- O produto é local-first. Dados só deixam a máquina por integração explicitamente solicitada, como GitHub Checks ou workflow com API.
+- O produto é local-first. Iniciar um scan autoriza explicitamente a conexão selecionada a receber os prompts e as evidências limitadas do repositório exigidas pela metodologia. Publicar no GitHub continua sendo uma ação separada.
 - Falhas operacionais nunca podem virar decisões de segurança aprovadas.
-- `OPENAI_API_KEY` é um secret do GitHub Actions. A aplicação verifica a presença, mas não lê nem persiste o valor.
+- Secrets de providers e tokens OAuth são write-only na API local e ficam no cofre de credenciais do sistema operacional. O SQLite guarda apenas referências opacas e os DTOs públicos nunca retornam credenciais.
+- Manifests, telemetria, SSE e logs persistidos passam pela fronteira compartilhada de redação. Processos locais por assinatura recebem um ambiente mínimo.
+- Endpoints compatíveis customizados são configuração não confiável e precisam passar pelas validações de URL, transporte, redirect, tamanho e capacidade antes de liberar um modelo para scan.
 - A exclusão gerenciada pode remover saída local do scan; alvo e efeito devem permanecer explícitos na interface.
 
 Nunca anexe secrets reais, código privado, state completo, bancos ou caminhos pessoais em issues públicas. Redija logs e forneça o menor artefato capaz de reproduzir o problema.
