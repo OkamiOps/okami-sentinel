@@ -147,6 +147,53 @@ export function createRemoteAgentJobRunner(
     deps.requestTimeoutMs ?? REMOTE_AGENT_JOB_REQUEST_TIMEOUT_MS,
     REMOTE_AGENT_JOB_REQUEST_TIMEOUT_MS,
   );
+  const cancelWithBudget = async (
+    remoteJobId: string,
+    parentSignal: AbortSignal | undefined,
+    timeoutMs: number,
+    reconcileConflict: boolean,
+  ): Promise<{ remote: boolean }> => {
+    const job = requiredJob(remoteJobId, jobs);
+    const connection = cursorBackgroundConnection(job.connectionId, deps.connections);
+    const request = createRequestScope(parentSignal, timeoutMs);
+    try {
+      const apiKey = await awaitWithin(readApiKey(connection, deps.vault), request.signal);
+      try {
+        await awaitWithin(deps.api.cancel({
+          agentId: job.agentId,
+          runId: job.runId,
+          apiKey,
+          signal: request.signal,
+        }), request.signal);
+      } catch (error) {
+        if (!isRunNotCancellable(error) || !reconcileConflict || request.signal.aborted) throw error;
+        // Reconciliation shares this exact bounded request scope. A cleanup
+        // race must never buy a fresh full request timeout after cancellation.
+        const finalStatus = await readRemoteStatus(deps.api, job, apiKey, request.signal);
+        if (!finalStatus.terminal) throw new RemoteAgentJobError("provider_unreachable");
+        jobs.update(job.remoteJobId, finalStatus.status);
+        return { remote: false };
+      }
+      jobs.update(job.remoteJobId, "cancelled");
+      return { remote: true };
+    } catch (error) {
+      throw normalizeRemoteError(error);
+    } finally {
+      request.dispose();
+    }
+  };
+  const scheduleTerminalCleanup = (remoteJobId: string, deadlineAt: number): void => {
+    const remainingMs = Math.max(0, deadlineAt - now());
+    const cleanupBudgetMs = Math.max(1, Math.min(requestTimeoutMs, remainingMs));
+    // This is intentionally detached. Once the lifecycle is terminal, that
+    // result wins; a provider that ignores AbortSignal cannot extend it.
+    consumeLate(cancelWithBudget(
+      remoteJobId,
+      undefined,
+      cleanupBudgetMs,
+      remainingMs > 0,
+    ));
+  };
 
   return {
     async create(input) {
@@ -198,32 +245,7 @@ export function createRemoteAgentJobRunner(
     },
 
     async cancel(remoteJobId, signal) {
-      const job = requiredJob(remoteJobId, jobs);
-      const connection = cursorBackgroundConnection(job.connectionId, deps.connections);
-      const request = createRequestScope(signal, requestTimeoutMs);
-      try {
-        const apiKey = await awaitWithin(readApiKey(connection, deps.vault), request.signal);
-        try {
-          await awaitWithin(deps.api.cancel({
-            agentId: job.agentId,
-            runId: job.runId,
-            apiKey,
-            signal: request.signal,
-          }), request.signal);
-        } catch (error) {
-          if (!isRunNotCancellable(error)) throw error;
-          const finalStatus = await readRemoteStatus(deps.api, job, apiKey, request.signal);
-          if (!finalStatus.terminal) throw new RemoteAgentJobError("provider_unreachable");
-          jobs.update(job.remoteJobId, finalStatus.status);
-          return { remote: false };
-        }
-        jobs.update(job.remoteJobId, "cancelled");
-        return { remote: true };
-      } catch (error) {
-        throw normalizeRemoteError(error);
-      } finally {
-        request.dispose();
-      }
+      return cancelWithBudget(remoteJobId, signal, requestTimeoutMs, true);
     },
 
     async waitForTerminal(remoteJobId, input) {
@@ -234,7 +256,8 @@ export function createRemoteAgentJobRunner(
         for (;;) {
           const terminalCode = terminalCondition(input.signal, lifecycle, now() >= deadlineAt);
           if (terminalCode !== null) {
-            await cancelAfterTerminalCondition(remoteJobId, this.cancel, terminalCode);
+            scheduleTerminalCleanup(remoteJobId, deadlineAt);
+            throw new RemoteAgentJobError(terminalCode);
           }
 
           try {
@@ -243,7 +266,8 @@ export function createRemoteAgentJobRunner(
           } catch (error) {
             const terminalCodeAfterStatus = terminalCondition(input.signal, lifecycle, now() >= deadlineAt);
             if (terminalCodeAfterStatus !== null) {
-              await cancelAfterTerminalCondition(remoteJobId, this.cancel, terminalCodeAfterStatus);
+              scheduleTerminalCleanup(remoteJobId, deadlineAt);
+              throw new RemoteAgentJobError(terminalCodeAfterStatus);
             }
             throw normalizeRemoteError(error);
           }
@@ -253,7 +277,8 @@ export function createRemoteAgentJobRunner(
           } catch (error) {
             const terminalCodeAfterSleep = terminalCondition(input.signal, lifecycle, now() >= deadlineAt);
             if (terminalCodeAfterSleep !== null) {
-              await cancelAfterTerminalCondition(remoteJobId, this.cancel, terminalCodeAfterSleep);
+              scheduleTerminalCleanup(remoteJobId, deadlineAt);
+              throw new RemoteAgentJobError(terminalCodeAfterSleep);
             }
             throw normalizeRemoteError(error);
           }
@@ -528,19 +553,6 @@ function terminalCondition(
   if (parent.aborted) return "remote_job_cancelled";
   if (deadlineReached || lifecycle.signal.aborted) return "remote_job_deadline_exceeded";
   return null;
-}
-
-async function cancelAfterTerminalCondition(
-  remoteJobId: string,
-  cancel: (id: string) => Promise<{ remote: boolean }>,
-  code: "remote_job_cancelled" | "remote_job_deadline_exceeded",
-): Promise<never> {
-  try {
-    await cancel(remoteJobId);
-  } catch {
-    // The lifecycle terminal condition is more useful than a retryable cancel failure.
-  }
-  throw new RemoteAgentJobError(code);
 }
 
 function positiveBoundedInteger(value: unknown, maximum: number): number {

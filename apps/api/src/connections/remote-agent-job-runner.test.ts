@@ -174,6 +174,7 @@ test("Cursor Background cancels the remote v1 run when polling is aborted or rea
       error.code === "remote_job_deadline_exceeded",
   );
 
+  await waitFor(() => api.cancelCalls === 1, 50);
   assert.equal(api.cancelCalls, 1);
   assert.equal(JSON.stringify(api.safeCalls).includes("cursor-secret"), false);
 });
@@ -239,6 +240,7 @@ test("Cursor Background sends a remote cancellation when an active polling signa
   );
 
   assert.equal(api.statusCalls, 0);
+  await waitFor(() => api.cancelCalls === 1, 50);
   assert.equal(api.cancelCalls, 1);
 });
 
@@ -287,6 +289,88 @@ test("Cursor Background bounds an ignored status and ignored cancellation after 
   assert.equal(statusSignal instanceof AbortSignal, true);
   assert.equal(cancelSignal instanceof AbortSignal, true);
   assert.equal(api.cancelCalls, 1);
+});
+
+test("Cursor Background returns its deadline without awaiting an ignored cleanup cancel", async () => {
+  const vault = fakeVault({ apiKey: "cursor-secret" });
+  const api = fakeCursorApi();
+  api.status = async () => {
+    api.statusCalls += 1;
+    return new Promise(() => {});
+  };
+  api.cancel = async () => {
+    api.cancelCalls += 1;
+    return new Promise(() => {});
+  };
+  const runner = createRemoteAgentJobRunner({
+    vault,
+    connections: fakeConnections(),
+    models: fakeModels(),
+    api,
+  });
+  const created = await runner.create({
+    connectionId: "cursor-bg",
+    repositoryUrl: "https://github.com/acme/repository",
+    branch: "main",
+    confirmed: true,
+    instructions: "Review the repository.",
+    modelId: "account-visible",
+    signal: new AbortController().signal,
+  });
+
+  const outcome = await settleWithin(
+    runner.waitForTerminal(created.remoteJobId, {
+      signal: new AbortController().signal,
+      deadlineMs: 5,
+      pollIntervalMs: 1,
+    }),
+    100,
+  );
+
+  assert.equal(outcome, "remote_job_deadline_exceeded");
+  await waitFor(() => api.cancelCalls === 1, 50);
+  assert.equal(api.cancelCalls, 1);
+});
+
+test("Cursor Background skips 409 reconciliation when terminal cleanup has no remaining budget", async () => {
+  const vault = fakeVault({ apiKey: "cursor-secret" });
+  const api = fakeCursorApi();
+  api.status = async () => {
+    api.statusCalls += 1;
+    return new Promise(() => {});
+  };
+  api.cancel = async () => {
+    api.cancelCalls += 1;
+    throw { code: "run_not_cancellable" };
+  };
+  const runner = createRemoteAgentJobRunner({
+    vault,
+    connections: fakeConnections(),
+    models: fakeModels(),
+    api,
+  });
+  const created = await runner.create({
+    connectionId: "cursor-bg",
+    repositoryUrl: "https://github.com/acme/repository",
+    branch: "main",
+    confirmed: true,
+    instructions: "Review the repository.",
+    modelId: "account-visible",
+    signal: new AbortController().signal,
+  });
+
+  const outcome = await settleWithin(
+    runner.waitForTerminal(created.remoteJobId, {
+      signal: new AbortController().signal,
+      deadlineMs: 5,
+      pollIntervalMs: 1,
+    }),
+    100,
+  );
+
+  assert.equal(outcome, "remote_job_deadline_exceeded");
+  await waitFor(() => api.cancelCalls === 1, 50);
+  assert.equal(api.statusCalls, 1);
 });
 
 test("Cursor Background reconciles a 409 cancel race through the final run state", async () => {
@@ -463,4 +547,12 @@ async function settleWithin(promise: Promise<unknown>, timeoutMs: number): Promi
     ),
     new Promise<string>((resolve) => setTimeout(() => resolve("test_timeout"), timeoutMs)),
   ]);
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("Timed out waiting for asynchronous cleanup");
+    await new Promise<void>((resolve) => setTimeout(resolve, 1));
+  }
 }
