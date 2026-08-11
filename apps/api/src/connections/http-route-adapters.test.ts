@@ -497,6 +497,25 @@ test("an exhausted HTTP probe deadline records provider_unreachable instead of p
   assert.equal(result.report.errorCode, "provider_unreachable");
 });
 
+test("an explicitly cancelled HTTP probe propagates without creating a failed report", async () => {
+  const selection: ScanConnectionSelection = {
+    connectionId: "conn-a",
+    modelSelectionMode: "catalog",
+    modelId: "account-visible",
+  };
+
+  await assert.rejects(
+    probeHttpRoute(connection("minimax-token-plan"), selection, {
+      vault: fakeVault({ apiKey: "minimax-secret" }),
+      selectedModel: model("conn-a", "account-visible"),
+      probeSession: async () => {
+        throw new AgentSessionError("agent_cancelled");
+      },
+    }),
+    { code: "agent_cancelled" },
+  );
+});
+
 test("probe keeps the bundle redactor active through the complete session callback", async () => {
   const activeScopes = new Map<string, readonly string[]>();
   const redactor = {

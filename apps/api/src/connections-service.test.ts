@@ -24,6 +24,7 @@ import {
   validateScanConnectionSelection,
 } from "./connections-service.js";
 import { createLocalRuntimeAdapter } from "./connections/local-runtime-adapters.js";
+import { AgentSessionError } from "./agent/session-types.js";
 import {
   createRouteRegistry,
   type RouteManifest,
@@ -119,6 +120,28 @@ class FakeCatalog implements ConnectionCatalogStore {
   writeCapabilityCheck(report: unknown) {
     this.reports.push(report);
   }
+}
+
+function catalogModel(connectionId: string, id: string): ProviderModel {
+  return {
+    connectionId,
+    id,
+    displayName: id,
+    contextWindow: null,
+    capabilities: {
+      tools: "unknown",
+      artifactOutput: "unknown",
+      structuredOutput: "unknown",
+      boundedExecution: "unknown",
+      osIsolation: "unknown",
+      streaming: "unknown",
+      usage: "unknown",
+      cancellation: "unknown",
+    },
+    pricing: null,
+    discoveredAt: "2026-08-11T00:00:00.000Z",
+    source: "provider-api",
+  };
 }
 
 function runtimeRoute(
@@ -581,6 +604,48 @@ test("refresh persists only models returned by the selected route and marks an e
     const degraded = await degradedService.refreshModels(created.id);
     assert.equal(degraded?.discovery.safeError?.code, "model_discovery_unsupported");
     assert.deepEqual(catalog.stale, [created.id]);
+  } finally {
+    db.close();
+  }
+});
+
+test("a cancelled probe never persists a capability report after adapter cancellation", async () => {
+  const db = new Database(":memory:");
+  try {
+    const catalog = new FakeCatalog();
+    const controller = new AbortController();
+    let observedSignal: AbortSignal | undefined;
+    const adapter = runtimeRoute({
+      routeKind: "openai-api",
+      transport: "http-inference",
+      protocol: "openai-responses",
+      async probe(_connection, _selection, options) {
+        observedSignal = options?.signal;
+        controller.abort();
+        throw new AgentSessionError("agent_cancelled");
+      },
+    });
+    const service = createConnectionsService({
+      vault: new FakeVault(),
+      store: storeFor(db),
+      catalog,
+      routes: testRouteRegistry({ adapter, providerKind: "openai", authKinds: ["api-key"] }),
+    });
+    const connection = await service.create(apiConnectionInput());
+    catalog.models.set(connection.id, [catalogModel(connection.id, "account-visible")]);
+
+    await assert.rejects(
+      service.probe(connection.id, {
+        connectionId: connection.id,
+        modelSelectionMode: "catalog",
+        modelId: "account-visible",
+      }, { signal: controller.signal }),
+      { code: "agent_cancelled" },
+    );
+
+    assert.equal(observedSignal, controller.signal);
+    assert.deepEqual(catalog.reports, []);
+    assert.equal(getConnection(connection.id, db)?.lastTestedAt, null);
   } finally {
     db.close();
   }

@@ -12,6 +12,7 @@ import {
   type ScanConnectionSelection,
 } from "@csb/shared";
 import type { StoredProviderConnection } from "../connections-store.js";
+import { AgentSessionError } from "../agent/session-types.js";
 import {
   VaultError,
   type ConnectionSecretBundle,
@@ -405,6 +406,9 @@ export async function probeHttpRoute(
       now: deps.now,
     });
   } catch (error) {
+    // Caller cancellation is control flow, not a provider capability fact.
+    // Let ConnectionsService's live-signal gate suppress persistence.
+    if (error instanceof AgentSessionError && error.code === "agent_cancelled") throw error;
     return createHttpProbeResult({
       connectionId: connection.id,
       protocol: metadata.protocol,
