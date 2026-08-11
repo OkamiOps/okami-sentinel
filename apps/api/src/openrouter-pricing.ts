@@ -1,4 +1,4 @@
-import type { ScanCost, ScanRun } from "@csb/shared";
+import type { ModelPricing, ScanCost, ScanRun } from "@csb/shared";
 
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 const PRICING_TTL_MS = 6 * 60 * 60 * 1000;
@@ -45,6 +45,14 @@ interface PricingResolution {
   model: OpenRouterModel;
   pricingMatch: "exact" | "catalog-unique" | "approved-alias";
   pricingAliasId?: string;
+}
+
+export interface OpenRouterLaunchPricingResolution {
+  modelId: string;
+  pricing: ModelPricing;
+  pricingMatch: PricingResolution["pricingMatch"];
+  pricingAliasId?: string;
+  pricingUpdatedAt: string;
 }
 
 const approvedModelAliases = [
@@ -147,6 +155,50 @@ function openRouterModelId(run: ScanRun): string | null {
     return model;
   }
   return `${namespace}/${model}`;
+}
+
+/**
+ * Resolves a launch-time rate without reaching the network. A compatible
+ * gateway may use an exact qualified model id or one unambiguous suffix; every
+ * other tuple fails closed instead of borrowing another vendor's rate.
+ */
+export function resolveOpenRouterLaunchPricing(
+  input: { providerKind: string; routeKind: string; modelId: string },
+  models: OpenRouterModel[] = catalog.models,
+  pricingUpdatedAt = catalog.updatedAt,
+): OpenRouterLaunchPricingResolution | null {
+  const compatibleGateway = input.providerKind === "openrouter" ||
+    input.providerKind === "custom" || input.routeKind.startsWith("custom-");
+  const namespace = openRouterProviderNamespace(input.providerKind);
+  const modelId = qualifiedOpenRouterModelId(input.modelId, namespace, compatibleGateway);
+  if (modelId === null) return null;
+  const resolution = resolvePricing(modelId, models, compatibleGateway);
+  if (resolution === null) return null;
+  const snapshot = pricingSnapshot(resolution.model.pricing, pricingUpdatedAt);
+  return {
+    modelId: resolution.model.id,
+    pricing: {
+      inputUsdPerMillionTokens: snapshot.inputUsdPerMillionTokens,
+      cachedInputUsdPerMillionTokens: snapshot.cachedInputUsdPerMillionTokens,
+      cacheWriteInputUsdPerMillionTokens: snapshot.cacheWriteInputUsdPerMillionTokens,
+      outputUsdPerMillionTokens: snapshot.outputUsdPerMillionTokens,
+    },
+    pricingMatch: resolution.pricingMatch,
+    ...(resolution.pricingAliasId === undefined
+      ? {}
+      : { pricingAliasId: resolution.pricingAliasId }),
+    pricingUpdatedAt,
+  };
+}
+
+function qualifiedOpenRouterModelId(
+  modelId: string,
+  namespace: string,
+  compatibleGateway: boolean,
+): string | null {
+  if (!modelId.includes("/")) return `${namespace}/${modelId}`;
+  const declaredNamespace = modelId.slice(0, modelId.indexOf("/")).toLowerCase();
+  return compatibleGateway || declaredNamespace === namespace.toLowerCase() ? modelId : null;
 }
 
 function resolvePricing(

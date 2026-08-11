@@ -35,6 +35,7 @@ export type PortableCodexSecurityStageErrorCode =
   | "agent_input_byte_limit"
   | "agent_output_byte_limit"
   | "agent_time_limit"
+  | "cost_limit_reached"
   | "stage_evidence_incomplete"
   | "stage_artifact_invalid"
   | "agent_session_failed"
@@ -61,7 +62,7 @@ export interface PortableCodexSecurityStageObservationInput {
   signal?: AbortSignal;
   onEvent?: (safeEvent: string) => void;
   /** Persists usage as it arrives so a later stage failure cannot erase it. */
-  onUsage?: (usage: ScannerUsage) => void;
+  onUsage?: (usage: ScannerUsage) => boolean | void;
 }
 
 export interface PortableCodexSecurityStageObservation {
@@ -212,6 +213,7 @@ export async function observePortableCodexSecurityStage(
   let artifactEvents = 0;
   let completion: Record<string, unknown> | null = null;
   let usage = input.usage;
+  let stoppedByBudget = false;
   const iterator = input.session.run()[Symbol.asyncIterator]();
 
   try {
@@ -241,7 +243,10 @@ export async function observePortableCodexSecurityStage(
           break;
         case "usage":
           usage = addPortableCodexSecurityUsage(usage, event.usage);
-          input.onUsage?.(usage);
+          if (input.onUsage?.(usage) === false) {
+            stoppedByBudget = true;
+            throw new PortableCodexSecurityStageError("cost_limit_reached");
+          }
           break;
         case "completion":
           if (completion !== null || !isStructuredCompletion(event.structured, input.stage)) {
@@ -261,7 +266,7 @@ export async function observePortableCodexSecurityStage(
     if (error instanceof PortableCodexSecurityStageError) throw error;
     throw new PortableCodexSecurityStageError(input.signal?.aborted ? "agent_cancelled" : "agent_session_failed");
   } finally {
-    if (input.signal?.aborted) {
+    if (input.signal?.aborted || stoppedByBudget) {
       void iterator.return?.().catch(() => undefined);
     }
   }

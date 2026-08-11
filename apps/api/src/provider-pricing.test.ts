@@ -259,6 +259,27 @@ test("uses exact provider catalog pricing for a compatible API and refuses unkno
   }), null);
 });
 
+test("freezes an exact OpenRouter catalog fallback for an otherwise unpriced compatible model", () => {
+  const quote = resolveScannerPricingQuote({
+    connectionId: "custom-connection",
+    providerKind: "custom",
+    routeKind: "custom-openai-compatible",
+    protocol: "openai-chat",
+    modelId: "openai/gpt-5.3-codex",
+    modelPricing: null,
+    capturedAt: CAPTURED_AT,
+  });
+
+  assert.equal(quote?.pricingSource, "openrouter");
+  assert.equal(quote?.modelId, "openai/gpt-5.3-codex");
+  assert.equal(quote?.pricingModelId, "openai/gpt-5.3-codex");
+  assert.equal(quote?.pricingMatch, "exact");
+  assert.equal(quote?.pricingBasis, "payg-equivalent");
+  assert.equal(quote?.billingMode, "unknown");
+  assert.equal(quote?.inputUsdPerMillionTokens, 1.75);
+  assert.equal(quote?.outputUsdPerMillionTokens, 14);
+});
+
 test("fails closed when aggregated usage cannot prove the official per-request tier", () => {
   const quote = resolveScannerPricingQuote({
     connectionId: "xai-connection",

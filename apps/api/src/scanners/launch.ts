@@ -158,21 +158,53 @@ function recipeHash(input: {
     .digest("hex");
 }
 
-const PORTABLE_STANDARD_LIMITS: PortableCodexSecurityExecutionLimits = {
-  totalTimeoutMs: 900_000,
-  maxModelTurns: 24,
-  maxToolCalls: 96,
+const PORTABLE_LIMIT_BYTES = {
   maxInputBytes: 67_108_864,
   maxOutputBytes: 1_048_576,
+} as const;
+
+type PortableExecutionBudgetTier = "constrained" | "balanced" | "extended" | "maximum";
+
+const PORTABLE_EXECUTION_LIMITS: Record<
+  ScanMode,
+  Record<PortableExecutionBudgetTier, Omit<PortableCodexSecurityExecutionLimits, keyof typeof PORTABLE_LIMIT_BYTES>>
+> = {
+  standard: {
+    constrained: { totalTimeoutMs: 1_200_000, maxModelTurns: 24, maxToolCalls: 96 },
+    balanced: { totalTimeoutMs: 1_800_000, maxModelTurns: 32, maxToolCalls: 128 },
+    extended: { totalTimeoutMs: 2_700_000, maxModelTurns: 48, maxToolCalls: 192 },
+    maximum: { totalTimeoutMs: 3_600_000, maxModelTurns: 64, maxToolCalls: 256 },
+  },
+  deep: {
+    constrained: { totalTimeoutMs: 1_800_000, maxModelTurns: 48, maxToolCalls: 192 },
+    balanced: { totalTimeoutMs: 2_700_000, maxModelTurns: 64, maxToolCalls: 256 },
+    extended: { totalTimeoutMs: 3_600_000, maxModelTurns: 96, maxToolCalls: 384 },
+    maximum: { totalTimeoutMs: 5_400_000, maxModelTurns: 128, maxToolCalls: 512 },
+  },
 };
 
-const PORTABLE_DEEP_LIMITS: PortableCodexSecurityExecutionLimits = {
-  totalTimeoutMs: 1_800_000,
-  maxModelTurns: 48,
-  maxToolCalls: 192,
-  maxInputBytes: 67_108_864,
-  maxOutputBytes: 1_048_576,
-};
+/**
+ * Portable budgets scale only from the declared effort semantic, never from a
+ * provider or model identifier. Unknown provider-defined efforts retain the
+ * balanced envelope instead of being silently treated as a low-effort model.
+ */
+export function resolvePortableCodexSecurityExecutionLimits(
+  mode: ScanMode,
+  effort: string | null,
+): PortableCodexSecurityExecutionLimits {
+  const normalized = effort?.trim().toLowerCase();
+  const tier: PortableExecutionBudgetTier = normalized === "minimal" || normalized === "low"
+    ? "constrained"
+    : normalized === "xhigh"
+    ? "extended"
+    : normalized === "max" || normalized === "ultra"
+    ? "maximum"
+    : "balanced";
+  return {
+    ...PORTABLE_EXECUTION_LIMITS[mode][tier],
+    ...PORTABLE_LIMIT_BYTES,
+  };
+}
 
 const CODEX_SECURITY_EFFORT_FLAG_VALUES = new Set([
   "minimal",
@@ -199,6 +231,14 @@ const CODEX_SECURITY_REASONING_SUMMARY_OVERRIDES = [
 export function preparePortableCodexSecurityLaunch(
   input: PortableCodexSecurityLaunchInput,
 ): ScannerLaunch {
+  const requestedCostCeiling = input.request.maxCostUsd;
+  if (
+    requestedCostCeiling !== undefined &&
+    (!Number.isFinite(requestedCostCeiling) || requestedCostCeiling <= 0 || input.pricingQuote === null ||
+      input.pricingQuote === undefined)
+  ) {
+    throw new Error("cost_budget_unavailable");
+  }
   const configuration: PortableCodexSecurityWorkerConfiguration = {
     outputDir: input.outputDir,
     repositoryPath: input.repositoryPath,
@@ -208,8 +248,11 @@ export function preparePortableCodexSecurityLaunch(
     providerPlan: {
       ...input.portableCodexSecurityProviderPlan,
     },
-    limits: input.mode === "deep" ? { ...PORTABLE_DEEP_LIMITS } : { ...PORTABLE_STANDARD_LIMITS },
+    limits: resolvePortableCodexSecurityExecutionLimits(input.mode, input.effort),
     ...(input.effort === null ? {} : { reasoningEffort: input.effort }),
+    ...(requestedCostCeiling === undefined
+      ? {}
+      : { costBudget: { maxCostUsd: requestedCostCeiling, pricing: input.pricingQuote! } }),
   };
   // This happens before the child can make its first provider call. Reconcile
   // reads only this immutable local snapshot, never a current provider catalog.

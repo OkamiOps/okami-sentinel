@@ -5,8 +5,10 @@ import { globalSecretRedactor } from "../redaction.js";
 import {
   PortableCodexSecurityRunnerError,
   runPortableCodexSecurity,
+  type PortableCodexSecurityCostBudget,
   type PortableCodexSecurityWorkerConfiguration,
 } from "./portable-codex-security-http-runner.js";
+import { isFrozenScannerPricing } from "../model-pricing.js";
 import { createSafePortableCodexSecurityProviderPlan } from "./portable-codex-security-profile.js";
 
 const MAX_CONFIG_BYTES = 128 * 1024;
@@ -42,6 +44,9 @@ export function readPortableCodexSecurityWorkerConfiguration(
       providerPlan: createSafePortableCodexSecurityProviderPlan(parsed.providerPlan),
       limits: parsed.limits as unknown as PortableCodexSecurityWorkerConfiguration["limits"],
       ...(parsed.reasoningEffort === undefined ? {} : { reasoningEffort: parsed.reasoningEffort }),
+      ...(parsed.costBudget === undefined
+        ? {}
+        : { costBudget: parsed.costBudget as PortableCodexSecurityCostBudget }),
     };
   } catch {
     throw new PortableCodexSecurityRunnerError("provider_plan_invalid");
@@ -132,9 +137,10 @@ function isConfigurationShape(value: unknown): value is Record<string, unknown> 
   providerPlan: unknown;
   limits: Record<string, unknown>;
   reasoningEffort?: string;
+  costBudget?: { maxCostUsd: number; pricing: unknown };
 } {
   if (!isRecord(value) || !onlyKeys(value, [
-    "outputDir", "repositoryPath", "paths", "sourceRef", "mode", "providerPlan", "limits", "reasoningEffort",
+    "outputDir", "repositoryPath", "paths", "sourceRef", "mode", "providerPlan", "limits", "reasoningEffort", "costBudget",
   ])) return false;
   if (
     !safeText(value.outputDir, 4_096) ||
@@ -151,9 +157,16 @@ function isConfigurationShape(value: unknown): value is Record<string, unknown> 
     !Object.values(value.limits).every((item) =>
       typeof item === "number" && Number.isSafeInteger(item) && item > 0,
     ) ||
-    (value.reasoningEffort !== undefined && !safeText(value.reasoningEffort, 64))
+    (value.reasoningEffort !== undefined && !safeText(value.reasoningEffort, 64)) ||
+    (value.costBudget !== undefined && !validCostBudget(value.costBudget))
   ) return false;
   return true;
+}
+
+function validCostBudget(value: unknown): value is { maxCostUsd: number; pricing: unknown } {
+  return isRecord(value) && onlyKeys(value, ["maxCostUsd", "pricing"]) &&
+    typeof value.maxCostUsd === "number" && Number.isFinite(value.maxCostUsd) &&
+    value.maxCostUsd > 0 && isFrozenScannerPricing(value.pricing);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

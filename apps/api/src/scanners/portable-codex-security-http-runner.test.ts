@@ -21,6 +21,7 @@ import type { XaiOAuthFlow } from "../connections/xai-oauth-flow.js";
 import {
   PortableCodexSecurityRunnerError,
   runPortableCodexSecurity,
+  type PortableCodexSecurityCostBudget,
   type PortableCodexSecurityWorkerConfiguration,
 } from "./portable-codex-security-http-runner.js";
 import {
@@ -160,6 +161,34 @@ function configuration(
       maxInputBytes: 65_536,
       maxOutputBytes: 65_536,
     },
+  };
+}
+
+function costBudget(
+  patch: Partial<PortableCodexSecurityCostBudget> = {},
+): PortableCodexSecurityCostBudget {
+  return {
+    maxCostUsd: 0.5,
+    pricing: {
+      currency: "USD",
+      capturedAt: NOW.toISOString(),
+      modelId: "model-a",
+      inputUsdPerMillionTokens: 1,
+      cachedInputUsdPerMillionTokens: 0,
+      cacheWriteInputUsdPerMillionTokens: 0,
+      outputUsdPerMillionTokens: 1,
+      connectionId: "connection-a",
+      providerKind: "custom",
+      routeKind: "custom-openai-compatible",
+      protocol: "openai-chat",
+      pricingSource: "provider-catalog",
+      pricingBasis: "payg-equivalent",
+      billingMode: "unknown",
+      pricingRateCardId: null,
+      rateCardUpdatedAt: NOW.toISOString(),
+      maximumInputTokensInclusive: null,
+    },
+    ...patch,
   };
 }
 
@@ -562,6 +591,87 @@ test("Portable Codex Security persists usage emitted by a stage before it fails"
       cacheWriteInputTokens: 0,
       outputTokens: 1_989,
     });
+  } finally {
+    remove(root);
+  }
+});
+
+test("Portable Codex Security rejects an unavailable usage meter before reading the vault when a ceiling is requested", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-cost-usage-preflight-"));
+  const config = configuration(root);
+  config.costBudget = costBudget();
+  let vaultReads = 0;
+  let sessions = 0;
+  try {
+    await assert.rejects(
+      runPortableCodexSecurity(config, dependencies({
+        getLatestCapabilityCheck: () => report({
+          capabilities: { ...CAPABILITIES, usage: "unsupported" },
+        }),
+        vault: {
+          get: async () => {
+            vaultReads += 1;
+            return { apiKey: "must-not-read" };
+          },
+        },
+        createSession: async () => {
+          sessions += 1;
+          throw new Error("must-not-start");
+        },
+      })),
+      (error: unknown) => error instanceof PortableCodexSecurityRunnerError &&
+        error.code === "cost_budget_unavailable",
+    );
+    assert.equal(vaultReads, 0);
+    assert.equal(sessions, 0);
+  } finally {
+    remove(root);
+  }
+});
+
+test("Portable Codex Security stops before the next agent event when the frozen cost ceiling is reached", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-cost-limit-"));
+  const config = configuration(root);
+  config.costBudget = costBudget();
+  let sessions = 0;
+  let cancelCalls = 0;
+  let eventsAfterUsage = 0;
+  try {
+    await assert.rejects(
+      runPortableCodexSecurity(config, dependencies({
+        createSession: async () => {
+          sessions += 1;
+          return {
+            async *run() {
+              yield {
+                type: "usage",
+                usage: {
+                  inputTokens: 1_000_000,
+                  cachedInputTokens: 0,
+                  cacheWriteInputTokens: 0,
+                  outputTokens: 0,
+                  reasoningTokens: null,
+                },
+              } as const;
+              eventsAfterUsage += 1;
+              yield { type: "tool", phase: "requested", callId: "must-not-run", name: "workspace.read" } as const;
+            },
+            async cancel() { cancelCalls += 1; return { remote: false }; },
+          };
+        },
+      })),
+      (error: unknown) => error instanceof PortableCodexSecurityRunnerError &&
+        error.code === "cost_limit_reached",
+    );
+    assert.equal(sessions, 1);
+    assert.equal(cancelCalls, 1);
+    assert.equal(eventsAfterUsage, 0);
+    const runtime = JSON.parse(fs.readFileSync(
+      path.join(config.outputDir, "portable-codex-security-runtime.json"),
+      "utf8",
+    )) as { usage: { inputTokens: number }; error: string };
+    assert.equal(runtime.usage.inputTokens, 1_000_000);
+    assert.equal(runtime.error, "cost_limit_reached");
   } finally {
     remove(root);
   }

@@ -6,6 +6,7 @@ import {
   scannerPricingQuoteMatchesRun,
   type FrozenScannerPricing,
 } from "./model-pricing.js";
+import { resolveOpenRouterLaunchPricing } from "./openrouter-pricing.js";
 import type { ScannerUsage } from "./scanners/usage.js";
 
 export interface ResolveScannerPricingQuoteInput {
@@ -52,8 +53,8 @@ const MIMO_V25_PRO_PAYG_RATES: ModelPricing = {
 };
 
 /**
- * Resolves only exact, auditable prices. Arbitrary compatible endpoints remain
- * unpriced unless their normalized provider catalog supplied ModelPricing.
+ * Resolves frozen auditable prices. Compatible endpoints may also use an
+ * exact or unambiguous OpenRouter catalog match; ambiguous aliases fail closed.
  */
 export function resolveScannerPricingQuote(
   input: ResolveScannerPricingQuoteInput,
@@ -93,7 +94,29 @@ export function resolveScannerPricingQuote(
     });
   }
 
-  if (input.modelPricing === null) return null;
+  if (input.modelPricing === null) {
+    const openRouter = resolveOpenRouterLaunchPricing({
+      providerKind: input.providerKind,
+      routeKind: input.routeKind,
+      modelId: input.modelId,
+    });
+    if (openRouter === null) return null;
+    const directOpenRouter = input.providerKind === "openrouter" &&
+      input.routeKind === "openrouter-api" && input.protocol === "openai-chat";
+    return freezeQuote(input, openRouter.pricing, {
+      pricingSource: "openrouter",
+      pricingBasis: directOpenRouter ? "metered" : "payg-equivalent",
+      billingMode: directOpenRouter ? "metered" : "unknown",
+      pricingRateCardId: `openrouter/${openRouter.modelId}`,
+      rateCardUpdatedAt: openRouter.pricingUpdatedAt,
+      maximumInputTokensInclusive: null,
+      pricingModelId: openRouter.modelId,
+      pricingMatch: openRouter.pricingMatch,
+      ...(openRouter.pricingAliasId === undefined
+        ? {}
+        : { pricingAliasId: openRouter.pricingAliasId }),
+    });
+  }
   const trustedOpenRouterMetering = input.providerKind === "openrouter" &&
     input.routeKind === "openrouter-api" && input.protocol === "openai-chat";
   const declaredBilling = validDeclaredBilling(input.modelPricing)
@@ -179,6 +202,9 @@ function freezeQuote(
     | "pricingRateCardId"
     | "rateCardUpdatedAt"
     | "maximumInputTokensInclusive"
+    | "pricingModelId"
+    | "pricingMatch"
+    | "pricingAliasId"
   >,
 ): FrozenScannerPricing | null {
   const frozen = freezeCatalogPricing(pricing, input.capturedAt, input.modelId);

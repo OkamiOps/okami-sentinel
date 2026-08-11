@@ -25,11 +25,15 @@ export interface FrozenScannerPricing extends FrozenCatalogPricing {
   providerKind: string;
   routeKind: string;
   protocol: ProviderProtocol;
-  pricingSource: "provider-catalog" | "official-rate-card";
+  pricingSource: "openrouter" | "provider-catalog" | "official-rate-card";
   pricingBasis: "metered" | "payg-equivalent";
   billingMode: "metered" | "subscription" | "credits" | "unknown";
   pricingRateCardId: string | null;
   rateCardUpdatedAt: string | null;
+  /** OpenRouter's resolved catalog model when it differs from the selected route id. */
+  pricingModelId?: string;
+  pricingMatch?: "exact" | "catalog-unique" | "approved-alias";
+  pricingAliasId?: string;
   /** Base-tier aggregate is safe only while every possible request remains below this bound. */
   maximumInputTokensInclusive: number | null;
 }
@@ -246,6 +250,9 @@ function estimateFrozenUsageCost(
     | "pricingRateCardId"
     | "rateCardUpdatedAt"
     | "maximumInputTokensInclusive"
+    | "pricingModelId"
+    | "pricingMatch"
+    | "pricingAliasId"
   >,
 ): ScanCost | null {
   if (
@@ -271,7 +278,8 @@ function estimateFrozenUsageCost(
     const cacheWriteRate = pricing.cacheWriteInputUsdPerMillionTokens;
     const outputRate = pricing.outputUsdPerMillionTokens;
     if (
-      provenance.pricingSource !== "official-rate-card" ||
+      (provenance.pricingSource !== "official-rate-card" &&
+        provenance.pricingSource !== "openrouter") ||
       inputRate === null ||
       cachedRate === null ||
       cacheWriteRate === null ||
@@ -336,6 +344,9 @@ function baseScanCost(
     | "pricingRateCardId"
     | "rateCardUpdatedAt"
     | "maximumInputTokensInclusive"
+    | "pricingModelId"
+    | "pricingMatch"
+    | "pricingAliasId"
   >,
   cacheWriteInputTokens: number,
   inputUsd: number,
@@ -360,7 +371,7 @@ function baseScanCost(
       cacheWriteInputUsdPerMillionTokens: pricing.cacheWriteInputUsdPerMillionTokens,
       outputUsdPerMillionTokens: pricing.outputUsdPerMillionTokens,
     },
-    pricingModel: pricing.modelId,
+    pricingModel: provenance.pricingModelId ?? pricing.modelId,
     pricingUpdatedAt: provenance.rateCardUpdatedAt ?? pricing.capturedAt,
     pricingTiming: "launch",
     inputUsd,
@@ -369,6 +380,8 @@ function baseScanCost(
   if (provenance.pricingRateCardId !== null) {
     cost.pricingRateCardId = provenance.pricingRateCardId;
   }
+  if (provenance.pricingMatch !== undefined) cost.pricingMatch = provenance.pricingMatch;
+  if (provenance.pricingAliasId !== undefined) cost.pricingAliasId = provenance.pricingAliasId;
   return cost;
 }
 
@@ -396,7 +409,8 @@ function isScannerPricingFile(value: unknown): value is ScannerPricingFile {
   return value.pricing === null || isFrozenScannerPricing(value.pricing);
 }
 
-function isFrozenScannerPricing(value: unknown): value is FrozenScannerPricing {
+/** Validates the immutable, secret-free quote shared by launch and the Portable worker. */
+export function isFrozenScannerPricing(value: unknown): value is FrozenScannerPricing {
   if (
     !isRecord(value) ||
     !hasOnlyKeys(value, [
@@ -417,6 +431,9 @@ function isFrozenScannerPricing(value: unknown): value is FrozenScannerPricing {
       "pricingRateCardId",
       "rateCardUpdatedAt",
       "maximumInputTokensInclusive",
+      "pricingModelId",
+      "pricingMatch",
+      "pricingAliasId",
     ]) ||
     value.currency !== "USD" ||
     !validTimestamp(value.capturedAt) ||
@@ -429,14 +446,20 @@ function isFrozenScannerPricing(value: unknown): value is FrozenScannerPricing {
     !safeIdentifier(value.providerKind) ||
     !safeIdentifier(value.routeKind) ||
     !safeIdentifier(value.protocol) ||
-    (value.pricingSource !== "provider-catalog" && value.pricingSource !== "official-rate-card") ||
+    (value.pricingSource !== "openrouter" && value.pricingSource !== "provider-catalog" &&
+      value.pricingSource !== "official-rate-card") ||
     (value.pricingBasis !== "metered" && value.pricingBasis !== "payg-equivalent") ||
     !["metered", "subscription", "credits", "unknown"].includes(String(value.billingMode)) ||
     !(value.pricingRateCardId === null || safeIdentifier(value.pricingRateCardId)) ||
     !(value.rateCardUpdatedAt === null || validTimestamp(value.rateCardUpdatedAt)) ||
     !(value.maximumInputTokensInclusive === null ||
       (Number.isSafeInteger(value.maximumInputTokensInclusive) &&
-        Number(value.maximumInputTokensInclusive) > 0))
+        Number(value.maximumInputTokensInclusive) > 0)) ||
+    !(value.pricingModelId === undefined || safeModelId(value.pricingModelId)) ||
+    !(value.pricingMatch === undefined ||
+      value.pricingMatch === "exact" || value.pricingMatch === "catalog-unique" ||
+      value.pricingMatch === "approved-alias") ||
+    !(value.pricingAliasId === undefined || safeIdentifier(value.pricingAliasId))
   ) return false;
   return true;
 }

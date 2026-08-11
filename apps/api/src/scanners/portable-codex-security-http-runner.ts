@@ -61,6 +61,11 @@ import {
   type PortableCodexSecurityRuntimeState,
 } from "./portable-codex-security-runtime.js";
 import type { ScannerUsage } from "./usage.js";
+import {
+  estimateFrozenScannerUsageCost,
+  isFrozenScannerPricing,
+  type FrozenScannerPricing,
+} from "../model-pricing.js";
 
 export interface PortableCodexSecurityExecutionLimits {
   totalTimeoutMs: number;
@@ -68,6 +73,13 @@ export interface PortableCodexSecurityExecutionLimits {
   maxToolCalls: number;
   maxInputBytes: number;
   maxOutputBytes: number;
+}
+
+export interface PortableCodexSecurityCostBudget {
+  /** Estimated USD ceiling: a response already in flight can exceed it once. */
+  maxCostUsd: number;
+  /** Frozen before the worker is spawned and contains no credential material. */
+  pricing: FrozenScannerPricing;
 }
 
 /** The only child-process configuration: route identifiers and explicit local budgets. */
@@ -81,6 +93,8 @@ export interface PortableCodexSecurityWorkerConfiguration {
   limits: PortableCodexSecurityExecutionLimits;
   /** Published by the exact selected model; no provider credential material. */
   reasoningEffort?: string;
+  /** Optional local ceiling that is enforceable only against frozen reported usage. */
+  costBudget?: PortableCodexSecurityCostBudget;
 }
 
 export type PortableCodexSecurityRunnerErrorCode =
@@ -94,6 +108,8 @@ export type PortableCodexSecurityRunnerErrorCode =
   | "agent_tool_limit"
   | "agent_input_byte_limit"
   | "agent_output_byte_limit"
+  | "cost_budget_unavailable"
+  | "cost_limit_reached"
   | "agent_session_failed"
   | "stage_evidence_incomplete"
   | "stage_artifact_invalid"
@@ -220,6 +236,7 @@ export async function runPortableCodexSecurity(
   deadline.signal.addEventListener("abort", cancelActive, { once: true });
 
   let releaseRedaction = () => undefined;
+  let costBudgetStop: "cost_budget_unavailable" | "cost_limit_reached" | null = null;
   try {
     throwIfStopped(deadline);
     const plan = createSafePortableCodexSecurityProviderPlan(safeConfiguration.providerPlan);
@@ -229,6 +246,7 @@ export async function runPortableCodexSecurity(
       dependencies,
       now(),
     );
+    assertPortableCostBudget(safeConfiguration.costBudget, plan, resolved);
     const snapshot = createPortableCodexSecuritySnapshot(
       safeConfiguration.repositoryPath,
       outputDir,
@@ -342,6 +360,13 @@ export async function runPortableCodexSecurity(
         onUsage: (usage) => {
           runtime = { ...runtime, usage, updatedAt: now().toISOString() };
           if (runtimeWritable) writePortableCodexSecurityRuntime(outputDir, runtime);
+          const stop = costBudgetStopCode(safeConfiguration.costBudget, usage);
+          if (stop !== null) {
+            costBudgetStop = stop;
+            cancelActive();
+            return false;
+          }
+          return true;
         },
       });
       activeSession = null;
@@ -385,7 +410,7 @@ export async function runPortableCodexSecurity(
     });
     return { runtime };
   } catch (error) {
-    const normalized = normalizeRunnerError(error, deadline);
+    const normalized = normalizeRunnerError(error, deadline, costBudgetStop);
     runtime = {
       ...runtime,
       status: normalized.code === "agent_cancelled" ? "cancelled" : "failed",
@@ -409,7 +434,7 @@ function validateConfiguration(
   value: PortableCodexSecurityWorkerConfiguration,
 ): PortableCodexSecurityWorkerConfiguration {
   if (!isRecord(value) || !hasOnlyKeys(value, new Set([
-    "outputDir", "repositoryPath", "paths", "sourceRef", "mode", "providerPlan", "limits", "reasoningEffort",
+    "outputDir", "repositoryPath", "paths", "sourceRef", "mode", "providerPlan", "limits", "reasoningEffort", "costBudget",
   ]))) invalidPlan();
   if (
     !isSafeText(value.outputDir, MAX_PATH_LENGTH * 4) ||
@@ -420,7 +445,8 @@ function validateConfiguration(
     value.paths.length > MAX_CONFIG_PATHS ||
     !value.paths.every((item) => isSafeRelativePath(item, MAX_PATH_LENGTH)) ||
     !validLimits(value.limits) ||
-    (value.reasoningEffort !== undefined && !isSafeText(value.reasoningEffort, 64))
+    (value.reasoningEffort !== undefined && !isSafeText(value.reasoningEffort, 64)) ||
+    (value.costBudget !== undefined && !validCostBudget(value.costBudget))
   ) invalidPlan();
   try {
     return {
@@ -432,6 +458,7 @@ function validateConfiguration(
       providerPlan: createSafePortableCodexSecurityProviderPlan(value.providerPlan),
       limits: { ...value.limits },
       ...(value.reasoningEffort === undefined ? {} : { reasoningEffort: value.reasoningEffort }),
+      ...(value.costBudget === undefined ? {} : { costBudget: value.costBudget }),
     };
   } catch {
     invalidPlan();
@@ -505,6 +532,37 @@ function revalidatePortablePlan(
     throw new PortableCodexSecurityRunnerError("provider_plan_revalidation_failed");
   }
   return { connection, model, capability, directXaiOAuth };
+}
+
+function assertPortableCostBudget(
+  budget: PortableCodexSecurityCostBudget | undefined,
+  plan: SafePortableCodexSecurityProviderPlan,
+  resolved: ResolvedPortablePlan,
+): void {
+  if (budget === undefined) return;
+  const pricing = budget.pricing;
+  if (
+    resolved.capability.capabilities.usage !== "supported" ||
+    pricing.connectionId !== plan.connectionId ||
+    pricing.routeKind !== plan.routeKind ||
+    pricing.protocol !== plan.protocol ||
+    pricing.modelId !== plan.modelId ||
+    pricing.providerKind !== resolved.connection.providerKind ||
+    pricing.inputUsdPerMillionTokens === null ||
+    pricing.outputUsdPerMillionTokens === null
+  ) {
+    throw new PortableCodexSecurityRunnerError("cost_budget_unavailable");
+  }
+}
+
+function costBudgetStopCode(
+  budget: PortableCodexSecurityCostBudget | undefined,
+  usage: ScannerUsage,
+): "cost_budget_unavailable" | "cost_limit_reached" | null {
+  if (budget === undefined) return null;
+  const estimate = estimateFrozenScannerUsageCost(usage, budget.pricing);
+  if (estimate === null) return "cost_budget_unavailable";
+  return estimate.estimatedUsd >= budget.maxCostUsd ? "cost_limit_reached" : null;
 }
 
 function productionSessionFactory(
@@ -636,12 +694,17 @@ function throwIfStopped(deadline: TotalDeadline): void {
   );
 }
 
-function normalizeRunnerError(error: unknown, deadline: TotalDeadline): PortableCodexSecurityRunnerError {
+function normalizeRunnerError(
+  error: unknown,
+  deadline: TotalDeadline,
+  costBudgetStop: "cost_budget_unavailable" | "cost_limit_reached" | null,
+): PortableCodexSecurityRunnerError {
   if (deadline.signal.aborted) {
     return new PortableCodexSecurityRunnerError(
       deadline.timedOut() ? "agent_time_limit" : "agent_cancelled",
     );
   }
+  if (costBudgetStop !== null) return new PortableCodexSecurityRunnerError(costBudgetStop);
   if (error instanceof PortableCodexSecurityRunnerError) return error;
   if (error instanceof PortableCodexSecurityStageError) {
     return new PortableCodexSecurityRunnerError(error.code);
@@ -723,6 +786,12 @@ function validLimits(value: unknown): value is PortableCodexSecurityExecutionLim
   } catch {
     return false;
   }
+}
+
+function validCostBudget(value: unknown): value is PortableCodexSecurityCostBudget {
+  return isRecord(value) && hasOnlyKeys(value, new Set(["maxCostUsd", "pricing"])) &&
+    typeof value.maxCostUsd === "number" && Number.isFinite(value.maxCostUsd) &&
+    value.maxCostUsd > 0 && isFrozenScannerPricing(value.pricing);
 }
 
 function safeProviderCode(value: string): SafeProviderErrorCode | null {

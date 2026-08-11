@@ -286,3 +286,89 @@ test("Portable Standard and Deep keep a bounded scan-sized cumulative input budg
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("Portable derives its execution envelope from the selected effort instead of a model name", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-adaptive-limits-"));
+  const cases = [
+    { mode: "standard" as const, effort: "minimal", timeout: 1_200_000, turns: 24, tools: 96 },
+    { mode: "deep" as const, effort: "low", timeout: 1_800_000, turns: 48, tools: 192 },
+    { mode: "standard" as const, effort: null, timeout: 1_800_000, turns: 32, tools: 128 },
+    { mode: "deep" as const, effort: "future-provider-level", timeout: 2_700_000, turns: 64, tools: 256 },
+    { mode: "standard" as const, effort: "xhigh", timeout: 2_700_000, turns: 48, tools: 192 },
+    { mode: "deep" as const, effort: "max", timeout: 5_400_000, turns: 128, tools: 512 },
+  ];
+  try {
+    for (const [index, scenario] of cases.entries()) {
+      const outputDir = path.join(root, String(index));
+      fs.mkdirSync(outputDir, { mode: 0o700 });
+      preparePortableCodexSecurityLaunch({
+        request: { repositoryPath: "/repository", mode: scenario.mode },
+        repositoryPath: "/repository",
+        outputDir,
+        model: model.id,
+        effort: scenario.effort,
+        mode: scenario.mode,
+        providerKind: "xiaomi",
+        portableCodexSecurityProviderPlan: {
+          scanId: `scan-adaptive-${index}`,
+          connectionId: connection.id,
+          routeKind: "mimo-token-plan",
+          protocol: "openai-chat",
+          modelId: model.id,
+          capabilityCheckId: "probe-mimo",
+          profileVersion: "sentinel-codex-security-portable-v1",
+          methodologyRef: "sentinel/codex-security-methodology@v1",
+        },
+        pricing: null,
+        capturedAt: "2026-08-11T12:00:00.000Z",
+      });
+      const config = JSON.parse(fs.readFileSync(
+        path.join(outputDir, "portable-codex-security-run.json"),
+        "utf8",
+      )) as { limits: { totalTimeoutMs: number; maxModelTurns: number; maxToolCalls: number } };
+      assert.deepEqual(config.limits, {
+        totalTimeoutMs: scenario.timeout,
+        maxModelTurns: scenario.turns,
+        maxToolCalls: scenario.tools,
+        maxInputBytes: 67_108_864,
+        maxOutputBytes: 1_048_576,
+      });
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Portable rejects a requested cost ceiling before worker spawn when no frozen quote exists", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-cost-preflight-"));
+  try {
+    assert.throws(
+      () => preparePortableCodexSecurityLaunch({
+        request: { repositoryPath: "/repository", mode: "standard", maxCostUsd: 1 },
+        repositoryPath: "/repository",
+        outputDir: root,
+        model: model.id,
+        effort: null,
+        mode: "standard",
+        providerKind: "xiaomi",
+        portableCodexSecurityProviderPlan: {
+          scanId: "scan-cost-preflight",
+          connectionId: connection.id,
+          routeKind: "mimo-token-plan",
+          protocol: "openai-chat",
+          modelId: model.id,
+          capabilityCheckId: "probe-mimo",
+          profileVersion: "sentinel-codex-security-portable-v1",
+          methodologyRef: "sentinel/codex-security-methodology@v1",
+        },
+        pricing: null,
+        pricingQuote: null,
+        capturedAt: "2026-08-11T12:00:00.000Z",
+      }),
+      /cost_budget_unavailable/,
+    );
+    assert.equal(fs.existsSync(path.join(root, "portable-codex-security-run.json")), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
