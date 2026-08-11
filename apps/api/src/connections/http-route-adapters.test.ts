@@ -120,19 +120,42 @@ test("failed refresh preserves stale rows and never supplies a fallback model", 
   assert.equal(JSON.stringify(result).includes("secret-value"), false);
 });
 
-test("MiniMax remains non-ready when no catalog endpoint is explicitly available", async () => {
+test("MiniMax discovers all pages from its pinned Token Plan catalog", async () => {
+  const transport = fakeFetch({
+    "GET https://api.minimax.io/anthropic/v1/models": json(200, {
+      data: [{ id: "account-visible", display_name: "Account Visible" }],
+      has_more: true,
+      last_id: "account-visible",
+    }),
+    "GET https://api.minimax.io/anthropic/v1/models?after_id=account-visible": json(200, {
+      data: [{ id: "account-visible-2", display_name: "Account Visible 2" }],
+      has_more: false,
+      last_id: "account-visible-2",
+    }),
+  });
   const result = await discoverModels(connection("minimax-token-plan"), {
     vault: fakeVault({ apiKey: "minimax-secret" }),
-    transport: fakeFetch({}),
+    transport,
   });
 
-  assert.deepEqual(result.models, []);
-  assert.equal(result.safeError?.code, "model_discovery_unsupported");
+  assert.deepEqual(result.models.map((model) => ({ id: model.id, displayName: model.displayName })), [
+    { id: "account-visible", displayName: "Account Visible" },
+    { id: "account-visible-2", displayName: "Account Visible 2" },
+  ]);
+  assert.equal(result.pageCount, 2);
+  assert.equal(result.safeError, undefined);
+  assert.deepEqual(transport.calls.map((call) => call.url), [
+    "https://api.minimax.io/anthropic/v1/models",
+    "https://api.minimax.io/anthropic/v1/models?after_id=account-visible",
+  ]);
+  assert.equal(transport.calls[0]?.init.headers?.["X-Api-Key"], "minimax-secret");
   assert.equal(JSON.stringify(result).includes("minimax-secret"), false);
 });
 
 test("MiniMax ignores arbitrary discovery and base hosts rather than sending its plan token", async () => {
-  const transport = fakeFetch({});
+  const transport = fakeFetch({
+    "GET https://api.minimax.io/anthropic/v1/models": json(200, { data: [] }),
+  });
   const result = await discoverModels(connection("minimax-token-plan"), {
     vault: fakeVault({
       apiKey: "minimax-secret",
@@ -142,8 +165,12 @@ test("MiniMax ignores arbitrary discovery and base hosts rather than sending its
     transport,
   });
 
-  assert.equal(result.safeError?.code, "model_discovery_unsupported");
-  assert.deepEqual(transport.calls, []);
+  assert.equal(result.safeError, undefined);
+  assert.deepEqual(result.models, []);
+  assert.deepEqual(transport.calls.map((call) => call.url), [
+    "https://api.minimax.io/anthropic/v1/models",
+  ]);
+  assert.equal(transport.calls[0]?.init.headers?.["X-Api-Key"], "minimax-secret");
   assert.equal(JSON.stringify(result).includes("minimax-secret"), false);
   assert.equal(JSON.stringify(result).includes("untrusted.example"), false);
 });

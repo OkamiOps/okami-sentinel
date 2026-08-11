@@ -48,6 +48,8 @@ export const HTTP_ROUTE_KINDS = [
 
 export type HttpRouteKind = (typeof HTTP_ROUTE_KINDS)[number];
 
+const MINIMAX_TOKEN_PLAN_ANTHROPIC_BASE_URL = "https://api.minimax.io/anthropic";
+
 export interface HttpRouteInspection {
   available: boolean;
   reason: SafeProviderErrorCode | null;
@@ -171,9 +173,14 @@ export async function discoverModels(
     case "deepseek-api":
       return discoverDeepSeekModels(credentials, transport);
     case "minimax-token-plan":
-      // Its Token Plan base is an inference contract, not a documented catalog.
-      // Never send a plan credential to a user-configured discovery/base host.
-      return unsupportedDiscovery();
+      return discoverAnthropicModels({
+        ...credentials,
+        // Token Plan credentials are only ever sent to MiniMax's documented
+        // Anthropic-compatible catalog; vault URLs and custom headers do not apply.
+        baseUrl: MINIMAX_TOKEN_PLAN_ANTHROPIC_BASE_URL,
+        discoveryUrl: undefined,
+        headers: credentials.apiKey === undefined ? undefined : { "X-Api-Key": credentials.apiKey },
+      }, transport);
     case "mimo-token-plan":
       return discoverMimoModels(connection, credentials, transport);
     default:
