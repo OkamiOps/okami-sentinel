@@ -40,6 +40,7 @@ interface ProviderConnectionRow {
   last_tested_at: string | null;
   last_model_sync_at: string | null;
   model_catalog_stale: number;
+  model_metadata_version: number;
 }
 
 interface ProviderModelRow {
@@ -103,6 +104,8 @@ const unknownCapabilities: ModelCapabilities = Object.freeze({
   cancellation: "unknown",
 });
 
+const CURRENT_MODEL_METADATA_VERSION = 1;
+
 export function ensureConnectionSchema(
   database: Database.Database = getDb(),
 ): void {
@@ -129,6 +132,7 @@ export function ensureConnectionSchema(
       last_tested_at TEXT,
       last_model_sync_at TEXT,
       model_catalog_stale INTEGER NOT NULL DEFAULT 0,
+      model_metadata_version INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -139,6 +143,12 @@ export function ensureConnectionSchema(
     database,
     "provider_connections",
     "model_catalog_stale",
+    "INTEGER NOT NULL DEFAULT 0",
+  );
+  addColumnIfMissing(
+    database,
+    "provider_connections",
+    "model_metadata_version",
     "INTEGER NOT NULL DEFAULT 0",
   );
   ensureProviderModelsSchema(database);
@@ -208,12 +218,14 @@ export class ConnectionStore {
           protocol, status, credential_ref, model_selection_mode, default_model_id,
           provider_label, route_label, secret_configured, endpoint_configured,
           endpoint_kind, last_tested_at, last_model_sync_at, model_catalog_stale,
+          model_metadata_version,
           created_at, updated_at
         ) VALUES (
           @id, @scope_id, @name, @provider_kind, @route_kind, @transport, @auth_kind,
           @protocol, @status, @credential_ref, @model_selection_mode, @default_model_id,
           @provider_label, @route_label, @secret_configured, @endpoint_configured,
           @endpoint_kind, @last_tested_at, @last_model_sync_at, @model_catalog_stale,
+          @model_metadata_version,
           @created_at, @updated_at
         )`,
       )
@@ -326,10 +338,11 @@ export class ConnectionStore {
       const update = this.database
         .prepare(
           `UPDATE provider_connections
-           SET last_model_sync_at = ?, model_catalog_stale = 0, updated_at = ?
+           SET last_model_sync_at = ?, model_catalog_stale = 0,
+             model_metadata_version = ?, updated_at = ?
            WHERE id = ? AND scope_id = 'local'`,
         )
-        .run(refreshedAt, refreshedAt, connectionId);
+        .run(refreshedAt, CURRENT_MODEL_METADATA_VERSION, refreshedAt, connectionId);
       if (update.changes !== 1) throw new Error("Provider connection not found");
     });
     replace();
@@ -694,6 +707,9 @@ function connectionToParams(
     last_tested_at: connection.lastTestedAt,
     last_model_sync_at: connection.lastModelSyncAt,
     model_catalog_stale: connection.modelCatalogStale ? 1 : 0,
+    model_metadata_version: connection.lastModelSyncAt === null
+      ? 0
+      : CURRENT_MODEL_METADATA_VERSION,
     created_at: timestamp,
     updated_at: timestamp,
   };
@@ -716,7 +732,10 @@ function rowToStoredProviderConnection(
     defaultModelId: row.default_model_id,
     lastTestedAt: row.last_tested_at,
     lastModelSyncAt: row.last_model_sync_at,
-    modelCatalogStale: row.model_catalog_stale === 1,
+    modelCatalogStale: row.model_catalog_stale === 1 || (
+      row.last_model_sync_at !== null &&
+      row.model_metadata_version < CURRENT_MODEL_METADATA_VERSION
+    ),
     display: {
       providerLabel: row.provider_label,
       routeLabel: row.route_label,

@@ -13,6 +13,7 @@ import {
   type SecretRedactorRegistry,
 } from "../credentials/credential-vault.js";
 import { globalSecretRedactor } from "../redaction.js";
+import { reasoningEffortFromModelRecord } from "./model-reasoning-metadata.js";
 
 /** The only HTTP timeout used by live provider catalog discovery. */
 export const HTTP_TIMEOUT_MS = 8_000;
@@ -618,6 +619,10 @@ function normalizeRows(
     const result = fields(row);
     if (result.id === null || secrets.contains(result.id) || ids.has(result.id)) continue;
     ids.add(result.id);
+    const reasoningEffort = safeReasoningEffort(
+      reasoningEffortFromModelRecord(row),
+      secrets,
+    );
     normalized.push({
       connectionId: metadata.connectionId,
       id: result.id,
@@ -627,6 +632,7 @@ function normalizeRows(
       pricing: result.pricing,
       discoveredAt: metadata.discoveredAt,
       source: "provider-api",
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
       ...(result.unverifiedHints === undefined ? {} : {
         unverifiedHints: {
           ...result.unverifiedHints,
@@ -638,6 +644,21 @@ function normalizeRows(
     });
   }
   return normalized;
+}
+
+function safeReasoningEffort(
+  metadata: ProviderModel["reasoningEffort"],
+  secrets: { contains(value: string): boolean },
+): ProviderModel["reasoningEffort"] {
+  if (metadata === undefined) return undefined;
+  const options = metadata.options.filter((option) => !secrets.contains(option));
+  if (options.length === 0) return undefined;
+  return {
+    options,
+    default: metadata.default !== null && options.includes(metadata.default)
+      ? metadata.default
+      : null,
+  };
 }
 
 function openRouterPricing(value: unknown): ModelPricing | null {

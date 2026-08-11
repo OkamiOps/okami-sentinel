@@ -245,7 +245,7 @@ test("launches Codex Security with the pinned MiMo Responses provider and child-
   assert.equal(launch.env.CODEX_API_KEY, undefined);
   assert.equal(launch.args.includes("model_provider=\"mimo\""), true);
   assert.equal(launch.args.includes("model_providers.mimo.wire_api=\"responses\""), true);
-  assert.equal(launch.args.includes("model_reasoning_effort=\"high\""), true);
+  assert.equal(launch.args.some((argument) => argument.startsWith("model_reasoning_effort=")), false);
   assert.equal(launch.args.includes("model_supports_reasoning_summaries=true"), true);
   assert.equal(
     launch.args.includes(

@@ -1,3 +1,4 @@
+import type { ModelReasoningEffort } from "@csb/shared";
 import type {
   CursorBackgroundAgentCreateInput,
   CursorBackgroundAgentCreateResult,
@@ -6,6 +7,7 @@ import type {
   RemoteAgentJobStatus,
   RemoteAgentStatus,
 } from "./remote-agent-job-runner.js";
+import { reasoningEffortFromModelRecord } from "./model-reasoning-metadata.js";
 
 /** The pinned origin documented for Cursor Cloud Agents API v1. */
 export const CURSOR_CLOUD_AGENTS_ORIGIN = "https://api.cursor.com";
@@ -20,6 +22,7 @@ export type CursorBackgroundFetch = (
 export interface CursorBackgroundCatalogModel {
   id: string;
   displayName: string;
+  reasoningEffort?: ModelReasoningEffort;
 }
 
 export type CursorBackgroundAgentsErrorCode =
@@ -151,7 +154,12 @@ export function createCursorBackgroundAgentsAdapter(
         if (seen.has(id)) throw new CursorBackgroundAgentsError("protocol_unsupported");
         seen.add(id);
         const displayName = safeModelDisplayName(model.displayName, input.apiKey) ?? id;
-        return { id, displayName };
+        const reasoningEffort = reasoningEffortFromModelRecord(model, [input.apiKey]);
+        return {
+          id,
+          displayName,
+          ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+        };
       });
     },
   };

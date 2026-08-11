@@ -167,6 +167,27 @@ test("connection launch accepts only reasoning efforts published by the resolved
     launchPlans: resolver(plan()).resolver,
   });
   assert.equal("effort" in providerManaged.request, false);
+
+  const noPublishedDefault = resolveScanLaunchSelection({
+    request: {
+      repositoryPath: "/repo",
+      engine: "mantis",
+      effort: "browser-value",
+      connection: {
+        connectionId: "openai-session",
+        modelSelectionMode: "catalog",
+        modelId: "gpt-live",
+      },
+    },
+    scanId: "scan-126",
+    launchPlans: resolver(plan({
+      model: {
+        ...model,
+        reasoningEffort: { options: ["economy", "forensic"], default: null },
+      },
+    })).resolver,
+  });
+  assert.equal("effort" in noPublishedDefault.request, false);
 });
 
 test("Mantis HTTP agent sessions retain the server plan instead of mapping to the old Codex worker", () => {

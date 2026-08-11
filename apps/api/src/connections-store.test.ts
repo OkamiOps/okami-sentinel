@@ -240,6 +240,38 @@ test("preserves provider-reported reasoning metadata without inventing it for le
   }
 });
 
+test("marks model catalogs from an older metadata contract stale until a live refresh", () => {
+  const db = new Database(":memory:");
+  try {
+    const store = new ConnectionStore(db);
+    store.insert(connectionFixture());
+    store.replaceModels("conn-1", [{
+      connectionId: "conn-1",
+      id: "legacy-model",
+      displayName: "Legacy model",
+      contextWindow: null,
+      capabilities: {
+        tools: "unknown", artifactOutput: "unknown", structuredOutput: "unknown",
+        boundedExecution: "unknown", osIsolation: "unknown", streaming: "unknown",
+        usage: "unknown", cancellation: "unknown",
+      },
+      pricing: null,
+      discoveredAt: "2026-08-11T00:00:00.000Z",
+      source: "runtime",
+    }]);
+    db.prepare("UPDATE provider_connections SET model_metadata_version = 0 WHERE id = ?").run("conn-1");
+
+    ensureConnectionSchema(db);
+    assert.equal(store.get("conn-1")?.modelCatalogStale, true);
+
+    store.replaceModels("conn-1", []);
+    ensureConnectionSchema(db);
+    assert.equal(store.get("conn-1")?.modelCatalogStale, false);
+  } finally {
+    db.close();
+  }
+});
+
 test("canonicalizes capability and pricing metadata at the store boundary", () => {
   const db = new Database(":memory:");
   const privateMarker = "sk-capability-metadata-secret";

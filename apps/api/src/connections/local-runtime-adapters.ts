@@ -20,6 +20,7 @@ import {
   RuntimeCommandError,
   type RuntimeCommandOutput,
 } from "./runtime-command.js";
+import { reasoningEffortFromModelRecord } from "./model-reasoning-metadata.js";
 
 export interface RuntimeExecResult {
   stdout: string;
@@ -256,6 +257,7 @@ function parseRuntimeModels(
     if (!isPlainRecord(row)) continue;
     const id = safeModelId(row.id);
     if (id === undefined) continue;
+    const reasoningEffort = reasoningEffortFromModelRecord(row);
     models.push({
       connectionId: connection.id,
       id,
@@ -263,6 +265,7 @@ function parseRuntimeModels(
       contextWindow: safeContextWindow(row.contextWindow ?? row.context_window),
       capabilities: unknownCapabilities(),
       pricing: null,
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
       discoveredAt,
       source: "runtime",
     });

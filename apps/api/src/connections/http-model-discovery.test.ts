@@ -35,6 +35,43 @@ test("normalizes only models returned by the authenticated endpoint", async () =
   assert.equal(result.models.some((model) => model.id === "fallbackModel"), false);
 });
 
+test("preserves provider-published reasoning metadata without model or provider hardcodes", async () => {
+  const transport = fakeFetch({
+    "GET https://gateway.example/v1/models": json(200, {
+      data: [{
+        id: "vendor/dynamic-a",
+        supportedReasoningEfforts: [
+          { reasoningEffort: "economy" },
+          { reasoningEffort: "forensic" },
+        ],
+        defaultReasoningEffort: "forensic",
+      }, {
+        id: "vendor/dynamic-b",
+        supported_reasoning_efforts: ["brief", "exhaustive"],
+        default_reasoning_effort: "brief",
+      }, {
+        id: "vendor/dynamic-c",
+        supported_reasoning_levels: [
+          { effort: "low" },
+          { effort: "high" },
+        ],
+        default_reasoning_level: "high",
+      }],
+    }),
+  });
+
+  const result = await discoverOpenAiModels({
+    baseUrl: "https://gateway.example/v1",
+    apiKey: "secret-value",
+  }, transport);
+
+  assert.deepEqual(result.models.map((model) => model.reasoningEffort), [
+    { options: ["economy", "forensic"], default: "forensic" },
+    { options: ["brief", "exhaustive"], default: "brief" },
+    { options: ["low", "high"], default: "high" },
+  ]);
+});
+
 test("uses documented cursor pagination without accepting a provider-supplied URL", async () => {
   const transport = fakeFetch({
     "GET https://gateway.example/v1/models": json(200, {

@@ -38,6 +38,10 @@ import {
   buildConnectionAwareStartRequest,
   canResolveConnectionWithEngine,
   connectionSelectionFor,
+  defaultReasoningEffortForModel,
+  loadLiveConnectionModels,
+  reasoningEffortPanelClass,
+  reasoningEffortViewportClass,
   reasoningEffortGridClass,
   reasoningEffortForModel,
 } from "../lib/new-scan-routing";
@@ -185,11 +189,6 @@ export function NewScanPage() {
     compatibility.modelId === selection.modelId;
   const usesCostEnvelope = engine === "codex-security";
   const cost = Math.max(100, Number(maxCostUsd) || 100);
-  const expected = Math.round(
-    cost *
-      ({ minimal: 0.16, low: 0.3, medium: 0.55, high: 0.82, xhigh: 1 }[reasoning.selected ?? ""] ?? 0.7) *
-      (mode === "deep" ? 1.3 : 1),
-  );
 
   useEffect(() => {
     void Promise.all([api.health(), api.scanners()])
@@ -237,8 +236,8 @@ export function NewScanPage() {
   }, [catalog, mode, scanner]);
 
   useEffect(() => {
-    setEffort((current) => current === reasoning.selected ? current : reasoning.selected);
-  }, [reasoning.selected]);
+    setEffort(defaultReasoningEffortForModel(selectedModel));
+  }, [selectedModel?.id, selectedModel?.reasoningEffort]);
 
   useEffect(() => {
     let active = true;
@@ -251,7 +250,7 @@ export function NewScanPage() {
     }
     setModelsLoading(true);
     setSelectedModelId(null);
-    void api.listConnectionModels(selectedConnection.id)
+    void loadLiveConnectionModels(api, selectedConnection.id)
       .then((catalogModels) => {
         if (!active) return;
         setModels(catalogModels);
@@ -516,7 +515,7 @@ export function NewScanPage() {
             </div>
 
             <div className="grid border-b lg:grid-cols-[.85fr_1.15fr]">
-              <div className="border-b p-4 lg:border-b-0 lg:border-r">
+              <div className="min-w-0 border-b p-4 lg:border-b-0 lg:border-r">
                 <div className="bench-label mb-3">{t("newScan.connectionRoute")}</div>
                 <p className="mb-3 text-[10px] leading-relaxed text-muted-foreground">{t("newScan.connectionHelp")}</p>
                 {connections === null && !connectionsError ? (
@@ -527,7 +526,7 @@ export function NewScanPage() {
                   <div className="border border-dashed p-3 text-[10px] leading-relaxed text-muted-foreground"><p>{t("newScan.connectionEmpty")}</p><Link to="/settings/connections" className="mt-2 inline-block text-primary underline underline-offset-4">{t("newScan.manageConnections")}</Link></div>
                 ) : (
                   <Select value={connectionId} onValueChange={(next) => { setConnectionId(next); setAuthorized(false); setError(null); }}>
-                    <SelectTrigger aria-label={t("newScan.selectConnection")} className="w-full"><SelectValue placeholder={t("newScan.selectConnection")} /></SelectTrigger>
+                    <SelectTrigger aria-label={t("newScan.selectConnection")} className="w-full min-w-0 max-w-full overflow-hidden *:data-[slot=select-value]:min-w-0 *:data-[slot=select-value]:truncate"><SelectValue placeholder={t("newScan.selectConnection")} /></SelectTrigger>
                     <SelectContent>{connections?.map((candidate) => <SelectItem key={candidate.id} value={candidate.id}>{candidate.name} · {candidate.display.routeLabel}</SelectItem>)}</SelectContent>
                   </Select>
                 )}
@@ -548,7 +547,7 @@ export function NewScanPage() {
                   <div className="border border-dashed p-3 text-[10px] leading-relaxed text-muted-foreground"><p>{t("newScan.modelEmpty")}</p><Link to="/settings/connections" className="mt-2 inline-block text-primary underline underline-offset-4">{t("newScan.manageConnections")}</Link></div>
                 ) : (
                   <Select value={selectedModelId ?? ""} onValueChange={setSelectedModelId}>
-                    <SelectTrigger aria-label={t("newScan.selectModel")} className="w-full"><SelectValue placeholder={t("newScan.selectModel")} /></SelectTrigger>
+                    <SelectTrigger aria-label={t("newScan.selectModel")} className="w-full min-w-0 max-w-full overflow-hidden *:data-[slot=select-value]:min-w-0 *:data-[slot=select-value]:truncate"><SelectValue placeholder={t("newScan.selectModel")} /></SelectTrigger>
                     <SelectContent>{selectedConnectionModels.map((candidate) => <SelectItem key={candidate.id} value={candidate.id}>{candidate.displayName ? `${candidate.displayName} · ${candidate.id}` : candidate.id}</SelectItem>)}</SelectContent>
                   </Select>
                 )}
@@ -556,28 +555,33 @@ export function NewScanPage() {
             </div>
 
             <div className="grid border-b md:grid-cols-[1.25fr_.75fr]">
-              <div className="border-b p-4 md:border-b-0 md:border-r">
+              <div className={reasoningEffortPanelClass}>
                 <div className="bench-label mb-3">{t("newScan.reasoningEffort")}</div>
-                <div className={reasoningEffortGridClass}>
-                  {reasoning.options.length === 0 ? (
-                    <div className="flex h-14 items-center px-3 font-mono text-[8px] uppercase text-muted-foreground">
-                      {t("newScan.providerManagedEffort")}
-                    </div>
-                  ) : reasoning.options.map((candidate) => (
-                    <button
-                      key={candidate}
-                      type="button"
-                      onClick={() => setEffort(candidate)}
-                      className={cx(
-                        "relative h-14 border-l border-border px-1 font-mono text-[8px] uppercase first:border-l-0 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary",
-                        reasoning.selected === candidate
-                          ? "z-10 bg-chart-4/[.06] text-chart-4 after:pointer-events-none after:absolute after:inset-0 after:border after:border-chart-4/60"
-                          : "hover:bg-accent",
-                      )}
-                    >
-                      {candidate}
-                    </button>
-                  ))}
+                <div className={reasoningEffortViewportClass}>
+                  <div className={reasoningEffortGridClass}>
+                    {reasoning.options.length === 0 ? (
+                      <div className="flex h-14 items-center px-3 font-mono text-[8px] uppercase text-muted-foreground">
+                        {t("newScan.providerManagedEffort")}
+                      </div>
+                    ) : reasoning.options.map((candidate) => (
+                      <button
+                        key={candidate}
+                        type="button"
+                        title={candidate}
+                        aria-label={candidate}
+                        aria-pressed={reasoning.selected === candidate}
+                        onClick={() => setEffort(candidate)}
+                        className={cx(
+                          "relative h-14 w-full min-w-0 truncate border-l border-border px-2 font-mono text-[8px] uppercase first:border-l-0 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary",
+                          reasoning.selected === candidate
+                            ? "z-10 bg-chart-4/[.06] text-chart-4 after:pointer-events-none after:absolute after:inset-0 after:border after:border-chart-4/60"
+                            : "hover:bg-accent",
+                        )}
+                      >
+                        {candidate}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
               <div className="p-4">
@@ -635,7 +639,7 @@ export function NewScanPage() {
             {usesCostEnvelope ? (
               <>
                 <div className="grid grid-cols-2 border-b p-4">
-                  <Readout label={t("newScan.expected")} value={unlimited ? "OPEN" : formatUsd(expected)} tone="signal" />
+                  <Readout label={t("newScan.expected")} value={unlimited ? "OPEN" : t("common.unknown").toUpperCase()} tone="signal" />
                   <Readout label={t("newScan.ceiling")} value={unlimited ? "NONE" : formatUsd(cost)} />
                 </div>
                 <div className="border-b p-4">
@@ -708,7 +712,7 @@ export function NewScanPage() {
                 <span>
                   <span className="block text-sm font-semibold">{t("newScan.authorizeExecution")}</span>
                   <span className="mt-1 block text-[11px] leading-relaxed text-muted-foreground">
-                    {scanner?.name} / {selection?.modelId ?? (selection ? t("newScan.runtimeDefault") : "—")} / {reasoning.selected ?? t("newScan.providerManagedEffort")} · {usesCostEnvelope ? t("newScan.estimatedCost") : t("newScan.planAllowance")}.
+                    {scanner?.name} / {selection?.modelId ?? (selection ? t("newScan.runtimeDefault") : "—")} / {reasoning.selected ?? t("newScan.providerManagedEffort")} · {usesCostEnvelope ? t("newScan.ceiling").toLowerCase() : t("newScan.planAllowance")}.
                   </span>
                 </span>
               </label>

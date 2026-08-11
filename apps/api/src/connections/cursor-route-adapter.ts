@@ -58,6 +58,12 @@ export function createCursorRouteAdapter(
             contextWindow: null,
             capabilities: unknownCapabilities(),
             pricing: null,
+            ...(model.reasoningEffort === undefined ? {} : {
+              reasoningEffort: {
+                options: [...model.reasoningEffort.options],
+                default: model.reasoningEffort.default,
+              },
+            }),
             discoveredAt,
             source: "provider-api",
           })),

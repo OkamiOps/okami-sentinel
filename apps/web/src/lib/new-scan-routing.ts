@@ -26,10 +26,16 @@ export function connectionSelectionFor(
 
 export type ReasoningEffortControl =
   | { kind: "provider-managed"; options: []; selected: null }
-  | { kind: "configurable"; options: string[]; selected: string };
+  | { kind: "configurable"; options: string[]; selected: string | null };
 
-/** One equal-width column per provider-published option; no fixed cap. */
-export const reasoningEffortGridClass = "grid grid-flow-col auto-cols-fr border border-border";
+/** Lets the viewport shrink instead of inheriting its scrollable grid width. */
+export const reasoningEffortPanelClass = "min-w-0 border-b p-4 md:border-b-0 md:border-r";
+
+/** Keeps overflow inside the control when a provider publishes many long labels. */
+export const reasoningEffortViewportClass = "min-w-0 max-w-full overflow-x-auto overscroll-x-contain";
+
+/** One equal-width, readable column per provider-published option; no fixed cap. */
+export const reasoningEffortGridClass = "grid w-max min-w-full grid-flow-col auto-cols-[minmax(8rem,1fr)] border border-border";
 
 export function reasoningEffortForModel(
   model: ProviderModel | null,
@@ -43,13 +49,22 @@ export function reasoningEffortForModel(
     ? selectedEffort
     : metadata.default !== null && metadata.options.includes(metadata.default)
       ? metadata.default
-      : metadata.options[0] ?? null;
-  if (selected === null) return { kind: "provider-managed", options: [], selected: null };
+      : null;
   return {
     kind: "configurable",
     options: [...metadata.options],
     selected,
   };
+}
+
+/** The model's own catalog default is the only safe reset across model changes. */
+export function defaultReasoningEffortForModel(model: ProviderModel | null): string | null {
+  const metadata = model?.reasoningEffort;
+  return metadata !== undefined &&
+    metadata.default !== null &&
+    metadata.options.includes(metadata.default)
+    ? metadata.default
+    : null;
 }
 
 type ConnectionAwareStartInput = Omit<StartScanRequest, "connection" | "provider" | "authMode" | "model"> & {
@@ -69,7 +84,45 @@ export function buildConnectionAwareStartRequest(input: ConnectionAwareStartInpu
   ) return null;
   return {
     ...request,
-    ...(reasoning.kind === "configurable" ? { effort: reasoning.selected } : {}),
+    ...(reasoning.kind === "configurable" && reasoning.selected !== null
+      ? { effort: reasoning.selected }
+      : {}),
     connection: selection,
   };
+}
+
+export interface LiveConnectionModelsClient {
+  listConnectionModels(connectionId: string): Promise<ProviderModel[]>;
+  refreshConnectionModels(connectionId: string): Promise<{
+    discovery: {
+      models: ProviderModel[];
+      safeError?: { code: string };
+    };
+  }>;
+}
+
+/**
+ * Refreshes every catalog-backed route through its registered adapter. When a
+ * provider cannot be reached, the last known catalog remains usable; no model
+ * or provider name is used to infer capabilities.
+ */
+export async function loadLiveConnectionModels(
+  client: LiveConnectionModelsClient,
+  connectionId: string,
+): Promise<ProviderModel[]> {
+  const cached = client.listConnectionModels(connectionId).then(
+    (models) => ({ ok: true as const, models }),
+    () => ({ ok: false as const, models: [] as ProviderModel[] }),
+  );
+  try {
+    const refreshed = await client.refreshConnectionModels(connectionId);
+    if (refreshed.discovery.safeError === undefined) {
+      return refreshed.discovery.models;
+    }
+  } catch {
+    // The cached outcome below is the deliberate degraded-mode fallback.
+  }
+  const fallback = await cached;
+  if (fallback.ok) return fallback.models;
+  throw new Error("model_catalog_unavailable");
 }

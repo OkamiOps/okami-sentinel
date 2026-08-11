@@ -262,9 +262,6 @@ export function prepareCodexSecurityMimoLaunch(
     provider: "xiaomi",
     codexOverrides: [
       `model_provider=${JSON.stringify("mimo")}`,
-      ...(input.effort === null
-        ? [`model_reasoning_effort=${JSON.stringify("high")}`]
-        : []),
       "model_supports_reasoning_summaries=true",
       `model_reasoning_summary=${JSON.stringify("none")}`,
       `web_search=${JSON.stringify("disabled")}`,

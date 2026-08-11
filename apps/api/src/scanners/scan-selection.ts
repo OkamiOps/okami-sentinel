@@ -167,15 +167,14 @@ function normalizeReasoningEffort(
     const { effort: _untrustedEffort, ...withoutEffort } = request;
     return withoutEffort;
   }
-  const defaultEffort = metadata.default !== null && metadata.options.includes(metadata.default)
-    ? metadata.default
-    : metadata.options[0]!;
-  return {
-    ...request,
-    effort: request.effort !== undefined && metadata.options.includes(request.effort)
-      ? request.effort
-      : defaultEffort,
-  };
+  if (request.effort !== undefined && metadata.options.includes(request.effort)) {
+    return { ...request, effort: request.effort };
+  }
+  if (metadata.default !== null && metadata.options.includes(metadata.default)) {
+    return { ...request, effort: metadata.default };
+  }
+  const { effort: _untrustedEffort, ...withoutEffort } = request;
+  return withoutEffort;
 }
 
 /**

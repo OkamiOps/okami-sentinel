@@ -145,6 +145,25 @@ test("Cursor Background rejects a v1 catalog response that echoes the bearer cre
   );
 });
 
+test("Cursor Background never exposes a bearer echoed as reasoning metadata", async () => {
+  const transport = fakeFetch({
+    "GET https://api.cursor.com/v1/models": json(200, {
+      items: [{
+        id: "account-visible",
+        displayName: "Account Visible",
+        supported_reasoning_efforts: ["low", "cursor-secret"],
+        default_reasoning_effort: "cursor-secret",
+      }],
+    }),
+  });
+  const adapter = createCursorBackgroundAgentsAdapter({ transport });
+
+  const models = await adapter.listModels({ apiKey: "cursor-secret" });
+
+  assert.deepEqual(models, [{ id: "account-visible", displayName: "Account Visible" }]);
+  assert.equal(JSON.stringify(models).includes("cursor-secret"), false);
+});
+
 test("Cursor Background adapter rejects repository credentials before making its fixed-origin request", async () => {
   const transport = fakeFetch({});
   const adapter = createCursorBackgroundAgentsAdapter({ transport });
