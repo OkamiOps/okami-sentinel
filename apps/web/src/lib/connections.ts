@@ -57,8 +57,19 @@ export function validateConnectionDraft(
   if (!draft.providerKind.trim()) return "provider";
   if (!draft.routeKind.trim()) return "route";
   if (draft.headers.trim() && parseSecretHeaders(draft.headers) === null) return "headers";
-  if (draft.transport === "http-inference" && options.requireHttpSecret !== false && !connectionSecretInput(draft)) return "secret";
+  if (
+    requiresSecretBundle(draft) &&
+    options.requireHttpSecret !== false &&
+    !connectionSecretInput(draft)
+  ) return "secret";
   return null;
+}
+
+/** Managed browser/device authentication obtains credentials after creation. */
+export function requiresSecretBundle(draft: ConnectionDraft): boolean {
+  return (draft.transport === "http-inference" || draft.transport === "remote-agent-api") &&
+    draft.authKind !== "browser-oauth" &&
+    draft.authKind !== "device-code";
 }
 
 export function changeConnectionTransport(
