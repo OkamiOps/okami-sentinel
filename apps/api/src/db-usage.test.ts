@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { scanEstimatedUsd, type ScanRun } from "@csb/shared";
+
 import { rowToScanRun, type BenchmarkRow } from "./db.js";
 
 function subscriptionRow(tokens: Partial<Pick<
@@ -66,4 +68,22 @@ test("never assigns OpenRouter-like cost to a local existing-session scan", () =
   });
 
   assert.equal(run.cost, null);
+});
+
+test("never displays a local existing-session Mantis amount as USD", () => {
+  const run: ScanRun = {
+    ...rowToScanRun(subscriptionRow({})),
+    engine: "mantis",
+    provider: "anthropic",
+    authMode: "existing-session",
+    cost: {
+      estimatedUsd: 12.34,
+      inputTokens: 120,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      outputTokens: 30,
+    },
+  };
+
+  assert.equal(scanEstimatedUsd(run), null);
 });

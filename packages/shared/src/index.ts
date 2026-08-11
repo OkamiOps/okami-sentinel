@@ -374,6 +374,9 @@ export interface ScanRun {
  * subscription-scanner usage has been explicitly priced from the OpenRouter catalog.
  */
 export function scanEstimatedUsd(scan: ScanRun): number | null {
+  if (scan.engine === "mantis" && scan.authMode === "existing-session") {
+    return null;
+  }
   if (
     (scan.engine === "mantis" || scan.engine === "vulnhunter") &&
     scan.authMode === "chatgpt" &&
