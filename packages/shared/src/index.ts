@@ -148,6 +148,13 @@ export interface ConnectionCompatibility extends ScanConnectionSelection {
   reasons: string[];
 }
 
+/** Server-owned eligibility request for a scanner engine and registered connection. */
+export interface ResolveScanCompatibilityRequest {
+  engine: ScannerEngine;
+  selection: ScanConnectionSelection;
+  remoteRepositoryConfirmed?: boolean;
+}
+
 export type ConnectionStatus =
   | "draft"
   | "authentication-required"

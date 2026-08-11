@@ -24,6 +24,8 @@ import type {
   ProviderDisconnectResponse,
   ProviderModel,
   ProviderModelsResponse,
+  ConnectionCompatibility,
+  ResolveScanCompatibilityRequest,
   RegressionSummary,
   ScanRun,
   ScannerCatalogResponse,
@@ -48,6 +50,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
+export function createScanRoutingClient(fetcher: Fetcher = fetch): {
+  resolveCompatibility(body: ResolveScanCompatibilityRequest): Promise<ConnectionCompatibility>;
+} {
+  return {
+    async resolveCompatibility(body) {
+      return parseApiResponse<ConnectionCompatibility>(await fetcher(`${BASE}/connections/compatibility`, {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }));
+    },
+  };
+}
 
 /** Keeps the CSRF token in the browser process only; public DTOs omit vault data. */
 export function createConnectionsClient(fetcher: Fetcher = fetch): {
@@ -134,6 +150,7 @@ export function createConnectionsClient(fetcher: Fetcher = fetch): {
 }
 
 const connections = createConnectionsClient();
+const scanRouting = createScanRoutingClient();
 
 export interface EnrollGuardrailRepositoryRequest {
   repositoryPath: string;
@@ -191,6 +208,7 @@ export const api = {
   getConnectionAuth: (id: string, flowId: string) => connections.getAuth(id, flowId),
   cancelConnectionAuth: (id: string, flowId: string) => connections.cancelAuth(id, flowId),
   disconnectConnectionAuth: (id: string) => connections.disconnectAuth(id),
+  resolveScanCompatibility: (body: ResolveScanCompatibilityRequest) => scanRouting.resolveCompatibility(body),
   scanners: () => request<ScannerCatalogResponse>("/scanners"),
   ingest: () => request<{ imported: number }>("/ingest", { method: "POST" }),
   metrics: () => request<MetricsSummary>("/metrics/summary"),

@@ -3,7 +3,7 @@ import test from "node:test";
 
 import type { CreateProviderConnectionRequest, ProviderConnection } from "@csb/shared";
 
-import { createConnectionsClient } from "../api.js";
+import { createConnectionsClient, createScanRoutingClient } from "../api.js";
 
 const connection: ProviderConnection = {
   id: "conn-1",
@@ -130,4 +130,36 @@ test("uses the same csrf session for auth mutations while polling flow state wit
     { method: "POST", path: "/api/connections/conn-1/auth/flow-1/cancel", csrf: "auth-csrf" },
     { method: "POST", path: "/api/connections/conn-1/auth/disconnect", csrf: "auth-csrf" },
   ]);
+});
+
+test("asks the server to resolve engine compatibility from a connection selection", async () => {
+  const calls: Array<{ method: string; path: string; body: string }> = [];
+  const client = createScanRoutingClient(async (input, init) => {
+    const request = new Request(`http://sentinel.local${String(input)}`, init);
+    calls.push({ method: request.method, path: new URL(request.url).pathname, body: await request.text() });
+    return Response.json({
+      connectionId: "conn-1",
+      modelSelectionMode: "catalog",
+      modelId: "live-model",
+      eligible: true,
+      reasons: [],
+    });
+  });
+
+  const result = await client.resolveCompatibility({
+    engine: "mantis",
+    selection: { connectionId: "conn-1", modelSelectionMode: "catalog", modelId: "live-model" },
+    remoteRepositoryConfirmed: true,
+  });
+
+  assert.equal(result.eligible, true);
+  assert.deepEqual(calls, [{
+    method: "POST",
+    path: "/api/connections/compatibility",
+    body: JSON.stringify({
+      engine: "mantis",
+      selection: { connectionId: "conn-1", modelSelectionMode: "catalog", modelId: "live-model" },
+      remoteRepositoryConfirmed: true,
+    }),
+  }]);
 });

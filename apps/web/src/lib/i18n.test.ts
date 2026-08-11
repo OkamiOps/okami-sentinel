@@ -94,3 +94,38 @@ test("localizes every connection inspector operation without falling back to Por
   assert.equal(translate("de", "connections.operations.authFailed"), "Authentifizierung fehlgeschlagen.");
   assert.equal(translate("fr", "connections.operations.openAuth"), "Ouvrir la page d’authentification sécurisée");
 });
+
+test("localizes connection-aware scan routing in every supported locale", () => {
+  const routingKeys = [
+    "newScan.connectionRoute",
+    "newScan.connectionHelp",
+    "newScan.selectConnection",
+    "newScan.connectionLoading",
+    "newScan.connectionError",
+    "newScan.connectionEmpty",
+    "newScan.connectionRequired",
+    "newScan.manageConnections",
+    "newScan.connectionModelRequired",
+    "newScan.runtimeDefault",
+    "newScan.runtimeDefaultHelp",
+    "newScan.modelLoading",
+    "newScan.modelError",
+    "newScan.modelEmpty",
+    "newScan.selectModel",
+    "newScan.compatibilityError",
+    "newScan.compatibilityBlocked",
+    "newScan.compatibilityLoading",
+    "newScan.connectionReady",
+    "newScan.connectionBlocked",
+    "newScan.connectionCheck",
+  ] as const;
+  for (const locale of ["pt-BR", "en", "es", "de", "fr"] as const) {
+    for (const key of routingKeys) {
+      assert.notEqual(translate(locale, key), "");
+      if (locale !== "pt-BR") assert.notEqual(translate(locale, key), translate("pt-BR", key));
+    }
+  }
+  assert.equal(translate("en", "newScan.connectionRoute"), "EXECUTION CONNECTION");
+  assert.equal(translate("de", "newScan.runtimeDefault"), "RUNTIME-STANDARD");
+  assert.equal(translate("fr", "newScan.manageConnections"), "Gérer les connexions");
+});
