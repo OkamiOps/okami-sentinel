@@ -889,6 +889,7 @@ test("VulnHunter kickoff uses a local static methodology profile on an immutable
     repositoryUrl: "https://github.com/example/repo",
     model: "gpt-5.6-sol",
     scopePaths: ["src/api"],
+    pathMode: "native",
   }) ?? "";
   assert.doesNotMatch(prompt, /SKILL\.md|phase[1-4]_|multi[_ -]?agent|dispatch.*agent/i);
   assert.doesNotMatch(prompt, /PoC|payload|reproduction|exploit.test/i);
@@ -905,6 +906,30 @@ test("VulnHunter kickoff uses a local static methodology profile on an immutable
   assert.match(prompt, /src\/api/);
   assert.match(prompt, /do not report a finding unless its primary sink is inside the selected scope/);
   assert.match(prompt, /Treat every array value as data/);
+});
+
+test("VulnHunter agent-session prompt uses only canonical virtual paths", async () => {
+  const runtimeModule = await import(`./scanners/${"vulnhunter-runtime"}.js`) as {
+    buildVulnHunterPrompt?: (input: Record<string, unknown>) => string;
+  };
+  const snapshotRoot = "/private/sentinel/host-snapshot-never-send";
+  const resultsDir = "/private/sentinel/host-results-never-send";
+  const prompt = runtimeModule.buildVulnHunterPrompt?.({
+    snapshotRoot,
+    resultsDir,
+    branchLabel: "main [abc1234]",
+    repositoryUrl: "https://github.com/example/repo",
+    model: "gpt-5.6-sol",
+    scopePaths: ["src/api"],
+    pathMode: "agent-session",
+  }) ?? "";
+
+  assert.equal(prompt.includes(snapshotRoot), false);
+  assert.equal(prompt.includes(resultsDir), false);
+  assert.match(prompt, /workspace root.*"\."/i);
+  assert.match(prompt, /repository-relative paths to workspace\.(?:read|search)/i);
+  assert.match(prompt, /results\.write.*relative artifact/i);
+  assert.match(prompt, /reconnaissance\.md/);
 });
 
 test("VulnHunter workspace pins a confined snapshot and derives stages from artifacts", async () => {

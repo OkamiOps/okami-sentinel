@@ -4,7 +4,9 @@ import test from "node:test";
 import { SecretRedactor } from "../redaction.js";
 import {
   addVulnHunterHttpUsage,
+  advanceVulnHunterHttpTerminal,
   serializeVulnHunterHttpEvent,
+  vulnHunterHttpTerminalExitCode,
 } from "./vulnhunter-http-worker-support.js";
 
 test("HTTP VulnHunter telemetry redacts provider credentials and endpoints before JSONL persistence", () => {
@@ -64,4 +66,22 @@ test("HTTP VulnHunter preserves unknown versus reported-zero usage for pricing",
   assert.equal(second.cachedInputTokensKnown, false);
   assert.equal(second.cacheWriteInputTokensKnown, false);
   assert.equal(second.outputTokensKnown, true);
+});
+
+test("HTTP VulnHunter keeps a tool-path failure failed after provider cleanup cancellation", () => {
+  let terminal = advanceVulnHunterHttpTerminal("running", {
+    type: "failure",
+    code: "tool_path_denied",
+  });
+  terminal = advanceVulnHunterHttpTerminal(terminal, { type: "cancellation", remote: true });
+
+  assert.equal(terminal, "failed");
+  assert.equal(vulnHunterHttpTerminalExitCode(terminal), 1);
+
+  const userAbort = advanceVulnHunterHttpTerminal("running", {
+    type: "cancellation",
+    remote: true,
+  });
+  assert.equal(userAbort, "cancelled");
+  assert.equal(vulnHunterHttpTerminalExitCode(userAbort), 143);
 });

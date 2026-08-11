@@ -17,7 +17,10 @@ import {
 import type { AgentEvent } from "../agent/session-types.js";
 import {
   addVulnHunterHttpUsage,
+  advanceVulnHunterHttpTerminal,
   serializeVulnHunterHttpEvent,
+  vulnHunterHttpTerminalExitCode,
+  type VulnHunterHttpTerminal,
 } from "./vulnhunter-http-worker-support.js";
 import { createResilientLineWriter } from "./mantis-runtime.js";
 import { normalizeVulnHunterWorkspace } from "./vulnhunter-normalize.js";
@@ -40,6 +43,7 @@ let cancelled = false;
 let runtime: VulnHunterRuntimeState | null = null;
 let outputDirForSignal: string | null = null;
 let httpAbortController: AbortController | null = null;
+let httpTerminal: VulnHunterHttpTerminal = "running";
 const log = createResilientLineWriter(process.stdout);
 const workerRedactor = new SecretRedactor();
 workerRedactor.register("process", processSecretValues(process.env));
@@ -195,6 +199,7 @@ async function runVulnHunter(
     repositoryUrl,
     model: config.model,
     scopePaths: config.paths,
+    pathMode: "native",
   });
   await runCodexSession(config, stateRoot, resultsDir, prompt, "scan.jsonl", false);
 }
@@ -214,6 +219,7 @@ async function runHttpVulnHunter(
     repositoryUrl,
     model: config.model,
     scopePaths: config.paths,
+    pathMode: "agent-session",
   });
   const logDir = path.join(config.outputDir, "vulnhunter-logs");
   fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
@@ -250,6 +256,7 @@ async function runHttpVulnHunter(
           encoding: "utf8",
           mode: 0o600,
         });
+        httpTerminal = advanceVulnHunterHttpTerminal(httpTerminal, event);
         if (event.type === "usage") {
           aggregateUsage = addVulnHunterHttpUsage(aggregateUsage, event.usage);
           persistUsage(config, aggregateUsage);
@@ -267,7 +274,6 @@ async function runHttpVulnHunter(
           updateArtifactStage(config, resultsDir, "Bounded provider review completed");
           return;
         }
-        if (event.type === "cancellation") cancelled = true;
       },
     });
   } finally {
@@ -682,6 +688,7 @@ process.on("SIGTERM", () => {
 
 void main().catch((error) => {
   let message = safeErrorMessage(error);
+  const exitCode = vulnHunterHttpTerminalExitCode(httpTerminal) ?? (cancelled ? 143 : 1);
   if (runtime && outputDirForSignal) {
     let recoveredFindings = runtime.findings;
     const resultsDir = path.join(outputDirForSignal, "vulnhunter", "results");
@@ -709,7 +716,7 @@ void main().catch((error) => {
     const now = new Date().toISOString();
     runtime = {
       ...runtime,
-      status: cancelled ? "cancelled" : "failed",
+      status: exitCode === 143 ? "cancelled" : "failed",
       detail: message,
       findings: recoveredFindings,
       error: message,
@@ -719,5 +726,5 @@ void main().catch((error) => {
     writeVulnHunterRuntime(outputDirForSignal, runtime);
   }
   process.stderr.write(`[vulnhunter] ${message}\n`);
-  process.exitCode = cancelled ? 143 : 1;
+  process.exitCode = exitCode;
 });
