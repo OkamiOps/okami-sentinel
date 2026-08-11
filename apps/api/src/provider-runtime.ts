@@ -31,6 +31,10 @@ import type { CredentialVault, SecretRedactorRegistry } from "./credentials/cred
 import { createSystemCredentialVault } from "./credentials/system-credential-vault.js";
 import { SystemXaiOAuthCredentialStore } from "./credentials/system-xai-oauth-credential-store.js";
 import { globalSecretRedactor } from "./redaction.js";
+import {
+  createScanCompatibilityResolver,
+  type ScanCompatibilityResolver,
+} from "./connections/scan-compatibility.js";
 
 export interface ProviderRuntime {
   vault: CredentialVault;
@@ -39,6 +43,7 @@ export interface ProviderRuntime {
   connections: ConnectionsService;
   authFlows: AuthFlowService;
   launchPlans: LaunchPlanResolver;
+  compatibility: ScanCompatibilityResolver;
   /** Server-internal only: the worker uses it after immutable-plan validation. */
   xaiOAuthTokenResolver: Pick<XaiOAuthFlow, "getAccessToken">;
 }
@@ -111,6 +116,13 @@ export function createProviderRuntime(
     writeSnapshot: (snapshot) => store.writeSnapshot(snapshot),
     now: dependencies.now,
   });
+  const compatibility = createScanCompatibilityResolver({
+    getConnection: (id) => store.get(id),
+    getModel: (connectionId, modelId) => store.getModel(connectionId, modelId),
+    getLatestCapabilityCheck: (connectionId, modelId, protocol) =>
+      store.getLatestCapabilityCheck(connectionId, modelId, protocol),
+    now: dependencies.now,
+  });
 
   return {
     vault,
@@ -119,6 +131,7 @@ export function createProviderRuntime(
     connections,
     authFlows,
     launchPlans,
+    compatibility,
     xaiOAuthTokenResolver: {
       getAccessToken: (connectionId, signal) => xaiFlow.getAccessToken(connectionId, signal),
     },

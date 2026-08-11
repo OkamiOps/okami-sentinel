@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import Database from "better-sqlite3";
-import type { CreateProviderConnectionRequest, ProviderConnection } from "@csb/shared";
+import type {
+  CreateProviderConnectionRequest,
+  ProviderConnection,
+  ResolveScanCompatibilityRequest,
+} from "@csb/shared";
 import {
   deleteConnectionRecord,
   getConnection,
@@ -571,6 +575,62 @@ test("managed authentication routes are CSRF protected and expose only safe flow
       "cancel:conn-local:flow-1",
       "disconnect:conn-local",
     ]);
+  } finally {
+    db.close();
+  }
+});
+
+test("scan compatibility is a read-only server decision and never needs a CSRF token", async () => {
+  const { db } = fixture();
+  const service: ConnectionsService = {
+    list: () => [runtimeConnection()],
+    get: () => runtimeConnection(),
+    create: async () => runtimeConnection(),
+    update: async () => runtimeConnection(),
+    remove: async () => false,
+    inspect: async () => null,
+    listModels: () => [],
+    refreshModels: async () => null,
+    probe: async () => null,
+  };
+  const calls: ResolveScanCompatibilityRequest[] = [];
+  const api = createConnectionsApp({
+    service,
+    compatibility: {
+      resolve(input) {
+        calls.push(input);
+        return {
+          ...input.selection,
+          eligible: false,
+          reasons: ["capability_probe_missing"],
+        };
+      },
+    },
+  });
+  try {
+    const request: ResolveScanCompatibilityRequest = {
+      engine: "mantis",
+      selection: {
+        connectionId: "conn-local",
+        modelSelectionMode: "catalog",
+        modelId: "model-a",
+      },
+    };
+    const response = await api.request("/connections/compatibility", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    });
+
+    const responseBody = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(responseBody));
+    assert.equal(response.headers.get("Cache-Control"), "no-store");
+    assert.deepEqual(responseBody, {
+      ...request.selection,
+      eligible: false,
+      reasons: ["capability_probe_missing"],
+    });
+    assert.deepEqual(calls, [request]);
   } finally {
     db.close();
   }

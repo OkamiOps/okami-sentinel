@@ -3,6 +3,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { Hono, type Context } from "hono";
 import type {
   CreateProviderConnectionRequest,
+  ResolveScanCompatibilityRequest,
   UpdateProviderConnectionRequest,
 } from "@csb/shared";
 import { globalSecretRedactor, redactErrorMessage } from "./redaction.js";
@@ -16,10 +17,12 @@ import {
   AuthFlowServiceError,
   type AuthFlowService,
 } from "./connections/auth-flow-service.js";
+import type { ScanCompatibilityResolver } from "./connections/scan-compatibility.js";
 
 export interface ConnectionsApiDependencies {
   service: ConnectionsService;
   authFlows?: AuthFlowService;
+  compatibility?: ScanCompatibilityResolver;
 }
 
 export function createConnectionsApp(
@@ -30,6 +33,7 @@ export function createConnectionsApp(
       vault: createSystemCredentialVault({ redactor: globalSecretRedactor }),
     }),
     authFlows: supplied?.authFlows,
+    compatibility: supplied?.compatibility,
   };
   const csrfToken = randomBytes(32).toString("base64url");
   const connections = new Hono();
@@ -61,6 +65,20 @@ export function createConnectionsApp(
       const models = deps.service.listModels(connectionId(c.req.param("id")));
       if (models === null) return c.json({ error: "connection_not_found" }, 404);
       return c.json({ models });
+    } catch (error) {
+      return connectionError(c, error);
+    }
+  });
+
+  connections.post("/connections/compatibility", async (c) => {
+    try {
+      if (deps.compatibility === undefined) {
+        throw new ConnectionServiceError("invalid_model_selection");
+      }
+      const input = compatibilityRequest(
+        await requestJson<ResolveScanCompatibilityRequest>(c.req.raw),
+      );
+      return c.json(deps.compatibility.resolve(input));
     } catch (error) {
       return connectionError(c, error);
     }
@@ -234,6 +252,37 @@ function hasValidCsrfToken(value: string | undefined, token: string): boolean {
   const expected = Buffer.from(token);
   if (supplied.byteLength !== expected.byteLength) return false;
   return timingSafeEqual(supplied, expected);
+}
+
+function compatibilityRequest(value: ResolveScanCompatibilityRequest): ResolveScanCompatibilityRequest {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !["codex-security", "mantis", "vulnhunter"].includes(value.engine) ||
+    typeof value.selection !== "object" ||
+    value.selection === null ||
+    !/^[0-9a-z-]{1,100}$/i.test(value.selection.connectionId) ||
+    (value.selection.modelSelectionMode !== "catalog" &&
+      value.selection.modelSelectionMode !== "runtime-default") ||
+    (value.selection.modelId !== null &&
+      (typeof value.selection.modelId !== "string" ||
+        value.selection.modelId.length === 0 ||
+        value.selection.modelId.length > 320 ||
+        /[\u0000-\u001F\u007F]/.test(value.selection.modelId))) ||
+    (value.remoteRepositoryConfirmed !== undefined &&
+      typeof value.remoteRepositoryConfirmed !== "boolean")
+  ) throw new ConnectionServiceError("invalid_model_selection");
+  return {
+    engine: value.engine,
+    selection: {
+      connectionId: value.selection.connectionId,
+      modelSelectionMode: value.selection.modelSelectionMode,
+      modelId: value.selection.modelId,
+    },
+    ...(value.remoteRepositoryConfirmed === undefined
+      ? {}
+      : { remoteRepositoryConfirmed: value.remoteRepositoryConfirmed }),
+  };
 }
 
 async function requestJson<T>(request: Request): Promise<T> {

@@ -395,6 +395,7 @@ const providerRuntime = getProviderRuntime();
 app.route("/", createConnectionsApp({
   service: providerRuntime.connections,
   authFlows: providerRuntime.authFlows,
+  compatibility: providerRuntime.compatibility,
 }));
 
 app.get("/health", async (c) => {
