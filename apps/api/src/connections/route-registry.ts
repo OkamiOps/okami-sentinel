@@ -32,6 +32,7 @@ import {
   createCursorRouteAdapter,
   type CursorCatalogClient,
 } from "./cursor-route-adapter.js";
+import type { XaiOAuthRouteAdapter } from "./xai-oauth-adapter.js";
 import type {
   DiscoveryResult,
   RouteAdapter,
@@ -159,6 +160,14 @@ const REMOTE_ROUTE_MANIFESTS: readonly RouteManifest[] = Object.freeze([
   }),
 ]);
 
+const XAI_OAUTH_ROUTE_MANIFEST = immutableRouteManifest({
+  routeKind: "xai-oauth",
+  providerKind: "xai",
+  transport: "http-inference",
+  protocol: "xai-oauth-responses",
+  authKinds: ["device-code"],
+});
+
 export interface RouteRegistry {
   readonly manifests: readonly RouteManifest[];
   get(routeKind: string): RouteAdapter | undefined;
@@ -175,18 +184,23 @@ export interface RouteRegistryDependencies {
   resolveModel?: HttpRouteAdapterDependencies["resolveModel"];
   http?: Omit<HttpRouteAdapterDependencies, "vault" | "resolveModel" | "now">;
   cursor?: CursorCatalogClient;
+  /** Sentinel-owned device flow. This route never falls back to Grok Build. */
+  xaiOAuth?: XaiOAuthRouteAdapter;
 }
 
 export function createRouteRegistry(
   dependencies: RouteRegistryDependencies = {},
 ): RouteRegistry {
   const adapters = new Map<string, RouteAdapter>();
-  const availableManifests = dependencies.vault === undefined
-    ? LOCAL_ROUTE_MANIFESTS
-    : Object.freeze([
+  const availableManifests = Object.freeze([
       ...LOCAL_ROUTE_MANIFESTS,
-      ...HTTP_ROUTE_KINDS.map((routeKind) => HTTP_ROUTE_MANIFESTS[routeKind]),
-      ...REMOTE_ROUTE_MANIFESTS,
+      ...(dependencies.vault === undefined
+        ? []
+        : [
+          ...HTTP_ROUTE_KINDS.map((routeKind) => HTTP_ROUTE_MANIFESTS[routeKind]),
+          ...REMOTE_ROUTE_MANIFESTS,
+        ]),
+      ...(dependencies.xaiOAuth === undefined ? [] : [XAI_OAUTH_ROUTE_MANIFEST]),
     ]);
   const manifests = new Map<string, RouteManifest>(
     availableManifests.map((manifest) => [manifest.routeKind, manifest]),
@@ -229,6 +243,7 @@ export function createRouteRegistry(
       now,
     }));
   }
+  if (dependencies.xaiOAuth !== undefined) registry.register(dependencies.xaiOAuth);
   return registry;
 }
 

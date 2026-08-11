@@ -6,6 +6,7 @@ import {
   createXaiOAuthAdapter,
   type XaiOAuthAdapterFlow,
 } from "./xai-oauth-adapter.js";
+import { createRouteRegistry } from "./route-registry.js";
 
 function connection(): StoredProviderConnection {
   return {
@@ -151,6 +152,21 @@ test("xAI OAuth adapter maps expired credentials and disconnects without returni
   });
   assert.deepEqual(await adapter.disconnectAuth?.(connection()), { status: "revoked" });
   assert.deepEqual(flow.calls, ["disconnect:conn-xai"]);
+});
+
+test("production registry exposes the direct xAI device route only when its adapter is supplied", () => {
+  const adapter = createXaiOAuthAdapter({ flow: new FakeXaiFlow() });
+  const registry = createRouteRegistry({ xaiOAuth: adapter });
+
+  assert.deepEqual(registry.getManifest("xai-oauth"), {
+    routeKind: "xai-oauth",
+    providerKind: "xai",
+    transport: "http-inference",
+    protocol: "xai-oauth-responses",
+    authKinds: ["device-code"],
+  });
+  assert.equal(registry.get("xai-oauth"), adapter);
+  assert.equal(registry.get("xai-grok-build-local")?.protocol, "grok-build-cli");
 });
 
 test("xAI model discovery has an authoritative deadline when its transport ignores abort", async () => {
