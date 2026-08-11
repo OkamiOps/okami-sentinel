@@ -137,7 +137,7 @@ flowchart LR
 - An OS credential store supported by the local keychain adapter for secret-backed connections
 - At least one configured route under **Settings → Connections**. Available presets include:
   - OpenAI local Codex, ChatGPT browser/device authentication, and OpenAI API;
-  - xAI local Grok detection, direct Sentinel-owned device OAuth, and xAI API;
+  - xAI local Grok detection, device OAuth orchestrated locally by Sentinel, and xAI API;
   - Claude Code local session and Anthropic API;
   - Cursor local detection and Cursor Background Agents API;
   - OpenRouter, Gemini, DeepSeek, MiniMax Token Plan, Xiaomi MiMo Token Plan, and custom OpenAI- or Anthropic-compatible APIs.
@@ -195,12 +195,12 @@ At startup, the API indexes compatible scans already present in the configured C
 | Provider family | Connection routes | Scanner availability |
 |---|---|---|
 | **OpenAI** | Local Codex, ChatGPT browser OAuth, ChatGPT device code, API key | Codex Security, Mantis, VulnHunter according to the resolved route |
-| **xAI** | Direct device OAuth owned by Sentinel, API key, local Grok detection | OAuth/API may run Mantis and VulnHunter after capability proof. Grok local scanning remains blocked until its plugin/hook execution surface can be isolated. |
+| **xAI** | Device OAuth orchestrated locally by Sentinel, API key, local Grok detection | OAuth/API may run Mantis and VulnHunter after capability proof. Grok local scanning remains blocked until its plugin/hook execution surface can be isolated. |
 | **Anthropic** | Claude Code existing session, Anthropic API | Claude local runs Mantis through Sentinel's MCP-only snapshot boundary. API models require a successful capability probe. |
 | **Cursor** | Local CLI detection, Background Agents API | Connection and live catalog support are available; scanner execution is not advertised until the remote/local artifact contract is complete. |
 | **Other HTTP** | OpenRouter, Gemini, DeepSeek, MiniMax Token Plan, MiMo Token Plan, custom compatible URLs | Mantis/VulnHunter only when the exact model passes Sentinel's bounded tool, artifact, cancellation, and snapshot probe. |
 
-Models come from the authenticated provider catalog. The only runtime-default exception is an explicitly configured Claude Code local session. Secrets and OAuth tokens are write-only through the API, stored in the OS credential vault, and represented in SQLite only by opaque references. Direct xAI OAuth uses Sentinel's own device flow and does not invoke or depend on Grok CLI.
+Models come from the authenticated provider catalog. The only runtime-default exception is an explicitly configured Claude Code local session. Secrets and OAuth tokens are write-only through the API, stored in the OS credential vault, and represented in SQLite only by opaque references. Sentinel orchestrates xAI's public device flow locally and does not invoke or depend on Grok CLI; model access is accepted only after live catalog and capability checks succeed.
 
 ## Local guardrails
 

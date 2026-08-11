@@ -15,8 +15,10 @@ test("xAI OAuth transport posts only to pinned auth.x.ai endpoints and strips ra
       if (String(url).endsWith("/device/code")) {
         return new Response(JSON.stringify({
           device_code: "private-device-code",
-          verification_uri: "https://auth.x.ai/activate",
-          verification_uri_complete: "https://auth.x.ai/activate?code=private-device-code",
+          // xAI issues the device code on auth.x.ai, but the current provider
+          // response sends the operator to its separate accounts origin.
+          verification_uri: "https://accounts.x.ai/oauth2/device",
+          verification_uri_complete: "https://accounts.x.ai/oauth2/device?user_code=private-device-code",
           user_code: "ABCD-1234",
           expires_in: 900,
           interval: 5,
@@ -45,8 +47,8 @@ test("xAI OAuth transport posts only to pinned auth.x.ai endpoints and strips ra
 
   assert.deepEqual(device, {
     deviceCode: "private-device-code",
-    verificationUri: "https://auth.x.ai/activate",
-    verificationUriComplete: "https://auth.x.ai/activate?code=private-device-code",
+    verificationUri: "https://accounts.x.ai/oauth2/device",
+    verificationUriComplete: "https://accounts.x.ai/oauth2/device?user_code=private-device-code",
     userCode: "ABCD-1234",
     expiresIn: 900,
     interval: 5,

@@ -94,10 +94,11 @@ test("xAI device OAuth uses the pinned public client, persistent slow-down, and 
     revocationPath: "/oauth2/revoke",
     clientId: "b1a00492-073a-47ea-816f-4c329264a828",
     scopes: "openid profile email offline_access grok-cli:access api:access",
+    verificationOrigins: ["https://auth.x.ai", "https://accounts.x.ai"],
     inferenceOrigin: "https://api.x.ai",
     modelsPath: "/v1/models",
     responsesPath: "/v1/responses",
-    allowedOrigins: ["https://auth.x.ai", "https://api.x.ai"],
+    allowedOrigins: ["https://auth.x.ai", "https://accounts.x.ai", "https://api.x.ai"],
   });
   assert.deepEqual(calls, [
     { kind: "device", url: "https://auth.x.ai/oauth2/device/code" },

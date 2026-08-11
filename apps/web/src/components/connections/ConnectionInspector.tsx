@@ -11,7 +11,7 @@ import { KeyRound, Link2, LogIn, Pencil, Play, PlugZap, RefreshCw, ShieldCheck, 
 
 import { api } from "../../api";
 import { type TranslationKey, useI18n } from "../../i18n";
-import { authFlowPresentation, createAuthFlowPoller, disconnectMessageForStatus, isTerminalAuthFlow, probeSelectionForModel } from "../../lib/connection-inspector";
+import { authFlowPresentation, connectionOperationErrorKey, createAuthFlowPoller, disconnectMessageForStatus, isTerminalAuthFlow, probeSelectionForModel } from "../../lib/connection-inspector";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { EmptyState } from "../ui";
@@ -40,6 +40,9 @@ type MessageKey =
   | "connections.operations.probePassed"
   | "connections.operations.probeFailed"
   | "connections.operations.noModels"
+  | "connections.operations.authMetadataInvalid"
+  | "connections.operations.secureStorageUnavailable"
+  | "connections.operations.providerUnavailable"
   | "connections.operations.error";
 
 const statusLabels: Record<ProviderConnection["status"], TranslationKey> = {
@@ -157,8 +160,8 @@ export function ConnectionInspector({ connection, onConnectionChange, onEdit, on
     setMessage(null);
     try {
       await work();
-    } catch {
-      setMessage({ key: "connections.operations.error", tone: "error" });
+    } catch (error) {
+      setMessage({ key: connectionOperationErrorKey(error), tone: "error" });
     } finally {
       setBusy(null);
     }

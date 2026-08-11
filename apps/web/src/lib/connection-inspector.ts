@@ -2,6 +2,21 @@ import type { ProviderAuthFlow, ProviderDisconnectResponse, ProviderModel, ScanC
 
 export type ManagedAuthMode = "browser-oauth" | "device-code";
 
+export type ConnectionOperationErrorKey =
+  | "connections.operations.authMetadataInvalid"
+  | "connections.operations.secureStorageUnavailable"
+  | "connections.operations.providerUnavailable"
+  | "connections.operations.error";
+
+/** Maps only server-approved codes; arbitrary upstream text stays hidden. */
+export function connectionOperationErrorKey(error: unknown): ConnectionOperationErrorKey {
+  const code = error instanceof Error ? error.message : null;
+  if (code === "oauth_metadata_invalid") return "connections.operations.authMetadataInvalid";
+  if (code === "secure_storage_unavailable") return "connections.operations.secureStorageUnavailable";
+  if (code === "provider_unreachable") return "connections.operations.providerUnavailable";
+  return "connections.operations.error";
+}
+
 export interface AuthFlowClient {
   startAuth(connectionId: string, mode: ManagedAuthMode): Promise<ProviderAuthFlow>;
   getAuth(connectionId: string, flowId: string): Promise<ProviderAuthFlow>;

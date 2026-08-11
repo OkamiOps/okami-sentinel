@@ -4,10 +4,30 @@ import type { ProviderAuthFlow, ProviderModel } from "@csb/shared";
 
 import {
   authFlowPresentation,
+  connectionOperationErrorKey,
   createAuthFlowPoller,
   disconnectMessageForStatus,
   probeSelectionForModel,
 } from "./connection-inspector.js";
+
+test("maps safe provider auth errors to actionable localized messages", () => {
+  assert.equal(
+    connectionOperationErrorKey(new Error("oauth_metadata_invalid")),
+    "connections.operations.authMetadataInvalid",
+  );
+  assert.equal(
+    connectionOperationErrorKey(new Error("secure_storage_unavailable")),
+    "connections.operations.secureStorageUnavailable",
+  );
+  assert.equal(
+    connectionOperationErrorKey(new Error("provider_unreachable")),
+    "connections.operations.providerUnavailable",
+  );
+  assert.equal(
+    connectionOperationErrorKey(new Error("private upstream diagnostics")),
+    "connections.operations.error",
+  );
+});
 
 function flow(status: ProviderAuthFlow["status"] = "pending"): ProviderAuthFlow {
   return {

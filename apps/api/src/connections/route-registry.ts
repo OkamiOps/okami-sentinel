@@ -184,7 +184,7 @@ export interface RouteRegistryDependencies {
   resolveModel?: HttpRouteAdapterDependencies["resolveModel"];
   http?: Omit<HttpRouteAdapterDependencies, "vault" | "resolveModel" | "now">;
   cursor?: CursorCatalogClient;
-  /** Sentinel-owned device flow. This route never falls back to Grok Build. */
+  /** Sentinel-orchestrated device flow. This route never falls back to Grok Build. */
   xaiOAuth?: XaiOAuthRouteAdapter;
 }
 

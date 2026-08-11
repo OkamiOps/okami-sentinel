@@ -15,10 +15,11 @@ export const XAI_PUBLIC_OAUTH_PRESET = Object.freeze({
   revocationPath: "/oauth2/revoke",
   clientId: "b1a00492-073a-47ea-816f-4c329264a828",
   scopes: "openid profile email offline_access grok-cli:access api:access",
+  verificationOrigins: Object.freeze(["https://auth.x.ai", "https://accounts.x.ai"]),
   inferenceOrigin: "https://api.x.ai",
   modelsPath: "/v1/models",
   responsesPath: "/v1/responses",
-  allowedOrigins: Object.freeze(["https://auth.x.ai", "https://api.x.ai"]),
+  allowedOrigins: Object.freeze(["https://auth.x.ai", "https://accounts.x.ai", "https://api.x.ai"]),
 } as const);
 
 const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
@@ -891,7 +892,7 @@ function normalizeDeviceResponse(value: XaiDeviceCodeResponse): Omit<XaiDeviceCo
 function safeVerificationUrl(value: string): string | null {
   try {
     const url = new URL(value);
-    if (url.origin !== XAI_PUBLIC_OAUTH_PRESET.issuer) return null;
+    if (!isVerificationOrigin(url.origin)) return null;
     return `${url.origin}${url.pathname}`;
   } catch {
     return null;
@@ -901,10 +902,14 @@ function safeVerificationUrl(value: string): string | null {
 function safeCompleteVerificationUrl(value: string): string | null {
   try {
     const url = new URL(value);
-    return url.origin === XAI_PUBLIC_OAUTH_PRESET.issuer ? url.toString() : null;
+    return isVerificationOrigin(url.origin) ? url.toString() : null;
   } catch {
     return null;
   }
+}
+
+function isVerificationOrigin(value: string): boolean {
+  return XAI_PUBLIC_OAUTH_PRESET.verificationOrigins.some((origin) => origin === value);
 }
 
 function normalizeInterval(value: number | undefined): number {
