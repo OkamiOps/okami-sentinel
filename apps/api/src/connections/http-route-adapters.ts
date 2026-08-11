@@ -23,9 +23,12 @@ import {
   discoverAnthropicModels,
   discoverDeepSeekModels,
   discoverGeminiModels,
+  discoverMimoTokenPlanModels,
   discoverOpenAiModels,
   discoverOpenRouterModels,
   discoverXaiModels,
+  isMimoTokenPlanApiKey,
+  mimoTokenPlanOpenAiBase,
   unknownCapabilities,
   withBundleRedaction,
   type DiscoveryCredentials,
@@ -182,7 +185,7 @@ export async function discoverModels(
         headers: credentials.apiKey === undefined ? undefined : { "X-Api-Key": credentials.apiKey },
       }, transport);
     case "mimo-token-plan":
-      return discoverMimoModels(connection, credentials, transport);
+      return discoverMimoTokenPlanModels(credentials, transport);
     default:
       return unsupportedDiscovery();
   }
@@ -211,6 +214,14 @@ export async function inspectHttpRoute(
   if (metadata === null) return unavailableInspection("protocol_unsupported");
   const bundle = await readBundle(connection, vault);
   if ("safeError" in bundle) return unavailableInspection(bundle.safeError.code, metadata);
+  if (connection.routeKind === "mimo-token-plan") {
+    if (!isMimoTokenPlanApiKey(bundle.bundle.apiKey)) {
+      return unavailableInspection("credential_rejected", metadata);
+    }
+    if (mimoTokenPlanOpenAiBase(bundle.bundle.baseUrl) === null) {
+      return unavailableInspection("model_discovery_unsupported", metadata);
+    }
+  }
   if (!hasCredential(bundle.bundle)) return unavailableInspection("credential_rejected", metadata);
   if (metadata.endpointKind === "custom" && !hasCustomEndpoint(bundle.bundle)) {
     return unavailableInspection("model_discovery_unsupported", metadata);
@@ -362,23 +373,6 @@ function discoveryCredentials(
   };
 }
 
-function discoverMimoModels(
-  connection: StoredProviderConnection,
-  credentials: DiscoveryCredentials,
-  transport: HttpFetch,
-): Promise<HttpModelDiscoveryResult> {
-  if (credentials.baseUrl === undefined && credentials.discoveryUrl === undefined) {
-    return Promise.resolve(unsupportedDiscovery());
-  }
-  if (connection.protocol === "anthropic-messages") {
-    return discoverAnthropicModels(credentials, transport);
-  }
-  if (connection.protocol === "openai-chat" || connection.protocol === "openai-responses") {
-    return discoverOpenAiModels(credentials, transport);
-  }
-  return Promise.resolve(unsupportedDiscovery());
-}
-
 function routeMetadata(connection: StoredProviderConnection): RouteMetadata | null {
   return routeMetadataFor(connection.routeKind, connection.protocol);
 }
@@ -418,13 +412,13 @@ function routeMetadataFor(
       return { protocol: "anthropic-messages", inferencePath: "/v1/messages", endpointKind: "preset" };
     case "mimo-token-plan":
       if (connectionProtocol === "anthropic-messages") {
-        return { protocol: "anthropic-messages", inferencePath: "/v1/messages", endpointKind: "custom" };
+        return { protocol: "anthropic-messages", inferencePath: "/v1/messages", endpointKind: "preset" };
       }
       if (connectionProtocol === "openai-chat" || connectionProtocol === "openai-responses") {
         return {
           protocol: connectionProtocol,
           inferencePath: connectionProtocol === "openai-responses" ? "/responses" : "/chat/completions",
-          endpointKind: "custom",
+          endpointKind: "preset",
         };
       }
       return null;

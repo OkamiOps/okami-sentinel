@@ -112,6 +112,11 @@ const OFFICIAL_XAI_MODELS_URL = "https://api.x.ai/v1/models";
 const OFFICIAL_DEEPSEEK_MODELS_URL = "https://api.deepseek.com/models";
 const OFFICIAL_ANTHROPIC_MODELS_URL = "https://api.anthropic.com/v1/models";
 const OFFICIAL_OPENAI_BASE_URL = "https://api.openai.com/v1";
+const MIMO_TOKEN_PLAN_OPENAI_BASES = new Set([
+  "https://token-plan-cn.xiaomimimo.com/v1",
+  "https://token-plan-sgp.xiaomimimo.com/v1",
+  "https://token-plan-ams.xiaomimimo.com/v1",
+]);
 
 /**
  * Fetches a JSON response with the provider boundary's non-negotiable safety
@@ -215,6 +220,73 @@ export async function discoverOpenAiModels(
       }, sensitiveValues),
     });
   }, credentials.redactor);
+}
+
+/**
+ * MiMo Token Plan publishes a one-page OpenAI-compatible catalog for the
+ * region selected by the user. Its Anthropic base is inference-only, so this
+ * derives the paired OpenAI base without ever accepting a custom host.
+ */
+export async function discoverMimoTokenPlanModels(
+  credentials: DiscoveryCredentials,
+  transport: HttpFetch = fetch,
+): Promise<HttpModelDiscoveryResult> {
+  const baseUrl = mimoTokenPlanOpenAiBase(credentials.baseUrl);
+  if (baseUrl === null) return unsupportedDiscovery();
+  const apiKey = credentials.apiKey;
+  if (typeof apiKey !== "string" || !isMimoTokenPlanApiKey(apiKey)) {
+    return failedDiscovery({ code: "credential_rejected" });
+  }
+
+  const bundle = bundleFromCredentials(credentials);
+  return withBundleRedaction(bundle, async (secretValues) => {
+    const response = await safeFetchJson({
+      url: `${baseUrl}/models`,
+      headers: { "api-key": apiKey },
+      allowInsecureLocalhost: false,
+      transport,
+      secretValues,
+      redactor: credentials.redactor,
+    });
+    if ("safeError" in response) return failedDiscovery(response.safeError);
+
+    const payload = recordOf(response.data);
+    const rows = payload?.data;
+    if (
+      payload?.object !== "list" ||
+      !Array.isArray(rows) ||
+      !rows.every((row) => {
+        const model = recordOf(row);
+        return model !== null && stringAt(model, "id") !== null;
+      })
+    ) return failedDiscovery({ code: "protocol_unsupported" });
+
+    const bodySecrets = sensitiveBodyValues(response.data);
+    const bodyScope = `connections/http-body/${randomUUID()}`;
+    const redactor = credentials.redactor ?? globalSecretRedactor;
+    redactor.register(bodyScope, bodySecrets);
+    try {
+      return successfulDiscovery(normalizeOpenAiRows(rows, {
+        connectionId: credentials.connectionId ?? "unbound",
+        discoveredAt: (credentials.now ?? (() => new Date()))().toISOString(),
+      }, [...secretValues, ...bodySecrets]), 1);
+    } finally {
+      redactor.unregister(bodyScope);
+    }
+  }, credentials.redactor);
+}
+
+/** Returns the canonical OpenAI base for an allowed MiMo Token Plan region. */
+export function mimoTokenPlanOpenAiBase(baseUrl: string | undefined): string | null {
+  if (baseUrl === undefined) return null;
+  const openAiBase = baseUrl.endsWith("/anthropic")
+    ? baseUrl.slice(0, -"/anthropic".length)
+    : baseUrl;
+  return MIMO_TOKEN_PLAN_OPENAI_BASES.has(openAiBase) ? openAiBase : null;
+}
+
+export function isMimoTokenPlanApiKey(apiKey: string | undefined): boolean {
+  return typeof apiKey === "string" && /^tp-\S+$/.test(apiKey);
 }
 
 /** xAI's API may return OpenAI-style `data` or a top-level `models` array. */

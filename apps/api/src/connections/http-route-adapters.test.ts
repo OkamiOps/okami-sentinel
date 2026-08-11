@@ -251,7 +251,7 @@ test("Anthropic uses its authenticated model pages while MiMo without a regional
     transport: anthropicTransport,
   });
   const mimo = await discoverModels(connection("mimo-token-plan"), {
-    vault: fakeVault({ apiKey: "mimo-secret" }),
+    vault: fakeVault({ apiKey: "tp-mimo-secret" }),
     transport: fakeFetch({}),
   });
 
@@ -259,7 +259,131 @@ test("Anthropic uses its authenticated model pages while MiMo without a regional
   assert.equal(anthropicTransport.calls[0]?.init.headers?.["x-api-key"], "anthropic-secret");
   assert.equal(mimo.safeError?.code, "model_discovery_unsupported");
   assert.equal(JSON.stringify([anthropic, mimo]).includes("anthropic-secret"), false);
-  assert.equal(JSON.stringify([anthropic, mimo]).includes("mimo-secret"), false);
+  assert.equal(JSON.stringify([anthropic, mimo]).includes("tp-mimo-secret"), false);
+});
+
+test("MiMo discovers exactly one authenticated catalog from the selected OpenAI Token Plan region", async () => {
+  const tokenPlanKey = "tp-mimo-secret";
+  const transport = fakeFetch({
+    "GET https://token-plan-sgp.xiaomimimo.com/v1/models": json(200, {
+      object: "list",
+      data: [{ id: "account-visible" }],
+      has_more: true,
+      last_id: "account-visible",
+    }),
+  });
+
+  const result = await discoverModels(connection("mimo-token-plan"), {
+    vault: fakeVault({
+      apiKey: tokenPlanKey,
+      baseUrl: "https://token-plan-sgp.xiaomimimo.com/v1",
+      discoveryUrl: "https://attacker.example/models",
+    }),
+    transport,
+  });
+
+  assert.deepEqual(result.models.map((model) => model.id), ["account-visible"]);
+  assert.equal(result.pageCount, 1);
+  assert.deepEqual(transport.calls.map((call) => call.url), [
+    "https://token-plan-sgp.xiaomimimo.com/v1/models",
+  ]);
+  assert.equal(transport.calls[0]?.init.headers?.["api-key"], tokenPlanKey);
+  assert.equal(transport.calls[0]?.init.headers?.Authorization, undefined);
+  assert.equal(JSON.stringify(result).includes(tokenPlanKey), false);
+
+  const empty = await discoverModels(connection("mimo-token-plan"), {
+    vault: fakeVault({
+      apiKey: tokenPlanKey,
+      baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+    }),
+    transport: fakeFetch({
+      "GET https://token-plan-cn.xiaomimimo.com/v1/models": json(200, {
+        object: "list",
+        data: [],
+      }),
+    }),
+  });
+  assert.deepEqual(empty.models, []);
+  assert.equal(empty.safeError, undefined);
+  assert.equal(empty.pageCount, 1);
+});
+
+test("MiMo derives the paired OpenAI catalog from an Anthropic Token Plan base", async () => {
+  const tokenPlanKey = "tp-mimo-secret";
+  const transport = fakeFetch({
+    "GET https://token-plan-ams.xiaomimimo.com/v1/models": json(200, {
+      object: "list",
+      data: [{ id: "account-visible" }],
+    }),
+  });
+  const anthropicConnection = {
+    ...connection("mimo-token-plan"),
+    protocol: "anthropic-messages" as const,
+  };
+
+  const result = await discoverModels(anthropicConnection, {
+    vault: fakeVault({
+      apiKey: tokenPlanKey,
+      baseUrl: "https://token-plan-ams.xiaomimimo.com/v1/anthropic",
+      discoveryUrl: "https://attacker.example/models",
+    }),
+    transport,
+  });
+  const inspection = await inspectHttpRoute(anthropicConnection, fakeVault({
+    apiKey: tokenPlanKey,
+    baseUrl: "https://token-plan-ams.xiaomimimo.com/v1/anthropic",
+  }));
+
+  assert.deepEqual(result.models.map((model) => model.id), ["account-visible"]);
+  assert.deepEqual(transport.calls.map((call) => call.url), [
+    "https://token-plan-ams.xiaomimimo.com/v1/models",
+  ]);
+  assert.equal(transport.calls[0]?.init.headers?.["api-key"], tokenPlanKey);
+  assert.equal(inspection.inferencePath, "/v1/messages");
+  assert.equal(JSON.stringify([result, inspection]).includes(tokenPlanKey), false);
+});
+
+test("MiMo fails closed for non-plan keys, unapproved regions, and invalid catalog shapes", async () => {
+  const nonPlanKeyTransport = fakeFetch({});
+  const nonPlanKey = await discoverModels(connection("mimo-token-plan"), {
+    vault: fakeVault({
+      apiKey: "sk-not-a-token-plan-key",
+      baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+    }),
+    transport: nonPlanKeyTransport,
+  });
+  assert.equal(nonPlanKey.safeError?.code, "credential_rejected");
+  assert.deepEqual(nonPlanKeyTransport.calls, []);
+
+  const unapprovedRegionTransport = fakeFetch({});
+  const unapprovedRegion = await discoverModels(connection("mimo-token-plan"), {
+    vault: fakeVault({
+      apiKey: "tp-mimo-secret",
+      baseUrl: "https://token-plan-unknown.xiaomimimo.com/v1",
+    }),
+    transport: unapprovedRegionTransport,
+  });
+  assert.equal(unapprovedRegion.safeError?.code, "model_discovery_unsupported");
+  assert.deepEqual(unapprovedRegionTransport.calls, []);
+
+  for (const [status, response, expected] of [
+    [401, { object: "list", data: [] }, "credential_rejected"],
+    [403, { object: "list", data: [] }, "endpoint_access_denied"],
+    [200, { object: "not-a-list", data: [{ id: "must-not-escape" }] }, "protocol_unsupported"],
+  ] as const) {
+    const result = await discoverModels(connection("mimo-token-plan"), {
+      vault: fakeVault({
+        apiKey: "tp-mimo-secret",
+        baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+      }),
+      transport: fakeFetch({
+        "GET https://token-plan-cn.xiaomimimo.com/v1/models": json(status, response),
+      }),
+    });
+
+    assert.equal(result.safeError?.code, expected);
+    assert.deepEqual(result.models, []);
+  }
 });
 
 test("a probe only records explicit measurements for a selected model owned by the connection", async () => {
