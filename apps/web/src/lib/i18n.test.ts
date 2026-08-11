@@ -49,3 +49,48 @@ test("localizes every provider preset label and its critical setup guidance", ()
   assert.equal(translate("fr", "connections.preset.mimoRegionUpdateHelp"), "Choisissez explicitement une région avant de remplacer un identifiant Token Plan existant.");
   assert.equal(translate("en", "connections.preset.customBundleReplacementWarning"), "While editing, any sensitive field replaces the entire bundle. Enter the base URL and an API key or header again.");
 });
+
+test("localizes every connection inspector operation without falling back to Portuguese", () => {
+  const operationKeys = [
+    "connections.operations.title",
+    "connections.operations.inspect",
+    "connections.operations.authenticate",
+    "connections.operations.disconnect",
+    "connections.operations.cancelAuth",
+    "connections.operations.inspectionReady",
+    "connections.operations.inspectionUnavailable",
+    "connections.operations.authPending",
+    "connections.operations.authCancelled",
+    "connections.operations.disconnected",
+    "connections.operations.disconnectRevoked",
+    "connections.operations.disconnectLocalRemoved",
+    "connections.operations.disconnectRevokePending",
+    "connections.operations.disconnectNotSupported",
+    "connections.operations.modelsUpdated",
+    "connections.operations.modelsUnavailable",
+    "connections.operations.probePassed",
+    "connections.operations.probeFailed",
+    "connections.operations.noModels",
+    "connections.operations.error",
+    "connections.operations.authCompleted",
+    "connections.operations.authExpired",
+    "connections.operations.authDenied",
+    "connections.operations.authFailed",
+    "connections.operations.authFlow",
+    "connections.operations.openAuth",
+    "connections.operations.userCode",
+    "connections.operations.expiresAt",
+    "connections.operations.modelCatalog",
+    "connections.operations.modelCatalogHelp",
+    "connections.operations.refreshModels",
+    "connections.operations.selectModel",
+    "connections.operations.probe",
+  ] as const;
+  for (const locale of ["pt-BR", "en", "es", "de", "fr"] as const) {
+    for (const key of operationKeys) assert.notEqual(translate(locale, key), "");
+  }
+  assert.equal(translate("en", "connections.operations.inspect"), "Inspect / test");
+  assert.equal(translate("es", "connections.operations.modelCatalog"), "Catálogo de modelos");
+  assert.equal(translate("de", "connections.operations.authFailed"), "Authentifizierung fehlgeschlagen.");
+  assert.equal(translate("fr", "connections.operations.openAuth"), "Ouvrir la page d’authentification sécurisée");
+});
