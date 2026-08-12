@@ -135,9 +135,9 @@ export function SettingsPage() {
       </section>
 
       <div className="mt-4 grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(21rem,.65fr)]">
-        <Panel label="ENGINE REGISTRY" title={t("settings.engineRegistry")} aside={<span className="font-mono text-[8px] uppercase text-muted-foreground">{scanners?.length ?? 0} / {t("settings.catalogSignals")}</span>}>
+        <Panel className="xl:flex xl:h-full xl:flex-col" label="ENGINE REGISTRY" title={t("settings.engineRegistry")} aside={<span className="font-mono text-[8px] uppercase text-muted-foreground">{scanners?.length ?? 0} / {t("settings.catalogSignals")}</span>}>
           <p className="border-b px-4 py-3 text-xs leading-relaxed text-muted-foreground">{t("settings.engineRegistryDescription")}</p>
-          <div role="list">
+          <div role="list" className="xl:grid xl:flex-1 xl:grid-rows-3">
             {(scanners ?? []).map((scanner, index) => <EngineLane key={scanner.engine} scanner={scanner} index={index} />)}
             {!scanners?.length && <div className="p-6 text-center text-xs text-muted-foreground">{t("settings.noScannerSignal")}</div>}
           </div>
