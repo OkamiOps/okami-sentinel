@@ -117,6 +117,10 @@ function fixture() {
       calls.resources.push(path);
       return { sha: "a".repeat(40) };
     },
+    async writeRepositoryJson() { return { id: 1 }; },
+    async createRepositoryToken() {
+      return { token: "installation-token", expiresAt: "2026-08-12T13:00:00.000Z" };
+    },
     clearConnection(connectionId: string) { calls.cleared.push(connectionId); },
   };
   const service = new GitHubAppService({
@@ -280,6 +284,11 @@ function fixtureWithInstallationFailure() {
       listInstallations: async () => { throw new Error("private upstream response"); },
       listInstallationRepositories: async () => [],
       readRepositoryJson: async () => ({}),
+      writeRepositoryJson: async () => ({}),
+      createRepositoryToken: async () => ({
+        token: "installation-token",
+        expiresAt: "2026-08-12T13:00:00.000Z",
+      }),
       clearConnection: () => undefined,
     },
     now: () => new Date("2026-08-12T12:00:00.000Z"),

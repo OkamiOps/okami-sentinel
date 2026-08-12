@@ -41,6 +41,7 @@ import {
   cancelGate,
   getGateArtifact,
   startLocalGate,
+  startRemoteManagedGate,
   subscribeGate,
 } from "./gate-orchestrator.js";
 import {
@@ -189,7 +190,7 @@ const targetPreviewService = new TargetPreviewService({
   loadPolicy: (repository, target, resolved) =>
     protectedPolicyLoader.load(repository, target, resolved),
   executorCapability: (_repository, executor) => executor === "sentinel-managed"
-    ? { ready: false, code: "managed_executor_unavailable" }
+    ? { ready: true, code: "ready" }
     : { ready: false, code: "github_actions_unavailable" },
 });
 
@@ -779,6 +780,9 @@ async function startGuardrailGate(
   }
   if (acceptedPreview === null) {
     throw new TargetPreviewError("target_preview_stale");
+  }
+  if (executor === "sentinel-managed") {
+    return startRemoteManagedGate(acceptedPreview);
   }
   throw new TargetPreviewError("target_preview_executor_unavailable");
 }

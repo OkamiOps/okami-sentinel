@@ -46,7 +46,7 @@ export class GitHubAppClientError extends Error {
 
 export interface GitHubHttpRequest {
   url: string;
-  method: "DELETE" | "GET" | "POST";
+  method: "DELETE" | "GET" | "PATCH" | "POST";
   headers: Readonly<Record<string, string>>;
   body?: string;
 }
@@ -265,6 +265,29 @@ export class GitHubAppClient {
     });
   }
 
+  async writeRepositoryJson(
+    connection: GitHubAppConnectionMetadata,
+    installationId: string,
+    repositoryId: string,
+    path: string,
+    method: "PATCH" | "POST",
+    body: unknown,
+    permissions: GitHubInstallationPermissions,
+  ): Promise<unknown> {
+    const token = await this.createRepositoryToken(
+      connection,
+      installationId,
+      repositoryId,
+      permissions,
+    );
+    return this.#request({
+      method,
+      path: repositoryResourcePath(path),
+      authorization: `Bearer ${token.token}`,
+      body,
+    });
+  }
+
   clearConnection(connectionId: string): void {
     for (const [key, cached] of this.#tokens) {
       if (!key.startsWith(`${connectionId}:`)) continue;
@@ -333,7 +356,7 @@ export class GitHubAppClient {
   }
 
   async #request(input: {
-    method: "DELETE" | "GET" | "POST";
+    method: "DELETE" | "GET" | "PATCH" | "POST";
     path: string;
     authorization?: string;
     body?: unknown;

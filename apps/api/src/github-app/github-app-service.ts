@@ -6,7 +6,10 @@ import type {
   GitHubAppInstallationMetadata,
   GitHubInstallationRepositoryMetadata,
 } from "../gate-store.js";
-import type { ManifestAppExchange } from "./github-app-client.js";
+import type {
+  GitHubInstallationToken,
+  ManifestAppExchange,
+} from "./github-app-client.js";
 import {
   GitHubAppClientError,
   type GitHubInstallationPermissions,
@@ -73,6 +76,21 @@ export interface GitHubAppServiceClient {
     path: string,
     permissions: GitHubInstallationPermissions,
   ): Promise<unknown>;
+  writeRepositoryJson(
+    connection: GitHubAppConnectionMetadata,
+    installationId: string,
+    repositoryId: string,
+    path: string,
+    method: "PATCH" | "POST",
+    body: unknown,
+    permissions: GitHubInstallationPermissions,
+  ): Promise<unknown>;
+  createRepositoryToken(
+    connection: GitHubAppConnectionMetadata,
+    installationId: string,
+    repositoryId: string,
+    permissions: GitHubInstallationPermissions,
+  ): Promise<GitHubInstallationToken>;
   clearConnection(connectionId: string): void;
 }
 
@@ -243,6 +261,42 @@ export class GitHubAppService {
       installationId,
       repositoryId,
       path,
+      permissions,
+    );
+  }
+
+  async writeAuthorizedRepositoryJson(
+    connectionId: string,
+    installationId: string,
+    repositoryId: string,
+    path: string,
+    method: "PATCH" | "POST",
+    body: unknown,
+    permissions: GitHubInstallationPermissions,
+  ): Promise<unknown> {
+    this.requireAuthorizedRepository(connectionId, installationId, repositoryId);
+    return this.#client.writeRepositoryJson(
+      this.#readyConnection(connectionId),
+      installationId,
+      repositoryId,
+      path,
+      method,
+      body,
+      permissions,
+    );
+  }
+
+  async createAuthorizedRepositoryToken(
+    connectionId: string,
+    installationId: string,
+    repositoryId: string,
+    permissions: GitHubInstallationPermissions,
+  ): Promise<GitHubInstallationToken> {
+    this.requireAuthorizedRepository(connectionId, installationId, repositoryId);
+    return this.#client.createRepositoryToken(
+      this.#readyConnection(connectionId),
+      installationId,
+      repositoryId,
       permissions,
     );
   }

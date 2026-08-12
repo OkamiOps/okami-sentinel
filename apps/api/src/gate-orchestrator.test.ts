@@ -3,7 +3,9 @@ import test from "node:test";
 
 import {
   buildGateArtifact,
+  buildGateArtifactV2,
   buildOperationalErrorArtifact,
+  buildScanLineage,
   defaultGuardrailPolicy,
   evaluateGate,
 } from "@csb/gate-core";
@@ -20,10 +22,14 @@ import type {
 import {
   cancelGate,
   startLocalGate,
+  startRemoteManagedGate,
   waitForGate,
   type LocalGateDependencies,
   type LocalGateRequest,
+  type RemoteManagedGateDependencies,
 } from "./gate-orchestrator.js";
+import type { AcceptedGateTargetPreview } from "./guardrails/target-preview.js";
+import type { SentinelManagedExecutionResult } from "./guardrails/sentinel-managed-executor.js";
 
 function changeSet(paths: string[]): ChangeSet {
   return {
@@ -304,6 +310,235 @@ test("turns unavailable github baseline history into an operational error", asyn
   assert.equal(deps.runs.get(gate.id)?.outcome, "error");
   assert.match(deps.runs.get(gate.id)?.error ?? "", /histórico encontrado/);
 });
+
+test("remote managed gate persists frozen identity before execution and publishes only after artifact v2", async () => {
+  const { deps, runs, calls } = remoteDeps();
+  const gate = await startRemoteManagedGate(remotePreview(), deps);
+  await waitForGate(gate.id);
+
+  assert.equal(gate.repositoryPath, null);
+  assert.equal(gate.resolvedBaseSha, "a".repeat(40));
+  assert.equal(gate.resolvedHeadSha, "b".repeat(40));
+  assert.equal(gate.policySha, "a".repeat(40));
+  assert.equal(gate.artifactSchemaVersion, 2);
+  assert.deepEqual(calls, ["execute", "write", "publish"]);
+  const completed = runs.get(gate.id)!;
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.outcome, "bootstrap");
+  assert.equal(completed.publishStatus, "published");
+  assert.equal(completed.materializationState, "released");
+  assert.equal(completed.repositoryPath, null);
+  assert.equal(JSON.stringify(completed).includes("/private/managed"), false);
+});
+
+test("remote managed gate cancellation aborts the executor and linked scan", async () => {
+  let rejectExecution: ((error: Error) => void) | null = null;
+  const held = new Promise<SentinelManagedExecutionResult>((_resolve, reject) => {
+    rejectExecution = reject;
+  });
+  const { deps, runs } = remoteDeps({ execute: async (input) => {
+    await input.hooks.scanStarted(scan("running"));
+    input.signal?.addEventListener("abort", () => {
+      rejectExecution?.(new Error("managed_cancelled"));
+    }, { once: true });
+    return held;
+  } });
+  const gate = await startRemoteManagedGate(remotePreview(), deps);
+  await until(() => runs.get(gate.id)?.scanId === "scan-1");
+
+  assert.equal(cancelGate(gate.id, deps), true);
+  await waitForGate(gate.id);
+  assert.equal(runs.get(gate.id)?.status, "cancelled");
+  assert.equal(runs.get(gate.id)?.artifactPath, null);
+});
+
+function remoteDeps(overrides: {
+  execute?: RemoteManagedGateDependencies["execute"];
+} = {}): {
+  deps: RemoteManagedGateDependencies;
+  runs: Map<string, GateRun>;
+  calls: string[];
+} {
+  const runs = new Map<string, GateRun>();
+  const events = new Map<string, Parameters<RemoteManagedGateDependencies["appendGateEvent"]>[1][]>();
+  const calls: string[] = [];
+  const result = remoteExecutionResult();
+  const deps: RemoteManagedGateDependencies = {
+    createGateId: () => "managed-gate-1",
+    now: () => "2026-08-12T12:00:00.000Z",
+    getRepository: () => remoteRepository(),
+    insertGateRun: (run) => runs.set(run.id, structuredClone(run)),
+    updateGateRun: (id, updates) => {
+      const current = runs.get(id);
+      if (current) runs.set(id, { ...current, ...updates });
+    },
+    getGateRun: (id) => runs.get(id) ?? null,
+    listGateEvents: (id) => events.get(id) ?? [],
+    appendGateEvent: (id, event) => events.set(id, [...(events.get(id) ?? []), event]),
+    execute: overrides.execute ?? (async (input) => {
+      calls.push("execute");
+      await input.hooks.materialized(`sha256:${"c".repeat(64)}`);
+      await input.hooks.scanStarted(scan("running"));
+      await input.hooks.finalize(result);
+      return result;
+    }),
+    cancelScan: () => true,
+    writeArtifact: (_id, artifact) => {
+      calls.push("write");
+      assert.equal(artifact.schemaVersion, 2);
+      return "/gates/managed-gate-1/csb-gate-result.json";
+    },
+    publishCheck: async ({ artifact }) => {
+      calls.push("publish");
+      assert.equal(artifact.schemaVersion, 2);
+      return "created";
+    },
+  };
+  return { deps, runs, calls };
+}
+
+function remoteRepository(): GuardrailRepository {
+  return {
+    repositoryKey: "github:991122",
+    repositoryPath: null,
+    source: "github",
+    displayName: "OkamiOps/private-sentinel",
+    defaultBranch: "main",
+    defaultExecutor: "sentinel-managed",
+    remoteOwner: "OkamiOps",
+    remoteName: "private-sentinel",
+    githubConnectionId: "connection-1",
+    githubInstallationId: "77",
+    githubRepositoryId: "991122",
+    enabled: true,
+    policyPath: ".csb/guardrails.json",
+    lastGateId: null,
+    githubStatus: "not_checked",
+  };
+}
+
+function remotePreview(): AcceptedGateTargetPreview {
+  const policy = defaultGuardrailPolicy();
+  return {
+    previewIdentity: "preview-1",
+    expiresAt: "2026-08-12T12:10:00.000Z",
+    repositoryKey: "github:991122",
+    executor: "sentinel-managed",
+    target: { kind: "pull_request", number: 7 },
+    resolvedTarget: {
+      baseRef: "main",
+      headRef: "refs/pull/7/head",
+      baseSha: "a".repeat(40),
+      headSha: "b".repeat(40),
+      policySha: "a".repeat(40),
+      pullRequestNumber: 7,
+    },
+    policySource: "base",
+    policySha: "a".repeat(40),
+    policyPath: ".csb/guardrails.json",
+    protectedBranches: ["main"],
+    exceptionsCount: 0,
+    executorCapability: { ready: true, code: "ready" },
+    scanPlan: {
+      scopeMode: policy.scope.mode,
+      maxChangedPaths: policy.scope.maxChangedPaths,
+      fallback: policy.scope.fallback,
+      model: policy.scan.model,
+      effort: policy.scan.effort,
+      mode: policy.scan.mode,
+    },
+    costBudget: {
+      maxCostUsd: policy.scan.maxCostUsd,
+      kind: "estimated_ceiling",
+      requestInFlightMayExceed: true,
+    },
+    publication: { eligible: true, protectedBranch: "main", reason: "protected_branch" },
+    policy,
+    exceptions: [],
+    repositoryAuthority: {
+      connectionId: "connection-1",
+      installationId: "77",
+      repositoryId: "991122",
+    },
+  };
+}
+
+function remoteExecutionResult(): SentinelManagedExecutionResult {
+  const policy = defaultGuardrailPolicy();
+  const change = {
+    baseRef: "main",
+    headRef: "refs/pull/7/head",
+    baseSha: "a".repeat(40),
+    headSha: "b".repeat(40),
+    files: [{
+      status: "modified" as const,
+      path: "src/a.ts",
+      previousPath: null,
+      additions: null,
+      deletions: null,
+    }],
+    scanPaths: ["src/a.ts"],
+    scopeMode: "changed" as const,
+    fallbackReason: null,
+  };
+  const artifact = buildGateArtifactV2({
+    gateId: "managed-gate-1",
+    repository: {
+      id: "github:991122",
+      key: "github:991122",
+      owner: "OkamiOps",
+      name: "private-sentinel",
+      defaultBranch: "main",
+      locator: { kind: "github", repositoryId: "991122", owner: "OkamiOps", name: "private-sentinel" },
+    },
+    source: "github",
+    executor: "sentinel-managed",
+    target: { kind: "pull_request", number: 7 },
+    resolvedTarget: remotePreview().resolvedTarget,
+    policySource: "base",
+    changeSet: change,
+    policy,
+    scan: { id: "scan-1", cost: null, status: "completed" },
+    baselineCommit: null,
+    evaluation: {
+      deltas: [],
+      decision: {
+        outcome: "bootstrap",
+        summary: "Baseline initialized with 0 finding(s).",
+        violations: [],
+        warnings: [],
+        exceptionsApplied: [],
+        githubConclusion: "neutral",
+      },
+    },
+    lineage: buildScanLineage({
+      engine: "codex-security",
+      engineVersion: "portable-v1",
+      route: "minimax-token-plan",
+      protocol: "anthropic-messages",
+      provider: "minimax",
+      model: "MiniMax-M3",
+      reasoningEffort: "provider-managed",
+      methodology: "portable-v1",
+      profile: "portable-v1",
+      recipeHash: `sha256:${"d".repeat(64)}`,
+      sourceRevision: `sha256:${"e".repeat(64)}`,
+    }),
+    coverage: {
+      status: "complete",
+      repositoryFileCount: 1,
+      inspectedFileCount: 1,
+      unexaminedFileCount: 0,
+      submodules: [],
+      lfsPointers: [],
+    },
+    snapshot: { identity: `sha256:${"c".repeat(64)}`, materializerVersion: "github-archive-v1" },
+    workflowRun: null,
+    versions: { gateCore: "0.2.0", scanner: "portable-v1" },
+    createdAt: "2026-08-12T12:00:00.000Z",
+  });
+  return { artifact, changeSet: change, scan: scan("completed"), baseline: { kind: "absent" } };
+}
 
 async function until(predicate: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 20; attempt += 1) {

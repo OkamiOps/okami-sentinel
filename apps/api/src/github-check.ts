@@ -2,10 +2,12 @@ import path from "node:path";
 
 import type {
   GateArtifact,
+  GateArtifactV2,
   GateFindingDelta,
   GateFindingLifecycle,
   Severity,
 } from "@csb/shared";
+import { parseGateArtifact } from "@csb/gate-core";
 
 import { defaultGhRunner, type GhRunner } from "./github-cli.js";
 
@@ -13,6 +15,37 @@ export interface PublishGateCheckInput {
   artifact: GateArtifact;
   owner: string;
   repository: string;
+  detailsUrl: string | null;
+}
+
+export interface ManagedGateCheckAuthority {
+  connectionId: string;
+  installationId: string;
+  repositoryId: string;
+}
+
+export interface ManagedGitHubCheckClient {
+  readAuthorizedRepositoryJson(
+    connectionId: string,
+    installationId: string,
+    repositoryId: string,
+    path: string,
+    permissions: { checks: "write" },
+  ): Promise<unknown>;
+  writeAuthorizedRepositoryJson(
+    connectionId: string,
+    installationId: string,
+    repositoryId: string,
+    path: string,
+    method: "PATCH" | "POST",
+    body: unknown,
+    permissions: { checks: "write" },
+  ): Promise<unknown>;
+}
+
+export interface PublishManagedGateCheckInput {
+  artifact: GateArtifactV2;
+  authority: ManagedGateCheckAuthority;
   detailsUrl: string | null;
 }
 
@@ -52,35 +85,7 @@ export async function publishGateCheck(
     throw new Error("GitHub owner or repository is invalid");
   }
 
-  const findings = [...input.artifact.findings].sort(compareFindings);
-  const annotations = findings
-    .map(toAnnotation)
-    .filter((annotation): annotation is CheckAnnotation => annotation !== null)
-    .slice(0, 20);
-  const findingSummary = findings
-    .slice(0, 20)
-    .map((finding) =>
-      `- ${finding.severity.toUpperCase()} · ${finding.lifecycle}: ${redact(finding.title)}`)
-    .join("\n");
-  const output = {
-    title: `Security Change Gate: ${input.artifact.decision.outcome}`,
-    summary: [
-      redact(input.artifact.decision.summary),
-      findingSummary,
-    ].filter(Boolean).join("\n\n"),
-    text: findings.length === 0
-      ? "No security findings were attached to this gate."
-      : findingSummary,
-    annotations,
-  };
-  const payload: Record<string, unknown> = {
-    name: "CSB Security Change Gate",
-    head_sha: input.artifact.changeSet.headSha,
-    status: "completed",
-    conclusion: input.artifact.decision.githubConclusion,
-    output,
-  };
-  if (input.detailsUrl !== null) payload.details_url = input.detailsUrl;
+  const payload = checkPayload(input.artifact, input.detailsUrl);
 
   let result;
   try {
@@ -103,6 +108,133 @@ export async function publishGateCheck(
       `GitHub Check publication failed: ${redact(result.stderr.trim() || "gh exited with an error")}`,
     );
   }
+}
+
+export async function publishManagedGateCheck(
+  input: PublishManagedGateCheckInput,
+  client: ManagedGitHubCheckClient,
+): Promise<"created" | "updated"> {
+  const parsed = parseGateArtifact(input.artifact);
+  if (parsed.schemaVersion !== 2) throw new Error("Managed GitHub Check requires GateArtifact v2");
+  const artifact = parsed;
+  if (
+    artifact.source !== "github"
+    || artifact.executor !== "sentinel-managed"
+    || !artifact.publication.eligible
+    || artifact.repository.locator.kind !== "github"
+    || artifact.repository.locator.repositoryId !== input.authority.repositoryId
+  ) {
+    throw new Error("Managed GitHub Check is not eligible");
+  }
+  const owner = githubSlug(artifact.repository.locator.owner);
+  const repository = githubSlug(artifact.repository.locator.name);
+  const headSha = fullSha(artifact.resolvedTarget.headSha);
+  if (artifact.changeSet.headSha !== headSha) {
+    throw new Error("Managed GitHub Check head identity mismatch");
+  }
+  const name = "CSB Security Change Gate";
+  const listPath = `/repos/${owner}/${repository}/commits/${headSha}/check-runs?check_name=${encodeURIComponent(name)}&filter=all&per_page=100`;
+  const listed = checkRuns(await client.readAuthorizedRepositoryJson(
+    input.authority.connectionId,
+    input.authority.installationId,
+    input.authority.repositoryId,
+    listPath,
+    { checks: "write" },
+  ));
+  const matches = listed.filter((check) => check.externalId === artifact.gateId);
+  if (matches.length > 1) throw new Error("Managed GitHub Check identity is ambiguous");
+
+  const payload = {
+    ...checkPayload(artifact, input.detailsUrl),
+    external_id: artifact.gateId,
+  };
+  if (matches.length === 1) {
+    await client.writeAuthorizedRepositoryJson(
+      input.authority.connectionId,
+      input.authority.installationId,
+      input.authority.repositoryId,
+      `/repos/${owner}/${repository}/check-runs/${matches[0]!.id}`,
+      "PATCH",
+      payload,
+      { checks: "write" },
+    );
+    return "updated";
+  }
+  await client.writeAuthorizedRepositoryJson(
+    input.authority.connectionId,
+    input.authority.installationId,
+    input.authority.repositoryId,
+    `/repos/${owner}/${repository}/check-runs`,
+    "POST",
+    payload,
+    { checks: "write" },
+  );
+  return "created";
+}
+
+function checkPayload(artifact: GateArtifact, detailsUrl: string | null): Record<string, unknown> {
+  const findings = [...artifact.findings].sort(compareFindings);
+  const annotations = findings
+    .map(toAnnotation)
+    .filter((annotation): annotation is CheckAnnotation => annotation !== null)
+    .slice(0, 20);
+  const findingSummary = findings
+    .slice(0, 20)
+    .map((finding) =>
+      `- ${finding.severity.toUpperCase()} · ${finding.lifecycle}: ${redact(finding.title)}`)
+    .join("\n");
+  const output = {
+    title: `Security Change Gate: ${artifact.decision.outcome}`,
+    summary: [
+      redact(artifact.decision.summary),
+      findingSummary,
+    ].filter(Boolean).join("\n\n"),
+    text: findings.length === 0
+      ? "No security findings were attached to this gate."
+      : findingSummary,
+    annotations,
+  };
+  const payload: Record<string, unknown> = {
+    name: "CSB Security Change Gate",
+    head_sha: artifact.changeSet.headSha,
+    status: "completed",
+    conclusion: artifact.decision.githubConclusion,
+    output,
+  };
+  if (detailsUrl !== null) payload.details_url = detailsUrl;
+  return payload;
+}
+
+function checkRuns(value: unknown): Array<{ id: string; externalId: string | null }> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Managed GitHub Check response is invalid");
+  }
+  const rows = (value as Record<string, unknown>).check_runs;
+  if (!Array.isArray(rows) || rows.length > 100) {
+    throw new Error("Managed GitHub Check response is invalid");
+  }
+  return rows.map((value) => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      throw new Error("Managed GitHub Check response is invalid");
+    }
+    const row = value as Record<string, unknown>;
+    const id = String(row.id ?? "");
+    if (!/^[1-9][0-9]*$/.test(id)) throw new Error("Managed GitHub Check response is invalid");
+    const externalId = row.external_id === null || row.external_id === undefined
+      ? null
+      : String(row.external_id);
+    return { id, externalId };
+  });
+}
+
+function githubSlug(value: string): string {
+  if (!SAFE_SLUG.test(value)) throw new Error("GitHub owner or repository is invalid");
+  return value;
+}
+
+function fullSha(value: string): string {
+  if (!/^[0-9a-f]{40}$/.test(value)) throw new Error("GitHub head SHA is invalid");
+  return value;
 }
 
 function compareFindings(left: GateFindingDelta, right: GateFindingDelta): number {

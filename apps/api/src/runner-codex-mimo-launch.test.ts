@@ -136,6 +136,7 @@ function fakeChild(): ChildProcess {
 test("startScan dispatches only the Portable worker for a resolved Portable Codex plan", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "runner-codex-mimo-"));
   const repositoryPath = path.join(root, "repository");
+  const publicRepositoryPath = `github:991122@${"b".repeat(40)}`;
   fs.mkdirSync(repositoryPath);
   const displayName = `codex-mimo-${randomUUID()}`;
   let selectedPlan: ScanLaunchPlan | null = null;
@@ -150,7 +151,7 @@ test("startScan dispatches only the Portable worker for a resolved Portable Code
 
   try {
     const run = await startScan({
-        repositoryPath,
+        repositoryPath: publicRepositoryPath,
         displayName,
         engine: "codex-security",
         executionProfilePreference: "portable",
@@ -160,6 +161,7 @@ test("startScan dispatches only the Portable worker for a resolved Portable Code
           modelId: model.id,
         },
       }, {
+        executionPath: repositoryPath,
         dependencies: {
           validateScannerRequest: async () => scanner,
           providerRuntime: {
@@ -202,6 +204,8 @@ test("startScan dispatches only the Portable worker for a resolved Portable Code
     runId = run.id;
 
     assert.equal(vaultReads, 0);
+    assert.equal(run.repositoryPath, publicRepositoryPath);
+    assert.equal(getRun(run.id)?.repositoryPath, publicRepositoryPath);
     assert.equal(run.authMode, null);
     assert.equal(run.cost, null);
     assert.deepEqual(run.execution, selectedPlan!.execution);
@@ -230,6 +234,7 @@ test("startScan dispatches only the Portable worker for a resolved Portable Code
       "limits", "mode", "outputDir", "paths", "providerPlan", "repositoryPath", "sourceRef",
     ]);
     assert.equal(config.mode, "standard");
+    assert.equal(config.repositoryPath, repositoryPath);
     assert.deepEqual(config.paths, []);
     assert.equal(fs.statSync(configPath!).mode & 0o077, 0);
     for (const secret of [

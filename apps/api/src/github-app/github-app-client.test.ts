@@ -180,6 +180,60 @@ test("reads a repository resource only with a repository-scoped installation tok
   );
 });
 
+test("writes a repository resource only with the requested repository-scoped permission", async () => {
+  const { privateKey } = keyPair();
+  const pem = privateKey.export({ format: "pem", type: "pkcs8" }).toString();
+  const requests: GitHubHttpRequest[] = [];
+  const client = new GitHubAppClient({
+    credentials: new MemoryCredentialStore({ privateKeyPem: pem }),
+    redactor: new RecordingRedactor(),
+    now: () => new Date("2026-08-12T12:00:00.000Z"),
+    transport: async (request) => {
+      requests.push(request);
+      if (request.url.endsWith("/access_tokens")) {
+        return {
+          status: 201,
+          body: {
+            token: "ghs_repository_checks",
+            expires_at: "2026-08-12T13:00:00.000Z",
+          },
+        };
+      }
+      return { status: 200, body: { id: 7788 } };
+    },
+  });
+
+  assert.deepEqual(await client.writeRepositoryJson(
+    connection(),
+    "77",
+    "9001",
+    "/repos/OkamiOps/sentinel/check-runs/7788",
+    "PATCH",
+    { status: "completed" },
+    { checks: "write" },
+  ), { id: 7788 });
+  assert.deepEqual(JSON.parse(requests[0]?.body ?? "{}"), {
+    repository_ids: [9001],
+    permissions: { checks: "write" },
+  });
+  assert.equal(requests[1]?.method, "PATCH");
+  assert.equal(requests[1]?.url, "https://api.github.com/repos/OkamiOps/sentinel/check-runs/7788");
+  assert.equal(requests[1]?.headers.Authorization, "Bearer ghs_repository_checks");
+  assert.deepEqual(JSON.parse(requests[1]?.body ?? "{}"), { status: "completed" });
+  await assert.rejects(
+    client.writeRepositoryJson(
+      connection(),
+      "77",
+      "9001",
+      "https://evil.example/repos/OkamiOps/sentinel/check-runs",
+      "POST",
+      {},
+      { checks: "write" },
+    ),
+    /github_request_rejected/,
+  );
+});
+
 test("exchanges a manifest code without returning client or webhook secrets", async () => {
   const { privateKey } = keyPair();
   const pem = privateKey.export({ format: "pem", type: "pkcs8" }).toString();

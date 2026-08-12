@@ -5,8 +5,10 @@ import path from "node:path";
 import {
   buildGateArtifact,
   buildOperationalErrorArtifact,
+  selectGateBaseline,
   evaluateGate,
   parseGateArtifact,
+  type GateBaselineCandidate,
   type BuildGateArtifactInput,
   type BuildOperationalErrorArtifactInput,
   type EvaluateGateInput,
@@ -19,6 +21,7 @@ import {
   type ResolveChangeSetInput,
 } from "@csb/gate-runtime";
 import type {
+  EffectiveScanLineage,
   FindingSummary,
   FindingTriage,
   GateArtifact,
@@ -28,10 +31,11 @@ import type {
   GuardrailRepository,
   ScanRun,
   StartScanRequest,
+  GateCoverageEnvelope,
 } from "@csb/shared";
 import { nanoid } from "nanoid";
 
-import { GATES_DIR } from "./config.js";
+import { GATES_DIR, GUARDRAIL_MATERIALIZATIONS_DIR } from "./config.js";
 import {
   getFindingTriage,
   getRepositoryBaseline,
@@ -48,7 +52,10 @@ import {
   getGateRun,
   insertGateRun,
   listGateEvents,
+  listGateRuns,
   listGuardrailRepositories,
+  listMaterializationLeases,
+  upsertMaterializationLease,
   updateGateRun,
   type GateEvent,
   type GateRunUpdate,
@@ -58,6 +65,21 @@ import {
   type BaselineProvider,
 } from "./github-baseline.js";
 import { readFindingsFile, toFindingSummaries } from "./ingest.js";
+import { getSystemGitHubAppService } from "./github-app-api.js";
+import {
+  publishManagedGateCheck,
+  type ManagedGitHubCheckClient,
+} from "./github-check.js";
+import { GitHubArchiveClient } from "./guardrails/github-archive-client.js";
+import {
+  SentinelManagedExecutor,
+  SentinelManagedExecutorError,
+  type SentinelManagedExecutionInput,
+  type SentinelManagedExecutionResult,
+} from "./guardrails/sentinel-managed-executor.js";
+import { SnapshotMaterializer } from "./guardrails/snapshot-materializer.js";
+import { reconcileMaterializationLeases } from "./guardrails/materialization-reconciler.js";
+import type { AcceptedGateTargetPreview } from "./guardrails/target-preview.js";
 import {
   cancelScan,
   isScanActive,
@@ -100,8 +122,29 @@ export interface LocalGateDependencies {
   writeArtifact(gateId: string, artifact: GateArtifact): string;
 }
 
+export interface RemoteManagedGateDependencies {
+  createGateId(): string;
+  now(): string;
+  getRepository(repositoryKey: string): GuardrailRepository | null;
+  insertGateRun(run: GateRun): void;
+  updateGateRun(gateId: string, updates: GateRunUpdate): void;
+  getGateRun(gateId: string): GateRun | null;
+  listGateEvents(gateId: string): GateEvent[];
+  appendGateEvent(gateId: string, event: GateEvent): void;
+  execute(input: SentinelManagedExecutionInput): Promise<SentinelManagedExecutionResult>;
+  cancelScan(scanId: string): boolean;
+  writeArtifact(gateId: string, artifact: GateArtifact): string;
+  publishCheck(input: {
+    artifact: Extract<GateArtifact, { schemaVersion: 2 }>;
+    authority: AcceptedGateTargetPreview["repositoryAuthority"];
+    detailsUrl: string | null;
+  }): Promise<"created" | "updated">;
+}
+
 const activeGates = new Map<string, Promise<void>>();
+const activeManagedGates = new Map<string, { controller: AbortController; scanId: string | null }>();
 const githubBaselineProvider = new GitHubBaselineProvider();
+let managedExecutor: SentinelManagedExecutor | null = null;
 
 const productionDeps: LocalGateDependencies = {
   createGateId: () => nanoid(12),
@@ -132,6 +175,27 @@ const productionDeps: LocalGateDependencies = {
   buildGateArtifact,
   buildOperationalErrorArtifact,
   writeArtifact: writeGateArtifact,
+};
+
+const productionManagedDeps: RemoteManagedGateDependencies = {
+  createGateId: () => nanoid(12),
+  now: () => new Date().toISOString(),
+  getRepository: (repositoryKey) =>
+    listGuardrailRepositories().find(
+      (repository) => repository.repositoryKey === repositoryKey,
+    ) ?? null,
+  insertGateRun,
+  updateGateRun,
+  getGateRun,
+  listGateEvents,
+  appendGateEvent,
+  execute: (input) => systemManagedExecutor().execute(input),
+  cancelScan,
+  writeArtifact: writeGateArtifact,
+  publishCheck: (input) => publishManagedGateCheck(
+    input,
+    getSystemGitHubAppService() as ManagedGitHubCheckClient,
+  ),
 };
 
 export async function startLocalGate(
@@ -188,12 +252,69 @@ export async function startLocalGate(
   return run;
 }
 
+export async function startRemoteManagedGate(
+  preview: AcceptedGateTargetPreview,
+  deps: RemoteManagedGateDependencies = productionManagedDeps,
+): Promise<GateRun> {
+  const repository = deps.getRepository(preview.repositoryKey);
+  if (
+    repository === null
+    || repository.source !== "github"
+    || repository.repositoryPath !== null
+    || preview.executor !== "sentinel-managed"
+    || preview.repositoryAuthority.connectionId !== repository.githubConnectionId
+    || preview.repositoryAuthority.installationId !== repository.githubInstallationId
+    || preview.repositoryAuthority.repositoryId !== repository.githubRepositoryId
+  ) {
+    throw new Error("target_preview_stale");
+  }
+  const run: GateRun = {
+    id: deps.createGateId(),
+    repositoryKey: repository.repositoryKey,
+    repositoryPath: null,
+    source: "github",
+    executor: "sentinel-managed",
+    baseRef: preview.resolvedTarget.baseRef,
+    headRef: preview.resolvedTarget.headRef,
+    resolvedBaseSha: preview.resolvedTarget.baseSha,
+    resolvedHeadSha: preview.resolvedTarget.headSha,
+    policySha: preview.resolvedTarget.policySha,
+    pullRequestNumber: preview.resolvedTarget.pullRequestNumber,
+    workflowRunId: null,
+    materializationState: "queued",
+    scanLineageHash: null,
+    artifactSchemaVersion: 2,
+    scanId: null,
+    status: "queued",
+    outcome: null,
+    policyVersion: preview.policy.schemaVersion,
+    baselineCommit: null,
+    artifactPath: null,
+    publishStatus: preview.publication.eligible ? "waiting" : "not_configured",
+    publishError: null,
+    publishedAt: null,
+    error: null,
+    startedAt: deps.now(),
+    completedAt: null,
+    estimatedUsd: 0,
+  };
+  deps.insertGateRun(run);
+  emit(run.id, "status", { gateId: run.id, status: "queued" }, deps);
+  launchRemoteManagedGate(run.id, repository, preview, deps);
+  return run;
+}
+
 export function cancelGate(
   gateId: string,
-  deps: LocalGateDependencies = productionDeps,
+  deps: LocalGateDependencies | RemoteManagedGateDependencies = productionDeps,
 ): boolean {
   const gate = deps.getGateRun(gateId);
   if (!gate || ["completed", "cancelled", "error"].includes(gate.status)) return false;
+  const managed = activeManagedGates.get(gateId);
+  managed?.controller.abort();
+  if (managed?.scanId !== null && managed?.scanId !== undefined) {
+    deps.cancelScan(managed.scanId);
+  }
   if (gate.scanId !== null) deps.cancelScan(gate.scanId);
   const completedAt = deps.now();
   deps.updateGateRun(gateId, { status: "cancelled", completedAt });
@@ -229,6 +350,145 @@ export function getGateArtifact(
 
 export function waitForGate(gateId: string): Promise<void> {
   return activeGates.get(gateId) ?? Promise.resolve();
+}
+
+function launchRemoteManagedGate(
+  gateId: string,
+  repository: GuardrailRepository,
+  preview: AcceptedGateTargetPreview,
+  deps: RemoteManagedGateDependencies,
+): void {
+  if (activeGates.has(gateId)) return;
+  const controller = new AbortController();
+  activeManagedGates.set(gateId, { controller, scanId: null });
+  const task = runRemoteManagedGate(
+    gateId,
+    repository,
+    preview,
+    controller,
+    deps,
+  ).finally(() => {
+    if (activeGates.get(gateId) === task) activeGates.delete(gateId);
+    activeManagedGates.delete(gateId);
+  });
+  activeGates.set(gateId, task);
+}
+
+async function runRemoteManagedGate(
+  gateId: string,
+  repository: GuardrailRepository,
+  preview: AcceptedGateTargetPreview,
+  controller: AbortController,
+  deps: RemoteManagedGateDependencies,
+): Promise<void> {
+  let artifactPersisted = false;
+  try {
+    transition(gateId, "resolving", deps);
+    deps.updateGateRun(gateId, { materializationState: "materializing" });
+    const result = await deps.execute({
+      gateId,
+      repository,
+      preview,
+      signal: controller.signal,
+      hooks: {
+        materialized: () => {
+          deps.updateGateRun(gateId, { materializationState: "ready" });
+        },
+        scanStarted: (scan) => {
+          const active = activeManagedGates.get(gateId);
+          if (active !== undefined) active.scanId = scan.id;
+          deps.updateGateRun(gateId, { status: "scanning", scanId: scan.id });
+          emit(gateId, "scan", {
+            gateId,
+            scanId: scan.id,
+            status: "scanning",
+          }, deps);
+        },
+        finalize: async (execution) => {
+          if (deps.getGateRun(gateId)?.status === "cancelled") {
+            throw new SentinelManagedExecutorError("managed_cancelled");
+          }
+          transition(gateId, "evaluating", deps);
+          const artifactPath = deps.writeArtifact(gateId, execution.artifact);
+          artifactPersisted = true;
+          const estimatedUsd = execution.scan?.cost?.estimatedUsd ?? 0;
+          deps.updateGateRun(gateId, {
+            artifactPath,
+            artifactSchemaVersion: 2,
+            scanLineageHash: execution.artifact.lineage.scanLineageHash,
+            baselineCommit: execution.artifact.baselineCommit,
+            outcome: execution.artifact.decision.outcome,
+            estimatedUsd,
+          });
+          if (execution.artifact.publication.eligible) {
+            transition(gateId, "publishing", deps);
+            deps.updateGateRun(gateId, { publishStatus: "publishing", publishError: null });
+            try {
+              await deps.publishCheck({
+                artifact: execution.artifact,
+                authority: preview.repositoryAuthority,
+                detailsUrl: null,
+              });
+              deps.updateGateRun(gateId, {
+                publishStatus: "published",
+                publishedAt: deps.now(),
+              });
+            } catch {
+              deps.updateGateRun(gateId, {
+                publishStatus: "failed",
+                publishError: "github_check_publish_failed",
+              });
+            }
+          }
+        },
+      },
+    });
+    if (deps.getGateRun(gateId)?.status === "cancelled") return;
+    const completedAt = deps.now();
+    const estimatedUsd = result.scan?.cost?.estimatedUsd ?? 0;
+    deps.updateGateRun(gateId, {
+      materializationState: "released",
+      status: "completed",
+      outcome: result.artifact.decision.outcome,
+      error: null,
+      estimatedUsd,
+      completedAt,
+    });
+    emit(gateId, "decision", {
+      gateId,
+      status: "completed",
+      outcome: result.artifact.decision.outcome,
+      conclusion: result.artifact.decision.githubConclusion,
+      artifactAvailable: true,
+      estimatedUsd,
+    }, deps);
+    emit(gateId, "done", {
+      gateId,
+      status: "completed",
+      outcome: result.artifact.decision.outcome,
+      completedAt,
+      artifactAvailable: true,
+    }, deps);
+  } catch (error) {
+    if (deps.getGateRun(gateId)?.status === "cancelled") return;
+    const completedAt = deps.now();
+    const code = managedFailureCode(error, artifactPersisted);
+    deps.updateGateRun(gateId, {
+      materializationState: "failed",
+      status: "error",
+      ...(artifactPersisted ? {} : { outcome: "error" as const }),
+      error: code,
+      completedAt,
+    });
+    emit(gateId, "error", {
+      gateId,
+      status: "error",
+      outcome: artifactPersisted ? deps.getGateRun(gateId)?.outcome ?? "error" : "error",
+      code,
+      completedAt,
+      artifactAvailable: artifactPersisted,
+    }, deps);
+  }
 }
 
 function launchGate(
@@ -525,7 +785,8 @@ function artifactEnvelope(
 function transition(
   gateId: string,
   status: GateRun["status"],
-  deps: LocalGateDependencies,
+  deps: Pick<LocalGateDependencies, "now" | "updateGateRun" | "listGateEvents" | "appendGateEvent">
+    | Pick<RemoteManagedGateDependencies, "now" | "updateGateRun" | "listGateEvents" | "appendGateEvent">,
 ): void {
   deps.updateGateRun(gateId, { status });
   emit(gateId, "status", { gateId, status, phase: status }, deps);
@@ -535,9 +796,110 @@ function emit(
   gateId: string,
   type: Parameters<typeof publishGateEvent>[1],
   payload: Parameters<typeof publishGateEvent>[2],
-  deps: LocalGateDependencies,
+  deps: Pick<LocalGateDependencies, "now" | "listGateEvents" | "appendGateEvent">
+    | Pick<RemoteManagedGateDependencies, "now" | "listGateEvents" | "appendGateEvent">,
 ): void {
   publishGateEvent(gateId, type, payload, deps.now(), deps);
+}
+
+function systemManagedExecutor(): SentinelManagedExecutor {
+  if (managedExecutor !== null) return managedExecutor;
+  const archive = new GitHubArchiveClient({
+    authorize: async (repository) => {
+      const connectionId = requiredRemoteIdentity(repository.githubConnectionId);
+      const installationId = requiredRemoteIdentity(repository.githubInstallationId);
+      const repositoryId = requiredRemoteIdentity(repository.githubRepositoryId);
+      const service = getSystemGitHubAppService();
+      const selection = service.requireAuthorizedRepository(
+        connectionId,
+        installationId,
+        repositoryId,
+      );
+      const token = await service.createAuthorizedRepositoryToken(
+        connectionId,
+        installationId,
+        repositoryId,
+        { contents: "read" },
+      );
+      return { owner: selection.owner, name: selection.name, token: token.token };
+    },
+  });
+  const materializer = new SnapshotMaterializer({
+    root: GUARDRAIL_MATERIALIZATIONS_DIR,
+    leases: { save: upsertMaterializationLease },
+    downloadArchive: (repository, sha, signal) => archive.download(repository, sha, signal),
+  });
+  managedExecutor = new SentinelManagedExecutor({
+    materializer,
+    startScan,
+    waitForScan,
+    readFindings: (scanDir) => toFindingSummaries(readFindingsFile(scanDir)),
+    readTriage: getFindingTriage,
+    baselineCandidate: managedBaselineCandidate,
+  });
+  return managedExecutor;
+}
+
+async function managedBaselineCandidate(input: {
+  repository: GuardrailRepository;
+  protectedBranch: string | null;
+  lineage: EffectiveScanLineage;
+  coverage: GateCoverageEnvelope;
+}): Promise<GateBaselineCandidate> {
+  if (input.protectedBranch === null) return { kind: "absent" };
+  let incompatible: GateBaselineCandidate | null = null;
+  for (const gate of listGateRuns(input.repository.repositoryKey)) {
+    if (
+      gate.status !== "completed"
+      || gate.source !== "github"
+      || gate.artifactSchemaVersion !== 2
+      || gate.pullRequestNumber !== null
+      || gate.baseRef !== input.protectedBranch
+      || gate.headRef !== input.protectedBranch
+    ) continue;
+    let artifact: GateArtifact | null;
+    try {
+      artifact = getGateArtifact(gate.id);
+    } catch {
+      return { kind: "unavailable", reason: "artifact_invalid" };
+    }
+    if (artifact === null) return { kind: "unavailable", reason: "artifact_missing" };
+    const candidate: GateBaselineCandidate = { kind: "artifact", artifact };
+    const selection = selectGateBaseline({
+      repositoryId: `github:${requiredRemoteIdentity(input.repository.githubRepositoryId)}`,
+      protectedBranch: input.protectedBranch,
+      lineage: input.lineage,
+      policySchemaVersion: 1,
+      coverage: input.coverage,
+    }, candidate);
+    if (selection.kind === "comparable") return candidate;
+    if (selection.kind === "unavailable") {
+      return { kind: "unavailable", reason: selection.reason };
+    }
+    incompatible ??= candidate;
+  }
+  return incompatible ?? { kind: "absent" };
+}
+
+export function reconcileManagedMaterializations() {
+  return reconcileMaterializationLeases(
+    GUARDRAIL_MATERIALIZATIONS_DIR,
+    { list: listMaterializationLeases, save: upsertMaterializationLease },
+  );
+}
+
+function managedFailureCode(error: unknown, artifactPersisted: boolean): string {
+  if (artifactPersisted) return "snapshot_cleanup_failed";
+  if (error instanceof SentinelManagedExecutorError) return error.code;
+  const code = error instanceof Error ? error.message : "managed_executor_failed";
+  return /^[a-z][a-z0-9_-]{0,127}$/.test(code) ? code : "managed_executor_failed";
+}
+
+function requiredRemoteIdentity(value: string | null): string {
+  if (value === null || !/^[A-Za-z0-9_.:-]+$/.test(value)) {
+    throw new Error("github_repository_authority_invalid");
+  }
+  return value;
 }
 
 function requiredGate(gateId: string, deps: LocalGateDependencies): GateRun {

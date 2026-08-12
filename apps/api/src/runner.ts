@@ -340,8 +340,28 @@ function safeName(input: string): string {
   return input.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "repo";
 }
 
+function publicRepositoryLocator(value: string): string {
+  const locator = value.trim();
+  if (
+    locator.length === 0
+    || locator.length > 1_024
+    || /[\u0000-\u001f\u007f]/.test(locator)
+    || /file:\/\//i.test(locator)
+    || /^(?:\/|~\/|[A-Za-z]:[\\/]|\\\\)/.test(locator)
+  ) {
+    throw new Error("Identidade pública do repositório inválida");
+  }
+  return locator;
+}
+
 export interface StartScanOptions {
   signal?: AbortSignal;
+  /**
+   * Private immutable checkout used by the scanner. When present, the public
+   * request repositoryPath is retained only as provenance and is never used
+   * for filesystem access or child-process launch.
+   */
+  executionPath?: string;
   /** Injectable only for deterministic launch-boundary tests. */
   dependencies?: Partial<StartScanDependencies>;
 }
@@ -497,12 +517,19 @@ export async function startScan(
     );
   }
 
-  const repositoryPath = path.resolve(req.repositoryPath);
+  const repositoryPath = path.resolve(options.executionPath ?? req.repositoryPath);
   if (!fs.existsSync(repositoryPath) || !fs.statSync(repositoryPath).isDirectory()) {
     throw new Error(`Repositório inválido: ${repositoryPath}`);
   }
+  const publicRepositoryPath = options.executionPath === undefined
+    ? repositoryPath
+    : publicRepositoryLocator(req.repositoryPath);
+  const executionRequest: StartScanRequest = {
+    ...req,
+    repositoryPath,
+  };
 
-  const scanner = await (dependencies.validateScannerRequest ?? validateScannerRequest)(req);
+  const scanner = await (dependencies.validateScannerRequest ?? validateScannerRequest)(executionRequest);
   throwIfLaunchAborted(options.signal);
 
   const displayName = req.displayName?.trim() || path.basename(repositoryPath);
@@ -510,7 +537,7 @@ export async function startScan(
   const outputDir = path.join(SCANS_ROOT, safeName(displayName), `csb-${safeName(displayName)}-${id}`);
   const providerRuntime = dependencies.providerRuntime ?? getProviderRuntime();
   const selection = await resolveScanLaunchSelectionAfterCapabilityProbe({
-    request: req,
+    request: executionRequest,
     scanId: id,
     providerRuntime,
     signal: options.signal,
@@ -674,7 +701,7 @@ export async function startScan(
   const run: ScanRun = {
     id,
     displayName,
-    repositoryPath,
+    repositoryPath: publicRepositoryPath,
     revision: null,
     scanDir: outputDir,
     status: "running",

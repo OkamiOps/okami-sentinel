@@ -10,11 +10,22 @@ import {
 import { getDb } from "./db.js";
 import { ensureConnectionSchema } from "./connections-store.js";
 import { importExternalScans, reconcileRunningScans } from "./ingest.js";
+import { reconcileManagedMaterializations } from "./gate-orchestrator.js";
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(RUNS_DIR, { recursive: true });
 getDb();
 ensureConnectionSchema(getDb());
+
+const materializations = reconcileManagedMaterializations();
+if (materializations.released.length > 0 || materializations.retryable.length > 0) {
+  console.log(
+    `[csb-api] Reconciled ${materializations.released.length} Guardrails materialization lease(s)`
+      + (materializations.retryable.length > 0
+        ? ` (${materializations.retryable.length} cleanup retry pending)`
+        : ""),
+  );
+}
 
 const { imported, pruned } = importExternalScans();
 console.log(
