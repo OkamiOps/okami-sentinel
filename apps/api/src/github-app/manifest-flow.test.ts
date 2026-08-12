@@ -37,7 +37,9 @@ test("uses the exact least-privilege GitHub App manifest contract", () => {
   const authorization = flow.authorization(started.flowId);
   assert.deepEqual(authorization.manifest.default_permissions, GITHUB_APP_MANIFEST_PERMISSIONS);
   assert.deepEqual(authorization.manifest.default_events, []);
-  assert.equal(authorization.manifest.public, false);
+  assert.equal(authorization.manifest.public, true);
+  assert.equal(authorization.manifest.name, "OKAMI Sentinel Guardrails");
+  assert.equal(authorization.manifest.description, "Evidence-backed repository security guardrails");
 });
 
 test("creates high-entropy state without returning it in the public start response", () => {

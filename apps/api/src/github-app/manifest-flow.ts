@@ -18,7 +18,7 @@ export interface GitHubAppManifest {
   url: string;
   description: string;
   redirect_url: string;
-  public: false;
+  public: true;
   default_permissions: typeof GITHUB_APP_MANIFEST_PERMISSIONS;
   default_events: readonly string[];
   request_oauth_on_install: false;
@@ -112,11 +112,11 @@ export class GitHubAppManifestFlow {
       actionUrl: `https://github.com/settings/apps/new?state=${state}`,
       state: flow.state,
       manifest: Object.freeze({
-        name: "Okami Sentinel Local",
+        name: "OKAMI Sentinel Guardrails",
         url: "https://github.com/OkamiOps/okami-sentinel",
-        description: "Local-first repository security guardrails",
+        description: "Evidence-backed repository security guardrails",
         redirect_url: withFlowId(this.#callbackUrl, flow.flowId),
-        public: false,
+        public: true,
         default_permissions: GITHUB_APP_MANIFEST_PERMISSIONS,
         default_events: GITHUB_APP_MANIFEST_EVENTS,
         request_oauth_on_install: false,

@@ -34,11 +34,11 @@ function fixture() {
       actionUrl: "https://github.com/settings/apps/new?state=private-state",
       state: "private-state",
       manifest: {
-        name: "Okami Sentinel Local",
+        name: "OKAMI Sentinel Guardrails",
         url: "https://github.com/OkamiOps/okami-sentinel",
-        description: "Local-first repository security guardrails",
+        description: "Evidence-backed repository security guardrails",
         redirect_url: "http://127.0.0.1:8787/callback?flowId=flow-1",
-        public: false,
+        public: true,
         default_permissions: {
           actions: "write", checks: "write", contents: "read", metadata: "read", pull_requests: "read",
         },
