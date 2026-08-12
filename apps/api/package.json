@@ -19,11 +19,13 @@
     "hono": "^4.8.5",
     "keytar": "7.9.0",
     "nanoid": "^5.1.5",
+    "tar-stream": "^3.2.0",
     "undici": "^7.29.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.15.32",
+    "@types/tar-stream": "^3.1.4",
     "tsx": "^4.20.3",
     "typescript": "^5.8.3"
   }

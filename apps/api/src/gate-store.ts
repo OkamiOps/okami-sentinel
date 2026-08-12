@@ -479,6 +479,7 @@ export function upsertMaterializationLease(
       @created_at, @expires_at, @released_at
     )
     ON CONFLICT(id) DO UPDATE SET
+      snapshot_identity = excluded.snapshot_identity,
       state = excluded.state,
       expires_at = excluded.expires_at,
       released_at = excluded.released_at
@@ -494,6 +495,17 @@ export function upsertMaterializationLease(
   });
 }
 
+export function listMaterializationLeases(
+  database: Database.Database = getDb(),
+): MaterializationLeaseMetadata[] {
+  ensureGateSchema(database);
+  const rows = database.prepare(`
+    SELECT * FROM materialization_leases
+    ORDER BY created_at, id
+  `).all() as Array<Record<string, string | null>>;
+  return rows.map(materializationLeaseFromRow);
+}
+
 export function getMaterializationLease(
   id: string,
   database: Database.Database = getDb(),
@@ -503,6 +515,12 @@ export function getMaterializationLease(
     | Record<string, string | null>
     | undefined;
   if (!row) return null;
+  return materializationLeaseFromRow(row);
+}
+
+function materializationLeaseFromRow(
+  row: Record<string, string | null>,
+): MaterializationLeaseMetadata {
   return {
     id: row.id!,
     gateId: row.gate_id!,

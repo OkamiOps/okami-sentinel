@@ -9,6 +9,7 @@ import {
   getGitHubActionsArtifact,
   getGateRun,
   getMaterializationLease,
+  listMaterializationLeases,
   insertGateRun,
   listGateEvents,
   listGitHubAppConnections,
@@ -539,6 +540,14 @@ test("round-trips GitHub App, installation, lease and validated artifact metadat
     assert.deepEqual(listGitHubAppInstallations(connection.id, db), [installation]);
     assert.deepEqual(listGitHubInstallationRepositories(installation.id, db), [authorizedRepository]);
     assert.deepEqual(getMaterializationLease(lease.id, db), lease);
+    assert.deepEqual(listMaterializationLeases(db), [lease]);
+    const readyLease = {
+      ...lease,
+      snapshotIdentity: `sha256:${"f".repeat(64)}`,
+      state: "ready" as const,
+    };
+    upsertMaterializationLease(readyLease, db);
+    assert.deepEqual(getMaterializationLease(lease.id, db), readyLease);
     assert.deepEqual(getGitHubActionsArtifact(artifact.id, db), artifact);
     const schema = databaseSchema(db);
     assert.doesNotMatch(schema, /private[_ ]?key|installation[_ ]?token|pem|secret/i);
