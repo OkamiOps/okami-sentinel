@@ -17,6 +17,7 @@ import {
   type SeverityCounts,
 } from "@csb/shared";
 import { BENCHMARK_DB_PATH, DATA_DIR } from "./config.js";
+import { migrateGuardrailsSchema } from "./guardrails-migrations.js";
 import { withOpenRouterPricingEstimate } from "./openrouter-pricing.js";
 
 export interface BenchmarkRow {
@@ -141,6 +142,7 @@ export function getDb(): Database.Database {
       ON finding_triage(repository_key, updated_at DESC);
   `);
   ensureRunMetadataColumns(db);
+  migrateGuardrailsSchema(db);
   return db;
 }
 

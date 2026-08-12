@@ -184,7 +184,7 @@ export function createGuardrailsApp(
     const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
     if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
     try {
-      return c.json({ policy: deps.readPolicy(repository.repositoryPath) });
+      return c.json({ policy: deps.readPolicy(localRepositoryPath(repository)) });
     } catch (error) {
       return c.json({ error: errorMessage(error) }, 400);
     }
@@ -195,7 +195,7 @@ export function createGuardrailsApp(
     if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
     try {
       const policy = deps.parsePolicy(await c.req.json());
-      deps.writePolicy(repository.repositoryPath, policy);
+      deps.writePolicy(localRepositoryPath(repository), policy);
       return c.json({ policy });
     } catch (error) {
       return c.json({ error: errorMessage(error) }, 400);
@@ -215,7 +215,7 @@ export function createGuardrailsApp(
       const policy = deps.parsePolicy(body.policy);
       const now = body.now ?? new Date().toISOString();
       if (!Number.isFinite(Date.parse(now))) throw new Error("now deve ser uma data ISO válida");
-      const exceptions = deps.readExceptions(repository.repositoryPath);
+      const exceptions = deps.readExceptions(localRepositoryPath(repository));
       const configurationErrors = exceptions.flatMap((exception, index) =>
         Date.parse(exception.expiresAt) <= Date.parse(now)
           ? [{ field: `exceptions[${index}].expiresAt`, message: "Exceção expirada" }]
@@ -235,6 +235,9 @@ export function createGuardrailsApp(
   guardrails.get("/guardrails/repositories/:repositoryKey/github-status", async (c) => {
     const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
     if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
+    if (repository.repositoryPath === null) {
+      return c.json({ error: "Status remoto requer conexão GitHub App" }, 409);
+    }
     const status = await deps.getGitHubStatus(repository.repositoryPath);
     return c.json({ status });
   });
@@ -246,7 +249,7 @@ export function createGuardrailsApp(
       return c.json({ error: "Repositório não possui remoto GitHub" }, 400);
     }
     try {
-      const workflow = await deps.installWorkflow(repository.repositoryPath, {
+      const workflow = await deps.installWorkflow(localRepositoryPath(repository), {
         defaultBranch: repository.defaultBranch,
         secretName: "OPENAI_API_KEY",
       });
@@ -664,15 +667,26 @@ async function inspectRepository(
       ? `github.com/${remote.owner}/${remote.name}`
       : `local/${path.basename(repositoryRoot)}`,
     repositoryPath: repositoryRoot,
+    source: "local",
     displayName,
     defaultBranch,
     remoteOwner: remote?.owner ?? null,
     remoteName: remote?.name ?? null,
+    githubConnectionId: null,
+    githubInstallationId: null,
+    githubRepositoryId: null,
     enabled: true,
     policyPath: ".csb/guardrails.json",
     lastGateId: null,
     githubStatus: remote ? "not_checked" : "not_configured",
   };
+}
+
+function localRepositoryPath(repository: GuardrailRepository): string {
+  if (repository.source !== "local" || repository.repositoryPath === null) {
+    throw new Error("A operação local exige uma pasta de repositório configurada");
+  }
+  return repository.repositoryPath;
 }
 
 async function optionalGit(args: string[], cwd: string): Promise<string | null> {

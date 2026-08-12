@@ -140,6 +140,7 @@ export async function startLocalGate(
 ): Promise<GateRun> {
   const repository = deps.getRepository(request.repositoryKey);
   if (!repository) throw new Error(`Repositório não configurado: ${request.repositoryKey}`);
+  const repositoryPath = requiredLocalRepositoryPath(repository);
   const baselineSource = request.baselineSource ?? "local";
   if (
     baselineSource === "github" &&
@@ -151,11 +152,19 @@ export async function startLocalGate(
   const run: GateRun = {
     id: deps.createGateId(),
     repositoryKey: repository.repositoryKey,
-    repositoryPath: repository.repositoryPath,
+    repositoryPath,
     source: "local",
+    executor: "sentinel-managed",
     baseRef: request.baseRef,
     headRef: request.headRef,
+    resolvedBaseSha: null,
+    resolvedHeadSha: null,
+    policySha: null,
     pullRequestNumber: null,
+    workflowRunId: null,
+    materializationState: "not_required",
+    scanLineageHash: null,
+    artifactSchemaVersion: 1,
     scanId: null,
     status: "queued",
     outcome: null,
@@ -243,15 +252,16 @@ async function runGate(
 ): Promise<void> {
   const gate = requiredGate(gateId, deps);
   const repository = requiredRepository(gate.repositoryKey, deps);
+  const repositoryPath = requiredLocalRepositoryPath(repository);
   let policy: GuardrailPolicy | null = null;
   let changeSet: import("@csb/shared").ChangeSet | null = null;
   let scan: ScanRun | null = null;
 
   try {
     if (!recoverScan) transition(gateId, "resolving", deps);
-    policy = deps.readPolicy(repository.repositoryPath);
+    policy = deps.readPolicy(repositoryPath);
     changeSet = await deps.resolveChangeSet({
-      repositoryPath: repository.repositoryPath,
+      repositoryPath,
       baseRef: gate.baseRef,
       headRef: gate.headRef,
       maxChangedPaths: policy.scope.maxChangedPaths,
@@ -279,7 +289,7 @@ async function runGate(
     } else {
       transition(gateId, "scanning", deps);
       scan = await deps.startScan({
-        repositoryPath: repository.repositoryPath,
+        repositoryPath,
         displayName: repository.displayName,
         model: policy.scan.model,
         effort: policy.scan.effort,
@@ -353,7 +363,7 @@ async function evaluateAndComplete(
     baselineFindings,
     historicalFindings,
     triageByIdentity: deps.readTriage(repository.repositoryKey),
-    exceptions: deps.readExceptions(repository.repositoryPath),
+    exceptions: deps.readExceptions(requiredLocalRepositoryPath(repository)),
     sourceScanId: scan?.id ?? "no-scan",
     baselineScanId,
     now: deps.now(),
@@ -543,6 +553,13 @@ function requiredRepository(
   const repository = deps.getRepository(repositoryKey);
   if (!repository) throw new Error(`Repositório não configurado: ${repositoryKey}`);
   return repository;
+}
+
+function requiredLocalRepositoryPath(repository: GuardrailRepository): string {
+  if (repository.source !== "local" || repository.repositoryPath === null) {
+    throw new Error("Gate local exige uma pasta de repositório configurada");
+  }
+  return repository.repositoryPath;
 }
 
 function writeGateArtifact(gateId: string, artifact: GateArtifact): string {

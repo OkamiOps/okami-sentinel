@@ -62,7 +62,7 @@ export function PortfolioPipeline({
                   selected && "bg-primary/[.065] shadow-[inset_3px_0_0_var(--primary)]",
                 )}
               >
-                <PipelineCell label="Repository" primary={repositoryName(gate.repositoryPath)} secondary={gate.source} icon={<ShieldCheck aria-hidden size={14} />} />
+                <PipelineCell label="Repository" primary={repositoryName(gate.repositoryPath, gate.repositoryKey)} secondary={gate.source} icon={<ShieldCheck aria-hidden size={14} />} />
                 <PipelineCell label="Changeset" primary={`${gate.baseRef} → ${gate.headRef}`} secondary={gate.id} icon={<GitCompareArrows aria-hidden size={14} />} mono />
                 <PipelineCell label="Scope" primary={artifact?.changeSet.scopeMode ?? "Não determinado"} secondary={artifact ? `${artifact.changeSet.files.length} arquivo(s)` : null} />
                 <PipelineCell label="Scan" primary={gateStageLabel(gate.status)} secondary={`${formatUsd(gate.estimatedUsd)} USD estimado`} />
@@ -98,7 +98,7 @@ export function PortfolioPipeline({
               >
                 <ShieldCheck aria-hidden size={15} className={selected ? "text-primary" : "text-muted-foreground"} />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-semibold">{repositoryName(gate.repositoryPath)}</span>
+                  <span className="block truncate text-sm font-semibold">{repositoryName(gate.repositoryPath, gate.repositoryKey)}</span>
                   <span className="mt-0.5 block truncate font-mono text-[9px] text-muted-foreground">
                     {gate.baseRef} → {gate.headRef}
                   </span>
@@ -158,6 +158,7 @@ function MobileCell({ label, value }: { label: string; value: string }) {
   );
 }
 
-function repositoryName(repositoryPath: string): string {
-  return repositoryPath.split(/[\\/]/).filter(Boolean).at(-1) ?? repositoryPath;
+function repositoryName(repositoryPath: string | null, repositoryKey: string): string {
+  if (repositoryPath === null) return repositoryKey;
+  return repositoryPath.split(/[\\/]/).filter(Boolean).at(-1) ?? repositoryKey;
 }

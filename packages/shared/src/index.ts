@@ -962,6 +962,13 @@ export function normalizeSeverity(value: unknown): Severity {
 
 export type GateSource = "local" | "github";
 export type GateExecutorKind = "sentinel-managed" | "github-actions";
+export type GateMaterializationState =
+  | "not_required"
+  | "queued"
+  | "materializing"
+  | "ready"
+  | "released"
+  | "failed";
 export type GateStatus = "queued" | "resolving" | "scanning" | "evaluating" | "publishing" | "completed" | "cancelled" | "error";
 export type GateOutcome = "no_changes" | "bootstrap" | "pass" | "warning" | "blocked" | "error";
 export type GatePublishStatus = "not_configured" | "waiting" | "publishing" | "published" | "failed";
@@ -1169,11 +1176,19 @@ export type GateArtifact = GateArtifactV1 | GateArtifactV2;
 export interface GateRun {
   id: string;
   repositoryKey: string;
-  repositoryPath: string;
+  repositoryPath: string | null;
   source: GateSource;
+  executor: GateExecutorKind;
   baseRef: string;
   headRef: string;
+  resolvedBaseSha: string | null;
+  resolvedHeadSha: string | null;
+  policySha: string | null;
   pullRequestNumber: number | null;
+  workflowRunId: string | null;
+  materializationState: GateMaterializationState;
+  scanLineageHash: string | null;
+  artifactSchemaVersion: number;
   scanId: string | null;
   status: GateStatus;
   outcome: GateOutcome | null;
@@ -1193,11 +1208,15 @@ export type RepositoryGitHubStatus = "not_configured" | "not_checked" | "ready" 
 
 export interface GuardrailRepository {
   repositoryKey: string;
-  repositoryPath: string;
+  repositoryPath: string | null;
+  source: GateSource;
   displayName: string;
   defaultBranch: string;
   remoteOwner: string | null;
   remoteName: string | null;
+  githubConnectionId: string | null;
+  githubInstallationId: string | null;
+  githubRepositoryId: string | null;
   enabled: boolean;
   policyPath: string;
   lastGateId: string | null;

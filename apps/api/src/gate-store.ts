@@ -1,5 +1,7 @@
 import Database from "better-sqlite3";
 import type {
+  GateExecutorKind,
+  GateMaterializationState,
   GateOutcome,
   GatePublishStatus,
   GateRun,
@@ -9,14 +11,19 @@ import type {
   GuardrailRepository,
 } from "@csb/shared";
 import { getDb } from "./db.js";
+import { migrateGuardrailsSchema } from "./guardrails-migrations.js";
 
 interface GuardrailRepositoryRow {
   repository_key: string;
-  repository_path: string;
+  repository_path: string | null;
+  source: string;
   display_name: string;
   default_branch: string;
   remote_owner: string | null;
   remote_name: string | null;
+  github_connection_id: string | null;
+  github_installation_id: string | null;
+  github_repository_id: string | null;
   enabled: number;
   policy_path: string;
   last_gate_id: string | null;
@@ -25,11 +32,19 @@ interface GuardrailRepositoryRow {
 interface GateRunRow {
   id: string;
   repository_key: string;
-  repository_path: string;
+  repository_path: string | null;
   source: string;
+  executor: string;
   base_ref: string;
   head_ref: string;
+  resolved_base_sha: string | null;
+  resolved_head_sha: string | null;
+  policy_sha: string | null;
   pull_request_number: number | null;
+  workflow_run_id: string | null;
+  materialization_state: string;
+  scan_lineage_hash: string | null;
+  artifact_schema_version: number;
   scan_id: string | null;
   status: string;
   outcome: string | null;
@@ -86,9 +101,72 @@ export interface GatePublicationAttempt {
   createdAt: string;
 }
 
+export interface GitHubAppConnectionMetadata {
+  id: string;
+  appId: string;
+  appSlug: string;
+  clientId: string;
+  status: "ready" | "revoked" | "error";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GitHubAppInstallationMetadata {
+  id: string;
+  connectionId: string;
+  accountLogin: string;
+  accountType: "User" | "Organization";
+  status: "ready" | "suspended" | "revoked";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GitHubInstallationRepositoryMetadata {
+  repositoryId: string;
+  installationId: string;
+  owner: string;
+  name: string;
+  defaultBranch: string;
+  private: boolean;
+  archived: boolean;
+  updatedAt: string;
+}
+
+export interface MaterializationLeaseMetadata {
+  id: string;
+  gateId: string;
+  repositoryKey: string;
+  snapshotIdentity: string;
+  state: Exclude<GateMaterializationState, "not_required">;
+  createdAt: string;
+  expiresAt: string;
+  releasedAt: string | null;
+}
+
+export interface GitHubActionsArtifactMetadata {
+  id: string;
+  gateId: string;
+  repositoryKey: string;
+  workflowRunId: string;
+  workflowRunAttempt: number;
+  artifactName: string;
+  artifactDigest: string;
+  artifactSchemaVersion: number;
+  status: "pending" | "validated" | "rejected";
+  createdAt: string;
+  validatedAt: string | null;
+}
+
 export type GateRunUpdate = Partial<
   Pick<
     GateRun,
+    | "resolvedBaseSha"
+    | "resolvedHeadSha"
+    | "policySha"
+    | "workflowRunId"
+    | "materializationState"
+    | "scanLineageHash"
+    | "artifactSchemaVersion"
     | "scanId"
     | "status"
     | "outcome"
@@ -185,88 +263,7 @@ const ISO_TIMESTAMP_PATTERN =
 export function ensureGateSchema(
   database: Database.Database = getDb(),
 ): void {
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS guardrail_repositories (
-      repository_key TEXT PRIMARY KEY,
-      repository_path TEXT NOT NULL,
-      display_name TEXT NOT NULL,
-      default_branch TEXT NOT NULL,
-      remote_owner TEXT,
-      remote_name TEXT,
-      enabled INTEGER NOT NULL DEFAULT 1,
-      policy_path TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS gate_runs (
-      id TEXT PRIMARY KEY,
-      repository_key TEXT NOT NULL,
-      repository_path TEXT NOT NULL,
-      source TEXT NOT NULL,
-      base_ref TEXT NOT NULL,
-      head_ref TEXT NOT NULL,
-      pull_request_number INTEGER,
-      scan_id TEXT,
-      status TEXT NOT NULL,
-      outcome TEXT,
-      policy_version INTEGER NOT NULL,
-      baseline_commit TEXT,
-      artifact_path TEXT,
-      publish_status TEXT NOT NULL DEFAULT 'not_configured',
-      publish_error TEXT,
-      published_at TEXT,
-      error TEXT,
-      estimated_usd REAL NOT NULL DEFAULT 0,
-      started_at TEXT NOT NULL,
-      completed_at TEXT
-    );
-
-    CREATE INDEX IF NOT EXISTS gate_runs_by_repository_started
-      ON gate_runs(repository_key, started_at DESC);
-
-    CREATE TABLE IF NOT EXISTS gate_events (
-      gate_id TEXT NOT NULL,
-      sequence INTEGER NOT NULL,
-      type TEXT NOT NULL,
-      payload_json TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      PRIMARY KEY (gate_id, sequence)
-    );
-
-    CREATE TABLE IF NOT EXISTS github_baselines (
-      repository_key TEXT PRIMARY KEY,
-      workflow_run_id TEXT NOT NULL,
-      head_sha TEXT NOT NULL,
-      artifact_path TEXT NOT NULL,
-      fetched_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS gate_publication_attempts (
-      id TEXT PRIMARY KEY,
-      gate_id TEXT NOT NULL,
-      status TEXT NOT NULL,
-      error TEXT,
-      created_at TEXT NOT NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS gate_publication_attempts_by_gate
-      ON gate_publication_attempts(gate_id, created_at DESC);
-  `);
-
-  const gateRunColumns = new Set(
-    (database.prepare("PRAGMA table_info(gate_runs)").all() as Array<{ name: string }>)
-      .map((column) => column.name),
-  );
-  if (!gateRunColumns.has("publish_status")) {
-    database.exec("ALTER TABLE gate_runs ADD COLUMN publish_status TEXT NOT NULL DEFAULT 'not_configured'");
-  }
-  if (!gateRunColumns.has("publish_error")) {
-    database.exec("ALTER TABLE gate_runs ADD COLUMN publish_error TEXT");
-  }
-  if (!gateRunColumns.has("published_at")) {
-    database.exec("ALTER TABLE gate_runs ADD COLUMN published_at TEXT");
-  }
+  migrateGuardrailsSchema(database);
 }
 
 export function recordGatePublicationAttempt(
@@ -310,6 +307,270 @@ export function listGatePublicationAttempts(
     error: row.error,
     createdAt: row.created_at,
   }));
+}
+
+export function upsertGitHubAppConnection(
+  connection: GitHubAppConnectionMetadata,
+  database: Database.Database = getDb(),
+): void {
+  ensureGateSchema(database);
+  database.prepare(`
+    INSERT INTO github_app_connections (
+      id, app_id, app_slug, client_id, status, created_at, updated_at
+    ) VALUES (
+      @id, @app_id, @app_slug, @client_id, @status, @created_at, @updated_at
+    )
+    ON CONFLICT(id) DO UPDATE SET
+      app_id = excluded.app_id,
+      app_slug = excluded.app_slug,
+      client_id = excluded.client_id,
+      status = excluded.status,
+      updated_at = excluded.updated_at
+  `).run({
+    id: connection.id,
+    app_id: connection.appId,
+    app_slug: connection.appSlug,
+    client_id: connection.clientId,
+    status: connection.status,
+    created_at: connection.createdAt,
+    updated_at: connection.updatedAt,
+  });
+}
+
+export function listGitHubAppConnections(
+  database: Database.Database = getDb(),
+): GitHubAppConnectionMetadata[] {
+  ensureGateSchema(database);
+  const rows = database.prepare(`
+    SELECT id, app_id, app_slug, client_id, status, created_at, updated_at
+    FROM github_app_connections
+    ORDER BY created_at, id
+  `).all() as Array<Record<string, string>>;
+  return rows.map((row) => ({
+    id: row.id!,
+    appId: row.app_id!,
+    appSlug: row.app_slug!,
+    clientId: row.client_id!,
+    status: row.status as GitHubAppConnectionMetadata["status"],
+    createdAt: row.created_at!,
+    updatedAt: row.updated_at!,
+  }));
+}
+
+export function upsertGitHubAppInstallation(
+  installation: GitHubAppInstallationMetadata,
+  database: Database.Database = getDb(),
+): void {
+  ensureGateSchema(database);
+  database.prepare(`
+    INSERT INTO github_app_installations (
+      id, connection_id, account_login, account_type, status, created_at, updated_at
+    ) VALUES (
+      @id, @connection_id, @account_login, @account_type, @status, @created_at, @updated_at
+    )
+    ON CONFLICT(id) DO UPDATE SET
+      connection_id = excluded.connection_id,
+      account_login = excluded.account_login,
+      account_type = excluded.account_type,
+      status = excluded.status,
+      updated_at = excluded.updated_at
+  `).run({
+    id: installation.id,
+    connection_id: installation.connectionId,
+    account_login: installation.accountLogin,
+    account_type: installation.accountType,
+    status: installation.status,
+    created_at: installation.createdAt,
+    updated_at: installation.updatedAt,
+  });
+}
+
+export function listGitHubAppInstallations(
+  connectionId: string,
+  database: Database.Database = getDb(),
+): GitHubAppInstallationMetadata[] {
+  ensureGateSchema(database);
+  const rows = database.prepare(`
+    SELECT id, connection_id, account_login, account_type, status, created_at, updated_at
+    FROM github_app_installations
+    WHERE connection_id = ?
+    ORDER BY created_at, id
+  `).all(connectionId) as Array<Record<string, string>>;
+  return rows.map((row) => ({
+    id: row.id!,
+    connectionId: row.connection_id!,
+    accountLogin: row.account_login!,
+    accountType: row.account_type as GitHubAppInstallationMetadata["accountType"],
+    status: row.status as GitHubAppInstallationMetadata["status"],
+    createdAt: row.created_at!,
+    updatedAt: row.updated_at!,
+  }));
+}
+
+export function upsertGitHubInstallationRepository(
+  repository: GitHubInstallationRepositoryMetadata,
+  database: Database.Database = getDb(),
+): void {
+  ensureGateSchema(database);
+  database.prepare(`
+    INSERT INTO github_installation_repositories (
+      repository_id, installation_id, owner, name, default_branch,
+      is_private, archived, updated_at
+    ) VALUES (
+      @repository_id, @installation_id, @owner, @name, @default_branch,
+      @is_private, @archived, @updated_at
+    )
+    ON CONFLICT(repository_id) DO UPDATE SET
+      installation_id = excluded.installation_id,
+      owner = excluded.owner,
+      name = excluded.name,
+      default_branch = excluded.default_branch,
+      is_private = excluded.is_private,
+      archived = excluded.archived,
+      updated_at = excluded.updated_at
+  `).run({
+    repository_id: repository.repositoryId,
+    installation_id: repository.installationId,
+    owner: repository.owner,
+    name: repository.name,
+    default_branch: repository.defaultBranch,
+    is_private: repository.private ? 1 : 0,
+    archived: repository.archived ? 1 : 0,
+    updated_at: repository.updatedAt,
+  });
+}
+
+export function listGitHubInstallationRepositories(
+  installationId: string,
+  database: Database.Database = getDb(),
+): GitHubInstallationRepositoryMetadata[] {
+  ensureGateSchema(database);
+  const rows = database.prepare(`
+    SELECT repository_id, installation_id, owner, name, default_branch,
+           is_private, archived, updated_at
+    FROM github_installation_repositories
+    WHERE installation_id = ?
+    ORDER BY owner COLLATE NOCASE, name COLLATE NOCASE, repository_id
+  `).all(installationId) as Array<Record<string, string | number>>;
+  return rows.map((row) => ({
+    repositoryId: String(row.repository_id),
+    installationId: String(row.installation_id),
+    owner: String(row.owner),
+    name: String(row.name),
+    defaultBranch: String(row.default_branch),
+    private: row.is_private === 1,
+    archived: row.archived === 1,
+    updatedAt: String(row.updated_at),
+  }));
+}
+
+export function upsertMaterializationLease(
+  lease: MaterializationLeaseMetadata,
+  database: Database.Database = getDb(),
+): void {
+  ensureGateSchema(database);
+  database.prepare(`
+    INSERT INTO materialization_leases (
+      id, gate_id, repository_key, snapshot_identity, state,
+      created_at, expires_at, released_at
+    ) VALUES (
+      @id, @gate_id, @repository_key, @snapshot_identity, @state,
+      @created_at, @expires_at, @released_at
+    )
+    ON CONFLICT(id) DO UPDATE SET
+      state = excluded.state,
+      expires_at = excluded.expires_at,
+      released_at = excluded.released_at
+  `).run({
+    id: lease.id,
+    gate_id: lease.gateId,
+    repository_key: lease.repositoryKey,
+    snapshot_identity: lease.snapshotIdentity,
+    state: lease.state,
+    created_at: lease.createdAt,
+    expires_at: lease.expiresAt,
+    released_at: lease.releasedAt,
+  });
+}
+
+export function getMaterializationLease(
+  id: string,
+  database: Database.Database = getDb(),
+): MaterializationLeaseMetadata | null {
+  ensureGateSchema(database);
+  const row = database.prepare("SELECT * FROM materialization_leases WHERE id = ?").get(id) as
+    | Record<string, string | null>
+    | undefined;
+  if (!row) return null;
+  return {
+    id: row.id!,
+    gateId: row.gate_id!,
+    repositoryKey: row.repository_key!,
+    snapshotIdentity: row.snapshot_identity!,
+    state: row.state as MaterializationLeaseMetadata["state"],
+    createdAt: row.created_at!,
+    expiresAt: row.expires_at!,
+    releasedAt: row.released_at,
+  };
+}
+
+export function upsertGitHubActionsArtifact(
+  artifact: GitHubActionsArtifactMetadata,
+  database: Database.Database = getDb(),
+): void {
+  ensureGateSchema(database);
+  database.prepare(`
+    INSERT INTO github_actions_artifacts (
+      id, gate_id, repository_key, workflow_run_id, workflow_run_attempt,
+      artifact_name, artifact_digest, artifact_schema_version, status,
+      created_at, validated_at
+    ) VALUES (
+      @id, @gate_id, @repository_key, @workflow_run_id, @workflow_run_attempt,
+      @artifact_name, @artifact_digest, @artifact_schema_version, @status,
+      @created_at, @validated_at
+    )
+    ON CONFLICT(id) DO UPDATE SET
+      artifact_digest = excluded.artifact_digest,
+      artifact_schema_version = excluded.artifact_schema_version,
+      status = excluded.status,
+      validated_at = excluded.validated_at
+  `).run({
+    id: artifact.id,
+    gate_id: artifact.gateId,
+    repository_key: artifact.repositoryKey,
+    workflow_run_id: artifact.workflowRunId,
+    workflow_run_attempt: artifact.workflowRunAttempt,
+    artifact_name: artifact.artifactName,
+    artifact_digest: artifact.artifactDigest,
+    artifact_schema_version: artifact.artifactSchemaVersion,
+    status: artifact.status,
+    created_at: artifact.createdAt,
+    validated_at: artifact.validatedAt,
+  });
+}
+
+export function getGitHubActionsArtifact(
+  id: string,
+  database: Database.Database = getDb(),
+): GitHubActionsArtifactMetadata | null {
+  ensureGateSchema(database);
+  const row = database.prepare("SELECT * FROM github_actions_artifacts WHERE id = ?").get(id) as
+    | Record<string, string | number | null>
+    | undefined;
+  if (!row) return null;
+  return {
+    id: String(row.id),
+    gateId: String(row.gate_id),
+    repositoryKey: String(row.repository_key),
+    workflowRunId: String(row.workflow_run_id),
+    workflowRunAttempt: Number(row.workflow_run_attempt),
+    artifactName: String(row.artifact_name),
+    artifactDigest: String(row.artifact_digest),
+    artifactSchemaVersion: Number(row.artifact_schema_version),
+    status: row.status as GitHubActionsArtifactMetadata["status"],
+    createdAt: String(row.created_at),
+    validatedAt: row.validated_at === null ? null : String(row.validated_at),
+  };
 }
 
 export function getCachedGitHubBaseline(
@@ -366,18 +627,26 @@ export function upsertGuardrailRepository(
   database
     .prepare(
       `INSERT INTO guardrail_repositories (
-         repository_key, repository_path, display_name, default_branch,
-         remote_owner, remote_name, enabled, policy_path, created_at, updated_at
+         repository_key, repository_path, source, display_name, default_branch,
+         remote_owner, remote_name, github_connection_id,
+         github_installation_id, github_repository_id, enabled, policy_path,
+         created_at, updated_at
        ) VALUES (
-         @repository_key, @repository_path, @display_name, @default_branch,
-         @remote_owner, @remote_name, @enabled, @policy_path, @created_at, @updated_at
+         @repository_key, @repository_path, @source, @display_name, @default_branch,
+         @remote_owner, @remote_name, @github_connection_id,
+         @github_installation_id, @github_repository_id, @enabled, @policy_path,
+         @created_at, @updated_at
        )
        ON CONFLICT(repository_key) DO UPDATE SET
          repository_path = excluded.repository_path,
+         source = excluded.source,
          display_name = excluded.display_name,
          default_branch = excluded.default_branch,
          remote_owner = excluded.remote_owner,
          remote_name = excluded.remote_name,
+         github_connection_id = excluded.github_connection_id,
+         github_installation_id = excluded.github_installation_id,
+         github_repository_id = excluded.github_repository_id,
          enabled = excluded.enabled,
          policy_path = excluded.policy_path,
          updated_at = excluded.updated_at`,
@@ -385,11 +654,15 @@ export function upsertGuardrailRepository(
     .run({
       repository_key: repository.repositoryKey,
       repository_path: repository.repositoryPath,
+      source: repository.source,
       display_name: repository.displayName,
       default_branch: repository.defaultBranch,
       remote_owner:
         repository.remoteOwner === null ? null : repository.remoteOwner,
       remote_name: repository.remoteName === null ? null : repository.remoteName,
+      github_connection_id: repository.githubConnectionId,
+      github_installation_id: repository.githubInstallationId,
+      github_repository_id: repository.githubRepositoryId,
       enabled: repository.enabled === true ? 1 : 0,
       policy_path: repository.policyPath,
       created_at: now,
@@ -427,13 +700,17 @@ export function insertGateRun(
   database
     .prepare(
       `INSERT INTO gate_runs (
-         id, repository_key, repository_path, source, base_ref, head_ref,
-         pull_request_number, scan_id, status, outcome, policy_version,
+         id, repository_key, repository_path, source, executor, base_ref, head_ref,
+         resolved_base_sha, resolved_head_sha, policy_sha, pull_request_number,
+         workflow_run_id, materialization_state, scan_lineage_hash,
+         artifact_schema_version, scan_id, status, outcome, policy_version,
          baseline_commit, artifact_path, publish_status, publish_error,
          published_at, error, estimated_usd, started_at, completed_at
        ) VALUES (
-         @id, @repository_key, @repository_path, @source, @base_ref, @head_ref,
-         @pull_request_number, @scan_id, @status, @outcome, @policy_version,
+         @id, @repository_key, @repository_path, @source, @executor, @base_ref, @head_ref,
+         @resolved_base_sha, @resolved_head_sha, @policy_sha, @pull_request_number,
+         @workflow_run_id, @materialization_state, @scan_lineage_hash,
+         @artifact_schema_version, @scan_id, @status, @outcome, @policy_version,
          @baseline_commit, @artifact_path, @publish_status, @publish_error,
          @published_at, @error, @estimated_usd, @started_at, @completed_at
        )`,
@@ -450,6 +727,34 @@ export function updateGateRun(
   const assignments: string[] = [];
   const params: Record<string, unknown> = { id };
 
+  if (updates.resolvedBaseSha !== undefined) {
+    assignments.push("resolved_base_sha = @resolved_base_sha");
+    params.resolved_base_sha = updates.resolvedBaseSha;
+  }
+  if (updates.resolvedHeadSha !== undefined) {
+    assignments.push("resolved_head_sha = @resolved_head_sha");
+    params.resolved_head_sha = updates.resolvedHeadSha;
+  }
+  if (updates.policySha !== undefined) {
+    assignments.push("policy_sha = @policy_sha");
+    params.policy_sha = updates.policySha;
+  }
+  if (updates.workflowRunId !== undefined) {
+    assignments.push("workflow_run_id = @workflow_run_id");
+    params.workflow_run_id = updates.workflowRunId;
+  }
+  if (updates.materializationState !== undefined) {
+    assignments.push("materialization_state = @materialization_state");
+    params.materialization_state = updates.materializationState;
+  }
+  if (updates.scanLineageHash !== undefined) {
+    assignments.push("scan_lineage_hash = @scan_lineage_hash");
+    params.scan_lineage_hash = updates.scanLineageHash;
+  }
+  if (updates.artifactSchemaVersion !== undefined) {
+    assignments.push("artifact_schema_version = @artifact_schema_version");
+    params.artifact_schema_version = updates.artifactSchemaVersion;
+  }
   if (updates.scanId !== undefined) {
     assignments.push("scan_id = @scan_id");
     params.scan_id = updates.scanId === null ? null : updates.scanId;
@@ -588,10 +893,14 @@ function rowToGuardrailRepository(
   return {
     repositoryKey: row.repository_key,
     repositoryPath: row.repository_path,
+    source: row.source as GateSource,
     displayName: row.display_name,
     defaultBranch: row.default_branch,
     remoteOwner,
     remoteName,
+    githubConnectionId: row.github_connection_id,
+    githubInstallationId: row.github_installation_id,
+    githubRepositoryId: row.github_repository_id,
     enabled: row.enabled === 1,
     policyPath: row.policy_path,
     lastGateId: row.last_gate_id === null ? null : row.last_gate_id,
@@ -608,10 +917,18 @@ function gateRunToParams(run: GateRun): Record<string, unknown> {
     repository_key: run.repositoryKey,
     repository_path: run.repositoryPath,
     source: run.source,
+    executor: run.executor,
     base_ref: run.baseRef,
     head_ref: run.headRef,
+    resolved_base_sha: run.resolvedBaseSha,
+    resolved_head_sha: run.resolvedHeadSha,
+    policy_sha: run.policySha,
     pull_request_number:
       run.pullRequestNumber === null ? null : run.pullRequestNumber,
+    workflow_run_id: run.workflowRunId,
+    materialization_state: run.materializationState,
+    scan_lineage_hash: run.scanLineageHash,
+    artifact_schema_version: run.artifactSchemaVersion,
     scan_id: run.scanId === null ? null : run.scanId,
     status: run.status,
     outcome: run.outcome === null ? null : run.outcome,
@@ -635,10 +952,18 @@ function rowToGateRun(row: GateRunRow): GateRun {
     repositoryKey: row.repository_key,
     repositoryPath: row.repository_path,
     source: row.source as GateSource,
+    executor: row.executor as GateExecutorKind,
     baseRef: row.base_ref,
     headRef: row.head_ref,
+    resolvedBaseSha: row.resolved_base_sha,
+    resolvedHeadSha: row.resolved_head_sha,
+    policySha: row.policy_sha,
     pullRequestNumber:
       row.pull_request_number === null ? null : row.pull_request_number,
+    workflowRunId: row.workflow_run_id,
+    materializationState: row.materialization_state as GateMaterializationState,
+    scanLineageHash: row.scan_lineage_hash,
+    artifactSchemaVersion: row.artifact_schema_version,
     scanId: row.scan_id === null ? null : row.scan_id,
     status: row.status as GateStatus,
     outcome: row.outcome === null ? null : (row.outcome as GateOutcome),

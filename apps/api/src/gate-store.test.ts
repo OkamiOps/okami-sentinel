@@ -6,16 +6,26 @@ import {
   appendGateEvent,
   ensureGateSchema,
   getCachedGitHubBaseline,
+  getGitHubActionsArtifact,
   getGateRun,
+  getMaterializationLease,
   insertGateRun,
   listGateEvents,
+  listGitHubAppConnections,
+  listGitHubAppInstallations,
+  listGitHubInstallationRepositories,
   listGatePublicationAttempts,
   listGateRuns,
   listGuardrailRepositories,
   recordGatePublicationAttempt,
   updateGateRun,
   upsertCachedGitHubBaseline,
+  upsertGitHubActionsArtifact,
+  upsertGitHubAppConnection,
+  upsertGitHubAppInstallation,
+  upsertGitHubInstallationRepository,
   upsertGuardrailRepository,
+  upsertMaterializationLease,
 } from "./gate-store.js";
 
 function repositoryFixture(
@@ -24,10 +34,14 @@ function repositoryFixture(
   return {
     repositoryKey: "github.com/okami/csb",
     repositoryPath: "/workspace/csb",
+    source: "local",
     displayName: "Codex Security Benchmark",
     defaultBranch: "main",
     remoteOwner: "okami",
     remoteName: "csb",
+    githubConnectionId: null,
+    githubInstallationId: null,
+    githubRepositoryId: null,
     enabled: true,
     policyPath: ".csb/guardrails.json",
     lastGateId: null,
@@ -42,9 +56,17 @@ function gateRunFixture(overrides: Partial<GateRun> = {}): GateRun {
     repositoryKey: "github.com/okami/csb",
     repositoryPath: "/workspace/csb",
     source: "local",
+    executor: "sentinel-managed",
     baseRef: "main",
     headRef: "HEAD",
+    resolvedBaseSha: null,
+    resolvedHeadSha: null,
+    policySha: null,
     pullRequestNumber: null,
+    workflowRunId: null,
+    materializationState: "not_required",
+    scanLineageHash: null,
+    artifactSchemaVersion: 1,
     scanId: null,
     status: "queued",
     outcome: null,
@@ -115,6 +137,14 @@ test("persists repositories and gate runs without changing scan tables", () => {
   }
 });
 
+function databaseSchema(database: Database.Database): string {
+  return (database.prepare(`
+    SELECT group_concat(sql, '\n') AS sql
+    FROM sqlite_master
+    WHERE sql IS NOT NULL
+  `).get() as { sql: string }).sql;
+}
+
 test("creates only the additive gate schema and expected index", () => {
   const db = new Database(":memory:");
 
@@ -126,10 +156,21 @@ test("creates only the additive gate schema and expected index", () => {
          FROM sqlite_master
          WHERE name IN (
            'guardrail_repositories',
+           'guardrail_schema_migrations',
            'gate_runs',
            'gate_runs_by_repository_started',
+           'gate_runs_by_workflow_run',
            'gate_events',
            'github_baselines',
+           'github_app_connections',
+           'github_app_installations',
+           'github_app_installations_by_connection',
+           'github_installation_repositories',
+           'github_installation_repositories_by_installation',
+           'materialization_leases',
+           'materialization_leases_by_gate',
+           'github_actions_artifacts',
+           'github_actions_artifacts_by_run_attempt',
            'gate_publication_attempts',
            'gate_publication_attempts_by_gate'
          )
@@ -143,8 +184,19 @@ test("creates only the additive gate schema and expected index", () => {
       { name: "gate_publication_attempts_by_gate", type: "index" },
       { name: "gate_runs", type: "table" },
       { name: "gate_runs_by_repository_started", type: "index" },
+      { name: "gate_runs_by_workflow_run", type: "index" },
+      { name: "github_actions_artifacts", type: "table" },
+      { name: "github_actions_artifacts_by_run_attempt", type: "index" },
+      { name: "github_app_connections", type: "table" },
+      { name: "github_app_installations", type: "table" },
+      { name: "github_app_installations_by_connection", type: "index" },
       { name: "github_baselines", type: "table" },
+      { name: "github_installation_repositories", type: "table" },
+      { name: "github_installation_repositories_by_installation", type: "index" },
       { name: "guardrail_repositories", type: "table" },
+      { name: "guardrail_schema_migrations", type: "table" },
+      { name: "materialization_leases", type: "table" },
+      { name: "materialization_leases_by_gate", type: "index" },
     ]);
   } finally {
     db.close();
@@ -314,6 +366,8 @@ test("round-trips nullable run fields and lists newest runs first", () => {
     const second = gateRunFixture({
       id: "gate-2",
       source: "github",
+      repositoryPath: null,
+      executor: "github-actions",
       pullRequestNumber: 184,
       scanId: "scan-2",
       status: "completed",
@@ -338,6 +392,156 @@ test("round-trips nullable run fields and lists newest runs first", () => {
       listGateRuns("github.com/okami/csb", db).map((run) => run.id),
       ["gate-2", "gate-1"],
     );
+  } finally {
+    db.close();
+  }
+});
+
+test("round-trips a GitHub repository and gate without a filesystem path", () => {
+  const db = new Database(":memory:");
+  const repository = repositoryFixture({
+    repositoryKey: "github:991122",
+    repositoryPath: null,
+    source: "github",
+    remoteOwner: "OkamiOps",
+    remoteName: "private-sentinel",
+    githubConnectionId: "connection-1",
+    githubInstallationId: "installation-1",
+    githubRepositoryId: "991122",
+  });
+  const gate = gateRunFixture({
+    id: "gate-remote",
+    repositoryKey: repository.repositoryKey,
+    repositoryPath: null,
+    source: "github",
+    executor: "github-actions",
+    baseRef: "main",
+    headRef: "refs/pull/42/head",
+    resolvedBaseSha: "a".repeat(40),
+    resolvedHeadSha: "b".repeat(40),
+    policySha: "a".repeat(40),
+    pullRequestNumber: 42,
+    workflowRunId: "1234567",
+    materializationState: "not_required",
+    scanLineageHash: `sha256:${"c".repeat(64)}`,
+    artifactSchemaVersion: 2,
+  });
+
+  try {
+    upsertGuardrailRepository(repository, db);
+    insertGateRun(gate, db);
+
+    assert.deepEqual(listGuardrailRepositories(db), [{ ...repository, lastGateId: gate.id }]);
+    assert.deepEqual(getGateRun(gate.id, db), gate);
+    const persisted = JSON.stringify({
+      repository: listGuardrailRepositories(db)[0],
+      gate: getGateRun(gate.id, db),
+    });
+    assert.equal(persisted.includes("/tmp/"), false);
+    assert.equal(persisted.includes("/workspace/"), false);
+    assert.throws(
+      () => upsertGuardrailRepository({ ...repository, repositoryPath: "/tmp/leak" }, db),
+      /constraint/i,
+    );
+    assert.throws(
+      () => insertGateRun({ ...gate, id: "gate-with-path", repositoryPath: "/tmp/leak" }, db),
+      /constraint/i,
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test("round-trips GitHub App, installation, lease and validated artifact metadata only", () => {
+  const db = new Database(":memory:");
+  const now = "2026-08-12T12:00:00.000Z";
+  const connection = {
+    id: "connection-1",
+    appId: "101",
+    appSlug: "okami-sentinel",
+    clientId: "Iv1.client",
+    status: "ready" as const,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const installation = {
+    id: "installation-1",
+    connectionId: connection.id,
+    accountLogin: "OkamiOps",
+    accountType: "Organization" as const,
+    status: "ready" as const,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const authorizedRepository = {
+    repositoryId: "991122",
+    installationId: installation.id,
+    owner: "OkamiOps",
+    name: "private-sentinel",
+    defaultBranch: "main",
+    private: true,
+    archived: false,
+    updatedAt: now,
+  };
+  const repository = repositoryFixture({
+    repositoryKey: "github:991122",
+    repositoryPath: null,
+    source: "github",
+    remoteOwner: authorizedRepository.owner,
+    remoteName: authorizedRepository.name,
+    githubConnectionId: connection.id,
+    githubInstallationId: installation.id,
+    githubRepositoryId: authorizedRepository.repositoryId,
+  });
+  const gate = gateRunFixture({
+    id: "gate-remote",
+    repositoryKey: repository.repositoryKey,
+    repositoryPath: null,
+    source: "github",
+    executor: "github-actions",
+    artifactSchemaVersion: 2,
+  });
+  const lease = {
+    id: "lease-1",
+    gateId: gate.id,
+    repositoryKey: repository.repositoryKey,
+    snapshotIdentity: `sha256:${"d".repeat(64)}`,
+    state: "ready" as const,
+    createdAt: now,
+    expiresAt: "2026-08-12T12:15:00.000Z",
+    releasedAt: null,
+  };
+  const artifact = {
+    id: "artifact-1",
+    gateId: gate.id,
+    repositoryKey: repository.repositoryKey,
+    workflowRunId: "1234567",
+    workflowRunAttempt: 1,
+    artifactName: "csb-gate-result",
+    artifactDigest: `sha256:${"e".repeat(64)}`,
+    artifactSchemaVersion: 2,
+    status: "validated" as const,
+    createdAt: now,
+    validatedAt: now,
+  };
+
+  try {
+    upsertGitHubAppConnection(connection, db);
+    upsertGitHubAppInstallation(installation, db);
+    upsertGitHubInstallationRepository(authorizedRepository, db);
+    upsertGuardrailRepository(repository, db);
+    insertGateRun(gate, db);
+    upsertMaterializationLease(lease, db);
+    upsertGitHubActionsArtifact(artifact, db);
+
+    assert.deepEqual(listGitHubAppConnections(db), [connection]);
+    assert.deepEqual(listGitHubAppInstallations(connection.id, db), [installation]);
+    assert.deepEqual(listGitHubInstallationRepositories(installation.id, db), [authorizedRepository]);
+    assert.deepEqual(getMaterializationLease(lease.id, db), lease);
+    assert.deepEqual(getGitHubActionsArtifact(artifact.id, db), artifact);
+    const schema = databaseSchema(db);
+    assert.doesNotMatch(schema, /private[_ ]?key|installation[_ ]?token|pem|secret/i);
+    assert.equal(schema.includes("repository_path TEXT NOT NULL"), false);
   } finally {
     db.close();
   }
