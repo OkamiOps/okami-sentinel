@@ -58,6 +58,27 @@ test("localizes terminal connection errors and their retry action", () => {
   }
 });
 
+test("localizes the system readiness bench in every supported locale", () => {
+  const keys = [
+    "settings.title",
+    "settings.refresh",
+    "settings.engineRegistry",
+    "settings.routePostureDescription",
+    "settings.compatibilityDescription",
+    "settings.ingestionDescription",
+    "settings.reindexError",
+  ] as const;
+  for (const locale of ["pt-BR", "en", "es", "de", "fr"] as const) {
+    for (const key of keys) assert.notEqual(translate(locale, key), "");
+    assert.match(translate(locale, "settings.moduleCode"), /^07\.01 \/ /);
+  }
+  for (const locale of ["en", "es", "de", "fr"] as const) {
+    assert.notEqual(translate(locale, "settings.refresh"), translate("pt-BR", "settings.refresh"));
+    assert.notEqual(translate(locale, "settings.ingestionDescription"), translate("pt-BR", "settings.ingestionDescription"));
+    assert.notEqual(translate(locale, "settings.reindexError"), translate("pt-BR", "settings.reindexError"));
+  }
+});
+
 test("localizes every provider preset label and its critical setup guidance", () => {
   const customBundleKeys = [
     "connections.preset.customBundleRequiredHelp",
