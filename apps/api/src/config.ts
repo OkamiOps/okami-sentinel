@@ -183,6 +183,12 @@ export const VULNHUNTER_WORKER_ENTRY = path.join(
 export const API_HOST = process.env.CSB_HOST || "127.0.0.1";
 export const API_PORT = Number(process.env.CSB_PORT || 8787);
 
+/** GitHub Manifest callbacks remain loopback-only in the local-first desktop API. */
+export const GITHUB_APP_LOCAL_ORIGIN =
+  process.env.CSB_GITHUB_APP_LOCAL_ORIGIN?.trim() || `http://127.0.0.1:${API_PORT}`;
+export const GITHUB_APP_CALLBACK_URL =
+  `${GITHUB_APP_LOCAL_ORIGIN}/guardrails/github-app/manifest/callback`;
+
 /** Soft cap so a click-storm doesn't spawn unbounded Codex jobs. */
 export const MAX_CONCURRENT_SCANS = Math.max(
   1,

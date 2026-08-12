@@ -60,6 +60,7 @@ import {
   type PublishGateCheckInput,
 } from "./github-check.js";
 import { getGitHubStatus } from "./github-status.js";
+import { createGitHubAppApi } from "./github-app-api.js";
 import {
   installCallerWorkflow,
   type InstallCallerWorkflowOptions,
@@ -398,6 +399,7 @@ export function createGuardrailsApp(
 }
 
 app.route("/", createGuardrailsApp());
+app.route("/", createGitHubAppApi());
 const providerRuntime = getProviderRuntime();
 app.route("/", createConnectionsApp({
   service: providerRuntime.connections,
