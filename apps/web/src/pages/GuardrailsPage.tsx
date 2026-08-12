@@ -5,7 +5,7 @@ import type {
   GateRun,
   GuardrailRepository,
 } from "@csb/shared";
-import { GitBranch, Plus, Square } from "lucide-react";
+import { ArrowRight, Cloud, GitBranch, HardDrive, Plus, ShieldCheck, Square } from "lucide-react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { api, type EnrollGuardrailRepositoryRequest } from "../api";
@@ -18,7 +18,7 @@ import {
   PublishGateControl,
   RepositoryEnrollmentForm,
 } from "../components/guardrails";
-import { AlertBanner, EmptyState, Loading, PageHeader } from "../components/ui";
+import { AlertBanner, EmptyState, Loading, PageHeader, cx } from "../components/ui";
 import { guardrailHref, isGateActive, selectDecisionNode, selectGate } from "../lib/guardrails";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
@@ -203,20 +203,14 @@ export function GuardrailsPage() {
 
       {readyState.gates.length > 0 ? (
         <PortfolioPipeline
+          repositories={readyState.repositories}
           gates={readyState.gates}
           selectedGateId={readyState.selectedGate?.id ?? null}
           selectedArtifact={readyState.artifact}
           onSelect={selectLane}
         />
       ) : (
-        <section className="bench-panel bench-corners">
-          <EmptyState
-            title={readyState.repositories.length ? t("guardrails.empty") : t("guardrails.noRepository")}
-            description={readyState.repositories.length
-              ? t("guardrails.emptyDescription")
-              : t("guardrails.noRepositoryDescription")}
-          />
-        </section>
+        <GuardrailLaunchpad repositories={readyState.repositories} />
       )}
 
       {readyState.selectedGate && readyState.selectedGate.error && (
@@ -260,6 +254,84 @@ export function GuardrailsPage() {
         </div>
       )}
     </div>
+  );
+}
+
+function GuardrailLaunchpad({ repositories }: { repositories: readonly GuardrailRepository[] }) {
+  const { t } = useI18n();
+  const repository = repositories[0] ?? null;
+  return (
+    <section className="bench-panel bench-corners min-w-0 overflow-hidden" aria-labelledby="guardrail-launchpad-title">
+      <div className="grid min-h-[28rem] lg:grid-cols-[minmax(0,1.05fr)_minmax(22rem,.95fr)]">
+        <div className="relative flex min-w-0 flex-col justify-between overflow-hidden border-b px-5 py-7 sm:px-7 lg:border-b-0 lg:border-r lg:px-9 lg:py-9">
+          <div aria-hidden className="pointer-events-none absolute -right-24 top-1/2 size-80 -translate-y-1/2 rounded-full border border-primary/10 shadow-[0_0_90px_color-mix(in_oklab,var(--primary)_9%,transparent)]" />
+          <div className="relative max-w-2xl">
+            <div className="flex items-center gap-2 text-primary">
+              <ShieldCheck aria-hidden size={16} />
+              <span className="bench-label">{repository ? t("guardrails.readyToProtect") : t("guardrails.authorityRequired")}</span>
+            </div>
+            <h2 id="guardrail-launchpad-title" className="mt-5 max-w-xl font-heading text-3xl font-semibold tracking-[-0.04em] sm:text-4xl">
+              {repository ? t("guardrails.empty") : t("guardrails.noRepository")}
+            </h2>
+            <p className="mt-4 max-w-xl text-sm leading-6 text-muted-foreground">
+              {repository ? t("guardrails.emptyDescription") : t("guardrails.noRepositoryDescription")}
+            </p>
+          </div>
+
+          {repository && (
+            <div className="relative mt-10 flex min-w-0 items-center gap-3 border-t pt-5">
+              <span className={cx("grid size-10 shrink-0 place-items-center border", repository.source === "github" ? "border-info/40 text-info" : "border-primary/40 text-primary")}>
+                {repository.source === "github" ? <GitBranch aria-hidden size={17} /> : <HardDrive aria-hidden size={17} />}
+              </span>
+              <div className="min-w-0">
+                <div className="truncate text-sm font-semibold">{repository.displayName}</div>
+                <div className="mt-1 truncate font-mono text-[9px] uppercase text-muted-foreground">{repository.source} · {repository.defaultExecutor} · {repository.defaultBranch}</div>
+              </div>
+              <span className="ml-auto hidden font-mono text-[9px] uppercase text-chart-2 sm:inline">{t("guardrails.authorized")}</span>
+            </div>
+          )}
+        </div>
+
+        <div className="flex min-w-0 flex-col justify-center bg-secondary/[.08] px-5 py-7 sm:px-7 lg:px-8">
+          <div className="bench-label text-primary">{t("guardrails.firstGate")}</div>
+          <ol className="mt-5 border-t">
+            <LaunchStep icon={repository ? <ShieldCheck aria-hidden size={15} /> : <Cloud aria-hidden size={15} />} title={t("guardrails.launchAuthority")} detail={repository ? repository.displayName : t("guardrails.launchAuthorityMissing")} state={repository ? "complete" : "current"} />
+            <LaunchStep icon={<ArrowRight aria-hidden size={15} />} title={t("guardrails.launchTarget")} detail={t("guardrails.launchTargetDetail")} state={repository ? "current" : "pending"} />
+            <LaunchStep icon={<ShieldCheck aria-hidden size={15} />} title={t("guardrails.launchDecision")} detail={t("guardrails.launchDecisionDetail")} state="pending" />
+          </ol>
+          <p className="mt-5 border border-primary/25 bg-primary/[.035] px-3 py-3 text-xs leading-5 text-muted-foreground">
+            {repository ? t("guardrails.launchHint") : t("guardrails.launchRegisterHint")}
+          </p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function LaunchStep({
+  icon,
+  title,
+  detail,
+  state,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  detail: string;
+  state: "complete" | "current" | "pending";
+}) {
+  return (
+    <li className="grid grid-cols-[auto_minmax(0,1fr)] gap-3 border-b py-4">
+      <span className={cx(
+        "grid size-8 place-items-center border",
+        state === "complete" && "border-chart-2/50 text-chart-2",
+        state === "current" && "border-primary bg-primary text-primary-foreground",
+        state === "pending" && "border-border text-muted-foreground",
+      )}>{icon}</span>
+      <span className="min-w-0">
+        <span className="block text-xs font-semibold">{title}</span>
+        <span className="mt-1 block text-[11px] leading-5 text-muted-foreground">{detail}</span>
+      </span>
+    </li>
   );
 }
 
