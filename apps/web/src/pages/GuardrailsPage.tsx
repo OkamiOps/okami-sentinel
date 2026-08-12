@@ -1,11 +1,11 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type {
   DecisionGraphNode,
   GateArtifact,
   GateRun,
   GuardrailRepository,
 } from "@csb/shared";
-import { GitBranch, GitPullRequestArrow, Plus, Square } from "lucide-react";
+import { GitBranch, Plus, Square } from "lucide-react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { api, type EnrollGuardrailRepositoryRequest } from "../api";
@@ -13,6 +13,7 @@ import {
   DecisionEquation,
   DecisionGraph,
   EvidenceTrace,
+  GuardrailPreflightSheet,
   PortfolioPipeline,
   PublishGateControl,
   RepositoryEnrollmentForm,
@@ -20,14 +21,6 @@ import {
 import { AlertBanner, EmptyState, Loading, PageHeader } from "../components/ui";
 import { guardrailHref, isGateActive, selectDecisionNode, selectGate } from "../lib/guardrails";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { useI18n } from "../i18n";
 
@@ -114,7 +107,7 @@ export function GuardrailsPage() {
     return (
       <div>
         <AlertBanner>{state.message}</AlertBanner>
-        <Button variant="outline" className="min-h-11" onClick={() => void load()}>Tentar novamente</Button>
+        <Button variant="outline" className="min-h-11" onClick={() => void load()}>{t("guardrails.retry")}</Button>
       </div>
     );
   }
@@ -144,24 +137,6 @@ export function GuardrailsPage() {
       await load();
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Falha ao cadastrar repositório");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function start(repositoryKey: string, baseRef: string, headRef: string) {
-    setBusy(true);
-    setActionError(null);
-    try {
-      const { gate } = await api.startGate({
-        repositoryKey,
-        target: { kind: "compare", baseRef, headRef },
-        executor: "sentinel-managed",
-      });
-      setRunOpen(false);
-      navigate(guardrailHref(gate.id));
-    } catch (error) {
-      setActionError(error instanceof Error ? error.message : "Falha ao iniciar preflight");
     } finally {
       setBusy(false);
     }
@@ -209,11 +184,17 @@ export function GuardrailsPage() {
             </Button>
             {selectedGateActive && (
               <Button variant="destructive" className="min-h-11" onClick={() => void cancelSelected()} disabled={busy}>
-                <Square aria-hidden size={13} />Cancelar gate
+                <Square aria-hidden size={13} />{t("guardrails.cancel")}
               </Button>
             )}
             <EnrollmentSheet open={enrollOpen} onOpenChange={setEnrollOpen} busy={busy} onEnroll={enroll} />
-            <PreflightSheet repositories={readyState.repositories} open={runOpen} onOpenChange={setRunOpen} busy={busy} onStart={start} />
+            <GuardrailPreflightSheet
+              repositories={readyState.repositories}
+              open={runOpen}
+              onOpenChange={setRunOpen}
+              onError={setActionError}
+              onStarted={(gate) => navigate(guardrailHref(gate.id))}
+            />
           </>
         )}
       />
@@ -301,94 +282,11 @@ function EnrollmentSheet({
       </SheetTrigger>
       <SheetContent className="w-full gap-0 border-border bg-background sm:max-w-3xl">
         <SheetHeader className="border-b">
-          <SheetTitle className="font-heading">Cadastrar repositório</SheetTitle>
-          <SheetDescription>Escolha a autoridade real do código. Uma pasta local e uma instalação GitHub são contratos diferentes.</SheetDescription>
+          <SheetTitle className="font-heading">{t("guardrails.enrollTitle")}</SheetTitle>
+          <SheetDescription>{t("guardrails.enrollDescription")}</SheetDescription>
         </SheetHeader>
         <RepositoryEnrollmentForm active={open} busy={busy} onEnroll={onEnroll} />
       </SheetContent>
     </Sheet>
-  );
-}
-
-function PreflightSheet({
-  repositories,
-  open,
-  onOpenChange,
-  busy,
-  onStart,
-}: {
-  repositories: GuardrailRepository[];
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  busy: boolean;
-  onStart: (repositoryKey: string, baseRef: string, headRef: string) => Promise<void>;
-}) {
-  const { t } = useI18n();
-  const [repositoryKey, setRepositoryKey] = useState(repositories[0]?.repositoryKey ?? "");
-  const selected = repositories.find((repository) => repository.repositoryKey === repositoryKey) ?? repositories[0];
-  const [baseRef, setBaseRef] = useState(selected?.defaultBranch ?? "main");
-  const [headRef, setHeadRef] = useState("HEAD");
-  useEffect(() => {
-    if (!repositoryKey && repositories[0]) setRepositoryKey(repositories[0].repositoryKey);
-  }, [repositories, repositoryKey]);
-  function submit(event: FormEvent) {
-    event.preventDefault();
-    if (selected) void onStart(selected.repositoryKey, baseRef, headRef);
-  }
-  return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetTrigger asChild>
-        <Button className="min-h-11" disabled={repositories.length === 0}><GitPullRequestArrow aria-hidden size={14} />{t("guardrails.preflight")}</Button>
-      </SheetTrigger>
-      <SheetContent className="w-full border-border bg-background sm:max-w-md">
-        <SheetHeader>
-          <SheetTitle className="font-heading">Executar preflight local</SheetTitle>
-          <SheetDescription>O gate resolve o diff entre as referências e aplica a política versionada do repositório.</SheetDescription>
-        </SheetHeader>
-        <form className="mt-6 grid gap-5" onSubmit={submit}>
-          <Field label="Repositório" htmlFor="guardrail-repository-select">
-            <Select value={selected?.repositoryKey ?? ""} onValueChange={(value) => {
-              const repository = repositories.find((item) => item.repositoryKey === value);
-              setRepositoryKey(value);
-              if (repository) setBaseRef(repository.defaultBranch);
-            }}>
-              <SelectTrigger id="guardrail-repository-select" className="min-h-11 w-full rounded-none"><SelectValue placeholder="Selecione" /></SelectTrigger>
-              <SelectContent position="popper" className="rounded-none border-border bg-popover">
-                {repositories.map((repository) => <SelectItem key={repository.repositoryKey} value={repository.repositoryKey} className="min-h-11 rounded-none">{repository.displayName}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          </Field>
-          <Field label="Referência base" htmlFor="guardrail-base-ref" hint="Branch ou commit usado como baseline do diff.">
-            <Input id="guardrail-base-ref" className="min-h-11 font-mono" required value={baseRef} onChange={(event) => setBaseRef(event.target.value)} />
-          </Field>
-          <Field label="Referência head" htmlFor="guardrail-head-ref" hint="HEAD inclui apenas o conteúdo resolvido pelo adapter Git.">
-            <Input id="guardrail-head-ref" className="min-h-11 font-mono" required value={headRef} onChange={(event) => setHeadRef(event.target.value)} />
-          </Field>
-          <Button type="submit" className="min-h-11" disabled={busy || !selected || !baseRef.trim() || !headRef.trim()}>
-            <GitPullRequestArrow aria-hidden size={14} />{busy ? "Iniciando…" : "Iniciar gate"}
-          </Button>
-        </form>
-      </SheetContent>
-    </Sheet>
-  );
-}
-
-function Field({
-  label,
-  htmlFor,
-  hint,
-  children,
-}: {
-  label: string;
-  htmlFor: string;
-  hint?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div>
-      <label className="text-sm font-semibold" htmlFor={htmlFor}>{label}</label>
-      <div className="mt-2">{children}</div>
-      {hint && <p className="mt-2 text-xs leading-5 text-muted-foreground">{hint}</p>}
-    </div>
   );
 }

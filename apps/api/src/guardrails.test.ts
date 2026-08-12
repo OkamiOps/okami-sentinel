@@ -206,6 +206,7 @@ function dependencies(options: {
   writes: Array<{ repositoryPath: string; policy: GuardrailPolicy }>;
   callerWorkflowRequests: string[];
   baselineSyncs: string[];
+  remotePolicyReads: string[];
   publicationInputs: Array<Parameters<GuardrailsApiDependencies["publishCheck"]>[0]>;
   started: Array<{
     request: StartGateRequest;
@@ -224,6 +225,7 @@ function dependencies(options: {
   const writes: Array<{ repositoryPath: string; policy: GuardrailPolicy }> = [];
   const callerWorkflowRequests: string[] = [];
   const baselineSyncs: string[] = [];
+  const remotePolicyReads: string[] = [];
   const publicationInputs: Array<Parameters<GuardrailsApiDependencies["publishCheck"]>[0]> = [];
   const started: Array<{
     request: StartGateRequest;
@@ -257,6 +259,7 @@ function dependencies(options: {
     writes,
     callerWorkflowRequests,
     baselineSyncs,
+    remotePolicyReads,
     publicationInputs,
     started,
     dispatched,
@@ -270,6 +273,15 @@ function dependencies(options: {
     upsertRepository: (value) => enrolled.push(value),
     getRepository: (key) => key === currentRepository.repositoryKey ? currentRepository : null,
     readPolicy: () => defaultGuardrailPolicy(),
+    readRemotePolicy: async (value) => {
+      remotePolicyReads.push(value.repositoryKey);
+      return {
+        policy: defaultGuardrailPolicy(),
+        exceptions: options.exceptions ?? [],
+        policySource: "protected_branch" as const,
+        policySha: "c".repeat(40),
+      };
+    },
     parsePolicy: (value) => value as GuardrailPolicy,
     writePolicy: (repositoryPath, policy) => writes.push({ repositoryPath, policy }),
     readExceptions: () => options.exceptions ?? [],
@@ -504,6 +516,68 @@ test("policy PUT delegates the validated policy to the atomic adapter", async ()
 
   assert.equal(response.status, 200);
   assert.deepEqual(deps.writes, [{ repositoryPath: repository.repositoryPath, policy }]);
+});
+
+test("remote policy reads through GitHub authority and remains read-only", async () => {
+  const remote = remoteRepository();
+  const deps = dependencies({ repository: remote });
+  const route = `/guardrails/repositories/${encodeURIComponent(remote.repositoryKey)}/policy`;
+  const getResponse = await createGuardrailsApp(deps).request(route);
+  const getBody = await getResponse.json();
+
+  assert.equal(getResponse.status, 200);
+  assert.equal(getBody.readOnly, true);
+  assert.equal(getBody.policySource, "protected_branch");
+  assert.equal(getBody.policySha, "c".repeat(40));
+  assert.deepEqual(deps.remotePolicyReads, [remote.repositoryKey]);
+
+  const putResponse = await createGuardrailsApp(deps).request(route, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(defaultGuardrailPolicy()),
+  });
+  assert.equal(putResponse.status, 409);
+  assert.deepEqual(deps.writes, []);
+});
+
+test("remote policy simulation reads exceptions from the protected GitHub policy bundle", async () => {
+  const remote = remoteRepository();
+  const expired: GuardrailException = {
+    findingIdentity: "finding-remote",
+    reason: "temporary",
+    owner: "security",
+    createdAt: "2026-08-01T00:00:00.000Z",
+    expiresAt: "2026-08-06T00:00:00.000Z",
+    branches: ["main"],
+    ruleIndexes: [],
+  };
+  const remoteArtifact: GateArtifact = {
+    ...artifact,
+    source: "github",
+    repository: { ...artifact.repository, key: remote.repositoryKey },
+  };
+  const deps = dependencies({
+    repository: remote,
+    exceptions: [expired],
+    artifact: remoteArtifact,
+  });
+  const response = await createGuardrailsApp(deps).request(
+    `/guardrails/repositories/${encodeURIComponent(remote.repositoryKey)}/policy/simulate`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        gateId: "gate-1",
+        policy: defaultGuardrailPolicy(),
+        now: "2026-08-07T00:00:00.000Z",
+      }),
+    },
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.configurationErrors[0]?.field, "exceptions[0].expiresAt");
+  assert.deepEqual(deps.remotePolicyReads, [remote.repositoryKey]);
 });
 
 test("policy simulation reports an expired exception and does not apply it", async () => {

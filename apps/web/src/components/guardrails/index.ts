@@ -4,6 +4,7 @@ export { EvidenceTrace } from "./EvidenceTrace";
 export { GateOutcomeBadge } from "./GateOutcomeBadge";
 export { ChoiceCard } from "./ChoiceCard";
 export { GitHubStatusPanel } from "./GitHubStatusPanel";
+export { GuardrailPreflightSheet } from "./GuardrailPreflightSheet";
 export { PortfolioPipeline } from "./PortfolioPipeline";
 export { PolicyDiffPreview } from "./PolicyDiffPreview";
 export { PolicyRuleEditor } from "./PolicyRuleEditor";

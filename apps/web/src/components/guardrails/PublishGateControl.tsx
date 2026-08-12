@@ -33,6 +33,7 @@ export function PublishGateControl({
   const configured = gate.publishStatus !== "not_configured";
   const publishable = gate.status === "completed" && Boolean(artifact.repository.owner) && Boolean(target.headSha);
   const finished = gate.publishStatus === "published";
+  const actionsOwned = gate.executor === "github-actions";
 
   async function publish() {
     setBusy(true);
@@ -75,7 +76,13 @@ export function PublishGateControl({
             <div className="mt-1 break-words font-mono text-[10px] font-semibold text-foreground">{prCheckLabel(gate)}</div>
             {gate.publishError && <p className="mt-2 break-words text-xs leading-5 text-destructive">{gate.publishError}</p>}
           </div>
-          {!configured ? (
+          {actionsOwned ? (
+            <div className="border border-info/35 bg-info/[.05] p-3">
+              <div className="bench-label text-info">ACTIONS OWNED</div>
+              <p className="mt-2 text-xs leading-5 text-muted-foreground">O workflow publica ou atualiza o Check usando o gate ID. O Sentinel apenas reconcilia o resultado; não existe botão de publicação manual.</p>
+              {gate.workflowRunId && <div className="mt-2 break-all font-mono text-[9px] text-foreground">RUN {gate.workflowRunId}</div>}
+            </div>
+          ) : !configured ? (
             <Button asChild variant="outline" className="min-h-11 w-full"><Link to={`/guardrails/setup?repository=${encodeURIComponent(gate.repositoryKey)}`}><ExternalLink aria-hidden size={14} />Configurar GitHub</Link></Button>
           ) : finished ? (
             <Button variant="outline" className="min-h-11 w-full" disabled><Send aria-hidden size={14} />Check publicado</Button>

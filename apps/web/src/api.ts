@@ -331,6 +331,13 @@ export interface PolicySimulationResponse {
   configurationErrors: Array<{ field: string; message: string }>;
 }
 
+export interface GuardrailPolicyResponse {
+  policy: GuardrailPolicy;
+  policySource: "workspace" | "base" | "protected_branch" | "default";
+  policySha: string | null;
+  readOnly: boolean;
+}
+
 export interface GatePublicationAttempt {
   id: string;
   gateId: string;
@@ -426,11 +433,11 @@ export const api = {
       body: JSON.stringify(body),
     }),
   getGuardrailPolicy: (repositoryKey: string) =>
-    request<{ policy: GuardrailPolicy }>(
+    request<GuardrailPolicyResponse>(
       `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/policy`,
     ),
   updateGuardrailPolicy: (repositoryKey: string, policy: GuardrailPolicy) =>
-    request<{ policy: GuardrailPolicy }>(
+    request<GuardrailPolicyResponse>(
       `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/policy`,
       { method: "PUT", body: JSON.stringify(policy) },
     ),

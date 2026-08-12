@@ -79,6 +79,34 @@ test("localizes the system readiness bench in every supported locale", () => {
   }
 });
 
+test("localizes remote guardrail enrollment, preflight, and policy authority", () => {
+  const keys = [
+    "guardrails.enrollTitle",
+    "guardrails.enrollDescription",
+    "guardrails.preflightTitle",
+    "guardrails.preflightDescription",
+    "guardrails.remoteTargetHelp",
+    "guardrails.localTargetHelp",
+    "guardrails.executorTitle",
+    "guardrails.previewDescription",
+    "guardrails.previewRequired",
+    "guardrails.policyRemoteTitle",
+    "guardrails.policyRemoteDescription",
+    "guardrails.copyProposal",
+    "guardrails.downloadProposal",
+    "guardrails.pipelineSubtitle",
+  ] as const;
+  for (const locale of ["pt-BR", "en", "es", "de", "fr"] as const) {
+    for (const key of keys) {
+      assert.notEqual(translate(locale, key), "");
+      if (locale !== "pt-BR") assert.notEqual(translate(locale, key), translate("pt-BR", key));
+    }
+  }
+  assert.match(translate("en", "guardrails.remoteTargetHelp"), /implicit HEAD/i);
+  assert.match(translate("de", "guardrails.policyRemoteDescription"), /GitHub-App/i);
+  assert.match(translate("fr", "guardrails.previewDescription"), /dix minutes/i);
+});
+
 test("localizes every provider preset label and its critical setup guidance", () => {
   const customBundleKeys = [
     "connections.preset.customBundleRequiredHelp",

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { GateRun, GuardrailPolicy, GuardrailRepository } from "@csb/shared";
-import { ArrowLeft, Beaker, FileCheck2, Save, ShieldAlert } from "lucide-react";
+import { ArrowLeft, Beaker, Clipboard, Download, FileCheck2, GitBranch, HardDrive, Save, ShieldAlert } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 
 import { api, type PolicySimulationResponse } from "../api";
@@ -25,6 +25,9 @@ type PolicyPageState =
       status: "ready";
       repository: GuardrailRepository;
       policy: GuardrailPolicy;
+      policySource: "workspace" | "base" | "protected_branch" | "default";
+      policySha: string | null;
+      readOnly: boolean;
       gates: GateRun[];
     };
 
@@ -51,7 +54,15 @@ export function GuardrailPolicyPage() {
       const repository = repositoriesResponse.repositories.find((item) => item.repositoryKey === repositoryKey);
       if (!repository) throw new Error("Repositório não encontrado");
       const eligibleGates = gatesResponse.gates.filter((gate) => Boolean(gate.artifactPath));
-      setState({ status: "ready", repository, policy: policyResponse.policy, gates: gatesResponse.gates });
+      setState({
+        status: "ready",
+        repository,
+        policy: policyResponse.policy,
+        policySource: policyResponse.policySource,
+        policySha: policyResponse.policySha,
+        readOnly: policyResponse.readOnly,
+        gates: gatesResponse.gates,
+      });
       setEditor(editorStateFromPolicy(policyResponse.policy));
       setGateId((current) => eligibleGates.some((gate) => gate.id === current) ? current : eligibleGates[0]?.id ?? "");
     } catch (error) {
@@ -78,6 +89,7 @@ export function GuardrailPolicyPage() {
   const validation = validatePolicyEditor(editor);
   const changed = JSON.stringify(state.policy) !== JSON.stringify(proposedPolicy);
   const eligibleGates = state.gates.filter((gate) => Boolean(gate.artifactPath));
+  const readOnly = state.readOnly;
 
   function update<K extends keyof PolicyEditorState>(key: K, value: PolicyEditorState[K]) {
     setEditor((current) => current ? { ...current, [key]: value } : current);
@@ -100,13 +112,19 @@ export function GuardrailPolicyPage() {
   }
 
   async function saveConfirmed() {
-    if (validation || !changed) return;
+    if (validation || !changed || readOnly) return;
     setBusy(true);
     setActionError(null);
     try {
       await api.updateGuardrailPolicy(repositoryKey, proposedPolicy);
       const reloaded = await api.getGuardrailPolicy(repositoryKey);
-      setState((current) => current.status === "ready" ? { ...current, policy: reloaded.policy } : current);
+      setState((current) => current.status === "ready" ? {
+        ...current,
+        policy: reloaded.policy,
+        policySource: reloaded.policySource,
+        policySha: reloaded.policySha,
+        readOnly: reloaded.readOnly,
+      } : current);
       setEditor(editorStateFromPolicy(reloaded.policy));
       setConfirmOpen(false);
       setMessage("Arquivo atualizado no workspace");
@@ -115,6 +133,24 @@ export function GuardrailPolicyPage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function copyProposal() {
+    await navigator.clipboard.writeText(`${JSON.stringify(proposedPolicy, null, 2)}\n`);
+    setMessage(t("guardrails.proposalCopied"));
+  }
+
+  function downloadProposal() {
+    const href = URL.createObjectURL(new Blob(
+      [`${JSON.stringify(proposedPolicy, null, 2)}\n`],
+      { type: "application/json" },
+    ));
+    const anchor = document.createElement("a");
+    anchor.href = href;
+    anchor.download = "guardrails.json";
+    anchor.click();
+    URL.revokeObjectURL(href);
+    setMessage(t("guardrails.proposalDownloaded"));
   }
 
   return (
@@ -126,7 +162,14 @@ export function GuardrailPolicyPage() {
         actions={(
           <>
             <Button asChild variant="ghost" className="min-h-11"><Link to={state.repository.lastGateId ? `/guardrails/${encodeURIComponent(state.repository.lastGateId)}` : "/guardrails"}><ArrowLeft aria-hidden size={14} />{t("guardrails.backPipeline")}</Link></Button>
-            <Button className="min-h-11" disabled={busy || Boolean(validation) || !changed} onClick={() => setConfirmOpen(true)}><Save aria-hidden size={14} />{t("guardrails.savePolicy")}</Button>
+            {state.readOnly ? (
+              <>
+                <Button variant="outline" className="min-h-11" disabled={Boolean(validation)} onClick={() => void copyProposal()}><Clipboard aria-hidden size={14} />{t("guardrails.copyProposal")}</Button>
+                <Button className="min-h-11" disabled={Boolean(validation)} onClick={downloadProposal}><Download aria-hidden size={14} />{t("guardrails.downloadProposal")}</Button>
+              </>
+            ) : (
+              <Button className="min-h-11" disabled={busy || Boolean(validation) || !changed} onClick={() => setConfirmOpen(true)}><Save aria-hidden size={14} />{t("guardrails.savePolicy")}</Button>
+            )}
           </>
         )}
       />
@@ -134,6 +177,23 @@ export function GuardrailPolicyPage() {
       {actionError && <AlertBanner>{actionError}</AlertBanner>}
       {message && <div aria-live="polite"><AlertBanner tone="success">{message}</AlertBanner></div>}
       {validation && <div role="alert"><AlertBanner>{validation.message}</AlertBanner></div>}
+
+      <section className="bench-panel bench-corners mb-4 min-w-0 overflow-hidden" aria-labelledby="policy-authority-title">
+        <div className="grid gap-3 p-4 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-center">
+          <span className={`grid size-10 place-items-center border ${state.readOnly ? "border-info/50 text-info" : "border-primary/50 text-primary"}`}>
+            {state.readOnly ? <GitBranch aria-hidden size={17} /> : <HardDrive aria-hidden size={17} />}
+          </span>
+          <div className="min-w-0">
+            <div className="bench-label text-primary">POLICY AUTHORITY / {state.readOnly ? "REMOTE READ-ONLY" : "LOCAL WORKSPACE"}</div>
+            <h2 id="policy-authority-title" className="mt-1 font-heading text-sm font-semibold">{state.readOnly ? t("guardrails.policyRemoteTitle") : t("guardrails.policyLocalTitle")}</h2>
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">{state.readOnly ? t("guardrails.policyRemoteDescription") : t("guardrails.policyLocalDescription")}</p>
+          </div>
+          <div className="min-w-0 text-left sm:text-right">
+            <div className="bench-label">SOURCE</div>
+            <div className="mt-1 break-all font-mono text-[10px] text-foreground">{state.policySource}{state.policySha ? ` · ${state.policySha}` : ""}</div>
+          </div>
+        </div>
+      </section>
 
       <section className="bench-panel bench-corners min-w-0" aria-labelledby="policy-envelope-title">
         <div className="border-b px-4 py-2.5">
@@ -195,7 +255,7 @@ export function GuardrailPolicyPage() {
 
       <div className="mt-4"><PolicyDiffPreview before={state.policy} after={proposedPolicy} /></div>
 
-      <Sheet open={confirmOpen} onOpenChange={setConfirmOpen}>
+      {!state.readOnly && <Sheet open={confirmOpen} onOpenChange={setConfirmOpen}>
         <SheetContent side="bottom" className="mx-auto max-h-[85dvh] overflow-y-auto border-border bg-background sm:left-1/2 sm:max-w-2xl sm:-translate-x-1/2">
           <SheetHeader>
             <SheetTitle className="flex items-center gap-2 font-heading"><FileCheck2 aria-hidden size={17} className="text-primary" />Confirmar gravação local</SheetTitle>
@@ -211,7 +271,7 @@ export function GuardrailPolicyPage() {
             <Button className="min-h-11" onClick={() => void saveConfirmed()} disabled={busy || Boolean(validation) || !changed}><Save aria-hidden size={14} />{busy ? "Salvando…" : "Confirmar e salvar"}</Button>
           </SheetFooter>
         </SheetContent>
-      </Sheet>
+      </Sheet>}
     </div>
   );
 }

@@ -71,7 +71,10 @@ import {
   type EnrollGuardrailRepositoryRequest,
 } from "./guardrails/repository-source-adapter.js";
 import { GitHubRefResolver } from "./guardrails/github-ref-resolver.js";
-import { ProtectedPolicyLoader } from "./guardrails/protected-policy-loader.js";
+import {
+  ProtectedPolicyLoader,
+  type ProtectedPolicyBundle,
+} from "./guardrails/protected-policy-loader.js";
 import {
   TargetPreviewError,
   TargetPreviewService,
@@ -131,6 +134,7 @@ export interface GuardrailsApiDependencies {
   upsertRepository(repository: GuardrailRepository): void;
   getRepository(repositoryKey: string): GuardrailRepository | null;
   readPolicy(repositoryPath: string): GuardrailPolicy;
+  readRemotePolicy(repository: GuardrailRepository): Promise<ProtectedPolicyBundle>;
   parsePolicy(value: unknown): GuardrailPolicy;
   writePolicy(repositoryPath: string, policy: GuardrailPolicy): void;
   readExceptions(repositoryPath: string): GuardrailException[];
@@ -232,6 +236,11 @@ const guardrailsDependencies: GuardrailsApiDependencies = {
   upsertRepository: upsertGuardrailRepository,
   getRepository: findRepository,
   readPolicy: readGuardrailPolicy,
+  readRemotePolicy: async (repository) => {
+    const target = { kind: "protected_branch" as const, ref: repository.defaultBranch };
+    const resolved = await githubRefResolver.resolve(repository, target);
+    return protectedPolicyLoader.load(repository, target, resolved);
+  },
   parsePolicy: parseGuardrailPolicy,
   writePolicy: writeGuardrailPolicy,
   readExceptions: readGuardrailExceptions,
@@ -308,11 +317,25 @@ export function createGuardrailsApp(
     }
   });
 
-  guardrails.get("/guardrails/repositories/:repositoryKey/policy", (c) => {
+  guardrails.get("/guardrails/repositories/:repositoryKey/policy", async (c) => {
     const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
     if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
     try {
-      return c.json({ policy: deps.readPolicy(localRepositoryPath(repository)) });
+      if (repository.source === "github") {
+        const bundle = await deps.readRemotePolicy(repository);
+        return c.json({
+          policy: bundle.policy,
+          policySource: bundle.policySource,
+          policySha: bundle.policySha,
+          readOnly: true,
+        });
+      }
+      return c.json({
+        policy: deps.readPolicy(localRepositoryPath(repository)),
+        policySource: "workspace",
+        policySha: null,
+        readOnly: false,
+      });
     } catch (error) {
       return c.json({ error: errorMessage(error) }, 400);
     }
@@ -321,10 +344,18 @@ export function createGuardrailsApp(
   guardrails.put("/guardrails/repositories/:repositoryKey/policy", async (c) => {
     const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
     if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
+    if (repository.source === "github") {
+      return c.json({ error: "remote_policy_read_only" }, 409);
+    }
     try {
       const policy = deps.parsePolicy(await c.req.json());
       deps.writePolicy(localRepositoryPath(repository), policy);
-      return c.json({ policy });
+      return c.json({
+        policy,
+        policySource: "workspace",
+        policySha: null,
+        readOnly: false,
+      });
     } catch (error) {
       return c.json({ error: errorMessage(error) }, 400);
     }
@@ -343,7 +374,9 @@ export function createGuardrailsApp(
       const policy = deps.parsePolicy(body.policy);
       const now = body.now ?? new Date().toISOString();
       if (!Number.isFinite(Date.parse(now))) throw new Error("now deve ser uma data ISO válida");
-      const exceptions = deps.readExceptions(localRepositoryPath(repository));
+      const exceptions = repository.source === "github"
+        ? (await deps.readRemotePolicy(repository)).exceptions
+        : deps.readExceptions(localRepositoryPath(repository));
       const configurationErrors = exceptions.flatMap((exception, index) =>
         Date.parse(exception.expiresAt) <= Date.parse(now)
           ? [{ field: `exceptions[${index}].expiresAt`, message: "Exceção expirada" }]
