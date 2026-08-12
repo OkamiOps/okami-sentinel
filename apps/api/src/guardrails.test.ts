@@ -204,7 +204,7 @@ function dependencies(options: {
 } = {}): GuardrailsApiDependencies & {
   enrolled: GuardrailRepository[];
   writes: Array<{ repositoryPath: string; policy: GuardrailPolicy }>;
-  installed: string[];
+  callerWorkflowRequests: string[];
   baselineSyncs: string[];
   publicationInputs: Array<Parameters<GuardrailsApiDependencies["publishCheck"]>[0]>;
   started: Array<{
@@ -218,7 +218,7 @@ function dependencies(options: {
 } {
   const enrolled: GuardrailRepository[] = [];
   const writes: Array<{ repositoryPath: string; policy: GuardrailPolicy }> = [];
-  const installed: string[] = [];
+  const callerWorkflowRequests: string[] = [];
   const baselineSyncs: string[] = [];
   const publicationInputs: Array<Parameters<GuardrailsApiDependencies["publishCheck"]>[0]> = [];
   const started: Array<{
@@ -247,7 +247,7 @@ function dependencies(options: {
   return {
     enrolled,
     writes,
-    installed,
+    callerWorkflowRequests,
     baselineSyncs,
     publicationInputs,
     started,
@@ -296,11 +296,13 @@ function dependencies(options: {
     cancelGate: () => true,
     subscribeGate: () => () => undefined,
     getGitHubStatus: async () => githubStatus,
-    installWorkflow: async (repositoryPath) => {
-      installed.push(repositoryPath);
+    getCallerWorkflow: async (value) => {
+      callerWorkflowRequests.push(value.repositoryKey);
       return {
-        path: `${repositoryPath}/.github/workflows/csb-security-change-gate.yml`,
-        committed: false,
+        path: ".github/workflows/csb-security-change-gate.yml",
+        filename: "csb-security-change-gate.yml",
+        mediaType: "application/yaml",
+        content: "name: CSB Security Change Gate\n",
       };
     },
     syncBaseline: async (value) => {
@@ -333,7 +335,7 @@ test("exposes local and github guardrail routes", () => {
     "PUT /guardrails/repositories/:repositoryKey/policy",
     "POST /guardrails/repositories/:repositoryKey/policy/simulate",
     "GET /guardrails/repositories/:repositoryKey/github-status",
-    "POST /guardrails/repositories/:repositoryKey/install-workflow",
+    "GET /guardrails/repositories/:repositoryKey/caller-workflow",
     "POST /guardrails/repositories/:repositoryKey/baseline/sync",
     "GET /guardrails/gates",
     "POST /guardrails/gates",
@@ -465,25 +467,23 @@ test("policy simulation reports an expired exception and does not apply it", asy
   assert.equal(body.configurationErrors[0]?.field, "exceptions[0].expiresAt");
 });
 
-test("github status, workflow installation and baseline sync use the enrolled repository", async () => {
+test("github status, read-only caller workflow and baseline sync use the enrolled repository", async () => {
   const deps = dependencies();
   const base = `/guardrails/repositories/${encodeURIComponent(repository.repositoryKey)}`;
 
   const statusResponse = await createGuardrailsApp(deps).request(`${base}/github-status`);
-  const installResponse = await createGuardrailsApp(deps).request(`${base}/install-workflow`, {
-    method: "POST",
-  });
+  const callerResponse = await createGuardrailsApp(deps).request(`${base}/caller-workflow`);
   const baselineResponse = await createGuardrailsApp(deps).request(`${base}/baseline/sync`, {
     method: "POST",
   });
 
   assert.equal(statusResponse.status, 200);
   assert.equal((await statusResponse.json()).status.ready, true);
-  assert.equal(installResponse.status, 201);
-  assert.equal((await installResponse.json()).workflow.committed, false);
+  assert.equal(callerResponse.status, 200);
+  assert.equal((await callerResponse.json()).workflow.path, ".github/workflows/csb-security-change-gate.yml");
   assert.equal(baselineResponse.status, 200);
   assert.equal((await baselineResponse.json()).baseline.gateId, artifact.gateId);
-  assert.deepEqual(deps.installed, [repository.repositoryPath]);
+  assert.deepEqual(deps.callerWorkflowRequests, [repository.repositoryKey]);
   assert.deepEqual(deps.baselineSyncs, [repository.repositoryKey]);
 });
 
@@ -491,7 +491,7 @@ test("github actions reject a repository without a remote", async () => {
   const testApp = createGuardrailsApp(dependencies({ remote: false }));
   const base = `/guardrails/repositories/${encodeURIComponent(repository.repositoryKey)}`;
 
-  assert.equal((await testApp.request(`${base}/install-workflow`, { method: "POST" })).status, 400);
+  assert.equal((await testApp.request(`${base}/caller-workflow`)).status, 400);
   assert.equal((await testApp.request(`${base}/baseline/sync`, { method: "POST" })).status, 400);
 });
 

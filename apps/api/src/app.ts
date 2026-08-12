@@ -82,9 +82,8 @@ import {
   type TargetPreviewRequest,
 } from "./guardrails/target-preview.js";
 import {
-  installCallerWorkflow,
-  type InstallCallerWorkflowOptions,
-  type InstallCallerWorkflowResult,
+  callerWorkflowDocument,
+  type CallerWorkflowDocument,
 } from "./github-workflow.js";
 import {
   importExternalScans,
@@ -97,7 +96,7 @@ import { refreshOpenRouterPricing } from "./openrouter-pricing.js";
 import { withProgress, withProgressMany } from "./progress.js";
 import { buildRegressionSummary, markScanAsRepositoryBaseline, updateFindingTriage } from "./regression.js";
 import { isRemovableScanStatus } from "./lifecycle.js";
-import { MAX_CONCURRENT_SCANS } from "./config.js";
+import { GITHUB_ACTIONS_WORKFLOW_SHA, MAX_CONCURRENT_SCANS } from "./config.js";
 import { createConnectionsApp } from "./connections-api.js";
 import { getProviderRuntime } from "./provider-runtime.js";
 import { createScanStartApp } from "./scan-start-api.js";
@@ -152,10 +151,7 @@ export interface GuardrailsApiDependencies {
   cancelGate(gateId: string): boolean;
   subscribeGate(gateId: string, listener: (event: GateEvent) => void): () => void;
   getGitHubStatus(repository: GuardrailRepository): ReturnType<typeof getGitHubStatus>;
-  installWorkflow(
-    repositoryPath: string,
-    options: InstallCallerWorkflowOptions,
-  ): Promise<InstallCallerWorkflowResult>;
+  getCallerWorkflow(repository: GuardrailRepository): Promise<CallerWorkflowDocument>;
   syncBaseline(repository: GuardrailRepository): Promise<GateArtifact | null>;
   publishCheck(input: PublishGateCheckInput): Promise<void>;
   updateGate(gateId: string, updates: GateRunUpdate): void;
@@ -214,7 +210,16 @@ const guardrailsDependencies: GuardrailsApiDependencies = {
   getGitHubStatus: (repository) => repository.source === "github"
     ? getRemoteGitHubStatus(repository, getSystemGitHubAppService())
     : getGitHubStatus(localRepositoryPath(repository)),
-  installWorkflow: installCallerWorkflow,
+  getCallerWorkflow: async (repository) => {
+    if (GITHUB_ACTIONS_WORKFLOW_SHA === null) {
+      throw new Error("actions_workflow_release_unavailable");
+    }
+    return callerWorkflowDocument({
+      defaultBranch: repository.defaultBranch,
+      secretName: "OPENAI_API_KEY",
+      workflowSha: GITHUB_ACTIONS_WORKFLOW_SHA,
+    });
+  },
   syncBaseline: (repository) => githubBaselineProvider.getBaseline({
     repositoryKey: repository.repositoryKey,
     owner: repository.remoteOwner!,
@@ -316,18 +321,14 @@ export function createGuardrailsApp(
     return c.json({ status });
   });
 
-  guardrails.post("/guardrails/repositories/:repositoryKey/install-workflow", async (c) => {
+  guardrails.get("/guardrails/repositories/:repositoryKey/caller-workflow", async (c) => {
     const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
     if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
     if (!hasGitHubRemote(repository)) {
       return c.json({ error: "Repositório não possui remoto GitHub" }, 400);
     }
     try {
-      const workflow = await deps.installWorkflow(localRepositoryPath(repository), {
-        defaultBranch: repository.defaultBranch,
-        secretName: "OPENAI_API_KEY",
-      });
-      return c.json({ workflow }, 201);
+      return c.json({ workflow: await deps.getCallerWorkflow(repository) });
     } catch (error) {
       return c.json({ error: errorMessage(error) }, 502);
     }

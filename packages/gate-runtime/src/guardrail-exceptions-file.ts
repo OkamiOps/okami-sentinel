@@ -27,12 +27,17 @@ export class GuardrailExceptionsError extends Error {
 
 export function readGuardrailExceptions(repositoryPath: string): GuardrailException[] {
   const exceptionsPath = path.join(repositoryPath, ".csb", "guardrails-exceptions.json");
+  return readGuardrailExceptionsFile(exceptionsPath);
+}
+
+export function readGuardrailExceptionsFile(exceptionsPath: string): GuardrailException[] {
   if (!fs.existsSync(exceptionsPath)) return [];
 
   let value: unknown;
   try {
-    value = JSON.parse(fs.readFileSync(exceptionsPath, "utf8"));
+    value = JSON.parse(readConfigurationFile(exceptionsPath));
   } catch (error) {
+    if (error instanceof GuardrailExceptionsError) throw error;
     throw new GuardrailExceptionsError(`invalid JSON: ${errorMessage(error)}`, "exceptions");
   }
   return parseGuardrailExceptions(value);
@@ -157,4 +162,26 @@ function fail(fieldPath: string, message: string): never {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function readConfigurationFile(filePath: string): string {
+  let descriptor: number | null = null;
+  try {
+    const before = fs.lstatSync(filePath);
+    if (!before.isFile() || before.isSymbolicLink() || before.size > 1_048_576) {
+      fail("exceptions", "must be a bounded regular file");
+    }
+    descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    const opened = fs.fstatSync(descriptor);
+    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino) {
+      fail("exceptions", "was replaced during read");
+    }
+    return fs.readFileSync(descriptor, "utf8");
+  } catch (error) {
+    if (error instanceof GuardrailExceptionsError) throw error;
+    fail("exceptions", `cannot be read safely: ${errorMessage(error)}`);
+  } finally {
+    if (descriptor !== null) fs.closeSync(descriptor);
+  }
+  return fail("exceptions", "cannot be read safely");
 }

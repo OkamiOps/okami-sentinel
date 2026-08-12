@@ -27,12 +27,17 @@ export class GuardrailPolicyError extends Error {
 
 export function readGuardrailPolicy(repositoryPath: string): GuardrailPolicy {
   const policyPath = path.join(repositoryPath, ".csb", "guardrails.json");
+  return readGuardrailPolicyFile(policyPath);
+}
+
+export function readGuardrailPolicyFile(policyPath: string): GuardrailPolicy {
   if (!fs.existsSync(policyPath)) return defaultGuardrailPolicy();
 
   let value: unknown;
   try {
-    value = JSON.parse(fs.readFileSync(policyPath, "utf8"));
+    value = JSON.parse(readConfigurationFile(policyPath, "policy"));
   } catch (error) {
+    if (error instanceof GuardrailPolicyError) throw error;
     throw new GuardrailPolicyError(`invalid JSON: ${errorMessage(error)}`, "policy");
   }
   return parseGuardrailPolicy(value);
@@ -249,6 +254,28 @@ function fileIdentity(metadata: fs.Stats): FileIdentity {
 
 function sameIdentity(metadata: fs.Stats, expected: FileIdentity): boolean {
   return metadata.dev === expected.dev && metadata.ino === expected.ino;
+}
+
+function readConfigurationFile(filePath: string, fieldPath: string): string {
+  let descriptor: number | null = null;
+  try {
+    const before = fs.lstatSync(filePath);
+    if (!before.isFile() || before.isSymbolicLink() || before.size > 1_048_576) {
+      fail(fieldPath, "must be a bounded regular file");
+    }
+    descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    const opened = fs.fstatSync(descriptor);
+    if (!opened.isFile() || !sameIdentity(opened, fileIdentity(before))) {
+      fail(fieldPath, "was replaced during read");
+    }
+    return fs.readFileSync(descriptor, "utf8");
+  } catch (error) {
+    if (error instanceof GuardrailPolicyError) throw error;
+    fail(fieldPath, `cannot be read safely: ${errorMessage(error)}`);
+  } finally {
+    if (descriptor !== null) fs.closeSync(descriptor);
+  }
+  return fail(fieldPath, "cannot be read safely");
 }
 
 function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {

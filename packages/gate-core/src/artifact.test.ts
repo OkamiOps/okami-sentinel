@@ -415,6 +415,45 @@ test("keeps v2 operational failures action_required without findings", () => {
   assert.equal(JSON.stringify(artifact).includes("/Users/"), false);
 });
 
+test("allows an explicit protected-branch scan to establish a neutral baseline on an unchanged commit", () => {
+  const input = artifactV2Input();
+  input.target = { kind: "protected_branch", ref: "main" };
+  input.resolvedTarget = {
+    baseRef: "main",
+    headRef: "main",
+    baseSha: FULL_HEAD_SHA,
+    headSha: FULL_HEAD_SHA,
+    policySha: FULL_HEAD_SHA,
+    pullRequestNumber: null,
+  };
+  input.policySource = "protected_branch";
+  input.changeSet = {
+    ...input.changeSet,
+    baseRef: "main",
+    headRef: "main",
+    baseSha: FULL_HEAD_SHA,
+    headSha: FULL_HEAD_SHA,
+    files: [],
+    scanPaths: [],
+  };
+  input.baselineCommit = null;
+  input.evaluation.deltas[0]!.lifecycle = "new";
+  input.evaluation.decision = {
+    outcome: "bootstrap",
+    summary: "Protected baseline initialized.",
+    violations: [],
+    warnings: [],
+    exceptionsApplied: [],
+    githubConclusion: "neutral",
+  };
+
+  const artifact = buildGateArtifactV2(input);
+  assert.equal(artifact.target.kind, "protected_branch");
+  assert.equal(artifact.decision.outcome, "bootstrap");
+  assert.equal(artifact.decision.githubConclusion, "neutral");
+  assert.equal(artifact.scan.status, "completed");
+});
+
 test("makes protectedBranches authoritative for Check publication", () => {
   const protectedInput = artifactV2Input();
   assert.deepEqual(

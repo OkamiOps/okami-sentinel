@@ -1164,6 +1164,11 @@ function validateDecisionInvariants(artifact: GateArtifact): void {
     artifact.changeSet.files.length === 0
     && decision.outcome !== "no_changes"
     && decision.outcome !== "error"
+    && !(
+      artifact.schemaVersion === 2
+      && artifact.target.kind === "protected_branch"
+      && decision.outcome === "bootstrap"
+    )
   ) {
     fail("GateArtifact.decision.outcome", "empty diff exige no_changes");
   }

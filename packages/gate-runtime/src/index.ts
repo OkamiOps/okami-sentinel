@@ -10,10 +10,12 @@ export {
   GuardrailPolicyError,
   parseGuardrailPolicy,
   readGuardrailPolicy,
+  readGuardrailPolicyFile,
   writeGuardrailPolicy,
 } from "./guardrail-policy-file.js";
 export {
   GuardrailExceptionsError,
   parseGuardrailExceptions,
   readGuardrailExceptions,
+  readGuardrailExceptionsFile,
 } from "./guardrail-exceptions-file.js";

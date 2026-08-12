@@ -14,6 +14,7 @@ import type { ChangeSet, FindingSummary } from "@csb/shared";
 import {
   GuardrailExceptionsError,
   readGuardrailExceptions,
+  readGuardrailExceptionsFile,
 } from "./guardrail-exceptions-file.js";
 
 function repo(): string {
@@ -43,6 +44,20 @@ test("returns an empty array when the exception file is absent", () => {
   const repositoryPath = repo();
   assert.deepEqual(readGuardrailExceptions(repositoryPath), []);
   assert.equal(fs.existsSync(path.join(repositoryPath, ".csb", "guardrails-exceptions.json")), false);
+});
+
+test("reads an explicit frozen exceptions file without following a symlink", () => {
+  const root = repo();
+  const exceptionsPath = path.join(root, "exceptions.json");
+  fs.writeFileSync(exceptionsPath, JSON.stringify({ schemaVersion: 1, exceptions: [validException()] }));
+  assert.equal(readGuardrailExceptionsFile(exceptionsPath)[0]?.findingIdentity, "finding-1");
+
+  const linkedPath = path.join(root, "linked-exceptions.json");
+  fs.symlinkSync(exceptionsPath, linkedPath);
+  assert.throws(
+    () => readGuardrailExceptionsFile(linkedPath),
+    (error: unknown) => error instanceof GuardrailExceptionsError && error.path === "exceptions",
+  );
 });
 
 test("reads versioned exceptions and rejects incomplete entries", () => {

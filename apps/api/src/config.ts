@@ -193,6 +193,13 @@ export const GITHUB_APP_LOCAL_ORIGIN =
 export const GITHUB_APP_CALLBACK_URL =
   `${GITHUB_APP_LOCAL_ORIGIN}/guardrails/github-app/manifest/callback`;
 
+const configuredGitHubActionsWorkflowSha =
+  process.env.CSB_GITHUB_ACTIONS_WORKFLOW_SHA?.trim() ?? "";
+export const GITHUB_ACTIONS_WORKFLOW_SHA =
+  /^[0-9a-f]{40}$/.test(configuredGitHubActionsWorkflowSha)
+    ? configuredGitHubActionsWorkflowSha
+    : null;
+
 /** Soft cap so a click-storm doesn't spawn unbounded Codex jobs. */
 export const MAX_CONCURRENT_SCANS = Math.max(
   1,

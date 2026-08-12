@@ -1,104 +1,49 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import test from "node:test";
 
-import { installCallerWorkflow } from "./github-workflow.js";
+import { callerWorkflowDocument, renderCallerWorkflow } from "./github-workflow.js";
 
-const EXPECTED_CALLER = `name: CSB Security Change Gate
-on:
-  pull_request:
-  push:
-    branches: [main]
-permissions:
-  contents: read
-  pull-requests: read
-  actions: read
-  checks: write
-jobs:
-  security-change-gate:
-    uses: OkamiOps/okami-sentinel/.github/workflows/security-change-gate.yml@v1
-    with:
-      policy_path: .csb/guardrails.json
-      default_branch: main
-    secrets:
-      OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
-`;
+const RELEASE_SHA = "9".repeat(40);
 
-test("writes the exact versioned caller workflow without committing it", async () => {
-  const repositoryPath = fs.mkdtempSync(
-    path.join(os.tmpdir(), "csb-github-workflow-"),
-  );
+test("renders a downloadable caller pinned to one real immutable workflow SHA", () => {
+  const document = callerWorkflowDocument({
+    defaultBranch: "main",
+    secretName: "OPENAI_API_KEY",
+    workflowSha: RELEASE_SHA,
+  });
 
-  try {
-    const result = await installCallerWorkflow(repositoryPath, {
-      defaultBranch: "main",
-      secretName: "OPENAI_API_KEY",
-    });
-    const body = fs.readFileSync(result.path, "utf8");
-
-    assert.equal(body, EXPECTED_CALLER);
-    assert.match(body, /@v1/);
-    assert.doesNotMatch(body, /@main/);
-    assert.equal(
-      result.path,
-      path.join(
-        repositoryPath,
-        ".github",
-        "workflows",
-        "csb-security-change-gate.yml",
-      ),
-    );
-    assert.equal(result.committed, false);
-  } finally {
-    fs.rmSync(repositoryPath, { recursive: true, force: true });
-  }
+  assert.equal(document.path, ".github/workflows/csb-security-change-gate.yml");
+  assert.equal(document.filename, "csb-security-change-gate.yml");
+  assert.equal(document.mediaType, "application/yaml");
+  assert.match(document.content, new RegExp(`security-change-gate\\.yml@${RELEASE_SHA}`));
+  assert.match(document.content, new RegExp(`csb_ref: ${RELEASE_SHA}`));
+  assert.match(document.content, /OPENAI_API_KEY: \$\{\{ secrets\.OPENAI_API_KEY \}\}/);
+  assert.doesNotMatch(document.content, /@main|@v\d+/);
+  assert.doesNotMatch(document.content, /secrets:\s*inherit/);
 });
 
-test("renders the configured branch and secret into the caller", async () => {
-  const repositoryPath = fs.mkdtempSync(
-    path.join(os.tmpdir(), "csb-github-workflow-options-"),
-  );
+test("caller rendering is pure and accepts only bounded YAML-safe values", () => {
+  const trunk = renderCallerWorkflow({
+    defaultBranch: "release/trunk",
+    secretName: "CSB_OPENAI_KEY",
+    workflowSha: RELEASE_SHA,
+  });
+  assert.match(trunk, /branches: \[release\/trunk\]/);
+  assert.match(trunk, /CSB_OPENAI_KEY: \$\{\{ secrets\.CSB_OPENAI_KEY \}\}/);
 
-  try {
-    const result = await installCallerWorkflow(repositoryPath, {
-      defaultBranch: "trunk",
-      secretName: "CSB_OPENAI_KEY",
-    });
-    const body = fs.readFileSync(result.path, "utf8");
-
-    assert.match(body, /branches: \[trunk\]/);
-    assert.match(body, /default_branch: trunk/);
-    assert.match(body, /CSB_OPENAI_KEY: \$\{\{ secrets\.CSB_OPENAI_KEY \}\}/);
-  } finally {
-    fs.rmSync(repositoryPath, { recursive: true, force: true });
-  }
-});
-
-test("rejects branch and secret values that can alter the yaml structure", async () => {
-  const repositoryPath = fs.mkdtempSync(
-    path.join(os.tmpdir(), "csb-github-workflow-invalid-"),
-  );
-
-  try {
-    await assert.rejects(
-      () =>
-        installCallerWorkflow(repositoryPath, {
-          defaultBranch: "main\npermissions: write-all",
-          secretName: "OPENAI_API_KEY",
-        }),
-      /default branch/i,
-    );
-    await assert.rejects(
-      () =>
-        installCallerWorkflow(repositoryPath, {
-          defaultBranch: "main",
-          secretName: "OPENAI_API_KEY }} malicious",
-        }),
-      /secret name/i,
-    );
-  } finally {
-    fs.rmSync(repositoryPath, { recursive: true, force: true });
-  }
+  assert.throws(() => renderCallerWorkflow({
+    defaultBranch: "main\npermissions: write-all",
+    secretName: "OPENAI_API_KEY",
+    workflowSha: RELEASE_SHA,
+  }), /default branch/i);
+  assert.throws(() => renderCallerWorkflow({
+    defaultBranch: "main",
+    secretName: "OPENAI_API_KEY }} malicious",
+    workflowSha: RELEASE_SHA,
+  }), /secret name/i);
+  assert.throws(() => renderCallerWorkflow({
+    defaultBranch: "main",
+    secretName: "OPENAI_API_KEY",
+    workflowSha: "v2",
+  }), /immutable release SHA/i);
 });

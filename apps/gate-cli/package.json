@@ -6,6 +6,7 @@
   "bin": { "csb-gate": "./src/index.ts" },
   "scripts": {
     "start": "tsx src/index.ts",
+    "publish-check": "tsx src/actions-check-entry.ts",
     "test": "tsx --test src/*.test.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit"

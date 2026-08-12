@@ -9,6 +9,7 @@ import { defaultGuardrailPolicy } from "@csb/gate-core";
 import {
   GuardrailPolicyError,
   readGuardrailPolicy,
+  readGuardrailPolicyFile,
   writeGuardrailPolicy,
 } from "./guardrail-policy-file.js";
 
@@ -35,6 +36,20 @@ test("returns the default policy without writing when the policy file is absent"
   const repositoryPath = repo("csb-policy-missing-");
   assert.deepEqual(readGuardrailPolicy(repositoryPath), defaultGuardrailPolicy());
   assert.equal(fs.existsSync(path.join(repositoryPath, ".csb", "guardrails.json")), false);
+});
+
+test("reads an explicit frozen policy file without following a symlink", () => {
+  const root = repo("csb-policy-frozen-");
+  const policyPath = path.join(root, "guardrails.json");
+  fs.writeFileSync(policyPath, JSON.stringify(defaultGuardrailPolicy()));
+  assert.deepEqual(readGuardrailPolicyFile(policyPath), defaultGuardrailPolicy());
+
+  const linkedPath = path.join(root, "linked-policy.json");
+  fs.symlinkSync(policyPath, linkedPath);
+  assert.throws(
+    () => readGuardrailPolicyFile(linkedPath),
+    (error: unknown) => error instanceof GuardrailPolicyError && error.path === "policy",
+  );
 });
 
 test("reports malformed JSON and future schemas with a field path", () => {

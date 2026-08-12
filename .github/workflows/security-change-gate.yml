@@ -1,6 +1,10 @@
+# csb-guardrail-contract: 2
 name: CSB Security Change Gate
 
 on:
+  pull_request:
+  push:
+    branches: [main]
   workflow_call:
     inputs:
       policy_path:
@@ -8,139 +12,433 @@ on:
         required: false
         type: string
         default: .csb/guardrails.json
-      csb_ref:
-        description: Immutable CSB release ref
+      exceptions_path:
+        description: Repository-relative path to CSB guardrail exceptions
         required: false
         type: string
-        default: v1
+        default: .csb/guardrails-exceptions.json
+      csb_ref:
+        description: Immutable 40-character Sentinel release SHA
+        required: true
+        type: string
       default_branch:
-        description: Default branch used by the gate policy
+        description: Protected branch used by the gate policy
         required: false
         type: string
         default: main
+      gate_id:
+        description: Optional persisted Sentinel gate identity
+        required: false
+        type: string
     secrets:
       OPENAI_API_KEY:
         description: Scanner credential
         required: false
+  workflow_dispatch:
+    inputs:
+      policy_path:
+        description: Repository-relative policy path
+        required: false
+        default: .csb/guardrails.json
+        type: string
+      exceptions_path:
+        description: Repository-relative exceptions path
+        required: false
+        default: .csb/guardrails-exceptions.json
+        type: string
+      csb_ref:
+        description: Immutable 40-character Sentinel release SHA
+        required: true
+        type: string
+      gate_id:
+        description: Optional persisted Sentinel gate identity
+        required: false
+        type: string
+      target_kind:
+        description: Frozen target kind
+        required: true
+        type: choice
+        options: [pull_request, compare, protected_branch]
+      base_ref:
+        description: Human-readable base reference
+        required: true
+        type: string
+      head_ref:
+        description: Human-readable head reference
+        required: true
+        type: string
+      base_sha:
+        description: Frozen base commit SHA
+        required: true
+        type: string
+      head_sha:
+        description: Frozen head commit SHA
+        required: true
+        type: string
+      protected_branch:
+        description: Protected branch that owns the baseline
+        required: true
+        type: string
+      pull_request_number:
+        description: Pull request number, or 0 for non-PR targets
+        required: false
+        default: "0"
+        type: string
+      head_repository:
+        description: Head owner/repository for a fork
+        required: false
+        type: string
 
 permissions:
   contents: read
   pull-requests: read
   actions: read
+  checks: write
 
 jobs:
   security-change-gate:
     name: CSB Security Change Gate
     runs-on: ubuntu-latest
     env:
-      CSB_GUARDRAIL_CONTRACT: legacy-contained
+      CSB_GUARDRAIL_CONTRACT: "2"
+      CSB_RELEASE_SHA: ${{ inputs.csb_ref || vars.CSB_RELEASE_SHA }}
+      POLICY_PATH: ${{ inputs.policy_path || '.csb/guardrails.json' }}
+      EXCEPTIONS_PATH: ${{ inputs.exceptions_path || '.csb/guardrails-exceptions.json' }}
+      DEFAULT_BRANCH: ${{ inputs.default_branch || github.event.repository.default_branch || 'main' }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
+      - name: Resolve and validate immutable identities
+        id: revisions
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REPOSITORY: ${{ github.repository }}
+          EVENT_REPOSITORY_ID: ${{ github.event.repository.id }}
+          EVENT_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_REF_NAME: ${{ github.ref_name }}
+          EVENT_SHA: ${{ github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          INPUT_GATE_ID: ${{ inputs.gate_id }}
+          INPUT_TARGET_KIND: ${{ inputs.target_kind }}
+          INPUT_BASE_REF: ${{ inputs.base_ref }}
+          INPUT_HEAD_REF: ${{ inputs.head_ref }}
+          INPUT_BASE_SHA: ${{ inputs.base_sha }}
+          INPUT_HEAD_SHA: ${{ inputs.head_sha }}
+          INPUT_PROTECTED_BRANCH: ${{ inputs.protected_branch }}
+          INPUT_PULL_REQUEST: ${{ inputs.pull_request_number }}
+          INPUT_HEAD_REPOSITORY: ${{ inputs.head_repository }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${CSB_RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "CSB_RELEASE_SHA must be a real immutable 40-character commit SHA" >&2
+            exit 3
+          fi
+          if [[ ! "${EVENT_REPOSITORY_ID}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "GitHub repository identity is unavailable" >&2
+            exit 3
+          fi
+
+          target_kind=""
+          base_ref=""
+          head_ref=""
+          base_sha=""
+          head_sha=""
+          protected_branch=""
+          pull_request="0"
+          head_repository="${EVENT_REPOSITORY}"
+
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            target_kind="pull_request"
+            base_ref="${PR_BASE_REF}"
+            head_ref="refs/pull/${PR_NUMBER}/head"
+            base_sha="${PR_BASE_SHA}"
+            head_sha="${PR_HEAD_SHA}"
+            protected_branch="${PR_BASE_REF}"
+            pull_request="${PR_NUMBER}"
+            head_repository="${PR_HEAD_REPOSITORY}"
+          elif [[ "${EVENT_NAME}" == "push" ]]; then
+            target_kind="protected_branch"
+            base_ref="${EVENT_REF_NAME}"
+            head_ref="${EVENT_REF_NAME}"
+            base_sha="${EVENT_SHA}"
+            head_sha="${EVENT_SHA}"
+            protected_branch="${EVENT_REF_NAME}"
+          elif [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            target_kind="${INPUT_TARGET_KIND}"
+            base_ref="${INPUT_BASE_REF}"
+            head_ref="${INPUT_HEAD_REF}"
+            base_sha="${INPUT_BASE_SHA}"
+            head_sha="${INPUT_HEAD_SHA}"
+            protected_branch="${INPUT_PROTECTED_BRANCH}"
+            pull_request="${INPUT_PULL_REQUEST:-0}"
+            head_repository="${INPUT_HEAD_REPOSITORY:-${EVENT_REPOSITORY}}"
+          else
+            echo "Unsupported workflow event" >&2
+            exit 3
+          fi
+
+          if [[ ! "${base_sha}" =~ ^[0-9a-f]{40}$ || ! "${head_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Frozen base/head identity is invalid" >&2
+            exit 3
+          fi
+          if [[ -z "${base_ref}" || -z "${head_ref}" || -z "${protected_branch}" ]]; then
+            echo "Frozen human references are incomplete" >&2
+            exit 3
+          fi
+          if [[ "${target_kind}" == "pull_request" && ! "${pull_request}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Pull request identity is invalid" >&2
+            exit 3
+          fi
+          if [[ "${target_kind}" != "pull_request" ]]; then
+            pull_request="0"
+          fi
+          if [[ ! "${head_repository}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "Head repository identity is invalid" >&2
+            exit 3
+          fi
+
+          gate_id="${INPUT_GATE_ID:-gha-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${head_sha:0:12}}"
+          if [[ ! "${gate_id}" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$ ]]; then
+            echo "Gate identity is invalid" >&2
+            exit 3
+          fi
+          {
+            printf 'target_kind=%s\n' "${target_kind}"
+            printf 'base_ref=%s\n' "${base_ref}"
+            printf 'head_ref=%s\n' "${head_ref}"
+            printf 'base_sha=%s\n' "${base_sha}"
+            printf 'head_sha=%s\n' "${head_sha}"
+            printf 'policy_sha=%s\n' "${base_sha}"
+            printf 'protected_branch=%s\n' "${protected_branch}"
+            printf 'pull_request=%s\n' "${pull_request}"
+            printf 'head_repository=%s\n' "${head_repository}"
+            printf 'repository_id=%s\n' "${EVENT_REPOSITORY_ID}"
+            printf 'gate_id=%s\n' "${gate_id}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout frozen policy tree
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
-          fetch-depth: 0
+          repository: ${{ github.repository }}
+          ref: ${{ steps.revisions.outputs.policy_sha }}
+          path: policy
           persist-credentials: false
 
-      - name: Checkout CSB release
-        uses: actions/checkout@v6
+      - name: Checkout frozen head tree
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: ${{ steps.revisions.outputs.head_repository }}
+          ref: ${{ steps.revisions.outputs.head_sha }}
+          path: head
+          persist-credentials: false
+
+      - name: Checkout immutable Sentinel release
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           repository: OkamiOps/okami-sentinel
-          ref: ${{ inputs.csb_ref }}
+          ref: ${{ env.CSB_RELEASE_SHA }}
           path: .csb-tool
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version: 24.17.0
 
-      - name: Set up pnpm
+      - name: Install trusted gate CLI dependency closure
+        shell: bash
         run: |
+          set -euo pipefail
           corepack enable
           corepack prepare pnpm@11.5.2 --activate
+          pnpm --dir .csb-tool install --frozen-lockfile --ignore-scripts --filter @csb/gate-cli...
 
-      - name: Install gate CLI dependency closure
-        run: pnpm --dir .csb-tool install --frozen-lockfile --filter @csb/gate-cli...
-
-      - name: Resolve event revisions
-        id: revisions
+      - name: Locate protected-branch GateArtifact v2 baseline
+        id: baseline
+        shell: bash
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || github.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          GH_TOKEN: ${{ github.token }}
+          PROTECTED_BRANCH: ${{ steps.revisions.outputs.protected_branch }}
+          TARGET_KIND: ${{ steps.revisions.outputs.target_kind }}
         run: |
-          echo "base_sha=${BASE_SHA}" >> "${GITHUB_OUTPUT}"
-          echo "head_sha=${HEAD_SHA}" >> "${GITHUB_OUTPUT}"
-
-      - name: Check scanner authentication
-        id: scanner-auth
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          if [[ -n "${OPENAI_API_KEY}" ]]; then
-            echo "ready=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "ready=false" >> "${GITHUB_OUTPUT}"
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/csb-baseline"
+          if [[ "${TARGET_KIND}" == "protected_branch" ]]; then
+            echo "state=absent" >> "${GITHUB_OUTPUT}"
+            exit 0
           fi
 
-      - name: Run security change gate
+          set +e
+          run_id="$(gh api --method GET "/repos/${GITHUB_REPOSITORY}/actions/runs" \
+            -f branch="${PROTECTED_BRANCH}" -f status=completed -f event=push -f per_page=100 \
+            --jq '[.workflow_runs[] | select(.path == ".github/workflows/csb-security-change-gate.yml" or .path == ".github/workflows/security-change-gate.yml")][0].id // empty')"
+          history_status=$?
+          set -e
+          if [[ ${history_status} -ne 0 ]]; then
+            echo "state=unavailable" >> "${GITHUB_OUTPUT}"
+            echo "reason=protected-history-unavailable" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if [[ -z "${run_id}" ]]; then
+            echo "state=absent" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          set +e
+          artifact_id="$(gh api --method GET "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" \
+            -f per_page=100 --jq '[.artifacts[] | select(.name == "csb-gate-artifact-v2" and .expired == false)][0].id // empty')"
+          artifact_status=$?
+          set -e
+          if [[ ${artifact_status} -ne 0 || -z "${artifact_id}" ]]; then
+            echo "state=unavailable" >> "${GITHUB_OUTPUT}"
+            echo "reason=protected-artifact-unavailable" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          set +e
+          gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
+            > "${RUNNER_TEMP}/csb-baseline/artifact.zip"
+          download_status=$?
+          unzip -p "${RUNNER_TEMP}/csb-baseline/artifact.zip" csb-gate-result.json \
+            > "${RUNNER_TEMP}/csb-baseline/csb-gate-result.json"
+          unzip_status=$?
+          set -e
+          if [[ ${download_status} -ne 0 || ${unzip_status} -ne 0 || ! -s "${RUNNER_TEMP}/csb-baseline/csb-gate-result.json" ]]; then
+            echo "state=unavailable" >> "${GITHUB_OUTPUT}"
+            echo "reason=protected-artifact-unreadable" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          echo "state=available" >> "${GITHUB_OUTPUT}"
+          echo "path=${RUNNER_TEMP}/csb-baseline/csb-gate-result.json" >> "${GITHUB_OUTPUT}"
+
+      - name: Run frozen security change gate
         id: gate
+        shell: bash
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          POLICY_PATH: ${{ inputs.policy_path }}
-          DEFAULT_BRANCH: ${{ inputs.default_branch }}
+          TARGET_KIND: ${{ steps.revisions.outputs.target_kind }}
+          BASE_REF: ${{ steps.revisions.outputs.base_ref }}
+          HEAD_REF: ${{ steps.revisions.outputs.head_ref }}
           BASE_SHA: ${{ steps.revisions.outputs.base_sha }}
           HEAD_SHA: ${{ steps.revisions.outputs.head_sha }}
+          POLICY_SHA: ${{ steps.revisions.outputs.policy_sha }}
+          PROTECTED_BRANCH: ${{ steps.revisions.outputs.protected_branch }}
+          PULL_REQUEST_NUMBER: ${{ steps.revisions.outputs.pull_request }}
+          REPOSITORY_ID: ${{ steps.revisions.outputs.repository_id }}
+          GATE_ID: ${{ steps.revisions.outputs.gate_id }}
+          BASELINE_STATE: ${{ steps.baseline.outputs.state }}
+          BASELINE_PATH: ${{ steps.baseline.outputs.path }}
+          BASELINE_REASON: ${{ steps.baseline.outputs.reason }}
         run: |
+          set -euo pipefail
+          mkdir -p "${GITHUB_WORKSPACE}/.csb-results"
+          args=(
+            --repository "${GITHUB_WORKSPACE}/head"
+            --policy-root "${GITHUB_WORKSPACE}/policy"
+            --policy "${POLICY_PATH}"
+            --exceptions "${EXCEPTIONS_PATH}"
+            --output "${GITHUB_WORKSPACE}/.csb-results/csb-gate-result.json"
+            --repository-id "${REPOSITORY_ID}"
+            --repository-key "github:${REPOSITORY_ID}"
+            --repository-name "${GITHUB_REPOSITORY#*/}"
+            --default-branch "${DEFAULT_BRANCH}"
+            --owner "${GITHUB_REPOSITORY_OWNER}"
+            --executor github-actions
+            --target-kind "${TARGET_KIND}"
+            --base-ref "${BASE_REF}"
+            --head-ref "${HEAD_REF}"
+            --base-sha "${BASE_SHA}"
+            --head-sha "${HEAD_SHA}"
+            --policy-sha "${POLICY_SHA}"
+            --protected-branch "${PROTECTED_BRANCH}"
+            --baseline-state "${BASELINE_STATE}"
+            --gate-id "${GATE_ID}"
+            --workflow-run-id "${GITHUB_RUN_ID}"
+            --workflow-run-attempt "${GITHUB_RUN_ATTEMPT}"
+          )
+          if [[ "${TARGET_KIND}" == "pull_request" ]]; then
+            args+=(--pull-request "${PULL_REQUEST_NUMBER}")
+          fi
+          if [[ "${BASELINE_STATE}" == "available" ]]; then
+            args+=(--baseline "${BASELINE_PATH}")
+          elif [[ "${BASELINE_STATE}" == "unavailable" ]]; then
+            args+=(--baseline-reason "${BASELINE_REASON}")
+          fi
           set +e
-          pnpm --dir .csb-tool --filter @csb/gate-cli start -- \
-            --repository "${GITHUB_WORKSPACE}" \
-            --base-ref "${BASE_SHA}" \
-            --head-ref "${HEAD_SHA}" \
-            --policy "${POLICY_PATH}" \
-            --output "${GITHUB_WORKSPACE}/csb-gate-result.json" \
-            --repository-key "github.com/${GITHUB_REPOSITORY}" \
-            --repository-name "${GITHUB_REPOSITORY#*/}" \
-            --default-branch "${DEFAULT_BRANCH}" \
-            --owner "${GITHUB_REPOSITORY_OWNER}" \
-            --gate-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          pnpm --dir .csb-tool --filter @csb/gate-cli start -- "${args[@]}"
           gate_exit=$?
           set -e
           echo "exit_code=${gate_exit}" >> "${GITHUB_OUTPUT}"
+          if [[ -s "${GITHUB_WORKSPACE}/.csb-results/csb-gate-result.json" ]]; then
+            echo "artifact_ready=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "artifact_ready=false" >> "${GITHUB_OUTPUT}"
+          fi
 
-      - name: Upload gate artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: csb-gate-artifact
-          path: csb-gate-result.json
-          if-no-files-found: warn
-
-      - name: Write gate summary
-        if: always()
+      - name: Build artifact integrity manifest
+        if: always() && steps.gate.outputs.artifact_ready == 'true'
+        shell: bash
         env:
-          HAS_SCANNER_CREDENTIAL: ${{ steps.scanner-auth.outputs.ready }}
+          EXPECTED_GATE_ID: ${{ steps.revisions.outputs.gate_id }}
+          EXPECTED_HEAD_SHA: ${{ steps.revisions.outputs.head_sha }}
         run: |
           node <<'NODE'
+          const crypto = require('node:crypto');
           const fs = require('node:fs');
-          const summaryPath = process.env.GITHUB_STEP_SUMMARY;
-          let body = '## CSB Security Change Gate\n\n';
-          if (!fs.existsSync('csb-gate-result.json')) {
-            body += 'The gate artifact was not produced. Inspect the setup and CLI steps.\n';
-          } else {
-            const artifact = JSON.parse(fs.readFileSync('csb-gate-result.json', 'utf8'));
-            const credentialReady = process.env.HAS_SCANNER_CREDENTIAL === 'true';
-            const conclusion = artifact.decision.githubConclusion;
-            body += `- Outcome: \`${artifact.decision.outcome}\`\n`;
-            body += `- Conclusion: \`${conclusion}\`\n`;
-            body += `- Findings: ${artifact.findings.length}\n`;
-            body += `- Estimated cost: $${artifact.scan.cost?.estimatedUsd ?? 0}\n`;
-            if (!credentialReady) body += '- Check publication: unavailable because scanner authentication is missing\n';
-          }
-          fs.appendFileSync(summaryPath, body);
+          const artifactPath = '.csb-results/csb-gate-result.json';
+          const bytes = fs.readFileSync(artifactPath);
+          const artifact = JSON.parse(bytes.toString('utf8'));
+          if (artifact.schemaVersion !== 2 || artifact.gateId !== process.env.EXPECTED_GATE_ID) process.exit(3);
+          if (artifact.resolvedTarget?.headSha !== process.env.EXPECTED_HEAD_SHA) process.exit(3);
+          const manifest = {
+            schemaVersion: 1,
+            gateId: artifact.gateId,
+            workflowRunId: String(process.env.GITHUB_RUN_ID),
+            workflowRunAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+            headSha: artifact.resolvedTarget.headSha,
+            artifactSha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+          };
+          fs.writeFileSync('.csb-results/csb-gate-manifest.json', `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
           NODE
 
-      - name: Enforce gate result
+      - name: Publish validated Actions-owned Check
+        if: always() && steps.gate.outputs.artifact_ready == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          pnpm --dir .csb-tool --filter @csb/gate-cli publish-check --
+          "${GITHUB_WORKSPACE}/.csb-results/csb-gate-result.json"
+
+      - name: Upload final gate evidence
         if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: csb-gate-artifact-v2
+          path: |
+            .csb-results/csb-gate-result.json
+            .csb-results/csb-gate-manifest.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce validated gate result
+        if: always()
+        shell: bash
+        env:
+          TARGET_KIND: ${{ steps.revisions.outputs.target_kind }}
+          GATE_EXIT: ${{ steps.gate.outputs.exit_code }}
         run: |
-          echo "Legacy Guardrails workflow is contained and cannot approve a branch. Upgrade to contract v2." >> "${GITHUB_STEP_SUMMARY}"
-          exit 3
+          set -euo pipefail
+          if [[ ! -s ".csb-results/csb-gate-result.json" ]]; then
+            echo "GateArtifact v2 was not produced." >> "${GITHUB_STEP_SUMMARY}"
+            exit 3
+          fi
+          outcome="$(node -p "JSON.parse(require('node:fs').readFileSync('.csb-results/csb-gate-result.json','utf8')).decision.outcome")"
+          echo "Gate outcome: ${outcome}" >> "${GITHUB_STEP_SUMMARY}"
+          if [[ "${TARGET_KIND}" != "protected_branch" && "${outcome}" == "bootstrap" ]]; then
+            echo "A PR/compare bootstrap is evidence only and cannot approve a required gate." >> "${GITHUB_STEP_SUMMARY}"
+            exit 3
+          fi
+          exit "${GATE_EXIT:-3}"
