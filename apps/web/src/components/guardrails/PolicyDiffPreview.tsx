@@ -1,17 +1,19 @@
 import type { GuardrailPolicy } from "@csb/shared";
+import { useI18n } from "../../i18n";
 
 export function PolicyDiffPreview({ before, after }: { before: GuardrailPolicy; after: GuardrailPolicy }) {
+  const { t } = useI18n();
   const beforeJson = `${JSON.stringify(before, null, 2)}\n`;
   const afterJson = `${JSON.stringify(after, null, 2)}\n`;
   return (
     <section className="bench-panel min-w-0" aria-labelledby="policy-diff-title">
       <div className="border-b px-4 py-2.5">
         <div className="bench-label text-primary">EXACT JSON DIFF</div>
-        <h2 id="policy-diff-title" className="mt-0.5 text-sm font-semibold">Antes e depois</h2>
+        <h2 id="policy-diff-title" className="mt-0.5 text-sm font-semibold">{t("guardrails.diffTitle")}</h2>
       </div>
       <div className="grid min-w-0 lg:grid-cols-2">
-        <JsonPane label="Arquivo atual" value={beforeJson} />
-        <JsonPane label="Próximo arquivo" value={afterJson} next />
+        <JsonPane label={t("guardrails.currentFile")} value={beforeJson} />
+        <JsonPane label={t("guardrails.nextFile")} value={afterJson} next />
       </div>
     </section>
   );

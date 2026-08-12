@@ -22,11 +22,13 @@ Le produit réunit preuves de sécurité et télémétrie d’exécution. Findin
 
 ## Contexte opérationnel
 
-Le produit est utilisé pendant le développement et la revue de sécurité de dépôts locaux. Les scans peuvent être longs, partiels ou coûteux ; leurs résultats doivent rester lisibles pendant et après l’exécution. Le flux principal est vue d’ensemble → nouveau scan → activité/détail → comparaison → rapport.
+Le produit est utilisé pendant le développement et la revue de sécurité de checkouts locaux ou de dépôts GitHub explicitement autorisés. Les scans peuvent être longs, partiels ou coûteux ; leurs résultats doivent rester lisibles pendant et après l’exécution. Le flux principal est vue d’ensemble → nouveau scan → activité/détail → comparaison → rapport.
 
 ## Capacités et limites
 
 - Interface React/Vite locale, API Hono et métadonnées reflétées dans SQLite.
+- Guardrails accepte deux autorités explicites de dépôt : checkout local ou installation GitHub App privée. Les cibles distantes doivent être résolues en SHA base/head immuables avant exécution ; `HEAD` distant implicite et fallback silencieux vers l’état local sont interdits.
+- Un gate distant s’exécute depuis un snapshot immuable géré par Sentinel ou un caller GitHub Actions appartenant au dépôt et épinglé sur un SHA complet de release. La policy distante est en lecture seule dans Sentinel ; les propositions sont copiées ou téléchargées puis publiées via la revue pull request normale. Seul le workflow publie les GitHub Checks.
 - Indexation des scans compatibles présents dans l’état local configuré des scanners et dans les sorties gérées par Sentinel.
 - Moteur, connexion, protocole, profil d’exécution et sélection de modèle sont résolus et épinglés avant le lancement. Un scan fixe soit un modèle du catalogue en direct, soit, uniquement lorsque l’adapter le déclare, un runtime par défaut explicite. Un tuple qui exige une capability probe n’est éligible qu’après la réussite d’une probe fraîche et correspondante ; Sentinel ne bascule jamais silencieusement vers une autre route, un autre modèle ou profil.
 - Les modèles et options d’effort de raisonnement proviennent du catalogue du runtime/provider sélectionné. Lorsqu’un provider ne publie pas de métadonnées d’effort, Sentinel laisse l’effort géré par le provider au lieu d’inventer des options.

@@ -234,15 +234,17 @@ Au démarrage, l’API indexe les scans compatibles déjà présents dans le ré
 
 Les modèles et niveaux d’effort valides proviennent du catalogue authentifié et des capacités en direct du fournisseur. La seule exception de défaut de runtime est une session locale Claude Code configurée explicitement. Pour OpenRouter, `reasoning.supported_efforts: null` signifie que l’ensemble des efforts de la passerelle est disponible ; si `reasoning.mandatory` est vrai, `none` est retiré. L’effort envoyé par Sentinel et son champ wire sont conservés lorsqu’ils sont connus ; sinon le run indique la valeur par défaut du fournisseur sans prétendre savoir ce qu’il a appliqué. Les secrets et tokens OAuth sont write-only via l’API, stockés dans le coffre de credentials du système d’exploitation et représentés dans SQLite uniquement par des références opaques. Sentinel orchestre localement le flux d’appareil public de xAI et ne dépend pas de la CLI Grok ; l’accès au modèle n’est accepté qu’après le catalogue en direct et les vérifications de capacité réussies.
 
-## Guardrails locaux
+## Guardrails locaux et distants
 
-Les guardrails évaluent un changeset Git et conservent les preuves utilisées pour la décision.
+Les guardrails évaluent un changeset Git et conservent les preuves utilisées pour la décision. Un dépôt peut être autorisé par un checkout local ou une installation GitHub App privée ; Sentinel ne remplace jamais silencieusement une autorité par une autre.
 
-1. Enregistrer la racine d’un dépôt Git local.
-2. Exécuter le preflight avec des références comme `main` et `HEAD`.
-3. Inspecter le changeset, le périmètre du scanner, l’issue de la politique et le Decision Graph.
-4. Modifier visuellement `.csb/guardrails.json` et vérifier le JSON avant/après.
-5. Enregistrer des exceptions limitées dans le temps dans `.csb/guardrails-exceptions.json`.
+1. Enregistrer la racine d’un dépôt Git local ou un dépôt GitHub autorisé.
+2. Choisir l’exécuteur : snapshot immuable géré par Sentinel ou caller GitHub Actions épinglé du dépôt.
+3. Résoudre avant exécution une comparaison locale ou une cible distante explicite par pull request/base/head.
+4. Inspecter les SHA, le digest de policy, le périmètre, l’enveloppe de coût, l’issue et le Decision Graph figés.
+5. Modifier `.csb/guardrails.json` localement ; à distance, copier ou télécharger la proposition et la publier via la revue pull request normale.
+
+La policy distante est en lecture seule dans Sentinel et provient de la branche par défaut protégée. La GitHub App ne demande que `metadata:read`, `contents:read`, `pull_requests:read`, `actions:write` et `checks:write`. Sentinel ne commit ni ne push dans le dépôt cible. Toute capability, caller, ref, policy, lignée ou baseline absente, périmée ou divergente échoue en mode fermé.
 
 | Issue | Signification | Conclusion GitHub | Exit CLI |
 |---|---|---|---:|
@@ -256,7 +258,9 @@ Les guardrails évaluent un changeset Git et conservent les preuves utilisées p
 <details>
 <summary><strong>Utiliser le gate GitHub Actions réutilisable</strong></summary>
 
-Créez `.github/workflows/csb-security-change-gate.yml` dans le dépôt cible :
+Dans **Guardrails → Configurer GitHub**, copiez ou téléchargez le `.github/workflows/csb-security-change-gate.yml` généré puis publiez-le par pull request. Le caller épingle `uses` et `csb_ref` sur le même SHA immuable de release Sentinel à 40 caractères. Une branche ou un tag mutable comme `@main` ou `@v1` est refusé.
+
+Le caller utilise cette enveloppe minimale de permissions :
 
 ```yaml
 name: CSB Security Change Gate
@@ -269,17 +273,9 @@ permissions:
   pull-requests: read
   actions: read
   checks: write
-jobs:
-  security-change-gate:
-    uses: OkamiOps/okami-sentinel/.github/workflows/security-change-gate.yml@v1
-    with:
-      policy_path: .csb/guardrails.json
-      default_branch: main
-    secrets:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 ```
 
-Utilisez la référence versionnée `@v1` ; `@main` n’est pas accepté comme release du gate. Configurez le required check avec le nom exact **`CSB Security Change Gate`**.
+Configurez le required check avec le nom exact **`CSB Security Change Gate`**. `CSB_GITHUB_ACTIONS_WORKFLOW_SHA` doit contenir ce même SHA immuable avant que Sentinel déclare l’exécuteur Actions prêt ou le déclenche.
 
 Les pull requests provenant de forks ne reçoivent généralement pas les secrets du dépôt principal. Sans authentification du scanner, l’exécution se termine par l’erreur opérationnelle `3`, jamais par un faux succès.
 </details>
@@ -337,6 +333,7 @@ Voir l’[architecture de localisation](docs/localization.fr.md).
 | `VULNHUNTER_SOURCE_REF` | Libellé de commit revu | Révision VulnHunter enregistrée comme provenance de méthodologie ; elle n’est pas récupérée au runtime |
 | `CSB_HOST` | `127.0.0.1` | Adresse d’écoute de l’API |
 | `CSB_PORT` | `8787` | Port de l’API |
+| `CSB_GITHUB_ACTIONS_WORKFLOW_SHA` | indisponible | SHA immuable de release Sentinel à 40 caractères accepté par les callers distants |
 | `CSB_MAX_CONCURRENT_SCANS` | `8` | Nombre maximal de processus scanner simultanés |
 
 ## Développement

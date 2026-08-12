@@ -52,7 +52,7 @@ export function GuardrailPolicyPage() {
         api.listGates(repositoryKey),
       ]);
       const repository = repositoriesResponse.repositories.find((item) => item.repositoryKey === repositoryKey);
-      if (!repository) throw new Error("Repositório não encontrado");
+      if (!repository) throw new Error(t("guardrails.repositoryNotFound"));
       const eligibleGates = gatesResponse.gates.filter((gate) => Boolean(gate.artifactPath));
       setState({
         status: "ready",
@@ -66,7 +66,7 @@ export function GuardrailPolicyPage() {
       setEditor(editorStateFromPolicy(policyResponse.policy));
       setGateId((current) => eligibleGates.some((gate) => gate.id === current) ? current : eligibleGates[0]?.id ?? "");
     } catch (error) {
-      setState({ status: "error", message: error instanceof Error ? error.message : "Falha ao carregar política" });
+      setState({ status: "error", message: error instanceof Error ? error.message : t("guardrails.policyLoadError") });
     }
   }
 
@@ -79,7 +79,7 @@ export function GuardrailPolicyPage() {
     return (
       <div>
         <AlertBanner>{state.message}</AlertBanner>
-        <Button asChild variant="outline" className="min-h-11"><Link to="/guardrails"><ArrowLeft aria-hidden size={14} />Voltar a Guardrails</Link></Button>
+        <Button asChild variant="outline" className="min-h-11"><Link to="/guardrails"><ArrowLeft aria-hidden size={14} />{t("guardrails.back")}</Link></Button>
       </div>
     );
   }
@@ -105,7 +105,7 @@ export function GuardrailPolicyPage() {
     try {
       setSimulation(await api.simulateGuardrailPolicy(repositoryKey, { gateId, policy: proposedPolicy }));
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : "Falha ao simular política");
+      setActionError(error instanceof Error ? error.message : t("guardrails.simulationError"));
     } finally {
       setBusy(false);
     }
@@ -127,9 +127,9 @@ export function GuardrailPolicyPage() {
       } : current);
       setEditor(editorStateFromPolicy(reloaded.policy));
       setConfirmOpen(false);
-      setMessage("Arquivo atualizado no workspace");
+      setMessage(t("guardrails.policySaved"));
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : "Falha ao salvar política");
+      setActionError(error instanceof Error ? error.message : t("guardrails.policySaveError"));
     } finally {
       setBusy(false);
     }
@@ -184,12 +184,12 @@ export function GuardrailPolicyPage() {
             {state.readOnly ? <GitBranch aria-hidden size={17} /> : <HardDrive aria-hidden size={17} />}
           </span>
           <div className="min-w-0">
-            <div className="bench-label text-primary">POLICY AUTHORITY / {state.readOnly ? "REMOTE READ-ONLY" : "LOCAL WORKSPACE"}</div>
+            <div className="bench-label text-primary">POLICY AUTHORITY / {state.readOnly ? t("guardrails.remoteReadOnly") : t("guardrails.localWorkspace")}</div>
             <h2 id="policy-authority-title" className="mt-1 font-heading text-sm font-semibold">{state.readOnly ? t("guardrails.policyRemoteTitle") : t("guardrails.policyLocalTitle")}</h2>
             <p className="mt-1 text-xs leading-5 text-muted-foreground">{state.readOnly ? t("guardrails.policyRemoteDescription") : t("guardrails.policyLocalDescription")}</p>
           </div>
           <div className="min-w-0 text-left sm:text-right">
-            <div className="bench-label">SOURCE</div>
+            <div className="bench-label">{t("guardrails.source")}</div>
             <div className="mt-1 break-all font-mono text-[10px] text-foreground">{state.policySource}{state.policySha ? ` · ${state.policySha}` : ""}</div>
           </div>
         </div>
@@ -198,31 +198,31 @@ export function GuardrailPolicyPage() {
       <section className="bench-panel bench-corners min-w-0" aria-labelledby="policy-envelope-title">
         <div className="border-b px-4 py-2.5">
           <div className="bench-label text-primary">POLICY ENVELOPE</div>
-          <h2 id="policy-envelope-title" className="mt-0.5 text-sm font-semibold">Escopo e execução</h2>
+          <h2 id="policy-envelope-title" className="mt-0.5 text-sm font-semibold">{t("guardrails.scopeExecution")}</h2>
         </div>
         <div className="grid min-w-0 xl:grid-cols-2">
           <div className="grid gap-5 border-b p-4 xl:border-b-0 xl:border-r">
-            <EditorField label="Branches protegidas" htmlFor="policy-branches" hint="Separe múltiplas branches por vírgula." error={validation?.field === "protectedBranches" ? validation.message : null}>
+            <EditorField label={t("guardrails.protectedBranches")} htmlFor="policy-branches" hint={t("guardrails.branchesHint")} error={validation?.field === "protectedBranches" ? validation.message : null}>
               <Input id="policy-branches" className="min-h-11 font-mono" aria-invalid={validation?.field === "protectedBranches"} value={editor.protectedBranches.join(", ")} onChange={(event) => update("protectedBranches", event.target.value.split(",").map((value) => value.trim()))} />
             </EditorField>
             <div className="grid gap-5 sm:grid-cols-3">
-              <EditorSelect label="Modo de escopo" id="policy-scope-mode" value={editor.scopeMode} onValueChange={(value: PolicyEditorState["scopeMode"]) => update("scopeMode", value)} options={[{ value: "changed", label: "Paths alterados" }, { value: "repository", label: "Repositório" }]} />
-              <EditorField label="Teto de paths" htmlFor="policy-max-paths" error={validation?.field === "maxChangedPaths" ? validation.message : null}>
+              <EditorSelect label={t("guardrails.scopeMode")} id="policy-scope-mode" value={editor.scopeMode} onValueChange={(value: PolicyEditorState["scopeMode"]) => update("scopeMode", value)} options={[{ value: "changed", label: t("guardrails.changedPaths") }, { value: "repository", label: t("guardrails.repositoryScope") }]} />
+              <EditorField label={t("guardrails.maxPaths")} htmlFor="policy-max-paths" error={validation?.field === "maxChangedPaths" ? validation.message : null}>
                 <Input id="policy-max-paths" type="number" min={1} step={1} className="min-h-11 font-mono" aria-invalid={validation?.field === "maxChangedPaths"} value={editor.maxChangedPaths} onChange={(event) => update("maxChangedPaths", Number(event.target.value))} />
               </EditorField>
-              <EditorSelect label="Fallback" id="policy-fallback" value={editor.fallback} onValueChange={(value: PolicyEditorState["fallback"]) => update("fallback", value)} options={[{ value: "repository", label: "Repositório" }, { value: "error", label: "Interromper" }]} />
+              <EditorSelect label={t("guardrails.fallback")} id="policy-fallback" value={editor.fallback} onValueChange={(value: PolicyEditorState["fallback"]) => update("fallback", value)} options={[{ value: "repository", label: t("guardrails.repositoryScope") }, { value: "error", label: t("guardrails.stop") }]} />
             </div>
           </div>
           <div className="grid gap-5 p-4">
             <div className="grid gap-5 sm:grid-cols-2">
-              <EditorField label="Modelo" htmlFor="policy-model" error={validation?.field === "model" ? validation.message : null}>
+              <EditorField label={t("guardrails.model")} htmlFor="policy-model" error={validation?.field === "model" ? validation.message : null}>
                 <Input id="policy-model" className="min-h-11 font-mono" aria-invalid={validation?.field === "model"} value={editor.model} onChange={(event) => update("model", event.target.value)} />
               </EditorField>
               <EditorField label="Effort" htmlFor="policy-effort" error={validation?.field === "effort" ? validation.message : null}>
                 <Input id="policy-effort" className="min-h-11 font-mono" aria-invalid={validation?.field === "effort"} value={editor.effort} onChange={(event) => update("effort", event.target.value)} />
               </EditorField>
-              <EditorSelect label="Modo do scan" id="policy-scan-mode" value={editor.scanMode} onValueChange={(value: PolicyEditorState["scanMode"]) => update("scanMode", value)} options={[{ value: "standard", label: "Standard" }, { value: "deep", label: "Deep" }]} />
-              <EditorField label="Envelope máximo / USD" htmlFor="policy-max-cost" hint="Valor estimado em USD; não representa cobrança confirmada." error={validation?.field === "maxCostUsd" ? validation.message : null}>
+              <EditorSelect label={t("guardrails.scanMode")} id="policy-scan-mode" value={editor.scanMode} onValueChange={(value: PolicyEditorState["scanMode"]) => update("scanMode", value)} options={[{ value: "standard", label: "Standard" }, { value: "deep", label: "Deep" }]} />
+              <EditorField label={t("guardrails.maxCost")} htmlFor="policy-max-cost" hint={t("guardrails.maxCostHint")} error={validation?.field === "maxCostUsd" ? validation.message : null}>
                 <Input id="policy-max-cost" type="number" min="0.01" step="0.01" className="min-h-11 font-mono" aria-invalid={validation?.field === "maxCostUsd"} value={editor.maxCostUsd} onChange={(event) => update("maxCostUsd", Number(event.target.value))} />
               </EditorField>
             </div>
@@ -238,19 +238,19 @@ export function GuardrailPolicyPage() {
         <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-2.5">
           <div>
             <div className="bench-label text-primary">SIMULATION</div>
-            <h2 id="policy-simulation-title" className="mt-0.5 text-sm font-semibold">Artifact existente, sem escrita</h2>
+            <h2 id="policy-simulation-title" className="mt-0.5 text-sm font-semibold">{t("guardrails.simulationTitle")}</h2>
           </div>
           <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
             <Select value={gateId} onValueChange={setGateId}>
-              <SelectTrigger aria-label="Gate usado na simulação" className="min-h-11 w-full rounded-none sm:w-72"><SelectValue placeholder="Selecione um gate" /></SelectTrigger>
+              <SelectTrigger aria-label={t("guardrails.simulationGateLabel")} className="min-h-11 w-full rounded-none sm:w-72"><SelectValue placeholder={t("guardrails.selectGate")} /></SelectTrigger>
               <SelectContent position="popper" className="rounded-none border-border bg-popover">
                 {eligibleGates.map((gate) => <SelectItem key={gate.id} value={gate.id} className="min-h-11 rounded-none">{gate.baseRef} → {gate.headRef} · {gate.outcome ?? gate.status}</SelectItem>)}
               </SelectContent>
             </Select>
-            <Button variant="outline" className="min-h-11" disabled={busy || Boolean(validation) || !gateId} onClick={() => void simulate()}><Beaker aria-hidden size={14} />{busy ? "Simulando…" : "Simular política"}</Button>
+            <Button variant="outline" className="min-h-11" disabled={busy || Boolean(validation) || !gateId} onClick={() => void simulate()}><Beaker aria-hidden size={14} />{busy ? t("guardrails.simulating") : t("guardrails.simulatePolicy")}</Button>
           </div>
         </div>
-        {simulation ? <SimulationReadout simulation={simulation} /> : <EmptyState title={eligibleGates.length ? "Simulação ainda não executada" : "Nenhum artifact disponível"} description={eligibleGates.length ? "Escolha um gate e execute a política em memória. Nenhum arquivo será alterado." : "Conclua um gate para habilitar a simulação."} />}
+        {simulation ? <SimulationReadout simulation={simulation} /> : <EmptyState title={eligibleGates.length ? t("guardrails.simulationEmpty") : t("guardrails.noArtifact")} description={eligibleGates.length ? t("guardrails.simulationEmptyDescription") : t("guardrails.noArtifactDescription")} />}
       </section>
 
       <div className="mt-4"><PolicyDiffPreview before={state.policy} after={proposedPolicy} /></div>
@@ -258,17 +258,17 @@ export function GuardrailPolicyPage() {
       {!state.readOnly && <Sheet open={confirmOpen} onOpenChange={setConfirmOpen}>
         <SheetContent side="bottom" className="mx-auto max-h-[85dvh] overflow-y-auto border-border bg-background sm:left-1/2 sm:max-w-2xl sm:-translate-x-1/2">
           <SheetHeader>
-            <SheetTitle className="flex items-center gap-2 font-heading"><FileCheck2 aria-hidden size={17} className="text-primary" />Confirmar gravação local</SheetTitle>
-            <SheetDescription>Esta ação substitui somente o arquivo de política no workspace selecionado.</SheetDescription>
+            <SheetTitle className="flex items-center gap-2 font-heading"><FileCheck2 aria-hidden size={17} className="text-primary" />{t("guardrails.confirmLocalWrite")}</SheetTitle>
+            <SheetDescription>{t("guardrails.confirmLocalWriteDescription")}</SheetDescription>
           </SheetHeader>
           <div className="mx-4 border p-4">
-            <div className="bench-label">CAMINHO EXATO</div>
+            <div className="bench-label">{t("guardrails.exactPath")}</div>
             <code className="mt-2 block break-all font-mono text-sm text-primary">.csb/guardrails.json</code>
-            <p className="mt-3 text-xs leading-5 text-muted-foreground">Nenhum commit ou push será executado. O JSON mostrado em “Próximo arquivo” é o conteúdo enviado à API.</p>
+            <p className="mt-3 text-xs leading-5 text-muted-foreground">{t("guardrails.noCommitPush")}</p>
           </div>
           <SheetFooter className="sm:flex-row sm:justify-end">
-            <Button variant="outline" className="min-h-11" onClick={() => setConfirmOpen(false)} disabled={busy}>Cancelar</Button>
-            <Button className="min-h-11" onClick={() => void saveConfirmed()} disabled={busy || Boolean(validation) || !changed}><Save aria-hidden size={14} />{busy ? "Salvando…" : "Confirmar e salvar"}</Button>
+            <Button variant="outline" className="min-h-11" onClick={() => setConfirmOpen(false)} disabled={busy}>{t("common.cancel")}</Button>
+            <Button className="min-h-11" onClick={() => void saveConfirmed()} disabled={busy || Boolean(validation) || !changed}><Save aria-hidden size={14} />{busy ? t("guardrails.saving") : t("guardrails.confirmSave")}</Button>
           </SheetFooter>
         </SheetContent>
       </Sheet>}
@@ -277,27 +277,28 @@ export function GuardrailPolicyPage() {
 }
 
 function SimulationReadout({ simulation }: { simulation: PolicySimulationResponse }) {
+  const { t } = useI18n();
   return (
     <div>
       <div className="grid gap-4 border-b p-4 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-start">
         <GateOutcomeBadge outcome={simulation.decision.outcome} status="completed" />
         <div>
           <p className="text-sm leading-6">{simulation.decision.summary}</p>
-          <p className="mt-1 font-mono text-[9px] uppercase text-muted-foreground">Simulação em memória · nenhuma escrita</p>
+          <p className="mt-1 font-mono text-[9px] uppercase text-muted-foreground">{t("guardrails.simulationMemory")}</p>
         </div>
       </div>
       {simulation.configurationErrors.length > 0 ? (
         <div>
-          <div className="flex items-center gap-2 border-b px-4 py-3 text-sm font-semibold text-destructive"><ShieldAlert aria-hidden size={15} />Erros de configuração</div>
+          <div className="flex items-center gap-2 border-b px-4 py-3 text-sm font-semibold text-destructive"><ShieldAlert aria-hidden size={15} />{t("guardrails.configurationErrors")}</div>
           {simulation.configurationErrors.map((error, index) => (
             <div key={`${error.field}-${index}`} className="grid gap-3 border-b px-4 py-3 last:border-b-0 sm:grid-cols-[minmax(0,1fr)_12rem_12rem]">
               <div><div className="font-mono text-[9px] text-destructive">{error.field}</div><p className="mt-1 text-xs">{error.message}</p></div>
-              <div><div className="bench-label">Owner</div><div className="mt-1 text-xs text-muted-foreground">Não determinado</div></div>
-              <div><div className="bench-label">Expira em</div><div className="mt-1 text-xs text-muted-foreground">Não determinado</div></div>
+              <div><div className="bench-label">{t("guardrails.owner")}</div><div className="mt-1 text-xs text-muted-foreground">{t("guardrails.undetermined")}</div></div>
+              <div><div className="bench-label">{t("guardrails.expiresAt")}</div><div className="mt-1 text-xs text-muted-foreground">{t("guardrails.undetermined")}</div></div>
             </div>
           ))}
         </div>
-      ) : <div className="px-4 py-3 text-xs text-chart-2">Nenhum erro de configuração retornado.</div>}
+      ) : <div className="px-4 py-3 text-xs text-chart-2">{t("guardrails.noConfigurationErrors")}</div>}
     </div>
   );
 }

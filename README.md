@@ -229,15 +229,17 @@ At startup, the API indexes compatible scans already present in the configured C
 
 Models come from the authenticated provider catalog. The only runtime-default exception is an explicitly configured Claude Code local session. For OpenRouter, `reasoning.supported_efforts: null` means the gateway effort set is available; if `reasoning.mandatory` is true, `none` is removed. The exact effort Sentinel sent is preserved with its wire field when known; otherwise the run records provider-default behavior without claiming what the provider applied. Secrets and OAuth tokens are write-only through the API, stored in the OS credential vault, and represented in SQLite only by opaque references. Sentinel orchestrates xAI's public device flow locally and does not invoke or depend on Grok CLI; model access is accepted only after live catalog and capability checks succeed.
 
-## Local guardrails
+## Local and remote guardrails
 
-Guardrails evaluate a Git changeset and preserve the evidence used in the decision.
+Guardrails evaluate a Git changeset and preserve the evidence used in the decision. A repository may be authorized by a local checkout or by a private GitHub App installation; Sentinel never silently substitutes one authority for the other.
 
-1. Enroll the root of a local Git repository.
-2. Run preflight with base and head references such as `main` and `HEAD`.
-3. Inspect the effective changeset, scanner scope, policy outcome, and Decision Graph.
-4. Edit `.csb/guardrails.json` visually and review the before/after JSON.
-5. Record time-bounded exceptions in `.csb/guardrails-exceptions.json`.
+1. Enroll either the root of a local Git repository or an authorized GitHub repository.
+2. Choose the executor: Sentinel-managed immutable snapshot or the repository's pinned GitHub Actions caller.
+3. Resolve a local comparison or an explicit remote pull request/base/head target before execution.
+4. Inspect the frozen SHAs, policy digest, scanner scope, cost envelope, outcome, and Decision Graph.
+5. Edit `.csb/guardrails.json` locally, or copy/download a remote proposal and publish it through the repository's normal pull-request review.
+
+Remote policy is read-only in Sentinel and comes from the protected default branch. The GitHub App requests only `metadata:read`, `contents:read`, `pull_requests:read`, `actions:write`, and `checks:write`. Sentinel does not commit or push to the target repository. Missing, stale, or mismatched capability, caller, ref, policy, lineage, or baseline state fails closed rather than becoming approval.
 
 | Outcome | Meaning | GitHub conclusion | CLI exit |
 |---|---|---|---:|
@@ -251,7 +253,9 @@ Guardrails evaluate a Git changeset and preserve the evidence used in the decisi
 <details>
 <summary><strong>Use the reusable GitHub Actions gate</strong></summary>
 
-Create `.github/workflows/csb-security-change-gate.yml` in the target repository:
+From **Guardrails → Configure GitHub**, copy or download the generated `.github/workflows/csb-security-change-gate.yml`, then publish it through a pull request. The generated caller includes the full dispatch contract and pins both `uses` and `csb_ref` to the same immutable 40-character Sentinel release SHA. A mutable branch or tag such as `@main` or `@v1` is rejected.
+
+The caller uses this minimum permission envelope:
 
 ```yaml
 name: CSB Security Change Gate
@@ -264,17 +268,9 @@ permissions:
   pull-requests: read
   actions: read
   checks: write
-jobs:
-  security-change-gate:
-    uses: OkamiOps/okami-sentinel/.github/workflows/security-change-gate.yml@v1
-    with:
-      policy_path: .csb/guardrails.json
-      default_branch: main
-    secrets:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 ```
 
-Use the versioned `@v1` reference; `@main` is not accepted as a gate release. Configure the exact required-check name **`CSB Security Change Gate`** in branch protection.
+Configure the exact required-check name **`CSB Security Change Gate`** in branch protection. `CSB_GITHUB_ACTIONS_WORKFLOW_SHA` must contain that same immutable release SHA before Sentinel will declare the Actions executor ready or dispatch it.
 
 Fork pull requests usually cannot read base-repository secrets. Missing scanner authentication ends as operational exit `3`, never as a false-success Check.
 </details>
@@ -332,6 +328,7 @@ See [localization architecture](docs/localization.md).
 | `VULNHUNTER_SOURCE_REF` | Reviewed commit label | VulnHunter methodology revision recorded as provenance; it is not fetched at runtime |
 | `CSB_HOST` | `127.0.0.1` | API bind address |
 | `CSB_PORT` | `8787` | API port |
+| `CSB_GITHUB_ACTIONS_WORKFLOW_SHA` | unavailable | Immutable 40-character Sentinel release SHA accepted by remote Actions callers |
 | `CSB_MAX_CONCURRENT_SCANS` | `8` | Maximum concurrent scanner processes |
 
 For ChatGPT-subscription runs on macOS, Sentinel prefers the Codex executable bundled with ChatGPT Desktop. This keeps the inference host aligned with the shared authentication and model-cache schema; an explicit `CODEX_BIN` always wins.

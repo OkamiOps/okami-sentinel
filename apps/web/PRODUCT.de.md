@@ -22,11 +22,13 @@ Das Produkt verbindet Sicherheitsbelege und Ausführungstelemetrie. Findings, Sc
 
 ## Betriebskontext
 
-Das Produkt wird während Entwicklung und Sicherheitsreview an lokalen Repositories eingesetzt. Scans können lange laufen, partiell oder teuer sein; Ergebnisse müssen während und nach der Ausführung lesbar bleiben. Der Hauptfluss lautet Übersicht → neuer Scan → Aktivität/Detail → Vergleich → Bericht.
+Das Produkt wird während Entwicklung und Sicherheitsreview an lokalen Checkouts oder explizit autorisierten GitHub-Repositories eingesetzt. Scans können lange laufen, partiell oder teuer sein; Ergebnisse müssen während und nach der Ausführung lesbar bleiben. Der Hauptfluss lautet Übersicht → neuer Scan → Aktivität/Detail → Vergleich → Bericht.
 
 ## Fähigkeiten und Grenzen
 
 - Lokale React/Vite-Oberfläche, Hono-API und in SQLite gespiegelte Metadaten.
+- Guardrails akzeptiert zwei explizite Repository-Autoritäten: lokalen Checkout oder private GitHub-App-Installation. Remote-Ziele müssen vor der Ausführung auf unveränderliche Base-/Head-SHAs aufgelöst werden; implizites Remote-`HEAD` und stiller Fallback auf lokalen State sind verboten.
+- Ein Remote-Gate läuft über einen von Sentinel verwalteten unveränderlichen Snapshot oder einen Repository-eigenen GitHub-Actions-Caller, der auf einen vollständigen Release-SHA gepinnt ist. Remote-Policies sind in Sentinel nur lesbar; Vorschläge werden kopiert oder heruntergeladen und über den normalen Pull-Request-Prozess veröffentlicht. Nur der Workflow veröffentlicht GitHub Checks.
 - Vorhandene kompatible Scans werden aus dem konfigurierten lokalen Scanner-State und aus von Sentinel verwalteten Ausgaben indexiert.
 - Engine, Verbindung, Protokoll, Ausführungsprofil und Modellauswahl werden vor dem Start aufgelöst und festgeschrieben. Ein Scan verwendet entweder ein Modell aus dem Live-Katalog oder, nur wenn der Adapter dies deklariert, einen expliziten Runtime-Default. Ein Tupel, das eine Capability-Probe erfordert, ist erst nach einer frischen passenden erfolgreichen Probe berechtigt; Sentinel fällt nie still auf eine andere Route, ein anderes Modell oder Profil zurück.
 - Modelle und Reasoning-Effort-Optionen stammen aus dem Katalog des ausgewählten Runtime/Providers. Veröffentlicht ein Provider keine Effort-Metadaten, bleibt der Effort providerverwaltet, statt dass Sentinel Optionen erfindet.

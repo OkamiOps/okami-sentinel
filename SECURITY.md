@@ -24,6 +24,7 @@ Please allow time for validation before public disclosure. No response-time SLA 
 
 - Scanner output, findings, paths, logs, and repository content are untrusted input.
 - The default product is local-first. Starting a scan explicitly authorizes the selected provider connection to receive the prompts and bounded repository evidence required by that methodology. GitHub publication remains a separate explicit action.
+- Remote Guardrails requires an explicitly selected private GitHub App installation and repository. The server resolves refs to immutable SHAs, reads policy from the protected branch, and rejects implicit remote `HEAD`. Sentinel never commits or pushes to the target; only the pinned repository workflow may publish a Check. Installation tokens remain server-side and are never returned to the browser.
 - Operational failures must never become passing security decisions.
 - Provider secrets and OAuth tokens are write-only through the local API and stored through the OS credential vault. SQLite stores opaque credential references, never secret values, and public connection DTOs never return a credential.
 - Scanner manifests, telemetry, SSE events, and persisted logs must pass through the shared redaction boundary. Local subscription children receive a minimal environment rather than the API process environment.

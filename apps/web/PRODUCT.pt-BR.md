@@ -22,11 +22,13 @@ O produto cruza evidência de segurança com telemetria de execução. Findings,
 
 ## Contexto operacional
 
-O uso acontece durante desenvolvimento e revisão de segurança contra repositórios locais. Scans podem ser longos, parciais ou caros; resultados precisam permanecer legíveis durante e depois da execução. O fluxo principal é visão → novo scan → atividade/detalhe → comparação → relatório.
+O uso acontece durante desenvolvimento e revisão de segurança contra checkouts locais ou repositórios GitHub explicitamente autorizados. Scans podem ser longos, parciais ou caros; resultados precisam permanecer legíveis durante e depois da execução. O fluxo principal é visão → novo scan → atividade/detalhe → comparação → relatório.
 
 ## Capabilities e limites
 
 - Interface React/Vite local, API Hono e metadados espelhados em SQLite.
+- Guardrails aceita duas autoridades explícitas de repositório: checkout local ou instalação privada do GitHub App. Alvos remotos precisam resolver SHAs imutáveis de base/head antes de executar; `HEAD` remoto implícito e fallback silencioso para estado local são proibidos.
+- Um gate remoto roda em snapshot imutável gerenciado pelo Sentinel ou em caller GitHub Actions do próprio repositório, fixado em um SHA completo de release. Policy remota é somente leitura no Sentinel; propostas são copiadas ou baixadas e publicadas pelo pull request normal. Somente o workflow publica GitHub Checks.
 - Scans compatíveis existentes são indexados do state local configurado dos scanners e das saídas gerenciadas pelo Sentinel.
 - Motor, conexão, protocolo, perfil de execução e seleção de modelo são resolvidos e fixados antes do lançamento. O scan fixa um modelo do catálogo ao vivo ou, somente quando o adapter declara, um default de runtime explícito. Uma tupla que exige capability probe não fica elegível até a probe nova e correspondente passar; o Sentinel nunca faz fallback silencioso para outra rota, modelo ou perfil.
 - Modelos e opções de esforço de raciocínio vêm do catálogo do runtime/provider selecionado. Quando o provider não publica metadados de esforço, o Sentinel deixa o esforço gerenciado pelo provider em vez de inventar opções.

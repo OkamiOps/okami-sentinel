@@ -24,6 +24,7 @@ Laissez le temps nécessaire à la validation avant toute divulgation publique. 
 
 - Sortie du scanner, findings, chemins, logs et contenu du dépôt sont des entrées non fiables.
 - Le produit est local-first par défaut. Démarrer un scan autorise explicitement la connexion sélectionnée à recevoir les prompts et les preuves bornées du dépôt nécessaires à la méthodologie. La publication GitHub reste une action distincte.
+- Les Guardrails distants exigent une installation GitHub App privée et un dépôt sélectionnés explicitement. Le serveur résout les refs en SHA immuables, lit la policy depuis la branche protégée et refuse `HEAD` distant implicite. Sentinel ne commit ni ne push dans la cible ; seul le workflow épinglé du dépôt peut publier un Check. Les jetons d’installation restent côté serveur et ne sont jamais renvoyés au navigateur.
 - Une erreur opérationnelle ne doit jamais devenir une décision de sécurité positive.
 - Les secrets de fournisseurs et jetons OAuth sont accessibles uniquement en écriture via l’API locale et stockés dans le coffre de credentials du système. SQLite ne conserve que des références opaques et les DTO publics ne renvoient jamais de credential.
 - Manifestes de scan, télémétrie, événements SSE et logs persistés passent par la frontière de rédaction partagée. Les processus locaux par abonnement reçoivent un environnement minimal.

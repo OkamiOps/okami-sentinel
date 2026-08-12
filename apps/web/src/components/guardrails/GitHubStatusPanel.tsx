@@ -5,6 +5,7 @@ import { Check, Clipboard, Download, GitBranch, RotateCw, ShieldAlert, Workflow 
 import type { GuardrailActionsStatus, GuardrailCallerWorkflow } from "../../api";
 import { Button } from "@/components/ui/button";
 import { cx } from "../ui";
+import { useI18n } from "../../i18n";
 
 export function GitHubStatusPanel({
   repository,
@@ -23,6 +24,7 @@ export function GitHubStatusPanel({
   onRefresh: () => Promise<void>;
   onSyncBaseline: () => Promise<void>;
 }) {
+  const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   const remoteReady = status.remote.ready && status.auth.ready && status.permissions.ready;
   const managedReady = remoteReady;
@@ -49,41 +51,41 @@ export function GitHubStatusPanel({
       <div className="grid border-b lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
         <div className="px-4 py-4">
           <div className="bench-label text-primary">GITHUB APP / TRUST CHAIN</div>
-          <h2 id="github-capability-title" className="mt-1 font-heading text-base font-semibold">Autoridade remota e planos de execução</h2>
-          <p className="mt-2 max-w-3xl text-xs leading-5 text-muted-foreground">O GitHub App substitui o requisito universal de pasta local e gh CLI. Cada executor continua com seu próprio contrato.</p>
+          <h2 id="github-capability-title" className="mt-1 font-heading text-base font-semibold">{t("guardrails.remoteAuthorityTitle")}</h2>
+          <p className="mt-2 max-w-3xl text-xs leading-5 text-muted-foreground">{t("guardrails.remoteAuthorityDescription")}</p>
         </div>
-        <Button variant="outline" className="m-4 min-h-11" disabled={busy} onClick={() => void onRefresh()}><RotateCw aria-hidden size={14} />Atualizar capacidades</Button>
+        <Button variant="outline" className="m-4 min-h-11" disabled={busy} onClick={() => void onRefresh()}><RotateCw aria-hidden size={14} />{t("guardrails.refreshCapabilities")}</Button>
       </div>
 
       <div className="grid border-b md:grid-cols-3">
         <CapabilityCell icon={<GitBranch aria-hidden size={15} />} code="01 / AUTHORITY" title="GitHub App" ready={remoteReady} detail={status.remote.message} />
-        <CapabilityCell icon={<ShieldAlert aria-hidden size={15} />} code="02 / MANAGED" title="Sentinel managed" ready={managedReady} detail={managedReady ? "Snapshot imutável autorizado pela instalação." : status.auth.message} />
-        <CapabilityCell icon={<Workflow aria-hidden size={15} />} code="03 / ACTIONS" title="GitHub Actions" ready={actionsReady} detail={actionsStatus ? actionsStatusMessage(actionsStatus) : "Verificando caller fixado…"} />
+        <CapabilityCell icon={<ShieldAlert aria-hidden size={15} />} code="02 / MANAGED" title="Sentinel managed" ready={managedReady} detail={managedReady ? t("guardrails.managedReadyDetail") : status.auth.message} />
+        <CapabilityCell icon={<Workflow aria-hidden size={15} />} code="03 / ACTIONS" title="GitHub Actions" ready={actionsReady} detail={actionsStatus ? t(`guardrails.actionsStatus.${actionsStatus.code}`) : t("guardrails.actionsChecking")} />
       </div>
 
       <div className="grid min-w-0 lg:grid-cols-[minmax(0,1fr)_minmax(20rem,.45fr)]">
         <div className="min-w-0 border-b p-4 lg:border-b-0 lg:border-r">
-          <div className="bench-label text-primary">ENROLLED IDENTITY</div>
+          <div className="bench-label text-primary">{t("guardrails.enrolledIdentity")}</div>
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <IdentityRow label="Repositório" value={`${repository.remoteOwner}/${repository.remoteName}`} />
-            <IdentityRow label="Branch padrão" value={repository.defaultBranch} />
+            <IdentityRow label={t("guardrails.repository")} value={`${repository.remoteOwner}/${repository.remoteName}`} />
+            <IdentityRow label={t("guardrails.defaultBranch")} value={repository.defaultBranch} />
             <IdentityRow label="Installation ID" value={repository.githubInstallationId ?? "—"} />
             <IdentityRow label="Repository ID" value={repository.githubRepositoryId ?? "—"} />
-            <IdentityRow label="Executor padrão" value={repository.defaultExecutor} />
-            <IdentityRow label="Baseline" value={status.baseline.ready ? "AUTORIZADA" : "AÇÃO NECESSÁRIA"} />
+            <IdentityRow label={t("guardrails.defaultExecutor")} value={repository.defaultExecutor} />
+            <IdentityRow label="Baseline" value={status.baseline.ready ? t("guardrails.authorized") : t("guardrails.actionRequired")} />
           </div>
         </div>
         <div className="grid content-start gap-3 p-4">
           <div>
             <div className="bench-label">CALLER WORKFLOW</div>
-            <p className="mt-2 text-xs leading-5 text-muted-foreground">O Sentinel nunca faz commit ou push no repositório. Copie ou baixe o caller e publique pela revisão normal do projeto.</p>
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">{t("guardrails.callerDescription")}</p>
           </div>
           <code className="block break-all border bg-secondary/30 p-3 font-mono text-[10px] text-primary">{actionsStatus?.workflowPath ?? ".github/workflows/csb-security-change-gate.yml"}</code>
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
-            <Button variant="outline" className="min-h-11" disabled={!callerWorkflow} onClick={() => void copyCaller()}><Clipboard aria-hidden size={14} />{copied ? "Copiado" : "Copiar YAML"}</Button>
-            <Button variant="outline" className="min-h-11" disabled={!callerWorkflow} onClick={downloadCaller}><Download aria-hidden size={14} />Baixar arquivo</Button>
+            <Button variant="outline" className="min-h-11" disabled={!callerWorkflow} onClick={() => void copyCaller()}><Clipboard aria-hidden size={14} />{copied ? t("guardrails.copied") : t("guardrails.copyYaml")}</Button>
+            <Button variant="outline" className="min-h-11" disabled={!callerWorkflow} onClick={downloadCaller}><Download aria-hidden size={14} />{t("guardrails.downloadFile")}</Button>
           </div>
-          <Button className="min-h-11" disabled={busy || !remoteReady} onClick={() => void onSyncBaseline()}><RotateCw aria-hidden size={14} />Sincronizar baseline</Button>
+          <Button className="min-h-11" disabled={busy || !remoteReady} onClick={() => void onSyncBaseline()}><RotateCw aria-hidden size={14} />{t("guardrails.syncBaseline")}</Button>
         </div>
       </div>
     </section>
@@ -96,16 +98,4 @@ function CapabilityCell({ icon, code, title, ready, detail }: { icon: React.Reac
 
 function IdentityRow({ label, value }: { label: string; value: string }) {
   return <div className="min-w-0 border-l border-primary/40 pl-3"><div className="font-mono text-[8px] uppercase tracking-[.12em] text-muted-foreground">{label}</div><div className="mt-1 break-all font-mono text-[10px] text-foreground">{value}</div></div>;
-}
-
-function actionsStatusMessage(status: GuardrailActionsStatus): string {
-  const messages: Record<GuardrailActionsStatus["code"], string> = {
-    ready: "Caller ativo e fixado no release imutável do Sentinel.",
-    actions_release_unavailable: "Release imutável ainda não publicado.",
-    caller_workflow_inactive: "O caller existe, mas está inativo no GitHub.",
-    caller_workflow_missing: "O caller ainda não existe na branch padrão.",
-    caller_workflow_outdated: "O caller não corresponde ao release autorizado.",
-    github_actions_unavailable: "A instalação não comprovou acesso ao Actions.",
-  };
-  return messages[status.code];
 }

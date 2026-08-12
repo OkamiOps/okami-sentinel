@@ -24,6 +24,7 @@ Vor öffentlicher Veröffentlichung muss Zeit für die Validierung bleiben. Sola
 
 - Scanner-Ausgabe, Findings, Pfade, Logs und Repository-Inhalte sind nicht vertrauenswürdige Eingaben.
 - Das Produkt ist standardmäßig local-first. Der Start eines Scans autorisiert die ausgewählte Provider-Verbindung ausdrücklich, die für die Methodik benötigten Prompts und begrenzten Repository-Belege zu empfangen. Eine GitHub-Veröffentlichung bleibt eine separate Aktion.
+- Remote-Guardrails erfordert eine explizit gewählte private GitHub-App-Installation und ein Repository. Der Server löst Refs auf unveränderliche SHAs auf, liest die Policy aus dem geschützten Branch und lehnt implizites Remote-`HEAD` ab. Sentinel committet oder pusht nie ins Ziel; nur der gepinnte Repository-Workflow darf einen Check veröffentlichen. Installation-Tokens bleiben serverseitig und werden nie an den Browser zurückgegeben.
 - Operative Fehler dürfen nie zu einer positiven Sicherheitsentscheidung werden.
 - Provider-Secrets und OAuth-Tokens sind über die lokale API nur schreibbar und werden im Credential Vault des Betriebssystems gespeichert. SQLite enthält nur undurchsichtige Referenzen; öffentliche DTOs geben keine Credentials zurück.
 - Scanner-Manifeste, Telemetrie, SSE-Ereignisse und persistierte Logs durchlaufen die gemeinsame Redaktionsgrenze. Lokale Subscription-Prozesse erhalten nur eine minimale Umgebung.

@@ -115,7 +115,7 @@ export function GuardrailPreflightSheet({
       setAcceptedFingerprint(fingerprint);
       setIdempotencyKey(`guardrail:${crypto.randomUUID()}`);
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : "Falha ao resolver o alvo remoto";
+      const message = cause instanceof Error ? cause.message : t("guardrails.resolveError");
       setError(message);
       onError(message);
     } finally {
@@ -146,7 +146,7 @@ export function GuardrailPreflightSheet({
       onOpenChange(false);
       onStarted(response.gate);
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : "Falha ao iniciar o gate";
+      const message = cause instanceof Error ? cause.message : t("guardrails.startError");
       setError(message);
       onError(message);
     } finally {
@@ -174,10 +174,10 @@ export function GuardrailPreflightSheet({
         <ScrollArea className="min-h-0 flex-1">
           <div className="grid gap-5 p-4 pb-8">
             <section aria-labelledby="preflight-authority-title">
-              <StepHeading code="01 / AUTHORITY" id="preflight-authority-title" title="Repositório e autoridade" />
+              <StepHeading code="01 / AUTHORITY" id="preflight-authority-title" title={t("guardrails.authorityTitle")} />
               <Field label={t("guardrails.repository")} htmlFor="guardrail-preflight-repository">
                 <Select value={selected?.repositoryKey ?? ""} onValueChange={selectRepository}>
-                  <SelectTrigger id="guardrail-preflight-repository" className="min-h-11 w-full rounded-none"><SelectValue placeholder="Selecione" /></SelectTrigger>
+                  <SelectTrigger id="guardrail-preflight-repository" className="min-h-11 w-full rounded-none"><SelectValue placeholder={t("guardrails.select")} /></SelectTrigger>
                   <SelectContent position="popper" className="rounded-none border-border bg-popover">
                     {repositories.map((repository) => <SelectItem key={repository.repositoryKey} value={repository.repositoryKey} className="min-h-11 rounded-none">{repository.displayName}</SelectItem>)}
                   </SelectContent>
@@ -204,22 +204,22 @@ export function GuardrailPreflightSheet({
                 </StepHeading>
 
                 {selected.source === "github" && (
-                  <div className="mb-4 grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Tipo de alvo remoto">
+                  <div className="mb-4 grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label={t("guardrails.remoteTarget")}>
                     <ChoiceCard checked={draft.kind === "pull_request"} icon={<GitPullRequestArrow aria-hidden size={17} />} title={t("guardrails.pullRequest")} meta="PR NUMBER" description={t("guardrails.remoteTargetHelp")} onSelect={() => invalidatePreview({ ...draft, kind: "pull_request" })} />
                     <ChoiceCard checked={draft.kind === "compare"} icon={<GitCompareArrows aria-hidden size={17} />} title={t("guardrails.compareRefs")} meta="BASE + HEAD" description={t("guardrails.remoteTargetHelp")} onSelect={() => invalidatePreview({ ...draft, kind: "compare" })} />
                   </div>
                 )}
 
                 {selected.source === "github" && draft.kind === "pull_request" ? (
-                  <Field label={t("guardrails.prNumber")} htmlFor="guardrail-pr-number" hint="Inteiro positivo, sem URL ou texto adicional.">
+                  <Field label={t("guardrails.prNumber")} htmlFor="guardrail-pr-number" hint={t("guardrails.prNumberHelp")}>
                     <Input id="guardrail-pr-number" inputMode="numeric" type="number" min={1} step={1} className="min-h-11 font-mono" value={draft.pullRequestNumber} onChange={(event) => invalidatePreview({ ...draft, pullRequestNumber: event.target.value })} />
                   </Field>
                 ) : (
                   <div className="grid gap-4 sm:grid-cols-2">
-                    <Field label={t("guardrails.baseRef")} htmlFor="guardrail-base-ref" hint="Branch, tag ou SHA usada como autoridade da policy.">
+                    <Field label={t("guardrails.baseRef")} htmlFor="guardrail-base-ref" hint={t("guardrails.baseRefHelp")}>
                       <Input id="guardrail-base-ref" className="min-h-11 font-mono" value={draft.baseRef} onChange={(event) => invalidatePreview({ ...draft, baseRef: event.target.value })} />
                     </Field>
-                    <Field label={t("guardrails.headRef")} htmlFor="guardrail-head-ref" hint={selected.source === "github" ? "Branch, tag ou SHA explícita." : "HEAD lê também o estado atual do workspace."}>
+                    <Field label={t("guardrails.headRef")} htmlFor="guardrail-head-ref" hint={selected.source === "github" ? t("guardrails.remoteHeadHelp") : t("guardrails.localHeadHelp")}>
                       <Input id="guardrail-head-ref" className="min-h-11 font-mono" value={draft.headRef} onChange={(event) => invalidatePreview({ ...draft, headRef: event.target.value })} />
                     </Field>
                   </div>
@@ -230,7 +230,7 @@ export function GuardrailPreflightSheet({
             {selected?.source === "github" && (
               <section aria-labelledby="preflight-executor-title">
                 <StepHeading code="03 / EXECUTION PLANE" id="preflight-executor-title" title={t("guardrails.executorTitle")} />
-                <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Executor do gate">
+                <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label={t("guardrails.executorTitle")}>
                   <ChoiceCard checked={executor === "sentinel-managed"} icon={<Cloud aria-hidden size={17} />} title="Sentinel managed" meta="IMMUTABLE SNAPSHOT" description={t("guardrails.managedDescription")} onSelect={() => invalidatePreview(undefined, "sentinel-managed")} />
                   <ChoiceCard checked={executor === "github-actions"} icon={<Workflow aria-hidden size={17} />} title="GitHub Actions" meta="PINNED CALLER" description={t("guardrails.actionsDescription")} onSelect={() => invalidatePreview(undefined, "github-actions")} />
                 </div>
@@ -265,7 +265,7 @@ export function GuardrailPreflightSheet({
               ? previewAccepted && preview
                 ? `${preview.resolvedTarget.baseSha.slice(0, 12)} → ${preview.resolvedTarget.headSha.slice(0, 12)} · ${preview.executor}`
                 : t("guardrails.previewRequired")
-              : "A identidade final do workspace será resolvida no início do gate."}</span>
+              : t("guardrails.localIdentityPending")}</span>
           </div>
           <Button type="button" className="min-h-11 w-full sm:w-auto" disabled={busy || !canStart} onClick={() => void start()}>
             <GitPullRequestArrow aria-hidden size={14} />{busy ? t("guardrails.starting") : executor === "github-actions" ? t("guardrails.dispatch") : t("guardrails.start")}
@@ -277,20 +277,21 @@ export function GuardrailPreflightSheet({
 }
 
 function PreviewReadout({ preview }: { preview: GuardrailTargetPreview }) {
+  const { t } = useI18n();
   const capability = preview.executorCapability.ready ? "READY" : "BLOCKED";
   return (
     <div className="border">
-      <div className="grid sm:grid-cols-2 lg:grid-cols-3">
-        <Readout label="Base ref / SHA" value={`${preview.resolvedTarget.baseRef}\n${preview.resolvedTarget.baseSha}`} />
-        <Readout label="Head ref / SHA" value={`${preview.resolvedTarget.headRef}\n${preview.resolvedTarget.headSha}`} />
-        <Readout label="Policy" value={`${preview.policySource} · ${preview.policySha}`} />
-        <Readout label="Executor" value={`${capability} · ${preview.executorCapability.code}`} tone={preview.executorCapability.ready ? "good" : "risk"} />
-        <Readout label="Scan intent" value={`${preview.scanPlan.model} · ${preview.scanPlan.effort} · ${preview.scanPlan.mode}\n${preview.scanPlan.scopeMode} · até ${preview.scanPlan.maxChangedPaths} paths`} />
-        <Readout label="Envelope estimado" value={`≤ USD ${preview.costBudget.maxCostUsd.toFixed(2)}\nUma request em voo pode ultrapassar a estimativa.`} />
+      <div className="grid sm:grid-cols-2">
+        <Readout label={t("guardrails.previewBase")} value={`${preview.resolvedTarget.baseRef}\n${preview.resolvedTarget.baseSha}`} />
+        <Readout label={t("guardrails.previewHead")} value={`${preview.resolvedTarget.headRef}\n${preview.resolvedTarget.headSha}`} />
+        <Readout label={t("guardrails.previewPolicy")} value={`${preview.policySource} · ${preview.policySha}`} />
+        <Readout label={t("guardrails.previewExecutor")} value={`${capability} · ${preview.executorCapability.code}`} tone={preview.executorCapability.ready ? "good" : "risk"} />
+        <Readout label={t("guardrails.previewScan")} value={`${preview.scanPlan.model} · ${preview.scanPlan.effort} · ${preview.scanPlan.mode}\n${preview.scanPlan.scopeMode} · ${preview.scanPlan.maxChangedPaths} paths`} />
+        <Readout label={t("guardrails.previewCost")} value={`≤ USD ${preview.costBudget.maxCostUsd.toFixed(2)}\n${t("guardrails.costInFlight")}`} />
       </div>
       <div className="grid border-t px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
-        <div><div className="bench-label">PUBLICATION OWNER</div><p className="mt-1 text-xs text-muted-foreground">{preview.publication.eligible ? `Check elegível na branch protegida ${preview.publication.protectedBranch}.` : "Preflight fora da branch protegida: não publica aprovação."}</p></div>
-        <span className="mt-2 font-mono text-[9px] uppercase text-primary sm:mt-0">EXPIRA {new Date(preview.expiresAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+        <div><div className="bench-label">{t("guardrails.publicationOwner")}</div><p className="mt-1 text-xs text-muted-foreground">{preview.publication.eligible ? t("guardrails.publicationEligible", { branch: preview.publication.protectedBranch ?? "—" }) : t("guardrails.publicationIneligible")}</p></div>
+        <span className="mt-2 font-mono text-[9px] uppercase text-primary sm:mt-0">{t("guardrails.expires")} {new Date(preview.expiresAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
       </div>
     </div>
   );
@@ -298,7 +299,7 @@ function PreviewReadout({ preview }: { preview: GuardrailTargetPreview }) {
 
 function Readout({ label, value, tone = "neutral" }: { label: string; value: string; tone?: "neutral" | "good" | "risk" }) {
   return (
-    <div className="min-w-0 border-b p-4 sm:border-r lg:[&:nth-child(3n)]:border-r-0">
+    <div className="min-w-0 border-b p-4 sm:border-r sm:[&:nth-child(2n)]:border-r-0">
       <div className="bench-label">{label}</div>
       <div className={`mt-2 whitespace-pre-wrap break-all font-mono text-[10px] leading-5 ${tone === "good" ? "text-chart-2" : tone === "risk" ? "text-destructive" : "text-foreground"}`}>{value}</div>
     </div>
