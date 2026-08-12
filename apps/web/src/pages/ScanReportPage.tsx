@@ -11,6 +11,7 @@ import { useI18n } from "../i18n";
 import { reasoningDeliveryCopy, scanReasoningDelivery } from "../lib/reasoning-delivery";
 import { executionProfileLabel } from "../lib/execution-profile";
 import { scanCostPresentation, scanTokenUsage } from "../lib/scan-cost";
+import { reportEvidenceBlocks, reportExcerpt } from "../lib/report-content";
 
 const severityOrder: Severity[] = ["critical", "high", "medium", "low", "info", "unknown"];
 const severityLabel: Record<Severity, string> = {
@@ -123,9 +124,9 @@ export function ScanReportPage() {
         </div>
       </ReportSheet>
 
-      <ReportSheet>
+      <ReportSheet className="report-scan-executive-sheet">
         <ReportHeader section="01" title={t("report.executive")} reportId={reportId} />
-        <div className="mt-10 grid gap-4 md:grid-cols-[1.35fr_.65fr]">
+        <div className="mt-10 grid gap-4 md:grid-cols-[1.22fr_.78fr]">
           <section className="border border-border p-6">
             <Kicker>Decision signal</Kicker>
             <h2 className="mt-3 font-heading text-3xl font-semibold tracking-[-.045em]">{partial ? "Resultado parcial com evidência preservada" : scan.status === "completed" ? "Cobertura concluída pelo motor" : `Execução ${scan.status}`}</h2>
@@ -135,8 +136,8 @@ export function ScanReportPage() {
           <section className="grid grid-cols-2 border border-border">
             <Metric label="FINDINGS" value={scan.severity.total} />
             <Metric label="HIGH+" value={highPlus} tone="text-chart-4" />
-            <Metric label={t(costCopy.labelKey)} value={formatScanUsd(scan)} tone="text-chart-1" />
-            <Metric label="$ / FINDING" value={formatUsd(usdPerFinding, scan.cost?.estimateKind === "upper-bound")} tone="text-primary" />
+            <Metric label={t(costCopy.labelKey)} value={formatScanUsd(scan)} tone="text-chart-1" kind="currency" />
+            <Metric label="$ / FINDING" value={formatUsd(usdPerFinding, scan.cost?.estimateKind === "upper-bound")} tone="text-primary" kind="currency" />
           </section>
         </div>
 
@@ -147,9 +148,9 @@ export function ScanReportPage() {
               {severityOrder.slice(0, 5).map((severity) => <SeverityRow key={severity} severity={severity} count={scan.severity[severity]} total={scan.severity.total} />)}
             </div>
             <div className="grid grid-cols-3 border-t border-border md:border-l md:border-t-0">
-              <Metric label="NEW" value={regression.counts.new} tone="text-primary" />
-              <Metric label="REGRESSED" value={regression.counts.regressed} tone="text-destructive" />
-              <Metric label="PERSISTING" value={regression.counts.persisting} tone="text-chart-3" />
+              <Metric label="NEW" value={regression.counts.new} tone="text-primary" kind="compact" />
+              <Metric label="REGRESSED" value={regression.counts.regressed} tone="text-destructive" kind="compact" />
+              <Metric label="PERSISTING" value={regression.counts.persisting} tone="text-chart-3" kind="compact" />
             </div>
           </div>
         </section>
@@ -163,14 +164,30 @@ export function ScanReportPage() {
         <ReportFooter reportId={reportId} />
       </ReportSheet>
 
-      <ReportSheet>
-        <ReportHeader section="02" title="Manifesto da execução" reportId={reportId} />
+      <ReportSheet className="report-manifest-sheet">
+        <ReportHeader section="02" title="Manifesto / identidade da execução" reportId={reportId} />
         <div className="mt-10 grid border border-border sm:grid-cols-2">
           <MetaCell label="SCAN ID" value={scan.id} />
           <MetaCell label="STATUS" value={partial ? "FAILED / PARTIAL RESULTS" : scan.status.toUpperCase()} />
           <MetaCell label="REPOSITORY" value={scan.repositoryPath ?? "—"} />
           <MetaCell label="REVISION" value={scan.revision ?? "—"} />
           <MetaCell label="ENGINE" value={scan.engine} />
+          <MetaCell label="MODEL" value={scan.model ?? "—"} />
+          <MetaCell label="SCAN MODE" value={scan.mode ?? "—"} />
+          <MetaCell label="SOURCE" value={scan.source} />
+          <MetaCell label="STARTED" value={formatDate(scan.startedAt)} />
+          <MetaCell label="COMPLETED" value={formatDate(scan.completedAt)} />
+        </div>
+        <section className="mt-6 grid gap-5 md:grid-cols-2">
+          <ReportText title="Como ler este documento">O índice contém todos os findings reportados por esta execução. Evidências detalhadas são apresentadas para itens critical e high; os demais continuam visíveis no inventário para triagem e rastreabilidade.</ReportText>
+          <ReportText title="O que este documento não prova">Uma diferença entre scans pode resultar de cobertura, modelo, esforço, interrupção ou não determinismo. “Ausente nesta execução” não é sinônimo automático de corrigido.</ReportText>
+        </section>
+        <ReportFooter reportId={reportId} />
+      </ReportSheet>
+
+      <ReportSheet className="report-manifest-sheet">
+        <ReportHeader section="02B" title="Método, proveniência e limites" reportId={reportId} />
+        <div className="mt-10 grid border border-border sm:grid-cols-2">
           <MetaCell label="AUTHENTICATION" value={scan.authMode ?? "—"} />
           {scan.execution && <>
             <MetaCell label={t("report.executionProfile")} value={resolvedExecutionProfileLabel ?? "—"} />
@@ -179,19 +196,12 @@ export function ScanReportPage() {
             <MetaCell label={t("report.protocol")} value={scan.execution.protocol ?? "—"} />
             <MetaCell label={t("report.connectionAuth")} value={scan.execution.authKind ?? "—"} />
           </>}
-          <MetaCell label="MODEL" value={scan.model ?? "—"} />
           <MetaCell label="REASONING DELIVERY" value={t(reasoningCopy.key, reasoningCopy.variables)} />
-          <MetaCell label="SCAN MODE" value={scan.mode ?? "—"} />
           <MetaCell label="SCANNER VERSION" value={scan.scannerVersion ?? "—"} />
           <MetaCell label="RECIPE HASH" value={scan.recipeHash ?? "—"} />
-          <MetaCell label="SOURCE" value={scan.source} />
-          <MetaCell label="STARTED" value={formatDate(scan.startedAt)} />
-          <MetaCell label="COMPLETED" value={formatDate(scan.completedAt)} />
         </div>
         <section className="mt-6 grid gap-5 md:grid-cols-2">
           {scan.execution?.executionProfile === "portable" && <ReportText title={t("report.executionProfile")}>{t("report.portableDisclosure")}</ReportText>}
-          <ReportText title="Como ler este documento">O índice contém todos os findings reportados por esta execução. Evidências detalhadas são apresentadas para itens critical e high; os demais continuam visíveis no inventário para triagem e rastreabilidade.</ReportText>
-          <ReportText title="O que este documento não prova">Uma diferença entre scans pode resultar de cobertura, modelo, esforço, interrupção ou não determinismo. “Ausente nesta execução” não é sinônimo automático de corrigido.</ReportText>
           <ReportText title="Método">Análise estática assistida por modelo no repositório informado, com consolidação local de evidências, classificação de severidade, custo estimado e fingerprint de lifecycle.</ReportText>
           <ReportText title="Prioridade sugerida">Validar critical/high com maior impacto e confiança, confirmar o caminho executável, registrar triagem e repetir o mesmo perfil após a correção.</ReportText>
         </section>
@@ -244,36 +254,43 @@ function FindingIndexRow({ finding, index, signal }: { finding: FindingDetail; i
 }
 
 function FindingSheet({ finding, index, signal, reportId }: { finding: FindingDetail; index: number; signal?: LifecycleFinding; reportId: string }) {
-  const evidence = flattenText(finding.codeEvidence, 6);
-  const validation = flattenText(finding.validation, 6);
-  const remediation = flattenText(finding.remediation, 6);
-  const locations = locationList(finding.locations);
-  return <ReportSheet>
+  const evidence = reportEvidenceBlocks(finding.codeEvidence, 1);
+  const validation = boundedText(finding.validation, 1, 180);
+  const remediation = boundedText(finding.remediation, 1, 240);
+  const rationale = [finding.severityRationale, finding.confidenceRationale].filter((line): line is string => Boolean(line)).slice(0, 1).map((line) => reportExcerpt(line, { maxChars: 170, maxLines: 2 }).text);
+  const locations = locationList(finding.locations).slice(0, 6);
+  const summary = reportExcerpt(finding.summary ?? "O scan não forneceu resumo textual para este finding.", { maxChars: 360, maxLines: 4 }).text;
+  return <ReportSheet className="report-finding-sheet">
     <ReportHeader section="04" title={`OKS-${String(index + 1).padStart(3, "0")} / Technical finding`} reportId={reportId} />
-    <div className="mt-8 flex flex-wrap items-center gap-2"><span className={`border border-current px-2 py-1 font-mono text-[8px] uppercase ${severityText[finding.severity]}`}>{severityLabel[finding.severity]}</span><span className="border border-border px-2 py-1 font-mono text-[8px] uppercase text-muted-foreground">confidence / {finding.confidence ?? "unknown"}</span>{signal && <span className="border border-border px-2 py-1 font-mono text-[8px] uppercase text-muted-foreground">{lifecycleLabel[signal.lifecycle]}</span>}</div>
-    <h2 className="mt-5 max-w-3xl font-heading text-3xl font-semibold leading-tight tracking-[-.04em]">{finding.title}</h2>
-    <p className="mt-5 max-w-3xl text-sm leading-7 text-muted-foreground">{finding.summary ?? "O scan não forneceu resumo textual para este finding."}</p>
-    <div className="mt-7 grid border border-border sm:grid-cols-2">
+    <div className="mt-6 flex flex-wrap items-center gap-2"><span className={`border border-current px-2 py-1 font-mono text-[8px] uppercase ${severityText[finding.severity]}`}>{severityLabel[finding.severity]}</span><span className="border border-border px-2 py-1 font-mono text-[8px] uppercase text-muted-foreground">confidence / {finding.confidence ?? "unknown"}</span>{signal && <span className="border border-border px-2 py-1 font-mono text-[8px] uppercase text-muted-foreground">{lifecycleLabel[signal.lifecycle]}</span>}</div>
+    <h2 className="report-copy mt-4 max-w-3xl font-heading text-2xl font-semibold leading-tight tracking-[-.04em]">{finding.title}</h2>
+    <p className="report-copy mt-3 max-w-3xl whitespace-pre-wrap text-[11px] leading-5 text-muted-foreground">{summary}</p>
+    <div className="mt-5 grid border border-border sm:grid-cols-2">
       <MetaCell label="PRIMARY LOCATION" value={finding.primaryPath ?? "—"} />
       <MetaCell label="CWE / RULE" value={[...finding.cwe, finding.ruleId].filter(Boolean).join(" · ") || "—"} />
       <MetaCell label="CATEGORY" value={finding.category ?? "—"} />
       <MetaCell label="TRIAGE" value={signal ? signal.triage.status.replace("_", " ") : "unreviewed"} />
     </div>
-    {locations.length > 0 && <ReportSection title="Affected locations"><div className="flex flex-wrap gap-2">{locations.map((location) => <span key={location} className="border border-border px-2 py-1 font-mono text-[8px] text-muted-foreground">{location}</span>)}</div></ReportSection>}
-    <ReportSection title="Evidence and validation"><TextBlocks lines={[...evidence, ...validation].slice(0, 7)} fallback="Nenhuma evidência estruturada adicional foi preservada neste artefato." /></ReportSection>
-    <ReportSection title="Remediation direction"><TextBlocks lines={remediation} fallback="A execução não registrou orientação estruturada de remediação." /></ReportSection>
-    {(finding.severityRationale || finding.confidenceRationale) && <ReportSection title="Rationale"><TextBlocks lines={[finding.severityRationale, finding.confidenceRationale].filter((line): line is string => Boolean(line))} /></ReportSection>}
+    {locations.length > 0 && <ReportSection title="Affected locations"><div className="flex min-w-0 flex-wrap gap-2">{locations.map((location) => <span key={location} className="report-copy max-w-full border border-border px-2 py-1 font-mono text-[8px] text-muted-foreground">{location}</span>)}</div></ReportSection>}
+    <ReportSection title="Evidence excerpt">
+      {evidence.blocks.length ? <div className="space-y-3">{evidence.blocks.map((block) => <article key={block.id} className="report-evidence-block border border-border bg-[#060609]/70"><div className="grid min-w-0 gap-1 border-b border-border px-3 py-2 sm:grid-cols-[minmax(0,1fr)_auto]"><div className="min-w-0"><strong className="report-copy block text-[9px]">{block.label}</strong><span className="report-copy mt-1 block font-mono text-[7px] text-primary">{block.path}</span></div><span className="font-mono text-[7px] uppercase text-muted-foreground">{block.role}</span></div><p className="report-copy px-3 pt-2 text-[9px] leading-4 text-muted-foreground">{block.explanation.text}</p><pre className="report-code-excerpt"><code>{block.code.text}</code></pre></article>)}</div> : <TextBlocks lines={boundedText(finding.codeEvidence, 2, 320)} fallback="Nenhuma evidência estruturada adicional foi preservada neste artefato." />}
+      {evidence.hidden > 0 && <p className="mt-2 font-mono text-[7px] uppercase text-muted-foreground">+ {evidence.hidden} evidence block(s) remain available in the full finding.</p>}
+    </ReportSection>
+    <div className="mt-4 grid gap-4 sm:grid-cols-2">
+      <ReportSection title="Remediation direction" compact><TextBlocks lines={remediation} fallback="A execução não registrou orientação estruturada de remediação." /></ReportSection>
+      <ReportSection title="Validation and rationale" compact><TextBlocks lines={[...validation, ...rationale].slice(0, 4)} fallback="Nenhuma validação adicional foi preservada." /></ReportSection>
+    </div>
     <ReportFooter reportId={reportId} />
   </ReportSheet>;
 }
 
-function ReportSection({ title, children }: { title: string; children: ReactNode }) {
-  return <section className="mt-6 border-t border-border pt-5"><Kicker>{title}</Kicker><div className="mt-3">{children}</div></section>;
+function ReportSection({ title, children, compact = false }: { title: string; children: ReactNode; compact?: boolean }) {
+  return <section className={`${compact ? "mt-0" : "mt-4"} min-w-0 border-t border-border pt-3`}><Kicker>{title}</Kicker><div className="mt-2 min-w-0">{children}</div></section>;
 }
 
 function TextBlocks({ lines, fallback }: { lines: string[]; fallback?: string }) {
   const content = lines.length ? lines : fallback ? [fallback] : [];
-  return <div className="space-y-2">{content.map((line, index) => <p key={`${line}-${index}`} className="text-[11px] leading-5 text-muted-foreground">{line}</p>)}</div>;
+  return <div className="min-w-0 space-y-2">{content.map((line, index) => <p key={`${line}-${index}`} className="report-copy whitespace-pre-wrap text-[9px] leading-4 text-muted-foreground">{line}</p>)}</div>;
 }
 
 function sortFindings(findings: FindingDetail[]): FindingDetail[] {
@@ -303,6 +320,10 @@ function flattenText(value: unknown, limit: number): string[] {
   };
   visit(value);
   return collected;
+}
+
+function boundedText(value: unknown, limit: number, maxChars: number): string[] {
+  return flattenText(value, limit).map((line) => reportExcerpt(line, { maxChars, maxLines: 4 }).text);
 }
 
 function locationList(value: unknown): string[] {
