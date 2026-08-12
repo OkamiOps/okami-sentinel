@@ -1,19 +1,29 @@
 import type {
+  ArtifactRepositoryLocator,
   ChangeSet,
   DecisionGraph,
+  EffectiveScanLineage,
   GateArtifact,
+  GateArtifactV1,
+  GateArtifactV2,
+  GateCoverageEnvelope,
   GateDecision,
+  GateExecutorKind,
   GateFindingDelta,
   GateOutcome,
+  GatePublicationEligibility,
   GateSource,
+  GateTarget,
   GitHubConclusion,
   GuardrailException,
   GuardrailPolicy,
+  ResolvedGateTarget,
   ScanCost,
   Severity,
 } from "@csb/shared";
 import type { EvaluateGateResult } from "./evaluate.js";
 import { buildDecisionGraph } from "./decision-graph.js";
+import { buildScanLineage } from "./lineage.js";
 
 export interface PublicRepositoryIdentity {
   key: string;
@@ -28,9 +38,9 @@ interface PublicArtifactEnvelope {
   source: GateSource;
   changeSet: ChangeSet;
   policy: GuardrailPolicy;
-  scan: GateArtifact["scan"];
+  scan: GateArtifactV1["scan"];
   baselineCommit: string | null;
-  versions: GateArtifact["versions"];
+  versions: GateArtifactV1["versions"];
   createdAt: string;
 }
 
@@ -42,13 +52,35 @@ export interface BuildOperationalErrorArtifactInput extends PublicArtifactEnvelo
   operationalSummary: string;
 }
 
+export interface PublicRepositoryIdentityV2 extends PublicRepositoryIdentity {
+  id: string;
+  locator: ArtifactRepositoryLocator;
+}
+
+export interface BuildGateArtifactV2Input extends Omit<PublicArtifactEnvelope, "repository"> {
+  repository: PublicRepositoryIdentityV2;
+  executor: GateExecutorKind;
+  target: GateTarget;
+  resolvedTarget: ResolvedGateTarget;
+  policySource: GateArtifactV2["policySource"];
+  evaluation: EvaluateGateResult;
+  lineage: EffectiveScanLineage;
+  coverage: GateCoverageEnvelope;
+  snapshot: GateArtifactV2["snapshot"];
+  workflowRun: GateArtifactV2["workflowRun"];
+}
+
+export interface BuildOperationalErrorArtifactV2Input extends Omit<BuildGateArtifactV2Input, "evaluation"> {
+  operationalSummary: string;
+}
+
 const severities: readonly Severity[] = ["critical", "high", "medium", "low", "info", "unknown"];
 const outcomes: readonly GateOutcome[] = ["no_changes", "bootstrap", "pass", "warning", "blocked", "error"];
 const conclusions: readonly GitHubConclusion[] = ["success", "neutral", "failure", "action_required"];
 const nodeKinds = ["changeset", "surface", "signal", "rule", "verdict"] as const;
 const nodeIds = ["changeset", "surface", "signal", "rule", "verdict"] as const;
 
-export function buildGateArtifact(input: BuildGateArtifactInput): GateArtifact {
+export function buildGateArtifact(input: BuildGateArtifactInput): GateArtifactV1 {
   const envelope = buildEnvelope(input);
   const findings = input.evaluation.deltas.map(copyFinding);
   const decisionWithoutGraph = copyEvaluatedDecision(input.evaluation.decision);
@@ -78,7 +110,7 @@ export function buildGateArtifact(input: BuildGateArtifactInput): GateArtifact {
   });
 }
 
-export function buildOperationalErrorArtifact(input: BuildOperationalErrorArtifactInput): GateArtifact {
+export function buildOperationalErrorArtifact(input: BuildOperationalErrorArtifactInput): GateArtifactV1 {
   const envelope = buildEnvelope(input);
   const summary = sanitizeOperationalSummary(input.operationalSummary);
   const decisionWithoutGraph: Omit<GateDecision, "decisionGraph"> = {
@@ -114,22 +146,112 @@ export function buildOperationalErrorArtifact(input: BuildOperationalErrorArtifa
   });
 }
 
-export function parseGateArtifact(value: unknown): GateArtifact {
-  validateGateArtifactV1(value);
-  return copyGateArtifact(value);
+export function buildGateArtifactV2(input: BuildGateArtifactV2Input): GateArtifactV2 {
+  const findings = input.evaluation.deltas.map(copyFinding);
+  const decisionWithoutGraph = copyEvaluatedDecision(input.evaluation.decision);
+  const changeSet = copyChangeSet(input.changeSet);
+  const decision: GateDecision = {
+    ...decisionWithoutGraph,
+    decisionGraph: copyDecisionGraph(buildDecisionGraph(changeSet, findings, decisionWithoutGraph)),
+  };
+  const lineage = copyVerifiedLineage(input.lineage);
+  const artifact: GateArtifactV2 = {
+    schemaVersion: 2,
+    gateId: input.gateId,
+    repository: copyRepositoryV2(input.repository),
+    source: input.source,
+    executor: input.executor,
+    target: copyGateTarget(input.target),
+    resolvedTarget: copyResolvedTarget(input.resolvedTarget),
+    policySource: input.policySource,
+    publication: gatePublicationEligibility(input.policy, input.target, input.resolvedTarget),
+    changeSet,
+    policy: copyPolicy(input.policy),
+    scan: copyScan(input.scan),
+    baselineCommit: input.baselineCommit,
+    findings,
+    decision,
+    lineage,
+    coverage: copyCoverage(input.coverage),
+    snapshot: {
+      identity: input.snapshot.identity,
+      materializerVersion: input.snapshot.materializerVersion,
+    },
+    workflowRun: input.workflowRun ? {
+      id: input.workflowRun.id,
+      attempt: input.workflowRun.attempt,
+    } : null,
+    versions: {
+      gateCore: input.versions.gateCore,
+      scanner: input.versions.scanner,
+    },
+    createdAt: input.createdAt,
+  };
+  validateGateArtifactV2(artifact);
+  return artifact;
 }
 
-function validatedArtifact(artifact: GateArtifact): GateArtifact {
+export function buildOperationalErrorArtifactV2(
+  input: BuildOperationalErrorArtifactV2Input,
+): GateArtifactV2 {
+  const { operationalSummary, ...envelope } = input;
+  return buildGateArtifactV2({
+    ...envelope,
+    evaluation: {
+      deltas: [],
+      decision: {
+        outcome: "error",
+        summary: sanitizeOperationalSummary(operationalSummary),
+        violations: [],
+        warnings: [],
+        exceptionsApplied: [],
+        githubConclusion: "action_required",
+      },
+    },
+  });
+}
+
+export function gatePublicationEligibility(
+  policy: GuardrailPolicy,
+  target: GateTarget,
+  resolvedTarget: ResolvedGateTarget,
+): GatePublicationEligibility {
+  const candidate = target.kind === "protected_branch" ? target.ref : resolvedTarget.baseRef;
+  if (policy.protectedBranches.includes(candidate)) {
+    return {
+      eligible: true,
+      protectedBranch: candidate,
+      reason: "protected_branch",
+    };
+  }
+  return {
+    eligible: false,
+    protectedBranch: null,
+    reason: "off_policy_preflight",
+  };
+}
+
+export function parseGateArtifact(value: unknown): GateArtifact {
+  const schemaVersion = record(value, "GateArtifact").schemaVersion;
+  if (schemaVersion === 1) {
+    validateGateArtifactV1(value);
+    return copyGateArtifactV1(value);
+  }
+  if (schemaVersion === 2) {
+    validateGateArtifactV2(value);
+    return structuredClone(value);
+  }
+  throw new Error(`GateArtifact schema ${String(schemaVersion)} não suportado`);
+}
+
+function validatedArtifact(artifact: GateArtifactV1): GateArtifactV1 {
   validateGateArtifactV1(artifact);
   return artifact;
 }
 
-function validateGateArtifactV1(value: unknown): asserts value is GateArtifact {
+function validateGateArtifactV1(value: unknown): asserts value is GateArtifactV1 {
   const artifact = record(value, "GateArtifact");
   const schemaVersion = artifact.schemaVersion;
-  if (typeof schemaVersion === "number" && schemaVersion > 1) {
-    throw new Error(`GateArtifact schema ${schemaVersion} não suportado`);
-  }
   exactKeys(artifact, [
     "schemaVersion",
     "gateId",
@@ -157,11 +279,303 @@ function validateGateArtifactV1(value: unknown): asserts value is GateArtifact {
   validateDecision(artifact.decision, findings);
   validateVersions(artifact.versions);
   isoTimestamp(artifact.createdAt, "GateArtifact.createdAt");
-  validateDecisionInvariants(value as GateArtifact);
-  validateCanonicalDecisionGraph(value as GateArtifact);
+  validateDecisionInvariants(value as GateArtifactV1);
+  validateCanonicalDecisionGraph(value as GateArtifactV1);
 }
 
-function buildEnvelope(input: PublicArtifactEnvelope): Omit<GateArtifact, "schemaVersion" | "findings" | "decision"> {
+function validateGateArtifactV2(value: unknown): asserts value is GateArtifactV2 {
+  const artifact = record(value, "GateArtifact");
+  exactKeys(artifact, [
+    "schemaVersion",
+    "gateId",
+    "repository",
+    "source",
+    "executor",
+    "target",
+    "resolvedTarget",
+    "policySource",
+    "publication",
+    "changeSet",
+    "policy",
+    "scan",
+    "baselineCommit",
+    "findings",
+    "decision",
+    "lineage",
+    "coverage",
+    "snapshot",
+    "workflowRun",
+    "versions",
+    "createdAt",
+  ], "GateArtifact");
+  equal(artifact.schemaVersion, 2, "GateArtifact.schemaVersion");
+  nonEmptyString(artifact.gateId, "GateArtifact.gateId");
+  const source = enumValue(artifact.source, ["local", "github"] as const, "GateArtifact.source");
+  validateRepositoryV2(artifact.repository, source);
+  const executor = enumValue(
+    artifact.executor,
+    ["sentinel-managed", "github-actions"] as const,
+    "GateArtifact.executor",
+  );
+  if (source === "local" && executor === "github-actions") {
+    fail("GateArtifact.executor", "local não aceita github-actions sem origem GitHub");
+  }
+  const target = validateGateTarget(artifact.target);
+  const resolvedTarget = validateResolvedTarget(artifact.resolvedTarget);
+  const policySource = enumValue(
+    artifact.policySource,
+    ["base", "protected_branch"] as const,
+    "GateArtifact.policySource",
+  );
+  validateTargetResolution(target, resolvedTarget, policySource);
+  validatePolicy(artifact.policy);
+  validatePublication(artifact.publication, artifact.policy as GuardrailPolicy, target, resolvedTarget);
+  validateChangeSet(artifact.changeSet);
+  validateChangeSetResolution(artifact.changeSet as ChangeSet, resolvedTarget);
+  validateScan(artifact.scan);
+  if (artifact.baselineCommit !== null) fullCommitSha(artifact.baselineCommit, "GateArtifact.baselineCommit");
+  const findings = array(artifact.findings, "GateArtifact.findings");
+  findings.forEach((finding, index) => validateFinding(finding, `GateArtifact.findings[${index}]`));
+  validateDecision(artifact.decision, findings);
+  validateLineage(artifact.lineage);
+  const coverage = validateCoverage(artifact.coverage);
+  validateSnapshot(artifact.snapshot);
+  validateWorkflowRun(artifact.workflowRun);
+  validateVersions(artifact.versions);
+  isoTimestamp(artifact.createdAt, "GateArtifact.createdAt");
+  validateDecisionInvariants(value as GateArtifactV2);
+  validateCanonicalDecisionGraph(value as GateArtifactV2);
+  const decision = (value as GateArtifactV2).decision;
+  if (!coverageIsComplete(coverage) && decision.githubConclusion === "success") {
+    fail("GateArtifact.coverage", `incompleta não pode publicar outcome ${decision.outcome} como success`);
+  }
+}
+
+function validateRepositoryV2(value: unknown, source: GateSource): void {
+  const repository = record(value, "GateArtifact.repository");
+  exactKeys(repository, ["id", "key", "owner", "name", "defaultBranch", "locator"], "GateArtifact.repository");
+  const id = nonEmptyString(repository.id, "GateArtifact.repository.id");
+  const key = nonEmptyString(repository.key, "GateArtifact.repository.key");
+  if (id !== key) fail("GateArtifact.repository.key", "deve usar a identidade estável do repositório");
+  const owner = nullableString(repository.owner, "GateArtifact.repository.owner");
+  const name = nonEmptyString(repository.name, "GateArtifact.repository.name");
+  nonEmptyString(repository.defaultBranch, "GateArtifact.repository.defaultBranch");
+  const locator = record(repository.locator, "GateArtifact.repository.locator");
+  const kind = enumValue(locator.kind, ["local", "github"] as const, "GateArtifact.repository.locator.kind");
+  if (kind !== source) fail("GateArtifact.repository.locator.kind", "não corresponde ao source");
+  if (kind === "local") {
+    exactKeys(locator, ["kind", "repositoryKey"], "GateArtifact.repository.locator");
+    const repositoryKey = nonEmptyString(locator.repositoryKey, "GateArtifact.repository.locator.repositoryKey");
+    if (repositoryKey !== key) fail("GateArtifact.repository.locator.repositoryKey", "não corresponde ao repository key");
+    return;
+  }
+  exactKeys(locator, ["kind", "repositoryId", "owner", "name"], "GateArtifact.repository.locator");
+  const repositoryId = nonEmptyString(locator.repositoryId, "GateArtifact.repository.locator.repositoryId");
+  const locatorOwner = nonEmptyString(locator.owner, "GateArtifact.repository.locator.owner");
+  const locatorName = nonEmptyString(locator.name, "GateArtifact.repository.locator.name");
+  if (id !== `github:${repositoryId}`) fail("GateArtifact.repository.id", "não corresponde ao GitHub repositoryId");
+  if (owner !== locatorOwner) fail("GateArtifact.repository.locator.owner", "não corresponde ao repository owner");
+  if (name !== locatorName) fail("GateArtifact.repository.locator.name", "não corresponde ao repository name");
+}
+
+function validateGateTarget(value: unknown): GateTarget {
+  const target = record(value, "GateArtifact.target");
+  const kind = enumValue(
+    target.kind,
+    ["pull_request", "compare", "protected_branch"] as const,
+    "GateArtifact.target.kind",
+  );
+  if (kind === "pull_request") {
+    exactKeys(target, ["kind", "number"], "GateArtifact.target");
+    return { kind, number: positiveInteger(target.number, "GateArtifact.target.number") };
+  }
+  if (kind === "protected_branch") {
+    exactKeys(target, ["kind", "ref"], "GateArtifact.target");
+    return { kind, ref: nonEmptyString(target.ref, "GateArtifact.target.ref") };
+  }
+  exactKeys(target, ["kind", "baseRef", "headRef"], "GateArtifact.target");
+  return {
+    kind,
+    baseRef: nonEmptyString(target.baseRef, "GateArtifact.target.baseRef"),
+    headRef: nonEmptyString(target.headRef, "GateArtifact.target.headRef"),
+  };
+}
+
+function validateResolvedTarget(value: unknown): ResolvedGateTarget {
+  const target = record(value, "GateArtifact.resolvedTarget");
+  exactKeys(target, [
+    "baseRef",
+    "headRef",
+    "baseSha",
+    "headSha",
+    "policySha",
+    "pullRequestNumber",
+  ], "GateArtifact.resolvedTarget");
+  return {
+    baseRef: nonEmptyString(target.baseRef, "GateArtifact.resolvedTarget.baseRef"),
+    headRef: nonEmptyString(target.headRef, "GateArtifact.resolvedTarget.headRef"),
+    baseSha: fullCommitSha(target.baseSha, "GateArtifact.resolvedTarget.baseSha"),
+    headSha: fullCommitSha(target.headSha, "GateArtifact.resolvedTarget.headSha"),
+    policySha: fullCommitSha(target.policySha, "GateArtifact.resolvedTarget.policySha"),
+    pullRequestNumber: target.pullRequestNumber === null
+      ? null
+      : positiveInteger(target.pullRequestNumber, "GateArtifact.resolvedTarget.pullRequestNumber"),
+  };
+}
+
+function validateTargetResolution(
+  target: GateTarget,
+  resolved: ResolvedGateTarget,
+  policySource: GateArtifactV2["policySource"],
+): void {
+  if (target.kind === "pull_request") {
+    if (resolved.pullRequestNumber !== target.number) {
+      fail("GateArtifact.resolvedTarget.pullRequestNumber", "não corresponde ao pull request");
+    }
+  } else {
+    if (resolved.pullRequestNumber !== null) {
+      fail("GateArtifact.resolvedTarget.pullRequestNumber", "deve ser nulo fora de pull request");
+    }
+    if (target.kind === "compare" && (resolved.baseRef !== target.baseRef || resolved.headRef !== target.headRef)) {
+      fail("GateArtifact.resolvedTarget", "não corresponde aos refs comparados");
+    }
+    if (target.kind === "protected_branch" && (resolved.baseRef !== target.ref || resolved.headRef !== target.ref)) {
+      fail("GateArtifact.resolvedTarget", "não corresponde à branch protegida");
+    }
+  }
+  if (policySource === "base" && resolved.policySha !== resolved.baseSha) {
+    fail("GateArtifact.policySource", "base exige policySha igual ao baseSha");
+  }
+  if (
+    policySource === "protected_branch"
+    && (target.kind !== "protected_branch" || resolved.policySha !== resolved.headSha)
+  ) {
+    fail("GateArtifact.policySource", "protected_branch exige alvo e policySha protegidos");
+  }
+}
+
+function validateChangeSetResolution(changeSet: ChangeSet, resolved: ResolvedGateTarget): void {
+  if (
+    changeSet.baseRef !== resolved.baseRef
+    || changeSet.headRef !== resolved.headRef
+    || changeSet.baseSha !== resolved.baseSha
+    || changeSet.headSha !== resolved.headSha
+  ) {
+    fail("GateArtifact.changeSet", "não corresponde ao alvo resolvido");
+  }
+}
+
+function validatePublication(
+  value: unknown,
+  policy: GuardrailPolicy,
+  target: GateTarget,
+  resolved: ResolvedGateTarget,
+): void {
+  const publication = record(value, "GateArtifact.publication");
+  exactKeys(publication, ["eligible", "protectedBranch", "reason"], "GateArtifact.publication");
+  const actual: GatePublicationEligibility = {
+    eligible: booleanValue(publication.eligible, "GateArtifact.publication.eligible"),
+    protectedBranch: nullableString(publication.protectedBranch, "GateArtifact.publication.protectedBranch"),
+    reason: enumValue(
+      publication.reason,
+      ["protected_branch", "off_policy_preflight"] as const,
+      "GateArtifact.publication.reason",
+    ),
+  };
+  const expected = gatePublicationEligibility(policy, target, resolved);
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    fail("GateArtifact.publication", "não corresponde a protectedBranches");
+  }
+}
+
+function validateLineage(value: unknown): void {
+  const lineage = record(value, "GateArtifact.lineage");
+  exactKeys(lineage, [
+    "engine",
+    "engineVersion",
+    "route",
+    "protocol",
+    "provider",
+    "model",
+    "reasoningEffort",
+    "methodology",
+    "profile",
+    "recipeHash",
+    "sourceRevision",
+    "scanLineageHash",
+  ], "GateArtifact.lineage");
+  const rebuilt = buildScanLineage({
+    engine: nonEmptyString(lineage.engine, "GateArtifact.lineage.engine"),
+    engineVersion: nonEmptyString(lineage.engineVersion, "GateArtifact.lineage.engineVersion"),
+    route: nonEmptyString(lineage.route, "GateArtifact.lineage.route"),
+    protocol: nonEmptyString(lineage.protocol, "GateArtifact.lineage.protocol"),
+    provider: nonEmptyString(lineage.provider, "GateArtifact.lineage.provider"),
+    model: nonEmptyString(lineage.model, "GateArtifact.lineage.model"),
+    reasoningEffort: nonEmptyString(lineage.reasoningEffort, "GateArtifact.lineage.reasoningEffort"),
+    methodology: nonEmptyString(lineage.methodology, "GateArtifact.lineage.methodology"),
+    profile: nonEmptyString(lineage.profile, "GateArtifact.lineage.profile"),
+    recipeHash: canonicalSha256(lineage.recipeHash, "GateArtifact.lineage.recipeHash"),
+    sourceRevision: canonicalSha256(lineage.sourceRevision, "GateArtifact.lineage.sourceRevision"),
+  });
+  const actualHash = canonicalSha256(lineage.scanLineageHash, "GateArtifact.lineage.scanLineageHash");
+  if (actualHash !== rebuilt.scanLineageHash) {
+    fail("GateArtifact.lineage.scanLineageHash", "não corresponde à lineage efetiva");
+  }
+}
+
+function validateCoverage(value: unknown): GateCoverageEnvelope {
+  const coverage = record(value, "GateArtifact.coverage");
+  exactKeys(coverage, [
+    "status",
+    "repositoryFileCount",
+    "inspectedFileCount",
+    "unexaminedFileCount",
+    "submodules",
+    "lfsPointers",
+  ], "GateArtifact.coverage");
+  const parsed: GateCoverageEnvelope = {
+    status: enumValue(coverage.status, ["complete", "partial"] as const, "GateArtifact.coverage.status"),
+    repositoryFileCount: nonNegativeInteger(coverage.repositoryFileCount, "GateArtifact.coverage.repositoryFileCount"),
+    inspectedFileCount: nonNegativeInteger(coverage.inspectedFileCount, "GateArtifact.coverage.inspectedFileCount"),
+    unexaminedFileCount: nonNegativeInteger(coverage.unexaminedFileCount, "GateArtifact.coverage.unexaminedFileCount"),
+    submodules: stringArray(coverage.submodules, "GateArtifact.coverage.submodules"),
+    lfsPointers: stringArray(coverage.lfsPointers, "GateArtifact.coverage.lfsPointers"),
+  };
+  parsed.submodules.forEach((entry, index) => publicPath(entry, `GateArtifact.coverage.submodules[${index}]`));
+  parsed.lfsPointers.forEach((entry, index) => publicPath(entry, `GateArtifact.coverage.lfsPointers[${index}]`));
+  if (parsed.inspectedFileCount + parsed.unexaminedFileCount !== parsed.repositoryFileCount) {
+    fail("GateArtifact.coverage", "contagens não fecham o repositório");
+  }
+  if (parsed.status === "complete" && !coverageIsComplete(parsed)) {
+    fail("GateArtifact.coverage", "status complete exige cobertura integral");
+  }
+  return parsed;
+}
+
+function coverageIsComplete(coverage: GateCoverageEnvelope): boolean {
+  return coverage.status === "complete"
+    && coverage.inspectedFileCount === coverage.repositoryFileCount
+    && coverage.unexaminedFileCount === 0
+    && coverage.submodules.length === 0
+    && coverage.lfsPointers.length === 0;
+}
+
+function validateSnapshot(value: unknown): void {
+  const snapshot = record(value, "GateArtifact.snapshot");
+  exactKeys(snapshot, ["identity", "materializerVersion"], "GateArtifact.snapshot");
+  canonicalSha256(snapshot.identity, "GateArtifact.snapshot.identity");
+  nonEmptyString(snapshot.materializerVersion, "GateArtifact.snapshot.materializerVersion");
+}
+
+function validateWorkflowRun(value: unknown): void {
+  if (value === null) return;
+  const workflowRun = record(value, "GateArtifact.workflowRun");
+  exactKeys(workflowRun, ["id", "attempt"], "GateArtifact.workflowRun");
+  nonEmptyString(workflowRun.id, "GateArtifact.workflowRun.id");
+  positiveInteger(workflowRun.attempt, "GateArtifact.workflowRun.attempt");
+}
+
+function buildEnvelope(input: PublicArtifactEnvelope): Omit<GateArtifactV1, "schemaVersion" | "findings" | "decision"> {
   const changeSet = copyChangeSet(input.changeSet);
 
   return {
@@ -201,6 +615,72 @@ function copyChangeSet(changeSet: ChangeSet): ChangeSet {
     scanPaths: [...changeSet.scanPaths],
     scopeMode: changeSet.scopeMode,
     fallbackReason: changeSet.fallbackReason,
+  };
+}
+
+function copyRepositoryV2(repository: PublicRepositoryIdentityV2): GateArtifactV2["repository"] {
+  return {
+    id: repository.id,
+    key: repository.key,
+    owner: repository.owner,
+    name: repository.name,
+    defaultBranch: repository.defaultBranch,
+    locator: repository.locator.kind === "local"
+      ? { kind: "local", repositoryKey: repository.locator.repositoryKey }
+      : {
+          kind: "github",
+          repositoryId: repository.locator.repositoryId,
+          owner: repository.locator.owner,
+          name: repository.locator.name,
+        },
+  };
+}
+
+function copyGateTarget(target: GateTarget): GateTarget {
+  if (target.kind === "pull_request") return { kind: "pull_request", number: target.number };
+  if (target.kind === "protected_branch") return { kind: "protected_branch", ref: target.ref };
+  return { kind: "compare", baseRef: target.baseRef, headRef: target.headRef };
+}
+
+function copyResolvedTarget(target: ResolvedGateTarget): ResolvedGateTarget {
+  return {
+    baseRef: target.baseRef,
+    headRef: target.headRef,
+    baseSha: target.baseSha,
+    headSha: target.headSha,
+    policySha: target.policySha,
+    pullRequestNumber: target.pullRequestNumber,
+  };
+}
+
+function copyVerifiedLineage(lineage: EffectiveScanLineage): EffectiveScanLineage {
+  const rebuilt = buildScanLineage({
+    engine: lineage.engine,
+    engineVersion: lineage.engineVersion,
+    route: lineage.route,
+    protocol: lineage.protocol,
+    provider: lineage.provider,
+    model: lineage.model,
+    reasoningEffort: lineage.reasoningEffort,
+    methodology: lineage.methodology,
+    profile: lineage.profile,
+    recipeHash: lineage.recipeHash,
+    sourceRevision: lineage.sourceRevision,
+  });
+  if (rebuilt.scanLineageHash !== lineage.scanLineageHash) {
+    fail("GateArtifact.lineage.scanLineageHash", "não corresponde à lineage efetiva");
+  }
+  return rebuilt;
+}
+
+function copyCoverage(coverage: GateCoverageEnvelope): GateCoverageEnvelope {
+  return {
+    status: coverage.status,
+    repositoryFileCount: coverage.repositoryFileCount,
+    inspectedFileCount: coverage.inspectedFileCount,
+    unexaminedFileCount: coverage.unexaminedFileCount,
+    submodules: [...coverage.submodules],
+    lfsPointers: [...coverage.lfsPointers],
   };
 }
 
@@ -319,7 +799,7 @@ function copyDecisionGraph(graph: DecisionGraph): DecisionGraph {
   };
 }
 
-function copyGateArtifact(artifact: GateArtifact): GateArtifact {
+function copyGateArtifactV1(artifact: GateArtifactV1): GateArtifactV1 {
   return {
     schemaVersion: 1,
     gateId: artifact.gateId,
@@ -859,6 +1339,29 @@ function nonNegativeNumber(value: unknown, path: string): number {
 function nonNegativeInteger(value: unknown, path: string): number {
   const parsed = nonNegativeNumber(value, path);
   if (!Number.isInteger(parsed)) fail(path, "deve ser inteiro");
+  return parsed;
+}
+
+function positiveInteger(value: unknown, path: string): number {
+  const parsed = nonNegativeInteger(value, path);
+  if (parsed === 0) fail(path, "deve ser maior que zero");
+  return parsed;
+}
+
+function booleanValue(value: unknown, path: string): boolean {
+  if (typeof value !== "boolean") fail(path, "deve ser booleano");
+  return value;
+}
+
+function fullCommitSha(value: unknown, path: string): string {
+  const parsed = nonEmptyString(value, path);
+  if (!/^[0-9a-f]{40}$/.test(parsed)) fail(path, "deve ser um commit SHA completo");
+  return parsed;
+}
+
+function canonicalSha256(value: unknown, path: string): string {
+  const parsed = nonEmptyString(value, path);
+  if (!/^sha256:[0-9a-f]{64}$/.test(parsed)) fail(path, "deve ser sha256 canônico");
   return parsed;
 }
 

@@ -81,6 +81,36 @@ test("returns bootstrap when no baseline exists", () => {
   assert.equal(result.decision.githubConclusion, "neutral");
 });
 
+test("turns a known unavailable or incompatible baseline into action_required", () => {
+  for (const baseline of [
+    { kind: "unavailable" as const, reason: "artifact unavailable" },
+    { kind: "incompatible" as const, reason: "scanner lineage mismatch" },
+  ]) {
+    const result = evaluateGate(input({
+      currentFindings: [finding("stable-xss", "high")],
+      baseline,
+    }));
+
+    assert.equal(result.decision.outcome, "error");
+    assert.equal(result.decision.githubConclusion, "action_required");
+    assert.deepEqual(result.deltas, []);
+  }
+});
+
+test("only a comparable baseline can emit fixed lifecycle", () => {
+  const high = finding("stable-xss", "high");
+  const result = evaluateGate(input({
+    currentFindings: [],
+    baseline: {
+      kind: "comparable",
+      findings: [high],
+      scanId: "scan-baseline",
+    },
+  }));
+
+  assert.equal(result.deltas[0]?.lifecycle, "fixed");
+});
+
 test("classifies bootstrap observations as new even when history matches", () => {
   const high = finding("stable-xss", "high");
   const result = evaluateGate(input({

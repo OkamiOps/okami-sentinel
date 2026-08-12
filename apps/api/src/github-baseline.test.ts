@@ -192,7 +192,7 @@ test("rejects an artifact with a future schema", async () => {
   const fixture = cacheFixture();
   const future = {
     ...artifact("new"),
-    schemaVersion: 2,
+    schemaVersion: 3,
   };
   const gh = fakeGh({
     runs: [run(200, "new", "2026-08-07T12:00:00Z")],
@@ -207,7 +207,7 @@ test("rejects an artifact with a future schema", async () => {
     );
     await assert.rejects(
       () => provider.getBaseline(repositoryContext()),
-      /GateArtifact schema 2 não suportado/,
+      /GateArtifact schema 3 não suportado/,
     );
   } finally {
     closeFixture(fixture);

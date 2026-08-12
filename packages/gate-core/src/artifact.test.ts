@@ -3,16 +3,25 @@ import test from "node:test";
 import type {
   ChangeSet,
   GateArtifact,
+  GateArtifactV2,
   GateFindingDelta,
 } from "@csb/shared";
 import {
   buildDecisionGraph,
   buildGateArtifact,
+  buildGateArtifactV2,
   buildOperationalErrorArtifact,
+  buildOperationalErrorArtifactV2,
+  buildScanLineage,
   defaultGuardrailPolicy,
+  gatePublicationEligibility,
   parseGateArtifact,
   type BuildGateArtifactInput,
+  type BuildGateArtifactV2Input,
 } from "./index.js";
+
+const FULL_BASE_SHA = "1".repeat(40);
+const FULL_HEAD_SHA = "2".repeat(40);
 
 function changeSet(): ChangeSet {
   return {
@@ -98,6 +107,73 @@ function artifactInput(): BuildGateArtifactInput {
     },
     versions: { gateCore: "0.1.0", scanner: "1.2.3" },
     createdAt: "2026-08-07T12:00:00.000Z",
+  };
+}
+
+function artifactV2Input(): BuildGateArtifactV2Input {
+  const legacy = artifactInput();
+  legacy.changeSet = {
+    ...legacy.changeSet,
+    baseRef: "main",
+    headRef: "refs/pull/7/head",
+    baseSha: FULL_BASE_SHA,
+    headSha: FULL_HEAD_SHA,
+  };
+  legacy.baselineCommit = FULL_BASE_SHA;
+  return {
+    ...legacy,
+    repository: {
+      ...legacy.repository,
+      id: "github:4242",
+      key: "github:4242",
+      locator: {
+        kind: "github",
+        repositoryId: "4242",
+        owner: "okami",
+        name: "security-benchmark",
+      },
+    },
+    source: "github",
+    executor: "sentinel-managed",
+    target: { kind: "pull_request", number: 7 },
+    resolvedTarget: {
+      baseRef: "main",
+      headRef: "refs/pull/7/head",
+      baseSha: FULL_BASE_SHA,
+      headSha: FULL_HEAD_SHA,
+      policySha: FULL_BASE_SHA,
+      pullRequestNumber: 7,
+    },
+    policySource: "base",
+    lineage: buildScanLineage({
+      engine: "codex-security",
+      engineVersion: "1.2.3",
+      route: "minimax-token-plan",
+      protocol: "anthropic-messages",
+      provider: "minimax",
+      model: "MiniMax-M3",
+      reasoningEffort: "provider-default",
+      methodology: "portable-codex-security",
+      profile: "deep",
+      recipeHash: `sha256:${"a".repeat(64)}`,
+      sourceRevision: `sha256:${"b".repeat(64)}`,
+    }),
+    coverage: {
+      status: "complete",
+      repositoryFileCount: 20,
+      inspectedFileCount: 20,
+      unexaminedFileCount: 0,
+      submodules: [],
+      lfsPointers: [],
+    },
+    snapshot: {
+      identity: `sha256:${"c".repeat(64)}`,
+      materializerVersion: "snapshot-v1",
+    },
+    workflowRun: {
+      id: "987654321",
+      attempt: 1,
+    },
   };
 }
 
@@ -199,6 +275,166 @@ test("creates a schema v1 artifact without a local path", () => {
   assert.equal(JSON.stringify(artifact).includes("/Users/"), false);
   assert.equal(artifact.decision.decisionGraph.nodes.length, 5);
   assert.deepEqual(Object.keys(artifact.repository), ["key", "owner", "name", "defaultBranch"]);
+});
+
+test("round-trips a complete GateArtifact v2 without host paths", () => {
+  const artifact = buildGateArtifactV2(artifactV2Input());
+  const parsed = parseGateArtifact(JSON.parse(JSON.stringify(artifact)));
+
+  assert.equal(parsed.schemaVersion, 2);
+  const v2 = parsed as GateArtifactV2;
+  assert.equal(v2.repository.id, "github:4242");
+  assert.deepEqual(v2.repository.locator, {
+    kind: "github",
+    repositoryId: "4242",
+    owner: "okami",
+    name: "security-benchmark",
+  });
+  assert.equal(v2.executor, "sentinel-managed");
+  assert.equal(v2.resolvedTarget.policySha, FULL_BASE_SHA);
+  assert.equal(v2.policySource, "base");
+  assert.match(v2.lineage.scanLineageHash, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(v2.coverage.status, "complete");
+  assert.match(v2.snapshot.identity, /^sha256:[0-9a-f]{64}$/);
+  assert.equal(v2.snapshot.materializerVersion, "snapshot-v1");
+  assert.deepEqual(v2.workflowRun, { id: "987654321", attempt: 1 });
+  assert.deepEqual(v2.publication, {
+    eligible: true,
+    protectedBranch: "main",
+    reason: "protected_branch",
+  });
+  assert.equal(JSON.stringify(v2).includes("/Users/"), false);
+});
+
+test("keeps local and GitHub artifact locators discriminated", () => {
+  const local = artifactV2Input();
+  local.source = "local";
+  local.repository = {
+    id: "local:security-benchmark",
+    key: "local:security-benchmark",
+    owner: null,
+    name: "security-benchmark",
+    defaultBranch: "main",
+    locator: { kind: "local", repositoryKey: "local:security-benchmark" },
+  };
+  local.target = { kind: "compare", baseRef: "main", headRef: "feature" };
+  local.resolvedTarget = {
+    ...local.resolvedTarget,
+    baseRef: "main",
+    headRef: "feature",
+    pullRequestNumber: null,
+  };
+  local.changeSet = {
+    ...local.changeSet,
+    baseRef: "main",
+    headRef: "feature",
+  };
+
+  const artifact = buildGateArtifactV2(local);
+  assert.deepEqual(artifact.repository.locator, {
+    kind: "local",
+    repositoryKey: "local:security-benchmark",
+  });
+  assert.equal(JSON.stringify(artifact).includes("repositoryPath"), false);
+
+  local.executor = "github-actions";
+  assert.throws(() => buildGateArtifactV2(local), /executor.*local/);
+
+  const mismatched = artifactV2Input();
+  mismatched.repository.locator = {
+    kind: "local",
+    repositoryKey: mismatched.repository.key,
+  };
+  assert.throws(() => buildGateArtifactV2(mismatched), /locator\.kind.*source/);
+});
+
+test("keeps schema v1 parseable as history", () => {
+  const legacy = buildGateArtifact(artifactInput());
+  assert.equal(parseGateArtifact(legacy).schemaVersion, 1);
+});
+
+test("rejects malformed or over-trusting GateArtifact v2 envelopes", () => {
+  const shortSha = artifactV2Input();
+  shortSha.resolvedTarget.headSha = "short";
+  assert.throws(() => buildGateArtifactV2(shortSha), /resolvedTarget\.headSha/);
+
+  const impossiblePolicySource = artifactV2Input();
+  impossiblePolicySource.policySource = "protected_branch";
+  assert.throws(() => buildGateArtifactV2(impossiblePolicySource), /policySource/);
+
+  const hostPath = artifactV2Input();
+  hostPath.repository.locator = {
+    kind: "github",
+    repositoryId: "4242",
+    owner: "/Users/marcos/private",
+    name: "security-benchmark",
+  };
+  assert.throws(() => buildGateArtifactV2(hostPath), /repository\.locator\.owner/);
+
+  const unknown = structuredClone(buildGateArtifactV2(artifactV2Input())) as unknown as Record<string, unknown>;
+  unknown.runtimePath = "/Users/marcos/private";
+  assert.throws(() => parseGateArtifact(unknown), /campo desconhecido runtimePath/);
+});
+
+test("rejects a successful v2 decision with incomplete coverage", () => {
+  const input = artifactV2Input();
+  input.evaluation.decision = passDecision();
+  input.evaluation.deltas = [];
+  input.coverage = {
+    ...input.coverage,
+    status: "partial",
+    inspectedFileCount: 19,
+    unexaminedFileCount: 1,
+  };
+
+  assert.throws(() => buildGateArtifactV2(input), /coverage.*pass/);
+});
+
+test("keeps v2 operational failures action_required without findings", () => {
+  const input = artifactV2Input();
+  const { evaluation: _evaluation, ...envelope } = input;
+  envelope.scan = { id: "scan-current", cost: null, status: "failed" };
+  envelope.coverage = {
+    ...envelope.coverage,
+    status: "partial",
+    inspectedFileCount: 19,
+    unexaminedFileCount: 1,
+  };
+  const artifact = buildOperationalErrorArtifactV2({
+    ...envelope,
+    operationalSummary: "scanner failed at /Users/marcos/private",
+  });
+
+  assert.equal(artifact.decision.outcome, "error");
+  assert.equal(artifact.decision.githubConclusion, "action_required");
+  assert.deepEqual(artifact.findings, []);
+  assert.equal(JSON.stringify(artifact).includes("/Users/"), false);
+});
+
+test("makes protectedBranches authoritative for Check publication", () => {
+  const protectedInput = artifactV2Input();
+  assert.deepEqual(
+    gatePublicationEligibility(
+      protectedInput.policy,
+      protectedInput.target,
+      protectedInput.resolvedTarget,
+    ),
+    { eligible: true, protectedBranch: "main", reason: "protected_branch" },
+  );
+
+  const offPolicy = artifactV2Input();
+  offPolicy.target = { kind: "compare", baseRef: "feature/a", headRef: "feature/b" };
+  offPolicy.resolvedTarget = {
+    ...offPolicy.resolvedTarget,
+    baseRef: "feature/a",
+    headRef: "feature/b",
+    policySha: FULL_BASE_SHA,
+    pullRequestNumber: null,
+  };
+  assert.deepEqual(
+    gatePublicationEligibility(offPolicy.policy, offPolicy.target, offPolicy.resolvedTarget),
+    { eligible: false, protectedBranch: null, reason: "off_policy_preflight" },
+  );
 });
 
 test("rejects an absolute local path in finding evidence", () => {
@@ -708,8 +944,8 @@ test("parses a complete schema v1 artifact", () => {
 
 test("rejects an artifact from a future schema", () => {
   assert.throws(
-    () => parseGateArtifact({ ...buildGateArtifact(artifactInput()), schemaVersion: 2 }),
-    /GateArtifact schema 2 não suportado/,
+    () => parseGateArtifact({ ...buildGateArtifact(artifactInput()), schemaVersion: 3 }),
+    /GateArtifact schema 3 não suportado/,
   );
 });
 

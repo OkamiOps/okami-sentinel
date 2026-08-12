@@ -17,14 +17,23 @@ export interface EvaluateGateInput {
   branch: string;
   changeSet: ChangeSet;
   currentFindings: FindingSummary[];
+  /** Legacy GateArtifact v1 bridge. GateArtifact v2 callers must provide baseline. */
   baselineFindings: FindingSummary[] | null;
+  baseline?: EvaluateGateBaseline;
   historicalFindings: FindingSummary[];
   triageByIdentity: ReadonlyMap<string, FindingTriage>;
   exceptions: GuardrailException[];
   sourceScanId: string;
+  /** Legacy GateArtifact v1 bridge. GateArtifact v2 callers take this from baseline.scanId. */
   baselineScanId: string | null;
   now: string;
 }
+
+export type EvaluateGateBaseline =
+  | { kind: "absent" }
+  | { kind: "comparable"; findings: FindingSummary[]; scanId: string }
+  | { kind: "unavailable"; reason: string }
+  | { kind: "incompatible"; reason: string };
 
 export interface EvaluateGateResult {
   deltas: GateFindingDelta[];
@@ -38,14 +47,18 @@ const unreviewedTriage: FindingTriage = {
 };
 
 export function classifyGateFindings(input: EvaluateGateInput): GateFindingDelta[] {
-  if (input.baselineFindings === null) {
+  const selectedBaseline = evaluationBaseline(input);
+  if (selectedBaseline.kind === "unavailable" || selectedBaseline.kind === "incompatible") {
+    throw new Error(`Cannot classify findings with ${selectedBaseline.kind} baseline`);
+  }
+  if (selectedBaseline.kind === "absent") {
     return input.currentFindings.map((finding): GateFindingDelta => {
       const identity = findingIdentity(finding);
       return delta(finding, identity, "new", input);
     });
   }
 
-  const baseline = input.baselineFindings;
+  const baseline = selectedBaseline.findings;
   const baselineIdentities = new Set(baseline.map(findingIdentity));
   const historicalIdentities = new Set(input.historicalFindings.map(findingIdentity));
   const currentIdentities = new Set(input.currentFindings.map(findingIdentity));
@@ -72,7 +85,11 @@ export function classifyGateFindings(input: EvaluateGateInput): GateFindingDelta
 
 export function evaluateGate(input: EvaluateGateInput): EvaluateGateResult {
   if (input.changeSet.files.length === 0) return noChangesResult();
-  if (input.baselineFindings === null) return bootstrapResult(input);
+  const selectedBaseline = evaluationBaseline(input);
+  if (selectedBaseline.kind === "unavailable" || selectedBaseline.kind === "incompatible") {
+    return baselineErrorResult(selectedBaseline.kind);
+  }
+  if (selectedBaseline.kind === "absent") return bootstrapResult(input);
 
   const deltas = classifyGateFindings(input);
   const violations: GateViolation[] = [];
@@ -173,6 +190,20 @@ function bootstrapResult(input: EvaluateGateInput): EvaluateGateResult {
   };
 }
 
+function baselineErrorResult(kind: "unavailable" | "incompatible"): EvaluateGateResult {
+  return {
+    deltas: [],
+    decision: {
+      outcome: "error",
+      summary: kind === "unavailable" ? "Baseline unavailable." : "Baseline incompatible.",
+      violations: [],
+      warnings: [],
+      exceptionsApplied: [],
+      githubConclusion: "action_required",
+    },
+  };
+}
+
 function decisionSummary(outcome: GateOutcome, violations: number, warnings: number): string {
   if (outcome === "blocked") return `${violations} blocking policy violation(s).`;
   if (outcome === "warning") return `${warnings} policy warning(s).`;
@@ -192,8 +223,28 @@ function sourceScanId(
   input: EvaluateGateInput,
 ): string {
   if (lifecycle !== "fixed") return input.sourceScanId;
-  if (input.baselineScanId === null) {
+  const selectedBaseline = evaluationBaseline(input);
+  const baselineScanId = selectedBaseline.kind === "comparable"
+    ? selectedBaseline.scanId
+    : input.baselineScanId;
+  if (baselineScanId === null) {
     throw new Error("baselineScanId is required for fixed findings");
   }
-  return input.baselineScanId;
+  return baselineScanId;
+}
+
+function evaluationBaseline(input: EvaluateGateInput): EvaluateGateBaseline {
+  if (input.baseline) return input.baseline;
+  if (input.baselineFindings === null) return { kind: "absent" };
+  if (input.baselineScanId === null) {
+    if (input.baselineFindings.length === 0) {
+      return { kind: "comparable", findings: [], scanId: "legacy-empty-baseline" };
+    }
+    return { kind: "incompatible", reason: "missing baseline scan identity" };
+  }
+  return {
+    kind: "comparable",
+    findings: input.baselineFindings,
+    scanId: input.baselineScanId,
+  };
 }

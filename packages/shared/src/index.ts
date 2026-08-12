@@ -961,12 +961,82 @@ export function normalizeSeverity(value: unknown): Severity {
 }
 
 export type GateSource = "local" | "github";
+export type GateExecutorKind = "sentinel-managed" | "github-actions";
 export type GateStatus = "queued" | "resolving" | "scanning" | "evaluating" | "publishing" | "completed" | "cancelled" | "error";
 export type GateOutcome = "no_changes" | "bootstrap" | "pass" | "warning" | "blocked" | "error";
 export type GatePublishStatus = "not_configured" | "waiting" | "publishing" | "published" | "failed";
 export type GateFindingLifecycle = "new" | "reopened" | "persistent" | "fixed";
 export type GateRuleDecision = "block" | "review";
 export type GitHubConclusion = "success" | "neutral" | "failure" | "action_required";
+
+export type RepositoryLocator =
+  | { kind: "local"; repositoryPath: string }
+  | {
+      kind: "github";
+      connectionId: string;
+      installationId: string;
+      repositoryId: string;
+      owner: string;
+      name: string;
+    };
+
+export type ArtifactRepositoryLocator =
+  | { kind: "local"; repositoryKey: string }
+  | { kind: "github"; repositoryId: string; owner: string; name: string };
+
+export type GateTarget =
+  | { kind: "pull_request"; number: number }
+  | { kind: "compare"; baseRef: string; headRef: string }
+  | { kind: "protected_branch"; ref: string };
+
+export interface ResolvedGateTarget {
+  baseRef: string;
+  headRef: string;
+  baseSha: string;
+  headSha: string;
+  policySha: string;
+  pullRequestNumber: number | null;
+}
+
+export interface EffectiveScanLineage {
+  engine: string;
+  engineVersion: string;
+  route: string;
+  protocol: string;
+  provider: string;
+  model: string;
+  reasoningEffort: string;
+  methodology: string;
+  profile: string;
+  recipeHash: string;
+  sourceRevision: string;
+  scanLineageHash: string;
+}
+
+export interface GateCoverageEnvelope {
+  status: "complete" | "partial";
+  repositoryFileCount: number;
+  inspectedFileCount: number;
+  unexaminedFileCount: number;
+  submodules: string[];
+  lfsPointers: string[];
+}
+
+export interface GateSnapshotIdentity {
+  identity: string;
+  materializerVersion: string;
+}
+
+export interface GateWorkflowRunReference {
+  id: string;
+  attempt: number;
+}
+
+export interface GatePublicationEligibility {
+  eligible: boolean;
+  protectedBranch: string | null;
+  reason: "protected_branch" | "off_policy_preflight";
+}
 
 export interface GuardrailRule {
   severity: Severity[];
@@ -1048,7 +1118,7 @@ export interface GateDecision {
   decisionGraph: DecisionGraph;
 }
 
-export interface GateArtifact {
+export interface GateArtifactV1 {
   schemaVersion: 1;
   gateId: string;
   repository: { key: string; owner: string | null; name: string; defaultBranch: string };
@@ -1062,6 +1132,39 @@ export interface GateArtifact {
   versions: { gateCore: string; scanner: string | null };
   createdAt: string;
 }
+
+export interface GateArtifactV2 {
+  schemaVersion: 2;
+  gateId: string;
+  repository: {
+    id: string;
+    key: string;
+    owner: string | null;
+    name: string;
+    defaultBranch: string;
+    locator: ArtifactRepositoryLocator;
+  };
+  source: GateSource;
+  executor: GateExecutorKind;
+  target: GateTarget;
+  resolvedTarget: ResolvedGateTarget;
+  policySource: "base" | "protected_branch";
+  publication: GatePublicationEligibility;
+  changeSet: ChangeSet;
+  policy: GuardrailPolicy;
+  scan: { id: string | null; cost: ScanCost | null; status: string };
+  baselineCommit: string | null;
+  findings: GateFindingDelta[];
+  decision: GateDecision;
+  lineage: EffectiveScanLineage;
+  coverage: GateCoverageEnvelope;
+  snapshot: GateSnapshotIdentity;
+  workflowRun: GateWorkflowRunReference | null;
+  versions: { gateCore: string; scanner: string | null };
+  createdAt: string;
+}
+
+export type GateArtifact = GateArtifactV1 | GateArtifactV2;
 
 export interface GateRun {
   id: string;
