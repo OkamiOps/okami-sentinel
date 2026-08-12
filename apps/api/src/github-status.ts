@@ -20,6 +20,7 @@ const WORKFLOW_PATH = path.join(
   "workflows",
   "csb-security-change-gate.yml",
 );
+const WORKFLOW_V2_MARKER = "# csb-guardrail-contract: 2";
 
 interface RepositoryView {
   nameWithOwner?: unknown;
@@ -65,7 +66,7 @@ export async function getGitHubStatus(
   codexRunner: GhRunner = defaultCodexRunner,
 ): Promise<GuardrailGitHubStatus> {
   const cwd = path.resolve(repositoryPath);
-  const workflowInstalled = fs.existsSync(path.join(cwd, WORKFLOW_PATH));
+  const workflowSource = readCallerWorkflow(cwd);
   const codexAuthResult = await run(codexRunner, ["login", "status"], cwd);
   const codexAuthOutput = `${codexAuthResult.stdout}\n${codexAuthResult.stderr}`;
   const subscriptionReady =
@@ -101,7 +102,7 @@ export async function getGitHubStatus(
       auth: unavailable,
       permissions: unavailable,
       secret: unavailable,
-      workflow: workflowCapability(workflowInstalled),
+      workflow: workflowCapability(workflowSource),
       baseline: unavailable,
       ready: false,
     };
@@ -168,7 +169,7 @@ export async function getGitHubStatus(
     secretReady ? null : `Crie o secret ${SECRET_NAME} no repositório.`,
   );
 
-  const workflow = workflowCapability(workflowInstalled);
+  const workflow = workflowCapability(workflowSource);
   const baselineReady = repositorySlug !== null && permissions.ready;
   const baseline = capability(
     baselineReady,
@@ -240,12 +241,28 @@ async function permissionsCapability(
   );
 }
 
-function workflowCapability(installed: boolean): GitHubCapabilityStatus {
-  return capability(
-    installed,
-    installed
-      ? "Caller workflow do CSB instalado."
-      : "Caller workflow do CSB não instalado.",
-    installed ? null : "Instale o caller workflow do CSB.",
-  );
+function readCallerWorkflow(cwd: string): string | null {
+  try {
+    return fs.readFileSync(path.join(cwd, WORKFLOW_PATH), "utf8");
+  } catch {
+    return null;
+  }
+}
+
+function workflowCapability(source: string | null): GitHubCapabilityStatus {
+  if (source === null) {
+    return capability(
+      false,
+      "Caller workflow do CSB não instalado.",
+      "Instale o caller workflow do CSB.",
+    );
+  }
+  if (!source.includes(WORKFLOW_V2_MARKER)) {
+    return capability(
+      false,
+      "Caller workflow legado detectado; publicação de Check desabilitada.",
+      "Atualize o caller para o contrato v2 antes de usar o Actions.",
+    );
+  }
+  return capability(true, "Caller workflow v2 do CSB instalado.", null);
 }

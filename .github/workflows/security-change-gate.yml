@@ -27,12 +27,13 @@ permissions:
   contents: read
   pull-requests: read
   actions: read
-  checks: write
 
 jobs:
   security-change-gate:
     name: CSB Security Change Gate
     runs-on: ubuntu-latest
+    env:
+      CSB_GUARDRAIL_CONTRACT: legacy-contained
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -138,67 +139,8 @@ jobs:
           fs.appendFileSync(summaryPath, body);
           NODE
 
-      - name: Publish CSB check
-        if: always() && hashFiles('csb-gate-result.json') != '' && steps.scanner-auth.outputs.ready == 'true'
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ github.token }}
-          script: |
-            const fs = require('node:fs');
-            const artifact = JSON.parse(fs.readFileSync('csb-gate-result.json', 'utf8'));
-            const severityRank = new Map(['critical', 'high', 'medium', 'low', 'info', 'unknown'].map((value, index) => [value, index]));
-            const lifecycleRank = new Map(['new', 'reopened', 'persistent', 'fixed'].map((value, index) => [value, index]));
-            const relativeLocation = (finding) => {
-              const raw = finding.primaryPath;
-              if (typeof raw !== 'string' || raw.length === 0) return null;
-              const match = raw.match(/:(\d+)(?:-(\d+))?$/);
-              const candidate = raw.replace(/:(\d+)(?:-(\d+))?$/, '').replaceAll('\\', '/');
-              if (candidate.startsWith('/') || candidate.split('/').includes('..')) return null;
-              const startLine = match ? Number(match[1]) : 1;
-              const endLine = match?.[2] ? Number(match[2]) : startLine;
-              return { path: candidate, startLine, endLine };
-            };
-            const annotations = [...artifact.findings]
-              .sort((left, right) =>
-                (severityRank.get(left.severity) ?? 99) - (severityRank.get(right.severity) ?? 99)
-                || (lifecycleRank.get(left.lifecycle) ?? 99) - (lifecycleRank.get(right.lifecycle) ?? 99)
-                || String(left.identity).localeCompare(String(right.identity)))
-              .map((finding) => ({ finding, location: relativeLocation(finding) }))
-              .filter(({ location }) => location !== null)
-              .slice(0, 20)
-              .map(({ finding, location }) => ({
-                path: location.path,
-                start_line: location.startLine,
-                end_line: location.endLine,
-                annotation_level: ['critical', 'high'].includes(finding.severity) ? 'failure' : finding.severity === 'medium' ? 'warning' : 'notice',
-                title: String(finding.title).slice(0, 255),
-                message: String(finding.summary ?? `${finding.severity}/${finding.lifecycle}: ${finding.identity}`).slice(0, 6000),
-              }));
-            const conclusion = artifact.decision.githubConclusion;
-            await github.rest.checks.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              name: 'CSB Security Change Gate',
-              head_sha: artifact.changeSet.headSha,
-              status: 'completed',
-              conclusion,
-              output: {
-                title: `CSB gate: ${artifact.decision.outcome}`,
-                summary: artifact.decision.summary,
-                annotations,
-              },
-            });
-
       - name: Enforce gate result
         if: always()
-        env:
-          GATE_EXIT: ${{ steps.gate.outputs.exit_code }}
-          HAS_SCANNER_CREDENTIAL: ${{ steps.scanner-auth.outputs.ready }}
         run: |
-          if [[ "${HAS_SCANNER_CREDENTIAL}" != "true" ]]; then
-            exit 3
-          fi
-          case "${GATE_EXIT:-3}" in
-            2|3) exit "${GATE_EXIT:-3}" ;;
-            *) exit 0 ;;
-          esac
+          echo "Legacy Guardrails workflow is contained and cannot approve a branch. Upgrade to contract v2." >> "${GITHUB_STEP_SUMMARY}"
+          exit 3

@@ -8,16 +8,19 @@ const repositoryRoot = path.resolve(fileURLToPath(new URL(".", import.meta.url))
 const workflowPath = path.join(repositoryRoot, ".github", "workflows", "security-change-gate.yml");
 const callerPath = path.join(repositoryRoot, ".github", "workflows", "fixtures", "caller.yml");
 
-test("workflow has bounded permissions, immutable tool ref and unconditional artifact upload", () => {
+test("legacy workflow is contained until the v2 contract replaces it", () => {
   const workflow = fs.readFileSync(workflowPath, "utf8");
   assert.match(workflow, /contents:\s*read/);
   assert.match(workflow, /pull-requests:\s*read/);
   assert.match(workflow, /actions:\s*read/);
-  assert.match(workflow, /checks:\s*write/);
+  assert.doesNotMatch(workflow, /checks:\s*write/);
   assert.match(workflow, /ref:\s*\$\{\{ inputs\.csb_ref \}\}/);
   assert.match(workflow, /if:\s*always\(\)/);
-  assert.match(workflow, /steps\.scanner-auth\.outputs\.ready == 'true'/);
-  assert.match(workflow, /const conclusion = artifact\.decision\.githubConclusion;/);
+  assert.match(workflow, /CSB_GUARDRAIL_CONTRACT:\s*legacy-contained/);
+  assert.match(workflow, /exit 3/);
+  assert.doesNotMatch(workflow, /csb-guardrail-contract:\s*2/);
+  assert.doesNotMatch(workflow, /actions\/github-script/);
+  assert.doesNotMatch(workflow, /checks\.create/);
   assert.doesNotMatch(workflow, /@main/);
 });
 

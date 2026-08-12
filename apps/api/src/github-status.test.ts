@@ -134,10 +134,35 @@ test("reports read-only repository access without hiding healthy capabilities", 
 
     assert.equal(status.auth.ready, true);
     assert.equal(status.secret.ready, true);
-    assert.equal(status.workflow.ready, true);
+    assert.equal(status.workflow.ready, false);
+    assert.match(status.workflow.message, /legado/i);
+    assert.match(status.workflow.action ?? "", /contrato v2/i);
     assert.equal(status.permissions.ready, false);
     assert.match(status.permissions.message, /somente leitura/i);
     assert.equal(status.ready, false);
+  } finally {
+    fs.rmSync(repositoryPath, { recursive: true, force: true });
+  }
+});
+
+test("reports a caller workflow ready only with the v2 contract marker", async () => {
+  const repositoryPath = fs.mkdtempSync(
+    path.join(os.tmpdir(), "csb-github-v2-workflow-"),
+  );
+  const workflowDir = path.join(repositoryPath, ".github", "workflows");
+  fs.mkdirSync(workflowDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(workflowDir, "csb-security-change-gate.yml"),
+    "# csb-guardrail-contract: 2\nname: CSB Security Change Gate\n",
+  );
+  const gh = fakeGh();
+
+  try {
+    const status = await getGitHubStatus(repositoryPath, gh.runner, fakeCodex());
+
+    assert.equal(status.workflow.ready, true);
+    assert.equal(status.workflow.action, null);
+    assert.equal(status.ready, true);
   } finally {
     fs.rmSync(repositoryPath, { recursive: true, force: true });
   }
