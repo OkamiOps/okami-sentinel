@@ -4,9 +4,6 @@ run-name: >-
   CSB gate ${{ inputs.gate_id || github.run_id }} · ${{ inputs.head_sha || github.sha }}
 
 on:
-  pull_request:
-  push:
-    branches: [main]
   workflow_call:
     inputs:
       policy_path:

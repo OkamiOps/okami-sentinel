@@ -18,6 +18,9 @@ test("renders a downloadable caller pinned to one real immutable workflow SHA", 
   assert.match(document.content, new RegExp(`security-change-gate\\.yml@${RELEASE_SHA}`));
   assert.match(document.content, new RegExp(`csb_ref: ${RELEASE_SHA}`));
   assert.match(document.content, /run-name: CSB gate/);
+  assert.match(document.content, /^  pull_request:$/m);
+  assert.match(document.content, /^  push:$/m);
+  assert.match(document.content, /^    branches: \[main\]$/m);
   assert.match(document.content, /workflow_dispatch:/);
   assert.match(document.content, /gate_id: \$\{\{ inputs\.gate_id \}\}/);
   assert.match(document.content, /head_sha: \$\{\{ inputs\.head_sha \}\}/);

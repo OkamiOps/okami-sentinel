@@ -10,10 +10,12 @@ const callerPath = path.join(repositoryRoot, ".github", "workflows", "fixtures",
 
 test("workflow v2 freezes policy and head, restores a baseline and publishes one validated Check", () => {
   const workflow = fs.readFileSync(workflowPath, "utf8");
+  const triggerEnvelope = workflow.slice(0, workflow.indexOf("permissions:"));
   assert.match(workflow, /^# csb-guardrail-contract: 2$/m);
-  assert.match(workflow, /pull_request:/);
-  assert.match(workflow, /push:/);
+  assert.match(triggerEnvelope, /workflow_call:/);
   assert.match(workflow, /workflow_dispatch:/);
+  assert.doesNotMatch(triggerEnvelope, /^\s{2}pull_request:/m);
+  assert.doesNotMatch(triggerEnvelope, /^\s{2}push:/m);
   assert.doesNotMatch(workflow, /pull_request_target/);
 
   assert.match(workflow, /contents:\s*read/);
