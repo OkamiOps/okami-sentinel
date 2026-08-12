@@ -158,6 +158,58 @@ export interface GitHubActionsArtifactMetadata {
   validatedAt: string | null;
 }
 
+export type GitHubActionsDispatchState =
+  | "dispatch_requested"
+  | "dispatch_accepted"
+  | "correlating"
+  | "running"
+  | "artifact_pending"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface GitHubActionsDispatchMetadata {
+  gateId: string;
+  repositoryKey: string;
+  idempotencyKey: string;
+  requestFingerprint: string;
+  connectionId: string;
+  installationId: string;
+  repositoryId: string;
+  workflowPath: string;
+  workflowRef: string;
+  releaseSha: string;
+  targetKind: "pull_request" | "compare" | "protected_branch";
+  protectedBranch: string;
+  expectedRunName: string;
+  expectedHeadSha: string;
+  state: GitHubActionsDispatchState;
+  workflowRunId: string | null;
+  workflowRunAttempt: number | null;
+  requestedAt: string;
+  dispatchedAt: string | null;
+  lastPolledAt: string | null;
+  completedAt: string | null;
+  error: string | null;
+}
+
+export type GitHubActionsDispatchUpdate = Partial<Pick<
+  GitHubActionsDispatchMetadata,
+  | "state"
+  | "workflowRunId"
+  | "workflowRunAttempt"
+  | "dispatchedAt"
+  | "lastPolledAt"
+  | "completedAt"
+  | "error"
+>>;
+
+export interface CreateGitHubActionsDispatchResult {
+  created: boolean;
+  gate: GateRun;
+  dispatch: GitHubActionsDispatchMetadata;
+}
+
 export type GateRunUpdate = Partial<
   Pick<
     GateRun,
@@ -577,6 +629,12 @@ export function getGitHubActionsArtifact(
     | Record<string, string | number | null>
     | undefined;
   if (!row) return null;
+  return githubActionsArtifactFromRow(row);
+}
+
+function githubActionsArtifactFromRow(
+  row: Record<string, string | number | null>,
+): GitHubActionsArtifactMetadata {
   return {
     id: String(row.id),
     gateId: String(row.gate_id),
@@ -590,6 +648,171 @@ export function getGitHubActionsArtifact(
     createdAt: String(row.created_at),
     validatedAt: row.validated_at === null ? null : String(row.validated_at),
   };
+}
+
+export function createGitHubActionsDispatchGate(
+  run: GateRun,
+  dispatch: GitHubActionsDispatchMetadata,
+  database: Database.Database = getDb(),
+): CreateGitHubActionsDispatchResult {
+  ensureGateSchema(database);
+  const create = database.transaction((): CreateGitHubActionsDispatchResult => {
+    const existing = database.prepare(`
+      SELECT * FROM github_actions_dispatches
+      WHERE repository_key = ? AND idempotency_key = ?
+    `).get(dispatch.repositoryKey, dispatch.idempotencyKey) as
+      | Record<string, string | number | null>
+      | undefined;
+    if (existing !== undefined) {
+      const persistedDispatch = githubActionsDispatchFromRow(existing);
+      const persistedGate = getGateRun(persistedDispatch.gateId, database);
+      if (persistedGate === null) throw new Error("GitHub Actions dispatch gate is missing");
+      return { created: false, gate: persistedGate, dispatch: persistedDispatch };
+    }
+
+    insertGateRun(run, database);
+    database.prepare(`
+      INSERT INTO github_actions_dispatches (
+        gate_id, repository_key, idempotency_key, request_fingerprint,
+        connection_id, installation_id, repository_id, workflow_path,
+        workflow_ref, release_sha, target_kind, protected_branch,
+        expected_run_name, expected_head_sha, state, workflow_run_id,
+        workflow_run_attempt, requested_at, dispatched_at, last_polled_at,
+        completed_at, error
+      ) VALUES (
+        @gate_id, @repository_key, @idempotency_key, @request_fingerprint,
+        @connection_id, @installation_id, @repository_id, @workflow_path,
+        @workflow_ref, @release_sha, @target_kind, @protected_branch,
+        @expected_run_name, @expected_head_sha, @state, @workflow_run_id,
+        @workflow_run_attempt, @requested_at, @dispatched_at, @last_polled_at,
+        @completed_at, @error
+      )
+    `).run(githubActionsDispatchToParams(dispatch));
+    return { created: true, gate: run, dispatch };
+  });
+  return create.immediate();
+}
+
+export function getGitHubActionsDispatch(
+  gateId: string,
+  database: Database.Database = getDb(),
+): GitHubActionsDispatchMetadata | null {
+  ensureGateSchema(database);
+  const row = database.prepare(
+    "SELECT * FROM github_actions_dispatches WHERE gate_id = ?",
+  ).get(gateId) as Record<string, string | number | null> | undefined;
+  return row === undefined ? null : githubActionsDispatchFromRow(row);
+}
+
+export function listPendingGitHubActionsDispatches(
+  database: Database.Database = getDb(),
+): GitHubActionsDispatchMetadata[] {
+  ensureGateSchema(database);
+  const rows = database.prepare(`
+    SELECT * FROM github_actions_dispatches
+    WHERE state NOT IN ('completed', 'failed', 'cancelled')
+    ORDER BY requested_at, gate_id
+  `).all() as Array<Record<string, string | number | null>>;
+  return rows.map(githubActionsDispatchFromRow);
+}
+
+export function updateGitHubActionsDispatch(
+  gateId: string,
+  updates: GitHubActionsDispatchUpdate,
+  database: Database.Database = getDb(),
+): void {
+  ensureGateSchema(database);
+  const assignments: string[] = [];
+  const params: Record<string, unknown> = { gate_id: gateId };
+  const columns: Array<[keyof GitHubActionsDispatchUpdate, string]> = [
+    ["state", "state"],
+    ["workflowRunId", "workflow_run_id"],
+    ["workflowRunAttempt", "workflow_run_attempt"],
+    ["dispatchedAt", "dispatched_at"],
+    ["lastPolledAt", "last_polled_at"],
+    ["completedAt", "completed_at"],
+    ["error", "error"],
+  ];
+  for (const [key, column] of columns) {
+    if (updates[key] === undefined) continue;
+    assignments.push(`${column} = @${column}`);
+    params[column] = updates[key];
+  }
+  if (assignments.length === 0) return;
+  const result = database.prepare(`
+    UPDATE github_actions_dispatches
+    SET ${assignments.join(", ")}
+    WHERE gate_id = @gate_id
+  `).run(params);
+  if (result.changes !== 1) throw new Error("GitHub Actions dispatch is missing");
+}
+
+export function reserveGitHubActionsArtifact(
+  artifact: GitHubActionsArtifactMetadata,
+  database: Database.Database = getDb(),
+): "created" | "existing" {
+  ensureGateSchema(database);
+  const reserve = database.transaction(() => {
+    const existingById = getGitHubActionsArtifact(artifact.id, database);
+    const existingByRun = database.prepare(`
+      SELECT * FROM github_actions_artifacts
+      WHERE repository_key = ? AND workflow_run_id = ?
+        AND workflow_run_attempt = ? AND artifact_name = ?
+    `).get(
+      artifact.repositoryKey,
+      artifact.workflowRunId,
+      artifact.workflowRunAttempt,
+      artifact.artifactName,
+    ) as Record<string, string | number | null> | undefined;
+    const existing = existingById ?? (
+      existingByRun === undefined ? null : githubActionsArtifactFromRow(existingByRun)
+    );
+    if (existing !== null) {
+      if (
+        existing.id !== artifact.id
+        || existing.gateId !== artifact.gateId
+        || existing.repositoryKey !== artifact.repositoryKey
+        || existing.workflowRunId !== artifact.workflowRunId
+        || existing.workflowRunAttempt !== artifact.workflowRunAttempt
+        || existing.artifactName !== artifact.artifactName
+        || existing.artifactDigest !== artifact.artifactDigest
+        || existing.artifactSchemaVersion !== artifact.artifactSchemaVersion
+      ) {
+        throw new Error("GitHub Actions artifact identity conflict");
+      }
+      return "existing" as const;
+    }
+    upsertGitHubActionsArtifact(artifact, database);
+    return "created" as const;
+  });
+  return reserve.immediate();
+}
+
+export function finalizeGitHubActionsArtifact(
+  input: {
+    artifactId: string;
+    artifactStatus: "validated" | "rejected";
+    validatedAt: string;
+    gateId: string;
+    gateUpdates?: GateRunUpdate;
+    dispatchUpdates: GitHubActionsDispatchUpdate;
+  },
+  database: Database.Database = getDb(),
+): void {
+  ensureGateSchema(database);
+  const finalize = database.transaction(() => {
+    const result = database.prepare(`
+      UPDATE github_actions_artifacts
+      SET status = ?, validated_at = ?
+      WHERE id = ? AND status IN ('pending', ?)
+    `).run(input.artifactStatus, input.validatedAt, input.artifactId, input.artifactStatus);
+    if (result.changes !== 1) throw new Error("GitHub Actions artifact is missing");
+    if (input.gateUpdates !== undefined) {
+      updateGateRun(input.gateId, input.gateUpdates, database);
+    }
+    updateGitHubActionsDispatch(input.gateId, input.dispatchUpdates, database);
+  });
+  finalize.immediate();
 }
 
 export function getCachedGitHubBaseline(
@@ -1000,6 +1223,65 @@ function rowToGateRun(row: GateRunRow): GateRun {
     estimatedUsd: row.estimated_usd,
     startedAt: row.started_at,
     completedAt: row.completed_at === null ? null : row.completed_at,
+  };
+}
+
+function githubActionsDispatchToParams(
+  dispatch: GitHubActionsDispatchMetadata,
+): Record<string, unknown> {
+  return {
+    gate_id: dispatch.gateId,
+    repository_key: dispatch.repositoryKey,
+    idempotency_key: dispatch.idempotencyKey,
+    request_fingerprint: dispatch.requestFingerprint,
+    connection_id: dispatch.connectionId,
+    installation_id: dispatch.installationId,
+    repository_id: dispatch.repositoryId,
+    workflow_path: dispatch.workflowPath,
+    workflow_ref: dispatch.workflowRef,
+    release_sha: dispatch.releaseSha,
+    target_kind: dispatch.targetKind,
+    protected_branch: dispatch.protectedBranch,
+    expected_run_name: dispatch.expectedRunName,
+    expected_head_sha: dispatch.expectedHeadSha,
+    state: dispatch.state,
+    workflow_run_id: dispatch.workflowRunId,
+    workflow_run_attempt: dispatch.workflowRunAttempt,
+    requested_at: dispatch.requestedAt,
+    dispatched_at: dispatch.dispatchedAt,
+    last_polled_at: dispatch.lastPolledAt,
+    completed_at: dispatch.completedAt,
+    error: dispatch.error,
+  };
+}
+
+function githubActionsDispatchFromRow(
+  row: Record<string, string | number | null>,
+): GitHubActionsDispatchMetadata {
+  return {
+    gateId: String(row.gate_id),
+    repositoryKey: String(row.repository_key),
+    idempotencyKey: String(row.idempotency_key),
+    requestFingerprint: String(row.request_fingerprint),
+    connectionId: String(row.connection_id),
+    installationId: String(row.installation_id),
+    repositoryId: String(row.repository_id),
+    workflowPath: String(row.workflow_path),
+    workflowRef: String(row.workflow_ref),
+    releaseSha: String(row.release_sha),
+    targetKind: row.target_kind as GitHubActionsDispatchMetadata["targetKind"],
+    protectedBranch: String(row.protected_branch),
+    expectedRunName: String(row.expected_run_name),
+    expectedHeadSha: String(row.expected_head_sha),
+    state: row.state as GitHubActionsDispatchState,
+    workflowRunId: row.workflow_run_id === null ? null : String(row.workflow_run_id),
+    workflowRunAttempt:
+      row.workflow_run_attempt === null ? null : Number(row.workflow_run_attempt),
+    requestedAt: String(row.requested_at),
+    dispatchedAt: row.dispatched_at === null ? null : String(row.dispatched_at),
+    lastPolledAt: row.last_polled_at === null ? null : String(row.last_polled_at),
+    completedAt: row.completed_at === null ? null : String(row.completed_at),
+    error: row.error === null ? null : String(row.error),
   };
 }
 

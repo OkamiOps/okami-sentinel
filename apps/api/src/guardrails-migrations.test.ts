@@ -220,6 +220,8 @@ test("keeps remote metadata tables, indexes and foreign keys after reopening", (
     );
     assert.equal(indexExists(reopened, "gate_runs_by_repository_started"), true);
     assert.equal(indexExists(reopened, "github_installation_repositories_by_installation"), true);
+    assert.equal(tableExists(reopened, "github_actions_dispatches"), true);
+    assert.equal(indexExists(reopened, "github_actions_dispatches_by_state"), true);
     assert.equal(
       (reopened.prepare("PRAGMA foreign_key_list(github_app_installations)").all() as unknown[]).length,
       1,

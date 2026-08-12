@@ -1,5 +1,7 @@
 # csb-guardrail-contract: 2
 name: CSB Security Change Gate
+run-name: >-
+  CSB gate ${{ inputs.gate_id || github.run_id }} · ${{ inputs.head_sha || github.sha }}
 
 on:
   pull_request:
@@ -28,6 +30,39 @@ on:
         default: main
       gate_id:
         description: Optional persisted Sentinel gate identity
+        required: false
+        type: string
+      target_kind:
+        description: Frozen target kind for an API dispatch
+        required: false
+        type: string
+      base_ref:
+        description: Frozen human-readable base reference
+        required: false
+        type: string
+      head_ref:
+        description: Frozen human-readable head reference
+        required: false
+        type: string
+      base_sha:
+        description: Frozen base commit SHA
+        required: false
+        type: string
+      head_sha:
+        description: Frozen head commit SHA
+        required: false
+        type: string
+      protected_branch:
+        description: Protected branch that owns the baseline
+        required: false
+        type: string
+      pull_request_number:
+        description: Pull request number, or 0 for non-PR targets
+        required: false
+        type: string
+        default: "0"
+      head_repository:
+        description: Head owner/repository for a fork
         required: false
         type: string
     secrets:

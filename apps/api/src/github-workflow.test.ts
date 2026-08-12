@@ -17,6 +17,10 @@ test("renders a downloadable caller pinned to one real immutable workflow SHA", 
   assert.equal(document.mediaType, "application/yaml");
   assert.match(document.content, new RegExp(`security-change-gate\\.yml@${RELEASE_SHA}`));
   assert.match(document.content, new RegExp(`csb_ref: ${RELEASE_SHA}`));
+  assert.match(document.content, /run-name: CSB gate/);
+  assert.match(document.content, /workflow_dispatch:/);
+  assert.match(document.content, /gate_id: \$\{\{ inputs\.gate_id \}\}/);
+  assert.match(document.content, /head_sha: \$\{\{ inputs\.head_sha \}\}/);
   assert.match(document.content, /OPENAI_API_KEY: \$\{\{ secrets\.OPENAI_API_KEY \}\}/);
   assert.doesNotMatch(document.content, /@main|@v\d+/);
   assert.doesNotMatch(document.content, /secrets:\s*inherit/);

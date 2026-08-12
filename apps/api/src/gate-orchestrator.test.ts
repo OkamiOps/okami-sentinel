@@ -260,7 +260,7 @@ test("cancels the linked scan", async () => {
   assert.equal(deps.cancelledScanId, "scan-1");
 });
 
-test("uses the github provider only when github baseline is requested and a remote is ready", async () => {
+test("local gates fail closed instead of using a remote baseline without App authority", async () => {
   const deps = fakeDeps({ githubBaseline: githubBaseline() });
   const gate = await startLocalGate(
     { ...request(), baselineSource: "github" },
@@ -268,9 +268,10 @@ test("uses the github provider only when github baseline is requested and a remo
   );
   await waitForGate(gate.id);
 
-  assert.equal(deps.githubBaselineCalls, 1);
-  assert.equal(deps.runs.get(gate.id)?.baselineCommit, "remote-head");
-  assert.equal(deps.runs.get(gate.id)?.outcome, "pass");
+  assert.equal(deps.githubBaselineCalls, 0);
+  assert.equal(deps.runs.get(gate.id)?.status, "error");
+  assert.equal(deps.runs.get(gate.id)?.outcome, "error");
+  assert.equal(deps.runs.get(gate.id)?.error, "github_repository_authority_invalid");
 });
 
 test("keeps the local baseline provider intact by default", async () => {
@@ -293,7 +294,7 @@ test("rejects github baseline selection when the repository has no ready remote"
   assert.equal(deps.runs.size, 0);
 });
 
-test("turns unavailable github baseline history into an operational error", async () => {
+test("legacy github baseline requests cannot bypass missing App enrollment", async () => {
   const deps = fakeDeps({
     githubBaselineError: new Error(
       "histórico encontrado, mas o artifact de baseline não está disponível",
@@ -305,10 +306,10 @@ test("turns unavailable github baseline history into an operational error", asyn
   );
   await waitForGate(gate.id);
 
-  assert.equal(deps.githubBaselineCalls, 1);
+  assert.equal(deps.githubBaselineCalls, 0);
   assert.equal(deps.runs.get(gate.id)?.status, "error");
   assert.equal(deps.runs.get(gate.id)?.outcome, "error");
-  assert.match(deps.runs.get(gate.id)?.error ?? "", /histórico encontrado/);
+  assert.equal(deps.runs.get(gate.id)?.error, "github_repository_authority_invalid");
 });
 
 test("remote managed gate persists frozen identity before execution and publishes only after artifact v2", async () => {

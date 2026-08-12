@@ -180,6 +180,45 @@ test("reads a repository resource only with a repository-scoped installation tok
   );
 });
 
+test("downloads a bounded repository artifact as bytes with an actions token", async () => {
+  const { privateKey } = keyPair();
+  const pem = privateKey.export({ format: "pem", type: "pkcs8" }).toString();
+  const requests: GitHubHttpRequest[] = [];
+  const expected = new Uint8Array([0x50, 0x4b, 0x03, 0x04]);
+  const client = new GitHubAppClient({
+    credentials: new MemoryCredentialStore({ privateKeyPem: pem }),
+    redactor: new RecordingRedactor(),
+    now: () => new Date("2026-08-12T12:00:00.000Z"),
+    transport: async (request) => {
+      requests.push(request);
+      if (request.url.endsWith("/access_tokens")) {
+        return {
+          status: 201,
+          body: {
+            token: "ghs_repository_actions",
+            expires_at: "2026-08-12T13:00:00.000Z",
+          },
+        };
+      }
+      return { status: 200, body: expected };
+    },
+  });
+
+  assert.deepEqual(await client.downloadRepositoryBytes(
+    connection(),
+    "77",
+    "9001",
+    "/repos/OkamiOps/sentinel/actions/artifacts/9001/zip",
+    { actions: "read" },
+  ), expected);
+  assert.deepEqual(JSON.parse(requests[0]?.body ?? "{}"), {
+    repository_ids: [9001],
+    permissions: { actions: "read" },
+  });
+  assert.equal(requests[1]?.responseType, "bytes");
+  assert.equal(requests[1]?.headers.Authorization, "Bearer ghs_repository_actions");
+});
+
 test("writes a repository resource only with the requested repository-scoped permission", async () => {
   const { privateKey } = keyPair();
   const pem = privateKey.export({ format: "pem", type: "pkcs8" }).toString();

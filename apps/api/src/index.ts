@@ -10,7 +10,10 @@ import {
 import { getDb } from "./db.js";
 import { ensureConnectionSchema } from "./connections-store.js";
 import { importExternalScans, reconcileRunningScans } from "./ingest.js";
-import { reconcileManagedMaterializations } from "./gate-orchestrator.js";
+import {
+  reconcileGitHubActionsGates,
+  reconcileManagedMaterializations,
+} from "./gate-orchestrator.js";
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(RUNS_DIR, { recursive: true });
@@ -38,6 +41,14 @@ if (reconciled > 0) {
   console.log(`[csb-api] Reconciled ${reconciled} running scan(s) from workbench`);
 }
 
+void reconcileGitHubActionsGates().then((gates) => {
+  if (gates.length > 0) {
+    console.log(`[csb-api] Reconciled ${gates.length} GitHub Actions gate(s)`);
+  }
+}).catch(() => {
+  console.warn("[csb-api] GitHub Actions gate reconciliation deferred");
+});
+
 // Keep orphaned CLI jobs (surviving an API restart) in sync with workbench.
 setInterval(() => {
   try {
@@ -45,6 +56,12 @@ setInterval(() => {
   } catch {
     // ignore transient sqlite locks
   }
+}, 15_000).unref();
+
+setInterval(() => {
+  void reconcileGitHubActionsGates().catch(() => {
+    // A persisted dispatch remains retryable after transient App/API failures.
+  });
 }, 15_000).unref();
 
 serve(

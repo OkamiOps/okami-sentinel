@@ -11,6 +11,7 @@ import type {
 const DEFAULT_API_BASE_URL = "https://api.github.com";
 const GITHUB_API_VERSION = "2026-03-10";
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+const MAX_BINARY_RESPONSE_BYTES = 32 * 1024 * 1024;
 const TOKEN_EARLY_EXPIRY_MS = 60_000;
 
 const MAX_PERMISSION = Object.freeze({
@@ -49,6 +50,7 @@ export interface GitHubHttpRequest {
   method: "DELETE" | "GET" | "PATCH" | "POST";
   headers: Readonly<Record<string, string>>;
   body?: string;
+  responseType?: "bytes";
 }
 
 export interface GitHubHttpResponse {
@@ -288,6 +290,31 @@ export class GitHubAppClient {
     });
   }
 
+  async downloadRepositoryBytes(
+    connection: GitHubAppConnectionMetadata,
+    installationId: string,
+    repositoryId: string,
+    path: string,
+    permissions: GitHubInstallationPermissions,
+  ): Promise<Uint8Array> {
+    const token = await this.createRepositoryToken(
+      connection,
+      installationId,
+      repositoryId,
+      permissions,
+    );
+    const body = await this.#request({
+      method: "GET",
+      path: repositoryResourcePath(path),
+      authorization: `Bearer ${token.token}`,
+      responseType: "bytes",
+    });
+    if (!(body instanceof Uint8Array) || body.byteLength > MAX_BINARY_RESPONSE_BYTES) {
+      throw new GitHubAppClientError("github_protocol_error");
+    }
+    return body;
+  }
+
   clearConnection(connectionId: string): void {
     for (const [key, cached] of this.#tokens) {
       if (!key.startsWith(`${connectionId}:`)) continue;
@@ -360,6 +387,7 @@ export class GitHubAppClient {
     path: string;
     authorization?: string;
     body?: unknown;
+    responseType?: "bytes";
   }): Promise<unknown> {
     const url = new URL(input.path, `${this.#apiBaseUrl}/`).toString();
     assertAllowedGitHubApiUrl(url);
@@ -376,11 +404,17 @@ export class GitHubAppClient {
           ...(input.authorization ? { Authorization: input.authorization } : {}),
         },
         ...(input.body === undefined ? {} : { body: JSON.stringify(input.body) }),
+        ...(input.responseType === undefined ? {} : { responseType: input.responseType }),
       });
     } catch {
       throw new GitHubAppClientError("github_unavailable");
     }
-    if (response.status >= 200 && response.status < 300) return response.body;
+    if (response.status >= 200 && response.status < 300) {
+      if (input.responseType === "bytes" && !(response.body instanceof Uint8Array)) {
+        throw new GitHubAppClientError("github_protocol_error");
+      }
+      return response.body;
+    }
     if (response.status === 401 || response.status === 403) {
       throw new GitHubAppClientError("github_credential_rejected");
     }
@@ -591,6 +625,12 @@ async function fetchGitHubJson(request: GitHubHttpRequest): Promise<GitHubHttpRe
     body: request.body,
     signal: AbortSignal.timeout(30_000),
   });
+  if (request.responseType === "bytes") {
+    return {
+      status: response.status,
+      body: await readBoundedResponseBytes(response, MAX_BINARY_RESPONSE_BYTES),
+    };
+  }
   const encoded = await response.text();
   if (Buffer.byteLength(encoded, "utf8") > MAX_RESPONSE_BYTES) {
     throw new GitHubAppClientError("github_protocol_error");
@@ -604,4 +644,36 @@ async function fetchGitHubJson(request: GitHubHttpRequest): Promise<GitHubHttpRe
     }
   }
   return { status: response.status, body };
+}
+
+async function readBoundedResponseBytes(
+  response: Response,
+  maximum: number,
+): Promise<Uint8Array> {
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maximum) {
+    throw new GitHubAppClientError("github_protocol_error");
+  }
+  if (response.body === null) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      total += next.value.byteLength;
+      if (total > maximum) throw new GitHubAppClientError("github_protocol_error");
+      chunks.push(next.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }

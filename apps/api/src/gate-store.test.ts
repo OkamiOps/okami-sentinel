@@ -4,21 +4,26 @@ import Database from "better-sqlite3";
 import type { GateRun, GuardrailRepository } from "@csb/shared";
 import {
   appendGateEvent,
+  createGitHubActionsDispatchGate,
   ensureGateSchema,
   getCachedGitHubBaseline,
   getGitHubActionsArtifact,
+  getGitHubActionsDispatch,
   getGateRun,
   getMaterializationLease,
   listMaterializationLeases,
   insertGateRun,
   listGateEvents,
   listGitHubAppConnections,
+  listPendingGitHubActionsDispatches,
   listGitHubAppInstallations,
   listGitHubInstallationRepositories,
   listGatePublicationAttempts,
   listGateRuns,
   listGuardrailRepositories,
   recordGatePublicationAttempt,
+  reserveGitHubActionsArtifact,
+  finalizeGitHubActionsArtifact,
   updateGateRun,
   upsertCachedGitHubBaseline,
   upsertGitHubActionsArtifact,
@@ -27,6 +32,7 @@ import {
   upsertGitHubInstallationRepository,
   upsertGuardrailRepository,
   upsertMaterializationLease,
+  type GitHubActionsDispatchMetadata,
 } from "./gate-store.js";
 
 function repositoryFixture(
@@ -173,6 +179,8 @@ test("creates only the additive gate schema and expected index", () => {
            'materialization_leases_by_gate',
            'github_actions_artifacts',
            'github_actions_artifacts_by_run_attempt',
+           'github_actions_dispatches',
+           'github_actions_dispatches_by_state',
            'gate_publication_attempts',
            'gate_publication_attempts_by_gate'
          )
@@ -189,6 +197,8 @@ test("creates only the additive gate schema and expected index", () => {
       { name: "gate_runs_by_workflow_run", type: "index" },
       { name: "github_actions_artifacts", type: "table" },
       { name: "github_actions_artifacts_by_run_attempt", type: "index" },
+      { name: "github_actions_dispatches", type: "table" },
+      { name: "github_actions_dispatches_by_state", type: "index" },
       { name: "github_app_connections", type: "table" },
       { name: "github_app_installations", type: "table" },
       { name: "github_app_installations_by_connection", type: "index" },
@@ -200,6 +210,107 @@ test("creates only the additive gate schema and expected index", () => {
       { name: "materialization_leases", type: "table" },
       { name: "materialization_leases_by_gate", type: "index" },
     ]);
+  } finally {
+    db.close();
+  }
+});
+
+test("persists one idempotent Actions dispatch and reserves its artifact identity", () => {
+  const db = new Database(":memory:");
+  try {
+    const repository = repositoryFixture({
+      repositoryKey: "github:991122",
+      repositoryPath: null,
+      source: "github",
+      defaultExecutor: "github-actions",
+      githubConnectionId: "connection-1",
+      githubInstallationId: "77",
+      githubRepositoryId: "991122",
+    });
+    const run = gateRunFixture({
+      id: "gate-actions-1",
+      repositoryKey: repository.repositoryKey,
+      repositoryPath: null,
+      source: "github",
+      executor: "github-actions",
+      resolvedBaseSha: "a".repeat(40),
+      resolvedHeadSha: "b".repeat(40),
+      policySha: "a".repeat(40),
+      artifactSchemaVersion: 2,
+    });
+    const dispatch: GitHubActionsDispatchMetadata = {
+      gateId: run.id,
+      repositoryKey: run.repositoryKey,
+      idempotencyKey: "gate-dispatch-client-0001",
+      requestFingerprint: `sha256:${"c".repeat(64)}`,
+      connectionId: "connection-1",
+      installationId: "77",
+      repositoryId: "991122",
+      workflowPath: ".github/workflows/csb-security-change-gate.yml",
+      workflowRef: "main",
+      releaseSha: "d".repeat(40),
+      targetKind: "pull_request",
+      protectedBranch: "main",
+      expectedRunName: `CSB gate ${run.id} · ${run.resolvedHeadSha}`,
+      expectedHeadSha: run.resolvedHeadSha!,
+      state: "dispatch_requested",
+      workflowRunId: null,
+      workflowRunAttempt: null,
+      requestedAt: "2026-08-12T12:00:00.000Z",
+      dispatchedAt: null,
+      lastPolledAt: null,
+      completedAt: null,
+      error: null,
+    };
+    upsertGuardrailRepository(repository, db);
+    assert.equal(createGitHubActionsDispatchGate(run, dispatch, db).created, true);
+    assert.equal(createGitHubActionsDispatchGate(
+      { ...run, id: "must-not-be-inserted" },
+      { ...dispatch, gateId: "must-not-be-inserted" },
+      db,
+    ).created, false);
+    assert.equal(getGitHubActionsDispatch(run.id, db)?.state, "dispatch_requested");
+    assert.deepEqual(listPendingGitHubActionsDispatches(db).map((entry) => entry.gateId), [run.id]);
+
+    const artifact = {
+      id: "github-actions:9001",
+      gateId: run.id,
+      repositoryKey: run.repositoryKey,
+      workflowRunId: "7001",
+      workflowRunAttempt: 1,
+      artifactName: "csb-gate-artifact-v2",
+      artifactDigest: `sha256:${"e".repeat(64)}`,
+      artifactSchemaVersion: 2,
+      status: "pending" as const,
+      createdAt: "2026-08-12T12:05:00.000Z",
+      validatedAt: null,
+    };
+    assert.equal(reserveGitHubActionsArtifact(artifact, db), "created");
+    assert.equal(reserveGitHubActionsArtifact(artifact, db), "existing");
+    assert.throws(
+      () => reserveGitHubActionsArtifact({
+        ...artifact,
+        artifactDigest: `sha256:${"f".repeat(64)}`,
+      }, db),
+      /identity conflict/,
+    );
+    finalizeGitHubActionsArtifact({
+      artifactId: artifact.id,
+      artifactStatus: "validated",
+      validatedAt: "2026-08-12T12:06:00.000Z",
+      gateId: run.id,
+      gateUpdates: { status: "completed", outcome: "pass" },
+      dispatchUpdates: {
+        state: "completed",
+        workflowRunId: "7001",
+        workflowRunAttempt: 1,
+        completedAt: "2026-08-12T12:06:00.000Z",
+      },
+    }, db);
+    assert.equal(getGitHubActionsArtifact(artifact.id, db)?.status, "validated");
+    assert.equal(getGitHubActionsDispatch(run.id, db)?.state, "completed");
+    assert.equal(listPendingGitHubActionsDispatches(db).length, 0);
+    assert.equal(getGateRun(run.id, db)?.outcome, "pass");
   } finally {
     db.close();
   }

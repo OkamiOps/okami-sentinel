@@ -92,7 +92,7 @@ test("a branch move creates a new preview while accepted identity keeps the orig
   const first = await service.create(repository(), { target, executor: "sentinel-managed" });
   nextHead = SECOND_HEAD_SHA;
   const second = await service.create(repository(), { target, executor: "sentinel-managed" });
-  const accepted = service.accept(repository(), {
+  const accepted = await service.accept(repository(), {
     previewIdentity: first.previewIdentity,
     target,
     executor: "sentinel-managed",
@@ -117,8 +117,8 @@ test("rejects expired, mismatched and unavailable accepted previews", async () =
   const target: GateTarget = { kind: "pull_request", number: 42 };
   const preview = await service.create(repository(), { target, executor: "sentinel-managed" });
 
-  assert.throws(
-    () => service.accept(repository(), {
+  await assert.rejects(
+    service.accept(repository(), {
       previewIdentity: preview.previewIdentity,
       target: { kind: "pull_request", number: 43 },
       executor: "sentinel-managed",
@@ -128,8 +128,8 @@ test("rejects expired, mismatched and unavailable accepted previews", async () =
   );
 
   now = new Date("2026-08-12T12:10:00.001Z");
-  assert.throws(
-    () => service.accept(repository(), {
+  await assert.rejects(
+    service.accept(repository(), {
       previewIdentity: preview.previewIdentity,
       target,
       executor: "sentinel-managed",
@@ -142,8 +142,8 @@ test("rejects expired, mismatched and unavailable accepted previews", async () =
     target,
     executor: "github-actions",
   });
-  assert.throws(
-    () => service.accept(repository(), {
+  await assert.rejects(
+    service.accept(repository(), {
       previewIdentity: unavailable.previewIdentity,
       target,
       executor: "github-actions",

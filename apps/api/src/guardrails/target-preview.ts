@@ -106,7 +106,7 @@ export interface TargetPreviewDependencies {
   executorCapability(
     repository: GuardrailRepository,
     executor: GateExecutorKind,
-  ): GateTargetPreview["executorCapability"];
+  ): GateTargetPreview["executorCapability"] | Promise<GateTargetPreview["executorCapability"]>;
   createIdentity?(): string;
   now?(): Date;
 }
@@ -131,7 +131,7 @@ export class TargetPreviewService {
     const target = structuredClone(request.target);
     const resolvedTarget = await this.dependencies.resolveTarget(repository, target);
     const protectedPolicy = await this.dependencies.loadPolicy(repository, target, resolvedTarget);
-    const capability = this.dependencies.executorCapability(repository, executor);
+    const capability = await this.dependencies.executorCapability(repository, executor);
     const now = this.#now();
     const preview: GateTargetPreview = {
       previewIdentity: boundedString(this.#createIdentity(), 255),
@@ -174,10 +174,10 @@ export class TargetPreviewService {
     return structuredClone(preview);
   }
 
-  accept(
+  async accept(
     repository: GuardrailRepository,
     request: AcceptTargetPreviewRequest,
-  ): AcceptedGateTargetPreview {
+  ): Promise<AcceptedGateTargetPreview> {
     this.#prune();
     const preview = this.#previews.get(request.previewIdentity);
     const authority = remoteAuthority(repository);
@@ -190,10 +190,11 @@ export class TargetPreviewService {
     ) {
       throw new TargetPreviewError("target_preview_stale");
     }
-    if (
-      !preview.executorCapability.ready
-      || !this.dependencies.executorCapability(repository, request.executor).ready
-    ) {
+    const currentCapability = await this.dependencies.executorCapability(
+      repository,
+      request.executor,
+    );
+    if (!preview.executorCapability.ready || !currentCapability.ready) {
       throw new TargetPreviewError("target_preview_executor_unavailable");
     }
     return structuredClone(preview);

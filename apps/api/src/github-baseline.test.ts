@@ -1,314 +1,320 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import { createHash } from "node:crypto";
 import test from "node:test";
-import Database from "better-sqlite3";
 
 import {
-  buildGateArtifact,
-  buildOperationalErrorArtifact,
+  buildGateArtifactV2,
+  buildScanLineage,
   defaultGuardrailPolicy,
 } from "@csb/gate-core";
-import type { GateArtifact } from "@csb/shared";
+import type { GateArtifactV2 } from "@csb/shared";
 
-import type { GhResult, GhRunner } from "./github-cli.js";
 import {
   BaselineUnavailableError,
   GitHubBaselineProvider,
+  type GitHubBaselineAuthority,
 } from "./github-baseline.js";
-import { getCachedGitHubBaseline } from "./gate-store.js";
 
-interface RunFixture {
-  databaseId: number;
-  headSha: string;
-  createdAt: string;
-  conclusion?: string;
+const SHA_OLD = "a".repeat(40);
+const SHA_NEW = "b".repeat(40);
+
+test("selects only a validated v2 protected-branch artifact through App authority", async () => {
+  const oldArtifact = artifactFixture("7001", SHA_OLD);
+  const newArtifact = artifactFixture("7002", SHA_NEW, { repositoryId: "other" });
+  const authority = authorityFixture([
+    runFixture("7002", SHA_NEW, "2026-08-12T13:00:00.000Z"),
+    runFixture("7001", SHA_OLD, "2026-08-12T12:00:00.000Z"),
+  ], { "7002": newArtifact, "7001": oldArtifact });
+
+  const baseline = await new GitHubBaselineProvider(authority).getBaseline(context());
+
+  assert.equal(baseline?.gateId, oldArtifact.gateId);
+  assert.equal(baseline?.resolvedTarget.headSha, SHA_OLD);
+  assert.equal(authority.calls.every((call) => call.permissions.actions === "read"), true);
+  assert.equal(authority.calls.some((call) => call.path.includes("event=push")), true);
+});
+
+test("returns null when the protected branch has no completed v2 history", async () => {
+  const authority = authorityFixture([], {});
+  assert.equal(await new GitHubBaselineProvider(authority).getBaseline(context()), null);
+  assert.equal(authority.downloads.length, 0);
+});
+
+test("fails closed for malformed history instead of bootstrapping", async () => {
+  const authority = authorityFixture([], {});
+  authority.history = { workflow_runs: [{ id: 7001, event: "push" }] };
+  await assert.rejects(
+    new GitHubBaselineProvider(authority).getBaseline(context()),
+    (error: unknown) => error instanceof BaselineUnavailableError
+      && /runs v2 válidos/.test(error.message),
+  );
+});
+
+test("rejects ambiguous artifacts for one persisted workflow run", async () => {
+  const artifact = artifactFixture("7001", SHA_OLD);
+  const authority = authorityFixture(
+    [runFixture("7001", SHA_OLD, "2026-08-12T12:00:00.000Z")],
+    { "7001": artifact },
+  );
+  authority.artifactLists.set("7001", {
+    artifacts: [
+      artifactMetadata("9001", archiveFixture(artifact)),
+      artifactMetadata("9002", archiveFixture(artifact)),
+    ],
+  });
+
+  await assert.rejects(
+    new GitHubBaselineProvider(authority).getBaseline(context()),
+    (error: unknown) => error instanceof BaselineUnavailableError
+      && /ambíguo/.test(error.message),
+  );
+  assert.equal(authority.downloads.length, 0);
+});
+
+test("rejects history that only contains an artifact for another repository", async () => {
+  const authority = authorityFixture(
+    [runFixture("7001", SHA_OLD, "2026-08-12T12:00:00.000Z")],
+    { "7001": artifactFixture("7001", SHA_OLD, { repositoryId: "other" }) },
+  );
+  await assert.rejects(
+    new GitHubBaselineProvider(authority).getBaseline(context()),
+    (error: unknown) => error instanceof BaselineUnavailableError
+      && /identidade v2 incompatível/.test(error.message),
+  );
+});
+
+function context() {
+  return {
+    repositoryKey: "github:991122",
+    owner: "OkamiOps",
+    name: "private-sentinel",
+    defaultBranch: "main",
+    connectionId: "connection-1",
+    installationId: "77",
+    repositoryId: "991122",
+  };
 }
 
-function artifact(headSha: string): GateArtifact {
-  return buildGateArtifact({
-    gateId: `gate-${headSha}`,
+function runFixture(id: string, headSha: string, createdAt: string) {
+  return {
+    id: Number(id),
+    run_attempt: 1,
+    event: "push",
+    status: "completed",
+    conclusion: "success",
+    head_branch: "main",
+    head_sha: headSha,
+    created_at: createdAt,
+    path: ".github/workflows/csb-security-change-gate.yml",
+  };
+}
+
+function authorityFixture(
+  runs: unknown[],
+  artifacts: Record<string, GateArtifactV2>,
+): GitHubBaselineAuthority & {
+  history: unknown;
+  calls: Array<{ path: string; permissions: { actions: "read" } }>;
+  downloads: string[];
+  artifactLists: Map<string, unknown>;
+} {
+  const calls: Array<{ path: string; permissions: { actions: "read" } }> = [];
+  const downloads: string[] = [];
+  const archives = new Map<string, Uint8Array>();
+  const artifactLists = new Map<string, unknown>();
+  let artifactIndex = 9000;
+  for (const [runId, artifact] of Object.entries(artifacts)) {
+    const archive = archiveFixture(artifact);
+    const artifactId = String(++artifactIndex);
+    archives.set(artifactId, archive);
+    artifactLists.set(runId, { artifacts: [artifactMetadata(artifactId, archive)] });
+  }
+  const authority = {
+    history: { workflow_runs: runs },
+    calls,
+    downloads,
+    artifactLists,
+    readAuthorizedRepositoryJson: async (
+      _connectionId: string,
+      _installationId: string,
+      _repositoryId: string,
+      resourcePath: string,
+      permissions: { actions: "read" },
+    ) => {
+      calls.push({ path: resourcePath, permissions });
+      if (resourcePath.includes("/runs?")) return authority.history;
+      const runId = /\/actions\/runs\/(\d+)\/artifacts/.exec(resourcePath)?.[1];
+      return runId === undefined ? { artifacts: [] } : artifactLists.get(runId) ?? { artifacts: [] };
+    },
+    downloadAuthorizedRepositoryBytes: async (
+      _connectionId: string,
+      _installationId: string,
+      _repositoryId: string,
+      resourcePath: string,
+      permissions: { actions: "read" },
+    ) => {
+      calls.push({ path: resourcePath, permissions });
+      downloads.push(resourcePath);
+      const artifactId = /\/actions\/artifacts\/(\d+)\/zip/.exec(resourcePath)?.[1];
+      const archive = artifactId === undefined ? undefined : archives.get(artifactId);
+      if (archive === undefined) throw new Error("artifact_missing");
+      return archive;
+    },
+  };
+  return authority;
+}
+
+function artifactMetadata(id: string, archive: Uint8Array) {
+  return {
+    id: Number(id),
+    name: "csb-gate-artifact-v2",
+    expired: false,
+    digest: digest(archive),
+  };
+}
+
+function artifactFixture(
+  workflowRunId: string,
+  headSha: string,
+  overrides: { repositoryId?: string } = {},
+): GateArtifactV2 {
+  const repositoryId = overrides.repositoryId ?? "991122";
+  const policy = defaultGuardrailPolicy();
+  const lineage = buildScanLineage({
+    engine: "codex-security",
+    engineVersion: "1",
+    route: "openai-api",
+    protocol: "openai-responses",
+    provider: "openai",
+    model: "gpt-5.6-sol",
+    reasoningEffort: "high",
+    methodology: "codex-security",
+    profile: "portable",
+    recipeHash: `sha256:${"1".repeat(64)}`,
+    sourceRevision: `sha256:${"2".repeat(64)}`,
+  });
+  return buildGateArtifactV2({
+    gateId: `gate-${workflowRunId}`,
     repository: {
-      key: "github.com/okami/csb",
-      owner: "okami",
-      name: "csb",
+      id: `github:${repositoryId}`,
+      key: `github:${repositoryId}`,
+      owner: "OkamiOps",
+      name: "private-sentinel",
       defaultBranch: "main",
+      locator: {
+        kind: "github",
+        repositoryId,
+        owner: "OkamiOps",
+        name: "private-sentinel",
+      },
     },
     source: "github",
-    changeSet: {
-      baseRef: "base",
-      headRef: headSha,
-      baseSha: "base123",
+    executor: "github-actions",
+    target: { kind: "protected_branch", ref: "main" },
+    resolvedTarget: {
+      baseRef: "main",
+      headRef: "main",
+      baseSha: headSha,
       headSha,
-      files: [
-        {
-          status: "modified",
-          path: "src/a.ts",
-          previousPath: null,
-          additions: 1,
-          deletions: 0,
-        },
-      ],
-      scanPaths: ["src/a.ts"],
-      scopeMode: "changed",
+      policySha: headSha,
+      pullRequestNumber: null,
+    },
+    policySource: "protected_branch",
+    changeSet: {
+      baseRef: "main",
+      headRef: "main",
+      baseSha: headSha,
+      headSha,
+      files: [],
+      scanPaths: [],
+      scopeMode: "repository",
       fallbackReason: null,
     },
-    policy: defaultGuardrailPolicy(),
-    scan: { id: `scan-${headSha}`, cost: null, status: "completed" },
+    policy,
+    scan: { id: `scan-${workflowRunId}`, cost: null, status: "completed" },
     baselineCommit: null,
     evaluation: {
       deltas: [],
       decision: {
         outcome: "bootstrap",
-        summary: "Baseline initialized with 0 finding(s).",
+        summary: "Protected baseline initialized.",
         violations: [],
         warnings: [],
         exceptionsApplied: [],
         githubConclusion: "neutral",
       },
     },
-    versions: { gateCore: "0.1.0", scanner: "gpt-5.6-sol" },
-    createdAt: "2026-08-07T12:00:00.000Z",
-  });
-}
-
-function operationalErrorArtifact(headSha: string): GateArtifact {
-  const valid = artifact(headSha);
-  return buildOperationalErrorArtifact({
-    gateId: valid.gateId,
-    repository: valid.repository,
-    source: valid.source,
-    changeSet: valid.changeSet,
-    policy: valid.policy,
-    scan: valid.scan,
-    baselineCommit: valid.baselineCommit,
-    versions: valid.versions,
-    createdAt: valid.createdAt,
-    operationalSummary: "Operational failure",
-  });
-}
-
-function repositoryContext() {
-  return {
-    repositoryKey: "github.com/okami/csb",
-    owner: "okami",
-    name: "csb",
-    defaultBranch: "main",
-  };
-}
-
-function run(
-  databaseId: number,
-  headSha: string,
-  createdAt: string,
-  conclusion?: string,
-): RunFixture {
-  return { databaseId, headSha, createdAt, conclusion };
-}
-
-function fakeGh(options: {
-  runs: RunFixture[];
-  artifacts?: Record<string, unknown>;
-  downloadFailures?: ReadonlySet<string>;
-}): { runner: GhRunner; calls: string[][] } {
-  const calls: string[][] = [];
-  const success = (stdout = ""): GhResult => ({ stdout, stderr: "", exitCode: 0 });
-  const failure = (stderr: string): GhResult => ({ stdout: "", stderr, exitCode: 1 });
-
-  return {
-    calls,
-    runner: async (args) => {
-      calls.push(args);
-      if (args[0] === "run" && args[1] === "list") {
-        return success(JSON.stringify(options.runs));
-      }
-      if (args[0] === "run" && args[1] === "download") {
-        const workflowRunId = args[2]!;
-        if (options.downloadFailures?.has(workflowRunId)) {
-          return failure("artifact expired");
-        }
-        const directory = args[args.indexOf("--dir") + 1]!;
-        fs.mkdirSync(directory, { recursive: true });
-        fs.writeFileSync(
-          path.join(directory, "csb-gate-result.json"),
-          JSON.stringify(options.artifacts?.[workflowRunId] ?? artifact(workflowRunId)),
-        );
-        return success();
-      }
-      return failure(`unexpected gh call: ${args.join(" ")}`);
+    lineage,
+    coverage: {
+      status: "complete",
+      repositoryFileCount: 1,
+      inspectedFileCount: 1,
+      unexaminedFileCount: 0,
+      submodules: [],
+      lfsPointers: [],
     },
-  };
-}
-
-function cacheFixture(): { cacheRoot: string; database: Database.Database } {
-  return {
-    cacheRoot: fs.mkdtempSync(path.join(os.tmpdir(), "csb-github-cache-")),
-    database: new Database(":memory:"),
-  };
-}
-
-function closeFixture(fixture: ReturnType<typeof cacheFixture>): void {
-  fixture.database.close();
-  fs.rmSync(fixture.cacheRoot, { recursive: true, force: true });
-}
-
-test("downloads the newest eligible default-branch artifact", async () => {
-  const fixture = cacheFixture();
-  const gh = fakeGh({
-    runs: [
-      run(200, "new", "2026-08-07T12:00:00Z"),
-      run(100, "old", "2026-08-07T11:00:00Z"),
-    ],
-    artifacts: { "200": artifact("new"), "100": artifact("old") },
-  });
-
-  try {
-    const provider = new GitHubBaselineProvider(
-      gh.runner,
-      fixture.cacheRoot,
-      fixture.database,
-    );
-    const baseline = await provider.getBaseline(repositoryContext());
-
-    assert.equal(baseline?.changeSet.headSha, "new");
-    assert.equal(
-      gh.calls.filter((args) => args[0] === "run" && args[1] === "download")
-        .length,
-      1,
-    );
-    const cached = getCachedGitHubBaseline(
-      repositoryContext().repositoryKey,
-      fixture.database,
-    );
-    assert.equal(cached?.workflowRunId, "200");
-    assert.equal(cached?.artifactPath.startsWith(fixture.cacheRoot), true);
-  } finally {
-    closeFixture(fixture);
-  }
-});
-
-test("rejects an artifact with a future schema", async () => {
-  const fixture = cacheFixture();
-  const future = {
-    ...artifact("new"),
-    schemaVersion: 3,
-  };
-  const gh = fakeGh({
-    runs: [run(200, "new", "2026-08-07T12:00:00Z")],
-    artifacts: { "200": future },
-  });
-
-  try {
-    const provider = new GitHubBaselineProvider(
-      gh.runner,
-      fixture.cacheRoot,
-      fixture.database,
-    );
-    await assert.rejects(
-      () => provider.getBaseline(repositoryContext()),
-      /GateArtifact schema 3 não suportado/,
-    );
-  } finally {
-    closeFixture(fixture);
-  }
-});
-
-test("returns null when no default-branch artifact exists", async () => {
-  const fixture = cacheFixture();
-  const gh = fakeGh({ runs: [] });
-
-  try {
-    const provider = new GitHubBaselineProvider(
-      gh.runner,
-      fixture.cacheRoot,
-      fixture.database,
-    );
-    assert.equal(await provider.getBaseline(repositoryContext()), null);
-  } finally {
-    closeFixture(fixture);
-  }
-});
-
-test("does not bootstrap when github returns malformed run history", async () => {
-  const fixture = cacheFixture();
-  const runner: GhRunner = async () => ({
-    stdout: JSON.stringify([{ databaseId: null, headSha: "", createdAt: null }]),
-    stderr: "",
-    exitCode: 0,
-  });
-
-  try {
-    const provider = new GitHubBaselineProvider(
-      runner,
-      fixture.cacheRoot,
-      fixture.database,
-    );
-    await assert.rejects(
-      () => provider.getBaseline(repositoryContext()),
-      (error: unknown) => error instanceof BaselineUnavailableError,
-    );
-  } finally {
-    closeFixture(fixture);
-  }
-});
-
-test("returns an operational error when run history exists but its artifacts are unavailable", async () => {
-  const fixture = cacheFixture();
-  const gh = fakeGh({
-    runs: [run(200, "new", "2026-08-07T12:00:00Z")],
-    downloadFailures: new Set(["200"]),
-  });
-
-  try {
-    const provider = new GitHubBaselineProvider(
-      gh.runner,
-      fixture.cacheRoot,
-      fixture.database,
-    );
-    await assert.rejects(
-      () => provider.getBaseline(repositoryContext()),
-      (error: unknown) =>
-        error instanceof BaselineUnavailableError &&
-        /histórico encontrado, mas o artifact de baseline não está disponível/.test(
-          error.message,
-        ),
-    );
-  } finally {
-    closeFixture(fixture);
-  }
-});
-
-test("skips cancelled and error artifacts before selecting an older valid baseline", async () => {
-  const fixture = cacheFixture();
-  const gh = fakeGh({
-    runs: [
-      run(300, "cancelled", "2026-08-07T13:00:00Z", "cancelled"),
-      run(200, "error", "2026-08-07T12:00:00Z"),
-      run(100, "old", "2026-08-07T11:00:00Z"),
-    ],
-    artifacts: {
-      "200": operationalErrorArtifact("error"),
-      "100": artifact("old"),
+    snapshot: {
+      identity: `sha256:${"3".repeat(64)}`,
+      materializerVersion: "github-actions-tree-v1",
     },
+    workflowRun: { id: workflowRunId, attempt: 1 },
+    versions: { gateCore: "0.1.0", scanner: "1" },
+    createdAt: "2026-08-12T12:02:00.000Z",
   });
+}
 
-  try {
-    const provider = new GitHubBaselineProvider(
-      gh.runner,
-      fixture.cacheRoot,
-      fixture.database,
-    );
-    const baseline = await provider.getBaseline(repositoryContext());
+function archiveFixture(artifact: GateArtifactV2): Uint8Array {
+  const artifactBytes = Buffer.from(`${JSON.stringify(artifact)}\n`);
+  const manifestBytes = Buffer.from(`${JSON.stringify({
+    schemaVersion: 1,
+    gateId: artifact.gateId,
+    workflowRunId: artifact.workflowRun!.id,
+    workflowRunAttempt: artifact.workflowRun!.attempt,
+    headSha: artifact.resolvedTarget.headSha,
+    artifactSha256: createHash("sha256").update(artifactBytes).digest("hex"),
+  })}\n`);
+  return storedZip([
+    ["csb-gate-result.json", artifactBytes],
+    ["csb-gate-manifest.json", manifestBytes],
+  ]);
+}
 
-    assert.equal(baseline?.changeSet.headSha, "old");
-    assert.equal(
-      gh.calls.some(
-        (args) => args[0] === "run" && args[1] === "download" && args[2] === "300",
-      ),
-      false,
-    );
-  } finally {
-    closeFixture(fixture);
+function storedZip(entries: ReadonlyArray<readonly [string, Buffer]>): Uint8Array {
+  const locals: Buffer[] = [];
+  const centrals: Buffer[] = [];
+  let offset = 0;
+  for (const [name, contents] of entries) {
+    const nameBytes = Buffer.from(name);
+    const local = Buffer.alloc(30 + nameBytes.length);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt32LE(contents.length, 18);
+    local.writeUInt32LE(contents.length, 22);
+    local.writeUInt16LE(nameBytes.length, 26);
+    nameBytes.copy(local, 30);
+    locals.push(local, contents);
+    const central = Buffer.alloc(46 + nameBytes.length);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt32LE(contents.length, 20);
+    central.writeUInt32LE(contents.length, 24);
+    central.writeUInt16LE(nameBytes.length, 28);
+    central.writeUInt32LE(offset, 42);
+    nameBytes.copy(central, 46);
+    centrals.push(central);
+    offset += local.length + contents.length;
   }
-});
+  const central = Buffer.concat(centrals);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(entries.length, 8);
+  eocd.writeUInt16LE(entries.length, 10);
+  eocd.writeUInt32LE(central.length, 12);
+  eocd.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, central, eocd]);
+}
+
+function digest(bytes: Uint8Array): string {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}

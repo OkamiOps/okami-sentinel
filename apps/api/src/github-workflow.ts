@@ -35,11 +35,53 @@ export function renderCallerWorkflow(options: CallerWorkflowOptions): string {
     throw new Error("Caller workflow requires an immutable release SHA");
   }
   const { defaultBranch, secretName, workflowSha } = options;
-  return `name: CSB Security Change Gate
+  return `# csb-guardrail-caller: 2
+name: CSB Security Change Gate
+run-name: CSB gate \${{ inputs.gate_id || github.run_id }} · \${{ inputs.head_sha || github.sha }}
 on:
   pull_request:
   push:
     branches: [${defaultBranch}]
+  workflow_dispatch:
+    inputs:
+      gate_id:
+        description: Persisted Sentinel gate identity
+        required: true
+        type: string
+      target_kind:
+        description: Frozen target kind
+        required: true
+        type: choice
+        options: [pull_request, compare, protected_branch]
+      base_ref:
+        description: Frozen base reference
+        required: true
+        type: string
+      head_ref:
+        description: Frozen head reference
+        required: true
+        type: string
+      base_sha:
+        description: Frozen base SHA
+        required: true
+        type: string
+      head_sha:
+        description: Frozen head SHA
+        required: true
+        type: string
+      protected_branch:
+        description: Protected branch
+        required: true
+        type: string
+      pull_request_number:
+        description: Pull request number or 0
+        required: false
+        default: "0"
+        type: string
+      head_repository:
+        description: Optional fork owner/repository
+        required: false
+        type: string
 permissions:
   contents: read
   pull-requests: read
@@ -53,6 +95,15 @@ jobs:
       exceptions_path: .csb/guardrails-exceptions.json
       csb_ref: ${workflowSha}
       default_branch: ${defaultBranch}
+      gate_id: \${{ inputs.gate_id }}
+      target_kind: \${{ inputs.target_kind }}
+      base_ref: \${{ inputs.base_ref }}
+      head_ref: \${{ inputs.head_ref }}
+      base_sha: \${{ inputs.base_sha }}
+      head_sha: \${{ inputs.head_sha }}
+      protected_branch: \${{ inputs.protected_branch }}
+      pull_request_number: \${{ inputs.pull_request_number }}
+      head_repository: \${{ inputs.head_repository }}
     secrets:
       ${secretName}: \${{ secrets.${secretName} }}
 `;

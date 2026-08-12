@@ -1,12 +1,13 @@
 import type Database from "better-sqlite3";
 
-export const CURRENT_GUARDRAILS_SCHEMA_VERSION = 3;
+export const CURRENT_GUARDRAILS_SCHEMA_VERSION = 4;
 
 export type GuardrailsMigrationStep =
   | "repositories_rebuilt"
   | "gates_rebuilt"
   | "metadata_created"
-  | "repository_executor_added";
+  | "repository_executor_added"
+  | "actions_dispatches_added";
 
 export interface GuardrailsMigrationHooks {
   afterStep?(step: GuardrailsMigrationStep): void;
@@ -47,12 +48,15 @@ export function migrateGuardrailsSchema(
       ensureRepositoryDefaultExecutor(database);
       hooks.afterStep?.("repository_executor_added");
     }
+    if (currentVersion < 4) {
+      hooks.afterStep?.("actions_dispatches_added");
+    }
     database.prepare(`
       INSERT OR REPLACE INTO guardrail_schema_migrations (version, name, applied_at)
       VALUES (?, ?, ?)
     `).run(
       CURRENT_GUARDRAILS_SCHEMA_VERSION,
-      "repository default gate executor",
+      "github actions dispatch reconciliation",
       new Date().toISOString(),
     );
   });
@@ -65,7 +69,8 @@ function schemaIsCurrent(database: Database.Database): boolean {
     .prepare("SELECT max(version) AS version FROM guardrail_schema_migrations")
     .get() as { version: number | null };
   return (row.version ?? 0) >= CURRENT_GUARDRAILS_SCHEMA_VERSION
-    && tableColumns(database, "guardrail_repositories").has("default_executor");
+    && tableColumns(database, "guardrail_repositories").has("default_executor")
+    && tableExists(database, "github_actions_dispatches");
 }
 
 function rebuildRepositories(database: Database.Database): void {
@@ -361,6 +366,43 @@ function ensureMetadataTables(database: Database.Database): void {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS github_actions_artifacts_by_run_attempt
       ON github_actions_artifacts(repository_key, workflow_run_id, workflow_run_attempt, artifact_name);
+
+    CREATE TABLE IF NOT EXISTS github_actions_dispatches (
+      gate_id TEXT PRIMARY KEY,
+      repository_key TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      request_fingerprint TEXT NOT NULL,
+      connection_id TEXT NOT NULL,
+      installation_id TEXT NOT NULL,
+      repository_id TEXT NOT NULL,
+      workflow_path TEXT NOT NULL,
+      workflow_ref TEXT NOT NULL,
+      release_sha TEXT NOT NULL,
+      target_kind TEXT NOT NULL,
+      protected_branch TEXT NOT NULL,
+      expected_run_name TEXT NOT NULL,
+      expected_head_sha TEXT NOT NULL,
+      state TEXT NOT NULL,
+      workflow_run_id TEXT,
+      workflow_run_attempt INTEGER,
+      requested_at TEXT NOT NULL,
+      dispatched_at TEXT,
+      last_polled_at TEXT,
+      completed_at TEXT,
+      error TEXT,
+      FOREIGN KEY (gate_id) REFERENCES gate_runs(id) ON DELETE CASCADE,
+      FOREIGN KEY (repository_key) REFERENCES guardrail_repositories(repository_key) ON DELETE CASCADE,
+      UNIQUE (repository_key, idempotency_key),
+      UNIQUE (workflow_run_id),
+      CHECK (target_kind IN ('pull_request', 'compare', 'protected_branch')),
+      CHECK (state IN (
+        'dispatch_requested', 'dispatch_accepted', 'correlating', 'running',
+        'artifact_pending', 'completed', 'failed', 'cancelled'
+      )),
+      CHECK (workflow_run_attempt IS NULL OR workflow_run_attempt > 0)
+    );
+    CREATE INDEX IF NOT EXISTS github_actions_dispatches_by_state
+      ON github_actions_dispatches(state, requested_at);
   `);
 }
 

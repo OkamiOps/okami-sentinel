@@ -211,6 +211,10 @@ function dependencies(options: {
     request: StartGateRequest;
     acceptedPreview: AcceptedGateTargetPreview | null;
   }>;
+  dispatched: Array<{
+    preview: AcceptedGateTargetPreview;
+    idempotencyKey: string;
+  }>;
   store: {
     getGateRun(gateId: string): GateRun | null;
     listGatePublicationAttempts(gateId: string): GatePublicationAttempt[];
@@ -224,6 +228,10 @@ function dependencies(options: {
   const started: Array<{
     request: StartGateRequest;
     acceptedPreview: AcceptedGateTargetPreview | null;
+  }> = [];
+  const dispatched: Array<{
+    preview: AcceptedGateTargetPreview;
+    idempotencyKey: string;
   }> = [];
   const currentRepository: GuardrailRepository = options.repository ?? (options.remote === false
     ? { ...repository, remoteOwner: null, remoteName: null, githubStatus: "not_configured" }
@@ -251,6 +259,7 @@ function dependencies(options: {
     baselineSyncs,
     publicationInputs,
     started,
+    dispatched,
     store: {
       getGateRun: (id) => id === currentGate.id ? currentGate : null,
       listGatePublicationAttempts: (id) =>
@@ -272,7 +281,7 @@ function dependencies(options: {
       request.target,
       request.executor ?? currentRepository.defaultExecutor,
     ),
-    acceptTargetPreview: (_repository, request) => {
+    acceptTargetPreview: async (_repository, request) => {
       if (options.acceptPreviewError) throw new TargetPreviewError("target_preview_stale");
       const preview = testPreview(currentRepository, request.target, request.executor);
       if (request.previewIdentity !== preview.previewIdentity) {
@@ -293,9 +302,19 @@ function dependencies(options: {
       started.push({ request, acceptedPreview });
       return currentGate;
     },
+    dispatchActionsGate: async (_repository, preview, idempotencyKey) => {
+      dispatched.push({ preview, idempotencyKey });
+      return currentGate;
+    },
     cancelGate: () => true,
     subscribeGate: () => () => undefined,
     getGitHubStatus: async () => githubStatus,
+    getActionsStatus: async () => ({
+      ready: true,
+      code: "ready",
+      workflowPath: ".github/workflows/csb-security-change-gate.yml",
+      releaseSha: "f".repeat(40),
+    }),
     getCallerWorkflow: async (value) => {
       callerWorkflowRequests.push(value.repositoryKey);
       return {
@@ -335,7 +354,9 @@ test("exposes local and github guardrail routes", () => {
     "PUT /guardrails/repositories/:repositoryKey/policy",
     "POST /guardrails/repositories/:repositoryKey/policy/simulate",
     "GET /guardrails/repositories/:repositoryKey/github-status",
+    "GET /guardrails/repositories/:repositoryKey/actions-status",
     "GET /guardrails/repositories/:repositoryKey/caller-workflow",
+    "POST /guardrails/repositories/:repositoryKey/actions-dispatch",
     "POST /guardrails/repositories/:repositoryKey/baseline/sync",
     "GET /guardrails/gates",
     "POST /guardrails/gates",
@@ -406,6 +427,54 @@ test("remote gate start rejects a stale accepted preview before dispatch", async
   assert.equal(response.status, 409);
   assert.deepEqual(await response.json(), { error: "target_preview_stale" });
   assert.equal(deps.started.length, 0);
+});
+
+test("actions dispatch requires a stable idempotency key and accepted frozen preview", async () => {
+  const remote = { ...remoteRepository(), defaultExecutor: "github-actions" as const };
+  const deps = dependencies({
+    repository: remote,
+    gate: { source: "github", executor: "github-actions", repositoryPath: null },
+  });
+  const testApp = createGuardrailsApp(deps);
+  const base = `/guardrails/repositories/${encodeURIComponent(remote.repositoryKey)}`;
+  const target = { kind: "pull_request" as const, number: 42 };
+  const previewResponse = await testApp.request(`${base}/target-preview`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ target, executor: "github-actions" }),
+  });
+  const preview = (await previewResponse.json()).preview as GateTargetPreview;
+  const request = {
+    repositoryKey: remote.repositoryKey,
+    target,
+    executor: "github-actions",
+    previewIdentity: preview.previewIdentity,
+  };
+
+  const missingKey = await testApp.request(`${base}/actions-dispatch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+  assert.equal(missingKey.status, 400);
+  assert.equal(deps.dispatched.length, 0);
+
+  const accepted = await testApp.request(`${base}/actions-dispatch`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Idempotency-Key": "gate-dispatch-client-0001",
+    },
+    body: JSON.stringify(request),
+  });
+  assert.equal(accepted.status, 202);
+  assert.equal(deps.dispatched.length, 1);
+  assert.equal(deps.dispatched[0]?.idempotencyKey, "gate-dispatch-client-0001");
+  assert.equal(deps.dispatched[0]?.preview.resolvedTarget.headSha, "b".repeat(40));
+
+  const status = await testApp.request(`${base}/actions-status`);
+  assert.equal(status.status, 200);
+  assert.equal((await status.json()).status.code, "ready");
 });
 
 test("enrollment persists only the server-resolved repository identity", async () => {
@@ -501,6 +570,18 @@ test("POST publish returns 409 when the gate has no artifact", async () => {
     { method: "POST" },
   );
   assert.equal(response.status, 409);
+});
+
+test("managed publish endpoint refuses an Actions-owned gate", async () => {
+  const deps = dependencies({
+    gate: { executor: "github-actions", status: "completed", artifactSchemaVersion: 2 },
+  });
+  const response = await createGuardrailsApp(deps).request(
+    "/guardrails/gates/gate-1/publish",
+    { method: "POST" },
+  );
+  assert.equal(response.status, 409);
+  assert.equal(deps.publicationInputs.length, 0);
 });
 
 test("POST publish keeps the local outcome when github fails", async () => {

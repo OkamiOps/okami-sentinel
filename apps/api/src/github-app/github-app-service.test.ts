@@ -118,6 +118,7 @@ function fixture() {
       return { sha: "a".repeat(40) };
     },
     async writeRepositoryJson() { return { id: 1 }; },
+    async downloadRepositoryBytes() { return new Uint8Array([1, 2, 3]); },
     async createRepositoryToken() {
       return { token: "installation-token", expiresAt: "2026-08-12T13:00:00.000Z" };
     },
@@ -285,6 +286,7 @@ function fixtureWithInstallationFailure() {
       listInstallationRepositories: async () => [],
       readRepositoryJson: async () => ({}),
       writeRepositoryJson: async () => ({}),
+      downloadRepositoryBytes: async () => new Uint8Array(),
       createRepositoryToken: async () => ({
         token: "installation-token",
         expiresAt: "2026-08-12T13:00:00.000Z",

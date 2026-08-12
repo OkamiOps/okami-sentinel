@@ -85,6 +85,13 @@ export interface GitHubAppServiceClient {
     body: unknown,
     permissions: GitHubInstallationPermissions,
   ): Promise<unknown>;
+  downloadRepositoryBytes(
+    connection: GitHubAppConnectionMetadata,
+    installationId: string,
+    repositoryId: string,
+    path: string,
+    permissions: GitHubInstallationPermissions,
+  ): Promise<Uint8Array>;
   createRepositoryToken(
     connection: GitHubAppConnectionMetadata,
     installationId: string,
@@ -282,6 +289,23 @@ export class GitHubAppService {
       path,
       method,
       body,
+      permissions,
+    );
+  }
+
+  async downloadAuthorizedRepositoryBytes(
+    connectionId: string,
+    installationId: string,
+    repositoryId: string,
+    path: string,
+    permissions: GitHubInstallationPermissions,
+  ): Promise<Uint8Array> {
+    this.requireAuthorizedRepository(connectionId, installationId, repositoryId);
+    return this.#client.downloadRepositoryBytes(
+      this.#readyConnection(connectionId),
+      installationId,
+      repositoryId,
+      path,
       permissions,
     );
   }

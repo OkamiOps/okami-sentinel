@@ -35,7 +35,11 @@ import type {
 } from "@csb/shared";
 import { nanoid } from "nanoid";
 
-import { GATES_DIR, GUARDRAIL_MATERIALIZATIONS_DIR } from "./config.js";
+import {
+  GATES_DIR,
+  GITHUB_ACTIONS_WORKFLOW_SHA,
+  GUARDRAIL_MATERIALIZATIONS_DIR,
+} from "./config.js";
 import {
   getFindingTriage,
   getRepositoryBaseline,
@@ -49,14 +53,21 @@ import {
 } from "./gate-events.js";
 import {
   appendGateEvent,
+  createGitHubActionsDispatchGate,
+  finalizeGitHubActionsArtifact,
+  getGitHubActionsArtifact,
+  getGitHubActionsDispatch,
   getGateRun,
   insertGateRun,
   listGateEvents,
   listGateRuns,
   listGuardrailRepositories,
+  listPendingGitHubActionsDispatches,
   listMaterializationLeases,
+  reserveGitHubActionsArtifact,
   upsertMaterializationLease,
   updateGateRun,
+  updateGitHubActionsDispatch,
   type GateEvent,
   type GateRunUpdate,
 } from "./gate-store.js";
@@ -70,6 +81,11 @@ import {
   publishManagedGateCheck,
   type ManagedGitHubCheckClient,
 } from "./github-check.js";
+import { ActionsArtifactImporter } from "./guardrails/actions-artifact-importer.js";
+import {
+  GitHubActionsExecutor,
+  GitHubActionsGitHubApi,
+} from "./guardrails/github-actions-executor.js";
 import { GitHubArchiveClient } from "./guardrails/github-archive-client.js";
 import {
   SentinelManagedExecutor,
@@ -143,8 +159,26 @@ export interface RemoteManagedGateDependencies {
 
 const activeGates = new Map<string, Promise<void>>();
 const activeManagedGates = new Map<string, { controller: AbortController; scanId: string | null }>();
-const githubBaselineProvider = new GitHubBaselineProvider();
+const githubBaselineProvider = new GitHubBaselineProvider({
+  readAuthorizedRepositoryJson: (connectionId, installationId, repositoryId, resourcePath, permissions) =>
+    getSystemGitHubAppService().readAuthorizedRepositoryJson(
+      connectionId,
+      installationId,
+      repositoryId,
+      resourcePath,
+      permissions,
+    ),
+  downloadAuthorizedRepositoryBytes: (connectionId, installationId, repositoryId, resourcePath, permissions) =>
+    getSystemGitHubAppService().downloadAuthorizedRepositoryBytes(
+      connectionId,
+      installationId,
+      repositoryId,
+      resourcePath,
+      permissions,
+    ),
+});
 let managedExecutor: SentinelManagedExecutor | null = null;
+let actionsExecutor: GitHubActionsExecutor | null = null;
 
 const productionDeps: LocalGateDependencies = {
   createGateId: () => nanoid(12),
@@ -304,12 +338,40 @@ export async function startRemoteManagedGate(
   return run;
 }
 
+export async function startRemoteActionsGate(
+  preview: AcceptedGateTargetPreview,
+  idempotencyKey: string,
+): Promise<GateRun> {
+  const repository = listGuardrailRepositories().find(
+    (candidate) => candidate.repositoryKey === preview.repositoryKey,
+  ) ?? null;
+  if (repository === null) throw new Error("target_preview_stale");
+  return systemActionsExecutor().start({ repository, preview, idempotencyKey });
+}
+
+export async function reconcileGitHubActionsGates(): Promise<GateRun[]> {
+  return systemActionsExecutor().reconcilePending();
+}
+
 export function cancelGate(
   gateId: string,
   deps: LocalGateDependencies | RemoteManagedGateDependencies = productionDeps,
 ): boolean {
   const gate = deps.getGateRun(gateId);
   if (!gate || ["completed", "cancelled", "error"].includes(gate.status)) return false;
+  if (gate.executor === "github-actions") {
+    const completedAt = deps.now();
+    deps.updateGateRun(gateId, { status: "cancelled", completedAt });
+    const dispatch = getGitHubActionsDispatch(gateId);
+    if (dispatch !== null) {
+      updateGitHubActionsDispatch(gateId, {
+        state: "cancelled",
+        completedAt,
+      });
+    }
+    emit(gateId, "done", { gateId, status: "cancelled", completedAt }, deps);
+    return true;
+  }
   const managed = activeManagedGates.get(gateId);
   managed?.controller.abort();
   if (managed?.scanId !== null && managed?.scanId !== undefined) {
@@ -721,6 +783,9 @@ async function resolveBaseline(
     owner: repository.remoteOwner,
     name: repository.remoteName,
     defaultBranch: repository.defaultBranch,
+    connectionId: requiredRemoteIdentity(repository.githubConnectionId),
+    installationId: requiredRemoteIdentity(repository.githubInstallationId),
+    repositoryId: requiredRemoteIdentity(repository.githubRepositoryId),
   });
   if (artifact === null) {
     return { scanId: null, findings: null, commit: null };
@@ -838,6 +903,75 @@ function systemManagedExecutor(): SentinelManagedExecutor {
     baselineCandidate: managedBaselineCandidate,
   });
   return managedExecutor;
+}
+
+function systemActionsExecutor(): GitHubActionsExecutor {
+  if (actionsExecutor !== null) return actionsExecutor;
+  const repository = (repositoryKey: string) =>
+    listGuardrailRepositories().find((candidate) => candidate.repositoryKey === repositoryKey) ?? null;
+  const importer = new ActionsArtifactImporter({
+    store: {
+      getGateRun,
+      getRepository: repository,
+      getDispatch: getGitHubActionsDispatch,
+      getArtifact: getGitHubActionsArtifact,
+      finalize: finalizeGitHubActionsArtifact,
+    },
+    writeArtifact: (gateId, artifact) => writeGateArtifact(gateId, artifact),
+  });
+  const service = getSystemGitHubAppService();
+  actionsExecutor = new GitHubActionsExecutor({
+    store: {
+      createDispatchGate: createGitHubActionsDispatchGate,
+      getGateRun,
+      getRepository: repository,
+      getDispatch: getGitHubActionsDispatch,
+      listPendingDispatches: listPendingGitHubActionsDispatches,
+      updateGateRun,
+      updateDispatch: updateGitHubActionsDispatch,
+      reserveArtifact: reserveGitHubActionsArtifact,
+    },
+    remote: new GitHubActionsGitHubApi(service),
+    importer,
+    releaseSha: GITHUB_ACTIONS_WORKFLOW_SHA,
+    createGateId: () => nanoid(20),
+    onGateChanged: (gate) => {
+      if (gate.status === "scanning") {
+        emit(gate.id, "status", {
+          gateId: gate.id,
+          status: "scanning",
+          phase: "scanning",
+        }, productionDeps);
+      } else if (gate.status === "completed") {
+        const artifact = getGateArtifact(gate.id);
+        emit(gate.id, "decision", {
+          gateId: gate.id,
+          status: gate.status,
+          outcome: gate.outcome,
+          conclusion: artifact?.decision.githubConclusion ?? null,
+          artifactAvailable: artifact !== null,
+          estimatedUsd: gate.estimatedUsd,
+        }, productionDeps);
+        emit(gate.id, "done", {
+          gateId: gate.id,
+          status: gate.status,
+          outcome: gate.outcome,
+          completedAt: gate.completedAt,
+          artifactAvailable: artifact !== null,
+        }, productionDeps);
+      } else if (gate.status === "error") {
+        emit(gate.id, "error", {
+          gateId: gate.id,
+          status: gate.status,
+          outcome: gate.outcome,
+          code: gate.error ?? "actions_run_failed",
+          completedAt: gate.completedAt,
+          artifactAvailable: gate.artifactPath !== null,
+        }, productionDeps);
+      }
+    },
+  });
+  return actionsExecutor;
 }
 
 async function managedBaselineCandidate(input: {

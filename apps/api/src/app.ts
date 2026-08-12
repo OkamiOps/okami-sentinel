@@ -41,6 +41,7 @@ import {
   cancelGate,
   getGateArtifact,
   startLocalGate,
+  startRemoteActionsGate,
   startRemoteManagedGate,
   subscribeGate,
 } from "./gate-orchestrator.js";
@@ -86,6 +87,10 @@ import {
   type CallerWorkflowDocument,
 } from "./github-workflow.js";
 import {
+  getGitHubActionsStatus,
+  type GitHubActionsStatus,
+} from "./guardrails/github-actions-status.js";
+import {
   importExternalScans,
   readFindingsFile,
   refreshRunFromDisk,
@@ -116,7 +121,7 @@ app.use(
   cors({
     origin: ["http://127.0.0.1:5173", "http://localhost:5173"],
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowHeaders: ["Content-Type", "X-CSRF-Token"],
+    allowHeaders: ["Content-Type", "X-CSRF-Token", "Idempotency-Key"],
   }),
 );
 
@@ -143,14 +148,20 @@ export interface GuardrailsApiDependencies {
       target: StartGateRequest["target"];
       executor: GateExecutorKind;
     },
-  ): AcceptedGateTargetPreview;
+  ): Promise<AcceptedGateTargetPreview>;
   startGate(
     request: StartGateRequest,
     acceptedPreview: AcceptedGateTargetPreview | null,
   ): Promise<GateRun>;
+  dispatchActionsGate(
+    repository: GuardrailRepository,
+    preview: AcceptedGateTargetPreview,
+    idempotencyKey: string,
+  ): Promise<GateRun>;
   cancelGate(gateId: string): boolean;
   subscribeGate(gateId: string, listener: (event: GateEvent) => void): () => void;
   getGitHubStatus(repository: GuardrailRepository): ReturnType<typeof getGitHubStatus>;
+  getActionsStatus(repository: GuardrailRepository): Promise<GitHubActionsStatus>;
   getCallerWorkflow(repository: GuardrailRepository): Promise<CallerWorkflowDocument>;
   syncBaseline(repository: GuardrailRepository): Promise<GateArtifact | null>;
   publishCheck(input: PublishGateCheckInput): Promise<void>;
@@ -159,7 +170,24 @@ export interface GuardrailsApiDependencies {
   listPublicationAttempts(gateId: string): GatePublicationAttempt[];
 }
 
-const githubBaselineProvider = new GitHubBaselineProvider();
+const githubBaselineProvider = new GitHubBaselineProvider({
+  readAuthorizedRepositoryJson: (connectionId, installationId, repositoryId, resourcePath, permissions) =>
+    getSystemGitHubAppService().readAuthorizedRepositoryJson(
+      connectionId,
+      installationId,
+      repositoryId,
+      resourcePath,
+      permissions,
+    ),
+  downloadAuthorizedRepositoryBytes: (connectionId, installationId, repositoryId, resourcePath, permissions) =>
+    getSystemGitHubAppService().downloadAuthorizedRepositoryBytes(
+      connectionId,
+      installationId,
+      repositoryId,
+      resourcePath,
+      permissions,
+    ),
+});
 const repositoryEnrollmentService = new GitHubRepositoryService({
   inspectLocal: inspectRepository,
   requireAuthorizedRepository: (connectionId, installationId, repositoryId) =>
@@ -185,9 +213,17 @@ const targetPreviewService = new TargetPreviewService({
   resolveTarget: (repository, target) => githubRefResolver.resolve(repository, target),
   loadPolicy: (repository, target, resolved) =>
     protectedPolicyLoader.load(repository, target, resolved),
-  executorCapability: (_repository, executor) => executor === "sentinel-managed"
-    ? { ready: true, code: "ready" }
-    : { ready: false, code: "github_actions_unavailable" },
+  executorCapability: async (repository, executor) => {
+    if (executor === "sentinel-managed") return { ready: true, code: "ready" };
+    const status = await getGitHubActionsStatus(
+      repository,
+      getSystemGitHubAppService(),
+      GITHUB_ACTIONS_WORKFLOW_SHA,
+    );
+    return status.ready
+      ? { ready: true, code: "ready" }
+      : { ready: false, code: "github_actions_unavailable" };
+  },
 });
 
 const guardrailsDependencies: GuardrailsApiDependencies = {
@@ -205,11 +241,18 @@ const guardrailsDependencies: GuardrailsApiDependencies = {
   previewTarget: (repository, request) => targetPreviewService.create(repository, request),
   acceptTargetPreview: (repository, request) => targetPreviewService.accept(repository, request),
   startGate: startGuardrailGate,
+  dispatchActionsGate: (_repository, preview, idempotencyKey) =>
+    startRemoteActionsGate(preview, idempotencyKey),
   cancelGate,
   subscribeGate,
   getGitHubStatus: (repository) => repository.source === "github"
     ? getRemoteGitHubStatus(repository, getSystemGitHubAppService())
     : getGitHubStatus(localRepositoryPath(repository)),
+  getActionsStatus: (repository) => getGitHubActionsStatus(
+    repository,
+    getSystemGitHubAppService(),
+    GITHUB_ACTIONS_WORKFLOW_SHA,
+  ),
   getCallerWorkflow: async (repository) => {
     if (GITHUB_ACTIONS_WORKFLOW_SHA === null) {
       throw new Error("actions_workflow_release_unavailable");
@@ -225,6 +268,9 @@ const guardrailsDependencies: GuardrailsApiDependencies = {
     owner: repository.remoteOwner!,
     name: repository.remoteName!,
     defaultBranch: repository.defaultBranch,
+    connectionId: requiredRemoteAuthority(repository.githubConnectionId),
+    installationId: requiredRemoteAuthority(repository.githubInstallationId),
+    repositoryId: requiredRemoteAuthority(repository.githubRepositoryId),
   }),
   publishCheck: publishGateCheck,
   updateGate: updateGateRun,
@@ -321,6 +367,12 @@ export function createGuardrailsApp(
     return c.json({ status });
   });
 
+  guardrails.get("/guardrails/repositories/:repositoryKey/actions-status", async (c) => {
+    const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
+    if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
+    return c.json({ status: await deps.getActionsStatus(repository) });
+  });
+
   guardrails.get("/guardrails/repositories/:repositoryKey/caller-workflow", async (c) => {
     const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
     if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
@@ -331,6 +383,28 @@ export function createGuardrailsApp(
       return c.json({ workflow: await deps.getCallerWorkflow(repository) });
     } catch (error) {
       return c.json({ error: errorMessage(error) }, 502);
+    }
+  });
+
+  guardrails.post("/guardrails/repositories/:repositoryKey/actions-dispatch", async (c) => {
+    const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
+    if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
+    try {
+      const request = parseStartGateRequest(await c.req.json<unknown>());
+      if (
+        request.repositoryKey !== repository.repositoryKey
+        || request.executor !== "github-actions"
+      ) throw new TargetPreviewError("target_preview_invalid");
+      const preview = await deps.acceptTargetPreview(repository, {
+        previewIdentity: requiredPreviewIdentity(request.previewIdentity),
+        target: request.target,
+        executor: "github-actions",
+      });
+      const idempotencyKey = requiredIdempotencyKey(c.req.header("Idempotency-Key"));
+      const gate = await deps.dispatchActionsGate(repository, preview, idempotencyKey);
+      return c.json({ gate }, 202);
+    } catch (error) {
+      return c.json({ error: errorMessage(error) }, targetPreviewStatus(error));
     }
   });
 
@@ -357,7 +431,7 @@ export function createGuardrailsApp(
       if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
       const executor = request.executor ?? repository.defaultExecutor;
       const acceptedPreview = repository.source === "github"
-        ? deps.acceptTargetPreview(repository, {
+        ? await deps.acceptTargetPreview(repository, {
             previewIdentity: requiredPreviewIdentity(request.previewIdentity),
             target: request.target,
             executor,
@@ -414,6 +488,9 @@ export function createGuardrailsApp(
     const gateId = c.req.param("gateId");
     const gate = deps.getGate(gateId);
     if (!gate) return c.json({ error: "Gate não encontrado" }, 404);
+    if (gate.executor !== "sentinel-managed") {
+      return c.json({ error: "O Check deste gate pertence ao GitHub Actions" }, 409);
+    }
     const artifact = deps.getArtifact(gateId);
     if (!artifact) return c.json({ error: "Gate ainda não possui artifact" }, 409);
     const repository = deps.getRepository(gate.repositoryKey);
@@ -822,6 +899,21 @@ function repositoryKey(value: string): string {
 function requiredPreviewIdentity(value: string | undefined): string {
   if (value === undefined) throw new TargetPreviewError("target_preview_stale");
   return value;
+}
+
+function requiredRemoteAuthority(value: string | null): string {
+  if (value === null || !/^[A-Za-z0-9_.:-]+$/.test(value)) {
+    throw new Error("github_repository_authority_invalid");
+  }
+  return value;
+}
+
+function requiredIdempotencyKey(value: string | undefined): string {
+  const key = value?.trim() ?? "";
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{15,255}$/.test(key)) {
+    throw new TargetPreviewError("target_preview_invalid");
+  }
+  return key;
 }
 
 function targetPreviewStatus(error: unknown): 400 | 409 {
