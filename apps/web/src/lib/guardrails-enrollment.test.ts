@@ -103,3 +103,22 @@ test("GitHub enrollment client calls only Guardrails GitHub App endpoints", asyn
   ]);
   assert.equal(calls.some((call) => call.includes("/connections/")), false);
 });
+
+test("GitHub App connections expose only the public installation URL needed by the browser", async () => {
+  const fetcher: typeof fetch = async () => new Response(JSON.stringify({
+    connections: [{
+      id: "connection-1",
+      appId: "123",
+      appSlug: "sentinel-local",
+      clientId: "Iv1.client",
+      installationUrl: "https://github.com/apps/sentinel-local/installations/new",
+      status: "ready",
+      createdAt: "2026-08-12T12:00:00.000Z",
+      updatedAt: "2026-08-12T12:00:00.000Z",
+    }],
+  }), { status: 200, headers: { "Content-Type": "application/json" } });
+
+  const [connection] = await createGuardrailsGitHubAppClient(fetcher).listConnections();
+  assert.equal(connection?.installationUrl, "https://github.com/apps/sentinel-local/installations/new");
+  assert.equal(JSON.stringify(connection).includes("privateKey"), false);
+});

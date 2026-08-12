@@ -1,6 +1,18 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
-import { Cloud, GitBranch, HardDrive, LockKeyhole, Plus, Radio, Workflow } from "lucide-react";
+import {
+  Building2,
+  Cloud,
+  ExternalLink,
+  GitBranch,
+  HardDrive,
+  LockKeyhole,
+  Plus,
+  Radio,
+  RefreshCw,
+  UserRound,
+  Workflow,
+} from "lucide-react";
 
 import {
   api,
@@ -40,7 +52,10 @@ export function RepositoryEnrollmentForm({ active, busy, onEnroll }: {
   const [error, setError] = useState<string | null>(null);
   const [flowId, setFlowId] = useState<string | null>(null);
   const [flowMessage, setFlowMessage] = useState<string | null>(null);
+  const [installationRefresh, setInstallationRefresh] = useState(0);
 
+  const selectedConnection = connections.find((item) => item.id === state.connectionId) ?? null;
+  const readyInstallations = installations.filter((item) => item.status === "ready");
   const selectedRepository = repositories.find((item) => item.repositoryId === state.repositoryId) ?? null;
   const availability = useMemo(() => ({
     managed: selectedRepository !== null && !selectedRepository.archived,
@@ -56,6 +71,10 @@ export function RepositoryEnrollmentForm({ active, busy, onEnroll }: {
       setConnections(next);
       if (preferredId && next.some((item) => item.id === preferredId)) {
         setState((current) => selectEnrollmentConnection(current, preferredId));
+      } else if (next.length === 1) {
+        setState((current) => current.connectionId
+          ? current
+          : selectEnrollmentConnection(current, next[0]!.id));
       }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t("guardrails.connectionsError"));
@@ -78,11 +97,27 @@ export function RepositoryEnrollmentForm({ active, busy, onEnroll }: {
     setLoading(true);
     setError(null);
     void api.listGuardrailGitHubInstallations(state.connectionId)
-      .then((next) => { if (current) setInstallations(next); })
+      .then((next) => {
+        if (!current) return;
+        setInstallations(next);
+        setState((value) => {
+          if (value.connectionId !== state.connectionId) return value;
+          const ready = next.filter((item) => item.status === "ready");
+          if (value.installationId && ready.some((item) => item.id === value.installationId)) return value;
+          return selectEnrollmentInstallation(value, ready.length === 1 ? ready[0]!.id : "");
+        });
+      })
       .catch((cause) => { if (current) setError(cause instanceof Error ? cause.message : t("guardrails.installationsError")); })
       .finally(() => { if (current) setLoading(false); });
     return () => { current = false; };
-  }, [state.connectionId, t]);
+  }, [state.connectionId, installationRefresh, t]);
+
+  useEffect(() => {
+    if (!active || state.source !== "github" || !state.connectionId) return;
+    const refreshAfterGitHub = () => setInstallationRefresh((value) => value + 1);
+    window.addEventListener("focus", refreshAfterGitHub);
+    return () => window.removeEventListener("focus", refreshAfterGitHub);
+  }, [active, state.connectionId, state.source]);
 
   useEffect(() => {
     if (!state.installationId) {
@@ -145,6 +180,16 @@ export function RepositoryEnrollmentForm({ active, busy, onEnroll }: {
     }
   }
 
+  function installGitHubApp() {
+    if (!selectedConnection) return;
+    setFlowMessage(t("guardrails.installationOpening"));
+    window.open(
+      selectedConnection.installationUrl,
+      "csb-github-installation",
+      "popup,width=900,height=900,noreferrer",
+    );
+  }
+
   function submit(event: FormEvent) {
     event.preventDefault();
     if (canSubmit) void onEnroll(enrollmentRequest(state));
@@ -178,10 +223,65 @@ export function RepositoryEnrollmentForm({ active, busy, onEnroll }: {
                 <StepHeading code="02 / GITHUB AUTHORITY CHAIN" id="github-authority-title" title={t("guardrails.githubChainTitle")}>
                   {t("guardrails.githubChainDescription")}
                 </StepHeading>
-                <Button type="button" variant="outline" className="min-h-11" disabled={loading || flowId !== null} onClick={() => void connectGitHub()}><Plus aria-hidden size={14} />{t("guardrails.connectGitHub")}</Button>
+                <Button type="button" variant="outline" className="min-h-11" disabled={loading || flowId !== null} onClick={() => void connectGitHub()}><Plus aria-hidden size={14} />{connections.length > 0 ? t("guardrails.createAnotherGitHubApp") : t("guardrails.connectGitHub")}</Button>
               </div>
               <div aria-live="polite" className="min-h-5 font-mono text-[9px] uppercase text-muted-foreground">{flowMessage ?? t("guardrails.connectionsAvailable", { count: connections.length })}</div>
               {error && <AlertBanner>{error}</AlertBanner>}
+
+              {selectedConnection && (
+                <div className="grid min-w-0 border bg-secondary/[.12]">
+                  <div className="grid min-w-0 grid-cols-2 divide-x">
+                    <AuthorityReadout label={t("guardrails.connectedApp")} value={selectedConnection.appSlug} detail={t("guardrails.connectionReady")} />
+                    <AuthorityReadout label={t("guardrails.authorizedInstallations")} value={String(readyInstallations.length)} detail={readyInstallations.length === 1 ? t("guardrails.installationReady") : t("guardrails.installationsReady")} />
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 border-t p-3">
+                    <Button type="button" className="min-h-10 flex-1 rounded-none lg:flex-none" onClick={installGitHubApp}>
+                      <ExternalLink aria-hidden size={14} />
+                      {readyInstallations.length > 0 ? t("guardrails.installAnotherOrganization") : t("guardrails.installGitHubApp")}
+                    </Button>
+                    <Button type="button" variant="outline" className="min-h-10 flex-1 rounded-none lg:flex-none" disabled={loading} onClick={() => setInstallationRefresh((value) => value + 1)}>
+                      <RefreshCw aria-hidden size={14} className={loading ? "animate-spin motion-reduce:animate-none" : undefined} />
+                      {t("guardrails.refreshInstallations")}
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {selectedConnection && readyInstallations.length === 0 && !loading && (
+                <div className="grid gap-3 border border-warning/50 bg-warning/[.06] p-4 sm:grid-cols-[auto_minmax(0,1fr)]">
+                  <span className="grid size-9 place-items-center border border-warning/60 text-warning"><Building2 aria-hidden size={16} /></span>
+                  <div className="min-w-0">
+                    <h4 className="text-sm font-semibold text-warning">{t("guardrails.noInstallationsTitle")}</h4>
+                    <p className="mt-1 max-w-2xl text-xs leading-5 text-warning/80">{t("guardrails.noInstallationsDescription")}</p>
+                  </div>
+                </div>
+              )}
+
+              {readyInstallations.length > 0 && (
+                <div className="min-w-0">
+                  <div className="bench-label mb-2 text-primary">{t("guardrails.installationAccounts")}</div>
+                  <div className="flex max-h-40 flex-wrap gap-2 overflow-y-auto" role="list" aria-label={t("guardrails.installationAccounts")}>
+                    {readyInstallations.map((installation) => {
+                      const selected = installation.id === state.installationId;
+                      return (
+                        <button
+                          key={installation.id}
+                          type="button"
+                          role="listitem"
+                          aria-pressed={selected}
+                          onClick={() => setState((current) => selectEnrollmentInstallation(current, installation.id))}
+                          className={`flex min-h-10 min-w-0 items-center gap-2 border px-3 py-2 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none ${selected ? "border-info bg-info/[.08] text-foreground" : "border-border text-muted-foreground hover:border-info/50 hover:text-foreground"}`}
+                        >
+                          {installation.accountType === "Organization" ? <Building2 aria-hidden size={14} className="shrink-0 text-info" /> : <UserRound aria-hidden size={14} className="shrink-0 text-info" />}
+                          <span className="min-w-0 truncate font-semibold">{installation.accountLogin}</span>
+                          <span className="shrink-0 font-mono text-[8px] uppercase">{installation.accountType === "Organization" ? t("guardrails.organization") : t("guardrails.personalAccount")}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               <div className="grid gap-4 sm:grid-cols-3">
                 <Field label={t("guardrails.connection")} htmlFor="guardrail-github-connection">
                   <Select value={state.connectionId} onValueChange={(value) => setState((current) => selectEnrollmentConnection(current, value))}>
@@ -225,6 +325,16 @@ export function RepositoryEnrollmentForm({ active, busy, onEnroll }: {
         <Button type="submit" className="min-h-11 w-full sm:w-auto" disabled={busy || loading || !canSubmit}><Plus aria-hidden size={14} />{busy ? t("guardrails.registering") : state.source === "local" ? t("guardrails.registerFolder") : t("guardrails.registerRemote")}</Button>
       </div>
     </form>
+  );
+}
+
+function AuthorityReadout({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return (
+    <div className="min-w-0 p-3 sm:p-4">
+      <div className="min-h-5 font-mono text-[7px] uppercase leading-3 tracking-[0.08em] text-muted-foreground">{label}</div>
+      <div className="mt-1 truncate font-mono text-sm font-semibold text-foreground">{value}</div>
+      <div className="mt-1 text-[10px] text-muted-foreground">{detail}</div>
+    </div>
   );
 }
 

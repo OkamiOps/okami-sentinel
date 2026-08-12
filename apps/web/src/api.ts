@@ -239,6 +239,7 @@ export interface GitHubAppConnection {
   appId: string;
   appSlug: string;
   clientId: string;
+  installationUrl: string;
   status: "ready" | "revoked" | "error";
   createdAt: string;
   updatedAt: string;

@@ -80,12 +80,21 @@ export function createGitHubAppApi(injectedService?: GitHubAppApiService): Hono 
         code,
         error: errorQuery,
       });
+      const connection = result.status === "completed"
+        ? service().listConnections().find((item) => item.id === result.connectionId) ?? null
+        : null;
       return callbackHtml(
         c,
         result.status === "denied"
           ? "Conexão cancelada. Você pode fechar esta janela."
-          : "Conexão concluída. Retorne ao Sentinel e feche esta janela.",
+          : connection
+            ? "GitHub App criada. Agora instale-a na sua conta ou organização para liberar os repositórios."
+            : "Conexão concluída. Retorne ao Sentinel e feche esta janela.",
         200,
+        connection ? {
+          href: githubAppInstallationUrl(connection.appSlug),
+          label: "Instalar no GitHub",
+        } : undefined,
       );
     } catch (error) {
       const codeValue = githubAppServiceErrorCode(error);
@@ -95,7 +104,12 @@ export function createGitHubAppApi(injectedService?: GitHubAppApiService): Hono 
 
   api.get("/guardrails/github-app/connections", (c) => {
     try {
-      return c.json({ connections: service().listConnections() });
+      return c.json({
+        connections: service().listConnections().map((connection) => ({
+          ...connection,
+          installationUrl: githubAppInstallationUrl(connection.appSlug),
+        })),
+      });
     } catch (error) {
       return githubAppError(c, error);
     }
@@ -191,11 +205,19 @@ function callbackHtml(
   c: Context,
   message: string,
   status: 200 | 400 | 401 | 404 | 409 | 502,
+  action?: { href: string; label: string },
 ) {
   c.header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'");
   c.header("Cache-Control", "no-store");
   c.header("Referrer-Policy", "no-referrer");
-  return c.html(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>GitHub App · Sentinel</title></head><body style="margin:0;background:#07080d;color:#f6f5f2;font:16px ui-monospace,monospace;display:grid;min-height:100vh;place-items:center"><main style="max-width:640px;padding:32px;border:1px solid #ff6b1a"><strong>${escapeText(message)}</strong></main></body></html>`, status);
+  const actionHtml = action
+    ? `<a href="${escapeAttribute(action.href)}" rel="noreferrer" style="display:inline-flex;margin-top:24px;padding:12px 16px;background:#ff6b1a;color:#07080d;text-decoration:none;font-weight:800">${escapeText(action.label)}</a>`
+    : "";
+  return c.html(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>GitHub App · Sentinel</title></head><body style="margin:0;background:#07080d;color:#f6f5f2;font:16px ui-monospace,monospace;display:grid;min-height:100vh;place-items:center"><main style="max-width:640px;padding:32px;border:1px solid #ff6b1a"><strong style="display:block;line-height:1.6">${escapeText(message)}</strong>${actionHtml}</main></body></html>`, status);
+}
+
+function githubAppInstallationUrl(appSlug: string): string {
+  return `https://github.com/apps/${encodeURIComponent(appSlug)}/installations/new`;
 }
 
 function escapeAttribute(value: string): string {

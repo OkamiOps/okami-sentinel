@@ -90,7 +90,12 @@ test("covers the seven public GitHub App routes without exposing flow state or c
   }]);
 
   const connections = await api.request("/guardrails/github-app/connections");
-  assert.deepEqual(await connections.json(), { connections: [connection] });
+  assert.deepEqual(await connections.json(), {
+    connections: [{
+      ...connection,
+      installationUrl: "https://github.com/apps/sentinel-local/installations/new",
+    }],
+  });
 
   const installations = await api.request("/guardrails/github-app/connections/connection-1/installations");
   assert.deepEqual(await installations.json(), { installations: [installation] });
@@ -116,6 +121,19 @@ test("renders an auto-submit POST bridge with the manifest but no response-side 
   assert.match(html, /name="manifest"/i);
   assert.match(html, /&quot;contents&quot;:&quot;read&quot;/);
   assert.doesNotMatch(html, /pem|privateKey|installation[_-]?token/i);
+});
+
+test("guides a completed manifest connection into the separate GitHub installation step", async () => {
+  const { api } = fixture();
+  const response = await api.request(
+    "/guardrails/github-app/manifest/callback?flowId=flow-1&state=state-value&code=code-value",
+  );
+  const html = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(html, /https:\/\/github\.com\/apps\/sentinel-local\/installations\/new/);
+  assert.match(html, /Instalar no GitHub/);
+  assert.doesNotMatch(html, /connection-1|privateKey|installation[_-]?token/i);
 });
 
 test("returns closed errors and never serializes arbitrary upstream messages", async () => {
