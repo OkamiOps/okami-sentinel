@@ -9,8 +9,10 @@ import type {
   FsListResponse,
   GateArtifact,
   GateDecision,
+  GateExecutorKind,
   GatePublishStatus,
   GateRun,
+  GateTarget,
   GuardrailGitHubStatus,
   GuardrailPolicy,
   GuardrailRepository,
@@ -165,16 +167,157 @@ export function createConnectionsClient(fetcher: Fetcher = fetch): {
 
 const connections = createConnectionsClient();
 const scanRouting = createScanRoutingClient();
+const guardrailsGitHubApp = createGuardrailsGitHubAppClient();
 
-export interface EnrollGuardrailRepositoryRequest {
-  repositoryPath: string;
-  displayName?: string;
+export type EnrollGuardrailRepositoryRequest =
+  | {
+      source: "local";
+      repositoryPath: string;
+      displayName?: string;
+    }
+  | {
+      source: "github";
+      connectionId: string;
+      installationId: string;
+      repositoryId: string;
+      defaultExecutor: GateExecutorKind;
+      displayName?: string;
+    };
+
+export interface StartGuardrailGateRequest {
+  repositoryKey: string;
+  target: GateTarget;
+  executor?: GateExecutorKind;
+  previewIdentity?: string;
 }
 
-export interface StartLocalGateRequest {
+export interface GuardrailTargetPreview {
+  previewIdentity: string;
+  expiresAt: string;
   repositoryKey: string;
-  baseRef: string;
-  headRef: string;
+  executor: GateExecutorKind;
+  target: GateTarget;
+  resolvedTarget: {
+    baseRef: string;
+    headRef: string;
+    baseSha: string;
+    headSha: string;
+    policySha: string;
+    pullRequestNumber: number | null;
+  };
+  policySource: "base" | "protected_branch" | "default";
+  policySha: string;
+  policyPath: ".csb/guardrails.json";
+  protectedBranches: string[];
+  exceptionsCount: number;
+  executorCapability: {
+    ready: boolean;
+    code: "ready" | "managed_executor_unavailable" | "github_actions_unavailable";
+  };
+  scanPlan: {
+    scopeMode: "changed" | "repository";
+    maxChangedPaths: number;
+    fallback: "repository" | "error";
+    model: string;
+    effort: string;
+    mode: "standard" | "deep";
+  };
+  costBudget: {
+    maxCostUsd: number;
+    kind: "estimated_ceiling";
+    requestInFlightMayExceed: true;
+  };
+  publication: {
+    eligible: boolean;
+    protectedBranch: string | null;
+    reason: "protected_branch" | "off_policy_preflight";
+  };
+}
+
+export interface GitHubAppConnection {
+  id: string;
+  appId: string;
+  appSlug: string;
+  clientId: string;
+  status: "ready" | "revoked" | "error";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GitHubAppInstallation {
+  id: string;
+  connectionId: string;
+  accountLogin: string;
+  accountType: "User" | "Organization";
+  status: "ready" | "suspended" | "revoked";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GitHubInstallationRepository {
+  repositoryId: string;
+  installationId: string;
+  owner: string;
+  name: string;
+  defaultBranch: string;
+  private: boolean;
+  archived: boolean;
+  updatedAt: string;
+}
+
+export type GitHubManifestFlow =
+  | { status: "pending" | "expired" | "denied" | "failed" }
+  | { status: "completed"; connectionId: string };
+
+export interface GuardrailActionsStatus {
+  ready: boolean;
+  code:
+    | "ready"
+    | "actions_release_unavailable"
+    | "caller_workflow_inactive"
+    | "caller_workflow_missing"
+    | "caller_workflow_outdated"
+    | "github_actions_unavailable";
+  workflowPath: ".github/workflows/csb-security-change-gate.yml";
+  releaseSha: string | null;
+}
+
+export interface GuardrailCallerWorkflow {
+  path: ".github/workflows/csb-security-change-gate.yml";
+  filename: "csb-security-change-gate.yml";
+  mediaType: "application/yaml";
+  content: string;
+}
+
+export function createGuardrailsGitHubAppClient(fetcher: Fetcher = fetch) {
+  const read = async <T>(path: string): Promise<T> =>
+    parseApiResponse<T>(await fetcher(`${BASE}${path}`, {
+      headers: { Accept: "application/json" },
+    }));
+  const post = async <T>(path: string): Promise<T> =>
+    parseApiResponse<T>(await fetcher(`${BASE}${path}`, {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+    }));
+  return {
+    startManifest: () => post<{ flowId: string; authorizeUrl: string }>(
+      "/guardrails/github-app/manifest/start",
+    ),
+    getManifestFlow: (flowId: string) => read<{ flow: GitHubManifestFlow }>(
+      `/guardrails/github-app/manifest/flows/${encodeURIComponent(flowId)}`,
+    ),
+    listConnections: async () => (await read<{ connections: GitHubAppConnection[] }>(
+      "/guardrails/github-app/connections",
+    )).connections,
+    listInstallations: async (connectionId: string) =>
+      (await read<{ installations: GitHubAppInstallation[] }>(
+        `/guardrails/github-app/connections/${encodeURIComponent(connectionId)}/installations`,
+      )).installations,
+    listRepositories: async (installationId: string) =>
+      (await read<{ repositories: GitHubInstallationRepository[] }>(
+        `/guardrails/github-app/installations/${encodeURIComponent(installationId)}/repositories`,
+      )).repositories,
+  };
 }
 
 export interface PolicySimulationRequest {
@@ -270,6 +413,13 @@ export const api = {
     ),
   listGuardrailRepositories: () =>
     request<{ repositories: GuardrailRepository[] }>("/guardrails/repositories"),
+  startGuardrailGitHubManifest: () => guardrailsGitHubApp.startManifest(),
+  getGuardrailGitHubManifestFlow: (flowId: string) => guardrailsGitHubApp.getManifestFlow(flowId),
+  listGuardrailGitHubConnections: () => guardrailsGitHubApp.listConnections(),
+  listGuardrailGitHubInstallations: (connectionId: string) =>
+    guardrailsGitHubApp.listInstallations(connectionId),
+  listGuardrailGitHubRepositories: (installationId: string) =>
+    guardrailsGitHubApp.listRepositories(installationId),
   enrollGuardrailRepository: (body: EnrollGuardrailRepositoryRequest) =>
     request<{ repository: GuardrailRepository }>("/guardrails/repositories", {
       method: "POST",
@@ -295,10 +445,13 @@ export const api = {
     request<{ status: GuardrailGitHubStatus }>(
       `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/github-status`,
     ),
-  installGuardrailWorkflow: (repositoryKey: string) =>
-    request<{ workflow: { path: string; committed: false } }>(
-      `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/install-workflow`,
-      { method: "POST" },
+  getGuardrailActionsStatus: (repositoryKey: string) =>
+    request<{ status: GuardrailActionsStatus }>(
+      `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/actions-status`,
+    ),
+  getGuardrailCallerWorkflow: (repositoryKey: string) =>
+    request<{ workflow: GuardrailCallerWorkflow }>(
+      `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/caller-workflow`,
     ),
   syncGuardrailBaseline: (repositoryKey: string) =>
     request<{ baseline: GateArtifact | null }>(
@@ -309,11 +462,30 @@ export const api = {
     request<{ gates: GateRun[] }>(
       `/guardrails/gates${repositoryKey ? `?repositoryKey=${encodeURIComponent(repositoryKey)}` : ""}`,
     ),
-  startGate: (body: StartLocalGateRequest) =>
+  previewGuardrailTarget: (
+    repositoryKey: string,
+    body: { target: GateTarget; executor?: GateExecutorKind },
+  ) => request<{ preview: GuardrailTargetPreview }>(
+    `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/target-preview`,
+    { method: "POST", body: JSON.stringify(body) },
+  ),
+  startGate: (body: StartGuardrailGateRequest) =>
     request<{ gate: GateRun }>("/guardrails/gates", {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  dispatchGuardrailActionsGate: (
+    repositoryKey: string,
+    body: StartGuardrailGateRequest,
+    idempotencyKey: string,
+  ) => request<{ gate: GateRun }>(
+    `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/actions-dispatch`,
+    {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: JSON.stringify(body),
+    },
+  ),
   getGate: (gateId: string) =>
     request<{ gate: GateRun; artifact: GateArtifact | null }>(
       `/guardrails/gates/${encodeURIComponent(gateId)}`,

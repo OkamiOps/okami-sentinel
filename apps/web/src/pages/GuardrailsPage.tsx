@@ -8,14 +8,14 @@ import type {
 import { GitBranch, GitPullRequestArrow, Plus, Square } from "lucide-react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
-import { api } from "../api";
+import { api, type EnrollGuardrailRepositoryRequest } from "../api";
 import {
   DecisionEquation,
   DecisionGraph,
   EvidenceTrace,
   PortfolioPipeline,
   PublishGateControl,
-  RepositoryDirectoryBrowser,
+  RepositoryEnrollmentForm,
 } from "../components/guardrails";
 import { AlertBanner, EmptyState, Loading, PageHeader } from "../components/ui";
 import { guardrailHref, isGateActive, selectDecisionNode, selectGate } from "../lib/guardrails";
@@ -135,14 +135,11 @@ export function GuardrailsPage() {
     setParams(next, { replace: true });
   }
 
-  async function enroll(repositoryPath: string, displayName: string) {
+  async function enroll(request: EnrollGuardrailRepositoryRequest) {
     setBusy(true);
     setActionError(null);
     try {
-      await api.enrollGuardrailRepository({
-        repositoryPath,
-        ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
-      });
+      await api.enrollGuardrailRepository(request);
       setEnrollOpen(false);
       await load();
     } catch (error) {
@@ -156,7 +153,11 @@ export function GuardrailsPage() {
     setBusy(true);
     setActionError(null);
     try {
-      const { gate } = await api.startGate({ repositoryKey, baseRef, headRef });
+      const { gate } = await api.startGate({
+        repositoryKey,
+        target: { kind: "compare", baseRef, headRef },
+        executor: "sentinel-managed",
+      });
       setRunOpen(false);
       navigate(guardrailHref(gate.id));
     } catch (error) {
@@ -290,41 +291,20 @@ function EnrollmentSheet({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   busy: boolean;
-  onEnroll: (repositoryPath: string, displayName: string) => Promise<void>;
+  onEnroll: (request: EnrollGuardrailRepositoryRequest) => Promise<void>;
 }) {
   const { t } = useI18n();
-  const [repositoryPath, setRepositoryPath] = useState("");
-  const [displayName, setDisplayName] = useState("");
-  function submit(event: FormEvent) {
-    event.preventDefault();
-    void onEnroll(repositoryPath, displayName);
-  }
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetTrigger asChild>
         <Button variant="outline" className="min-h-11"><Plus aria-hidden size={14} />{t("guardrails.register")}</Button>
       </SheetTrigger>
-      <SheetContent className="w-full border-border bg-background sm:max-w-xl">
-        <SheetHeader>
+      <SheetContent className="w-full gap-0 border-border bg-background sm:max-w-3xl">
+        <SheetHeader className="border-b">
           <SheetTitle className="font-heading">Cadastrar repositório</SheetTitle>
-          <SheetDescription>Navegue até a pasta raiz do projeto. A API confirma se ela é um repositório Git antes do cadastro.</SheetDescription>
+          <SheetDescription>Escolha a autoridade real do código. Uma pasta local e uma instalação GitHub são contratos diferentes.</SheetDescription>
         </SheetHeader>
-        <form className="mt-5 grid gap-5" onSubmit={submit}>
-          <div>
-            <div className="mb-2 flex items-center justify-between gap-3">
-              <span className="text-sm font-semibold">Escolha a pasta do repositório</span>
-              <span className="font-mono text-[8px] text-muted-foreground">COMEÇA EM ~/Documents/Git</span>
-            </div>
-            <RepositoryDirectoryBrowser active={open} value={repositoryPath} onChange={setRepositoryPath} />
-            <p className="mt-2 text-xs leading-5 text-muted-foreground">Clique em uma pasta para entrar nela. Quando a raiz do projeto estiver em “Pasta atual”, cadastre.</p>
-          </div>
-          <Field label="Nome de exibição" htmlFor="guardrail-repository-name" hint="Opcional; o nome da pasta será usado quando vazio.">
-            <Input id="guardrail-repository-name" className="min-h-11" value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
-          </Field>
-          <Button type="submit" className="min-h-11" disabled={busy || !repositoryPath.trim()}>
-            <Plus aria-hidden size={14} />{busy ? "Cadastrando…" : "Cadastrar pasta atual"}
-          </Button>
-        </form>
+        <RepositoryEnrollmentForm active={open} busy={busy} onEnroll={onEnroll} />
       </SheetContent>
     </Sheet>
   );
