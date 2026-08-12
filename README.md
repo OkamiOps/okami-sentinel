@@ -96,9 +96,18 @@ Codex Security has two explicit execution profiles. They are intentionally not a
 | **Native** | Local Codex, ChatGPT browser OAuth, ChatGPT device code, or OpenAI API | The upstream `@openai/codex-security` contract. |
 | **Portable** | xAI direct OAuth/API, Anthropic API, OpenRouter, Gemini, DeepSeek, MiniMax Token Plan, MiMo Token Plan, or a compatible OpenAI/Anthropic API | Sentinel's versioned defensive methodology over its bounded AgentSession host. |
 
-Portable is not a claim that a non-OpenAI provider runs the upstream scanner. It runs `sentinel/codex-security-methodology@v1`: six defensive, static-only stages against an immutable snapshot, with bounded read/search tools, structured artifacts, cancellation, and isolated execution required. A server-owned structured dossier carries the inventory, candidate set, stage summaries, assessments, and scope between stages. Retained findings must trace to a carried candidate and contain anchored evidence plus remediation; a zero-finding report is valid only when the coverage record explicitly accounts for every candidate and inspected or unexamined scope. Before launch, the exact persisted connection/model/protocol tuple must have a fresh passing capability probe. A missing, stale, failed, or mismatched probe blocks the run; Sentinel never falls back to Native, another route, CLI, or a different model.
+Portable is not a claim that a non-OpenAI provider runs the upstream scanner. It runs `sentinel/codex-security-methodology@v1`: six defensive, static-only stages against an immutable snapshot, with bounded read/search tools, structured artifacts, cancellation, and isolated execution required. A server-owned structured dossier carries the inventory, candidate set, stage summaries, assessments, and scope between stages. Internal report pages are capped at 16 confirmed candidates each, validated before I/O, and may use only bounded repair within the scan limits; the server publishes only the final consolidated report. Retained findings must trace to a carried candidate and include substantive `rootCause`, impact, remediation, and repository-backed anchors; a zero-finding report is valid only when the coverage record explicitly accounts for every candidate and inspected or unexamined scope. Before launch, the exact persisted connection/model/protocol tuple must have a fresh passing capability probe. A missing, stale, failed, or mismatched probe blocks the run; Sentinel never falls back to Native, another route, CLI, or a different model.
 
-Portable limits are adaptive to the selected mode and effort, rather than to a vendor or model-name allowlist: higher reasoning efforts receive more turns, tool calls, and elapsed time. An optional USD ceiling uses a frozen matching price quote and stops the session before the next provider request once reported usage reaches the ceiling. An already in-flight request can still take the estimate above that ceiling. If usage or a usable quote is unavailable, Sentinel does not invent a cost or pretend the ceiling was enforced.
+Portable limits follow the selected mode and effort group, never a vendor or model-name allowlist. The exact effort must be published by the selected model and serializable by its route; an effort name alone does not enlarge the budget.
+
+| Effort group | Standard | Deep |
+|---|---:|---:|
+| `minimal`, `low` | 20 min / 24 turns / 96 tool calls | 30 min / 48 turns / 192 tool calls |
+| `medium`, `high`, unknown, or absent | 30 min / 32 turns / 128 tool calls | 45 min / 64 turns / 256 tool calls |
+| `xhigh` | 45 min / 48 turns / 192 tool calls | 60 min / 96 turns / 384 tool calls |
+| `max`, `ultra` | 60 min / 64 turns / 256 tool calls | 90 min / 128 turns / 512 tool calls |
+
+Each Portable AgentSession is additionally capped at 64 MiB of input and 1 MiB of output. An optional `maxCostUsd` ceiling requires a frozen matching price quote at launch; without one, launch fails closed. Reported usage that reaches the ceiling stops the session before the next provider request, although one request already in flight can exceed the estimate; usage that cannot be estimated stops rather than claiming the ceiling was enforced.
 
 ## Architecture
 
@@ -205,15 +214,18 @@ At startup, the API indexes compatible scans already present in the configured C
 5. **Report** — generate an individual report from scan detail or a comparison report after running the diff.
 6. **Guardrails** — evaluate a local changeset against a versioned policy and optionally publish the result as a GitHub Check.
 
+> [!NOTE]
+> **Lifecycle semantics.** `standard` and `deep` runs contain current-scan evidence only; their lifecycle labels are `new`, `persisting`, or `regressed`. `fixed` is reserved for a future explicit incremental contract. A baseline is a same-lineage comparison reference, not an incremental mode, and a missing finding never proves remediation.
+
 ## Provider connections
 
 | Provider family | Connection routes | Scanner availability |
 |---|---|---|
 | **OpenAI** | Local Codex, ChatGPT browser OAuth, ChatGPT device code, API key | Codex Security, Mantis, VulnHunter according to the resolved route |
-| **xAI** | Device OAuth orchestrated locally by Sentinel, API key, local Grok detection | OAuth/API may run Mantis and VulnHunter after capability proof. Grok local scanning remains blocked until its plugin/hook execution surface can be isolated. |
-| **Anthropic** | Claude Code existing session, Anthropic API | Claude local runs Mantis through Sentinel's MCP-only snapshot boundary. API models require a successful capability probe. |
+| **xAI** | Device OAuth orchestrated locally by Sentinel, API key, local Grok detection | OAuth/API may run Codex Security Portable when the exact connection/model/protocol tuple has a fresh passing capability probe; Mantis and VulnHunter remain capability-dependent. Grok local scanning remains blocked until its plugin/hook execution surface can be isolated. |
+| **Anthropic** | Claude Code existing session, Anthropic API | Claude local runs Mantis through Sentinel's MCP-only snapshot boundary. Anthropic API may run Codex Security Portable when the exact tuple has a fresh passing capability probe; other engines remain capability-dependent. |
 | **Cursor** | Local CLI detection, Background Agents API | Connection and live catalog support are available; scanner execution is not advertised until the remote/local artifact contract is complete. |
-| **Other HTTP** | OpenRouter, Gemini, DeepSeek, MiniMax Token Plan, MiMo Token Plan, custom compatible URLs | Mantis/VulnHunter only when the exact model passes Sentinel's bounded tool, artifact, cancellation, and snapshot probe. |
+| **Other HTTP** | OpenRouter, Gemini, DeepSeek, MiniMax Token Plan, MiMo Token Plan, custom compatible URLs | Codex Security Portable, Mantis, and VulnHunter are available only when the exact connection/model/protocol tuple passes Sentinel's bounded tool, artifact, cancellation, and snapshot probe. |
 
 Models come from the authenticated provider catalog. The only runtime-default exception is an explicitly configured Claude Code local session. For OpenRouter, `reasoning.supported_efforts: null` means the gateway effort set is available; if `reasoning.mandatory` is true, `none` is removed. The exact effort Sentinel sent is preserved with its wire field when known; otherwise the run records provider-default behavior without claiming what the provider applied. Secrets and OAuth tokens are write-only through the API, stored in the OS credential vault, and represented in SQLite only by opaque references. Sentinel orchestrates xAI's public device flow locally and does not invoke or depend on Grok CLI; model access is accepted only after live catalog and capability checks succeed.
 

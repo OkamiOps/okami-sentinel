@@ -33,8 +33,11 @@ O uso acontece durante desenvolvimento e revisão de segurança contra repositó
 - A interface suporta PT-BR, inglês, espanhol, alemão e francês; o locale é detectado e a preferência persiste localmente.
 - Comparações aceitam um baseline e até cinco candidatos.
 - Scans interrompidos que preservaram findings continuam disponíveis como resultados parciais claramente identificados.
+- O Portable mantém um dossiê controlado pelo servidor e emite páginas de relatório apenas para candidatos confirmados. Essas páginas internas e privadas são validadas e consolidadas em um único relatório final; candidatos rejeitados e sua cobertura são derivados pelo servidor. Se uma página ou sua validação falhar, nenhum relatório final parcial é publicado.
+- Quando um artefato terminal falha na validação, o Portable permite apenas uma pequena janela de reparo limitada, dentro dos limites globais existentes de turnos, ferramentas, tempo e custo configurado do scan.
+- Scans standard e deep classificam somente findings da execução atual como `new`, `persisting` ou `regressed` contra um baseline compatível da mesma linhagem. A ausência de um finding não é remediação; `fixed` permanece reservado para um contrato incremental explícito futuro.
 - Relatórios individuais e comparativos reutilizam a leitura de evidência, custo e eficiência do produto e podem ser impressos ou exportados em PDF.
-- O custo só aparece quando há usage reportado e preço correspondente disponível; caso contrário fica indisponível, nunca zero inventado ou fatura de assinatura.
+- O custo só aparece quando há usage reportado e preço correspondente disponível; caso contrário fica indisponível, nunca zero inventado ou fatura de assinatura. O teto opcional em USD do Portable usa usage reportado e cotação correspondente congelada: ele bloqueia a próxima request depois de atingido, mas uma request já em voo pode levar a estimativa além dele.
 - High por dólar é heurística, não prova de precisão.
 - Evidência do scanner permanece no idioma de origem para preservar o significado técnico.
 - O ledger de runs exibe identidade do motor e do modelo, além de High+ e total de findings, para que a linha seja compreendida sem abrir o detalhe.

@@ -33,8 +33,11 @@ Das Produkt wird während Entwicklung und Sicherheitsreview an lokalen Repositor
 - UI in PT-BR, Englisch, Spanisch, Deutsch und Französisch mit erkannter und lokal gespeicherter Auswahl.
 - Eine Baseline und bis zu fünf Kandidaten pro Vergleich.
 - Unterbrochene Scans mit Findings bleiben als klar markierte Teilergebnisse verfügbar.
+- Portable verwaltet ein servergeführtes Dossier und erzeugt Berichtsseiten nur für bestätigte Kandidaten. Diese internen, privaten Seiten werden validiert und zu einem einzigen Abschlussbericht zusammengeführt; abgelehnte Kandidaten und ihre Abdeckung werden vom Server abgeleitet. Schlägt eine Seite oder ihre Validierung fehl, wird kein partieller Abschlussbericht veröffentlicht.
+- Wenn ein terminales Artefakt die Validierung nicht besteht, erlaubt Portable nur ein kleines begrenztes Reparaturfenster innerhalb der bestehenden globalen Grenzen des Scans für Turns, Tools, Zeit und konfigurierte Kosten.
+- Standard- und Deep-Scans klassifizieren ausschließlich Findings des aktuellen Scans gegenüber einer kompatiblen Baseline derselben Analyse-Linie als `new`, `persisting` oder `regressed`. Ein fehlendes Finding ist keine Behebung; `fixed` bleibt einem zukünftigen expliziten inkrementellen Vertrag vorbehalten.
 - Einzel- und Vergleichsberichte verwenden dasselbe Beleg-, Kosten- und Effizienzmodell und können gedruckt oder als PDF exportiert werden.
-- Kosten erscheinen nur, wenn gemeldete Usage und passende Preisdaten vorliegen; andernfalls bleiben sie nicht verfügbar, niemals ein erfundenes Nullergebnis oder eine Abo-Rechnung.
+- Kosten erscheinen nur, wenn gemeldete Usage und passende Preisdaten vorliegen; andernfalls bleiben sie nicht verfügbar, niemals ein erfundenes Nullergebnis oder eine Abo-Rechnung. Die optionale USD-Obergrenze von Portable nutzt gemeldete Usage und ein eingefrorenes passendes Preisangebot: Nach Erreichen blockiert sie die nächste Anfrage, während eine bereits laufende Anfrage die Schätzung noch darüber heben kann.
 - High pro Dollar ist eine Heuristik, kein Genauigkeitsbeweis.
 - Scanner-Belege bleiben zur Wahrung der technischen Bedeutung in ihrer Quellsprache.
 - Das Run-Ledger zeigt die Engine- und Modellidentität sowie High+ und die Gesamtzahl der Findings, damit eine Zeile ohne das Öffnen der Detailansicht verständlich bleibt.

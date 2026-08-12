@@ -28,6 +28,8 @@ Please allow time for validation before public disclosure. No response-time SLA 
 - Provider secrets and OAuth tokens are write-only through the local API and stored through the OS credential vault. SQLite stores opaque credential references, never secret values, and public connection DTOs never return a credential.
 - Scanner manifests, telemetry, SSE events, and persisted logs must pass through the shared redaction boundary. Local subscription children receive a minimal environment rather than the API process environment.
 - Custom compatible endpoints are untrusted configuration. The exact persisted connection, model, and protocol tuple must pass the fixed URL, transport, redirect, response-size, and capability checks before that model becomes scanner-eligible; Sentinel does not silently substitute another tuple.
+- Portable stage artifacts and private report pages are untrusted input. Before accepting an artifact write, the server validates a strict contract and the pinned snapshot anchors. A rejected artifact gets only a bounded repair window within the scan's existing global turn, tool, elapsed-time, and configured-cost limits.
+- The server derives rejected-candidate coverage, keeps report pages private, and writes one final report only after every page validates and consolidates. A failed page or repair never publishes a partial final report.
 - Managed scan deletion is available only for terminal runs. It may remove the local record and a Sentinel-managed artifact directory, but never the analyzed repository or an external path; the target and effect must remain explicit in the UI.
 
 ## Sensitive data

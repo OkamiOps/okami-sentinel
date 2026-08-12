@@ -96,9 +96,18 @@ O Codex Security tem dois perfis explícitos. Eles não são apelidos: o detalhe
 | **Native** | Codex local, ChatGPT por OAuth no navegador, ChatGPT por código de dispositivo ou API OpenAI | O contrato upstream do `@openai/codex-security`. |
 | **Portable** | OAuth/API direta da xAI, API Anthropic, OpenRouter, Gemini, DeepSeek, MiniMax Token Plan, MiMo Token Plan ou API compatível OpenAI/Anthropic | A metodologia defensiva versionada do Sentinel, executada no host AgentSession com limites. |
 
-Portable não afirma que um provider que não é OpenAI está executando o scanner upstream. Ele executa `sentinel/codex-security-methodology@v1`: seis estágios defensivos e somente estáticos sobre um snapshot imutável, com ferramentas limitadas de leitura/busca, artefatos estruturados, cancelamento e isolamento obrigatórios. Um dossiê estruturado, mantido pelo servidor, carrega inventário, conjunto de candidatos, resumos das etapas, avaliações e escopo entre os estágios. Findings retidos precisam partir de um candidato já carregado e ter evidência ancorada e remediação; um relatório com zero findings só é válido quando a cobertura registra explicitamente cada candidato e o escopo inspecionado ou não inspecionado. Antes do lançamento, a tupla persistida exata de conexão/modelo/protocolo precisa ter uma capability probe nova e aprovada. Probe ausente, expirada, falha ou incompatível bloqueia o run; o Sentinel nunca faz fallback para Native, outra rota, CLI ou outro modelo.
+Portable não afirma que um provider que não é OpenAI está executando o scanner upstream. Ele executa `sentinel/codex-security-methodology@v1`: seis estágios defensivos e somente estáticos sobre um snapshot imutável, com ferramentas limitadas de leitura/busca, artefatos estruturados, cancelamento e isolamento obrigatórios. Um dossiê estruturado, mantido pelo servidor, carrega inventário, conjunto de candidatos, resumos das etapas, avaliações e escopo entre os estágios. Páginas internas do relatório são limitadas a 16 candidatos confirmados cada, validadas antes de I/O e podem usar apenas reparo limitado dentro dos limites do scan; o servidor publica somente o relatório final consolidado. Findings retidos precisam partir de um candidato já carregado e conter `rootCause`, impacto, remediação e anchors sustentados pelo repositório; um relatório com zero findings só é válido quando a cobertura registra explicitamente cada candidato e o escopo inspecionado ou não inspecionado. Antes do lançamento, a tupla persistida exata de conexão/modelo/protocolo precisa ter uma capability probe nova e aprovada. Probe ausente, expirada, falha ou incompatível bloqueia o run; o Sentinel nunca faz fallback para Native, outra rota, CLI ou outro modelo.
 
-Os limites Portable são adaptativos ao modo e ao effort selecionados, e não a uma allowlist de vendors ou nomes de modelo: esforços de raciocínio maiores recebem mais turnos, chamadas de ferramenta e tempo. Um teto opcional em USD usa uma cotação correspondente congelada e encerra a sessão antes da próxima request ao provider quando o usage reportado alcança o teto. Uma request já em voo ainda pode levar a estimativa além dele. Sem usage ou cotação utilizável, o Sentinel não inventa custo nem finge que o teto foi aplicado.
+Os limites Portable seguem o modo selecionado e o grupo de effort, nunca uma allowlist de vendors ou nomes de modelo. O effort exato precisa ser publicado pelo modelo escolhido e serializável pela rota; o nome do effort, sozinho, não aumenta o orçamento.
+
+| Grupo de effort | Standard | Deep |
+|---|---:|---:|
+| `minimal`, `low` | 20 min / 24 turnos / 96 chamadas de ferramenta | 30 min / 48 turnos / 192 chamadas de ferramenta |
+| `medium`, `high`, desconhecido ou ausente | 30 min / 32 turnos / 128 chamadas de ferramenta | 45 min / 64 turnos / 256 chamadas de ferramenta |
+| `xhigh` | 45 min / 48 turnos / 192 chamadas de ferramenta | 60 min / 96 turnos / 384 chamadas de ferramenta |
+| `max`, `ultra` | 60 min / 64 turnos / 256 chamadas de ferramenta | 90 min / 128 turnos / 512 chamadas de ferramenta |
+
+Cada AgentSession Portable também é limitada a 64 MiB de entrada e 1 MiB de saída. Um teto opcional `maxCostUsd` exige cotação correspondente congelada no lançamento; sem ela, o lançamento falha de forma fechada. Usage reportado que alcança o teto encerra a sessão antes da próxima request ao provider, embora uma request já em voo possa exceder a estimativa; usage que não pode ser estimado encerra em vez de alegar que o teto foi aplicado.
 
 ## Arquitetura
 
@@ -108,8 +117,11 @@ flowchart LR
     API["API local\nHono + Node.js"]
     DB[("SQLite\nmetadados do benchmark")]
     STATE[("State do Codex Security\nsaída + evidências")]
+    CONNECTIONS["Conexões de provider\nlocal · OAuth · API · Token Plan"]
+    VAULT[("Cofre de credenciais do SO")]
+    MODELS[("Catálogos de modelos ao vivo\n+ probes de capability")]
     ROUTER["Router de capacidades\nengine + auth + modelo"]
-    SCANNER["Adapter Codex Security"]
+    CODEXSEC["Adapter Codex Security"]
     MANTIS["Adapter Mantis scan-only"]
     VULNHUNTER["Adapter VulnHunter estático"]
     GATE["Motor de guardrails\npolítica + Decision Graph"]
@@ -118,8 +130,12 @@ flowchart LR
     UI -->|HTTP + SSE| API
     API --> DB
     API --> STATE
+    API --> CONNECTIONS
+    CONNECTIONS --> VAULT
+    CONNECTIONS --> MODELS
+    MODELS --> ROUTER
     API --> ROUTER
-    ROUTER --> SCANNER
+    ROUTER --> CODEXSEC
     ROUTER --> MANTIS
     ROUTER --> VULNHUNTER
     API --> GATE
@@ -198,15 +214,18 @@ Na inicialização, a API indexa scans compatíveis já existentes no state conf
 5. **Relatório** — gere o relatório individual no detalhe ou o comparativo após executar o diff.
 6. **Guardrails** — avalie um changeset local e publique opcionalmente a decisão como GitHub Check.
 
+> [!NOTE]
+> **Semântica de lifecycle.** Runs `standard` e `deep` contêm apenas evidências do scan atual; seus rótulos de lifecycle são `new`, `persisting` ou `regressed`. `fixed` fica reservado a um futuro contrato incremental explícito. Um baseline é uma referência de comparação da mesma linhagem, não um modo incremental, e a ausência de finding nunca prova remediação.
+
 ## Conexões de provider
 
 | Família de provider | Rotas de conexão | Disponibilidade de scanner |
 |---|---|---|
 | **OpenAI** | Codex local, OAuth ChatGPT no navegador, código de dispositivo ChatGPT, chave de API | Codex Security, Mantis e VulnHunter de acordo com a rota resolvida |
-| **xAI** | OAuth de dispositivo orquestrado localmente pelo Sentinel, chave de API, detecção local do Grok | OAuth/API pode executar Mantis e VulnHunter após prova de capability. Scan local do Grok permanece bloqueado até que a superfície de execução de plugin/hook possa ser isolada. |
-| **Anthropic** | Sessão existente Claude Code, API Anthropic | Claude local executa Mantis pela fronteira MCP-only do snapshot. Modelos de API exigem capability probe aprovada. |
+| **xAI** | OAuth de dispositivo orquestrado localmente pelo Sentinel, chave de API, detecção local do Grok | OAuth/API pode executar Codex Security Portable quando a tupla exata conexão/modelo/protocolo tem capability probe nova e aprovada; Mantis e VulnHunter continuam dependentes de capability. Scan local do Grok permanece bloqueado até que a superfície de execução de plugin/hook possa ser isolada. |
+| **Anthropic** | Sessão existente Claude Code, API Anthropic | Claude local executa Mantis pela fronteira MCP-only do snapshot. A API Anthropic pode executar Codex Security Portable quando a tupla exata tem capability probe nova e aprovada; os demais motores continuam dependentes de capability. |
 | **Cursor** | Detecção de CLI local, Background Agents API | Conexão e catálogo ao vivo disponíveis; execução de scanner não é anunciada até que o contrato de artefatos remoto/local esteja completo. |
-| **Outros HTTP** | OpenRouter, Gemini, DeepSeek, MiniMax Token Plan, MiMo Token Plan, URLs compatíveis customizadas | Mantis/VulnHunter somente quando o modelo exato passa a probe limitada de ferramentas, artefatos, cancelamento e snapshot do Sentinel. |
+| **Outros HTTP** | OpenRouter, Gemini, DeepSeek, MiniMax Token Plan, MiMo Token Plan, URLs compatíveis customizadas | Codex Security Portable, Mantis e VulnHunter ficam disponíveis somente quando a tupla exata conexão/modelo/protocolo passa a probe limitada de ferramentas, artefatos, cancelamento e snapshot do Sentinel. |
 
 Os modelos e os níveis de effort válidos vêm do catálogo autenticado e das capacidades ao vivo do provider. A única exceção de default de runtime é uma sessão local Claude Code configurada explicitamente. No OpenRouter, `reasoning.supported_efforts: null` significa que o conjunto de efforts do gateway está disponível; se `reasoning.mandatory` é `true`, `none` é removido. Quando conhecido, o effort enviado pelo Sentinel e seu campo wire são preservados; caso contrário o run registra o default do provider sem afirmar o que ele aplicou. Secrets e tokens OAuth são write-only pela API, armazenados no cofre de credenciais do sistema operacional e representados no SQLite apenas por referências opacas. O Sentinel orquestra localmente o device flow público da xAI e não depende da CLI do Grok; o acesso ao modelo é aceito somente após catálogo ao vivo e verificações de capability aprovadas.
 
@@ -306,13 +325,16 @@ Veja a [arquitetura de localização](docs/localization.pt-BR.md).
 | `CODEX_SECURITY_BIN` | `npx` | Executável do scanner |
 | `CSB_NPM_CACHE_DIR` | `data/npm-cache` | Cache npm isolado usado pelo scanner |
 | `CODEX_BIN` | CLI incluída no ChatGPT Desktop no macOS; senão `codex` | Host de inferência do Mantis e VulnHunter |
-| `VULNHUNTER_REPOSITORY_URL` | `https://github.com/capitalone/vulnhunter.git` | Repositório upstream revisado |
-| `VULNHUNTER_SOURCE_REF` | Commit revisado e fixado | Revisão exata usada em novos scans |
-| `VULNHUNTER_CACHE_DIR` | `data/vulnhunter-cache` | Cache local da skill fixada |
-| `VULNHUNTER_SKILL_DIR` | não definido | Skill já provisionada opcional, com `SKILL.md` e todas as fases |
+| `MANTIS_REPOSITORY_URL` | `https://github.com/google/mantis.git` | Repositório Mantis revisado |
+| `MANTIS_SOURCE_REF` | Commit revisado e fixado | Revisão exata do Mantis usada em novos scans |
+| `MANTIS_CACHE_DIR` | `data/mantis-cache` | Cache local das skills Mantis fixadas |
+| `VULNHUNTER_REPOSITORY_URL` | `https://github.com/capitalone/vulnhunter.git` | Repositório upstream do VulnHunter registrado como proveniência metodológica |
+| `VULNHUNTER_SOURCE_REF` | Rótulo de commit revisado | Revisão metodológica do VulnHunter registrada como proveniência; não é buscada em runtime |
 | `CSB_HOST` | `127.0.0.1` | Bind da API |
 | `CSB_PORT` | `8787` | Porta da API |
 | `CSB_MAX_CONCURRENT_SCANS` | `8` | Máximo de processos simultâneos |
+
+Para runs de assinatura ChatGPT no macOS, o Sentinel prefere o executável Codex incluído no ChatGPT Desktop. Isso mantém o host de inferência alinhado ao schema compartilhado de autenticação e cache de modelos; um `CODEX_BIN` explícito sempre prevalece.
 
 ## Desenvolvimento
 

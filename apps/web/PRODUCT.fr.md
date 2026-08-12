@@ -33,8 +33,11 @@ Le produit est utilisé pendant le développement et la revue de sécurité de d
 - Interface en PT-BR, anglais, espagnol, allemand et français avec détection et persistance locale.
 - Une baseline et jusqu’à cinq candidats par comparaison.
 - Les scans interrompus ayant conservé des findings restent disponibles comme résultats partiels clairement identifiés.
+- Portable conserve un dossier géré par le serveur et n’émet des pages de rapport que pour les candidats confirmés. Ces pages internes privées sont validées puis consolidées dans un seul rapport final ; les candidats rejetés et leur couverture sont dérivés par le serveur. Si une page ou sa validation échoue, aucun rapport final partiel n’est publié.
+- Lorsqu’un artefact terminal échoue à la validation, Portable n’accorde qu’une petite fenêtre de réparation bornée, dans les limites globales existantes du scan pour les tours, outils, temps et coût configuré.
+- Les scans standard et deep ne classent que les findings de l’exécution actuelle, en `new`, `persisting` ou `regressed`, par rapport à une baseline compatible de même lignée d’analyse. L’absence d’un finding ne constitue pas une remédiation ; `fixed` reste réservé à un futur contrat incrémental explicite.
 - Les rapports individuels et comparatifs réutilisent le même modèle de preuves, coût et efficacité et peuvent être imprimés ou exportés en PDF.
-- Le coût n’apparaît que lorsque l’usage rapporté et un prix correspondant sont disponibles ; sinon il reste indisponible, jamais un zéro inventé ou une facture d’abonnement.
+- Le coût n’apparaît que lorsque l’usage rapporté et un prix correspondant sont disponibles ; sinon il reste indisponible, jamais un zéro inventé ou une facture d’abonnement. Le plafond USD facultatif de Portable utilise l’usage rapporté et un devis correspondant figé : il bloque la requête suivante une fois atteint, tandis qu’une requête déjà en vol peut encore faire dépasser l’estimation.
 - High par dollar est une heuristique, pas une preuve d’exactitude.
 - Les preuves du scanner restent dans leur langue source pour préserver le sens technique.
 - Le registre des runs expose l’identité du moteur et du modèle, ainsi que High+ et le total des findings, afin qu’une ligne soit compréhensible sans ouvrir son détail.

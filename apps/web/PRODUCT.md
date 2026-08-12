@@ -33,8 +33,11 @@ The product is used during development and security review against local reposit
 - The UI supports PT-BR, English, Spanish, German, and French; browser locale is detected and the selection persists locally.
 - Comparisons accept one baseline and up to five candidates.
 - Interrupted scans that preserved findings remain available as explicitly labeled partial results.
+- Portable keeps a server-owned dossier and emits report pages only for confirmed candidates. Those private internal pages are validated and consolidated into one final report; rejected candidates and their coverage are server-derived. If a page or its validation fails, no partial final report is published.
+- When a terminal artifact fails validation, Portable allows only a small bounded repair window within the scan's existing global turn, tool, elapsed-time, and configured-cost limits.
+- Standard and deep scans classify only findings from the current execution as `new`, `persisting`, or `regressed` against a compatible same-lineage baseline. A missing finding is not remediation; `fixed` remains reserved for a future explicit incremental contract.
 - Individual and comparison reports reuse the evidence, cost, and efficiency model shown in the product and can be printed or exported as PDF.
-- Cost appears only when reported usage and matching pricing data are available; otherwise it is unavailable, never an invented zero or a subscription invoice.
+- Cost appears only when reported usage and matching pricing data are available; otherwise it is unavailable, never an invented zero or a subscription invoice. Portable's optional USD ceiling uses reported usage and a frozen matching quote: it blocks the next request after the ceiling is reached, while one request already in flight can take the estimate above it.
 - High-per-dollar comparisons are heuristics, not proof of accuracy.
 - Scanner-generated evidence remains in its source language to preserve technical meaning.
 - The run ledger exposes engine and model identity alongside High+ and total findings, so a row can be understood without opening its detail view.
