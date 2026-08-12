@@ -8,6 +8,7 @@ import { Kicker, MetaCell, Metric, ReportBrand, ReportFooter, ReportHeader, Repo
 import { formatDate, formatDuration, formatScanUsd, formatTokens, formatUsd, shortId } from "../format";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "../i18n";
+import { reasoningDeliveryCopy, scanReasoningDelivery } from "../lib/reasoning-delivery";
 import { executionProfileLabel } from "../lib/execution-profile";
 import { scanCostPresentation, scanTokenUsage } from "../lib/scan-cost";
 
@@ -89,6 +90,7 @@ export function ScanReportPage() {
   const usdPerFinding = estimatedUsd != null && scan.severity.total ? estimatedUsd / scan.severity.total : null;
   const reportId = `SNT-${scan.id.toUpperCase()}`;
   const resolvedExecutionProfileLabel = executionProfileLabel(scan, t);
+  const reasoningCopy = reasoningDeliveryCopy(scanReasoningDelivery(scan));
 
   return <div className="report-root min-h-screen bg-[#040407] pb-16 text-foreground">
     <div className="report-toolbar report-no-print sticky top-0 z-50 border-b border-border bg-background/95 backdrop-blur-md">
@@ -178,7 +180,7 @@ export function ScanReportPage() {
             <MetaCell label={t("report.connectionAuth")} value={scan.execution.authKind ?? "—"} />
           </>}
           <MetaCell label="MODEL" value={scan.model ?? "—"} />
-          <MetaCell label="REASONING EFFORT" value={scan.effort ?? "—"} />
+          <MetaCell label="REASONING DELIVERY" value={t(reasoningCopy.key, reasoningCopy.variables)} />
           <MetaCell label="SCAN MODE" value={scan.mode ?? "—"} />
           <MetaCell label="SCANNER VERSION" value={scan.scannerVersion ?? "—"} />
           <MetaCell label="RECIPE HASH" value={scan.recipeHash ?? "—"} />

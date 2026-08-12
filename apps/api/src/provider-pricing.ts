@@ -32,7 +32,9 @@ const GROK_45_MODEL_IDS = new Set([
 const XAI_GROK_45_RATES: ModelPricing = {
   inputUsdPerMillionTokens: 2,
   cachedInputUsdPerMillionTokens: 0.3,
-  cacheWriteInputUsdPerMillionTokens: null,
+  // xAI does not publish a separate write discount. Charging this bucket at
+  // the ordinary input rate keeps a requested ceiling conservative.
+  cacheWriteInputUsdPerMillionTokens: 2,
   outputUsdPerMillionTokens: 6,
 };
 

@@ -17,6 +17,7 @@ import { attackPathHref } from "../lib/attack-path";
 import { executionProfileLabel, portableRetryHref } from "../lib/execution-profile";
 import { scanCostPresentation, scanTokenUsage } from "../lib/scan-cost";
 import { appendTelemetryEvent, mergeTelemetrySnapshot, telemetrySnapshot } from "../lib/telemetry";
+import { reasoningDeliveryCopy, scanReasoningDelivery } from "../lib/reasoning-delivery";
 import { useI18n } from "../i18n";
 
 type View = "evidence" | "telemetry" | "profile";
@@ -74,12 +75,13 @@ export function ScanDetailPage() {
     : `${t(costCopy.rateKey)}${costCopy.disclaimerKey === null ? "" : ` · ${t(costCopy.disclaimerKey)}`}`;
   const resolvedExecutionProfileLabel = executionProfileLabel(scan, t);
   const retryHref = portableRetryHref(scan);
+  const reasoningCopy = reasoningDeliveryCopy(scanReasoningDelivery(scan));
   return <div>
     <header className="bench-panel bench-corners mb-4">
       <div className="flex h-8 items-center justify-between border-b px-3 font-mono text-[8px] uppercase tracking-[.13em] text-muted-foreground"><span className="text-primary">CHANNEL / {shortId(scan.id)}</span><span>{scan.status === "running" ? "LIVE TELEMETRY" : "ARCHIVED EVIDENCE"}</span></div>
       <div className="grid lg:grid-cols-[minmax(0,1fr)_24rem]">
         <div className="min-w-0 border-b p-5 lg:border-b-0 lg:border-r">
-          <div className="flex flex-wrap items-center gap-2"><Button asChild variant="ghost" size="sm"><Link to="/scans"><HugeiconsIcon icon={ArrowLeft01Icon} size={12} />{t("scanDetail.ledger")}</Link></Button><StatusBadge status={scan.status} /><span className="border border-primary/35 bg-primary/5 px-2 py-1 font-mono text-[9px] uppercase text-primary">{scan.engine}</span>{resolvedExecutionProfileLabel && <span aria-label={`${t("scanDetail.executionProfile")}: ${resolvedExecutionProfileLabel}`} className="border border-primary/35 bg-primary/[.04] px-2 py-1 font-mono text-[9px] uppercase text-primary">{resolvedExecutionProfileLabel}</span>}<span className="border px-2 py-1 font-mono text-[9px] text-muted-foreground">{scan.model}/{scan.effort}/{scan.mode}</span></div>
+          <div className="flex flex-wrap items-center gap-2"><Button asChild variant="ghost" size="sm"><Link to="/scans"><HugeiconsIcon icon={ArrowLeft01Icon} size={12} />{t("scanDetail.ledger")}</Link></Button><StatusBadge status={scan.status} /><span className="border border-primary/35 bg-primary/5 px-2 py-1 font-mono text-[9px] uppercase text-primary">{scan.engine}</span>{resolvedExecutionProfileLabel && <span aria-label={`${t("scanDetail.executionProfile")}: ${resolvedExecutionProfileLabel}`} className="border border-primary/35 bg-primary/[.04] px-2 py-1 font-mono text-[9px] uppercase text-primary">{resolvedExecutionProfileLabel}</span>}<span className="border px-2 py-1 font-mono text-[9px] text-muted-foreground">{scan.model ?? t("scans.providerDefault")} / {scan.mode}</span><span className="border border-border bg-muted/30 px-2 py-1 font-mono text-[8px] uppercase text-muted-foreground">{t(reasoningCopy.key, reasoningCopy.variables)}</span></div>
           <h1 className="mt-5 truncate font-heading text-3xl font-semibold tracking-[-.045em] sm:text-4xl">{scan.displayName}</h1>
           <button type="button" onClick={() => void navigator.clipboard.writeText(scan.repositoryPath ?? scan.scanDir)} className="mt-2 flex max-w-full items-center gap-2 truncate font-mono text-[10px] text-muted-foreground hover:text-primary"><HugeiconsIcon icon={Copy01Icon} size={11} />{scan.repositoryPath ?? scan.scanDir}</button>
           <div className="mt-5"><SeverityStrip counts={scan.severity} total={scan.severity.total} /></div>
@@ -129,6 +131,7 @@ function Profile({ scan }: { scan: ScanRun }) {
   const { t } = useI18n();
   const execution = scan.execution;
   const executionProfile = executionProfileLabel(scan, t) ?? "—";
+  const reasoning = reasoningDeliveryCopy(scanReasoningDelivery(scan));
   const rows = [
     ["scan id", scan.id], ["engine", scan.engine], ["provider", scan.provider ?? "—"], ["authentication", scan.authMode ?? "—"],
     ...(execution ? [
@@ -138,7 +141,7 @@ function Profile({ scan }: { scan: ScanRun }) {
       [t("scanDetail.protocol"), execution.protocol ?? "—"],
       [t("scanDetail.connectionAuth"), execution.authKind ?? "—"],
     ] : []),
-    ["pricing source", scan.cost?.pricingSource ?? "scanner"], ["pricing model", scan.cost?.pricingModel ?? scan.cost?.model ?? "—"], ["pricing updated", scan.cost?.pricingUpdatedAt ? formatDate(scan.cost.pricingUpdatedAt) : "—"], ["scanner version", scan.scannerVersion ?? "—"], ["recipe hash", scan.recipeHash ?? "—"], ["source", scan.source], ["repository", scan.repositoryPath ?? "—"], ["revision", scan.revision ?? "—"], ["scan dir", scan.scanDir], ["model", scan.model ?? "—"], ["effort", scan.effort ?? "—"], ["mode", scan.mode ?? "—"], ["started", formatDate(scan.startedAt)], ["completed", formatDate(scan.completedAt)],
+    ["pricing source", scan.cost?.pricingSource ?? "scanner"], ["pricing model", scan.cost?.pricingModel ?? scan.cost?.model ?? "—"], ["pricing updated", scan.cost?.pricingUpdatedAt ? formatDate(scan.cost.pricingUpdatedAt) : "—"], ["scanner version", scan.scannerVersion ?? "—"], ["recipe hash", scan.recipeHash ?? "—"], ["source", scan.source], ["repository", scan.repositoryPath ?? "—"], ["revision", scan.revision ?? "—"], ["scan dir", scan.scanDir], ["model", scan.model ?? "—"], ["reasoning delivery", t(reasoning.key, reasoning.variables)], ["mode", scan.mode ?? "—"], ["started", formatDate(scan.startedAt)], ["completed", formatDate(scan.completedAt)],
   ];
   return <Panel label="MANIFEST" title="Execution profile">
     {execution?.executionProfile === "portable" && <div className="border-b border-chart-3/40 bg-chart-3/[.04] px-4 py-3 text-[10px] leading-relaxed text-muted-foreground">{t("scanDetail.portableDisclosure")}</div>}

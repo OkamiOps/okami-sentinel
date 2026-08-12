@@ -56,7 +56,7 @@ export function createAnthropicMessagesWireAdapter(
         operation: "messages",
         body: {
           model: spec.model.id,
-          max_tokens: 4_096,
+          max_tokens: anthropicMaxTokens(spec.reasoningEffort),
           messages,
           ...(finalizing
             ? {}
@@ -98,6 +98,25 @@ export function createAnthropicMessagesWireAdapter(
       };
     },
   };
+}
+
+/** Long-horizon effort needs response headroom; provider-managed routes retain the proven default. */
+function anthropicMaxTokens(reasoningEffort: string | undefined): number {
+  switch (reasoningEffort) {
+    case "max":
+    case "ultra":
+    case "xhigh":
+      return 65_536;
+    case "high":
+      return 32_768;
+    case "medium":
+      return 16_384;
+    case "low":
+    case "minimal":
+      return 8_192;
+    default:
+      return 4_096;
+  }
 }
 
 function anthropicTools(

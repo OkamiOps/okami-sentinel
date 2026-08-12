@@ -17,6 +17,9 @@ const DEFAULT_KEYS = [
 const OPTION_KEYS = ["reasoningEffort", "reasoning_effort", "effort"] as const;
 const NESTED_OPTION_COLLECTION_KEYS = ["supported_efforts"] as const;
 const NESTED_DEFAULT_KEYS = ["default_effort"] as const;
+const OPENROUTER_GATEWAY_EFFORTS = [
+  "max", "xhigh", "high", "medium", "low", "minimal", "none",
+] as const;
 
 /**
  * Normalizes reasoning metadata only when a runtime/provider catalog publishes
@@ -27,7 +30,12 @@ export function reasoningEffortFromModelRecord(
   sensitiveValues: readonly string[] = [],
 ): ModelReasoningEffort | undefined {
   const reasoning = isRecord(record.reasoning) ? record.reasoning : undefined;
-  const collection = firstArray(record, OPTION_COLLECTION_KEYS) ??
+  const acceptsAllGatewayEfforts = reasoning !== undefined &&
+    Object.hasOwn(reasoning, "supported_efforts") &&
+    reasoning.supported_efforts === null;
+  const collection = acceptsAllGatewayEfforts
+    ? OPENROUTER_GATEWAY_EFFORTS
+    : firstArray(record, OPTION_COLLECTION_KEYS) ??
     (reasoning === undefined ? undefined : firstArray(reasoning, NESTED_OPTION_COLLECTION_KEYS));
   const options: string[] = [];
   const seen = new Set<string>();
@@ -40,6 +48,13 @@ export function reasoningEffortFromModelRecord(
     if (candidate !== undefined && !seen.has(candidate)) {
       seen.add(candidate);
       options.push(candidate);
+    }
+  }
+  if (reasoning?.mandatory === true) {
+    const noneIndex = options.indexOf("none");
+    if (noneIndex >= 0) {
+      options.splice(noneIndex, 1);
+      seen.delete("none");
     }
   }
 

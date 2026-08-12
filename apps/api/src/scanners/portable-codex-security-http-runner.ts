@@ -63,6 +63,7 @@ import {
 import type { ScannerUsage } from "./usage.js";
 import {
   estimateFrozenScannerUsageCost,
+  frozenScannerPricingSupportsCostBudget,
   isFrozenScannerPricing,
   type FrozenScannerPricing,
 } from "../model-pricing.js";
@@ -548,8 +549,7 @@ function assertPortableCostBudget(
     pricing.protocol !== plan.protocol ||
     pricing.modelId !== plan.modelId ||
     pricing.providerKind !== resolved.connection.providerKind ||
-    pricing.inputUsdPerMillionTokens === null ||
-    pricing.outputUsdPerMillionTokens === null
+    !frozenScannerPricingSupportsCostBudget(pricing)
   ) {
     throw new PortableCodexSecurityRunnerError("cost_budget_unavailable");
   }

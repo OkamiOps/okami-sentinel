@@ -34,6 +34,7 @@ test("freezes the official Grok 4.5 PAYG equivalent for the exact xAI OAuth tupl
   assert.equal(quote?.billingMode, "subscription");
   assert.equal(quote?.pricingRateCardId, "xai.grok-4.5.2026-07-03");
   assert.equal(quote?.maximumInputTokensInclusive, 200_000);
+  assert.equal(quote?.cacheWriteInputUsdPerMillionTokens, 2);
 
   const cost = estimateFrozenScannerUsageCost({
     reported: true,
@@ -51,6 +52,21 @@ test("freezes the official Grok 4.5 PAYG equivalent for the exact xAI OAuth tupl
   assert.equal(cost?.pricingBasis, "payg-equivalent");
   assert.equal(cost?.pricingSource, "official-rate-card");
   assert.equal(cost?.pricingTiming, "launch");
+
+  const partialUsageUpperBound = estimateFrozenScannerUsageCost({
+    reported: true,
+    inputTokens: 75_312,
+    inputTokensKnown: true,
+    cachedInputTokens: 45_056,
+    cachedInputTokensKnown: false,
+    cacheWriteInputTokens: 0,
+    cacheWriteInputTokensKnown: false,
+    outputTokens: 5_498,
+    outputTokensKnown: true,
+    maximumInputTokensPerRequest: 75_312,
+  }, quote);
+  assert.equal(partialUsageUpperBound?.estimateKind, "upper-bound");
+  assert.equal(partialUsageUpperBound?.estimatedUsd, 0.183612);
 });
 
 test("freezes MiniMax Token Plan as a PAYG equivalent rather than an invoiced scan cost", () => {

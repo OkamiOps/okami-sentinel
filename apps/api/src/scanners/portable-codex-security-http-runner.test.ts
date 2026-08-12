@@ -629,6 +629,43 @@ test("Portable Codex Security rejects an unavailable usage meter before reading 
   }
 });
 
+test("Portable Codex Security rejects an incomplete cost quote before its first paid request", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-cost-quote-preflight-"));
+  const config = configuration(root);
+  const complete = costBudget();
+  config.costBudget = {
+    ...complete,
+    pricing: {
+      ...complete.pricing,
+      cacheWriteInputUsdPerMillionTokens: null,
+    },
+  };
+  let vaultReads = 0;
+  let sessions = 0;
+  try {
+    await assert.rejects(
+      runPortableCodexSecurity(config, dependencies({
+        vault: {
+          get: async () => {
+            vaultReads += 1;
+            return { apiKey: "must-not-read" };
+          },
+        },
+        createSession: async () => {
+          sessions += 1;
+          throw new Error("must-not-start");
+        },
+      })),
+      (error: unknown) => error instanceof PortableCodexSecurityRunnerError &&
+        error.code === "cost_budget_unavailable",
+    );
+    assert.equal(vaultReads, 0);
+    assert.equal(sessions, 0);
+  } finally {
+    remove(root);
+  }
+});
+
 test("Portable Codex Security stops before the next agent event when the frozen cost ceiling is reached", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-cost-limit-"));
   const config = configuration(root);

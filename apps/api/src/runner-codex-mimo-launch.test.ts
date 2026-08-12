@@ -18,6 +18,7 @@ import type { StoredProviderConnection } from "./connections-store.js";
 import { deleteRun, getRun } from "./db.js";
 import type { ScanLaunchPlan } from "./connections/launch-plan.js";
 import { readScannerPricingQuote } from "./model-pricing.js";
+import { refreshOpenRouterPricing } from "./openrouter-pricing.js";
 import { startScan } from "./runner.js";
 import { preparePortableCodexSecurityLaunch } from "./scanners/launch.js";
 
@@ -241,6 +242,120 @@ test("startScan dispatches only the Portable worker for a resolved Portable Code
       assert.equal(launch.env[key], undefined, `${key} must not reach the Portable worker`);
     }
     launch.child.emit("close", 0);
+  } finally {
+    if (runId !== null) deleteRun(runId);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("startScan refreshes a cold OpenRouter catalog before freezing a compatible Portable ceiling", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "runner-codex-openrouter-cold-"));
+  const repositoryPath = path.join(root, "repository");
+  fs.mkdirSync(repositoryPath);
+  const customModel: ProviderModel = {
+    ...model,
+    connectionId: "custom-connection",
+    id: "future-provider/future-model",
+    displayName: "Future Model",
+  };
+  const customConnection: StoredProviderConnection = {
+    ...connection,
+    id: "custom-connection",
+    name: "Compatible API",
+    providerKind: "custom",
+    routeKind: "custom-openai-compatible",
+  };
+  let runId: string | null = null;
+  let refreshes = 0;
+  let child: ChildProcess | null = null;
+  try {
+    const run = await startScan({
+      repositoryPath,
+      displayName: `codex-openrouter-cold-${randomUUID()}`,
+      engine: "codex-security",
+      executionProfilePreference: "portable",
+      maxCostUsd: 0.25,
+      connection: {
+        connectionId: customConnection.id,
+        modelSelectionMode: "catalog",
+        modelId: customModel.id,
+      },
+    }, {
+      dependencies: {
+        validateScannerRequest: async () => scanner,
+        refreshOpenRouterPricing: async () => {
+          refreshes += 1;
+          return refreshOpenRouterPricing(
+            async () => new Response(JSON.stringify({
+              data: [{
+                id: customModel.id,
+                pricing: {
+                  prompt: "0.000001",
+                  completion: "0.000004",
+                  input_cache_read: "0.0000002",
+                },
+              }],
+            }), { status: 200 }),
+            Date.parse("2026-08-12T00:00:00.000Z"),
+          );
+        },
+        providerRuntime: {
+          launchPlans: {
+            resolve: ({ scanId }) => {
+              const base = plan(scanId);
+              return {
+                ...base,
+                connectionId: customConnection.id,
+                providerKind: customConnection.providerKind,
+                routeKind: customConnection.routeKind,
+                model: customModel,
+                execution: {
+                  executionProfile: "portable",
+                  profileVersion: "sentinel-codex-security-portable-v1",
+                  methodologyRef: "sentinel/codex-security-methodology@v1",
+                  capabilityCheckId: "probe-mimo",
+                  connectionId: customConnection.id,
+                  routeKind: customConnection.routeKind,
+                  protocol: "openai-chat",
+                  authKind: "api-key",
+                },
+                snapshot: {
+                  ...base.snapshot,
+                  connectionId: customConnection.id,
+                  routeKind: customConnection.routeKind,
+                  modelId: customModel.id,
+                },
+              };
+            },
+          },
+          store: {
+            get: () => customConnection,
+            getSnapshot: () => null,
+            getModel: () => customModel,
+          },
+          vault: {
+            available: async () => ({ available: true, backend: "keychain" }),
+            put: async () => undefined,
+            get: async () => { throw new Error("vault must not be read by parent"); },
+            delete: async () => undefined,
+          },
+        },
+        spawn: () => {
+          child = fakeChild();
+          return child;
+        },
+        environment: { PATH: "/private/portable-worker-bin" },
+      },
+    });
+    runId = run.id;
+    assert.equal(refreshes, 1);
+    const quote = readScannerPricingQuote(run.scanDir);
+    assert.equal(quote?.pricingSource, "openrouter");
+    assert.equal(quote?.pricingModelId, customModel.id);
+    assert.equal(quote?.pricingMatch, "exact");
+    assert.equal(quote?.inputUsdPerMillionTokens, 1);
+    assert.equal(quote?.outputUsdPerMillionTokens, 4);
+    child!.emit("close", 0);
   } finally {
     if (runId !== null) deleteRun(runId);
     fs.rmSync(root, { recursive: true, force: true });

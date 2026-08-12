@@ -40,6 +40,12 @@ export type ReasoningEffortControl =
   | { kind: "provider-managed"; options: []; selected: null }
   | { kind: "configurable"; options: string[]; selected: string | null };
 
+/** Cost ceilings are useful at scan-sized values; the server remains authoritative. */
+export function parseCostCeiling(value: string): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0.01 ? parsed : null;
+}
+
 /** Lets the viewport shrink instead of inheriting its scrollable grid width. */
 export const reasoningEffortPanelClass = "min-w-0 border-b p-4 md:border-b-0 md:border-r";
 

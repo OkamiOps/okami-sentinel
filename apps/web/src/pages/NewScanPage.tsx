@@ -50,10 +50,15 @@ import {
   reasoningEffortViewportClass,
   reasoningEffortGridClass,
   reasoningEffortOptionClass,
+  parseCostCeiling,
   reasoningEffortForCompatibility,
   reconcileReasoningEffort,
   validateConnectionCapability,
 } from "../lib/new-scan-routing";
+import {
+  connectionReasoningDelivery,
+  reasoningDeliveryCopy,
+} from "../lib/reasoning-delivery";
 
 const PREFS = "csb-bench-launch-v2";
 const scannerOrder: ScannerEngine[] = ["codex-security", "mantis", "vulnhunter"];
@@ -177,7 +182,7 @@ export function NewScanPage() {
   const [providerValidation, setProviderValidation] = useState<"validating" | "ready" | "failed" | "error" | null>(null);
   const [effort, setEffort] = useState<string | null>(initial.effort ?? null);
   const [mode, setMode] = useState<ScanMode>(initial.mode ?? "standard");
-  const [maxCostUsd, setMaxCostUsd] = useState(initial.maxCostUsd ?? "100");
+  const [maxCostUsd, setMaxCostUsd] = useState(initial.maxCostUsd ?? "1");
   const [unlimited, setUnlimited] = useState(initial.unlimited ?? false);
   const [paths, setPaths] = useState(initial.paths ?? "");
   const [authorized, setAuthorized] = useState(false);
@@ -209,6 +214,9 @@ export function NewScanPage() {
     () => reasoningEffortForCompatibility(compatibility, effort),
     [compatibility, effort],
   );
+  const reasoningDeliveryCopyValue = reasoningDeliveryCopy(
+    connectionReasoningDelivery(selectedConnection, reasoning.selected),
+  );
   const engineReady = catalog !== null && scanner !== undefined && canResolveConnectionWithEngine(scanner);
   const modeReady = scanner?.modes.includes(mode) === true;
   const routeReady = engineReady && modeReady && selection !== null && compatibility?.eligible === true &&
@@ -216,7 +224,7 @@ export function NewScanPage() {
     compatibility.modelSelectionMode === selection.modelSelectionMode &&
     compatibility.modelId === selection.modelId;
   const usesCostEnvelope = engine === "codex-security";
-  const cost = Math.max(100, Number(maxCostUsd) || 100);
+  const cost = parseCostCeiling(maxCostUsd) ?? 1;
   const executionProfile = engine === "codex-security" ? compatibility?.selectedProfile ?? null : null;
   const executionProfileLabel = executionProfile === "native"
     ? t("newScan.profile.native")
@@ -431,7 +439,7 @@ export function NewScanPage() {
     if (
       usesCostEnvelope &&
       !unlimited &&
-      (!Number.isFinite(Number(maxCostUsd)) || Number(maxCostUsd) < 100)
+      parseCostCeiling(maxCostUsd) === null
     ) {
       return setError(t("newScan.minimumCost"));
     }
@@ -710,6 +718,9 @@ export function NewScanPage() {
                     ))}
                   </div>
                 </div>
+                <p className="mt-3 font-mono text-[8px] uppercase leading-relaxed text-muted-foreground">
+                  {t(reasoningDeliveryCopyValue.key, reasoningDeliveryCopyValue.variables)}
+                </p>
               </div>
               <div className="p-4">
                 <div className="bench-label mb-3">{t("newScan.scanMode")}</div>
@@ -781,13 +792,16 @@ export function NewScanPage() {
                   <Input
                     id="cost"
                     type="number"
-                    min="100"
-                    step="1"
+                    min="0.01"
+                    step="0.01"
                     value={maxCostUsd}
                     onChange={(event) => setMaxCostUsd(event.target.value)}
                     disabled={unlimited}
                     className="mt-2 font-mono text-lg"
                   />
+                  <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
+                    {t("newScan.costCeilingDisclosure")}
+                  </p>
                   <label htmlFor="unlimited-cost" className="mt-3 flex cursor-pointer items-center gap-3 text-xs text-muted-foreground">
                     <Checkbox
                       id="unlimited-cost"

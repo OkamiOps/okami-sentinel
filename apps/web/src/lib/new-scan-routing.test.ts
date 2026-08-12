@@ -15,6 +15,7 @@ import {
   reasoningEffortViewportClass,
   reasoningEffortGridClass,
   reasoningEffortOptionClass,
+  parseCostCeiling,
   reasoningEffortForCompatibility,
   reconcileReasoningEffort,
 } from "./new-scan-routing.js";
@@ -45,6 +46,13 @@ test("explains an unproven Codex Security gateway contract instead of a generic 
     compatibilityReasonKey(["provider_runner_unavailable"]),
     "newScan.compatibilityPortableRunnerUnavailable",
   );
+});
+
+test("accepts practical scan-sized cost ceilings without inventing a US$100 floor", () => {
+  assert.equal(parseCostCeiling("0.01"), 0.01);
+  assert.equal(parseCostCeiling("1.25"), 1.25);
+  assert.equal(parseCostCeiling("0"), null);
+  assert.equal(parseCostCeiling("not-a-number"), null);
 });
 
 test("recognizes a selected model blocked only by a missing, stale, or failed capability probe", () => {

@@ -81,6 +81,23 @@ test("Anthropic Messages writes output effort only when the exact model publishe
   assert.equal("output_config" in (unmanaged.nextRequest([]).body as Record<string, unknown>), false);
 });
 
+test("Anthropic Messages gives long-horizon published efforts enough response budget", () => {
+  const xhigh = createAnthropicMessagesWireAdapter({
+    model: model("long-horizon-model", {
+      reasoningEffort: { options: ["low", "high", "xhigh", "max"], default: "high" },
+    }),
+    instructions: "Inspect the snapshot.",
+    reasoningEffort: "xhigh",
+  });
+  const providerManaged = createAnthropicMessagesWireAdapter({
+    model: model("provider-managed-model"),
+    instructions: "Inspect the snapshot.",
+  });
+
+  assert.equal((xhigh.nextRequest([]).body as Record<string, unknown>).max_tokens, 65_536);
+  assert.equal((providerManaged.nextRequest([]).body as Record<string, unknown>).max_tokens, 4_096);
+});
+
 test("Anthropic Messages closes the tool surface after results.write is consumed", () => {
   const adapter = createAnthropicMessagesWireAdapter({
     model: model("MiniMax-M3"),

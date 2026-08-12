@@ -226,6 +226,22 @@ export function estimateFrozenScannerUsageCost(
   return estimateFrozenUsageCost(usage, pricing, pricing);
 }
 
+/**
+ * A Portable ceiling must remain calculable even when a provider reports only
+ * aggregate input/output counters. In that case all input is conservatively
+ * charged at the normal input rate.
+ */
+export function frozenScannerPricingSupportsCostBudget(
+  pricing: FrozenScannerPricing,
+): boolean {
+  const inputRate = pricing.inputUsdPerMillionTokens;
+  const cachedRate = pricing.cachedInputUsdPerMillionTokens;
+  const cacheWriteRate = pricing.cacheWriteInputUsdPerMillionTokens;
+  const outputRate = pricing.outputUsdPerMillionTokens;
+  return inputRate !== null && cachedRate !== null && cacheWriteRate !== null &&
+    outputRate !== null && inputRate >= cachedRate && inputRate >= cacheWriteRate;
+}
+
 /** A quote is usable only by the exact server-resolved connection tuple that created it. */
 export function scannerPricingQuoteMatchesRun(
   pricing: FrozenScannerPricing,
@@ -278,8 +294,6 @@ function estimateFrozenUsageCost(
     const cacheWriteRate = pricing.cacheWriteInputUsdPerMillionTokens;
     const outputRate = pricing.outputUsdPerMillionTokens;
     if (
-      (provenance.pricingSource !== "official-rate-card" &&
-        provenance.pricingSource !== "openrouter") ||
       inputRate === null ||
       cachedRate === null ||
       cacheWriteRate === null ||

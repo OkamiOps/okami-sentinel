@@ -118,6 +118,42 @@ test("preserves provider-published reasoning metadata without model or provider 
   ]);
 });
 
+test("materializes all documented gateway efforts when a catalog publishes null", async () => {
+  const transport = fakeFetch({
+    "GET https://openrouter.ai/api/v1/models": json(200, {
+      data: [{
+        id: "vendor/reasoning-model",
+        reasoning: {
+          supported_efforts: null,
+          default_effort: "high",
+          default_enabled: true,
+          mandatory: false,
+        },
+      }, {
+        id: "vendor/mandatory-reasoning-model",
+        reasoning: {
+          supported_efforts: null,
+          default_effort: "high",
+          mandatory: true,
+        },
+      }],
+    }),
+  });
+
+  const result = await discoverOpenRouterModels({ apiKey: "secret-value" }, transport);
+
+  assert.deepEqual(result.models.map((model) => model.reasoningEffort), [
+    {
+      options: ["max", "xhigh", "high", "medium", "low", "minimal", "none"],
+      default: "high",
+    },
+    {
+      options: ["max", "xhigh", "high", "medium", "low", "minimal"],
+      default: "high",
+    },
+  ]);
+});
+
 test("uses documented cursor pagination without accepting a provider-supplied URL", async () => {
   const transport = fakeFetch({
     "GET https://gateway.example/v1/models": json(200, {

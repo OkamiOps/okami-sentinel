@@ -71,6 +71,7 @@ import { refreshPortableCodexSecurityRunFromDisk } from "./scanners/portable-cod
 import { refreshVulnHunterRunFromDisk } from "./scanners/vulnhunter-reconcile.js";
 import { getProviderRuntime, type ProviderRuntime } from "./provider-runtime.js";
 import { resolveScannerPricingQuote } from "./provider-pricing.js";
+import { refreshOpenRouterPricing } from "./openrouter-pricing.js";
 import {
   globalSecretRedactor,
   processSecretValues,
@@ -356,6 +357,7 @@ interface StartScanDependencies {
   validateScannerRequest: typeof validateScannerRequest;
   providerRuntime: StartScanProviderRuntime;
   resolveMantisLocalSource: typeof resolveMantisLocalSource;
+  refreshOpenRouterPricing: typeof refreshOpenRouterPricing;
   spawn: ScannerSpawn;
   /** Existing-session environment only; API-key variables are removed in launch.ts. */
   environment: NodeJS.ProcessEnv;
@@ -513,6 +515,26 @@ export async function startScan(
     providerRuntime,
     signal: options.signal,
   });
+  const preliminaryPricingQuote = selection.plan?.model === null || selection.plan === null
+    ? null
+    : resolveScannerPricingQuote({
+      connectionId: selection.plan.connectionId,
+      providerKind: selection.plan.providerKind,
+      routeKind: selection.plan.routeKind,
+      protocol: selection.plan.protocol,
+      modelId: selection.plan.model.id,
+      modelPricing: selection.plan.model.pricing,
+      capturedAt: new Date().toISOString(),
+    });
+  if (
+    req.maxCostUsd !== undefined &&
+    selection.plan !== null &&
+    selection.plan.model !== null &&
+    (preliminaryPricingQuote === null || preliminaryPricingQuote.pricingSource === "openrouter")
+  ) {
+    await (dependencies.refreshOpenRouterPricing ?? refreshOpenRouterPricing)();
+    throwIfLaunchAborted(options.signal);
+  }
   // This repeats the server-side immutable selection check before any vault or
   // network-facing preflight. A Portable child will repeat it once more before
   // it opens its credential boundary.
@@ -550,8 +572,6 @@ export async function startScan(
   // immutable plan has passed and the exact Codex Security API tuple, when
   // selected, has resolved its vault credential.
   const startedAt = new Date().toISOString();
-  fs.mkdirSync(outputDir, { recursive: true, mode: 0o700 });
-  fs.mkdirSync(RUNS_DIR, { recursive: true });
 
   // Connection-aware local runtime-default plans intentionally have no model.
   // Never reinstate a browser value or the legacy GPT fallback for them.
@@ -574,6 +594,11 @@ export async function startScan(
       modelPricing: selection.plan.model.pricing,
       capturedAt: startedAt,
     });
+  if (portablePlan !== undefined && req.maxCostUsd !== undefined && pricingQuote === null) {
+    throw new Error("cost_budget_unavailable");
+  }
+  fs.mkdirSync(outputDir, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(RUNS_DIR, { recursive: true });
   const requiredModel = (): string => {
     if (model === null) throw new Error("Selected scanner route requires an exact provider model");
     return model;
