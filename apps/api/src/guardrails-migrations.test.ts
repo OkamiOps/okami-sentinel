@@ -22,7 +22,7 @@ test("migrates every legacy guardrail row atomically and idempotently", () => {
     assert.equal(column(database, "gate_runs", "repository_path").notnull, 0);
     assert.deepEqual(
       database.prepare(`
-        SELECT repository_key, repository_path, source,
+        SELECT repository_key, repository_path, source, default_executor,
                github_connection_id, github_installation_id, github_repository_id
         FROM guardrail_repositories
       `).all(),
@@ -30,6 +30,7 @@ test("migrates every legacy guardrail row atomically and idempotently", () => {
         repository_key: "local:fixture",
         repository_path: "/fixture/repository",
         source: "local",
+        default_executor: "sentinel-managed",
         github_connection_id: null,
         github_installation_id: null,
         github_repository_id: null,
@@ -96,6 +97,67 @@ test("migrates every legacy guardrail row atomically and idempotently", () => {
     assert.deepEqual(
       database.prepare("SELECT version FROM guardrail_schema_migrations ORDER BY version").all(),
       [{ version: CURRENT_GUARDRAILS_SCHEMA_VERSION }],
+    );
+  } finally {
+    database.close();
+  }
+});
+
+test("adds a default executor without losing an existing v2 remote enrollment", () => {
+  const database = new Database(":memory:");
+  try {
+    database.exec(`
+      CREATE TABLE guardrail_schema_migrations (
+        version INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        applied_at TEXT NOT NULL
+      );
+      INSERT INTO guardrail_schema_migrations VALUES (
+        2, 'remote repositories and GateArtifact v2', '${NOW}'
+      );
+      CREATE TABLE guardrail_repositories (
+        repository_key TEXT PRIMARY KEY,
+        repository_path TEXT,
+        source TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        default_branch TEXT NOT NULL,
+        remote_owner TEXT,
+        remote_name TEXT,
+        github_connection_id TEXT,
+        github_installation_id TEXT,
+        github_repository_id TEXT,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        policy_path TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO guardrail_repositories VALUES (
+        'github:991122', NULL, 'github', 'OkamiOps/private-sentinel', 'main',
+        'OkamiOps', 'private-sentinel', 'connection-1', '77', '991122', 1,
+        '.csb/guardrails.json', '${NOW}', '${NOW}'
+      );
+    `);
+
+    migrateGuardrailsSchema(database);
+
+    assert.deepEqual(database.prepare(`
+      SELECT repository_key, source, repository_path, default_executor,
+             github_connection_id, github_installation_id, github_repository_id
+      FROM guardrail_repositories
+    `).all(), [{
+      repository_key: "github:991122",
+      source: "github",
+      repository_path: null,
+      default_executor: "sentinel-managed",
+      github_connection_id: "connection-1",
+      github_installation_id: "77",
+      github_repository_id: "991122",
+    }]);
+    assert.throws(
+      () => database.prepare(
+        "UPDATE guardrail_repositories SET source = 'local', default_executor = 'github-actions'",
+      ).run(),
+      /constraint/i,
     );
   } finally {
     database.close();

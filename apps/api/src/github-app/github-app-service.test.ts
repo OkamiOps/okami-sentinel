@@ -76,7 +76,13 @@ function fixture() {
   });
   const credentials = new MemoryCredentials();
   const store = new MemoryStore();
-  const calls = { exchanges: [] as string[], installations: 0, repositories: 0, cleared: [] as string[] };
+  const calls = {
+    exchanges: [] as string[],
+    installations: 0,
+    repositories: 0,
+    resources: [] as string[],
+    cleared: [] as string[],
+  };
   const client = {
     async exchangeManifestCode<T>(code: string, consume: (app: ManifestAppExchange) => Promise<T> | T) {
       calls.exchanges.push(code);
@@ -101,6 +107,15 @@ function fixture() {
         repositoryId: "9001", installationId, owner: "OkamiOps", name: "sentinel",
         defaultBranch: "main", private: true, archived: false, updatedAt: now.toISOString(),
       }];
+    },
+    async readRepositoryJson(
+      _connection: GitHubAppConnectionMetadata,
+      _installationId: string,
+      _repositoryId: string,
+      path: string,
+    ) {
+      calls.resources.push(path);
+      return { sha: "a".repeat(40) };
     },
     clearConnection(connectionId: string) { calls.cleared.push(connectionId); },
   };
@@ -211,12 +226,29 @@ test("marks a persisted connection errored when authenticated installation disco
 });
 
 test("checks repository authorization through connection and installation state before use", async () => {
-  const { service, flow, store } = fixture();
+  const { service, flow, store, calls } = fixture();
   const started = service.startManifest();
   const state = flow.authorization(started.flowId).state;
   await service.completeManifestCallback({ flowId: started.flowId, state, code: "temporary-code", error: null });
   await service.refreshRepositories("77");
   assert.equal(service.requireReadyRepository("9001").name, "sentinel");
+  assert.deepEqual(service.requireAuthorizedRepository("connection-1", "77", "9001"), {
+    ...store.repositories.get("9001")!,
+    connectionId: "connection-1",
+  });
+  assert.deepEqual(await service.readAuthorizedRepositoryJson(
+    "connection-1",
+    "77",
+    "9001",
+    "/repos/OkamiOps/sentinel/commits/main",
+    { contents: "read" },
+  ), { sha: "a".repeat(40) });
+  assert.deepEqual(calls.resources, ["/repos/OkamiOps/sentinel/commits/main"]);
+  assert.throws(
+    () => service.requireAuthorizedRepository("connection-1", "another-installation", "9001"),
+    (error: unknown) => error instanceof GitHubAppServiceError
+      && error.code === "github_installation_not_found",
+  );
 
   store.repositories.set("9001", { ...store.repositories.get("9001")!, archived: true });
   assert.throws(
@@ -247,6 +279,7 @@ function fixtureWithInstallationFailure() {
       }),
       listInstallations: async () => { throw new Error("private upstream response"); },
       listInstallationRepositories: async () => [],
+      readRepositoryJson: async () => ({}),
       clearConnection: () => undefined,
     },
     now: () => new Date("2026-08-12T12:00:00.000Z"),

@@ -37,6 +37,7 @@ function repositoryFixture(
     source: "local",
     displayName: "Codex Security Benchmark",
     defaultBranch: "main",
+    defaultExecutor: "sentinel-managed",
     remoteOwner: "okami",
     remoteName: "csb",
     githubConnectionId: null,

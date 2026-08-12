@@ -1,11 +1,12 @@
 import type Database from "better-sqlite3";
 
-export const CURRENT_GUARDRAILS_SCHEMA_VERSION = 2;
+export const CURRENT_GUARDRAILS_SCHEMA_VERSION = 3;
 
 export type GuardrailsMigrationStep =
   | "repositories_rebuilt"
   | "gates_rebuilt"
-  | "metadata_created";
+  | "metadata_created"
+  | "repository_executor_added";
 
 export interface GuardrailsMigrationHooks {
   afterStep?(step: GuardrailsMigrationStep): void;
@@ -30,27 +31,30 @@ export function migrateGuardrailsSchema(
       .get() as { version: number | null };
     const currentVersion = versionRow.version ?? 0;
 
-    if (currentVersion < CURRENT_GUARDRAILS_SCHEMA_VERSION) {
+    if (currentVersion < 2) {
       rebuildRepositories(database);
       hooks.afterStep?.("repositories_rebuilt");
       rebuildGateRuns(database);
       hooks.afterStep?.("gates_rebuilt");
       ensureMetadataTables(database);
       hooks.afterStep?.("metadata_created");
-      database.prepare(`
-        INSERT INTO guardrail_schema_migrations (version, name, applied_at)
-        VALUES (?, ?, ?)
-      `).run(
-        CURRENT_GUARDRAILS_SCHEMA_VERSION,
-        "remote repositories and GateArtifact v2",
-        new Date().toISOString(),
-      );
-      return;
     }
 
     ensureFinalRepositoryTable(database);
     ensureFinalGateRunTable(database);
     ensureMetadataTables(database);
+    if (currentVersion < 3) {
+      ensureRepositoryDefaultExecutor(database);
+      hooks.afterStep?.("repository_executor_added");
+    }
+    database.prepare(`
+      INSERT OR REPLACE INTO guardrail_schema_migrations (version, name, applied_at)
+      VALUES (?, ?, ?)
+    `).run(
+      CURRENT_GUARDRAILS_SCHEMA_VERSION,
+      "repository default gate executor",
+      new Date().toISOString(),
+    );
   });
   migrate.immediate();
 }
@@ -60,7 +64,8 @@ function schemaIsCurrent(database: Database.Database): boolean {
   const row = database
     .prepare("SELECT max(version) AS version FROM guardrail_schema_migrations")
     .get() as { version: number | null };
-  return (row.version ?? 0) >= CURRENT_GUARDRAILS_SCHEMA_VERSION;
+  return (row.version ?? 0) >= CURRENT_GUARDRAILS_SCHEMA_VERSION
+    && tableColumns(database, "guardrail_repositories").has("default_executor");
 }
 
 function rebuildRepositories(database: Database.Database): void {
@@ -72,13 +77,13 @@ function rebuildRepositories(database: Database.Database): void {
   createRepositoryTable(database, "guardrail_repositories_v2");
   database.exec(`
     INSERT INTO guardrail_repositories_v2 (
-      repository_key, repository_path, source, display_name, default_branch,
+      repository_key, repository_path, source, display_name, default_branch, default_executor,
       remote_owner, remote_name, github_connection_id,
       github_installation_id, github_repository_id, enabled, policy_path,
       created_at, updated_at
     )
     SELECT
-      repository_key, repository_path, 'local', display_name, default_branch,
+      repository_key, repository_path, 'local', display_name, default_branch, 'sentinel-managed',
       remote_owner, remote_name, NULL, NULL, NULL, enabled, policy_path,
       created_at, updated_at
     FROM guardrail_repositories
@@ -147,6 +152,7 @@ function createRepositoryTable(database: Database.Database, table: string): void
       source TEXT NOT NULL,
       display_name TEXT NOT NULL,
       default_branch TEXT NOT NULL,
+      default_executor TEXT NOT NULL DEFAULT 'sentinel-managed',
       remote_owner TEXT,
       remote_name TEXT,
       github_connection_id TEXT,
@@ -157,6 +163,8 @@ function createRepositoryTable(database: Database.Database, table: string): void
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       CHECK (source IN ('local', 'github')),
+      CHECK (default_executor IN ('sentinel-managed', 'github-actions')),
+      CHECK (source = 'github' OR default_executor = 'sentinel-managed'),
       CHECK (
         (source = 'local' AND repository_path IS NOT NULL
           AND github_connection_id IS NULL
@@ -169,6 +177,28 @@ function createRepositoryTable(database: Database.Database, table: string): void
           AND github_repository_id IS NOT NULL)
       )
     )
+  `);
+}
+
+function ensureRepositoryDefaultExecutor(database: Database.Database): void {
+  if (tableColumns(database, "guardrail_repositories").has("default_executor")) return;
+  database.exec(`DROP TABLE IF EXISTS guardrail_repositories_v3`);
+  createRepositoryTable(database, "guardrail_repositories_v3");
+  database.exec(`
+    INSERT INTO guardrail_repositories_v3 (
+      repository_key, repository_path, source, display_name, default_branch,
+      default_executor, remote_owner, remote_name, github_connection_id,
+      github_installation_id, github_repository_id, enabled, policy_path,
+      created_at, updated_at
+    )
+    SELECT
+      repository_key, repository_path, source, display_name, default_branch,
+      'sentinel-managed', remote_owner, remote_name, github_connection_id,
+      github_installation_id, github_repository_id, enabled, policy_path,
+      created_at, updated_at
+    FROM guardrail_repositories;
+    DROP TABLE guardrail_repositories;
+    ALTER TABLE guardrail_repositories_v3 RENAME TO guardrail_repositories;
   `);
 }
 

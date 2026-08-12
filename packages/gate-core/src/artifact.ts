@@ -324,7 +324,7 @@ function validateGateArtifactV2(value: unknown): asserts value is GateArtifactV2
   const resolvedTarget = validateResolvedTarget(artifact.resolvedTarget);
   const policySource = enumValue(
     artifact.policySource,
-    ["base", "protected_branch"] as const,
+    ["base", "protected_branch", "default"] as const,
     "GateArtifact.policySource",
   );
   validateTargetResolution(target, resolvedTarget, policySource);
@@ -451,6 +451,12 @@ function validateTargetResolution(
     && (target.kind !== "protected_branch" || resolved.policySha !== resolved.headSha)
   ) {
     fail("GateArtifact.policySource", "protected_branch exige alvo e policySha protegidos");
+  }
+  if (
+    policySource === "default"
+    && resolved.policySha !== (target.kind === "protected_branch" ? resolved.headSha : resolved.baseSha)
+  ) {
+    fail("GateArtifact.policySource", "default exige policySha da fonte protegida resolvida");
   }
 }
 

@@ -133,6 +133,53 @@ test("creates and caches a repository- and permission-scoped installation token"
   assert.equal(JSON.stringify(requests).includes("ghs_private_1"), false);
 });
 
+test("reads a repository resource only with a repository-scoped installation token", async () => {
+  const { privateKey } = keyPair();
+  const pem = privateKey.export({ format: "pem", type: "pkcs8" }).toString();
+  const requests: GitHubHttpRequest[] = [];
+  const client = new GitHubAppClient({
+    credentials: new MemoryCredentialStore({ privateKeyPem: pem }),
+    redactor: new RecordingRedactor(),
+    now: () => new Date("2026-08-12T12:00:00.000Z"),
+    transport: async (request) => {
+      requests.push(request);
+      if (request.url.endsWith("/access_tokens")) {
+        return {
+          status: 201,
+          body: {
+            token: "ghs_repository_read",
+            expires_at: "2026-08-12T13:00:00.000Z",
+          },
+        };
+      }
+      return { status: 200, body: { sha: "a".repeat(40) } };
+    },
+  });
+
+  assert.deepEqual(await client.readRepositoryJson(
+    connection(),
+    "77",
+    "9001",
+    "/repos/OkamiOps/sentinel/commits/main",
+    { contents: "read" },
+  ), { sha: "a".repeat(40) });
+  assert.deepEqual(JSON.parse(requests[0]?.body ?? "{}"), {
+    repository_ids: [9001],
+    permissions: { contents: "read" },
+  });
+  assert.equal(requests[1]?.headers.Authorization, "Bearer ghs_repository_read");
+  await assert.rejects(
+    client.readRepositoryJson(
+      connection(),
+      "77",
+      "9001",
+      "https://evil.example/repos/OkamiOps/sentinel",
+      { contents: "read" },
+    ),
+    /github_request_rejected/,
+  );
+});
+
 test("exchanges a manifest code without returning client or webhook secrets", async () => {
   const { privateKey } = keyPair();
   const pem = privateKey.export({ format: "pem", type: "pkcs8" }).toString();

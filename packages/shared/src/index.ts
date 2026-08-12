@@ -1155,7 +1155,7 @@ export interface GateArtifactV2 {
   executor: GateExecutorKind;
   target: GateTarget;
   resolvedTarget: ResolvedGateTarget;
-  policySource: "base" | "protected_branch";
+  policySource: "base" | "protected_branch" | "default";
   publication: GatePublicationEligibility;
   changeSet: ChangeSet;
   policy: GuardrailPolicy;
@@ -1212,6 +1212,7 @@ export interface GuardrailRepository {
   source: GateSource;
   displayName: string;
   defaultBranch: string;
+  defaultExecutor: GateExecutorKind;
   remoteOwner: string | null;
   remoteName: string | null;
   githubConnectionId: string | null;

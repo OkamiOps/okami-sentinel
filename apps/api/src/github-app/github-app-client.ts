@@ -245,6 +245,26 @@ export class GitHubAppClient {
     );
   }
 
+  async readRepositoryJson(
+    connection: GitHubAppConnectionMetadata,
+    installationId: string,
+    repositoryId: string,
+    path: string,
+    permissions: GitHubInstallationPermissions,
+  ): Promise<unknown> {
+    const token = await this.createRepositoryToken(
+      connection,
+      installationId,
+      repositoryId,
+      permissions,
+    );
+    return this.#request({
+      method: "GET",
+      path: repositoryResourcePath(path),
+      authorization: `Bearer ${token.token}`,
+    });
+  }
+
   clearConnection(connectionId: string): void {
     for (const [key, cached] of this.#tokens) {
       if (!key.startsWith(`${connectionId}:`)) continue;
@@ -397,6 +417,28 @@ function validApiBaseUrl(value: string): string {
     throw new GitHubAppClientError("github_host_not_allowed");
   }
   return url.origin;
+}
+
+function repositoryResourcePath(value: string): string {
+  if (
+    typeof value !== "string"
+    || value.length < 8
+    || value.length > 2_048
+    || !value.startsWith("/repos/")
+    || value.includes("\0")
+    || value.includes("//")
+  ) {
+    throw new GitHubAppClientError("github_request_rejected");
+  }
+  const parsed = new URL(value, "https://api.github.com");
+  if (
+    parsed.origin !== "https://api.github.com"
+    || !parsed.pathname.startsWith("/repos/")
+    || parsed.hash
+  ) {
+    throw new GitHubAppClientError("github_request_rejected");
+  }
+  return `${parsed.pathname}${parsed.search}`;
 }
 
 function assertReadyConnection(connection: GitHubAppConnectionMetadata): void {

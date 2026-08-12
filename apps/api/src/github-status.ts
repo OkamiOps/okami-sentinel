@@ -4,6 +4,7 @@ import path from "node:path";
 import type {
   GitHubCapabilityStatus,
   GuardrailGitHubStatus,
+  GuardrailRepository,
 } from "@csb/shared";
 
 import {
@@ -12,6 +13,7 @@ import {
   type GhResult,
   type GhRunner,
 } from "./github-cli.js";
+import { githubAppServiceErrorCode } from "./github-app/github-app-service.js";
 
 const SECRET_NAME = "OPENAI_API_KEY";
 const defaultCodexRunner = createGhRunner("codex");
@@ -38,6 +40,100 @@ function capability(
   action: string | null,
 ): GitHubCapabilityStatus {
   return { ready, message, action };
+}
+
+export interface RemoteGitHubStatusAuthority {
+  refreshRepositories(installationId: string): Promise<unknown>;
+  requireAuthorizedRepository(
+    connectionId: string,
+    installationId: string,
+    repositoryId: string,
+  ): { owner: string; name: string };
+}
+
+export async function getRemoteGitHubStatus(
+  repository: GuardrailRepository,
+  authority: RemoteGitHubStatusAuthority,
+): Promise<GuardrailGitHubStatus> {
+  if (
+    repository.source !== "github"
+    || repository.repositoryPath !== null
+    || repository.githubConnectionId === null
+    || repository.githubInstallationId === null
+    || repository.githubRepositoryId === null
+  ) {
+    return unavailableRemoteStatus("github_repository_not_configured");
+  }
+  try {
+    await authority.refreshRepositories(repository.githubInstallationId);
+    const authorized = authority.requireAuthorizedRepository(
+      repository.githubConnectionId,
+      repository.githubInstallationId,
+      repository.githubRepositoryId,
+    );
+    const noCli = {
+      ...capability(true, "GitHub CLI não é necessário para este repositório remoto.", null),
+      available: false,
+    };
+    const managed = repository.defaultExecutor === "sentinel-managed";
+    const status: GuardrailGitHubStatus = {
+      subscription: capability(
+        true,
+        "A conexão de inferência será validada no preview do gate.",
+        null,
+      ),
+      cli: noCli,
+      remote: capability(
+        true,
+        `Repositório GitHub ${authorized.owner}/${authorized.name} autorizado pela instalação.`,
+        null,
+      ),
+      auth: capability(true, "GitHub App autenticada e instalação ativa.", null),
+      permissions: capability(true, "Permissões da instalação aceitam o catálogo autorizado.", null),
+      secret: capability(
+        managed,
+        managed
+          ? "Execução Sentinel-managed não exige secret no repositório."
+          : "Secrets do executor Actions ainda precisam de preflight.",
+        managed ? null : "Conclua o preflight do GitHub Actions.",
+      ),
+      workflow: capability(
+        managed,
+        managed
+          ? "Execução Sentinel-managed não exige caller workflow."
+          : "Caller workflow ainda precisa de preflight.",
+        managed ? null : "Valide o caller workflow v2.",
+      ),
+      baseline: capability(true, "A instalação pode resolver a baseline por identidade GitHub.", null),
+      ready: managed,
+    };
+    return status;
+  } catch (error) {
+    return unavailableRemoteStatus(remoteStatusCode(error));
+  }
+}
+
+function unavailableRemoteStatus(code: string): GuardrailGitHubStatus {
+  const blocked = capability(
+    false,
+    `Conexão GitHub App indisponível (${code}).`,
+    "Reconecte o GitHub App e confirme o acesso ao repositório.",
+  );
+  return {
+    subscription: capability(true, "A conexão de inferência será validada no preview do gate.", null),
+    cli: { ...capability(true, "GitHub CLI não é necessário para este repositório remoto.", null), available: false },
+    remote: blocked,
+    auth: blocked,
+    permissions: blocked,
+    secret: blocked,
+    workflow: blocked,
+    baseline: blocked,
+    ready: false,
+  };
+}
+
+function remoteStatusCode(error: unknown): string {
+  return githubAppServiceErrorCode(error);
 }
 
 async function run(

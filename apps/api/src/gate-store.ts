@@ -19,6 +19,7 @@ interface GuardrailRepositoryRow {
   source: string;
   display_name: string;
   default_branch: string;
+  default_executor: string;
   remote_owner: string | null;
   remote_name: string | null;
   github_connection_id: string | null;
@@ -627,12 +628,12 @@ export function upsertGuardrailRepository(
   database
     .prepare(
       `INSERT INTO guardrail_repositories (
-         repository_key, repository_path, source, display_name, default_branch,
+         repository_key, repository_path, source, display_name, default_branch, default_executor,
          remote_owner, remote_name, github_connection_id,
          github_installation_id, github_repository_id, enabled, policy_path,
          created_at, updated_at
        ) VALUES (
-         @repository_key, @repository_path, @source, @display_name, @default_branch,
+         @repository_key, @repository_path, @source, @display_name, @default_branch, @default_executor,
          @remote_owner, @remote_name, @github_connection_id,
          @github_installation_id, @github_repository_id, @enabled, @policy_path,
          @created_at, @updated_at
@@ -642,6 +643,7 @@ export function upsertGuardrailRepository(
          source = excluded.source,
          display_name = excluded.display_name,
          default_branch = excluded.default_branch,
+         default_executor = excluded.default_executor,
          remote_owner = excluded.remote_owner,
          remote_name = excluded.remote_name,
          github_connection_id = excluded.github_connection_id,
@@ -657,6 +659,7 @@ export function upsertGuardrailRepository(
       source: repository.source,
       display_name: repository.displayName,
       default_branch: repository.defaultBranch,
+      default_executor: repository.defaultExecutor,
       remote_owner:
         repository.remoteOwner === null ? null : repository.remoteOwner,
       remote_name: repository.remoteName === null ? null : repository.remoteName,
@@ -896,6 +899,7 @@ function rowToGuardrailRepository(
     source: row.source as GateSource,
     displayName: row.display_name,
     defaultBranch: row.default_branch,
+    defaultExecutor: row.default_executor as GateExecutorKind,
     remoteOwner,
     remoteName,
     githubConnectionId: row.github_connection_id,

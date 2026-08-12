@@ -19,6 +19,7 @@ import type {
   CompareRequest,
   GateArtifact,
   GateDecision,
+  GateExecutorKind,
   GateFindingDelta,
   GateRun,
   GuardrailException,
@@ -59,8 +60,26 @@ import {
   publishGateCheck,
   type PublishGateCheckInput,
 } from "./github-check.js";
-import { getGitHubStatus } from "./github-status.js";
-import { createGitHubAppApi } from "./github-app-api.js";
+import { getGitHubStatus, getRemoteGitHubStatus } from "./github-status.js";
+import { createGitHubAppApi, getSystemGitHubAppService } from "./github-app-api.js";
+import { GitHubRepositoryService } from "./guardrails/github-repository-service.js";
+import {
+  GitHubRepositorySourceAdapter,
+  parseEnrollGuardrailRepositoryRequest,
+  type EnrollGuardrailRepositoryRequest,
+} from "./guardrails/repository-source-adapter.js";
+import { GitHubRefResolver } from "./guardrails/github-ref-resolver.js";
+import { ProtectedPolicyLoader } from "./guardrails/protected-policy-loader.js";
+import {
+  TargetPreviewError,
+  TargetPreviewService,
+  parseStartGateRequest,
+  parseTargetPreviewRequest,
+  type AcceptedGateTargetPreview,
+  type GateTargetPreview,
+  type StartGateRequest,
+  type TargetPreviewRequest,
+} from "./guardrails/target-preview.js";
 import {
   installCallerWorkflow,
   type InstallCallerWorkflowOptions,
@@ -103,7 +122,7 @@ app.use(
 
 export interface GuardrailsApiDependencies {
   listRepositories(): GuardrailRepository[];
-  resolveRepository(repositoryPath: string, displayName?: string): Promise<GuardrailRepository>;
+  enrollRepository(request: EnrollGuardrailRepositoryRequest): Promise<GuardrailRepository>;
   upsertRepository(repository: GuardrailRepository): void;
   getRepository(repositoryKey: string): GuardrailRepository | null;
   readPolicy(repositoryPath: string): GuardrailPolicy;
@@ -113,10 +132,25 @@ export interface GuardrailsApiDependencies {
   listGates(repositoryKey?: string | null): GateRun[];
   getGate(gateId: string): GateRun | null;
   getArtifact(gateId: string): GateArtifact | null;
-  startGate(request: { repositoryKey: string; baseRef: string; headRef: string }): Promise<GateRun>;
+  previewTarget(
+    repository: GuardrailRepository,
+    request: TargetPreviewRequest,
+  ): Promise<GateTargetPreview>;
+  acceptTargetPreview(
+    repository: GuardrailRepository,
+    request: {
+      previewIdentity: string;
+      target: StartGateRequest["target"];
+      executor: GateExecutorKind;
+    },
+  ): AcceptedGateTargetPreview;
+  startGate(
+    request: StartGateRequest,
+    acceptedPreview: AcceptedGateTargetPreview | null,
+  ): Promise<GateRun>;
   cancelGate(gateId: string): boolean;
   subscribeGate(gateId: string, listener: (event: GateEvent) => void): () => void;
-  getGitHubStatus(repositoryPath: string): ReturnType<typeof getGitHubStatus>;
+  getGitHubStatus(repository: GuardrailRepository): ReturnType<typeof getGitHubStatus>;
   installWorkflow(
     repositoryPath: string,
     options: InstallCallerWorkflowOptions,
@@ -129,10 +163,39 @@ export interface GuardrailsApiDependencies {
 }
 
 const githubBaselineProvider = new GitHubBaselineProvider();
+const repositoryEnrollmentService = new GitHubRepositoryService({
+  inspectLocal: inspectRepository,
+  requireAuthorizedRepository: (connectionId, installationId, repositoryId) =>
+    getSystemGitHubAppService().requireAuthorizedRepository(
+      connectionId,
+      installationId,
+      repositoryId,
+    ),
+});
+const githubRepositorySource = new GitHubRepositorySourceAdapter({
+  readAuthorizedRepositoryJson: (connectionId, installationId, repositoryId, resourcePath, permissions) =>
+    getSystemGitHubAppService().readAuthorizedRepositoryJson(
+      connectionId,
+      installationId,
+      repositoryId,
+      resourcePath,
+      permissions,
+    ),
+});
+const githubRefResolver = new GitHubRefResolver(githubRepositorySource);
+const protectedPolicyLoader = new ProtectedPolicyLoader(githubRepositorySource);
+const targetPreviewService = new TargetPreviewService({
+  resolveTarget: (repository, target) => githubRefResolver.resolve(repository, target),
+  loadPolicy: (repository, target, resolved) =>
+    protectedPolicyLoader.load(repository, target, resolved),
+  executorCapability: (_repository, executor) => executor === "sentinel-managed"
+    ? { ready: false, code: "managed_executor_unavailable" }
+    : { ready: false, code: "github_actions_unavailable" },
+});
 
 const guardrailsDependencies: GuardrailsApiDependencies = {
   listRepositories: listGuardrailRepositories,
-  resolveRepository: inspectRepository,
+  enrollRepository: (request) => repositoryEnrollmentService.enroll(request),
   upsertRepository: upsertGuardrailRepository,
   getRepository: findRepository,
   readPolicy: readGuardrailPolicy,
@@ -142,10 +205,14 @@ const guardrailsDependencies: GuardrailsApiDependencies = {
   listGates: listGateRuns,
   getGate: getGateRun,
   getArtifact: getGateArtifact,
-  startGate: startLocalGate,
+  previewTarget: (repository, request) => targetPreviewService.create(repository, request),
+  acceptTargetPreview: (repository, request) => targetPreviewService.accept(repository, request),
+  startGate: startGuardrailGate,
   cancelGate,
   subscribeGate,
-  getGitHubStatus,
+  getGitHubStatus: (repository) => repository.source === "github"
+    ? getRemoteGitHubStatus(repository, getSystemGitHubAppService())
+    : getGitHubStatus(localRepositoryPath(repository)),
   installWorkflow: installCallerWorkflow,
   syncBaseline: (repository) => githubBaselineProvider.getBaseline({
     repositoryKey: repository.repositoryKey,
@@ -169,15 +236,23 @@ export function createGuardrailsApp(
 
   guardrails.post("/guardrails/repositories", async (c) => {
     try {
-      const body = await c.req.json<{ repositoryPath?: string; displayName?: string }>();
-      if (typeof body.repositoryPath !== "string" || !body.repositoryPath.trim()) {
-        return c.json({ error: "Caminho do repositório é obrigatório" }, 400);
-      }
-      const repository = await deps.resolveRepository(body.repositoryPath, body.displayName);
+      const request = parseEnrollGuardrailRepositoryRequest(await c.req.json<unknown>());
+      const repository = await deps.enrollRepository(request);
       deps.upsertRepository(repository);
       return c.json({ repository }, 201);
     } catch (error) {
       return c.json({ error: errorMessage(error) }, 400);
+    }
+  });
+
+  guardrails.post("/guardrails/repositories/:repositoryKey/target-preview", async (c) => {
+    const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
+    if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
+    try {
+      const request = parseTargetPreviewRequest(await c.req.json<unknown>());
+      return c.json({ preview: await deps.previewTarget(repository, request) });
+    } catch (error) {
+      return c.json({ error: errorMessage(error) }, targetPreviewStatus(error));
     }
   });
 
@@ -236,10 +311,7 @@ export function createGuardrailsApp(
   guardrails.get("/guardrails/repositories/:repositoryKey/github-status", async (c) => {
     const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
     if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
-    if (repository.repositoryPath === null) {
-      return c.json({ error: "Status remoto requer conexão GitHub App" }, 409);
-    }
-    const status = await deps.getGitHubStatus(repository.repositoryPath);
+    const status = await deps.getGitHubStatus(repository);
     return c.json({ status });
   });
 
@@ -278,22 +350,21 @@ export function createGuardrailsApp(
 
   guardrails.post("/guardrails/gates", async (c) => {
     try {
-      const body = await c.req.json<{
-        repositoryKey?: string;
-        baseRef?: string;
-        headRef?: string;
-      }>();
-      if (!body.repositoryKey || !body.baseRef || !body.headRef) {
-        return c.json({ error: "repositoryKey, baseRef e headRef são obrigatórios" }, 400);
-      }
-      const gate = await deps.startGate({
-        repositoryKey: body.repositoryKey,
-        baseRef: body.baseRef,
-        headRef: body.headRef,
-      });
+      const request = parseStartGateRequest(await c.req.json<unknown>());
+      const repository = deps.getRepository(request.repositoryKey);
+      if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
+      const executor = request.executor ?? repository.defaultExecutor;
+      const acceptedPreview = repository.source === "github"
+        ? deps.acceptTargetPreview(repository, {
+            previewIdentity: requiredPreviewIdentity(request.previewIdentity),
+            target: request.target,
+            executor,
+          })
+        : null;
+      const gate = await deps.startGate({ ...request, executor }, acceptedPreview);
       return c.json({ gate }, 202);
     } catch (error) {
-      return c.json({ error: errorMessage(error) }, 400);
+      return c.json({ error: errorMessage(error) }, targetPreviewStatus(error));
     }
   });
 
@@ -672,6 +743,7 @@ async function inspectRepository(
     source: "local",
     displayName,
     defaultBranch,
+    defaultExecutor: "sentinel-managed",
     remoteOwner: remote?.owner ?? null,
     remoteName: remote?.name ?? null,
     githubConnectionId: null,
@@ -682,6 +754,33 @@ async function inspectRepository(
     lastGateId: null,
     githubStatus: remote ? "not_checked" : "not_configured",
   };
+}
+
+async function startGuardrailGate(
+  request: StartGateRequest,
+  acceptedPreview: AcceptedGateTargetPreview | null,
+): Promise<GateRun> {
+  const repository = findRepository(request.repositoryKey);
+  if (!repository) throw new TargetPreviewError("target_preview_invalid");
+  const executor = request.executor ?? repository.defaultExecutor;
+  if (repository.source === "local") {
+    if (
+      executor !== "sentinel-managed"
+      || request.target.kind !== "compare"
+      || acceptedPreview !== null
+    ) {
+      throw new TargetPreviewError("target_preview_invalid");
+    }
+    return startLocalGate({
+      repositoryKey: repository.repositoryKey,
+      baseRef: request.target.baseRef,
+      headRef: request.target.headRef,
+    });
+  }
+  if (acceptedPreview === null) {
+    throw new TargetPreviewError("target_preview_stale");
+  }
+  throw new TargetPreviewError("target_preview_executor_unavailable");
 }
 
 function localRepositoryPath(repository: GuardrailRepository): string {
@@ -713,6 +812,21 @@ function repositoryKey(value: string): string {
   } catch {
     return value;
   }
+}
+
+function requiredPreviewIdentity(value: string | undefined): string {
+  if (value === undefined) throw new TargetPreviewError("target_preview_stale");
+  return value;
+}
+
+function targetPreviewStatus(error: unknown): 400 | 409 {
+  return error instanceof TargetPreviewError
+    && (
+      error.code === "target_preview_stale"
+      || error.code === "target_preview_executor_unavailable"
+    )
+    ? 409
+    : 400;
 }
 
 function hasGitHubRemote(

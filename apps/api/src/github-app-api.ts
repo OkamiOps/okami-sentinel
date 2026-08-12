@@ -133,7 +133,7 @@ export function createGitHubAppApi(injectedService?: GitHubAppApiService): Hono 
   return api;
 }
 
-function getSystemGitHubAppService(): GitHubAppService {
+export function getSystemGitHubAppService(): GitHubAppService {
   if (systemService) return systemService;
   const credentials = new SystemGitHubAppCredentialStore({
     redactor: globalSecretRedactor,

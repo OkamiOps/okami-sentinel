@@ -362,6 +362,10 @@ test("rejects malformed or over-trusting GateArtifact v2 envelopes", () => {
   impossiblePolicySource.policySource = "protected_branch";
   assert.throws(() => buildGateArtifactV2(impossiblePolicySource), /policySource/);
 
+  const missingProtectedPolicy = artifactV2Input();
+  missingProtectedPolicy.policySource = "default";
+  assert.equal(buildGateArtifactV2(missingProtectedPolicy).policySource, "default");
+
   const hostPath = artifactV2Input();
   hostPath.repository.locator = {
     kind: "github",

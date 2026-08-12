@@ -111,6 +111,7 @@ function fakeDeps(options: {
     source: "local",
     displayName: "Codex Security Benchmark",
     defaultBranch: "main",
+    defaultExecutor: "sentinel-managed",
     remoteOwner: options.remoteReady === false ? null : "okami",
     remoteName: options.remoteReady === false ? null : "csb",
     githubConnectionId: null,

@@ -4,8 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import type { GuardrailRepository } from "@csb/shared";
+
 import type { GhResult, GhRunner } from "./github-cli.js";
-import { getGitHubStatus } from "./github-status.js";
+import { getGitHubStatus, getRemoteGitHubStatus } from "./github-status.js";
 
 interface FakeGhOptions {
   authenticated?: boolean;
@@ -185,4 +187,70 @@ test("does not present an API-key login as a subscription", async () => {
   } finally {
     fs.rmSync(repositoryPath, { recursive: true, force: true });
   }
+});
+
+test("resolves a remote repository exclusively through GitHub App authority", async () => {
+  const calls: string[] = [];
+  const repository: GuardrailRepository = {
+    repositoryKey: "github:991122",
+    repositoryPath: null,
+    source: "github",
+    displayName: "OkamiOps/private-sentinel",
+    defaultBranch: "main",
+    defaultExecutor: "sentinel-managed",
+    remoteOwner: "OkamiOps",
+    remoteName: "private-sentinel",
+    githubConnectionId: "connection-1",
+    githubInstallationId: "77",
+    githubRepositoryId: "991122",
+    enabled: true,
+    policyPath: ".csb/guardrails.json",
+    lastGateId: null,
+    githubStatus: "not_checked",
+  };
+
+  const status = await getRemoteGitHubStatus(repository, {
+    refreshRepositories: async (installationId) => { calls.push(`refresh:${installationId}`); },
+    requireAuthorizedRepository: (connectionId, installationId, repositoryId) => {
+      calls.push(`authorize:${connectionId}:${installationId}:${repositoryId}`);
+      return { owner: "OkamiOps", name: "private-sentinel" };
+    },
+  });
+
+  assert.deepEqual(calls, ["refresh:77", "authorize:connection-1:77:991122"]);
+  assert.equal(status.cli.available, false);
+  assert.equal(status.cli.ready, true);
+  assert.equal(status.auth.ready, true);
+  assert.equal(status.remote.ready, true);
+  assert.equal(status.secret.ready, true);
+  assert.equal(status.workflow.ready, true);
+  assert.equal(status.ready, true);
+});
+
+test("keeps GitHub Actions remote status blocked until its executor preflight exists", async () => {
+  const repository: GuardrailRepository = {
+    repositoryKey: "github:991122",
+    repositoryPath: null,
+    source: "github",
+    displayName: "OkamiOps/private-sentinel",
+    defaultBranch: "main",
+    defaultExecutor: "github-actions",
+    remoteOwner: "OkamiOps",
+    remoteName: "private-sentinel",
+    githubConnectionId: "connection-1",
+    githubInstallationId: "77",
+    githubRepositoryId: "991122",
+    enabled: true,
+    policyPath: ".csb/guardrails.json",
+    lastGateId: null,
+    githubStatus: "not_checked",
+  };
+  const status = await getRemoteGitHubStatus(repository, {
+    refreshRepositories: async () => undefined,
+    requireAuthorizedRepository: () => ({ owner: "OkamiOps", name: "private-sentinel" }),
+  });
+  assert.equal(status.auth.ready, true);
+  assert.equal(status.secret.ready, false);
+  assert.equal(status.workflow.ready, false);
+  assert.equal(status.ready, false);
 });

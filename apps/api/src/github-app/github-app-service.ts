@@ -7,7 +7,10 @@ import type {
   GitHubInstallationRepositoryMetadata,
 } from "../gate-store.js";
 import type { ManifestAppExchange } from "./github-app-client.js";
-import { GitHubAppClientError } from "./github-app-client.js";
+import {
+  GitHubAppClientError,
+  type GitHubInstallationPermissions,
+} from "./github-app-client.js";
 import type { GitHubAppStore } from "./github-app-store.js";
 import type {
   GitHubAppManifestFlow,
@@ -63,6 +66,13 @@ export interface GitHubAppServiceClient {
     connection: GitHubAppConnectionMetadata,
     installationId: string,
   ): Promise<GitHubInstallationRepositoryMetadata[]>;
+  readRepositoryJson(
+    connection: GitHubAppConnectionMetadata,
+    installationId: string,
+    repositoryId: string,
+    path: string,
+    permissions: GitHubInstallationPermissions,
+  ): Promise<unknown>;
   clearConnection(connectionId: string): void;
 }
 
@@ -80,6 +90,10 @@ export interface CompleteManifestCallbackInput {
   state: string;
   code: string | null;
   error: string | null;
+}
+
+export interface AuthorizedGitHubRepositorySelection extends GitHubInstallationRepositoryMetadata {
+  connectionId: string;
 }
 
 export class GitHubAppService {
@@ -194,6 +208,43 @@ export class GitHubAppService {
       throw new GitHubAppServiceError("github_repository_revoked");
     }
     return repository;
+  }
+
+  requireAuthorizedRepository(
+    connectionId: string,
+    installationId: string,
+    repositoryId: string,
+  ): AuthorizedGitHubRepositorySelection {
+    const connection = this.#readyConnection(connectionId);
+    const installation = this.#installation(installationId);
+    if (installation.connectionId !== connection.id || installation.status !== "ready") {
+      throw new GitHubAppServiceError("github_installation_revoked");
+    }
+    const repository = this.#store.getRepository(repositoryId);
+    if (!repository || repository.installationId !== installation.id) {
+      throw new GitHubAppServiceError("github_repository_not_found");
+    }
+    if (repository.archived) {
+      throw new GitHubAppServiceError("github_repository_revoked");
+    }
+    return { ...repository, connectionId: connection.id };
+  }
+
+  async readAuthorizedRepositoryJson(
+    connectionId: string,
+    installationId: string,
+    repositoryId: string,
+    path: string,
+    permissions: GitHubInstallationPermissions,
+  ): Promise<unknown> {
+    this.requireAuthorizedRepository(connectionId, installationId, repositoryId);
+    return this.#client.readRepositoryJson(
+      this.#readyConnection(connectionId),
+      installationId,
+      repositoryId,
+      path,
+      permissions,
+    );
   }
 
   async disconnect(connectionId: string): Promise<void> {
