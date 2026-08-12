@@ -69,6 +69,44 @@ test("purges a managed scan directory together with its runtime log", () => {
   }
 });
 
+test("purges Codex sessions rooted at a scan without touching a sibling scan", () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "csb-cleanup-sessions-"));
+  const managedRoot = path.join(fixtureRoot, "scans");
+  const sessionsRoot = path.join(fixtureRoot, "sessions");
+  const scanDir = path.join(managedRoot, "repository", "csb-target");
+  const siblingDir = path.join(managedRoot, "repository", "csb-target-other");
+  const exactSession = path.join(sessionsRoot, "exact.jsonl");
+  const workerSession = path.join(sessionsRoot, "worker.jsonl");
+  const siblingSession = path.join(sessionsRoot, "sibling.jsonl");
+
+  fs.mkdirSync(scanDir, { recursive: true });
+  fs.mkdirSync(siblingDir, { recursive: true });
+  fs.mkdirSync(sessionsRoot, { recursive: true });
+  const writeSession = (file: string, cwd: string) => fs.writeFileSync(
+    file,
+    `${JSON.stringify({ type: "session_meta", payload: { cwd } })}\n`,
+    "utf8",
+  );
+  writeSession(exactSession, scanDir);
+  writeSession(
+    workerSession,
+    path.join(scanDir, "artifacts", "deep_discovery", "workers", "discovery-0001", "output"),
+  );
+  writeSession(siblingSession, siblingDir);
+
+  try {
+    const result = purgeScanArtifacts(scanDir, [managedRoot], sessionsRoot);
+
+    assert.equal(result.sessionsDeleted, 2);
+    assert.equal(fs.existsSync(exactSession), false);
+    assert.equal(fs.existsSync(workerSession), false);
+    assert.equal(fs.existsSync(siblingSession), true);
+    assert.equal(fs.existsSync(siblingDir), true);
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
 test("purges a managed Portable snapshot after it was locked read-only", () => {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "csb-cleanup-readonly-"));
   const managedRoot = path.join(fixtureRoot, "scans");

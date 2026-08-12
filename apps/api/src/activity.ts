@@ -285,13 +285,23 @@ function purgeCodexSessionsForScan(scanDir: string, sessionsRoot: string): numbe
   const files = listSessionFilesWithoutFollowingLinks(resolvedRoot);
   let deleted = 0;
   for (const file of files) {
-    if (readSessionCwd(file) !== scanDir) continue;
+    const sessionCwd = readSessionCwd(file);
+    if (!sessionCwd || !isPathAtOrBelow(sessionCwd, scanDir)) continue;
     fs.rmSync(file, { force: true });
     assertPathRemoved(file, "Sessão Codex vinculada ao scan");
     deleted += 1;
     pruneEmptyAncestors(path.dirname(file), resolvedRoot);
   }
   return deleted;
+}
+
+function isPathAtOrBelow(candidate: string, parent: string): boolean {
+  const relative = path.relative(path.resolve(parent), path.resolve(candidate));
+  return relative === "" || (
+    relative !== ".."
+    && !relative.startsWith(`..${path.sep}`)
+    && !path.isAbsolute(relative)
+  );
 }
 
 function listSessionFilesWithoutFollowingLinks(root: string): string[] {
