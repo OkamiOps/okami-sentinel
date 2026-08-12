@@ -1,8 +1,14 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { execSync } from "node:child_process";
 import Database from "better-sqlite3";
-import { RUNS_DIR, SCANS_ROOT, WORKBENCH_DB_PATH } from "./config.js";
+import {
+  CODEX_SECURITY_SESSIONS_DIR,
+  RUNS_DIR,
+  SCANS_ROOT,
+  WORKBENCH_DB_PATH,
+} from "./config.js";
 import { dirsMatch } from "./progress.js";
 import { redactText } from "./redaction.js";
 
@@ -18,6 +24,20 @@ export interface CliLogSnapshot {
 export interface CliLogEntry {
   line: string;
   cursor: number;
+}
+
+export interface PurgedScanArtifacts {
+  artifactsDeleted: true;
+  sessionsDeleted: number;
+}
+
+export interface PurgedScanRunArtifacts extends PurgedScanArtifacts {
+  workbenchRowsDeleted: number;
+}
+
+interface WorkbenchArtifactRow {
+  id: string;
+  scan_dir: string;
 }
 
 export function appendCliLog(scanDir: string, line: string): number {
@@ -78,8 +98,11 @@ export function readCliLogTail(scanDir: string, maxLines = 250): string[] {
 export function purgeScanArtifacts(
   scanDir: string,
   managedRoots: string[] = [SCANS_ROOT],
-): void {
-  if (!isManagedScanArtifactDirectory(scanDir, managedRoots)) {
+  sessionsRoot = CODEX_SECURITY_SESSIONS_DIR,
+  removeRuntimeLog = true,
+): PurgedScanArtifacts {
+  const managedRoot = managedRootForScanDirectory(scanDir, managedRoots);
+  if (!managedRoot) {
     throw new Error("Diretório do scan fora das raízes gerenciadas; exclusão recusada.");
   }
 
@@ -91,7 +114,259 @@ export function purgeScanArtifacts(
     maxRetries: 3,
     retryDelay: 50,
   });
-  fs.rmSync(cliLogPath(resolvedScanDir), { force: true });
+  assertPathRemoved(resolvedScanDir, "Diretório de artefatos do scan");
+
+  if (removeRuntimeLog) {
+    const logPath = cliLogPath(resolvedScanDir);
+    fs.rmSync(logPath, { force: true });
+    assertPathRemoved(logPath, "Log do scan");
+  }
+
+  const sessionsDeleted = purgeCodexSessionsForScan(resolvedScanDir, sessionsRoot);
+  pruneEmptyAncestors(path.dirname(resolvedScanDir), managedRoot);
+
+  return { artifactsDeleted: true, sessionsDeleted };
+}
+
+export function purgeScanRunArtifacts(
+  scanDir: string,
+  databasePath = WORKBENCH_DB_PATH,
+): PurgedScanRunArtifacts {
+  const workbenchRows = matchingWorkbenchArtifactRows(scanDir, databasePath);
+  const registeredWorkbenchDirectories = new Set(
+    workbenchRows.map((row) => path.resolve(row.scan_dir)),
+  );
+  const targets = [...new Set([
+    path.resolve(scanDir),
+    ...registeredWorkbenchDirectories,
+  ])];
+
+  const plans = targets.map((target) => {
+    const configuredRoot = managedRootForScanDirectory(target, [SCANS_ROOT]);
+    if (configuredRoot) return { target, root: configuredRoot };
+
+    if (registeredWorkbenchDirectories.has(target)) {
+      const temporaryRoot = registeredWorkbenchArtifactRoot(target);
+      if (temporaryRoot) return { target, root: temporaryRoot };
+    }
+    throw new Error("Diretório do scan fora das raízes gerenciadas; exclusão recusada.");
+  });
+
+  let sessionsDeleted = 0;
+  for (const plan of plans) {
+    const purge = purgeScanArtifacts(
+      plan.target,
+      [plan.root],
+      CODEX_SECURITY_SESSIONS_DIR,
+      plan.target === path.resolve(scanDir),
+    );
+    sessionsDeleted += purge.sessionsDeleted;
+  }
+
+  const workbenchRowsDeleted = deleteWorkbenchScanRecords(
+    workbenchRows,
+    databasePath,
+  );
+  return { artifactsDeleted: true, sessionsDeleted, workbenchRowsDeleted };
+}
+
+function matchingWorkbenchArtifactRows(
+  scanDir: string,
+  databasePath: string,
+): WorkbenchArtifactRow[] {
+  if (!fs.existsSync(databasePath)) return [];
+
+  const database = new Database(databasePath, {
+    readonly: true,
+    fileMustExist: true,
+  });
+  try {
+    const rows = database
+      .prepare("SELECT id, scan_dir FROM scans")
+      .all() as WorkbenchArtifactRow[];
+    const exact = rows.filter(
+      (row) => path.resolve(row.scan_dir) === path.resolve(scanDir),
+    );
+    if (exact.length > 0) return exact;
+
+    const identity = scanArtifactIdentity(scanDir);
+    if (!identity) return [];
+    const related = rows.filter((row) =>
+      path.resolve(row.scan_dir)
+        .split(path.sep)
+        .filter(Boolean)
+        .includes(identity),
+    );
+    if (related.length > 1) {
+      throw new Error("Identidade do scan ambígua no ledger operacional; exclusão recusada.");
+    }
+    return related;
+  } finally {
+    database.close();
+  }
+}
+
+function scanArtifactIdentity(scanDir: string): string | null {
+  const basename = path.basename(path.resolve(scanDir));
+  return basename.startsWith("csb-") ? basename : null;
+}
+
+function deleteWorkbenchScanRecords(
+  rows: WorkbenchArtifactRow[],
+  databasePath: string,
+): number {
+  if (rows.length === 0) return 0;
+  if (!fs.existsSync(databasePath)) {
+    throw new Error("Ledger operacional mudou durante a exclusão; tente novamente.");
+  }
+
+  const database = new Database(databasePath, { fileMustExist: true });
+  try {
+    database.pragma("foreign_keys = ON");
+    return database.transaction(() => {
+      const remove = database.prepare(
+        "DELETE FROM scans WHERE id = ? AND scan_dir = ?",
+      );
+      let deleted = 0;
+      for (const row of rows) {
+        deleted += remove.run(row.id, row.scan_dir).changes;
+      }
+      if (deleted !== rows.length) {
+        throw new Error("Ledger operacional mudou durante a exclusão; tente novamente.");
+      }
+      return deleted;
+    })();
+  } finally {
+    database.close();
+  }
+}
+
+function registeredWorkbenchArtifactRoot(scanDir: string): string | null {
+  const resolvedScanDir = path.resolve(scanDir);
+  const resolvedTempRoot = path.resolve(os.tmpdir());
+  const canonicalTempRoot = fs.existsSync(resolvedTempRoot)
+    ? fs.realpathSync.native(resolvedTempRoot)
+    : resolvedTempRoot;
+  const canonicalScanDir = fs.existsSync(resolvedScanDir)
+    ? fs.realpathSync.native(resolvedScanDir)
+    : resolvedScanDir;
+  const relative = path.relative(canonicalTempRoot, canonicalScanDir);
+  if (
+    relative === "" ||
+    relative === ".." ||
+    relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative)
+  ) return null;
+
+  let current = path.dirname(canonicalScanDir);
+  while (current !== canonicalTempRoot) {
+    if (path.basename(current).startsWith("codex-security-scans-")) return current;
+    const parent = path.dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+  return null;
+}
+
+function assertPathRemoved(candidate: string, label: string): void {
+  try {
+    fs.lstatSync(candidate);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  throw new Error(`${label} não foi removido; o run continua no ledger.`);
+}
+
+function purgeCodexSessionsForScan(scanDir: string, sessionsRoot: string): number {
+  const resolvedRoot = path.resolve(sessionsRoot);
+  if (!fs.existsSync(resolvedRoot)) return 0;
+
+  const files = listSessionFilesWithoutFollowingLinks(resolvedRoot);
+  let deleted = 0;
+  for (const file of files) {
+    if (readSessionCwd(file) !== scanDir) continue;
+    fs.rmSync(file, { force: true });
+    assertPathRemoved(file, "Sessão Codex vinculada ao scan");
+    deleted += 1;
+    pruneEmptyAncestors(path.dirname(file), resolvedRoot);
+  }
+  return deleted;
+}
+
+function listSessionFilesWithoutFollowingLinks(root: string): string[] {
+  const files: string[] = [];
+  const directories = [root];
+  while (directories.length > 0) {
+    const current = directories.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    for (const entry of entries) {
+      const candidate = path.join(current, entry.name);
+      if (entry.isDirectory()) directories.push(candidate);
+      else if (entry.isFile() && entry.name.endsWith(".jsonl")) files.push(candidate);
+    }
+  }
+  return files;
+}
+
+function readSessionCwd(file: string): string | null {
+  const noFollow = typeof fs.constants.O_NOFOLLOW === "number"
+    ? fs.constants.O_NOFOLLOW
+    : 0;
+  let descriptor: number | null = null;
+  try {
+    descriptor = fs.openSync(file, fs.constants.O_RDONLY | noFollow);
+    const buffer = Buffer.alloc(64 * 1024);
+    const bytesRead = fs.readSync(descriptor, buffer, 0, buffer.length, 0);
+    const line = buffer.subarray(0, bytesRead).toString("utf8").split(/\r?\n/, 1)[0];
+    if (!line) return null;
+    const row = JSON.parse(line) as {
+      type?: unknown;
+      payload?: { cwd?: unknown };
+    };
+    return row.type === "session_meta" && typeof row.payload?.cwd === "string"
+      ? path.resolve(row.payload.cwd)
+      : null;
+  } catch (error) {
+    if (["ENOENT", "ELOOP"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+      return null;
+    }
+    return null;
+  } finally {
+    if (descriptor !== null) fs.closeSync(descriptor);
+  }
+}
+
+function pruneEmptyAncestors(candidate: string, boundary: string): void {
+  const resolvedBoundary = path.resolve(boundary);
+  let current = path.resolve(candidate);
+  while (current !== resolvedBoundary) {
+    const relative = path.relative(resolvedBoundary, current);
+    if (
+      relative === "" ||
+      relative === ".." ||
+      relative.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relative)
+    ) return;
+    try {
+      fs.rmdirSync(current);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
+        current = path.dirname(current);
+        continue;
+      }
+      if (["ENOTEMPTY", "EEXIST"].includes(code ?? "")) return;
+      throw error;
+    }
+    current = path.dirname(current);
+  }
 }
 
 function unlockManagedArtifactTree(candidate: string): void {
@@ -146,21 +421,31 @@ export function isManagedScanArtifactDirectory(
   scanDir: string,
   managedRoots: string[] = [SCANS_ROOT],
 ): boolean {
+  return managedRootForScanDirectory(scanDir, managedRoots) !== null;
+}
+
+function managedRootForScanDirectory(
+  scanDir: string,
+  managedRoots: string[],
+): string | null {
   const resolvedScanDir = path.resolve(scanDir);
   const canonicalScanDir = fs.existsSync(resolvedScanDir)
     ? fs.realpathSync.native(resolvedScanDir)
     : resolvedScanDir;
-  return managedRoots.some((root) => {
+  for (const root of managedRoots) {
     const resolvedRoot = path.resolve(root);
     const canonicalRoot = fs.existsSync(resolvedRoot)
       ? fs.realpathSync.native(resolvedRoot)
       : resolvedRoot;
     const relative = path.relative(canonicalRoot, canonicalScanDir);
-    return relative !== ""
+    if (
+      relative !== ""
       && relative !== ".."
       && !relative.startsWith(`..${path.sep}`)
-      && !path.isAbsolute(relative);
-  });
+      && !path.isAbsolute(relative)
+    ) return resolvedRoot;
+  }
+  return null;
 }
 
 /** Resolve the live workbench scan_dir for a CSB (or workbench) directory. */

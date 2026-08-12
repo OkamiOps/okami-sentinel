@@ -251,7 +251,12 @@ export const api = {
   cancelScan: (id: string) =>
     request<{ ok: boolean }>(`/scans/${id}/cancel`, { method: "POST" }),
   deleteScan: (id: string) =>
-    request<{ ok: boolean; artifactsDeleted: boolean }>(`/scans/${id}`, {
+    request<{
+      ok: boolean;
+      artifactsDeleted: boolean;
+      sessionsDeleted: number;
+      workbenchRowsDeleted: number;
+    }>(`/scans/${id}`, {
       method: "DELETE",
     }),
   compare: (body: CompareRequest) =>
