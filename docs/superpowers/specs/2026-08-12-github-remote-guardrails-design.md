@@ -1,6 +1,6 @@
 # Guardrails remotos com GitHub App
 
-**Status:** aguardando revisão do documento
+**Status:** aprovado para implementação
 
 **Data:** 2026-08-12
 
