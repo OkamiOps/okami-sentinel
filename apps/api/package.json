@@ -18,7 +18,8 @@
     "better-sqlite3": "^11.10.0",
     "hono": "^4.8.5",
     "keytar": "7.9.0",
-    "nanoid": "^5.1.5"
+    "nanoid": "^5.1.5",
+    "undici": "^7.29.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

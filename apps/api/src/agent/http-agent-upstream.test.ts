@@ -11,10 +11,35 @@ import { resolveCompatibility } from "../connections/compatibility-resolver.js";
 import { probeHttpRoute } from "../connections/http-route-adapters.js";
 import {
   HTTP_AGENT_BODY_LIMIT_BYTES,
+  HTTP_AGENT_TRANSPORT_TIMEOUTS,
   HttpAgentUpstreamError,
   createHttpAgentUpstream,
   createHttpProbeSession,
+  createLongHorizonHttpAgentTransport,
 } from "./http-agent-upstream.js";
+
+test("the production transport delegates long inference liveness to the session AbortSignal", async () => {
+  const dispatcher = {} as Parameters<typeof createLongHorizonHttpAgentTransport>[0] extends infer Dependencies
+    ? Dependencies extends { dispatcher: infer Dispatcher } ? Dispatcher : never
+    : never;
+  let capturedInit: { dispatcher?: unknown; signal?: AbortSignal | null } | undefined;
+  const transport = createLongHorizonHttpAgentTransport({
+    dispatcher,
+    fetch: (async (_input, init) => {
+      capturedInit = init;
+      return new Response("{}", { status: 200 });
+    }) as Parameters<typeof createLongHorizonHttpAgentTransport>[0] extends infer Dependencies
+      ? Dependencies extends { fetch: infer Fetch } ? Fetch : never
+      : never,
+  });
+  const controller = new AbortController();
+
+  await transport("https://provider.example/inference", { signal: controller.signal });
+
+  assert.deepEqual(HTTP_AGENT_TRANSPORT_TIMEOUTS, { headersTimeout: 0, bodyTimeout: 0 });
+  assert.equal(capturedInit?.dispatcher, dispatcher);
+  assert.equal(capturedInit?.signal, controller.signal);
+});
 
 test("AgentUpstream resolves the official route on the server and never accepts a wire URL", async () => {
   const transport = transcript([json(200, { id: "response-1", output: [] })]);

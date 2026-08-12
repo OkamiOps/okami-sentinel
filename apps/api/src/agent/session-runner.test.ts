@@ -16,6 +16,7 @@ import {
   type NormalizedModelReply,
   type WireSessionAdapter,
 } from "./session-types.js";
+import { createPortableCodexSecurityReportShards } from "../scanners/portable-codex-security-report-shards.js";
 
 test("a session cannot be created from an unmeasured tool capability", async () => {
   await assert.rejects(createAgentSession({
@@ -136,6 +137,91 @@ test("the shared session reserves its final turns for artifact write and complet
     typeof event === "object" && event !== null &&
     (event as { type?: unknown }).type === "completion"), true);
 });
+
+for (const [maxModelTurns, ignoredFinalizationRequests] of [[32, 3], [64, 7]] as const) {
+test(`artifact-write sessions reserve enough of ${maxModelTurns} turns for a reasoning model to obey finalization`, async () => {
+  let finalizationRequests = 0;
+  let explorationRequests = 0;
+  let reply: NormalizedModelReply = {
+    toolCalls: [], text: null, structured: null, usage: null,
+  };
+  const adapter = {
+    nextRequest(
+      _toolResults: readonly AgentToolResult[],
+      control?: { finalizationRequired?: boolean },
+    ) {
+      if (control?.finalizationRequired === true) {
+        finalizationRequests += 1;
+        reply = finalizationRequests <= ignoredFinalizationRequests
+          ? {
+            toolCalls: [{
+              id: `ignored-read-${finalizationRequests}`,
+              name: "workspace.read",
+              input: { path: "index.ts" },
+            }],
+            text: null,
+            structured: null,
+            usage: null,
+          }
+          : {
+            toolCalls: [{
+              id: "write-after-reminders",
+              name: "results.write",
+              input: { path: "result.json", content: "{}" },
+            }],
+            text: null,
+            structured: null,
+            usage: null,
+          };
+      } else {
+        explorationRequests += 1;
+        reply = {
+          toolCalls: [{
+            id: `explore-${explorationRequests}`,
+            name: "workspace.read",
+            input: { path: "index.ts" },
+          }],
+          text: null,
+          structured: null,
+          usage: null,
+        };
+      }
+      return { operation: "messages" as const, body: {} };
+    },
+    readResponse() { return reply; },
+  } as WireSessionAdapter;
+  const hostCalls: string[] = [];
+  const session = createConstrainedWireSession({
+    terminalMode: "artifact-write",
+    limits: {
+      maxModelTurns,
+      maxToolCalls: 128,
+      maxInputBytes: 1_048_576,
+      maxOutputBytes: 1_048_576,
+      timeoutMs: 60_000,
+    },
+    signal: new AbortController().signal,
+    host: {
+      minimumOutputBytes() { return 0; },
+      async call(name) {
+        hostCalls.push(name);
+        return name === "results.write"
+          ? { content: "written", artifact: { path: "result.json", bytes: 2 } }
+          : { content: "source" };
+      },
+    },
+    upstream: { async request() { return {}; } },
+    adapter,
+  });
+
+  await collect(session.run(), []);
+
+  assert.equal(finalizationRequests, ignoredFinalizationRequests + 1);
+  assert.equal(explorationRequests + finalizationRequests, maxModelTurns);
+  assert.equal(hostCalls.at(-1), "results.write");
+  assert.equal(hostCalls.includes("workspace.read"), true);
+});
+}
 
 test("a Gemini OpenAI chat probe proves agent facts only after the complete artifact loop", async (t) => {
   const fixture = await fixtureRoots("probe-complete");
@@ -825,6 +911,767 @@ test("an artifact-terminal session retries malformed JSON before creating an art
   assert.match(requestedWith[1]![0]!.content, /tool_argument_invalid/);
   assert.equal(requestedWith[1]![0]!.content.includes("truncated"), false);
   assert.equal(events.filter((event) => isArtifact(event, "01-inventory.json")).length, 1);
+});
+
+test("an artifact-terminal session corrects a Portable discovery anchor before artifact I/O", async (t) => {
+  const fixture = await fixtureRoots("runner-portable-anchor");
+  t.after(fixture.cleanup);
+  const requestedWith: AgentToolResult[][] = [];
+  const discovery = (endLine: number) => ({
+    schemaVersion: 1,
+    stage: "discovery",
+    summary: "Discovery recorded a repository-backed candidate.",
+    observations: [],
+    candidates: [{
+      id: "candidate-index",
+      category: "authorization",
+      anchors: [{ path: "index.ts", startLine: 1, endLine, role: "source" }],
+    }],
+  });
+  const replies: NormalizedModelReply[] = [
+    {
+      toolCalls: [{
+        id: "write-invalid-anchor",
+        name: "results.write",
+        input: { path: "03-discovery.json", content: JSON.stringify(discovery(2)) },
+      }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    {
+      toolCalls: [{
+        id: "write-valid-anchor",
+        name: "results.write",
+        input: { path: "03-discovery.json", content: JSON.stringify(discovery(1)) },
+      }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+  ];
+  const hostInputs: unknown[] = [];
+  const session = createConstrainedWireSession({
+    limits: DEFAULT_AGENT_LIMITS,
+    signal: new AbortController().signal,
+    terminalMode: "artifact-write",
+    resultArtifactContract: "portable-stage-json-v1",
+    resultArtifactSnapshotRoot: fixture.snapshotRoot,
+    resultArtifactValidationContext: {
+      dossier: {
+        schemaVersion: 1,
+        stageSummaries: [],
+        candidates: [],
+        assessments: [],
+        scope: { inspected: [], unexamined: [] },
+      },
+    },
+    host: {
+      minimumOutputBytes() { return 0; },
+      async call(_name, input) {
+        hostInputs.push(input);
+        return {
+          content: "artifact-written",
+          artifact: { path: "03-discovery.json", bytes: 128 },
+        };
+      },
+    },
+    upstream: { async request() { return {}; } },
+    adapter: transcriptAdapter(replies, requestedWith),
+  });
+
+  const events: unknown[] = [];
+  await collect(session.run(), events);
+
+  assert.deepEqual(hostInputs, [{
+    path: "03-discovery.json",
+    content: JSON.stringify(discovery(1)),
+  }]);
+  assert.equal(requestedWith[1]![0]!.ok, false);
+  assert.match(requestedWith[1]![0]!.content, /tool_argument_invalid/);
+  assert.match(requestedWith[1]![0]!.content, /stage-anchor-invalid/);
+  assert.match(requestedWith[1]![0]!.content, /"path":"index.ts"/);
+  assert.match(requestedWith[1]![0]!.content, /"violations":\[/);
+  assert.match(requestedWith[1]![0]!.content, /"maxLine":1/);
+  assert.match(requestedWith[1]![0]!.content, /schemaVersion 1/);
+  assert.match(requestedWith[1]![0]!.content, /scope paths as '\.'/);
+  assert.equal(events.some((event) =>
+    typeof event === "object" && event !== null &&
+    (event as { phase?: unknown }).phase === "result" &&
+    (event as { reason?: unknown }).reason === "stage-anchor-invalid"), true);
+  assert.equal(JSON.stringify(events).includes("maxLine"), false);
+  assert.equal(events.filter((event) => isArtifact(event, "03-discovery.json")).length, 1);
+  assert.equal(events.some((event) =>
+    typeof event === "object" && event !== null && (event as { type?: unknown }).type === "completion"), false);
+});
+
+test("an artifact-terminal session repairs within its total model-turn budget", async (t) => {
+  const fixture = await fixtureRoots("runner-portable-repair-window");
+  t.after(fixture.cleanup);
+  const controls: Array<{ finalizationRequired: boolean } | undefined> = [];
+  const requestedWith: AgentToolResult[][] = [];
+  const discovery = (endLine: number) => ({
+    schemaVersion: 1,
+    stage: "discovery",
+    summary: "Discovery recorded a repository-backed candidate.",
+    observations: [],
+    candidates: [{
+      id: "candidate-index",
+      category: "authorization",
+      anchors: [{ path: "index.ts", startLine: 1, endLine, role: "source" }],
+    }],
+  });
+  const replies: NormalizedModelReply[] = [
+    {
+      toolCalls: [{
+        id: "write-truncated",
+        name: "results.write",
+        input: { path: "03-discovery.json", content: "{\"schemaVersion\":1" },
+      }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    {
+      toolCalls: [{
+        id: "write-invalid-anchor",
+        name: "results.write",
+        input: { path: "03-discovery.json", content: JSON.stringify(discovery(2)) },
+      }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    {
+      toolCalls: [{
+        id: "verify-anchor",
+        name: "workspace.search",
+        input: { query: "export const value", path: "index.ts" },
+      }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    {
+      toolCalls: [{
+        id: "write-valid-anchor",
+        name: "results.write",
+        input: { path: "03-discovery.json", content: JSON.stringify(discovery(1)) },
+      }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+  ];
+  const hostCalls: string[] = [];
+  const session = createConstrainedWireSession({
+    limits: { ...DEFAULT_AGENT_LIMITS, maxModelTurns: 4, maxToolCalls: 8 },
+    signal: new AbortController().signal,
+    terminalMode: "artifact-write",
+    resultArtifactContract: "portable-stage-json-v1",
+    resultArtifactSnapshotRoot: fixture.snapshotRoot,
+    resultArtifactValidationContext: {
+      dossier: {
+        schemaVersion: 1,
+        stageSummaries: [],
+        candidates: [],
+        assessments: [],
+        scope: { inspected: [], unexamined: [] },
+      },
+    },
+    host: {
+      minimumOutputBytes() { return 0; },
+      async call(name) {
+        hostCalls.push(name);
+        return name === "results.write"
+          ? {
+            content: "artifact-written",
+            artifact: { path: "03-discovery.json", bytes: 128 },
+          }
+          : { content: "search-result" };
+      },
+    },
+    upstream: { async request() { return {}; } },
+    adapter: {
+      nextRequest(toolResults, control) {
+        requestedWith.push([...toolResults]);
+        controls.push(control);
+        return { operation: "messages", body: {} };
+      },
+      readResponse() {
+        const reply = replies.shift();
+        if (reply === undefined) throw new Error("test transcript exhausted");
+        return reply;
+      },
+    },
+  });
+
+  const events: unknown[] = [];
+  await collect(session.run(), events);
+
+  assert.deepEqual(hostCalls, ["workspace.search", "results.write"]);
+  assert.equal(controls[0], undefined);
+  assert.equal(controls[1], undefined);
+  assert.equal(controls[2], undefined);
+  assert.equal(controls[3]?.finalizationRequired, true);
+  assert.equal(requestedWith[1]![0]!.validationIssue, "json-invalid");
+  assert.equal(requestedWith[2]![0]!.validationIssue, "stage-anchor-invalid");
+  assert.equal(events.filter((event) => isArtifact(event, "03-discovery.json")).length, 1);
+});
+
+test("an artifact repair survives one text-only reply and repeats the terminal instruction", async () => {
+  const controls: Array<{ finalizationRequired: boolean; artifactRepairReminder?: boolean } | undefined> = [];
+  const replies: NormalizedModelReply[] = [
+    {
+      toolCalls: [{
+        id: "write-invalid-json",
+        name: "results.write",
+        input: { path: "result.json", content: "{\"status\":" },
+      }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    {
+      toolCalls: [],
+      text: "I will correct the artifact.",
+      structured: null,
+      usage: null,
+    },
+    {
+      toolCalls: [{
+        id: "write-valid-json",
+        name: "results.write",
+        input: { path: "result.json", content: "{\"status\":\"complete\"}" },
+      }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+  ];
+  const hostInputs: unknown[] = [];
+  const session = createConstrainedWireSession({
+    limits: DEFAULT_AGENT_LIMITS,
+    signal: new AbortController().signal,
+    terminalMode: "artifact-write",
+    host: {
+      minimumOutputBytes() { return 0; },
+      async call(_name, input) {
+        hostInputs.push(input);
+        return {
+          content: "artifact-written",
+          artifact: { path: "result.json", bytes: 21 },
+        };
+      },
+    },
+    upstream: { async request() { return {}; } },
+    adapter: {
+      nextRequest(_toolResults, control) {
+        controls.push(control);
+        return { operation: "messages", body: {} };
+      },
+      readResponse() {
+        const reply = replies.shift();
+        if (reply === undefined) throw new Error("test transcript exhausted");
+        return reply;
+      },
+    },
+  });
+
+  const events: unknown[] = [];
+  await collect(session.run(), events);
+
+  assert.equal(controls.length, 3);
+  assert.equal(controls[1], undefined);
+  assert.equal(controls[2]?.finalizationRequired, true);
+  assert.equal(controls[2]?.artifactRepairReminder, true);
+  assert.equal(hostInputs.length, 1);
+  assert.equal(events.filter((event) => isArtifact(event, "result.json")).length, 1);
+});
+
+test("an artifact repair survives one malformed provider reply inside its bounded window", async () => {
+  const controls: Array<{ finalizationRequired: boolean; artifactRepairReminder?: boolean } | undefined> = [];
+  let responseIndex = 0;
+  const validWrite: NormalizedModelReply = {
+    toolCalls: [{
+      id: "write-valid-after-protocol-repair",
+      name: "results.write",
+      input: { path: "result.json", content: "{\"status\":\"complete\"}" },
+    }],
+    text: null,
+    structured: null,
+    usage: null,
+  };
+  const invalidWrite: NormalizedModelReply = {
+    toolCalls: [{
+      id: "write-invalid-before-protocol-repair",
+      name: "results.write",
+      input: { path: "result.json", content: "{\"status\":" },
+    }],
+    text: null,
+    structured: null,
+    usage: null,
+  };
+  const session = createConstrainedWireSession({
+    limits: DEFAULT_AGENT_LIMITS,
+    signal: new AbortController().signal,
+    terminalMode: "artifact-write",
+    host: {
+      minimumOutputBytes() { return 0; },
+      async call() {
+        return {
+          content: "artifact-written",
+          artifact: { path: "result.json", bytes: 21 },
+        };
+      },
+    },
+    upstream: { async request() { return {}; } },
+    adapter: {
+      nextRequest(_toolResults, control) {
+        controls.push(control);
+        return { operation: "messages", body: {} };
+      },
+      readResponse() {
+        responseIndex += 1;
+        if (responseIndex === 1) return invalidWrite;
+        if (responseIndex === 2) throw new AgentSessionError("agent_protocol_error");
+        if (responseIndex === 3) return validWrite;
+        throw new Error("repair must stop after the valid artifact");
+      },
+    },
+  });
+
+  const events: unknown[] = [];
+  await collect(session.run(), events);
+
+  assert.equal(responseIndex, 3);
+  assert.equal(controls[2]?.finalizationRequired, true);
+  assert.equal(controls[2]?.artifactRepairReminder, true);
+  assert.equal(events.filter((event) => isArtifact(event, "result.json")).length, 1);
+});
+
+test("an artifact repair inspection permits one bounded tool call before the corrected write", async (t) => {
+  const fixture = await fixtureRoots("runner-artifact-repair-bounded-inspection");
+  t.after(fixture.cleanup);
+  const replies: NormalizedModelReply[] = [
+    {
+      toolCalls: [{
+        id: "write-invalid-json",
+        name: "results.write",
+        input: { path: "result.json", content: "{\"status\":" },
+      }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    {
+      toolCalls: [{
+        id: "inspect-first",
+        name: "workspace.search",
+        input: { query: "first", path: "." },
+      }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    {
+      toolCalls: [{
+        id: "write-corrected-json",
+        name: "results.write",
+        input: { path: "result.json", content: "{\"status\":\"ok\"}" },
+      }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+  ];
+  const hostCalls: string[] = [];
+  let upstreamRequests = 0;
+  const session = createConstrainedWireSession({
+    limits: { ...DEFAULT_AGENT_LIMITS, maxModelTurns: 3, maxToolCalls: 8 },
+    signal: new AbortController().signal,
+    terminalMode: "artifact-write",
+    host: {
+      minimumOutputBytes() { return 0; },
+      async call(name) {
+        hostCalls.push(name);
+        return name === "results.write"
+          ? { content: "artifact-written", artifact: { path: "result.json", bytes: 15 } }
+          : { content: "inspection-result" };
+      },
+    },
+    upstream: {
+      async request() {
+        upstreamRequests += 1;
+        return {};
+      },
+    },
+    adapter: {
+      nextRequest() { return { operation: "messages", body: {} }; },
+      readResponse() {
+        const reply = replies.shift();
+        if (reply === undefined) throw new Error("test transcript exhausted");
+        return reply;
+      },
+    },
+  });
+
+  const events: unknown[] = [];
+  await collect(session.run(), events);
+  assert.equal(upstreamRequests, 3);
+  assert.deepEqual(hostCalls, ["workspace.search", "results.write"]);
+  assert.equal(events.filter((event) => isArtifact(event, "result.json")).length, 1);
+});
+
+test("an artifact repair window stops before a fifth repair response", async (t) => {
+  const fixture = await fixtureRoots("runner-artifact-repair-turn-cap");
+  t.after(fixture.cleanup);
+  const invalidWrite = (id: string): NormalizedModelReply => ({
+    toolCalls: [{
+      id,
+      name: "results.write",
+      input: { path: "result.json", content: "{\"status\":" },
+    }],
+    text: null,
+    structured: null,
+    usage: null,
+  });
+  const replies = [
+    invalidWrite("write-initial"),
+    invalidWrite("write-repair-1"),
+    invalidWrite("write-repair-2"),
+    invalidWrite("write-repair-3"),
+    invalidWrite("write-repair-4"),
+  ];
+  let upstreamRequests = 0;
+  const session = createConstrainedWireSession({
+    limits: { ...DEFAULT_AGENT_LIMITS, maxModelTurns: 5, maxToolCalls: 8 },
+    signal: new AbortController().signal,
+    terminalMode: "artifact-write",
+    host: {
+      minimumOutputBytes() { return 0; },
+      async call() { return { content: "unexpected" }; },
+    },
+    upstream: {
+      async request() {
+        upstreamRequests += 1;
+        return {};
+      },
+    },
+    adapter: {
+      nextRequest() { return { operation: "messages", body: {} }; },
+      readResponse() {
+        const reply = replies.shift();
+        if (reply === undefined) throw new Error("fifth repair request must not occur");
+        return reply;
+      },
+    },
+  });
+
+  await assert.rejects(collect(session.run(), []), { code: "agent_turn_limit" });
+  assert.equal(upstreamRequests, 5);
+});
+
+test("a deep artifact repair can consume a closed anchor diagnostic before the corrected write", async (t) => {
+  const fixture = await fixtureRoots("runner-deep-artifact-repair-progress");
+  t.after(fixture.cleanup);
+  const discovery = (endLine: number) => ({
+    schemaVersion: 1,
+    stage: "discovery",
+    summary: "Discovery recorded a repository-backed candidate.",
+    observations: [],
+    candidates: [{
+      id: "candidate-index",
+      category: "authorization",
+      anchors: [{ path: "index.ts", startLine: 1, endLine, role: "source" }],
+    }],
+  });
+  const replies: NormalizedModelReply[] = [
+    {
+      toolCalls: [{
+        id: "write-json-invalid-initial",
+        name: "results.write",
+        input: { path: "03-discovery.json", content: "{\"schemaVersion\":1" },
+      }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    {
+      toolCalls: [{
+        id: "write-json-invalid-repair",
+        name: "results.write",
+        input: { path: "03-discovery.json", content: "{\"schemaVersion\":1,\"stage\":\"discovery\"" },
+      }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    {
+      toolCalls: [{
+        id: "write-anchor-invalid",
+        name: "results.write",
+        input: { path: "03-discovery.json", content: JSON.stringify(discovery(2)) },
+      }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    {
+      toolCalls: [{ id: "inspect-anchor", name: "workspace.read", input: { path: "index.ts" } }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    {
+      toolCalls: [
+        { id: "ignored-search-one", name: "workspace.search", input: { query: "value", path: "." } },
+        { id: "ignored-search-two", name: "workspace.search", input: { query: "export", path: "." } },
+      ],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    {
+      toolCalls: [{
+        id: "write-corrected-after-diagnostic",
+        name: "results.write",
+        input: { path: "03-discovery.json", content: JSON.stringify(discovery(1)) },
+      }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+  ];
+  const hostCalls: string[] = [];
+  let upstreamRequests = 0;
+  const session = createConstrainedWireSession({
+    limits: { ...DEFAULT_AGENT_LIMITS, maxModelTurns: 64, maxToolCalls: 256 },
+    signal: new AbortController().signal,
+    terminalMode: "artifact-write",
+    resultArtifactContract: "portable-stage-json-v1",
+    resultArtifactSnapshotRoot: fixture.snapshotRoot,
+    resultArtifactValidationContext: {
+      dossier: {
+        schemaVersion: 1,
+        stageSummaries: [],
+        candidates: [],
+        assessments: [],
+        scope: { inspected: [], unexamined: [] },
+      },
+    },
+    host: {
+      minimumOutputBytes() { return 0; },
+      async call(name) {
+        hostCalls.push(name);
+        return name === "results.write"
+          ? { content: "artifact-written", artifact: { path: "03-discovery.json", bytes: 128 } }
+          : { content: "inspection-result" };
+      },
+    },
+    upstream: {
+      async request() {
+        upstreamRequests += 1;
+        return {};
+      },
+    },
+    adapter: {
+      nextRequest() { return { operation: "messages", body: {} }; },
+      readResponse() {
+        const reply = replies.shift();
+        if (reply === undefined) throw new Error("repair transcript exhausted");
+        return reply;
+      },
+    },
+  });
+
+  const events: unknown[] = [];
+  await collect(session.run(), events);
+
+  assert.equal(upstreamRequests, 6);
+  assert.deepEqual(hostCalls, ["workspace.read", "results.write"]);
+  assert.equal(events.filter((event) => isArtifact(event, "03-discovery.json")).length, 1);
+});
+
+test("an artifact-terminal session corrects Portable report coverage before artifact I/O", async (t) => {
+  const fixture = await fixtureRoots("runner-portable-report-coverage");
+  t.after(fixture.cleanup);
+  const requestedWith: AgentToolResult[][] = [];
+  const anchor = { path: "index.ts", startLine: 1, endLine: 1, role: "source" as const };
+  const dossier = {
+    schemaVersion: 1 as const,
+    stageSummaries: [],
+    candidates: [{ id: "candidate-index", category: "authorization", anchors: [anchor] }],
+    assessments: [{
+      candidateId: "candidate-index",
+      stage: "validation" as const,
+      status: "confirmed" as const,
+      reason: "control-not-present" as const,
+      evidence: [anchor],
+    }],
+    scope: { inspected: ["index.ts"], unexamined: [] },
+  };
+  const report = (complete: boolean) => ({
+    schemaVersion: 1,
+    stage: "report",
+    findings: complete
+      ? [{
+        id: "PCS-001",
+        candidateId: "candidate-index",
+        title: "Missing authorization control",
+        severity: "high",
+        confidence: "high",
+        category: "authorization",
+        summary: "The endpoint reaches sensitive data without a caller-bound authorization control.",
+        rootCause: "The sensitive read is not constrained by the authenticated caller identity.",
+        impact: "An authenticated attacker could access data outside the intended authorization boundary.",
+        remediation: "Bind the sensitive query to the authenticated subject and reject unauthorized access before the read.",
+        anchors: [{ ...anchor, explanation: "The source location reaches the sensitive operation without a control." }],
+      }]
+      : [],
+    coverage: {
+      inspected: ["index.ts"],
+      unexamined: [],
+      candidates: complete
+        ? [{
+          candidateId: "candidate-index",
+          disposition: "reported",
+          reason: "control-not-present",
+          evidence: [anchor],
+        }]
+        : [],
+    },
+  });
+  const replies: NormalizedModelReply[] = [
+    {
+      toolCalls: [{
+        id: "write-incomplete-report",
+        name: "results.write",
+        input: { path: "sentinel-findings.json", content: JSON.stringify(report(false)) },
+      }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    {
+      toolCalls: [{
+        id: "write-complete-report",
+        name: "results.write",
+        input: { path: "sentinel-findings.json", content: JSON.stringify(report(true)) },
+      }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+  ];
+  const hostInputs: unknown[] = [];
+  const session = createConstrainedWireSession({
+    limits: DEFAULT_AGENT_LIMITS,
+    signal: new AbortController().signal,
+    terminalMode: "artifact-write",
+    resultArtifactContract: "portable-stage-json-v1",
+    resultArtifactSnapshotRoot: fixture.snapshotRoot,
+    resultArtifactValidationContext: { dossier },
+    host: {
+      minimumOutputBytes() { return 0; },
+      async call(_name, input) {
+        hostInputs.push(input);
+        return {
+          content: "artifact-written",
+          artifact: { path: "sentinel-findings.json", bytes: 128 },
+        };
+      },
+    },
+    upstream: { async request() { return {}; } },
+    adapter: transcriptAdapter(replies, requestedWith),
+  });
+
+  const events: unknown[] = [];
+  await collect(session.run(), events);
+
+  assert.deepEqual(hostInputs, [{
+    path: "sentinel-findings.json",
+    content: JSON.stringify(report(true)),
+  }]);
+  assert.equal(requestedWith[1]![0]!.ok, false);
+  assert.equal(requestedWith[1]![0]!.validationIssue, "report-coverage-candidate-missing");
+  assert.match(requestedWith[1]![0]!.content, /tool_argument_invalid/);
+  assert.match(requestedWith[1]![0]!.content, /report-coverage-candidate-missing/);
+  assert.equal(events.filter((event) => isArtifact(event, "sentinel-findings.json")).length, 1);
+  assert.equal(typeof (hostInputs[0] as { content?: unknown }).content, "string");
+  assert.notEqual(
+    JSON.parse((hostInputs[0] as { content: string }).content).findings[0].remediation,
+    "",
+  );
+});
+
+test("a Portable report shard repair repeats the findings-only contract", async (t) => {
+  const fixture = await fixtureRoots("runner-portable-report-shard-repair");
+  t.after(fixture.cleanup);
+  const requestedWith: AgentToolResult[][] = [];
+  const anchor = { path: "index.ts", startLine: 1, endLine: 1, role: "source" as const };
+  const dossier = {
+    schemaVersion: 1 as const,
+    stageSummaries: [],
+    candidates: [{ id: "candidate-index", category: "authorization", anchors: [anchor] }],
+    assessments: [{
+      candidateId: "candidate-index",
+      stage: "validation" as const,
+      status: "confirmed" as const,
+      reason: "control-not-present" as const,
+      evidence: [anchor],
+    }],
+    scope: { inspected: ["index.ts"], unexamined: [] },
+  };
+  const shard = createPortableCodexSecurityReportShards(dossier)[0]!;
+  const validFinding = {
+    id: "page-finding-01",
+    candidateId: "candidate-index",
+    title: "Missing authorization control on protected operation",
+    severity: "high",
+    confidence: "high",
+    category: "authorization",
+    summary: "The protected operation reaches sensitive data without binding access to the authenticated caller.",
+    rootCause: "The sensitive operation does not enforce an authorization predicate for the authenticated identity.",
+    impact: "An authenticated attacker could access data outside the intended authorization boundary.",
+    remediation: "Bind the sensitive operation to the authenticated identity and reject unauthorized callers before access.",
+    anchors: [{ ...anchor, explanation: "The source location reaches the sensitive operation without a control." }],
+  };
+  const replies: NormalizedModelReply[] = [
+    { toolCalls: [{ id: "bad", name: "results.write", input: {
+      path: "sentinel-findings.json",
+      content: JSON.stringify({ schemaVersion: 1, stage: "report", findings: [] }),
+    } }], text: null, structured: null, usage: null },
+    { toolCalls: [{ id: "good", name: "results.write", input: {
+      path: "sentinel-findings.json",
+      content: JSON.stringify({ schemaVersion: 1, stage: "report", findings: [validFinding] }),
+    } }], text: null, structured: null, usage: null },
+  ];
+  const hostInputs: unknown[] = [];
+  const session = createConstrainedWireSession({
+    limits: DEFAULT_AGENT_LIMITS,
+    signal: new AbortController().signal,
+    terminalMode: "artifact-write",
+    resultArtifactContract: "portable-stage-json-v1",
+    resultArtifactSnapshotRoot: fixture.snapshotRoot,
+    resultArtifactValidationContext: { dossier: shard.dossier, reportShard: shard },
+    host: {
+      minimumOutputBytes() { return 0; },
+      async call(_name, input) {
+        hostInputs.push(input);
+        return { content: "artifact-written", artifact: { path: "sentinel-findings.json", bytes: 128 } };
+      },
+    },
+    upstream: { async request() { return {}; } },
+    adapter: transcriptAdapter(replies, requestedWith),
+  });
+
+  await collect(session.run(), []);
+
+  assert.equal(hostInputs.length, 1);
+  assert.match(requestedWith[1]![0]!.content, /containing only schemaVersion:1/i);
+  assert.match(requestedWith[1]![0]!.content, /Do not include summary, observations, scope, coverage/i);
+  assert.equal(requestedWith[1]![0]!.content.includes("Include a non-empty summary"), false);
 });
 
 test("the constrained session rejects nonexistent and out-of-range evidence before artifact I/O", async (t) => {

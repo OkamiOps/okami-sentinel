@@ -177,12 +177,14 @@ test("OpenAI Responses exposes only the required artifact tool during reserved f
   });
   const request = responseBody((adapter.nextRequest as (
     results: readonly [],
-    control: { finalizationRequired: true },
-  ) => AgentWireRequest)([], { finalizationRequired: true }));
+    control: { finalizationRequired: true; artifactRepairReminder: true },
+  ) => AgentWireRequest)([], { finalizationRequired: true, artifactRepairReminder: true }));
   const tools = request.tools as Array<{ name: string }>;
+  const input = request.input as Array<{ role: string; content: string }>;
 
   assert.deepEqual(tools.map((tool) => tool.name), ["results_write"]);
   assert.equal(request.tool_choice, "required");
+  assert.match(input[0]?.content ?? "", /call results\.write now/i);
 });
 
 test("OpenAI Responses keeps the VulnHunter result tool on the strict string contract", () => {

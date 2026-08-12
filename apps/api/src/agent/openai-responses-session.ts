@@ -1,6 +1,7 @@
 import type { ProviderModel } from "@csb/shared";
 
 import {
+  AGENT_ARTIFACT_REPAIR_REMINDER,
   AgentSessionError,
   validateAgentSessionReasoningEffort,
   type AgentToolCall,
@@ -43,7 +44,12 @@ export function createOpenAiResponsesWireAdapter(
     ): AgentWireRequest {
       if (toolResults.some((result) => result.name === "results.write" && result.ok !== false)) finalizing = true;
       const input = toolResults.length === 0
-        ? [{ role: "user", content: spec.instructions }]
+        ? [{
+          role: "user",
+          content: control?.artifactRepairReminder === true
+            ? AGENT_ARTIFACT_REPAIR_REMINDER
+            : spec.instructions,
+        }]
         : toolResults.map((result) => ({
           type: "function_call_output",
           call_id: result.callId,

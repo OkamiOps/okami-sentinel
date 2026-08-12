@@ -7,6 +7,7 @@ import { PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT } from "./result-artifact-contr
 import { createWorkspaceToolHost } from "./workspace-tool-host.js";
 import {
   AgentSessionError,
+  MAX_AGENT_SESSION_COMPLETION_TOKENS,
   createConstrainedWireSession,
   validateAgentSessionReasoningEffort,
   validateAgentSessionLimits,
@@ -59,6 +60,9 @@ export async function createAgentSession(
       : {
         resultArtifactContract: input.resultArtifactContract,
         resultArtifactSnapshotRoot: input.snapshotRoot,
+        ...(input.resultArtifactValidationContext === undefined
+          ? {}
+          : { resultArtifactValidationContext: input.resultArtifactValidationContext }),
       }),
   });
 }
@@ -104,11 +108,18 @@ function validateSessionSpec(input: CreateAgentSessionInput): void {
       !isNonEmptyString(input.instructions) || !isNonEmptyString(input.snapshotRoot) ||
       !isNonEmptyString(input.artifactRoot) || !isAbortSignal(input.signal) ||
       !isNonEmptyString(input.model?.id) || input.model.connectionId !== input.connectionId ||
+      (input.maxCompletionTokens !== undefined &&
+        (!Number.isSafeInteger(input.maxCompletionTokens) || input.maxCompletionTokens <= 0 ||
+          input.maxCompletionTokens > MAX_AGENT_SESSION_COMPLETION_TOKENS)) ||
       (input.terminalMode !== undefined &&
         input.terminalMode !== "provider-completion" && input.terminalMode !== "artifact-write") ||
       (input.resultArtifactContract !== undefined &&
         input.resultArtifactContract !== "vulnhunter-report-v1" &&
-        input.resultArtifactContract !== PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT)) {
+        input.resultArtifactContract !== PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT) ||
+      (input.resultArtifactContract === PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT &&
+        input.resultArtifactValidationContext === undefined) ||
+      (input.resultArtifactContract !== PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT &&
+        input.resultArtifactValidationContext !== undefined)) {
     throw new AgentSessionError("runner_invalid_spec");
   }
   validateAgentSessionLimits(input.limits);

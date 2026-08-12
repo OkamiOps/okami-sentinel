@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   applyPortableCodexSecurityStageArtifact,
   createPortableCodexSecurityDossier,
+  normalizePortableCodexSecurityStageArtifact,
   validatePortableCodexSecurityReportCoverage,
 } from "./portable-codex-security-dossier.js";
 import {
@@ -108,7 +109,47 @@ test("Portable coverage dossier carries bounded candidates and stage assessments
   }, dossier));
 });
 
-test("Portable coverage dossier retains prior stage summaries and accepts only identical duplicate candidates", () => {
+test("Portable dataflow discards provider candidates while retaining assessments for carried ids", () => {
+  const dossier = applyPortableCodexSecurityStageArtifact(createPortableCodexSecurityDossier(), {
+    schemaVersion: 1,
+    stage: "discovery",
+    summary: "Discovery recorded one repository-backed authorization candidate.",
+    observations: [],
+    candidates: [{ id: "candidate-profile-query", category: "authorization", anchors: [anchor] }],
+  });
+  const providerShapedDataflow = {
+    schemaVersion: 1,
+    stage: "dataflow",
+    summary: "Dataflow traced the carried authorization candidate to its sensitive sink.",
+    observations: [],
+    candidates: [{ id: 7, category: { malformed: true }, anchors: "not-an-anchor-list" }],
+    assessments: [{
+      candidateId: "candidate-profile-query",
+      status: "confirmed",
+      reason: "untrusted-flow-reaches-sink",
+      evidence: [anchor],
+    }],
+  };
+
+  const normalized = normalizePortableCodexSecurityStageArtifact(
+    "04-dataflow.json",
+    providerShapedDataflow,
+  );
+  assert.ok(normalized !== null);
+  assert.equal("candidates" in normalized, false);
+
+  const next = applyPortableCodexSecurityStageArtifact(dossier, normalized);
+  assert.deepEqual(next.candidates, dossier.candidates);
+  assert.equal(next.assessments.length, 1);
+  assert.equal(next.assessments[0]?.candidateId, "candidate-profile-query");
+
+  assert.equal(normalizePortableCodexSecurityStageArtifact("03-discovery.json", {
+    ...providerShapedDataflow,
+    stage: "discovery",
+  }), null);
+});
+
+test("Portable coverage dossier keeps candidate creation exclusive to discovery", () => {
   let dossier = createPortableCodexSecurityDossier();
   dossier = applyPortableCodexSecurityStageArtifact(dossier, {
     schemaVersion: 1,
@@ -142,16 +183,14 @@ test("Portable coverage dossier retains prior stage summaries and accepts only i
     { stage: "threat-model", summary: "Threat model prioritised entrypoints and sensitive data operations." },
   ]);
   assert.equal(dossier.candidates.length, 1);
-  assert.throws(
-    () => applyPortableCodexSecurityStageArtifact(dossier, {
-      schemaVersion: 1,
-      stage: "validation",
-      summary: "Validation attempted a conflicting candidate id.",
-      observations: [],
-      candidates: [{ id: "candidate-profile-query", category: "injection", anchors: [anchor] }],
-    }),
-    /candidate id conflicts/i,
-  );
+  const next = applyPortableCodexSecurityStageArtifact(dossier, {
+    schemaVersion: 1,
+    stage: "validation",
+    summary: "Validation received a redundant provider candidate outside discovery.",
+    observations: [],
+    candidates: [{ id: "candidate-profile-query", category: "injection", anchors: [anchor] }],
+  });
+  assert.deepEqual(next.candidates, dossier.candidates);
 });
 
 test("Portable report rejects a verified-zero claim when a carried candidate is not explicitly rejected", () => {
@@ -220,6 +259,43 @@ test("Portable report cannot erase a candidate confirmed by the validation stage
       },
     }, dossier),
     /confirmed candidate must be reported/i,
+  );
+});
+
+test("Portable report identifies a confirmed candidate omitted from coverage", () => {
+  const reportAnchor = { ...anchor, role: "sink" as const };
+  const dossier = {
+    schemaVersion: 1 as const,
+    stageSummaries: [],
+    candidates: [{ id: "candidate-profile-query", category: "authorization", anchors: [reportAnchor] }],
+    assessments: [{
+      candidateId: "candidate-profile-query",
+      stage: "validation" as const,
+      status: "confirmed" as const,
+      reason: "control-not-present" as const,
+      evidence: [reportAnchor],
+    }],
+    scope: { inspected: ["src/routes/profile.ts"], unexamined: [] },
+  };
+
+  assert.throws(
+    () => validatePortableCodexSecurityReportCoverage({
+      schemaVersion: 1,
+      stage: "report",
+      findings: [],
+      coverage: {
+        inspected: ["src/routes/profile.ts"],
+        unexamined: [],
+        candidates: [],
+      },
+    }, dossier),
+    (error: unknown) => {
+      assert.equal(
+        (error as { issue?: unknown }).issue,
+        "report-coverage-candidate-missing",
+      );
+      return true;
+    },
   );
 });
 
@@ -315,6 +391,64 @@ test("Portable anchor validation is byte bounded and checks the remaining deadli
       /agent_time_limit/i,
     );
   } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Portable pre-I/O anchor validation rejects a symlink swapped before descriptor open", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-anchor-swap-"));
+  const source = path.join(root, "src", "candidate.ts");
+  const replacement = path.join(root, "src", "replacement.ts");
+  const mutableFs = fs as unknown as {
+    openSync: typeof fs.openSync;
+    readFileSync: typeof fs.readFileSync;
+  };
+  const originalOpen = mutableFs.openSync;
+  const originalRead = mutableFs.readFileSync;
+  try {
+    fs.mkdirSync(path.dirname(source), { recursive: true });
+    fs.writeFileSync(source, "const safe = true;\n");
+    fs.writeFileSync(replacement, "const replacement = true;\n");
+    const artifact = {
+      schemaVersion: 1,
+      stage: "discovery",
+      summary: "Candidate discovery recorded an anchored source file.",
+      observations: [],
+      candidates: [{
+        id: "candidate-swap",
+        category: "validation",
+        anchors: [{ path: "src/candidate.ts", startLine: 1, endLine: 1, role: "source" }],
+      }],
+    };
+    assert.notEqual(
+      normalizePortableCodexSecurityStageArtifact("03-discovery.json", artifact, root),
+      null,
+    );
+
+    let swapped = false;
+    let readAttempted = false;
+    mutableFs.openSync = ((...args: Parameters<typeof fs.openSync>) => {
+      if (!swapped && args[0] === source) {
+        swapped = true;
+        fs.unlinkSync(source);
+        fs.symlinkSync(replacement, source);
+      }
+      return originalOpen(...args);
+    }) as typeof fs.openSync;
+    mutableFs.readFileSync = ((...args: Parameters<typeof fs.readFileSync>) => {
+      if (args[0] === source) readAttempted = true;
+      return originalRead(...args);
+    }) as typeof fs.readFileSync;
+
+    assert.equal(
+      normalizePortableCodexSecurityStageArtifact("03-discovery.json", artifact, root),
+      null,
+    );
+    assert.equal(swapped, true);
+    assert.equal(readAttempted, false);
+  } finally {
+    mutableFs.openSync = originalOpen;
+    mutableFs.readFileSync = originalRead;
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

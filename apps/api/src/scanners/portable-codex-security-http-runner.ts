@@ -51,7 +51,6 @@ import {
   assertPortableCodexSecuritySnapshot,
   createPortableCodexSecurityAnchorValidationCache,
   createPortableCodexSecuritySnapshot,
-  materializePortableCodexSecurityReportArtifact,
   observePortableCodexSecurityStage,
   PORTABLE_CODEX_SECURITY_TOOL_SURFACE,
   PortableCodexSecurityStageError,
@@ -59,8 +58,15 @@ import {
 } from "./portable-codex-security-worker-support.js";
 import {
   createPortableCodexSecurityDossier,
+  portableCodexSecurityDossierBase64,
   writePortableCodexSecurityDossier,
 } from "./portable-codex-security-dossier.js";
+import {
+  createPortableCodexSecurityReportShards,
+  writePortableCodexSecurityReportShards,
+  type PortableCodexSecurityReportShardResult,
+} from "./portable-codex-security-report-shards.js";
+import { portableCodexSecurityReportCompletionTokens } from "./portable-codex-security-report-budget.js";
 import {
   writePortableCodexSecurityRuntime,
   type PortableCodexSecurityRuntimeState,
@@ -195,7 +201,8 @@ export async function runPortableCodexSecurity(
   );
   const outputDir = path.resolve(safeConfiguration.outputDir);
   const log = dependencies.log ?? (() => undefined);
-  const startedAt = now().toISOString();
+  const authorizationTime = now();
+  const startedAt = authorizationTime.toISOString();
   let runtime: PortableCodexSecurityRuntimeState = {
     engine: "codex-security",
     executionProfile: "portable",
@@ -250,7 +257,7 @@ export async function runPortableCodexSecurity(
       plan,
       safeConfiguration.reasoningEffort,
       dependencies,
-      now(),
+      authorizationTime,
     );
     assertPortableCostBudget(safeConfiguration.costBudget, plan, resolved);
     const snapshot = createPortableCodexSecuritySnapshot(
@@ -265,7 +272,7 @@ export async function runPortableCodexSecurity(
       plan,
       safeConfiguration.reasoningEffort,
       dependencies,
-      now(),
+      authorizationTime,
     );
     throwIfStopped(deadline);
     runtime = {
@@ -304,27 +311,41 @@ export async function runPortableCodexSecurity(
     const anchorValidationCache = createPortableCodexSecurityAnchorValidationCache();
     let dossier = createPortableCodexSecurityDossier();
     let dossierStateBase64: string | null = null;
-    let reportArtifactRoot: string | null = null;
+    let reportShardResults: PortableCodexSecurityReportShardResult[] | null = null;
     for (const stage of PORTABLE_CODEX_SECURITY_STAGES) {
       throwIfStopped(deadline);
       resolved = revalidatePortablePlan(
         plan,
         safeConfiguration.reasoningEffort,
         dependencies,
-        now(),
+        authorizationTime,
       );
       assertPortableCodexSecuritySnapshot(snapshot);
       const remaining = deadline.remainingMs();
       if (remaining <= 0) throw new PortableCodexSecurityRunnerError("agent_time_limit");
-      const artifactRoot = path.join(artifactsRoot, stage.id);
-      fs.mkdirSync(artifactRoot, { recursive: false, mode: 0o700 });
       update({
         stage: stage.id,
         stageLabel: stage.label,
         percent: stage.startPercent,
         detail: `running ${stage.label.toLowerCase()}`,
       });
-      const spec: AgentSessionSpec = {
+      const shards = stage.id === "report"
+        ? createPortableCodexSecurityReportShards(dossier, {
+          maxShards: Math.max(1, Math.floor(safeConfiguration.limits.maxModelTurns / 4)),
+        })
+        : null;
+      const pageResults: PortableCodexSecurityReportShardResult[] = [];
+      for (const shard of shards ?? [null]) {
+        const stageDossier = shard?.dossier ?? dossier;
+        const stageDossierStateBase64 = shard === null
+          ? dossierStateBase64
+          : portableCodexSecurityDossierBase64(stageDossier);
+        const artifactRoot = path.join(
+          artifactsRoot,
+          shard === null ? stage.id : `${stage.id}-${String(shard.index + 1).padStart(2, "0")}`,
+        );
+        fs.mkdirSync(artifactRoot, { recursive: false, mode: 0o700 });
+        const spec: AgentSessionSpec = {
         connectionId: resolved.connection.id,
         routeKind: resolved.connection.routeKind,
         protocol: resolved.connection.protocol as AgentSessionSpec["protocol"],
@@ -333,19 +354,30 @@ export async function runPortableCodexSecurity(
           ? {}
           : { reasoningEffort: safeConfiguration.reasoningEffort }),
         terminalMode: "artifact-write",
+        ...(stage.id === "report"
+          ? { maxCompletionTokens: portableCodexSecurityReportCompletionTokens(stageDossier) }
+          : {}),
         resultArtifactContract: PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT,
+        resultArtifactValidationContext: {
+          dossier: stageDossier,
+          ...(shard === null ? {} : { reportShard: shard }),
+        },
         snapshotRoot: snapshot.snapshotRoot,
         artifactRoot,
         instructions: buildPortableCodexSecurityStagePrompt(stage, {
           snapshotRoot: snapshot.snapshotRoot,
           artifactRoot,
           scopePaths: safeConfiguration.paths,
-          dossierStateBase64,
+          dossierStateBase64: stageDossierStateBase64,
+          candidateIds: stageDossier.candidates.map((candidate) => candidate.id),
+          ...(shard === null ? {} : { reportShard: shard }),
         }),
-        limits: sessionLimits(safeConfiguration.limits, remaining),
+        limits: shard === null
+          ? sessionLimits(safeConfiguration.limits, remaining)
+          : reportShardSessionLimits(safeConfiguration.limits, remaining, shards!.length),
         signal: deadline.signal,
-      };
-      activeSession = await raceWithDeadline(
+        };
+        activeSession = await raceWithDeadline(
         createSession({
           connection: resolved.connection,
           model: resolved.model,
@@ -355,13 +387,13 @@ export async function runPortableCodexSecurity(
           toolSurface: PORTABLE_CODEX_SECURITY_TOOL_SURFACE,
         }),
         deadline,
-      );
-      sessionCancelled = false;
-      const observed = await observePortableCodexSecurityStage({
+        );
+        sessionCancelled = false;
+        const observed = await observePortableCodexSecurityStage({
         session: activeSession,
         stage,
         artifactRoot,
-        dossier,
+        dossier: stageDossier,
         snapshotRoot: snapshot.snapshotRoot,
         usage: runtime.usage,
         signal: deadline.signal,
@@ -380,18 +412,24 @@ export async function runPortableCodexSecurity(
           }
           return true;
         },
-      });
-      activeSession = null;
-      sessionCancelled = false;
-      runtime = { ...runtime, usage: observed.usage };
-      dossier = observed.dossier;
-      dossierStateBase64 = observed.dossierStateBase64;
-      if (stage.id === "report") reportArtifactRoot = artifactRoot;
+        });
+        activeSession = null;
+        sessionCancelled = false;
+        runtime = { ...runtime, usage: observed.usage };
+        if (shard === null) {
+          dossier = observed.dossier;
+          dossierStateBase64 = observed.dossierStateBase64;
+        } else {
+          if (observed.report === undefined) throw new PortableCodexSecurityRunnerError("stage_artifact_invalid");
+          pageResults.push({ shard, report: observed.report });
+        }
+      }
+      if (shards !== null) reportShardResults = pageResults;
       update({ percent: stage.completePercent, detail: `${stage.label} complete` });
     }
 
     throwIfStopped(deadline);
-    if (reportArtifactRoot === null) throw new PortableCodexSecurityRunnerError("stage_artifact_invalid");
+    if (reportShardResults === null) throw new PortableCodexSecurityRunnerError("stage_artifact_invalid");
     update({
       stage: "normalize",
       stageLabel: "Normalize evidence",
@@ -399,11 +437,7 @@ export async function runPortableCodexSecurity(
       detail: "mapping portable findings into Sentinel's canonical schema",
     });
     const resultsDir = path.join(outputDir, "portable-codex-security-results");
-    materializePortableCodexSecurityReportArtifact(
-      reportArtifactRoot,
-      resultsDir,
-      "sentinel-findings.json",
-    );
+    writePortableCodexSecurityReportShards(resultsDir, dossier, reportShardResults);
     writePortableCodexSecurityDossier(resultsDir, dossier);
     const findings = (dependencies.normalizeWorkspace ?? normalizePortableCodexSecurityWorkspace)(
       resultsDir,
@@ -643,6 +677,20 @@ function sessionLimits(
   };
   validateAgentSessionLimits(result);
   return result;
+}
+
+/** Normal report turns/tools are divided across pages; deadline and cost stay global. */
+function reportShardSessionLimits(
+  limits: PortableCodexSecurityExecutionLimits,
+  remainingMs: number,
+  shardCount: number,
+): AgentSessionLimits {
+  const maxModelTurns = Math.floor(limits.maxModelTurns / shardCount);
+  const maxToolCalls = Math.floor(limits.maxToolCalls / shardCount);
+  if (maxModelTurns < 4 || maxToolCalls < 2) {
+    throw new PortableCodexSecurityRunnerError("agent_turn_limit");
+  }
+  return sessionLimits({ ...limits, maxModelTurns, maxToolCalls }, remainingMs);
 }
 
 function createTotalDeadline(

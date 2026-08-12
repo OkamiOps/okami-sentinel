@@ -29,6 +29,12 @@ const SNAPSHOT_EXCLUDES = new Set([
   ".git", ".hg", ".svn", "node_modules", ".next", ".nuxt", ".turbo",
   "dist", "build", "coverage", ".cache",
 ]);
+const AGENT_INSTRUCTION_DIRECTORIES = new Set([
+  ".claude", ".cursor", ".continue", ".codeium", ".junie",
+]);
+const ROOT_AGENT_INSTRUCTION_FILES = new Set([
+  "AGENTS.md", "CLAUDE.md", "GEMINI.md", ".cursorrules", ".windsurfrules",
+]);
 const MAX_SNAPSHOT_ENTRIES = 500_000;
 const MAX_ARTIFACT_BYTES = 1_048_576;
 const MAX_STAGE_SUMMARY_BYTES = 16_384;
@@ -89,6 +95,8 @@ export interface PortableCodexSecurityStageObservation {
   usage: ScannerUsage;
   dossier: PortableCodexSecurityDossier;
   dossierStateBase64: string;
+  /** Canonical page report, returned only after pre-I/O validation succeeds. */
+  report?: PortableReportArtifact;
 }
 
 export interface PortableCodexSecurityAnchorValidationCache {
@@ -137,7 +145,7 @@ export function createPortableCodexSecuritySnapshot(
       filter(source) {
         if (source === sourceRoot) return true;
         const relative = path.relative(sourceRoot, source);
-        if (relative.split(path.sep).some((segment) => SNAPSHOT_EXCLUDES.has(segment))) {
+        if (isSnapshotExcluded(relative)) {
           return false;
         }
         const info = fs.lstatSync(source);
@@ -161,6 +169,14 @@ export function createPortableCodexSecuritySnapshot(
     if (error instanceof PortableCodexSecurityStageError) throw error;
     throw new PortableCodexSecurityStageError("snapshot_invalid");
   }
+}
+
+function isSnapshotExcluded(relative: string): boolean {
+  const segments = relative.split(path.sep);
+  if (segments.some((segment) => SNAPSHOT_EXCLUDES.has(segment))) return true;
+  if (segments.some((segment) => AGENT_INSTRUCTION_DIRECTORIES.has(segment))) return true;
+  if (segments.length === 1 && ROOT_AGENT_INSTRUCTION_FILES.has(segments[0]!)) return true;
+  return segments.length === 2 && segments[0] === ".github" && segments[1] === "copilot-instructions.md";
 }
 
 export function hashPortableCodexSecuritySnapshot(snapshotRoot: string): string {
@@ -323,9 +339,10 @@ export async function observePortableCodexSecurityStage(
     throw new PortableCodexSecurityStageError("stage_evidence_incomplete");
   }
   let dossier: PortableCodexSecurityDossier;
+  let report: PortableReportArtifact | undefined;
   try {
     if (input.stage.id === "report") {
-      const report = validatePortableCodexSecurityReportCoverage(artifact, input.dossier);
+      report = validatePortableCodexSecurityReportCoverage(artifact, input.dossier);
       if (input.snapshotRoot !== undefined) {
         assertPortableCodexSecurityReportAnchors(
           input.snapshotRoot,
@@ -356,6 +373,7 @@ export async function observePortableCodexSecurityStage(
     usage,
     dossier,
     dossierStateBase64: portableCodexSecurityDossierBase64(dossier),
+    ...(report === undefined ? {} : { report }),
   };
 }
 

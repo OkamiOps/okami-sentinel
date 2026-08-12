@@ -4,6 +4,12 @@ import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import {
+  Agent as UndiciAgent,
+  fetch as undiciFetch,
+  type Dispatcher as UndiciDispatcher,
+} from "undici";
+
 import type {
   ModelCapabilities,
   ProviderModel,
@@ -31,6 +37,39 @@ import { WORKSPACE_TOOL_WIRE_CODEC } from "./workspace-tool-wire-codec.js";
 
 /** The provider body limit is independent from an agent-run output budget. */
 export const HTTP_AGENT_BODY_LIMIT_BYTES = 1_048_576;
+
+/** The scan/session AbortSignal is the authoritative liveness deadline. */
+export const HTTP_AGENT_TRANSPORT_TIMEOUTS = Object.freeze({
+  headersTimeout: 0,
+  bodyTimeout: 0,
+});
+
+const HTTP_AGENT_DISPATCHER = new UndiciAgent(HTTP_AGENT_TRANSPORT_TIMEOUTS);
+
+interface LongHorizonTransportDependencies {
+  fetch: typeof undiciFetch;
+  dispatcher: UndiciDispatcher;
+}
+
+/** Avoids Undici's shorter 300s defaults without weakening the bounded scan deadline. */
+export function createLongHorizonHttpAgentTransport(
+  dependencies: LongHorizonTransportDependencies = {
+    fetch: undiciFetch,
+    dispatcher: HTTP_AGENT_DISPATCHER,
+  },
+): typeof fetch {
+  return (async (input: string | URL | Request, init?: RequestInit) => {
+    return await dependencies.fetch(
+      input as Parameters<typeof undiciFetch>[0],
+      {
+        ...init,
+        dispatcher: dependencies.dispatcher,
+      } as Parameters<typeof undiciFetch>[1],
+    ) as unknown as Response;
+  }) as typeof fetch;
+}
+
+const DEFAULT_HTTP_AGENT_TRANSPORT = createLongHorizonHttpAgentTransport();
 
 export type HttpAgentProtocol = Extract<ProviderProtocol,
   | "openai-responses"
@@ -226,7 +265,7 @@ class HttpAgentUpstream implements AgentUpstream {
     this.#endpoint = route?.endpoint ?? null;
     this.#headers = route?.headers ?? {};
     this.#operation = route?.operation ?? null;
-    this.#transport = options.transport ?? fetch;
+    this.#transport = options.transport ?? DEFAULT_HTTP_AGENT_TRANSPORT;
   }
 
   async request(request: AgentUpstreamRequest): Promise<unknown> {

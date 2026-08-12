@@ -104,7 +104,12 @@ test("Portable Codex Security fixes six frozen bounded stages and prompts each s
     }
     assert.match(prompt, /artifact is terminal/i);
     assert.match(prompt, /complete in one tool call/i);
-    assert.match(prompt, /never exhaust the model output limit/i);
+    if (stage.id === "report") {
+      assert.doesNotMatch(prompt, /observations:\s*\[\]/i);
+      assert.match(prompt, /stable global id/i);
+    } else {
+      assert.match(prompt, /never exhaust the model output limit/i);
+    }
     assert.doesNotMatch(prompt, /structured completion/i);
     assert.doesNotMatch(prompt, /(?:workspace|results)\./);
     assert.match(prompt, /workspace_(?:list|read|search)/);
@@ -125,6 +130,40 @@ test("Portable Codex Security stage prompts never disclose host snapshot or arti
   assert.match(prompt, /workspace root.*"\."/i);
   assert.match(prompt, /repository-relative paths to workspace_(?:read|search)/i);
   assert.match(prompt, /fixed result-relative name.*01-inventory\.json/i);
+});
+
+test("Portable Codex Security prompts reserve candidate creation for discovery", () => {
+  const promptFor = (stageId: "discovery" | "dataflow" | "validation") => {
+    const stage = PORTABLE_CODEX_SECURITY_STAGES.find((item) => item.id === stageId);
+    if (stage === undefined) throw new Error(`missing ${stageId} stage`);
+    return buildPortableCodexSecurityStagePrompt(stage, {
+      snapshotRoot: "/snapshot",
+      artifactRoot: "/artifacts",
+    });
+  };
+
+  assert.match(promptFor("discovery"), /"candidates":\[\{"id":"candidate-id"/);
+  for (const stageId of ["dataflow", "validation"] as const) {
+    const prompt = promptFor(stageId);
+    assert.doesNotMatch(prompt, /"candidates":\[\{"id":"candidate-id"/);
+    assert.match(prompt, /do not include candidates/i);
+  }
+});
+
+test("Portable Codex Security makes carried candidate ids explicit for assessment stages", () => {
+  for (const stageId of ["dataflow", "validation"] as const) {
+    const stage = PORTABLE_CODEX_SECURITY_STAGES.find((item) => item.id === stageId);
+    assert.ok(stage);
+    const prompt = buildPortableCodexSecurityStagePrompt(stage!, {
+      snapshotRoot: "/snapshot",
+      artifactRoot: "/artifacts",
+      candidateIds: ["candidate-auth", "candidate-sqli"],
+    });
+
+    assert.match(prompt, /BEGIN_PORTABLE_CANDIDATE_IDS_JSON\n\["candidate-auth","candidate-sqli"\]\nEND_PORTABLE_CANDIDATE_IDS_JSON/);
+    assert.match(prompt, /candidateId values exactly as listed/i);
+    assert.equal(prompt.includes("/snapshot"), false);
+  }
 });
 
 test("Portable Codex Security runtime writes atomically, round-trips, and maps bounded progress", () => {

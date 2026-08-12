@@ -221,11 +221,13 @@ test("OpenAI chat exposes only the required artifact tool during reserved finali
   });
   const request = chatBody((adapter.nextRequest as (
     results: readonly [],
-    control: { finalizationRequired: true },
-  ) => AgentWireRequest)([], { finalizationRequired: true }));
+    control: { finalizationRequired: true; artifactRepairReminder: true },
+  ) => AgentWireRequest)([], { finalizationRequired: true, artifactRepairReminder: true }));
 
   assert.deepEqual(request.tools.map((tool) => tool.function.name), ["results_write"]);
   assert.equal(request.tool_choice, "required");
+  const reminder = request.messages.at(-1) as { content?: unknown } | undefined;
+  assert.match(String(reminder?.content ?? ""), /call results\.write now/i);
 });
 
 test("OpenAI chat parses a safe workspace read followed by results.write batch", () => {

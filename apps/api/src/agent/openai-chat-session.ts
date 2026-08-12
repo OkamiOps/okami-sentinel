@@ -2,6 +2,7 @@ import type { ModelCapabilities, ProviderModel } from "@csb/shared";
 
 import { createWorkspaceToolHost } from "./workspace-tool-host.js";
 import {
+  AGENT_ARTIFACT_REPAIR_REMINDER,
   AgentSessionError,
   validateAgentSessionReasoningEffort,
   createConstrainedWireSession,
@@ -80,6 +81,9 @@ export function createOpenAiChatWireAdapter(spec: OpenAiChatSessionSpec): WireSe
       if (toolResults.some((result) => result.name === "results.write" && result.ok !== false)) finalizing = true;
       for (const result of toolResults) {
         messages.push({ role: "tool", tool_call_id: result.callId, content: result.content });
+      }
+      if (control?.artifactRepairReminder === true && toolResults.length === 0) {
+        messages.push({ role: "user", content: AGENT_ARTIFACT_REPAIR_REMINDER });
       }
       return {
         operation: "chat-completions",

@@ -338,7 +338,9 @@ function portableStageArtifact(stage: string): Record<string, unknown> {
       stage: "report",
       findings: [portableFinding()],
       coverage: {
-        inspected: ["src/auth.ts"],
+        // Report pages are validated against a reduced server-owned dossier;
+        // final scope is reassembled from the complete dossier after all pages.
+        inspected: ["."],
         unexamined: [],
         candidates: [{
           candidateId: "candidate-account-authorization",

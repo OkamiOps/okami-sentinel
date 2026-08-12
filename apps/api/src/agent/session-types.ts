@@ -7,7 +7,11 @@ import type {
 
 import {
   normalizeResultArtifactInput,
+  PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT,
   type AgentResultArtifactContract,
+  type PortableResultArtifactValidationContext,
+  type ResultArtifactValidationIssue,
+  type ResultArtifactRepairDetail,
 } from "./result-artifact-contract.js";
 
 export const WORKSPACE_TOOL_NAMES = [
@@ -97,6 +101,9 @@ export interface AgentSessionLimits {
 
 export type AgentSessionTerminalMode = "provider-completion" | "artifact-write";
 
+/** Closed upper bound for a server-selected provider completion request. */
+export const MAX_AGENT_SESSION_COMPLETION_TOKENS = 65_536;
+
 export interface AgentSessionSpec {
   connectionId: string;
   routeKind: string;
@@ -111,8 +118,12 @@ export interface AgentSessionSpec {
   reasoningEffort?: string;
   /** Server-selected artifact contract; never inferred from provider/model. */
   resultArtifactContract?: AgentResultArtifactContract;
+  /** Server-owned Portable dossier used to reject semantic terminal artifacts before host I/O. */
+  resultArtifactValidationContext?: PortableResultArtifactValidationContext;
   /** Scanner sessions may finish on a locally accepted artifact; probes still verify provider completion. */
   terminalMode?: AgentSessionTerminalMode;
+  /** Optional server-owned completion budget; wire adapters use it only when their proven protocol supports one. */
+  maxCompletionTokens?: number;
   snapshotRoot: string;
   /** Existing, unique 0700 directory reserved by the session owner. */
   artifactRoot: string;
@@ -190,6 +201,8 @@ export type AgentEvent =
     name: WorkspaceToolName;
     /** False only when the tool result is a safe local rejection, not host evidence. */
     ok?: boolean;
+    /** Closed, non-content diagnostic for a rejected terminal artifact. */
+    reason?: ResultArtifactValidationIssue;
   }
   | { type: "artifact"; path: string; bytes: number }
   | { type: "usage"; usage: AgentUsage }
@@ -248,6 +261,8 @@ export interface AgentToolResult {
   content: string;
   /** False only for a safe pre-I/O validation failure the model may correct. */
   ok?: boolean;
+  /** Closed, non-content diagnostic retained only for safe telemetry. */
+  validationIssue?: ResultArtifactValidationIssue;
 }
 
 export interface NormalizedModelReply {
@@ -260,7 +275,12 @@ export interface NormalizedModelReply {
 export interface AgentWireRequestControl {
   /** Exploration is closed; the provider must write the declared artifact now. */
   finalizationRequired: boolean;
+  /** The previous repair reply omitted results.write; restate the terminal action. */
+  artifactRepairReminder?: boolean;
 }
+
+export const AGENT_ARTIFACT_REPAIR_REMINDER =
+  "The previous reply did not call results.write. Call results.write now with one complete corrected artifact and no other tool call.";
 
 export interface WireSessionAdapter {
   nextRequest(
@@ -273,6 +293,10 @@ export interface WireSessionAdapter {
 /** Bump whenever a fresh provider probe must prove a changed wire/session contract. */
 export const CURRENT_AGENT_SESSION_CONTRACT_VERSION = 1;
 
+/** A rejected terminal artifact gets a small, bounded correction window outside exploration. */
+const MIN_ARTIFACT_REPAIR_MODEL_TURNS = 4;
+const MAX_ARTIFACT_REPAIR_INSPECTION_CALLS = 1;
+
 export interface ConstrainedWireSessionOptions {
   limits: AgentSessionLimits;
   signal: AbortSignal;
@@ -283,6 +307,8 @@ export interface ConstrainedWireSessionOptions {
   resultArtifactContract?: AgentResultArtifactContract;
   /** Snapshot boundary used to prove report evidence before artifact I/O. */
   resultArtifactSnapshotRoot?: string;
+  /** Server-owned Portable dossier used to reject semantic terminal artifacts before host I/O. */
+  resultArtifactValidationContext?: PortableResultArtifactValidationContext;
   now?: () => number;
   timer?: AgentSessionTimer;
 }
@@ -301,7 +327,23 @@ export function createConstrainedWireSession(
   options: ConstrainedWireSessionOptions,
 ): AgentSession {
   validateAgentSessionLimits(options.limits);
+  validateResultArtifactValidationContext(options);
   return new ConstrainedWireSession(options);
+}
+
+function validateResultArtifactValidationContext(options: ConstrainedWireSessionOptions): void {
+  if (
+    options.resultArtifactContract === PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT &&
+    options.resultArtifactValidationContext === undefined
+  ) {
+    throw new AgentSessionError("runner_invalid_spec");
+  }
+  if (
+    options.resultArtifactContract !== PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT &&
+    options.resultArtifactValidationContext !== undefined
+  ) {
+    throw new AgentSessionError("runner_invalid_spec");
+  }
 }
 
 export function validateAgentSessionLimits(limits: AgentSessionLimits): void {
@@ -364,6 +406,18 @@ class ConstrainedWireSession implements AgentSession {
     let outputBytes = 0;
     let toolResults: AgentToolResult[] = [];
     let artifactWritten = false;
+    let artifactRepairActive = false;
+    let artifactRepairTurns = 0;
+    let artifactRepairInspectionAvailable = false;
+    let artifactRepairReminder = false;
+    const finalizationReserveTurns = Math.max(
+      3,
+      Math.min(8, Math.ceil(this.#options.limits.maxModelTurns / 8)),
+    );
+    const artifactRepairTurnLimit = Math.max(
+      MIN_ARTIFACT_REPAIR_MODEL_TURNS,
+      finalizationReserveTurns,
+    );
 
     try {
       for (;;) {
@@ -375,18 +429,30 @@ class ConstrainedWireSession implements AgentSession {
         ) {
           throw new AgentSessionError("agent_tool_limit");
         }
+        if (artifactRepairActive && artifactRepairTurns >= artifactRepairTurnLimit) {
+          throw new AgentSessionError("agent_turn_limit");
+        }
         if (modelTurns >= this.#options.limits.maxModelTurns) {
           throw new AgentSessionError("agent_turn_limit");
         }
 
-        const finalizationRequired = !artifactWritten && (
-          this.#options.limits.maxModelTurns - modelTurns <= 3 ||
+        const repairInspectionAllowed = artifactRepairActive && artifactRepairInspectionAvailable;
+        const finalizationRequired = !artifactWritten && !repairInspectionAllowed && (
+          artifactRepairActive ||
+          this.#options.limits.maxModelTurns - modelTurns <= finalizationReserveTurns ||
           this.#options.limits.maxToolCalls - toolCalls <= 2
         );
+        const requestInArtifactRepair = artifactRepairActive;
         const request = this.#options.adapter.nextRequest(
           toolResults,
-          finalizationRequired ? { finalizationRequired: true } : undefined,
+          finalizationRequired
+            ? {
+              finalizationRequired: true,
+              ...(artifactRepairReminder ? { artifactRepairReminder: true } : {}),
+            }
+            : undefined,
         );
+        artifactRepairReminder = false;
         const requestBytes = serializedByteLength(request.body);
         if (inputBytes + requestBytes > this.#options.limits.maxInputBytes) {
           throw new AgentSessionError("agent_input_byte_limit");
@@ -399,9 +465,14 @@ class ConstrainedWireSession implements AgentSession {
             callId: result.callId,
             name: result.name,
             ...(result.ok === false ? { ok: false } : {}),
+            ...(result.validationIssue === undefined ? {} : { reason: result.validationIssue }),
           };
         }
         modelTurns += 1;
+        if (requestInArtifactRepair) {
+          artifactRepairTurns += 1;
+          artifactRepairInspectionAvailable = false;
+        }
         const response = await raceWithAbort(
           Promise.resolve().then(() => this.#options.upstream.request({
             ...request,
@@ -410,16 +481,37 @@ class ConstrainedWireSession implements AgentSession {
           this.#controller.signal,
         );
         this.#throwIfStopped();
-        const responseBytes = serializedByteLength(response);
-        if (outputBytes + responseBytes > this.#options.limits.maxOutputBytes) {
-          throw new AgentSessionError("agent_output_byte_limit");
+        let reply: NormalizedModelReply;
+        try {
+          const responseBytes = serializedByteLength(response);
+          if (outputBytes + responseBytes > this.#options.limits.maxOutputBytes) {
+            throw new AgentSessionError("agent_output_byte_limit");
+          }
+          outputBytes += responseBytes;
+          reply = this.#options.adapter.readResponse(response);
+        } catch (error) {
+          if (
+            artifactRepairActive &&
+            error instanceof AgentSessionError &&
+            error.code === "agent_protocol_error"
+          ) {
+            artifactRepairInspectionAvailable = false;
+            artifactRepairReminder = true;
+            toolResults = [];
+            continue;
+          }
+          throw error;
         }
-        outputBytes += responseBytes;
-        const reply = this.#options.adapter.readResponse(response);
         const usage = reply.usage ?? emptyUsage();
         yield { type: "usage", usage };
 
         if (reply.toolCalls.length === 0) {
+          if (artifactRepairActive && !artifactWritten) {
+            artifactRepairInspectionAvailable = false;
+            artifactRepairReminder = true;
+            toolResults = [];
+            continue;
+          }
           if (finalizationRequired && !artifactWritten) {
             throw new AgentSessionError("agent_protocol_error");
           }
@@ -431,6 +523,12 @@ class ConstrainedWireSession implements AgentSession {
         validateTerminalResultsWrite(reply.toolCalls);
         if (this.#options.terminalMode === "artifact-write") {
           validateArtifactTerminalWrite(reply.toolCalls);
+        }
+        if (
+          repairInspectionAllowed &&
+          reply.toolCalls.length > MAX_ARTIFACT_REPAIR_INSPECTION_CALLS
+        ) {
+          throw new AgentSessionError("agent_protocol_error");
         }
         toolResults = [];
         for (const call of reply.toolCalls) {
@@ -447,6 +545,8 @@ class ConstrainedWireSession implements AgentSession {
           let result: WorkspaceToolResult;
           let recoveredBeforeIo = false;
           let hostCallStarted = false;
+          let artifactValidationIssue: ResultArtifactValidationIssue | undefined;
+          let artifactRepairDetail: ResultArtifactRepairDetail | undefined;
           try {
             if (finalizationRequired && call.name !== "results.write") {
               result = terminalArtifactRequiredResult();
@@ -457,6 +557,11 @@ class ConstrainedWireSession implements AgentSession {
                   call.input,
                   this.#options.resultArtifactContract,
                   this.#options.resultArtifactSnapshotRoot,
+                  this.#options.resultArtifactValidationContext,
+                  (issue, detail) => {
+                    artifactValidationIssue = issue;
+                    artifactRepairDetail = detail;
+                  },
                 )
                 : call.input;
               if (normalizedInput === null) throw new AgentSessionError("tool_argument_invalid");
@@ -469,10 +574,27 @@ class ConstrainedWireSession implements AgentSession {
               });
             }
           } catch (error) {
-            const recovered = recoverableWorkspaceToolFailure(call, error, !hostCallStarted);
+            const recovered = recoverableWorkspaceToolFailure(
+              call,
+              error,
+              !hostCallStarted,
+              this.#options.resultArtifactContract,
+              artifactValidationIssue,
+              artifactRepairDetail,
+              this.#options.resultArtifactValidationContext?.reportShard !== undefined,
+            );
             if (recovered === null) throw error;
             result = recovered;
             recoveredBeforeIo = true;
+          }
+          if (
+            call.name === "results.write" && recoveredBeforeIo &&
+            this.#options.terminalMode === "artifact-write"
+          ) {
+            artifactRepairActive = true;
+            artifactRepairInspectionAvailable = true;
+          } else if (call.name === "results.write" && !recoveredBeforeIo) {
+            artifactRepairActive = false;
           }
           this.#throwIfStopped();
           const resultBytes = Buffer.byteLength(result.content, "utf8");
@@ -485,6 +607,7 @@ class ConstrainedWireSession implements AgentSession {
             name: call.name,
             content: result.content,
             ...(recoveredBeforeIo ? { ok: false } : {}),
+            ...(artifactValidationIssue === undefined ? {} : { validationIssue: artifactValidationIssue }),
           });
           yield {
             type: "tool",
@@ -492,6 +615,7 @@ class ConstrainedWireSession implements AgentSession {
             callId: call.id,
             name: call.name,
             ...(recoveredBeforeIo ? { ok: false } : {}),
+            ...(artifactValidationIssue === undefined ? {} : { reason: artifactValidationIssue }),
           };
           if (result.artifact !== undefined) {
             if (call.name === "results.write" && !recoveredBeforeIo) artifactWritten = true;
@@ -594,15 +718,34 @@ function recoverableWorkspaceToolFailure(
   call: AgentToolCall,
   error: unknown,
   beforeHostIo = false,
+  resultArtifactContract?: AgentResultArtifactContract,
+  artifactValidationIssue?: ResultArtifactValidationIssue,
+  artifactRepairDetail?: ResultArtifactRepairDetail,
+  reportShard = false,
 ): WorkspaceToolResult | null {
   if ((call.name === "results.write" && !beforeHostIo) || !(error instanceof AgentSessionError) ||
       !RECOVERABLE_WORKSPACE_TOOL_ERRORS.has(error.code)) return null;
   const hint = error.code === "tool_path_denied"
     ? "Use '.' for the virtual root or a repository-relative path."
     : call.name === "results.write"
-      ? "Use the declared result path and pass one complete compact JSON artifact matching the declared stage contract."
+      ? resultArtifactContract === PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT
+        ? reportShard
+          ? "Use the declared result path and pass one complete compact JSON object containing only schemaVersion:1, optional stage:'report', and findings. Include exactly one substantive finding for every carried candidateId, with non-empty rootCause, impact, remediation, and pinned anchors. Do not include summary, observations, scope, coverage, disposition, or reason fields."
+          : artifactRepairDetail?.kind === "candidate-contract"
+            ? "Discovery candidates must be an array of at most 100 exact objects with only id, category, and anchors. IDs must be unique identifiers. Each anchors value must be an array of exact path, startLine, endLine, role, and optional explanation objects. Correct the indicated item and do not add extra keys."
+          : artifactValidationIssue === "dossier-semantics-invalid"
+          ? "Use the declared result path and pass one complete compact JSON object. For dataflow and validation, omit candidates and use only candidateId values from BEGIN_PORTABLE_CANDIDATE_IDS_JSON exactly as listed. Do not rename or invent candidate ids."
+          : "Use the declared result path and pass one complete compact JSON object with schemaVersion 1 and the stage matching that path. Include a non-empty summary, observations [], and scope paths as '.' or repository-relative paths. Candidate, assessment, finding, coverage, and evidence fields must match the declared stage contract and pinned line ranges."
+        : "Use the declared result path and pass one complete compact JSON artifact matching the declared stage contract."
       : "Correct the tool arguments and stay within the declared read limits.";
-  return { content: JSON.stringify({ error: error.code, hint }) };
+  return {
+    content: JSON.stringify({
+      error: error.code,
+      ...(artifactValidationIssue === undefined ? {} : { reason: artifactValidationIssue }),
+      ...(artifactRepairDetail === undefined ? {} : { repair: artifactRepairDetail }),
+      hint,
+    }),
+  };
 }
 
 const REMOTE_CANCELLATION_GRACE_MS = 100;

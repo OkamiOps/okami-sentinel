@@ -1,6 +1,19 @@
 import { parseStructuredResult } from "./structured-result.js";
 import { validateVulnHunterReportEvidence } from "./result-artifact-evidence.js";
-import { normalizePortableCodexSecurityStageArtifact } from "../scanners/portable-codex-security-dossier.js";
+import {
+  applyPortableCodexSecurityStageArtifact,
+  normalizePortableCodexSecurityStageArtifact,
+  validatePortableCodexSecurityReportCoverage,
+  type PortableArtifactValidationIssue,
+  type PortableArtifactRepairDetail,
+  type PortableCodexSecurityDossier,
+  type PortableReportCoverageValidationIssue,
+  PortableCodexSecurityDossierError,
+} from "../scanners/portable-codex-security-dossier.js";
+import {
+  materializePortableCodexSecurityReportShard,
+  type PortableCodexSecurityReportShard,
+} from "../scanners/portable-codex-security-report-shards.js";
 
 export const VULNHUNTER_RESULT_ARTIFACT_PATH = "sentinel-findings.json";
 export const MAX_VULNHUNTER_RESULT_REPORT_BYTES = 2 * 1024 * 1024;
@@ -19,6 +32,19 @@ export const VULNHUNTER_RESULT_ARTIFACT_NAMES = [
 export type AgentResultArtifactContract =
   | typeof PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT
   | "vulnhunter-report-v1";
+
+/** Server-owned Portable state used only to validate a terminal artifact before host I/O. */
+export interface PortableResultArtifactValidationContext {
+  dossier: PortableCodexSecurityDossier;
+  /** Report-page membership; causes the model-facing artifact to be findings-only. */
+  reportShard?: PortableCodexSecurityReportShard;
+}
+
+export type ResultArtifactValidationIssue = PortableArtifactValidationIssue
+  | PortableReportCoverageValidationIssue
+  | "json-invalid"
+  | "dossier-semantics-invalid";
+export type ResultArtifactRepairDetail = PortableArtifactRepairDetail;
 
 const REPORT_KEYS = new Set(["schemaVersion", "findings"]);
 const FINDING_KEYS = new Set([
@@ -94,16 +120,21 @@ export function normalizeResultArtifactInput(
   input: Record<string, unknown>,
   contract: AgentResultArtifactContract | undefined,
   snapshotRoot?: string,
+  portableContext?: PortableResultArtifactValidationContext,
+  onReject?: (issue: ResultArtifactValidationIssue, detail?: ResultArtifactRepairDetail) => void,
 ): Record<string, unknown> | null {
   const parsed = typeof input.content === "string"
     ? parseStructuredResult(undefined, input.content)
     : parseStructuredResult(input.content, null);
-  if (parsed === null) return null;
+  if (parsed === null) {
+    onReject?.("json-invalid");
+    return null;
+  }
   if (contract === undefined) {
     return { ...input, content: JSON.stringify(parsed) };
   }
   if (contract === PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT) {
-    return normalizePortableStageArtifact(input.path, parsed);
+    return normalizePortableStageArtifact(input.path, parsed, snapshotRoot, portableContext, onReject);
   }
   if (input.path !== VULNHUNTER_RESULT_ARTIFACT_PATH) return null;
   const report = normalizeVulnHunterResultReport(parsed, snapshotRoot);
@@ -112,11 +143,52 @@ export function normalizeResultArtifactInput(
     : { path: VULNHUNTER_RESULT_ARTIFACT_PATH, content: JSON.stringify(report) };
 }
 
-function normalizePortableStageArtifact(path: unknown, value: unknown): Record<string, unknown> | null {
-  const artifact = normalizePortableCodexSecurityStageArtifact(path, value);
-  return artifact === null || typeof path !== "string"
-    ? null
-    : { path, content: JSON.stringify(artifact) };
+function normalizePortableStageArtifact(
+  path: unknown,
+  value: unknown,
+  snapshotRoot: string | undefined,
+  context: PortableResultArtifactValidationContext | undefined,
+  onReject?: (issue: ResultArtifactValidationIssue, detail?: ResultArtifactRepairDetail) => void,
+): Record<string, unknown> | null {
+  let repairDetail: ResultArtifactRepairDetail | undefined;
+  let modelValue = value;
+  if (path === VULNHUNTER_RESULT_ARTIFACT_PATH && context?.reportShard !== undefined) {
+    try {
+      modelValue = materializePortableCodexSecurityReportShard(context.reportShard, value);
+    } catch (error) {
+      const issue = error instanceof PortableCodexSecurityDossierError && error.issue !== undefined
+        ? error.issue
+        : "report-contract-invalid";
+      onReject?.(issue);
+      return null;
+    }
+  }
+  const artifact = normalizePortableCodexSecurityStageArtifact(
+    path,
+    modelValue,
+    snapshotRoot,
+    (issue) => onReject?.(issue, repairDetail),
+    (detail) => { repairDetail = detail; },
+  );
+  if (artifact === null || typeof path !== "string") return null;
+  if (context !== undefined) {
+    try {
+      if (path === VULNHUNTER_RESULT_ARTIFACT_PATH) {
+        validatePortableCodexSecurityReportCoverage(artifact, context.dossier);
+      } else {
+        applyPortableCodexSecurityStageArtifact(context.dossier, artifact);
+      }
+    } catch (error) {
+      const issue = error instanceof PortableCodexSecurityDossierError && error.issue !== undefined
+        ? error.issue
+        : path === VULNHUNTER_RESULT_ARTIFACT_PATH
+          ? "report-contract-invalid"
+          : "dossier-semantics-invalid";
+      onReject?.(issue);
+      return null;
+    }
+  }
+  return { path, content: JSON.stringify(artifact) };
 }
 
 function validValidation(value: unknown): boolean {

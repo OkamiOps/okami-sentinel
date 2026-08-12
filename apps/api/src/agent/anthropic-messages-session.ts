@@ -1,10 +1,13 @@
 import type { ProviderModel } from "@csb/shared";
 
 import {
+  AGENT_ARTIFACT_REPAIR_REMINDER,
   AgentSessionError,
+  MAX_AGENT_SESSION_COMPLETION_TOKENS,
   validateAgentSessionReasoningEffort,
   type AgentToolCall,
   type AgentToolResult,
+  type AgentSessionTerminalMode,
   type AgentWireRequestControl,
   type AgentWireRequest,
   type NormalizedModelReply,
@@ -26,6 +29,8 @@ export interface AnthropicMessagesSessionSpec {
   instructions: string;
   reasoningEffort?: string;
   resultArtifactContract?: AgentResultArtifactContract;
+  terminalMode?: AgentSessionTerminalMode;
+  maxCompletionTokens?: number;
 }
 
 /** Translates the four fixed local tools to Anthropic Messages wire objects. */
@@ -52,11 +57,18 @@ export function createAnthropicMessagesWireAdapter(
           })),
         });
       }
+      if (control?.artifactRepairReminder === true && toolResults.length === 0) {
+        messages.push({ role: "user", content: AGENT_ARTIFACT_REPAIR_REMINDER });
+      }
       return {
         operation: "messages",
         body: {
           model: spec.model.id,
-          max_tokens: anthropicMaxTokens(spec.reasoningEffort),
+          max_tokens: anthropicMaxTokens(
+            spec.reasoningEffort,
+            spec.terminalMode,
+            spec.maxCompletionTokens,
+          ),
           messages,
           ...(finalizing
             ? {}
@@ -101,22 +113,38 @@ export function createAnthropicMessagesWireAdapter(
 }
 
 /** Long-horizon effort needs response headroom; provider-managed routes retain the proven default. */
-function anthropicMaxTokens(reasoningEffort: string | undefined): number {
+function anthropicMaxTokens(
+  reasoningEffort: string | undefined,
+  terminalMode: AgentSessionTerminalMode | undefined,
+  requestedCompletionTokens: number | undefined,
+): number {
+  let defaultBudget: number;
   switch (reasoningEffort) {
     case "max":
     case "ultra":
     case "xhigh":
-      return 65_536;
+      defaultBudget = 65_536;
+      break;
     case "high":
-      return 32_768;
+      defaultBudget = 32_768;
+      break;
     case "medium":
-      return 16_384;
+      defaultBudget = 16_384;
+      break;
     case "low":
     case "minimal":
-      return 8_192;
+      defaultBudget = 8_192;
+      break;
     default:
-      return 4_096;
+      defaultBudget = terminalMode === "artifact-write" ? 8_192 : 4_096;
   }
+  if (!Number.isSafeInteger(requestedCompletionTokens) || requestedCompletionTokens === undefined) {
+    return defaultBudget;
+  }
+  return Math.min(
+    MAX_AGENT_SESSION_COMPLETION_TOKENS,
+    Math.max(defaultBudget, requestedCompletionTokens),
+  );
 }
 
 function anthropicTools(

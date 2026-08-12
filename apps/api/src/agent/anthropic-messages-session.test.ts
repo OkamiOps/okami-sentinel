@@ -98,6 +98,35 @@ test("Anthropic Messages gives long-horizon published efforts enough response bu
   assert.equal((providerManaged.nextRequest([]).body as Record<string, unknown>).max_tokens, 4_096);
 });
 
+test("Anthropic Messages gives provider-managed artifact sessions a bounded JSON response budget", () => {
+  const artifactSession = createAnthropicMessagesWireAdapter({
+    model: model("provider-managed-model"),
+    instructions: "Inspect the snapshot and write the declared artifact.",
+    terminalMode: "artifact-write",
+  });
+
+  const body = artifactSession.nextRequest([]).body as Record<string, unknown>;
+  assert.equal(body.max_tokens, 8_192);
+  assert.equal("output_config" in body, false);
+});
+
+test("Anthropic Messages honors a server-owned completion budget without changing provider-managed defaults", () => {
+  const report = createAnthropicMessagesWireAdapter({
+    model: model("provider-managed-model"),
+    instructions: "Write the Portable report.",
+    terminalMode: "artifact-write",
+    maxCompletionTokens: 12_288,
+  });
+  const nonReport = createAnthropicMessagesWireAdapter({
+    model: model("provider-managed-model"),
+    instructions: "Write a stage artifact.",
+    terminalMode: "artifact-write",
+  });
+
+  assert.equal((report.nextRequest([]).body as Record<string, unknown>).max_tokens, 12_288);
+  assert.equal((nonReport.nextRequest([]).body as Record<string, unknown>).max_tokens, 8_192);
+});
+
 test("Anthropic Messages closes the tool surface after results.write is consumed", () => {
   const adapter = createAnthropicMessagesWireAdapter({
     model: model("MiniMax-M3"),
@@ -132,13 +161,15 @@ test("Anthropic Messages exposes only the required artifact tool during reserved
   });
   const request = (adapter.nextRequest as (
     results: readonly [],
-    control: { finalizationRequired: true },
-  ) => AgentWireRequest)([], { finalizationRequired: true });
+    control: { finalizationRequired: true; artifactRepairReminder: true },
+  ) => AgentWireRequest)([], { finalizationRequired: true, artifactRepairReminder: true });
   const body = request.body as Record<string, unknown>;
   const tools = body.tools as Array<{ name: string }>;
+  const messages = body.messages as Array<{ role: string; content: string }>;
 
   assert.deepEqual(tools.map((tool) => tool.name), ["results_write"]);
   assert.deepEqual(body.tool_choice, { type: "any" });
+  assert.match(messages.at(-1)?.content ?? "", /call results\.write now/i);
 });
 
 test("Anthropic Messages keeps the VulnHunter result tool on the universal string contract", () => {
