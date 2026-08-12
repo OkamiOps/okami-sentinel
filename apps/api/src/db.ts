@@ -8,6 +8,7 @@ import {
   type ScanCost,
   type ScanConnectionProvenance,
   type ScanLaunchSelection,
+  type ReasoningWireField,
   type ScanRun,
   type ScanUsageSummary,
   type ScanStatus,
@@ -508,10 +509,37 @@ function sanitizeLaunchSelection(value: unknown): ScanLaunchSelection | null {
     value.paths.length > 256 ||
     !value.paths.every(safeLaunchPath)
   ) return null;
+  const reasoning = sanitizeLaunchReasoning(value.reasoning);
+  if (value.reasoning !== undefined && reasoning === null) return null;
   return {
     modelSelectionMode,
     modelId: modelId as string | null,
     paths: [...value.paths],
+    ...(reasoning === null ? {} : { reasoning }),
+  };
+}
+
+function sanitizeLaunchReasoning(value: unknown): NonNullable<ScanLaunchSelection["reasoning"]> | null {
+  if (!isRecord(value)) return null;
+  if (value.kind === "provider-default" && value.effort === null && value.wire === null) {
+    return { kind: "provider-default", effort: null, wire: null };
+  }
+  const wires = new Set([
+    "Codex CLI config", "turn/start.effort", "reasoning.effort", "reasoning_effort",
+    "output_config.effort",
+  ]);
+  if (
+    value.kind !== "sent" ||
+    !safeLaunchIdentifier(value.effort) ||
+    typeof value.wire !== "string" ||
+    !wires.has(value.wire)
+  ) {
+    return null;
+  }
+  return {
+    kind: "sent",
+    effort: value.effort,
+    wire: value.wire as ReasoningWireField,
   };
 }
 

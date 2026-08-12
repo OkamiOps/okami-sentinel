@@ -62,6 +62,8 @@ test("Portable Codex Security completes a local API-key HTTP route through launc
   const database = new Database(":memory:");
   let runId: string | undefined;
   let runDir: string | undefined;
+  let child: FakeWorkerChild | undefined;
+  let childClosed = false;
 
   try {
     // The production modules read this only once, at import time. Keeping the
@@ -136,7 +138,7 @@ test("Portable Codex Security completes a local API-key HTTP route through launc
     assert.equal(preview.selectedProfile, "portable");
     assert.equal(preview.capabilityCheckId, probe?.report.id);
 
-    const child = new FakeWorkerChild();
+    child = new FakeWorkerChild();
     let workerConfigPath: string | undefined;
     let workerEnvironment: NodeJS.ProcessEnv | undefined;
     const run = await startScan({
@@ -186,9 +188,7 @@ test("Portable Codex Security completes a local API-key HTTP route through launc
         assert.ok(artifact, `stage ${stage} must have an artifact`);
         fs.writeFileSync(
           path.join(input.spec.artifactRoot, artifact),
-          JSON.stringify(stage === "report"
-            ? { schemaVersion: 1, stage: "report", findings: [portableFinding()] }
-            : { schemaVersion: 1, stage, summary: `${stage} completed`, observations: [] }),
+          JSON.stringify(portableStageArtifact(stage)),
           { mode: 0o600 },
         );
         return completedStageSession(stage, artifact!);
@@ -212,6 +212,7 @@ test("Portable Codex Security completes a local API-key HTTP route through launc
     });
 
     child.emit("close", 0);
+    childClosed = true;
     const reconciled = getRun(run.id);
     assert.equal(reconciled?.status, "completed");
     assert.equal(reconciled?.severity.high, 1);
@@ -222,6 +223,7 @@ test("Portable Codex Security completes a local API-key HTTP route through launc
       modelSelectionMode: "catalog",
       modelId: "e2e-model",
       paths: [],
+      reasoning: { kind: "provider-default", effort: null, wire: null },
     });
 
     const publicFiles = [
@@ -235,6 +237,7 @@ test("Portable Codex Security completes a local API-key HTTP route through launc
     assert.equal(logs.join("\n").includes(secret), false);
     assert.equal(logs.join("\n").includes(baseUrl), false);
   } finally {
+    if (child !== undefined && !childClosed) child.emit("close", 1);
     if (runId !== undefined) {
       const { deleteRun } = await import("./db.js");
       deleteRun(runId);
@@ -302,12 +305,15 @@ function completeProbeMeasurement() {
 function portableFinding() {
   return {
     id: "PCS-E2E-1",
+    candidateId: "candidate-account-authorization",
     title: "Authorization predicate is absent",
     severity: "high",
     confidence: "high",
     category: "Authorization",
     remediation: "Require ownership verification before loading an account.",
     summary: "The selected account is loaded without an ownership predicate.",
+    rootCause: "The account lookup uses a caller-controlled identifier without an ownership predicate.",
+    impact: "An authenticated caller can retrieve an account that belongs to another user.",
     anchors: [{
       path: "src/auth.ts",
       startLine: 2,
@@ -315,6 +321,59 @@ function portableFinding() {
       role: "sink",
       explanation: "The account lookup consumes the caller-controlled identifier.",
     }],
+  };
+}
+
+function portableStageArtifact(stage: string): Record<string, unknown> {
+  const anchor = {
+    path: "src/auth.ts",
+    startLine: 2,
+    endLine: 2,
+    role: "sink",
+    explanation: "The lookup consumes the caller-controlled account identifier.",
+  };
+  if (stage === "report") {
+    return {
+      schemaVersion: 1,
+      stage: "report",
+      findings: [portableFinding()],
+      coverage: {
+        inspected: ["src/auth.ts"],
+        unexamined: [],
+        candidates: [{
+          candidateId: "candidate-account-authorization",
+          disposition: "reported",
+          reason: "control-not-present",
+          evidence: [anchor],
+        }],
+      },
+    };
+  }
+  return {
+    schemaVersion: 1,
+    stage,
+    summary: `${stage} completed`,
+    observations: [],
+    scope: { inspected: ["src/auth.ts"], unexamined: [] },
+    ...(stage === "discovery"
+      ? {
+        candidates: [{
+          id: "candidate-account-authorization",
+          category: "authorization",
+          anchors: [anchor],
+        }],
+      }
+      : {}),
+    ...(stage === "dataflow" || stage === "validation"
+      ? {
+        assessments: [{
+          candidateId: "candidate-account-authorization",
+          status: "confirmed",
+          reason: stage === "validation" ? "control-not-present" : "untrusted-flow-reaches-sink",
+          evidence: [anchor],
+        }],
+      }
+      : {}),
   };
 }
 

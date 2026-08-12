@@ -209,6 +209,7 @@ test("startScan dispatches only the Portable worker for a resolved Portable Code
       modelSelectionMode: "catalog",
       modelId: model.id,
       paths: [],
+      reasoning: { kind: "provider-default", effort: null, wire: null },
     });
     assert.deepEqual(getRun(run.id)?.launchSelection, run.launchSelection);
     const frozenPricing = readScannerPricingQuote(run.scanDir);

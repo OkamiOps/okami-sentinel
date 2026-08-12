@@ -49,6 +49,7 @@ import {
 } from "./portable-codex-security-profile.js";
 import {
   assertPortableCodexSecuritySnapshot,
+  createPortableCodexSecurityAnchorValidationCache,
   createPortableCodexSecuritySnapshot,
   materializePortableCodexSecurityReportArtifact,
   observePortableCodexSecurityStage,
@@ -300,6 +301,7 @@ export async function runPortableCodexSecurity(
     });
 
     const createSession = dependencies.createSession ?? productionSessionFactory(dependencies.createUpstream);
+    const anchorValidationCache = createPortableCodexSecurityAnchorValidationCache();
     let dossier = createPortableCodexSecurityDossier();
     let dossierStateBase64: string | null = null;
     let reportArtifactRoot: string | null = null;
@@ -363,6 +365,8 @@ export async function runPortableCodexSecurity(
         snapshotRoot: snapshot.snapshotRoot,
         usage: runtime.usage,
         signal: deadline.signal,
+        remainingMs: deadline.remainingMs,
+        anchorValidationCache,
         redact: globalSecretRedactor.redactText.bind(globalSecretRedactor),
         onEvent: (safeEvent) => log(safeEvent),
         onUsage: (usage) => {

@@ -31,7 +31,7 @@ test("distinguishes a sent effort from a provider default", () => {
   });
 });
 
-test("derives immutable historical delivery from the stored route tuple", () => {
+test("reads immutable delivery from the frozen launch record", () => {
   const scan = {
     effort: "high",
     connection: {
@@ -42,8 +42,31 @@ test("derives immutable historical delivery from the stored route tuple", () => 
       capabilityCheckId: "probe-a",
     },
     execution: null,
-  } satisfies Pick<ScanRun, "effort" | "connection" | "execution">;
+    launchSelection: {
+      modelSelectionMode: "catalog" as const,
+      modelId: "claude-opus-5",
+      paths: [],
+      reasoning: { kind: "sent" as const, effort: "high", wire: "output_config.effort" as const },
+    },
+  } satisfies Pick<ScanRun, "effort" | "connection" | "execution" | "launchSelection">;
   assert.deepEqual(scanReasoningDelivery(scan), {
     kind: "sent", effort: "high", wire: "output_config.effort",
+  });
+});
+
+test("never claims a historical effort was sent without launch-time proof", () => {
+  assert.deepEqual(scanReasoningDelivery({
+    effort: "high",
+    connection: null,
+    execution: null,
+    launchSelection: null,
+  }), {
+    kind: "legacy-unverified", effort: "high", wire: null,
+  });
+  assert.deepEqual(reasoningDeliveryCopy({
+    kind: "legacy-unverified", effort: "high", wire: null,
+  }), {
+    key: "reasoning.legacyUnverified",
+    variables: { effort: "high" },
   });
 });

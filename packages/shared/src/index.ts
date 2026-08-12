@@ -61,6 +61,36 @@ export type ProviderProtocol =
   | "anthropic-messages"
   | "cursor-background-agents";
 
+export type ReasoningWireField =
+  | "Codex CLI config"
+  | "turn/start.effort"
+  | "reasoning.effort"
+  | "reasoning_effort"
+  | "output_config.effort";
+
+/** Exact request/config field used by a proven route; null means provider-managed. */
+export function reasoningWireFieldForRoute(
+  routeKind: string,
+  protocol: ProviderProtocol,
+): ReasoningWireField | null {
+  if (protocol === "codex-cli") return "Codex CLI config";
+  if (protocol === "codex-app-server") return "turn/start.effort";
+  if (routeKind === "openai-api") {
+    if (protocol === "openai-responses") return "reasoning.effort";
+    if (protocol === "openai-chat") return "reasoning_effort";
+  }
+  if ((routeKind === "xai-api" || routeKind === "xai-oauth" || routeKind === "openrouter-api") &&
+      (protocol === "openai-responses" || protocol === "xai-oauth-responses" ||
+        protocol === "openai-chat")) {
+    return "reasoning.effort";
+  }
+  if (routeKind === "anthropic-api" && protocol === "anthropic-messages") {
+    return "output_config.effort";
+  }
+  if (routeKind === "gemini-api" && protocol === "openai-chat") return "reasoning_effort";
+  return null;
+}
+
 export type ModelSelectionMode = "catalog" | "runtime-default";
 
 /** Credential treatment required by a visible connection preset. */
@@ -333,6 +363,10 @@ export interface ScanLaunchSelection {
   modelSelectionMode: SnapshotModelSelectionMode;
   modelId: string | null;
   paths: string[];
+  /** Immutable launch-time proof; absent on historical rows created before this contract. */
+  reasoning?:
+    | { kind: "provider-default"; effort: null; wire: null }
+    | { kind: "sent"; effort: string; wire: ReasoningWireField };
 }
 
 /** A stable server-resolved eligibility result for one connection/model pair. */

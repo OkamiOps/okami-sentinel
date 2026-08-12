@@ -9,7 +9,7 @@ import type {
   ScanRun,
   StartScanRequest,
 } from "@csb/shared";
-import { emptySeverityCounts } from "@csb/shared";
+import { emptySeverityCounts, reasoningWireFieldForRoute } from "@csb/shared";
 import {
   CODEX_SECURITY_API_VAULT_TIMEOUT_MS,
   MAX_CONCURRENT_SCANS,
@@ -717,7 +717,7 @@ export async function startScan(
         authKind: selection.plan.snapshot.authKind,
         capabilityCheckId: selection.plan.capabilityCheckId,
       },
-    launchSelection: launchSelectionForRun(selection.plan, selection.request.paths),
+    launchSelection: launchSelectionForRun(selection.plan, selection.request.paths, effort),
     progress: initialProgress ? sanitizeScanProgress(initialProgress) : null,
   };
   upsertRun(run);
@@ -929,12 +929,19 @@ function isPortableCodexSecurityRun(run: ScanRun): boolean {
 function launchSelectionForRun(
   plan: ScanLaunchPlan | null,
   paths: readonly string[] | undefined,
+  effort: string | null,
 ): ScanRun["launchSelection"] {
   if (plan === null) return null;
+  const wire = reasoningWireFieldForRoute(plan.routeKind, plan.protocol);
   return {
     modelSelectionMode: plan.snapshot.modelSelectionMode,
     modelId: plan.snapshot.modelId,
     paths: (paths ?? []).map((item) => item.trim()).filter(Boolean),
+    ...(effort === null
+      ? { reasoning: { kind: "provider-default" as const, effort: null, wire: null } }
+      : wire === null
+        ? {}
+        : { reasoning: { kind: "sent" as const, effort, wire } }),
   };
 }
 

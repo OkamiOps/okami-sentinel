@@ -1,15 +1,24 @@
-import type { ProviderConnection, ProviderProtocol, ScanRun } from "@csb/shared";
+import {
+  reasoningWireFieldForRoute,
+  type ProviderConnection,
+  type ProviderProtocol,
+  type ScanRun,
+} from "@csb/shared";
 
 export type ReasoningDelivery =
   | { kind: "provider-default"; effort: null; wire: null }
+  | { kind: "legacy-unverified"; effort: string; wire: null }
   | { kind: "sent"; effort: string; wire: string };
 
 export function reasoningDeliveryCopy(delivery: ReasoningDelivery): {
-  key: "reasoning.sent" | "reasoning.providerDefault";
+  key: "reasoning.sent" | "reasoning.providerDefault" | "reasoning.legacyUnverified";
   variables?: Record<string, string>;
 } {
-  return delivery.kind === "sent"
-    ? { key: "reasoning.sent", variables: { effort: delivery.effort, wire: delivery.wire } }
+  if (delivery.kind === "sent") {
+    return { key: "reasoning.sent", variables: { effort: delivery.effort, wire: delivery.wire } };
+  }
+  return delivery.kind === "legacy-unverified"
+    ? { key: "reasoning.legacyUnverified", variables: { effort: delivery.effort } }
     : { key: "reasoning.providerDefault" };
 }
 
@@ -17,26 +26,7 @@ export function reasoningWireField(
   routeKind: string,
   protocol: ProviderProtocol,
 ): string | null {
-  if (protocol === "codex-cli") return "Codex CLI config";
-  if (protocol === "codex-app-server") return "turn/start.effort";
-  switch (routeKind) {
-    case "openai-api":
-      return protocol === "openai-responses" ? "reasoning.effort"
-        : protocol === "openai-chat" ? "reasoning_effort" : null;
-    case "xai-api":
-    case "xai-oauth":
-    case "openrouter-api":
-      return protocol === "openai-responses" || protocol === "xai-oauth-responses" ||
-          protocol === "openai-chat"
-        ? "reasoning.effort"
-        : null;
-    case "anthropic-api":
-      return protocol === "anthropic-messages" ? "output_config.effort" : null;
-    case "gemini-api":
-      return protocol === "openai-chat" ? "reasoning_effort" : null;
-    default:
-      return null;
-  }
+  return reasoningWireFieldForRoute(routeKind, protocol);
 }
 
 export function connectionReasoningDelivery(
@@ -46,24 +36,18 @@ export function connectionReasoningDelivery(
   if (effort === null || connection === null) {
     return { kind: "provider-default", effort: null, wire: null };
   }
-  return {
-    kind: "sent",
-    effort,
-    wire: reasoningWireField(connection.routeKind, connection.protocol) ?? "launch adapter",
-  };
+  const wire = reasoningWireField(connection.routeKind, connection.protocol);
+  return wire === null
+    ? { kind: "legacy-unverified", effort, wire: null }
+    : { kind: "sent", effort, wire };
 }
 
 export function scanReasoningDelivery(
-  scan: Pick<ScanRun, "effort" | "connection" | "execution">,
+  scan: Pick<ScanRun, "effort" | "connection" | "execution" | "launchSelection">,
 ): ReasoningDelivery {
-  if (scan.effort === null) return { kind: "provider-default", effort: null, wire: null };
-  const routeKind = scan.connection?.routeKind ?? scan.execution?.routeKind;
-  const protocol = scan.connection?.protocol ?? scan.execution?.protocol;
-  return {
-    kind: "sent",
-    effort: scan.effort,
-    wire: routeKind !== null && routeKind !== undefined && protocol !== null && protocol !== undefined
-      ? reasoningWireField(routeKind, protocol) ?? "launch adapter"
-      : "launch adapter",
-  };
+  const frozen = scan.launchSelection?.reasoning;
+  if (frozen !== undefined) return frozen;
+  return scan.effort === null
+    ? { kind: "provider-default", effort: null, wire: null }
+    : { kind: "legacy-unverified", effort: scan.effort, wire: null };
 }

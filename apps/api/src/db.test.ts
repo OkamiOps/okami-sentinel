@@ -102,6 +102,7 @@ test("round-trips frozen provider-catalog pricing and null costs", () => {
       modelSelectionMode: "catalog",
       modelId: "mimo-v2.5",
       paths: ["src/auth"],
+      reasoning: { kind: "sent", effort: "high", wire: "reasoning.effort" },
     },
   };
   const nullCostRun: ScanRun = {

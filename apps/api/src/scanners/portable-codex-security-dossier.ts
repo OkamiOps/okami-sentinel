@@ -191,6 +191,15 @@ export function applyPortableCodexSecurityStageArtifact(
     if (!next.candidates.some((candidate) => candidate.id === assessment.candidateId)) {
       throw new PortableCodexSecurityDossierError("assessment references an unknown candidate");
     }
+    const existing = next.assessments.find((item) =>
+      item.candidateId === assessment.candidateId && item.stage === artifact.stage
+    );
+    if (existing !== undefined) {
+      if (!sameAssessment(existing, assessment)) {
+        throw new PortableCodexSecurityDossierError("candidate assessment conflicts with existing dossier state");
+      }
+      continue;
+    }
     if (next.assessments.length >= MAX_ASSESSMENTS) {
       throw new PortableCodexSecurityDossierError("assessment dossier limit exceeded");
     }
@@ -229,6 +238,30 @@ export function validatePortableCodexSecurityReportCoverage(
   }
   if (coverageByCandidate.size !== carriedCandidateIds.size) {
     throw new PortableCodexSecurityDossierError("candidate coverage is incomplete");
+  }
+
+  const decisiveAssessments = new Map<string, PortableCandidateAssessment>();
+  for (const assessment of dossier.assessments) {
+    const current = decisiveAssessments.get(assessment.candidateId);
+    if (current === undefined || assessment.stage === "validation") {
+      decisiveAssessments.set(assessment.candidateId, assessment);
+    }
+  }
+  for (const candidateId of carriedCandidateIds) {
+    const assessment = decisiveAssessments.get(candidateId);
+    if (assessment === undefined || assessment.status === "inconclusive") {
+      throw new PortableCodexSecurityDossierError("candidate has no conclusive assessment");
+    }
+    const coverage = coverageByCandidate.get(candidateId)!;
+    if (assessment.status === "confirmed" && coverage.disposition !== "reported") {
+      throw new PortableCodexSecurityDossierError("confirmed candidate must be reported");
+    }
+    if (assessment.status === "rejected" && coverage.disposition !== "rejected") {
+      throw new PortableCodexSecurityDossierError("rejected candidate cannot be reported");
+    }
+    if (coverage.reason !== assessment.reason) {
+      throw new PortableCodexSecurityDossierError("candidate coverage must preserve the conclusive assessment reason");
+    }
   }
 
   const findingIds = new Set<string>();
@@ -636,6 +669,14 @@ function copyCandidate(candidate: PortableCandidate): PortableCandidate {
 
 function sameCandidate(left: PortableCandidate, right: PortableCandidate): boolean {
   return left.category === right.category && JSON.stringify(left.anchors) === JSON.stringify(right.anchors);
+}
+
+function sameAssessment(
+  left: PortableCandidateAssessment,
+  right: Omit<PortableCandidateAssessment, "stage">,
+): boolean {
+  return left.status === right.status && left.reason === right.reason &&
+    JSON.stringify(left.evidence) === JSON.stringify(right.evidence);
 }
 
 function copyAssessment(assessment: Omit<PortableCandidateAssessment, "stage">): Omit<PortableCandidateAssessment, "stage">;

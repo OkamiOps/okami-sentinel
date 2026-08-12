@@ -180,6 +180,49 @@ test("Portable report rejects a verified-zero claim when a carried candidate is 
   );
 });
 
+test("Portable report cannot erase a candidate confirmed by the validation stage", () => {
+  let dossier = createPortableCodexSecurityDossier();
+  dossier = applyPortableCodexSecurityStageArtifact(dossier, {
+    schemaVersion: 1,
+    stage: "discovery",
+    summary: "Candidate discovery recorded one repository-backed authorization target.",
+    observations: [],
+    scope: { inspected: ["src/routes/profile.ts"], unexamined: [] },
+    candidates: [{ id: "candidate-profile-query", category: "authorization", anchors: [anchor] }],
+  });
+  dossier = applyPortableCodexSecurityStageArtifact(dossier, {
+    schemaVersion: 1,
+    stage: "validation",
+    summary: "Validation confirmed the missing authorization control.",
+    observations: [],
+    assessments: [{
+      candidateId: "candidate-profile-query",
+      status: "confirmed",
+      reason: "control-not-present",
+      evidence: [anchor],
+    }],
+  });
+
+  assert.throws(
+    () => validatePortableCodexSecurityReportCoverage({
+      schemaVersion: 1,
+      stage: "report",
+      findings: [],
+      coverage: {
+        inspected: ["src/routes/profile.ts"],
+        unexamined: [],
+        candidates: [{
+          candidateId: "candidate-profile-query",
+          disposition: "rejected",
+          reason: "not-vulnerable",
+          evidence: [anchor],
+        }],
+      },
+    }, dossier),
+    /confirmed candidate must be reported/i,
+  );
+});
+
 test("Portable coverage anchors must resolve to regular pinned source lines", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-coverage-anchors-"));
   try {
@@ -209,6 +252,18 @@ test("Portable coverage anchors must resolve to regular pinned source lines", ()
         { ...anchor, startLine: 1, endLine: 1 },
       ] }],
     });
+    const rejectedDossier = applyPortableCodexSecurityStageArtifact(validDossier, {
+      schemaVersion: 1,
+      stage: "validation",
+      summary: "Validation rejected the candidate using repository-backed evidence.",
+      observations: [],
+      assessments: [{
+        candidateId: "candidate-profile-query",
+        status: "rejected",
+        reason: "not-vulnerable",
+        evidence: [{ ...anchor, startLine: 1, endLine: 1 }],
+      }],
+    });
     const report = validatePortableCodexSecurityReportCoverage({
       schemaVersion: 1,
       stage: "report",
@@ -223,10 +278,41 @@ test("Portable coverage anchors must resolve to regular pinned source lines", ()
           evidence: [{ ...anchor, path: "src/routes/missing.ts", startLine: 1, endLine: 1 }],
         }],
       },
-    }, validDossier);
+    }, rejectedDossier);
     assert.throws(
       () => assertPortableCodexSecurityReportAnchors(root, report),
       /stage_evidence_incomplete/i,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Portable anchor validation is byte bounded and checks the remaining deadline", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-anchor-budget-"));
+  try {
+    fs.mkdirSync(path.join(root, "src"), { recursive: true });
+    fs.writeFileSync(path.join(root, "src", "large.ts"), Buffer.alloc(1_048_577, 97));
+    const dossier = applyPortableCodexSecurityStageArtifact(createPortableCodexSecurityDossier(), {
+      schemaVersion: 1,
+      stage: "discovery",
+      summary: "Candidate discovery recorded a bounded source target.",
+      observations: [],
+      candidates: [{
+        id: "candidate-large-file",
+        category: "validation",
+        anchors: [{ ...anchor, path: "src/large.ts", startLine: 1, endLine: 1 }],
+      }],
+    });
+    assert.throws(
+      () => assertPortableCodexSecurityDossierAnchors(root, dossier),
+      /stage_evidence_incomplete/i,
+    );
+
+    fs.writeFileSync(path.join(root, "src", "large.ts"), "const bounded = true;\n");
+    assert.throws(
+      () => assertPortableCodexSecurityDossierAnchors(root, dossier, () => 0),
+      /agent_time_limit/i,
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

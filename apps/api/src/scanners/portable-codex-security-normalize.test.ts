@@ -96,10 +96,16 @@ function writeHandoff(fixture: Fixture, findings: Record<string, unknown>[]): vo
     candidates: coverageCandidates.map((coverage, index) => ({
       id: coverage.candidateId,
       category: "Authorization",
-      anchors: coverage.evidence,
+      anchors: coverage.evidence.slice(0, 1),
       index,
     })).map(({ index: _index, ...candidate }) => candidate),
-    assessments: [],
+    assessments: coverageCandidates.map((coverage) => ({
+      candidateId: coverage.candidateId,
+      stage: "validation",
+      status: "confirmed",
+      reason: coverage.reason,
+      evidence: coverage.evidence.slice(0, 1),
+    })),
     scope: { inspected: ["src"], unexamined: [] },
   };
   fs.writeFileSync(

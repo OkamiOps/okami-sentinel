@@ -32,6 +32,9 @@ const SNAPSHOT_EXCLUDES = new Set([
 const MAX_SNAPSHOT_ENTRIES = 500_000;
 const MAX_ARTIFACT_BYTES = 1_048_576;
 const MAX_STAGE_SUMMARY_BYTES = 16_384;
+const MAX_ANCHOR_FILE_BYTES = 1_048_576;
+const MAX_ANCHOR_VALIDATED_FILES = 256;
+const MAX_ANCHOR_VALIDATED_BYTES = 32 * 1_048_576;
 const NO_FOLLOW = typeof fs.constants.O_NOFOLLOW === "number"
   ? fs.constants.O_NOFOLLOW
   : 0;
@@ -76,12 +79,25 @@ export interface PortableCodexSecurityStageObservationInput {
   onEvent?: (safeEvent: string) => void;
   /** Persists usage as it arrives so a later stage failure cannot erase it. */
   onUsage?: (usage: ScannerUsage) => boolean | void;
+  /** Monotonic remaining-time seam used during synchronous evidence validation. */
+  remainingMs?: () => number;
+  /** Snapshot-owned cache shared by every stage so repeated anchors never reread a file. */
+  anchorValidationCache?: PortableCodexSecurityAnchorValidationCache;
 }
 
 export interface PortableCodexSecurityStageObservation {
   usage: ScannerUsage;
   dossier: PortableCodexSecurityDossier;
   dossierStateBase64: string;
+}
+
+export interface PortableCodexSecurityAnchorValidationCache {
+  lineCounts: Map<string, number>;
+  totalBytes: number;
+}
+
+export function createPortableCodexSecurityAnchorValidationCache(): PortableCodexSecurityAnchorValidationCache {
+  return { lineCounts: new Map(), totalBytes: 0 };
 }
 
 /**
@@ -166,14 +182,17 @@ export function hashPortableCodexSecuritySnapshot(snapshotRoot: string): string 
   return `content:${hash.digest("hex")}`;
 }
 
-function readPinnedSnapshotFile(file: string): Buffer {
+function readPinnedSnapshotFile(file: string, maxBytes = Number.MAX_SAFE_INTEGER): Buffer {
   let descriptor: number | undefined;
   try {
     const expected = fs.lstatSync(file);
-    if (expected.isSymbolicLink() || !expected.isFile()) throw new Error("unsafe file");
+    if (expected.isSymbolicLink() || !expected.isFile() || expected.size > maxBytes) {
+      throw new Error("unsafe file");
+    }
     descriptor = fs.openSync(file, READ_NO_FOLLOW);
     const opened = fs.fstatSync(descriptor);
-    if (!sameVersion(expected, opened) || !opened.isFile() || opened.isSymbolicLink()) {
+    if (!sameVersion(expected, opened) || !opened.isFile() || opened.isSymbolicLink() ||
+      opened.size > maxBytes) {
       throw new Error("file changed");
     }
     const output = Buffer.alloc(opened.size);
@@ -308,13 +327,23 @@ export async function observePortableCodexSecurityStage(
     if (input.stage.id === "report") {
       const report = validatePortableCodexSecurityReportCoverage(artifact, input.dossier);
       if (input.snapshotRoot !== undefined) {
-        assertPortableCodexSecurityReportAnchors(input.snapshotRoot, report);
+        assertPortableCodexSecurityReportAnchors(
+          input.snapshotRoot,
+          report,
+          input.remainingMs,
+          input.anchorValidationCache,
+        );
       }
       dossier = input.dossier;
     } else {
       dossier = applyPortableCodexSecurityStageArtifact(input.dossier, artifact);
       if (input.snapshotRoot !== undefined) {
-        assertPortableCodexSecurityDossierAnchors(input.snapshotRoot, dossier);
+        assertPortableCodexSecurityDossierAnchors(
+          input.snapshotRoot,
+          dossier,
+          input.remainingMs,
+          input.anchorValidationCache,
+        );
       }
     }
   } catch (error) {
@@ -334,43 +363,83 @@ export async function observePortableCodexSecurityStage(
 export function assertPortableCodexSecurityDossierAnchors(
   snapshotRoot: string,
   dossier: PortableCodexSecurityDossier,
+  remainingMs?: () => number,
+  cache = createPortableCodexSecurityAnchorValidationCache(),
 ): void {
-  for (const candidate of dossier.candidates) assertPortableCodexSecuritySnapshotAnchors(snapshotRoot, candidate.anchors);
-  for (const assessment of dossier.assessments) assertPortableCodexSecuritySnapshotAnchors(snapshotRoot, assessment.evidence);
+  const context = anchorValidationContext(snapshotRoot, remainingMs, cache);
+  for (const candidate of dossier.candidates) assertPortableCodexSecuritySnapshotAnchors(context, candidate.anchors);
+  for (const assessment of dossier.assessments) assertPortableCodexSecuritySnapshotAnchors(context, assessment.evidence);
 }
 
 /** Ensures findings and coverage cannot justify a result with invented source anchors. */
 export function assertPortableCodexSecurityReportAnchors(
   snapshotRoot: string,
   report: PortableReportArtifact,
+  remainingMs?: () => number,
+  cache = createPortableCodexSecurityAnchorValidationCache(),
 ): void {
-  for (const finding of report.findings) assertPortableCodexSecuritySnapshotAnchors(snapshotRoot, finding.anchors);
+  const context = anchorValidationContext(snapshotRoot, remainingMs, cache);
+  for (const finding of report.findings) assertPortableCodexSecuritySnapshotAnchors(context, finding.anchors);
   for (const coverage of report.coverage.candidates) {
-    assertPortableCodexSecuritySnapshotAnchors(snapshotRoot, coverage.evidence);
+    assertPortableCodexSecuritySnapshotAnchors(context, coverage.evidence);
   }
 }
 
-function assertPortableCodexSecuritySnapshotAnchors(
+interface PortableAnchorValidationContext {
+  root: string;
+  remainingMs?: () => number;
+  cache: PortableCodexSecurityAnchorValidationCache;
+}
+
+function anchorValidationContext(
   snapshotRoot: string,
+  remainingMs: (() => number) | undefined,
+  cache: PortableCodexSecurityAnchorValidationCache,
+): PortableAnchorValidationContext {
+  return { root: path.resolve(snapshotRoot), remainingMs, cache };
+}
+
+function assertPortableCodexSecuritySnapshotAnchors(
+  context: PortableAnchorValidationContext,
   anchors: readonly PortableCoverageAnchor[],
 ): void {
-  const root = path.resolve(snapshotRoot);
   for (const anchor of anchors) {
-    const candidate = path.resolve(root, anchor.path);
-    if (!isInside(root, candidate)) throw new PortableCodexSecurityStageError("stage_evidence_incomplete");
-    let contents: Buffer;
-    try {
-      contents = readPinnedSnapshotFile(candidate);
-    } catch {
+    assertAnchorValidationTime(context.remainingMs);
+    const candidate = path.resolve(context.root, anchor.path);
+    if (!isInside(context.root, candidate)) {
       throw new PortableCodexSecurityStageError("stage_evidence_incomplete");
     }
-    const lines = contents.length === 0
-      ? 0
-      : contents.reduce((total, value) => total + (value === 10 ? 1 : 0), 0) +
-        (contents[contents.length - 1] === 10 ? 0 : 1);
+    let lines = context.cache.lineCounts.get(candidate);
+    if (lines === undefined) {
+      if (context.cache.lineCounts.size >= MAX_ANCHOR_VALIDATED_FILES) {
+        throw new PortableCodexSecurityStageError("stage_evidence_incomplete");
+      }
+      let contents: Buffer;
+      try {
+        contents = readPinnedSnapshotFile(candidate, MAX_ANCHOR_FILE_BYTES);
+      } catch {
+        throw new PortableCodexSecurityStageError("stage_evidence_incomplete");
+      }
+      context.cache.totalBytes += contents.length;
+      if (context.cache.totalBytes > MAX_ANCHOR_VALIDATED_BYTES) {
+        throw new PortableCodexSecurityStageError("stage_evidence_incomplete");
+      }
+      lines = contents.length === 0
+        ? 0
+        : contents.reduce((total, value) => total + (value === 10 ? 1 : 0), 0) +
+          (contents[contents.length - 1] === 10 ? 0 : 1);
+      context.cache.lineCounts.set(candidate, lines);
+      assertAnchorValidationTime(context.remainingMs);
+    }
     if (anchor.endLine > lines) {
       throw new PortableCodexSecurityStageError("stage_evidence_incomplete");
     }
+  }
+}
+
+function assertAnchorValidationTime(remainingMs: (() => number) | undefined): void {
+  if (remainingMs !== undefined && remainingMs() <= 0) {
+    throw new PortableCodexSecurityStageError("agent_time_limit");
   }
 }
 
