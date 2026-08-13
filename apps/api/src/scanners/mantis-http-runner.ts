@@ -309,6 +309,18 @@ export async function runMantisHttpAgent(
       const artifactRoot = path.join(artifactsRoot, stage.id);
       fs.mkdirSync(artifactRoot, { recursive: true, mode: 0o700 });
       const expectedArtifact = `${stage.id}.json`;
+      // Reporting has to turn the bounded state accumulated by the eight
+      // preceding stages into a complete evidence artifact. Reasoning models
+      // can legitimately need more terminal attempts here than they need in a
+      // discovery stage, so give the report its own bounded envelope instead
+      // of silently inheriting the smaller exploratory-stage budget.
+      const stageLimits = stage.id === "report"
+        ? {
+            ...limits,
+            maxModelTurns: Math.min(256, Math.max(limits.maxModelTurns, limits.maxModelTurns * 2)),
+            maxToolCalls: Math.min(1_024, Math.max(limits.maxToolCalls, limits.maxToolCalls * 2)),
+          }
+        : limits;
       const spec: AgentSessionSpec = {
         connectionId: resolved.connection.id,
         routeKind: resolved.connection.routeKind,
@@ -323,14 +335,14 @@ export async function runMantisHttpAgent(
           : {}),
         artifactWriteByTurn: Math.max(
           1,
-          Math.floor(limits.maxModelTurns * (stage.id === "report" ? 1 / 3 : 2 / 3)),
+          Math.floor(stageLimits.maxModelTurns * (stage.id === "report" ? 1 / 3 : 2 / 3)),
         ),
         snapshotRoot,
         artifactRoot,
         instructions: stageInstructions(stage, configuration.paths, priorState, expectedArtifact),
         limits: {
-          ...limits,
-          timeoutMs: stage === MANTIS_STAGES[0] ? firstStageTimeoutMs : limits.timeoutMs,
+          ...stageLimits,
+          timeoutMs: stage === MANTIS_STAGES[0] ? firstStageTimeoutMs : stageLimits.timeoutMs,
         },
         signal,
       };

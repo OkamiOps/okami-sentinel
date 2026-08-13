@@ -284,12 +284,18 @@ test("Mantis HTTP runner executes every bounded stage with chained state and nev
     assert.equal(specs.length, STAGES.length);
     assert.deepEqual(specs.map((spec) => spec.reasoningEffort), Array(STAGES.length).fill("high"));
     assert.deepEqual(specs.map((spec) => spec.terminalMode), Array(STAGES.length).fill("artifact-write"));
-    assert.deepEqual(specs.map((spec) => spec.limits.maxModelTurns), Array(STAGES.length).fill(24));
-    assert.deepEqual(specs.map((spec) => spec.limits.maxToolCalls), Array(STAGES.length).fill(96));
+    assert.deepEqual(
+      specs.map((spec) => spec.limits.maxModelTurns),
+      STAGES.map((stage) => stage === "report" ? 48 : 24),
+    );
+    assert.deepEqual(
+      specs.map((spec) => spec.limits.maxToolCalls),
+      STAGES.map((stage) => stage === "report" ? 192 : 96),
+    );
     assert.deepEqual(specs.map((spec) => spec.limits.maxInputBytes), Array(STAGES.length).fill(64 * 1024 * 1024));
     assert.deepEqual(
       specs.map((spec) => spec.artifactWriteByTurn),
-      STAGES.map((stage) => stage === "report" ? 8 : 16),
+      STAGES.map((stage) => stage === "report" ? 16 : 16),
     );
     assert.deepEqual(specs.map((spec) =>
       String(spec.instructions.match(/stage_id=([a-z-]+)/)?.[1])), STAGES);
