@@ -740,8 +740,8 @@ function validEvidenceLocator(value: unknown, snapshotRoot: string): value is st
 function stageLimits(overrides: Partial<AgentSessionLimits> = {}): AgentSessionLimits {
   return {
     ...DEFAULT_AGENT_LIMITS,
-    maxModelTurns: 16,
-    maxToolCalls: 48,
+    maxModelTurns: 24,
+    maxToolCalls: 96,
     maxInputBytes: 4 * 1024 * 1024,
     maxOutputBytes: 1 * 1024 * 1024,
     timeoutMs: 5 * 60_000,
