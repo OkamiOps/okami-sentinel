@@ -198,7 +198,52 @@ const configuredGitHubActionsWorkflowSha =
 export const GITHUB_ACTIONS_WORKFLOW_SHA =
   /^[0-9a-f]{40}$/.test(configuredGitHubActionsWorkflowSha)
     ? configuredGitHubActionsWorkflowSha
-    : null;
+    : sourceCheckoutReleaseSha(ROOT_DIR);
+
+/**
+ * Source checkouts may safely pin their own published main commit. Packaged
+ * builds still require CSB_GITHUB_ACTIONS_WORKFLOW_SHA because they have no
+ * Git metadata to prove which immutable workflow release they ship.
+ */
+export function sourceCheckoutReleaseSha(rootDir: string): string | null {
+  if (!fs.existsSync(path.join(rootDir, ".github", "workflows", "security-change-gate.yml"))) {
+    return null;
+  }
+  const head = readGitRef(rootDir, "HEAD");
+  const publishedMain = readGitRef(rootDir, "refs/remotes/origin/main");
+  return head !== null && head === publishedMain ? head : null;
+}
+
+function readGitRef(rootDir: string, ref: string): string | null {
+  const gitPath = path.join(rootDir, ".git");
+  let gitDir = gitPath;
+  try {
+    const stat = fs.statSync(gitPath);
+    if (!stat.isDirectory()) {
+      const pointer = fs.readFileSync(gitPath, "utf8").trim();
+      if (!pointer.startsWith("gitdir: ")) return null;
+      gitDir = path.resolve(rootDir, pointer.slice("gitdir: ".length));
+    }
+    let resolvedRef = ref;
+    if (ref === "HEAD") {
+      const head = fs.readFileSync(path.join(gitDir, "HEAD"), "utf8").trim();
+      if (/^[0-9a-f]{40}$/.test(head)) return head;
+      if (!head.startsWith("ref: ")) return null;
+      resolvedRef = head.slice("ref: ".length);
+    }
+    const loosePath = path.join(gitDir, ...resolvedRef.split("/"));
+    if (fs.existsSync(loosePath)) {
+      const value = fs.readFileSync(loosePath, "utf8").trim();
+      return /^[0-9a-f]{40}$/.test(value) ? value : null;
+    }
+    const packed = fs.readFileSync(path.join(gitDir, "packed-refs"), "utf8");
+    const line = packed.split("\n").find((entry) => entry.endsWith(` ${resolvedRef}`));
+    const value = line?.slice(0, 40) ?? "";
+    return /^[0-9a-f]{40}$/.test(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Soft cap so a click-storm doesn't spawn unbounded Codex jobs. */
 export const MAX_CONCURRENT_SCANS = Math.max(

@@ -42,3 +42,24 @@ test("falls back to app-local scanner state when the default Codex path is not w
     else process.env.CODEX_SECURITY_STATE_DIR = previousStateDir;
   }
 });
+
+test("uses a source checkout main SHA only when the reusable workflow is published", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "csb-config-release-"));
+  const gitDir = path.join(root, ".git");
+  const head = "a".repeat(40);
+  fs.mkdirSync(path.join(root, ".github", "workflows"), { recursive: true });
+  fs.writeFileSync(path.join(root, ".github", "workflows", "security-change-gate.yml"), "name: gate\n");
+  fs.mkdirSync(path.join(gitDir, "refs", "heads"), { recursive: true });
+  fs.mkdirSync(path.join(gitDir, "refs", "remotes", "origin"), { recursive: true });
+  fs.writeFileSync(path.join(gitDir, "HEAD"), "ref: refs/heads/main\n");
+  fs.writeFileSync(path.join(gitDir, "refs", "heads", "main"), `${head}\n`);
+  fs.writeFileSync(path.join(gitDir, "refs", "remotes", "origin", "main"), `${head}\n`);
+  try {
+    const config = await import(`./config.js?release=${Date.now()}`);
+    assert.equal(config.sourceCheckoutReleaseSha(root), head);
+    fs.writeFileSync(path.join(gitDir, "refs", "heads", "main"), `${"b".repeat(40)}\n`);
+    assert.equal(config.sourceCheckoutReleaseSha(root), null);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

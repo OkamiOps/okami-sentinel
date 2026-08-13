@@ -33,12 +33,14 @@ import { useI18n } from "../../i18n";
 
 export function GuardrailPreflightSheet({
   repositories,
+  initialRepositoryKey,
   open,
   onOpenChange,
   onStarted,
   onError,
 }: {
   repositories: GuardrailRepository[];
+  initialRepositoryKey?: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onStarted: (gate: GateRun) => void;
@@ -68,7 +70,9 @@ export function GuardrailPreflightSheet({
 
   useEffect(() => {
     if (!open) return;
-    const repository = repositories.find((item) => item.repositoryKey === repositoryKey) ?? repositories[0];
+    const repository = repositories.find((item) => item.repositoryKey === initialRepositoryKey)
+      ?? repositories.find((item) => item.repositoryKey === repositoryKey)
+      ?? repositories[0];
     if (!repository) return;
     setRepositoryKey(repository.repositoryKey);
     setDraft(initialGuardrailTargetDraft(repository));
@@ -77,7 +81,7 @@ export function GuardrailPreflightSheet({
     setAcceptedFingerprint(null);
     setIdempotencyKey(null);
     setError(null);
-  }, [open]);
+  }, [open, initialRepositoryKey]);
 
   useEffect(() => {
     if (!repositoryKey && repositories[0]) setRepositoryKey(repositories[0].repositoryKey);

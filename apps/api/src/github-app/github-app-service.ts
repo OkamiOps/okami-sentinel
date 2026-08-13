@@ -81,7 +81,7 @@ export interface GitHubAppServiceClient {
     installationId: string,
     repositoryId: string,
     path: string,
-    method: "PATCH" | "POST",
+    method: "PATCH" | "POST" | "PUT",
     body: unknown,
     permissions: GitHubInstallationPermissions,
   ): Promise<unknown>;
@@ -277,7 +277,7 @@ export class GitHubAppService {
     installationId: string,
     repositoryId: string,
     path: string,
-    method: "PATCH" | "POST",
+    method: "PATCH" | "POST" | "PUT",
     body: unknown,
     permissions: GitHubInstallationPermissions,
   ): Promise<unknown> {

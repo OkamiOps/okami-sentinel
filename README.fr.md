@@ -239,12 +239,12 @@ Les modèles et niveaux d’effort valides proviennent du catalogue authentifié
 Les guardrails évaluent un changeset Git et conservent les preuves utilisées pour la décision. Un dépôt peut être autorisé par un checkout local ou une installation GitHub App privée ; Sentinel ne remplace jamais silencieusement une autorité par une autre.
 
 1. Enregistrer la racine d’un dépôt Git local ou un dépôt GitHub autorisé.
-2. Choisir l’exécuteur : snapshot immuable géré par Sentinel ou caller GitHub Actions épinglé du dépôt.
+2. Choisir l’exécuteur : snapshot immuable géré par Sentinel ou caller GitHub Actions épinglé du dépôt. Sentinel peut créer ou mettre à jour ce caller automatiquement ; l’utilisateur choisit les déclencheurs push, pull request et post-merge.
 3. Résoudre avant exécution une comparaison locale ou une cible distante explicite par pull request/base/head.
 4. Inspecter les SHA, le digest de policy, le périmètre, l’enveloppe de coût, l’issue et le Decision Graph figés.
 5. Modifier `.csb/guardrails.json` localement ; à distance, copier ou télécharger la proposition et la publier via la revue pull request normale.
 
-La policy distante est en lecture seule dans Sentinel et provient de la branche par défaut protégée. La GitHub App ne demande que `metadata:read`, `contents:read`, `pull_requests:read`, `actions:write` et `checks:write`. Sentinel ne commit ni ne push dans le dépôt cible. Toute capability, caller, ref, policy, lignée ou baseline absente, périmée ou divergente échoue en mode fermé.
+La policy distante est en lecture seule dans Sentinel et provient de la branche par défaut protégée. La GitHub App demande `metadata:read`, `pull_requests:read`, `actions:write`, `checks:write`, `contents:write` et `workflows:write`. L’écriture est limitée à l’installation ou à la mise à jour du caller généré ; Sentinel ne modifie ni le code applicatif ni la policy distante. Toute capability, caller, ref, policy, lignée ou baseline absente, périmée ou divergente échoue en mode fermé.
 
 | Issue | Signification | Conclusion GitHub | Exit CLI |
 |---|---|---|---:|
@@ -258,7 +258,7 @@ La policy distante est en lecture seule dans Sentinel et provient de la branche 
 <details>
 <summary><strong>Utiliser le gate GitHub Actions réutilisable</strong></summary>
 
-Dans **Guardrails → Configurer GitHub**, copiez ou téléchargez le `.github/workflows/csb-security-change-gate.yml` généré puis publiez-le par pull request. Le caller épingle `uses` et `csb_ref` sur le même SHA immuable de release Sentinel à 40 caractères. Une branche ou un tag mutable comme `@main` ou `@v1` est refusé.
+Dans **Guardrails → Configurer GitHub**, choisissez les déclencheurs push, pull request et merge, puis utilisez **Configurer automatiquement**. Sentinel crée ou met à jour `.github/workflows/csb-security-change-gate.yml` via l’installation autorisée ; copier/télécharger reste disponible comme solution manuelle. Le caller épingle `uses` et `csb_ref` sur le même SHA immuable de release Sentinel à 40 caractères. Une branche ou un tag mutable comme `@main` ou `@v1` est refusé.
 
 Le caller utilise cette enveloppe minimale de permissions :
 

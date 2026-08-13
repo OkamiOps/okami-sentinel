@@ -1,6 +1,6 @@
 import type { GuardrailRepository } from "@csb/shared";
 
-import { callerWorkflowDocument } from "../github-workflow.js";
+import { callerWorkflowDocument, parseCallerAutomation, type GuardrailAutomationTriggers } from "../github-workflow.js";
 import { ACTIONS_CALLER_WORKFLOW_PATH } from "./github-actions-executor.js";
 
 export type GitHubActionsStatusCode =
@@ -16,6 +16,7 @@ export interface GitHubActionsStatus {
   code: GitHubActionsStatusCode;
   workflowPath: typeof ACTIONS_CALLER_WORKFLOW_PATH;
   releaseSha: string | null;
+  triggers?: GuardrailAutomationTriggers | null;
 }
 
 export interface GitHubActionsStatusAuthority {
@@ -38,6 +39,7 @@ export async function getGitHubActionsStatus(
     code,
     workflowPath: ACTIONS_CALLER_WORKFLOW_PATH,
     releaseSha,
+    triggers: null,
   });
   if (releaseSha === null || !/^[0-9a-f]{40}$/.test(releaseSha)) {
     return unavailable("actions_release_unavailable");
@@ -74,10 +76,13 @@ export async function getGitHubActionsStatus(
     } catch {
       return unavailable("caller_workflow_outdated");
     }
+    const triggers = parseCallerAutomation(decoded);
+    if (triggers === null) return unavailable("caller_workflow_outdated");
     const expected = callerWorkflowDocument({
       defaultBranch: repository.defaultBranch,
       secretName: "OPENAI_API_KEY",
       workflowSha: releaseSha,
+      triggers,
     }).content;
     if (normalize(decoded) !== normalize(expected)) {
       return unavailable("caller_workflow_outdated");
@@ -95,6 +100,7 @@ export async function getGitHubActionsStatus(
       code: "ready",
       workflowPath: ACTIONS_CALLER_WORKFLOW_PATH,
       releaseSha,
+      triggers,
     };
   } catch (error) {
     const code = error instanceof Error && "code" in error

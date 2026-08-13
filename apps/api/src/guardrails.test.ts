@@ -26,6 +26,7 @@ import {
   type GateTargetPreview,
   type StartGateRequest,
 } from "./guardrails/target-preview.js";
+import type { GuardrailAutomationTriggers } from "./github-workflow.js";
 
 function testPreview(
   value: GuardrailRepository,
@@ -205,6 +206,10 @@ function dependencies(options: {
   enrolled: GuardrailRepository[];
   writes: Array<{ repositoryPath: string; policy: GuardrailPolicy }>;
   callerWorkflowRequests: string[];
+  workflowInstalls: Array<{
+    repositoryKey: string;
+    triggers: GuardrailAutomationTriggers;
+  }>;
   baselineSyncs: string[];
   remotePolicyReads: string[];
   publicationInputs: Array<Parameters<GuardrailsApiDependencies["publishCheck"]>[0]>;
@@ -224,6 +229,10 @@ function dependencies(options: {
   const enrolled: GuardrailRepository[] = [];
   const writes: Array<{ repositoryPath: string; policy: GuardrailPolicy }> = [];
   const callerWorkflowRequests: string[] = [];
+  const workflowInstalls: Array<{
+    repositoryKey: string;
+    triggers: GuardrailAutomationTriggers;
+  }> = [];
   const baselineSyncs: string[] = [];
   const remotePolicyReads: string[] = [];
   const publicationInputs: Array<Parameters<GuardrailsApiDependencies["publishCheck"]>[0]> = [];
@@ -258,6 +267,7 @@ function dependencies(options: {
     enrolled,
     writes,
     callerWorkflowRequests,
+    workflowInstalls,
     baselineSyncs,
     remotePolicyReads,
     publicationInputs,
@@ -336,6 +346,16 @@ function dependencies(options: {
         content: "name: CSB Security Change Gate\n",
       };
     },
+    installCallerWorkflow: async (value, triggers) => {
+      workflowInstalls.push({ repositoryKey: value.repositoryKey, triggers });
+      return {
+        ready: true,
+        code: "ready",
+        workflowPath: ".github/workflows/csb-security-change-gate.yml",
+        releaseSha: "f".repeat(40),
+        triggers,
+      };
+    },
     syncBaseline: async (value) => {
       baselineSyncs.push(value.repositoryKey);
       return artifact;
@@ -368,6 +388,7 @@ test("exposes local and github guardrail routes", () => {
     "GET /guardrails/repositories/:repositoryKey/github-status",
     "GET /guardrails/repositories/:repositoryKey/actions-status",
     "GET /guardrails/repositories/:repositoryKey/caller-workflow",
+    "PUT /guardrails/repositories/:repositoryKey/caller-workflow",
     "POST /guardrails/repositories/:repositoryKey/actions-dispatch",
     "POST /guardrails/repositories/:repositoryKey/baseline/sync",
     "GET /guardrails/gates",
@@ -628,6 +649,50 @@ test("github status, read-only caller workflow and baseline sync use the enrolle
   assert.equal((await baselineResponse.json()).baseline.gateId, artifact.gateId);
   assert.deepEqual(deps.callerWorkflowRequests, [repository.repositoryKey]);
   assert.deepEqual(deps.baselineSyncs, [repository.repositoryKey]);
+});
+
+test("caller workflow PUT installs the selected automation triggers", async () => {
+  const remote = remoteRepository();
+  const deps = dependencies({ repository: remote });
+  const response = await createGuardrailsApp(deps).request(
+    `/guardrails/repositories/${encodeURIComponent(remote.repositoryKey)}/caller-workflow`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ push: true, pullRequest: true, merge: false }),
+    },
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(deps.workflowInstalls, [{
+    repositoryKey: remote.repositoryKey,
+    triggers: { push: true, pullRequest: true, merge: false },
+  }]);
+  assert.deepEqual((await response.json()).status.triggers, {
+    push: true,
+    pullRequest: true,
+    merge: false,
+  });
+});
+
+test("caller workflow PUT rejects partial or unknown trigger contracts", async () => {
+  const remote = remoteRepository();
+  const deps = dependencies({ repository: remote });
+  const route = `/guardrails/repositories/${encodeURIComponent(remote.repositoryKey)}/caller-workflow`;
+  const partial = await createGuardrailsApp(deps).request(route, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ push: true, pullRequest: true }),
+  });
+  const widened = await createGuardrailsApp(deps).request(route, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ push: true, pullRequest: true, merge: true, schedule: true }),
+  });
+
+  assert.equal(partial.status, 400);
+  assert.equal(widened.status, 400);
+  assert.deepEqual(deps.workflowInstalls, []);
 });
 
 test("github actions reject a repository without a remote", async () => {

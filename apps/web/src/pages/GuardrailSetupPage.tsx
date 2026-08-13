@@ -4,6 +4,7 @@ import { ArrowLeft, GitBranch, HardDrive, RotateCw } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 
 import { api, type GuardrailActionsStatus, type GuardrailCallerWorkflow } from "../api";
+import type { GuardrailAutomationTriggers } from "../api";
 import { GitHubStatusPanel } from "../components/guardrails";
 import { AlertBanner, EmptyState, Loading, PageHeader } from "../components/ui";
 import { Button } from "@/components/ui/button";
@@ -18,6 +19,7 @@ export function GuardrailSetupPage() {
   const [actionsStatus, setActionsStatus] = useState<GuardrailActionsStatus | null>(null);
   const [caller, setCaller] = useState<GuardrailCallerWorkflow | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [baselineError, setBaselineError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -58,19 +60,41 @@ export function GuardrailSetupPage() {
   }, [t]);
 
   useEffect(() => { void loadRepositories(); }, [loadRepositories]);
-  useEffect(() => { if (selected) void loadStatus(selected); }, [selected?.repositoryKey, loadStatus]);
+  useEffect(() => {
+    setBaselineError(null);
+    setMessage(null);
+    if (selected) void loadStatus(selected);
+  }, [selected?.repositoryKey, loadStatus]);
 
   async function syncBaseline() {
     if (!selected) return;
     setBusy(true);
-    setLoadError(null);
+    setBaselineError(null);
     setMessage(null);
     try {
       const response = await api.syncGuardrailBaseline(selected.repositoryKey);
       setMessage(response.baseline ? t("guardrails.baselineSynced", { sha: response.baseline.changeSet.headSha }) : t("guardrails.baselineMissing"));
       await loadStatus(selected);
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : t("guardrails.baselineSyncError"));
+      setBaselineError(error instanceof Error ? error.message : t("guardrails.baselineSyncError"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function configureWorkflow(triggers: GuardrailAutomationTriggers) {
+    if (!selected) return;
+    setBusy(true);
+    setLoadError(null);
+    setMessage(null);
+    try {
+      const response = await api.installGuardrailCallerWorkflow(selected.repositoryKey, triggers);
+      setActionsStatus(response.status);
+      setMessage(t("guardrails.automationConfigured"));
+      await loadStatus(selected);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "";
+      setLoadError(`${t("guardrails.automationConfigureError")}${detail ? ` (${detail})` : ""}`);
     } finally {
       setBusy(false);
     }
@@ -95,7 +119,7 @@ export function GuardrailSetupPage() {
             </div>
           </section>
           {selected.source === "github" ? (
-            status ? <GitHubStatusPanel repository={selected} status={status} actionsStatus={actionsStatus} callerWorkflow={caller} busy={busy} onRefresh={() => loadStatus(selected)} onSyncBaseline={syncBaseline} /> : !loadError ? <Loading /> : null
+            status ? <GitHubStatusPanel repository={selected} status={status} actionsStatus={actionsStatus} callerWorkflow={caller} baselineError={baselineError} busy={busy} onRefresh={() => loadStatus(selected)} onConfigureWorkflow={configureWorkflow} onSyncBaseline={syncBaseline} /> : !loadError ? <Loading /> : null
           ) : (
             <section className="bench-panel bench-corners"><EmptyState title={t("guardrails.localExecutionTitle")} description={t("guardrails.localExecutionDescription")} /></section>
           )}

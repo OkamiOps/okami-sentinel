@@ -17,9 +17,10 @@ const TOKEN_EARLY_EXPIRY_MS = 60_000;
 const MAX_PERMISSION = Object.freeze({
   actions: "write",
   checks: "write",
-  contents: "read",
+  contents: "write",
   metadata: "read",
   pull_requests: "read",
+  workflows: "write",
 } as const);
 
 export type GitHubInstallationPermission = keyof typeof MAX_PERMISSION;
@@ -47,7 +48,7 @@ export class GitHubAppClientError extends Error {
 
 export interface GitHubHttpRequest {
   url: string;
-  method: "DELETE" | "GET" | "PATCH" | "POST";
+  method: "DELETE" | "GET" | "PATCH" | "POST" | "PUT";
   headers: Readonly<Record<string, string>>;
   body?: string;
   responseType?: "bytes";
@@ -272,7 +273,7 @@ export class GitHubAppClient {
     installationId: string,
     repositoryId: string,
     path: string,
-    method: "PATCH" | "POST",
+    method: "PATCH" | "POST" | "PUT",
     body: unknown,
     permissions: GitHubInstallationPermissions,
   ): Promise<unknown> {
@@ -383,7 +384,7 @@ export class GitHubAppClient {
   }
 
   async #request(input: {
-    method: "DELETE" | "GET" | "PATCH" | "POST";
+    method: "DELETE" | "GET" | "PATCH" | "POST" | "PUT";
     path: string;
     authorization?: string;
     body?: unknown;

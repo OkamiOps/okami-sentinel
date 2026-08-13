@@ -40,7 +40,7 @@ function fixture() {
         redirect_url: "http://127.0.0.1:8787/callback?flowId=flow-1",
         public: true,
         default_permissions: {
-          actions: "write", checks: "write", contents: "read", metadata: "read", pull_requests: "read",
+          actions: "write", checks: "write", contents: "write", metadata: "read", pull_requests: "read", workflows: "write",
         },
         default_events: [],
         request_oauth_on_install: false,
@@ -119,7 +119,8 @@ test("renders an auto-submit POST bridge with the manifest but no response-side 
   assert.match(response.headers.get("content-security-policy") ?? "", /form-action https:\/\/github\.com/);
   assert.match(html, /method="post"/i);
   assert.match(html, /name="manifest"/i);
-  assert.match(html, /&quot;contents&quot;:&quot;read&quot;/);
+  assert.match(html, /&quot;contents&quot;:&quot;write&quot;/);
+  assert.match(html, /&quot;workflows&quot;:&quot;write&quot;/);
   assert.doesNotMatch(html, /pem|privateKey|installation[_-]?token/i);
 });
 

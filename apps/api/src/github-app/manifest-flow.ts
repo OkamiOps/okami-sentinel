@@ -6,9 +6,10 @@ const FLOW_ID = /^[A-Za-z0-9-]{1,100}$/;
 export const GITHUB_APP_MANIFEST_PERMISSIONS = Object.freeze({
   actions: "write",
   checks: "write",
-  contents: "read",
+  contents: "write",
   metadata: "read",
   pull_requests: "read",
+  workflows: "write",
 } as const);
 
 export const GITHUB_APP_MANIFEST_EVENTS = Object.freeze([] as string[]);

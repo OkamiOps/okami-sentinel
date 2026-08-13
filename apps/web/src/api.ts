@@ -281,6 +281,13 @@ export interface GuardrailActionsStatus {
     | "github_actions_unavailable";
   workflowPath: ".github/workflows/csb-security-change-gate.yml";
   releaseSha: string | null;
+  triggers?: GuardrailAutomationTriggers | null;
+}
+
+export interface GuardrailAutomationTriggers {
+  push: boolean;
+  pullRequest: boolean;
+  merge: boolean;
 }
 
 export interface GuardrailCallerWorkflow {
@@ -460,6 +467,11 @@ export const api = {
   getGuardrailCallerWorkflow: (repositoryKey: string) =>
     request<{ workflow: GuardrailCallerWorkflow }>(
       `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/caller-workflow`,
+    ),
+  installGuardrailCallerWorkflow: (repositoryKey: string, triggers: GuardrailAutomationTriggers) =>
+    request<{ status: GuardrailActionsStatus }>(
+      `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/caller-workflow`,
+      { method: "PUT", body: JSON.stringify(triggers) },
     ),
   syncGuardrailBaseline: (repositoryKey: string) =>
     request<{ baseline: GateArtifact | null }>(

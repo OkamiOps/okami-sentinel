@@ -234,12 +234,12 @@ Os modelos e os níveis de effort válidos vêm do catálogo autenticado e das c
 Os guardrails avaliam um changeset Git e preservam a evidência usada na decisão. Um repositório pode ser autorizado por checkout local ou por uma instalação privada do GitHub App; o Sentinel nunca troca silenciosamente uma autoridade pela outra.
 
 1. Cadastre a raiz de um repositório Git local ou um repositório autorizado no GitHub.
-2. Escolha o executor: snapshot imutável gerenciado pelo Sentinel ou caller fixado no GitHub Actions do repositório.
+2. Escolha o executor: snapshot imutável gerenciado pelo Sentinel ou caller fixado no GitHub Actions do repositório. O Sentinel pode criar ou atualizar esse caller automaticamente e permite escolher gatilhos de push, pull request e pós-merge.
 3. Resolva uma comparação local ou um alvo remoto explícito por pull request/base/head antes de executar.
 4. Inspecione SHAs, digest da policy, escopo, envelope de custo, outcome e Decision Graph congelados.
 5. Edite `.csb/guardrails.json` localmente; no remoto, copie ou baixe a proposta e publique-a pelo pull request normal do repositório.
 
-No remoto, a policy é somente leitura e vem da branch protegida padrão. O GitHub App solicita apenas `metadata:read`, `contents:read`, `pull_requests:read`, `actions:write` e `checks:write`. O Sentinel não faz commit nem push no repositório alvo. Capability, caller, ref, policy, linhagem ou baseline ausentes, stale ou divergentes falham fechados em vez de virar aprovação.
+No remoto, a policy é somente leitura e vem da branch protegida padrão. O GitHub App solicita `metadata:read`, `pull_requests:read`, `actions:write`, `checks:write`, `contents:write` e `workflows:write`. A escrita fica restrita a instalar ou atualizar o caller gerado; o Sentinel não edita código da aplicação nem a policy remota. Capability, caller, ref, policy, linhagem ou baseline ausentes, stale ou divergentes falham fechados em vez de virar aprovação.
 
 | Outcome | Significado | Conclusão no GitHub | Exit do CLI |
 |---|---|---|---:|
@@ -253,7 +253,7 @@ No remoto, a policy é somente leitura e vem da branch protegida padrão. O GitH
 <details>
 <summary><strong>Usar o workflow reutilizável no GitHub Actions</strong></summary>
 
-Em **Guardrails → Configurar GitHub**, copie ou baixe o `.github/workflows/csb-security-change-gate.yml` gerado e publique-o por pull request. O caller gerado inclui o contrato completo de dispatch e fixa `uses` e `csb_ref` no mesmo SHA imutável de 40 caracteres do release Sentinel. Branch ou tag mutável, como `@main` ou `@v1`, é recusada.
+Em **Guardrails → Configurar GitHub**, escolha os gatilhos de push, pull request e merge e clique em **Configurar automaticamente**. O Sentinel cria ou atualiza `.github/workflows/csb-security-change-gate.yml` pela instalação autorizada; copiar/baixar permanece como fallback manual. O caller inclui o contrato completo de dispatch e fixa `uses` e `csb_ref` no mesmo SHA imutável de 40 caracteres do release Sentinel. Branch ou tag mutável, como `@main` ou `@v1`, é recusada.
 
 O caller usa este envelope mínimo de permissões:
 

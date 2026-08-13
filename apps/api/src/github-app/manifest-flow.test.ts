@@ -24,13 +24,13 @@ test("uses the exact least-privilege GitHub App manifest contract", () => {
   assert.deepEqual(GITHUB_APP_MANIFEST_PERMISSIONS, {
     actions: "write",
     checks: "write",
-    contents: "read",
+    contents: "write",
     metadata: "read",
     pull_requests: "read",
+    workflows: "write",
   });
   assert.equal(Object.isFrozen(GITHUB_APP_MANIFEST_PERMISSIONS), true);
-  assert.equal("workflows" in GITHUB_APP_MANIFEST_PERMISSIONS, false);
-  assert.notEqual(GITHUB_APP_MANIFEST_PERMISSIONS.contents, "write");
+  assert.equal(GITHUB_APP_MANIFEST_PERMISSIONS.workflows, "write");
 
   const { flow } = fixture();
   const started = flow.start();

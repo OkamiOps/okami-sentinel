@@ -2,7 +2,20 @@ export interface CallerWorkflowOptions {
   defaultBranch: string;
   secretName: string;
   workflowSha: string;
+  triggers?: GuardrailAutomationTriggers;
 }
+
+export interface GuardrailAutomationTriggers {
+  push: boolean;
+  pullRequest: boolean;
+  merge: boolean;
+}
+
+export const DEFAULT_GUARDRAIL_AUTOMATION = Object.freeze({
+  push: false,
+  pullRequest: true,
+  merge: true,
+} satisfies GuardrailAutomationTriggers);
 
 export interface CallerWorkflowDocument {
   path: ".github/workflows/csb-security-change-gate.yml";
@@ -35,14 +48,17 @@ export function renderCallerWorkflow(options: CallerWorkflowOptions): string {
     throw new Error("Caller workflow requires an immutable release SHA");
   }
   const { defaultBranch, secretName, workflowSha } = options;
-  return `# csb-guardrail-caller: 2
+  const triggers = automationTriggers(options.triggers ?? DEFAULT_GUARDRAIL_AUTOMATION);
+  const automaticEvents = renderAutomaticEvents(triggers);
+  const mergeGuard = triggers.merge
+    ? "    if: github.event.action != 'closed' || github.event.pull_request.merged == true\n"
+    : "";
+  return `# csb-guardrail-caller: 3
+# csb-automation: push=${Number(triggers.push)},pr=${Number(triggers.pullRequest)},merge=${Number(triggers.merge)}
 name: CSB Security Change Gate
 run-name: CSB gate \${{ inputs.gate_id || github.run_id }} · \${{ inputs.head_sha || github.sha }}
 on:
-  pull_request:
-  push:
-    branches: [${defaultBranch}]
-  workflow_dispatch:
+${automaticEvents}${automaticEvents ? "\n" : ""}  workflow_dispatch:
     inputs:
       gate_id:
         description: Persisted Sentinel gate identity
@@ -89,7 +105,7 @@ permissions:
   checks: write
 jobs:
   security-change-gate:
-    uses: OkamiOps/okami-sentinel/.github/workflows/security-change-gate.yml@${workflowSha}
+${mergeGuard}    uses: OkamiOps/okami-sentinel/.github/workflows/security-change-gate.yml@${workflowSha}
     with:
       policy_path: .csb/guardrails.json
       exceptions_path: .csb/guardrails-exceptions.json
@@ -107,4 +123,30 @@ jobs:
     secrets:
       ${secretName}: \${{ secrets.${secretName} }}
 `;
+}
+
+export function parseCallerAutomation(content: string): GuardrailAutomationTriggers | null {
+  const match = /^# csb-automation: push=([01]),pr=([01]),merge=([01])$/m.exec(content);
+  if (!match) return null;
+  return { push: match[1] === "1", pullRequest: match[2] === "1", merge: match[3] === "1" };
+}
+
+function automationTriggers(value: GuardrailAutomationTriggers): GuardrailAutomationTriggers {
+  if (!value || typeof value.push !== "boolean" || typeof value.pullRequest !== "boolean" || typeof value.merge !== "boolean") {
+    throw new Error("Invalid guardrail automation triggers");
+  }
+  return value;
+}
+
+function renderAutomaticEvents(triggers: GuardrailAutomationTriggers): string {
+  const lines: string[] = [];
+  if (triggers.push) lines.push("  push:");
+  if (triggers.pullRequest || triggers.merge) {
+    const types = [
+      ...(triggers.pullRequest ? ["opened", "synchronize", "reopened", "ready_for_review"] : []),
+      ...(triggers.merge ? ["closed"] : []),
+    ];
+    lines.push("  pull_request:", `    types: [${types.join(", ")}]`);
+  }
+  return lines.join("\n");
 }

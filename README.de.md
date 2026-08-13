@@ -239,12 +239,12 @@ Modelle und gültige Effort-Stufen kommen aus dem authentifizierten Katalog und 
 Guardrails bewerten ein Git-Changeset und bewahren die für die Entscheidung verwendeten Belege. Ein Repository kann über einen lokalen Checkout oder eine private GitHub-App-Installation autorisiert werden; Sentinel ersetzt keine Autorität still durch eine andere.
 
 1. Root eines lokalen Git-Repositories oder ein autorisiertes GitHub-Repository registrieren.
-2. Executor wählen: von Sentinel verwalteter unveränderlicher Snapshot oder gepinnter GitHub-Actions-Caller des Repositorys.
+2. Executor wählen: von Sentinel verwalteter unveränderlicher Snapshot oder gepinnter GitHub-Actions-Caller des Repositorys. Sentinel kann den Caller automatisch erstellen oder aktualisieren; Push-, Pull-Request- und Post-Merge-Trigger werden vom Benutzer gewählt.
 3. Vor der Ausführung einen lokalen Vergleich oder ein explizites Remote-Ziel per Pull Request/Base/Head auflösen.
 4. Festgeschriebene SHAs, Policy-Digest, Scope, Kostenrahmen, Ergebnis und Decision Graph prüfen.
 5. `.csb/guardrails.json` lokal bearbeiten; Remote-Vorschläge kopieren oder herunterladen und über den normalen Pull-Request-Prozess veröffentlichen.
 
-Die Remote-Policy ist in Sentinel nur lesbar und stammt aus dem geschützten Default-Branch. Die GitHub App fordert nur `metadata:read`, `contents:read`, `pull_requests:read`, `actions:write` und `checks:write` an. Sentinel committet oder pusht nicht ins Ziel-Repository. Fehlende, veraltete oder abweichende Capability-, Caller-, Ref-, Policy-, Lineage- oder Baseline-Daten schlagen geschlossen fehl.
+Die Remote-Policy ist in Sentinel nur lesbar und stammt aus dem geschützten Default-Branch. Die GitHub App fordert `metadata:read`, `pull_requests:read`, `actions:write`, `checks:write`, `contents:write` und `workflows:write` an. Schreibzugriff ist auf Installation oder Aktualisierung des generierten Callers begrenzt; Sentinel ändert weder Anwendungscode noch Remote-Policy. Fehlende, veraltete oder abweichende Capability-, Caller-, Ref-, Policy-, Lineage- oder Baseline-Daten schlagen geschlossen fehl.
 
 | Ergebnis | Bedeutung | GitHub Conclusion | CLI Exit |
 |---|---|---|---:|
@@ -258,7 +258,7 @@ Die Remote-Policy ist in Sentinel nur lesbar und stammt aus dem geschützten Def
 <details>
 <summary><strong>Wiederverwendbares GitHub-Actions-Gate</strong></summary>
 
-Unter **Guardrails → GitHub konfigurieren** den generierten `.github/workflows/csb-security-change-gate.yml` kopieren oder herunterladen und per Pull Request veröffentlichen. Der Caller pinnt `uses` und `csb_ref` auf denselben unveränderlichen 40-stelligen Sentinel-Release-SHA. Veränderliche Branches oder Tags wie `@main` oder `@v1` werden abgelehnt.
+Unter **Guardrails → GitHub konfigurieren** die Push-, Pull-Request- und Merge-Trigger wählen und **Automatisch konfigurieren** ausführen. Sentinel erstellt oder aktualisiert `.github/workflows/csb-security-change-gate.yml` über die autorisierte Installation; Kopieren/Herunterladen bleibt als manueller Fallback erhalten. Der Caller pinnt `uses` und `csb_ref` auf denselben unveränderlichen 40-stelligen Sentinel-Release-SHA. Veränderliche Branches oder Tags wie `@main` oder `@v1` werden abgelehnt.
 
 Der Caller nutzt diesen minimalen Berechtigungsrahmen:
 

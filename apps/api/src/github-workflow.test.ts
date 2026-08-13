@@ -18,9 +18,10 @@ test("renders a downloadable caller pinned to one real immutable workflow SHA", 
   assert.match(document.content, new RegExp(`security-change-gate\\.yml@${RELEASE_SHA}`));
   assert.match(document.content, new RegExp(`csb_ref: ${RELEASE_SHA}`));
   assert.match(document.content, /run-name: CSB gate/);
+  assert.match(document.content, /^# csb-automation: push=0,pr=1,merge=1$/m);
   assert.match(document.content, /^  pull_request:$/m);
-  assert.match(document.content, /^  push:$/m);
-  assert.match(document.content, /^    branches: \[main\]$/m);
+  assert.doesNotMatch(document.content, /^  push:$/m);
+  assert.match(document.content, /ready_for_review, closed/);
   assert.match(document.content, /workflow_dispatch:/);
   assert.match(document.content, /gate_id: \$\{\{ inputs\.gate_id \}\}/);
   assert.match(document.content, /head_sha: \$\{\{ inputs\.head_sha \}\}/);
@@ -34,8 +35,10 @@ test("caller rendering is pure and accepts only bounded YAML-safe values", () =>
     defaultBranch: "release/trunk",
     secretName: "CSB_OPENAI_KEY",
     workflowSha: RELEASE_SHA,
+    triggers: { push: true, pullRequest: false, merge: false },
   });
-  assert.match(trunk, /branches: \[release\/trunk\]/);
+  assert.match(trunk, /^  push:$/m);
+  assert.doesNotMatch(trunk, /pull_request:/);
   assert.match(trunk, /CSB_OPENAI_KEY: \$\{\{ secrets\.CSB_OPENAI_KEY \}\}/);
 
   assert.throws(() => renderCallerWorkflow({

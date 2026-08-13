@@ -33,6 +33,7 @@ test("is ready only when the active caller exactly matches the pinned release", 
     code: "ready",
     workflowPath: ".github/workflows/csb-security-change-gate.yml",
     releaseSha: RELEASE_SHA,
+    triggers: { push: false, pullRequest: true, merge: true },
   });
   assert.equal(reads.length, 2);
 });

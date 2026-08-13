@@ -5,10 +5,10 @@ import type {
   GateRun,
   GuardrailRepository,
 } from "@csb/shared";
-import { ArrowRight, Cloud, GitBranch, HardDrive, Plus, ShieldCheck, Square } from "lucide-react";
+import { Activity, ArrowRight, Check, GitBranch, HardDrive, Plus, ShieldAlert, ShieldCheck, Square, Workflow } from "lucide-react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
-import { api, type EnrollGuardrailRepositoryRequest } from "../api";
+import { api, type EnrollGuardrailRepositoryRequest, type GuardrailActionsStatus } from "../api";
 import {
   DecisionEquation,
   DecisionGraph,
@@ -33,7 +33,15 @@ type GuardrailsState =
       gates: GateRun[];
       selectedGate: GateRun | null;
       artifact: GateArtifact | null;
+      readiness: Record<string, RepositoryReadiness>;
     };
+
+type RepositoryReadiness = {
+  authorityReady: boolean;
+  baselineReady: boolean;
+  executorReady: boolean;
+  executorCode: GuardrailActionsStatus["code"] | "managed" | "unavailable";
+};
 
 export function GuardrailsPage() {
   const { t } = useI18n();
@@ -45,6 +53,7 @@ export function GuardrailsPage() {
   const [busy, setBusy] = useState(false);
   const [enrollOpen, setEnrollOpen] = useState(false);
   const [runOpen, setRunOpen] = useState(false);
+  const [runRepositoryKey, setRunRepositoryKey] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setState({ status: "loading" });
@@ -54,6 +63,36 @@ export function GuardrailsPage() {
         api.listGuardrailRepositories(),
         gateId ? api.getGate(gateId) : Promise.resolve(null),
       ]);
+      const readinessEntries = await Promise.all(repositoryList.repositories.map(async (repository) => {
+        if (repository.source === "local") {
+          return [repository.repositoryKey, {
+            authorityReady: true,
+            baselineReady: true,
+            executorReady: true,
+            executorCode: "managed",
+          } satisfies RepositoryReadiness] as const;
+        }
+        try {
+          const [github, actions] = await Promise.all([
+            api.getGuardrailGitHubStatus(repository.repositoryKey),
+            api.getGuardrailActionsStatus(repository.repositoryKey),
+          ]);
+          const authorityReady = github.status.remote.ready && github.status.auth.ready && github.status.permissions.ready;
+          return [repository.repositoryKey, {
+            authorityReady,
+            baselineReady: github.status.baseline.ready,
+            executorReady: repository.defaultExecutor === "sentinel-managed" ? authorityReady : actions.status.ready,
+            executorCode: repository.defaultExecutor === "sentinel-managed" ? "managed" : actions.status.code,
+          } satisfies RepositoryReadiness] as const;
+        } catch {
+          return [repository.repositoryKey, {
+            authorityReady: false,
+            baselineReady: false,
+            executorReady: false,
+            executorCode: "unavailable",
+          } satisfies RepositoryReadiness] as const;
+        }
+      }));
       const selected = selectedResponse?.gate ?? selectGate(gateList.gates, gateId);
       const detail = selectedResponse ?? (selected ? await api.getGate(selected.id) : null);
       setState({
@@ -64,6 +103,7 @@ export function GuardrailsPage() {
           : gateList.gates,
         selectedGate: detail?.gate ?? selected,
         artifact: detail?.artifact ?? null,
+        readiness: Object.fromEntries(readinessEntries),
       });
     } catch (error) {
       setState({
@@ -182,6 +222,7 @@ export function GuardrailsPage() {
             <Button asChild variant="outline" className="min-h-11">
               <Link to={setupRepositoryKey ? `/guardrails/setup?repository=${encodeURIComponent(setupRepositoryKey)}` : "/guardrails/setup"}><GitBranch aria-hidden size={14} />{t("guardrails.setup")}</Link>
             </Button>
+            <Button className="min-h-11" disabled={!setupRepositoryKey || selectedGateActive} onClick={() => { setRunRepositoryKey(setupRepositoryKey); setRunOpen(true); }}><ArrowRight aria-hidden size={14} />{t("guardrails.scanNow")}</Button>
             {selectedGateActive && (
               <Button variant="destructive" className="min-h-11" onClick={() => void cancelSelected()} disabled={busy}>
                 <Square aria-hidden size={13} />{t("guardrails.cancel")}
@@ -190,6 +231,7 @@ export function GuardrailsPage() {
             <EnrollmentSheet open={enrollOpen} onOpenChange={setEnrollOpen} busy={busy} onEnroll={enroll} />
             <GuardrailPreflightSheet
               repositories={readyState.repositories}
+              initialRepositoryKey={runRepositoryKey ?? undefined}
               open={runOpen}
               onOpenChange={setRunOpen}
               onError={setActionError}
@@ -210,7 +252,12 @@ export function GuardrailsPage() {
           onSelect={selectLane}
         />
       ) : (
-        <GuardrailLaunchpad repositories={readyState.repositories} />
+        <GuardrailLaunchpad
+          repositories={readyState.repositories}
+          readiness={readyState.readiness}
+          gates={readyState.gates}
+          onRun={(repositoryKey) => { setRunRepositoryKey(repositoryKey); setRunOpen(true); }}
+        />
       )}
 
       {readyState.selectedGate && readyState.selectedGate.error && (
@@ -257,82 +304,114 @@ export function GuardrailsPage() {
   );
 }
 
-function GuardrailLaunchpad({ repositories }: { repositories: readonly GuardrailRepository[] }) {
+function GuardrailLaunchpad({
+  repositories,
+  readiness,
+  gates,
+  onRun,
+}: {
+  repositories: readonly GuardrailRepository[];
+  readiness: Readonly<Record<string, RepositoryReadiness>>;
+  gates: readonly GateRun[];
+  onRun: (repositoryKey: string) => void;
+}) {
   const { t } = useI18n();
-  const repository = repositories[0] ?? null;
+  const [selectedKey, setSelectedKey] = useState(repositories[0]?.repositoryKey ?? "");
+  const repository = repositories.find((item) => item.repositoryKey === selectedKey) ?? repositories[0] ?? null;
+  const repoReadiness = repository ? readiness[repository.repositoryKey] : null;
+  const readyCount = repositories.filter((item) => readiness[item.repositoryKey]?.executorReady).length;
+  const blockedCount = repositories.length - readyCount;
+  const setupHref = repository ? `/guardrails/setup?repository=${encodeURIComponent(repository.repositoryKey)}` : "/guardrails/setup";
+  const actionsBlocked = repository?.defaultExecutor === "github-actions" && repoReadiness?.executorReady !== true;
+  const statusLabel = actionsBlocked && repoReadiness
+    ? repoReadiness.executorCode === "unavailable"
+      ? t("guardrails.capabilitiesLoadError")
+      : repoReadiness.executorCode === "managed"
+        ? t("guardrails.managedReadyDetail")
+      : t(`guardrails.actionsStatus.${repoReadiness.executorCode}`)
+    : repository ? t("guardrails.readyToProtect") : t("guardrails.authorityRequired");
   return (
     <section className="bench-panel bench-corners min-w-0 overflow-hidden" aria-labelledby="guardrail-launchpad-title">
-      <div className="grid min-h-[28rem] lg:grid-cols-[minmax(0,1.05fr)_minmax(22rem,.95fr)]">
-        <div className="relative flex min-w-0 flex-col justify-between overflow-hidden border-b px-5 py-7 sm:px-7 lg:border-b-0 lg:border-r lg:px-9 lg:py-9">
-          <div aria-hidden className="pointer-events-none absolute -right-24 top-1/2 size-80 -translate-y-1/2 rounded-full border border-primary/10 shadow-[0_0_90px_color-mix(in_oklab,var(--primary)_9%,transparent)]" />
-          <div className="relative max-w-2xl">
-            <div className="flex items-center gap-2 text-primary">
-              <ShieldCheck aria-hidden size={16} />
-              <span className="bench-label">{repository ? t("guardrails.readyToProtect") : t("guardrails.authorityRequired")}</span>
-            </div>
-            <h2 id="guardrail-launchpad-title" className="mt-5 max-w-xl font-heading text-3xl font-semibold tracking-[-0.04em] sm:text-4xl">
-              {repository ? t("guardrails.empty") : t("guardrails.noRepository")}
-            </h2>
-            <p className="mt-4 max-w-xl text-sm leading-6 text-muted-foreground">
-              {repository ? t("guardrails.emptyDescription") : t("guardrails.noRepositoryDescription")}
-            </p>
+      <div className="grid border-b sm:grid-cols-4">
+        <CockpitMetric label={t("guardrails.portfolioRepositories")} value={repositories.length} />
+        <CockpitMetric label={t("guardrails.portfolioClear")} value={readyCount} tone="ready" />
+        <CockpitMetric label={t("guardrails.portfolioBlocked")} value={blockedCount} tone={blockedCount > 0 ? "blocked" : "muted"} />
+        <CockpitMetric label={t("guardrails.portfolioRuns")} value={gates.length} />
+      </div>
+
+      <div className="grid min-h-[34rem] xl:grid-cols-[19rem_minmax(0,1fr)]">
+        <aside className="min-w-0 border-b bg-secondary/[.08] xl:border-b-0 xl:border-r" aria-label={t("guardrails.portfolioRepositories")}>
+          <div className="border-b px-4 py-4"><div className="bench-label text-primary">REPOSITORY CONTROL</div><p className="mt-2 text-xs leading-5 text-muted-foreground">{t("guardrails.pipelineSubtitle")}</p></div>
+          <div className="grid">
+            {repositories.map((item) => {
+              const itemReady = readiness[item.repositoryKey]?.executorReady === true;
+              const active = item.repositoryKey === repository?.repositoryKey;
+              return (
+                <button key={item.repositoryKey} type="button" onClick={() => setSelectedKey(item.repositoryKey)} className={cx("grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 border-b px-4 py-4 text-left transition-colors", active ? "bg-primary/[.07] shadow-[inset_2px_0_var(--primary)]" : "hover:bg-secondary/40")}>
+                  <span className={cx("grid size-9 place-items-center border", itemReady ? "border-chart-2/50 text-chart-2" : "border-destructive/50 text-destructive")}>{item.source === "github" ? <GitBranch aria-hidden size={15} /> : <HardDrive aria-hidden size={15} />}</span>
+                  <span className="min-w-0"><strong className="block truncate text-xs">{item.displayName}</strong><span className="mt-1 block truncate font-mono text-[8px] uppercase tracking-[.08em] text-muted-foreground">{item.defaultExecutor} · {item.defaultBranch}</span></span>
+                  <span className={cx("size-2", itemReady ? "bg-chart-2" : "bg-destructive")} aria-label={itemReady ? t("guardrails.authorized") : t("guardrails.actionRequired")} />
+                </button>
+              );
+            })}
           </div>
+        </aside>
 
-          {repository && (
-            <div className="relative mt-10 flex min-w-0 items-center gap-3 border-t pt-5">
-              <span className={cx("grid size-10 shrink-0 place-items-center border", repository.source === "github" ? "border-info/40 text-info" : "border-primary/40 text-primary")}>
-                {repository.source === "github" ? <GitBranch aria-hidden size={17} /> : <HardDrive aria-hidden size={17} />}
-              </span>
-              <div className="min-w-0">
-                <div className="truncate text-sm font-semibold">{repository.displayName}</div>
-                <div className="mt-1 truncate font-mono text-[9px] uppercase text-muted-foreground">{repository.source} · {repository.defaultExecutor} · {repository.defaultBranch}</div>
+        <div className="min-w-0">
+          {repository ? (
+            <>
+              <div className="grid gap-5 border-b px-5 py-6 md:grid-cols-[minmax(0,1fr)_auto] md:items-start md:px-7">
+                <div className="min-w-0">
+                  <div className={cx("flex items-center gap-2 bench-label", actionsBlocked ? "text-destructive" : "text-chart-2")}>{actionsBlocked ? <ShieldAlert aria-hidden size={15} /> : <ShieldCheck aria-hidden size={15} />}{actionsBlocked ? t("guardrails.actionRequired") : t("guardrails.readyToProtect")}</div>
+                  <h2 id="guardrail-launchpad-title" className="mt-3 break-words font-heading text-2xl font-semibold tracking-[-.035em] sm:text-3xl">{repository.displayName}</h2>
+                  <p className="mt-2 font-mono text-[9px] uppercase tracking-[.08em] text-muted-foreground">{repository.source} · {repository.defaultExecutor} · {repository.defaultBranch}</p>
+                  <p className={cx("mt-4 max-w-3xl border-l-2 pl-3 text-sm leading-6", actionsBlocked ? "border-destructive text-destructive" : "border-chart-2 text-muted-foreground")}>{statusLabel}</p>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2 md:min-w-48 md:grid-cols-1">
+                  <Button asChild variant={actionsBlocked ? "default" : "outline"} className="min-h-11"><Link to={setupHref}><Workflow aria-hidden size={14} />{t("guardrails.setup")}</Link></Button>
+                  <Button variant={actionsBlocked ? "outline" : "default"} className="min-h-11" disabled={actionsBlocked} onClick={() => onRun(repository.repositoryKey)}><ArrowRight aria-hidden size={14} />{t("guardrails.scanNow")}</Button>
+                </div>
               </div>
-              <span className="ml-auto hidden font-mono text-[9px] uppercase text-chart-2 sm:inline">{t("guardrails.authorized")}</span>
-            </div>
-          )}
-        </div>
 
-        <div className="flex min-w-0 flex-col justify-center bg-secondary/[.08] px-5 py-7 sm:px-7 lg:px-8">
-          <div className="bench-label text-primary">{t("guardrails.firstGate")}</div>
-          <ol className="mt-5 border-t">
-            <LaunchStep icon={repository ? <ShieldCheck aria-hidden size={15} /> : <Cloud aria-hidden size={15} />} title={t("guardrails.launchAuthority")} detail={repository ? repository.displayName : t("guardrails.launchAuthorityMissing")} state={repository ? "complete" : "current"} />
-            <LaunchStep icon={<ArrowRight aria-hidden size={15} />} title={t("guardrails.launchTarget")} detail={t("guardrails.launchTargetDetail")} state={repository ? "current" : "pending"} />
-            <LaunchStep icon={<ShieldCheck aria-hidden size={15} />} title={t("guardrails.launchDecision")} detail={t("guardrails.launchDecisionDetail")} state="pending" />
-          </ol>
-          <p className="mt-5 border border-primary/25 bg-primary/[.035] px-3 py-3 text-xs leading-5 text-muted-foreground">
-            {repository ? t("guardrails.launchHint") : t("guardrails.launchRegisterHint")}
-          </p>
+              <div className="grid border-b md:grid-cols-5">
+                <ReadinessCell code="01" title={t("guardrails.stageAuthority")} ready={repoReadiness?.authorityReady === true} current={repoReadiness?.authorityReady !== true} detail={repository.source === "github" ? "GITHUB APP" : "LOCAL ROOT"} />
+                <ReadinessCell code="02" title={t("guardrails.factBaseline")} ready={repoReadiness?.baselineReady === true} current={repoReadiness?.authorityReady === true && repoReadiness?.baselineReady !== true} detail={repoReadiness?.baselineReady ? t("guardrails.authorized") : t("guardrails.actionRequired")} />
+                <ReadinessCell code="03" title={t("guardrails.previewExecutor")} ready={repoReadiness?.executorReady === true} current={actionsBlocked} detail={repository.defaultExecutor} />
+                <ReadinessCell code="04" title={t("guardrails.stageTarget")} ready={false} current={!actionsBlocked} detail={t("guardrails.pending")} />
+                <ReadinessCell code="05" title={t("guardrails.stageDecision")} ready={false} current={false} detail={t("guardrails.pending")} />
+              </div>
+
+              <div className="grid gap-0 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,.42fr)]">
+                <div className="min-w-0 border-b p-5 lg:border-b-0 lg:border-r md:p-7">
+                  <div className="flex items-center gap-2 text-primary"><Activity aria-hidden size={15} /><span className="bench-label">LATEST GATE ACTIVITY</span></div>
+                  <div className="mt-5 border border-dashed px-4 py-6">
+                    <strong className="text-sm">{t("guardrails.empty")}</strong>
+                    <p className="mt-2 max-w-xl text-xs leading-5 text-muted-foreground">{actionsBlocked ? statusLabel : t("guardrails.emptyDescription")}</p>
+                  </div>
+                </div>
+                <div className="p-5 md:p-7">
+                  <div className="bench-label text-primary">NEXT REQUIRED ACTION</div>
+                  <p className="mt-3 text-sm font-semibold">{actionsBlocked ? t("guardrails.setup") : t("guardrails.launchTarget")}</p>
+                  <p className="mt-2 text-xs leading-5 text-muted-foreground">{actionsBlocked ? statusLabel : t("guardrails.launchTargetDetail")}</p>
+                  <Button asChild variant="outline" className="mt-5 min-h-11 w-full"><Link to={actionsBlocked ? setupHref : "#"} onClick={actionsBlocked ? undefined : (event) => { event.preventDefault(); onRun(repository.repositoryKey); }}><ArrowRight aria-hidden size={14} />{actionsBlocked ? t("guardrails.setup") : t("guardrails.scanNow")}</Link></Button>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="p-8"><EmptyState title={t("guardrails.noRepository")} description={t("guardrails.noRepositoryDescription")} /></div>
+          )}
         </div>
       </div>
     </section>
   );
 }
 
-function LaunchStep({
-  icon,
-  title,
-  detail,
-  state,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  detail: string;
-  state: "complete" | "current" | "pending";
-}) {
-  return (
-    <li className="grid grid-cols-[auto_minmax(0,1fr)] gap-3 border-b py-4">
-      <span className={cx(
-        "grid size-8 place-items-center border",
-        state === "complete" && "border-chart-2/50 text-chart-2",
-        state === "current" && "border-primary bg-primary text-primary-foreground",
-        state === "pending" && "border-border text-muted-foreground",
-      )}>{icon}</span>
-      <span className="min-w-0">
-        <span className="block text-xs font-semibold">{title}</span>
-        <span className="mt-1 block text-[11px] leading-5 text-muted-foreground">{detail}</span>
-      </span>
-    </li>
-  );
+function CockpitMetric({ label, value, tone = "muted" }: { label: string; value: number; tone?: "ready" | "blocked" | "muted" }) {
+  return <div className="min-w-0 border-b px-4 py-4 last:border-b-0 sm:border-b-0 sm:border-r sm:last:border-r-0"><div className="bench-label">{label}</div><div className={cx("mt-2 font-mono text-xl font-semibold", tone === "ready" && "text-chart-2", tone === "blocked" && "text-destructive")}>{String(value).padStart(2, "0")}</div></div>;
+}
+
+function ReadinessCell({ code, title, ready, current, detail }: { code: string; title: string; ready: boolean; current: boolean; detail: string }) {
+  return <div className={cx("min-w-0 border-b p-4 md:border-b-0 md:border-r md:last:border-r-0", current && "bg-primary/[.04]")}><div className={cx("bench-label", ready ? "text-chart-2" : current ? "text-primary" : "text-muted-foreground")}>{code}</div><div className="mt-2 flex items-center gap-2"><span className={cx("grid size-7 place-items-center border", ready ? "border-chart-2/50 text-chart-2" : current ? "border-primary/60 text-primary" : "border-border text-muted-foreground")}>{ready ? <Check aria-hidden size={13} /> : current ? <ArrowRight aria-hidden size={13} /> : <Square aria-hidden size={11} />}</span><strong className="truncate text-xs">{title}</strong></div><div className="mt-2 truncate font-mono text-[8px] uppercase text-muted-foreground">{detail}</div></div>;
 }
 
 function EnrollmentSheet({

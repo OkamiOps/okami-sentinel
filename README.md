@@ -234,12 +234,12 @@ Models come from the authenticated provider catalog. The only runtime-default ex
 Guardrails evaluate a Git changeset and preserve the evidence used in the decision. A repository may be authorized by a local checkout or by a private GitHub App installation; Sentinel never silently substitutes one authority for the other.
 
 1. Enroll either the root of a local Git repository or an authorized GitHub repository.
-2. Choose the executor: Sentinel-managed immutable snapshot or the repository's pinned GitHub Actions caller.
+2. Choose the executor: Sentinel-managed immutable snapshot or the repository's pinned GitHub Actions caller. Sentinel can create or update that caller automatically and lets the user select push, pull-request, and post-merge triggers.
 3. Resolve a local comparison or an explicit remote pull request/base/head target before execution.
 4. Inspect the frozen SHAs, policy digest, scanner scope, cost envelope, outcome, and Decision Graph.
 5. Edit `.csb/guardrails.json` locally, or copy/download a remote proposal and publish it through the repository's normal pull-request review.
 
-Remote policy is read-only in Sentinel and comes from the protected default branch. The GitHub App requests only `metadata:read`, `contents:read`, `pull_requests:read`, `actions:write`, and `checks:write`. Sentinel does not commit or push to the target repository. Missing, stale, or mismatched capability, caller, ref, policy, lineage, or baseline state fails closed rather than becoming approval.
+Remote policy is read-only in Sentinel and comes from the protected default branch. The GitHub App requests `metadata:read`, `pull_requests:read`, `actions:write`, `checks:write`, `contents:write`, and `workflows:write`. Write access is restricted to installing or updating the generated caller workflow; Sentinel does not edit application code or remote policy. Missing, stale, or mismatched capability, caller, ref, policy, lineage, or baseline state fails closed rather than becoming approval.
 
 | Outcome | Meaning | GitHub conclusion | CLI exit |
 |---|---|---|---:|
@@ -253,7 +253,7 @@ Remote policy is read-only in Sentinel and comes from the protected default bran
 <details>
 <summary><strong>Use the reusable GitHub Actions gate</strong></summary>
 
-From **Guardrails → Configure GitHub**, copy or download the generated `.github/workflows/csb-security-change-gate.yml`, then publish it through a pull request. The generated caller includes the full dispatch contract and pins both `uses` and `csb_ref` to the same immutable 40-character Sentinel release SHA. A mutable branch or tag such as `@main` or `@v1` is rejected.
+From **Guardrails → Configure GitHub**, select the desired push, pull-request, and merge triggers, then choose **Configure automatically**. Sentinel creates or updates `.github/workflows/csb-security-change-gate.yml` through the authorized installation; copy/download remains a manual fallback. The generated caller includes the full dispatch contract and pins both `uses` and `csb_ref` to the same immutable 40-character Sentinel release SHA. A mutable branch or tag such as `@main` or `@v1` is rejected.
 
 The caller uses this minimum permission envelope:
 

@@ -273,6 +273,47 @@ test("writes a repository resource only with the requested repository-scoped per
   );
 });
 
+test("writes a workflow file with explicit contents and workflows permissions", async () => {
+  const { privateKey } = keyPair();
+  const pem = privateKey.export({ format: "pem", type: "pkcs8" }).toString();
+  const requests: GitHubHttpRequest[] = [];
+  const client = new GitHubAppClient({
+    credentials: new MemoryCredentialStore({ privateKeyPem: pem }),
+    redactor: new RecordingRedactor(),
+    now: () => new Date("2026-08-12T12:00:00.000Z"),
+    transport: async (request) => {
+      requests.push(request);
+      if (request.url.endsWith("/access_tokens")) {
+        return {
+          status: 201,
+          body: {
+            token: "ghs_repository_workflows",
+            expires_at: "2026-08-12T13:00:00.000Z",
+          },
+        };
+      }
+      return { status: 201, body: { content: { path: ".github/workflows/gate.yml" } } };
+    },
+  });
+
+  await client.writeRepositoryJson(
+    connection(),
+    "77",
+    "9001",
+    "/repos/OkamiOps/sentinel/contents/.github/workflows/gate.yml",
+    "PUT",
+    { message: "configure gate", content: "bmFtZTogZ2F0ZQo=" },
+    { contents: "write", workflows: "write" },
+  );
+
+  assert.deepEqual(JSON.parse(requests[0]?.body ?? "{}"), {
+    repository_ids: [9001],
+    permissions: { contents: "write", workflows: "write" },
+  });
+  assert.equal(requests[1]?.method, "PUT");
+  assert.equal(requests[1]?.headers.Authorization, "Bearer ghs_repository_workflows");
+});
+
 test("exchanges a manifest code without returning client or webhook secrets", async () => {
   const { privateKey } = keyPair();
   const pem = privateKey.export({ format: "pem", type: "pkcs8" }).toString();

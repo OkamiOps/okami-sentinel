@@ -87,6 +87,8 @@ import {
 } from "./guardrails/target-preview.js";
 import {
   callerWorkflowDocument,
+  DEFAULT_GUARDRAIL_AUTOMATION,
+  type GuardrailAutomationTriggers,
   type CallerWorkflowDocument,
 } from "./github-workflow.js";
 import {
@@ -167,6 +169,7 @@ export interface GuardrailsApiDependencies {
   getGitHubStatus(repository: GuardrailRepository): ReturnType<typeof getGitHubStatus>;
   getActionsStatus(repository: GuardrailRepository): Promise<GitHubActionsStatus>;
   getCallerWorkflow(repository: GuardrailRepository): Promise<CallerWorkflowDocument>;
+  installCallerWorkflow?(repository: GuardrailRepository, triggers: GuardrailAutomationTriggers): Promise<GitHubActionsStatus>;
   syncBaseline(repository: GuardrailRepository): Promise<GateArtifact | null>;
   publishCheck(input: PublishGateCheckInput): Promise<void>;
   updateGate(gateId: string, updates: GateRunUpdate): void;
@@ -270,7 +273,48 @@ const guardrailsDependencies: GuardrailsApiDependencies = {
       defaultBranch: repository.defaultBranch,
       secretName: "OPENAI_API_KEY",
       workflowSha: GITHUB_ACTIONS_WORKFLOW_SHA,
+      triggers: DEFAULT_GUARDRAIL_AUTOMATION,
     });
+  },
+  installCallerWorkflow: async (repository, triggers) => {
+    if (GITHUB_ACTIONS_WORKFLOW_SHA === null || !hasGitHubRemote(repository)) {
+      throw new Error("actions_workflow_release_unavailable");
+    }
+    const owner = requiredRemoteAuthority(repository.remoteOwner);
+    const name = requiredRemoteAuthority(repository.remoteName);
+    const connectionId = requiredRemoteAuthority(repository.githubConnectionId);
+    const installationId = requiredRemoteAuthority(repository.githubInstallationId);
+    const repositoryId = requiredRemoteAuthority(repository.githubRepositoryId);
+    const workflow = callerWorkflowDocument({
+      defaultBranch: repository.defaultBranch,
+      secretName: "OPENAI_API_KEY",
+      workflowSha: GITHUB_ACTIONS_WORKFLOW_SHA,
+      triggers,
+    });
+    let sha: string | undefined;
+    try {
+      const current = await getSystemGitHubAppService().readAuthorizedRepositoryJson(
+        connectionId, installationId, repositoryId,
+        `/repos/${owner}/${name}/contents/${workflow.path}?ref=${encodeURIComponent(repository.defaultBranch)}`,
+        { contents: "read" },
+      );
+      if (typeof current === "object" && current !== null && "sha" in current && typeof current.sha === "string") sha = current.sha;
+    } catch (error) {
+      if (!(error instanceof Error) || !("code" in error) || String((error as Error & { code: unknown }).code) !== "github_not_found") throw error;
+    }
+    await getSystemGitHubAppService().writeAuthorizedRepositoryJson(
+      connectionId, installationId, repositoryId,
+      `/repos/${owner}/${name}/contents/${workflow.path}`,
+      "PUT",
+      {
+        message: "chore(security): configure Okami Sentinel guardrail",
+        content: Buffer.from(workflow.content).toString("base64"),
+        branch: repository.defaultBranch,
+        ...(sha ? { sha } : {}),
+      },
+      { contents: "write", workflows: "write" },
+    );
+    return getGitHubActionsStatus(repository, getSystemGitHubAppService(), GITHUB_ACTIONS_WORKFLOW_SHA);
   },
   syncBaseline: (repository) => githubBaselineProvider.getBaseline({
     repositoryKey: repository.repositoryKey,
@@ -416,6 +460,24 @@ export function createGuardrailsApp(
       return c.json({ workflow: await deps.getCallerWorkflow(repository) });
     } catch (error) {
       return c.json({ error: errorMessage(error) }, 502);
+    }
+  });
+
+  guardrails.put("/guardrails/repositories/:repositoryKey/caller-workflow", async (c) => {
+    const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
+    if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
+    if (!hasGitHubRemote(repository)) return c.json({ error: "Repositório não possui remoto GitHub" }, 400);
+    if (!deps.installCallerWorkflow) return c.json({ error: "github_workflow_install_unavailable" }, 501);
+    let triggers: GuardrailAutomationTriggers;
+    try {
+      triggers = parseAutomationTriggers(await c.req.json<unknown>());
+    } catch (error) {
+      return c.json({ error: errorMessage(error) }, 400);
+    }
+    try {
+      return c.json({ status: await deps.installCallerWorkflow(repository, triggers) });
+    } catch (error) {
+      return c.json({ error: errorMessage(error) }, 409);
     }
   });
 
@@ -947,6 +1009,16 @@ function requiredIdempotencyKey(value: string | undefined): string {
     throw new TargetPreviewError("target_preview_invalid");
   }
   return key;
+}
+
+function parseAutomationTriggers(value: unknown): GuardrailAutomationTriggers {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("automation_triggers_invalid");
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).sort().join(",") !== "merge,pullRequest,push") throw new Error("automation_triggers_invalid");
+  if (typeof record.push !== "boolean" || typeof record.pullRequest !== "boolean" || typeof record.merge !== "boolean") {
+    throw new Error("automation_triggers_invalid");
+  }
+  return { push: record.push, pullRequest: record.pullRequest, merge: record.merge };
 }
 
 function targetPreviewStatus(error: unknown): 400 | 409 {
