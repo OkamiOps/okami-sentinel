@@ -306,14 +306,17 @@ function scanRequest(
   changeSet: ChangeSet,
 ): StartScanRequest {
   const repositoryId = requiredRemoteField(input.repository.githubRepositoryId);
+  const selected = input.preview.scanSelection ?? null;
   return {
     repositoryPath: `github:${repositoryId}@${input.preview.resolvedTarget.headSha}`,
     displayName: input.repository.displayName,
-    engine: "codex-security",
+    engine: selected?.engine ?? "codex-security",
+    ...(selected === null ? {} : { connection: selected.connection }),
+    ...(selected?.engine === "codex-security" ? { executionProfilePreference: "auto" as const } : {}),
     remoteRepositoryConfirmed: true,
-    model: input.preview.policy.scan.model,
-    effort: input.preview.policy.scan.effort,
-    mode: input.preview.policy.scan.mode,
+    ...(selected === null ? { model: input.preview.policy.scan.model, effort: input.preview.policy.scan.effort } : {}),
+    ...(selected?.effort === undefined ? {} : { effort: selected.effort }),
+    mode: selected?.mode ?? input.preview.policy.scan.mode,
     maxCostUsd: input.preview.policy.scan.maxCostUsd,
     paths: changeSet.scopeMode === "changed" ? changeSet.scanPaths : [],
   };
@@ -325,17 +328,20 @@ function scanLineage(
   headSnapshotIdentity: string,
 ): EffectiveScanLineage {
   if (scan === null) {
+    const selected = preview.scanSelection ?? null;
     return buildScanLineage({
-      engine: "codex-security",
+      engine: selected?.engine ?? "codex-security",
       engineVersion: "not-run-v1",
       route: "not-run",
       protocol: "not-run",
       provider: "not-run",
-      model: preview.policy.scan.model,
-      reasoningEffort: preview.policy.scan.effort,
+      model: selected === null
+        ? preview.policy.scan.model
+        : selected.connection.modelId ?? "provider-managed",
+      reasoningEffort: selected?.effort ?? "provider-managed",
       methodology: "security-change-gate",
-      profile: preview.policy.scan.mode,
-      recipeHash: hash({ scan: preview.policy.scan, reason: "no_changes" }),
+      profile: selected?.mode ?? preview.policy.scan.mode,
+      recipeHash: hash({ scan: selected ?? preview.policy.scan, reason: "no_changes" }),
       sourceRevision: hash({ implementation: "sentinel-managed", version: GATE_CORE_VERSION }),
     });
   }

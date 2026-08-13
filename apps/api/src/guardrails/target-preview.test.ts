@@ -105,6 +105,59 @@ test("a branch move creates a new preview while accepted identity keeps the orig
   assert.deepEqual(accepted.policy, defaultGuardrailPolicy());
 });
 
+test("freezes only a server-approved managed scanner route into the preview", async () => {
+  const service = new TargetPreviewService({
+    resolveTarget: async () => resolvedTarget(FIRST_HEAD_SHA),
+    loadPolicy: async () => policyBundle(),
+    executorCapability: () => ({ ready: true, code: "ready" }),
+    resolveScanSelection: (selection) => ({
+      ...selection.connection,
+      eligible: true,
+      reasons: [],
+      reasoningEffort: { options: ["high"], default: "high" },
+    }),
+  });
+  const scanSelection = {
+    engine: "mantis" as const,
+    connection: { connectionId: "minimax", modelSelectionMode: "catalog" as const, modelId: "MiniMax-M3" },
+    effort: "high",
+    mode: "deep" as const,
+  };
+  const preview = await service.create(repository(), {
+    target: { kind: "pull_request", number: 42 },
+    executor: "sentinel-managed",
+    scanSelection,
+  });
+
+  assert.deepEqual(preview.scanSelection, scanSelection);
+  assert.equal(preview.scanPlan.engine, "mantis");
+  assert.equal(preview.scanPlan.connectionId, "minimax");
+  assert.equal(preview.scanPlan.model, "MiniMax-M3");
+  assert.equal(preview.scanPlan.effort, "high");
+  assert.equal(preview.scanPlan.mode, "deep");
+
+  const providerManaged = await service.create(repository(), {
+    target: { kind: "pull_request", number: 42 },
+    executor: "sentinel-managed",
+    scanSelection: {
+      engine: "vulnhunter",
+      connection: { connectionId: "mimo", modelSelectionMode: "runtime-default", modelId: null },
+      mode: "standard",
+    },
+  });
+  assert.equal(providerManaged.scanPlan.model, "provider-managed");
+  assert.equal(providerManaged.scanPlan.effort, "provider-managed");
+
+  await assert.rejects(
+    service.create(repository(), {
+      target: { kind: "pull_request", number: 42 },
+      executor: "github-actions",
+      scanSelection,
+    }),
+    (error: unknown) => error instanceof TargetPreviewError && error.code === "target_preview_invalid",
+  );
+});
+
 test("rejects expired, mismatched and unavailable accepted previews", async () => {
   let now = new Date("2026-08-12T12:00:00.000Z");
   const service = previewService({
@@ -172,6 +225,15 @@ test("strict request parsers reject implicit refs and client-supplied SHAs", () 
     target: { kind: "pull_request", number: 42 },
     previewIdentity: "preview-1",
   });
+  assert.deepEqual(parseTargetPreviewRequest({
+    executor: "sentinel-managed",
+    target: { kind: "pull_request", number: 42 },
+    scanSelection: {
+      engine: "vulnhunter",
+      connection: { connectionId: "openrouter", modelSelectionMode: "catalog", modelId: "anthropic/opus" },
+      mode: "deep",
+    },
+  }).scanSelection?.engine, "vulnhunter");
   for (const input of [
     { repositoryKey: "github:991122", target: { kind: "compare", baseRef: "main", headRef: "HEAD" } },
     { repositoryKey: "github:991122", target: { kind: "pull_request", number: 42 }, headSha: FIRST_HEAD_SHA },

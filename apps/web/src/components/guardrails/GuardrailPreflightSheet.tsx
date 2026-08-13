@@ -1,18 +1,28 @@
 import { useEffect, useState } from "react";
 import type {
+  ConnectionCompatibility,
   GateExecutorKind,
   GateRun,
+  GuardrailScanSelection,
   GuardrailPullRequestSummary,
   GuardrailRepository,
+  ProviderConnection,
+  ProviderModel,
+  ScannerCatalogResponse,
+  ScannerEngine,
+  ScanMode,
 } from "@csb/shared";
 import {
+  Bug,
   Cloud,
+  FlaskConical,
   GitBranch,
   GitCompareArrows,
   GitPullRequestArrow,
   HardDrive,
   LockKeyhole,
   ShieldCheck,
+  Shield,
   Workflow,
 } from "lucide-react";
 
@@ -31,6 +41,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { ChoiceCard } from "./ChoiceCard";
 import { useI18n } from "../../i18n";
+import {
+  connectionSelectionFor,
+  reasoningEffortForCompatibility,
+  reconcileReasoningEffort,
+} from "../../lib/new-scan-routing";
+
+const ENGINE_ORDER: ScannerEngine[] = ["codex-security", "mantis", "vulnhunter"];
 
 export function GuardrailPreflightSheet({
   repositories,
@@ -67,10 +84,42 @@ export function GuardrailPreflightSheet({
   const [executorChosenByUser, setExecutorChosenByUser] = useState(false);
   const [managedFallback, setManagedFallback] = useState(false);
   const [previewRefresh, setPreviewRefresh] = useState(0);
+  const [catalog, setCatalog] = useState<ScannerCatalogResponse | null>(null);
+  const [connections, setConnections] = useState<ProviderConnection[]>([]);
+  const [models, setModels] = useState<ProviderModel[]>([]);
+  const [engine, setEngine] = useState<ScannerEngine>("codex-security");
+  const [connectionId, setConnectionId] = useState("");
+  const [modelId, setModelId] = useState<string | null>(null);
+  const [effort, setEffort] = useState<string | null>(null);
+  const [mode, setMode] = useState<ScanMode>("standard");
+  const [compatibility, setCompatibility] = useState<ConnectionCompatibility | null>(null);
+  const [routingBusy, setRoutingBusy] = useState(false);
+
+  const scanner = catalog?.scanners.find((candidate) => candidate.engine === engine) ?? null;
+  const connection = connections.find((candidate) => candidate.id === connectionId) ?? null;
+  const connectionModels = models.filter((model) => model.connectionId === connectionId);
+  const connectionSelection = connectionSelectionFor(connection, connectionModels, modelId);
+  const reasoning = reasoningEffortForCompatibility(compatibility, effort);
+  const routeReady = executor !== "sentinel-managed" || (
+    connectionSelection !== null
+    && compatibility?.eligible === true
+    && compatibility.connectionId === connectionSelection.connectionId
+    && compatibility.modelSelectionMode === connectionSelection.modelSelectionMode
+    && compatibility.modelId === connectionSelection.modelId
+    && scanner?.modes.includes(mode) === true
+  );
+  const scanSelection: GuardrailScanSelection | null = executor === "sentinel-managed" && routeReady && connectionSelection
+    ? {
+        engine,
+        connection: connectionSelection,
+        ...(reasoning.kind === "configurable" && reasoning.selected !== null ? { effort: reasoning.selected } : {}),
+        mode,
+      }
+    : null;
 
   const target = selected ? targetFromDraft(selected, draft) : null;
   const fingerprint = selected && target
-    ? preflightFingerprint(selected.repositoryKey, executor, target)
+    ? `${preflightFingerprint(selected.repositoryKey, executor, target)}:${JSON.stringify(scanSelection)}`
     : null;
   const previewAccepted = preview !== null && fingerprint !== null && fingerprint === acceptedFingerprint;
   const remoteReady = previewAccepted && preview.executorCapability.ready;
@@ -95,6 +144,58 @@ export function GuardrailPreflightSheet({
   useEffect(() => {
     if (!repositoryKey && repositories[0]) setRepositoryKey(repositories[0].repositoryKey);
   }, [repositories, repositoryKey]);
+
+  useEffect(() => {
+    if (!open) return;
+    void Promise.all([api.scanners(), api.listConnections()]).then(([nextCatalog, nextConnections]) => {
+      setCatalog(nextCatalog);
+      setConnections(nextConnections);
+      setConnectionId((current) => nextConnections.some((item) => item.id === current)
+        ? current
+        : nextConnections.find((item) => item.status === "ready")?.id ?? nextConnections[0]?.id ?? "");
+    }).catch(() => setError(t("newScan.runtimeUnavailable")));
+  }, [open, t]);
+
+  useEffect(() => {
+    if (!open || connection === null) return;
+    let cancelled = false;
+    setModels([]);
+    setModelId(null);
+    if (connection.modelSelectionMode === "runtime-default") return;
+    void api.listConnectionModels(connection.id).then((nextModels) => {
+      if (cancelled) return;
+      setModels(nextModels);
+      setModelId(nextModels[0]?.id ?? null);
+    }).catch(() => { if (!cancelled) setModels([]); });
+    return () => { cancelled = true; };
+  }, [open, connection?.id, connection?.modelSelectionMode]);
+
+  useEffect(() => {
+    if (!open || connectionSelection === null) {
+      setCompatibility(null);
+      return;
+    }
+    let cancelled = false;
+    setRoutingBusy(true);
+    setCompatibility(null);
+    void api.resolveScanCompatibility({
+      engine,
+      selection: connectionSelection,
+      remoteRepositoryConfirmed: true,
+      ...(engine === "codex-security" ? { executionProfilePreference: "auto" as const } : {}),
+    }).then((result) => { if (!cancelled) setCompatibility(result); })
+      .catch(() => { if (!cancelled) setCompatibility(null); })
+      .finally(() => { if (!cancelled) setRoutingBusy(false); });
+    return () => { cancelled = true; };
+  }, [open, engine, connectionSelection?.connectionId, connectionSelection?.modelId, connectionSelection?.modelSelectionMode]);
+
+  useEffect(() => {
+    setEffort((current) => reconcileReasoningEffort(current, compatibility));
+  }, [compatibility]);
+
+  useEffect(() => {
+    if (scanner !== null && !scanner.modes.includes(mode) && scanner.modes[0]) setMode(scanner.modes[0]);
+  }, [scanner, mode]);
 
   useEffect(() => {
     if (!open || selected?.source !== "github") {
@@ -126,12 +227,16 @@ export function GuardrailPreflightSheet({
   }, [open, selected?.repositoryKey, selected?.source, t]);
 
   useEffect(() => {
-    if (!open || selected?.source !== "github" || !target || !fingerprint) return;
+    if (!open || selected?.source !== "github" || !target || !fingerprint || !routeReady) return;
     let cancelled = false;
     setPreviewBusy(true);
     setError(null);
     onError(null);
-    void api.previewGuardrailTarget(selected.repositoryKey, { target, executor }).then((response) => {
+    void api.previewGuardrailTarget(selected.repositoryKey, {
+      target,
+      executor,
+      ...(scanSelection === null ? {} : { scanSelection }),
+    }).then((response) => {
       if (cancelled) return;
       if (
         !response.preview.executorCapability.ready
@@ -157,7 +262,7 @@ export function GuardrailPreflightSheet({
       if (!cancelled) setPreviewBusy(false);
     });
     return () => { cancelled = true; };
-  }, [open, selected?.repositoryKey, selected?.source, fingerprint, executorChosenByUser, previewRefresh, t]);
+  }, [open, selected?.repositoryKey, selected?.source, fingerprint, executorChosenByUser, previewRefresh, routeReady, t]);
 
   function invalidatePreview(nextDraft?: GuardrailTargetDraft, nextExecutor?: GateExecutorKind) {
     if (nextDraft) setDraft(nextDraft);
@@ -219,7 +324,7 @@ export function GuardrailPreflightSheet({
     }
   }
 
-  const canStart = Boolean(selected && target) && (
+  const canStart = Boolean(selected && target && routeReady) && (
     selected?.source === "local" || remoteReady
   );
 
@@ -310,9 +415,94 @@ export function GuardrailPreflightSheet({
               </section>
             )}
 
+            {selected?.source === "github" && executor === "sentinel-managed" && (
+              <section aria-labelledby="preflight-scan-route-title">
+                <StepHeading code="03 / SCAN ROUTE" id="preflight-scan-route-title" title={t("newScan.strategy")}>
+                  {t("newScan.engineHelp")}
+                </StepHeading>
+                <div className="grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label={t("newScan.scannerEngine")}>
+                  {ENGINE_ORDER.map((candidate) => {
+                    const capability = catalog?.scanners.find((item) => item.engine === candidate);
+                    const checked = candidate === engine;
+                    const icon = candidate === "codex-security"
+                      ? <Shield aria-hidden size={17} />
+                      : candidate === "mantis"
+                        ? <Bug aria-hidden size={17} />
+                        : <FlaskConical aria-hidden size={17} />;
+                    return (
+                      <ChoiceCard
+                        key={candidate}
+                        checked={checked}
+                        disabled={capability?.enabled === false}
+                        icon={icon}
+                        title={capability?.name ?? candidate}
+                        meta={(capability?.maturity ?? "checking").toUpperCase()}
+                        description={t(candidate === "codex-security" ? "newScan.engine.codexDescription" : candidate === "mantis" ? "newScan.engine.mantisDescription" : "newScan.engine.vulnHunterDescription")}
+                        onSelect={() => {
+                          setEngine(candidate);
+                          setCompatibility(null);
+                          invalidatePreview();
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+
+                <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                  <Field label={t("newScan.connectionRoute")} htmlFor="guardrail-scan-connection">
+                    <Select value={connectionId} onValueChange={(value) => { setConnectionId(value); invalidatePreview(); }}>
+                      <SelectTrigger id="guardrail-scan-connection" className="min-h-11 w-full rounded-none"><SelectValue placeholder={t("newScan.connectionRequired")} /></SelectTrigger>
+                      <SelectContent position="popper" className="rounded-none border-border bg-popover">
+                        {connections.map((item) => <SelectItem key={item.id} value={item.id} className="min-h-11 rounded-none">{item.name} · {item.display.providerLabel}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field label={t("newScan.modelChannel" )} htmlFor="guardrail-scan-model">
+                    {connection?.modelSelectionMode === "runtime-default" ? (
+                      <div id="guardrail-scan-model" className="grid min-h-11 items-center border px-3 font-mono text-[10px] text-muted-foreground">{t("newScan.providerManagedEffort")}</div>
+                    ) : (
+                      <Select value={modelId ?? ""} onValueChange={(value) => { setModelId(value); invalidatePreview(); }}>
+                        <SelectTrigger id="guardrail-scan-model" className="min-h-11 w-full rounded-none"><SelectValue placeholder={t("newScan.connectionModelRequired")} /></SelectTrigger>
+                        <SelectContent position="popper" className="max-w-[calc(100vw-2rem)] rounded-none border-border bg-popover sm:max-w-2xl">
+                          {connectionModels.map((model) => <SelectItem key={model.id} value={model.id} className="min-h-11 rounded-none">{model.displayName}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  </Field>
+                </div>
+
+                <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold">{t("newScan.reasoningEffort")}</div>
+                    <div className="mt-2 grid grid-cols-2 gap-px border bg-border">
+                      {reasoning.kind === "provider-managed" ? (
+                        <div className="col-span-2 bg-background px-3 py-3 font-mono text-[9px] uppercase text-muted-foreground">{t("newScan.providerManagedEffort")}</div>
+                      ) : reasoning.options.map((option) => (
+                        <button key={option} type="button" aria-pressed={reasoning.selected === option} onClick={() => { setEffort(option); invalidatePreview(); }} className={`min-h-11 bg-background px-3 font-mono text-[9px] uppercase transition-colors ${reasoning.selected === option ? "text-primary shadow-[inset_0_-2px_var(--primary)]" : "text-muted-foreground hover:text-foreground"}`}>{option}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold">{t("newScan.scanMode")}</div>
+                    <div className="mt-2 grid grid-cols-2 gap-px border bg-border">
+                      {["standard", "deep"].map((option) => (
+                        <button key={option} type="button" disabled={scanner?.modes.includes(option as ScanMode) === false} aria-pressed={mode === option} onClick={() => { setMode(option as ScanMode); invalidatePreview(); }} className={`min-h-11 bg-background px-3 font-mono text-[9px] uppercase transition-colors disabled:opacity-40 ${mode === option ? "text-primary shadow-[inset_0_-2px_var(--primary)]" : "text-muted-foreground hover:text-foreground"}`}>{option}</button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className={`mt-3 border px-4 py-3 text-xs leading-5 ${routeReady ? "border-chart-2/40 bg-chart-2/[.05] text-chart-2" : "border-destructive/40 bg-destructive/[.05] text-destructive"}`}>
+                  {routingBusy ? t("newScan.probing") : routeReady
+                    ? `${scanner?.name ?? engine} · ${connection?.name ?? "—"} · ${modelId ?? t("newScan.providerManagedEffort")}`
+                    : compatibility?.reasons.join(" · ") || t("newScan.routeUnavailable")}
+                </div>
+              </section>
+            )}
+
             {selected?.source === "github" && (
               <section aria-labelledby="preflight-executor-title">
-                <StepHeading code="03 / EXECUTION PLANE" id="preflight-executor-title" title={t("guardrails.executorTitle")} />
+                <StepHeading code="04 / EXECUTION PLANE" id="preflight-executor-title" title={t("guardrails.executorTitle")} />
                 <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label={t("guardrails.executorTitle")}>
                   <ChoiceCard checked={executor === "sentinel-managed"} icon={<Cloud aria-hidden size={17} />} title="Sentinel managed" meta="IMMUTABLE SNAPSHOT" description={t("guardrails.managedDescription")} onSelect={() => selectExecutor("sentinel-managed")} />
                   <ChoiceCard checked={executor === "github-actions"} icon={<Workflow aria-hidden size={17} />} title="GitHub Actions" meta="PINNED CALLER" description={t("guardrails.actionsDescription")} onSelect={() => selectExecutor("github-actions")} />
@@ -324,7 +514,7 @@ export function GuardrailPreflightSheet({
             {selected?.source === "github" && (
               <section aria-labelledby="preflight-proof-title">
                 <div className="flex flex-wrap items-end justify-between gap-3">
-                  <StepHeading code="04 / SERVER PREVIEW" id="preflight-proof-title" title={t("guardrails.previewTitle")}>
+                  <StepHeading code="05 / SERVER PREVIEW" id="preflight-proof-title" title={t("guardrails.previewTitle")}>
                     {t("guardrails.previewDescription")}
                   </StepHeading>
                   <Button type="button" variant="outline" className="min-h-11" disabled={previewBusy || !target} onClick={() => setPreviewRefresh((value) => value + 1)}>
@@ -370,7 +560,7 @@ function PreviewReadout({ preview }: { preview: GuardrailTargetPreview }) {
         <Readout label={t("guardrails.previewHead")} value={`${preview.resolvedTarget.headRef}\n${preview.resolvedTarget.headSha}`} />
         <Readout label={t("guardrails.previewPolicy")} value={`${preview.policySource} · ${preview.policySha}`} />
         <Readout label={t("guardrails.previewExecutor")} value={`${capability} · ${preview.executorCapability.code}`} tone={preview.executorCapability.ready ? "good" : "risk"} />
-        <Readout label={t("guardrails.previewScan")} value={`${preview.scanPlan.model} · ${preview.scanPlan.effort} · ${preview.scanPlan.mode}\n${preview.scanPlan.scopeMode} · ${preview.scanPlan.maxChangedPaths} paths`} />
+        <Readout label={t("guardrails.previewScan")} value={`${preview.scanPlan.engine ?? "codex-security"} · ${preview.scanPlan.model} · ${preview.scanPlan.effort} · ${preview.scanPlan.mode}\n${preview.scanPlan.scopeMode} · ${preview.scanPlan.maxChangedPaths} paths`} />
         <Readout label={t("guardrails.previewCost")} value={`≤ USD ${preview.costBudget.maxCostUsd.toFixed(2)}\n${t("guardrails.costInFlight")}`} />
       </div>
       <div className="grid border-t px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">

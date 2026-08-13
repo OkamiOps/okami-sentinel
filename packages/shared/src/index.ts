@@ -310,6 +310,14 @@ export interface ScanConnectionSelection {
   modelId: string | null;
 }
 
+/** Exact scanner route frozen into a server-resolved Guardrail preview. */
+export interface GuardrailScanSelection {
+  engine: ScannerEngine;
+  connection: ScanConnectionSelection;
+  effort?: string;
+  mode: ScanMode;
+}
+
 export type CodexSecurityExecutionProfile = "native" | "portable";
 
 export type CodexSecurityProfilePreference =

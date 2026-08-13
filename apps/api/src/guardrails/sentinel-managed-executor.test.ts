@@ -81,6 +81,30 @@ test("known unavailable baseline closes as action_required and never produces li
   assert.match(result.artifact.decision.summary, /^baseline_unavailable:/);
 });
 
+test("launches the exact engine, connection, model, effort and mode frozen by the preview", async () => {
+  const requests: StartScanRequest[] = [];
+  const executor = new SentinelManagedExecutor(dependencies({
+    startScan: async (value) => {
+      requests.push(structuredClone(value));
+      return scan("running");
+    },
+  }));
+  const selectedPreview = preview();
+  selectedPreview.scanSelection = {
+    engine: "vulnhunter",
+    connection: { connectionId: "openrouter", modelSelectionMode: "catalog", modelId: "anthropic/opus" },
+    effort: "high",
+    mode: "deep",
+  };
+  await executor.execute({ ...executionInput(), preview: selectedPreview });
+  const request = requests[0]!;
+
+  assert.equal(request.engine, "vulnhunter");
+  assert.deepEqual(request.connection, selectedPreview.scanSelection.connection);
+  assert.equal(request.effort, "high");
+  assert.equal(request.mode, "deep");
+});
+
 test("partial submodule or LFS coverage cannot publish success", async () => {
   const executor = new SentinelManagedExecutor(dependencies({
     handle: materialization({

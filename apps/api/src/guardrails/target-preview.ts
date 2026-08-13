@@ -5,6 +5,8 @@ import type {
   GateExecutorKind,
   GatePublicationEligibility,
   GateTarget,
+  GuardrailScanSelection,
+  ConnectionCompatibility,
   GuardrailException,
   GuardrailPolicy,
   GuardrailRepository,
@@ -36,6 +38,7 @@ export class TargetPreviewError extends Error {
 export interface TargetPreviewRequest {
   target: GateTarget;
   executor?: GateExecutorKind;
+  scanSelection?: GuardrailScanSelection;
 }
 
 export interface StartGateRequest {
@@ -67,7 +70,10 @@ export interface GateTargetPreview {
     ready: boolean;
     code: TargetPreviewCapabilityCode;
   };
+  scanSelection?: GuardrailScanSelection | null;
   scanPlan: {
+    engine?: string;
+    connectionId?: string | null;
     scopeMode: "changed" | "repository";
     maxChangedPaths: number;
     fallback: "repository" | "error";
@@ -107,6 +113,7 @@ export interface TargetPreviewDependencies {
     repository: GuardrailRepository,
     executor: GateExecutorKind,
   ): GateTargetPreview["executorCapability"] | Promise<GateTargetPreview["executorCapability"]>;
+  resolveScanSelection?(selection: GuardrailScanSelection): ConnectionCompatibility | Promise<ConnectionCompatibility>;
   createIdentity?(): string;
   now?(): Date;
 }
@@ -132,6 +139,9 @@ export class TargetPreviewService {
     const resolvedTarget = await this.dependencies.resolveTarget(repository, target);
     const protectedPolicy = await this.dependencies.loadPolicy(repository, target, resolvedTarget);
     const capability = await this.dependencies.executorCapability(repository, executor);
+    const scanSelection = request.scanSelection === undefined
+      ? null
+      : await resolvedScanSelection(request.scanSelection, executor, this.dependencies.resolveScanSelection);
     const now = this.#now();
     const preview: GateTargetPreview = {
       previewIdentity: boundedString(this.#createIdentity(), 255),
@@ -146,13 +156,22 @@ export class TargetPreviewService {
       protectedBranches: [...protectedPolicy.policy.protectedBranches],
       exceptionsCount: protectedPolicy.exceptions.length,
       executorCapability: { ...capability },
+      scanSelection,
       scanPlan: {
+        ...(scanSelection === null ? {} : {
+          engine: scanSelection.engine,
+          connectionId: scanSelection.connection.connectionId,
+        }),
         scopeMode: protectedPolicy.policy.scope.mode,
         maxChangedPaths: protectedPolicy.policy.scope.maxChangedPaths,
         fallback: protectedPolicy.policy.scope.fallback,
-        model: protectedPolicy.policy.scan.model,
-        effort: protectedPolicy.policy.scan.effort,
-        mode: protectedPolicy.policy.scan.mode,
+        model: scanSelection === null
+          ? protectedPolicy.policy.scan.model
+          : scanSelection.connection.modelId ?? "provider-managed",
+        effort: scanSelection === null
+          ? protectedPolicy.policy.scan.effort
+          : scanSelection.effort ?? "provider-managed",
+        mode: scanSelection?.mode ?? protectedPolicy.policy.scan.mode,
       },
       costBudget: {
         maxCostUsd: protectedPolicy.policy.scan.maxCostUsd,
@@ -210,11 +229,55 @@ export class TargetPreviewService {
 
 export function parseTargetPreviewRequest(value: unknown): TargetPreviewRequest {
   const input = record(value);
-  exactKeys(input, new Set(["target", "executor"]), new Set(["executor"]));
+  exactKeys(input, new Set(["target", "executor", "scanSelection"]), new Set(["executor", "scanSelection"]));
   const executor = optionalExecutor(input.executor);
-  return executor === undefined
-    ? { target: parsedTarget(input.target) }
-    : { target: parsedTarget(input.target), executor };
+  const scanSelection = input.scanSelection === undefined ? undefined : parsedScanSelection(input.scanSelection);
+  return {
+    target: parsedTarget(input.target),
+    ...(executor === undefined ? {} : { executor }),
+    ...(scanSelection === undefined ? {} : { scanSelection }),
+  };
+}
+
+function parsedScanSelection(value: unknown): GuardrailScanSelection {
+  const input = record(value);
+  exactKeys(input, new Set(["engine", "connection", "effort", "mode"]), new Set(["effort"]));
+  if (!isScannerEngine(input.engine) || (input.mode !== "standard" && input.mode !== "deep")) invalid();
+  const connection = record(input.connection);
+  exactKeys(connection, new Set(["connectionId", "modelSelectionMode", "modelId"]), new Set());
+  const connectionId = boundedString(connection.connectionId, 100);
+  if (!/^[0-9a-z-]+$/i.test(connectionId)) invalid();
+  if (connection.modelSelectionMode !== "catalog" && connection.modelSelectionMode !== "runtime-default") invalid();
+  const modelId = connection.modelId === null ? null : boundedString(connection.modelId, 320);
+  if ((connection.modelSelectionMode === "catalog") !== (modelId !== null)) invalid();
+  const effort = input.effort === undefined ? undefined : boundedString(input.effort, 64);
+  return {
+    engine: input.engine,
+    connection: { connectionId, modelSelectionMode: connection.modelSelectionMode, modelId },
+    ...(effort === undefined ? {} : { effort }),
+    mode: input.mode,
+  };
+}
+
+async function resolvedScanSelection(
+  selection: GuardrailScanSelection,
+  executor: GateExecutorKind,
+  resolve: TargetPreviewDependencies["resolveScanSelection"],
+): Promise<GuardrailScanSelection> {
+  if (executor !== "sentinel-managed" || resolve === undefined) invalid();
+  const compatibility = await resolve(selection);
+  if (
+    !compatibility.eligible
+    || compatibility.connectionId !== selection.connection.connectionId
+    || compatibility.modelSelectionMode !== selection.connection.modelSelectionMode
+    || compatibility.modelId !== selection.connection.modelId
+    || (selection.effort !== undefined && !compatibility.reasoningEffort?.options.includes(selection.effort))
+  ) invalid();
+  return structuredClone(selection);
+}
+
+function isScannerEngine(value: unknown): value is GuardrailScanSelection["engine"] {
+  return value === "codex-security" || value === "mantis" || value === "vulnhunter";
 }
 
 export function parseStartGateRequest(value: unknown): StartGateRequest {

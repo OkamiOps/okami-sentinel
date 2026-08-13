@@ -233,6 +233,18 @@ const targetPreviewService = new TargetPreviewService({
       ? { ready: true, code: "ready" }
       : { ready: false, code: "github_actions_unavailable" };
   },
+  resolveScanSelection: async (selection) => {
+    const scanner = (await getScannerCatalog()).scanners.find((candidate) => candidate.engine === selection.engine);
+    if (!scanner?.enabled || !scanner.modes.includes(selection.mode)) {
+      throw new TargetPreviewError("target_preview_invalid");
+    }
+    return getProviderRuntime().compatibility.resolve({
+      engine: selection.engine,
+      selection: selection.connection,
+      remoteRepositoryConfirmed: true,
+      ...(selection.engine === "codex-security" ? { executionProfilePreference: "auto" as const } : {}),
+    });
+  },
 });
 
 const guardrailsDependencies: GuardrailsApiDependencies = {

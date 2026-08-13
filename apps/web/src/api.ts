@@ -14,6 +14,7 @@ import type {
   GateRun,
   GateTarget,
   GuardrailGitHubStatus,
+  GuardrailScanSelection,
   GuardrailPullRequestSummary,
   GuardrailPolicy,
   GuardrailRepository,
@@ -215,7 +216,10 @@ export interface GuardrailTargetPreview {
     ready: boolean;
     code: "ready" | "managed_executor_unavailable" | "github_actions_unavailable";
   };
+  scanSelection?: GuardrailScanSelection | null;
   scanPlan: {
+    engine?: string;
+    connectionId?: string | null;
     scopeMode: "changed" | "repository";
     maxChangedPaths: number;
     fallback: "repository" | "error";
@@ -489,7 +493,7 @@ export const api = {
     ),
   previewGuardrailTarget: (
     repositoryKey: string,
-    body: { target: GateTarget; executor?: GateExecutorKind },
+    body: { target: GateTarget; executor?: GateExecutorKind; scanSelection?: GuardrailScanSelection },
   ) => request<{ preview: GuardrailTargetPreview }>(
     `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/target-preview`,
     { method: "POST", body: JSON.stringify(body) },
