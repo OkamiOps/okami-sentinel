@@ -60,9 +60,13 @@ export function GuardrailPreflightSheet({
   const [acceptedFingerprint, setAcceptedFingerprint] = useState<string | null>(null);
   const [idempotencyKey, setIdempotencyKey] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [previewBusy, setPreviewBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pullRequests, setPullRequests] = useState<GuardrailPullRequestSummary[] | null>(null);
   const [pullRequestsError, setPullRequestsError] = useState<string | null>(null);
+  const [executorChosenByUser, setExecutorChosenByUser] = useState(false);
+  const [managedFallback, setManagedFallback] = useState(false);
+  const [previewRefresh, setPreviewRefresh] = useState(0);
 
   const target = selected ? targetFromDraft(selected, draft) : null;
   const fingerprint = selected && target
@@ -84,6 +88,8 @@ export function GuardrailPreflightSheet({
     setAcceptedFingerprint(null);
     setIdempotencyKey(null);
     setError(null);
+    setExecutorChosenByUser(false);
+    setManagedFallback(false);
   }, [open, initialRepositoryKey]);
 
   useEffect(() => {
@@ -119,6 +125,40 @@ export function GuardrailPreflightSheet({
     return () => { cancelled = true; };
   }, [open, selected?.repositoryKey, selected?.source, t]);
 
+  useEffect(() => {
+    if (!open || selected?.source !== "github" || !target || !fingerprint) return;
+    let cancelled = false;
+    setPreviewBusy(true);
+    setError(null);
+    onError(null);
+    void api.previewGuardrailTarget(selected.repositoryKey, { target, executor }).then((response) => {
+      if (cancelled) return;
+      if (
+        !response.preview.executorCapability.ready
+        && executor === "github-actions"
+        && !executorChosenByUser
+      ) {
+        setManagedFallback(true);
+        setExecutor("sentinel-managed");
+        setPreview(null);
+        setAcceptedFingerprint(null);
+        setIdempotencyKey(null);
+        return;
+      }
+      setPreview(response.preview);
+      setAcceptedFingerprint(fingerprint);
+      setIdempotencyKey(`guardrail:${crypto.randomUUID()}`);
+    }).catch((cause) => {
+      if (cancelled) return;
+      const message = cause instanceof Error ? cause.message : t("guardrails.resolveError");
+      setError(message);
+      onError(message);
+    }).finally(() => {
+      if (!cancelled) setPreviewBusy(false);
+    });
+    return () => { cancelled = true; };
+  }, [open, selected?.repositoryKey, selected?.source, fingerprint, executorChosenByUser, previewRefresh, t]);
+
   function invalidatePreview(nextDraft?: GuardrailTargetDraft, nextExecutor?: GateExecutorKind) {
     if (nextDraft) setDraft(nextDraft);
     if (nextExecutor) setExecutor(nextExecutor);
@@ -138,25 +178,14 @@ export function GuardrailPreflightSheet({
     setAcceptedFingerprint(null);
     setIdempotencyKey(null);
     setError(null);
+    setExecutorChosenByUser(false);
+    setManagedFallback(false);
   }
 
-  async function resolvePreview() {
-    if (!selected || selected.source !== "github" || !target || !fingerprint) return;
-    setBusy(true);
-    setError(null);
-    onError(null);
-    try {
-      const response = await api.previewGuardrailTarget(selected.repositoryKey, { target, executor });
-      setPreview(response.preview);
-      setAcceptedFingerprint(fingerprint);
-      setIdempotencyKey(`guardrail:${crypto.randomUUID()}`);
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : t("guardrails.resolveError");
-      setError(message);
-      onError(message);
-    } finally {
-      setBusy(false);
-    }
+  function selectExecutor(nextExecutor: GateExecutorKind) {
+    setExecutorChosenByUser(true);
+    setManagedFallback(false);
+    invalidatePreview(undefined, nextExecutor);
   }
 
   async function start() {
@@ -285,9 +314,10 @@ export function GuardrailPreflightSheet({
               <section aria-labelledby="preflight-executor-title">
                 <StepHeading code="03 / EXECUTION PLANE" id="preflight-executor-title" title={t("guardrails.executorTitle")} />
                 <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label={t("guardrails.executorTitle")}>
-                  <ChoiceCard checked={executor === "sentinel-managed"} icon={<Cloud aria-hidden size={17} />} title="Sentinel managed" meta="IMMUTABLE SNAPSHOT" description={t("guardrails.managedDescription")} onSelect={() => invalidatePreview(undefined, "sentinel-managed")} />
-                  <ChoiceCard checked={executor === "github-actions"} icon={<Workflow aria-hidden size={17} />} title="GitHub Actions" meta="PINNED CALLER" description={t("guardrails.actionsDescription")} onSelect={() => invalidatePreview(undefined, "github-actions")} />
+                  <ChoiceCard checked={executor === "sentinel-managed"} icon={<Cloud aria-hidden size={17} />} title="Sentinel managed" meta="IMMUTABLE SNAPSHOT" description={t("guardrails.managedDescription")} onSelect={() => selectExecutor("sentinel-managed")} />
+                  <ChoiceCard checked={executor === "github-actions"} icon={<Workflow aria-hidden size={17} />} title="GitHub Actions" meta="PINNED CALLER" description={t("guardrails.actionsDescription")} onSelect={() => selectExecutor("github-actions")} />
                 </div>
+                {managedFallback && <div className="mt-3 border border-primary/40 bg-primary/[.06] px-4 py-3 text-xs leading-5 text-muted-foreground"><span className="font-semibold text-primary">Sentinel managed</span> · {t("guardrails.managedFallbackReady")}</div>}
               </section>
             )}
 
@@ -297,8 +327,8 @@ export function GuardrailPreflightSheet({
                   <StepHeading code="04 / SERVER PREVIEW" id="preflight-proof-title" title={t("guardrails.previewTitle")}>
                     {t("guardrails.previewDescription")}
                   </StepHeading>
-                  <Button type="button" variant="outline" className="min-h-11" disabled={busy || !target} onClick={() => void resolvePreview()}>
-                    <LockKeyhole aria-hidden size={14} />{busy ? t("guardrails.resolving") : previewAccepted ? t("guardrails.resolveAgain") : t("guardrails.resolve")}
+                  <Button type="button" variant="outline" className="min-h-11" disabled={previewBusy || !target} onClick={() => setPreviewRefresh((value) => value + 1)}>
+                    <LockKeyhole aria-hidden size={14} />{previewBusy ? t("guardrails.resolving") : previewAccepted ? t("guardrails.resolveAgain") : t("guardrails.resolve")}
                   </Button>
                 </div>
                 <div aria-live="polite">
@@ -321,7 +351,7 @@ export function GuardrailPreflightSheet({
                 : t("guardrails.previewRequired")
               : t("guardrails.localIdentityPending")}</span>
           </div>
-          <Button type="button" className="min-h-11 w-full sm:w-auto" disabled={busy || !canStart} onClick={() => void start()}>
+          <Button type="button" className="min-h-11 w-full sm:w-auto" disabled={busy || previewBusy || !canStart} onClick={() => void start()}>
             <GitPullRequestArrow aria-hidden size={14} />{busy ? t("guardrails.starting") : executor === "github-actions" ? t("guardrails.dispatch") : t("guardrails.start")}
           </Button>
         </div>

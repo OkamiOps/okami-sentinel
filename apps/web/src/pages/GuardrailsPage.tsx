@@ -81,7 +81,7 @@ export function GuardrailsPage() {
           return [repository.repositoryKey, {
             authorityReady,
             baselineReady: github.status.baseline.ready,
-            executorReady: repository.defaultExecutor === "sentinel-managed" ? authorityReady : actions.status.ready,
+            executorReady: authorityReady || actions.status.ready,
             executorCode: repository.defaultExecutor === "sentinel-managed" ? "managed" : actions.status.code,
           } satisfies RepositoryReadiness] as const;
         } catch {
@@ -323,7 +323,13 @@ function GuardrailLaunchpad({
   const blockedCount = repositories.length - readyCount;
   const setupHref = repository ? `/guardrails/setup?repository=${encodeURIComponent(repository.repositoryKey)}` : "/guardrails/setup";
   const actionsBlocked = repository?.defaultExecutor === "github-actions" && repoReadiness?.executorReady !== true;
-  const statusLabel = actionsBlocked && repoReadiness
+  const defaultActionsBlocked = repository?.defaultExecutor === "github-actions"
+    && repoReadiness?.authorityReady === true
+    && repoReadiness.executorCode !== "ready";
+  const scanReady = repoReadiness?.executorReady === true;
+  const statusLabel = defaultActionsBlocked
+    ? t("guardrails.managedFallbackReady")
+    : actionsBlocked && repoReadiness
     ? repoReadiness.executorCode === "unavailable"
       ? t("guardrails.capabilitiesLoadError")
       : repoReadiness.executorCode === "managed"
@@ -362,22 +368,22 @@ function GuardrailLaunchpad({
             <>
               <div className="grid gap-5 border-b px-5 py-6 md:grid-cols-[minmax(0,1fr)_auto] md:items-start md:px-7">
                 <div className="min-w-0">
-                  <div className={cx("flex items-center gap-2 bench-label", actionsBlocked ? "text-destructive" : "text-chart-2")}>{actionsBlocked ? <ShieldAlert aria-hidden size={15} /> : <ShieldCheck aria-hidden size={15} />}{actionsBlocked ? t("guardrails.actionRequired") : t("guardrails.readyToProtect")}</div>
+                  <div className={cx("flex items-center gap-2 bench-label", scanReady ? "text-chart-2" : "text-destructive")}>{scanReady ? <ShieldCheck aria-hidden size={15} /> : <ShieldAlert aria-hidden size={15} />}{scanReady ? t("guardrails.readyToProtect") : t("guardrails.actionRequired")}</div>
                   <h2 id="guardrail-launchpad-title" className="mt-3 break-words font-heading text-2xl font-semibold tracking-[-.035em] sm:text-3xl">{repository.displayName}</h2>
                   <p className="mt-2 font-mono text-[9px] uppercase tracking-[.08em] text-muted-foreground">{repository.source} · {repository.defaultExecutor} · {repository.defaultBranch}</p>
-                  <p className={cx("mt-4 max-w-3xl border-l-2 pl-3 text-sm leading-6", actionsBlocked ? "border-destructive text-destructive" : "border-chart-2 text-muted-foreground")}>{statusLabel}</p>
+                  <p className={cx("mt-4 max-w-3xl border-l-2 pl-3 text-sm leading-6", scanReady ? "border-chart-2 text-muted-foreground" : "border-destructive text-destructive")}>{statusLabel}</p>
                 </div>
                 <div className="grid gap-2 sm:grid-cols-2 md:min-w-48 md:grid-cols-1">
                   <Button asChild variant={actionsBlocked ? "default" : "outline"} className="min-h-11"><Link to={setupHref}><Workflow aria-hidden size={14} />{t("guardrails.setup")}</Link></Button>
-                  <Button variant={actionsBlocked ? "outline" : "default"} className="min-h-11" disabled={actionsBlocked} onClick={() => onRun(repository.repositoryKey)}><ArrowRight aria-hidden size={14} />{t("guardrails.scanNow")}</Button>
+                  <Button variant="default" className="min-h-11" disabled={!scanReady} onClick={() => onRun(repository.repositoryKey)}><ArrowRight aria-hidden size={14} />{t("guardrails.scanNow")}</Button>
                 </div>
               </div>
 
               <div className="grid border-b md:grid-cols-5">
                 <ReadinessCell code="01" title={t("guardrails.stageAuthority")} ready={repoReadiness?.authorityReady === true} current={repoReadiness?.authorityReady !== true} detail={repository.source === "github" ? "GITHUB APP" : "LOCAL ROOT"} />
                 <ReadinessCell code="02" title={t("guardrails.factBaseline")} ready={repoReadiness?.baselineReady === true} current={repoReadiness?.authorityReady === true && repoReadiness?.baselineReady !== true} detail={repoReadiness?.baselineReady ? t("guardrails.authorized") : t("guardrails.actionRequired")} />
-                <ReadinessCell code="03" title={t("guardrails.previewExecutor")} ready={repoReadiness?.executorReady === true} current={actionsBlocked} detail={repository.defaultExecutor} />
-                <ReadinessCell code="04" title={t("guardrails.stageTarget")} ready={false} current={!actionsBlocked} detail={t("guardrails.pending")} />
+                <ReadinessCell code="03" title={t("guardrails.previewExecutor")} ready={scanReady} current={!scanReady} detail={defaultActionsBlocked ? "sentinel-managed" : repository.defaultExecutor} />
+                <ReadinessCell code="04" title={t("guardrails.stageTarget")} ready={false} current={scanReady} detail={t("guardrails.pending")} />
                 <ReadinessCell code="05" title={t("guardrails.stageDecision")} ready={false} current={false} detail={t("guardrails.pending")} />
               </div>
 
@@ -386,14 +392,14 @@ function GuardrailLaunchpad({
                   <div className="flex items-center gap-2 text-primary"><Activity aria-hidden size={15} /><span className="bench-label">LATEST GATE ACTIVITY</span></div>
                   <div className="mt-5 border border-dashed px-4 py-6">
                     <strong className="text-sm">{t("guardrails.empty")}</strong>
-                    <p className="mt-2 max-w-xl text-xs leading-5 text-muted-foreground">{actionsBlocked ? statusLabel : t("guardrails.emptyDescription")}</p>
+                    <p className="mt-2 max-w-xl text-xs leading-5 text-muted-foreground">{scanReady ? t("guardrails.emptyDescription") : statusLabel}</p>
                   </div>
                 </div>
                 <div className="p-5 md:p-7">
                   <div className="bench-label text-primary">NEXT REQUIRED ACTION</div>
-                  <p className="mt-3 text-sm font-semibold">{actionsBlocked ? t("guardrails.setup") : t("guardrails.launchTarget")}</p>
-                  <p className="mt-2 text-xs leading-5 text-muted-foreground">{actionsBlocked ? statusLabel : t("guardrails.launchTargetDetail")}</p>
-                  <Button asChild variant="outline" className="mt-5 min-h-11 w-full"><Link to={actionsBlocked ? setupHref : "#"} onClick={actionsBlocked ? undefined : (event) => { event.preventDefault(); onRun(repository.repositoryKey); }}><ArrowRight aria-hidden size={14} />{actionsBlocked ? t("guardrails.setup") : t("guardrails.scanNow")}</Link></Button>
+                  <p className="mt-3 text-sm font-semibold">{scanReady ? t("guardrails.launchTarget") : t("guardrails.setup")}</p>
+                  <p className="mt-2 text-xs leading-5 text-muted-foreground">{scanReady ? t("guardrails.launchTargetDetail") : statusLabel}</p>
+                  <Button asChild variant="outline" className="mt-5 min-h-11 w-full"><Link to={scanReady ? "#" : setupHref} onClick={scanReady ? (event) => { event.preventDefault(); onRun(repository.repositoryKey); } : undefined}><ArrowRight aria-hidden size={14} />{scanReady ? t("guardrails.scanNow") : t("guardrails.setup")}</Link></Button>
                 </div>
               </div>
             </>
