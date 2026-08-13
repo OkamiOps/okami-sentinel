@@ -742,7 +742,10 @@ function stageLimits(overrides: Partial<AgentSessionLimits> = {}): AgentSessionL
     ...DEFAULT_AGENT_LIMITS,
     maxModelTurns: 24,
     maxToolCalls: 96,
-    maxInputBytes: 4 * 1024 * 1024,
+    // Tool responses are counted cumulatively for the isolated stage. A
+    // source-heavy repository can legitimately cross 4 MiB long before the
+    // provider context window is approached; retain the shared hard ceiling.
+    maxInputBytes: 64 * 1024 * 1024,
     maxOutputBytes: 1 * 1024 * 1024,
     timeoutMs: 5 * 60_000,
     ...overrides,
