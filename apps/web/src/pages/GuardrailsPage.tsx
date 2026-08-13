@@ -261,7 +261,7 @@ export function GuardrailsPage() {
       )}
 
       {readyState.selectedGate && readyState.selectedGate.error && (
-        <div className="mt-4"><AlertBanner>{readyState.selectedGate.error}</AlertBanner></div>
+        <div className="mt-4"><AlertBanner>{gateFailureMessage(readyState.selectedGate.error, t)}</AlertBanner></div>
       )}
       {readyState.selectedGate?.outcome === "bootstrap" && (
         <div className="mt-4"><AlertBanner tone="warning">Baseline ausente. Execute o gate na branch principal para estabelecer a referência; este resultado não é uma aprovação.</AlertBanner></div>
@@ -302,6 +302,19 @@ export function GuardrailsPage() {
       )}
     </div>
   );
+}
+
+function gateFailureMessage(code: string, t: ReturnType<typeof useI18n>["t"]): string {
+  if (code === "snapshot_materialization_failed") {
+    return t("guardrails.snapshotDownloadFailed");
+  }
+  if (code === "snapshot_archive_invalid") {
+    return t("guardrails.snapshotArchiveInvalid");
+  }
+  if (code === "snapshot_limit_exceeded") {
+    return t("guardrails.snapshotLimitExceeded");
+  }
+  return code;
 }
 
 function GuardrailLaunchpad({

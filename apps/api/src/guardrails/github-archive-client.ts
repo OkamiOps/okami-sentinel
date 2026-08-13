@@ -83,6 +83,7 @@ export class GitHubArchiveClient {
           url,
           headers: {
             Accept: "application/vnd.github+json",
+            "User-Agent": "okami-sentinel",
             "X-GitHub-Api-Version": "2026-03-10",
             ...(includeAuthorization ? { Authorization: `Bearer ${token}` } : {}),
           },
@@ -185,7 +186,12 @@ function approvedRedirect(value: string, current: string): URL {
 
 function closeBody(body: AsyncIterable<Uint8Array> | null): void {
   if (body === null) return;
-  const destroy = (body as { destroy?: () => void }).destroy;
+  const closeable = body as {
+    destroy?: () => void;
+    once?: (event: "error", listener: () => void) => unknown;
+  };
+  closeable.once?.("error", () => undefined);
+  const destroy = closeable.destroy;
   if (typeof destroy === "function") destroy.call(body);
 }
 

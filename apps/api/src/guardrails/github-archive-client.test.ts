@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { Readable } from "node:stream";
+import { PassThrough, Readable } from "node:stream";
 import test from "node:test";
 
 import type { GuardrailRepository } from "@csb/shared";
@@ -41,7 +41,9 @@ test("downloads the exact commit archive and strips authorization on the approve
     `https://api.github.com/repos/OkamiOps/private-sentinel/tarball/${SHA}`,
   );
   assert.equal(requests[0]?.headers.Authorization, "Bearer ghs_private_archive");
+  assert.equal(requests[0]?.headers["User-Agent"], "okami-sentinel");
   assert.equal(requests[1]?.headers.Authorization, undefined);
+  assert.equal(requests[1]?.headers["User-Agent"], "okami-sentinel");
   assert.equal(requests[1]?.url.startsWith("https://codeload.github.com/"), true);
 });
 
@@ -59,6 +61,16 @@ test("rejects redirects outside approved GitHub archive hosts without following 
   );
   assert.equal(requests.length, 1);
   assert.equal(JSON.stringify(requests).includes("evil.example"), false);
+});
+
+test("consumes the abort emitted when closing a redirect response body", async () => {
+  const redirectBody = new PassThrough();
+  const client = archiveClient(async (request) => request.url.startsWith("https://api.github.com/")
+    ? { status: 302, headers: { location: `https://codeload.github.com/OkamiOps/private-sentinel/legacy.tar.gz/${SHA}` }, body: redirectBody }
+    : response(200, [Buffer.from("archive-bytes")]));
+
+  assert.equal(await read(await client.download(repository(), SHA)), "archive-bytes");
+  redirectBody.emit("error", new Error("redirect body aborted"));
 });
 
 test("enforces the compressed byte limit from headers and streamed bytes", async () => {
