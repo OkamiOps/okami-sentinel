@@ -105,6 +105,11 @@ export function GuardrailPreflightSheet({
   const scanner = catalog?.scanners.find((candidate) => candidate.engine === engine) ?? null;
   const connection = connections.find((candidate) => candidate.id === connectionId) ?? null;
   const connectionModels = models.filter((model) => model.connectionId === connectionId);
+  const nativeScannerModelIds = new Set(scanner?.models.map((model) => model.id) ?? []);
+  const nativeCostModelUnsupported = engine === "codex-security"
+    && compatibility?.selectedProfile === "native"
+    && modelId !== null
+    && !nativeScannerModelIds.has(modelId);
   const connectionSelection = connectionSelectionFor(connection, connectionModels, modelId);
   const reasoning = reasoningEffortForCompatibility(compatibility, effort);
   const capabilityProbeOnlyBlock = isProbeOnlyCompatibilityBlock(compatibility);
@@ -118,6 +123,7 @@ export function GuardrailPreflightSheet({
     && compatibility.modelSelectionMode === connectionSelection.modelSelectionMode
     && compatibility.modelId === connectionSelection.modelId
     && scanner?.modes.includes(mode) === true
+    && !nativeCostModelUnsupported
   );
   const scanSelection: GuardrailScanSelection | null = executor === "sentinel-managed" && routeReady && connectionSelection
     ? {
@@ -546,7 +552,9 @@ export function GuardrailPreflightSheet({
                         ? t("newScan.providerValidationFailed")
                         : providerValidation === "error"
                           ? t("newScan.providerValidationError")
-                          : routeReady
+                            : nativeCostModelUnsupported
+                              ? t("guardrails.nativeCostModelUnsupported")
+                            : routeReady
                             ? `${scanner?.name ?? engine} · ${connection?.name ?? "—"} · ${modelId ?? t("newScan.providerManagedEffort")}`
                             : compatibility === null
                               ? t("newScan.routeUnavailable")

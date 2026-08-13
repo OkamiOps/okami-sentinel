@@ -13,6 +13,7 @@ import type { ProtectedPolicyBundle } from "./protected-policy-loader.js";
 import {
   TargetPreviewError,
   TargetPreviewService,
+  nativeScanCostCeilingSupported,
   parseStartGateRequest,
   parseTargetPreviewRequest,
 } from "./target-preview.js";
@@ -20,6 +21,22 @@ import {
 const BASE_SHA = "a".repeat(40);
 const FIRST_HEAD_SHA = "b".repeat(40);
 const SECOND_HEAD_SHA = "c".repeat(40);
+
+test("a native cost ceiling accepts only models published by the native scanner catalog", () => {
+  const selection = {
+    engine: "codex-security" as const,
+    connection: { connectionId: "openai", modelSelectionMode: "catalog" as const, modelId: "gpt-5.3-codex-spark" },
+    effort: "xhigh",
+    mode: "standard" as const,
+  };
+
+  assert.equal(nativeScanCostCeilingSupported(selection, { selectedProfile: "native" }, ["gpt-5.6-sol", "gpt-5.6-terra"]), false);
+  assert.equal(nativeScanCostCeilingSupported({
+    ...selection,
+    connection: { ...selection.connection, modelId: "gpt-5.6-sol" },
+  }, { selectedProfile: "native" }, ["gpt-5.6-sol", "gpt-5.6-terra"]), true);
+  assert.equal(nativeScanCostCeilingSupported(selection, { selectedProfile: "portable" }, []), true);
+});
 
 test("returns frozen target, policy, executor, scan, cost and publication facts without starting work", async () => {
   let resolved = 0;

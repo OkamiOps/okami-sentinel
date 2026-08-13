@@ -39,9 +39,15 @@ export function PortfolioPipeline({
 }) {
   const { locale, t } = useI18n();
   const selectedGate = gates.find((gate) => gate.id === selectedGateId) ?? gates[0] ?? null;
-  const activeCount = gates.filter((gate) => isGateActive(gate.status)).length;
-  const blockedCount = gates.filter((gate) => gate.outcome === "blocked" || gate.status === "error").length;
-  const remoteCount = repositories.filter((repository) => repository.source === "github").length;
+  const projectGates = selectedGate === null
+    ? []
+    : gates.filter((gate) => gate.repositoryKey === selectedGate.repositoryKey);
+  const projectRepositories = selectedGate === null
+    ? []
+    : repositories.filter((repository) => repository.repositoryKey === selectedGate.repositoryKey);
+  const activeCount = projectGates.filter((gate) => isGateActive(gate.status)).length;
+  const blockedCount = projectGates.filter((gate) => gate.outcome === "blocked" || gate.status === "error").length;
+  const remoteCount = projectRepositories.filter((repository) => repository.source === "github").length;
 
   return (
     <section className="bench-panel bench-corners min-w-0 overflow-hidden" aria-labelledby="portfolio-pipeline-title">
@@ -55,8 +61,8 @@ export function PortfolioPipeline({
           </p>
         </div>
         <dl className="grid grid-cols-3 border-t xl:min-w-[31rem] xl:border-l xl:border-t-0">
-          <PortfolioReadout label={t("guardrails.portfolioRepositories")} value={repositories.length} detail={`${remoteCount} ${t("guardrails.portfolioRemote")}`} />
-          <PortfolioReadout label={t("guardrails.portfolioActive")} value={activeCount} tone={activeCount > 0 ? "live" : "neutral"} detail={`${gates.length} ${t("guardrails.portfolioRuns")}`} />
+          <PortfolioReadout label={t("guardrails.portfolioRepositories")} value={projectRepositories.length} detail={`${remoteCount} ${t("guardrails.portfolioRemote")}`} />
+          <PortfolioReadout label={t("guardrails.portfolioActive")} value={activeCount} tone={activeCount > 0 ? "live" : "neutral"} detail={`${projectGates.length} ${t("guardrails.portfolioRuns")}`} />
           <PortfolioReadout label={t("guardrails.portfolioBlocked")} value={blockedCount} tone={blockedCount > 0 ? "risk" : "good"} detail={blockedCount > 0 ? t("guardrails.portfolioNeedsAction") : t("guardrails.portfolioClear")} />
         </dl>
       </header>
@@ -65,10 +71,10 @@ export function PortfolioPipeline({
         <aside className="min-w-0 border-b bg-secondary/[.08] xl:border-b-0 xl:border-r" aria-label={t("guardrails.gateQueue")}>
           <div className="flex min-h-11 items-center justify-between border-b px-4 py-2.5">
             <span className="bench-label text-primary">{t("guardrails.gateQueue")}</span>
-            <span className="font-mono text-[9px] tabular-nums text-muted-foreground">{gates.length}</span>
+            <span className="font-mono text-[9px] tabular-nums text-muted-foreground">{projectGates.length}</span>
           </div>
           <div className="max-h-[25rem] overflow-y-auto xl:max-h-[34rem]">
-            {gates.map((gate) => {
+            {projectGates.map((gate) => {
               const selected = gate.id === selectedGate?.id;
               return (
                 <button

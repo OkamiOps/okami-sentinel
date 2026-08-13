@@ -80,6 +80,7 @@ import {
 import {
   TargetPreviewError,
   TargetPreviewService,
+  nativeScanCostCeilingSupported,
   parseStartGateRequest,
   parseTargetPreviewRequest,
   type AcceptedGateTargetPreview,
@@ -240,12 +241,20 @@ const targetPreviewService = new TargetPreviewService({
     if (!scanner?.enabled || !scanner.modes.includes(selection.mode)) {
       throw new TargetPreviewError("target_preview_invalid");
     }
-    return getProviderRuntime().compatibility.resolve({
+    const compatibility = getProviderRuntime().compatibility.resolve({
       engine: selection.engine,
       selection: selection.connection,
       remoteRepositoryConfirmed: true,
       ...(selection.engine === "codex-security" ? { executionProfilePreference: "auto" as const } : {}),
     });
+    if (!nativeScanCostCeilingSupported(
+      selection,
+      compatibility,
+      scanner.models.map((model) => model.id),
+    )) {
+      throw new TargetPreviewError("target_preview_invalid");
+    }
+    return compatibility;
   },
 });
 

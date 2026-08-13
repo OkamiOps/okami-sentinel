@@ -88,6 +88,33 @@ test("portfolio header shows a frozen ceiling separately and never invents a zer
   assert.doesNotMatch(legacyHtml, /USD[^<]*0,00/);
 });
 
+test("portfolio detail isolates its queue and counters to the selected project", () => {
+  const selected = gate(18);
+  const other = {
+    ...gate(9),
+    id: "gate-other-project",
+    repositoryKey: "github:2",
+    baseRef: "release",
+    headRef: "feature/other-project",
+  };
+  const html = renderToStaticMarkup(createElement(I18nProvider, null,
+    createElement(PortfolioPipeline, {
+      repositories: [
+        { repositoryKey: "github:1", source: "github" },
+        { repositoryKey: "github:2", source: "github" },
+      ] as never,
+      gates: [selected, other],
+      selectedGateId: selected.id,
+      selectedArtifact: null,
+      onSelect: () => undefined,
+    }),
+  ));
+
+  assert.match(html, />1<\/dd>/);
+  assert.doesNotMatch(html, /feature\/other-project/);
+  assert.doesNotMatch(html, /gate-other-project/);
+});
+
 test("a completed guardrail scan exposes its findings as the primary result action", () => {
   const scan = {
     id: "scan-findings",

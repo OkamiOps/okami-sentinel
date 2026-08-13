@@ -35,6 +35,17 @@ export class TargetPreviewError extends Error {
   }
 }
 
+/** Native Codex Security can enforce a ceiling only for models published by its scanner catalog. */
+export function nativeScanCostCeilingSupported(
+  selection: GuardrailScanSelection,
+  compatibility: Pick<ConnectionCompatibility, "selectedProfile">,
+  nativePricedModelIds: readonly string[],
+): boolean {
+  return selection.engine !== "codex-security"
+    || compatibility.selectedProfile !== "native"
+    || (selection.connection.modelId !== null && nativePricedModelIds.includes(selection.connection.modelId));
+}
+
 export interface TargetPreviewRequest {
   target: GateTarget;
   executor?: GateExecutorKind;
