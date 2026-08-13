@@ -56,6 +56,9 @@ export async function createAgentSession(
     upstream,
     adapter: adapterFor(input),
     ...(input.terminalMode === undefined ? {} : { terminalMode: input.terminalMode }),
+    ...(input.artifactWriteByTurn === undefined
+      ? {}
+      : { artifactWriteByTurn: input.artifactWriteByTurn }),
     ...(input.resultArtifactContract === undefined
       ? {}
       : {
@@ -114,6 +117,11 @@ function validateSessionSpec(input: CreateAgentSessionInput): void {
           input.maxCompletionTokens > MAX_AGENT_SESSION_COMPLETION_TOKENS)) ||
       (input.terminalMode !== undefined &&
         input.terminalMode !== "provider-completion" && input.terminalMode !== "artifact-write") ||
+      (input.artifactWriteByTurn !== undefined &&
+        (!Number.isSafeInteger(input.artifactWriteByTurn) ||
+          input.artifactWriteByTurn < 1 ||
+          input.artifactWriteByTurn >= input.limits.maxModelTurns ||
+          input.terminalMode !== "artifact-write")) ||
       (input.resultArtifactContract !== undefined &&
         input.resultArtifactContract !== "vulnhunter-report-v1" &&
         input.resultArtifactContract !== PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT &&

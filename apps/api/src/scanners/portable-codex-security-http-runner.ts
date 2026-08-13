@@ -357,6 +357,9 @@ export async function runPortableCodexSecurity(
           shard === null ? stage.id : `${stage.id}-${String(shard.index + 1).padStart(2, "0")}`,
         );
         fs.mkdirSync(artifactRoot, { recursive: false, mode: 0o700 });
+        const stageSessionLimits = shard === null
+          ? sessionLimits(safeConfiguration.limits, remaining)
+          : reportShardSessionLimits(safeConfiguration.limits, remaining, shards!.length);
         const spec: AgentSessionSpec = {
         connectionId: resolved.connection.id,
         routeKind: resolved.connection.routeKind,
@@ -366,6 +369,10 @@ export async function runPortableCodexSecurity(
           ? {}
           : { reasoningEffort: safeConfiguration.reasoningEffort }),
         terminalMode: "artifact-write",
+        artifactWriteByTurn: Math.min(
+          stageSessionLimits.maxModelTurns - 1,
+          Math.max(8, Math.floor(stageSessionLimits.maxModelTurns * 2 / 3)),
+        ),
         ...(stage.id === "report"
           ? { maxCompletionTokens: portableCodexSecurityReportCompletionTokens(stageDossier) }
           : {}),
@@ -384,9 +391,7 @@ export async function runPortableCodexSecurity(
           candidateIds: stageDossier.candidates.map((candidate) => candidate.id),
           ...(shard === null ? {} : { reportShard: shard }),
         }),
-        limits: shard === null
-          ? sessionLimits(safeConfiguration.limits, remaining)
-          : reportShardSessionLimits(safeConfiguration.limits, remaining, shards!.length),
+        limits: stageSessionLimits,
         signal: deadline.signal,
         };
         activeSession = await raceWithDeadline(

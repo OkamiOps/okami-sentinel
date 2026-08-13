@@ -223,6 +223,52 @@ test(`artifact-write sessions reserve enough of ${maxModelTurns} turns for a rea
 });
 }
 
+test("artifact-write deadline forces results.write before the global turn reserve", async () => {
+  const controls: Array<{ finalizationRequired?: boolean } | undefined> = [];
+  let reply: NormalizedModelReply = { toolCalls: [], text: null, structured: null, usage: null };
+  let request = 0;
+  const session = createConstrainedWireSession({
+    terminalMode: "artifact-write",
+    artifactWriteByTurn: 4,
+    limits: {
+      maxModelTurns: 16,
+      maxToolCalls: 64,
+      maxInputBytes: 1_048_576,
+      maxOutputBytes: 1_048_576,
+      timeoutMs: 60_000,
+    },
+    signal: new AbortController().signal,
+    host: {
+      minimumOutputBytes() { return 0; },
+      async call(name) {
+        return name === "results.write"
+          ? { content: "ok", artifact: { path: "result.json", bytes: 2 } }
+          : { content: "inspected" };
+      },
+    },
+    adapter: {
+      nextRequest(_results, control) {
+        controls.push(control);
+        request += 1;
+        reply = control?.finalizationRequired === true
+          ? { toolCalls: [{ id: "write", name: "results.write", input: { path: "result.json", content: "{}" } }], text: null, structured: null, usage: null }
+          : { toolCalls: [{ id: `read-${request}`, name: "workspace.read", input: { path: "index.ts" } }], text: null, structured: null, usage: null };
+        return { operation: "messages" as const, body: {} };
+      },
+      readResponse() { return reply; },
+    } as WireSessionAdapter,
+    upstream: { async request() { return {}; } },
+  });
+
+  const events: unknown[] = [];
+  await collect(session.run(), events);
+  assert.equal(controls.slice(0, 4).every((control) => control === undefined), true);
+  assert.equal(controls[4]?.finalizationRequired, true);
+  assert.equal(events.some((event) =>
+    typeof event === "object" && event !== null &&
+    (event as { type?: unknown }).type === "artifact"), true);
+});
+
 test("a Gemini OpenAI chat probe proves agent facts only after the complete artifact loop", async (t) => {
   const fixture = await fixtureRoots("probe-complete");
   t.after(fixture.cleanup);

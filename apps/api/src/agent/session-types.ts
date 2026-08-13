@@ -123,6 +123,8 @@ export interface AgentSessionSpec {
   resultArtifactValidationContext?: PortableResultArtifactValidationContext;
   /** Scanner sessions may finish on a locally accepted artifact; probes still verify provider completion. */
   terminalMode?: AgentSessionTerminalMode;
+  /** After this many model replies, artifact-write sessions expose only results.write. */
+  artifactWriteByTurn?: number;
   /** Optional server-owned completion budget; wire adapters use it only when their proven protocol supports one. */
   maxCompletionTokens?: number;
   snapshotRoot: string;
@@ -305,6 +307,7 @@ export interface ConstrainedWireSessionOptions {
   upstream: AgentUpstream;
   adapter: WireSessionAdapter;
   terminalMode?: AgentSessionTerminalMode;
+  artifactWriteByTurn?: number;
   resultArtifactContract?: AgentResultArtifactContract;
   /** Snapshot boundary used to prove report evidence before artifact I/O. */
   resultArtifactSnapshotRoot?: string;
@@ -440,6 +443,8 @@ class ConstrainedWireSession implements AgentSession {
         const repairInspectionAllowed = artifactRepairActive && artifactRepairInspectionAvailable;
         const finalizationRequired = !artifactWritten && !repairInspectionAllowed && (
           artifactRepairActive ||
+          (this.#options.artifactWriteByTurn !== undefined &&
+            modelTurns >= this.#options.artifactWriteByTurn) ||
           this.#options.limits.maxModelTurns - modelTurns <= finalizationReserveTurns ||
           this.#options.limits.maxToolCalls - toolCalls <= 2
         );
