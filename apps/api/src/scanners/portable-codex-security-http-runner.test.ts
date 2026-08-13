@@ -21,6 +21,7 @@ import type { XaiOAuthFlow } from "../connections/xai-oauth-flow.js";
 import {
   PortableCodexSecurityRunnerError,
   portableAssessmentPageSessionLimits,
+  portableReportShardSessionLimits,
   runPortableCodexSecurity,
   type PortableCodexSecurityCostBudget,
   type PortableCodexSecurityWorkerConfiguration,
@@ -50,6 +51,19 @@ test("Portable Deep grants 128 tools to every assessment page", () => {
   assert.equal(limits.maxModelTurns, 16);
   assert.equal(limits.maxToolCalls, 128);
   assert.equal(limits.timeoutMs, 2_000_000);
+});
+
+test("Portable report grants 128 tools to every shard", () => {
+  const limits = portableReportShardSessionLimits({
+    totalTimeoutMs: 2_700_000,
+    maxModelTurns: 64,
+    maxToolCalls: 512,
+    maxInputBytes: 64 * 1_048_576,
+    maxOutputBytes: 1_048_576,
+  }, 1_500_000, 5);
+  assert.equal(limits.maxModelTurns, 12);
+  assert.equal(limits.maxToolCalls, 128);
+  assert.equal(limits.timeoutMs, 1_500_000);
 });
 const CAPABILITIES: ModelCapabilities = {
   tools: "supported",
@@ -767,7 +781,7 @@ test("Portable Codex Security bounds report pages and shares the original report
     assert.ok((reportSpecs[0]!.maxCompletionTokens ?? 0) > 10_240);
     assert.ok((reportSpecs[0]!.maxCompletionTokens ?? Infinity) <= 65_536);
     assert.equal(reportSpecs[0]!.limits.maxModelTurns, 6);
-    assert.equal(reportSpecs[0]!.limits.maxToolCalls, 25);
+    assert.equal(reportSpecs[0]!.limits.maxToolCalls, 128);
     assert.ok(reportSpecs[0]!.limits.maxModelTurns >= 4, "each page permits one evidence turn and terminal write");
     assert.equal(reportSpecs[0]!.instructions.includes("BEGIN_PORTABLE_COVERAGE_DOSSIER_BASE64"), false);
     assert.equal(reportSpecs[0]!.instructions.includes("BEGIN_PORTABLE_REPORT_PAGE_JSON"), true);

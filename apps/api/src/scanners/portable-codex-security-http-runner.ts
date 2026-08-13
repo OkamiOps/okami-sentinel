@@ -422,7 +422,7 @@ export async function runPortableCodexSecurity(
             )
             : shard === null
             ? sessionLimits(safeConfiguration.limits, stageRemaining)
-            : reportShardSessionLimits(safeConfiguration.limits, stageRemaining, shards!.length);
+            : portableReportShardSessionLimits(safeConfiguration.limits, stageRemaining, shards!.length);
         const deepCoverage = partition === null
           ? undefined
           : {
@@ -856,14 +856,17 @@ function sessionLimits(
 }
 
 /** Normal report turns/tools are divided across pages; deadline and cost stay global. */
-function reportShardSessionLimits(
+export function portableReportShardSessionLimits(
   limits: PortableCodexSecurityExecutionLimits,
   remainingMs: number,
   shardCount: number,
 ): AgentSessionLimits {
   const maxModelTurns = Math.floor(limits.maxModelTurns / shardCount);
-  const maxToolCalls = Math.floor(limits.maxToolCalls / shardCount);
-  if (maxModelTurns < 4 || maxToolCalls < 2) {
+  // Report pages are independent terminal sessions. Dividing tools by the
+  // number of pages starves dense reports after a valid first shard. Keep the
+  // model-turn share bounded, but give each page enough inspections/repairs.
+  const maxToolCalls = 128;
+  if (maxModelTurns < 4) {
     throw new PortableCodexSecurityRunnerError("agent_turn_limit");
   }
   return sessionLimits({ ...limits, maxModelTurns, maxToolCalls }, remainingMs);
