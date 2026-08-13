@@ -45,6 +45,7 @@ import { purgeScanRunArtifacts } from "./activity.js";
 import {
   getFindingTriage,
   getRepositoryBaseline,
+  deleteRun,
   getRun,
   hideRun,
   listRuns,
@@ -411,6 +412,7 @@ export function deleteTerminalGate(
       }
       purgeScanRunArtifacts(scan.scanDir);
       hideRun(scan.id);
+      deleteRun(scan.id);
     }
   }
   for (const lease of listMaterializationLeases().filter((candidate) => candidate.gateId === gate.id)) {

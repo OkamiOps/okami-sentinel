@@ -28,7 +28,7 @@ const {
   SCANS_ROOT,
   WORKBENCH_DB_PATH,
 } = config;
-const { deleteRun, getDb, listRuns, upsertRun } = dbModule;
+const { deleteRun, getDb, getRun, listRuns, upsertRun } = dbModule;
 const {
   getGateRun,
   insertGateRun,
@@ -303,6 +303,7 @@ test("DELETE removes every managed run artifact before hiding it from the ledger
     assert.equal(sessionFiles.some((sessionFile) => fs.existsSync(sessionFile)), false);
     assert.equal(fs.existsSync(projectRoot), false);
     assert.equal(listRuns().some((run) => run.id === id), false);
+    assert.equal(getRun(id), null);
     assert.deepEqual(workbenchCounts(workbenchId), { scans: 0, progress: 0 });
     assert.equal(fs.readFileSync(repositoryFile, "utf8"), "export const keep = true;\n");
     assert.equal(fs.statSync(repositoryFile).mode & 0o777, 0o400);
@@ -362,6 +363,7 @@ test("deleting a scan also deletes its terminal gate and every managed directory
     assert.equal(response.status, 200);
     assert.equal(body.linkedGatesDeleted, 1);
     assert.equal(listRuns().some((run) => run.id === scanId), false);
+    assert.equal(getRun(scanId), null);
     assert.equal(getGateRun(gateId), null);
     assert.equal(fs.existsSync(scanDir), false);
     assert.equal(fs.existsSync(path.join(GATES_DIR, gateId)), false);
@@ -388,6 +390,7 @@ test("deleting a gate also deletes its linked scan and every managed directory",
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { ok: true, deleted: true });
     assert.equal(listRuns().some((run) => run.id === scanId), false);
+    assert.equal(getRun(scanId), null);
     assert.equal(getGateRun(gateId), null);
     assert.equal(fs.existsSync(scanDir), false);
     assert.equal(fs.existsSync(path.join(GATES_DIR, gateId)), false);

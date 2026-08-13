@@ -36,7 +36,7 @@ import {
 import { compareScans } from "./compare.js";
 import { getCodexInfo } from "./codex-info.js";
 import { CODEX_SECURITY_STATE_DIR } from "./config.js";
-import { getRun, hideRun, listRuns } from "./db.js";
+import { deleteRun, getRun, hideRun, listRuns } from "./db.js";
 import { listDirectory } from "./fs.js";
 import {
   cancelGate,
@@ -751,6 +751,7 @@ app.delete("/scans/:id", (c) => {
     }
     const purge = purgeScanRunArtifacts(run.scanDir);
     hideRun(id);
+    deleteRun(id);
     const linkedGatesDeleted = linkedGates.reduce(
       (count, gate) => count + (deleteTerminalGate(gate.id, { preserveLinkedScan: true }) ? 1 : 0),
       0,
