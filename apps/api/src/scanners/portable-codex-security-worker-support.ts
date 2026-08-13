@@ -157,6 +157,10 @@ export function createPortableCodexSecuritySnapshot(
         return true;
       },
     });
+    // Remote guardrail materializations are deliberately immutable. cpSync
+    // preserves the source root mode, so reopen only our private copy long
+    // enough to write its content marker before lockReadOnly seals it again.
+    fs.chmodSync(snapshotRoot, 0o700);
     const snapshotId = hashPortableCodexSecuritySnapshot(snapshotRoot);
     fs.writeFileSync(
       path.join(snapshotRoot, ".portable-codex-security-snapshot-id"),

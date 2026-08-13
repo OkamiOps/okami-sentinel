@@ -105,6 +105,30 @@ test("Portable Codex Security snapshot preserves application code but excludes a
   }
 });
 
+test("Portable Codex Security snapshots an immutable remote materialization and seals its private copy", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-immutable-source-"));
+  const repository = path.join(root, "repository");
+  const output = path.join(root, "output");
+  try {
+    fs.mkdirSync(path.join(repository, "src"), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(repository, "src", "auth.ts"), "export const auth = true;\n", {
+      mode: 0o600,
+    });
+    fs.chmodSync(path.join(repository, "src", "auth.ts"), 0o400);
+    fs.chmodSync(path.join(repository, "src"), 0o500);
+    fs.chmodSync(repository, 0o500);
+
+    const snapshot = createPortableCodexSecuritySnapshot(repository, output);
+    const marker = path.join(snapshot.snapshotRoot, ".portable-codex-security-snapshot-id");
+
+    assert.equal(fs.readFileSync(marker, "utf8").trim(), snapshot.snapshotId);
+    assert.equal(fs.statSync(snapshot.snapshotRoot).mode & 0o222, 0);
+    assert.equal(fs.statSync(marker).mode & 0o222, 0);
+  } finally {
+    removeFixture(root);
+  }
+});
+
 test("Portable Codex Security stage evidence rejects missing, extra, wrong, unknown, or malformed events", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-stage-evidence-"));
   const stage = PORTABLE_CODEX_SECURITY_STAGES[0]!;
