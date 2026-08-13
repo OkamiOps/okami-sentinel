@@ -20,6 +20,7 @@ import {
 import type { XaiOAuthFlow } from "../connections/xai-oauth-flow.js";
 import {
   PortableCodexSecurityRunnerError,
+  portableAssessmentPageSessionLimits,
   runPortableCodexSecurity,
   type PortableCodexSecurityCostBudget,
   type PortableCodexSecurityWorkerConfiguration,
@@ -37,6 +38,19 @@ import {
 } from "./portable-codex-security-worker.js";
 
 const NOW = new Date("2026-08-11T12:00:00.000Z");
+
+test("Portable Deep grants 128 tools to every assessment page", () => {
+  const limits = portableAssessmentPageSessionLimits({
+    totalTimeoutMs: 2_700_000,
+    maxModelTurns: 64,
+    maxToolCalls: 512,
+    maxInputBytes: 64 * 1_048_576,
+    maxOutputBytes: 1_048_576,
+  }, 2_000_000, 4);
+  assert.equal(limits.maxModelTurns, 16);
+  assert.equal(limits.maxToolCalls, 128);
+  assert.equal(limits.timeoutMs, 2_000_000);
+});
 const CAPABILITIES: ModelCapabilities = {
   tools: "supported",
   artifactOutput: "supported",

@@ -415,7 +415,7 @@ export async function runPortableCodexSecurity(
             partition,
           )
           : assessmentPage !== null
-            ? assessmentPageSessionLimits(
+            ? portableAssessmentPageSessionLimits(
               safeConfiguration.limits,
               stageRemaining,
               assessmentPage.total,
@@ -870,14 +870,18 @@ function reportShardSessionLimits(
 }
 
 /** Assessment pages may inspect every carried candidate before one terminal write. */
-function assessmentPageSessionLimits(
+export function portableAssessmentPageSessionLimits(
   limits: PortableCodexSecurityExecutionLimits,
   remainingMs: number,
   pageCount: number,
 ): AgentSessionLimits {
   const maxModelTurns = Math.floor(limits.maxModelTurns / pageCount);
-  const maxToolCalls = Math.floor(limits.maxToolCalls / pageCount);
-  if (maxModelTurns < 4 || maxToolCalls < 64) {
+  // Assessment pages carry at most 32 candidates, but a candidate can require
+  // several source/sink reads before the terminal artifact. Dividing tools by
+  // the number of pages repeatedly starved dense deep scans. Give every page a
+  // fixed, bounded allowance; cost and the hard deadline remain scan-global.
+  const maxToolCalls = 128;
+  if (maxModelTurns < 4) {
     throw new PortableCodexSecurityRunnerError("agent_tool_limit");
   }
   return sessionLimits({ ...limits, maxModelTurns, maxToolCalls }, remainingMs);
