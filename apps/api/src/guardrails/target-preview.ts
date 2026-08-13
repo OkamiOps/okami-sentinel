@@ -47,6 +47,11 @@ export function nativeScanCostCeilingSupported(
     || (selection.connection.modelId !== null && nativePricedModelIds.includes(selection.connection.modelId));
 }
 
+/** Only Codex Security routes currently expose a scanner-level USD ceiling. */
+export function scanCostCeilingSupported(selection: GuardrailScanSelection): boolean {
+  return selection.costLimit?.kind === "none" || selection.engine === "codex-security";
+}
+
 export interface TargetPreviewRequest {
   target: GateTarget;
   executor?: GateExecutorKind;
@@ -309,6 +314,7 @@ async function resolvedScanSelection(
   resolve: TargetPreviewDependencies["resolveScanSelection"],
 ): Promise<GuardrailScanSelection> {
   if (executor !== "sentinel-managed" || resolve === undefined) invalid();
+  if (!scanCostCeilingSupported(selection)) invalid();
   const compatibility = await resolve(selection);
   if (
     !compatibility.eligible

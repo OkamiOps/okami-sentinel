@@ -15,6 +15,7 @@ import {
   TargetPreviewError,
   TargetPreviewService,
   nativeScanCostCeilingSupported,
+  scanCostCeilingSupported,
   parseStartGateRequest,
   parseTargetPreviewRequest,
 } from "./target-preview.js";
@@ -45,6 +46,18 @@ test("a native cost ceiling accepts only priced models while no ceiling remains 
     ...selection,
     costLimit: { kind: "none" },
   }, { selectedProfile: "native" }, []), true);
+});
+
+test("only Codex Security accepts a scanner-level USD ceiling", () => {
+  const selection = {
+    engine: "mantis" as const,
+    connection: { connectionId: "minimax", modelSelectionMode: "catalog" as const, modelId: "MiniMax-M3" },
+    mode: "standard" as const,
+  };
+  assert.equal(scanCostCeilingSupported(selection), false);
+  assert.equal(scanCostCeilingSupported({ ...selection, costLimit: { kind: "manual", maxCostUsd: 3 } }), false);
+  assert.equal(scanCostCeilingSupported({ ...selection, costLimit: { kind: "none" } }), true);
+  assert.equal(scanCostCeilingSupported({ ...selection, engine: "codex-security" }), true);
 });
 
 test("parses policy, manual and no-ceiling scan controls and rejects invalid manual values", () => {
@@ -203,6 +216,7 @@ test("freezes only a server-approved managed scanner route into the preview", as
     connection: { connectionId: "minimax", modelSelectionMode: "catalog" as const, modelId: "MiniMax-M3" },
     effort: "high",
     mode: "deep" as const,
+    costLimit: { kind: "none" as const },
   };
   const preview = await service.create(repository(), {
     target: { kind: "pull_request", number: 42 },
@@ -224,6 +238,7 @@ test("freezes only a server-approved managed scanner route into the preview", as
       engine: "vulnhunter",
       connection: { connectionId: "mimo", modelSelectionMode: "runtime-default", modelId: null },
       mode: "standard",
+      costLimit: { kind: "none" },
     },
   });
   assert.equal(providerManaged.scanPlan.model, "provider-managed");
@@ -237,6 +252,31 @@ test("freezes only a server-approved managed scanner route into the preview", as
     }),
     (error: unknown) => error instanceof TargetPreviewError && error.code === "target_preview_invalid",
   );
+});
+
+test("rejects Mantis and VulnHunter ceilings before resolving compatibility", async () => {
+  let compatibilityCalls = 0;
+  const service = previewService({
+    resolveScanSelection: async () => {
+      compatibilityCalls += 1;
+      return compatibility();
+    },
+  });
+  const base = {
+    connection: { connectionId: "minimax", modelSelectionMode: "catalog" as const, modelId: "MiniMax-M3" },
+    mode: "standard" as const,
+  };
+  for (const engine of ["mantis", "vulnhunter"] as const) {
+    await assert.rejects(
+      service.create(repository(), {
+        target: { kind: "pull_request", number: 42 },
+        executor: "sentinel-managed",
+        scanSelection: { ...base, engine, costLimit: { kind: "manual", maxCostUsd: 3 } },
+      }),
+      (error: unknown) => error instanceof TargetPreviewError && error.code === "target_preview_invalid",
+    );
+  }
+  assert.equal(compatibilityCalls, 0);
 });
 
 test("rejects expired, mismatched and unavailable accepted previews", async () => {

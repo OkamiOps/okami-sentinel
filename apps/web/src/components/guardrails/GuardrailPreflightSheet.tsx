@@ -116,6 +116,7 @@ export function GuardrailPreflightSheet({
     && compatibility?.selectedProfile === "native"
     && modelId !== null
     && !nativeScannerModelIds.has(modelId);
+  const scannerCostLimitUnsupported = costMode !== "none" && engine !== "codex-security";
   const connectionSelection = connectionSelectionFor(connection, connectionModels, modelId);
   const reasoning = reasoningEffortForCompatibility(compatibility, effort);
   const capabilityProbeOnlyBlock = isProbeOnlyCompatibilityBlock(compatibility);
@@ -131,6 +132,7 @@ export function GuardrailPreflightSheet({
     && scanner?.modes.includes(mode) === true
     && manualCostValid
     && !nativeCostModelUnsupported
+    && !scannerCostLimitUnsupported
   );
   const scanSelection: GuardrailScanSelection | null = executor === "sentinel-managed" && routeReady && connectionSelection
     ? {
@@ -218,6 +220,14 @@ export function GuardrailPreflightSheet({
       .finally(() => { if (!cancelled) setRoutingBusy(false); });
     return () => { cancelled = true; };
   }, [open, engine, connectionSelection?.connectionId, connectionSelection?.modelId, connectionSelection?.modelSelectionMode]);
+
+  useEffect(() => {
+    if (engine !== "codex-security" && costMode !== "none") {
+      setCostMode("none");
+      setPreview(null);
+      setAcceptedFingerprint(null);
+    }
+  }, [engine, costMode]);
 
   useEffect(() => {
     if (
