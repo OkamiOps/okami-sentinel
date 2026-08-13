@@ -422,6 +422,7 @@ export const api = {
       artifactsDeleted: boolean;
       sessionsDeleted: number;
       workbenchRowsDeleted: number;
+      linkedGatesDeleted: number;
     }>(`/scans/${id}`, {
       method: "DELETE",
     }),

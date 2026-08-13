@@ -20,18 +20,19 @@ import {
   resolveChangeSet,
   type ResolveChangeSetInput,
 } from "@csb/gate-runtime";
-import type {
-  EffectiveScanLineage,
-  FindingSummary,
-  FindingTriage,
-  GateArtifact,
-  GateRun,
-  GuardrailException,
-  GuardrailPolicy,
-  GuardrailRepository,
-  ScanRun,
-  StartScanRequest,
-  GateCoverageEnvelope,
+import {
+  isTerminalScanStatus,
+  type EffectiveScanLineage,
+  type FindingSummary,
+  type FindingTriage,
+  type GateArtifact,
+  type GateRun,
+  type GuardrailException,
+  type GuardrailPolicy,
+  type GuardrailRepository,
+  type ScanRun,
+  type StartScanRequest,
+  type GateCoverageEnvelope,
 } from "@csb/shared";
 import { nanoid } from "nanoid";
 
@@ -40,10 +41,12 @@ import {
   GITHUB_ACTIONS_WORKFLOW_SHA,
   GUARDRAIL_MATERIALIZATIONS_DIR,
 } from "./config.js";
+import { purgeScanRunArtifacts } from "./activity.js";
 import {
   getFindingTriage,
   getRepositoryBaseline,
   getRun,
+  hideRun,
   listRuns,
 } from "./db.js";
 import {
@@ -391,11 +394,24 @@ export function cancelGate(
   return true;
 }
 
-export function deleteTerminalGate(gateId: string): boolean {
+export function deleteTerminalGate(
+  gateId: string,
+  options: { preserveLinkedScan?: boolean } = {},
+): boolean {
   const gate = getGateRun(gateId);
   if (gate === null) return false;
   if (gate.status !== "completed" && gate.status !== "cancelled" && gate.status !== "error") {
     throw new Error("gate_not_terminal");
+  }
+  if (!options.preserveLinkedScan && gate.scanId !== null) {
+    const scan = getRun(gate.scanId);
+    if (scan !== null) {
+      if (isScanActive(scan.id) || !isTerminalScanStatus(scan.status)) {
+        throw new Error("linked_scan_not_terminal");
+      }
+      purgeScanRunArtifacts(scan.scanDir);
+      hideRun(scan.id);
+    }
   }
   for (const lease of listMaterializationLeases().filter((candidate) => candidate.gateId === gate.id)) {
     cleanupMaterializationLeaseRoot(GUARDRAIL_MATERIALIZATIONS_DIR, gate.id, lease.id);
@@ -404,13 +420,116 @@ export function deleteTerminalGate(gateId: string): boolean {
   return deleteGateRun(gate.id);
 }
 
+/**
+ * A gate is a projection of its linked scan, never an independent source of
+ * liveness. After a process restart the in-memory completion callback may be
+ * gone, so reconcile the durable terminal scan before serving the gate.
+ */
+export function reconcileGateWithLinkedScan(
+  gateId: string,
+  deps: LocalGateDependencies = productionDeps,
+): GateRun | null {
+  const gate = deps.getGateRun(gateId);
+  if (
+    gate === null
+    || gate.status !== "scanning"
+    || gate.scanId === null
+    || activeGates.has(gate.id)
+    || deps.isScanActive(gate.scanId)
+  ) return gate;
+
+  const scan = deps.getScan(gate.scanId);
+  if (scan === null || !isTerminalScanStatus(scan.status)) return gate;
+
+  let materializationState = gate.materializationState;
+  if (deps === productionDeps && materializationState !== "not_required") {
+    materializationState = releaseGateMaterializations(gate.id, deps.now());
+  }
+
+  const completedAt = scan.completedAt ?? deps.now();
+  const estimatedUsd = scan.cost?.estimatedUsd ?? gate.estimatedUsd;
+  if (scan.status === "completed") {
+    let artifact: GateArtifact | null = null;
+    try {
+      artifact = getGateArtifact(gate.id, deps);
+    } catch {
+      artifact = null;
+    }
+    if (artifact !== null) {
+      deps.updateGateRun(gate.id, {
+        status: "completed",
+        outcome: artifact.decision.outcome,
+        error: null,
+        estimatedUsd,
+        materializationState,
+        completedAt,
+      });
+      emit(gate.id, "done", {
+        gateId: gate.id,
+        status: "completed",
+        outcome: artifact.decision.outcome,
+        completedAt,
+        artifactAvailable: true,
+      }, deps);
+      return deps.getGateRun(gate.id);
+    }
+  }
+
+  const cancelled = scan.status === "cancelled";
+  const code = scan.status === "completed"
+    ? "gate_finalization_interrupted"
+    : `linked_scan_${scan.status}`;
+  deps.updateGateRun(gate.id, {
+    status: cancelled ? "cancelled" : "error",
+    outcome: cancelled ? null : "error",
+    error: code,
+    estimatedUsd,
+    materializationState,
+    completedAt,
+  });
+  emit(gate.id, cancelled ? "done" : "error", {
+    gateId: gate.id,
+    status: cancelled ? "cancelled" : "error",
+    outcome: cancelled ? null : "error",
+    code,
+    completedAt,
+    artifactAvailable: false,
+  }, deps);
+  return deps.getGateRun(gate.id);
+}
+
+function releaseGateMaterializations(
+  gateId: string,
+  releasedAt: string,
+): GateRun["materializationState"] {
+  let failed = false;
+  for (const lease of listMaterializationLeases().filter((candidate) => candidate.gateId === gateId)) {
+    try {
+      cleanupMaterializationLeaseRoot(GUARDRAIL_MATERIALIZATIONS_DIR, gateId, lease.id);
+      upsertMaterializationLease({
+        ...lease,
+        state: "released",
+        releasedAt,
+      });
+    } catch {
+      failed = true;
+      upsertMaterializationLease({
+        ...lease,
+        state: "failed",
+        releasedAt: null,
+      });
+    }
+  }
+  return failed ? "failed" : "released";
+}
+
 export function subscribeGate(
   gateId: string,
   listener: GateEventListener,
   deps: LocalGateDependencies = productionDeps,
 ): () => void {
   const unsubscribe = subscribePersistedGateEvents(gateId, listener, deps);
-  const gate = deps.getGateRun(gateId);
+  const gate = reconcileGateWithLinkedScan(gateId, deps);
   if (
     gate?.status === "scanning" &&
     gate.scanId !== null &&

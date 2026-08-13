@@ -5,27 +5,36 @@ import path from "node:path";
 import test, { after } from "node:test";
 
 import Database from "better-sqlite3";
-import type { ScanRun } from "@csb/shared";
+import type { GateRun, GuardrailRepository, ScanRun } from "@csb/shared";
 
 const isolatedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "csb-scan-delete-test-"));
 process.env.CSB_DATA_DIR = path.join(isolatedRoot, "data");
 process.env.CODEX_SECURITY_STATE_DIR = path.join(isolatedRoot, "state");
 process.env.CSB_NPM_CACHE_DIR = path.join(isolatedRoot, "npm-cache");
 
-const [activity, appModule, config, dbModule] = await Promise.all([
+const [activity, appModule, config, dbModule, gateStoreModule] = await Promise.all([
   import("./activity.js"),
   import("./app.js"),
   import("./config.js"),
   import("./db.js"),
+  import("./gate-store.js"),
 ]);
 const { appendCliLog, cliLogPath } = activity;
 const { app } = appModule;
 const {
   CODEX_SECURITY_SESSIONS_DIR,
+  GATES_DIR,
+  GUARDRAIL_MATERIALIZATIONS_DIR,
   SCANS_ROOT,
   WORKBENCH_DB_PATH,
 } = config;
 const { deleteRun, getDb, listRuns, upsertRun } = dbModule;
+const {
+  getGateRun,
+  insertGateRun,
+  upsertGuardrailRepository,
+  upsertMaterializationLease,
+} = gateStoreModule;
 
 after(() => {
   fs.rmSync(isolatedRoot, { recursive: true, force: true });
@@ -64,6 +73,78 @@ function terminalRun(id: string, scanDir: string, repositoryPath: string): ScanR
     pid: null,
     execution: null,
   };
+}
+
+function linkedGate(id: string, scanId: string, repositoryPath: string): GateRun {
+  return {
+    id,
+    repositoryKey: `fixture/${id}`,
+    repositoryPath,
+    source: "local",
+    executor: "sentinel-managed",
+    baseRef: "main",
+    headRef: "HEAD",
+    resolvedBaseSha: "a".repeat(40),
+    resolvedHeadSha: "b".repeat(40),
+    policySha: "c".repeat(64),
+    pullRequestNumber: null,
+    workflowRunId: null,
+    materializationState: "released",
+    scanLineageHash: null,
+    artifactSchemaVersion: 2,
+    scanId,
+    status: "error",
+    outcome: "error",
+    policyVersion: 1,
+    baselineCommit: null,
+    artifactPath: path.join(GATES_DIR, id, "csb-gate-result.json"),
+    publishStatus: "not_configured",
+    publishError: null,
+    publishedAt: null,
+    error: "fixture",
+    startedAt: "2026-08-13T10:00:00.000Z",
+    completedAt: "2026-08-13T10:01:00.000Z",
+    costCeilingUsd: 18,
+    estimatedUsd: 0,
+  };
+}
+
+function createLinkedGateFixture(gate: GateRun, leaseId: string): string {
+  const repository: GuardrailRepository = {
+    repositoryKey: gate.repositoryKey,
+    repositoryPath: gate.repositoryPath,
+    source: "local",
+    displayName: gate.repositoryKey,
+    defaultBranch: "main",
+    defaultExecutor: "sentinel-managed",
+    remoteOwner: null,
+    remoteName: null,
+    githubConnectionId: null,
+    githubInstallationId: null,
+    githubRepositoryId: null,
+    enabled: true,
+    policyPath: ".csb/guardrails.json",
+    lastGateId: null,
+    githubStatus: "not_checked",
+  };
+  upsertGuardrailRepository(repository);
+  insertGateRun(gate);
+  upsertMaterializationLease({
+    id: leaseId,
+    gateId: gate.id,
+    repositoryKey: gate.repositoryKey,
+    snapshotIdentity: "sha256:fixture",
+    state: "released",
+    createdAt: gate.startedAt,
+    expiresAt: gate.completedAt!,
+    releasedAt: gate.completedAt,
+  });
+  fs.mkdirSync(path.dirname(gate.artifactPath!), { recursive: true });
+  fs.writeFileSync(gate.artifactPath!, "{}", "utf8");
+  const materialization = path.join(GUARDRAIL_MATERIALIZATIONS_DIR, `${gate.id}--${leaseId}`);
+  fs.mkdirSync(materialization, { recursive: true });
+  fs.writeFileSync(path.join(materialization, "private-snapshot"), "fixture", "utf8");
+  return materialization;
 }
 
 function createWorkbenchFixture(id: string, scanDir: string): void {
@@ -262,5 +343,58 @@ test("DELETE refuses an unmanaged scan directory and keeps the run visible", asy
   } finally {
     removeBenchmarkFixture(id);
     fs.rmSync(repositoryRoot, { recursive: true, force: true });
+  }
+});
+
+test("deleting a scan also deletes its terminal gate and every managed directory", async () => {
+  const scanId = "delete-linked-from-run";
+  const gateId = "gate-delete-linked-from-run";
+  const scanDir = path.join(SCANS_ROOT, "linked-delete", `csb-${scanId}`);
+  fs.mkdirSync(scanDir, { recursive: true });
+  fs.writeFileSync(path.join(scanDir, "result.json"), "{}", "utf8");
+  upsertRun(terminalRun(scanId, scanDir, "/fixture/repository"));
+  const gate = linkedGate(gateId, scanId, "/fixture/repository");
+  const materialization = createLinkedGateFixture(gate, "lease-from-run");
+
+  try {
+    const response = await app.request(`/scans/${scanId}`, { method: "DELETE" });
+    const body = await response.json() as { linkedGatesDeleted?: number };
+    assert.equal(response.status, 200);
+    assert.equal(body.linkedGatesDeleted, 1);
+    assert.equal(listRuns().some((run) => run.id === scanId), false);
+    assert.equal(getGateRun(gateId), null);
+    assert.equal(fs.existsSync(scanDir), false);
+    assert.equal(fs.existsSync(path.join(GATES_DIR, gateId)), false);
+    assert.equal(fs.existsSync(materialization), false);
+  } finally {
+    removeBenchmarkFixture(scanId);
+    fs.rmSync(path.join(GATES_DIR, gateId), { recursive: true, force: true });
+    fs.rmSync(materialization, { recursive: true, force: true });
+  }
+});
+
+test("deleting a gate also deletes its linked scan and every managed directory", async () => {
+  const scanId = "delete-linked-from-gate";
+  const gateId = "gate-delete-linked-from-gate";
+  const scanDir = path.join(SCANS_ROOT, "linked-delete", `csb-${scanId}`);
+  fs.mkdirSync(scanDir, { recursive: true });
+  fs.writeFileSync(path.join(scanDir, "result.json"), "{}", "utf8");
+  upsertRun(terminalRun(scanId, scanDir, "/fixture/repository"));
+  const gate = linkedGate(gateId, scanId, "/fixture/repository");
+  const materialization = createLinkedGateFixture(gate, "lease-from-gate");
+
+  try {
+    const response = await app.request(`/guardrails/gates/${gateId}`, { method: "DELETE" });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true, deleted: true });
+    assert.equal(listRuns().some((run) => run.id === scanId), false);
+    assert.equal(getGateRun(gateId), null);
+    assert.equal(fs.existsSync(scanDir), false);
+    assert.equal(fs.existsSync(path.join(GATES_DIR, gateId)), false);
+    assert.equal(fs.existsSync(materialization), false);
+  } finally {
+    removeBenchmarkFixture(scanId);
+    fs.rmSync(path.join(GATES_DIR, gateId), { recursive: true, force: true });
+    fs.rmSync(materialization, { recursive: true, force: true });
   }
 });

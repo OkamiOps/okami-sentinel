@@ -341,6 +341,15 @@ export function GuardrailsPage() {
 }
 
 function gateFailureMessage(code: string, t: ReturnType<typeof useI18n>["t"]): string {
+  if (code === "linked_scan_failed" || code === "linked_scan_incomplete") {
+    return t("guardrails.linkedScanFailed");
+  }
+  if (code === "linked_scan_cancelled") {
+    return t("guardrails.linkedScanCancelled");
+  }
+  if (code === "gate_finalization_interrupted") {
+    return t("guardrails.finalizationInterrupted");
+  }
   if (code === "snapshot_materialization_failed") {
     return t("guardrails.snapshotDownloadFailed");
   }

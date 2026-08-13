@@ -21,6 +21,7 @@ import type {
 
 import {
   cancelGate,
+  reconcileGateWithLinkedScan,
   startLocalGate,
   startRemoteManagedGate,
   waitForGate,
@@ -108,6 +109,7 @@ function fakeDeps(options: {
   remoteReady?: boolean;
   scanStatus?: ScanRun["status"];
   holdScan?: boolean;
+  scanActive?: boolean;
 } = {}): FakeDeps {
   const runs = new Map<string, GateRun>();
   const events = new Map<string, Parameters<LocalGateDependencies["appendGateEvent"]>[1][]>();
@@ -164,7 +166,7 @@ function fakeDeps(options: {
       releaseHeld?.({ ...completedScan, status: "cancelled" });
       return true;
     },
-    isScanActive: () => true,
+    isScanActive: () => options.scanActive ?? true,
     getBaselineScanId: () => null,
     githubBaselineProvider: {
       getBaseline: async () => {
@@ -553,3 +555,85 @@ async function until(predicate: () => boolean): Promise<void> {
   }
   throw new Error("condition was not reached");
 }
+
+test("reconciles a stale scanning gate when its linked scan has failed", () => {
+  const deps = fakeDeps({ scanStatus: "failed", scanActive: false });
+  deps.runs.set("stale-gate", {
+    id: "stale-gate",
+    repositoryKey: "github.com/okami/csb",
+    repositoryPath: "/workspace/csb",
+    source: "local",
+    executor: "sentinel-managed",
+    baseRef: "main",
+    headRef: "HEAD",
+    resolvedBaseSha: "base123",
+    resolvedHeadSha: "head456",
+    policySha: null,
+    pullRequestNumber: null,
+    workflowRunId: null,
+    materializationState: "not_required",
+    scanLineageHash: null,
+    artifactSchemaVersion: 1,
+    scanId: "scan-1",
+    status: "scanning",
+    outcome: null,
+    policyVersion: 1,
+    baselineCommit: null,
+    artifactPath: null,
+    publishStatus: "not_configured",
+    publishError: null,
+    publishedAt: null,
+    error: null,
+    startedAt: "2026-08-07T10:00:00.000Z",
+    completedAt: null,
+    costCeilingUsd: 18,
+    estimatedUsd: 0,
+  });
+
+  const reconciled = reconcileGateWithLinkedScan("stale-gate", deps);
+
+  assert.equal(reconciled?.status, "error");
+  assert.equal(reconciled?.outcome, "error");
+  assert.equal(reconciled?.error, "linked_scan_failed");
+  assert.equal(reconciled?.completedAt, "2026-08-07T10:01:00.000Z");
+});
+
+test("fails closed when a completed linked scan lost gate finalization", () => {
+  const deps = fakeDeps({ scanStatus: "completed", scanActive: false });
+  deps.runs.set("interrupted-gate", {
+    id: "interrupted-gate",
+    repositoryKey: "github.com/okami/csb",
+    repositoryPath: "/workspace/csb",
+    source: "local",
+    executor: "sentinel-managed",
+    baseRef: "main",
+    headRef: "HEAD",
+    resolvedBaseSha: "base123",
+    resolvedHeadSha: "head456",
+    policySha: null,
+    pullRequestNumber: null,
+    workflowRunId: null,
+    materializationState: "not_required",
+    scanLineageHash: null,
+    artifactSchemaVersion: 1,
+    scanId: "scan-1",
+    status: "scanning",
+    outcome: null,
+    policyVersion: 1,
+    baselineCommit: null,
+    artifactPath: null,
+    publishStatus: "not_configured",
+    publishError: null,
+    publishedAt: null,
+    error: null,
+    startedAt: "2026-08-07T10:00:00.000Z",
+    completedAt: null,
+    costCeilingUsd: 18,
+    estimatedUsd: 0,
+  });
+
+  const reconciled = reconcileGateWithLinkedScan("interrupted-gate", deps);
+
+  assert.equal(reconciled?.status, "error");
+  assert.equal(reconciled?.error, "gate_finalization_interrupted");
+});

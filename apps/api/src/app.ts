@@ -42,6 +42,7 @@ import {
   cancelGate,
   deleteTerminalGate,
   getGateArtifact,
+  reconcileGateWithLinkedScan,
   startLocalGate,
   startRemoteActionsGate,
   startRemoteManagedGate,
@@ -272,8 +273,9 @@ const guardrailsDependencies: GuardrailsApiDependencies = {
   parsePolicy: parseGuardrailPolicy,
   writePolicy: writeGuardrailPolicy,
   readExceptions: readGuardrailExceptions,
-  listGates: listGateRuns,
-  getGate: getGateRun,
+  listGates: (repositoryKey) => listGateRuns(repositoryKey).map((gate) =>
+    reconcileGateWithLinkedScan(gate.id) ?? gate),
+  getGate: (gateId) => reconcileGateWithLinkedScan(gateId),
   getArtifact: getGateArtifact,
   listPullRequests: (repository) => githubRepositorySource.listOpenPullRequests(repository),
   previewTarget: (repository, request) => targetPreviewService.create(repository, request),
@@ -743,9 +745,17 @@ app.delete("/scans/:id", (c) => {
     );
   }
   try {
+    const linkedGates = listGateRuns().filter((gate) => gate.scanId === id);
+    if (linkedGates.some((gate) => !["completed", "cancelled", "error"].includes(gate.status))) {
+      return c.json({ error: "O scan ainda pertence a um gate ativo; cancele o gate antes de excluir." }, 409);
+    }
     const purge = purgeScanRunArtifacts(run.scanDir);
     hideRun(id);
-    return c.json({ ok: true, ...purge });
+    const linkedGatesDeleted = linkedGates.reduce(
+      (count, gate) => count + (deleteTerminalGate(gate.id, { preserveLinkedScan: true }) ? 1 : 0),
+      0,
+    );
+    return c.json({ ok: true, ...purge, linkedGatesDeleted });
   } catch (error) {
     return c.json({ error: errorMessage(error) }, 409);
   }
