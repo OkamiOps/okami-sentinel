@@ -115,6 +115,67 @@ test("portfolio detail isolates its queue and counters to the selected project",
   assert.doesNotMatch(html, /gate-other-project/);
 });
 
+test("portfolio queue uses the repository name and a human scan identity instead of the GitHub database key", () => {
+  const completed = {
+    ...gate(18),
+    id: "gate-human-name",
+    scanId: "scan-completed-123",
+    status: "completed" as const,
+    outcome: "bootstrap" as const,
+    baseRef: "main",
+    headRef: "main",
+    pullRequestNumber: null,
+    completedAt: "2026-08-13T00:07:13.000Z",
+  };
+  const html = renderToStaticMarkup(createElement(I18nProvider, null,
+    createElement(PortfolioPipeline, {
+      repositories: [{
+        repositoryKey: "github:1",
+        displayName: "aitherion-labs/mvp-luna-classic",
+        source: "github",
+      }] as never,
+      gates: [completed],
+      scans: [{
+        id: "scan-completed-123",
+        engine: "codex-security",
+        model: "gpt-5.3-codex-spark",
+        severity: { critical: 0, high: 2, medium: 0, low: 0, info: 0, total: 2 },
+      }] as never,
+      selectedGateId: completed.id,
+      selectedArtifact: null,
+      onSelect: () => undefined,
+    }),
+  ));
+
+  assert.match(html, /mvp-luna-classic\/main/);
+  assert.match(html, /Branch completa · main/);
+  assert.match(html, /SCAN scan-com/);
+  assert.match(html, /Codex Security · gpt-5.3-codex-spark/);
+  assert.match(html, /7m 13s/);
+  assert.doesNotMatch(html, />github:1</);
+});
+
+test("a failed gate marks the scan stage as failed rather than completed", () => {
+  const failed = {
+    ...gate(18),
+    scanId: "scan-failed",
+    status: "completed" as const,
+    outcome: "error" as const,
+    completedAt: "2026-08-13T00:00:08.000Z",
+  };
+  const html = renderToStaticMarkup(createElement(I18nProvider, null,
+    createElement(PortfolioPipeline, {
+      repositories: [{ repositoryKey: "github:1", displayName: "owner/repo", source: "github" }] as never,
+      gates: [failed],
+      selectedGateId: failed.id,
+      selectedArtifact: null,
+      onSelect: () => undefined,
+    }),
+  ));
+
+  assert.match(html, /text-destructive[^>]*">Falhou/);
+});
+
 test("a completed guardrail scan exposes its findings as the primary result action", () => {
   const scan = {
     id: "scan-findings",

@@ -1,4 +1,4 @@
-import type { GateArtifact, GateRun, GuardrailRepository } from "@csb/shared";
+import type { GateArtifact, GateRun, GuardrailRepository, ScanRun } from "@csb/shared";
 import {
   Activity,
   Check,
@@ -14,9 +14,10 @@ import {
   X,
 } from "lucide-react";
 
-import { formatUsd } from "../../format";
+import { formatDuration, formatUsd, shortId } from "../../format";
 import { prCheckLabel } from "../../lib/github-guardrails";
 import { gateStageLabel, isGateActive } from "../../lib/guardrails";
+import { scanLedgerIdentity } from "../../lib/scan-ledger";
 import { useI18n } from "../../i18n";
 import { Badge } from "@/components/ui/badge";
 import { cx } from "../ui";
@@ -29,12 +30,14 @@ export function PortfolioPipeline({
   gates,
   selectedGateId,
   selectedArtifact,
+  scans = [],
   onSelect,
 }: {
   repositories: readonly GuardrailRepository[];
   gates: readonly GateRun[];
   selectedGateId: string | null;
   selectedArtifact: GateArtifact | null;
+  scans?: readonly ScanRun[];
   onSelect: (gate: GateRun) => void;
 }) {
   const { locale, t } = useI18n();
@@ -48,6 +51,8 @@ export function PortfolioPipeline({
   const activeCount = projectGates.filter((gate) => isGateActive(gate.status)).length;
   const blockedCount = projectGates.filter((gate) => gate.outcome === "blocked" || gate.status === "error").length;
   const remoteCount = projectRepositories.filter((repository) => repository.source === "github").length;
+  const repositoryLabels = new Map(repositories.map((repository) => [repository.repositoryKey, repository.displayName]));
+  const scansById = new Map(scans.map((scan) => [scan.id, scan]));
 
   return (
     <section className="bench-panel bench-corners min-w-0 overflow-hidden" aria-labelledby="portfolio-pipeline-title">
@@ -76,6 +81,8 @@ export function PortfolioPipeline({
           <div className="max-h-[25rem] overflow-y-auto xl:max-h-[34rem]">
             {projectGates.map((gate) => {
               const selected = gate.id === selectedGate?.id;
+              const scan = gate.scanId ? scansById.get(gate.scanId) ?? null : null;
+              const scanIdentity = scan ? scanLedgerIdentity(scan) : null;
               return (
                 <button
                   key={gate.id}
@@ -96,14 +103,16 @@ export function PortfolioPipeline({
                   </span>
                   <span className="min-w-0">
                     <span className="flex min-w-0 items-start justify-between gap-2">
-                      <span className="truncate text-xs font-semibold">{repositoryName(gate.repositoryPath, gate.repositoryKey)}</span>
+                      <span className="truncate text-xs font-semibold" title={gateQueueTitle(gate, repositoryLabels)}>{gateQueueTitle(gate, repositoryLabels)}</span>
                       <GateOutcomeBadge outcome={gate.outcome} status={gate.status} />
                     </span>
-                    <span className="mt-1.5 block truncate font-mono text-[9px] text-foreground">{targetLabel(gate)}</span>
+                    <span className="mt-1.5 block truncate text-[11px] font-medium text-foreground">{descriptiveTargetLabel(gate)}</span>
+                    {scanIdentity && <span className="mt-1 block truncate font-mono text-[8px] text-primary">{scanIdentity.engine} · {scanIdentity.model}</span>}
                     <span className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5">
                       <Badge variant="outline" className="h-4 rounded-none px-1 font-mono text-[7px] uppercase">{sourceLabel(gate)}</Badge>
                       <Badge variant="outline" className="h-4 rounded-none px-1 font-mono text-[7px] uppercase">{executorLabel(gate)}</Badge>
-                      <span className="ml-auto font-mono text-[8px] tabular-nums text-muted-foreground">{formatGateDate(gate.startedAt, locale)}</span>
+                      <span className="font-mono text-[8px] tabular-nums text-muted-foreground">{gate.scanId ? `SCAN ${shortId(gate.scanId)}` : `GATE ${shortId(gate.id)}`}</span>
+                      <span className="ml-auto font-mono text-[8px] tabular-nums text-muted-foreground">{gateDuration(gate)} · {formatGateDate(gate.startedAt, locale)}</span>
                     </span>
                   </span>
                 </button>
@@ -114,7 +123,7 @@ export function PortfolioPipeline({
 
         {selectedGate && (
           <div className="min-w-0">
-            <SelectedGateHeader gate={selectedGate} artifact={selectedArtifact} />
+            <SelectedGateHeader gate={selectedGate} artifact={selectedArtifact} repositoryLabels={repositoryLabels} />
             <CustodyRail gate={selectedGate} />
             <GateFacts gate={selectedGate} artifact={selectedArtifact} />
           </div>
@@ -149,7 +158,7 @@ function PortfolioReadout({
   );
 }
 
-function SelectedGateHeader({ gate, artifact }: { gate: GateRun; artifact: GateArtifact | null }) {
+function SelectedGateHeader({ gate, artifact, repositoryLabels }: { gate: GateRun; artifact: GateArtifact | null; repositoryLabels: ReadonlyMap<string, string> }) {
   const { t } = useI18n();
   const v2 = artifact?.schemaVersion === 2 ? artifact : null;
   const hasObservedCost = Number.isFinite(gate.estimatedUsd) && gate.estimatedUsd > 0;
@@ -168,7 +177,7 @@ function SelectedGateHeader({ gate, artifact }: { gate: GateRun; artifact: GateA
           <span className="font-mono text-[8px] uppercase tracking-[0.12em] text-muted-foreground">{gateStageLabel(gate.status)}</span>
         </div>
         <h3 className="mt-3 truncate font-heading text-xl font-semibold tracking-[-0.03em] sm:text-2xl">
-          {repositoryName(gate.repositoryPath, gate.repositoryKey)}
+          {gateDisplayName(gate, repositoryLabels)}
         </h3>
         <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
           <span className="inline-flex min-w-0 items-center gap-1.5"><GitCompareArrows aria-hidden size={13} className="shrink-0 text-primary" /><span className="truncate font-mono text-[10px] text-foreground">{targetLabel(gate)}</span></span>
@@ -261,7 +270,7 @@ function IdentityFact({ label, value, mono = false }: { label: string; value: st
 }
 
 function custodySteps(gate: GateRun, t: ReturnType<typeof useI18n>["t"]) {
-  const failed = gate.status === "error" || gate.status === "cancelled";
+  const failed = gate.status === "error" || gate.status === "cancelled" || gate.outcome === "error";
   const active = isGateActive(gate.status);
   const publicationComplete = gate.publishStatus === "published" || (gate.executor === "github-actions" && Boolean(gate.workflowRunId) && gate.status === "completed");
   const publicationFailed = gate.publishStatus === "failed";
@@ -269,7 +278,7 @@ function custodySteps(gate: GateRun, t: ReturnType<typeof useI18n>["t"]) {
     { label: t("guardrails.stageAuthority"), value: sourceLabel(gate), state: "complete" as CustodyState, icon: gate.source === "github" ? <GitBranch aria-hidden size={12} /> : <HardDrive aria-hidden size={12} /> },
     { label: t("guardrails.stageTarget"), value: gate.resolvedHeadSha?.slice(0, 8) ?? t("guardrails.pending"), state: gate.resolvedHeadSha ? "complete" as CustodyState : failed ? "failed" as CustodyState : "current" as CustodyState, icon: <GitCompareArrows aria-hidden size={12} /> },
     { label: t("guardrails.stagePolicy"), value: gate.policySha?.slice(0, 8) ?? t("guardrails.pending"), state: gate.policySha ? "complete" as CustodyState : failed ? "failed" as CustodyState : gate.resolvedHeadSha ? "current" as CustodyState : "pending" as CustodyState, icon: <ShieldCheck aria-hidden size={12} /> },
-    { label: t("guardrails.stageScan"), value: gate.scanId ? gateStageLabel(gate.status) : t("guardrails.pending"), state: gate.scanId && !active ? "complete" as CustodyState : failed ? "failed" as CustodyState : gate.scanId || gate.status === "scanning" ? "current" as CustodyState : "pending" as CustodyState, icon: <ScanSearch aria-hidden size={12} /> },
+    { label: t("guardrails.stageScan"), value: failed ? t("guardrails.failed") : gate.scanId ? gateStageLabel(gate.status) : t("guardrails.pending"), state: failed ? "failed" as CustodyState : gate.scanId && !active ? "complete" as CustodyState : gate.scanId || gate.status === "scanning" ? "current" as CustodyState : "pending" as CustodyState, icon: <ScanSearch aria-hidden size={12} /> },
     { label: t("guardrails.stageDecision"), value: gate.outcome ?? t("guardrails.pending"), state: gate.outcome === "blocked" || gate.outcome === "error" || failed ? "failed" as CustodyState : gate.outcome ? "complete" as CustodyState : gate.status === "evaluating" ? "current" as CustodyState : "pending" as CustodyState, icon: gate.outcome === "blocked" || failed ? <X aria-hidden size={12} /> : gate.outcome ? <Check aria-hidden size={12} /> : <Activity aria-hidden size={12} /> },
     { label: t("guardrails.stagePublication"), value: publicationComplete ? t("guardrails.published") : publicationFailed ? t("guardrails.failed") : gate.executor === "github-actions" ? "ACTIONS" : t("guardrails.pending"), state: publicationComplete ? "complete" as CustodyState : publicationFailed ? "failed" as CustodyState : gate.status === "publishing" || gate.status === "completed" ? "current" as CustodyState : "pending" as CustodyState, icon: gate.executor === "github-actions" ? <Workflow aria-hidden size={12} /> : publicationComplete ? <Send aria-hidden size={12} /> : <CircleDashed aria-hidden size={12} /> },
   ];
@@ -278,6 +287,27 @@ function custodySteps(gate: GateRun, t: ReturnType<typeof useI18n>["t"]) {
 function repositoryName(repositoryPath: string | null, repositoryKey: string): string {
   if (repositoryPath === null) return repositoryKey.split("/").at(-1) ?? repositoryKey;
   return repositoryPath.split(/[\\/]/).filter(Boolean).at(-1) ?? repositoryKey;
+}
+
+function gateDisplayName(gate: GateRun, repositoryLabels: ReadonlyMap<string, string>): string {
+  return repositoryLabels.get(gate.repositoryKey) ?? repositoryName(gate.repositoryPath, gate.repositoryKey);
+}
+
+function gateQueueTitle(gate: GateRun, repositoryLabels: ReadonlyMap<string, string>): string {
+  const repository = gateDisplayName(gate, repositoryLabels).split("/").filter(Boolean).at(-1) ?? gate.repositoryKey;
+  return `${repository}/${gate.headRef}`;
+}
+
+function descriptiveTargetLabel(gate: GateRun): string {
+  if (gate.pullRequestNumber) return `Pull request #${gate.pullRequestNumber} · ${gate.headRef}`;
+  if (gate.baseRef === gate.headRef) return `Branch completa · ${gate.headRef}`;
+  return `Comparação · ${gate.baseRef} → ${gate.headRef}`;
+}
+
+function gateDuration(gate: GateRun): string {
+  if (!gate.completedAt) return "EM CURSO";
+  const duration = Date.parse(gate.completedAt) - Date.parse(gate.startedAt);
+  return Number.isFinite(duration) && duration >= 0 ? formatDuration(duration) : "—";
 }
 
 function sourceLabel(gate: GateRun): string {

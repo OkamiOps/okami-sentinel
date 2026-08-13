@@ -38,6 +38,7 @@ type GuardrailsState =
       gates: GateRun[];
       selectedGate: GateRun | null;
       artifact: GateArtifact | null;
+      scans: ScanRun[];
       readiness: Record<string, RepositoryReadiness>;
     };
 
@@ -63,10 +64,11 @@ export function GuardrailsPage() {
   const load = useCallback(async () => {
     setState({ status: "loading" });
     try {
-      const [gateList, repositoryList, selectedResponse] = await Promise.all([
+      const [gateList, repositoryList, selectedResponse, scanList] = await Promise.all([
         api.listGates(),
         api.listGuardrailRepositories(),
         gateId ? api.getGate(gateId) : Promise.resolve(null),
+        api.listScans(),
       ]);
       const readinessEntries = await Promise.all(repositoryList.repositories.map(async (repository) => {
         if (repository.source === "local") {
@@ -108,6 +110,7 @@ export function GuardrailsPage() {
           : gateList.gates,
         selectedGate: detail?.gate ?? selected,
         artifact: detail?.artifact ?? null,
+        scans: scanList.scans,
         readiness: Object.fromEntries(readinessEntries),
       });
     } catch (error) {
@@ -279,6 +282,7 @@ export function GuardrailsPage() {
           gates={readyState.gates}
           selectedGateId={readyState.selectedGate?.id ?? null}
           selectedArtifact={readyState.artifact}
+          scans={readyState.scans}
           onSelect={selectLane}
         />
       ) : (
