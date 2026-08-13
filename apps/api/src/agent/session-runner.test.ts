@@ -270,6 +270,91 @@ test("artifact-write deadline forces results.write before the global turn reserv
     (event as { type?: unknown }).type === "artifact"), true);
 });
 
+test("an artifact-write deadline of zero requires the artifact on the first response", async () => {
+  const controls: Array<{ finalizationRequired?: boolean } | undefined> = [];
+  const session = createConstrainedWireSession({
+    terminalMode: "artifact-write",
+    artifactWriteByTurn: 0,
+    limits: {
+      maxModelTurns: 8,
+      maxToolCalls: 8,
+      maxInputBytes: 1_048_576,
+      maxOutputBytes: 1_048_576,
+      timeoutMs: 60_000,
+    },
+    signal: new AbortController().signal,
+    host: {
+      minimumOutputBytes() { return 0; },
+      async call() { return { content: "ok", artifact: { path: "result.json", bytes: 2 } }; },
+    },
+    adapter: {
+      nextRequest(_results, control) {
+        controls.push(control);
+        return { operation: "messages" as const, body: {} };
+      },
+      readResponse() {
+        return {
+          toolCalls: [{ id: "write", name: "results.write", input: { path: "result.json", content: "{}" } }],
+          text: null,
+          structured: null,
+          usage: null,
+        };
+      },
+    } as WireSessionAdapter,
+    upstream: { async request() { return {}; } },
+  });
+
+  await collect(session.run(), []);
+  assert.equal(controls.length, 1);
+  assert.equal(controls[0]?.finalizationRequired, true);
+});
+
+test("an artifact-write session turns premature prose into a required write", async () => {
+  const controls: Array<{ finalizationRequired?: boolean } | undefined> = [];
+  let response = 0;
+  const session = createConstrainedWireSession({
+    terminalMode: "artifact-write",
+    limits: {
+      maxModelTurns: 8,
+      maxToolCalls: 8,
+      maxInputBytes: 1_048_576,
+      maxOutputBytes: 1_048_576,
+      timeoutMs: 60_000,
+    },
+    signal: new AbortController().signal,
+    host: {
+      minimumOutputBytes() { return 0; },
+      async call() { return { content: "ok", artifact: { path: "result.json", bytes: 2 } }; },
+    },
+    adapter: {
+      nextRequest(_results, control) {
+        controls.push(control);
+        return { operation: "messages" as const, body: {} };
+      },
+      readResponse() {
+        response += 1;
+        return response === 1
+          ? { toolCalls: [], text: "I will write the artifact next.", structured: null, usage: null }
+          : {
+            toolCalls: [{ id: "write", name: "results.write", input: { path: "result.json", content: "{}" } }],
+            text: null,
+            structured: null,
+            usage: null,
+          };
+      },
+    } as WireSessionAdapter,
+    upstream: { async request() { return {}; } },
+  });
+
+  const events: Array<{ type?: string }> = [];
+  await collect(session.run(), events);
+  assert.equal(controls.length, 2);
+  assert.equal(controls[0], undefined);
+  assert.equal(controls[1]?.finalizationRequired, true);
+  assert.equal(events.some((event) => event.type === "completion"), false);
+  assert.equal(events.some((event) => event.type === "artifact"), true);
+});
+
 test("a Gemini OpenAI chat probe proves agent facts only after the complete artifact loop", async (t) => {
   const fixture = await fixtureRoots("probe-complete");
   t.after(fixture.cleanup);
@@ -1238,7 +1323,10 @@ test("Deep discovery records only complete successful reads and refuses an incom
       text: null, structured: null, usage: null,
     },
     {
-      toolCalls: [{ id: "read-b", name: "workspace.read", input: { path: "src/b.ts" } }],
+      toolCalls: [
+        { id: "read-b", name: "workspace.read", input: { path: "src/b.ts" } },
+        { id: "read-c", name: "workspace.read", input: { path: "src/c.ts" } },
+      ],
       text: null, structured: null, usage: null,
     },
     {
@@ -1269,8 +1357,8 @@ test("Deep discovery records only complete successful reads and refuses an incom
       deepCoverage: {
         index: 0,
         total: 1,
-        requiredPaths: ["src/a.ts", "src/b.ts"],
-        requiredBytes: { "src/a.ts": 20, "src/b.ts": 20 },
+        requiredPaths: ["src/a.ts", "src/b.ts", "src/c.ts"],
+        requiredBytes: { "src/a.ts": 20, "src/b.ts": 20, "src/c.ts": 20 },
         observedReadPaths,
       },
     },
@@ -1290,10 +1378,14 @@ test("Deep discovery records only complete successful reads and refuses an incom
   const events: unknown[] = [];
   await collect(session.run(), events);
 
-  assert.deepEqual(hostCalls, ["workspace.read", "workspace.read", "results.write"]);
-  assert.deepEqual([...observedReadPaths].sort(), ["src/a.ts", "src/b.ts"]);
+  assert.deepEqual(hostCalls, ["workspace.read", "workspace.read", "workspace.read", "results.write"]);
+  assert.deepEqual([...observedReadPaths].sort(), ["src/a.ts", "src/b.ts", "src/c.ts"]);
   assert.equal(requestedWith[2]![0]!.validationIssue, "deep-coverage-incomplete");
-  assert.match(requestedWith[2]![0]!.content, /every exact path.*read completely with workspace\.read/i);
+  assert.deepEqual(JSON.parse(requestedWith[2]![0]!.content).repair, {
+    kind: "deep-coverage",
+    missingPaths: ["src/b.ts", "src/c.ts"],
+  });
+  assert.match(requestedWith[2]![0]!.content, /read only the exact repair\.missingPaths/i);
   assert.equal(events.filter((event) => isArtifact(event, "03-discovery.json")).length, 1);
 });
 

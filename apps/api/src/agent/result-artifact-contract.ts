@@ -68,8 +68,13 @@ export type VulnHunterReportRepairDetail = {
   kind: "vulnhunter-report";
   reason: "envelope" | "finding" | "evidence";
 };
+export type DeepCoverageRepairDetail = {
+  kind: "deep-coverage";
+  /** Server-owned paths that were assigned to this partition but not fully observed yet. */
+  missingPaths: readonly string[];
+};
 export type ResultArtifactRepairDetail = PortableArtifactRepairDetail | MantisReportRepairDetail |
-  VulnHunterReportRepairDetail;
+  VulnHunterReportRepairDetail | DeepCoverageRepairDetail;
 
 const REPORT_KEYS = new Set(["schemaVersion", "findings"]);
 const FINDING_KEYS = new Set([

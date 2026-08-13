@@ -7,8 +7,12 @@ export const PORTABLE_CODEX_SECURITY_DOSSIER_FILE =
 const DOSSIER_SCHEMA_VERSION = 1 as const;
 const MAX_DOSSIER_BYTES = 2 * 1024 * 1024;
 const MAX_STAGE_SUMMARY_BYTES = 16_384;
-const MAX_CANDIDATES = 100;
-const MAX_ASSESSMENTS = 200;
+// A single provider artifact remains capped at 100 candidates. Deep discovery
+// merges multiple server-owned pages, so its durable dossier needs a separate
+// aggregate ceiling instead of silently discarding a complete audit.
+const MAX_STAGE_CANDIDATES = 100;
+const MAX_DOSSIER_CANDIDATES = 1_024;
+const MAX_ASSESSMENTS = 2_048;
 const MAX_SCOPE_ENTRIES = 4_096;
 const MAX_ANCHORS = 20;
 const MAX_TEXT_BYTES = 1_024;
@@ -373,7 +377,7 @@ export function applyPortableCodexSecurityStageArtifact(
         }
         continue;
       }
-      if (next.candidates.length >= MAX_CANDIDATES) {
+      if (next.candidates.length >= MAX_DOSSIER_CANDIDATES) {
         throw new PortableCodexSecurityDossierError("candidate dossier limit exceeded");
       }
       next.candidates.push(copyCandidate(candidate));
@@ -580,8 +584,16 @@ function parsePortableStageArtifact(
   if (summary === null || !Array.isArray(record.observations) || record.observations.length > 128) {
     return reject("stage-summary-invalid");
   }
-  const scope = record.scope === undefined ? undefined : parseScope(record.scope, narrativeStage);
-  if (record.scope !== undefined && scope === null) return reject("stage-scope-invalid");
+  // Dataflow and validation assess a server-owned candidate page. Their scope is
+  // already frozen by inventory/deep discovery, so provider-emitted scope is
+  // redundant and must not be allowed to kill an otherwise valid assessment.
+  const acceptsScope = narrativeStage || record.stage === "discovery";
+  const scope = !acceptsScope || record.scope === undefined
+    ? undefined
+    : parseScope(record.scope, narrativeStage);
+  if (acceptsScope && record.scope !== undefined && scope === null) {
+    return reject("stage-scope-invalid");
+  }
   const candidateProducingStage = record.stage === "discovery";
   const candidateResolution = !candidateProducingStage || record.candidates === undefined
     ? { value: undefined }
@@ -645,7 +657,7 @@ function parseDossier(value: unknown): PortableCodexSecurityDossier | null {
   if (record === null || record.schemaVersion !== DOSSIER_SCHEMA_VERSION ||
       !hasOnlyKeys(record, new Set(["schemaVersion", "stageSummaries", "candidates", "assessments", "scope"]))) return null;
   const stageSummaries = parseStageSummaries(record.stageSummaries);
-  const candidates = parseCandidates(record.candidates);
+  const candidates = parseCandidates(record.candidates, MAX_DOSSIER_CANDIDATES);
   const assessments = parseStoredAssessments(record.assessments);
   const scope = parseScope(record.scope);
   if (stageSummaries === null || candidates === null || assessments === null || scope === null) return null;
@@ -668,14 +680,18 @@ function parseStageSummaries(value: unknown): PortableStageSummary[] | null {
   return summaries;
 }
 
-function parseCandidates(value: unknown): PortableCandidate[] | null {
-  return parseCandidatesWithRepair(value).value;
+function parseCandidates(
+  value: unknown,
+  limit = MAX_STAGE_CANDIDATES,
+): PortableCandidate[] | null {
+  return parseCandidatesWithRepair(value, limit).value;
 }
 
 function parseCandidatesWithRepair(
   value: unknown,
+  limit = MAX_STAGE_CANDIDATES,
 ): { value: PortableCandidate[] | null; detail?: PortableCandidateRepairDetail } {
-  if (!Array.isArray(value) || value.length > MAX_CANDIDATES) {
+  if (!Array.isArray(value) || value.length > limit) {
     return { value: null, detail: { kind: "candidate-contract", reason: "array-or-limit" } };
   }
   const ids = new Set<string>();
@@ -771,7 +787,7 @@ function parseScope(value: unknown, narrative = false): PortableScope | null {
 }
 
 function parseCoverageEntries(value: unknown): PortableReportCoverageEntry[] | null {
-  if (!Array.isArray(value) || value.length > MAX_CANDIDATES) return null;
+  if (!Array.isArray(value) || value.length > MAX_DOSSIER_CANDIDATES) return null;
   const entries: PortableReportCoverageEntry[] = [];
   for (const item of value) {
     const record = asRecord(item);
@@ -792,7 +808,7 @@ function parseCoverageEntries(value: unknown): PortableReportCoverageEntry[] | n
 }
 
 function parseFindings(value: unknown): PortableReportFinding[] | null {
-  if (!Array.isArray(value) || value.length > MAX_CANDIDATES) return null;
+  if (!Array.isArray(value) || value.length > MAX_DOSSIER_CANDIDATES) return null;
   const findings: PortableReportFinding[] = [];
   for (const item of value) {
     const record = asRecord(item);

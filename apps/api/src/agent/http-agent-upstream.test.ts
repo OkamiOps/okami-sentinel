@@ -257,6 +257,25 @@ test("AgentUpstream rejects an oversized response before JSON parsing", async ()
   );
 });
 
+test("AgentUpstream permits a bounded multi-megabyte agent body", async () => {
+  const transport = transcript([json(200, { ok: true })]);
+  const upstream = createHttpAgentUpstream({
+    routeKind: "openai-api",
+    protocol: "openai-responses",
+    credentials: { apiKey: "openai-secret" },
+    transport: transport.fetch,
+  });
+
+  await upstream.request({
+    operation: "responses",
+    body: { input: "x".repeat(2 * 1_048_576) },
+    signal: new AbortController().signal,
+  });
+  const sentBody = transport.calls[0]?.init.body;
+  assert.equal(typeof sentBody, "string");
+  assert.ok(Buffer.byteLength(sentBody as string, "utf8") > 2 * 1_048_576);
+});
+
 test("AgentUpstream stops locally when a fetch ignores abort and consumes its late rejection", async () => {
   let rejectLate: ((reason?: unknown) => void) | undefined;
   const unhandled: unknown[] = [];

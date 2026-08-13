@@ -71,6 +71,7 @@ import {
   createPortableDeepCoveragePlan,
   mergePortableDeepDiscoveryDossiers,
   type PortableDeepCoveragePartition,
+  readPortableDeepCoveragePartition,
 } from "./portable-codex-security-deep-coverage.js";
 import {
   writePortableCodexSecurityRuntime,
@@ -125,6 +126,7 @@ export type PortableCodexSecurityRunnerErrorCode =
   | "agent_tool_limit"
   | "agent_input_byte_limit"
   | "agent_output_byte_limit"
+  | "rate_limited"
   | "cost_budget_unavailable"
   | "cost_limit_reached"
   | "agent_session_failed"
@@ -352,11 +354,27 @@ export async function runPortableCodexSecurity(
       const discoveryPartitions = stage.id === "discovery" && deepCoveragePlan !== null
         ? deepCoveragePlan.partitions
         : null;
+      const assessmentPages = deepCoveragePlan !== null &&
+          (stage.id === "dataflow" || stage.id === "validation") && dossier.candidates.length > 32
+        ? Array.from({ length: Math.ceil(dossier.candidates.length / 32) }, (_, index) => ({
+          index,
+          total: Math.ceil(dossier.candidates.length / 32),
+          dossier: {
+            ...dossier,
+            candidates: dossier.candidates.slice(index * 32, (index + 1) * 32),
+            assessments: dossier.assessments.filter((assessment) =>
+              dossier.candidates.slice(index * 32, (index + 1) * 32)
+                .some((candidate) => candidate.id === assessment.candidateId)
+            ),
+          },
+        }))
+        : null;
       const deepCoverageReserveMs = discoveryPartitions === null
         ? 0
-        : Math.floor(remaining * 0.4);
+        : Math.min(Math.floor(remaining * 0.25), 10 * 60_000);
       const pageResults: PortableCodexSecurityReportShardResult[] = [];
       const discoveryResults: typeof dossier[] = [];
+      const assessmentResults: typeof dossier[] = [];
       const modelShards = shards?.length === 1 && shards[0]?.candidateIds.length === 0
         ? []
         : shards;
@@ -372,24 +390,29 @@ export async function runPortableCodexSecurity(
       const stageItems: Array<{
         shard: PortableCodexSecurityReportShardResult["shard"] | null;
         partition: PortableDeepCoveragePartition | null;
-      }> = discoveryPartitions === null
-        ? (modelShards ?? [null]).map((shard) => ({ shard, partition: null }))
-        : discoveryPartitions.map((partition) => ({ shard: null, partition }));
+        assessmentPage: (typeof assessmentPages extends readonly (infer T)[] | null ? T : never) | null;
+      }> = discoveryPartitions !== null
+        ? discoveryPartitions.map((partition) => ({ shard: null, partition, assessmentPage: null }))
+        : assessmentPages !== null
+          ? assessmentPages.map((assessmentPage) => ({ shard: null, partition: null, assessmentPage }))
+          : (modelShards ?? [null]).map((shard) => ({ shard, partition: null, assessmentPage: null }));
       const discoveryBaseDossier = dossier;
-      for (const { shard, partition } of stageItems) {
+      for (const { shard, partition, assessmentPage } of stageItems) {
         const stageRemaining = deadline.remainingMs();
         if (stageRemaining <= 0) throw new PortableCodexSecurityRunnerError("agent_time_limit");
         const stageDossier = partition === null
-          ? shard?.dossier ?? dossier
+          ? assessmentPage?.dossier ?? shard?.dossier ?? dossier
           : discoveryBaseDossier;
-        const stageDossierStateBase64 = shard === null
+        const stageDossierStateBase64 = shard === null && assessmentPage === null
           ? dossierStateBase64
           : portableCodexSecurityDossierBase64(stageDossier);
         const artifactRoot = path.join(
           artifactsRoot,
           partition !== null
             ? `${stage.id}-${String(partition.index + 1).padStart(3, "0")}`
-            : shard === null ? stage.id : `${stage.id}-${String(shard.index + 1).padStart(2, "0")}`,
+            : assessmentPage !== null
+              ? `${stage.id}-${String(assessmentPage.index + 1).padStart(2, "0")}`
+              : shard === null ? stage.id : `${stage.id}-${String(shard.index + 1).padStart(2, "0")}`,
         );
         fs.mkdirSync(artifactRoot, { recursive: false, mode: 0o700 });
         const stageSessionLimits = partition !== null
@@ -399,7 +422,13 @@ export async function runPortableCodexSecurity(
             deepCoverageReserveMs,
             partition,
           )
-          : shard === null
+          : assessmentPage !== null
+            ? reportShardSessionLimits(
+              safeConfiguration.limits,
+              stageRemaining,
+              assessmentPage.total,
+            )
+            : shard === null
             ? sessionLimits(safeConfiguration.limits, stageRemaining)
             : reportShardSessionLimits(safeConfiguration.limits, stageRemaining, shards!.length);
         const deepCoverage = partition === null
@@ -411,6 +440,14 @@ export async function runPortableCodexSecurity(
             requiredBytes: partition.fileBytes,
             observedReadPaths: new Set<string>(),
           };
+        if (deepCoverage !== undefined) {
+          for (const requiredPath of deepCoverage.requiredPaths) {
+            deepCoverage.observedReadPaths.add(requiredPath);
+          }
+        }
+        const deepCoverageSourceFiles = partition === null
+          ? undefined
+          : readPortableDeepCoveragePartition(snapshot.snapshotRoot, partition);
         const spec: AgentSessionSpec = {
         connectionId: resolved.connection.id,
         routeKind: resolved.connection.routeKind,
@@ -420,13 +457,19 @@ export async function runPortableCodexSecurity(
           ? {}
           : { reasoningEffort: safeConfiguration.reasoningEffort }),
         terminalMode: "artifact-write",
-        artifactWriteByTurn: Math.min(
-          stageSessionLimits.maxModelTurns - 1,
-          Math.max(8, Math.floor(stageSessionLimits.maxModelTurns * 2 / 3)),
-        ),
+        artifactWriteByTurn: partition === null && assessmentPage === null
+          ? Math.min(
+            stageSessionLimits.maxModelTurns - 1,
+            Math.max(8, Math.floor(stageSessionLimits.maxModelTurns * 2 / 3)),
+          )
+          : assessmentPage === null ? 0 : Math.min(5, stageSessionLimits.maxModelTurns - 1),
         ...(stage.id === "report"
           ? { maxCompletionTokens: portableCodexSecurityReportCompletionTokens(stageDossier) }
-          : {}),
+          : assessmentPage !== null
+            ? { maxCompletionTokens: 32_768 }
+          : partition !== null
+            ? { maxCompletionTokens: 32_768 }
+            : {}),
         resultArtifactContract: PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT,
         resultArtifactValidationContext: {
           dossier: stageDossier,
@@ -441,8 +484,19 @@ export async function runPortableCodexSecurity(
           scopePaths: safeConfiguration.paths,
           dossierStateBase64: stageDossierStateBase64,
           candidateIds: stageDossier.candidates.map((candidate) => candidate.id),
+          ...(assessmentPage === null ? {} : {
+            assessmentCandidates: stageDossier.candidates.map((candidate) => ({
+              id: candidate.id,
+              category: candidate.category,
+              anchors: candidate.anchors.map(({ path, startLine, endLine, role }) => ({
+                path, startLine, endLine, role,
+              })),
+            })),
+          }),
           ...(shard === null ? {} : { reportShard: shard }),
-          ...(partition === null ? {} : { deepCoveragePartition: partition }),
+          ...(partition === null ? {} : {
+            deepCoveragePartition: { ...partition, sourceFiles: deepCoverageSourceFiles },
+          }),
         }),
         limits: stageSessionLimits,
         signal: deadline.signal,
@@ -465,6 +519,14 @@ export async function runPortableCodexSecurity(
         artifactRoot,
         dossier: stageDossier,
         snapshotRoot: snapshot.snapshotRoot,
+        ...(
+          partition !== null ||
+          assessmentPage !== null ||
+          shard !== null ||
+          stage.id === "threat-model"
+            ? { sourceEvidenceProjected: true }
+            : {}
+        ),
         usage: runtime.usage,
         signal: deadline.signal,
         remainingMs: deadline.remainingMs,
@@ -488,6 +550,8 @@ export async function runPortableCodexSecurity(
         runtime = { ...runtime, usage: observed.usage };
         if (partition !== null) {
           discoveryResults.push(observed.dossier);
+        } else if (assessmentPage !== null) {
+          assessmentResults.push(observed.dossier);
         } else if (shard === null) {
           dossier = deepCoveragePlan === null
             ? observed.dossier
@@ -508,6 +572,32 @@ export async function runPortableCodexSecurity(
         } catch {
           throw new PortableCodexSecurityRunnerError("deep_coverage_incomplete");
         }
+        dossierStateBase64 = portableCodexSecurityDossierBase64(dossier);
+      }
+      if (assessmentPages !== null) {
+        const stageAssessments = assessmentResults.flatMap((page) =>
+          page.assessments.filter((assessment) => assessment.stage === stage.id)
+        );
+        if (stageAssessments.length !== dossier.candidates.length) {
+          throw new PortableCodexSecurityRunnerError("stage_evidence_incomplete");
+        }
+        const stageSummary = assessmentResults
+          .flatMap((page) => page.stageSummaries)
+          .find((summary) => summary.stage === stage.id);
+        if (stageSummary === undefined) {
+          throw new PortableCodexSecurityRunnerError("stage_evidence_incomplete");
+        }
+        dossier = {
+          ...dossier,
+          stageSummaries: [
+            ...dossier.stageSummaries.filter((summary) => summary.stage !== stage.id),
+            stageSummary,
+          ],
+          assessments: [
+            ...dossier.assessments.filter((assessment) => assessment.stage !== stage.id),
+            ...stageAssessments,
+          ],
+        };
         dossierStateBase64 = portableCodexSecurityDossierBase64(dossier);
       }
       if (shards !== null) reportShardResults = pageResults;
@@ -785,18 +875,27 @@ function deepCoveragePartitionSessionLimits(
   reserveMs: number,
   partition: PortableDeepCoveragePartition,
 ): AgentSessionLimits {
-  const maxModelTurns = Math.min(limits.maxModelTurns, 16);
-  const maxToolCalls = Math.min(limits.maxToolCalls, partition.paths.length + 8);
+  // Deep pages are exhaustive, not best-effort. Preserve enough bounded
+  // turns for premature write repair and failed-read correction without
+  // granting a fresh scan-wide budget to each page.
+  const maxModelTurns = Math.min(limits.maxModelTurns, 32);
+  // Providers may retry an incomplete page and re-read assigned paths. Bound
+  // that behavior to at most two full passes plus repair overhead.
+  const maxToolCalls = Math.min(limits.maxToolCalls, partition.paths.length * 2 + 24);
   if (maxModelTurns < 8 || maxToolCalls < partition.paths.length + 1) {
     throw new PortableCodexSecurityRunnerError("agent_tool_limit");
   }
   const partitionsRemaining = partition.total - partition.index;
   const discoveryBudgetMs = Math.max(1, remainingMs - reserveMs);
-  const partitionTimeoutMs = Math.max(1, Math.floor(discoveryBudgetMs / partitionsRemaining));
-  const maxOutputBytes = Math.min(
-    8 * 1_048_576,
-    Math.max(limits.maxOutputBytes, partition.bytes * 6 + 262_144),
+  const partitionTimeoutMs = Math.min(
+    discoveryBudgetMs,
+    Math.max(3 * 60_000, Math.floor(discoveryBudgetMs / partitionsRemaining)),
   );
+  // The bounded counter includes escaped workspace results plus every model
+  // response in the page. A raw 1 MiB partition can therefore exceed a
+  // simple source-size multiplier even though the provider request remains
+  // comfortably under its priced context ceiling.
+  const maxOutputBytes = 16 * 1_048_576;
   return sessionLimits(
     { ...limits, maxModelTurns, maxToolCalls, maxOutputBytes },
     partitionTimeoutMs,
@@ -976,7 +1075,7 @@ function validCostBudget(value: unknown): value is PortableCodexSecurityCostBudg
 }
 
 function safeProviderCode(value: string): SafeProviderErrorCode | null {
-  return value === "credential_rejected" || value === "secure_storage_unavailable"
+  return value === "credential_rejected" || value === "secure_storage_unavailable" || value === "rate_limited"
     ? value
     : null;
 }

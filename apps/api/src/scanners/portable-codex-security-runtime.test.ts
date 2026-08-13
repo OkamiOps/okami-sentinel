@@ -166,6 +166,23 @@ test("Portable Codex Security makes carried candidate ids explicit for assessmen
   }
 });
 
+test("Portable Codex Security carries the complete aggregate deep candidate set", () => {
+  const stage = PORTABLE_CODEX_SECURITY_STAGES.find((item) => item.id === "dataflow");
+  assert.ok(stage);
+  const candidateIds = Array.from({ length: 140 }, (_, index) => `candidate-${index + 1}`);
+  const prompt = buildPortableCodexSecurityStagePrompt(stage!, {
+    snapshotRoot: "/snapshot",
+    artifactRoot: "/artifacts",
+    candidateIds,
+  });
+
+  const match = prompt.match(
+    /BEGIN_PORTABLE_CANDIDATE_IDS_JSON\n([^\n]+)\nEND_PORTABLE_CANDIDATE_IDS_JSON/,
+  );
+  assert.ok(match);
+  assert.deepEqual(JSON.parse(match[1]!), candidateIds);
+});
+
 test("Portable Codex Security runtime writes atomically, round-trips, and maps bounded progress", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-runtime-"));
   try {

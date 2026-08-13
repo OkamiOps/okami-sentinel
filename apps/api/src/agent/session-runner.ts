@@ -119,7 +119,7 @@ function validateSessionSpec(input: CreateAgentSessionInput): void {
         input.terminalMode !== "provider-completion" && input.terminalMode !== "artifact-write") ||
       (input.artifactWriteByTurn !== undefined &&
         (!Number.isSafeInteger(input.artifactWriteByTurn) ||
-          input.artifactWriteByTurn < 1 ||
+          input.artifactWriteByTurn < 0 ||
           input.artifactWriteByTurn >= input.limits.maxModelTurns ||
           input.terminalMode !== "artifact-write")) ||
       (input.resultArtifactContract !== undefined &&

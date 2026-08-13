@@ -53,6 +53,7 @@ export type PortableCodexSecurityStageErrorCode =
   | "agent_input_byte_limit"
   | "agent_output_byte_limit"
   | "agent_time_limit"
+  | "rate_limited"
   | "cost_limit_reached"
   | "stage_evidence_incomplete"
   | "stage_artifact_invalid"
@@ -79,6 +80,12 @@ export interface PortableCodexSecurityStageObservationInput {
   dossier: PortableCodexSecurityDossier;
   /** Immutable source snapshot used to reject invented or out-of-range anchors. */
   snapshotRoot?: string;
+  /**
+   * Deep discovery can receive the complete server-planned source page in its
+   * immutable prompt. In that case an extra workspace tool call is not proof
+   * of coverage and must not be required for stage completion.
+   */
+  sourceEvidenceProjected?: boolean;
   usage: ScannerUsage;
   redact: (value: string) => string;
   signal?: AbortSignal;
@@ -325,8 +332,7 @@ export async function observePortableCodexSecurityStage(
   }
 
   if (
-    !snapshotToolRequested ||
-    !snapshotToolConsumed ||
+    (input.sourceEvidenceProjected !== true && (!snapshotToolRequested || !snapshotToolConsumed)) ||
     resultsWriteAccepted !== 1 ||
     artifactEvents !== 1
   ) {
@@ -475,6 +481,7 @@ function portableAgentFailureCode(
     case "agent_input_byte_limit":
     case "agent_output_byte_limit":
     case "agent_time_limit":
+    case "rate_limited":
       return code;
     default:
       return "agent_session_failed";

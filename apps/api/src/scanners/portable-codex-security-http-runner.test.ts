@@ -666,8 +666,9 @@ test("Portable Deep partitions the immutable auditable universe and merges every
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-deep-partitions-"));
   const config = configuration(root);
   config.mode = "deep";
-  config.limits.maxToolCalls = 64;
-  for (let index = 0; index < 49; index += 1) {
+  config.limits.totalTimeoutMs = 20 * 60_000;
+  config.limits.maxToolCalls = 128;
+  for (let index = 0; index < 97; index += 1) {
     fs.writeFileSync(
       path.join(config.repositoryPath, "src", `deep-${String(index).padStart(2, "0")}.ts`),
       `export const deep${index} = true;\n`,
@@ -687,26 +688,31 @@ test("Portable Deep partitions the immutable auditable universe and merges every
       },
     }));
     const discovery = specs.filter((spec) => /stage "discovery"/.test(spec.instructions));
-    assert.equal(discovery.length, 2);
+    assert.equal(discovery.length, 1);
+    assert.match(discovery[0]!.instructions, /BEGIN_PORTABLE_DEEP_SOURCE_FILES_JSON/);
+    assert.match(discovery[0]!.instructions, /export const deep0 = true/);
+    assert.equal(discovery[0]!.maxCompletionTokens, 32_768);
+    assert.equal(discovery[0]!.artifactWriteByTurn, 0);
     assert.ok(discovery.every((spec) => spec.limits.maxOutputBytes >= 262_144));
+    assert.ok(discovery.every((spec) => spec.limits.timeoutMs >= 3 * 60_000));
     assert.deepEqual(
       discovery.flatMap((spec) => spec.resultArtifactValidationContext?.deepCoverage?.requiredPaths ?? []),
-      ["src/auth.ts", ...Array.from({ length: 49 }, (_, index) =>
+      ["src/auth.ts", ...Array.from({ length: 97 }, (_, index) =>
         `src/deep-${String(index).padStart(2, "0")}.ts`)],
     );
     const dataflow = specs.find((spec) => /stage "dataflow"/.test(spec.instructions));
     assert.ok(dataflow?.resultArtifactValidationContext?.dossier.stageSummaries.some(
-      (summary) => summary.stage === "discovery" && /50\/50 auditable files/.test(summary.summary),
+      (summary) => summary.stage === "discovery" && /98\/98 auditable files/.test(summary.summary),
     ));
     assert.deepEqual(
       dataflow?.resultArtifactValidationContext?.dossier.scope.inspected,
-      ["src/auth.ts", ...Array.from({ length: 49 }, (_, index) =>
+      ["src/auth.ts", ...Array.from({ length: 97 }, (_, index) =>
         `src/deep-${String(index).padStart(2, "0")}.ts`)],
     );
     const finalDossier = readPortableCodexSecurityDossier(
       path.join(config.outputDir, "portable-codex-security-results"),
     );
-    assert.equal(finalDossier?.scope.inspected.length, 50);
+    assert.equal(finalDossier?.scope.inspected.length, 98);
   } finally {
     remove(root);
   }

@@ -227,6 +227,40 @@ test("Portable Codex Security accepts a validated terminal artifact without a pr
   }
 });
 
+test("Portable Codex Security accepts server-projected Deep source as discovery evidence", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-projected-source-"));
+  const stage = PORTABLE_CODEX_SECURITY_STAGES[2]!;
+  try {
+    fs.writeFileSync(
+      path.join(root, stage.artifact),
+      JSON.stringify({
+        schemaVersion: 1,
+        stage: stage.id,
+        summary: "The complete projected source page was inspected.",
+        observations: [],
+        scope: { inspected: ["src/a.ts"], unexamined: [] },
+        candidates: [],
+      }),
+    );
+    const observed = await observePortableCodexSecurityStage({
+      session: stageSession([
+        { type: "tool", phase: "requested", callId: "write", name: "results.write" },
+        { type: "tool", phase: "result", callId: "write", name: "results.write" },
+        { type: "artifact", path: stage.artifact, bytes: 1 },
+      ]),
+      stage,
+      artifactRoot: root,
+      dossier: createPortableCodexSecurityDossier(),
+      sourceEvidenceProjected: true,
+      usage: { reported: false, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+      redact: (value) => value,
+    });
+    assert.deepEqual(observed.dossier.scope.inspected, ["src/a.ts"]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("Portable Codex Security accepts one corrected write after a rejected artifact attempt", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-corrected-artifact-"));
   const stage = PORTABLE_CODEX_SECURITY_STAGES[0]!;

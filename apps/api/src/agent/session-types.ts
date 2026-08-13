@@ -511,9 +511,14 @@ class ConstrainedWireSession implements AgentSession {
         const usage = reply.usage ?? emptyUsage();
         yield { type: "usage", usage };
 
+        const exhaustiveDeepReadRepair = repairInspectionAllowed &&
+          this.#options.resultArtifactValidationContext?.deepCoverage !== undefined &&
+          reply.toolCalls.length > 0 &&
+          reply.toolCalls.every((call) => call.name === "workspace.read");
         if (
           repairInspectionAllowed &&
-          reply.toolCalls.length > MAX_ARTIFACT_REPAIR_INSPECTION_CALLS
+          reply.toolCalls.length > MAX_ARTIFACT_REPAIR_INSPECTION_CALLS &&
+          !exhaustiveDeepReadRepair
         ) {
           toolResults = [];
           for (const call of reply.toolCalls) {
@@ -543,6 +548,13 @@ class ConstrainedWireSession implements AgentSession {
 
         if (reply.toolCalls.length === 0) {
           if (artifactRepairActive && !artifactWritten) {
+            artifactRepairInspectionAvailable = false;
+            artifactRepairReminder = true;
+            toolResults = [];
+            continue;
+          }
+          if (this.#options.terminalMode === "artifact-write" && !artifactWritten) {
+            artifactRepairActive = true;
             artifactRepairInspectionAvailable = false;
             artifactRepairReminder = true;
             toolResults = [];
@@ -616,6 +628,20 @@ class ConstrainedWireSession implements AgentSession {
               }
             }
           } catch (error) {
+            if (
+              call.name === "results.write" &&
+              artifactValidationIssue === "deep-coverage-incomplete" &&
+              artifactRepairDetail === undefined &&
+              this.#options.resultArtifactValidationContext?.deepCoverage !== undefined
+            ) {
+              const deepCoverage = this.#options.resultArtifactValidationContext.deepCoverage;
+              artifactRepairDetail = {
+                kind: "deep-coverage",
+                missingPaths: deepCoverage.requiredPaths.filter(
+                  (path) => !deepCoverage.observedReadPaths.has(path),
+                ),
+              };
+            }
             const recovered = recoverableWorkspaceToolFailure(
               call,
               error,
@@ -780,7 +806,7 @@ function recoverableWorkspaceToolFailure(
           : artifactValidationIssue === "report-candidate-assessment-inconclusive"
           ? "Validation must include exactly one decisive assessment for every carried candidateId. Set each status to confirmed or rejected with a valid reason and pinned evidence; do not leave any candidate inconclusive."
           : artifactValidationIssue === "deep-coverage-incomplete"
-          ? "Deep discovery cannot finish until every exact path in BEGIN_PORTABLE_DEEP_REQUIRED_PATHS_JSON has been read completely with workspace.read. Read each missing assigned file without truncating maxBytes, then write the complete discovery artifact again."
+          ? "Deep discovery cannot finish until every assigned file has been read completely with workspace.read. Read only the exact repair.missingPaths entries without truncating maxBytes, then write the complete discovery artifact again."
           : "Use the declared result path and pass one complete compact JSON object with schemaVersion 1 and the stage matching that path. Include a non-empty summary, observations [], and scope paths as '.' or repository-relative paths. Candidate, assessment, finding, coverage, and evidence fields must match the declared stage contract and pinned line ranges."
         : resultArtifactContract === MANTIS_REPORT_RESULT_ARTIFACT_CONTRACT
           ? "Write report.json as one complete compact JSON object with schemaVersion:1, engine:'mantis', stage:'report', and findings. Every finding needs id, title, severity, remediation or mitigation, and code_paths. Every code_paths entry must be a repository-relative path followed by :line or :start-end. Correct the indicated finding and locator; do not remove a finding to bypass evidence validation."

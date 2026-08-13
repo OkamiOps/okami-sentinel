@@ -35,8 +35,12 @@ import {
 } from "./session-types.js";
 import { WORKSPACE_TOOL_WIRE_CODEC } from "./workspace-tool-wire-codec.js";
 
-/** The provider body limit is independent from an agent-run output budget. */
-export const HTTP_AGENT_BODY_LIMIT_BYTES = 1_048_576;
+/**
+ * The transport accepts the largest bounded AgentSession request/response.
+ * The session still accounts every serialized byte against its stricter
+ * per-run input/output limits before and after transport I/O.
+ */
+export const HTTP_AGENT_BODY_LIMIT_BYTES = 16_777_216;
 
 /** The scan/session AbortSignal is the authoritative liveness deadline. */
 export const HTTP_AGENT_TRANSPORT_TIMEOUTS = Object.freeze({

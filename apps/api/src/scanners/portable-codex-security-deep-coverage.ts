@@ -8,12 +8,15 @@ import type {
 
 const MAX_AUDITABLE_FILES = 4_096;
 const MAX_AUDITABLE_FILE_BYTES = 1_048_576;
-const MAX_PARTITION_FILES = 48;
-// workspace.read returns JSON-escaped source and the session has a 1 MiB
-// default output guard. Deep gives each isolated partition a derived, capped
-// tool-output allowance so a real codebase does not degrade into hundreds of
-// provider sessions while worst-case JSON escaping stays bounded.
-const MAX_PARTITION_BYTES = 1_048_576;
+const MAX_PARTITION_FILES = 128;
+// workspace.read returns JSON-escaped source and the session retains those
+// results in later requests. Keep raw pages below route pricing/context
+// ceilings while deriving a larger bounded output allowance per partition.
+// Keep projected source comfortably below common frozen pricing/context
+// thresholds. JSON escaping and the stage envelope add bytes on top of the
+// source itself; 768 KiB kept the real MiniMax-M3 request below its pinned
+// 512k-token rate-card ceiling where a 1.5 MiB page crossed it.
+const MAX_PARTITION_BYTES = 786_432;
 
 const SOURCE_EXTENSIONS = new Set([
   ".c", ".cc", ".cpp", ".cs", ".css", ".go", ".h", ".hpp", ".html",
@@ -40,6 +43,38 @@ export interface PortableDeepCoveragePartition {
   paths: readonly string[];
   fileBytes: Readonly<Record<string, number>>;
   bytes: number;
+}
+
+export interface PortableDeepCoverageSourceFile {
+  path: string;
+  lineCount: number;
+  content: string;
+}
+
+/**
+ * Reads one server-planned immutable partition for prompt projection. The
+ * model receives every byte as untrusted data; it no longer has to spend
+ * hundreds of tool calls proving that it invoked workspace.read.
+ */
+export function readPortableDeepCoveragePartition(
+  snapshotRoot: string,
+  partition: PortableDeepCoveragePartition,
+): readonly PortableDeepCoverageSourceFile[] {
+  const root = path.resolve(snapshotRoot);
+  return partition.paths.map((relativePath) => {
+    const absolute = path.resolve(root, relativePath);
+    if (!absolute.startsWith(`${root}${path.sep}`)) throw new Error("deep_coverage_unavailable");
+    const expectedBytes = partition.fileBytes[relativePath];
+    const info = fs.lstatSync(absolute);
+    if (info.isSymbolicLink() || !info.isFile() || info.size !== expectedBytes) {
+      throw new Error("deep_coverage_unavailable");
+    }
+    const content = fs.readFileSync(absolute, "utf8");
+    const lineCount = content.length === 0
+      ? 0
+      : content.split("\n").length - (content.endsWith("\n") ? 1 : 0);
+    return { path: relativePath, lineCount, content };
+  });
 }
 
 export interface PortableDeepCoveragePlan {
