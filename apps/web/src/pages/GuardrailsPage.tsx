@@ -13,6 +13,7 @@ import {
   DecisionGraph,
   DeleteGateButton,
   EvidenceTrace,
+  GateOutcomeBadge,
   GuardrailPreflightSheet,
   GuardrailScanMonitor,
   PortfolioPipeline,
@@ -94,7 +95,7 @@ export function GuardrailsPage() {
           } satisfies RepositoryReadiness] as const;
         }
       }));
-      const selected = selectedResponse?.gate ?? selectGate(gateList.gates, gateId);
+      const selected = selectedResponse?.gate ?? (gateId ? selectGate(gateList.gates, gateId) : null);
       const detail = selectedResponse ?? (selected ? await api.getGate(selected.id) : null);
       setState({
         status: "ready",
@@ -217,28 +218,42 @@ export function GuardrailsPage() {
     });
   }
 
+  function handleGateDeleted(deletedGateId: string) {
+    setState((current) => {
+      if (current.status !== "ready") return current;
+      return {
+        ...current,
+        gates: current.gates.filter((gate) => gate.id !== deletedGateId),
+        selectedGate: current.selectedGate?.id === deletedGateId ? null : current.selectedGate,
+        artifact: current.selectedGate?.id === deletedGateId ? null : current.artifact,
+      };
+    });
+    navigate("/guardrails", { replace: true });
+  }
+
   const selectedGateActive = readyState.selectedGate ? isGateActive(readyState.selectedGate.status) : false;
-  const setupRepositoryKey = readyState.selectedGate?.repositoryKey ?? readyState.repositories[0]?.repositoryKey ?? null;
+  const setupRepositoryKey = readyState.selectedGate?.repositoryKey ?? null;
 
   return (
     <div className="min-w-0">
       <PageHeader
         code="03 / GUARDRAILS"
-        title={t("guardrails.title")}
-        description={t("guardrails.description")}
+        title={gateId ? t("guardrails.title") : t("guardrails.projectsTitle")}
+        description={gateId ? t("guardrails.description") : t("guardrails.projectsDescription")}
         actions={(
           <>
+            {gateId && <Button asChild variant="outline" className="min-h-11"><Link to="/guardrails"><ArrowRight aria-hidden size={14} className="rotate-180" />{t("guardrails.backProjects")}</Link></Button>}
             <Button asChild variant="outline" className="min-h-11">
               <Link to={setupRepositoryKey ? `/guardrails/setup?repository=${encodeURIComponent(setupRepositoryKey)}` : "/guardrails/setup"}><GitBranch aria-hidden size={14} />{t("guardrails.setup")}</Link>
             </Button>
-            <Button className="min-h-11" disabled={!setupRepositoryKey || selectedGateActive} onClick={() => { setRunRepositoryKey(setupRepositoryKey); setRunOpen(true); }}><ArrowRight aria-hidden size={14} />{t("guardrails.scanNow")}</Button>
+            {gateId && <Button className="min-h-11" disabled={!setupRepositoryKey || selectedGateActive} onClick={() => { setRunRepositoryKey(setupRepositoryKey); setRunOpen(true); }}><ArrowRight aria-hidden size={14} />{t("guardrails.scanNow")}</Button>}
             {selectedGateActive && (
               <Button variant="destructive" className="min-h-11" onClick={() => void cancelSelected()} disabled={busy}>
                 <Square aria-hidden size={13} />{t("guardrails.cancel")}
               </Button>
             )}
             {readyState.selectedGate && !selectedGateActive && (
-              <DeleteGateButton gate={readyState.selectedGate} onDeleted={() => navigate("/guardrails", { replace: true })} />
+              <DeleteGateButton gate={readyState.selectedGate} onDeleted={() => handleGateDeleted(readyState.selectedGate!.id)} />
             )}
             <EnrollmentSheet open={enrollOpen} onOpenChange={setEnrollOpen} busy={busy} onEnroll={enroll} />
             <GuardrailPreflightSheet
@@ -255,7 +270,7 @@ export function GuardrailsPage() {
 
       {actionError && <AlertBanner>{actionError}</AlertBanner>}
 
-      {readyState.gates.length > 0 ? (
+      {readyState.selectedGate ? (
         <PortfolioPipeline
           repositories={readyState.repositories}
           gates={readyState.gates}
@@ -269,6 +284,7 @@ export function GuardrailsPage() {
           readiness={readyState.readiness}
           gates={readyState.gates}
           onRun={(repositoryKey) => { setRunRepositoryKey(repositoryKey); setRunOpen(true); }}
+          onOpenGate={(gate) => navigate(guardrailHref(gate.id))}
         />
       )}
 
@@ -335,11 +351,13 @@ function GuardrailLaunchpad({
   readiness,
   gates,
   onRun,
+  onOpenGate,
 }: {
   repositories: readonly GuardrailRepository[];
   readiness: Readonly<Record<string, RepositoryReadiness>>;
   gates: readonly GateRun[];
   onRun: (repositoryKey: string) => void;
+  onOpenGate: (gate: GateRun) => void;
 }) {
   const { t } = useI18n();
   const [selectedKey, setSelectedKey] = useState(repositories[0]?.repositoryKey ?? "");
@@ -353,6 +371,12 @@ function GuardrailLaunchpad({
     && repoReadiness?.authorityReady === true
     && repoReadiness.executorCode !== "ready";
   const scanReady = repoReadiness?.executorReady === true;
+  const repositoryGates = repository
+    ? [...gates]
+      .filter((gate) => gate.repositoryKey === repository.repositoryKey)
+      .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt))
+    : [];
+  const latestGate = repositoryGates[0] ?? null;
   const statusLabel = defaultActionsBlocked
     ? t("guardrails.managedFallbackReady")
     : actionsBlocked && repoReadiness
@@ -415,11 +439,26 @@ function GuardrailLaunchpad({
 
               <div className="grid gap-0 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,.42fr)]">
                 <div className="min-w-0 border-b p-5 lg:border-b-0 lg:border-r md:p-7">
-                  <div className="flex items-center gap-2 text-primary"><Activity aria-hidden size={15} /><span className="bench-label">LATEST GATE ACTIVITY</span></div>
-                  <div className="mt-5 border border-dashed px-4 py-6">
-                    <strong className="text-sm">{t("guardrails.empty")}</strong>
-                    <p className="mt-2 max-w-xl text-xs leading-5 text-muted-foreground">{scanReady ? t("guardrails.emptyDescription") : statusLabel}</p>
-                  </div>
+                  <div className="flex items-center gap-2 text-primary"><Activity aria-hidden size={15} /><span className="bench-label">{t("guardrails.latestGate")}</span></div>
+                  {latestGate ? (
+                    <button type="button" onClick={() => onOpenGate(latestGate)} className="mt-5 grid w-full min-w-0 gap-4 border px-4 py-4 text-left transition-colors hover:bg-accent sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                      <span className="min-w-0">
+                        <span className="flex flex-wrap items-center gap-2"><GateOutcomeBadge outcome={latestGate.outcome} status={latestGate.status} /><strong className="text-sm">{latestGate.pullRequestNumber ? `PR #${latestGate.pullRequestNumber}` : latestGate.headRef}</strong></span>
+                        <span className="mt-2 block truncate font-mono text-[9px] text-muted-foreground">{latestGate.id} · {latestGate.executor}</span>
+                      </span>
+                      <span className="inline-flex items-center gap-2 font-mono text-[9px] uppercase text-primary">{t("guardrails.openGate")}<ArrowRight aria-hidden size={14} /></span>
+                    </button>
+                  ) : (
+                    <div className="mt-5 border border-dashed px-4 py-6">
+                      <strong className="text-sm">{t("guardrails.empty")}</strong>
+                      <p className="mt-2 max-w-xl text-xs leading-5 text-muted-foreground">{scanReady ? t("guardrails.emptyDescription") : statusLabel}</p>
+                    </div>
+                  )}
+                  {repositoryGates.length > 1 && (
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {repositoryGates.slice(1, 4).map((gate) => <button key={gate.id} type="button" onClick={() => onOpenGate(gate)} className="border px-3 py-2 font-mono text-[8px] uppercase text-muted-foreground hover:border-primary hover:text-primary">{gate.pullRequestNumber ? `PR #${gate.pullRequestNumber}` : gate.headRef} · {gate.status}</button>)}
+                    </div>
+                  )}
                 </div>
                 <div className="p-5 md:p-7">
                   <div className="bench-label text-primary">NEXT REQUIRED ACTION</div>
