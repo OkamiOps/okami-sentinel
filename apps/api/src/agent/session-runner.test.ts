@@ -13,6 +13,7 @@ import {
   type AgentToolCall,
   type AgentToolResult,
   type AgentUpstreamRequest,
+  type AgentWireRequestControl,
   type NormalizedModelReply,
   type WireSessionAdapter,
 } from "./session-types.js";
@@ -1416,6 +1417,83 @@ test("an artifact repair inspection permits one bounded tool call before the cor
   await collect(session.run(), events);
   assert.equal(upstreamRequests, 3);
   assert.deepEqual(hostCalls, ["workspace.search", "results.write"]);
+  assert.equal(events.filter((event) => isArtifact(event, "result.json")).length, 1);
+});
+
+test("an artifact repair rejects a multi-tool inspection batch and accepts the next isolated write", async (t) => {
+  const fixture = await fixtureRoots("runner-artifact-repair-multi-tool-inspection");
+  t.after(fixture.cleanup);
+  const replies: NormalizedModelReply[] = [
+    {
+      toolCalls: [{
+        id: "write-invalid-json",
+        name: "results.write",
+        input: { path: "result.json", content: "{\"status\":" },
+      }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    {
+      toolCalls: [
+        { id: "inspect-batched", name: "workspace.search", input: { query: "status", path: "." } },
+        {
+          id: "write-batched",
+          name: "results.write",
+          input: { path: "result.json", content: "{\"status\":\"premature\"}" },
+        },
+      ],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    {
+      toolCalls: [{
+        id: "write-corrected-json",
+        name: "results.write",
+        input: { path: "result.json", content: "{\"status\":\"ok\"}" },
+      }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+  ];
+  const hostCalls: string[] = [];
+  const consumed: AgentToolResult[][] = [];
+  const controls: Array<AgentWireRequestControl | undefined> = [];
+  const session = createConstrainedWireSession({
+    limits: { ...DEFAULT_AGENT_LIMITS, maxModelTurns: 4, maxToolCalls: 8 },
+    signal: new AbortController().signal,
+    terminalMode: "artifact-write",
+    host: {
+      minimumOutputBytes() { return 0; },
+      async call(name) {
+        hostCalls.push(name);
+        return { content: "artifact-written", artifact: { path: "result.json", bytes: 15 } };
+      },
+    },
+    upstream: { async request() { return {}; } },
+    adapter: {
+      nextRequest(toolResults, control) {
+        consumed.push([...toolResults]);
+        controls.push(control);
+        return { operation: "messages", body: {} };
+      },
+      readResponse() {
+        const reply = replies.shift();
+        if (reply === undefined) throw new Error("test transcript exhausted");
+        return reply;
+      },
+    },
+  });
+
+  const events: unknown[] = [];
+  await collect(session.run(), events);
+  assert.deepEqual(hostCalls, ["results.write"]);
+  assert.equal(consumed[2]?.length, 2);
+  assert.equal(consumed[2]?.every((result) => result.ok === false), true);
+  assert.equal(controls[2]?.finalizationRequired, true);
+  assert.equal(controls[2]?.artifactRepairReminder, true);
   assert.equal(events.filter((event) => isArtifact(event, "result.json")).length, 1);
 });
 

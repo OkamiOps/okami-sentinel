@@ -511,6 +511,36 @@ class ConstrainedWireSession implements AgentSession {
         const usage = reply.usage ?? emptyUsage();
         yield { type: "usage", usage };
 
+        if (
+          repairInspectionAllowed &&
+          reply.toolCalls.length > MAX_ARTIFACT_REPAIR_INSPECTION_CALLS
+        ) {
+          toolResults = [];
+          for (const call of reply.toolCalls) {
+            if (seenCallIds.has(call.id) || toolCalls >= this.#options.limits.maxToolCalls) {
+              throw new AgentSessionError(toolCalls >= this.#options.limits.maxToolCalls
+                ? "agent_tool_limit"
+                : "agent_protocol_error");
+            }
+            seenCallIds.add(call.id);
+            toolCalls += 1;
+            yield { type: "tool", phase: "requested", callId: call.id, name: call.name };
+            toolResults.push({
+              callId: call.id,
+              name: call.name,
+              content: JSON.stringify({
+                error: "artifact_repair_batch_invalid",
+                hint: "Artifact repair permits exactly one inspection tool call. Call results.write alone on the next reply.",
+              }),
+              ok: false,
+            });
+            yield { type: "tool", phase: "result", callId: call.id, name: call.name, ok: false };
+          }
+          artifactRepairInspectionAvailable = false;
+          artifactRepairReminder = true;
+          continue;
+        }
+
         if (reply.toolCalls.length === 0) {
           if (artifactRepairActive && !artifactWritten) {
             artifactRepairInspectionAvailable = false;
@@ -529,12 +559,6 @@ class ConstrainedWireSession implements AgentSession {
         validateTerminalResultsWrite(reply.toolCalls);
         if (this.#options.terminalMode === "artifact-write") {
           validateArtifactTerminalWrite(reply.toolCalls);
-        }
-        if (
-          repairInspectionAllowed &&
-          reply.toolCalls.length > MAX_ARTIFACT_REPAIR_INSPECTION_CALLS
-        ) {
-          throw new AgentSessionError("agent_protocol_error");
         }
         toolResults = [];
         for (const call of reply.toolCalls) {

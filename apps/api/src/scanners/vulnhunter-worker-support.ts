@@ -92,7 +92,7 @@ function isSnapshotExcluded(relative: string): boolean {
   const segments = relative.split(path.sep);
   if (segments.some((segment) => SNAPSHOT_EXCLUDES.has(segment))) return true;
   if (segments.some((segment) => AGENT_INSTRUCTION_DIRECTORIES.has(segment))) return true;
-  if (segments.length === 1 && ROOT_AGENT_INSTRUCTION_FILES.has(segments[0]!)) return true;
+  if (segments.some((segment) => ROOT_AGENT_INSTRUCTION_FILES.has(segment))) return true;
   return segments.length === 2 && segments[0] === ".github" &&
     segments[1] === "copilot-instructions.md";
 }
