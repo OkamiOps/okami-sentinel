@@ -689,7 +689,7 @@ const ptBR = {
   "guardrails.launchHint": "Use “Executar preflight” acima para resolver o alvo e revisar o contrato antes de iniciar qualquer scan.",
   "guardrails.launchRegisterHint": "Use “Cadastrar repositório” acima. Uma pasta local e uma instalação GitHub são autoridades diferentes e nunca recebem fallback silencioso.",
   "guardrails.resolveError": "Falha ao resolver o alvo remoto.",
-  "guardrails.nativeCostModelUnsupported": "Este modelo não publica uma tarifa compatível com o teto de custo do scanner nativo. Escolha GPT-5.6 Sol, Terra ou outra rota Portable precificada.",
+  "guardrails.nativeCostModelUnsupported": "Este modelo não publica uma tarifa compatível com o teto de custo do scanner nativo.",
   "guardrails.startError": "Falha ao iniciar o gate.",
   "guardrails.authorityTitle": "Repositório e autoridade",
   "guardrails.select": "Selecione",
@@ -709,6 +709,21 @@ const ptBR = {
   "guardrails.previewScan": "Intenção do scan",
   "guardrails.previewCost": "Envelope estimado",
   "guardrails.costInFlight": "Uma request em voo pode ultrapassar a estimativa.",
+  "guardrails.costControlTitle": "Controle de custo deste gate",
+  "guardrails.costMode.policy": "Automático",
+  "guardrails.costMode.manual": "Manual",
+  "guardrails.costMode.none": "Sem teto",
+  "guardrails.costMode.policyDetail": "Usa o valor versionado na policy do repositório. O preview mostrará o valor efetivo antes de iniciar.",
+  "guardrails.costMode.noneDetail": "Não envia maxCostUsd nem --max-cost. O scan pode consumir sem um limite monetário local.",
+  "guardrails.manualCostLabel": "Teto manual / USD",
+  "guardrails.manualCostHint": "Valor positivo aplicado somente a este gate. Em modelos nativos sem tarifa publicada, use Sem teto.",
+  "guardrails.manualCostInvalid": "Informe um valor maior que zero.",
+  "guardrails.costNoCeiling": "SEM TETO",
+  "guardrails.costNoCeilingDetail": "Nenhum limite monetário será enviado ao scanner.",
+  "guardrails.costSource.policy": "POLICY",
+  "guardrails.costSource.manual": "MANUAL",
+  "guardrails.costSource.none": "SEM TETO",
+  "guardrails.nativeCostLimitRequiresPrice": "Este modelo nativo não aceita teto automático nem manual porque o scanner não publica sua tarifa. Selecione Sem teto ou escolha uma rota precificada.",
   "guardrails.publicationOwner": "Responsável pela publicação",
   "guardrails.publicationEligible": "Check elegível na branch protegida {branch}.",
   "guardrails.publicationIneligible": "Preflight fora da branch protegida: não publica aprovação.",
@@ -1141,6 +1156,7 @@ const en: Record<TranslationKey, string> = {
   "guardrails.githubAuthorityReady": "Repository authorized by the GitHub App installation.",
   "guardrails.baselineAuthorityReady": "The installation can resolve the baseline by GitHub identity.",
   "compare.profileMismatch": "Execution profiles differ between Native and Portable. The diff remains visible, but compares distinct methodologies and recipes.",
+  "guardrails.costControlTitle": "Cost control for this gate", "guardrails.costMode.policy": "Automatic", "guardrails.costMode.manual": "Manual", "guardrails.costMode.none": "No ceiling", "guardrails.costMode.policyDetail": "Uses the repository's versioned policy value. The preview shows the effective amount before launch.", "guardrails.costMode.noneDetail": "Sends neither maxCostUsd nor --max-cost. The scan can run without a local monetary limit.", "guardrails.manualCostLabel": "Manual ceiling / USD", "guardrails.manualCostHint": "Positive amount applied only to this gate. For native models without published pricing, use No ceiling.", "guardrails.manualCostInvalid": "Enter an amount greater than zero.", "guardrails.costNoCeiling": "NO CEILING", "guardrails.costNoCeilingDetail": "No monetary limit will be sent to the scanner.", "guardrails.costSource.policy": "POLICY", "guardrails.costSource.manual": "MANUAL", "guardrails.costSource.none": "NO CEILING", "guardrails.nativeCostLimitRequiresPrice": "This native model accepts neither an automatic nor manual ceiling because the scanner does not publish its rate. Select No ceiling or choose a priced route.",
 };
 
 const es: Record<TranslationKey, string> = {
@@ -1303,6 +1319,7 @@ const es: Record<TranslationKey, string> = {
   "guardrails.githubAuthorityReady": "Repositorio autorizado por la instalación de GitHub App.",
   "guardrails.baselineAuthorityReady": "La instalación puede resolver la baseline mediante la identidad de GitHub.",
   "compare.profileMismatch": "Los perfiles de ejecución difieren entre Native y Portable. El diff sigue visible, pero compara metodologías y recetas distintas.",
+  "guardrails.costControlTitle": "Control de coste de este gate", "guardrails.costMode.policy": "Automático", "guardrails.costMode.manual": "Manual", "guardrails.costMode.none": "Sin límite", "guardrails.costMode.policyDetail": "Usa el valor versionado en la policy del repositorio. El preview muestra el importe efectivo antes de iniciar.", "guardrails.costMode.noneDetail": "No envía maxCostUsd ni --max-cost. El scan puede ejecutarse sin límite monetario local.", "guardrails.manualCostLabel": "Límite manual / USD", "guardrails.manualCostHint": "Importe positivo aplicado solo a este gate. Para modelos nativos sin tarifa publicada, usa Sin límite.", "guardrails.manualCostInvalid": "Introduce un importe mayor que cero.", "guardrails.costNoCeiling": "SIN LÍMITE", "guardrails.costNoCeilingDetail": "No se enviará ningún límite monetario al scanner.", "guardrails.costSource.policy": "POLICY", "guardrails.costSource.manual": "MANUAL", "guardrails.costSource.none": "SIN LÍMITE", "guardrails.nativeCostLimitRequiresPrice": "Este modelo nativo no acepta límite automático ni manual porque el scanner no publica su tarifa. Selecciona Sin límite o elige una ruta con precio.",
 };
 
 const de: Record<TranslationKey, string> = {
@@ -1465,6 +1482,7 @@ const de: Record<TranslationKey, string> = {
   "guardrails.githubAuthorityReady": "Repository durch die GitHub-App-Installation autorisiert.",
   "guardrails.baselineAuthorityReady": "Die Installation kann die Baseline über die GitHub-Identität auflösen.",
   "compare.profileMismatch": "Die Ausführungsprofile unterscheiden sich zwischen Native und Portable. Der Diff bleibt sichtbar, vergleicht jedoch verschiedene Methodiken und Rezepte.",
+  "guardrails.costControlTitle": "Kostenkontrolle für dieses Gate", "guardrails.costMode.policy": "Automatisch", "guardrails.costMode.manual": "Manuell", "guardrails.costMode.none": "Kein Limit", "guardrails.costMode.policyDetail": "Verwendet den versionierten Policy-Wert des Repositorys. Die Vorschau zeigt den effektiven Betrag vor dem Start.", "guardrails.costMode.noneDetail": "Sendet weder maxCostUsd noch --max-cost. Der Scan läuft ohne lokales Geldlimit.", "guardrails.manualCostLabel": "Manuelles Limit / USD", "guardrails.manualCostHint": "Positiver Betrag nur für dieses Gate. Bei nativen Modellen ohne veröffentlichten Tarif Kein Limit verwenden.", "guardrails.manualCostInvalid": "Gib einen Betrag größer als null ein.", "guardrails.costNoCeiling": "KEIN LIMIT", "guardrails.costNoCeilingDetail": "Es wird kein Geldlimit an den Scanner gesendet.", "guardrails.costSource.policy": "POLICY", "guardrails.costSource.manual": "MANUELL", "guardrails.costSource.none": "KEIN LIMIT", "guardrails.nativeCostLimitRequiresPrice": "Dieses native Modell akzeptiert weder ein automatisches noch ein manuelles Limit, da der Scanner keinen Tarif veröffentlicht. Wähle Kein Limit oder eine bepreiste Route.",
 };
 
 const fr: Record<TranslationKey, string> = {
@@ -1627,6 +1645,7 @@ const fr: Record<TranslationKey, string> = {
   "guardrails.githubAuthorityReady": "Dépôt autorisé par l’installation GitHub App.",
   "guardrails.baselineAuthorityReady": "L’installation peut résoudre la baseline via l’identité GitHub.",
   "compare.profileMismatch": "Les profils d’exécution diffèrent entre Native et Portable. Le diff reste visible, mais compare des méthodologies et recettes distinctes.",
+  "guardrails.costControlTitle": "Contrôle du coût de ce gate", "guardrails.costMode.policy": "Automatique", "guardrails.costMode.manual": "Manuel", "guardrails.costMode.none": "Sans plafond", "guardrails.costMode.policyDetail": "Utilise la valeur versionnée dans la policy du dépôt. L'aperçu affiche le montant effectif avant le lancement.", "guardrails.costMode.noneDetail": "N'envoie ni maxCostUsd ni --max-cost. Le scan peut s'exécuter sans limite monétaire locale.", "guardrails.manualCostLabel": "Plafond manuel / USD", "guardrails.manualCostHint": "Montant positif appliqué uniquement à ce gate. Pour un modèle natif sans tarif publié, utilisez Sans plafond.", "guardrails.manualCostInvalid": "Saisissez un montant supérieur à zéro.", "guardrails.costNoCeiling": "SANS PLAFOND", "guardrails.costNoCeilingDetail": "Aucune limite monétaire ne sera envoyée au scanner.", "guardrails.costSource.policy": "POLICY", "guardrails.costSource.manual": "MANUEL", "guardrails.costSource.none": "SANS PLAFOND", "guardrails.nativeCostLimitRequiresPrice": "Ce modèle natif n'accepte ni plafond automatique ni manuel car le scanner ne publie pas son tarif. Sélectionnez Sans plafond ou une route tarifée.",
 };
 
 const dictionaries: Record<Locale, Record<TranslationKey, string>> = { "pt-BR": ptBR, en, es, de, fr };

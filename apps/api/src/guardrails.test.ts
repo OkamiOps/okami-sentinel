@@ -70,6 +70,7 @@ function testPreview(
       mode: "standard",
     },
     costBudget: {
+      source: "policy",
       maxCostUsd: 18,
       kind: "estimated_ceiling",
       requestInFlightMayExceed: true,

@@ -271,6 +271,7 @@ function previewFixture(): AcceptedGateTargetPreview {
       mode: policy.scan.mode,
     },
     costBudget: {
+      source: "policy",
       maxCostUsd: policy.scan.maxCostUsd,
       kind: "estimated_ceiling",
       requestInFlightMayExceed: true,

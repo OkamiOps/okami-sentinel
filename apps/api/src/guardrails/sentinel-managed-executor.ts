@@ -317,7 +317,7 @@ function scanRequest(
     ...(selected === null ? { model: input.preview.policy.scan.model, effort: input.preview.policy.scan.effort } : {}),
     ...(selected?.effort === undefined ? {} : { effort: selected.effort }),
     mode: selected?.mode ?? input.preview.policy.scan.mode,
-    maxCostUsd: input.preview.policy.scan.maxCostUsd,
+    ...(input.preview.costBudget.maxCostUsd === null ? {} : { maxCostUsd: input.preview.costBudget.maxCostUsd }),
     paths: changeSet.scopeMode === "changed" ? changeSet.scanPaths : [],
   };
 }

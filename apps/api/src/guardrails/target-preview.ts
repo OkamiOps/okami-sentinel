@@ -41,6 +41,7 @@ export function nativeScanCostCeilingSupported(
   compatibility: Pick<ConnectionCompatibility, "selectedProfile">,
   nativePricedModelIds: readonly string[],
 ): boolean {
+  if (selection.costLimit?.kind === "none") return true;
   return selection.engine !== "codex-security"
     || compatibility.selectedProfile !== "native"
     || (selection.connection.modelId !== null && nativePricedModelIds.includes(selection.connection.modelId));
@@ -93,9 +94,10 @@ export interface GateTargetPreview {
     mode: "standard" | "deep";
   };
   costBudget: {
-    maxCostUsd: number;
-    kind: "estimated_ceiling";
-    requestInFlightMayExceed: true;
+    source: "policy" | "manual" | "none";
+    maxCostUsd: number | null;
+    kind: "estimated_ceiling" | "none";
+    requestInFlightMayExceed: boolean;
   };
   publication: GatePublicationEligibility;
 }
@@ -186,11 +188,7 @@ export class TargetPreviewService {
           : scanSelection.effort ?? "provider-managed",
         mode: scanSelection?.mode ?? protectedPolicy.policy.scan.mode,
       },
-      costBudget: {
-        maxCostUsd: protectedPolicy.policy.scan.maxCostUsd,
-        kind: "estimated_ceiling",
-        requestInFlightMayExceed: true,
-      },
+      costBudget: resolvedCostBudget(protectedPolicy.policy, scanSelection),
       publication: gatePublicationEligibility(
         protectedPolicy.policy,
         target,
@@ -254,7 +252,7 @@ export function parseTargetPreviewRequest(value: unknown): TargetPreviewRequest 
 
 function parsedScanSelection(value: unknown): GuardrailScanSelection {
   const input = record(value);
-  exactKeys(input, new Set(["engine", "connection", "effort", "mode"]), new Set(["effort"]));
+  exactKeys(input, new Set(["engine", "connection", "effort", "mode", "costLimit"]), new Set(["effort", "costLimit"]));
   if (!isScannerEngine(input.engine) || (input.mode !== "standard" && input.mode !== "deep")) invalid();
   const connection = record(input.connection);
   exactKeys(connection, new Set(["connectionId", "modelSelectionMode", "modelId"]), new Set());
@@ -264,11 +262,44 @@ function parsedScanSelection(value: unknown): GuardrailScanSelection {
   const modelId = connection.modelId === null ? null : boundedString(connection.modelId, 320);
   if ((connection.modelSelectionMode === "catalog") !== (modelId !== null)) invalid();
   const effort = input.effort === undefined ? undefined : boundedString(input.effort, 64);
+  const costLimit = input.costLimit === undefined ? undefined : parsedCostLimit(input.costLimit);
   return {
     engine: input.engine,
     connection: { connectionId, modelSelectionMode: connection.modelSelectionMode, modelId },
     ...(effort === undefined ? {} : { effort }),
     mode: input.mode,
+    ...(costLimit === undefined ? {} : { costLimit }),
+  };
+}
+
+function parsedCostLimit(value: unknown): GuardrailScanSelection["costLimit"] {
+  const input = record(value);
+  if (input.kind === "policy" || input.kind === "none") {
+    exactKeys(input, new Set(["kind"]), new Set());
+    return { kind: input.kind };
+  }
+  if (input.kind === "manual") {
+    exactKeys(input, new Set(["kind", "maxCostUsd"]), new Set());
+    if (typeof input.maxCostUsd !== "number" || !Number.isFinite(input.maxCostUsd) || input.maxCostUsd <= 0) invalid();
+    return { kind: "manual", maxCostUsd: input.maxCostUsd };
+  }
+  invalid();
+}
+
+function resolvedCostBudget(
+  policy: GuardrailPolicy,
+  selection: GuardrailScanSelection | null,
+): GateTargetPreview["costBudget"] {
+  const limit = selection?.costLimit ?? { kind: "policy" as const };
+  if (limit.kind === "none") {
+    return { source: "none", maxCostUsd: null, kind: "none", requestInFlightMayExceed: false };
+  }
+  const maxCostUsd = limit.kind === "manual" ? limit.maxCostUsd : policy.scan.maxCostUsd;
+  return {
+    source: limit.kind,
+    maxCostUsd,
+    kind: "estimated_ceiling",
+    requestInFlightMayExceed: true,
   };
 }
 

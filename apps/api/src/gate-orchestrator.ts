@@ -336,7 +336,7 @@ export async function startRemoteManagedGate(
     error: null,
     startedAt: deps.now(),
     completedAt: null,
-    costCeilingUsd: preview.costBudget.maxCostUsd,
+    costCeilingUsd: preview.costBudget.maxCostUsd ?? 0,
     estimatedUsd: 0,
   };
   deps.insertGateRun(run);

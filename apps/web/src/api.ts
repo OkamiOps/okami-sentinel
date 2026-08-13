@@ -228,9 +228,10 @@ export interface GuardrailTargetPreview {
     mode: "standard" | "deep";
   };
   costBudget: {
-    maxCostUsd: number;
-    kind: "estimated_ceiling";
-    requestInFlightMayExceed: true;
+    source: "policy" | "manual" | "none";
+    maxCostUsd: number | null;
+    kind: "estimated_ceiling" | "none";
+    requestInFlightMayExceed: boolean;
   };
   publication: {
     eligible: boolean;

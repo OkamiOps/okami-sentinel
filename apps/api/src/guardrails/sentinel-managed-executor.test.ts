@@ -105,6 +105,27 @@ test("launches the exact engine, connection, model, effort and mode frozen by th
   assert.equal(request.mode, "deep");
 });
 
+test("uses the frozen manual ceiling and omits maxCostUsd when the preview has no ceiling", async () => {
+  const requests: StartScanRequest[] = [];
+  const executor = new SentinelManagedExecutor(dependencies({
+    startScan: async (value) => {
+      requests.push(structuredClone(value));
+      return scan("running");
+    },
+  }));
+  const manual = preview();
+  manual.costBudget = {
+    source: "manual", maxCostUsd: 7.5, kind: "estimated_ceiling", requestInFlightMayExceed: true,
+  };
+  await executor.execute({ ...executionInput(), preview: manual });
+  assert.equal(requests[0]?.maxCostUsd, 7.5);
+
+  const none = preview();
+  none.costBudget = { source: "none", maxCostUsd: null, kind: "none", requestInFlightMayExceed: false };
+  await executor.execute({ ...executionInput(), preview: none });
+  assert.equal("maxCostUsd" in requests[1]!, false);
+});
+
 test("partial submodule or LFS coverage cannot publish success", async () => {
   const executor = new SentinelManagedExecutor(dependencies({
     handle: materialization({
@@ -268,6 +289,7 @@ function preview(): AcceptedGateTargetPreview {
       mode: policy.scan.mode,
     },
     costBudget: {
+      source: "policy",
       maxCostUsd: policy.scan.maxCostUsd,
       kind: "estimated_ceiling",
       requestInFlightMayExceed: true,

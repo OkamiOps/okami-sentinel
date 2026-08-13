@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { defaultGuardrailPolicy } from "@csb/gate-core";
 import type {
+  ConnectionCompatibility,
   GateExecutorKind,
   GateTarget,
   GuardrailRepository,
@@ -22,7 +23,7 @@ const BASE_SHA = "a".repeat(40);
 const FIRST_HEAD_SHA = "b".repeat(40);
 const SECOND_HEAD_SHA = "c".repeat(40);
 
-test("a native cost ceiling accepts only models published by the native scanner catalog", () => {
+test("a native cost ceiling accepts only priced models while no ceiling remains available", () => {
   const selection = {
     engine: "codex-security" as const,
     connection: { connectionId: "openai", modelSelectionMode: "catalog" as const, modelId: "gpt-5.3-codex-spark" },
@@ -36,6 +37,57 @@ test("a native cost ceiling accepts only models published by the native scanner 
     connection: { ...selection.connection, modelId: "gpt-5.6-sol" },
   }, { selectedProfile: "native" }, ["gpt-5.6-sol", "gpt-5.6-terra"]), true);
   assert.equal(nativeScanCostCeilingSupported(selection, { selectedProfile: "portable" }, []), true);
+  assert.equal(nativeScanCostCeilingSupported({
+    ...selection,
+    costLimit: { kind: "manual", maxCostUsd: 7 },
+  }, { selectedProfile: "native" }, []), false);
+  assert.equal(nativeScanCostCeilingSupported({
+    ...selection,
+    costLimit: { kind: "none" },
+  }, { selectedProfile: "native" }, []), true);
+});
+
+test("parses policy, manual and no-ceiling scan controls and rejects invalid manual values", () => {
+  const base = {
+    target: { kind: "pull_request", number: 42 },
+    executor: "sentinel-managed",
+    scanSelection: {
+      engine: "codex-security",
+      connection: { connectionId: "openai", modelSelectionMode: "catalog", modelId: "gpt-5.3-codex-spark" },
+      mode: "standard",
+    },
+  };
+  for (const costLimit of [{ kind: "policy" }, { kind: "manual", maxCostUsd: 7.5 }, { kind: "none" }]) {
+    const parsed = parseTargetPreviewRequest({ ...base, scanSelection: { ...base.scanSelection, costLimit } });
+    assert.deepEqual(parsed.scanSelection?.costLimit, costLimit);
+  }
+  assert.throws(() => parseTargetPreviewRequest({
+    ...base,
+    scanSelection: { ...base.scanSelection, costLimit: { kind: "manual", maxCostUsd: 0 } },
+  }), (error: unknown) => error instanceof TargetPreviewError && error.code === "target_preview_invalid");
+});
+
+test("freezes manual and no-ceiling budgets independently from repository policy", async () => {
+  const service = previewService({ resolveScanSelection: async () => compatibility() });
+  const selection = {
+    engine: "codex-security" as const,
+    connection: { connectionId: "openai", modelSelectionMode: "catalog" as const, modelId: "gpt-5.3-codex-spark" },
+    mode: "standard" as const,
+  };
+  const manual = await service.create(repository(), {
+    target: { kind: "pull_request", number: 42 }, executor: "sentinel-managed",
+    scanSelection: { ...selection, costLimit: { kind: "manual", maxCostUsd: 7.5 } },
+  });
+  assert.deepEqual(manual.costBudget, {
+    source: "manual", maxCostUsd: 7.5, kind: "estimated_ceiling", requestInFlightMayExceed: true,
+  });
+  const none = await service.create(repository(), {
+    target: { kind: "pull_request", number: 42 }, executor: "sentinel-managed",
+    scanSelection: { ...selection, costLimit: { kind: "none" } },
+  });
+  assert.deepEqual(none.costBudget, {
+    source: "none", maxCostUsd: null, kind: "none", requestInFlightMayExceed: false,
+  });
 });
 
 test("returns frozen target, policy, executor, scan, cost and publication facts without starting work", async () => {
@@ -81,6 +133,7 @@ test("returns frozen target, policy, executor, scan, cost and publication facts 
     mode: "standard",
   });
   assert.deepEqual(preview.costBudget, {
+    source: "policy",
     maxCostUsd: 18,
     kind: "estimated_ceiling",
     requestInFlightMayExceed: true,
@@ -283,6 +336,7 @@ function previewService(overrides: Partial<{
   ): { ready: boolean; code: "ready" | "managed_executor_unavailable" | "github_actions_unavailable" };
   createIdentity(): string;
   now(): Date;
+  resolveScanSelection(selection: import("@csb/shared").GuardrailScanSelection): Promise<ConnectionCompatibility>;
 }> = {}): TargetPreviewService {
   return new TargetPreviewService({
     resolveTarget: overrides.resolveTarget ?? (async () => resolvedTarget(FIRST_HEAD_SHA)),
@@ -290,7 +344,20 @@ function previewService(overrides: Partial<{
     executorCapability: overrides.executorCapability ?? (() => ({ ready: true, code: "ready" })),
     createIdentity: overrides.createIdentity ?? (() => "preview-1"),
     now: overrides.now ?? (() => new Date("2026-08-12T12:00:00.000Z")),
+    ...(overrides.resolveScanSelection === undefined ? {} : { resolveScanSelection: overrides.resolveScanSelection }),
   });
+}
+
+function compatibility(): ConnectionCompatibility {
+  return {
+    eligible: true,
+    connectionId: "openai",
+    modelSelectionMode: "catalog",
+    modelId: "gpt-5.3-codex-spark",
+    selectedProfile: "native",
+    profileVersion: "native-v1",
+    reasons: [],
+  };
 }
 
 function policyBundle(): ProtectedPolicyBundle {

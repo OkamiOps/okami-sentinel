@@ -96,6 +96,8 @@ export function GuardrailPreflightSheet({
   const [modelId, setModelId] = useState<string | null>(null);
   const [effort, setEffort] = useState<string | null>(null);
   const [mode, setMode] = useState<ScanMode>("standard");
+  const [costMode, setCostMode] = useState<"policy" | "manual" | "none">("policy");
+  const [manualCostUsd, setManualCostUsd] = useState("18");
   const [compatibility, setCompatibility] = useState<ConnectionCompatibility | null>(null);
   const [routingBusy, setRoutingBusy] = useState(false);
   const [providerValidation, setProviderValidation] = useState<"validating" | "ready" | "failed" | "error" | null>(null);
@@ -106,7 +108,11 @@ export function GuardrailPreflightSheet({
   const connection = connections.find((candidate) => candidate.id === connectionId) ?? null;
   const connectionModels = models.filter((model) => model.connectionId === connectionId);
   const nativeScannerModelIds = new Set(scanner?.models.map((model) => model.id) ?? []);
-  const nativeCostModelUnsupported = engine === "codex-security"
+  const manualCostValue = Number(manualCostUsd);
+  const manualCostValid = costMode !== "manual"
+    || (Number.isFinite(manualCostValue) && manualCostValue > 0);
+  const nativeCostModelUnsupported = costMode !== "none"
+    && engine === "codex-security"
     && compatibility?.selectedProfile === "native"
     && modelId !== null
     && !nativeScannerModelIds.has(modelId);
@@ -123,6 +129,7 @@ export function GuardrailPreflightSheet({
     && compatibility.modelSelectionMode === connectionSelection.modelSelectionMode
     && compatibility.modelId === connectionSelection.modelId
     && scanner?.modes.includes(mode) === true
+    && manualCostValid
     && !nativeCostModelUnsupported
   );
   const scanSelection: GuardrailScanSelection | null = executor === "sentinel-managed" && routeReady && connectionSelection
@@ -131,6 +138,9 @@ export function GuardrailPreflightSheet({
         connection: connectionSelection,
         ...(reasoning.kind === "configurable" && reasoning.selected !== null ? { effort: reasoning.selected } : {}),
         mode,
+        costLimit: costMode === "manual"
+          ? { kind: "manual", maxCostUsd: manualCostValue }
+          : { kind: costMode },
       }
     : null;
 
@@ -156,6 +166,8 @@ export function GuardrailPreflightSheet({
     setError(null);
     setExecutorChosenByUser(false);
     setManagedFallback(false);
+    setCostMode("policy");
+    setManualCostUsd("18");
   }, [open, initialRepositoryKey]);
 
   useEffect(() => {
@@ -523,6 +535,44 @@ export function GuardrailPreflightSheet({
                   </Field>
                 </div>
 
+                <div className="mt-4 min-w-0">
+                  <div className="text-sm font-semibold">{t("guardrails.costControlTitle")}</div>
+                  <div className="mt-2 grid grid-cols-3 gap-px border bg-border" role="radiogroup" aria-label={t("guardrails.costControlTitle")}>
+                    {(["policy", "manual", "none"] as const).map((option) => (
+                      <button
+                        key={option}
+                        type="button"
+                        role="radio"
+                        aria-checked={costMode === option}
+                        onClick={() => { setCostMode(option); invalidatePreview(); }}
+                        className={`min-h-11 bg-background px-2 font-mono text-[9px] uppercase transition-colors sm:px-3 ${costMode === option ? "text-primary shadow-[inset_0_-2px_var(--primary)]" : "text-muted-foreground hover:text-foreground"}`}
+                      >
+                        {t(`guardrails.costMode.${option}`)}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="border border-t-0 px-4 py-3">
+                    {costMode === "manual" ? (
+                      <Field label={t("guardrails.manualCostLabel")} htmlFor="guardrail-manual-cost" hint={t("guardrails.manualCostHint")}>
+                        <Input
+                          id="guardrail-manual-cost"
+                          type="number"
+                          inputMode="decimal"
+                          min="0.01"
+                          step="0.01"
+                          value={manualCostUsd}
+                          aria-invalid={!manualCostValid}
+                          onChange={(event) => { setManualCostUsd(event.target.value); invalidatePreview(); }}
+                          className="min-h-11 rounded-none font-mono"
+                        />
+                        {!manualCostValid && <p className="mt-2 text-xs text-destructive">{t("guardrails.manualCostInvalid")}</p>}
+                      </Field>
+                    ) : (
+                      <p className="text-xs leading-5 text-muted-foreground">{t(costMode === "none" ? "guardrails.costMode.noneDetail" : "guardrails.costMode.policyDetail")}</p>
+                    )}
+                  </div>
+                </div>
+
                 <div className="mt-4 grid gap-4 sm:grid-cols-2">
                   <div className="min-w-0">
                     <div className="text-sm font-semibold">{t("newScan.reasoningEffort")}</div>
@@ -553,7 +603,7 @@ export function GuardrailPreflightSheet({
                         : providerValidation === "error"
                           ? t("newScan.providerValidationError")
                             : nativeCostModelUnsupported
-                              ? t("guardrails.nativeCostModelUnsupported")
+                              ? t("guardrails.nativeCostLimitRequiresPrice")
                             : routeReady
                             ? `${scanner?.name ?? engine} · ${connection?.name ?? "—"} · ${modelId ?? t("newScan.providerManagedEffort")}`
                             : compatibility === null
@@ -639,7 +689,12 @@ function PreviewReadout({ preview }: { preview: GuardrailTargetPreview }) {
         <Readout label={t("guardrails.previewPolicy")} value={`${preview.policySource} · ${preview.policySha}`} />
         <Readout label={t("guardrails.previewExecutor")} value={`${capability} · ${preview.executorCapability.code}`} tone={preview.executorCapability.ready ? "good" : "risk"} />
         <Readout label={t("guardrails.previewScan")} value={`${preview.scanPlan.engine ?? "codex-security"} · ${preview.scanPlan.model} · ${preview.scanPlan.effort} · ${preview.scanPlan.mode}\n${preview.scanPlan.scopeMode}${preview.scanPlan.scopeMode === "changed" ? ` · ${preview.scanPlan.maxChangedPaths} paths` : ""}`} />
-        <Readout label={t("guardrails.previewCost")} value={`≤ USD ${preview.costBudget.maxCostUsd.toFixed(2)}\n${t("guardrails.costInFlight")}`} />
+        <Readout
+          label={t("guardrails.previewCost")}
+          value={preview.costBudget.maxCostUsd === null
+            ? `${t("guardrails.costNoCeiling")}\n${t("guardrails.costNoCeilingDetail")}`
+            : `≤ USD ${preview.costBudget.maxCostUsd.toFixed(2)} · ${t(`guardrails.costSource.${preview.costBudget.source}`)}\n${t("guardrails.costInFlight")}`}
+        />
       </div>
       <div className="grid border-t px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
         <div><div className="bench-label">{t("guardrails.publicationOwner")}</div><p className="mt-1 text-xs text-muted-foreground">{preview.publication.eligible ? t("guardrails.publicationEligible", { branch: preview.publication.protectedBranch ?? "—" }) : t("guardrails.publicationIneligible")}</p></div>

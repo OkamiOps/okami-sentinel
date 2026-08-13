@@ -316,7 +316,13 @@ export interface GuardrailScanSelection {
   connection: ScanConnectionSelection;
   effort?: string;
   mode: ScanMode;
+  costLimit?: GuardrailScanCostLimit;
 }
+
+export type GuardrailScanCostLimit =
+  | { kind: "policy" }
+  | { kind: "manual"; maxCostUsd: number }
+  | { kind: "none" };
 
 export type CodexSecurityExecutionProfile = "native" | "portable";
 
