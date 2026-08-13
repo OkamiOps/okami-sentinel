@@ -1,4 +1,8 @@
-import type { GateExecutorKind, GuardrailRepository } from "@csb/shared";
+import type {
+  GateExecutorKind,
+  GuardrailPullRequestSummary,
+  GuardrailRepository,
+} from "@csb/shared";
 
 import { githubAppServiceErrorCode } from "../github-app/github-app-service.js";
 import type { GitHubInstallationPermissions } from "../github-app/github-app-client.js";
@@ -55,6 +59,34 @@ export interface GitHubRepositoryResourceAuthority {
 
 export class GitHubRepositorySourceAdapter implements GitHubRepositoryReader {
   constructor(readonly authority: GitHubRepositoryResourceAuthority) {}
+
+  async listOpenPullRequests(repository: GuardrailRepository): Promise<GuardrailPullRequestSummary[]> {
+    const value = await this.#read(
+      repository,
+      "/pulls?state=open&sort=updated&direction=desc&per_page=50",
+      { pull_requests: "read" },
+    );
+    if (!Array.isArray(value) || value.length > 50) fail();
+    return value.map((entry) => {
+      const pullRequest = record(entry);
+      const user = record(pullRequest.user);
+      const base = record(pullRequest.base);
+      const head = record(pullRequest.head);
+      const number = pullRequest.number;
+      if (!Number.isSafeInteger(number) || (number as number) <= 0 || typeof pullRequest.draft !== "boolean") fail();
+      const updatedAt = boundedString(pullRequest.updated_at, 64);
+      if (!Number.isFinite(Date.parse(updatedAt))) fail();
+      return {
+        number: number as number,
+        title: boundedString(pullRequest.title, 512),
+        draft: pullRequest.draft,
+        author: identifier(user.login),
+        baseRef: boundedString(base.ref, 255),
+        headRef: boundedString(head.ref, 255),
+        updatedAt,
+      };
+    }).sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
+  }
 
   readPullRequest(repository: GuardrailRepository, number: number): Promise<unknown> {
     if (!Number.isSafeInteger(number) || number <= 0) fail();

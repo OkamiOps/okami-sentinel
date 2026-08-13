@@ -14,6 +14,7 @@ import type {
   GateRun,
   GateTarget,
   GuardrailGitHubStatus,
+  GuardrailPullRequestSummary,
   GuardrailPolicy,
   GuardrailRepository,
   HealthResponse,
@@ -428,6 +429,10 @@ export const api = {
     ),
   listGuardrailRepositories: () =>
     request<{ repositories: GuardrailRepository[] }>("/guardrails/repositories"),
+  listGuardrailPullRequests: (repositoryKey: string) =>
+    request<{ pullRequests: GuardrailPullRequestSummary[] }>(
+      `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/pull-requests`,
+    ),
   startGuardrailGitHubManifest: () => guardrailsGitHubApp.startManifest(),
   getGuardrailGitHubManifestFlow: (flowId: string) => guardrailsGitHubApp.getManifestFlow(flowId),
   listGuardrailGitHubConnections: () => guardrailsGitHubApp.listConnections(),

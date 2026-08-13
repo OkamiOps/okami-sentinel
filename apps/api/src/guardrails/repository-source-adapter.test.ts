@@ -75,7 +75,7 @@ test("enrollment rejects unknown sources, missing local paths and invalid execut
   }
 });
 
-test("reads PRs, commits and protected files through the authorized repository tuple", async () => {
+test("lists open PRs and reads targets through the authorized repository tuple", async () => {
   const calls: Array<{ path: string; permissions: unknown }> = [];
   const adapter = new GitHubRepositorySourceAdapter({
     readAuthorizedRepositoryJson: async (
@@ -87,6 +87,17 @@ test("reads PRs, commits and protected files through the authorized repository t
     ) => {
       assert.deepEqual([connectionId, installationId, repositoryId], ["connection-1", "77", "991122"]);
       calls.push({ path, permissions });
+      if (path.includes("/pulls?")) {
+        return [{
+          number: 42,
+          title: "Fix authentication boundary",
+          draft: false,
+          user: { login: "octocat" },
+          base: { ref: "main" },
+          head: { ref: "fix/auth-boundary" },
+          updated_at: "2026-08-13T00:30:00.000Z",
+        }];
+      }
       if (path.includes("/contents/")) {
         const content = Buffer.from('{"schemaVersion":1}').toString("base64");
         return {
@@ -103,6 +114,15 @@ test("reads PRs, commits and protected files through the authorized repository t
   });
   const repository = remoteRepository();
 
+  assert.deepEqual(await adapter.listOpenPullRequests(repository), [{
+    number: 42,
+    title: "Fix authentication boundary",
+    draft: false,
+    author: "octocat",
+    baseRef: "main",
+    headRef: "fix/auth-boundary",
+    updatedAt: "2026-08-13T00:30:00.000Z",
+  }]);
   assert.deepEqual(await adapter.readPullRequest(repository, 42), { sha: "a".repeat(40) });
   assert.deepEqual(await adapter.readCommit(repository, "feature/security"), { sha: "a".repeat(40) });
   assert.deepEqual(await adapter.readFile(repository, "b".repeat(40), ".csb/guardrails.json"), {
@@ -111,6 +131,10 @@ test("reads PRs, commits and protected files through the authorized repository t
     blobSha: "c".repeat(40),
   });
   assert.deepEqual(calls, [
+    {
+      path: "/repos/OkamiOps/private-sentinel/pulls?state=open&sort=updated&direction=desc&per_page=50",
+      permissions: { pull_requests: "read" },
+    },
     {
       path: "/repos/OkamiOps/private-sentinel/pulls/42",
       permissions: { pull_requests: "read" },

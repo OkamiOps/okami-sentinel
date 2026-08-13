@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type {
   GateExecutorKind,
   GateRun,
+  GuardrailPullRequestSummary,
   GuardrailRepository,
 } from "@csb/shared";
 import {
@@ -60,6 +61,8 @@ export function GuardrailPreflightSheet({
   const [idempotencyKey, setIdempotencyKey] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pullRequests, setPullRequests] = useState<GuardrailPullRequestSummary[] | null>(null);
+  const [pullRequestsError, setPullRequestsError] = useState<string | null>(null);
 
   const target = selected ? targetFromDraft(selected, draft) : null;
   const fingerprint = selected && target
@@ -86,6 +89,35 @@ export function GuardrailPreflightSheet({
   useEffect(() => {
     if (!repositoryKey && repositories[0]) setRepositoryKey(repositories[0].repositoryKey);
   }, [repositories, repositoryKey]);
+
+  useEffect(() => {
+    if (!open || selected?.source !== "github") {
+      setPullRequests(null);
+      setPullRequestsError(null);
+      return;
+    }
+    let cancelled = false;
+    setPullRequests(null);
+    setPullRequestsError(null);
+    void api.listGuardrailPullRequests(selected.repositoryKey).then(({ pullRequests: openPullRequests }) => {
+      if (cancelled) return;
+      setPullRequests(openPullRequests);
+      setDraft((current) => {
+        const currentNumber = Number(current.pullRequestNumber);
+        const selectedPullRequest = openPullRequests.find((pullRequest) => pullRequest.number === currentNumber)
+          ?? openPullRequests[0];
+        return {
+          ...current,
+          pullRequestNumber: selectedPullRequest ? String(selectedPullRequest.number) : "",
+        };
+      });
+    }).catch((cause) => {
+      if (cancelled) return;
+      setPullRequests([]);
+      setPullRequestsError(cause instanceof Error ? cause.message : t("guardrails.prLoadError"));
+    });
+    return () => { cancelled = true; };
+  }, [open, selected?.repositoryKey, selected?.source, t]);
 
   function invalidatePreview(nextDraft?: GuardrailTargetDraft, nextExecutor?: GateExecutorKind) {
     if (nextDraft) setDraft(nextDraft);
@@ -209,14 +241,32 @@ export function GuardrailPreflightSheet({
 
                 {selected.source === "github" && (
                   <div className="mb-4 grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label={t("guardrails.remoteTarget")}>
-                    <ChoiceCard checked={draft.kind === "pull_request"} icon={<GitPullRequestArrow aria-hidden size={17} />} title={t("guardrails.pullRequest")} meta="PR NUMBER" description={t("guardrails.remoteTargetHelp")} onSelect={() => invalidatePreview({ ...draft, kind: "pull_request" })} />
+                    <ChoiceCard checked={draft.kind === "pull_request"} icon={<GitPullRequestArrow aria-hidden size={17} />} title={t("guardrails.pullRequest")} meta="GITHUB RESOLVED" description={t("guardrails.remoteTargetHelp")} onSelect={() => invalidatePreview({ ...draft, kind: "pull_request" })} />
                     <ChoiceCard checked={draft.kind === "compare"} icon={<GitCompareArrows aria-hidden size={17} />} title={t("guardrails.compareRefs")} meta="BASE + HEAD" description={t("guardrails.remoteTargetHelp")} onSelect={() => invalidatePreview({ ...draft, kind: "compare" })} />
                   </div>
                 )}
 
                 {selected.source === "github" && draft.kind === "pull_request" ? (
                   <Field label={t("guardrails.prNumber")} htmlFor="guardrail-pr-number" hint={t("guardrails.prNumberHelp")}>
-                    <Input id="guardrail-pr-number" inputMode="numeric" type="number" min={1} step={1} className="min-h-11 font-mono" value={draft.pullRequestNumber} onChange={(event) => invalidatePreview({ ...draft, pullRequestNumber: event.target.value })} />
+                    {pullRequests === null ? (
+                      <div className="grid min-h-14 place-items-center border bg-secondary/20 px-4 text-xs text-muted-foreground">{t("guardrails.prLoading")}</div>
+                    ) : pullRequests.length > 0 ? (
+                      <Select value={draft.pullRequestNumber} onValueChange={(value) => invalidatePreview({ ...draft, pullRequestNumber: value })}>
+                        <SelectTrigger id="guardrail-pr-number" className="min-h-14 w-full rounded-none text-left"><SelectValue /></SelectTrigger>
+                        <SelectContent position="popper" className="max-w-[calc(100vw-2rem)] rounded-none border-border bg-popover sm:max-w-2xl">
+                          {pullRequests.map((pullRequest) => (
+                            <SelectItem key={pullRequest.number} value={String(pullRequest.number)} className="min-h-14 rounded-none py-2">
+                              <span className="grid min-w-0 gap-0.5">
+                                <span className="truncate text-sm font-medium">#{pullRequest.number} · {pullRequest.title}</span>
+                                <span className="truncate font-mono text-[9px] text-muted-foreground">{pullRequest.headRef} → {pullRequest.baseRef} · @{pullRequest.author}{pullRequest.draft ? ` · ${t("guardrails.prDraft")}` : ""}</span>
+                              </span>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <div id="guardrail-pr-number" className="border border-dashed px-4 py-5 text-xs leading-5 text-muted-foreground">{pullRequestsError ?? t("guardrails.prEmpty")}</div>
+                    )}
                   </Field>
                 ) : (
                   <div className="grid gap-4 sm:grid-cols-2">

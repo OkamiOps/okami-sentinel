@@ -22,6 +22,7 @@ import type {
   GateExecutorKind,
   GateFindingDelta,
   GateRun,
+  GuardrailPullRequestSummary,
   GuardrailException,
   GuardrailPolicy,
   GuardrailRepository,
@@ -143,6 +144,7 @@ export interface GuardrailsApiDependencies {
   listGates(repositoryKey?: string | null): GateRun[];
   getGate(gateId: string): GateRun | null;
   getArtifact(gateId: string): GateArtifact | null;
+  listPullRequests(repository: GuardrailRepository): Promise<GuardrailPullRequestSummary[]>;
   previewTarget(
     repository: GuardrailRepository,
     request: TargetPreviewRequest,
@@ -250,6 +252,7 @@ const guardrailsDependencies: GuardrailsApiDependencies = {
   listGates: listGateRuns,
   getGate: getGateRun,
   getArtifact: getGateArtifact,
+  listPullRequests: (repository) => githubRepositorySource.listOpenPullRequests(repository),
   previewTarget: (repository, request) => targetPreviewService.create(repository, request),
   acceptTargetPreview: (repository, request) => targetPreviewService.accept(repository, request),
   startGate: startGuardrailGate,
@@ -358,6 +361,17 @@ export function createGuardrailsApp(
       return c.json({ preview: await deps.previewTarget(repository, request) });
     } catch (error) {
       return c.json({ error: errorMessage(error) }, targetPreviewStatus(error));
+    }
+  });
+
+  guardrails.get("/guardrails/repositories/:repositoryKey/pull-requests", async (c) => {
+    const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
+    if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
+    if (!hasGitHubRemote(repository)) return c.json({ error: "Repositório não possui remoto GitHub" }, 400);
+    try {
+      return c.json({ pullRequests: await deps.listPullRequests(repository) });
+    } catch (error) {
+      return c.json({ error: errorMessage(error) }, 502);
     }
   });
 

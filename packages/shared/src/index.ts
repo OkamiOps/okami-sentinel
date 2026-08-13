@@ -996,6 +996,16 @@ export type GateTarget =
   | { kind: "compare"; baseRef: string; headRef: string }
   | { kind: "protected_branch"; ref: string };
 
+export interface GuardrailPullRequestSummary {
+  number: number;
+  title: string;
+  draft: boolean;
+  author: string;
+  baseRef: string;
+  headRef: string;
+  updatedAt: string;
+}
+
 export interface ResolvedGateTarget {
   baseRef: string;
   headRef: string;

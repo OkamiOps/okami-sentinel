@@ -298,6 +298,15 @@ function dependencies(options: {
     listGates: () => [currentGate],
     getGate: (id) => id === currentGate.id ? currentGate : null,
     getArtifact: (id) => id === currentGate.id ? currentArtifact : null,
+    listPullRequests: async () => [{
+      number: 42,
+      title: "Fix authentication boundary",
+      draft: false,
+      author: "octocat",
+      baseRef: "main",
+      headRef: "fix/auth-boundary",
+      updatedAt: "2026-08-13T00:30:00.000Z",
+    }],
     previewTarget: async (_repository, request) => testPreview(
       currentRepository,
       request.target,
@@ -382,6 +391,7 @@ test("exposes local and github guardrail routes", () => {
     "GET /guardrails/repositories",
     "POST /guardrails/repositories",
     "POST /guardrails/repositories/:repositoryKey/target-preview",
+    "GET /guardrails/repositories/:repositoryKey/pull-requests",
     "GET /guardrails/repositories/:repositoryKey/policy",
     "PUT /guardrails/repositories/:repositoryKey/policy",
     "POST /guardrails/repositories/:repositoryKey/policy/simulate",
@@ -399,6 +409,26 @@ test("exposes local and github guardrail routes", () => {
     "POST /guardrails/gates/:gateId/publish",
   ]);
 });
+
+test("GET /guardrails/repositories/:repositoryKey/pull-requests returns server-resolved open pull requests", async () => {
+  const remote = remoteRepository();
+  const testApp = createGuardrailsApp(dependencies({ repository: remote }));
+  const response = await testApp.request(`/guardrails/repositories/${encodeURIComponent(remote.repositoryKey)}/pull-requests`);
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    pullRequests: [{
+      number: 42,
+      title: "Fix authentication boundary",
+      draft: false,
+      author: "octocat",
+      baseRef: "main",
+      headRef: "fix/auth-boundary",
+      updatedAt: "2026-08-13T00:30:00.000Z",
+    }],
+  });
+});
+
 test("POST /guardrails/gates returns 202 with a queued gate", async () => {
   const testApp = createGuardrailsApp(dependencies());
   const response = await testApp.request("/guardrails/gates", {
