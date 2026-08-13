@@ -141,8 +141,9 @@ export function GuardrailScanMonitor({ gate, onScanTerminal }: { gate: GateRun; 
   const logs = telemetry.lines.slice(-120);
   const route = [scan.engine, scan.provider, scan.model].filter(Boolean).join(" · ");
   const reasoning = scan.effort ?? t("guardrails.providerManaged");
+  const displayedProgress = guardrailDisplayedProgress(scan);
   const progressLabel = scan.progress
-    ? `${scan.progress.phaseLabel}${scan.progress.detail ? ` / ${scan.progress.detail}` : ""}`
+    ? `${scan.status === "failed" || scan.status === "cancelled" ? `${t("guardrails.failed")} · ` : ""}${scan.progress.phaseLabel}${scan.progress.detail ? ` / ${scan.progress.detail}` : ""}`
     : t("guardrails.progressPending");
 
   return (
@@ -162,15 +163,15 @@ export function GuardrailScanMonitor({ gate, onScanTerminal }: { gate: GateRun; 
       <div className="border-b px-4 py-3 sm:px-5">
         <div className="mb-2 flex min-w-0 flex-wrap items-center justify-between gap-2 font-mono text-[9px]">
           <span className="min-w-0 break-words text-muted-foreground">{progressLabel}</span>
-          <span className="shrink-0 text-primary">{formatProgressMetric(scan.progress)}</span>
+          <span className={cx("shrink-0", scan.status === "failed" || scan.status === "cancelled" ? "text-destructive" : "text-primary")}>{displayedProgress.metric}</span>
         </div>
-        <ProgressTrack value={scan.progress?.percent ?? 0} indeterminate={scan.progress?.indeterminate ?? scan.status === "running"} label={progressLabel} />
+        <ProgressTrack value={displayedProgress.value} indeterminate={displayedProgress.indeterminate} label={progressLabel} />
       </div>
 
       <div className="grid min-w-0 xl:grid-cols-[minmax(25rem,.82fr)_minmax(0,1.18fr)]">
         <div className="min-w-0 border-b xl:border-b-0 xl:border-r">
           <div className="grid border-b sm:grid-cols-2">
-            <MonitorMetric label={t("guardrails.stage")} value={formatProgressMetric(scan.progress)} detail={scan.progress?.phaseLabel ?? "—"} tone="signal" />
+            <MonitorMetric label={t("guardrails.stage")} value={displayedProgress.metric} detail={scan.progress?.phaseLabel ?? "—"} tone={scan.status === "failed" || scan.status === "cancelled" ? "risk" : "signal"} />
             <MonitorMetric label={t("guardrails.activity")} value={activityLabel} detail={scan.progress?.lastActivityAt ? `${t("guardrails.lastEvent")} ${formatDate(scan.progress.lastActivityAt)}` : undefined} tone={activityTone} />
             <MonitorMetric label={t("guardrails.duration")} value={<LiveDuration startedAt={scan.startedAt} completedAt={scan.completedAt} status={scan.status} durationMs={scan.durationMs} showDot={false} />} />
             <MonitorMetric label={t("guardrails.findings")} value={scan.severity.total} detail={`${highPlus} HIGH+`} tone={highPlus > 0 ? "risk" : undefined} />
@@ -214,6 +215,27 @@ export function guardrailDisplayedActivity(scan: Pick<ScanRun, "status">): "live
   if (scan.status === "running") return "live";
   if (scan.status === "failed" || scan.status === "cancelled") return "failed";
   return "closed";
+}
+
+export function guardrailDisplayedProgress(
+  scan: Pick<ScanRun, "status" | "progress">,
+): { value: number; metric: string; indeterminate: boolean } {
+  const progress = scan.progress;
+  if (!progress) return { value: 0, metric: "—", indeterminate: scan.status === "running" };
+  const terminal = scan.status !== "running";
+  if (terminal && progress.unit === "stages" && progress.itemsTotal > 0) {
+    const completed = Math.min(progress.itemsCompleted, progress.itemsTotal);
+    return {
+      value: Math.max(0, Math.min(100, (completed / progress.itemsTotal) * 100)),
+      metric: `${completed}/${progress.itemsTotal}`,
+      indeterminate: false,
+    };
+  }
+  return {
+    value: progress.percent,
+    metric: formatProgressMetric(progress),
+    indeterminate: scan.status === "running" && progress.indeterminate === true,
+  };
 }
 
 export function ScanResultActions({ scan }: { scan: ScanRun }) {

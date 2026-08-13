@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import type { GateRun, ScanRun } from "@csb/shared";
 
-import { GuardrailScanMonitor, ScanResultActions, guardrailDisplayedActivity } from "../components/guardrails/GuardrailScanMonitor.js";
+import { GuardrailScanMonitor, ScanResultActions, guardrailDisplayedActivity, guardrailDisplayedProgress } from "../components/guardrails/GuardrailScanMonitor.js";
 import { PortfolioPipeline } from "../components/guardrails/PortfolioPipeline.js";
 import { I18nProvider } from "../i18n.js";
 
@@ -66,6 +66,29 @@ test("terminal guardrail scans never keep a stale ACTIVE activity label", () => 
   assert.equal(guardrailDisplayedActivity({ status: "failed" }), "failed");
   assert.equal(guardrailDisplayedActivity({ status: "cancelled" }), "failed");
   assert.equal(guardrailDisplayedActivity({ status: "completed" }), "closed");
+});
+
+test("a terminal failed scan freezes the progress bar at completed stages instead of looking live", () => {
+  const progress = {
+    percent: 88,
+    phase: "reporting",
+    phaseLabel: "Findings and coverage",
+    detail: "stage_evidence_incomplete",
+    unit: "stages" as const,
+    itemsCompleted: 5,
+    itemsTotal: 6,
+    currentItem: 6,
+    indeterminate: true,
+    activityState: "active" as const,
+    lastActivityAt: "2026-08-13T12:07:30.595Z",
+    reportableFindings: 0,
+  };
+
+  const terminal = guardrailDisplayedProgress({ status: "failed", progress });
+  assert.equal(terminal.metric, "5/6");
+  assert.equal(terminal.indeterminate, false);
+  assert.ok(Math.abs(terminal.value - (100 * 5 / 6)) < Number.EPSILON * 100);
+  assert.equal(guardrailDisplayedProgress({ status: "running", progress }).indeterminate, true);
 });
 
 test("portfolio header shows a frozen ceiling separately and never invents a zero estimate", () => {
