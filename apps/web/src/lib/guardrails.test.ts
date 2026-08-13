@@ -1,16 +1,42 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { DecisionGraph, GateRun, GuardrailPolicy } from "@csb/shared";
+import type { DecisionGraph, GateArtifact, GateRun, GuardrailPolicy } from "@csb/shared";
 
 import {
   editorStateFromPolicy,
+  guardrailFindingBranches,
   guardrailHref,
   policyFromEditor,
+  selectGuardrailFindingNode,
   selectDecisionNode,
   selectGate,
   validatePolicyEditor,
 } from "./guardrails.js";
+
+function largeArtifactFixture(count: number): GateArtifact {
+  return {
+    findings: Array.from({ length: count }, (_, index) => ({
+      findingId: `finding-${index}`,
+      occurrenceId: null,
+      title: `Finding ${index}`,
+      severity: index % 2 === 0 ? "critical" : "high",
+      confidence: "high",
+      ruleId: "rule",
+      summary: null,
+      primaryPath: `src/module-${index % 137}.ts`,
+      fingerprints: [],
+      category: "security",
+      cwe: [],
+      identity: `identity-${index}`,
+      lifecycle: "new",
+      triage: "unreviewed",
+      exception: null,
+      sourceScanId: "scan-1",
+    })),
+    decision: { decisionGraph: graphFixture() },
+  } as unknown as GateArtifact;
+}
 
 function gatesFixture(): GateRun[] {
   return [
@@ -139,6 +165,15 @@ test("selects a valid graph node and falls back to the graph default", () => {
     selectDecisionNode(graph, "missing")?.id,
     graph.selectedNodeId,
   );
+});
+
+test("groups one thousand guardrail findings into stable file branches without dropping nodes", () => {
+  const artifact = largeArtifactFixture(1_000);
+  const branches = guardrailFindingBranches(artifact);
+  assert.equal(branches.length, 137);
+  assert.equal(branches.flatMap((branch) => branch.findings).length, 1_000);
+  assert.equal(new Set(branches.flatMap((branch) => branch.findings.map((item) => item.node.id))).size, 1_000);
+  assert.equal(selectGuardrailFindingNode(artifact, "finding:identity-999")?.findingIdentity, "identity-999");
 });
 
 test("builds a reloadable guardrail URL", () => {

@@ -26,6 +26,14 @@ export interface NodeEvidence {
   finding: GateFindingDelta | null;
 }
 
+export interface GuardrailFindingBranch {
+  path: string;
+  findings: Array<{
+    finding: GateFindingDelta;
+    node: DecisionGraphNode;
+  }>;
+}
+
 export interface PolicyEditorRule {
   severity: Severity[];
   lifecycle: GateFindingLifecycle[];
@@ -86,6 +94,40 @@ export function selectDecisionNode(
     graph.nodes[0] ??
     null
   );
+}
+
+export function guardrailFindingBranches(artifact: GateArtifact): GuardrailFindingBranch[] {
+  const branches = new Map<string, GuardrailFindingBranch>();
+  for (const finding of artifact.findings) {
+    const path = finding.primaryPath?.trim() || "Sem arquivo associado";
+    const branch = branches.get(path) ?? { path, findings: [] };
+    branch.findings.push({
+      finding,
+      node: {
+        id: `finding:${finding.identity}`,
+        kind: "signal",
+        label: "Finding",
+        value: finding.title,
+        detail: finding.summary,
+        tone: finding.severity === "critical" || finding.severity === "high"
+          ? "risk"
+          : finding.severity === "medium"
+            ? "warning"
+            : "neutral",
+        findingIdentity: finding.identity,
+      },
+    });
+    branches.set(path, branch);
+  }
+  return [...branches.values()].sort((left, right) => left.path.localeCompare(right.path));
+}
+
+export function selectGuardrailFindingNode(
+  artifact: GateArtifact,
+  requestedId: string | null,
+): DecisionGraphNode | null {
+  const nodes = guardrailFindingBranches(artifact).flatMap((branch) => branch.findings.map((item) => item.node));
+  return nodes.find((node) => node.id === requestedId) ?? nodes[0] ?? selectDecisionNode(artifact.decision.decisionGraph, requestedId);
 }
 
 export function guardrailHref(gateId: string, nodeId?: string | null): string {

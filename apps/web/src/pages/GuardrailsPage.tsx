@@ -10,7 +10,6 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 
 import { api, type EnrollGuardrailRepositoryRequest, type GuardrailActionsStatus } from "../api";
 import {
-  DecisionEquation,
   DecisionGraph,
   DeleteGateButton,
   EvidenceTrace,
@@ -21,7 +20,7 @@ import {
   RepositoryEnrollmentForm,
 } from "../components/guardrails";
 import { AlertBanner, EmptyState, Loading, PageHeader, cx } from "../components/ui";
-import { guardrailHref, isGateActive, selectDecisionNode, selectGate } from "../lib/guardrails";
+import { guardrailHref, isGateActive, selectGuardrailFindingNode, selectGate } from "../lib/guardrails";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { useI18n } from "../i18n";
@@ -164,7 +163,7 @@ export function GuardrailsPage() {
   const readyState = state;
 
   const selectedNode = readyState.artifact
-    ? selectDecisionNode(readyState.artifact.decision.decisionGraph, params.get("node"))
+    ? selectGuardrailFindingNode(readyState.artifact, params.get("node"))
     : null;
 
   function selectLane(gate: GateRun) {
@@ -307,14 +306,11 @@ export function GuardrailsPage() {
       {readyState.artifact && selectedNode && (
         <div className="mt-4 grid min-w-0 gap-4">
           <DecisionGraph
-            nodes={readyState.artifact.decision.decisionGraph.nodes}
+            artifact={readyState.artifact}
             selectedNodeId={selectedNode.id}
             onSelect={selectNode}
           />
-          <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(22rem,.9fr)]">
-            <EvidenceTrace artifact={readyState.artifact} node={selectedNode} />
-            <DecisionEquation nodes={readyState.artifact.decision.decisionGraph.nodes} />
-          </div>
+          <EvidenceTrace artifact={readyState.artifact} node={selectedNode} />
         </div>
       )}
     </div>
