@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import type {
   DecisionGraphNode,
   GateArtifact,
   GateRun,
   GuardrailRepository,
 } from "@csb/shared";
-import { Activity, ArrowRight, Check, GitBranch, HardDrive, Plus, ShieldAlert, ShieldCheck, Square, Workflow } from "lucide-react";
+import { ArrowRight, GitBranch, HardDrive, Plus, ShieldAlert, ShieldCheck, Square, Workflow } from "lucide-react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import { api, type EnrollGuardrailRepositoryRequest, type GuardrailActionsStatus } from "../api";
 import {
@@ -24,6 +25,7 @@ import { AlertBanner, EmptyState, Loading, PageHeader, cx } from "../components/
 import { guardrailHref, isGateActive, selectGuardrailFindingNode, selectGate } from "../lib/guardrails";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { formatUsd } from "../format";
 import { useI18n } from "../i18n";
 
 type GuardrailsState =
@@ -46,7 +48,7 @@ type RepositoryReadiness = {
 };
 
 export function GuardrailsPage() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const { gateId = null } = useParams();
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
@@ -359,7 +361,7 @@ function GuardrailLaunchpad({
   onRun: (repositoryKey: string) => void;
   onOpenGate: (gate: GateRun) => void;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [selectedKey, setSelectedKey] = useState(repositories[0]?.repositoryKey ?? "");
   const repository = repositories.find((item) => item.repositoryKey === selectedKey) ?? repositories[0] ?? null;
   const repoReadiness = repository ? readiness[repository.repositoryKey] : null;
@@ -376,7 +378,17 @@ function GuardrailLaunchpad({
       .filter((gate) => gate.repositoryKey === repository.repositoryKey)
       .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt))
     : [];
-  const latestGate = repositoryGates[0] ?? null;
+  const completedDecisions = repositoryGates.filter((gate) => gate.outcome !== null).length;
+  const observedCosts = repositoryGates.filter((gate) => gate.estimatedUsd > 0);
+  const observedCost = observedCosts.reduce((sum, gate) => sum + gate.estimatedUsd, 0);
+  const lastActivity = repositoryGates[0]?.startedAt ?? null;
+  const outcomeData = buildProjectOutcomeData(repositoryGates, t);
+  const costData = repositoryGates.slice(0, 8).reverse().map((gate, index) => ({
+    gate: gate.pullRequestNumber ? `PR #${gate.pullRequestNumber}` : gate.headRef,
+    label: `G${index + 1}`,
+    cost: gate.estimatedUsd > 0 ? gate.estimatedUsd : null,
+    color: gateOutcomeColor(gate),
+  }));
   const statusLabel = defaultActionsBlocked
     ? t("guardrails.managedFallbackReady")
     : actionsBlocked && repoReadiness
@@ -421,6 +433,11 @@ function GuardrailLaunchpad({
                   <div className={cx("flex items-center gap-2 bench-label", scanReady ? "text-chart-2" : "text-destructive")}>{scanReady ? <ShieldCheck aria-hidden size={15} /> : <ShieldAlert aria-hidden size={15} />}{scanReady ? t("guardrails.readyToProtect") : t("guardrails.actionRequired")}</div>
                   <h2 id="guardrail-launchpad-title" className="mt-3 break-words font-heading text-2xl font-semibold tracking-[-.035em] sm:text-3xl">{repository.displayName}</h2>
                   <p className="mt-2 font-mono text-[9px] uppercase tracking-[.08em] text-muted-foreground">{repository.source} · {repository.defaultExecutor} · {repository.defaultBranch}</p>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <ProjectReadinessPill label={t("guardrails.projectAuthority")} value={repository.source === "github" ? "GITHUB APP" : "LOCAL ROOT"} ready={repoReadiness?.authorityReady === true} />
+                    <ProjectReadinessPill label={t("guardrails.projectBaseline")} value={repoReadiness?.baselineReady ? t("guardrails.authorized") : t("guardrails.actionRequired")} ready={repoReadiness?.baselineReady === true} />
+                    <ProjectReadinessPill label={t("guardrails.projectExecution")} value={defaultActionsBlocked ? "SENTINEL MANAGED" : repository.defaultExecutor} ready={scanReady} />
+                  </div>
                   <p className={cx("mt-4 max-w-3xl border-l-2 pl-3 text-sm leading-6", scanReady ? "border-chart-2 text-muted-foreground" : "border-destructive text-destructive")}>{statusLabel}</p>
                 </div>
                 <div className="grid gap-2 sm:grid-cols-2 md:min-w-48 md:grid-cols-1">
@@ -429,36 +446,37 @@ function GuardrailLaunchpad({
                 </div>
               </div>
 
-              <div className="grid border-b sm:grid-cols-3">
-                <ReadinessCell code="01" title={t("guardrails.stageAuthority")} ready={repoReadiness?.authorityReady === true} current={repoReadiness?.authorityReady !== true} detail={repository.source === "github" ? "GITHUB APP" : "LOCAL ROOT"} />
-                <ReadinessCell code="02" title={t("guardrails.factBaseline")} ready={repoReadiness?.baselineReady === true} current={repoReadiness?.authorityReady === true && repoReadiness?.baselineReady !== true} detail={repoReadiness?.baselineReady ? t("guardrails.authorized") : t("guardrails.actionRequired")} />
-                <ReadinessCell code="03" title={t("guardrails.previewExecutor")} ready={scanReady} current={!scanReady} detail={defaultActionsBlocked ? "sentinel-managed" : repository.defaultExecutor} />
+              <div className="grid border-b sm:grid-cols-2 xl:grid-cols-4">
+                <ProjectMetric label={t("guardrails.projectRuns")} value={String(repositoryGates.length)} detail={`${repositoryGates.filter((gate) => isGateActive(gate.status)).length} ${t("guardrails.portfolioActive").toLowerCase()}`} />
+                <ProjectMetric label={t("guardrails.projectDecisions")} value={String(completedDecisions)} detail={`${repositoryGates.filter((gate) => gate.outcome === "blocked" || gate.outcome === "error").length} ${t("guardrails.portfolioBlocked").toLowerCase()}`} tone={repositoryGates.some((gate) => gate.outcome === "blocked" || gate.outcome === "error") ? "danger" : "default"} />
+                <ProjectMetric label={t("guardrails.projectObservedCost")} value={observedCosts.length > 0 ? formatUsd(observedCost) : "—"} detail={observedCosts.length > 0 ? `${observedCosts.length} ${t("guardrails.projectPricedRuns")}` : t("guardrails.projectCostUnavailable")} tone="primary" />
+                <ProjectMetric label={t("guardrails.projectLastActivity")} value={lastActivity ? formatProjectDate(lastActivity, locale) : "—"} detail={lastActivity ? formatProjectTime(lastActivity, locale) : t("guardrails.projectNoGates")} />
+              </div>
+
+              <div className="grid min-w-0 border-b xl:grid-cols-2">
+                <ProjectChart title={t("guardrails.projectOutcomes")} description={t("guardrails.projectOutcomeDescription")}>
+                  {repositoryGates.length > 0 ? <ResponsiveContainer width="100%" height="100%"><BarChart data={outcomeData} layout="vertical" margin={{ top: 4, right: 18, bottom: 4, left: 8 }}>
+                    <CartesianGrid horizontal={false} strokeDasharray="2 5" />
+                    <XAxis type="number" domain={[0, "dataMax"]} allowDecimals={false} axisLine={false} tickLine={false} />
+                    <YAxis type="category" dataKey="label" axisLine={false} tickLine={false} width={88} tick={{ fontSize: 9, fontFamily: "var(--font-mono)" }} />
+                    <Tooltip cursor={{ fill: "var(--accent)", fillOpacity: 0.35 }} contentStyle={{ background: "var(--popover)", border: "1px solid var(--border)", borderRadius: 0, fontSize: 11 }} />
+                    <Bar dataKey="count" name={t("guardrails.projectRuns")} radius={0}>{outcomeData.map((entry) => <Cell key={entry.key} fill={entry.color} />)}</Bar>
+                  </BarChart></ResponsiveContainer> : <ProjectChartEmpty title={t("guardrails.projectNoGates")} detail={t("guardrails.projectNoGatesDescription")} />}
+                </ProjectChart>
+                <ProjectChart title={t("guardrails.projectCostHistory")} description={t("guardrails.projectCostDescription")} className="border-t xl:border-l xl:border-t-0">
+                  {observedCosts.length > 0 ? <ResponsiveContainer width="100%" height="100%"><BarChart data={costData} margin={{ top: 8, right: 10, bottom: 4, left: 2 }}>
+                    <CartesianGrid vertical={false} strokeDasharray="2 5" />
+                    <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fontSize: 9, fontFamily: "var(--font-mono)" }} />
+                    <YAxis axisLine={false} tickLine={false} width={46} tickFormatter={(value) => `$${Number(value).toFixed(1)}`} tick={{ fontSize: 9, fontFamily: "var(--font-mono)" }} />
+                    <Tooltip cursor={{ fill: "var(--accent)", fillOpacity: 0.35 }} formatter={(value) => formatUsd(typeof value === "number" ? value : null)} labelFormatter={(_, payload) => payload?.[0]?.payload?.gate ?? "Gate"} contentStyle={{ background: "var(--popover)", border: "1px solid var(--border)", borderRadius: 0, fontSize: 11 }} />
+                    <Bar dataKey="cost" name={t("guardrails.projectObservedCost")} radius={0}>{costData.map((entry) => <Cell key={`${entry.label}-${entry.gate}`} fill={entry.color} />)}</Bar>
+                  </BarChart></ResponsiveContainer> : <ProjectChartEmpty title={t("guardrails.projectCostUnavailable")} detail={t("guardrails.projectNoTrend")} />}
+                </ProjectChart>
               </div>
 
               <div className="min-w-0 p-5 md:p-7">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-2 text-primary"><Activity aria-hidden size={15} /><span className="bench-label">{t("guardrails.latestGate")}</span></div>
-                  <span className="font-mono text-[9px] uppercase tracking-[.08em] text-muted-foreground">{String(repositoryGates.length).padStart(2, "0")} {t("guardrails.portfolioRuns")}</span>
-                </div>
-                  {latestGate ? (
-                    <button type="button" onClick={() => onOpenGate(latestGate)} className="mt-4 grid w-full min-w-0 gap-4 border px-4 py-4 text-left transition-colors hover:border-primary/60 hover:bg-primary/[.03] sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
-                      <span className="min-w-0">
-                        <span className="flex flex-wrap items-center gap-2"><GateOutcomeBadge outcome={latestGate.outcome} status={latestGate.status} /><strong className="text-sm">{latestGate.pullRequestNumber ? `PR #${latestGate.pullRequestNumber}` : latestGate.headRef}</strong></span>
-                        <span className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[9px] text-muted-foreground"><span>{latestGate.id}</span><span>{latestGate.executor}</span><span>{latestGate.headRef}</span></span>
-                      </span>
-                      <span className="inline-flex items-center gap-2 font-mono text-[9px] uppercase text-primary">{t("guardrails.openGate")}<ArrowRight aria-hidden size={14} /></span>
-                    </button>
-                  ) : (
-                    <div className="mt-5 border border-dashed px-4 py-6">
-                      <strong className="text-sm">{t("guardrails.empty")}</strong>
-                      <p className="mt-2 max-w-xl text-xs leading-5 text-muted-foreground">{scanReady ? t("guardrails.emptyDescription") : statusLabel}</p>
-                    </div>
-                  )}
-                  {repositoryGates.length > 1 && (
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {repositoryGates.slice(1, 4).map((gate) => <button key={gate.id} type="button" onClick={() => onOpenGate(gate)} className="border px-3 py-2 font-mono text-[8px] uppercase text-muted-foreground hover:border-primary hover:text-primary">{gate.pullRequestNumber ? `PR #${gate.pullRequestNumber}` : gate.headRef} · {gate.status}</button>)}
-                    </div>
-                  )}
+                <div className="flex flex-wrap items-end justify-between gap-3"><div><div className="bench-label text-primary">{t("guardrails.projectRecentHistory")}</div><h3 className="mt-2 font-heading text-lg font-semibold">{repository.displayName}</h3></div><span className="font-mono text-[9px] uppercase text-muted-foreground">{repositoryGates.length} {t("guardrails.portfolioRuns")}</span></div>
+                {repositoryGates.length > 0 ? <div className="mt-4 overflow-x-auto border"><table className="w-full min-w-[48rem] border-collapse text-left"><thead><tr className="border-b bg-secondary/20 font-mono text-[8px] uppercase tracking-[.08em] text-muted-foreground"><th className="px-3 py-3">{t("guardrails.projectResult")}</th><th className="px-3 py-3">{t("guardrails.projectTarget")}</th><th className="px-3 py-3">{t("guardrails.projectExecutor")}</th><th className="px-3 py-3">{t("guardrails.projectObservedCost")}</th><th className="px-3 py-3">{t("guardrails.projectStarted")}</th><th className="px-3 py-3 text-right">{t("guardrails.openGate")}</th></tr></thead><tbody>{repositoryGates.slice(0, 8).map((gate) => <tr key={gate.id} className="border-b last:border-b-0 hover:bg-primary/[.03]"><td className="px-3 py-3"><GateOutcomeBadge outcome={gate.outcome} status={gate.status} /></td><td className="max-w-64 px-3 py-3"><strong className="block truncate text-xs">{gate.pullRequestNumber ? `PR #${gate.pullRequestNumber}` : gate.headRef}</strong><span className="mt-1 block truncate font-mono text-[8px] text-muted-foreground">{gate.headRef}</span></td><td className="px-3 py-3 font-mono text-[9px]">{gate.executor}</td><td className="px-3 py-3 font-mono text-[10px] text-primary">{gate.estimatedUsd > 0 ? formatUsd(gate.estimatedUsd) : "—"}</td><td className="px-3 py-3 font-mono text-[9px] text-muted-foreground">{formatProjectDate(gate.startedAt, locale)} · {formatProjectTime(gate.startedAt, locale)}</td><td className="px-3 py-3 text-right"><button type="button" onClick={() => onOpenGate(gate)} className="inline-flex items-center gap-2 font-mono text-[9px] uppercase text-primary hover:text-primary/70">{t("guardrails.openGate")}<ArrowRight aria-hidden size={13} /></button></td></tr>)}</tbody></table></div> : <div className="mt-4 border border-dashed px-4 py-8"><ProjectChartEmpty title={t("guardrails.projectNoGates")} detail={scanReady ? t("guardrails.emptyDescription") : statusLabel} /></div>}
               </div>
             </>
           ) : (
@@ -474,9 +492,23 @@ function CockpitMetric({ label, value, tone = "muted" }: { label: string; value:
   return <div className="min-w-0 border-b px-4 py-4 last:border-b-0 sm:border-b-0 sm:border-r sm:last:border-r-0"><div className="bench-label">{label}</div><div className={cx("mt-2 font-mono text-xl font-semibold", tone === "ready" && "text-chart-2", tone === "blocked" && "text-destructive")}>{String(value).padStart(2, "0")}</div></div>;
 }
 
-function ReadinessCell({ code, title, ready, current, detail }: { code: string; title: string; ready: boolean; current: boolean; detail: string }) {
-  return <div className={cx("min-w-0 border-b p-4 md:border-b-0 md:border-r md:last:border-r-0", current && "bg-primary/[.04]")}><div className={cx("bench-label", ready ? "text-chart-2" : current ? "text-primary" : "text-muted-foreground")}>{code}</div><div className="mt-2 flex items-center gap-2"><span className={cx("grid size-7 place-items-center border", ready ? "border-chart-2/50 text-chart-2" : current ? "border-primary/60 text-primary" : "border-border text-muted-foreground")}>{ready ? <Check aria-hidden size={13} /> : current ? <ArrowRight aria-hidden size={13} /> : <Square aria-hidden size={11} />}</span><strong className="truncate text-xs">{title}</strong></div><div className="mt-2 truncate font-mono text-[8px] uppercase text-muted-foreground">{detail}</div></div>;
-}
+function ProjectReadinessPill({ label, value, ready }: { label: string; value: string; ready: boolean }) { return <span className={cx("inline-flex min-w-0 items-center gap-2 border px-2.5 py-2 font-mono text-[8px] uppercase tracking-[.06em]", ready ? "border-chart-2/40 text-chart-2" : "border-destructive/40 text-destructive")}><span className={cx("size-1.5 shrink-0", ready ? "bg-chart-2" : "bg-destructive")} /><span className="text-muted-foreground">{label}</span><strong className="truncate font-medium text-current">{value}</strong></span>; }
+
+function ProjectMetric({ label, value, detail, tone = "default" }: { label: string; value: string; detail: string; tone?: "default" | "primary" | "danger" }) { return <div className="min-w-0 border-b px-5 py-5 last:border-b-0 sm:border-r sm:[&:nth-child(2)]:border-r-0 xl:border-b-0 xl:[&:nth-child(2)]:border-r xl:last:border-r-0"><div className="bench-label">{label}</div><div className={cx("mt-2 break-words font-mono text-xl font-semibold tracking-[-.03em]", tone === "primary" && "text-primary", tone === "danger" && "text-destructive")}>{value}</div><div className="mt-1 truncate font-mono text-[8px] uppercase text-muted-foreground">{detail}</div></div>; }
+
+function ProjectChart({ title, description, children, className }: { title: string; description: string; children: ReactNode; className?: string }) { return <section className={cx("min-w-0 p-5 md:p-7", className)}><div className="bench-label text-primary">{title}</div><p className="mt-2 min-h-10 max-w-xl text-xs leading-5 text-muted-foreground">{description}</p><div className="mt-4 h-52 min-w-0">{children}</div></section>; }
+function ProjectChartEmpty({ title, detail }: { title: string; detail: string }) { return <div className="grid h-full place-content-center border border-dashed px-5 text-center"><strong className="text-sm">{title}</strong><p className="mt-2 max-w-sm text-xs leading-5 text-muted-foreground">{detail}</p></div>; }
+
+function gateOutcomeColor(gate: GateRun): string { if (isGateActive(gate.status)) return "var(--primary)"; if (gate.status === "cancelled") return "var(--muted-foreground)"; if (gate.status === "error" || gate.outcome === "error" || gate.outcome === "blocked") return "var(--destructive)"; if (gate.outcome === "warning" || gate.outcome === "bootstrap") return "var(--chart-3)"; return "var(--chart-2)"; }
+function buildProjectOutcomeData(gates: readonly GateRun[], t: ReturnType<typeof useI18n>["t"]) { const buckets = [
+  { key: "pass", label: t("guardrails.projectOutcomePass"), count: gates.filter((gate) => gate.outcome === "pass" || gate.outcome === "no_changes").length, color: "var(--chart-2)" },
+  { key: "attention", label: t("guardrails.projectOutcomeAttention"), count: gates.filter((gate) => gate.outcome === "warning" || gate.outcome === "bootstrap").length, color: "var(--chart-3)" },
+  { key: "blocked", label: t("guardrails.projectOutcomeBlocked"), count: gates.filter((gate) => gate.outcome === "blocked").length, color: "var(--destructive)" },
+  { key: "error", label: t("guardrails.projectOutcomeError"), count: gates.filter((gate) => gate.status === "error" || gate.outcome === "error").length, color: "var(--destructive)" },
+  { key: "running", label: t("guardrails.portfolioActive"), count: gates.filter((gate) => isGateActive(gate.status)).length, color: "var(--primary)" },
+]; return buckets.filter((bucket) => bucket.count > 0); }
+function formatProjectDate(value: string, locale: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? "—" : new Intl.DateTimeFormat(locale, { day: "2-digit", month: "short", year: "2-digit" }).format(date); }
+function formatProjectTime(value: string, locale: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? "—" : new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(date); }
 
 function EnrollmentSheet({
   open,
