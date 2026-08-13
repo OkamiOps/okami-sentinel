@@ -417,7 +417,11 @@ test("Portable Codex Security pins probe freshness at scan authorization across 
     }));
 
     assert.equal(result.runtime.status, "completed");
-    assert.equal(specs.length, PORTABLE_CODEX_SECURITY_STAGES.length);
+    assert.equal(
+      specs.length,
+      PORTABLE_CODEX_SECURITY_STAGES.length - 1,
+      "an all-rejected dossier completes report coverage server-side without a paid empty model turn",
+    );
     assert.ok(
       currentNow.getTime() - Date.parse(report().checkedAt) > 60 * 60 * 1000,
       "the probe may age past the freshness window after an already-authorized scan starts",
@@ -558,7 +562,7 @@ test("Portable Codex Security reads only the persisted vault reference for an AP
   }
 });
 
-test("Portable Codex Security runs six isolated stages with a server-owned bounded coverage dossier", async () => {
+test("Portable Codex Security completes six methodology stages with a server-owned bounded coverage dossier", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-stages-"));
   const config = configuration(root, plan({
     routeKind: "openai-api",
@@ -592,15 +596,17 @@ test("Portable Codex Security runs six isolated stages with a server-owned bound
     }));
     assert.equal(result.runtime.status, "completed");
     assert.deepEqual(specs.map(({ spec }) =>
-      String(spec.instructions.match(/stage "([a-z-]+)"/)?.[1])), PORTABLE_CODEX_SECURITY_STAGES.map((stage) => stage.id));
+      String(spec.instructions.match(/stage "([a-z-]+)"/)?.[1])), PORTABLE_CODEX_SECURITY_STAGES
+        .filter((stage) => stage.id !== "report")
+        .map((stage) => stage.id));
     assert.deepEqual(specs.map(({ toolSurface }) => [...toolSurface]),
-      Array.from({ length: 6 }, () => ["workspace.list", "workspace.read", "workspace.search", "results.write"]));
-    assert.equal(new Set(specs.map(({ spec }) => spec.artifactRoot)).size, 6);
-    assert.deepEqual(specs.map(({ spec }) => spec.reasoningEffort), Array(6).fill("high"));
-    assert.deepEqual(specs.map(({ spec }) => spec.terminalMode), Array(6).fill("artifact-write"));
+      Array.from({ length: 5 }, () => ["workspace.list", "workspace.read", "workspace.search", "results.write"]));
+    assert.equal(new Set(specs.map(({ spec }) => spec.artifactRoot)).size, 5);
+    assert.deepEqual(specs.map(({ spec }) => spec.reasoningEffort), Array(5).fill("high"));
+    assert.deepEqual(specs.map(({ spec }) => spec.terminalMode), Array(5).fill("artifact-write"));
     assert.deepEqual(
       specs.map(({ spec }) => spec.resultArtifactContract),
-      Array(6).fill("portable-stage-json-v1"),
+      Array(5).fill("portable-stage-json-v1"),
     );
     assert.deepEqual(
       validationDossiers.map((context) => context?.dossier.stageSummaries),
@@ -622,7 +628,6 @@ test("Portable Codex Security runs six isolated stages with a server-owned bound
           { stage: "discovery", summary: "ok" },
           { stage: "dataflow", summary: "ok" },
         ],
-        [],
       ],
     );
     assert.equal(specs[1]!.spec.instructions.includes(injection), false);
@@ -643,9 +648,12 @@ test("Portable Codex Security runs six isolated stages with a server-owned bound
       { stage: "inventory", summary: "ok" },
       { stage: "threat-model", summary: "ok" },
     ]);
-    assert.equal(specs[5]!.spec.instructions.includes(injection), false);
-    assert.equal(specs[5]!.spec.instructions.includes("BEGIN_PORTABLE_COVERAGE_DOSSIER_BASE64"), false);
-    assert.equal(specs[5]!.spec.instructions.includes("BEGIN_PORTABLE_REPORT_PAGE_JSON"), true);
+    const finalReport = JSON.parse(fs.readFileSync(
+      path.join(config.outputDir, "portable-codex-security-results", "sentinel-findings.json"),
+      "utf8",
+    )) as { findings: unknown[]; coverage: { candidates: unknown[] } };
+    assert.deepEqual(finalReport.findings, []);
+    assert.deepEqual(finalReport.coverage.candidates, []);
   } finally {
     remove(root);
   }

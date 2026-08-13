@@ -123,6 +123,21 @@ export function GuardrailScanMonitor({ gate, onScanTerminal }: { gate: GateRun; 
   const costCopy = scanCostPresentation(scan.cost);
   const highPlus = scan.severity.critical + scan.severity.high;
   const activity = scan.progress?.activityState;
+  const displayedActivity = guardrailDisplayedActivity(scan);
+  const activityLabel = displayedActivity === "live"
+    ? formatActivityState(activity)
+    : displayedActivity === "failed"
+      ? t("guardrails.failed")
+      : t("guardrails.streamClosed");
+  const activityTone = displayedActivity === "failed"
+    ? "risk" as const
+    : displayedActivity === "closed"
+      ? "good" as const
+      : activity === "active"
+        ? "good" as const
+        : activity === "stale"
+          ? "risk" as const
+          : undefined;
   const logs = telemetry.lines.slice(-120);
   const route = [scan.engine, scan.provider, scan.model].filter(Boolean).join(" · ");
   const reasoning = scan.effort ?? t("guardrails.providerManaged");
@@ -156,7 +171,7 @@ export function GuardrailScanMonitor({ gate, onScanTerminal }: { gate: GateRun; 
         <div className="min-w-0 border-b xl:border-b-0 xl:border-r">
           <div className="grid border-b sm:grid-cols-2">
             <MonitorMetric label={t("guardrails.stage")} value={formatProgressMetric(scan.progress)} detail={scan.progress?.phaseLabel ?? "—"} tone="signal" />
-            <MonitorMetric label={t("guardrails.activity")} value={formatActivityState(activity)} detail={scan.progress?.lastActivityAt ? `${t("guardrails.lastEvent")} ${formatDate(scan.progress.lastActivityAt)}` : undefined} tone={activity === "active" ? "good" : activity === "stale" ? "risk" : undefined} />
+            <MonitorMetric label={t("guardrails.activity")} value={activityLabel} detail={scan.progress?.lastActivityAt ? `${t("guardrails.lastEvent")} ${formatDate(scan.progress.lastActivityAt)}` : undefined} tone={activityTone} />
             <MonitorMetric label={t("guardrails.duration")} value={<LiveDuration startedAt={scan.startedAt} completedAt={scan.completedAt} status={scan.status} durationMs={scan.durationMs} showDot={false} />} />
             <MonitorMetric label={t("guardrails.findings")} value={scan.severity.total} detail={`${highPlus} HIGH+`} tone={highPlus > 0 ? "risk" : undefined} />
             <MonitorMetric label={t(costCopy.labelKey)} value={formatScanUsd(scan)} detail={scan.cost?.pricingBasis ?? t("guardrails.costWaitingUsage")} tone="signal" />
@@ -193,6 +208,12 @@ export function GuardrailScanMonitor({ gate, onScanTerminal }: { gate: GateRun; 
       {error && <div className="border-t p-4"><AlertBanner>{error}</AlertBanner></div>}
     </section>
   );
+}
+
+export function guardrailDisplayedActivity(scan: Pick<ScanRun, "status">): "live" | "failed" | "closed" {
+  if (scan.status === "running") return "live";
+  if (scan.status === "failed" || scan.status === "cancelled") return "failed";
+  return "closed";
 }
 
 export function ScanResultActions({ scan }: { scan: ScanRun }) {

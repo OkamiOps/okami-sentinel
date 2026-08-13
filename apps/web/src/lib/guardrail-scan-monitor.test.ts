@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import type { GateRun, ScanRun } from "@csb/shared";
 
-import { GuardrailScanMonitor, ScanResultActions } from "../components/guardrails/GuardrailScanMonitor.js";
+import { GuardrailScanMonitor, ScanResultActions, guardrailDisplayedActivity } from "../components/guardrails/GuardrailScanMonitor.js";
 import { PortfolioPipeline } from "../components/guardrails/PortfolioPipeline.js";
 import { I18nProvider } from "../i18n.js";
 
@@ -59,6 +59,13 @@ test("legacy gates do not present a zero ceiling as a real estimate", () => {
   ));
 
   assert.doesNotMatch(html, /USD[^<]*0,00/);
+});
+
+test("terminal guardrail scans never keep a stale ACTIVE activity label", () => {
+  assert.equal(guardrailDisplayedActivity({ status: "running" }), "live");
+  assert.equal(guardrailDisplayedActivity({ status: "failed" }), "failed");
+  assert.equal(guardrailDisplayedActivity({ status: "cancelled" }), "failed");
+  assert.equal(guardrailDisplayedActivity({ status: "completed" }), "closed");
 });
 
 test("portfolio header shows a frozen ceiling separately and never invents a zero estimate", () => {

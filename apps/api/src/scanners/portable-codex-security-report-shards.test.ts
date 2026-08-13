@@ -105,6 +105,27 @@ test("Portable report shards retain every confirmed candidate and assemble deter
   assert.doesNotThrow(() => validatePortableCodexSecurityReportCoverage(report, dossier));
 });
 
+test("Portable report assembly derives a verified zero report when every candidate was rejected", () => {
+  const dossier = dossierWith65ConfirmedAnd2Rejected();
+  dossier.assessments = dossier.assessments.map((assessment) => ({
+    ...assessment,
+    status: "rejected" as const,
+    reason: "not-vulnerable",
+  }));
+
+  const shards = createPortableCodexSecurityReportShards(dossier);
+  assert.equal(shards.length, 1);
+  assert.deepEqual(shards[0]!.candidateIds, []);
+
+  const report = assemblePortableCodexSecurityReportShards(dossier, [{
+    shard: shards[0]!,
+    report: { schemaVersion: 1, stage: "report", findings: [] },
+  }]);
+  assert.deepEqual(report.findings, []);
+  assert.equal(report.coverage.candidates.length, 67);
+  assert.ok(report.coverage.candidates.every((entry) => entry.disposition === "rejected"));
+});
+
 test("Portable report shards fail closed instead of exceeding the 16-candidate page bound", () => {
   const dossier = dossierWith65ConfirmedAnd2Rejected();
 

@@ -335,7 +335,19 @@ export async function runPortableCodexSecurity(
         })
         : null;
       const pageResults: PortableCodexSecurityReportShardResult[] = [];
-      for (const shard of shards ?? [null]) {
+      const modelShards = shards?.length === 1 && shards[0]?.candidateIds.length === 0
+        ? []
+        : shards;
+      if (shards !== null && modelShards?.length === 0) {
+        // Validation already rejected every carried candidate. Coverage and
+        // the zero-finding report are entirely server-owned, so a paid model
+        // turn cannot add evidence and must not be required for completion.
+        pageResults.push({
+          shard: shards[0]!,
+          report: { schemaVersion: 1, stage: "report", findings: [] },
+        });
+      }
+      for (const shard of modelShards ?? [null]) {
         const stageDossier = shard?.dossier ?? dossier;
         const stageDossierStateBase64 = shard === null
           ? dossierStateBase64
