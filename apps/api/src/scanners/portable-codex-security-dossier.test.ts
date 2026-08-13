@@ -13,6 +13,7 @@ import {
 import {
   assertPortableCodexSecurityDossierAnchors,
   assertPortableCodexSecurityReportAnchors,
+  createPortableCodexSecurityAnchorValidationCache,
 } from "./portable-codex-security-worker-support.js";
 
 const anchor = {
@@ -359,6 +360,48 @@ test("Portable coverage anchors must resolve to regular pinned source lines", ()
       () => assertPortableCodexSecurityReportAnchors(root, report),
       /stage_evidence_incomplete/i,
     );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Portable Deep validation accepts evidence distributed across more than 256 pinned files", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-deep-anchor-universe-"));
+  try {
+    const candidates = Array.from({ length: 300 }, (_, index) => {
+      const relativePath = `src/deep/file-${String(index).padStart(3, "0")}.ts`;
+      const target = path.join(root, relativePath);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, `export const value${index} = true;\n`);
+      return {
+        id: `candidate-deep-${index}`,
+        category: "deep-coverage",
+        anchors: [{
+          path: relativePath,
+          startLine: 1,
+          endLine: 1,
+          role: "sink" as const,
+          explanation: "Pinned repository evidence for the Deep coverage universe.",
+        }],
+      };
+    });
+    const cache = createPortableCodexSecurityAnchorValidationCache();
+    for (let offset = 0; offset < candidates.length; offset += 100) {
+      const artifact = {
+        schemaVersion: 1 as const,
+        stage: "discovery" as const,
+        summary: "Deep discovery retained repository-backed candidates for this server-owned page.",
+        observations: [],
+        candidates: candidates.slice(offset, offset + 100),
+      };
+      assert.notEqual(
+        normalizePortableCodexSecurityStageArtifact("03-discovery.json", artifact, root),
+        null,
+      );
+      const dossier = applyPortableCodexSecurityStageArtifact(createPortableCodexSecurityDossier(), artifact);
+      assert.doesNotThrow(() => assertPortableCodexSecurityDossierAnchors(root, dossier, undefined, cache));
+    }
+    assert.equal(cache.lineCounts.size, 300);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

@@ -39,8 +39,12 @@ const MAX_SNAPSHOT_ENTRIES = 500_000;
 const MAX_ARTIFACT_BYTES = 1_048_576;
 const MAX_STAGE_SUMMARY_BYTES = 16_384;
 const MAX_ANCHOR_FILE_BYTES = 1_048_576;
-const MAX_ANCHOR_VALIDATED_FILES = 256;
-const MAX_ANCHOR_VALIDATED_BYTES = 32 * 1_048_576;
+// Deep coverage can enumerate up to 4,096 auditable files. Anchor validation
+// shares one cache across every discovery/assessment/report page, so its
+// aggregate bounds must cover that same server-owned universe instead of the
+// old single-artifact envelope.
+const MAX_ANCHOR_VALIDATED_FILES = 4_096;
+const MAX_ANCHOR_VALIDATED_BYTES = 256 * 1_048_576;
 const NO_FOLLOW = typeof fs.constants.O_NOFOLLOW === "number"
   ? fs.constants.O_NOFOLLOW
   : 0;

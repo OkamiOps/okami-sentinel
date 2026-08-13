@@ -18,8 +18,11 @@ const MAX_ANCHORS = 20;
 const MAX_TEXT_BYTES = 1_024;
 const MIN_SUBSTANTIVE_TEXT_BYTES = 24;
 const MAX_SNAPSHOT_ANCHOR_FILE_BYTES = 1_048_576;
-const MAX_SNAPSHOT_ANCHOR_FILES = 256;
-const MAX_SNAPSHOT_ANCHOR_BYTES = 32 * 1_048_576;
+// A report shard may legitimately span evidence from the full Deep coverage
+// universe. Keep pre-I/O validation aligned with the server-owned Deep plan;
+// individual files remain capped at 1 MiB and all reads stay descriptor-pinned.
+const MAX_SNAPSHOT_ANCHOR_FILES = 4_096;
+const MAX_SNAPSHOT_ANCHOR_BYTES = 256 * 1_048_576;
 const NO_FOLLOW = typeof fs.constants.O_NOFOLLOW === "number"
   ? fs.constants.O_NOFOLLOW
   : 0;
