@@ -110,8 +110,7 @@ async function main(): Promise<void> {
     getSnapshot: (scanId) => runtime.store.getSnapshot(scanId),
     getConnection: (connectionId) => runtime.store.get(connectionId),
     getModel: (connectionId, modelId) => runtime.store.getModel(connectionId, modelId),
-    getLatestCapabilityCheck: (connectionId, modelId, protocol) =>
-      runtime.store.getLatestCapabilityCheck(connectionId, modelId, protocol),
+    getCapabilityCheck: (capabilityCheckId) => runtime.store.getCapabilityCheck(capabilityCheckId),
     vault: runtime.vault,
     xaiOAuth: runtime.xaiOAuthTokenResolver,
     signal: controller.signal,

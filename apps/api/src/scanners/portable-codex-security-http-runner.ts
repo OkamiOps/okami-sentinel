@@ -156,11 +156,7 @@ export interface PortableCodexSecurityRunnerDependencies {
   getSnapshot(scanId: string): ScanConnectionSnapshot | null;
   getConnection(connectionId: string): StoredProviderConnection | null;
   getModel(connectionId: string, modelId: string): ProviderModel | null;
-  getLatestCapabilityCheck(
-    connectionId: string,
-    modelId: string | null,
-    protocol: ProviderProtocol,
-  ): CapabilityReport | null;
+  getCapabilityCheck(capabilityCheckId: string): CapabilityReport | null;
   vault: Pick<CredentialVault, "get">;
   xaiOAuth?: Pick<XaiOAuthFlow, "getAccessToken">;
   createSession?: (input: PortableCodexSecuritySessionInput) => Promise<AgentSession>;
@@ -369,9 +365,6 @@ export async function runPortableCodexSecurity(
           },
         }))
         : null;
-      const deepCoverageReserveMs = discoveryPartitions === null
-        ? 0
-        : Math.min(Math.floor(remaining * 0.25), 10 * 60_000);
       const pageResults: PortableCodexSecurityReportShardResult[] = [];
       const discoveryResults: typeof dossier[] = [];
       const assessmentResults: typeof dossier[] = [];
@@ -419,7 +412,6 @@ export async function runPortableCodexSecurity(
           ? deepCoveragePartitionSessionLimits(
             safeConfiguration.limits,
             stageRemaining,
-            deepCoverageReserveMs,
             partition,
           )
           : assessmentPage !== null
@@ -462,7 +454,9 @@ export async function runPortableCodexSecurity(
             stageSessionLimits.maxModelTurns - 1,
             Math.max(8, Math.floor(stageSessionLimits.maxModelTurns * 2 / 3)),
           )
-          : assessmentPage === null ? 0 : Math.min(5, stageSessionLimits.maxModelTurns - 1),
+          : partition !== null
+            ? Math.min(16, Math.max(1, stageSessionLimits.maxModelTurns - 8))
+            : Math.min(5, stageSessionLimits.maxModelTurns - 1),
         ...(stage.id === "report"
           ? { maxCompletionTokens: portableCodexSecurityReportCompletionTokens(stageDossier) }
           : assessmentPage !== null
@@ -731,8 +725,14 @@ function revalidatePortablePlan(
   } catch {
     throw new PortableCodexSecurityRunnerError("provider_plan_revalidation_failed");
   }
-  const capability = dependencies.getLatestCapabilityCheck(connection.id, model.id, connection.protocol);
-  if (capability === null || capability.id !== plan.capabilityCheckId) {
+  const capability = dependencies.getCapabilityCheck(plan.capabilityCheckId);
+  if (
+    capability === null ||
+    capability.id !== plan.capabilityCheckId ||
+    capability.connectionId !== connection.id ||
+    capability.modelId !== model.id ||
+    capability.protocol !== connection.protocol
+  ) {
     throw new PortableCodexSecurityRunnerError("provider_plan_revalidation_failed");
   }
   const compatibility = resolveCompatibility({
@@ -872,25 +872,18 @@ function reportShardSessionLimits(
 function deepCoveragePartitionSessionLimits(
   limits: PortableCodexSecurityExecutionLimits,
   remainingMs: number,
-  reserveMs: number,
   partition: PortableDeepCoveragePartition,
 ): AgentSessionLimits {
   // Deep pages are exhaustive, not best-effort. Preserve enough bounded
   // turns for premature write repair and failed-read correction without
   // granting a fresh scan-wide budget to each page.
-  const maxModelTurns = Math.min(limits.maxModelTurns, 32);
+  const maxModelTurns = limits.maxModelTurns;
   // Providers may retry an incomplete page and re-read assigned paths. Bound
   // that behavior to at most two full passes plus repair overhead.
   const maxToolCalls = Math.min(limits.maxToolCalls, partition.paths.length * 2 + 24);
   if (maxModelTurns < 8 || maxToolCalls < partition.paths.length + 1) {
     throw new PortableCodexSecurityRunnerError("agent_tool_limit");
   }
-  const partitionsRemaining = partition.total - partition.index;
-  const discoveryBudgetMs = Math.max(1, remainingMs - reserveMs);
-  const partitionTimeoutMs = Math.min(
-    discoveryBudgetMs,
-    Math.max(3 * 60_000, Math.floor(discoveryBudgetMs / partitionsRemaining)),
-  );
   // The bounded counter includes escaped workspace results plus every model
   // response in the page. A raw 1 MiB partition can therefore exceed a
   // simple source-size multiplier even though the provider request remains
@@ -898,7 +891,7 @@ function deepCoveragePartitionSessionLimits(
   const maxOutputBytes = 16 * 1_048_576;
   return sessionLimits(
     { ...limits, maxModelTurns, maxToolCalls, maxOutputBytes },
-    partitionTimeoutMs,
+    remainingMs,
   );
 }
 

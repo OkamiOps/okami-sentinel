@@ -200,6 +200,7 @@ function dependencies(overrides: Record<string, unknown> = {}) {
     getSnapshot: () => snapshot(),
     getConnection: () => connection(),
     getModel: () => model(),
+    getCapabilityCheck: () => report(),
     getLatestCapabilityCheck: () => report(),
     vault: {
       get: async () => ({ apiKey: "server-only-api-key" }),
@@ -341,7 +342,7 @@ test("Portable Codex Security rejects every persisted identity mismatch before v
       { getSnapshot: () => snapshot({ executionProfile: "native" }) },
       { getConnection: () => connection({ routeKind: "openrouter-api" }) },
       { getModel: () => model({ id: "other" }) },
-      { getLatestCapabilityCheck: () => report({ id: "other" }) },
+      { getCapabilityCheck: () => report({ id: "other" }) },
     ]) {
       await assert.rejects(
         runPortableCodexSecurity(config, dependencies({
@@ -510,6 +511,9 @@ test("Portable Codex Security reads only the exact xAI OAuth namespace and fails
       authKind: "device-code", credentialRef: null,
     }),
     getModel: () => model({ connectionId: "connection-xai", id: "grok-a" }),
+    getCapabilityCheck: () => report({
+      id: "capability-xai", connectionId: "connection-xai", modelId: "grok-a", protocol: "xai-oauth-responses",
+    }),
     getLatestCapabilityCheck: () => report({
       id: "capability-xai", connectionId: "connection-xai", modelId: "grok-a", protocol: "xai-oauth-responses",
     }),
@@ -591,6 +595,7 @@ test("Portable Codex Security completes six methodology stages with a server-own
         protocol: "openai-responses",
       }),
       getModel: () => model({ reasoningEffort: { options: ["low", "high"], default: "high" } }),
+      getCapabilityCheck: () => report({ protocol: "openai-responses" }),
       getLatestCapabilityCheck: () => report({ protocol: "openai-responses" }),
       createSession: async (input: { spec: AgentSessionSpec; toolSurface: readonly string[] }) => {
         validationDossiers.push(structuredClone(input.spec.resultArtifactValidationContext));
@@ -692,9 +697,10 @@ test("Portable Deep partitions the immutable auditable universe and merges every
     assert.match(discovery[0]!.instructions, /BEGIN_PORTABLE_DEEP_SOURCE_FILES_JSON/);
     assert.match(discovery[0]!.instructions, /export const deep0 = true/);
     assert.equal(discovery[0]!.maxCompletionTokens, 32_768);
-    assert.equal(discovery[0]!.artifactWriteByTurn, 0);
+    assert.equal(discovery[0]!.artifactWriteByTurn, 1);
+    assert.equal(discovery[0]!.limits.maxModelTurns, config.limits.maxModelTurns);
     assert.ok(discovery.every((spec) => spec.limits.maxOutputBytes >= 262_144));
-    assert.ok(discovery.every((spec) => spec.limits.timeoutMs >= 3 * 60_000));
+    assert.ok(discovery.every((spec) => spec.limits.timeoutMs >= 10 * 60_000));
     assert.deepEqual(
       discovery.flatMap((spec) => spec.resultArtifactValidationContext?.deepCoverage?.requiredPaths ?? []),
       ["src/auth.ts", ...Array.from({ length: 97 }, (_, index) =>
@@ -733,6 +739,7 @@ test("Portable Codex Security bounds report pages and shares the original report
       runPortableCodexSecurity(config, dependencies({
         getSnapshot: () => snapshot({ routeKind: "minimax-token-plan", protocol: "anthropic-messages" }),
         getConnection: () => connection({ routeKind: "minimax-token-plan", protocol: "anthropic-messages" }),
+        getCapabilityCheck: () => report({ protocol: "anthropic-messages" }),
         getLatestCapabilityCheck: () => report({ protocol: "anthropic-messages" }),
         createSession: reportBudgetStageSessionFactory(specs),
       })),
@@ -850,7 +857,7 @@ test("Portable Codex Security rejects an unavailable usage meter before reading 
   try {
     await assert.rejects(
       runPortableCodexSecurity(config, dependencies({
-        getLatestCapabilityCheck: () => report({
+        getCapabilityCheck: () => report({
           capabilities: { ...CAPABILITIES, usage: "unsupported" },
         }),
         vault: {
