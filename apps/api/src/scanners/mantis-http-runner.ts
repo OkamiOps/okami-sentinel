@@ -321,7 +321,10 @@ export async function runMantisHttpAgent(
         ...(stage.id === "report"
           ? { resultArtifactContract: MANTIS_REPORT_RESULT_ARTIFACT_CONTRACT }
           : {}),
-        artifactWriteByTurn: Math.max(1, Math.floor(limits.maxModelTurns * 2 / 3)),
+        artifactWriteByTurn: Math.max(
+          1,
+          Math.floor(limits.maxModelTurns * (stage.id === "report" ? 1 / 3 : 2 / 3)),
+        ),
         snapshotRoot,
         artifactRoot,
         instructions: stageInstructions(stage, configuration.paths, priorState, expectedArtifact),
