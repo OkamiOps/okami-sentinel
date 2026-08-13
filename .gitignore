@@ -7,6 +7,7 @@ data/codex-security-state/
 data/npm-cache/
 data/mantis-cache/
 data/vulnhunter-cache/
+data/gates/
 .DS_Store
 *.log
 .env

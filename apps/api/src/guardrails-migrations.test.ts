@@ -20,6 +20,7 @@ test("migrates every legacy guardrail row atomically and idempotently", () => {
 
     assert.equal(column(database, "guardrail_repositories", "repository_path").notnull, 0);
     assert.equal(column(database, "gate_runs", "repository_path").notnull, 0);
+    assert.equal(column(database, "gate_runs", "cost_ceiling_usd").dflt_value, "0");
     assert.deepEqual(
       database.prepare(`
         SELECT repository_key, repository_path, source, default_executor,
@@ -327,9 +328,15 @@ function createLegacyGuardrailsFixture(database: Database.Database): void {
   `);
 }
 
-function column(database: Database.Database, table: string, name: string): { notnull: number } {
+function column(
+  database: Database.Database,
+  table: string,
+  name: string,
+): { notnull: number; dflt_value: string | null } {
   const result = database.prepare(`PRAGMA table_info(${table})`).all()
-    .find((value) => (value as { name: string }).name === name) as { notnull: number } | undefined;
+    .find((value) => (value as { name: string }).name === name) as
+      | { notnull: number; dflt_value: string | null }
+      | undefined;
   assert.ok(result, `${table}.${name} must exist`);
   return result;
 }

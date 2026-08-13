@@ -243,6 +243,7 @@ export async function startLocalGate(
   const repository = deps.getRepository(request.repositoryKey);
   if (!repository) throw new Error(`Repositório não configurado: ${request.repositoryKey}`);
   const repositoryPath = requiredLocalRepositoryPath(repository);
+  const costCeilingUsd = localCostCeiling(repositoryPath, deps);
   const baselineSource = request.baselineSource ?? "local";
   if (
     baselineSource === "github" &&
@@ -282,6 +283,7 @@ export async function startLocalGate(
     error: null,
     startedAt: deps.now(),
     completedAt: null,
+    costCeilingUsd,
     estimatedUsd: 0,
   };
   deps.insertGateRun(run);
@@ -334,6 +336,7 @@ export async function startRemoteManagedGate(
     error: null,
     startedAt: deps.now(),
     completedAt: null,
+    costCeilingUsd: preview.costBudget.maxCostUsd,
     estimatedUsd: 0,
   };
   deps.insertGateRun(run);
@@ -1073,6 +1076,19 @@ function requiredLocalRepositoryPath(repository: GuardrailRepository): string {
     throw new Error("Gate local exige uma pasta de repositório configurada");
   }
   return repository.repositoryPath;
+}
+
+function localCostCeiling(
+  repositoryPath: string,
+  deps: Pick<LocalGateDependencies, "readPolicy">,
+): number {
+  try {
+    return deps.readPolicy(repositoryPath).scan.maxCostUsd;
+  } catch {
+    // Preserve the existing failed-gate flow for an unreadable policy. It will
+    // record the operational error during execution instead of rejecting the launch.
+    return 0;
+  }
 }
 
 function writeGateArtifact(gateId: string, artifact: GateArtifact): string {

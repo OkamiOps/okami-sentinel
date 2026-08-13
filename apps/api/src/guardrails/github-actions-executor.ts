@@ -470,6 +470,7 @@ function actionsGateRun(
     publishError: null,
     publishedAt: null,
     error: null,
+    costCeilingUsd: preview.costBudget.maxCostUsd,
     estimatedUsd: 0,
     startedAt: now,
     completedAt: null,

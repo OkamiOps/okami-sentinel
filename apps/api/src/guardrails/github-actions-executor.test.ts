@@ -47,6 +47,8 @@ test("persists dispatch_requested before the API call and deduplicates an idempo
 
   assert.equal(persistedBeforeRemote, true);
   assert.equal(first.id, second.id);
+  assert.equal(first.costCeilingUsd, 18);
+  assert.equal(first.estimatedUsd, 0);
   assert.equal(fixture.calls.dispatch, 1);
   assert.equal(fixture.store.dispatches.get(first.id)?.state, "dispatch_accepted");
 });

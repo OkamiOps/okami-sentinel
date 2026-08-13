@@ -610,10 +610,8 @@ export function createGuardrailsApp(
 
   guardrails.delete("/guardrails/gates/:gateId", (c) => {
     try {
-      if (!deps.deleteGate(c.req.param("gateId"))) {
-        return c.json({ error: "Gate não encontrado" }, 404);
-      }
-      return c.json({ ok: true });
+      const deleted = deps.deleteGate(c.req.param("gateId"));
+      return c.json({ ok: true, deleted });
     } catch (error) {
       return c.json({ error: errorMessage(error) }, 409);
     }

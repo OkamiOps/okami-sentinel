@@ -148,6 +148,7 @@ const gate: GateRun = {
   error: null,
   startedAt: "2026-08-07T00:00:00.000Z",
   completedAt: null,
+  costCeilingUsd: 18,
   estimatedUsd: 0,
 };
 
@@ -412,14 +413,15 @@ test("exposes local and github guardrail routes", () => {
   ]);
 });
 
-test("DELETE /guardrails/gates/:gateId delegates terminal cleanup and reports missing gates", async () => {
+test("DELETE /guardrails/gates/:gateId is idempotent for stale clients", async () => {
   const testApp = createGuardrailsApp(dependencies());
   const deleted = await testApp.request("/guardrails/gates/gate-1", { method: "DELETE" });
   const missing = await testApp.request("/guardrails/gates/missing", { method: "DELETE" });
 
   assert.equal(deleted.status, 200);
-  assert.deepEqual(await deleted.json(), { ok: true });
-  assert.equal(missing.status, 404);
+  assert.deepEqual(await deleted.json(), { ok: true, deleted: true });
+  assert.equal(missing.status, 200);
+  assert.deepEqual(await missing.json(), { ok: true, deleted: false });
 });
 
 test("DELETE /guardrails/gates/:gateId refuses an active gate", async () => {

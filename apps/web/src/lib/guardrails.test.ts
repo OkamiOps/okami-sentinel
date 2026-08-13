@@ -42,6 +42,7 @@ function gatesFixture(): GateRun[] {
       error: null,
       startedAt: "2026-08-07T10:00:00.000Z",
       completedAt: "2026-08-07T10:02:00.000Z",
+      costCeilingUsd: 18,
       estimatedUsd: 0.42,
     },
     {
@@ -72,6 +73,7 @@ function gatesFixture(): GateRun[] {
       error: null,
       startedAt: "2026-08-07T11:00:00.000Z",
       completedAt: "2026-08-07T11:03:00.000Z",
+      costCeilingUsd: 18,
       estimatedUsd: 0.85,
     },
   ];

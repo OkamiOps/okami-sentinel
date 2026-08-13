@@ -56,6 +56,7 @@ interface GateRunRow {
   publish_error: string | null;
   published_at: string | null;
   error: string | null;
+  cost_ceiling_usd: number;
   estimated_usd: number;
   started_at: string;
   completed_at: string | null;
@@ -949,14 +950,14 @@ export function insertGateRun(
          workflow_run_id, materialization_state, scan_lineage_hash,
          artifact_schema_version, scan_id, status, outcome, policy_version,
          baseline_commit, artifact_path, publish_status, publish_error,
-         published_at, error, estimated_usd, started_at, completed_at
+         published_at, error, cost_ceiling_usd, estimated_usd, started_at, completed_at
        ) VALUES (
          @id, @repository_key, @repository_path, @source, @executor, @base_ref, @head_ref,
          @resolved_base_sha, @resolved_head_sha, @policy_sha, @pull_request_number,
          @workflow_run_id, @materialization_state, @scan_lineage_hash,
          @artifact_schema_version, @scan_id, @status, @outcome, @policy_version,
          @baseline_commit, @artifact_path, @publish_status, @publish_error,
-         @published_at, @error, @estimated_usd, @started_at, @completed_at
+         @published_at, @error, @cost_ceiling_usd, @estimated_usd, @started_at, @completed_at
        )`,
     )
     .run(gateRunToParams(run));
@@ -1200,6 +1201,7 @@ function gateRunToParams(run: GateRun): Record<string, unknown> {
     publish_error: run.publishError === null ? null : run.publishError,
     published_at: run.publishedAt === null ? null : run.publishedAt,
     error: run.error === null ? null : run.error,
+    cost_ceiling_usd: run.costCeilingUsd,
     estimated_usd: run.estimatedUsd,
     started_at: run.startedAt,
     completed_at: run.completedAt === null ? null : run.completedAt,
@@ -1235,6 +1237,7 @@ function rowToGateRun(row: GateRunRow): GateRun {
     publishError: row.publish_error === null ? null : row.publish_error,
     publishedAt: row.published_at === null ? null : row.published_at,
     error: row.error === null ? null : row.error,
+    costCeilingUsd: row.cost_ceiling_usd,
     estimatedUsd: row.estimated_usd,
     startedAt: row.started_at,
     completedAt: row.completed_at === null ? null : row.completed_at,

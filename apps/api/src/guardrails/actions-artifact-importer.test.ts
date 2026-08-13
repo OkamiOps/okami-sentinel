@@ -149,6 +149,7 @@ function importerFixture(gateOverrides: Partial<GateRun> = {}) {
     publishError: null,
     publishedAt: null,
     error: null,
+    costCeilingUsd: 18,
     estimatedUsd: 0,
     startedAt: "2026-08-12T12:00:00.000Z",
     completedAt: null,

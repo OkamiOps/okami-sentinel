@@ -1219,6 +1219,9 @@ export interface GateRun {
   error: string | null;
   startedAt: string;
   completedAt: string | null;
+  /** Immutable preflight ceiling, frozen before a gate is dispatched. */
+  costCeilingUsd: number;
+  /** Observed/provider-priced estimate. Never use this field as the execution ceiling. */
   estimatedUsd: number;
 }
 

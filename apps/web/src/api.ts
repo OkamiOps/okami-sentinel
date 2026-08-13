@@ -394,6 +394,8 @@ export const api = {
     request<{ scan: ScanRun; findings: FindingSummary[] }>(`/scans/${id}`),
   getTelemetry: (id: string) =>
     request<ScanTelemetrySnapshot>(`/scans/${id}/telemetry?limit=500`),
+  scanEventsUrl: (id: string, after = 0) =>
+    `${BASE}/scans/${encodeURIComponent(id)}/events?after=${Math.max(0, Math.trunc(after))}`,
   report: (id: string) => request<ScanReportData>(`/scans/${id}/report`),
   getFinding: (scanId: string, findingId: string) =>
     request<{ finding: FindingDetail }>(`/scans/${scanId}/findings/${encodeURIComponent(findingId)}`),
@@ -525,7 +527,7 @@ export const api = {
       { method: "POST" },
     ),
   deleteGate: (gateId: string) =>
-    request<{ ok: boolean }>(
+    request<{ ok: boolean; deleted: boolean }>(
       `/guardrails/gates/${encodeURIComponent(gateId)}`,
       { method: "DELETE" },
     ),

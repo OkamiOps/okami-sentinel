@@ -15,6 +15,7 @@ import {
   DeleteGateButton,
   EvidenceTrace,
   GuardrailPreflightSheet,
+  GuardrailScanMonitor,
   PortfolioPipeline,
   PublishGateControl,
   RepositoryEnrollmentForm,
@@ -280,12 +281,16 @@ export function GuardrailsPage() {
         </div>
       )}
 
-      {readyState.selectedGate && !readyState.artifact && (
+      {readyState.selectedGate?.executor === "sentinel-managed" && readyState.selectedGate.scanId && (
+        <GuardrailScanMonitor gate={readyState.selectedGate} />
+      )}
+
+      {readyState.selectedGate && (readyState.selectedGate.executor !== "sentinel-managed" || !readyState.selectedGate.scanId) && !readyState.artifact && (
         <section className="bench-panel mt-4">
           <EmptyState
-            title={selectedGateActive ? "Gate em execução" : "Artifact indisponível"}
+            title={selectedGateActive ? t("guardrails.scanStartingTitle") : "Artifact indisponível"}
             description={selectedGateActive
-              ? "O Decision Graph será aberto quando o artifact estiver disponível."
+              ? t("guardrails.scanStartingDescription")
               : "Este gate não produziu evidência causal para inspecionar."}
           />
         </section>

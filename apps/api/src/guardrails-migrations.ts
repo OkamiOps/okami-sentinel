@@ -1,13 +1,14 @@
 import type Database from "better-sqlite3";
 
-export const CURRENT_GUARDRAILS_SCHEMA_VERSION = 4;
+export const CURRENT_GUARDRAILS_SCHEMA_VERSION = 5;
 
 export type GuardrailsMigrationStep =
   | "repositories_rebuilt"
   | "gates_rebuilt"
   | "metadata_created"
   | "repository_executor_added"
-  | "actions_dispatches_added";
+  | "actions_dispatches_added"
+  | "gate_cost_ceiling_added";
 
 export interface GuardrailsMigrationHooks {
   afterStep?(step: GuardrailsMigrationStep): void;
@@ -51,12 +52,16 @@ export function migrateGuardrailsSchema(
     if (currentVersion < 4) {
       hooks.afterStep?.("actions_dispatches_added");
     }
+    if (currentVersion < 5) {
+      ensureGateCostCeiling(database);
+      hooks.afterStep?.("gate_cost_ceiling_added");
+    }
     database.prepare(`
       INSERT OR REPLACE INTO guardrail_schema_migrations (version, name, applied_at)
       VALUES (?, ?, ?)
     `).run(
       CURRENT_GUARDRAILS_SCHEMA_VERSION,
-      "github actions dispatch reconciliation",
+      "gate cost ceiling",
       new Date().toISOString(),
     );
   });
@@ -70,6 +75,7 @@ function schemaIsCurrent(database: Database.Database): boolean {
     .get() as { version: number | null };
   return (row.version ?? 0) >= CURRENT_GUARDRAILS_SCHEMA_VERSION
     && tableColumns(database, "guardrail_repositories").has("default_executor")
+    && tableColumns(database, "gate_runs").has("cost_ceiling_usd")
     && tableExists(database, "github_actions_dispatches");
 }
 
@@ -115,7 +121,7 @@ function rebuildGateRuns(database: Database.Database): void {
       workflow_run_id, materialization_state, scan_lineage_hash,
       artifact_schema_version, scan_id, status, outcome, policy_version,
       baseline_commit, artifact_path, publish_status, publish_error,
-      published_at, error, estimated_usd, started_at, completed_at
+      published_at, error, cost_ceiling_usd, estimated_usd, started_at, completed_at
     )
     SELECT
       id, repository_key, repository_path, 'local', 'sentinel-managed',
@@ -125,7 +131,7 @@ function rebuildGateRuns(database: Database.Database): void {
       ${existing("publish_status", "'not_configured'")},
       ${existing("publish_error", "NULL")},
       ${existing("published_at", "NULL")},
-      error, estimated_usd, started_at, completed_at
+      error, ${existing("cost_ceiling_usd", "0")}, estimated_usd, started_at, completed_at
     FROM gate_runs
   `);
   database.exec(`
@@ -146,6 +152,11 @@ function ensureFinalGateRunTable(database: Database.Database): void {
     createGateRunTable(database, "gate_runs");
   }
   createGateRunIndexes(database);
+}
+
+function ensureGateCostCeiling(database: Database.Database): void {
+  if (tableColumns(database, "gate_runs").has("cost_ceiling_usd")) return;
+  database.exec("ALTER TABLE gate_runs ADD COLUMN cost_ceiling_usd REAL NOT NULL DEFAULT 0");
 }
 
 function createRepositoryTable(database: Database.Database, table: string): void {
@@ -236,6 +247,7 @@ function createGateRunTable(database: Database.Database, table: string): void {
       publish_error TEXT,
       published_at TEXT,
       error TEXT,
+      cost_ceiling_usd REAL NOT NULL DEFAULT 0,
       estimated_usd REAL NOT NULL DEFAULT 0,
       started_at TEXT NOT NULL,
       completed_at TEXT,

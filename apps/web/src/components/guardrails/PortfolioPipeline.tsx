@@ -146,6 +146,14 @@ function PortfolioReadout({
 function SelectedGateHeader({ gate, artifact }: { gate: GateRun; artifact: GateArtifact | null }) {
   const { t } = useI18n();
   const v2 = artifact?.schemaVersion === 2 ? artifact : null;
+  const hasObservedCost = Number.isFinite(gate.estimatedUsd) && gate.estimatedUsd > 0;
+  const hasCostCeiling = Number.isFinite(gate.costCeilingUsd) && gate.costCeilingUsd > 0;
+  const costLabel = hasObservedCost ? t("guardrails.selectedCost") : hasCostCeiling ? t("guardrails.costCeiling") : t("guardrails.selectedCost");
+  const costValue = hasObservedCost
+    ? formatUsd(gate.estimatedUsd)
+    : hasCostCeiling
+      ? formatUsd(gate.costCeilingUsd, true)
+      : "—";
   return (
     <div className="grid min-w-0 border-b lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
       <div className="min-w-0 px-4 py-5 sm:px-5">
@@ -162,7 +170,7 @@ function SelectedGateHeader({ gate, artifact }: { gate: GateRun; artifact: GateA
         </div>
       </div>
       <div className="grid grid-cols-2 border-t lg:min-w-[22rem] lg:border-l lg:border-t-0">
-        <HeaderFact label={t("guardrails.selectedCost")} value={formatUsd(gate.estimatedUsd)} />
+        <HeaderFact label={costLabel} value={costValue} />
         <HeaderFact label={t("guardrails.selectedLineage")} value={v2?.lineage.scanLineageHash.slice(0, 12) ?? gate.scanLineageHash?.slice(0, 12) ?? t("guardrails.pending")} mono />
       </div>
     </div>

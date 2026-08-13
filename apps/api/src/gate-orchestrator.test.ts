@@ -241,6 +241,8 @@ test("passes changed paths and cost envelope to the scanner", async () => {
 
   assert.deepEqual(deps.lastScanRequest?.paths, ["src/a.ts", "src/b.ts"]);
   assert.equal(deps.lastScanRequest?.maxCostUsd, 18);
+  assert.equal(deps.runs.get(gate.id)?.costCeilingUsd, 18);
+  assert.equal(deps.runs.get(gate.id)?.estimatedUsd, 0);
 });
 
 test("records engine failure as error instead of pass", async () => {
@@ -322,6 +324,8 @@ test("remote managed gate persists frozen identity before execution and publishe
   assert.equal(gate.resolvedHeadSha, "b".repeat(40));
   assert.equal(gate.policySha, "a".repeat(40));
   assert.equal(gate.artifactSchemaVersion, 2);
+  assert.equal(gate.costCeilingUsd, 18);
+  assert.equal(gate.estimatedUsd, 0);
   assert.deepEqual(calls, ["execute", "write", "publish"]);
   const completed = runs.get(gate.id)!;
   assert.equal(completed.status, "completed");

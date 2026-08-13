@@ -88,6 +88,7 @@ function gateRunFixture(overrides: Partial<GateRun> = {}): GateRun {
     error: null,
     startedAt: "2026-08-07T09:00:00Z",
     completedAt: null,
+    costCeilingUsd: 18,
     estimatedUsd: 0,
     ...overrides,
   };
@@ -384,6 +385,7 @@ test("migrates a local-plan gate schema idempotently", () => {
     assert.equal(columns.includes("publish_status"), true);
     assert.equal(columns.includes("publish_error"), true);
     assert.equal(columns.includes("published_at"), true);
+    assert.equal(columns.includes("cost_ceiling_usd"), true);
   } finally {
     db.close();
   }
@@ -537,6 +539,24 @@ test("round-trips nullable run fields and lists newest runs first", () => {
       listGateRuns("github.com/okami/csb", db).map((run) => run.id),
       ["gate-2", "gate-1"],
     );
+  } finally {
+    db.close();
+  }
+});
+
+test("preserves the frozen cost ceiling separately from the observed scan estimate", () => {
+  const db = new Database(":memory:");
+
+  try {
+    const expected = {
+      ...gateRunFixture({ estimatedUsd: 0.42 }),
+      costCeilingUsd: 18,
+    };
+    insertGateRun(expected, db);
+
+    const restored = getGateRun("gate-1", db)!;
+    assert.equal(restored.costCeilingUsd, 18);
+    assert.equal(restored.estimatedUsd, 0.42);
   } finally {
     db.close();
   }
