@@ -415,7 +415,7 @@ export async function runPortableCodexSecurity(
             partition,
           )
           : assessmentPage !== null
-            ? reportShardSessionLimits(
+            ? assessmentPageSessionLimits(
               safeConfiguration.limits,
               stageRemaining,
               assessmentPage.total,
@@ -865,6 +865,20 @@ function reportShardSessionLimits(
   const maxToolCalls = Math.floor(limits.maxToolCalls / shardCount);
   if (maxModelTurns < 4 || maxToolCalls < 2) {
     throw new PortableCodexSecurityRunnerError("agent_turn_limit");
+  }
+  return sessionLimits({ ...limits, maxModelTurns, maxToolCalls }, remainingMs);
+}
+
+/** Assessment pages may inspect every carried candidate before one terminal write. */
+function assessmentPageSessionLimits(
+  limits: PortableCodexSecurityExecutionLimits,
+  remainingMs: number,
+  pageCount: number,
+): AgentSessionLimits {
+  const maxModelTurns = Math.floor(limits.maxModelTurns / pageCount);
+  const maxToolCalls = Math.floor(limits.maxToolCalls / pageCount);
+  if (maxModelTurns < 4 || maxToolCalls < 64) {
+    throw new PortableCodexSecurityRunnerError("agent_tool_limit");
   }
   return sessionLimits({ ...limits, maxModelTurns, maxToolCalls }, remainingMs);
 }

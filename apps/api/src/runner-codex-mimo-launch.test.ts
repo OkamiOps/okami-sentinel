@@ -412,11 +412,11 @@ test("Portable derives its execution envelope from the selected effort instead o
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-adaptive-limits-"));
   const cases = [
     { mode: "standard" as const, effort: "minimal", timeout: 1_200_000, turns: 24, tools: 96 },
-    { mode: "deep" as const, effort: "low", timeout: 1_800_000, turns: 48, tools: 192 },
+    { mode: "deep" as const, effort: "low", timeout: 1_800_000, turns: 48, tools: 384 },
     { mode: "standard" as const, effort: null, timeout: 1_800_000, turns: 32, tools: 128 },
-    { mode: "deep" as const, effort: "future-provider-level", timeout: 2_700_000, turns: 64, tools: 256 },
+    { mode: "deep" as const, effort: "future-provider-level", timeout: 2_700_000, turns: 64, tools: 512 },
     { mode: "standard" as const, effort: "xhigh", timeout: 2_700_000, turns: 48, tools: 192 },
-    { mode: "deep" as const, effort: "max", timeout: 5_400_000, turns: 128, tools: 512 },
+    { mode: "deep" as const, effort: "max", timeout: 5_400_000, turns: 128, tools: 1_024 },
   ];
   try {
     for (const [index, scenario] of cases.entries()) {
