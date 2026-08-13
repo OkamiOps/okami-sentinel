@@ -4,7 +4,7 @@ import type {
   GuardrailRepository,
 } from "@csb/shared";
 
-export type GuardrailTargetKind = "pull_request" | "compare";
+export type GuardrailTargetKind = "pull_request" | "protected_branch" | "compare";
 
 export interface GuardrailTargetDraft {
   kind: GuardrailTargetKind;
@@ -43,12 +43,43 @@ export function targetFromDraft(
       : null;
   }
 
+  if (draft.kind === "protected_branch") {
+    const ref = draft.baseRef.trim();
+    return ref && ref.toUpperCase() !== "HEAD"
+      ? { kind: "protected_branch", ref }
+      : null;
+  }
+
   const baseRef = draft.baseRef.trim();
   const headRef = draft.headRef.trim();
   if (!baseRef || !headRef || baseRef.toUpperCase() === "HEAD" || headRef.toUpperCase() === "HEAD") {
     return null;
   }
   return { kind: "compare", baseRef, headRef };
+}
+
+export function reconcileRemotePullRequestDraft(
+  repository: GuardrailRepository,
+  draft: GuardrailTargetDraft,
+  pullRequestNumbers: readonly number[],
+): GuardrailTargetDraft {
+  const currentNumber = Number(draft.pullRequestNumber);
+  const selectedNumber = pullRequestNumbers.includes(currentNumber)
+    ? currentNumber
+    : pullRequestNumbers[0];
+
+  if (selectedNumber !== undefined) {
+    return { ...draft, pullRequestNumber: String(selectedNumber) };
+  }
+
+  return draft.kind === "pull_request"
+    ? {
+        ...draft,
+        kind: "protected_branch",
+        pullRequestNumber: "",
+        baseRef: repository.defaultBranch,
+      }
+    : { ...draft, pullRequestNumber: "" };
 }
 
 export function preflightFingerprint(

@@ -6,6 +6,7 @@ import type { GuardrailRepository } from "@csb/shared";
 import {
   initialGuardrailTargetDraft,
   preflightFingerprint,
+  reconcileRemotePullRequestDraft,
   targetFromDraft,
 } from "./guardrails-target.js";
 
@@ -34,6 +35,26 @@ test("GitHub pull request and compare drafts produce exact targets", () => {
     baseRef: "main",
     headRef: "feature/guardrail",
   }), { kind: "compare", baseRef: "main", headRef: "feature/guardrail" });
+  assert.deepEqual(targetFromDraft(repository, {
+    ...initialGuardrailTargetDraft(repository),
+    kind: "protected_branch",
+    baseRef: "main",
+  }), { kind: "protected_branch", ref: "main" });
+});
+
+test("a remote repository without open pull requests falls back to its default branch", () => {
+  const repository = remoteRepository();
+  const draft = initialGuardrailTargetDraft(repository);
+
+  assert.deepEqual(reconcileRemotePullRequestDraft(repository, draft, []), {
+    ...draft,
+    kind: "protected_branch",
+    baseRef: "main",
+  });
+  assert.deepEqual(reconcileRemotePullRequestDraft(repository, draft, [43, 42]), {
+    ...draft,
+    pullRequestNumber: "43",
+  });
 });
 
 test("a local comparison may resolve HEAD and keeps workspace authority explicit", () => {

@@ -30,6 +30,7 @@ import { api, type GuardrailTargetPreview } from "../../api";
 import {
   initialGuardrailTargetDraft,
   preflightFingerprint,
+  reconcileRemotePullRequestDraft,
   targetFromDraft,
   type GuardrailTargetDraft,
 } from "../../lib/guardrails-target";
@@ -252,19 +253,16 @@ export function GuardrailPreflightSheet({
     void api.listGuardrailPullRequests(selected.repositoryKey).then(({ pullRequests: openPullRequests }) => {
       if (cancelled) return;
       setPullRequests(openPullRequests);
-      setDraft((current) => {
-        const currentNumber = Number(current.pullRequestNumber);
-        const selectedPullRequest = openPullRequests.find((pullRequest) => pullRequest.number === currentNumber)
-          ?? openPullRequests[0];
-        return {
-          ...current,
-          pullRequestNumber: selectedPullRequest ? String(selectedPullRequest.number) : "",
-        };
-      });
-    }).catch((cause) => {
+      setDraft((current) => reconcileRemotePullRequestDraft(
+        selected,
+        current,
+        openPullRequests.map((pullRequest) => pullRequest.number),
+      ));
+    }).catch(() => {
       if (cancelled) return;
       setPullRequests([]);
-      setPullRequestsError(cause instanceof Error ? cause.message : t("guardrails.prLoadError"));
+      setPullRequestsError(t("guardrails.prLoadError"));
+      setDraft((current) => reconcileRemotePullRequestDraft(selected, current, []));
     });
     return () => { cancelled = true; };
   }, [open, selected?.repositoryKey, selected?.source, t]);
@@ -417,8 +415,9 @@ export function GuardrailPreflightSheet({
                 </StepHeading>
 
                 {selected.source === "github" && (
-                  <div className="mb-4 grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label={t("guardrails.remoteTarget")}>
+                  <div className="mb-4 grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label={t("guardrails.remoteTarget")}>
                     <ChoiceCard checked={draft.kind === "pull_request"} icon={<GitPullRequestArrow aria-hidden size={17} />} title={t("guardrails.pullRequest")} meta="GITHUB RESOLVED" description={t("guardrails.remoteTargetHelp")} onSelect={() => invalidatePreview({ ...draft, kind: "pull_request" })} />
+                    <ChoiceCard checked={draft.kind === "protected_branch"} icon={<GitBranch aria-hidden size={17} />} title={t("guardrails.branchSnapshot")} meta="FULL REPOSITORY" description={t("guardrails.branchSnapshotHelp")} onSelect={() => invalidatePreview({ ...draft, kind: "protected_branch", baseRef: selected.defaultBranch })} />
                     <ChoiceCard checked={draft.kind === "compare"} icon={<GitCompareArrows aria-hidden size={17} />} title={t("guardrails.compareRefs")} meta="BASE + HEAD" description={t("guardrails.remoteTargetHelp")} onSelect={() => invalidatePreview({ ...draft, kind: "compare" })} />
                   </div>
                 )}
@@ -444,6 +443,10 @@ export function GuardrailPreflightSheet({
                     ) : (
                       <div id="guardrail-pr-number" className="border border-dashed px-4 py-5 text-xs leading-5 text-muted-foreground">{pullRequestsError ?? t("guardrails.prEmpty")}</div>
                     )}
+                  </Field>
+                ) : draft.kind === "protected_branch" ? (
+                  <Field label={t("guardrails.branchRef")} htmlFor="guardrail-branch-ref" hint={pullRequestsError ?? (pullRequests?.length === 0 ? t("guardrails.branchFallbackHelp") : t("guardrails.branchSnapshotHelp"))}>
+                    <Input id="guardrail-branch-ref" className="min-h-11 font-mono" value={draft.baseRef} onChange={(event) => invalidatePreview({ ...draft, baseRef: event.target.value })} />
                   </Field>
                 ) : (
                   <div className="grid gap-4 sm:grid-cols-2">
@@ -627,7 +630,7 @@ function PreviewReadout({ preview }: { preview: GuardrailTargetPreview }) {
         <Readout label={t("guardrails.previewHead")} value={`${preview.resolvedTarget.headRef}\n${preview.resolvedTarget.headSha}`} />
         <Readout label={t("guardrails.previewPolicy")} value={`${preview.policySource} · ${preview.policySha}`} />
         <Readout label={t("guardrails.previewExecutor")} value={`${capability} · ${preview.executorCapability.code}`} tone={preview.executorCapability.ready ? "good" : "risk"} />
-        <Readout label={t("guardrails.previewScan")} value={`${preview.scanPlan.engine ?? "codex-security"} · ${preview.scanPlan.model} · ${preview.scanPlan.effort} · ${preview.scanPlan.mode}\n${preview.scanPlan.scopeMode} · ${preview.scanPlan.maxChangedPaths} paths`} />
+        <Readout label={t("guardrails.previewScan")} value={`${preview.scanPlan.engine ?? "codex-security"} · ${preview.scanPlan.model} · ${preview.scanPlan.effort} · ${preview.scanPlan.mode}\n${preview.scanPlan.scopeMode}${preview.scanPlan.scopeMode === "changed" ? ` · ${preview.scanPlan.maxChangedPaths} paths` : ""}`} />
         <Readout label={t("guardrails.previewCost")} value={`≤ USD ${preview.costBudget.maxCostUsd.toFixed(2)}\n${t("guardrails.costInFlight")}`} />
       </div>
       <div className="grid border-t px-4 py-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">

@@ -162,7 +162,9 @@ export class TargetPreviewService {
           engine: scanSelection.engine,
           connectionId: scanSelection.connection.connectionId,
         }),
-        scopeMode: protectedPolicy.policy.scope.mode,
+        scopeMode: target.kind === "protected_branch"
+          ? "repository"
+          : protectedPolicy.policy.scope.mode,
         maxChangedPaths: protectedPolicy.policy.scope.maxChangedPaths,
         fallback: protectedPolicy.policy.scope.fallback,
         model: scanSelection === null

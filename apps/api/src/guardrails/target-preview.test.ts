@@ -105,6 +105,17 @@ test("a branch move creates a new preview while accepted identity keeps the orig
   assert.deepEqual(accepted.policy, defaultGuardrailPolicy());
 });
 
+test("a protected branch freezes a full-repository scan even when policy defaults to changed paths", async () => {
+  const service = previewService();
+
+  const preview = await service.create(repository(), {
+    target: { kind: "protected_branch", ref: "main" },
+    executor: "sentinel-managed",
+  });
+
+  assert.equal(preview.scanPlan.scopeMode, "repository");
+});
+
 test("freezes only a server-approved managed scanner route into the preview", async () => {
   const service = new TargetPreviewService({
     resolveTarget: async () => resolvedTarget(FIRST_HEAD_SHA),
