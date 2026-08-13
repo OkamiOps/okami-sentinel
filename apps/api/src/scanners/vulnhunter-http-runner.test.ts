@@ -1034,6 +1034,7 @@ test("VulnHunter HTTP accepts one universal findings report and keeps legacy nor
       assert.match(spec.instructions, new RegExp(VULNHUNTER_HTTP_BUNDLE_NAME));
       assert.equal(spec.resultArtifactContract, "vulnhunter-report-v1");
       assert.equal(spec.terminalMode, "artifact-write");
+      assert.equal(spec.artifactWriteByTurn, 21);
       writeValidBundle(spec.artifactRoot);
       return completedSession([
         { type: "tool", phase: "requested", callId: "list-1", name: "workspace.list" },

@@ -51,8 +51,14 @@ export type ResultArtifactValidationIssue = PortableArtifactValidationIssue
   | PortableReportCoverageValidationIssue
   | "json-invalid"
   | "mantis-report-invalid"
+  | "vulnhunter-report-invalid"
   | "dossier-semantics-invalid";
-export type ResultArtifactRepairDetail = PortableArtifactRepairDetail | MantisReportRepairDetail;
+export type VulnHunterReportRepairDetail = {
+  kind: "vulnhunter-report";
+  reason: "envelope" | "finding" | "evidence";
+};
+export type ResultArtifactRepairDetail = PortableArtifactRepairDetail | MantisReportRepairDetail |
+  VulnHunterReportRepairDetail;
 
 const REPORT_KEYS = new Set(["schemaVersion", "findings"]);
 const FINDING_KEYS = new Set([
@@ -88,17 +94,27 @@ export function resultArtifactContentSchema(
 export function normalizeVulnHunterResultReport(
   value: unknown,
   snapshotRoot?: string,
+  onReject?: (detail: VulnHunterReportRepairDetail) => void,
 ): Record<string, unknown> | null {
   const report = record(value);
   if (report === null || !hasOnlyKeys(report, REPORT_KEYS) || report.schemaVersion !== 1 ||
-      !Array.isArray(report.findings) || report.findings.length > MAX_FINDINGS) return null;
+      !Array.isArray(report.findings) || report.findings.length > MAX_FINDINGS) {
+    onReject?.({ kind: "vulnhunter-report", reason: "envelope" });
+    return null;
+  }
 
   const ids = new Set<string>();
   for (const candidate of report.findings) {
     const finding = record(candidate);
-    if (finding === null || !hasOnlyKeys(finding, FINDING_KEYS)) return null;
+    if (finding === null || !hasOnlyKeys(finding, FINDING_KEYS)) {
+      onReject?.({ kind: "vulnhunter-report", reason: "finding" });
+      return null;
+    }
     const id = boundedText(finding.id, 256);
-    if (id === null || ids.has(id)) return null;
+    if (id === null || ids.has(id)) {
+      onReject?.({ kind: "vulnhunter-report", reason: "finding" });
+      return null;
+    }
     ids.add(id);
     if (boundedText(finding.title, 4_096) === null || !isSeverity(finding.severity) ||
         !isConfidence(finding.confidence) || !stringArray(finding.cwe, 128, 128, /^CWE-\d+$/i) ||
@@ -109,14 +125,22 @@ export function normalizeVulnHunterResultReport(
         boundedText(finding.impact, 32_768) === null ||
         boundedText(finding.remediation, 32_768) === null ||
         boundedText(finding.severityRationale, 32_768) === null ||
-        !validValidation(finding.validation) || !validEvidence(finding.evidence)) return null;
+        !validValidation(finding.validation) || !validEvidence(finding.evidence)) {
+      onReject?.({ kind: "vulnhunter-report", reason: "finding" });
+      return null;
+    }
   }
   const canonical = { schemaVersion: 1, findings: report.findings };
-  return Buffer.byteLength(`${JSON.stringify(canonical)}\n`, "utf8") <=
-    MAX_VULNHUNTER_RESULT_REPORT_BYTES &&
-    validateVulnHunterReportEvidence(canonical, snapshotRoot)
-    ? canonical
-    : null;
+  if (Buffer.byteLength(`${JSON.stringify(canonical)}\n`, "utf8") >
+      MAX_VULNHUNTER_RESULT_REPORT_BYTES) {
+    onReject?.({ kind: "vulnhunter-report", reason: "envelope" });
+    return null;
+  }
+  if (!validateVulnHunterReportEvidence(canonical, snapshotRoot)) {
+    onReject?.({ kind: "vulnhunter-report", reason: "evidence" });
+    return null;
+  }
+  return canonical;
 }
 
 /**
@@ -157,8 +181,17 @@ export function normalizeResultArtifactInput(
     }
     return { path: MANTIS_REPORT_RESULT_PATH, content: JSON.stringify(report) };
   }
-  if (input.path !== VULNHUNTER_RESULT_ARTIFACT_PATH) return null;
-  const report = normalizeVulnHunterResultReport(parsed, snapshotRoot);
+  if (input.path !== VULNHUNTER_RESULT_ARTIFACT_PATH) {
+    onReject?.("vulnhunter-report-invalid", { kind: "vulnhunter-report", reason: "envelope" });
+    return null;
+  }
+  let repairDetail: VulnHunterReportRepairDetail | undefined;
+  const report = normalizeVulnHunterResultReport(
+    parsed,
+    snapshotRoot,
+    (detail) => { repairDetail = detail; },
+  );
+  if (report === null) onReject?.("vulnhunter-report-invalid", repairDetail);
   return report === null
     ? null
     : { path: VULNHUNTER_RESULT_ARTIFACT_PATH, content: JSON.stringify(report) };

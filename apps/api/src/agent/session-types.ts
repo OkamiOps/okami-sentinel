@@ -746,7 +746,13 @@ function recoverableWorkspaceToolFailure(
           : "Use the declared result path and pass one complete compact JSON object with schemaVersion 1 and the stage matching that path. Include a non-empty summary, observations [], and scope paths as '.' or repository-relative paths. Candidate, assessment, finding, coverage, and evidence fields must match the declared stage contract and pinned line ranges."
         : resultArtifactContract === MANTIS_REPORT_RESULT_ARTIFACT_CONTRACT
           ? "Write report.json as one complete compact JSON object with schemaVersion:1, engine:'mantis', stage:'report', and findings. Every finding needs id, title, severity, remediation or mitigation, and code_paths. Every code_paths entry must be a repository-relative path followed by :line or :start-end. Correct the indicated finding and locator; do not remove a finding to bypass evidence validation."
-          : "Use the declared result path and pass one complete compact JSON artifact matching the declared stage contract."
+          : artifactRepairDetail?.kind === "vulnhunter-report"
+            ? artifactRepairDetail.reason === "evidence"
+              ? "Write sentinel-findings.json as one complete compact JSON object with schemaVersion:1 and findings. Every evidence entry must use an existing repository-relative regular file and exact positive line range previously verified with workspace_read; correct invalid paths or ranges without dropping a supported finding."
+              : artifactRepairDetail.reason === "finding"
+                ? "Write sentinel-findings.json as one complete compact JSON object with schemaVersion:1 and findings. Every finding must contain only the declared fields and include id, title, severity, confidence, CWE array, substantive summary, rootCause, entryPoint, dataFlow, impact, remediation, severityRationale, validation, and evidence."
+                : "Write sentinel-findings.json at the declared result path as one complete compact JSON object containing only schemaVersion:1 and a findings array. Do not add Markdown, coverage, stage, summary, or provider fields."
+            : "Use the declared result path and pass one complete compact JSON artifact matching the declared stage contract."
       : "Correct the tool arguments and stay within the declared read limits.";
   return {
     content: JSON.stringify({

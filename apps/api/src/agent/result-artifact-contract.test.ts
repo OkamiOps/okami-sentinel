@@ -11,6 +11,54 @@ import {
 import { createPortableCodexSecurityReportShards } from "../scanners/portable-codex-security-report-shards.js";
 import { MANTIS_REPORT_RESULT_ARTIFACT_CONTRACT } from "../scanners/mantis-report-contract.js";
 
+test("VulnHunter reports return a closed evidence repair reason before artifact I/O", (t) => {
+  const snapshotRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vulnhunter-report-repair-"));
+  t.after(() => fs.rmSync(snapshotRoot, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(snapshotRoot, "app.ts"), "one\ntwo");
+  const finding = {
+    id: "VULN-001",
+    title: "Untrusted input reaches a sensitive operation",
+    severity: "High",
+    confidence: "high",
+    cwe: ["CWE-20"],
+    summary: "An externally controlled value reaches a security-sensitive operation.",
+    rootCause: "The trust boundary lacks a required server-side validation control.",
+    entryPoint: "The application accepts the value from an external request.",
+    dataFlow: "request input to application handler to sensitive operation",
+    impact: "An attacker can cross the intended security boundary with crafted input.",
+    remediation: "Validate the value against a strict server-owned policy before use.",
+    severityRationale: "The path is statically reachable and crosses a security boundary.",
+    validation: {
+      summary: "Static inspection confirmed the source-to-operation path.",
+      limitations: ["Static inspection only; target code was not executed."],
+    },
+    evidence: [{
+      path: "app.ts",
+      startLine: 1,
+      endLine: 3,
+      role: "sink",
+      explanation: "The sensitive operation consumes the unvalidated value.",
+    }],
+  };
+  let issue: unknown;
+  let detail: unknown;
+  assert.equal(normalizeResultArtifactInput({
+    path: "sentinel-findings.json",
+    content: JSON.stringify({ schemaVersion: 1, findings: [finding] }),
+  }, "vulnhunter-report-v1", snapshotRoot, undefined, (nextIssue, nextDetail) => {
+    issue = nextIssue;
+    detail = nextDetail;
+  }), null);
+  assert.equal(issue, "vulnhunter-report-invalid");
+  assert.deepEqual(detail, { kind: "vulnhunter-report", reason: "evidence" });
+
+  finding.evidence[0]!.endLine = 2;
+  assert.notEqual(normalizeResultArtifactInput({
+    path: "sentinel-findings.json",
+    content: JSON.stringify({ schemaVersion: 1, findings: [finding] }),
+  }, "vulnhunter-report-v1", snapshotRoot), null);
+});
+
 test("Mantis reports reject an unpinned locator with closed repair coordinates", (t) => {
   const snapshotRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-report-anchor-"));
   t.after(() => fs.rmSync(snapshotRoot, { recursive: true, force: true }));

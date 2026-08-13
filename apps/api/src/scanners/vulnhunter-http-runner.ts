@@ -191,6 +191,7 @@ export function createVulnHunterHttpRunner(
             ? {}
             : { reasoningEffort: input.reasoningEffort }),
           terminalMode: "artifact-write",
+          artifactWriteByTurn: Math.max(1, Math.floor(limits.maxModelTurns * 2 / 3)),
           resultArtifactContract: "vulnhunter-report-v1",
           snapshotRoot: input.snapshotRoot,
           artifactRoot: handoffRoot,
