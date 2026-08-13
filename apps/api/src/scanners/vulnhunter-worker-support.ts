@@ -16,6 +16,20 @@ const SNAPSHOT_EXCLUDES = new Set([
   ".cache",
   "_VULNHUNT_RESULTS_",
 ]);
+const AGENT_INSTRUCTION_DIRECTORIES = new Set([
+  ".claude",
+  ".cursor",
+  ".continue",
+  ".codeium",
+  ".junie",
+]);
+const ROOT_AGENT_INSTRUCTION_FILES = new Set([
+  "AGENTS.md",
+  "CLAUDE.md",
+  "GEMINI.md",
+  ".cursorrules",
+  ".windsurfrules",
+]);
 
 export interface VulnHunterStageSnapshot {
   id: "recon" | "hunt" | "verify" | "validation-notes" | "sweep" | "report";
@@ -74,6 +88,15 @@ function hashSnapshot(root: string): string {
   return `content:${hash.digest("hex")}`;
 }
 
+function isSnapshotExcluded(relative: string): boolean {
+  const segments = relative.split(path.sep);
+  if (segments.some((segment) => SNAPSHOT_EXCLUDES.has(segment))) return true;
+  if (segments.some((segment) => AGENT_INSTRUCTION_DIRECTORIES.has(segment))) return true;
+  if (segments.length === 1 && ROOT_AGENT_INSTRUCTION_FILES.has(segments[0]!)) return true;
+  return segments.length === 2 && segments[0] === ".github" &&
+    segments[1] === "copilot-instructions.md";
+}
+
 export function createVulnHunterSnapshot(
   repositoryPath: string,
   outputDir: string,
@@ -98,7 +121,7 @@ export function createVulnHunterSnapshot(
     filter(source) {
       if (source === sourceRoot) return true;
       const relative = path.relative(sourceRoot, source);
-      if (relative.split(path.sep).some((segment) => SNAPSHOT_EXCLUDES.has(segment))) {
+      if (isSnapshotExcluded(relative)) {
         return false;
       }
       try {
