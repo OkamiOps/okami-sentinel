@@ -415,7 +415,7 @@ export function GuardrailPreflightSheet({
                 </StepHeading>
 
                 {selected.source === "github" && (
-                  <div className="mb-4 grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label={t("guardrails.remoteTarget")}>
+                  <div className="mb-4 grid gap-2" role="radiogroup" aria-label={t("guardrails.remoteTarget")}>
                     <ChoiceCard checked={draft.kind === "pull_request"} icon={<GitPullRequestArrow aria-hidden size={17} />} title={t("guardrails.pullRequest")} meta="GITHUB RESOLVED" description={t("guardrails.remoteTargetHelp")} onSelect={() => invalidatePreview({ ...draft, kind: "pull_request" })} />
                     <ChoiceCard checked={draft.kind === "protected_branch"} icon={<GitBranch aria-hidden size={17} />} title={t("guardrails.branchSnapshot")} meta="FULL REPOSITORY" description={t("guardrails.branchSnapshotHelp")} onSelect={() => invalidatePreview({ ...draft, kind: "protected_branch", baseRef: selected.defaultBranch })} />
                     <ChoiceCard checked={draft.kind === "compare"} icon={<GitCompareArrows aria-hidden size={17} />} title={t("guardrails.compareRefs")} meta="BASE + HEAD" description={t("guardrails.remoteTargetHelp")} onSelect={() => invalidatePreview({ ...draft, kind: "compare" })} />
