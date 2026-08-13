@@ -173,6 +173,7 @@ const SAFE_MANTIS_AGENT_SESSION_ERROR_CODES = Object.freeze([
   ...SAFE_PROVIDER_ERROR_CODES,
 ] as const satisfies readonly AgentSessionErrorCode[]);
 const MAX_PRIOR_STATE_BYTES = 16 * 1024;
+const MAX_STAGE_ARTIFACT_BYTES = 1 * 1024 * 1024;
 const MAX_REPORT_BYTES = 512 * 1024;
 const MAX_REPORT_FINDINGS = 256;
 
@@ -608,7 +609,7 @@ export function boundedMantisStageState(stage: string, value: unknown): MantisBo
   return state;
 }
 
-function stageStateFromArtifact(
+export function stageStateFromArtifact(
   artifactRoot: string,
   expectedArtifact: string,
   stage: string,
@@ -616,7 +617,7 @@ function stageStateFromArtifact(
   try {
     const candidate = path.join(artifactRoot, expectedArtifact);
     const info = fs.lstatSync(candidate);
-    const maximumBytes = stage === "report" ? MAX_REPORT_BYTES : MAX_PRIOR_STATE_BYTES;
+    const maximumBytes = stage === "report" ? MAX_REPORT_BYTES : MAX_STAGE_ARTIFACT_BYTES;
     if (!info.isFile() || info.isSymbolicLink() || info.size <= 0 || info.size > maximumBytes) {
       throw new MantisHttpRunnerError("stage_evidence_incomplete");
     }

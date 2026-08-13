@@ -27,6 +27,7 @@ import {
   createSafeMantisProviderPlan,
   hashMantisSnapshot,
   runMantisHttpAgent,
+  stageStateFromArtifact,
   type SafeMantisProviderPlan,
 } from "./mantis-http-runner.js";
 
@@ -585,6 +586,21 @@ test("Mantis HTTP canonicalizes a structured provider summary into inert bounded
     stage: "architecture",
     summary: JSON.stringify(summary),
   });
+});
+
+test("Mantis accepts a verbose stage artifact while keeping chained state bounded", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-verbose-artifact-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const artifactRoot = path.join(root, "artifact");
+  fs.mkdirSync(artifactRoot, { recursive: true });
+  const verbose = "bounded research ".repeat(1_400);
+  fs.writeFileSync(path.join(artifactRoot, "researcher.json"), JSON.stringify({
+    stage: "researcher",
+    summary: verbose,
+  }));
+  const state = stageStateFromArtifact(artifactRoot, "researcher.json", "researcher");
+  assert.equal(state.stage, "researcher");
+  assert.equal(state.summary.length, 8_000);
 });
 
 test("Mantis HTTP uses the validated stage artifact when the final provider text is not structured", async () => {
