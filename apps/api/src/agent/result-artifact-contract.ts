@@ -197,7 +197,23 @@ function normalizePortableStageArtifact(
       if (path === VULNHUNTER_RESULT_ARTIFACT_PATH) {
         validatePortableCodexSecurityReportCoverage(artifact, context.dossier);
       } else {
-        applyPortableCodexSecurityStageArtifact(context.dossier, artifact);
+        const nextDossier = applyPortableCodexSecurityStageArtifact(context.dossier, artifact);
+        if (path === "05-validation.json") {
+          const validationByCandidate = new Map(
+            nextDossier.assessments
+              .filter((assessment) => assessment.stage === "validation")
+              .map((assessment) => [assessment.candidateId, assessment.status] as const),
+          );
+          if (nextDossier.candidates.some((candidate) => {
+            const status = validationByCandidate.get(candidate.id);
+            return status !== "confirmed" && status !== "rejected";
+          })) {
+            throw new PortableCodexSecurityDossierError(
+              "validation must decide every carried candidate",
+              "report-candidate-assessment-inconclusive",
+            );
+          }
+        }
       }
     } catch (error) {
       const issue = error instanceof PortableCodexSecurityDossierError && error.issue !== undefined

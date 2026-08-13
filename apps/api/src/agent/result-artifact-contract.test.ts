@@ -129,6 +129,41 @@ test("Portable inventory canonicalizes provider detail at the declared virtual r
   });
 });
 
+test("Portable validation rejects an inconclusive carried candidate before artifact I/O", () => {
+  const candidate = {
+    id: "candidate-authz",
+    category: "authorization",
+    anchors: [{ path: "routes/auth.ts", startLine: 1, endLine: 1, role: "source" as const }],
+  };
+  let issue: unknown;
+  const normalized = normalizeResultArtifactInput({
+    path: "05-validation.json",
+    content: JSON.stringify({
+      schemaVersion: 1,
+      stage: "validation",
+      summary: "Static validation could not reach a decisive result.",
+      observations: [],
+      assessments: [{
+        candidateId: candidate.id,
+        status: "inconclusive",
+        reason: "insufficient-evidence",
+        evidence: candidate.anchors,
+      }],
+    }),
+  }, PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, undefined, {
+    dossier: {
+      schemaVersion: 1,
+      stageSummaries: [],
+      candidates: [candidate],
+      assessments: [],
+      scope: { inspected: ["."], unexamined: [] },
+    },
+  }, (nextIssue) => { issue = nextIssue; });
+
+  assert.equal(normalized, null);
+  assert.equal(issue, "report-candidate-assessment-inconclusive");
+});
+
 test("Portable discovery rejects an anchor beyond the pinned snapshot before artifact I/O", (t) => {
   const snapshotRoot = fs.mkdtempSync(path.join(os.tmpdir(), "portable-stage-anchor-"));
   t.after(() => fs.rmSync(snapshotRoot, { recursive: true, force: true }));
