@@ -10,6 +10,7 @@ import { AlertBanner, EmptyState, Loading, PageHeader } from "../components/ui";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useI18n } from "../i18n";
+import { githubPermissionRecovery, type GitHubPermissionRecovery } from "../lib/github-app-permission-recovery";
 
 export function GuardrailSetupPage() {
   const { t } = useI18n();
@@ -21,6 +22,8 @@ export function GuardrailSetupPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [baselineError, setBaselineError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [permissionRecovery, setPermissionRecovery] = useState<GitHubPermissionRecovery | null>(null);
+  const [workflowPermissionBlocked, setWorkflowPermissionBlocked] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const requestedKey = params.get("repository");
@@ -41,14 +44,23 @@ export function GuardrailSetupPage() {
     setActionsStatus(null);
     setCaller(null);
     setLoadError(null);
+    setPermissionRecovery(null);
+    setWorkflowPermissionBlocked(false);
     if (repository.source !== "github") return;
     try {
-      const [remote, actions] = await Promise.all([
+      const [remote, actions, connections] = await Promise.all([
         api.getGuardrailGitHubStatus(repository.repositoryKey),
         api.getGuardrailActionsStatus(repository.repositoryKey),
+        api.listGuardrailGitHubConnections(),
       ]);
       setStatus(remote.status);
       setActionsStatus(actions.status);
+      const connection = connections.find((item) => item.id === repository.githubConnectionId);
+      if (connection && repository.githubInstallationId) {
+        const installations = await api.listGuardrailGitHubInstallations(connection.id);
+        const installation = installations.find((item) => item.id === repository.githubInstallationId);
+        if (installation) setPermissionRecovery(githubPermissionRecovery(connection, installation));
+      }
       try {
         setCaller((await api.getGuardrailCallerWorkflow(repository.repositoryKey)).workflow);
       } catch {
@@ -63,6 +75,7 @@ export function GuardrailSetupPage() {
   useEffect(() => {
     setBaselineError(null);
     setMessage(null);
+    setWorkflowPermissionBlocked(false);
     if (selected) void loadStatus(selected);
   }, [selected?.repositoryKey, loadStatus]);
 
@@ -94,6 +107,7 @@ export function GuardrailSetupPage() {
       await loadStatus(selected);
     } catch (error) {
       const detail = error instanceof Error ? error.message : "";
+      setWorkflowPermissionBlocked(detail.includes("github_request_rejected") || detail.includes("github_credential_rejected"));
       setLoadError(`${t("guardrails.automationConfigureError")}${detail ? ` (${detail})` : ""}`);
     } finally {
       setBusy(false);
@@ -119,7 +133,7 @@ export function GuardrailSetupPage() {
             </div>
           </section>
           {selected.source === "github" ? (
-            status ? <GitHubStatusPanel repository={selected} status={status} actionsStatus={actionsStatus} callerWorkflow={caller} baselineError={baselineError} busy={busy} onRefresh={() => loadStatus(selected)} onConfigureWorkflow={configureWorkflow} onSyncBaseline={syncBaseline} /> : !loadError ? <Loading /> : null
+            status ? <GitHubStatusPanel repository={selected} status={status} actionsStatus={actionsStatus} callerWorkflow={caller} baselineError={baselineError} busy={busy} permissionRecovery={permissionRecovery} workflowPermissionBlocked={workflowPermissionBlocked} onRefresh={() => loadStatus(selected)} onConfigureWorkflow={configureWorkflow} onSyncBaseline={syncBaseline} /> : !loadError ? <Loading /> : null
           ) : (
             <section className="bench-panel bench-corners"><EmptyState title={t("guardrails.localExecutionTitle")} description={t("guardrails.localExecutionDescription")} /></section>
           )}

@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import type { GuardrailGitHubStatus, GuardrailRepository } from "@csb/shared";
-import { Check, Clipboard, Download, GitBranch, RotateCw, ShieldAlert, Sparkles, Workflow } from "lucide-react";
+import { Check, Clipboard, Download, ExternalLink, GitBranch, KeyRound, RotateCw, ShieldAlert, Sparkles, Workflow } from "lucide-react";
 
 import type { GuardrailActionsStatus, GuardrailAutomationTriggers, GuardrailCallerWorkflow } from "../../api";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { cx } from "../ui";
 import { useI18n } from "../../i18n";
+import type { GitHubPermissionRecovery } from "../../lib/github-app-permission-recovery";
 
 export function GitHubStatusPanel({
   repository,
@@ -15,6 +16,8 @@ export function GitHubStatusPanel({
   callerWorkflow,
   baselineError,
   busy,
+  permissionRecovery,
+  workflowPermissionBlocked,
   onRefresh,
   onConfigureWorkflow,
   onSyncBaseline,
@@ -25,6 +28,8 @@ export function GitHubStatusPanel({
   callerWorkflow: GuardrailCallerWorkflow | null;
   baselineError: string | null;
   busy: boolean;
+  permissionRecovery: GitHubPermissionRecovery | null;
+  workflowPermissionBlocked: boolean;
   onRefresh: () => Promise<void>;
   onConfigureWorkflow: (triggers: GuardrailAutomationTriggers) => Promise<void>;
   onSyncBaseline: () => Promise<void>;
@@ -97,13 +102,29 @@ export function GitHubStatusPanel({
             <div className="min-w-0 border-b p-5 md:border-b-0 md:border-r xl:p-6">
               <div className="bench-label">CALLER WORKFLOW</div>
               <p className="mt-2 text-xs leading-5 text-muted-foreground">{t("guardrails.configureAutomaticallyDetail")}</p>
+              {workflowPermissionBlocked && permissionRecovery && (
+                <div className="mt-4 border border-destructive/50 bg-destructive/[.04] p-4" role="alert">
+                  <div className="flex items-start gap-3">
+                    <span className="grid size-8 shrink-0 place-items-center border border-destructive/50 text-destructive"><KeyRound aria-hidden size={15} /></span>
+                    <div className="min-w-0">
+                      <strong className="block text-sm text-foreground">{t("guardrails.permissionUpgradeTitle")}</strong>
+                      <p className="mt-1 text-xs leading-5 text-muted-foreground">{t("guardrails.permissionUpgradeDetail")}</p>
+                    </div>
+                  </div>
+                  <ol className="mt-4 grid gap-2 sm:grid-cols-2">
+                    <li><Button asChild variant="outline" className="min-h-11 w-full justify-between"><a href={permissionRecovery.appSettingsUrl} target="_blank" rel="noreferrer"><span>1. {t("guardrails.openAppPermissions")}</span><ExternalLink aria-hidden size={14} /></a></Button></li>
+                    <li><Button asChild variant="outline" className="min-h-11 w-full justify-between"><a href={permissionRecovery.installationSettingsUrl} target="_blank" rel="noreferrer"><span>2. {t("guardrails.approveInstallation")}</span><ExternalLink aria-hidden size={14} /></a></Button></li>
+                  </ol>
+                  <p className="mt-3 text-[10px] leading-4 text-muted-foreground">{t("guardrails.permissionUpgradeHint")}</p>
+                </div>
+              )}
               <code className="mt-4 block break-all border bg-secondary/30 p-3 font-mono text-[10px] text-primary">{actionsStatus?.workflowPath ?? ".github/workflows/csb-security-change-gate.yml"}</code>
               <div className="mt-4 grid gap-2" role="group" aria-label={t("guardrails.automationTriggers")}>
                 <TriggerChoice checked={triggers.push} label={t("guardrails.triggerPush")} detail={t("guardrails.triggerPushDetail")} onChange={(push) => setTriggers((current) => ({ ...current, push }))} />
                 <TriggerChoice checked={triggers.pullRequest} label={t("guardrails.triggerPullRequest")} detail={t("guardrails.triggerPullRequestDetail")} onChange={(pullRequest) => setTriggers((current) => ({ ...current, pullRequest }))} />
                 <TriggerChoice checked={triggers.merge} label={t("guardrails.triggerMerge")} detail={t("guardrails.triggerMergeDetail")} onChange={(merge) => setTriggers((current) => ({ ...current, merge }))} />
               </div>
-              <Button className="mt-4 min-h-11 w-full" disabled={busy || !remoteReady} onClick={() => void onConfigureWorkflow(triggers)}><Sparkles aria-hidden size={14} />{actionsReady ? t("guardrails.updateAutomation") : t("guardrails.configureAutomatically")}</Button>
+              <Button className="mt-4 min-h-11 w-full" disabled={busy || !remoteReady} onClick={() => void onConfigureWorkflow(triggers)}><Sparkles aria-hidden size={14} />{workflowPermissionBlocked ? t("guardrails.verifyAndConfigure") : actionsReady ? t("guardrails.updateAutomation") : t("guardrails.configureAutomatically")}</Button>
               <p className="mt-2 text-[10px] leading-4 text-muted-foreground">{t("guardrails.configureAutomaticallyDetail")}</p>
               <div className="mt-4 grid gap-2 sm:grid-cols-2">
                 <Button variant="outline" className="min-h-11" disabled={!callerWorkflow} onClick={() => void copyCaller()}><Clipboard aria-hidden size={14} />{copied ? t("guardrails.copied") : t("guardrails.copyYaml")}</Button>
