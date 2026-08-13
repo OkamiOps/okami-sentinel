@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   ConnectionCompatibility,
   GateExecutorKind,
@@ -42,9 +42,12 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTr
 import { ChoiceCard } from "./ChoiceCard";
 import { useI18n } from "../../i18n";
 import {
+  compatibilityReasonKey,
   connectionSelectionFor,
+  isProbeOnlyCompatibilityBlock,
   reasoningEffortForCompatibility,
   reconcileReasoningEffort,
+  validateConnectionCapability,
 } from "../../lib/new-scan-routing";
 
 const ENGINE_ORDER: ScannerEngine[] = ["codex-security", "mantis", "vulnhunter"];
@@ -94,12 +97,19 @@ export function GuardrailPreflightSheet({
   const [mode, setMode] = useState<ScanMode>("standard");
   const [compatibility, setCompatibility] = useState<ConnectionCompatibility | null>(null);
   const [routingBusy, setRoutingBusy] = useState(false);
+  const [providerValidation, setProviderValidation] = useState<"validating" | "ready" | "failed" | "error" | null>(null);
+  const [capabilityRetry, setCapabilityRetry] = useState(0);
+  const capabilityAttemptRef = useRef<string | null>(null);
 
   const scanner = catalog?.scanners.find((candidate) => candidate.engine === engine) ?? null;
   const connection = connections.find((candidate) => candidate.id === connectionId) ?? null;
   const connectionModels = models.filter((model) => model.connectionId === connectionId);
   const connectionSelection = connectionSelectionFor(connection, connectionModels, modelId);
   const reasoning = reasoningEffortForCompatibility(compatibility, effort);
+  const capabilityProbeOnlyBlock = isProbeOnlyCompatibilityBlock(compatibility);
+  const capabilityProbeKey = connectionSelection !== null && connection !== null
+    ? [engine, connectionSelection.connectionId, connectionSelection.modelId ?? "runtime-default", connection.protocol, capabilityRetry].join("|")
+    : null;
   const routeReady = executor !== "sentinel-managed" || (
     connectionSelection !== null
     && compatibility?.eligible === true
@@ -178,6 +188,7 @@ export function GuardrailPreflightSheet({
     let cancelled = false;
     setRoutingBusy(true);
     setCompatibility(null);
+    setProviderValidation(null);
     void api.resolveScanCompatibility({
       engine,
       selection: connectionSelection,
@@ -188,6 +199,38 @@ export function GuardrailPreflightSheet({
       .finally(() => { if (!cancelled) setRoutingBusy(false); });
     return () => { cancelled = true; };
   }, [open, engine, connectionSelection?.connectionId, connectionSelection?.modelId, connectionSelection?.modelSelectionMode]);
+
+  useEffect(() => {
+    if (
+      !open
+      || executor !== "sentinel-managed"
+      || connectionSelection === null
+      || connectionSelection.modelSelectionMode !== "catalog"
+      || connectionSelection.modelId === null
+      || !capabilityProbeOnlyBlock
+      || capabilityProbeKey === null
+      || capabilityAttemptRef.current === capabilityProbeKey
+    ) return;
+
+    capabilityAttemptRef.current = capabilityProbeKey;
+    let cancelled = false;
+    setProviderValidation("validating");
+    setRoutingBusy(true);
+    void validateConnectionCapability(api, {
+      engine,
+      selection: connectionSelection,
+      remoteRepositoryConfirmed: true,
+    }).then(({ report, compatibility: refreshed }) => {
+      if (cancelled) return;
+      setCompatibility(refreshed);
+      setProviderValidation(report.status === "passed" && refreshed.eligible ? "ready" : "failed");
+    }).catch(() => {
+      if (!cancelled) setProviderValidation("error");
+    }).finally(() => {
+      if (!cancelled) setRoutingBusy(false);
+    });
+    return () => { cancelled = true; };
+  }, [open, executor, engine, connectionSelection?.connectionId, connectionSelection?.modelId, connectionSelection?.modelSelectionMode, capabilityProbeKey, capabilityProbeOnlyBlock]);
 
   useEffect(() => {
     setEffort((current) => reconcileReasoningEffort(current, compatibility));
@@ -420,7 +463,7 @@ export function GuardrailPreflightSheet({
                 <StepHeading code="03 / SCAN ROUTE" id="preflight-scan-route-title" title={t("newScan.strategy")}>
                   {t("newScan.engineHelp")}
                 </StepHeading>
-                <div className="grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label={t("newScan.scannerEngine")}>
+                <div className="grid gap-2" role="radiogroup" aria-label={t("newScan.scannerEngine")}>
                   {ENGINE_ORDER.map((candidate) => {
                     const capability = catalog?.scanners.find((item) => item.engine === candidate);
                     const checked = candidate === engine;
@@ -492,10 +535,34 @@ export function GuardrailPreflightSheet({
                   </div>
                 </div>
 
-                <div className={`mt-3 border px-4 py-3 text-xs leading-5 ${routeReady ? "border-chart-2/40 bg-chart-2/[.05] text-chart-2" : "border-destructive/40 bg-destructive/[.05] text-destructive"}`}>
-                  {routingBusy ? t("newScan.probing") : routeReady
-                    ? `${scanner?.name ?? engine} · ${connection?.name ?? "—"} · ${modelId ?? t("newScan.providerManagedEffort")}`
-                    : compatibility?.reasons.join(" · ") || t("newScan.routeUnavailable")}
+                <div className={`mt-3 grid gap-3 border px-4 py-3 text-xs leading-5 ${routeReady ? "border-chart-2/40 bg-chart-2/[.05] text-chart-2" : "border-destructive/40 bg-destructive/[.05] text-destructive"}`}>
+                  <span>
+                    {providerValidation === "validating" || routingBusy
+                      ? t("newScan.providerValidating")
+                      : providerValidation === "failed"
+                        ? t("newScan.providerValidationFailed")
+                        : providerValidation === "error"
+                          ? t("newScan.providerValidationError")
+                          : routeReady
+                            ? `${scanner?.name ?? engine} · ${connection?.name ?? "—"} · ${modelId ?? t("newScan.providerManagedEffort")}`
+                            : compatibility === null
+                              ? t("newScan.routeUnavailable")
+                              : t(compatibilityReasonKey(compatibility.reasons))}
+                  </span>
+                  {(providerValidation === "failed" || providerValidation === "error") && connectionSelection?.modelSelectionMode === "catalog" && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="w-fit border-current text-current"
+                      onClick={() => {
+                        capabilityAttemptRef.current = null;
+                        setCapabilityRetry((value) => value + 1);
+                      }}
+                    >
+                      {t("connections.operations.probe")}
+                    </Button>
+                  )}
                 </div>
               </section>
             )}
