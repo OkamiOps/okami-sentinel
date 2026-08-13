@@ -126,6 +126,65 @@ test("uses the frozen manual ceiling and omits maxCostUsd when the preview has n
   assert.equal("maxCostUsd" in requests[1]!, false);
 });
 
+test("finalizes a completed provider-managed Mantis scan with priced findings", async () => {
+  const completed = {
+    ...scan("completed"),
+    engine: "mantis" as const,
+    execution: null,
+    scannerVersion: "mantis-http-v1",
+    recipeHash: "c5df3a3fd7164953c90b04f47696a23b4f67398834c65653f60b7204f9d351f9",
+    cost: {
+      estimatedUsd: 1.5599748,
+      inputTokens: 5_127_492,
+      cachedInputTokens: 4_080_661,
+      cacheWriteInputTokens: 0,
+      outputTokens: 18_106,
+      model: "MiniMax-M3",
+      pricingSource: "official-rate-card" as const,
+      pricingBasis: "payg-equivalent" as const,
+      billingMode: "subscription" as const,
+      pricingSnapshot: {
+        currency: "USD" as const,
+        capturedAt: "2026-08-13T14:26:46.093Z",
+        inputUsdPerMillionTokens: 0.3,
+        cachedInputUsdPerMillionTokens: 0.06,
+        cacheWriteInputUsdPerMillionTokens: 0,
+        outputUsdPerMillionTokens: 1.2,
+      },
+      pricingModel: "MiniMax-M3",
+      pricingUpdatedAt: "2026-08-11T17:03:00.000Z",
+      pricingTiming: "launch" as const,
+      inputUsd: 1.5382476,
+      outputUsd: 0.0217272,
+      pricingRateCardId: "minimax.m3.payg.2026-08-11",
+      estimateKind: "upper-bound" as const,
+    },
+  };
+  const executor = new SentinelManagedExecutor(dependencies({
+    waitForScan: async () => completed,
+    readFindings: () => [{
+      ...finding(),
+      findingId: "mantis-MAN-MED-001",
+      occurrenceId: "MAN-MED-001",
+      title: "Bearer absent in demo mode accepts userId from body for chat stream",
+      summary: "Bearer absent in demo mode accepts userId from body for chat stream",
+      fingerprints: [
+        "google-mantis/v1",
+        "google-mantis/v1:fingerprint:MAN-MED-001",
+        "MAN-MED-001",
+      ],
+      primaryPath: "app/routes/api.agent.tsx",
+    }],
+  }));
+
+  const result = await executor.execute(executionInput());
+
+  assert.equal(result.scan?.status, "completed");
+  assert.equal(result.artifact.findings.length, 1);
+  assert.equal(result.artifact.scan.cost?.estimatedUsd, 1.5599748);
+  assert.equal(result.artifact.decision.outcome, "bootstrap");
+});
+
 test("partial submodule or LFS coverage cannot publish success", async () => {
   const executor = new SentinelManagedExecutor(dependencies({
     handle: materialization({
@@ -188,6 +247,8 @@ function dependencies(overrides: {
   order?: string[];
   handle?: MaterializationHandle;
   startScan?: SentinelManagedExecutorDependencies["startScan"];
+  waitForScan?: SentinelManagedExecutorDependencies["waitForScan"];
+  readFindings?: SentinelManagedExecutorDependencies["readFindings"];
   baselineCandidate?: SentinelManagedExecutorDependencies["baselineCandidate"];
 } = {}): SentinelManagedExecutorDependencies {
   const handle = overrides.handle ?? materialization();
@@ -199,8 +260,8 @@ function dependencies(overrides: {
   return {
     materializer: { materialize: async () => handle },
     startScan: overrides.startScan ?? (async () => scan("running")),
-    waitForScan: async () => scan("completed"),
-    readFindings: () => [finding()],
+    waitForScan: overrides.waitForScan ?? (async () => scan("completed")),
+    readFindings: overrides.readFindings ?? (() => [finding()]),
     readTriage: () => new Map(),
     baselineCandidate: overrides.baselineCandidate ?? (async () => ({ kind: "absent" })),
     now: () => "2026-08-12T12:00:00.000Z",

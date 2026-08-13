@@ -1431,7 +1431,7 @@ function containsBearerCredential(value: string): boolean {
 function isCredentialLikeBearerValue(value: string): boolean {
   const candidate = value.replace(/^[`'"\[({]+|[`'"\])}]+$/g, "");
   if (!candidate) return false;
-  if (/^(?:token|credential|authentication|authorization|header|scheme)(?:-[a-z]+)*$/i.test(candidate)) {
+  if (/^(?:token|credential|authentication|authorization|header|scheme|absent|missing|omitted|unavailable|required)(?:-[a-z]+)*$/i.test(candidate)) {
     return false;
   }
   return true;

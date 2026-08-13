@@ -661,6 +661,7 @@ test("distinguishes short Bearer secrets from conceptual Bearer evidence", () =>
   for (const conceptual of [
     "Bearer token-based authentication",
     "Bearer authentication-header bypass",
+    "Bearer absent in demo mode accepts userId from body for chat stream",
   ]) {
     const allowed = artifactInput();
     allowed.evaluation.deltas[0]!.summary = conceptual;
