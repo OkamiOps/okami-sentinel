@@ -9,6 +9,38 @@ import {
   normalizeResultArtifactInput,
 } from "./result-artifact-contract.js";
 import { createPortableCodexSecurityReportShards } from "../scanners/portable-codex-security-report-shards.js";
+import { MANTIS_REPORT_RESULT_ARTIFACT_CONTRACT } from "../scanners/mantis-report-contract.js";
+
+test("Mantis reports reject an unpinned locator with closed repair coordinates", (t) => {
+  const snapshotRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-report-anchor-"));
+  t.after(() => fs.rmSync(snapshotRoot, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(snapshotRoot, "routes"));
+  fs.writeFileSync(path.join(snapshotRoot, "routes", "redirect.ts"), "one\ntwo\n");
+  const finding = {
+    id: "MANTIS-1",
+    title: "Unvalidated redirect can cross the trust boundary",
+    severity: "high",
+    remediation: "Validate the destination against a strict server-owned allowlist.",
+    code_paths: ["routes/redirect.ts"],
+  };
+  let issue: unknown;
+  let repair: unknown;
+  assert.equal(normalizeResultArtifactInput({
+    path: "report.json",
+    content: JSON.stringify({ schemaVersion: 1, engine: "mantis", stage: "report", findings: [finding] }),
+  }, MANTIS_REPORT_RESULT_ARTIFACT_CONTRACT, snapshotRoot, undefined, (nextIssue, detail) => {
+    issue = nextIssue;
+    repair = detail;
+  }), null);
+  assert.equal(issue, "mantis-report-invalid");
+  assert.deepEqual(repair, { kind: "mantis-report", reason: "locator", findingIndex: 0, locatorIndex: 0 });
+
+  finding.code_paths = ["routes/redirect.ts:1-2"];
+  assert.notEqual(normalizeResultArtifactInput({
+    path: "report.json",
+    content: JSON.stringify({ schemaVersion: 1, engine: "mantis", stage: "report", findings: [finding] }),
+  }, MANTIS_REPORT_RESULT_ARTIFACT_CONTRACT, snapshotRoot), null);
+});
 
 test("generic JSON artifacts reject truncation and canonicalize a complete retry", () => {
   assert.equal(normalizeResultArtifactInput({

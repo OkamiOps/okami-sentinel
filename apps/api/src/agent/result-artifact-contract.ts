@@ -14,6 +14,12 @@ import {
   materializePortableCodexSecurityReportShard,
   type PortableCodexSecurityReportShard,
 } from "../scanners/portable-codex-security-report-shards.js";
+import {
+  MANTIS_REPORT_RESULT_ARTIFACT_CONTRACT,
+  MANTIS_REPORT_RESULT_PATH,
+  normalizeMantisReport,
+  type MantisReportRepairDetail,
+} from "../scanners/mantis-report-contract.js";
 
 export const VULNHUNTER_RESULT_ARTIFACT_PATH = "sentinel-findings.json";
 export const MAX_VULNHUNTER_RESULT_REPORT_BYTES = 2 * 1024 * 1024;
@@ -31,6 +37,7 @@ export const VULNHUNTER_RESULT_ARTIFACT_NAMES = [
 
 export type AgentResultArtifactContract =
   | typeof PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT
+  | typeof MANTIS_REPORT_RESULT_ARTIFACT_CONTRACT
   | "vulnhunter-report-v1";
 
 /** Server-owned Portable state used only to validate a terminal artifact before host I/O. */
@@ -43,8 +50,9 @@ export interface PortableResultArtifactValidationContext {
 export type ResultArtifactValidationIssue = PortableArtifactValidationIssue
   | PortableReportCoverageValidationIssue
   | "json-invalid"
+  | "mantis-report-invalid"
   | "dossier-semantics-invalid";
-export type ResultArtifactRepairDetail = PortableArtifactRepairDetail;
+export type ResultArtifactRepairDetail = PortableArtifactRepairDetail | MantisReportRepairDetail;
 
 const REPORT_KEYS = new Set(["schemaVersion", "findings"]);
 const FINDING_KEYS = new Set([
@@ -135,6 +143,19 @@ export function normalizeResultArtifactInput(
   }
   if (contract === PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT) {
     return normalizePortableStageArtifact(input.path, parsed, snapshotRoot, portableContext, onReject);
+  }
+  if (contract === MANTIS_REPORT_RESULT_ARTIFACT_CONTRACT) {
+    let repairDetail: MantisReportRepairDetail | undefined;
+    if (input.path !== MANTIS_REPORT_RESULT_PATH) {
+      onReject?.("mantis-report-invalid", { kind: "mantis-report", reason: "envelope" });
+      return null;
+    }
+    const report = normalizeMantisReport(parsed, snapshotRoot, (detail) => { repairDetail = detail; });
+    if (report === null) {
+      onReject?.("mantis-report-invalid", repairDetail);
+      return null;
+    }
+    return { path: MANTIS_REPORT_RESULT_PATH, content: JSON.stringify(report) };
   }
   if (input.path !== VULNHUNTER_RESULT_ARTIFACT_PATH) return null;
   const report = normalizeVulnHunterResultReport(parsed, snapshotRoot);

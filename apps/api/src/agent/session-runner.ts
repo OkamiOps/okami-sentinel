@@ -4,6 +4,7 @@ import { createAnthropicMessagesWireAdapter } from "./anthropic-messages-session
 import { createOpenAiChatWireAdapter } from "./openai-chat-session.js";
 import { createOpenAiResponsesWireAdapter } from "./openai-responses-session.js";
 import { PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT } from "./result-artifact-contract.js";
+import { MANTIS_REPORT_RESULT_ARTIFACT_CONTRACT } from "../scanners/mantis-report-contract.js";
 import { createWorkspaceToolHost } from "./workspace-tool-host.js";
 import {
   AgentSessionError,
@@ -115,7 +116,8 @@ function validateSessionSpec(input: CreateAgentSessionInput): void {
         input.terminalMode !== "provider-completion" && input.terminalMode !== "artifact-write") ||
       (input.resultArtifactContract !== undefined &&
         input.resultArtifactContract !== "vulnhunter-report-v1" &&
-        input.resultArtifactContract !== PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT) ||
+        input.resultArtifactContract !== PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT &&
+        input.resultArtifactContract !== MANTIS_REPORT_RESULT_ARTIFACT_CONTRACT) ||
       (input.resultArtifactContract === PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT &&
         input.resultArtifactValidationContext === undefined) ||
       (input.resultArtifactContract !== PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT &&

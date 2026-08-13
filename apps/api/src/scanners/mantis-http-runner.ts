@@ -40,6 +40,10 @@ import { globalSecretRedactor } from "../redaction.js";
 import { resolveCompatibility } from "../connections/compatibility-resolver.js";
 import { normalizeMantisWorkspace } from "./mantis-normalize.js";
 import {
+  MANTIS_REPORT_RESULT_ARTIFACT_CONTRACT,
+  normalizeMantisReport,
+} from "./mantis-report-contract.js";
+import {
   writeMantisRuntime,
   type MantisRuntimeState,
 } from "./mantis-runtime.js";
@@ -313,6 +317,9 @@ export async function runMantisHttpAgent(
           ? {}
           : { reasoningEffort: configuration.reasoningEffort }),
         terminalMode: "artifact-write",
+        ...(stage.id === "report"
+          ? { resultArtifactContract: MANTIS_REPORT_RESULT_ARTIFACT_CONTRACT }
+          : {}),
         snapshotRoot,
         artifactRoot,
         instructions: stageInstructions(stage, configuration.paths, priorState, expectedArtifact),
@@ -668,21 +675,9 @@ export function materializeMantisReportArtifact(
   } catch {
     throw new MantisHttpRunnerError("stage_artifact_invalid");
   }
-  if (
-    !isRecord(parsed) ||
-    parsed.schemaVersion !== 1 ||
-    parsed.engine !== "mantis" ||
-    parsed.stage !== "report" ||
-    !Object.prototype.hasOwnProperty.call(parsed, "findings")
-  ) throw new MantisHttpRunnerError("stage_artifact_invalid");
-  const findings = parsed.findings;
-  if (
-    !Array.isArray(findings) ||
-    findings.length > MAX_REPORT_FINDINGS ||
-    findings.some((finding) => !validReportFinding(finding, snapshotRoot))
-  ) {
-    throw new MantisHttpRunnerError("stage_artifact_invalid");
-  }
+  const report = normalizeMantisReport(parsed, snapshotRoot);
+  if (report === null) throw new MantisHttpRunnerError("stage_artifact_invalid");
+  const findings = report.findings as unknown[];
   const findingsDir = path.join(stateRoot, "workspace", "findings");
   for (const [index, finding] of findings.entries()) {
     const content = JSON.stringify(finding);

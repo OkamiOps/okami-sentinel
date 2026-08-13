@@ -838,6 +838,56 @@ test("the constrained session corrects a malformed terminal report before any ar
   assert.equal(requestedWith[2]![0]!.ok, undefined);
 });
 
+test("a Mantis report repairs an invalid locator before the sole artifact write", async (t) => {
+  const root = await mkdtemp(join(process.cwd(), ".test-mantis-report-"));
+  const snapshotRoot = join(root, "snapshot");
+  await mkdir(join(snapshotRoot, "routes"), { recursive: true });
+  await writeFile(join(snapshotRoot, "routes", "redirect.ts"), "one\ntwo\n");
+  t.after(async () => rm(root, { recursive: true, force: true }));
+  const requestedWith: AgentToolResult[][] = [];
+  const base = {
+    schemaVersion: 1,
+    engine: "mantis",
+    stage: "report",
+    findings: [{
+      id: "MANTIS-1",
+      title: "Unvalidated redirect can cross the trust boundary",
+      severity: "high",
+      remediation: "Validate destinations against a strict server-owned allowlist.",
+      code_paths: ["routes/redirect.ts"],
+    }],
+  };
+  const corrected = structuredClone(base);
+  corrected.findings[0]!.code_paths = ["routes/redirect.ts:1-2"];
+  const hostInputs: unknown[] = [];
+  const session = createConstrainedWireSession({
+    limits: DEFAULT_AGENT_LIMITS,
+    signal: new AbortController().signal,
+    terminalMode: "artifact-write",
+    resultArtifactContract: "mantis-report-v1",
+    resultArtifactSnapshotRoot: snapshotRoot,
+    host: {
+      minimumOutputBytes() { return 0; },
+      async call(_name, input) {
+        hostInputs.push(input);
+        return { content: "artifact-written", artifact: { path: "report.json", bytes: 1 } };
+      },
+    },
+    upstream: { async request() { return {}; } },
+    adapter: transcriptAdapter([
+      { toolCalls: [{ id: "bad", name: "results.write", input: { path: "report.json", content: JSON.stringify(base) } }], text: null, structured: null, usage: null },
+      { toolCalls: [{ id: "good", name: "results.write", input: { path: "report.json", content: JSON.stringify(corrected) } }], text: null, structured: null, usage: null },
+    ], requestedWith),
+  });
+
+  await collect(session.run(), []);
+  assert.equal(hostInputs.length, 1);
+  assert.deepEqual(hostInputs[0], { path: "report.json", content: JSON.stringify(corrected) });
+  assert.match(requestedWith[1]![0]!.content, /mantis-report-invalid/);
+  assert.match(requestedWith[1]![0]!.content, /"findingIndex":0/);
+  assert.equal(requestedWith[1]![0]!.content.includes("routes\/redirect"), false);
+});
+
 test("an artifact-terminal session retries malformed JSON before creating an artifact", async () => {
   const requestedWith: AgentToolResult[][] = [];
   const replies: NormalizedModelReply[] = [
