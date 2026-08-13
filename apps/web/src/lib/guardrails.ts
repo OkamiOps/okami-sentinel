@@ -26,6 +26,23 @@ export interface NodeEvidence {
   finding: GateFindingDelta | null;
 }
 
+export interface FindingTreeLeaf {
+  id: string;
+  finding: GateFindingDelta;
+  node: DecisionGraphNode;
+}
+
+export interface FindingTreeFile {
+  path: string;
+  findings: FindingTreeLeaf[];
+}
+
+export interface FindingTree {
+  files: FindingTreeFile[];
+  findingCount: number;
+  highPlusCount: number;
+}
+
 export interface PolicyEditorRule {
   severity: Severity[];
   lifecycle: GateFindingLifecycle[];
@@ -86,6 +103,65 @@ export function selectDecisionNode(
     graph.nodes[0] ??
     null
   );
+}
+
+export function buildFindingTree(artifact: Pick<GateArtifact, "findings">): FindingTree {
+  const files = new Map<string, FindingTreeLeaf[]>();
+
+  for (const finding of artifact.findings) {
+    const path = finding.primaryPath?.trim() || "Sem arquivo associado";
+    const leaf: FindingTreeLeaf = {
+      id: findingTreeNodeId(finding),
+      finding,
+      node: {
+        id: findingTreeNodeId(finding),
+        kind: "signal",
+        label: "Vulnerabilidade",
+        value: finding.title,
+        detail: [finding.severity, finding.lifecycle, finding.category].filter(Boolean).join(" · "),
+        tone: findingTone(finding.severity),
+        findingIdentity: finding.identity,
+      },
+    };
+    files.set(path, [...(files.get(path) ?? []), leaf]);
+  }
+
+  return {
+    files: [...files.entries()]
+      .map(([path, findings]) => ({
+        path,
+        findings: findings.sort((left, right) => severityRank(left.finding.severity) - severityRank(right.finding.severity)),
+      }))
+      .sort((left, right) => {
+        const severityDifference = severityRank(left.findings[0]?.finding.severity)
+          - severityRank(right.findings[0]?.finding.severity);
+        return severityDifference || left.path.localeCompare(right.path);
+      }),
+    findingCount: artifact.findings.length,
+    highPlusCount: artifact.findings.filter((finding) => finding.severity === "critical" || finding.severity === "high").length,
+  };
+}
+
+export function selectFindingTreeNode(
+  artifact: GateArtifact,
+  requestedId: string | null,
+): DecisionGraphNode | null {
+  const leaves = buildFindingTree(artifact).files.flatMap((file) => file.findings);
+  return leaves.find((leaf) => leaf.id === requestedId)?.node ?? leaves[0]?.node ?? null;
+}
+
+function findingTreeNodeId(finding: GateFindingDelta): string {
+  return `finding:${finding.findingId}`;
+}
+
+function severityRank(severity: Severity | undefined): number {
+  return severity ? ["critical", "high", "medium", "low", "info"].indexOf(severity) : 99;
+}
+
+function findingTone(severity: Severity): DecisionGraphNode["tone"] {
+  if (severity === "critical" || severity === "high") return "risk";
+  if (severity === "medium") return "warning";
+  return "neutral";
 }
 
 export function guardrailHref(gateId: string, nodeId?: string | null): string {
