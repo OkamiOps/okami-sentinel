@@ -115,6 +115,22 @@ export function GuardrailsPage() {
     }
   }, [gateId]);
 
+  const refreshGate = useCallback((selectedId: string) => {
+    void api.getGate(selectedId).then((response) => {
+      setState((current) => {
+        if (current.status !== "ready" || current.selectedGate?.id !== selectedId) return current;
+        return {
+          ...current,
+          gates: current.gates.map((gate) => gate.id === selectedId ? response.gate : gate),
+          selectedGate: response.gate,
+          artifact: response.artifact,
+        };
+      });
+    }).catch((error) => {
+      setActionError(error instanceof Error ? error.message : "Falha ao atualizar gate");
+    });
+  }, []);
+
   useEffect(() => {
     void load();
   }, [load]);
@@ -123,26 +139,18 @@ export function GuardrailsPage() {
     if (state.status !== "ready" || !state.selectedGate || !isGateActive(state.selectedGate.status)) return;
     const selectedId = state.selectedGate.id;
     const source = new EventSource(api.gateEventsUrl(selectedId));
-    const refreshSelected = () => {
-      void api.getGate(selectedId).then((response) => {
-        setState((current) => {
-          if (current.status !== "ready" || current.selectedGate?.id !== selectedId) return current;
-          return {
-            ...current,
-            gates: current.gates.map((gate) => gate.id === selectedId ? response.gate : gate),
-            selectedGate: response.gate,
-            artifact: response.artifact,
-          };
-        });
-      }).catch((error) => {
-        setActionError(error instanceof Error ? error.message : "Falha ao atualizar gate");
-      });
-    };
+    const refreshSelected = () => refreshGate(selectedId);
     for (const name of ["status", "scan", "decision", "done", "error"] as const) {
       source.addEventListener(name, refreshSelected);
     }
-    return () => source.close();
-  }, [state.status, state.status === "ready" ? state.selectedGate?.id : null, state.status === "ready" ? state.selectedGate?.status : null]);
+    // Gate SSE is the fast path. Polling is the reconciliation path when the
+    // terminal event races the browser subscription or a laptop sleeps.
+    const poll = window.setInterval(refreshSelected, 3_500);
+    return () => {
+      source.close();
+      window.clearInterval(poll);
+    };
+  }, [refreshGate, state.status, state.status === "ready" ? state.selectedGate?.id : null, state.status === "ready" ? state.selectedGate?.status : null]);
 
   if (state.status === "loading") return <Loading />;
   if (state.status === "error") {
@@ -282,7 +290,7 @@ export function GuardrailsPage() {
       )}
 
       {readyState.selectedGate?.executor === "sentinel-managed" && readyState.selectedGate.scanId && (
-        <GuardrailScanMonitor gate={readyState.selectedGate} />
+        <GuardrailScanMonitor gate={readyState.selectedGate} onScanTerminal={() => refreshGate(readyState.selectedGate!.id)} />
       )}
 
       {readyState.selectedGate && (readyState.selectedGate.executor !== "sentinel-managed" || !readyState.selectedGate.scanId) && !readyState.artifact && (

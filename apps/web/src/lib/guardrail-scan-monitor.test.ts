@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { GateRun } from "@csb/shared";
+import { MemoryRouter } from "react-router-dom";
+import type { GateRun, ScanRun } from "@csb/shared";
 
-import { GuardrailScanMonitor } from "../components/guardrails/GuardrailScanMonitor.js";
+import { GuardrailScanMonitor, ScanResultActions } from "../components/guardrails/GuardrailScanMonitor.js";
 import { PortfolioPipeline } from "../components/guardrails/PortfolioPipeline.js";
 import { I18nProvider } from "../i18n.js";
 
@@ -85,4 +86,18 @@ test("portfolio header shows a frozen ceiling separately and never invents a zer
     }),
   ));
   assert.doesNotMatch(legacyHtml, /USD[^<]*0,00/);
+});
+
+test("a completed guardrail scan exposes its findings as the primary result action", () => {
+  const scan = {
+    id: "scan-findings",
+    status: "completed",
+    severity: { critical: 1, high: 5, medium: 1, low: 0, info: 0, total: 7 },
+  } as ScanRun;
+  const html = renderToStaticMarkup(createElement(MemoryRouter, null,
+    createElement(I18nProvider, null, createElement(ScanResultActions, { scan })),
+  ));
+
+  assert.match(html, /Ver 7 findings/);
+  assert.match(html, /href="\/scans\/scan-findings"/);
 });

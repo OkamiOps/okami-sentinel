@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { GateRun, ScanEvent, ScanRun } from "@csb/shared";
-import { ArrowUpRight, Cpu, Radio, RefreshCw } from "lucide-react";
+import { ArrowUpRight, Cpu, ListChecks, Radio, RefreshCw } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../api";
@@ -19,7 +19,7 @@ import { useI18n } from "../../i18n";
 import { AlertBanner, LiveDuration, ProgressTrack, Readout, SeverityStrip, StatusBadge, cx } from "../ui";
 import { Button } from "@/components/ui/button";
 
-export function GuardrailScanMonitor({ gate }: { gate: GateRun }) {
+export function GuardrailScanMonitor({ gate, onScanTerminal }: { gate: GateRun; onScanTerminal?: () => void }) {
   const { t } = useI18n();
   const scanId = gate.scanId;
   const [scan, setScan] = useState<ScanRun | null>(null);
@@ -27,6 +27,7 @@ export function GuardrailScanMonitor({ gate }: { gate: GateRun }) {
   const [loading, setLoading] = useState(scanId !== null);
   const [error, setError] = useState<string | null>(null);
   const logRef = useRef<HTMLPreElement>(null);
+  const terminalReportedRef = useRef<string | null>(null);
 
   const load = useCallback(async () => {
     if (!scanId) return;
@@ -49,6 +50,12 @@ export function GuardrailScanMonitor({ gate }: { gate: GateRun }) {
     setError(null);
     void load();
   }, [scanId, load]);
+
+  useEffect(() => {
+    if (!scan || scan.status === "running" || terminalReportedRef.current === scan.id) return;
+    terminalReportedRef.current = scan.id;
+    onScanTerminal?.();
+  }, [onScanTerminal, scan]);
 
   useEffect(() => {
     if (!scanId) return;
@@ -134,9 +141,7 @@ export function GuardrailScanMonitor({ gate }: { gate: GateRun }) {
           <h2 id="guardrail-scan-monitor-title" className="mt-2 font-heading text-xl font-semibold tracking-[-.025em] sm:text-2xl">{t("guardrails.scanMonitorTitle")}</h2>
           <p className="mt-1 break-words text-xs leading-5 text-muted-foreground">{route || scan.id}</p>
         </div>
-        <Button asChild variant="outline" className="min-h-11 w-full sm:w-auto">
-          <Link to={`/scans/${scan.id}`}>{t("guardrails.openScanChannel")}<ArrowUpRight aria-hidden size={14} /></Link>
-        </Button>
+        <ScanResultActions scan={scan} />
       </header>
 
       <div className="border-b px-4 py-3 sm:px-5">
@@ -187,6 +192,23 @@ export function GuardrailScanMonitor({ gate }: { gate: GateRun }) {
       </div>
       {error && <div className="border-t p-4"><AlertBanner>{error}</AlertBanner></div>}
     </section>
+  );
+}
+
+export function ScanResultActions({ scan }: { scan: ScanRun }) {
+  const { t } = useI18n();
+  const hasFindings = scan.status !== "running" && scan.severity.total > 0;
+  return (
+    <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+      {hasFindings && (
+        <Button asChild className="min-h-11 w-full sm:w-auto">
+          <Link to={`/scans/${scan.id}`}><ListChecks aria-hidden size={14} />{t("guardrails.viewFindings", { count: scan.severity.total })}<ArrowUpRight aria-hidden size={14} /></Link>
+        </Button>
+      )}
+      <Button asChild variant="outline" className="min-h-11 w-full sm:w-auto">
+        <Link to={`/scans/${scan.id}`}>{t("guardrails.openScanChannel")}<ArrowUpRight aria-hidden size={14} /></Link>
+      </Button>
+    </div>
   );
 }
 
