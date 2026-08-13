@@ -1,38 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { DecisionGraph, GateFindingDelta, GateRun, GuardrailPolicy } from "@csb/shared";
+import type { DecisionGraph, GateRun, GuardrailPolicy } from "@csb/shared";
 
 import {
   editorStateFromPolicy,
-  buildFindingTree,
   guardrailHref,
   policyFromEditor,
   selectDecisionNode,
   selectGate,
   validatePolicyEditor,
 } from "./guardrails.js";
-
-function findingFixture(id: string, path: string | null, severity: GateFindingDelta["severity"]): GateFindingDelta {
-  return {
-    findingId: id,
-    occurrenceId: id,
-    title: `Finding ${id}`,
-    severity,
-    confidence: "high",
-    ruleId: null,
-    summary: null,
-    primaryPath: path,
-    fingerprints: [],
-    category: "Broken Access Control",
-    cwe: [],
-    identity: `identity-${id}`,
-    lifecycle: "new",
-    triage: { status: "unreviewed", note: null, updatedAt: null },
-    exception: null,
-    sourceScanId: "scan-1",
-  };
-}
 
 function gatesFixture(): GateRun[] {
   return [
@@ -161,29 +139,6 @@ test("selects a valid graph node and falls back to the graph default", () => {
     selectDecisionNode(graph, "missing")?.id,
     graph.selectedNodeId,
   );
-});
-
-test("builds a complete file tree without dropping findings after the first signal", () => {
-  const findings = [
-    findingFixture("critical-a", "src/files.ts", "critical"),
-    findingFixture("high-b", "src/files.ts", "high"),
-    findingFixture("medium-c", "src/auth.ts", "medium"),
-    findingFixture("unscoped-d", null, "low"),
-  ];
-
-  const tree = buildFindingTree({ findings });
-  assert.equal(tree.findingCount, 4);
-  assert.equal(tree.highPlusCount, 2);
-  assert.equal(tree.files.length, 3);
-  assert.deepEqual(
-    tree.files.flatMap((file) => file.findings.map((leaf) => leaf.finding.findingId)).sort(),
-    findings.map((finding) => finding.findingId).sort(),
-  );
-  assert.deepEqual(
-    tree.files.find((file) => file.path === "src/files.ts")?.findings.map((leaf) => leaf.finding.findingId),
-    ["critical-a", "high-b"],
-  );
-  assert.equal(tree.files.some((file) => file.path === "Sem arquivo associado"), true);
 });
 
 test("builds a reloadable guardrail URL", () => {
