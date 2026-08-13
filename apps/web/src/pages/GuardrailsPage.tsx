@@ -395,7 +395,7 @@ function GuardrailLaunchpad({
         <CockpitMetric label={t("guardrails.portfolioRuns")} value={gates.length} />
       </div>
 
-      <div className="grid min-h-[34rem] xl:grid-cols-[19rem_minmax(0,1fr)]">
+      <div className="grid xl:grid-cols-[19rem_minmax(0,1fr)]">
         <aside className="min-w-0 border-b bg-secondary/[.08] xl:border-b-0 xl:border-r" aria-label={t("guardrails.portfolioRepositories")}>
           <div className="border-b px-4 py-4"><div className="bench-label text-primary">REPOSITORY CONTROL</div><p className="mt-2 text-xs leading-5 text-muted-foreground">{t("guardrails.pipelineSubtitle")}</p></div>
           <div className="grid">
@@ -429,22 +429,22 @@ function GuardrailLaunchpad({
                 </div>
               </div>
 
-              <div className="grid border-b md:grid-cols-5">
+              <div className="grid border-b sm:grid-cols-3">
                 <ReadinessCell code="01" title={t("guardrails.stageAuthority")} ready={repoReadiness?.authorityReady === true} current={repoReadiness?.authorityReady !== true} detail={repository.source === "github" ? "GITHUB APP" : "LOCAL ROOT"} />
                 <ReadinessCell code="02" title={t("guardrails.factBaseline")} ready={repoReadiness?.baselineReady === true} current={repoReadiness?.authorityReady === true && repoReadiness?.baselineReady !== true} detail={repoReadiness?.baselineReady ? t("guardrails.authorized") : t("guardrails.actionRequired")} />
                 <ReadinessCell code="03" title={t("guardrails.previewExecutor")} ready={scanReady} current={!scanReady} detail={defaultActionsBlocked ? "sentinel-managed" : repository.defaultExecutor} />
-                <ReadinessCell code="04" title={t("guardrails.stageTarget")} ready={false} current={scanReady} detail={t("guardrails.pending")} />
-                <ReadinessCell code="05" title={t("guardrails.stageDecision")} ready={false} current={false} detail={t("guardrails.pending")} />
               </div>
 
-              <div className="grid gap-0 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,.42fr)]">
-                <div className="min-w-0 border-b p-5 lg:border-b-0 lg:border-r md:p-7">
+              <div className="min-w-0 p-5 md:p-7">
+                <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2 text-primary"><Activity aria-hidden size={15} /><span className="bench-label">{t("guardrails.latestGate")}</span></div>
+                  <span className="font-mono text-[9px] uppercase tracking-[.08em] text-muted-foreground">{String(repositoryGates.length).padStart(2, "0")} {t("guardrails.portfolioRuns")}</span>
+                </div>
                   {latestGate ? (
-                    <button type="button" onClick={() => onOpenGate(latestGate)} className="mt-5 grid w-full min-w-0 gap-4 border px-4 py-4 text-left transition-colors hover:bg-accent sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                    <button type="button" onClick={() => onOpenGate(latestGate)} className="mt-4 grid w-full min-w-0 gap-4 border px-4 py-4 text-left transition-colors hover:border-primary/60 hover:bg-primary/[.03] sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
                       <span className="min-w-0">
                         <span className="flex flex-wrap items-center gap-2"><GateOutcomeBadge outcome={latestGate.outcome} status={latestGate.status} /><strong className="text-sm">{latestGate.pullRequestNumber ? `PR #${latestGate.pullRequestNumber}` : latestGate.headRef}</strong></span>
-                        <span className="mt-2 block truncate font-mono text-[9px] text-muted-foreground">{latestGate.id} · {latestGate.executor}</span>
+                        <span className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[9px] text-muted-foreground"><span>{latestGate.id}</span><span>{latestGate.executor}</span><span>{latestGate.headRef}</span></span>
                       </span>
                       <span className="inline-flex items-center gap-2 font-mono text-[9px] uppercase text-primary">{t("guardrails.openGate")}<ArrowRight aria-hidden size={14} /></span>
                     </button>
@@ -459,13 +459,6 @@ function GuardrailLaunchpad({
                       {repositoryGates.slice(1, 4).map((gate) => <button key={gate.id} type="button" onClick={() => onOpenGate(gate)} className="border px-3 py-2 font-mono text-[8px] uppercase text-muted-foreground hover:border-primary hover:text-primary">{gate.pullRequestNumber ? `PR #${gate.pullRequestNumber}` : gate.headRef} · {gate.status}</button>)}
                     </div>
                   )}
-                </div>
-                <div className="p-5 md:p-7">
-                  <div className="bench-label text-primary">NEXT REQUIRED ACTION</div>
-                  <p className="mt-3 text-sm font-semibold">{scanReady ? t("guardrails.launchTarget") : t("guardrails.setup")}</p>
-                  <p className="mt-2 text-xs leading-5 text-muted-foreground">{scanReady ? t("guardrails.launchTargetDetail") : statusLabel}</p>
-                  <Button asChild variant="outline" className="mt-5 min-h-11 w-full"><Link to={scanReady ? "#" : setupHref} onClick={scanReady ? (event) => { event.preventDefault(); onRun(repository.repositoryKey); } : undefined}><ArrowRight aria-hidden size={14} />{scanReady ? t("guardrails.scanNow") : t("guardrails.setup")}</Link></Button>
-                </div>
               </div>
             </>
           ) : (
