@@ -262,7 +262,7 @@ export async function runMantisHttpAgent(
     const snapshotRoot = createMantisSnapshot(configuration.repositoryPath, outputDir);
     const snapshotId = hashMantisSnapshot(snapshotRoot);
     const stateRoot = path.join(outputDir, "mantis");
-    initializeMantisState(stateRoot, snapshotRoot, snapshotId, now());
+    initializeAndLockMantisSnapshot(stateRoot, snapshotRoot, snapshotId, now());
 
     // Metadata and the immutable source snapshot are both pinned before this
     // worker may read a secret or construct a network-capable session.
@@ -989,6 +989,44 @@ export function initializeMantisState(stateRoot: string, snapshotRoot: string, s
     changed_files_status: "UNKNOWN",
     changed_files_pass: 1,
   }, null, 2)}\n`, { mode: 0o600 });
+}
+
+/**
+ * Remote GitHub materializations are intentionally delivered read-only. Open
+ * only the snapshot root long enough to add Sentinel's identity marker, then
+ * pin every directory/file back to read-only before credentials or a provider
+ * session can be reached.
+ */
+function initializeAndLockMantisSnapshot(
+  stateRoot: string,
+  snapshotRoot: string,
+  snapshotId: string,
+  now: Date,
+): void {
+  try {
+    fs.chmodSync(snapshotRoot, 0o700);
+    initializeMantisState(stateRoot, snapshotRoot, snapshotId, now);
+    lockMantisHttpSnapshot(snapshotRoot);
+  } catch {
+    throw new MantisHttpRunnerError("snapshot_invalid");
+  }
+}
+
+function lockMantisHttpSnapshot(snapshotRoot: string): void {
+  const files: string[] = [];
+  const directories: string[] = [];
+  const visit = (directory: string): void => {
+    directories.push(directory);
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const candidate = path.join(directory, entry.name);
+      if (entry.isDirectory()) visit(candidate);
+      else if (entry.isFile()) files.push(candidate);
+      else throw new Error("unexpected snapshot entry");
+    }
+  };
+  visit(snapshotRoot);
+  for (const file of files) fs.chmodSync(file, 0o400);
+  for (const directory of directories.reverse()) fs.chmodSync(directory, 0o500);
 }
 
 function inside(parent: string, candidate: string): boolean {

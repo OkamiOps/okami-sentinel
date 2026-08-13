@@ -32,6 +32,22 @@ import {
 
 const NOW = new Date("2026-08-11T12:00:00.000Z");
 
+function removeTestTree(root: string): void {
+  if (!fs.existsSync(root)) return;
+  const unlock = (candidate: string): void => {
+    const info = fs.lstatSync(candidate);
+    if (info.isSymbolicLink()) return;
+    if (info.isDirectory()) {
+      fs.chmodSync(candidate, 0o700);
+      for (const entry of fs.readdirSync(candidate)) unlock(path.join(candidate, entry));
+    } else {
+      fs.chmodSync(candidate, 0o600);
+    }
+  };
+  unlock(root);
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
 const CAPABILITIES: ModelCapabilities = {
   tools: "supported",
   artifactOutput: "supported",
@@ -304,7 +320,7 @@ test("Mantis HTTP runner executes every bounded stage with chained state and nev
     assert.equal(logs.join("\n").includes(secret), false);
     assert.equal(fs.existsSync(path.join(outputDir, "findings.json")), true);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTestTree(root);
   }
 });
 
@@ -334,7 +350,7 @@ test("Mantis HTTP treats cache-write-only usage as reported", async () => {
     assert.equal(result.runtime.usage.cacheWriteInputTokensKnown, true);
     assert.equal(result.runtime.usage.outputTokensKnown, false);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTestTree(root);
   }
 });
 
@@ -363,7 +379,7 @@ test("Mantis HTTP rejects configuration keys outside its secret-free allowlist",
         error.code === "provider_plan_invalid",
     );
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTestTree(root);
   }
 });
 
@@ -403,7 +419,7 @@ test("Mantis HTTP rejects a MiMo effort before reading the vault", async () => {
     );
     assert.equal(vaultReads, 0);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTestTree(root);
   }
 });
 
@@ -413,6 +429,8 @@ test("Mantis HTTP pins and initializes the repository snapshot before vault, red
   const outputDir = path.join(root, "output");
   fs.mkdirSync(repositoryPath);
   fs.writeFileSync(path.join(repositoryPath, "app.ts"), "export const safe = true;\n");
+  fs.chmodSync(path.join(repositoryPath, "app.ts"), 0o400);
+  fs.chmodSync(repositoryPath, 0o500);
   const order: string[] = [];
   let vaultObservedUninitializedSnapshot = false;
 
@@ -438,6 +456,12 @@ test("Mantis HTTP pins and initializes the repository snapshot before vault, red
             path.join(outputDir, "mantis-snapshot", ".mantis_snapshot_id"),
           ) || !fs.existsSync(
             path.join(outputDir, "mantis", "workspace", ".mantis_state.json"),
+          );
+          assert.equal(fs.statSync(path.join(outputDir, "mantis-snapshot")).mode & 0o777, 0o500);
+          assert.equal(fs.statSync(path.join(outputDir, "mantis-snapshot", "app.ts")).mode & 0o777, 0o400);
+          assert.equal(
+            fs.statSync(path.join(outputDir, "mantis-snapshot", ".mantis_snapshot_id")).mode & 0o777,
+            0o400,
           );
           return { apiKey: "server-only-token" };
         },
@@ -466,7 +490,7 @@ test("Mantis HTTP pins and initializes the repository snapshot before vault, red
     ]);
     assert.equal(vaultObservedUninitializedSnapshot, false);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTestTree(root);
   }
 });
 
@@ -502,7 +526,7 @@ test("an invalid repository snapshot fails without reading the vault", async () 
     );
     assert.equal(vaultReads, 0);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTestTree(root);
   }
 });
 
@@ -544,7 +568,7 @@ test("prior stage summaries remain inert encoded DATA even when they contain pro
       summary: malicious,
     });
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTestTree(root);
   }
 });
 
@@ -594,7 +618,7 @@ test("Mantis HTTP uses the validated stage artifact when the final provider text
 
     assert.equal(result.runtime.status, "completed");
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTestTree(root);
   }
 });
 
@@ -613,7 +637,7 @@ test("report artifact requires an explicit findings array", async () => {
       (error: unknown) => error instanceof MantisHttpRunnerError && error.code === "stage_artifact_invalid",
     );
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTestTree(root);
   }
 });
 
@@ -633,7 +657,7 @@ test("report artifact rejects findings without valid Mantis id, title, and sever
       (error: unknown) => error instanceof MantisHttpRunnerError && error.code === "stage_artifact_invalid",
     );
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTestTree(root);
   }
 });
 
@@ -658,7 +682,7 @@ test("reportable findings require bounded source code paths for Inspector eviden
       (error: unknown) => error instanceof MantisHttpRunnerError && error.code === "stage_artifact_invalid",
     );
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTestTree(root);
   }
 });
 
@@ -683,7 +707,7 @@ test("reportable findings require a non-empty remediation direction", async () =
       (error: unknown) => error instanceof MantisHttpRunnerError && error.code === "stage_artifact_invalid",
     );
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTestTree(root);
   }
 });
 
@@ -714,7 +738,7 @@ for (const [label, locator] of [
         (error: unknown) => error instanceof MantisHttpRunnerError && error.code === "stage_artifact_invalid",
       );
     } finally {
-      fs.rmSync(root, { recursive: true, force: true });
+      removeTestTree(root);
     }
   });
 }
@@ -768,7 +792,7 @@ test("valid report schema produces normalized Inspector evidence", async () => {
     assert.match(reportSpec.find((spec) => spec.instructions.includes("stage_id=report"))!.instructions, /findings.*required/i);
     assert.match(reportSpec.find((spec) => spec.instructions.includes("stage_id=report"))!.instructions, /relative\/path\.ext:line/);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTestTree(root);
   }
 });
 
@@ -787,7 +811,7 @@ test("Mantis snapshot hashes do not depend on directory enumeration order", () =
     assert.equal(hashMantisSnapshot(root), canonical);
   } finally {
     fs.readdirSync = originalReadDir;
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTestTree(root);
   }
 });
 
@@ -866,7 +890,7 @@ test("Mantis HTTP resolves pinned direct xAI OAuth without an API-key vault read
       providerPlan: xaiPlan(),
     }).includes(oauthToken), false);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTestTree(root);
   }
 });
 
@@ -921,7 +945,7 @@ test("Mantis rejects a historically pinned passed probe when the latest exact pr
     assert.equal(xaiReads, 0);
     assert.equal(vaultReads, 0);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTestTree(root);
   }
 });
 
@@ -978,7 +1002,7 @@ test("Mantis direct xAI OAuth revalidates the exact tuple and snapshot before ei
     assert.equal(xaiReads, 0);
     assert.equal(vaultReads, 0);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTestTree(root);
   }
 });
 
@@ -1030,7 +1054,7 @@ test("Mantis direct xAI OAuth bounds a hung refresh, consumes its late rejection
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.deepEqual(unhandled, []);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTestTree(root);
   }
 });
 
@@ -1089,7 +1113,7 @@ test("Mantis direct xAI OAuth rejects a pre-aborted or missing bearer without a 
     assert.equal(xaiReads, 1);
     assert.equal(vaultReads, 0);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTestTree(root);
   }
 });
 
@@ -1115,7 +1139,7 @@ for (const unsafePath of ["../outside", "/absolute/path"] as const) {
         (error: unknown) => error instanceof MantisHttpRunnerError && error.code === "provider_plan_invalid",
       );
     } finally {
-      fs.rmSync(root, { recursive: true, force: true });
+      removeTestTree(root);
     }
   });
 }
@@ -1161,7 +1185,7 @@ test("Mantis HTTP revalidation fails before the vault for a changed snapshot", a
 
     assert.equal(vaultReads, 0);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTestTree(root);
   }
 });
 
@@ -1209,7 +1233,7 @@ test("Mantis HTTP runner propagates cancellation through the active agent sessio
     );
     assert.equal(cancelCalls, 1);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTestTree(root);
   }
 });
 
@@ -1226,7 +1250,7 @@ test("Mantis HTTP preserves closed agent-session failure codes in the runtime", 
 
   for (const code of codes) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), `mantis-http-safe-error-${code}-`));
-    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    t.after(() => removeTestTree(root));
     const repositoryPath = path.join(root, "repository");
     const outputDir = path.join(root, "output");
     fs.mkdirSync(repositoryPath);
@@ -1286,7 +1310,7 @@ test("Mantis HTTP falls back for a session code outside its closed safe vocabula
     const runtime = JSON.parse(fs.readFileSync(path.join(outputDir, "mantis-runtime.json"), "utf8"));
     assert.equal(runtime.error, "agent_session_failed");
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    removeTestTree(root);
   }
 });
 
