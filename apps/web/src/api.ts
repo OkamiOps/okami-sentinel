@@ -524,6 +524,11 @@ export const api = {
       `/guardrails/gates/${encodeURIComponent(gateId)}/cancel`,
       { method: "POST" },
     ),
+  deleteGate: (gateId: string) =>
+    request<{ ok: boolean }>(
+      `/guardrails/gates/${encodeURIComponent(gateId)}`,
+      { method: "DELETE" },
+    ),
   publishGate: (gateId: string) =>
     request<{ gate: GateRun; attempt: GatePublicationAttempt }>(
       `/guardrails/gates/${encodeURIComponent(gateId)}/publish`,

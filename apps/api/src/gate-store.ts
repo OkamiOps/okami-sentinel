@@ -1084,6 +1084,21 @@ export function listGateRuns(
   return rows.map(rowToGateRun);
 }
 
+export function deleteGateRun(
+  id: string,
+  database: Database.Database = getDb(),
+): boolean {
+  ensureGateSchema(database);
+  return database.transaction(() => {
+    database.prepare("DELETE FROM gate_events WHERE gate_id = ?").run(id);
+    database.prepare("DELETE FROM gate_publication_attempts WHERE gate_id = ?").run(id);
+    database.prepare("DELETE FROM github_actions_artifacts WHERE gate_id = ?").run(id);
+    database.prepare("DELETE FROM github_actions_dispatches WHERE gate_id = ?").run(id);
+    database.prepare("DELETE FROM materialization_leases WHERE gate_id = ?").run(id);
+    return database.prepare("DELETE FROM gate_runs WHERE id = ?").run(id).changes === 1;
+  })();
+}
+
 export function appendGateEvent(
   gateId: string,
   event: GateEvent,

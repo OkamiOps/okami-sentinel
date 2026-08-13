@@ -338,6 +338,7 @@ function dependencies(options: {
       return currentGate;
     },
     cancelGate: () => true,
+    deleteGate: (id) => id === currentGate.id,
     subscribeGate: () => () => undefined,
     getGitHubStatus: async () => githubStatus,
     getActionsStatus: async () => ({
@@ -406,8 +407,32 @@ test("exposes local and github guardrail routes", () => {
     "GET /guardrails/gates/:gateId",
     "GET /guardrails/gates/:gateId/events",
     "POST /guardrails/gates/:gateId/cancel",
+    "DELETE /guardrails/gates/:gateId",
     "POST /guardrails/gates/:gateId/publish",
   ]);
+});
+
+test("DELETE /guardrails/gates/:gateId delegates terminal cleanup and reports missing gates", async () => {
+  const testApp = createGuardrailsApp(dependencies());
+  const deleted = await testApp.request("/guardrails/gates/gate-1", { method: "DELETE" });
+  const missing = await testApp.request("/guardrails/gates/missing", { method: "DELETE" });
+
+  assert.equal(deleted.status, 200);
+  assert.deepEqual(await deleted.json(), { ok: true });
+  assert.equal(missing.status, 404);
+});
+
+test("DELETE /guardrails/gates/:gateId refuses an active gate", async () => {
+  const deps = dependencies();
+  deps.deleteGate = () => {
+    throw new Error("gate_not_terminal");
+  };
+  const response = await createGuardrailsApp(deps).request("/guardrails/gates/gate-1", {
+    method: "DELETE",
+  });
+
+  assert.equal(response.status, 409);
+  assert.deepEqual(await response.json(), { error: "gate_not_terminal" });
 });
 
 test("GET /guardrails/repositories/:repositoryKey/pull-requests returns server-resolved open pull requests", async () => {

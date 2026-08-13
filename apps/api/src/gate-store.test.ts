@@ -5,6 +5,7 @@ import type { GateRun, GuardrailRepository } from "@csb/shared";
 import {
   appendGateEvent,
   createGitHubActionsDispatchGate,
+  deleteGateRun,
   ensureGateSchema,
   getCachedGitHubBaseline,
   getGitHubActionsArtifact,
@@ -140,6 +141,37 @@ test("persists repositories and gate runs without changing scan tables", () => {
         .get(),
       { count: 0 },
     );
+  } finally {
+    db.close();
+  }
+});
+
+test("deletes a gate and its private relational history", () => {
+  const db = new Database(":memory:");
+
+  try {
+    ensureGateSchema(db);
+    upsertGuardrailRepository(repositoryFixture(), db);
+    insertGateRun(gateRunFixture({ status: "error", completedAt: "2026-08-07T10:00:00Z" }), db);
+    appendGateEvent("gate-1", {
+      sequence: 1,
+      type: "error",
+      payload: { status: "error" },
+      createdAt: "2026-08-07T10:00:00Z",
+    }, db);
+    recordGatePublicationAttempt({
+      id: "attempt-1",
+      gateId: "gate-1",
+      status: "failed",
+      error: "not published",
+      createdAt: "2026-08-07T10:00:00Z",
+    }, db);
+
+    assert.equal(deleteGateRun("gate-1", db), true);
+    assert.equal(getGateRun("gate-1", db), null);
+    assert.deepEqual(listGateEvents("gate-1", db), []);
+    assert.deepEqual(listGatePublicationAttempts("gate-1", db), []);
+    assert.equal(deleteGateRun("gate-1", db), false);
   } finally {
     db.close();
   }

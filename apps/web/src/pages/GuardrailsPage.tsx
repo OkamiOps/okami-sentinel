@@ -12,6 +12,7 @@ import { api, type EnrollGuardrailRepositoryRequest, type GuardrailActionsStatus
 import {
   DecisionEquation,
   DecisionGraph,
+  DeleteGateButton,
   EvidenceTrace,
   GuardrailPreflightSheet,
   PortfolioPipeline,
@@ -227,6 +228,9 @@ export function GuardrailsPage() {
               <Button variant="destructive" className="min-h-11" onClick={() => void cancelSelected()} disabled={busy}>
                 <Square aria-hidden size={13} />{t("guardrails.cancel")}
               </Button>
+            )}
+            {readyState.selectedGate && !selectedGateActive && (
+              <DeleteGateButton gate={readyState.selectedGate} onDeleted={() => navigate("/guardrails", { replace: true })} />
             )}
             <EnrollmentSheet open={enrollOpen} onOpenChange={setEnrollOpen} busy={busy} onEnroll={enroll} />
             <GuardrailPreflightSheet

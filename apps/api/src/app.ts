@@ -40,6 +40,7 @@ import { getRun, hideRun, listRuns } from "./db.js";
 import { listDirectory } from "./fs.js";
 import {
   cancelGate,
+  deleteTerminalGate,
   getGateArtifact,
   startLocalGate,
   startRemoteActionsGate,
@@ -167,6 +168,7 @@ export interface GuardrailsApiDependencies {
     idempotencyKey: string,
   ): Promise<GateRun>;
   cancelGate(gateId: string): boolean;
+  deleteGate(gateId: string): boolean;
   subscribeGate(gateId: string, listener: (event: GateEvent) => void): () => void;
   getGitHubStatus(repository: GuardrailRepository): ReturnType<typeof getGitHubStatus>;
   getActionsStatus(repository: GuardrailRepository): Promise<GitHubActionsStatus>;
@@ -271,6 +273,7 @@ const guardrailsDependencies: GuardrailsApiDependencies = {
   dispatchActionsGate: (_repository, preview, idempotencyKey) =>
     startRemoteActionsGate(preview, idempotencyKey),
   cancelGate,
+  deleteGate: deleteTerminalGate,
   subscribeGate,
   getGitHubStatus: (repository) => repository.source === "github"
     ? getRemoteGitHubStatus(repository, getSystemGitHubAppService())
@@ -603,6 +606,17 @@ export function createGuardrailsApp(
       return c.json({ error: "Gate não está ativo" }, 404);
     }
     return c.json({ ok: true });
+  });
+
+  guardrails.delete("/guardrails/gates/:gateId", (c) => {
+    try {
+      if (!deps.deleteGate(c.req.param("gateId"))) {
+        return c.json({ error: "Gate não encontrado" }, 404);
+      }
+      return c.json({ ok: true });
+    } catch (error) {
+      return c.json({ error: errorMessage(error) }, 409);
+    }
   });
 
   guardrails.post("/guardrails/gates/:gateId/publish", async (c) => {

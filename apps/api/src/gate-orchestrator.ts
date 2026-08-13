@@ -54,6 +54,7 @@ import {
 import {
   appendGateEvent,
   createGitHubActionsDispatchGate,
+  deleteGateRun,
   finalizeGitHubActionsArtifact,
   getGitHubActionsArtifact,
   getGitHubActionsDispatch,
@@ -93,7 +94,10 @@ import {
   type SentinelManagedExecutionInput,
   type SentinelManagedExecutionResult,
 } from "./guardrails/sentinel-managed-executor.js";
-import { SnapshotMaterializer } from "./guardrails/snapshot-materializer.js";
+import {
+  cleanupMaterializationLeaseRoot,
+  SnapshotMaterializer,
+} from "./guardrails/snapshot-materializer.js";
 import { reconcileMaterializationLeases } from "./guardrails/materialization-reconciler.js";
 import type { AcceptedGateTargetPreview } from "./guardrails/target-preview.js";
 import {
@@ -382,6 +386,19 @@ export function cancelGate(
   deps.updateGateRun(gateId, { status: "cancelled", completedAt });
   emit(gateId, "done", { gateId, status: "cancelled", completedAt }, deps);
   return true;
+}
+
+export function deleteTerminalGate(gateId: string): boolean {
+  const gate = getGateRun(gateId);
+  if (gate === null) return false;
+  if (gate.status !== "completed" && gate.status !== "cancelled" && gate.status !== "error") {
+    throw new Error("gate_not_terminal");
+  }
+  for (const lease of listMaterializationLeases().filter((candidate) => candidate.gateId === gate.id)) {
+    cleanupMaterializationLeaseRoot(GUARDRAIL_MATERIALIZATIONS_DIR, gate.id, lease.id);
+  }
+  removeGateArtifactDirectory(gate.id);
+  return deleteGateRun(gate.id);
 }
 
 export function subscribeGate(
@@ -1069,4 +1086,20 @@ function writeGateArtifact(gateId: string, artifact: GateArtifact): string {
   });
   fs.renameSync(temporary, destination);
   return destination;
+}
+
+function removeGateArtifactDirectory(gateId: string): void {
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(gateId)) {
+    throw new Error("gate_identity_invalid");
+  }
+  const root = path.resolve(GATES_DIR);
+  const target = path.join(root, gateId);
+  const relative = path.relative(root, target);
+  if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error("gate_identity_invalid");
+  }
+  if (!fs.existsSync(target)) return;
+  const stat = fs.lstatSync(target);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("gate_artifact_cleanup_failed");
+  fs.rmSync(target, { recursive: true, force: false });
 }
