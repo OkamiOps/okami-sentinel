@@ -36,6 +36,7 @@ The product is used during development and security review against local checkou
 - Comparisons accept one baseline and up to five candidates.
 - Interrupted scans that preserved findings remain available as explicitly labeled partial results.
 - Portable keeps a server-owned dossier and emits report pages only for confirmed candidates. Those private internal pages are validated and consolidated into one final report; rejected candidates and their coverage are server-derived. If a page or its validation fails, no partial final report is published.
+- Portable Deep independently enumerates and partitions the immutable snapshot's auditable source and security-configuration files. Discovery completes only after every assigned file has been read completely; it never depends on a Standard run and never publishes partial Deep coverage.
 - When a terminal artifact fails validation, Portable allows only a small bounded repair window within the scan's existing global turn, tool, elapsed-time, and configured-cost limits.
 - Standard and deep scans classify only findings from the current execution as `new`, `persisting`, or `regressed` against a compatible same-lineage baseline. A missing finding is not remediation; `fixed` remains reserved for a future explicit incremental contract.
 - Individual and comparison reports reuse the evidence, cost, and efficiency model shown in the product and can be printed or exported as PDF.

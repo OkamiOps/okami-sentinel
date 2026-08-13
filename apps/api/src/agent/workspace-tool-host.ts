@@ -20,7 +20,7 @@ import {
 } from "./session-types.js";
 import { collectBounded } from "./bounded-directory.js";
 
-const DEFAULT_MAX_READ_BYTES = 1_048_576;
+const DEFAULT_MAX_READ_BYTES = 4_194_304;
 const DEFAULT_MAX_WRITE_BYTES = 16_777_216;
 const DEFAULT_MAX_LIST_ENTRIES = 1_000;
 const DEFAULT_MAX_SEARCH_RESULTS = 200;
@@ -84,7 +84,6 @@ interface TraversalBudget {
   remainingEntries: number;
 }
 
-const MAX_JSON_STRING_BYTES_PER_INPUT_BYTE = 6;
 
 /**
  * The host is the complete local capability surface for an agent session.
@@ -211,15 +210,13 @@ async function readWorkspace(
   const value = objectInput(input);
   const requestedPath = requiredPath(value.path);
   const maxBytes = boundedPositive(value.maxBytes, limits.maxReadBytes, "tool_argument_invalid");
-  const emptyBytes = serializedBytes({ path: requestedPath, content: "" });
-  const outputContentCapacity = maxOutputBytes - emptyBytes;
   const target = await snapshotTarget(snapshotRoot, requestedPath);
   if (!target.info.isFile()) throw new AgentSessionError("tool_path_denied");
   if (target.info.size > maxBytes) throw new AgentSessionError("tool_read_limit");
-  if (target.info.size > Math.floor(outputContentCapacity / MAX_JSON_STRING_BYTES_PER_INPUT_BYTE)) {
+  const content = (await readPinnedSnapshotFile(snapshotRoot, target, maxBytes)).toString("utf8");
+  if (serializedBytes({ path: requestedPath, content }) > maxOutputBytes) {
     throw new AgentSessionError("agent_output_byte_limit");
   }
-  const content = (await readPinnedSnapshotFile(snapshotRoot, target, maxBytes)).toString("utf8");
   return textResult({ path: requestedPath, content }, maxOutputBytes);
 }
 

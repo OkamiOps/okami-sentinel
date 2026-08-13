@@ -276,6 +276,62 @@ test("Portable discovery returns a closed candidate-contract repair reason", () 
   assert.deepEqual(detail, { kind: "candidate-contract", reason: "entry-keys", itemIndex: 0 });
 });
 
+test("Deep discovery requires a complete read of every server-owned partition path", () => {
+  const deepCoverage = {
+    index: 0,
+    total: 1,
+    requiredPaths: ["src/a.ts", "src/b.ts"],
+    requiredBytes: { "src/a.ts": 10, "src/b.ts": 20 },
+    observedReadPaths: new Set(["src/a.ts"]),
+  };
+  const input = {
+    path: "03-discovery.json",
+    content: JSON.stringify({
+      schemaVersion: 1,
+      stage: "discovery",
+      summary: "Partition discovery completed after every assigned file was inspected.",
+      observations: [],
+      scope: { inspected: ["invented.ts"], unexamined: [{ path: "src/b.ts", reason: "out-of-scope" }] },
+      candidates: [{
+        id: "provider-local-id",
+        category: "authorization",
+        anchors: [{ path: "src/a.ts", startLine: 1, endLine: 1, role: "sink" }],
+      }],
+    }),
+  };
+  let issue: unknown;
+  const context = { dossier: {
+    schemaVersion: 1 as const,
+    stageSummaries: [],
+    candidates: [],
+    assessments: [],
+    scope: { inspected: [], unexamined: [] },
+  }, deepCoverage };
+  assert.equal(normalizeResultArtifactInput(
+    input,
+    PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT,
+    undefined,
+    context,
+    (nextIssue) => { issue = nextIssue; },
+  ), null);
+  assert.equal(issue, "deep-coverage-incomplete");
+
+  deepCoverage.observedReadPaths.add("src/b.ts");
+  const normalized = normalizeResultArtifactInput(
+    input,
+    PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT,
+    undefined,
+    context,
+  );
+  assert.ok(normalized);
+  const artifact = JSON.parse(String(normalized!.content)) as {
+    scope: { inspected: string[]; unexamined: unknown[] };
+    candidates: Array<{ id: string }>;
+  };
+  assert.deepEqual(artifact.scope, { inspected: ["src/a.ts", "src/b.ts"], unexamined: [] });
+  assert.match(artifact.candidates[0]!.id, /^deep-[a-f0-9]{24}$/);
+});
+
 test("Portable report rejects incomplete carried-candidate coverage before artifact I/O", (t) => {
   const snapshotRoot = fs.mkdtempSync(path.join(os.tmpdir(), "portable-report-coverage-"));
   t.after(() => fs.rmSync(snapshotRoot, { recursive: true, force: true }));

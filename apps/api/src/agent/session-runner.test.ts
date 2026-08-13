@@ -1216,6 +1216,87 @@ test("an artifact-terminal session repairs within its total model-turn budget", 
   assert.equal(events.filter((event) => isArtifact(event, "03-discovery.json")).length, 1);
 });
 
+test("Deep discovery records only complete successful reads and refuses an incomplete partition", async () => {
+  const artifact = JSON.stringify({
+    schemaVersion: 1,
+    stage: "discovery",
+    summary: "Deep partition inspected the complete assigned source set.",
+    observations: [],
+    candidates: [],
+  });
+  const replies: NormalizedModelReply[] = [
+    {
+      toolCalls: [{ id: "read-a", name: "workspace.read", input: { path: "src/a.ts" } }],
+      text: null, structured: null, usage: null,
+    },
+    {
+      toolCalls: [{
+        id: "write-incomplete",
+        name: "results.write",
+        input: { path: "03-discovery.json", content: artifact },
+      }],
+      text: null, structured: null, usage: null,
+    },
+    {
+      toolCalls: [{ id: "read-b", name: "workspace.read", input: { path: "src/b.ts" } }],
+      text: null, structured: null, usage: null,
+    },
+    {
+      toolCalls: [{
+        id: "write-complete",
+        name: "results.write",
+        input: { path: "03-discovery.json", content: artifact },
+      }],
+      text: null, structured: null, usage: null,
+    },
+  ];
+  const requestedWith: AgentToolResult[][] = [];
+  const hostCalls: string[] = [];
+  const observedReadPaths = new Set<string>();
+  const session = createConstrainedWireSession({
+    limits: { ...DEFAULT_AGENT_LIMITS, maxModelTurns: 8, maxToolCalls: 8 },
+    signal: new AbortController().signal,
+    terminalMode: "artifact-write",
+    resultArtifactContract: "portable-stage-json-v1",
+    resultArtifactValidationContext: {
+      dossier: {
+        schemaVersion: 1,
+        stageSummaries: [],
+        candidates: [],
+        assessments: [],
+        scope: { inspected: [], unexamined: [] },
+      },
+      deepCoverage: {
+        index: 0,
+        total: 1,
+        requiredPaths: ["src/a.ts", "src/b.ts"],
+        requiredBytes: { "src/a.ts": 20, "src/b.ts": 20 },
+        observedReadPaths,
+      },
+    },
+    host: {
+      minimumOutputBytes() { return 0; },
+      async call(name) {
+        hostCalls.push(name);
+        return name === "results.write"
+          ? { content: "artifact-written", artifact: { path: "03-discovery.json", bytes: 128 } }
+          : { content: "complete source" };
+      },
+    },
+    upstream: { async request() { return {}; } },
+    adapter: transcriptAdapter(replies, requestedWith),
+  });
+
+  const events: unknown[] = [];
+  await collect(session.run(), events);
+
+  assert.deepEqual(hostCalls, ["workspace.read", "workspace.read", "results.write"]);
+  assert.deepEqual([...observedReadPaths].sort(), ["src/a.ts", "src/b.ts"]);
+  assert.equal(requestedWith[2]![0]!.validationIssue, "deep-coverage-incomplete");
+  assert.match(requestedWith[2]![0]!.content, /every exact path.*read completely with workspace\.read/i);
+  assert.equal(events.filter((event) => isArtifact(event, "03-discovery.json")).length, 1);
+});
+
 test("an artifact repair survives one text-only reply and repeats the terminal instruction", async () => {
   const controls: Array<{ finalizationRequired: boolean; artifactRepairReminder?: boolean } | undefined> = [];
   const replies: NormalizedModelReply[] = [

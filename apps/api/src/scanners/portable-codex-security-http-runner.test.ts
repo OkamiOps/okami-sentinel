@@ -29,6 +29,9 @@ import {
   type SafePortableCodexSecurityProviderPlan,
 } from "./portable-codex-security-profile.js";
 import {
+  readPortableCodexSecurityDossier,
+} from "./portable-codex-security-dossier.js";
+import {
   portableCodexSecurityWorkerErrorCode,
   readPortableCodexSecurityWorkerConfiguration,
 } from "./portable-codex-security-worker.js";
@@ -654,6 +657,56 @@ test("Portable Codex Security completes six methodology stages with a server-own
     )) as { findings: unknown[]; coverage: { candidates: unknown[] } };
     assert.deepEqual(finalReport.findings, []);
     assert.deepEqual(finalReport.coverage.candidates, []);
+  } finally {
+    remove(root);
+  }
+});
+
+test("Portable Deep partitions the immutable auditable universe and merges every page before dataflow", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-deep-partitions-"));
+  const config = configuration(root);
+  config.mode = "deep";
+  config.limits.maxToolCalls = 64;
+  for (let index = 0; index < 49; index += 1) {
+    fs.writeFileSync(
+      path.join(config.repositoryPath, "src", `deep-${String(index).padStart(2, "0")}.ts`),
+      `export const deep${index} = true;\n`,
+    );
+  }
+  const specs: AgentSessionSpec[] = [];
+  const factory = stageSessionFactory();
+  try {
+    await runPortableCodexSecurity(config, dependencies({
+      createSession: async (input: { spec: AgentSessionSpec; toolSurface: readonly string[] }) => {
+        specs.push(input.spec);
+        const deepCoverage = input.spec.resultArtifactValidationContext?.deepCoverage;
+        for (const requiredPath of deepCoverage?.requiredPaths ?? []) {
+          deepCoverage!.observedReadPaths.add(requiredPath);
+        }
+        return factory(input);
+      },
+    }));
+    const discovery = specs.filter((spec) => /stage "discovery"/.test(spec.instructions));
+    assert.equal(discovery.length, 2);
+    assert.ok(discovery.every((spec) => spec.limits.maxOutputBytes >= 262_144));
+    assert.deepEqual(
+      discovery.flatMap((spec) => spec.resultArtifactValidationContext?.deepCoverage?.requiredPaths ?? []),
+      ["src/auth.ts", ...Array.from({ length: 49 }, (_, index) =>
+        `src/deep-${String(index).padStart(2, "0")}.ts`)],
+    );
+    const dataflow = specs.find((spec) => /stage "dataflow"/.test(spec.instructions));
+    assert.ok(dataflow?.resultArtifactValidationContext?.dossier.stageSummaries.some(
+      (summary) => summary.stage === "discovery" && /50\/50 auditable files/.test(summary.summary),
+    ));
+    assert.deepEqual(
+      dataflow?.resultArtifactValidationContext?.dossier.scope.inspected,
+      ["src/auth.ts", ...Array.from({ length: 49 }, (_, index) =>
+        `src/deep-${String(index).padStart(2, "0")}.ts`)],
+    );
+    const finalDossier = readPortableCodexSecurityDossier(
+      path.join(config.outputDir, "portable-codex-security-results"),
+    );
+    assert.equal(finalDossier?.scope.inspected.length, 50);
   } finally {
     remove(root);
   }

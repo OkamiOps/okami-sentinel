@@ -5,11 +5,11 @@ export const PORTABLE_CODEX_SECURITY_DOSSIER_FILE =
   "portable-codex-security-dossier.json" as const;
 
 const DOSSIER_SCHEMA_VERSION = 1 as const;
-const MAX_DOSSIER_BYTES = 256 * 1024;
+const MAX_DOSSIER_BYTES = 2 * 1024 * 1024;
 const MAX_STAGE_SUMMARY_BYTES = 16_384;
 const MAX_CANDIDATES = 100;
 const MAX_ASSESSMENTS = 200;
-const MAX_SCOPE_ENTRIES = 256;
+const MAX_SCOPE_ENTRIES = 4_096;
 const MAX_ANCHORS = 20;
 const MAX_TEXT_BYTES = 1_024;
 const MIN_SUBSTANTIVE_TEXT_BYTES = 24;

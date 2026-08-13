@@ -36,6 +36,7 @@ O uso acontece durante desenvolvimento e revisão de segurança contra checkouts
 - Comparações aceitam um baseline e até cinco candidatos.
 - Scans interrompidos que preservaram findings continuam disponíveis como resultados parciais claramente identificados.
 - O Portable mantém um dossiê controlado pelo servidor e emite páginas de relatório apenas para candidatos confirmados. Essas páginas internas e privadas são validadas e consolidadas em um único relatório final; candidatos rejeitados e sua cobertura são derivados pelo servidor. Se uma página ou sua validação falhar, nenhum relatório final parcial é publicado.
+- O Deep Portable enumera e particiona por conta própria os arquivos auditáveis de código-fonte e configuração de segurança do snapshot imutável. A descoberta só termina depois que cada arquivo atribuído foi lido por completo; ela nunca depende de um Standard nem publica cobertura Deep parcial.
 - Quando um artefato terminal falha na validação, o Portable permite apenas uma pequena janela de reparo limitada, dentro dos limites globais existentes de turnos, ferramentas, tempo e custo configurado do scan.
 - Scans standard e deep classificam somente findings da execução atual como `new`, `persisting` ou `regressed` contra um baseline compatível da mesma linhagem. A ausência de um finding não é remediação; `fixed` permanece reservado para um contrato incremental explícito futuro.
 - Relatórios individuais e comparativos reutilizam a leitura de evidência, custo e eficiência do produto e podem ser impressos ou exportados em PDF.

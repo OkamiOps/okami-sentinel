@@ -46,7 +46,7 @@ export async function createAgentSession(
   const host = await createWorkspaceToolHost({
     snapshotRoot: input.snapshotRoot,
     artifactRoot: input.artifactRoot,
-    maxReadBytes: Math.min(input.limits.maxOutputBytes, 1_048_576),
+    maxReadBytes: Math.min(input.limits.maxOutputBytes, 4 * 1_048_576),
     maxWriteBytes: input.limits.maxOutputBytes,
   });
   return createConstrainedWireSession({

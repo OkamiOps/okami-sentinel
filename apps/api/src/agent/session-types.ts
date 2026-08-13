@@ -602,6 +602,18 @@ class ConstrainedWireSession implements AgentSession {
               result = await this.#options.host.call(call.name, normalizedInput, {
                 maxOutputBytes: remainingOutputBytes,
               });
+              if (call.name === "workspace.read" &&
+                  this.#options.resultArtifactValidationContext?.deepCoverage !== undefined &&
+                  typeof normalizedInput.path === "string") {
+                const deepCoverage = this.#options.resultArtifactValidationContext.deepCoverage;
+                const requiredBytes = deepCoverage.requiredBytes[normalizedInput.path];
+                const requestedBytes = normalizedInput.maxBytes;
+                if (requiredBytes !== undefined &&
+                    (requestedBytes === undefined ||
+                      (typeof requestedBytes === "number" && requestedBytes >= requiredBytes))) {
+                  deepCoverage.observedReadPaths.add(normalizedInput.path);
+                }
+              }
             }
           } catch (error) {
             const recovered = recoverableWorkspaceToolFailure(
@@ -767,6 +779,8 @@ function recoverableWorkspaceToolFailure(
           ? "Use the declared result path and pass one complete compact JSON object. For dataflow and validation, omit candidates and use only candidateId values from BEGIN_PORTABLE_CANDIDATE_IDS_JSON exactly as listed. Do not rename or invent candidate ids."
           : artifactValidationIssue === "report-candidate-assessment-inconclusive"
           ? "Validation must include exactly one decisive assessment for every carried candidateId. Set each status to confirmed or rejected with a valid reason and pinned evidence; do not leave any candidate inconclusive."
+          : artifactValidationIssue === "deep-coverage-incomplete"
+          ? "Deep discovery cannot finish until every exact path in BEGIN_PORTABLE_DEEP_REQUIRED_PATHS_JSON has been read completely with workspace.read. Read each missing assigned file without truncating maxBytes, then write the complete discovery artifact again."
           : "Use the declared result path and pass one complete compact JSON object with schemaVersion 1 and the stage matching that path. Include a non-empty summary, observations [], and scope paths as '.' or repository-relative paths. Candidate, assessment, finding, coverage, and evidence fields must match the declared stage contract and pinned line ranges."
         : resultArtifactContract === MANTIS_REPORT_RESULT_ARTIFACT_CONTRACT
           ? "Write report.json as one complete compact JSON object with schemaVersion:1, engine:'mantis', stage:'report', and findings. Every finding needs id, title, severity, remediation or mitigation, and code_paths. Every code_paths entry must be a repository-relative path followed by :line or :start-end. Correct the indicated finding and locator; do not remove a finding to bypass evidence validation."

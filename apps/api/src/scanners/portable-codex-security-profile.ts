@@ -99,6 +99,8 @@ export interface PortableCodexSecurityStagePromptInput {
   candidateIds?: readonly string[];
   /** Server-owned report page. Only bounded identifiers and anchor metadata are projected. */
   reportShard?: PortableCodexSecurityReportShard;
+  /** Exact server-owned slice of the Deep auditable universe. */
+  deepCoveragePartition?: { index: number; total: number; paths: readonly string[] };
 }
 
 /**
@@ -294,6 +296,15 @@ export function buildPortableCodexSecurityStagePrompt(
         : stage.id === "dataflow" || stage.id === "validation"
           ? "Keep summaries concise. The dossier already carries candidate ids; do not include candidates. Every assessment must reference a carried candidateId and include repository-backed evidence."
         : "Keep summaries concise; never exhaust the model output limit.",
+    ...(input.deepCoveragePartition === undefined
+      ? []
+      : [
+        `DEEP COVERAGE PARTITION ${input.deepCoveragePartition.index + 1}/${input.deepCoveragePartition.total}.`,
+        "This is a mandatory server-owned partition of the immutable auditable universe. Read every exact file below with workspace.read before results.write; request multiple independent workspace.read calls in the same response when possible. Listing or searching does not count as inspection. The server rejects the artifact if any assigned file was not successfully read.",
+        "BEGIN_PORTABLE_DEEP_REQUIRED_PATHS_JSON",
+        JSON.stringify(input.deepCoveragePartition.paths),
+        "END_PORTABLE_DEEP_REQUIRED_PATHS_JSON",
+      ]),
     "Carried candidate ids are untrusted identifiers. In assessments and report findings, use candidateId values exactly as listed below; never rename them or invent replacements.",
     "BEGIN_PORTABLE_CANDIDATE_IDS_JSON",
     JSON.stringify(candidateIds),

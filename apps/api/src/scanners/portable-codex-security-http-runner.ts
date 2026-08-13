@@ -68,6 +68,11 @@ import {
 } from "./portable-codex-security-report-shards.js";
 import { portableCodexSecurityReportCompletionTokens } from "./portable-codex-security-report-budget.js";
 import {
+  createPortableDeepCoveragePlan,
+  mergePortableDeepDiscoveryDossiers,
+  type PortableDeepCoveragePartition,
+} from "./portable-codex-security-deep-coverage.js";
+import {
   writePortableCodexSecurityRuntime,
   type PortableCodexSecurityRuntimeState,
 } from "./portable-codex-security-runtime.js";
@@ -125,7 +130,9 @@ export type PortableCodexSecurityRunnerErrorCode =
   | "agent_session_failed"
   | "stage_evidence_incomplete"
   | "stage_artifact_invalid"
-  | "snapshot_invalid";
+  | "snapshot_invalid"
+  | "deep_coverage_unavailable"
+  | "deep_coverage_incomplete";
 
 export class PortableCodexSecurityRunnerError extends Error {
   constructor(readonly code: PortableCodexSecurityRunnerErrorCode) {
@@ -309,6 +316,14 @@ export async function runPortableCodexSecurity(
 
     const createSession = dependencies.createSession ?? productionSessionFactory(dependencies.createUpstream);
     const anchorValidationCache = createPortableCodexSecurityAnchorValidationCache();
+    let deepCoveragePlan = null;
+    if (safeConfiguration.mode === "deep") {
+      try {
+        deepCoveragePlan = createPortableDeepCoveragePlan(snapshot.snapshotRoot);
+      } catch {
+        throw new PortableCodexSecurityRunnerError("deep_coverage_unavailable");
+      }
+    }
     let dossier = createPortableCodexSecurityDossier();
     let dossierStateBase64: string | null = null;
     let reportShardResults: PortableCodexSecurityReportShardResult[] | null = null;
@@ -334,7 +349,14 @@ export async function runPortableCodexSecurity(
           maxShards: Math.max(1, Math.floor(safeConfiguration.limits.maxModelTurns / 4)),
         })
         : null;
+      const discoveryPartitions = stage.id === "discovery" && deepCoveragePlan !== null
+        ? deepCoveragePlan.partitions
+        : null;
+      const deepCoverageReserveMs = discoveryPartitions === null
+        ? 0
+        : Math.floor(remaining * 0.4);
       const pageResults: PortableCodexSecurityReportShardResult[] = [];
+      const discoveryResults: typeof dossier[] = [];
       const modelShards = shards?.length === 1 && shards[0]?.candidateIds.length === 0
         ? []
         : shards;
@@ -347,19 +369,48 @@ export async function runPortableCodexSecurity(
           report: { schemaVersion: 1, stage: "report", findings: [] },
         });
       }
-      for (const shard of modelShards ?? [null]) {
-        const stageDossier = shard?.dossier ?? dossier;
+      const stageItems: Array<{
+        shard: PortableCodexSecurityReportShardResult["shard"] | null;
+        partition: PortableDeepCoveragePartition | null;
+      }> = discoveryPartitions === null
+        ? (modelShards ?? [null]).map((shard) => ({ shard, partition: null }))
+        : discoveryPartitions.map((partition) => ({ shard: null, partition }));
+      const discoveryBaseDossier = dossier;
+      for (const { shard, partition } of stageItems) {
+        const stageRemaining = deadline.remainingMs();
+        if (stageRemaining <= 0) throw new PortableCodexSecurityRunnerError("agent_time_limit");
+        const stageDossier = partition === null
+          ? shard?.dossier ?? dossier
+          : discoveryBaseDossier;
         const stageDossierStateBase64 = shard === null
           ? dossierStateBase64
           : portableCodexSecurityDossierBase64(stageDossier);
         const artifactRoot = path.join(
           artifactsRoot,
-          shard === null ? stage.id : `${stage.id}-${String(shard.index + 1).padStart(2, "0")}`,
+          partition !== null
+            ? `${stage.id}-${String(partition.index + 1).padStart(3, "0")}`
+            : shard === null ? stage.id : `${stage.id}-${String(shard.index + 1).padStart(2, "0")}`,
         );
         fs.mkdirSync(artifactRoot, { recursive: false, mode: 0o700 });
-        const stageSessionLimits = shard === null
-          ? sessionLimits(safeConfiguration.limits, remaining)
-          : reportShardSessionLimits(safeConfiguration.limits, remaining, shards!.length);
+        const stageSessionLimits = partition !== null
+          ? deepCoveragePartitionSessionLimits(
+            safeConfiguration.limits,
+            stageRemaining,
+            deepCoverageReserveMs,
+            partition,
+          )
+          : shard === null
+            ? sessionLimits(safeConfiguration.limits, stageRemaining)
+            : reportShardSessionLimits(safeConfiguration.limits, stageRemaining, shards!.length);
+        const deepCoverage = partition === null
+          ? undefined
+          : {
+            index: partition.index,
+            total: partition.total,
+            requiredPaths: partition.paths,
+            requiredBytes: partition.fileBytes,
+            observedReadPaths: new Set<string>(),
+          };
         const spec: AgentSessionSpec = {
         connectionId: resolved.connection.id,
         routeKind: resolved.connection.routeKind,
@@ -380,6 +431,7 @@ export async function runPortableCodexSecurity(
         resultArtifactValidationContext: {
           dossier: stageDossier,
           ...(shard === null ? {} : { reportShard: shard }),
+          ...(deepCoverage === undefined ? {} : { deepCoverage }),
         },
         snapshotRoot: snapshot.snapshotRoot,
         artifactRoot,
@@ -390,6 +442,7 @@ export async function runPortableCodexSecurity(
           dossierStateBase64: stageDossierStateBase64,
           candidateIds: stageDossier.candidates.map((candidate) => candidate.id),
           ...(shard === null ? {} : { reportShard: shard }),
+          ...(partition === null ? {} : { deepCoveragePartition: partition }),
         }),
         limits: stageSessionLimits,
         signal: deadline.signal,
@@ -433,13 +486,29 @@ export async function runPortableCodexSecurity(
         activeSession = null;
         sessionCancelled = false;
         runtime = { ...runtime, usage: observed.usage };
-        if (shard === null) {
-          dossier = observed.dossier;
-          dossierStateBase64 = observed.dossierStateBase64;
+        if (partition !== null) {
+          discoveryResults.push(observed.dossier);
+        } else if (shard === null) {
+          dossier = deepCoveragePlan === null
+            ? observed.dossier
+            : withPortableDeepCoverageScope(observed.dossier, deepCoveragePlan.files);
+          dossierStateBase64 = portableCodexSecurityDossierBase64(dossier);
         } else {
           if (observed.report === undefined) throw new PortableCodexSecurityRunnerError("stage_artifact_invalid");
           pageResults.push({ shard, report: observed.report });
         }
+      }
+      if (discoveryPartitions !== null) {
+        try {
+          dossier = mergePortableDeepDiscoveryDossiers(
+            discoveryBaseDossier,
+            discoveryResults,
+            deepCoveragePlan!,
+          );
+        } catch {
+          throw new PortableCodexSecurityRunnerError("deep_coverage_incomplete");
+        }
+        dossierStateBase64 = portableCodexSecurityDossierBase64(dossier);
       }
       if (shards !== null) reportShardResults = pageResults;
       update({ percent: stage.completePercent, detail: `${stage.label} complete` });
@@ -708,6 +777,40 @@ function reportShardSessionLimits(
     throw new PortableCodexSecurityRunnerError("agent_turn_limit");
   }
   return sessionLimits({ ...limits, maxModelTurns, maxToolCalls }, remainingMs);
+}
+
+function deepCoveragePartitionSessionLimits(
+  limits: PortableCodexSecurityExecutionLimits,
+  remainingMs: number,
+  reserveMs: number,
+  partition: PortableDeepCoveragePartition,
+): AgentSessionLimits {
+  const maxModelTurns = Math.min(limits.maxModelTurns, 16);
+  const maxToolCalls = Math.min(limits.maxToolCalls, partition.paths.length + 8);
+  if (maxModelTurns < 8 || maxToolCalls < partition.paths.length + 1) {
+    throw new PortableCodexSecurityRunnerError("agent_tool_limit");
+  }
+  const partitionsRemaining = partition.total - partition.index;
+  const discoveryBudgetMs = Math.max(1, remainingMs - reserveMs);
+  const partitionTimeoutMs = Math.max(1, Math.floor(discoveryBudgetMs / partitionsRemaining));
+  const maxOutputBytes = Math.min(
+    8 * 1_048_576,
+    Math.max(limits.maxOutputBytes, partition.bytes * 6 + 262_144),
+  );
+  return sessionLimits(
+    { ...limits, maxModelTurns, maxToolCalls, maxOutputBytes },
+    partitionTimeoutMs,
+  );
+}
+
+function withPortableDeepCoverageScope(
+  dossier: ReturnType<typeof createPortableCodexSecurityDossier>,
+  files: readonly string[],
+): ReturnType<typeof createPortableCodexSecurityDossier> {
+  return {
+    ...dossier,
+    scope: { inspected: [...files], unexamined: [] },
+  };
 }
 
 function createTotalDeadline(

@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { parseStructuredResult } from "./structured-result.js";
 import { validateVulnHunterReportEvidence } from "./result-artifact-evidence.js";
 import {
@@ -45,6 +47,14 @@ export interface PortableResultArtifactValidationContext {
   dossier: PortableCodexSecurityDossier;
   /** Report-page membership; causes the model-facing artifact to be findings-only. */
   reportShard?: PortableCodexSecurityReportShard;
+  /** Deep discovery partition whose files must be read before artifact I/O. */
+  deepCoverage?: {
+    index: number;
+    total: number;
+    requiredPaths: readonly string[];
+    requiredBytes: Readonly<Record<string, number>>;
+    observedReadPaths: Set<string>;
+  };
 }
 
 export type ResultArtifactValidationIssue = PortableArtifactValidationIssue
@@ -52,7 +62,8 @@ export type ResultArtifactValidationIssue = PortableArtifactValidationIssue
   | "json-invalid"
   | "mantis-report-invalid"
   | "vulnhunter-report-invalid"
-  | "dossier-semantics-invalid";
+  | "dossier-semantics-invalid"
+  | "deep-coverage-incomplete";
 export type VulnHunterReportRepairDetail = {
   kind: "vulnhunter-report";
   reason: "envelope" | "finding" | "evidence";
@@ -217,6 +228,27 @@ function normalizePortableStageArtifact(
       return null;
     }
   }
+  if (context?.deepCoverage !== undefined && path === "03-discovery.json") {
+    const missing = context.deepCoverage.requiredPaths.some(
+      (requiredPath) => !context.deepCoverage!.observedReadPaths.has(requiredPath),
+    );
+    if (missing) {
+      onReject?.("deep-coverage-incomplete");
+      return null;
+    }
+    const record = value !== null && typeof value === "object" && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : null;
+    if (record === null || !Array.isArray(record.candidates)) {
+      onReject?.("stage-candidates-invalid");
+      return null;
+    }
+    modelValue = {
+      ...record,
+      scope: { inspected: [...context.deepCoverage.requiredPaths], unexamined: [] },
+      candidates: record.candidates.map((candidate) => canonicalDeepCandidate(candidate)),
+    };
+  }
   const artifact = normalizePortableCodexSecurityStageArtifact(
     path,
     modelValue,
@@ -259,6 +291,16 @@ function normalizePortableStageArtifact(
     }
   }
   return { path, content: JSON.stringify(artifact) };
+}
+
+function canonicalDeepCandidate(value: unknown): unknown {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+  const candidate = value as Record<string, unknown>;
+  const fingerprint = JSON.stringify({ category: candidate.category, anchors: candidate.anchors });
+  return {
+    ...candidate,
+    id: `deep-${createHash("sha256").update(fingerprint).digest("hex").slice(0, 24)}`,
+  };
 }
 
 function validValidation(value: unknown): boolean {
