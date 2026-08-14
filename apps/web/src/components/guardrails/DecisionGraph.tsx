@@ -2,6 +2,7 @@ import type { DecisionGraphNode as DecisionNode, GateArtifact } from "@csb/share
 import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, FileCode2, GitBranch, Search, ShieldAlert } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
+import { Input } from "@/components/ui/input";
 import { SeverityBadge, cx } from "../ui";
 import { guardrailFindingBranches } from "../../lib/guardrails";
 import { useI18n } from "../../i18n";
@@ -299,11 +300,11 @@ function ScalableFindingExplorer({
         <label className="flex min-w-0 items-center gap-2 border-b px-3 py-3 lg:border-b-0 lg:border-r">
           <Search aria-hidden size={14} className="shrink-0 text-muted-foreground" />
           <span className="sr-only">{t("guardrails.graphSearch")}</span>
-          <input
+          <Input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder={t("guardrails.graphSearch")}
-            className="h-9 min-w-0 flex-1 border-0 bg-transparent px-1 text-xs outline-none placeholder:text-muted-foreground"
+            className="h-9 min-w-0 flex-1 rounded-none border-0 bg-transparent px-1 text-xs shadow-none focus-visible:border-0 focus-visible:ring-0 dark:bg-transparent"
           />
         </label>
         <div className="flex min-w-0 flex-wrap items-center gap-2 px-3 py-3" aria-label={t("guardrails.graphFilterSeverity")}>

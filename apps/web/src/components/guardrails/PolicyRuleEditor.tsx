@@ -2,6 +2,7 @@ import type { GateFindingLifecycle, GuardrailRule, Severity } from "@csb/shared"
 import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useI18n } from "../../i18n";
 import { cx } from "../ui";
@@ -112,7 +113,7 @@ function ChoiceGroup<T extends string>({
           const checked = selected.includes(value);
           return (
             <label key={value} className={cx("flex min-h-11 cursor-pointer items-center gap-2 border px-3 text-xs transition-colors hover:bg-accent", checked && "border-primary bg-primary/[.06] text-primary")}>
-              <input type="checkbox" className="checkbox checkbox-sm checkbox-primary" checked={checked} onChange={() => onToggle(value)} />
+              <Checkbox checked={checked} onCheckedChange={() => onToggle(value)} aria-label={`${label}: ${value}`} />
               <span>{value}</span>
             </label>
           );

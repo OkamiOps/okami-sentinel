@@ -8,6 +8,7 @@ import { api } from "../api";
 import { AlertBanner, EmptyState, LiveDuration, Loading, PageHeader, Panel, Readout, SeverityStrip, StatusBadge, cx } from "../components/ui";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
 import { formatDate, formatScanUsd, formatUsd, shortId } from "../format";
 import { useI18n } from "../i18n";
 
@@ -256,7 +257,7 @@ function DashboardSearch({ value, onValueChange, label, placeholder, clearLabel 
       <HugeiconsIcon icon={Search01Icon} size={15} className="shrink-0 text-muted-foreground transition-colors group-focus-within:text-primary" />
       <span className="min-w-0 flex-1 border-l border-border pl-3 transition-colors group-focus-within:border-primary/45">
         <span className="block font-mono text-[7px] uppercase tracking-[.14em] text-muted-foreground transition-colors group-focus-within:text-primary">{label}</span>
-        <input id="dashboard-search" type="search" value={value} onChange={(event) => onValueChange(event.target.value)} placeholder={placeholder} className="mt-1 block h-5 w-full appearance-none border-0 bg-transparent p-0 text-[11px] font-medium text-foreground outline-none placeholder:font-normal placeholder:text-muted-foreground/65 [&::-webkit-search-cancel-button]:hidden" />
+        <Input id="dashboard-search" type="search" value={value} onChange={(event) => onValueChange(event.target.value)} placeholder={placeholder} className="mt-1 h-5 rounded-none border-0 bg-transparent p-0 text-[11px] font-medium shadow-none focus-visible:border-0 focus-visible:ring-0 dark:bg-transparent [&::-webkit-search-cancel-button]:hidden" />
       </span>
     </label>
     {value && <button type="button" onClick={() => onValueChange("")} aria-label={clearLabel} className="ml-2 grid size-6 shrink-0 place-items-center font-mono text-xs text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">×</button>}
