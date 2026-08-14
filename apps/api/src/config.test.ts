@@ -13,6 +13,10 @@ test("honors an isolated data directory for test and ephemeral runtimes", async 
     const config = await import(`./config.js?data=${Date.now()}`);
     assert.equal(config.DATA_DIR, fixtureRoot);
     assert.equal(config.BENCHMARK_DB_PATH, path.join(fixtureRoot, "benchmark.db"));
+    assert.equal(
+      config.LEGACY_SCANS_ROOT,
+      path.join(fixtureRoot, "codex-security-state", "scans"),
+    );
     assert.equal(config.RUNS_DIR, path.join(fixtureRoot, "runs"));
   } finally {
     if (previousDataDir === undefined) delete process.env.CSB_DATA_DIR;

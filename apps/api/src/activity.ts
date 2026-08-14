@@ -5,6 +5,7 @@ import { execSync } from "node:child_process";
 import Database from "better-sqlite3";
 import {
   CODEX_SECURITY_SESSIONS_DIR,
+  LEGACY_SCANS_ROOT,
   RUNS_DIR,
   SCANS_ROOT,
   WORKBENCH_DB_PATH,
@@ -97,7 +98,7 @@ export function readCliLogTail(scanDir: string, maxLines = 250): string[] {
 
 export function purgeScanArtifacts(
   scanDir: string,
-  managedRoots: string[] = [SCANS_ROOT],
+  managedRoots: string[] = [SCANS_ROOT, LEGACY_SCANS_ROOT],
   sessionsRoot = CODEX_SECURITY_SESSIONS_DIR,
   removeRuntimeLog = true,
 ): PurgedScanArtifacts {
@@ -142,7 +143,10 @@ export function purgeScanRunArtifacts(
   ])];
 
   const plans = targets.map((target) => {
-    const configuredRoot = managedRootForScanDirectory(target, [SCANS_ROOT]);
+    const configuredRoot = managedRootForScanDirectory(target, [
+      SCANS_ROOT,
+      LEGACY_SCANS_ROOT,
+    ]);
     if (configuredRoot) return { target, root: configuredRoot };
 
     if (registeredWorkbenchDirectories.has(target)) {

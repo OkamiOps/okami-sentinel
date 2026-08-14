@@ -40,6 +40,11 @@ export const WORKBENCH_DB_PATH = path.join(
 );
 
 export const SCANS_ROOT = path.join(CODEX_SECURITY_STATE_DIR, "scans");
+export const LEGACY_SCANS_ROOT = path.join(
+  DATA_DIR,
+  "codex-security-state",
+  "scans",
+);
 export const GUARDRAIL_MATERIALIZATIONS_DIR = path.join(
   CODEX_SECURITY_STATE_DIR,
   "guardrail-materializations",
