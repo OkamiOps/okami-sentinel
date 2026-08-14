@@ -5,6 +5,10 @@
   <p>Execute, inspecione, compare e governe scans de segurança assistidos por IA sem perder a evidência, o custo ou o contexto operacional de cada resultado.</p>
 
   <p>
+    <a href="https://sentinel.okamiops.com"><img alt="Acessar o site do OKAMI Sentinel" src="https://img.shields.io/badge/ABRIR_SENTINEL-sentinel.okamiops.com-FF7028?style=for-the-badge" /></a>
+  </p>
+
+  <p>
     <a href="README.md">English</a> ·
     <a href="README.pt-BR.md"><strong>Português (Brasil)</strong></a> ·
     <a href="README.de.md">Deutsch</a> ·
@@ -45,6 +49,16 @@ Foi criado para desenvolvedores, profissionais de DevSecOps, revisores de segura
 | **Guardrails** | Este changeset deve passar, alertar, exigir revisão ou bloquear? |
 | **GitHub Checks** | Como aplicar a mesma política versionada em um pull request? |
 
+## Tour do produto
+
+### Execute somente combinações comprovadas pelo motor
+
+Conexões são rotas explícitas de execução, não registros de credenciais intercambiáveis. Antes do scan, o Sentinel mantém juntos autenticação, protocolo, catálogo de modelos ao vivo, saúde da rota e teste de capacidade.
+
+![Inspector de rotas com seis conexões de provider, status ao vivo, protocolo, autenticação e catálogo do modelo MiMo](docs/assets/okami-sentinel-connections.png)
+
+### Inspecione um run ou compare seis canais de evidência
+
 <table>
   <tr>
     <td width="50%"><img src="docs/assets/okami-sentinel-compare.png" alt="Cockpit comparativo de seis scans com objetivos explícitos e avisos de resultado parcial" /></td>
@@ -55,6 +69,20 @@ Foi criado para desenvolvedores, profissionais de DevSecOps, revisores de segura
     <td align="center"><strong>Inspecione evidência e lifecycle</strong></td>
   </tr>
 </table>
+
+### Governe repositórios locais ou hospedados no GitHub
+
+O workspace de Guardrails separa repositórios, gates recentes, autoridade, baseline, executor, densidade de risco, custo observado e o alvo exato em revisão. A autoridade do GitHub App e checkouts locais continuam sendo fronteiras de confiança distintas.
+
+![Workspace de projetos protegidos com navegação de repositórios, histórico recente, autoridade, densidade de risco, eficiência de custo e perfil de execução](docs/assets/okami-sentinel-guardrails.png)
+
+### Entregue um dossiê de evidências pronto para impressão
+
+Todo scan concluído pode gerar um relatório com identidade da execução, distribuição de severidade, lifecycle, economia unitária, trechos de evidência, causa raiz e remediação. Relatórios Portable grandes são montados a partir de páginas privadas validadas; somente o relatório consolidado é publicado.
+
+<p align="center">
+  <img src="docs/assets/okami-sentinel-report.png" width="620" alt="Página executiva do relatório com 115 findings, 71 High+, distribuição de severidade, lifecycle, custo, tokens e marca d'água do OKAMI Sentinel" />
+</p>
 
 ## Principais recursos
 

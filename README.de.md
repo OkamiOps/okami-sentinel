@@ -5,6 +5,10 @@
   <p>KI-gestützte Sicherheitsscans ausführen, untersuchen, vergleichen und steuern – ohne Belege, Kosten oder den operativen Kontext eines Ergebnisses zu verlieren.</p>
 
   <p>
+    <a href="https://sentinel.okamiops.com"><img alt="OKAMI-Sentinel-Website öffnen" src="https://img.shields.io/badge/OPEN_SENTINEL-sentinel.okamiops.com-FF7028?style=for-the-badge" /></a>
+  </p>
+
+  <p>
     <a href="README.md">English</a> ·
     <a href="README.pt-BR.md">Português (Brasil)</a> ·
     <a href="README.de.md"><strong>Deutsch</strong></a> ·
@@ -45,6 +49,16 @@ Das Projekt richtet sich an Entwickler, DevSecOps-Teams, Security Reviewer und A
 | **Guardrails** | Soll dieses Changeset passieren, warnen, geprüft oder blockiert werden? |
 | **GitHub Checks** | Wie wird dieselbe versionierte Richtlinie auf Pull Requests angewendet? |
 
+## Produkttour
+
+### Nur von der Engine nachgewiesene Kombinationen ausführen
+
+Verbindungen sind explizite Ausführungsrouten und keine austauschbaren Credential-Einträge. Vor dem Scan hält Sentinel Authentifizierung, Protokoll, Live-Modellkatalog, Routenzustand und Fähigkeitstest zusammen.
+
+![Verbindungsinspektor mit sechs Provider-Routen, Live-Status, Protokoll, Authentifizierung und MiMo-Modellkatalog](docs/assets/okami-sentinel-connections.png)
+
+### Einen Lauf untersuchen oder sechs Evidenzkanäle vergleichen
+
 <table>
   <tr>
     <td width="50%"><img src="docs/assets/okami-sentinel-compare.png" alt="Vergleich von sechs Scans mit expliziten Zielen und Warnungen für Teilergebnisse" /></td>
@@ -55,6 +69,20 @@ Das Projekt richtet sich an Entwickler, DevSecOps-Teams, Security Reviewer und A
     <td align="center"><strong>Belege und Lifecycle untersuchen</strong></td>
   </tr>
 </table>
+
+### Lokale oder auf GitHub gehostete Repositories steuern
+
+Der Guardrails-Arbeitsbereich trennt Repositories, letzte Gates, Autorität, Baseline, Executor, Risikodichte, beobachtete Kosten und das exakt geprüfte Ziel. GitHub-App-Autorität und lokale Checkouts bleiben getrennte Vertrauensgrenzen.
+
+![Guardrails-Arbeitsbereich für geschützte Projekte mit Repository-Navigation, Verlauf, Autorität, Risikodichte, Kosteneffizienz und Ausführungsprofil](docs/assets/okami-sentinel-guardrails.png)
+
+### Ein druckfertiges Evidenzdossier übergeben
+
+Jeder abgeschlossene Scan kann einen Markenbericht mit Ausführungsidentität, Schweregradverteilung, Lifecycle, Stückkosten, Evidenzauszügen, Ursache und Behebung erzeugen. Große Portable-Berichte werden aus privaten validierten Seiten zusammengesetzt; nur der konsolidierte Bericht wird veröffentlicht.
+
+<p align="center">
+  <img src="docs/assets/okami-sentinel-report.png" width="620" alt="Executive-Report-Seite mit 115 Findings, 71 High+, Schweregradverteilung, Lifecycle, Kosten, Tokens und OKAMI-Sentinel-Wasserzeichen" />
+</p>
 
 ## Kernfunktionen
 

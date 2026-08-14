@@ -5,6 +5,10 @@
   <p>Run, inspect, compare, and govern AI-assisted security scans without losing the evidence, cost, or operational context behind each result.</p>
 
   <p>
+    <a href="https://sentinel.okamiops.com"><img alt="Open the OKAMI Sentinel website" src="https://img.shields.io/badge/OPEN_SENTINEL-sentinel.okamiops.com-FF7028?style=for-the-badge" /></a>
+  </p>
+
+  <p>
     <a href="README.md"><strong>English</strong></a> ·
     <a href="README.pt-BR.md">Português (Brasil)</a> ·
     <a href="README.de.md">Deutsch</a> ·
@@ -45,6 +49,16 @@ It is built for developers, DevSecOps engineers, security reviewers, and AI engi
 | **Guardrails** | Should this local changeset pass, warn, require review, or block? |
 | **GitHub Checks** | How can the same versioned policy annotate and gate a pull request? |
 
+## Product tour
+
+### Route only combinations the engine can prove
+
+Connections are explicit execution routes, not interchangeable credential records. Sentinel keeps authentication, protocol, live model catalog, route health, and capability testing together before a scan can launch.
+
+![Connection route inspector with six provider routes, live status, protocol, authentication, and the MiMo model catalog](docs/assets/okami-sentinel-connections.png)
+
+### Inspect one run or compare six evidence channels
+
 <table>
   <tr>
     <td width="50%"><img src="docs/assets/okami-sentinel-compare.png" alt="Six-scan comparison cockpit with explicit objectives and partial-result warnings" /></td>
@@ -55,6 +69,20 @@ It is built for developers, DevSecOps engineers, security reviewers, and AI engi
     <td align="center"><strong>Inspect evidence and lifecycle</strong></td>
   </tr>
 </table>
+
+### Govern local or GitHub-hosted repositories
+
+The Guardrails workspace separates repositories, recent gates, authority, baseline, executor, risk density, observed cost, and the exact target under review. GitHub App authority and local checkouts remain distinct trust boundaries.
+
+![Guardrails protected-project workspace with repository navigation, recent history, authority, risk density, cost efficiency, and execution profile](docs/assets/okami-sentinel-guardrails.png)
+
+### Hand off a printable evidence dossier
+
+Every completed scan can produce a branded report with execution identity, severity distribution, lifecycle, unit economics, evidence excerpts, root cause, and remediation. Large Portable reports are assembled from private validated pages; only the consolidated report is published.
+
+<p align="center">
+  <img src="docs/assets/okami-sentinel-report.png" width="620" alt="Executive report page showing 115 findings, 71 High+, severity distribution, lifecycle, cost, tokens, and the OKAMI Sentinel watermark" />
+</p>
 
 ## Core capabilities
 

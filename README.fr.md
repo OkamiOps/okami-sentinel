@@ -5,6 +5,10 @@
   <p>Exécutez, inspectez, comparez et gouvernez des scans de sécurité assistés par IA sans perdre les preuves, le coût ni le contexte opérationnel de chaque résultat.</p>
 
   <p>
+    <a href="https://sentinel.okamiops.com"><img alt="Ouvrir le site OKAMI Sentinel" src="https://img.shields.io/badge/OUVRIR_SENTINEL-sentinel.okamiops.com-FF7028?style=for-the-badge" /></a>
+  </p>
+
+  <p>
     <a href="README.md">English</a> ·
     <a href="README.pt-BR.md">Português (Brasil)</a> ·
     <a href="README.de.md">Deutsch</a> ·
@@ -45,6 +49,16 @@ Le projet s’adresse aux développeurs, équipes DevSecOps, analystes sécurit�
 | **Guardrails** | Ce changeset doit-il passer, avertir, demander une revue ou bloquer ? |
 | **GitHub Checks** | Comment appliquer la même politique versionnée à une pull request ? |
 
+## Visite du produit
+
+### Exécutez uniquement les combinaisons prouvées par le moteur
+
+Les connexions sont des routes d’exécution explicites, pas des enregistrements de credentials interchangeables. Avant un scan, Sentinel réunit l’authentification, le protocole, le catalogue de modèles en direct, l’état de la route et le test de capacité.
+
+![Inspecteur de routes avec six connexions fournisseur, état en direct, protocole, authentification et catalogue du modèle MiMo](docs/assets/okami-sentinel-connections.png)
+
+### Inspectez un run ou comparez six canaux de preuves
+
 <table>
   <tr>
     <td width="50%"><img src="docs/assets/okami-sentinel-compare.png" alt="Comparaison de six scans avec objectifs explicites et avertissements de résultats partiels" /></td>
@@ -55,6 +69,20 @@ Le projet s’adresse aux développeurs, équipes DevSecOps, analystes sécurit�
     <td align="center"><strong>Inspectez les preuves et le lifecycle</strong></td>
   </tr>
 </table>
+
+### Gouvernez les dépôts locaux ou hébergés sur GitHub
+
+L’espace Guardrails sépare les dépôts, les gates récents, l’autorité, la baseline, l’exécuteur, la densité de risque, le coût observé et la cible exacte en cours de revue. L’autorité GitHub App et les checkouts locaux restent des frontières de confiance distinctes.
+
+![Espace de projets protégés avec navigation des dépôts, historique récent, autorité, densité de risque, efficacité du coût et profil d’exécution](docs/assets/okami-sentinel-guardrails.png)
+
+### Transmettez un dossier de preuves prêt à imprimer
+
+Chaque scan terminé peut produire un rapport de marque avec identité d’exécution, répartition des sévérités, lifecycle, économie unitaire, extraits de preuves, cause racine et remédiation. Les grands rapports Portable sont assemblés depuis des pages privées validées ; seul le rapport consolidé est publié.
+
+<p align="center">
+  <img src="docs/assets/okami-sentinel-report.png" width="620" alt="Page exécutive du rapport avec 115 findings, 71 High+, répartition des sévérités, lifecycle, coût, tokens et filigrane OKAMI Sentinel" />
+</p>
 
 ## Fonctionnalités principales
 
