@@ -389,7 +389,16 @@ export const api = {
   resolveScanCompatibility: (body: ResolveScanCompatibilityRequest) => scanRouting.resolveCompatibility(body),
   scanners: () => request<ScannerCatalogResponse>("/scanners"),
   ingest: () => request<{ imported: number }>("/ingest", { method: "POST" }),
-  metrics: () => request<MetricsSummary>("/metrics/summary"),
+  metrics: (filters?: { days?: 7 | 14 | 21 | 30 | null; status?: "active" | "completed" | "attention" | null; engine?: ScanRun["engine"] | null; repository?: string | null; query?: string | null }) => {
+    const params = new URLSearchParams();
+    if (filters?.days) params.set("days", String(filters.days));
+    if (filters?.status) params.set("status", filters.status);
+    if (filters?.engine) params.set("engine", filters.engine);
+    if (filters?.repository) params.set("repository", filters.repository);
+    if (filters?.query?.trim()) params.set("query", filters.query.trim());
+    const suffix = params.size ? `?${params}` : "";
+    return request<MetricsSummary>(`/metrics/summary${suffix}`);
+  },
   listScans: () => request<{ scans: ScanRun[] }>("/scans"),
   getScan: (id: string) =>
     request<{ scan: ScanRun; findings: FindingSummary[] }>(`/scans/${id}`),

@@ -726,7 +726,25 @@ app.post("/ingest", (c) => {
 app.get("/metrics/summary", async (c) => {
   await refreshOpenRouterPricing();
   readRunsWithEngineRefresh();
-  return c.json(buildMetricsSummary());
+  const daysValue = c.req.query("days");
+  const days = daysValue === "7" || daysValue === "14" || daysValue === "21" || daysValue === "30"
+    ? Number(daysValue) as 7 | 14 | 21 | 30
+    : null;
+  const statusValue = c.req.query("status");
+  const status = statusValue === "active" || statusValue === "completed" || statusValue === "attention"
+    ? statusValue
+    : null;
+  const engineValue = c.req.query("engine");
+  const engine = engineValue === "codex-security" || engineValue === "mantis" || engineValue === "vulnhunter"
+    ? engineValue
+    : null;
+  return c.json(buildMetricsSummary({
+    days,
+    status,
+    engine,
+    repository: c.req.query("repository") ?? null,
+    query: c.req.query("query") ?? null,
+  }));
 });
 
 app.get("/scans", async (c) => {

@@ -1,36 +1,73 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ArrowRight01Icon, PlusSignIcon, RefreshIcon } from "@hugeicons/core-free-icons";
+import { ArrowLeft01Icon, ArrowRight01Icon, PlusSignIcon, RefreshIcon, Search01Icon } from "@hugeicons/core-free-icons";
 import { Bar, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { MetricsSummary, ScanRun } from "@csb/shared";
 import { api } from "../api";
 import { AlertBanner, EmptyState, LiveDuration, Loading, PageHeader, Panel, Readout, SeverityStrip, StatusBadge, cx } from "../components/ui";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { formatDate, formatScanUsd, formatUsd, shortId } from "../format";
 import { useI18n } from "../i18n";
 
 export function DashboardPage() {
   const { t } = useI18n();
   const [data, setData] = useState<MetricsSummary | null>(null);
+  const [inventory, setInventory] = useState<ScanRun[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [period, setPeriod] = useState<7 | 14 | 21 | 30 | "all">(30);
+  const [status, setStatus] = useState<"all" | "active" | "completed" | "attention">("all");
+  const [engine, setEngine] = useState<"all" | ScanRun["engine"]>("all");
+  const [repository, setRepository] = useState("all");
+  const [query, setQuery] = useState("");
+  const [ledgerPage, setLedgerPage] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  async function load() { try { setError(null); const next = await api.metrics(); setData(next); setSelectedId((id) => { if (id && next.recent.some((scan) => scan.id === id)) return id; const running = next.recent.find((scan) => scan.status === "running"); const strongest = [...next.recent].filter((scan) => scan.status === "completed").sort((a, b) => b.severity.total - a.severity.total)[0]; return running?.id ?? strongest?.id ?? next.recent[0]?.id ?? null; }); } catch (err) { setError(err instanceof Error ? err.message : "Falha ao ler a bancada"); } }
-  useEffect(() => { void load(); const id = window.setInterval(() => void load(), 8000); return () => window.clearInterval(id); }, []);
+  async function load() { try { setError(null); const [next, scanIndex] = await Promise.all([api.metrics({ days: period === "all" ? null : period, status: status === "all" ? null : status, engine: engine === "all" ? null : engine, repository: repository === "all" ? null : repository, query }), api.listScans()]); setData(next); setInventory(scanIndex.scans); setSelectedId((id) => { if (id && next.recent.some((scan) => scan.id === id)) return id; const running = next.recent.find((scan) => scan.status === "running"); const strongest = [...next.recent].filter((scan) => scan.status === "completed").sort((a, b) => b.severity.total - a.severity.total)[0]; return running?.id ?? strongest?.id ?? next.recent[0]?.id ?? null; }); } catch (err) { setError(err instanceof Error ? err.message : "Falha ao ler a bancada"); } }
+  useEffect(() => { const initial = window.setTimeout(() => void load(), query ? 250 : 0); const id = window.setInterval(() => void load(), 8000); return () => { window.clearTimeout(initial); window.clearInterval(id); }; }, [period, status, engine, repository, query]);
+  useEffect(() => { setLedgerPage(0); }, [period, status, engine, repository, query]);
   async function reindex() { setBusy(true); try { await api.ingest(); await load(); } catch (err) { setError(err instanceof Error ? err.message : "Falha ao reindexar"); } finally { setBusy(false); } }
   if (!data && !error) return <Loading />;
   if (!data) return <AlertBanner>{error}</AlertBanner>;
 
-  const channels = data.recent.slice(0, 9);
+  const channels = data.recent;
   const selected = channels.find((s) => s.id === selectedId) ?? channels[0] ?? null;
   const selectedIndex = selected ? channels.findIndex((scan) => scan.id === selected.id) : -1;
   const highPlus = data.severity.critical + data.severity.high;
-  const chart = (data.costTrend ?? []).map((p, i) => ({ ...p, label: String(i + 1).padStart(2, "0") }));
+  const chart = (data.costTrend ?? []).map((p) => ({ ...p, label: compactDate(p.startedAt) }));
+  const repositories = [...new Set(inventory.map((scan) => scan.displayName).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const pageSize = 12;
+  const ledgerPages = Math.max(1, Math.ceil(channels.length / pageSize));
+  const ledgerRows = channels.slice(ledgerPage * pageSize, (ledgerPage + 1) * pageSize);
+  const activeFilterCount = Number(period !== "all") + Number(status !== "all") + Number(engine !== "all") + Number(repository !== "all") + Number(Boolean(query.trim()));
+  const clearFilters = () => { setPeriod("all"); setStatus("all"); setEngine("all"); setRepository("all"); setQuery(""); };
 
   return <div>
     <PageHeader code="01 / OVERVIEW" title={t("dashboard.title")} description={t("dashboard.description")} actions={<><Button variant="ghost" size="sm" onClick={() => void reindex()} disabled={busy}><HugeiconsIcon icon={RefreshIcon} size={13} className={busy ? "animate-spin" : ""} />{t("dashboard.reindex")}</Button><Button asChild size="sm"><Link to="/scans/new"><HugeiconsIcon icon={PlusSignIcon} size={13} />{t("dashboard.launch")}</Link></Button></>} />
     {error && <AlertBanner>{error}</AlertBanner>}
+
+    <section className="bench-panel bench-corners mb-4 overflow-hidden" aria-label={t("dashboard.scopeTitle")}>
+      <div className="grid border-b xl:grid-cols-[minmax(0,1fr)_auto]">
+        <div className="min-w-0 p-3 xl:border-r">
+          <div className="flex flex-wrap items-center gap-2"><span className="bench-label text-primary">{t("dashboard.scopeTitle")}</span><span className="border border-primary/30 bg-primary/8 px-1.5 py-0.5 font-mono text-[7px] uppercase text-primary">{t("dashboard.activeFilters", { count: activeFilterCount })}</span></div>
+          <p className="mt-1 text-[10px] text-muted-foreground">{t("dashboard.scopeDescription", { count: data.totalScans, total: inventory.length })}</p>
+        </div>
+        <div className="flex min-w-0 items-stretch border-t xl:border-t-0">
+          <span className="hidden items-center border-r px-3 font-mono text-[7px] uppercase tracking-[.14em] text-muted-foreground sm:flex">{t("dashboard.period")}</span>
+          <div className="grid flex-1 grid-cols-5" role="group" aria-label={t("dashboard.period")}>
+            {([7, 14, 21, 30, "all"] as const).map((value) => <button key={value} type="button" className={cx("relative min-w-12 border-r px-3 py-3 font-mono text-[9px] uppercase transition last:border-r-0 hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring", period === value ? "bg-primary/10 text-primary shadow-[inset_0_-2px_0_var(--primary)]" : "text-muted-foreground")} aria-pressed={period === value} onClick={() => setPeriod(value)}>{value === "all" ? t("common.all") : `${value}D`}</button>)}
+          </div>
+        </div>
+      </div>
+      <div className="grid gap-px bg-border lg:grid-cols-[minmax(15rem,1.35fr)_repeat(3,minmax(10rem,.65fr))_auto]">
+        <DashboardSearch value={query} onValueChange={setQuery} label={t("dashboard.search")} placeholder={t("dashboard.searchPlaceholder")} clearLabel={t("dashboard.clearFilters")} />
+        <DashboardFilter value={status} onValueChange={(value) => setStatus(value as typeof status)} label={t("dashboard.status")} allLabel={t("common.all")} items={[{ value: "all", label: t("common.all") }, { value: "active", label: t("common.live") }, { value: "completed", label: t("common.complete") }, { value: "attention", label: t("dashboard.attention") }]} />
+        <DashboardFilter value={engine} onValueChange={(value) => setEngine(value as typeof engine)} label={t("dashboard.engine")} allLabel={t("common.all")} items={[{ value: "all", label: t("common.all") }, { value: "codex-security", label: "Codex Security" }, { value: "mantis", label: "Google Mantis" }, { value: "vulnhunter", label: "VulnHunter" }]} />
+        <DashboardFilter value={repository} onValueChange={setRepository} label={t("dashboard.repository")} allLabel={t("common.all")} items={[{ value: "all", label: t("common.all") }, ...repositories.map((value) => ({ value, label: value }))]} />
+        <button type="button" onClick={clearFilters} disabled={!activeFilterCount} className="flex min-h-14 items-center justify-center gap-2 bg-background px-4 font-mono text-[8px] uppercase tracking-wider text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-30"><span aria-hidden="true">×</span>{t("dashboard.clearFilters")}</button>
+      </div>
+    </section>
 
     <div className="bench-panel bench-corners scanline overflow-hidden">
       <div className="grid border-b lg:grid-cols-[17rem_minmax(0,1fr)_19rem]">
@@ -68,8 +105,8 @@ export function DashboardPage() {
         <GlobalReadout label={t("dashboard.evidence")} value={data.severity.total} />
         <GlobalReadout label={t("dashboard.totalCost")} value={formatUsd(data.totalEstimatedUsd, data.hasUpperBoundCost)} tone="signal" />
         <GlobalReadout label={t("dashboard.runsComplete")} value={`${data.completedScans}/${data.totalScans}`} />
-        <GlobalReadout label={t("dashboard.highPerUsd")} value={data.highPerDollar?.toFixed(3) ?? "—"} tone="good" />
-        <GlobalReadout label={t("dashboard.avgPerRun")} value={formatUsd(data.avgUsdPerScan, data.hasUpperBoundCost)} />
+        <GlobalReadout label={t("dashboard.inProgress")} value={data.runningScans} tone="good" />
+        <GlobalReadout label={t("dashboard.attention")} value={data.attentionScans} tone={data.attentionScans ? "risk" : "good"} />
       </div>
     </div>
 
@@ -81,8 +118,9 @@ export function DashboardPage() {
       <TaxonomyPulse rows={data.topCategories ?? []} />
     </div>
 
-    <Panel className="mt-4" label="RUN LEDGER" title={t("dashboard.latestRuns")} aside={<Button asChild variant="ghost" size="sm"><Link to="/scans">{t("dashboard.openLedger")} <HugeiconsIcon icon={ArrowRight01Icon} size={12} /></Link></Button>}>
-      <div className="overflow-x-auto"><table className="table table-sm min-w-[48rem]"><thead><tr className="font-mono text-[9px] uppercase text-muted-foreground"><th>Channel</th><th>Run</th><th>Status</th><th>Engine / model</th><th>{t("dashboard.exposure")}</th><th className="text-right">{t("dashboard.cost")}</th><th>{t("dashboard.started")}</th></tr></thead><tbody>{channels.slice(0, 6).map((scan, i) => <tr key={scan.id} className="border-border hover:bg-accent"><td className="font-mono text-[9px] text-primary">CH-{String(i + 1).padStart(2, "0")}</td><td><Link className="font-medium hover:text-primary" to={`/scans/${scan.id}`}>{scan.displayName}</Link></td><td><StatusBadge status={scan.status} /></td><td className="font-mono text-[9px] text-muted-foreground">{scan.engine} · {scan.model}/{scan.effort}</td><td className="font-mono">{scan.severity.critical + scan.severity.high} / {scan.severity.total}</td><td className="text-right font-mono tabular-nums text-primary">{formatScanUsd(scan)}</td><td className="font-mono text-[9px] text-muted-foreground">{formatDate(scan.startedAt)}</td></tr>)}</tbody></table></div>
+    <Panel className="mt-4" label="RUN LEDGER" title={t("dashboard.latestRuns")} aside={<div className="flex items-center gap-2"><span className="font-mono text-[8px] uppercase text-muted-foreground">{channels.length} {t("dashboard.indexed")}</span><Button asChild variant="ghost" size="sm"><Link to="/scans">{t("dashboard.openLedger")} <HugeiconsIcon icon={ArrowRight01Icon} size={12} /></Link></Button></div>}>
+      <div className="overflow-x-auto"><table className="table table-sm min-w-[48rem]"><thead><tr className="font-mono text-[9px] uppercase text-muted-foreground"><th>Channel</th><th>Run</th><th>Status</th><th>Engine / model</th><th>{t("dashboard.exposure")}</th><th className="text-right">{t("dashboard.cost")}</th><th>{t("dashboard.started")}</th></tr></thead><tbody>{ledgerRows.map((scan, i) => <tr key={scan.id} className="border-border hover:bg-accent"><td className="font-mono text-[9px] text-primary">CH-{String(ledgerPage * pageSize + i + 1).padStart(2, "0")}</td><td><Link className="font-medium hover:text-primary" to={`/scans/${scan.id}`}>{scan.displayName}</Link></td><td><StatusBadge status={scan.status} /></td><td className="font-mono text-[9px] text-muted-foreground">{scan.engine} · {scan.model}/{scan.effort}</td><td className="font-mono">{scan.severity.critical + scan.severity.high} / {scan.severity.total}</td><td className="text-right font-mono tabular-nums text-primary">{formatScanUsd(scan)}</td><td className="font-mono text-[9px] text-muted-foreground">{formatDate(scan.startedAt)}</td></tr>)}</tbody></table></div>
+      {channels.length > pageSize && <div className="flex items-center justify-between border-t px-3 py-2"><span className="font-mono text-[8px] uppercase text-muted-foreground">{t("dashboard.page", { current: ledgerPage + 1, total: ledgerPages })}</span><div className="flex"><Button type="button" variant="ghost" size="sm" disabled={ledgerPage === 0} onClick={() => setLedgerPage((page) => Math.max(0, page - 1))}><HugeiconsIcon icon={ArrowLeft01Icon} size={12} />{t("dashboard.previous")}</Button><Button type="button" variant="ghost" size="sm" disabled={ledgerPage >= ledgerPages - 1} onClick={() => setLedgerPage((page) => Math.min(ledgerPages - 1, page + 1))}>{t("dashboard.next")}<HugeiconsIcon icon={ArrowRight01Icon} size={12} /></Button></div></div>}
     </Panel>
   </div>;
 }
@@ -197,3 +235,37 @@ function ComparisonLane({ scan, index, focused, onSelect }: { scan: ScanRun; ind
 
 function GlobalReadout({ label, value, tone }: { label: string; value: string | number; tone?: "signal" | "risk" | "good" }) { return <div className="border-r border-t p-3 first:border-t-0 sm:border-t-0"><Readout label={label} value={value} tone={tone} /></div>; }
 function TraceTooltip({ active, payload }: { active?: boolean; payload?: Array<{ payload: { displayName: string; estimatedUsd: number; findingsTotal: number; findingsHigh: number; estimateKind: "upper-bound" | null } }> }) { const { t } = useI18n(); const p = payload?.[0]?.payload; if (!active || !p) return null; return <div className="border bg-popover p-3 text-xs"><div className="font-semibold">{p.displayName}</div><div className="mt-2 grid grid-cols-2 gap-6 font-mono text-[10px]"><span className="text-muted-foreground">{t("dashboard.cost")}<strong className="mt-1 block text-primary">{formatUsd(p.estimatedUsd, p.estimateKind === "upper-bound")}</strong></span><span className="text-muted-foreground">{t("dashboard.evidence")}<strong className="mt-1 block text-chart-2">{p.findingsTotal} / {p.findingsHigh} high+</strong></span></div></div>; }
+
+function DashboardFilter({ value, onValueChange, label, allLabel, items }: { value: string; onValueChange: (value: string) => void; label: string; allLabel: string; items: Array<{ value: string; label: string }> }) {
+  const active = value !== "all";
+  const selectedLabel = items.find((item) => item.value === value)?.label ?? allLabel;
+  return <DropdownMenu>
+    <DropdownMenuTrigger asChild><button type="button" className={cx("group flex min-h-14 min-w-0 items-center justify-between gap-3 bg-background px-3 text-left transition hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring", active && "bg-primary/[.045]")}><span className="min-w-0"><span className="block font-mono text-[7px] uppercase tracking-[.14em] text-muted-foreground">{label}</span><span className={cx("mt-1 block truncate text-[11px] font-medium", active && "text-primary")}>{selectedLabel}</span></span><span className={cx("grid size-6 shrink-0 place-items-center border font-mono text-[10px] transition group-data-[state=open]:border-primary group-data-[state=open]:text-primary", active ? "border-primary/50 text-primary" : "border-border text-muted-foreground")} aria-hidden="true">⌄</span></button></DropdownMenuTrigger>
+    <DropdownMenuContent align="start" sideOffset={1} className="w-[var(--radix-dropdown-menu-trigger-width)] min-w-56 rounded-none border-border bg-[#0b0b12] p-1.5 shadow-[0_18px_60px_rgba(0,0,0,.65)]">
+      <DropdownMenuLabel className="px-2 py-2 font-mono text-[8px] uppercase tracking-[.14em] text-primary">{label}</DropdownMenuLabel>
+      <DropdownMenuSeparator />
+      <DropdownMenuRadioGroup value={value} onValueChange={onValueChange}>{items.map((item) => <DropdownMenuRadioItem key={item.value} value={item.value} className="rounded-none px-2 py-2.5 text-[11px] focus:bg-primary/10 data-[state=checked]:text-primary">{item.label}</DropdownMenuRadioItem>)}</DropdownMenuRadioGroup>
+    </DropdownMenuContent>
+  </DropdownMenu>;
+}
+
+function DashboardSearch({ value, onValueChange, label, placeholder, clearLabel }: { value: string; onValueChange: (value: string) => void; label: string; placeholder: string; clearLabel: string }) {
+  return <div className="group relative flex min-h-14 min-w-0 items-center bg-background px-3 transition focus-within:bg-primary/[.035]">
+    <span className="absolute inset-y-0 left-0 w-0.5 origin-center scale-y-0 bg-primary transition-transform duration-150 group-focus-within:scale-y-100" aria-hidden="true" />
+    <label htmlFor="dashboard-search" className="flex min-w-0 flex-1 cursor-text items-center gap-3">
+      <HugeiconsIcon icon={Search01Icon} size={15} className="shrink-0 text-muted-foreground transition-colors group-focus-within:text-primary" />
+      <span className="min-w-0 flex-1 border-l border-border pl-3 transition-colors group-focus-within:border-primary/45">
+        <span className="block font-mono text-[7px] uppercase tracking-[.14em] text-muted-foreground transition-colors group-focus-within:text-primary">{label}</span>
+        <input id="dashboard-search" type="search" value={value} onChange={(event) => onValueChange(event.target.value)} placeholder={placeholder} className="mt-1 block h-5 w-full appearance-none border-0 bg-transparent p-0 text-[11px] font-medium text-foreground outline-none placeholder:font-normal placeholder:text-muted-foreground/65 [&::-webkit-search-cancel-button]:hidden" />
+      </span>
+    </label>
+    {value && <button type="button" onClick={() => onValueChange("")} aria-label={clearLabel} className="ml-2 grid size-6 shrink-0 place-items-center font-mono text-xs text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">×</button>}
+  </div>;
+}
+
+function compactDate(value: string | null): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat(undefined, { day: "2-digit", month: "2-digit" }).format(date);
+}

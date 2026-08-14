@@ -1,15 +1,28 @@
-import { emptySeverityCounts, scanEstimatedUsd, type MetricsSummary, type ScanRun, type SeverityCounts } from "@csb/shared";
+import { emptySeverityCounts, scanEstimatedUsd, type MetricsSummary, type ScanRun, type ScannerEngine, type SeverityCounts } from "@csb/shared";
 import { listRuns } from "./db.js";
 import { readFindingsFile } from "./ingest.js";
 
-export function buildMetricsSummary(): MetricsSummary {
-  const runs = listRuns();
+export type MetricsPeriodDays = 7 | 14 | 21 | 30;
+export type MetricsStatusFilter = "active" | "completed" | "attention";
+
+export interface MetricsFilters {
+  days?: MetricsPeriodDays | null;
+  status?: MetricsStatusFilter | null;
+  engine?: ScannerEngine | null;
+  repository?: string | null;
+  query?: string | null;
+  now?: Date;
+}
+
+export function buildMetricsSummary(filters: MetricsFilters = {}): MetricsSummary {
+  const runs = filterMetricRuns(listRuns(), filters);
   const severity = emptySeverityCounts();
   let totalEstimatedUsd = 0;
   let pricedScans = 0;
   let hasUpperBoundCost = false;
   let completedScans = 0;
   let runningScans = 0;
+  let attentionScans = 0;
   let durationSum = 0;
   let durationN = 0;
   let totalInputTokens = 0;
@@ -35,6 +48,7 @@ export function buildMetricsSummary(): MetricsSummary {
   for (const run of runs) {
     if (run.status === "completed") completedScans += 1;
     if (run.status === "running") runningScans += 1;
+    if (run.status === "failed" || run.status === "incomplete") attentionScans += 1;
     const estimatedUsd = scanEstimatedUsd(run);
     if (estimatedUsd != null) {
       totalEstimatedUsd += estimatedUsd;
@@ -105,7 +119,7 @@ export function buildMetricsSummary(): MetricsSummary {
     .filter((r) => r.startedAt)
     .sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
 
-  const costTrend = chronological.filter((run) => scanEstimatedUsd(run) != null).slice(-12).map((r) => ({
+  const costTrend = chronological.filter((run) => scanEstimatedUsd(run) != null).map((r) => ({
     scanId: r.id,
     displayName: r.displayName,
     startedAt: r.startedAt,
@@ -126,6 +140,8 @@ export function buildMetricsSummary(): MetricsSummary {
     totalScans: runs.length,
     completedScans,
     runningScans,
+    attentionScans,
+    pricedScans,
     totalEstimatedUsd,
     avgUsdPerScan: pricedScans > 0 ? totalEstimatedUsd / pricedScans : 0,
     hasUpperBoundCost,
@@ -138,8 +154,36 @@ export function buildMetricsSummary(): MetricsSummary {
     byModelEffort,
     costTrend,
     topCategories,
-    recent: runs.slice(0, 8),
+    recent: runs,
   };
+}
+
+export function filterMetricRuns(runs: ScanRun[], filters: MetricsFilters): ScanRun[] {
+  const now = filters.now ?? new Date();
+  const cutoff = filters.days == null
+    ? null
+    : now.getTime() - filters.days * 24 * 60 * 60 * 1_000;
+  const query = filters.query?.trim().toLocaleLowerCase() ?? "";
+
+  return runs.filter((run) => {
+    if (cutoff != null) {
+      const started = run.startedAt == null ? Number.NaN : Date.parse(run.startedAt);
+      if (!Number.isFinite(started) || started < cutoff) return false;
+    }
+    if (filters.engine && run.engine !== filters.engine) return false;
+    if (filters.repository && run.displayName !== filters.repository) return false;
+    if (filters.status === "active" && run.status !== "queued" && run.status !== "running") return false;
+    if (filters.status === "completed" && run.status !== "completed") return false;
+    if (filters.status === "attention" && run.status !== "failed" && run.status !== "incomplete") return false;
+    if (query) {
+      const haystack = [run.id, run.displayName, run.repositoryPath, run.model, run.provider, run.engine, run.mode]
+        .filter((value): value is string => typeof value === "string")
+        .join("\n")
+        .toLocaleLowerCase();
+      if (!haystack.includes(query)) return false;
+    }
+    return true;
+  });
 }
 
 /** Token telemetry is independent from whether a trustworthy USD quote exists. */

@@ -792,6 +792,8 @@ export interface MetricsSummary {
   totalScans: number;
   completedScans: number;
   runningScans: number;
+  attentionScans: number;
+  pricedScans: number;
   totalEstimatedUsd: number;
   avgUsdPerScan: number;
   hasUpperBoundCost: boolean;
