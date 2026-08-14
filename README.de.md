@@ -102,18 +102,22 @@ Portable `deep` ist eigenständig vollständig und verwendet oder erwartet niema
 
 Die Berichtsphase teilt bestätigte Kandidaten intern in Seiten mit höchstens 16 Kandidaten auf. Eine Modellseite darf nur ihre Findings liefern; Coverage und abgelehnte Kandidaten bleiben servergeführt. Vor jedem `results.write` prüft Sentinel JSON, Stufenvertrag, Dossier-Semantik, Seitenzuordnung, Coverage sowie Pfade und Zeilenbereiche der Snapshot-Anker. Ein abgelehntes Terminal-Artefakt kann ein begrenztes Reparaturfenster erhalten: vier bis acht Reparatur-Turns, höchstens ein Inspektions-Tool-Aufruf und stets innerhalb der globalen Sitzungsgrenzen. Nur der serverseitig zusammengesetzte Abschlussbericht wird als `sentinel-findings.json` geschrieben; Seitenartefakte werden nicht als Sentinel-Ergebnis veröffentlicht.
 
+Dataflow und Validation verarbeiten übernommene Kandidaten in servergeführten Seiten mit höchstens 32 Kandidaten. Unter dem maximalen Envelope kann der Report-Planer bis zu 32 private Seiten validieren; der kanonische Normalisierer akzeptiert bis zu 512 Findings und veröffentlicht daraus genau ein normalisiertes `findings.json`. Seitenzuordnung und Repository-Anker werden vor I/O geprüft, sodass ein dichter Deep-Lauf weder Kandidaten still abschneidet noch eine partielle Seite veröffentlicht.
+
 Übernommene Findings müssen auf einen bereits vorhandenen Kandidaten zurückgehen und `rootCause`, `impact`, nichtleere `remediation` sowie repository-gestützte Anker enthalten. Der lokale Normalisierer erzeugt daraus das kanonische `findings.json` mit Fundorten und Codebelegen. Die Validierung bleibt statisch: Sie führt weder Zielcode aus noch erzeugt sie Exploits oder wendet Patches automatisch an. Ein Bericht mit null Findings ist nur gültig, wenn die Coverage jeden Kandidaten und den geprüften oder ungeprüften Scope ausdrücklich ausweist.
 
 Portable-Budgets folgen der ausgewählten Effort-Semantik, nicht einer Provider- oder Modellnamen-Allowlist. Der exakte Effort muss vom ausgewählten Modell veröffentlicht sein und von dessen Route übertragen werden können; nicht jeder Effort-Name vergrößert das Budget.
 
 | Effort-Gruppe | Standard | Deep |
 |---|---:|---:|
-| `minimal`, `low` | 20 Min. / 24 Turns / 96 Tool-Aufrufe | 30 Min. / 48 Turns / 192 Tool-Aufrufe |
-| `medium`, `high`, unbekannt oder nicht gesetzt | 30 Min. / 32 Turns / 128 Tool-Aufrufe | 45 Min. / 64 Turns / 256 Tool-Aufrufe |
-| `xhigh` | 45 Min. / 48 Turns / 192 Tool-Aufrufe | 60 Min. / 96 Turns / 384 Tool-Aufrufe |
-| `max`, `ultra` | 60 Min. / 64 Turns / 256 Tool-Aufrufe | 90 Min. / 128 Turns / 512 Tool-Aufrufe |
+| `minimal`, `low` | 20 Min. / 24 Turns / 96 Tool-Aufrufe | 90 Min. / 48 Turns / 384 Tool-Aufrufe |
+| `medium`, `high`, unbekannt oder nicht gesetzt | 30 Min. / 32 Turns / 128 Tool-Aufrufe | 90 Min. / 64 Turns / 512 Tool-Aufrufe |
+| `xhigh` | 45 Min. / 48 Turns / 192 Tool-Aufrufe | 90 Min. / 96 Turns / 768 Tool-Aufrufe |
+| `max`, `ultra` | 60 Min. / 64 Turns / 256 Tool-Aufrufe | 90 Min. / 128 Turns / 1.024 Tool-Aufrufe |
 
-Jede Portable-Sitzung ist zusätzlich auf 64 MiB Eingabe und 1 MiB Ausgabe begrenzt. Eine optionale USD-Obergrenze verwendet ein eingefrorenes passendes Preisangebot; ohne ein solches Angebot blockiert Sentinel den Start. Sobald gemeldete Nutzung die Obergrenze erreicht, endet die Sitzung vor der nächsten Provider-Anfrage, auch wenn eine bereits laufende Anfrage die Schätzung noch darüber heben kann. Lässt sich die Usage während des Laufs nicht mehr schätzen, beendet Sentinel die Sitzung, statt Kosten oder eine durchgesetzte Obergrenze zu erfinden.
+Zeit-Deadline und Kostenobergrenze gelten global für den Scan. Turn- und Tool-Werte sind das begrenzte Basis-Envelope einer Sitzung; Seiten für vollständige Coverage, Assessment und Report verwenden explizite begrenzte Seitenregeln, erhalten aber niemals ein neues Zeit- oder Kostenbudget. Portable-Basissitzungen sind auf 64 MiB Eingabe und 1 MiB Ausgabe begrenzt; vollständige Deep-Coverage-Partitionen dürfen einen eigenen 16-MiB-Ausgabe-Guard verwenden, während der kanonische öffentliche Bericht auf 4 MiB begrenzt bleibt. Eine optionale USD-Obergrenze verwendet ein eingefrorenes passendes Preisangebot; ohne ein solches Angebot blockiert Sentinel den Start. Sobald gemeldete Nutzung die Obergrenze erreicht, endet die Sitzung vor der nächsten Provider-Anfrage, auch wenn eine bereits laufende Anfrage die Schätzung noch darüber heben kann. Lässt sich die Usage während des Laufs nicht mehr schätzen, beendet Sentinel die Sitzung, statt Kosten oder eine durchgesetzte Obergrenze zu erfinden.
+
+> **Abnahmebeleg (14.08.2026).** Ein realer Portable-Deep-Lauf über Juice Shop mit MiMo v2.5 schloss alle sechs Stufen in 61 Minuten ab, führte acht private Berichtsseiten zusammen und veröffentlichte 115 normalisierte Findings: 16 critical, 55 high, 29 medium und 15 low. Jedes veröffentlichte Finding hatte eine eindeutige ID, Remediation, Root Cause, Code Evidence und einen gültigen Repository-Fundort. Die Upper-Bound-Schätzung betrug USD 1,7805 bei einer Obergrenze von USD 5. Dies belegt den Ausführungs- und Konsolidierungspfad, nicht die Ground-Truth-Genauigkeit; Findings müssen weiterhin sicherheitsfachlich geprüft werden.
 
 ### Finding-Lifecycle
 

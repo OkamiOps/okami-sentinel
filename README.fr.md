@@ -102,18 +102,22 @@ Portable `deep` est exhaustif de manière autonome : il ne consomme ni ne suppos
 
 La phase de rapport segmente en interne les candidats confirmés par pages de 16 candidats au maximum. Une page modèle ne peut livrer que ses findings ; la couverture et les candidats rejetés restent gérés par le serveur. Avant tout `results.write`, Sentinel valide le JSON, le contrat de l’étape, la sémantique du dossier, l’appartenance à la page, la couverture ainsi que les chemins et plages de lignes des ancres du snapshot. Un artefact terminal rejeté peut recevoir une fenêtre de correction bornée : quatre à huit tours de correction, un seul appel d’outil d’inspection au plus et toujours dans les limites globales de session. Seul le rapport final assemblé par le serveur est écrit comme `sentinel-findings.json` ; les artefacts de page ne sont pas publiés comme résultat Sentinel.
 
+Dataflow et Validation traitent les candidats transmis dans des pages gérées par le serveur de 32 candidats au maximum. Avec l’enveloppe maximale, le planificateur de rapport peut valider jusqu’à 32 pages privées ; le normaliseur canonique accepte jusqu’à 512 findings et publie un seul `findings.json` normalisé. L’appartenance à la page et les ancres du dépôt sont vérifiées avant I/O, afin qu’un run Deep dense ne tronque jamais silencieusement des candidats et ne publie aucune page partielle.
+
 Les findings retenus doivent provenir d’un candidat déjà transmis et contenir `rootCause`, `impact`, une `remediation` non vide et des ancres appuyées par le dépôt. Le normaliseur local produit ensuite le `findings.json` canonique avec emplacements et preuves de code. La validation reste statique : elle n’exécute pas le code cible, ne génère pas d’exploit et n’applique aucun patch automatiquement. Un rapport sans finding n’est valide que si la couverture consigne explicitement chaque candidat ainsi que le périmètre inspecté ou non inspecté.
 
 Les budgets Portable suivent la sémantique de l’effort sélectionné, pas une liste d’autorisation de fournisseurs ou de noms de modèles. L’effort exact doit être publié par le modèle sélectionné et transmissible par sa route ; chaque nom d’effort n’augmente donc pas le budget.
 
 | Groupe d’effort | Standard | Deep |
 |---|---:|---:|
-| `minimal`, `low` | 20 min / 24 tours / 96 appels d’outil | 30 min / 48 tours / 192 appels d’outil |
-| `medium`, `high`, inconnu ou absent | 30 min / 32 tours / 128 appels d’outil | 45 min / 64 tours / 256 appels d’outil |
-| `xhigh` | 45 min / 48 tours / 192 appels d’outil | 60 min / 96 tours / 384 appels d’outil |
-| `max`, `ultra` | 60 min / 64 tours / 256 appels d’outil | 90 min / 128 tours / 512 appels d’outil |
+| `minimal`, `low` | 20 min / 24 tours / 96 appels d’outil | 90 min / 48 tours / 384 appels d’outil |
+| `medium`, `high`, inconnu ou absent | 30 min / 32 tours / 128 appels d’outil | 90 min / 64 tours / 512 appels d’outil |
+| `xhigh` | 45 min / 48 tours / 192 appels d’outil | 90 min / 96 tours / 768 appels d’outil |
+| `max`, `ultra` | 60 min / 64 tours / 256 appels d’outil | 90 min / 128 tours / 1 024 appels d’outil |
 
-Chaque session Portable est aussi limitée à 64 Mio d’entrée et 1 Mio de sortie. Un plafond facultatif en USD utilise un devis correspondant figé ; en l’absence d’un tel devis, Sentinel bloque le lancement. Lorsque l’usage rapporté atteint le plafond, la session s’arrête avant la prochaine requête fournisseur, même si une requête déjà en vol peut encore amener l’estimation au-delà. Si l’usage cesse d’être estimable pendant le run, Sentinel arrête la session au lieu d’inventer un coût ou de prétendre que le plafond a été appliqué.
+Le deadline temporel et le plafond de coût sont globaux au scan. Les valeurs de tours et d’outils forment l’enveloppe de session bornée de base ; les pages de couverture exhaustive, d’assessment et de rapport utilisent des règles de page explicites et bornées, sans jamais recevoir un nouveau budget de temps ou de coût. Les sessions Portable de base sont limitées à 64 Mio d’entrée et 1 Mio de sortie ; les partitions de couverture Deep exhaustive peuvent utiliser un garde de sortie dédié de 16 Mio, tandis que le rapport public canonique reste limité à 4 Mio. Un plafond facultatif en USD utilise un devis correspondant figé ; en l’absence d’un tel devis, Sentinel bloque le lancement. Lorsque l’usage rapporté atteint le plafond, la session s’arrête avant la prochaine requête fournisseur, même si une requête déjà en vol peut encore amener l’estimation au-delà. Si l’usage cesse d’être estimable pendant le run, Sentinel arrête la session au lieu d’inventer un coût ou de prétendre que le plafond a été appliqué.
+
+> **Preuve d’acceptation (14/08/2026).** Un run réel Portable Deep sur Juice Shop avec MiMo v2.5 a terminé les six étapes en 61 minutes, consolidé huit pages privées et publié 115 findings normalisés : 16 critical, 55 high, 29 medium et 15 low. Chaque finding publié possédait un identifiant unique, une remédiation, une cause racine, une preuve de code et un emplacement valide dans le dépôt. L’estimation upper-bound était de 1,7805 USD sous un plafond de 5 USD. Cette preuve valide le chemin d’exécution et de consolidation, pas la précision face au ground truth ; les findings nécessitent toujours une revue de sécurité.
 
 ### Cycle de vie des findings
 

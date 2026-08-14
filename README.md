@@ -100,16 +100,20 @@ Portable is not a claim that a non-OpenAI provider runs the upstream scanner. It
 
 Portable `deep` is independently exhaustive; it never consumes or assumes a prior `standard` result. Sentinel enumerates the auditable source and security-configuration universe from the immutable snapshot, partitions it server-side, and requires a complete successful `workspace.read` for every assigned file before discovery can finish. Missing a file or a partition fails closed instead of publishing a partial Deep report. `standard` remains the lower-cost bounded exploration mode and therefore does not promise the same exhaustive coverage.
 
+Dense Deep runs keep assessment and reporting bounded without truncating the final result. Dataflow and validation process carried candidates in server-owned pages of at most 32 candidates. Reporting uses private findings-only pages of at most 16 confirmed candidates; coverage for rejected candidates and the inspected scope remain server-derived. Under the maximum envelope, the report planner can validate up to 32 pages and the canonical normalizer accepts up to 512 findings. Every page is validated against its exact dossier membership and pinned repository anchors before I/O; only the consolidated `sentinel-findings.json` and normalized public `findings.json` are published.
+
 Portable limits follow the selected mode and effort group, never a vendor or model-name allowlist. The exact effort must be published by the selected model and serializable by its route; an effort name alone does not enlarge the budget.
 
 | Effort group | Standard | Deep |
 |---|---:|---:|
-| `minimal`, `low` | 20 min / 24 turns / 96 tool calls | 30 min / 48 turns / 192 tool calls |
-| `medium`, `high`, unknown, or absent | 30 min / 32 turns / 128 tool calls | 45 min / 64 turns / 256 tool calls |
-| `xhigh` | 45 min / 48 turns / 192 tool calls | 60 min / 96 turns / 384 tool calls |
-| `max`, `ultra` | 60 min / 64 turns / 256 tool calls | 90 min / 128 turns / 512 tool calls |
+| `minimal`, `low` | 20 min / 24 turns / 96 tool calls | 90 min / 48 turns / 384 tool calls |
+| `medium`, `high`, unknown, or absent | 30 min / 32 turns / 128 tool calls | 90 min / 64 turns / 512 tool calls |
+| `xhigh` | 45 min / 48 turns / 192 tool calls | 90 min / 96 turns / 768 tool calls |
+| `max`, `ultra` | 60 min / 64 turns / 256 tool calls | 90 min / 128 turns / 1,024 tool calls |
 
-Each Portable AgentSession is additionally capped at 64 MiB of input and 1 MiB of output. An optional `maxCostUsd` ceiling requires a frozen matching price quote at launch; without one, launch fails closed. Reported usage that reaches the ceiling stops the session before the next provider request, although one request already in flight can exceed the estimate; usage that cannot be estimated stops rather than claiming the ceiling was enforced.
+The elapsed-time deadline and cost ceiling are scan-global. Turn and tool values are the base bounded session envelope; exhaustive coverage, assessment, and report pages use explicit bounded page policies but never receive a new deadline or cost budget. Base Portable sessions are capped at 64 MiB of input and 1 MiB of output; exhaustive Deep coverage partitions may use a dedicated 16 MiB output guard, while the canonical public report remains capped at 4 MiB. An optional `maxCostUsd` ceiling requires a frozen matching price quote at launch; without one, launch fails closed. Reported usage that reaches the ceiling stops the session before the next provider request, although one request already in flight can exceed the estimate; usage that cannot be estimated stops rather than claiming the ceiling was enforced.
+
+> **Acceptance evidence (2026-08-14).** A real Juice Shop Portable Deep run over MiMo v2.5 completed all six stages in 61 minutes, consolidated eight private report pages, and published 115 normalized findings: 16 critical, 55 high, 29 medium, and 15 low. Every published finding had a unique ID, remediation, root cause, code evidence, and valid repository location. The upper-bound estimate was USD 1.7805 under a USD 5 ceiling. This proves the execution and consolidation path, not vulnerability ground-truth accuracy; findings still require security review.
 
 ## Architecture
 

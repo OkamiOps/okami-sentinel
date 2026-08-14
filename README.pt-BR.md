@@ -100,16 +100,20 @@ Portable não afirma que um provider que não é OpenAI está executando o scann
 
 O `deep` Portable é exaustivo por conta própria: ele nunca consome nem pressupõe um resultado `standard`. O Sentinel enumera no snapshot imutável todo o universo auditável de código-fonte e configurações de segurança, divide esse universo no servidor e exige um `workspace.read` completo e bem-sucedido para cada arquivo atribuído antes de concluir a descoberta. Arquivo ou partição ausente falha de forma fechada, sem publicar um relatório Deep parcial. O `standard` continua sendo a exploração limitada de menor custo e, portanto, não promete a mesma cobertura exaustiva.
 
+Runs Deep densos mantêm assessment e report limitados sem truncar o resultado final. Dataflow e validation processam os candidatos carregados em páginas controladas pelo servidor com no máximo 32 candidatos. O report usa páginas privadas, somente de findings, com no máximo 16 candidatos confirmados; a cobertura dos candidatos rejeitados e o escopo inspecionado continuam derivados pelo servidor. No envelope máximo, o planejador pode validar até 32 páginas e o normalizador canônico aceita até 512 findings. Cada página é validada contra sua associação exata ao dossiê e contra os anchors fixados do repositório antes de I/O; somente o `sentinel-findings.json` consolidado e o `findings.json` público normalizado são publicados.
+
 Os limites Portable seguem o modo selecionado e o grupo de effort, nunca uma allowlist de vendors ou nomes de modelo. O effort exato precisa ser publicado pelo modelo escolhido e serializável pela rota; o nome do effort, sozinho, não aumenta o orçamento.
 
 | Grupo de effort | Standard | Deep |
 |---|---:|---:|
-| `minimal`, `low` | 20 min / 24 turnos / 96 chamadas de ferramenta | 30 min / 48 turnos / 192 chamadas de ferramenta |
-| `medium`, `high`, desconhecido ou ausente | 30 min / 32 turnos / 128 chamadas de ferramenta | 45 min / 64 turnos / 256 chamadas de ferramenta |
-| `xhigh` | 45 min / 48 turnos / 192 chamadas de ferramenta | 60 min / 96 turnos / 384 chamadas de ferramenta |
-| `max`, `ultra` | 60 min / 64 turnos / 256 chamadas de ferramenta | 90 min / 128 turnos / 512 chamadas de ferramenta |
+| `minimal`, `low` | 20 min / 24 turnos / 96 chamadas de ferramenta | 90 min / 48 turnos / 384 chamadas de ferramenta |
+| `medium`, `high`, desconhecido ou ausente | 30 min / 32 turnos / 128 chamadas de ferramenta | 90 min / 64 turnos / 512 chamadas de ferramenta |
+| `xhigh` | 45 min / 48 turnos / 192 chamadas de ferramenta | 90 min / 96 turnos / 768 chamadas de ferramenta |
+| `max`, `ultra` | 60 min / 64 turnos / 256 chamadas de ferramenta | 90 min / 128 turnos / 1.024 chamadas de ferramenta |
 
-Cada AgentSession Portable também é limitada a 64 MiB de entrada e 1 MiB de saída. Um teto opcional `maxCostUsd` exige cotação correspondente congelada no lançamento; sem ela, o lançamento falha de forma fechada. Usage reportado que alcança o teto encerra a sessão antes da próxima request ao provider, embora uma request já em voo possa exceder a estimativa; usage que não pode ser estimado encerra em vez de alegar que o teto foi aplicado.
+O deadline de tempo e o teto de custo são globais ao scan. Os valores de turnos e ferramentas são o envelope base limitado da sessão; páginas de cobertura exaustiva, assessment e report usam policies explícitas e limitadas por página, mas nunca recebem um novo deadline ou orçamento de custo. Sessões Portable base são limitadas a 64 MiB de entrada e 1 MiB de saída; partições de cobertura Deep exaustiva podem usar um guard dedicado de 16 MiB de saída, enquanto o relatório público canônico permanece limitado a 4 MiB. Um teto opcional `maxCostUsd` exige cotação correspondente congelada no lançamento; sem ela, o lançamento falha de forma fechada. Usage reportado que alcança o teto encerra a sessão antes da próxima request ao provider, embora uma request já em voo possa exceder a estimativa; usage que não pode ser estimado encerra em vez de alegar que o teto foi aplicado.
+
+> **Evidência de aceite (14/08/2026).** Um run real Portable Deep no Juice Shop com MiMo v2.5 concluiu os seis estágios em 61 minutos, consolidou oito páginas privadas e publicou 115 findings normalizados: 16 critical, 55 high, 29 medium e 15 low. Todo finding publicado tinha ID único, remediação, causa raiz, evidência de código e localização válida no repositório. A estimativa upper-bound foi de USD 1,7805 sob teto de USD 5. Isso comprova o caminho de execução e consolidação, não precisão contra ground truth; os findings ainda exigem revisão de segurança.
 
 ## Arquitetura
 
