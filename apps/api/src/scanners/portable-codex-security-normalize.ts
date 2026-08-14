@@ -19,7 +19,9 @@ import {
 
 export const PORTABLE_CODEX_SECURITY_NORMALIZATION_LIMITS = Object.freeze({
   maxHandoffBytes: 1_048_576,
-  maxFindings: 128,
+  // Deep report execution can produce up to 32 validated pages with 16
+  // confirmed candidates each. This is a whole-report bound, not a page bound.
+  maxFindings: 512,
   maxAnchorsPerFinding: 20,
   maxTextFieldBytes: 16_384,
   maxSnippetBytes: 65_536,

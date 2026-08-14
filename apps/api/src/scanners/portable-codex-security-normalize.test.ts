@@ -7,7 +7,7 @@ import test from "node:test";
 import { normalizePortableCodexSecurityWorkspace } from "./portable-codex-security-normalize.js";
 
 const MAX_HANDOFF_BYTES = 1_048_576;
-const MAX_FINDINGS = 128;
+const MAX_FINDINGS = 512;
 const MAX_ANCHORS_PER_FINDING = 20;
 const MAX_TEXT_FIELD_BYTES = 16_384;
 const MAX_SNIPPET_BYTES = 65_536;
@@ -186,6 +186,30 @@ test("Portable Codex Security normalizes a consolidated report with 116 findings
       fs.readFileSync(path.join(fixture.outputDir, "findings.json"), "utf8"),
     ) as { findings: unknown[] };
     assert.equal(normalized.findings.length, 116);
+  } finally {
+    removeFixture(fixture.root);
+  }
+});
+
+test("Portable Codex Security normalizes more than 128 findings across report pages", () => {
+  const fixture = createFixture();
+  try {
+    const findings = Array.from({ length: 129 }, (_, index) => ({
+      ...validFinding(),
+      id: `PCS-${String(index + 1).padStart(3, "0")}`,
+      candidateId: `candidate-${String(index + 1).padStart(3, "0")}`,
+      title: `Authorization check is missing in flow ${index + 1}`,
+    }));
+    writeHandoff(fixture, findings);
+
+    assert.equal(
+      normalizePortableCodexSecurityWorkspace(fixture.resultsDir, fixture.outputDir),
+      129,
+    );
+    const normalized = JSON.parse(
+      fs.readFileSync(path.join(fixture.outputDir, "findings.json"), "utf8"),
+    ) as { findings: unknown[] };
+    assert.equal(normalized.findings.length, 129);
   } finally {
     removeFixture(fixture.root);
   }
