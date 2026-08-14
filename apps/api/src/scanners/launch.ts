@@ -176,9 +176,9 @@ const PORTABLE_EXECUTION_LIMITS: Record<
     maximum: { totalTimeoutMs: 3_600_000, maxModelTurns: 64, maxToolCalls: 256 },
   },
   deep: {
-    constrained: { totalTimeoutMs: 1_800_000, maxModelTurns: 48, maxToolCalls: 384 },
-    balanced: { totalTimeoutMs: 2_700_000, maxModelTurns: 64, maxToolCalls: 512 },
-    extended: { totalTimeoutMs: 3_600_000, maxModelTurns: 96, maxToolCalls: 768 },
+    constrained: { totalTimeoutMs: 5_400_000, maxModelTurns: 48, maxToolCalls: 384 },
+    balanced: { totalTimeoutMs: 5_400_000, maxModelTurns: 64, maxToolCalls: 512 },
+    extended: { totalTimeoutMs: 5_400_000, maxModelTurns: 96, maxToolCalls: 768 },
     maximum: { totalTimeoutMs: 5_400_000, maxModelTurns: 128, maxToolCalls: 1_024 },
   },
 };
