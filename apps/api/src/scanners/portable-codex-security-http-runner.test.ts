@@ -53,7 +53,7 @@ test("Portable Deep grants 128 tools to every assessment page", () => {
   assert.equal(limits.timeoutMs, 2_000_000);
 });
 
-test("Portable report grants 128 tools to every shard", () => {
+test("Portable report grants 128 turns and tools to every shard", () => {
   const limits = portableReportShardSessionLimits({
     totalTimeoutMs: 2_700_000,
     maxModelTurns: 64,
@@ -61,7 +61,7 @@ test("Portable report grants 128 tools to every shard", () => {
     maxInputBytes: 64 * 1_048_576,
     maxOutputBytes: 1_048_576,
   }, 1_500_000, 5);
-  assert.equal(limits.maxModelTurns, 12);
+  assert.equal(limits.maxModelTurns, 128);
   assert.equal(limits.maxToolCalls, 128);
   assert.equal(limits.timeoutMs, 1_500_000);
 });
@@ -752,13 +752,13 @@ test("Portable Deep partitions the immutable auditable universe and merges every
   }
 });
 
-test("Portable Codex Security bounds report pages and shares the original report allowance", async () => {
+test("Portable Codex Security gives every report page 128 bounded turns and tools", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-report-budget-"));
   const config = configuration(root, plan({
     routeKind: "minimax-token-plan",
     protocol: "anthropic-messages",
   }));
-  // Five report pages share (rather than reset) the standard report allowance.
+  // Five report pages remain independently bounded while deadline and cost are global.
   config.limits.maxModelTurns = 32;
   config.limits.maxToolCalls = 128;
   const specs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }> = [];
@@ -780,9 +780,8 @@ test("Portable Codex Security bounds report pages and shares the original report
     assert.equal(reportSpecs.length, 1, "the factory stops at the first of five report pages");
     assert.ok((reportSpecs[0]!.maxCompletionTokens ?? 0) > 10_240);
     assert.ok((reportSpecs[0]!.maxCompletionTokens ?? Infinity) <= 65_536);
-    assert.equal(reportSpecs[0]!.limits.maxModelTurns, 6);
+    assert.equal(reportSpecs[0]!.limits.maxModelTurns, 128);
     assert.equal(reportSpecs[0]!.limits.maxToolCalls, 128);
-    assert.ok(reportSpecs[0]!.limits.maxModelTurns >= 4, "each page permits one evidence turn and terminal write");
     assert.equal(reportSpecs[0]!.instructions.includes("BEGIN_PORTABLE_COVERAGE_DOSSIER_BASE64"), false);
     assert.equal(reportSpecs[0]!.instructions.includes("BEGIN_PORTABLE_REPORT_PAGE_JSON"), true);
     assert.deepEqual(specs.filter((item) => !/stage "report"/.test(item.spec.instructions))

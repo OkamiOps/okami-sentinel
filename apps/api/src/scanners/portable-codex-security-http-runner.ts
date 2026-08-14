@@ -855,20 +855,18 @@ function sessionLimits(
   return result;
 }
 
-/** Normal report turns/tools are divided across pages; deadline and cost stay global. */
+/** Every report page is bounded independently; deadline and cost stay scan-global. */
 export function portableReportShardSessionLimits(
   limits: PortableCodexSecurityExecutionLimits,
   remainingMs: number,
-  shardCount: number,
+  _shardCount: number,
 ): AgentSessionLimits {
-  const maxModelTurns = Math.floor(limits.maxModelTurns / shardCount);
-  // Report pages are independent terminal sessions. Dividing tools by the
-  // number of pages starves dense reports after a valid first shard. Keep the
-  // model-turn share bounded, but give each page enough inspections/repairs.
+  // Report pages are independent terminal sessions. Dividing either turns or
+  // tools by page count repeatedly starved dense reports near final assembly.
+  // Keep each page bounded while the scan-global deadline and cost ceiling
+  // remain authoritative across every page.
+  const maxModelTurns = 128;
   const maxToolCalls = 128;
-  if (maxModelTurns < 4) {
-    throw new PortableCodexSecurityRunnerError("agent_turn_limit");
-  }
   return sessionLimits({ ...limits, maxModelTurns, maxToolCalls }, remainingMs);
 }
 
