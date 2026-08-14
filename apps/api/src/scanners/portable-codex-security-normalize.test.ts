@@ -7,7 +7,7 @@ import test from "node:test";
 import { normalizePortableCodexSecurityWorkspace } from "./portable-codex-security-normalize.js";
 
 const MAX_HANDOFF_BYTES = 1_048_576;
-const MAX_FINDINGS = 100;
+const MAX_FINDINGS = 128;
 const MAX_ANCHORS_PER_FINDING = 20;
 const MAX_TEXT_FIELD_BYTES = 16_384;
 const MAX_SNIPPET_BYTES = 65_536;
@@ -167,6 +167,30 @@ test("Portable Codex Security normalizes valid confined anchors with hydrated sn
   }
 });
 
+test("Portable Codex Security normalizes a consolidated report with 116 findings", () => {
+  const fixture = createFixture();
+  try {
+    const findings = Array.from({ length: 116 }, (_, index) => ({
+      ...validFinding(),
+      id: `PCS-${String(index + 1).padStart(3, "0")}`,
+      candidateId: `candidate-${String(index + 1).padStart(3, "0")}`,
+      title: `Authorization check is missing in flow ${index + 1}`,
+    }));
+    writeHandoff(fixture, findings);
+
+    assert.equal(
+      normalizePortableCodexSecurityWorkspace(fixture.resultsDir, fixture.outputDir),
+      116,
+    );
+    const normalized = JSON.parse(
+      fs.readFileSync(path.join(fixture.outputDir, "findings.json"), "utf8"),
+    ) as { findings: unknown[] };
+    assert.equal(normalized.findings.length, 116);
+  } finally {
+    removeFixture(fixture.root);
+  }
+});
+
 test("Portable Codex Security redacts every public text field, evidence path, and source snippet", () => {
   const fixture = createFixture();
   const secret = "fake-secret-987654321";
@@ -296,16 +320,6 @@ test("Portable Codex Security rejects the whole handoff for every unsafe primary
       name: "reversed range",
       anchor: () => ({ startLine: 3, endLine: 2 }),
     },
-    {
-      name: "range over 200 lines",
-      prepare: (fixture) => {
-        fs.writeFileSync(
-          path.join(fixture.snapshotRoot, "src", "range.ts"),
-          `${Array.from({ length: 201 }, (_, index) => `line ${index + 1}`).join("\n")}\n`,
-        );
-      },
-      anchor: () => ({ path: "src/range.ts", startLine: 1, endLine: 201 }),
-    },
   ];
 
   for (const invalid of cases) {
@@ -325,6 +339,46 @@ test("Portable Codex Security rejects the whole handoff for every unsafe primary
     } finally {
       removeFixture(fixture.root);
     }
+  }
+});
+
+test("Portable Codex Security preserves a wide location while bounding its hydrated excerpt", () => {
+  const fixture = createFixture();
+  try {
+    fs.writeFileSync(
+      path.join(fixture.snapshotRoot, "src", "range.ts"),
+      `${Array.from({ length: 1_070 }, (_, index) => `line ${index + 1}`).join("\n")}\n`,
+    );
+    writeHandoff(fixture, [validFinding({
+      path: "src/range.ts",
+      startLine: 1,
+      endLine: 1_070,
+    })]);
+
+    assert.equal(
+      normalizePortableCodexSecurityWorkspace(fixture.resultsDir, fixture.outputDir),
+      1,
+    );
+    const normalized = JSON.parse(
+      fs.readFileSync(path.join(fixture.outputDir, "findings.json"), "utf8"),
+    ) as {
+      findings: Array<{
+        locations: Array<{ startLine: number; endLine: number }>;
+        codeEvidence: Array<{ startLine: number; endLine: number; code: string }>;
+      }>;
+    };
+    assert.deepEqual(normalized.findings[0]?.locations[0], {
+      path: "src/range.ts",
+      startLine: 1,
+      endLine: 1_070,
+      lines: "1-1070",
+      role: "primary",
+    });
+    assert.equal(normalized.findings[0]?.codeEvidence[0]?.startLine, 1);
+    assert.equal(normalized.findings[0]?.codeEvidence[0]?.endLine, 200);
+    assert.match(normalized.findings[0]?.codeEvidence[0]?.code ?? "", /line 200$/);
+  } finally {
+    removeFixture(fixture.root);
   }
 });
 
@@ -474,7 +528,7 @@ test("Portable Codex Security debits output budget while hydrating instead of re
       path.join(fixture.snapshotRoot, "src", "max-snippet.ts"),
       "x".repeat(MAX_SNIPPET_BYTES),
     );
-    const findings = Array.from({ length: MAX_FINDINGS }, (_, findingIndex) => ({
+    const findings = Array.from({ length: 100 }, (_, findingIndex) => ({
       ...validFinding(),
       id: `PCS-BUDGET-${findingIndex + 1}`,
       candidateId: `candidate-budget-${findingIndex + 1}`,

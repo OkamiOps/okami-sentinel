@@ -19,7 +19,7 @@ import {
 
 export const PORTABLE_CODEX_SECURITY_NORMALIZATION_LIMITS = Object.freeze({
   maxHandoffBytes: 1_048_576,
-  maxFindings: 100,
+  maxFindings: 128,
   maxAnchorsPerFinding: 20,
   maxTextFieldBytes: 16_384,
   maxSnippetBytes: 65_536,
@@ -85,6 +85,8 @@ interface CanonicalAnchor {
   path: string;
   startLine: number;
   endLine: number;
+  snippetStartLine: number;
+  snippetEndLine: number;
   role: PortableCodexSecurityEvidenceRole;
   explanation: string | null;
   code: string;
@@ -381,13 +383,6 @@ function lineSnippet(
   if (anchor.endLine < anchor.startLine) {
     throw new PortableCodexSecurityArtifactError("reversed range");
   }
-  if (
-    anchor.endLine - anchor.startLine + 1 >
-      PORTABLE_CODEX_SECURITY_NORMALIZATION_LIMITS.maxAnchorLines
-  ) {
-    throw new PortableCodexSecurityArtifactError("range over 200 lines");
-  }
-
   const pinnedRoot = pinSnapshotRoot(snapshotRoot);
   const root = pinnedRoot.canonicalPath;
 
@@ -445,14 +440,23 @@ function lineSnippet(
   if (anchor.startLine > lines.length || anchor.endLine > lines.length) {
     throw new PortableCodexSecurityArtifactError("out-of-range line");
   }
-  const code = lines.slice(anchor.startLine - 1, anchor.endLine).join("\n");
+  const snippetEndLine = Math.min(
+    anchor.endLine,
+    anchor.startLine + PORTABLE_CODEX_SECURITY_NORMALIZATION_LIMITS.maxAnchorLines - 1,
+  );
+  const code = lines.slice(anchor.startLine - 1, snippetEndLine).join("\n");
   if (
     Buffer.byteLength(code, "utf8") >
       PORTABLE_CODEX_SECURITY_NORMALIZATION_LIMITS.maxSnippetBytes
   ) {
     throw new PortableCodexSecurityArtifactError("snippet byte limit exceeded");
   }
-  return { ...anchor, code };
+  return {
+    ...anchor,
+    snippetStartLine: anchor.startLine,
+    snippetEndLine,
+    code,
+  };
 }
 
 function languageForPath(filePath: string): string {
@@ -633,13 +637,13 @@ function normalizeFinding(
     })),
     codeEvidence: anchors.map((anchor, index) => ({
       id: evidenceRefs[index],
-      label: `Evidence at ${anchor.path}:${anchor.startLine}${anchor.endLine !== anchor.startLine ? `–${anchor.endLine}` : ""}`,
+      label: `Evidence excerpt at ${anchor.path}:${anchor.snippetStartLine}${anchor.snippetEndLine !== anchor.snippetStartLine ? `–${anchor.snippetEndLine}` : ""}`,
       path: anchor.path,
-      startLine: anchor.startLine,
-      endLine: anchor.endLine,
-      lines: anchor.startLine === anchor.endLine
-        ? String(anchor.startLine)
-        : `${anchor.startLine}-${anchor.endLine}`,
+      startLine: anchor.snippetStartLine,
+      endLine: anchor.snippetEndLine,
+      lines: anchor.snippetStartLine === anchor.snippetEndLine
+        ? String(anchor.snippetStartLine)
+        : `${anchor.snippetStartLine}-${anchor.snippetEndLine}`,
       role: anchor.role,
       code: anchor.code,
       language: languages[index]!,
