@@ -1,5 +1,6 @@
 export { DecisionEquation } from "./DecisionEquation";
 export { DecisionGraph } from "./DecisionGraph";
+export { FindingInspectorDialog } from "./FindingInspectorDialog";
 export { DeleteGateButton } from "./DeleteGateButton";
 export { EvidenceTrace } from "./EvidenceTrace";
 export { GateOutcomeBadge } from "./GateOutcomeBadge";

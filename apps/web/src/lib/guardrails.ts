@@ -294,3 +294,11 @@ export function evidenceForNode(
     finding,
   };
 }
+
+export function findingForDecisionNode(
+  artifact: GateArtifact,
+  node: DecisionGraphNode,
+) {
+  if (!node.findingIdentity) return null;
+  return artifact.findings.find((finding) => finding.identity === node.findingIdentity) ?? null;
+}

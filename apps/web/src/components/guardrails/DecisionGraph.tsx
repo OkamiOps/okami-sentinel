@@ -1,5 +1,5 @@
 import type { DecisionGraphNode as DecisionNode, GateArtifact } from "@csb/shared";
-import { ChevronLeft, ChevronRight, FileCode2, GitBranch, Search, ShieldAlert } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, FileCode2, GitBranch, Search, ShieldAlert } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { SeverityBadge, cx } from "../ui";
@@ -81,10 +81,28 @@ function CompactFindingGraph({
   onSelect: (node: DecisionNode) => void;
 }) {
   const { t } = useI18n();
-  const findings = branches.flatMap((branch) => branch.findings);
+  const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(() => new Set());
+  const layout = useMemo(() => {
+    let row = 0;
+    return branches.map((branch) => {
+      const collapsed = collapsedPaths.has(branch.path);
+      const rowSpan = collapsed ? 1 : Math.max(1, branch.findings.length);
+      const item = { branch, collapsed, rowStart: row, rowSpan, centerRow: row + rowSpan / 2 };
+      row += rowSpan;
+      return item;
+    });
+  }, [branches, collapsedPaths]);
   const rowHeight = 76;
-  const graphHeight = Math.max(findings.length * rowHeight, 228);
-  let rowCursor = 0;
+  const graphHeight = Math.max(layout.reduce((total, item) => total + item.rowSpan, 0) * rowHeight, 228);
+
+  function toggleBranch(path: string) {
+    setCollapsedPaths((current) => {
+      const next = new Set(current);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }
 
   return (
     <section className="bench-panel min-w-0" aria-labelledby="decision-graph-title">
@@ -93,15 +111,13 @@ function CompactFindingGraph({
         <div className="hidden overflow-auto border bg-background/45 lg:block">
           <div className="relative min-w-[940px]" style={{ height: graphHeight }}>
             <svg className="pointer-events-none absolute inset-0 size-full text-border" viewBox={`0 0 1000 ${graphHeight}`} preserveAspectRatio="none" aria-hidden>
-              {branches.map((branch) => {
-                const start = rowCursor;
-                rowCursor += branch.findings.length;
-                const fileY = (start + branch.findings.length / 2) * rowHeight;
+              {layout.map(({ branch, collapsed, rowStart, centerRow }) => {
+                const fileY = centerRow * rowHeight;
                 return (
                   <g key={branch.path} fill="none" stroke="currentColor" strokeWidth="1">
                     <path d={`M 195 ${graphHeight / 2} C 245 ${graphHeight / 2}, 245 ${fileY}, 302 ${fileY}`} />
-                    {branch.findings.map((_, index) => {
-                      const findingY = (start + index + 0.5) * rowHeight;
+                    {!collapsed && branch.findings.map((_, index) => {
+                      const findingY = (rowStart + index + 0.5) * rowHeight;
                       return <path key={index} d={`M 522 ${fileY} C 570 ${fileY}, 570 ${findingY}, 620 ${findingY}`} />;
                     })}
                   </g>
@@ -127,27 +143,26 @@ function CompactFindingGraph({
             </div>
 
             {(() => {
-              let start = 0;
-              return branches.map((branch) => {
-                const top = (start + branch.findings.length / 2) * rowHeight;
-                start += branch.findings.length;
+              return layout.map(({ branch, collapsed, centerRow }) => {
+                const top = centerRow * rowHeight;
                 const shortPath = branch.path.split("/").pop() || branch.path;
                 return (
-                  <div key={branch.path} className="absolute left-[30%] w-[23%] -translate-y-1/2 border bg-card/95" style={{ top }}>
+                  <button type="button" aria-expanded={!collapsed} onClick={() => toggleBranch(branch.path)} key={branch.path} className="absolute left-[30%] w-[27%] -translate-y-1/2 border bg-card/95 text-left hover:bg-accent" style={{ top }}>
                     <div className="flex min-w-0 items-center gap-2 px-3 py-2.5">
                       <FileCode2 aria-hidden size={14} className="shrink-0 text-primary" />
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-xs font-semibold" title={branch.path}>{shortPath}</span>
                         <span className="block truncate font-mono text-[8px] text-muted-foreground" title={branch.path}>{branch.path}</span>
                       </span>
-                      <span className="font-mono text-xs text-primary">{branch.findings.length}</span>
+                      <FileSeveritySummary branch={branch} />
+                      {collapsed ? <ChevronDown aria-hidden size={13} /> : <ChevronUp aria-hidden size={13} />}
                     </div>
-                  </div>
+                  </button>
                 );
               });
             })()}
 
-            {findings.map((item, index) => {
+            {layout.flatMap(({ branch, collapsed, rowStart }) => collapsed ? [] : branch.findings.map((item, index) => ({ item, row: rowStart + index }))).map(({ item, row }) => {
               const selected = item.node.id === selectedNodeId;
               return (
                 <button
@@ -159,7 +174,7 @@ function CompactFindingGraph({
                     "absolute left-[62%] flex w-[36%] -translate-y-1/2 items-center gap-3 border bg-card/95 px-3 py-2 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring motion-reduce:transition-none",
                     selected && "border-primary bg-primary/[.07] shadow-[inset_3px_0_0_var(--primary)]",
                   )}
-                  style={{ top: (index + 0.5) * rowHeight }}
+                  style={{ top: (row + 0.5) * rowHeight }}
                 >
                   <ShieldAlert aria-hidden size={15} className="shrink-0 text-muted-foreground" />
                   <span className="min-w-0 flex-1">
@@ -176,23 +191,26 @@ function CompactFindingGraph({
         </div>
 
         <div className="grid gap-3 lg:hidden">
-          {branches.map((branch) => (
+          {branches.map((branch) => {
+            const collapsed = collapsedPaths.has(branch.path);
+            return (
             <section key={branch.path} className="border bg-card/70">
-              <div className="flex items-center gap-2 border-b px-3 py-2.5">
+              <button type="button" aria-expanded={!collapsed} onClick={() => toggleBranch(branch.path)} className="flex w-full items-center gap-2 border-b px-3 py-2.5 text-left">
                 <FileCode2 aria-hidden size={14} className="shrink-0 text-primary" />
                 <span className="min-w-0 flex-1 truncate font-mono text-[9px]" title={branch.path}>{branch.path}</span>
-                <span className="font-mono text-xs text-primary">{branch.findings.length}</span>
-              </div>
-              <div className="grid gap-px bg-border">
+                <FileSeveritySummary branch={branch} />
+                {collapsed ? <ChevronDown aria-hidden size={13} /> : <ChevronUp aria-hidden size={13} />}
+              </button>
+              {!collapsed && <div className="grid gap-px bg-border">
                 {branch.findings.map((item) => (
                   <button key={item.node.id} type="button" onClick={() => onSelect(item.node)} className={cx("flex min-w-0 items-start gap-3 bg-background px-3 py-3 text-left", item.node.id === selectedNodeId && "bg-primary/[.07] shadow-[inset_3px_0_0_var(--primary)]")}>
                     <span className="min-w-0 flex-1 text-xs font-semibold leading-5">{item.finding.title}</span>
                     <SeverityBadge severity={item.finding.severity} />
                   </button>
                 ))}
-              </div>
+              </div>}
             </section>
-          ))}
+          );})}
         </div>
       </div>
     </section>
@@ -217,6 +235,7 @@ function ScalableFindingExplorer({
   const [severity, setSeverity] = useState("all");
   const [filePage, setFilePage] = useState(0);
   const [findingPage, setFindingPage] = useState(0);
+  const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(() => new Set());
 
   const filteredBranches = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase();
@@ -258,6 +277,12 @@ function ScalableFindingExplorer({
   function activateBranch(path: string) {
     setActivePath(path);
     setFindingPage(0);
+    setCollapsedPaths((current) => {
+      const next = new Set(current);
+      if (path === activePath && !next.has(path)) next.add(path);
+      else next.delete(path);
+      return next;
+    });
   }
 
   function changeFilePage(nextPage: number) {
@@ -343,7 +368,8 @@ function ScalableFindingExplorer({
                       <span className="block truncate text-xs font-semibold" title={branch.path}>{shortPath}</span>
                       <span className="block truncate font-mono text-[8px] text-muted-foreground" title={branch.path}>{branch.path}</span>
                     </span>
-                    <span className="font-mono text-xs text-primary">{branch.findings.length}</span>
+                    <FileSeveritySummary branch={branch} />
+                    {collapsedPaths.has(branch.path) ? <ChevronDown aria-hidden size={13} /> : <ChevronUp aria-hidden size={13} />}
                   </button>
                 );
               })}
@@ -359,7 +385,7 @@ function ScalableFindingExplorer({
               </div>
               <span className="shrink-0 font-mono text-xs text-primary">{activeBranch.findings.length} findings</span>
             </div>
-            <div className="grid flex-1 content-start gap-px bg-border">
+            {!collapsedPaths.has(activeBranch.path) && <div className="grid flex-1 content-start gap-px bg-border">
               {visibleFindings.map((item) => (
                 <button
                   key={item.node.id}
@@ -376,8 +402,8 @@ function ScalableFindingExplorer({
                   <SeverityBadge severity={item.finding.severity} />
                 </button>
               ))}
-            </div>
-            <Pagination page={findingPage} pageCount={findingPageCount} label="findings" onChange={setFindingPage} />
+            </div>}
+            {!collapsedPaths.has(activeBranch.path) && <Pagination page={findingPage} pageCount={findingPageCount} label="findings" onChange={setFindingPage} />}
           </div>
         </div>
       ) : (
@@ -387,6 +413,20 @@ function ScalableFindingExplorer({
       )}
     </section>
   );
+}
+
+function FileSeveritySummary({ branch }: { branch: FindingBranch }) {
+  const counts = branch.findings.reduce<Record<string, number>>((result, item) => {
+    result[item.finding.severity] = (result[item.finding.severity] ?? 0) + 1;
+    return result;
+  }, {});
+  const items = [
+    ["C", "Critical", counts.critical ?? 0, "border-destructive bg-destructive text-destructive-foreground"],
+    ["H", "High", counts.high ?? 0, "border-destructive/50 bg-destructive/[.08] text-destructive"],
+    ["M", "Medium", counts.medium ?? 0, "border-chart-3/50 bg-chart-3/[.08] text-chart-3"],
+    ["L", "Low", counts.low ?? 0, "border-chart-5/50 bg-chart-5/[.08] text-chart-5"],
+  ] as const;
+  return <span className="flex shrink-0 items-center gap-1">{items.filter(([, , count]) => count > 0).map(([label, severity, count, tone]) => <span key={label} aria-label={`${severity}: ${count}`} title={`${severity}: ${count}`} className={cx("border px-1 py-0.5 font-mono text-[7px]", tone)}>{label}{count}</span>)}</span>;
 }
 
 function Pagination({ page, pageCount, label, onChange }: { page: number; pageCount: number; label: string; onChange: (page: number) => void }) {

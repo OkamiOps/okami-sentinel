@@ -5,6 +5,7 @@ import type { DecisionGraph, GateArtifact, GateRun, GuardrailPolicy } from "@csb
 
 import {
   editorStateFromPolicy,
+  findingForDecisionNode,
   guardrailFindingBranches,
   guardrailHref,
   policyFromEditor,
@@ -165,6 +166,14 @@ test("selects a valid graph node and falls back to the graph default", () => {
     selectDecisionNode(graph, "missing")?.id,
     graph.selectedNodeId,
   );
+});
+
+test("resolves the exact finding represented by a decision graph node", () => {
+  const artifact = largeArtifactFixture(3);
+  const node = selectGuardrailFindingNode(artifact, "finding:identity-2");
+  assert.ok(node);
+  assert.equal(findingForDecisionNode(artifact, node)?.findingId, "finding-2");
+  assert.equal(findingForDecisionNode(artifact, { ...node, findingIdentity: null }), null);
 });
 
 test("groups one thousand guardrail findings into stable file branches without dropping nodes", () => {

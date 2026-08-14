@@ -14,6 +14,7 @@ import {
   DecisionGraph,
   DeleteGateButton,
   EvidenceTrace,
+  FindingInspectorDialog,
   GateOutcomeBadge,
   GuardrailPreflightSheet,
   GuardrailScanMonitor,
@@ -172,6 +173,10 @@ export function GuardrailsPage() {
   const selectedNode = readyState.artifact
     ? selectGuardrailFindingNode(readyState.artifact, params.get("node"))
     : null;
+  const inspectedNodeId = params.get("inspect");
+  const inspectedNode = readyState.artifact && inspectedNodeId
+    ? selectGuardrailFindingNode(readyState.artifact, inspectedNodeId)
+    : null;
 
   function selectLane(gate: GateRun) {
     const nodeId = gate.id === readyState.selectedGate?.id ? selectedNode?.id : null;
@@ -181,6 +186,14 @@ export function GuardrailsPage() {
   function selectNode(node: DecisionGraphNode) {
     const next = new URLSearchParams(params);
     next.set("node", node.id);
+    if (node.findingIdentity) next.set("inspect", node.id);
+    else next.delete("inspect");
+    setParams(next, { replace: true });
+  }
+
+  function closeFindingInspector() {
+    const next = new URLSearchParams(params);
+    next.delete("inspect");
     setParams(next, { replace: true });
   }
 
@@ -335,6 +348,14 @@ export function GuardrailsPage() {
           />
           <EvidenceTrace artifact={readyState.artifact} node={selectedNode} />
         </div>
+      )}
+      {readyState.artifact && (
+        <FindingInspectorDialog
+          artifact={readyState.artifact}
+          node={inspectedNode}
+          open={inspectedNode !== null}
+          onOpenChange={(open) => { if (!open) closeFindingInspector(); }}
+        />
       )}
     </div>
   );
