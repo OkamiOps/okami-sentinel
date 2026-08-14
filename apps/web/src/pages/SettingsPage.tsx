@@ -154,7 +154,7 @@ export function SettingsPage() {
             <div className="border-t p-4">
               <p className="text-xs leading-relaxed text-muted-foreground">{t("settings.routePostureDescription")}</p>
               <p className="mt-3 font-mono text-[8px] uppercase tracking-[.1em] text-muted-foreground">{t("settings.lastModelSync", { date: formatDate(connectionSummary.lastSync) })}</p>
-              <Button asChild variant="outline" size="sm" className="mt-4 w-full justify-between">
+              <Button asChild variant="configuration" size="sm" className="mt-4 min-h-10 w-full justify-between">
                 <Link to="/settings/connections">{t("settings.manageConnections")}<ArrowRight aria-hidden="true" className="size-3" /></Link>
               </Button>
             </div>

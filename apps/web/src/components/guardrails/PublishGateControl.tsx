@@ -83,7 +83,7 @@ export function PublishGateControl({
               {gate.workflowRunId && <div className="mt-2 break-all font-mono text-[9px] text-foreground">RUN {gate.workflowRunId}</div>}
             </div>
           ) : !configured ? (
-            <Button asChild variant="outline" className="min-h-11 w-full"><Link to={`/guardrails/setup?repository=${encodeURIComponent(gate.repositoryKey)}`}><ExternalLink aria-hidden size={14} />Configurar GitHub</Link></Button>
+            <Button asChild variant="configuration" className="min-h-11 w-full"><Link to={`/guardrails/setup?repository=${encodeURIComponent(gate.repositoryKey)}`}><ExternalLink aria-hidden size={14} />Configurar GitHub</Link></Button>
           ) : finished ? (
             <Button variant="outline" className="min-h-11 w-full" disabled><Send aria-hidden size={14} />Check publicado</Button>
           ) : (

@@ -217,7 +217,7 @@ export function ConnectionInspector({ connection, onConnectionChange, onEdit, on
   return <section aria-labelledby="connection-inspector-title" className="min-w-0">
     <div className="flex min-h-12 flex-wrap items-start justify-between gap-4 border-b border-border px-4 py-3">
       <div className="min-w-0"><div className="bench-label">{t("connections.inspectorRoute", { id: connection.id.slice(0, 8).toUpperCase() })}</div><h2 id="connection-inspector-title" className="mt-1 truncate text-base font-semibold">{connection.name}</h2></div>
-      <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={onEdit} disabled={busyElsewhere}><Pencil aria-hidden="true" className="size-3" />{t("connections.edit")}</Button><Button size="sm" variant="destructive" onClick={onDelete} disabled={deleting || busyElsewhere}>{deleting ? <span role="status" aria-live="polite">{t("connections.deleting")}</span> : <><Trash2 aria-hidden="true" className="size-3" />{t("connections.delete")}</>}</Button></div>
+      <div className="flex flex-wrap gap-2"><Button size="sm" variant="configuration" onClick={onEdit} disabled={busyElsewhere}><Pencil aria-hidden="true" className="size-3" />{t("connections.edit")}</Button><Button size="sm" variant="destructive" onClick={onDelete} disabled={deleting || busyElsewhere}>{deleting ? <span role="status" aria-live="polite">{t("connections.deleting")}</span> : <><Trash2 aria-hidden="true" className="size-3" />{t("connections.delete")}</>}</Button></div>
     </div>
     <div className="grid border-b border-border sm:grid-cols-2 xl:grid-cols-3">
       <InspectorReadout label={t("connections.provider")} value={connection.display.providerLabel} />

@@ -95,7 +95,7 @@ export function DashboardPage() {
             <p className="mt-1 truncate font-mono text-[9px] text-muted-foreground">{selected.repositoryPath ?? selected.scanDir}</p>
             <div className="mt-5"><SeverityStrip counts={selected.severity} total={selected.severity.total} /></div>
             <div className="mt-5 grid grid-cols-2 gap-x-4 gap-y-5"><Readout label="HIGH+" value={selected.severity.critical + selected.severity.high} tone="risk" /><Readout label="TOTAL" value={selected.severity.total} /><Readout label={t("dashboard.cost")} value={formatScanUsd(selected)} tone="signal" /><Readout label={t("dashboard.duration")} value={<LiveDuration startedAt={selected.startedAt} completedAt={selected.completedAt} status={selected.status} durationMs={selected.durationMs} showDot={false} />} /></div>
-            <Button asChild variant="outline" size="sm" className="mt-6 w-full justify-between"><Link to={`/scans/${selected.id}`}>{t("dashboard.openChannel")} <HugeiconsIcon icon={ArrowRight01Icon} size={12} /></Link></Button>
+            <Button asChild size="sm" className="mt-6 min-h-10 w-full justify-between"><Link to={`/scans/${selected.id}`}>{t("dashboard.openChannel")} <HugeiconsIcon icon={ArrowRight01Icon} size={12} /></Link></Button>
           </div> : <EmptyState title={t("dashboard.noSample")} />}
         </div>
       </div>

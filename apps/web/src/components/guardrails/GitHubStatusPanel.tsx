@@ -112,8 +112,8 @@ export function GitHubStatusPanel({
                     </div>
                   </div>
                   <ol className="mt-4 grid gap-2 sm:grid-cols-2">
-                    <li><Button asChild variant="outline" className="min-h-11 w-full justify-between"><a href={permissionRecovery.appSettingsUrl} target="_blank" rel="noreferrer"><span>1. {t("guardrails.openAppPermissions")}</span><ExternalLink aria-hidden size={14} /></a></Button></li>
-                    <li><Button asChild variant="outline" className="min-h-11 w-full justify-between"><a href={permissionRecovery.installationSettingsUrl} target="_blank" rel="noreferrer"><span>2. {t("guardrails.approveInstallation")}</span><ExternalLink aria-hidden size={14} /></a></Button></li>
+                    <li><Button asChild variant="configuration" className="min-h-11 w-full justify-between"><a href={permissionRecovery.appSettingsUrl} target="_blank" rel="noreferrer"><span>1. {t("guardrails.openAppPermissions")}</span><ExternalLink aria-hidden size={14} /></a></Button></li>
+                    <li><Button asChild variant="configuration" className="min-h-11 w-full justify-between"><a href={permissionRecovery.installationSettingsUrl} target="_blank" rel="noreferrer"><span>2. {t("guardrails.approveInstallation")}</span><ExternalLink aria-hidden size={14} /></a></Button></li>
                   </ol>
                   <p className="mt-3 text-[10px] leading-4 text-muted-foreground">{t("guardrails.permissionUpgradeHint")}</p>
                 </div>

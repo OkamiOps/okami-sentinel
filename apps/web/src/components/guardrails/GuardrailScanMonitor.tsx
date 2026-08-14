@@ -113,7 +113,7 @@ export function GuardrailScanMonitor({ gate, onScanTerminal }: { gate: GateRun; 
         <AlertBanner>{error ?? t("guardrails.scanUnavailable")}</AlertBanner>
         <div className="flex flex-wrap gap-2">
           <Button type="button" variant="outline" onClick={() => void load()}><RefreshCw aria-hidden size={14} />{t("common.retry")}</Button>
-          <Button asChild variant="outline"><Link to={`/scans/${scanId}`}>{t("guardrails.openScanChannel")}<ArrowUpRight aria-hidden size={14} /></Link></Button>
+          <Button asChild><Link to={`/scans/${scanId}`}>{t("guardrails.openScanChannel")}<ArrowUpRight aria-hidden size={14} /></Link></Button>
         </div>
       </section>
     );
@@ -243,14 +243,15 @@ export function ScanResultActions({ scan }: { scan: ScanRun }) {
   const hasFindings = scan.status !== "running" && scan.severity.total > 0;
   return (
     <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
-      {hasFindings && (
+      {hasFindings ? (
         <Button asChild className="min-h-11 w-full sm:w-auto">
           <Link to={`/scans/${scan.id}`}><ListChecks aria-hidden size={14} />{t("guardrails.viewFindings", { count: scan.severity.total })}<ArrowUpRight aria-hidden size={14} /></Link>
         </Button>
+      ) : (
+        <Button asChild className="min-h-11 w-full sm:w-auto">
+          <Link to={`/scans/${scan.id}`}>{t("guardrails.openScanChannel")}<ArrowUpRight aria-hidden size={14} /></Link>
+        </Button>
       )}
-      <Button asChild variant="outline" className="min-h-11 w-full sm:w-auto">
-        <Link to={`/scans/${scan.id}`}>{t("guardrails.openScanChannel")}<ArrowUpRight aria-hidden size={14} /></Link>
-      </Button>
     </div>
   );
 }

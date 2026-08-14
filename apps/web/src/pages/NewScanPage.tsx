@@ -499,11 +499,12 @@ export function NewScanPage() {
       {error && <AlertBanner>{error}</AlertBanner>}
       {started && (
         <AlertBanner tone="success">
-          {t("newScan.accepted")} {" "}
-          <Link to={`/scans/${started}`} className="underline underline-offset-4">
-            {t("newScan.openActive")}
-          </Link>
-          .
+          <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
+            <span>{t("newScan.accepted")}</span>
+            <Button asChild size="sm" className="shrink-0">
+              <Link to={`/scans/${started}`}>{t("newScan.openActive")}<HugeiconsIcon icon={ArrowRight01Icon} size={12} /></Link>
+            </Button>
+          </div>
         </AlertBanner>
       )}
 

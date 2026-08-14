@@ -223,7 +223,7 @@ export function RepositoryEnrollmentForm({ active, busy, onEnroll }: {
                 <StepHeading code="02 / GITHUB AUTHORITY CHAIN" id="github-authority-title" title={t("guardrails.githubChainTitle")}>
                   {t("guardrails.githubChainDescription")}
                 </StepHeading>
-                <Button type="button" variant="outline" className="min-h-11" disabled={loading || flowId !== null} onClick={() => void connectGitHub()}><Plus aria-hidden size={14} />{connections.length > 0 ? t("guardrails.createAnotherGitHubApp") : t("guardrails.connectGitHub")}</Button>
+                <Button type="button" variant="configuration" className="min-h-11" disabled={loading || flowId !== null} onClick={() => void connectGitHub()}><Plus aria-hidden size={14} />{connections.length > 0 ? t("guardrails.createAnotherGitHubApp") : t("guardrails.connectGitHub")}</Button>
               </div>
               <div aria-live="polite" className="min-h-5 font-mono text-[9px] uppercase text-muted-foreground">{flowMessage ?? t("guardrails.connectionsAvailable", { count: connections.length })}</div>
               {error && <AlertBanner>{error}</AlertBanner>}
