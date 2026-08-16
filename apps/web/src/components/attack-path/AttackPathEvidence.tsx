@@ -95,7 +95,7 @@ export function AttackPathEvidence({
       )}
 
       {node.code && (
-        <div className="min-w-0 border-t bg-[#060609]">
+        <div className="min-w-0 border-t bg-[var(--surface-code)]">
           <div className="flex items-center justify-between border-b px-4 py-2 font-mono text-[8px] uppercase tracking-wider text-muted-foreground">
             <span className="inline-flex items-center gap-2">
               <FileCode2 aria-hidden size={12} />{node.language ?? "source"}
@@ -104,7 +104,7 @@ export function AttackPathEvidence({
           </div>
           <pre
             className={cx(
-              "max-w-full overflow-auto whitespace-pre py-3 font-mono text-[10px] leading-5 text-[#b9bac8] [tab-size:2]",
+              "max-w-full overflow-auto whitespace-pre py-3 font-mono text-[10px] leading-5 text-secondary-foreground [tab-size:2]",
               compact ? "max-h-52" : "max-h-[34rem]",
             )}
           >

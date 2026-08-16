@@ -24,6 +24,7 @@ import { ScansPage } from "./pages/ScansPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { ConnectionsPage } from "./pages/ConnectionsPage";
 import { LanguageSwitcher } from "./components/LanguageSwitcher";
+import { ThemeSwitcher } from "./components/ThemeSwitcher";
 import { useI18n, type TranslationKey } from "./i18n";
 
 const nav: ReadonlyArray<readonly [string, TranslationKey]> = [["/", "nav.overview"], ["/scans", "nav.runs"], ["/guardrails", "nav.guardrails"], ["/scans/new", "nav.operate"], ["/compare", "nav.compare"], ["/activity", "nav.activity"], ["/settings", "nav.system"]];
@@ -54,7 +55,7 @@ export function App() {
     return <Routes><Route path="/scans/:id/report" element={<ScanReportPage />} /><Route path="/compare/report" element={<CompareReportPage />} /></Routes>;
   }
 
-  return <div className="min-h-screen overflow-x-hidden pb-20">
+  return <div className="min-h-screen overflow-x-hidden pb-24 sm:pb-20">
     <header className="sticky top-0 z-40 border-b border-border bg-background/95 backdrop-blur-md">
       <div className="flex h-12 items-stretch">
         <Link to="/" className="flex min-w-0 flex-1 items-center gap-2 border-r px-3 sm:min-w-52 sm:flex-none sm:px-4">
@@ -64,6 +65,7 @@ export function App() {
         <div className="hidden flex-1 xl:block"><NavStrip /></div>
         <div className="ml-auto flex items-stretch">
           <div className="hidden items-center gap-2 border-l px-4 font-mono text-[9px] text-muted-foreground 2xl:flex"><span className={cx("size-1.5 rounded-full", current ? "bg-primary" : "bg-chart-2")} />{current ? t("shell.engineLive", { count: active.length }) : t("shell.engineReady")}</div>
+          <ThemeSwitcher />
           <LanguageSwitcher />
           <Button asChild className="h-full border-y-0 border-r-0 px-3 sm:px-4"><Link to="/scans/new"><HugeiconsIcon icon={PlusSignIcon} size={13} />{t("shell.launch")}</Link></Button>
           <Sheet>
@@ -102,11 +104,11 @@ export function App() {
 
 function CommandDock({ current, open, onOpenChange, syncing, onReindex, onNavigate }: { current?: ScanRun; open: boolean; onOpenChange: (open: boolean) => void; syncing: boolean; onReindex: () => void; onNavigate: (to: string) => void }) {
   const { t } = useI18n();
-  return <div className="fixed inset-x-0 bottom-3 z-40 mx-auto w-[calc(100%-1.5rem)] max-w-5xl border border-border bg-[#0b0b12]/96 shadow-[0_18px_60px_rgba(0,0,0,.55)] backdrop-blur-md">
+  return <div className="fixed inset-x-0 bottom-3 z-40 mx-auto w-[calc(100%-1.5rem)] max-w-5xl border border-border bg-[var(--surface-overlay)] shadow-[0_18px_60px_rgba(0,0,0,.25)] dark:shadow-[0_18px_60px_rgba(0,0,0,.55)] backdrop-blur-md">
     <div className="flex h-12 items-stretch">
       <DropdownMenu open={open} onOpenChange={onOpenChange}>
         <DropdownMenuTrigger asChild><button type="button" className="group flex shrink-0 items-center gap-2 border-r border-chart-4/30 px-3 font-mono text-[9px] uppercase tracking-wider text-chart-4 transition hover:bg-chart-4/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-chart-4" aria-label={t("shell.openQuickActions")}><span>{t("shell.actions")}</span><span className="hidden border border-chart-4/25 px-1 py-0.5 text-[7px] text-muted-foreground sm:inline">⌘K</span></button></DropdownMenuTrigger>
-        <DropdownMenuContent side="top" align="start" sideOffset={8} className="w-72 rounded-none border border-chart-4/35 bg-[#0b0b12] p-1.5 shadow-[0_18px_60px_rgba(0,0,0,.65)] ring-0">
+        <DropdownMenuContent side="top" align="start" sideOffset={8} className="w-72 rounded-none border border-chart-4/35 bg-popover p-1.5 shadow-[0_18px_60px_rgba(0,0,0,.35)] dark:shadow-[0_18px_60px_rgba(0,0,0,.65)] ring-0">
           <DropdownMenuLabel className="px-2 py-2 font-mono text-[8px] uppercase tracking-[.14em] text-chart-4">{t("shell.quickActions")}</DropdownMenuLabel>
           <DropdownMenuSeparator />
           <DockMenuItem icon={PlusSignIcon} label={t("shell.newScan")} detail={t("shell.openSequencer")} shortcut="⌘↵" onSelect={() => onNavigate("/scans/new")} />

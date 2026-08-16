@@ -93,7 +93,7 @@ export function ScanReportPage() {
   const resolvedExecutionProfileLabel = executionProfileLabel(scan, t);
   const reasoningCopy = reasoningDeliveryCopy(scanReasoningDelivery(scan));
 
-  return <div className="report-root min-h-screen bg-[#040407] pb-16 text-foreground">
+  return <div className="report-root min-h-screen bg-[var(--surface-code)] pb-16 text-foreground">
     <div className="report-toolbar report-no-print sticky top-0 z-50 border-b border-border bg-background/95 backdrop-blur-md">
       <div className="mx-auto flex max-w-[210mm] items-center gap-1 px-2 py-3 sm:gap-2 sm:px-4">
         <Button asChild variant="ghost" size="sm"><Link to={`/scans/${scan.id}`}><HugeiconsIcon icon={ArrowLeft01Icon} size={13} />{t("report.back")}</Link></Button>
@@ -273,7 +273,7 @@ function FindingSheet({ finding, index, signal, reportId }: { finding: FindingDe
     </div>
     {locations.length > 0 && <ReportSection title="Affected locations"><div className="flex min-w-0 flex-wrap gap-2">{locations.map((location) => <span key={location} className="report-copy max-w-full border border-border px-2 py-1 font-mono text-[8px] text-muted-foreground">{location}</span>)}</div></ReportSection>}
     <ReportSection title="Evidence excerpt">
-      {evidence.blocks.length ? <div className="space-y-3">{evidence.blocks.map((block) => <article key={block.id} className="report-evidence-block border border-border bg-[#060609]/70"><div className="grid min-w-0 gap-1 border-b border-border px-3 py-2 sm:grid-cols-[minmax(0,1fr)_auto]"><div className="min-w-0"><strong className="report-copy block text-[9px]">{block.label}</strong><span className="report-copy mt-1 block font-mono text-[7px] text-primary">{block.path}</span></div><span className="font-mono text-[7px] uppercase text-muted-foreground">{block.role}</span></div><p className="report-copy px-3 pt-2 text-[9px] leading-4 text-muted-foreground">{block.explanation.text}</p><pre className="report-code-excerpt"><code>{block.code.text}</code></pre></article>)}</div> : <TextBlocks lines={boundedText(finding.codeEvidence, 2, 320)} fallback="Nenhuma evidência estruturada adicional foi preservada neste artefato." />}
+      {evidence.blocks.length ? <div className="space-y-3">{evidence.blocks.map((block) => <article key={block.id} className="report-evidence-block border border-border bg-card/70"><div className="grid min-w-0 gap-1 border-b border-border px-3 py-2 sm:grid-cols-[minmax(0,1fr)_auto]"><div className="min-w-0"><strong className="report-copy block text-[9px]">{block.label}</strong><span className="report-copy mt-1 block font-mono text-[7px] text-primary">{block.path}</span></div><span className="font-mono text-[7px] uppercase text-muted-foreground">{block.role}</span></div><p className="report-copy px-3 pt-2 text-[9px] leading-4 text-muted-foreground">{block.explanation.text}</p><pre className="report-code-excerpt"><code>{block.code.text}</code></pre></article>)}</div> : <TextBlocks lines={boundedText(finding.codeEvidence, 2, 320)} fallback="Nenhuma evidência estruturada adicional foi preservada neste artefato." />}
       {evidence.hidden > 0 && <p className="mt-2 font-mono text-[7px] uppercase text-muted-foreground">+ {evidence.hidden} evidence block(s) remain available in the full finding.</p>}
     </ReportSection>
     <div className="mt-4 grid gap-4 sm:grid-cols-2">
