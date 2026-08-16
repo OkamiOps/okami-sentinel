@@ -7,7 +7,7 @@
 @custom-variant dark (&:is(.dark *));
 
 @plugin "daisyui" {
-  themes: bench --default;
+  themes: bench, bench-light;
 }
 
 @plugin "daisyui/theme" {
@@ -31,6 +31,35 @@
   --color-success: oklch(78% 0.16 150);
   --color-warning: oklch(82% 0.16 85);
   --color-error: oklch(65% 0.22 25);
+  --radius-selector: 0.15rem;
+  --radius-field: 0.15rem;
+  --radius-box: 0.15rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+@plugin "daisyui/theme" {
+  name: "bench-light";
+  default: false;
+  prefersdark: false;
+  color-scheme: light;
+  --color-base-100: #f8f8fa;
+  --color-base-200: #eeeef2;
+  --color-base-300: #e2e2e8;
+  --color-base-content: #0b0b12;
+  --color-primary: oklch(55% 0.14 200);
+  --color-primary-content: #ffffff;
+  --color-secondary: oklch(55% 0.22 340);
+  --color-secondary-content: #ffffff;
+  --color-accent: oklch(58% 0.16 45);
+  --color-accent-content: #ffffff;
+  --color-neutral: #d8d8e0;
+  --color-neutral-content: #3a3a48;
+  --color-info: oklch(55% 0.14 200);
+  --color-success: oklch(52% 0.14 150);
+  --color-warning: oklch(62% 0.16 85);
+  --color-error: oklch(52% 0.20 25);
   --radius-selector: 0.15rem;
   --radius-field: 0.15rem;
   --radius-box: 0.15rem;
@@ -72,7 +101,37 @@
   --radius-xl: 0.25rem;
 }
 
-:root,
+:root {
+  --background: #f8f8fa;
+  --foreground: #0b0b12;
+  --card: #ffffff;
+  --card-foreground: #0b0b12;
+  --popover: #ffffff;
+  --popover-foreground: #0b0b12;
+  --primary: oklch(55% 0.14 200);
+  --primary-foreground: #ffffff;
+  --secondary: #eeeef2;
+  --secondary-foreground: #3a3a48;
+  --muted: #eeeef2;
+  --muted-foreground: #5a5a6e;
+  --accent: #e2e2e8;
+  --accent-foreground: #0b0b12;
+  --destructive: oklch(55% 0.22 340);
+  --border: #d4d4dc;
+  --input: #c8c8d4;
+  --ring: oklch(55% 0.14 200);
+  --chart-1: oklch(58% 0.16 45);
+  --chart-2: oklch(52% 0.14 150);
+  --chart-3: oklch(62% 0.16 85);
+  --chart-4: oklch(55% 0.22 340);
+  --chart-5: oklch(55% 0.14 200);
+  --radius: 0.15rem;
+  --surface-raised: #ffffff;
+  --surface-overlay: rgba(255, 255, 255, 0.96);
+  --surface-code: #f4f4f8;
+  --grid-color: rgba(0, 0, 0, 0.04);
+}
+
 .dark {
   --background: #060609;
   --foreground: #f4f4f8;
@@ -98,6 +157,10 @@
   --chart-4: oklch(70% 0.27 340);
   --chart-5: oklch(82% 0.14 200);
   --radius: 0.15rem;
+  --surface-raised: #0b0b12;
+  --surface-overlay: rgba(11, 11, 18, 0.96);
+  --surface-code: #060609;
+  --grid-color: rgba(255, 255, 255, 0.03);
 }
 
 @layer base {
@@ -109,8 +172,8 @@
     overflow-x: hidden;
     font-feature-settings: "ss02", "ss03", "cv11";
     background-image:
-      linear-gradient(color-mix(in srgb, var(--border) 14%, transparent) 1px, transparent 1px),
-      linear-gradient(90deg, color-mix(in srgb, var(--border) 10%, transparent) 1px, transparent 1px);
+      linear-gradient(var(--grid-color) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid-color) 1px, transparent 1px);
     background-size: 48px 48px;
   }
   button, a { -webkit-tap-highlight-color: transparent; }
@@ -145,7 +208,7 @@
 .bench-corners::after { right: -1px; bottom: -1px; border-right: 1px solid var(--primary); border-bottom: 1px solid var(--primary); }
 
 .scanline {
-  background-image: repeating-linear-gradient(0deg, transparent 0, transparent 3px, rgb(255 255 255 / 0.012) 4px);
+  background-image: repeating-linear-gradient(0deg, transparent 0, transparent 3px, var(--grid-color) 4px);
 }
 
 .recharts-cartesian-grid line { stroke: color-mix(in srgb, var(--foreground) 8%, transparent); }
@@ -177,11 +240,15 @@
   overflow: hidden;
   padding: 14mm 15mm 12mm;
   background:
-    linear-gradient(color-mix(in srgb, var(--border) 11%, transparent) 1px, transparent 1px),
-    linear-gradient(90deg, color-mix(in srgb, var(--border) 8%, transparent) 1px, transparent 1px),
-    #08080d;
+    linear-gradient(var(--grid-color) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-color) 1px, transparent 1px),
+    var(--surface-code);
   background-size: 12mm 12mm;
   border: 1px solid var(--border);
+  box-shadow: 0 32px 100px rgb(0 0 0 / .25);
+}
+
+.dark .report-sheet {
   box-shadow: 0 32px 100px rgb(0 0 0 / .45);
 }
 
@@ -263,10 +330,10 @@
 @page { size: A4; margin: 0; }
 
 @media print {
-  html, body, #root { width: 210mm; min-height: 297mm; background: #08080d !important; }
+  html, body, #root { width: 210mm; min-height: 297mm; background: var(--surface-code) !important; }
   body { background-image: none !important; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
   .report-no-print { display: none !important; }
-  .report-root { padding: 0 !important; background: #08080d !important; }
+  .report-root { padding: 0 !important; background: var(--surface-code) !important; }
   .report-stack { display: block; padding: 0; }
   .report-sheet {
     width: 210mm;

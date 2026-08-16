@@ -64,7 +64,7 @@ export function CompareReportPage() {
   const winner = ranking[0];
   const backHref = `/compare?ids=${result.scans.map((scan) => scan.id).join(",")}`;
 
-  return <div className="report-root min-h-screen bg-[#040407] pb-16 text-foreground">
+  return <div className="report-root min-h-screen bg-[var(--surface-code)] pb-16 text-foreground">
     <div className="report-toolbar report-no-print sticky top-0 z-50 border-b border-border bg-background/95 backdrop-blur-md">
       <div className="mx-auto flex max-w-[210mm] items-center gap-1 px-2 py-3 sm:gap-2 sm:px-4">
         <Button asChild variant="ghost" size="sm"><Link to={backHref}><HugeiconsIcon icon={ArrowLeft01Icon} size={13} />{t("report.back")}</Link></Button>

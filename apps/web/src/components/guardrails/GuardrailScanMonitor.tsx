@@ -198,12 +198,12 @@ export function GuardrailScanMonitor({ gate, onScanTerminal }: { gate: GateRun; 
           </div>
         </div>
 
-        <div className="min-w-0 bg-[#060609]">
+        <div className="min-w-0 bg-[var(--surface-code)]">
           <div className="flex items-center justify-between gap-3 border-b px-4 py-3 sm:px-5">
             <div><div className="bench-label text-primary">STDOUT / EVENT STREAM</div><div className="mt-1 text-xs font-semibold">{t("guardrails.eventStream")}</div></div>
             <span className={cx("font-mono text-[8px] uppercase", scan.status === "running" ? "text-chart-2" : "text-muted-foreground")}>{scan.status === "running" ? t("guardrails.streamLive") : t("guardrails.streamClosed")}</span>
           </div>
-          <pre ref={logRef} className="h-[23rem] max-w-full overflow-auto whitespace-pre-wrap break-words p-4 font-mono text-[10px] leading-5 text-[#b9bac8] sm:p-5">{logs.length ? logs.join("\n") : scan.status === "running" ? t("guardrails.waitingEvents") : t("guardrails.noEvents")}</pre>
+          <pre ref={logRef} className="h-[23rem] max-w-full overflow-auto whitespace-pre-wrap break-words p-4 font-mono text-[10px] leading-5 text-secondary-foreground sm:p-5">{logs.length ? logs.join("\n") : scan.status === "running" ? t("guardrails.waitingEvents") : t("guardrails.noEvents")}</pre>
         </div>
       </div>
       {error && <div className="border-t p-4"><AlertBanner>{error}</AlertBanner></div>}
