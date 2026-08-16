@@ -55,7 +55,7 @@
   --color-accent: oklch(58% 0.16 45);
   --color-accent-content: #ffffff;
   --color-neutral: #d8d8e0;
-  --color-neutral-content: #3a3a48;
+  --color-neutral-content: #4a4a5a;
   --color-info: oklch(55% 0.14 200);
   --color-success: oklch(52% 0.14 150);
   --color-warning: oklch(62% 0.16 85);
@@ -113,7 +113,7 @@
   --secondary: #eeeef2;
   --secondary-foreground: #3a3a48;
   --muted: #eeeef2;
-  --muted-foreground: #5a5a6e;
+  --muted-foreground: #4a4a5a;
   --accent: #e2e2e8;
   --accent-foreground: #0b0b12;
   --destructive: oklch(55% 0.22 340);

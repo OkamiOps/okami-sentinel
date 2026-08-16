@@ -55,7 +55,7 @@ export function App() {
     return <Routes><Route path="/scans/:id/report" element={<ScanReportPage />} /><Route path="/compare/report" element={<CompareReportPage />} /></Routes>;
   }
 
-  return <div className="min-h-screen overflow-x-hidden pb-20">
+  return <div className="min-h-screen overflow-x-hidden pb-24 sm:pb-20">
     <header className="sticky top-0 z-40 border-b border-border bg-background/95 backdrop-blur-md">
       <div className="flex h-12 items-stretch">
         <Link to="/" className="flex min-w-0 flex-1 items-center gap-2 border-r px-3 sm:min-w-52 sm:flex-none sm:px-4">
