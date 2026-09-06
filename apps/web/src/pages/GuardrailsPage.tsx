@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   DecisionGraphNode,
   GateArtifact,
@@ -28,6 +28,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { formatDuration, formatUsd } from "../format";
+import { formatApiError } from "../lib/http";
 import { useI18n } from "../i18n";
 
 type GuardrailsState =
@@ -389,6 +390,9 @@ function GuardrailLaunchpad({ repositories, readiness, gates, onRun, onOpenGate 
   const [selectedGateId, setSelectedGateId] = useState<string | null>(null);
   const [projectQuery, setProjectQuery] = useState("");
   const [linkedScan, setLinkedScan] = useState<ScanRun | null>(null);
+  const [linkedScanState, setLinkedScanState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [linkedScanError, setLinkedScanError] = useState<string | null>(null);
+  const linkedScanRequest = useRef(0);
   const repository = repositories.find((item) => item.repositoryKey === selectedKey) ?? repositories[0] ?? null;
   const repositoryGates = repository ? [...gates].filter((gate) => gate.repositoryKey === repository.repositoryKey).sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt)) : [];
   const selectedGate = repositoryGates.find((gate) => gate.id === selectedGateId) ?? repositoryGates[0] ?? null;
@@ -397,17 +401,34 @@ function GuardrailLaunchpad({ repositories, readiness, gates, onRun, onOpenGate 
   const matchingRepositories = repositories.filter((item) => `${item.displayName} ${item.defaultBranch} ${item.defaultExecutor}`.toLowerCase().includes(projectQuery.trim().toLowerCase()));
   const setupHref = repository ? `/guardrails/setup?repository=${encodeURIComponent(repository.repositoryKey)}` : "/guardrails/setup";
 
+  const loadLinkedScan = useCallback(async (scanId: string) => {
+    const requestId = ++linkedScanRequest.current;
+    setLinkedScanState("loading");
+    setLinkedScanError(null);
+    try {
+      const { scan } = await api.getScan(scanId);
+      if (requestId !== linkedScanRequest.current) return;
+      setLinkedScan(scan);
+      setLinkedScanState("ready");
+    } catch (error) {
+      if (requestId !== linkedScanRequest.current) return;
+      setLinkedScan(null);
+      setLinkedScanState("error");
+      setLinkedScanError(formatApiError(error, t));
+    }
+  }, [t]);
+
   useEffect(() => {
-    let current = true;
+    linkedScanRequest.current++;
     setLinkedScan(null);
-    if (!selectedGate?.scanId) return () => { current = false; };
-    void api.getScan(selectedGate.scanId).then(({ scan }) => {
-      if (current) setLinkedScan(scan);
-    }).catch(() => {
-      if (current) setLinkedScan(null);
-    });
-    return () => { current = false; };
-  }, [selectedGate?.scanId]);
+    setLinkedScanError(null);
+    if (!selectedGate?.scanId) {
+      setLinkedScanState("idle");
+      return;
+    }
+    void loadLinkedScan(selectedGate.scanId);
+    return () => { linkedScanRequest.current++; };
+  }, [loadLinkedScan, selectedGate?.scanId]);
 
   return <section className="bench-panel bench-corners mb-16 min-w-0 overflow-hidden" aria-labelledby="guardrail-launchpad-title">
     <div className="grid min-h-[42rem] min-w-0 lg:grid-cols-[17rem_19rem_minmax(0,1fr)]">
@@ -425,7 +446,7 @@ function GuardrailLaunchpad({ repositories, readiness, gates, onRun, onOpenGate 
         {repository ? <>
           <header className="grid gap-5 border-b p-5 md:grid-cols-[minmax(0,1fr)_auto] md:p-7"><div className="min-w-0"><div className={cx("flex items-center gap-2 bench-label", scanReady ? "text-chart-2" : "text-destructive")}>{scanReady ? <ShieldCheck aria-hidden size={14} /> : <ShieldAlert aria-hidden size={14} />}{scanReady ? t("guardrails.readyToProtect") : t("guardrails.actionRequired")}</div><h2 className="mt-3 break-words font-heading text-2xl font-semibold">{repository.displayName}</h2><p className="mt-2 font-mono text-[8px] uppercase text-muted-foreground">{repository.source} · {repository.defaultBranch} · {repository.defaultExecutor}</p></div><div className="flex gap-2 md:flex-col"><Button asChild variant="configuration" size="sm"><Link to={setupHref}><Workflow aria-hidden size={13} />{t("guardrails.setup")}</Link></Button><Button size="sm" disabled={!scanReady} onClick={() => onRun(repository.repositoryKey)}><ArrowRight aria-hidden size={13} />{t("guardrails.scanNow")}</Button></div></header>
           <div className="grid gap-px border-b bg-border sm:grid-cols-3"><SignalFact label={t("guardrails.projectAuthority")} value={repository.source === "github" ? "GitHub App" : "Local root"} primary={repoReadiness?.authorityReady} danger={!repoReadiness?.authorityReady} /><SignalFact label={t("guardrails.projectBaseline")} value={repoReadiness?.baselineReady ? t("guardrails.authorized") : t("guardrails.actionRequired")} primary={repoReadiness?.baselineReady} danger={!repoReadiness?.baselineReady} /><SignalFact label={t("guardrails.projectExecution")} value={repository.defaultExecutor} primary={scanReady} danger={!scanReady} /></div>
-          {selectedGate ? <div className="p-5 md:p-7"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-3"><GateOutcomeBadge outcome={selectedGate.outcome} status={selectedGate.status} /><span className="font-mono text-[8px] uppercase text-muted-foreground">{formatProjectDate(selectedGate.startedAt, locale)} · {formatProjectTime(selectedGate.startedAt, locale)}</span></div><span className="font-mono text-[8px] uppercase text-muted-foreground">{selectedGate.id}</span></div><div className="mt-7"><div className="bench-label">{t("guardrails.projectTarget")}</div><h3 className="mt-3 break-words font-heading text-3xl font-semibold">{selectedGate.pullRequestNumber ? `PR #${selectedGate.pullRequestNumber}` : selectedGate.headRef}</h3><p className="mt-2 break-all font-mono text-[9px] text-muted-foreground">{selectedGate.baseRef} → {selectedGate.headRef}</p></div><RunInsightPanel gate={selectedGate} scan={linkedScan} t={t} /><div className="mt-7 grid gap-px bg-border sm:grid-cols-2"><RunFact label={t("guardrails.factTargetSha")} value={selectedGate.resolvedHeadSha ?? "—"} /><RunFact label={t("guardrails.factPolicy")} value={selectedGate.policySha ?? "—"} /><RunFact label={t("guardrails.factBaseline")} value={selectedGate.baselineCommit ?? t("guardrails.noBaseline")} /><RunFact label={t("guardrails.factPublication")} value={selectedGate.publishStatus} /></div><Button className="mt-7 w-full" onClick={() => onOpenGate(selectedGate)}>{t("guardrails.openGate")}<ArrowRight aria-hidden size={14} /></Button></div> : <div className="p-8"><ProjectChartEmpty title={t("guardrails.projectNoGates")} detail={t("guardrails.projectNoGatesDescription")} /></div>}
+          {selectedGate ? <div className="p-5 md:p-7"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-3"><GateOutcomeBadge outcome={selectedGate.outcome} status={selectedGate.status} /><span className="font-mono text-[8px] uppercase text-muted-foreground">{formatProjectDate(selectedGate.startedAt, locale)} · {formatProjectTime(selectedGate.startedAt, locale)}</span></div><span className="font-mono text-[8px] uppercase text-muted-foreground">{selectedGate.id}</span></div><div className="mt-7"><div className="bench-label">{t("guardrails.projectTarget")}</div><h3 className="mt-3 break-words font-heading text-3xl font-semibold">{selectedGate.pullRequestNumber ? `PR #${selectedGate.pullRequestNumber}` : selectedGate.headRef}</h3><p className="mt-2 break-all font-mono text-[9px] text-muted-foreground">{selectedGate.baseRef} → {selectedGate.headRef}</p></div><RunInsightPanel gate={selectedGate} scan={linkedScan} scanState={linkedScanState} scanError={linkedScanError} onRetry={() => selectedGate.scanId && void loadLinkedScan(selectedGate.scanId)} t={t} /><div className="mt-7 grid gap-px bg-border sm:grid-cols-2"><RunFact label={t("guardrails.factTargetSha")} value={selectedGate.resolvedHeadSha ?? "—"} /><RunFact label={t("guardrails.factPolicy")} value={selectedGate.policySha ?? "—"} /><RunFact label={t("guardrails.factBaseline")} value={selectedGate.baselineCommit ?? t("guardrails.noBaseline")} /><RunFact label={t("guardrails.factPublication")} value={selectedGate.publishStatus} /></div><Button className="mt-7 w-full" onClick={() => onOpenGate(selectedGate)}>{t("guardrails.openGate")}<ArrowRight aria-hidden size={14} /></Button></div> : <div className="p-8"><ProjectChartEmpty title={t("guardrails.projectNoGates")} detail={t("guardrails.projectNoGatesDescription")} /></div>}
         </> : <div className="p-8"><EmptyState title={t("guardrails.noRepository")} description={t("guardrails.noRepositoryDescription")} /></div>}
       </main>
     </div>
@@ -434,7 +455,13 @@ function GuardrailLaunchpad({ repositories, readiness, gates, onRun, onOpenGate 
 
 function RunFact({ label, value }: { label: string; value: string }) { return <div className="min-w-0 bg-background p-4"><div className="bench-label">{label}</div><div className="mt-2 break-all font-mono text-[9px] leading-5">{value}</div></div>; }
 
-function RunInsightPanel({ gate, scan, t }: { gate: GateRun; scan: ScanRun | null; t: ReturnType<typeof useI18n>["t"] }) {
+function RunInsightPanel({ gate, scan, scanState, scanError, onRetry, t }: { gate: GateRun; scan: ScanRun | null; scanState: "idle" | "loading" | "ready" | "error"; scanError: string | null; onRetry: () => void; t: ReturnType<typeof useI18n>["t"] }) {
+  if (scanState === "error" && !scan) {
+    return <section className="mt-7"><AlertBanner tone="warning"><div className="flex flex-wrap items-center justify-between gap-3"><span>{scanError ?? t("guardrails.scanUnavailable")}</span><Button type="button" variant="outline" size="sm" onClick={onRetry}>{t("common.retry")}</Button></div></AlertBanner></section>;
+  }
+  if (scanState === "loading" && !scan) {
+    return <section className="mt-7"><Loading label={t("guardrails.telemetryLoading")} /></section>;
+  }
   const highPlus = scan ? scan.severity.critical + scan.severity.high : null;
   const severity = scan ? [
     { label: "Critical", value: scan.severity.critical, color: "var(--chart-4)" },

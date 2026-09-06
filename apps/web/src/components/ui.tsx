@@ -44,11 +44,15 @@ export function StatusBadge({ status }: { status: string }) {
 }
 
 const severityTone: Record<string, string> = { critical: "border-destructive bg-destructive text-white", high: "border-destructive/50 bg-destructive/10 text-destructive", medium: "border-chart-3/50 bg-chart-3/10 text-chart-3", low: "border-chart-5/50 bg-chart-5/10 text-chart-5", info: "border-border bg-muted text-muted-foreground", unknown: "border-border bg-transparent text-muted-foreground" };
-export function SeverityBadge({ severity }: { severity: string }) { return <span className={cx("inline-flex h-5 items-center border px-1.5 font-mono text-[9px] font-semibold uppercase tracking-wide", severityTone[severity] ?? severityTone.unknown)}>{severity}</span>; }
+export function SeverityBadge({ severity }: { severity: string }) {
+  const { t } = useI18n();
+  const labels: Record<string, TranslationKey> = { critical: "compare.severity.critical", high: "compare.severity.high", medium: "compare.severity.medium", low: "compare.severity.low", info: "compare.severity.info", unknown: "common.unknown" };
+  return <span className={cx("inline-flex h-5 items-center border px-1.5 font-mono text-[9px] font-semibold uppercase tracking-wide", severityTone[severity] ?? severityTone.unknown)}>{labels[severity] ? t(labels[severity]) : severity}</span>;
+}
 
 export function AlertBanner({ children, tone = "error" }: { children: ReactNode; tone?: "error" | "warning" | "success" | "info" }) {
   const map = { error: "border-destructive/45 bg-destructive/8 text-destructive", warning: "border-chart-3/40 bg-chart-3/8 text-chart-3", success: "border-chart-2/40 bg-chart-2/8 text-chart-2", info: "border-chart-5/40 bg-chart-5/8 text-chart-5" };
-  return <div className={cx("mb-4 border px-3 py-2.5 text-xs", map[tone])}>{children}</div>;
+  return <div role={tone === "error" ? "alert" : "status"} aria-live={tone === "error" ? "assertive" : "polite"} className={cx("mb-4 border px-3 py-2.5 text-xs", map[tone])}>{children}</div>;
 }
 
 export function EmptyState({ title, description, icon }: { title: string; description?: string; icon?: IconSvgElement }) {

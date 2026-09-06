@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -28,6 +29,7 @@ import type {
   ProviderModel,
 } from "@csb/shared";
 import { api } from "../api";
+import { formatApiError } from "../lib/http";
 import { AlertBanner, PageHeader, Panel, Readout, cx } from "../components/ui";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -171,11 +173,13 @@ export function NewScanPage() {
   const [engine, setEngine] = useState<ScannerEngine>(initial.engine ?? "codex-security");
   const [connections, setConnections] = useState<ProviderConnection[] | null>(null);
   const [connectionsError, setConnectionsError] = useState(false);
+  const [connectionsLoading, setConnectionsLoading] = useState(true);
   const [connectionId, setConnectionId] = useState(initial.connectionId ?? "");
   const [models, setModels] = useState<ProviderModel[]>([]);
   const [selectedModelId, setSelectedModelId] = useState<string | null>(initial.modelId ?? null);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState(false);
+  const [modelsRetryNonce, setModelsRetryNonce] = useState(0);
   const [compatibility, setCompatibility] = useState<ConnectionCompatibility | null>(null);
   const [compatibilityLoading, setCompatibilityLoading] = useState(false);
   const [compatibilityError, setCompatibilityError] = useState(false);
@@ -192,6 +196,18 @@ export function NewScanPage() {
   const compatibilityRequestRef = useRef(0);
   const capabilityAttemptRef = useRef<string | null>(null);
   const selectedRouteRef = useRef<string | null>(null);
+
+  const loadConnections = useCallback(async () => {
+    setConnectionsLoading(true);
+    setConnectionsError(false);
+    try {
+      setConnections(await api.listConnections());
+    } catch {
+      setConnectionsError(true);
+    } finally {
+      setConnectionsLoading(false);
+    }
+  }, []);
 
   const scanners = catalog?.scanners ?? placeholderScanners;
   const scanner = scanners.find((candidate) => candidate.engine === engine) ?? scanners[0];
@@ -262,11 +278,9 @@ export function NewScanPage() {
         setCatalog(scannerResponse);
       })
       .catch((caught) =>
-        setError(caught instanceof Error ? caught.message : t("newScan.runtimeUnavailable")),
+        setError(formatApiError(caught, t)),
       );
-    void api.listConnections()
-      .then(setConnections)
-      .catch(() => setConnectionsError(true));
+    void loadConnections();
     void api
       .listFs(initial.repositoryPath || undefined)
       .then((response) => {
@@ -274,9 +288,9 @@ export function NewScanPage() {
         setRepositoryPath((current) => current || response.path);
       })
       .catch((caught) =>
-        setError(caught instanceof Error ? caught.message : t("newScan.folderUnavailable")),
+        setError(formatApiError(caught, t)),
       );
-  }, [initial.repositoryPath, t]);
+  }, [initial.repositoryPath, loadConnections, t]);
 
   useEffect(() => {
     localStorage.setItem(
@@ -346,7 +360,7 @@ export function NewScanPage() {
       .catch(() => { if (active) setModelsError(true); })
       .finally(() => { if (active) setModelsLoading(false); });
     return () => { active = false; };
-  }, [connectionId, retryIntent?.connectionId, retryIntent?.modelId, selectedConnection?.id, selectedConnection?.modelSelectionMode]);
+  }, [connectionId, modelsRetryNonce, retryIntent?.connectionId, retryIntent?.modelId, selectedConnection?.id, selectedConnection?.modelSelectionMode]);
 
   useEffect(() => {
     let active = true;
@@ -416,7 +430,7 @@ export function NewScanPage() {
     try {
       setFsState(await api.listFs(directory));
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : t("newScan.folderUnavailable"));
+      setError(formatApiError(caught, t));
     }
   }
 
@@ -654,10 +668,10 @@ export function NewScanPage() {
               <div className="min-w-0 border-b p-4 lg:border-b-0 lg:border-r">
                 <div className="bench-label mb-3">{t("newScan.connectionRoute")}</div>
                 <p className="mb-3 text-[10px] leading-relaxed text-muted-foreground">{t("newScan.connectionHelp")}</p>
-                {connections === null && !connectionsError ? (
+                {connectionsLoading && connections === null ? (
                   <div role="status" className="border border-dashed p-3 text-[10px] text-muted-foreground">{t("newScan.connectionLoading")}</div>
                 ) : connectionsError ? (
-                  <div className="border border-destructive/40 bg-destructive/5 p-3 text-[10px] leading-relaxed text-destructive">{t("newScan.connectionError")}</div>
+                  <div role="alert" className="border border-destructive/40 bg-destructive/5 p-3 text-[10px] leading-relaxed text-destructive"><p>{t("newScan.connectionError")}</p><div className="mt-3 flex flex-wrap items-center gap-3"><Button type="button" variant="outline" size="sm" onClick={() => void loadConnections()}>{t("common.retry")}</Button><Link to="/settings/connections" className="text-primary underline underline-offset-4">{t("newScan.manageConnections")}</Link></div></div>
                 ) : connections?.length === 0 ? (
                   <div className="border border-dashed p-3 text-[10px] leading-relaxed text-muted-foreground"><p>{t("newScan.connectionEmpty")}</p><Link to="/settings/connections" className="mt-2 inline-block text-primary underline underline-offset-4">{t("newScan.manageConnections")}</Link></div>
                 ) : (
@@ -678,7 +692,7 @@ export function NewScanPage() {
                 ) : modelsLoading ? (
                   <div role="status" className="border border-dashed p-3 text-[10px] text-muted-foreground">{t("newScan.modelLoading")}</div>
                 ) : modelsError ? (
-                  <div className="border border-destructive/40 bg-destructive/5 p-3 text-[10px] text-destructive">{t("newScan.modelError")}</div>
+                  <div role="alert" className="border border-destructive/40 bg-destructive/5 p-3 text-[10px] leading-relaxed text-destructive"><p>{t("newScan.modelError")}</p><Button type="button" variant="outline" size="sm" className="mt-3" onClick={() => setModelsRetryNonce((current) => current + 1)}>{t("common.retry")}</Button></div>
                 ) : selectedConnectionModels.length === 0 ? (
                   <div className="border border-dashed p-3 text-[10px] leading-relaxed text-muted-foreground"><p>{t("newScan.modelEmpty")}</p><Link to="/settings/connections" className="mt-2 inline-block text-primary underline underline-offset-4">{t("newScan.manageConnections")}</Link></div>
                 ) : (

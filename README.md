@@ -360,7 +360,7 @@ See [localization architecture](docs/localization.md).
 | `MANTIS_CACHE_DIR` | `data/mantis-cache` | Local cache for the pinned Mantis skills |
 | `VULNHUNTER_REPOSITORY_URL` | `https://github.com/capitalone/vulnhunter.git` | VulnHunter source repository recorded as methodology provenance |
 | `VULNHUNTER_SOURCE_REF` | Reviewed commit label | VulnHunter methodology revision recorded as provenance; it is not fetched at runtime |
-| `CSB_HOST` | `127.0.0.1` | API bind address |
+| `CSB_HOST` | `127.0.0.1` | Loopback API bind address only; public/LAN binding is rejected because the local API has no global authentication. Do not expose it through a proxy or tunnel without an authenticated access layer. |
 | `CSB_PORT` | `8787` | API port |
 | `CSB_GITHUB_ACTIONS_WORKFLOW_SHA` | unavailable | Immutable 40-character Sentinel release SHA accepted by remote Actions callers |
 | `CSB_MAX_CONCURRENT_SCANS` | `8` | Maximum concurrent scanner processes |
@@ -376,7 +376,11 @@ pnpm dev:web      # web only
 pnpm typecheck
 pnpm test
 pnpm build
+pnpm --filter @csb/web exec playwright install chromium
+pnpm --filter @csb/web test:e2e
 ```
+
+Browser tests cover desktop/mobile and all five interface languages using a mocked API. They do not launch external scans or use real provider credentials.
 
 ```text
 okami-sentinel/

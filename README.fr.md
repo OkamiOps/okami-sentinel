@@ -365,7 +365,7 @@ Voir l’[architecture de localisation](docs/localization.fr.md).
 | `MANTIS_CACHE_DIR` | `data/mantis-cache` | Cache local des skills Mantis épinglés |
 | `VULNHUNTER_REPOSITORY_URL` | `https://github.com/capitalone/vulnhunter.git` | Dépôt source VulnHunter enregistré comme provenance de méthodologie |
 | `VULNHUNTER_SOURCE_REF` | Libellé de commit revu | Révision VulnHunter enregistrée comme provenance de méthodologie ; elle n’est pas récupérée au runtime |
-| `CSB_HOST` | `127.0.0.1` | Adresse d’écoute de l’API |
+| `CSB_HOST` | `127.0.0.1` | Adresse de boucle locale uniquement ; les adresses publiques/LAN sont refusées car l’API locale n’a pas d’authentification globale. Ne pas l’exposer via un proxy ou tunnel sans contrôle d’accès authentifié. |
 | `CSB_PORT` | `8787` | Port de l’API |
 | `CSB_GITHUB_ACTIONS_WORKFLOW_SHA` | indisponible | SHA immuable de release Sentinel à 40 caractères accepté par les callers distants |
 | `CSB_MAX_CONCURRENT_SCANS` | `8` | Nombre maximal de processus scanner simultanés |
@@ -379,7 +379,11 @@ pnpm dev:web      # web uniquement
 pnpm typecheck
 pnpm test
 pnpm build
+pnpm --filter @csb/web exec playwright install chromium
+pnpm --filter @csb/web test:e2e
 ```
+
+Les tests navigateur couvrent les ordinateurs, les mobiles et les cinq langues de l’interface avec une API simulée. Ils ne lancent aucun scan externe et n’utilisent aucun identifiant réel de fournisseur.
 
 ```text
 okami-sentinel/

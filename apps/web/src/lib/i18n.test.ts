@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
+import ts from "typescript";
 import { resolveLocale, translate } from "../i18n";
 import { CONNECTION_PRESETS } from "./connection-presets";
 
@@ -304,4 +306,37 @@ test("localizes Codex Security execution provenance and fail-closed Portable sta
   assert.equal(translate("fr", "scanDetail.repeat"), "Relancer Portable");
   assert.match(translate("en", "newScan.profile.portableReason"), /Sentinel/);
   assert.match(translate("en", "newScan.compatibilityPortableRunnerUnavailable"), /not available/i);
+});
+
+
+test("core scan flows declare every translation explicitly and retain placeholders", () => {
+  const source = ts.createSourceFile("i18n.tsx", readFileSync(new URL("../i18n.tsx", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const declared = new Map<string, Set<string>>();
+  const visit = (node: ts.Node) => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+      let initializer = node.initializer;
+      if (ts.isAsExpression(initializer) || ts.isSatisfiesExpression(initializer)) initializer = initializer.expression;
+      if (ts.isObjectLiteralExpression(initializer)) {
+        declared.set(node.name.text, new Set(initializer.properties.flatMap((property) =>
+          ts.isPropertyAssignment(property) && ts.isStringLiteral(property.name) ? [property.name.text] : [])));
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  const criticalErrors = new Set(["common.apiUnavailable", "common.apiInvalidResponse", "common.apiEmptyResponse", "common.requestFailed", "shell.engineChecking", "shell.apiOffline", "shell.lastUpdated"]);
+  const keys = [...declared.get("ptBR")!].filter((key) => /^(scans|scanDetail|compare)\./.test(key) || criticalErrors.has(key)) as Array<Parameters<typeof translate>[1]>;
+  assert.ok(keys.length > 100, "The audit must include the full critical-flow catalogue");
+  const placeholders = (value: string) => [...new Set(value.match(/\{\w+\}/g) ?? [])].sort();
+  for (const locale of ["en", "es", "de", "fr"] as const) {
+    // Inheriting English or Portuguese is convenient for legacy pages but is
+    // not a translation of these user-facing flows. Identical terms such as
+    // PID remain valid when explicitly supplied by that locale.
+    const explicit = new Set([...declared.get(locale)!, ...declared.get(`${locale}Ui`)!]);
+    assert.deepEqual(keys.filter((key) => !explicit.has(key)), [], `${locale}: missing explicit critical-flow translations`);
+    for (const key of keys) {
+      assert.ok(translate(locale, key).trim(), `${locale}.${key} must be readable`);
+      assert.deepEqual(placeholders(translate(locale, key)), placeholders(translate("pt-BR", key)), `${locale}.${key}: interpolation mismatch`);
+    }
+  }
 });

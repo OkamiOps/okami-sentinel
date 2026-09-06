@@ -42,3 +42,18 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      - name: Install browser for UI regression tests
+        run: pnpm --filter @csb/web exec playwright install --with-deps chromium
+
+      - name: Browser regression tests
+        run: pnpm --filter @csb/web test:e2e
+
+      - name: Preserve browser failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-failures
+          path: output/playwright-improvements/test-results/
+          if-no-files-found: ignore
+          retention-days: 7

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -39,6 +39,7 @@ import {
   AlertBanner,
   EmptyState,
   LiveDuration,
+  Loading,
   PageHeader,
   Panel,
   SeverityBadge,
@@ -66,6 +67,7 @@ import {
 } from "../lib/compare-decision";
 import { executionProfileLabel, hasExecutionProfileMismatch } from "../lib/execution-profile";
 import { scanTokenUsage } from "../lib/scan-cost";
+import { formatApiError } from "../lib/http";
 import { useI18n, type TranslationKey } from "../i18n";
 
 const changeOrder: CompareFindingChange[] = [
@@ -74,11 +76,11 @@ const changeOrder: CompareFindingChange[] = [
   "baseline_only",
   "both",
 ];
-const changeLabel: Record<CompareFindingChange, string> = {
-  candidate_only: "só candidato",
-  baseline_only: "só baseline",
-  both: "em ambos",
-  severity_changed: "severidade diferente",
+const changeLabel: Record<CompareFindingChange, TranslationKey> = {
+  candidate_only: "compare.change.candidateOnly",
+  baseline_only: "compare.change.baselineOnly",
+  both: "compare.change.both",
+  severity_changed: "compare.change.severityChanged",
 };
 const changeTone: Record<CompareFindingChange, string> = {
   candidate_only: "border-primary/45 bg-primary/10 text-primary",
@@ -86,13 +88,13 @@ const changeTone: Record<CompareFindingChange, string> = {
   both: "border-chart-2/45 bg-chart-2/10 text-chart-2",
   severity_changed: "border-chart-3/45 bg-chart-3/10 text-chart-3",
 };
-const severityRows: Array<[keyof SeverityCounts, string]> = [
-  ["critical", "Critical"],
-  ["high", "High"],
-  ["medium", "Medium"],
-  ["low", "Low"],
-  ["info", "Info"],
-  ["total", "Total"],
+const severityRows: Array<[keyof SeverityCounts, TranslationKey]> = [
+  ["critical", "compare.severity.critical"],
+  ["high", "compare.severity.high"],
+  ["medium", "compare.severity.medium"],
+  ["low", "compare.severity.low"],
+  ["info", "compare.severity.info"],
+  ["total", "compare.severity.total"],
 ];
 const objectives: Array<{ id: CompareObjective; label: TranslationKey; description: TranslationKey }> = [
   { id: "balanced", label: "compare.objective.balanced", description: "compare.objective.balancedDescription" },
@@ -107,23 +109,45 @@ const scanChartColors = ["var(--primary)", "var(--chart-3)", "var(--chart-2)", "
 export function ComparePage() {
   const { t } = useI18n();
   const [params] = useSearchParams();
+  const idsParam = params.get("ids") ?? "";
   const [scans, setScans] = useState<ScanRun[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [result, setResult] = useState<CompareResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [loadingScans, setLoadingScans] = useState(true);
+  const scansRequestRef = useRef(0);
+  const compareRequestRef = useRef(0);
+  const loadedIdsParamRef = useRef<string | null>(null);
+  const tRef = useRef(t);
+  tRef.current = t;
+
+  const loadScans = useCallback(async (requestedIds: string, syncUrlSelection: boolean) => {
+    const requestId = ++scansRequestRef.current;
+    setLoadingScans(true);
+    try {
+      const { scans: all } = await api.listScans();
+      if (requestId !== scansRequestRef.current) return;
+      const comparable = all.filter(isComparableScan);
+      setScans(comparable);
+      if (syncUrlSelection) {
+        const ids = requestedIds.split(",").filter(Boolean);
+        setSelected(ids.filter((id) => comparable.some((scan) => scan.id === id)).slice(0, MAX_COMPARE_SCANS));
+        loadedIdsParamRef.current = requestedIds;
+      } else {
+        setSelected((current) => current.filter((id) => comparable.some((scan) => scan.id === id)));
+      }
+      setError(null);
+    } catch (reason) {
+      if (requestId === scansRequestRef.current) setError(formatApiError(reason, tRef.current));
+    } finally {
+      if (requestId === scansRequestRef.current) setLoadingScans(false);
+    }
+  }, []);
 
   useEffect(() => {
-    void api
-      .listScans()
-      .then(({ scans: all }) => {
-        const comparable = all.filter(isComparableScan);
-        setScans(comparable);
-        const ids = (params.get("ids") ?? "").split(",").filter(Boolean);
-        setSelected(ids.filter((id) => comparable.some((scan) => scan.id === id)).slice(0, MAX_COMPARE_SCANS));
-      })
-      .catch((reason) => setError(reason instanceof Error ? reason.message : "Falha ao listar scans"));
-  }, [params]);
+    void loadScans(idsParam, loadedIdsParamRef.current !== idsParam);
+  }, [idsParam, loadScans]);
 
   const chosen = useMemo(
     () => selected.map((id) => scans.find((scan) => scan.id === id)).filter((scan): scan is ScanRun => Boolean(scan)),
@@ -136,6 +160,8 @@ export function ComparePage() {
       setError(t("compare.limit", { count: MAX_COMPARE_SCANS - 1 }));
       return;
     }
+    compareRequestRef.current += 1;
+    setBusy(false);
     setError(null);
     setSelected((current) => {
       if (current.includes(id)) return current.filter((item) => item !== id);
@@ -145,19 +171,23 @@ export function ComparePage() {
   }
 
   function promoteToBaseline(id: string) {
+    compareRequestRef.current += 1;
+    setBusy(false);
     setSelected((current) => [id, ...current.filter((item) => item !== id)]);
     setResult(null);
   }
 
   async function compare() {
+    const requestId = ++compareRequestRef.current;
     setBusy(true);
     setError(null);
     try {
-      setResult(await api.compare({ scanIds: selected }));
+      const next = await api.compare({ scanIds: selected });
+      if (requestId === compareRequestRef.current) setResult(next);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Falha na comparação");
+      if (requestId === compareRequestRef.current) setError(formatApiError(reason, tRef.current));
     } finally {
-      setBusy(false);
+      if (requestId === compareRequestRef.current) setBusy(false);
     }
   }
 
@@ -171,12 +201,12 @@ export function ComparePage() {
         {busy ? t("compare.running") : t("compare.run", { count: selected.length })}
       </Button>}
     />
-    {error && <AlertBanner>{error}</AlertBanner>}
+    {error && <AlertBanner tone="error"><div className="flex flex-wrap items-center justify-between gap-3"><span>{error}</span><Button type="button" variant="outline" size="sm" onClick={() => void loadScans(idsParam, loadedIdsParamRef.current !== idsParam)} disabled={loadingScans}>{loadingScans ? t("common.loading") : t("common.retry")}</Button></div></AlertBanner>}
     {!result && <>
       {partialScanCount > 0 && <AlertBanner tone="warning"><strong>{t("compare.partialPreserved", { count: partialScanCount })}</strong> {t("compare.partialExplanation")}</AlertBanner>}
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
       <Panel className="order-2 xl:order-1" label={t("compare.library")} title={t("compare.comparableCount", { count: scans.length })} aside={<span className="font-mono text-[8px] uppercase text-muted-foreground">{t("compare.selectRange", { max: MAX_COMPARE_SCANS, count: partialScanCount })}</span>}>
-        {scans.length ? <div className="grid md:grid-cols-2 xl:max-h-[32rem] xl:overflow-auto">
+        {loadingScans && scans.length === 0 ? <Loading /> : error && scans.length === 0 ? <div className="grid gap-3 p-4 text-sm text-muted-foreground"><p>{t("common.requestFailed")}</p><Button type="button" variant="outline" size="sm" className="w-fit" onClick={() => void loadScans(idsParam, loadedIdsParamRef.current !== idsParam)} disabled={loadingScans}>{loadingScans ? t("common.loading") : t("common.retry")}</Button></div> : scans.length ? <div className="grid md:grid-cols-2 xl:max-h-[32rem] xl:overflow-auto">
           {scans.map((scan) => {
             const position = selected.indexOf(scan.id);
             const active = position >= 0;
@@ -213,7 +243,7 @@ export function ComparePage() {
           })}
         </div> : <EmptyState title={t("compare.noComparable")} description={t("compare.noComparableDescription")} />}
       </Panel>
-      <Panel className="order-1 h-fit xl:order-2 xl:sticky xl:top-24" label="DIFF INPUT" title={t("compare.order")}>
+      <Panel className="order-1 h-fit xl:order-2 xl:sticky xl:top-24" label={t("compare.diffInput")} title={t("compare.order")}>
         <CompareSlot role={t("compare.baseline")} scan={chosen[0]} onRemove={() => chosen[0] && toggle(chosen[0].id)} />
         <div className="flex h-10 items-center justify-center border-b bg-muted/20">
           <HugeiconsIcon icon={ArrowRight01Icon} size={14} className="rotate-90 text-primary xl:rotate-0" />
@@ -298,7 +328,7 @@ function ComparisonOutput({ result }: { result: CompareResult }) {
   const objectiveLabel = t(objectives.find((item) => item.id === objective)?.label ?? "compare.objective.balanced");
 
   return <section className="mt-6">
-    <div className="mb-4 flex flex-wrap items-center gap-3"><span className="bench-label text-primary">SECURITY CHANGESET / {partialScans.length ? "PARTIAL INPUT" : "READY"}</span><span className="h-px min-w-8 flex-1 bg-border" /><span className="font-mono text-[8px] text-muted-foreground">{result.scans.length} SCANS · 1 BASELINE · {result.candidateScanIds.length} CANDIDATES · {partialScans.length} PARTIAL</span><Button asChild variant="outline" size="sm" className="h-11 shrink-0 gap-3 border-primary/60 bg-primary/[.10] px-4 text-[10px] font-semibold uppercase tracking-[.08em] text-foreground shadow-[inset_3px_0_0_var(--primary)] hover:bg-primary/[.16] hover:text-foreground"><Link to={reportHref} target="_blank" aria-label={t("compare.openReport", { count: result.scans.length })}><HugeiconsIcon icon={DocumentValidationIcon} size={16} className="text-primary" /><span>{t("compare.report")}</span><span className="border-l border-primary/30 pl-3 font-mono text-[8px] font-medium text-primary">{objectiveLabel} · PDF</span><HugeiconsIcon icon={ArrowRight01Icon} size={12} className="text-primary" /></Link></Button></div>
+    <div className="mb-4 flex flex-wrap items-center gap-3"><span className="bench-label text-primary">{t("compare.securityChangeset")} / {partialScans.length ? t("compare.partialInput") : t("compare.ready")}</span><span className="h-px min-w-8 flex-1 bg-border" /><span className="font-mono text-[8px] text-muted-foreground">{t("compare.scansSummary", { scans: result.scans.length, candidates: result.candidateScanIds.length, partial: partialScans.length })}</span><Button asChild variant="outline" size="sm" className="h-11 shrink-0 gap-3 border-primary/60 bg-primary/[.10] px-4 text-[10px] font-semibold uppercase tracking-[.08em] text-foreground shadow-[inset_3px_0_0_var(--primary)] hover:bg-primary/[.16] hover:text-foreground"><Link to={reportHref} target="_blank" aria-label={t("compare.openReport", { count: result.scans.length })}><HugeiconsIcon icon={DocumentValidationIcon} size={16} className="text-primary" /><span>{t("compare.report")}</span><span className="border-l border-primary/30 pl-3 font-mono text-[8px] font-medium text-primary">{objectiveLabel} · PDF</span><HugeiconsIcon icon={ArrowRight01Icon} size={12} className="text-primary" /></Link></Button></div>
     <AlertBanner tone="info"><strong>{t("compare.coverageWarning")}</strong> {t("compare.coverageExplanation")}</AlertBanner>
     {executionProfileMismatch && <AlertBanner tone="warning">{t("compare.profileMismatch")}</AlertBanner>}
     {partialScans.length > 0 && <AlertBanner tone="warning"><strong>{partialScans.length === 1 ? t("compare.outputPartialTitleOne") : t("compare.outputPartialTitle", { count: partialScans.length })}</strong> {t("compare.outputPartialExplanation")}</AlertBanner>}
@@ -310,17 +340,17 @@ function ComparisonOutput({ result }: { result: CompareResult }) {
     <CandidateRail result={result} activeCandidateId={activeCandidateId} onSelect={selectCandidate} />
     <div className="bench-panel bench-corners">
       <div className="grid lg:grid-cols-[minmax(0,1fr)_16rem_minmax(0,1fr)]">
-        <RunReadout role="BASELINE" scan={baseline} />
+        <RunReadout role={t("compare.baseline")} scan={baseline} />
         <div className="flex min-h-40 flex-col items-center justify-center border-b p-5 text-center lg:border-x lg:border-b-0">
-          <div className="bench-label">DETECTION DELTA / HIGH+</div>
+          <div className="bench-label">{t("compare.detectionDelta")} / HIGH+</div>
           <div className={cx("mt-2 font-mono text-4xl font-semibold tabular-nums", highDelta > 0 ? "text-destructive" : highDelta < 0 ? "text-chart-2" : "text-muted-foreground")}>{signed(highDelta)}</div>
-          <div className="mt-1 text-[10px] text-muted-foreground">{highDelta > 0 ? `candidato reportou ${highDelta} high+ a mais` : highDelta < 0 ? `candidato reportou ${Math.abs(highDelta)} high+ a menos` : "mesma contagem de high+"}</div>
+          <div className="mt-1 text-[10px] text-muted-foreground">{highDelta > 0 ? t("compare.highPlusMore", { count: highDelta }) : highDelta < 0 ? t("compare.highPlusLess", { count: Math.abs(highDelta) }) : t("compare.sameHighPlus")}</div>
         </div>
-        <RunReadout role="CANDIDATO" scan={candidate} />
+        <RunReadout role={t("compare.candidate", { index: "" })} scan={candidate} />
       </div>
       <div className="grid grid-cols-2 border-t xl:grid-cols-4">
         {changeOrder.map((item) => <button key={item} type="button" onClick={() => setChange((current) => current === item ? "all" : item)} className={cx("border-b border-r p-4 text-left transition hover:bg-accent", change === item && "bg-accent shadow-[inset_0_-2px_0_var(--primary)]")}>
-          <div className={cx("font-mono text-[9px] uppercase tracking-wider", changeTone[item].split(" ").at(-1))}>{changeLabel[item]}</div>
+          <div className={cx("font-mono text-[9px] uppercase tracking-wider", changeTone[item].split(" ").at(-1))}>{t(changeLabel[item])}</div>
           <div className="mt-1 font-mono text-2xl font-semibold tabular-nums">{comparison.counts[item]}</div>
         </button>)}
       </div>
@@ -331,31 +361,32 @@ function ComparisonOutput({ result }: { result: CompareResult }) {
       <OperationalLedger result={result} baseline={baseline} candidate={candidate} />
     </div>
 
-    <Panel className="mt-4" label="OBSERVATION DIFF" title={`${filtered.length} de ${pairFindings.length} sinais comparados · ${candidate.displayName}`} aside={<span className="font-mono text-[8px] text-muted-foreground">EXPANDA UMA LINHA PARA INSPECIONAR</span>} wrapTitle>
+    <Panel className="mt-4" label={t("compare.observationDiff")} title={t("compare.observationCount", { filtered: filtered.length, total: pairFindings.length, name: candidate.displayName })} aside={<span className="font-mono text-[8px] text-muted-foreground">{t("compare.expandToInspect")}</span>} wrapTitle>
       <div className="grid gap-2 border-b p-3 md:grid-cols-[minmax(14rem,1fr)_11rem_10rem]">
         <label className="flex h-9 items-center gap-2 border bg-background px-3">
           <HugeiconsIcon icon={Search01Icon} size={12} className="text-muted-foreground" />
-          <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Título, caminho, regra, CWE…" className="h-8 border-0 bg-transparent px-0 text-xs shadow-none focus-visible:ring-0" />
+          <Input aria-label={t("compare.searchEvidence")} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("compare.searchEvidence")} className="h-8 border-0 bg-transparent px-0 text-xs shadow-none focus-visible:ring-0" />
         </label>
         <Select value={change} onValueChange={(value) => setChange(value as CompareFindingChange | "all")}>
           <SelectTrigger className="h-9 rounded-none font-mono text-[9px] uppercase"><SelectValue /></SelectTrigger>
-          <SelectContent className="rounded-none"><SelectItem value="all">Toda cobertura</SelectItem>{changeOrder.map((item) => <SelectItem key={item} value={item}>{changeLabel[item]}</SelectItem>)}</SelectContent>
+          <SelectContent className="rounded-none"><SelectItem value="all">{t("compare.allCoverage")}</SelectItem>{changeOrder.map((item) => <SelectItem key={item} value={item}>{t(changeLabel[item])}</SelectItem>)}</SelectContent>
         </Select>
         <Select value={severity} onValueChange={(value) => setSeverity(value as Severity | "all")}>
           <SelectTrigger className="h-9 rounded-none font-mono text-[9px] uppercase"><SelectValue /></SelectTrigger>
-          <SelectContent className="rounded-none"><SelectItem value="all">Toda severidade</SelectItem>{(["critical", "high", "medium", "low", "info"] as Severity[]).map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent>
+          <SelectContent className="rounded-none"><SelectItem value="all">{t("compare.allSeverity")}</SelectItem>{(["critical", "high", "medium", "low", "info"] as Severity[]).map((item) => <SelectItem key={item} value={item}>{t(`compare.severity.${item}` as TranslationKey)}</SelectItem>)}</SelectContent>
         </Select>
       </div>
-      <div className="hidden grid-cols-[8rem_9rem_minmax(18rem,1fr)_11rem] border-b px-4 py-2 font-mono text-[8px] uppercase tracking-wider text-muted-foreground lg:grid"><span>Cobertura</span><span>Severidade</span><span>Vulnerabilidade / evidência</span><span>Presença</span></div>
-      <div>{filtered.map((finding) => <FindingDiffRow key={finding.key} finding={finding} />)}{filtered.length === 0 && <EmptyState title="Nenhuma vulnerabilidade neste recorte" description="Remova filtros ou altere a busca para ampliar o diff." />}</div>
+      <div className="hidden grid-cols-[8rem_9rem_minmax(18rem,1fr)_11rem] border-b px-4 py-2 font-mono text-[8px] uppercase tracking-wider text-muted-foreground lg:grid"><span>{t("compare.coverage")}</span><span>{t("compare.severity")}</span><span>{t("compare.vulnerabilityEvidence")}</span><span>{t("compare.presence")}</span></div>
+      <div>{filtered.map((finding) => <FindingDiffRow key={finding.key} finding={finding} />)}{filtered.length === 0 && <EmptyState title={t("compare.noVulnerability")} description={t("compare.noVulnerabilityDescription")} />}</div>
     </Panel>
   </section>;
 }
 
 function CandidateRail({ result, activeCandidateId, onSelect }: { result: CompareResult; activeCandidateId: string; onSelect: (id: string) => void }) {
+  const { t } = useI18n();
   const baseline = result.scans.find((scan) => scan.id === result.baselineScanId);
   const baselineHigh = baseline ? baseline.severity.critical + baseline.severity.high : 0;
-  return <Panel className="mb-4" label="CANDIDATE CHANNELS" title="Escolha o diff detalhado" aside={<span className="font-mono text-[8px] text-muted-foreground">TODOS PERMANECEM NO RANKING</span>} wrapTitle>
+  return <Panel className="mb-4" label={t("compare.candidateChannels")} title={t("compare.chooseDetailedDiff")} aside={<span className="font-mono text-[8px] text-muted-foreground">{t("compare.allStayRanking")}</span>} wrapTitle>
     <div className="grid grid-cols-2 xl:grid-cols-5">
       {result.candidateScanIds.map((id, index) => {
         const scan = result.scans.find((item) => item.id === id);
@@ -366,7 +397,7 @@ function CandidateRail({ result, activeCandidateId, onSelect }: { result: Compar
           <div className="flex items-center justify-between gap-2"><span className="font-mono text-[8px] text-primary">C-{String(index + 1).padStart(2, "0")}</span><span className={cx("font-mono text-[9px]", highDelta > 0 ? "text-destructive" : highDelta < 0 ? "text-chart-2" : "text-muted-foreground")}>{signed(highDelta)} high+</span></div>
           <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2"><span className="truncate text-xs font-semibold">{scan.displayName}</span><PartialScanBadges scan={scan} compact /></div>
           <div className="mt-1 flex flex-wrap items-center gap-1 font-mono text-[8px] text-muted-foreground"><span className="truncate">{scan.engine} · {scan.model}/{scan.effort}/{scan.mode}</span><ExecutionProfileTag scan={scan} /></div>
-          <div className="mt-3 flex gap-3 font-mono text-[8px]"><span className="text-primary">{comparison.counts.candidate_only} só candidato</span><span className="text-chart-3">{comparison.counts.baseline_only} só baseline</span></div>
+          <div className="mt-3 flex gap-3 font-mono text-[8px]"><span className="text-primary">{t("compare.candidateOnlyCount", { count: comparison.counts.candidate_only })}</span><span className="text-chart-3">{t("compare.baselineOnlyCount", { count: comparison.counts.baseline_only })}</span></div>
         </button>;
       })}
     </div>
@@ -379,7 +410,7 @@ function DecisionCockpit({ ranking, objective, onObjectiveChange }: { ranking: S
   const runnerUp = ranking[1];
   const meta = objectives.find((item) => item.id === objective) ?? objectives[0];
   if (!winner) return null;
-  return <Panel className="mt-4 overflow-hidden" label="DECISION COCKPIT" title={t("compare.decisionQuestion")} aside={<span className="font-mono text-[8px] text-muted-foreground">EXPLICIT CRITERION · NO PRECISION GUESS</span>} wrapTitle>
+  return <Panel className="mt-4 overflow-hidden" label={t("compare.decisionCockpit")} title={t("compare.decisionQuestion")} aside={<span className="font-mono text-[8px] text-muted-foreground">{t("compare.explicitCriterion")}</span>} wrapTitle>
     <div className="flex flex-col gap-2 border-b bg-muted/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
       <div>
         <div className="bench-label text-primary">{t("compare.objective")}</div>
@@ -428,12 +459,12 @@ function DecisionCockpit({ ranking, objective, onObjectiveChange }: { ranking: S
         <p className="mt-5 max-w-2xl text-sm leading-relaxed text-foreground/80">{decisionReason(winner, objective, t)}</p>
         <div className="mt-6 grid grid-cols-2 border sm:grid-cols-4">
           <DecisionMetric label={t("compare.result")} value={decisionValue(winner, objective)} accent />
-          <DecisionMetric label="TOTAL" value={String(winner.total)} />
-          <DecisionMetric label="HIGH+" value={String(winner.highPlus)} />
+          <DecisionMetric label={t("compare.totalMetric")} value={String(winner.total)} />
+          <DecisionMetric label={t("compare.highPlusMetric")} value={String(winner.highPlus)} />
           <DecisionMetric label={t("dashboard.cost")} value={formatUsd(winner.costUsd, isUpperBound(winner.scan))} />
-          <DecisionMetric label="$ / FINDING" value={formatUsd(winner.costPerFinding, isUpperBound(winner.scan))} />
-          <DecisionMetric label="$ / HIGH+" value={formatUsd(winner.costPerHighPlus, isUpperBound(winner.scan))} />
-          <DecisionMetric label="FINDINGS / H" value={formatRate(winner.findingsPerHour)} />
+          <DecisionMetric label={t("compare.costFindingMetric")} value={formatUsd(winner.costPerFinding, isUpperBound(winner.scan))} />
+          <DecisionMetric label={t("compare.costHighMetric")} value={formatUsd(winner.costPerHighPlus, isUpperBound(winner.scan))} />
+          <DecisionMetric label={t("compare.findingsPerHourMetric")} value={formatRate(winner.findingsPerHour)} />
           <DecisionMetric label={t("dashboard.duration")} value={formatDuration(winner.durationMs)} />
         </div>
         {runnerUp && <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[8px] text-muted-foreground"><span>{t("compare.secondPlace")}</span><span className="text-foreground">{decisionProfile(runnerUp.scan)}</span><span>{decisionValue(runnerUp, objective)}</span><PartialScanBadges scan={runnerUp.scan} compact /></div>}
@@ -458,6 +489,7 @@ function DecisionMetric({ label, value, accent = false }: { label: string; value
 }
 
 function UnitEconomicsSummary({ rows, baselineScanId }: { rows: ScanDecisionRow[]; baselineScanId: string }) {
+  const { t } = useI18n();
   const bestFinding = [...rows].filter((row) => row.costPerFinding != null).sort((left, right) => (left.costPerFinding ?? Infinity) - (right.costPerFinding ?? Infinity))[0];
   const bestHigh = [...rows].filter((row) => row.costPerHighPlus != null).sort((left, right) => (left.costPerHighPlus ?? Infinity) - (right.costPerHighPlus ?? Infinity))[0];
   const bestThroughput = [...rows].filter((row) => row.findingsPerHour != null).sort((left, right) => (right.findingsPerHour ?? 0) - (left.findingsPerHour ?? 0))[0];
@@ -466,15 +498,15 @@ function UnitEconomicsSummary({ rows, baselineScanId }: { rows: ScanDecisionRow[
   const bestMarginalScan = rows.find((row) => row.scan.id === bestMarginal?.scanId);
   const bestMarginalHigh = [...marginal].filter((row) => row.costPerExtraHighPlus != null).sort((left, right) => (left.costPerExtraHighPlus ?? Infinity) - (right.costPerExtraHighPlus ?? Infinity))[0];
   const bestMarginalHighScan = rows.find((row) => row.scan.id === bestMarginalHigh?.scanId);
-  return <Panel className="mt-4" label="UNIT ECONOMICS" title="Quem extraiu mais sinal de cada dólar e de cada hora" aside={<span className="font-mono text-[8px] text-muted-foreground">MENOR CUSTO UNITÁRIO = MELHOR</span>} wrapTitle>
+  return <Panel className="mt-4" label={t("compare.unitEconomics")} title={t("compare.unitEconomicsTitle")} aside={<span className="font-mono text-[8px] text-muted-foreground">{t("compare.unitEconomicsAside")}</span>} wrapTitle>
     <div className="grid sm:grid-cols-2 xl:grid-cols-5">
-      <EconomicsLeader label="MENOR $ / FINDING" row={bestFinding} value={formatUsd(bestFinding?.costPerFinding, isUpperBound(bestFinding?.scan))} detail={bestFinding ? `${bestFinding.total} achados por ${formatUsd(bestFinding.costUsd, isUpperBound(bestFinding.scan))}` : "Sem custo mensurado"} />
-      <EconomicsLeader label="MENOR $ / HIGH+" row={bestHigh} value={formatUsd(bestHigh?.costPerHighPlus, isUpperBound(bestHigh?.scan))} detail={bestHigh ? `${bestHigh.highPlus} High+ por ${formatUsd(bestHigh.costUsd, isUpperBound(bestHigh.scan))}` : "Nenhum High+ com custo"} />
-      <EconomicsLeader label="MENOR $ MARGINAL" row={bestMarginalScan} value={formatUsd(bestMarginal?.costPerExtraFinding)} detail={bestMarginal ? `+${bestMarginal.extraFindings} achados por ${formatUsd(bestMarginal.extraCostUsd)} vs baseline` : "Sem ganho adicional mensurável"} />
-      <EconomicsLeader label="MENOR $ / HIGH+ EXTRA" row={bestMarginalHighScan} value={formatUsd(bestMarginalHigh?.costPerExtraHighPlus)} detail={bestMarginalHigh ? `+${bestMarginalHigh.extraHighPlus} High+ por ${formatUsd(bestMarginalHigh.extraCostUsd)} vs baseline` : "Sem High+ adicional mensurável"} />
-      <EconomicsLeader label="MAIOR THROUGHPUT" row={bestThroughput} value={bestThroughput ? `${formatRate(bestThroughput.findingsPerHour)} / h` : "—"} detail={bestThroughput ? `${bestThroughput.total} achados em ${formatDuration(bestThroughput.durationMs)}` : "Sem duração mensurada"} />
+      <EconomicsLeader label={t("compare.lowestFindingCost")} row={bestFinding} value={formatUsd(bestFinding?.costPerFinding, isUpperBound(bestFinding?.scan))} detail={bestFinding ? t("compare.findingsForCost", { count: bestFinding.total, cost: formatUsd(bestFinding.costUsd, isUpperBound(bestFinding.scan)) }) : t("compare.noMeasuredCost")} />
+      <EconomicsLeader label={t("compare.lowestHighCost")} row={bestHigh} value={formatUsd(bestHigh?.costPerHighPlus, isUpperBound(bestHigh?.scan))} detail={bestHigh ? t("compare.highForCost", { count: bestHigh.highPlus, cost: formatUsd(bestHigh.costUsd, isUpperBound(bestHigh.scan)) }) : t("compare.noHighCost")} />
+      <EconomicsLeader label={t("compare.lowestMarginalCost")} row={bestMarginalScan} value={formatUsd(bestMarginal?.costPerExtraFinding)} detail={bestMarginal ? t("compare.extraFindingsForCost", { count: bestMarginal.extraFindings, cost: formatUsd(bestMarginal.extraCostUsd) }) : t("compare.noMeasuredGain")} />
+      <EconomicsLeader label={t("compare.lowestExtraHighCost")} row={bestMarginalHighScan} value={formatUsd(bestMarginalHigh?.costPerExtraHighPlus)} detail={bestMarginalHigh ? t("compare.extraHighForCost", { count: bestMarginalHigh.extraHighPlus, cost: formatUsd(bestMarginalHigh.extraCostUsd) }) : t("compare.noExtraHigh")} />
+      <EconomicsLeader label={t("compare.highestThroughput")} row={bestThroughput} value={bestThroughput ? `${formatRate(bestThroughput.findingsPerHour)} / h` : "—"} detail={bestThroughput ? t("compare.findingsForDuration", { count: bestThroughput.total, duration: formatDuration(bestThroughput.durationMs) }) : t("compare.noMeasuredDuration")} />
     </div>
-    <div className="border-t px-4 py-3 text-[9px] leading-relaxed text-muted-foreground">Todos os custos usam findings reportados, antes de confirmação ou remoção de falsos positivos. Por isso $/finding mede economia operacional, não precisão.</div>
+    <div className="border-t px-4 py-3 text-[9px] leading-relaxed text-muted-foreground">{t("compare.unitEconomicsNote")}</div>
   </Panel>;
 }
 
@@ -489,6 +521,7 @@ function EconomicsLeader({ label, row, value, detail }: { label: string; row?: S
 }
 
 function ComparisonCharts({ result, rows, activeCandidateId, onSelectCandidate }: { result: CompareResult; rows: ScanDecisionRow[]; activeCandidateId: string; onSelectCandidate: (id: string) => void }) {
+  const { t } = useI18n();
   const severityData = result.scans.map((scan) => ({
     scanId: scan.id,
     label: chartProfile(scan),
@@ -541,7 +574,7 @@ function ComparisonCharts({ result, rows, activeCandidateId, onSelectCandidate }
   const agreementHeight = Math.max(240, agreementData.length * 62);
   const economicsHeight = Math.max(280, unitData.length * 58);
   return <div className="mt-4 grid gap-4 xl:grid-cols-2">
-    <Panel label="SEVERITY PROFILE" title="Composição do que cada scan reportou" aside={<span className="font-mono text-[8px] text-muted-foreground">VALORES ABSOLUTOS</span>} wrapTitle>
+    <Panel label={t("compare.severityProfile")} title={t("compare.severityProfileTitle")} aside={<span className="font-mono text-[8px] text-muted-foreground">{t("compare.absoluteValues")}</span>} wrapTitle>
       <div style={{ height: severityHeight }} className="px-2 py-4">
         <ResponsiveContainer width="100%" height="100%"><BarChart data={severityData} layout="vertical" margin={{ top: 4, right: 18, bottom: 4, left: 16 }}>
           <CartesianGrid horizontal={false} strokeDasharray="2 5" />
@@ -549,22 +582,22 @@ function ComparisonCharts({ result, rows, activeCandidateId, onSelectCandidate }
           <YAxis type="category" dataKey="label" axisLine={false} tickLine={false} width={104} />
           <RechartsTooltip content={(props) => <DecisionChartTooltip {...props} />} cursor={{ fill: "var(--accent)", fillOpacity: 0.35 }} />
           <Legend iconType="square" verticalAlign="top" align="right" wrapperStyle={{ fontSize: 9, fontFamily: "var(--font-mono)" }} />
-          <Bar dataKey="critical" name="Critical" stackId="severity" fill="var(--destructive)" />
-          <Bar dataKey="high" name="High" stackId="severity" fill="var(--chart-4)" />
-          <Bar dataKey="medium" name="Medium" stackId="severity" fill="var(--chart-3)" />
-          <Bar dataKey="low" name="Low" stackId="severity" fill="var(--chart-5)" />
-          <Bar dataKey="info" name="Info" stackId="severity" fill="var(--chart-2)" />
+          <Bar dataKey="critical" name={t("compare.severity.critical")} stackId="severity" fill="var(--destructive)" />
+          <Bar dataKey="high" name={t("compare.severity.high")} stackId="severity" fill="var(--chart-4)" />
+          <Bar dataKey="medium" name={t("compare.severity.medium")} stackId="severity" fill="var(--chart-3)" />
+          <Bar dataKey="low" name={t("compare.severity.low")} stackId="severity" fill="var(--chart-5)" />
+          <Bar dataKey="info" name={t("compare.severity.info")} stackId="severity" fill="var(--chart-2)" />
         </BarChart></ResponsiveContainer>
       </div>
     </Panel>
-    <Panel label="COST × COVERAGE" title="Quanto de cobertura foi comprado" aside={<span className="font-mono text-[8px] text-muted-foreground">MELHOR ZONA: ALTO E À ESQUERDA</span>} wrapTitle>
-      <div className="grid border-b sm:grid-cols-2 xl:grid-cols-3">{scatterData.map((point) => <button key={point.scanId} type="button" disabled={point.scanId === result.baselineScanId} onClick={() => onSelectCandidate(point.scanId)} className={cx("flex min-w-0 items-center gap-2 border-b border-r px-3 py-2 text-left hover:bg-accent/60 disabled:cursor-default", point.scanId === activeCandidateId && "bg-accent")}><span className="size-2 shrink-0" style={{ background: point.color }} /><span className="min-w-0"><span className="block truncate font-mono text-[8px] text-foreground">{point.label}</span><span className="mt-0.5 block font-mono text-[7px] text-muted-foreground">{formatUsd(point.cost, point.upperBound)} · {point.total} achados · {point.highPlus} High+</span></span></button>)}</div>
+    <Panel label={t("compare.costCoverage")} title={t("compare.costCoverageTitle")} aside={<span className="font-mono text-[8px] text-muted-foreground">{t("compare.bestZone")}</span>} wrapTitle>
+      <div className="grid border-b sm:grid-cols-2 xl:grid-cols-3">{scatterData.map((point) => <button key={point.scanId} type="button" disabled={point.scanId === result.baselineScanId} onClick={() => onSelectCandidate(point.scanId)} className={cx("flex min-w-0 items-center gap-2 border-b border-r px-3 py-2 text-left hover:bg-accent/60 disabled:cursor-default", point.scanId === activeCandidateId && "bg-accent")}><span className="size-2 shrink-0" style={{ background: point.color }} /><span className="min-w-0"><span className="block truncate font-mono text-[8px] text-foreground">{point.label}</span><span className="mt-0.5 block font-mono text-[7px] text-muted-foreground">{formatUsd(point.cost, point.upperBound)} · {point.total} {t("compare.findings")} · {point.highPlus} High+</span></span></button>)}</div>
       <div className="h-[22rem] px-2 py-4">
         <ResponsiveContainer width="100%" height="100%"><ScatterChart margin={{ top: 18, right: 24, bottom: 12, left: 0 }}>
           <CartesianGrid strokeDasharray="2 5" />
-          <XAxis type="number" dataKey="cost" name="Custo USD" axisLine={false} tickLine={false} tickFormatter={(value) => `$${Number(value).toFixed(0)}`} />
-          <YAxis type="number" dataKey="total" name="Achados" axisLine={false} tickLine={false} allowDecimals={false} />
-          <ZAxis type="number" dataKey="highPlus" range={[90, 360]} name="High+" />
+          <XAxis type="number" dataKey="cost" name={t("compare.costUsdAxis")} axisLine={false} tickLine={false} tickFormatter={(value) => `$${Number(value).toFixed(0)}`} />
+          <YAxis type="number" dataKey="total" name={t("compare.findings")} axisLine={false} tickLine={false} allowDecimals={false} />
+          <ZAxis type="number" dataKey="highPlus" range={[90, 360]} name={t("compare.highPlusMetric")} />
           <RechartsTooltip content={(props) => <DecisionChartTooltip {...props} />} cursor={{ strokeDasharray: "3 3" }} />
           <Scatter name="Scans" data={scatterData} fill="var(--primary)">
             {scatterData.map((point) => <Cell key={point.scanId} fill={point.color} stroke={point.scanId === activeCandidateId ? "var(--foreground)" : "var(--background)"} strokeWidth={point.scanId === activeCandidateId ? 3 : 2} />)}
@@ -573,7 +606,7 @@ function ComparisonCharts({ result, rows, activeCandidateId, onSelectCandidate }
       </div>
       <div className="border-t px-4 py-3 text-[9px] leading-relaxed text-muted-foreground">Tamanho do ponto = High+. O gráfico compara eficiência visualmente; não mede falsos positivos.</div>
     </Panel>
-    <Panel label="UNIT COST" title="Quanto custou cada finding reportado" aside={<span className="font-mono text-[8px] text-muted-foreground">MENOR É MELHOR</span>} wrapTitle>
+    <Panel label={t("compare.unitCost")} title={t("compare.unitCostTitle")} aside={<span className="font-mono text-[8px] text-muted-foreground">{t("compare.lowerIsBetter")}</span>} wrapTitle>
       <div style={{ height: economicsHeight }} className="px-2 py-4">
         <ResponsiveContainer width="100%" height="100%"><BarChart data={unitData} layout="vertical" margin={{ top: 4, right: 18, bottom: 4, left: 16 }}>
           <CartesianGrid horizontal={false} strokeDasharray="2 5" />
@@ -581,13 +614,13 @@ function ComparisonCharts({ result, rows, activeCandidateId, onSelectCandidate }
           <YAxis type="category" dataKey="label" axisLine={false} tickLine={false} width={104} />
           <RechartsTooltip content={(props) => <DecisionChartTooltip {...props} />} cursor={{ fill: "var(--accent)", fillOpacity: 0.35 }} />
           <Legend iconType="square" verticalAlign="top" align="right" wrapperStyle={{ fontSize: 9, fontFamily: "var(--font-mono)" }} />
-          <Bar dataKey="costPerFinding" name="$ / finding" fill="var(--primary)" onClick={(entry) => typeof entry.payload?.scanId === "string" && entry.payload.scanId !== result.baselineScanId && onSelectCandidate(entry.payload.scanId)} />
-          <Bar dataKey="costPerHighPlus" name="$ / High+" fill="var(--chart-3)" onClick={(entry) => typeof entry.payload?.scanId === "string" && entry.payload.scanId !== result.baselineScanId && onSelectCandidate(entry.payload.scanId)} />
+          <Bar dataKey="costPerFinding" name={t("compare.costPerFinding")} fill="var(--primary)" onClick={(entry) => typeof entry.payload?.scanId === "string" && entry.payload.scanId !== result.baselineScanId && onSelectCandidate(entry.payload.scanId)} />
+          <Bar dataKey="costPerHighPlus" name={t("compare.costPerHigh")} fill="var(--chart-3)" onClick={(entry) => typeof entry.payload?.scanId === "string" && entry.payload.scanId !== result.baselineScanId && onSelectCandidate(entry.payload.scanId)} />
         </BarChart></ResponsiveContainer>
       </div>
-      <div className="border-t px-4 py-3 text-[9px] leading-relaxed text-muted-foreground">Sem barra em $/High+ significa que o scan não reportou Critical ou High; não significa custo zero.</div>
+      <div className="border-t px-4 py-3 text-[9px] leading-relaxed text-muted-foreground">{t("compare.noHighBar")}</div>
     </Panel>
-    <Panel label="MARGINAL RETURN" title="Custo de cada achado adicional contra o baseline" aside={<span className="font-mono text-[8px] text-muted-foreground">Δ CUSTO / Δ ACHADOS</span>} wrapTitle>
+    <Panel label={t("compare.marginalReturn")} title={t("compare.marginalReturnTitle")} aside={<span className="font-mono text-[8px] text-muted-foreground">{t("compare.costFindingDelta")}</span>} wrapTitle>
       <div style={{ height: economicsHeight }} className="px-2 py-4">
         <ResponsiveContainer width="100%" height="100%"><BarChart data={marginalData} layout="vertical" margin={{ top: 4, right: 18, bottom: 4, left: 16 }}>
           <CartesianGrid horizontal={false} strokeDasharray="2 5" />
@@ -595,13 +628,13 @@ function ComparisonCharts({ result, rows, activeCandidateId, onSelectCandidate }
           <YAxis type="category" dataKey="label" axisLine={false} tickLine={false} width={104} />
           <RechartsTooltip content={(props) => <DecisionChartTooltip {...props} />} cursor={{ fill: "var(--accent)", fillOpacity: 0.35 }} />
           <Legend iconType="square" verticalAlign="top" align="right" wrapperStyle={{ fontSize: 9, fontFamily: "var(--font-mono)" }} />
-          <Bar dataKey="costPerExtraFinding" name="$ / finding extra" fill="var(--chart-2)" onClick={(entry) => typeof entry.payload?.scanId === "string" && onSelectCandidate(entry.payload.scanId)} />
-          <Bar dataKey="costPerExtraHighPlus" name="$ / High+ extra" fill="var(--chart-4)" onClick={(entry) => typeof entry.payload?.scanId === "string" && onSelectCandidate(entry.payload.scanId)} />
+          <Bar dataKey="costPerExtraFinding" name={t("compare.costPerExtraFinding")} fill="var(--chart-2)" onClick={(entry) => typeof entry.payload?.scanId === "string" && onSelectCandidate(entry.payload.scanId)} />
+          <Bar dataKey="costPerExtraHighPlus" name={t("compare.costPerExtraHigh")} fill="var(--chart-4)" onClick={(entry) => typeof entry.payload?.scanId === "string" && onSelectCandidate(entry.payload.scanId)} />
         </BarChart></ResponsiveContainer>
       </div>
-      <div className="border-t px-4 py-3 text-[9px] leading-relaxed text-muted-foreground">Métrica marginal só existe quando o candidato custa mais e reporta achados adicionais ao baseline.</div>
+      <div className="border-t px-4 py-3 text-[9px] leading-relaxed text-muted-foreground">{t("compare.marginalNote")}</div>
     </Panel>
-    <Panel className="xl:col-span-2" label="BASELINE AGREEMENT" title="O que cada candidato compartilha — ou não — com o baseline" aside={<span className="font-mono text-[8px] text-muted-foreground">CONCORDÂNCIA ≠ VERDADE</span>} wrapTitle>
+    <Panel className="xl:col-span-2" label={t("compare.baselineAgreement")} title={t("compare.baselineAgreementTitle")} aside={<span className="font-mono text-[8px] text-muted-foreground">{t("compare.agreementNotTruth")}</span>} wrapTitle>
       <div style={{ height: agreementHeight }} className="px-2 py-4">
         <ResponsiveContainer width="100%" height="100%"><BarChart data={agreementData} layout="vertical" margin={{ top: 4, right: 18, bottom: 4, left: 16 }}>
           <CartesianGrid horizontal={false} strokeDasharray="2 5" />
@@ -609,9 +642,9 @@ function ComparisonCharts({ result, rows, activeCandidateId, onSelectCandidate }
           <YAxis type="category" dataKey="label" axisLine={false} tickLine={false} width={112} />
           <RechartsTooltip content={(props) => <DecisionChartTooltip {...props} />} cursor={{ fill: "var(--accent)", fillOpacity: 0.35 }} />
           <Legend iconType="square" verticalAlign="top" align="right" wrapperStyle={{ fontSize: 9, fontFamily: "var(--font-mono)" }} />
-          <Bar dataKey="shared" name="Em ambos" stackId="agreement" fill="var(--chart-2)" onClick={(entry) => typeof entry.payload?.scanId === "string" && onSelectCandidate(entry.payload.scanId)} />
-          <Bar dataKey="candidateOnly" name="Só candidato" stackId="agreement" fill="var(--primary)" onClick={(entry) => typeof entry.payload?.scanId === "string" && onSelectCandidate(entry.payload.scanId)} />
-          <Bar dataKey="baselineOnly" name="Só baseline" stackId="agreement" fill="var(--chart-3)" onClick={(entry) => typeof entry.payload?.scanId === "string" && onSelectCandidate(entry.payload.scanId)} />
+          <Bar dataKey="shared" name={t("compare.change.both")} stackId="agreement" fill="var(--chart-2)" onClick={(entry) => typeof entry.payload?.scanId === "string" && onSelectCandidate(entry.payload.scanId)} />
+          <Bar dataKey="candidateOnly" name={t("compare.change.candidateOnly")} stackId="agreement" fill="var(--primary)" onClick={(entry) => typeof entry.payload?.scanId === "string" && onSelectCandidate(entry.payload.scanId)} />
+          <Bar dataKey="baselineOnly" name={t("compare.change.baselineOnly")} stackId="agreement" fill="var(--chart-3)" onClick={(entry) => typeof entry.payload?.scanId === "string" && onSelectCandidate(entry.payload.scanId)} />
         </BarChart></ResponsiveContainer>
       </div>
     </Panel>
@@ -631,17 +664,17 @@ function DetectionScoreboard({ ranking, objective, baselineScanId, activeCandida
   const { t } = useI18n();
   const meta = objectives.find((item) => item.id === objective) ?? objectives[0];
   const marginalById = new Map(buildMarginalEconomics(ranking, baselineScanId).map((row) => [row.scanId, row]));
-  return <Panel className="mt-4" label="DECISION RANKING" title={`Ranking · ${t(meta.label)}`} aside={<span className="font-mono text-[8px] text-muted-foreground">CHANGE THE OBJECTIVE ABOVE TO RECALCULATE</span>} wrapTitle>
+  return <Panel className="mt-4" label={t("compare.decisionRanking")} title={t("compare.rankingTitle", { objective: t(meta.label) })} aside={<span className="font-mono text-[8px] text-muted-foreground">{t("compare.changeObjective")}</span>} wrapTitle>
     <div className="overflow-x-auto">
       <table className="table min-w-[126rem]">
-        <thead><tr className="font-mono text-[8px] uppercase tracking-wider text-muted-foreground"><th className="sticky left-0 z-20 w-12 bg-background">#</th><th className="sticky left-12 z-20 min-w-60 bg-background">Execução</th><th>Resultado no critério</th><th>Nota relativa</th><th>Total</th><th>Critical</th><th>High</th><th>Medium</th><th>Low</th><th>High+</th><th>Custo</th><th>$ / finding</th><th>$ / High+</th><th>Findings / h</th><th>High+ / h</th><th>Δ custo</th><th>$ / finding extra</th><th>$ / High+ extra</th><th>Duração</th></tr></thead>
+        <thead><tr className="font-mono text-[8px] uppercase tracking-wider text-muted-foreground"><th className="sticky left-0 z-20 w-12 bg-background">#</th><th className="sticky left-12 z-20 min-w-60 bg-background">{t("compare.execution")}</th><th>{t("compare.resultOnCriterion")}</th><th>{t("compare.relativeScore")}</th><th>{t("compare.totalMetric")}</th><th>{t("compare.severity.critical")}</th><th>{t("compare.severity.high")}</th><th>{t("compare.severity.medium")}</th><th>{t("compare.severity.low")}</th><th>{t("compare.highPlusMetric")}</th><th>{t("compare.cost")}</th><th>{t("compare.costPerFinding")}</th><th>{t("compare.costPerHigh")}</th><th>{t("compare.findingsPerHourMetric")}</th><th>{t("compare.highPerHour")}</th><th>{t("compare.costDelta")}</th><th>{t("compare.costPerExtraFinding")}</th><th>{t("compare.costPerExtraHigh")}</th><th>{t("compare.duration")}</th></tr></thead>
         <tbody>{ranking.map((row, index) => {
           const scan = row.scan;
           const selectable = scan.id !== baselineScanId;
           const marginal = marginalById.get(scan.id);
           return <tr key={scan.id} className={cx(scan.id === activeCandidateId && "bg-accent")}>
             <td className={cx("sticky left-0 z-10 font-mono text-lg font-semibold", scan.id === activeCandidateId ? "bg-accent" : "bg-background", index === 0 ? "text-primary" : "text-muted-foreground")}>{String(index + 1).padStart(2, "0")}</td>
-            <td className={cx("sticky left-12 z-10", scan.id === activeCandidateId ? "bg-accent" : "bg-background")}><button type="button" disabled={!selectable} onClick={() => onSelect(scan.id)} className="max-w-56 text-left disabled:cursor-default"><span className="flex items-center gap-2"><span className="truncate text-xs font-semibold">{decisionProfile(scan)}</span>{index === 0 && <span className="shrink-0 border border-primary/40 px-1.5 py-0.5 font-mono text-[7px] uppercase text-primary">vence</span>}</span><span className="mt-1 flex flex-wrap items-center gap-2"><span className="truncate font-mono text-[8px] text-muted-foreground">{scan.id === baselineScanId ? "BASELINE" : scan.displayName}</span><PartialScanBadges scan={scan} compact /></span></button></td>
+            <td className={cx("sticky left-12 z-10", scan.id === activeCandidateId ? "bg-accent" : "bg-background")}><button type="button" disabled={!selectable} onClick={() => onSelect(scan.id)} className="max-w-56 text-left disabled:cursor-default"><span className="flex items-center gap-2"><span className="truncate text-xs font-semibold">{decisionProfile(scan)}</span>{index === 0 && <span className="shrink-0 border border-primary/40 px-1.5 py-0.5 font-mono text-[7px] uppercase text-primary">{t("compare.wins")}</span>}</span><span className="mt-1 flex flex-wrap items-center gap-2"><span className="truncate font-mono text-[8px] text-muted-foreground">{scan.id === baselineScanId ? t("compare.baseline") : scan.displayName}</span><PartialScanBadges scan={scan} compact /></span></button></td>
             <td className="font-mono text-sm font-semibold text-primary">{decisionValue(row, objective)}</td>
             <td><div className="flex items-center gap-3"><div className="h-1.5 w-20 overflow-hidden bg-muted"><div className="h-full bg-primary" style={{ width: `${Math.max(0, Math.min(100, row.score))}%` }} /></div><span className="font-mono text-[9px]">{row.score.toFixed(0)}</span></div></td>
             <td className="font-mono text-sm font-semibold">{row.total}</td>
@@ -663,31 +696,33 @@ function DetectionScoreboard({ ranking, objective, baselineScanId, activeCandida
         })}</tbody>
       </table>
     </div>
-    <div className="border-t px-4 py-3 text-[10px] leading-relaxed text-muted-foreground">A nota é relativa apenas aos scans selecionados. Ela muda conforme o objetivo e não representa precisão ou taxa de acerto.</div>
+    <div className="border-t px-4 py-3 text-[10px] leading-relaxed text-muted-foreground">{t("compare.rankingNote")}</div>
   </Panel>;
 }
 
 function RunReadout({ role, scan }: { role: string; scan: ScanRun }) {
+  const { t } = useI18n();
   return <div className="min-w-0 p-5">
     <div className="bench-label text-primary">{role} / {shortId(scan.id)}</div>
     <div className="mt-2 truncate font-heading text-xl font-semibold tracking-[-.035em]">{scan.displayName}</div>
     <div className="mt-1 flex flex-wrap items-center gap-1 font-mono text-[9px] text-muted-foreground"><span className="truncate">{scan.engine} · {scan.model}/{scan.effort}/{scan.mode}</span><ExecutionProfileTag scan={scan} /></div>
     <PartialScanBadges scan={scan} />
     <div className="mt-5"><SeverityStrip counts={scan.severity} total={scan.severity.total} /></div>
-    <div className="mt-2 flex items-center justify-between gap-3 font-mono text-[9px]"><span>{scan.severity.total} findings</span><span className="text-muted-foreground">{formatDate(scan.startedAt)}</span></div>
-    <div className="mt-3 truncate border-l border-primary/50 pl-3 font-mono text-[8px] text-muted-foreground">REV / {scan.revision ? shortId(scan.revision) : "unversioned"}</div>
+    <div className="mt-2 flex items-center justify-between gap-3 font-mono text-[9px]"><span>{t("compare.findingsCount", { count: scan.severity.total })}</span><span className="text-muted-foreground">{formatDate(scan.startedAt)}</span></div>
+    <div className="mt-3 truncate border-l border-primary/50 pl-3 font-mono text-[8px] text-muted-foreground">{t("compare.revision", { value: scan.revision ? shortId(scan.revision) : t("compare.unversioned") })}</div>
   </div>;
 }
 
 function SeverityLedger({ baseline, candidate }: { baseline: ScanRun; candidate: ScanRun }) {
-  return <Panel label="PAIRWISE COUNTS" title="Diferença de achados reportados">
-    <div className="grid grid-cols-[minmax(6rem,1fr)_5rem_5rem_5rem] border-b px-4 py-2 font-mono text-[8px] uppercase tracking-wider text-muted-foreground"><span>Severidade</span><span className="text-right">Antes</span><span className="text-right">Δ</span><span className="text-right">Depois</span></div>
+  const { t } = useI18n();
+  return <Panel label={t("compare.pairwiseCounts")} title={t("compare.reportedFindingsDiff")}>
+    <div className="grid grid-cols-[minmax(6rem,1fr)_5rem_5rem_5rem] border-b px-4 py-2 font-mono text-[8px] uppercase tracking-wider text-muted-foreground"><span>{t("compare.severity")}</span><span className="text-right">{t("compare.before")}</span><span className="text-right">Δ</span><span className="text-right">{t("compare.after")}</span></div>
     <div>{severityRows.map(([key, label]) => {
       const before = baseline.severity[key];
       const after = candidate.severity[key];
       const delta = after - before;
       return <button key={key} type="button" className="grid w-full grid-cols-[minmax(6rem,1fr)_5rem_5rem_5rem] items-center border-b px-4 py-3 text-left hover:bg-accent/50">
-        <span className={cx("font-mono text-[10px] uppercase", key === "critical" && "text-destructive", key === "high" && "text-destructive/80", key === "medium" && "text-chart-3", key === "low" && "text-chart-5", key === "total" && "font-semibold text-foreground")}>{label}</span>
+        <span className={cx("font-mono text-[10px] uppercase", key === "critical" && "text-destructive", key === "high" && "text-destructive/80", key === "medium" && "text-chart-3", key === "low" && "text-chart-5", key === "total" && "font-semibold text-foreground")}>{t(label)}</span>
         <span className="text-right font-mono text-sm tabular-nums">{before}</span>
         <span className={cx("text-right font-mono text-sm tabular-nums", delta > 0 ? "text-destructive" : delta < 0 ? "text-chart-2" : "text-muted-foreground")}>{signed(delta)}</span>
         <span className="text-right font-mono text-sm font-semibold tabular-nums">{after}</span>
@@ -715,20 +750,20 @@ function OperationalLedger({ result, baseline, candidate }: { result: CompareRes
   const baselineUsage = scanTokenUsage(baseline);
   const candidateUsage = scanTokenUsage(candidate);
   const rows: Array<[string, ReactNode, ReactNode, ReactNode]> = [
-    ["Custo estimado", formatUsd(baselineCost, isUpperBound(baseline)), moneyDelta(comparableBaselineCost, comparableCandidateCost), formatUsd(candidateCost, isUpperBound(candidate))],
-    ["USD / finding", formatUsd(baselineCostPerFinding, isUpperBound(baseline)), moneyDelta(unitCost(comparableBaselineCost, baseline.severity.total), unitCost(comparableCandidateCost, candidate.severity.total)), formatUsd(candidateCostPerFinding, isUpperBound(candidate))],
-    ["USD / High+", formatUsd(baselineCostPerHigh, isUpperBound(baseline)), moneyDelta(unitCost(comparableBaselineCost, baselineHigh), unitCost(comparableCandidateCost, candidateHigh)), formatUsd(candidateCostPerHigh, isUpperBound(candidate))],
-    ["Duração", <LiveDuration startedAt={baseline.startedAt} completedAt={baseline.completedAt} status={baseline.status} durationMs={baseline.durationMs} showDot={false} />, durationDelta(baseline.durationMs, candidate.durationMs), <LiveDuration startedAt={candidate.startedAt} completedAt={candidate.completedAt} status={candidate.status} durationMs={candidate.durationMs} showDot={false} />],
-    ["Findings / hora", formatRate(baselineFindingsPerHour), decimalDelta(baselineFindingsPerHour, candidateFindingsPerHour), formatRate(candidateFindingsPerHour)],
-    ["Input tokens", formatTokens(baselineUsage.inputTokens), compactDelta(baselineUsage.inputTokens, candidateUsage.inputTokens), formatTokens(candidateUsage.inputTokens)],
-    ["Output tokens", formatTokens(baselineUsage.outputTokens), compactDelta(baselineUsage.outputTokens, candidateUsage.outputTokens), formatTokens(candidateUsage.outputTokens)],
-    ["High+ / USD", metric(beforeRank?.highPerDollar), decimalDelta(beforeRank?.highPerDollar, afterRank?.highPerDollar), metric(afterRank?.highPerDollar)],
-    ["Findings / USD", metric(beforeRank?.totalPerDollar), decimalDelta(beforeRank?.totalPerDollar, afterRank?.totalPerDollar), metric(afterRank?.totalPerDollar)],
+    [t("compare.estimatedCost"), formatUsd(baselineCost, isUpperBound(baseline)), moneyDelta(comparableBaselineCost, comparableCandidateCost), formatUsd(candidateCost, isUpperBound(candidate))],
+    [t("compare.costPerFinding"), formatUsd(baselineCostPerFinding, isUpperBound(baseline)), moneyDelta(unitCost(comparableBaselineCost, baseline.severity.total), unitCost(comparableCandidateCost, candidate.severity.total)), formatUsd(candidateCostPerFinding, isUpperBound(candidate))],
+    [t("compare.costPerHigh"), formatUsd(baselineCostPerHigh, isUpperBound(baseline)), moneyDelta(unitCost(comparableBaselineCost, baselineHigh), unitCost(comparableCandidateCost, candidateHigh)), formatUsd(candidateCostPerHigh, isUpperBound(candidate))],
+    [t("compare.duration"), <LiveDuration startedAt={baseline.startedAt} completedAt={baseline.completedAt} status={baseline.status} durationMs={baseline.durationMs} showDot={false} />, durationDelta(baseline.durationMs, candidate.durationMs), <LiveDuration startedAt={candidate.startedAt} completedAt={candidate.completedAt} status={candidate.status} durationMs={candidate.durationMs} showDot={false} />],
+    [t("compare.findingsPerHourMetric"), formatRate(baselineFindingsPerHour), decimalDelta(baselineFindingsPerHour, candidateFindingsPerHour), formatRate(candidateFindingsPerHour)],
+    [t("compare.inputTokens"), formatTokens(baselineUsage.inputTokens), compactDelta(baselineUsage.inputTokens, candidateUsage.inputTokens), formatTokens(candidateUsage.inputTokens)],
+    [t("compare.outputTokens"), formatTokens(baselineUsage.outputTokens), compactDelta(baselineUsage.outputTokens, candidateUsage.outputTokens), formatTokens(candidateUsage.outputTokens)],
+    [t("compare.highPerDollar"), metric(beforeRank?.highPerDollar), decimalDelta(beforeRank?.highPerDollar, afterRank?.highPerDollar), metric(afterRank?.highPerDollar)],
+    [t("compare.findingsPerDollar"), metric(beforeRank?.totalPerDollar), decimalDelta(beforeRank?.totalPerDollar, afterRank?.totalPerDollar), metric(afterRank?.totalPerDollar)],
   ];
-  return <Panel label="OPERATIONAL DELTA" title="Custo, tempo e eficiência observada">
-    <div className="grid grid-cols-[minmax(5rem,1fr)_4.5rem_4.5rem_4.5rem] border-b px-4 py-2 font-mono text-[8px] uppercase tracking-wider text-muted-foreground sm:grid-cols-[minmax(7rem,1fr)_7rem_7rem_7rem]"><span>Métrica</span><span className="text-right">Antes</span><span className="text-right">Δ</span><span className="text-right">Depois</span></div>
+  return <Panel label={t("compare.operationalDelta")} title={t("compare.observedEfficiency")}>
+    <div className="grid grid-cols-[minmax(5rem,1fr)_4.5rem_4.5rem_4.5rem] border-b px-4 py-2 font-mono text-[8px] uppercase tracking-wider text-muted-foreground sm:grid-cols-[minmax(7rem,1fr)_7rem_7rem_7rem]"><span>{t("compare.metric")}</span><span className="text-right">{t("compare.before")}</span><span className="text-right">Δ</span><span className="text-right">{t("compare.after")}</span></div>
     <div>{rows.map(([label, before, delta, after]) => <div key={label} className="grid min-h-12 grid-cols-[minmax(5rem,1fr)_4.5rem_4.5rem_4.5rem] items-center border-b px-4 py-2 font-mono text-[10px] tabular-nums sm:grid-cols-[minmax(7rem,1fr)_7rem_7rem_7rem]"><span className="text-muted-foreground">{label}</span><span className="text-right">{before}</span><span className="text-right text-primary">{delta}</span><span className="text-right font-semibold">{after}</span></div>)}</div>
-    <div className="grid border-t sm:grid-cols-2"><ProfileCell label="PROFILE" before={`${baseline.engine} · ${baseline.model}/${baseline.effort}/${baseline.mode}`} after={`${candidate.engine} · ${candidate.model}/${candidate.effort}/${candidate.mode}`} /><ProfileCell label={t("scanDetail.executionProfile")} before={executionProfileLabel(baseline, t) ?? "—"} after={executionProfileLabel(candidate, t) ?? "—"} /><ProfileCell label={t("scanDetail.profileVersion")} before={baseline.execution?.profileVersion ?? "—"} after={candidate.execution?.profileVersion ?? "—"} /><ProfileCell label={t("scanDetail.methodologyRef")} before={baseline.execution?.methodologyRef ?? "—"} after={candidate.execution?.methodologyRef ?? "—"} /><ProfileCell label={t("scanDetail.protocol")} before={baseline.execution?.protocol ?? "—"} after={candidate.execution?.protocol ?? "—"} /><ProfileCell label={t("scanDetail.connectionAuth")} before={baseline.execution?.authKind ?? "—"} after={candidate.execution?.authKind ?? "—"} /><ProfileCell label="REVISION" before={baseline.revision ? shortId(baseline.revision) : "unversioned"} after={candidate.revision ? shortId(candidate.revision) : "unversioned"} /></div>
+    <div className="grid border-t sm:grid-cols-2"><ProfileCell label={t("compare.profile")} before={`${baseline.engine} · ${baseline.model}/${baseline.effort}/${baseline.mode}`} after={`${candidate.engine} · ${candidate.model}/${candidate.effort}/${candidate.mode}`} /><ProfileCell label={t("scanDetail.executionProfile")} before={executionProfileLabel(baseline, t) ?? "—"} after={executionProfileLabel(candidate, t) ?? "—"} /><ProfileCell label={t("scanDetail.profileVersion")} before={baseline.execution?.profileVersion ?? "—"} after={candidate.execution?.profileVersion ?? "—"} /><ProfileCell label={t("scanDetail.methodologyRef")} before={baseline.execution?.methodologyRef ?? "—"} after={candidate.execution?.methodologyRef ?? "—"} /><ProfileCell label={t("scanDetail.protocol")} before={baseline.execution?.protocol ?? "—"} after={candidate.execution?.protocol ?? "—"} /><ProfileCell label={t("scanDetail.connectionAuth")} before={baseline.execution?.authKind ?? "—"} after={candidate.execution?.authKind ?? "—"} /><ProfileCell label={t("compare.revisionLabel")} before={baseline.revision ? shortId(baseline.revision) : t("compare.unversioned")} after={candidate.revision ? shortId(candidate.revision) : t("compare.unversioned")} /></div>
   </Panel>;
 }
 
@@ -741,6 +776,7 @@ function ProfileCell({ label, before, after }: { label: string; before: string; 
 }
 
 function FindingDiffRow({ finding }: { finding: CompareFindingDelta }) {
+  const { t } = useI18n();
   const occurrence = finding.candidate ?? finding.baseline;
   if (!occurrence) return null;
   const severityChanged = finding.change === "severity_changed";
@@ -753,27 +789,28 @@ function FindingDiffRow({ finding }: { finding: CompareFindingDelta }) {
     </summary>
     <div className="border-t bg-muted/10">
       <div className="grid lg:grid-cols-2">
-        <OccurrenceReadout role="BASELINE" occurrence={finding.baseline} />
-        <OccurrenceReadout role="CANDIDATO" occurrence={finding.candidate} />
+        <OccurrenceReadout role={t("compare.baseline")} occurrence={finding.baseline} />
+        <OccurrenceReadout role={t("compare.candidateRole")} occurrence={finding.candidate} />
       </div>
-      <div className="border-t px-4 py-3 text-[10px] leading-5 text-muted-foreground">{occurrence.summary ?? "Este finding não trouxe resumo estruturado."}</div>
+      <div className="border-t px-4 py-3 text-[10px] leading-5 text-muted-foreground">{occurrence.summary ?? t("compare.noStructuredSummary")}</div>
     </div>
   </details>;
 }
 
 function OccurrenceReadout({ role, occurrence }: { role: string; occurrence: CompareFindingDelta["baseline"] }) {
+  const { t } = useI18n();
   return <div className="min-w-0 border-b p-4 lg:border-r">
     <div className="bench-label text-primary">{role}</div>
     {occurrence ? <>
       <div className="mt-3 flex flex-wrap items-center gap-2"><SeverityBadge severity={occurrence.severity} /><span className="font-mono text-[8px] text-muted-foreground">CONF / {occurrence.confidence ?? "—"}</span></div>
       <dl className="mt-3 grid gap-2 font-mono text-[9px]">
-        <MetaLine label="PATH" value={occurrence.primaryPath ?? "—"} />
-        <MetaLine label="RULE" value={occurrence.ruleId ?? "—"} />
-        <MetaLine label="CATEGORY" value={occurrence.category ?? "—"} />
-        <MetaLine label="CWE" value={occurrence.cwe.join(", ") || "—"} />
+        <MetaLine label={t("compare.path")} value={occurrence.primaryPath ?? "—"} />
+        <MetaLine label={t("compare.rule")} value={occurrence.ruleId ?? "—"} />
+        <MetaLine label={t("compare.category")} value={occurrence.category ?? "—"} />
+        <MetaLine label={t("compare.cwe")} value={occurrence.cwe.join(", ") || "—"} />
       </dl>
-      <Button asChild variant="outline" size="sm" className="mt-4"><Link to={`/scans/${occurrence.scanId}?f=${encodeURIComponent(occurrence.findingId)}`}>Abrir evidência</Link></Button>
-    </> : <div className="mt-3 border border-dashed p-4 text-xs leading-relaxed text-muted-foreground">Não reportado por este scan. Isso não comprova correção nem ausência da vulnerabilidade.</div>}
+      <Button asChild variant="outline" size="sm" className="mt-4"><Link to={`/scans/${occurrence.scanId}?f=${encodeURIComponent(occurrence.findingId)}`}>{t("compare.openEvidence")}</Link></Button>
+    </> : <div className="mt-3 border border-dashed p-4 text-xs leading-relaxed text-muted-foreground">{t("compare.notReportedWarning")}</div>}
   </div>;
 }
 
@@ -782,7 +819,8 @@ function MetaLine({ label, value }: { label: string; value: string }) {
 }
 
 function ChangeBadge({ change }: { change: CompareFindingChange }) {
-  return <span className={cx("inline-flex h-6 items-center border px-2 font-mono text-[8px] uppercase tracking-wider", changeTone[change])}>{changeLabel[change]}</span>;
+  const { t } = useI18n();
+  return <span className={cx("inline-flex h-6 items-center border px-2 font-mono text-[8px] uppercase tracking-wider", changeTone[change])}>{t(changeLabel[change])}</span>;
 }
 
 function Presence({ active, label }: { active: boolean; label: string }) {

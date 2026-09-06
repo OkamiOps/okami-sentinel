@@ -372,6 +372,37 @@ export interface ScanTelemetrySnapshot {
   cursor: number;
 }
 
+export interface ScanListSummary {
+  evidence: number;
+  costUsd: number | null;
+  costIsUpperBound: boolean;
+  archivedCount: number;
+}
+
+export interface ScanListResponse {
+  scans: ScanRun[];
+  total?: number;
+  limit?: number;
+  offset?: number;
+  summary?: ScanListSummary;
+}
+
+export interface ScanListOptions {
+  limit?: number;
+  offset?: number;
+  status?: "active" | "all" | "running" | "completed" | "failed" | "cancelled";
+  query?: string;
+}
+
+function scanListQuery(options: ScanListOptions = {}): string {
+  const params = new URLSearchParams();
+  if (options.limit !== undefined) params.set("limit", String(Math.max(1, Math.trunc(options.limit))));
+  if (options.offset !== undefined) params.set("offset", String(Math.max(0, Math.trunc(options.offset))));
+  if (options.status) params.set("status", options.status);
+  if (options.query?.trim()) params.set("query", options.query.trim());
+  return params.size ? `?${params}` : "";
+}
+
 export const api = {
   health: () => request<HealthResponse>("/health"),
   listConnections: () => connections.list(),
@@ -399,7 +430,8 @@ export const api = {
     const suffix = params.size ? `?${params}` : "";
     return request<MetricsSummary>(`/metrics/summary${suffix}`);
   },
-  listScans: () => request<{ scans: ScanRun[] }>("/scans"),
+  listScans: (options?: ScanListOptions) => request<ScanListResponse>(`/scans${scanListQuery(options)}`),
+  listActiveScans: () => request<{ scans: ScanRun[] }>("/scans/active"),
   getScan: (id: string) =>
     request<{ scan: ScanRun; findings: FindingSummary[] }>(`/scans/${id}`),
   getTelemetry: (id: string) =>

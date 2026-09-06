@@ -1,5 +1,6 @@
 import type { FindingLifecycle } from "@csb/shared";
 import { cx } from "./ui";
+import { useI18n, type TranslationKey } from "../i18n";
 
 export const lifecycleLabel: Record<FindingLifecycle, string> = {
   new: "new",
@@ -23,6 +24,7 @@ const lifecycleBorder: Record<FindingLifecycle, string> = {
 };
 
 export function LifecycleBadge({ state }: { state: FindingLifecycle }) {
+  const { t } = useI18n();
   return (
     <span
       className={cx(
@@ -30,7 +32,7 @@ export function LifecycleBadge({ state }: { state: FindingLifecycle }) {
         lifecycleBorder[state],
       )}
     >
-      {lifecycleLabel[state]}
+      {t(`scanDetail.lifecycle.${state}` as TranslationKey)}
     </span>
   );
 }

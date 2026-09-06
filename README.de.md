@@ -365,7 +365,7 @@ Siehe [Lokalisierungsarchitektur](docs/localization.de.md).
 | `MANTIS_CACHE_DIR` | `data/mantis-cache` | Lokaler Cache für die angehefteten Mantis-Skills |
 | `VULNHUNTER_REPOSITORY_URL` | `https://github.com/capitalone/vulnhunter.git` | VulnHunter-Quell-Repository, das als Methodik-Provenienz festgehalten wird |
 | `VULNHUNTER_SOURCE_REF` | Kennung des geprüften Commits | Als Methodik-Provenienz festgehalten; wird zur Laufzeit nicht abgerufen |
-| `CSB_HOST` | `127.0.0.1` | API-Bind-Adresse |
+| `CSB_HOST` | `127.0.0.1` | Nur Loopback-Adressen; öffentliche/LAN-Adressen werden abgelehnt, da die lokale API keine globale Authentifizierung hat. Keine Freigabe über Proxy oder Tunnel ohne authentifizierte Zugriffsschicht. |
 | `CSB_PORT` | `8787` | API-Port |
 | `CSB_GITHUB_ACTIONS_WORKFLOW_SHA` | nicht verfügbar | Unveränderlicher 40-stelliger Sentinel-Release-SHA für Remote-Caller |
 | `CSB_MAX_CONCURRENT_SCANS` | `8` | Maximale parallele Scanner-Prozesse |
@@ -379,7 +379,11 @@ pnpm dev:web      # nur Web
 pnpm typecheck
 pnpm test
 pnpm build
+pnpm --filter @csb/web exec playwright install chromium
+pnpm --filter @csb/web test:e2e
 ```
+
+Die Browsertests prüfen Desktop/Mobilgeräte und alle fünf Oberflächensprachen mit einer simulierten API. Sie starten keine externen Scans und verwenden keine echten Anbieterzugangsdaten.
 
 ```text
 okami-sentinel/
