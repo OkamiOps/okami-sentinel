@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execSync } from "node:child_process";
 import Database from "better-sqlite3";
 import {
   CODEX_SECURITY_SESSIONS_DIR,
@@ -11,6 +10,10 @@ import {
   WORKBENCH_DB_PATH,
 } from "./config.js";
 import { dirsMatch } from "./progress.js";
+import {
+  findProcessIdentitiesForScanDir,
+  removeProcessIdentity,
+} from "./process-identity.js";
 import { redactText } from "./redaction.js";
 
 export function cliLogPath(scanDir: string): string {
@@ -121,6 +124,7 @@ export function purgeScanArtifacts(
     const logPath = cliLogPath(resolvedScanDir);
     fs.rmSync(logPath, { force: true });
     assertPathRemoved(logPath, "Log do scan");
+    removeProcessIdentity(resolvedScanDir);
   }
 
   const sessionsDeleted = purgeCodexSessionsForScan(resolvedScanDir, sessionsRoot);
@@ -579,23 +583,12 @@ export function readDetachedActivity(scanDir: string): string[] {
   return lines.slice(-12);
 }
 
-/** Find OS PIDs whose command line mentions this scan directory. */
+/**
+ * Legacy PID-only discovery. New cancellation code must use the corresponding
+ * process identities and revalidate them immediately before every signal.
+ */
 export function findPidsForScanDir(scanDir: string): number[] {
-  const needle = path.basename(scanDir);
-  if (!needle) return [];
-  try {
-    const out = execSync(`pgrep -f ${JSON.stringify(needle)}`, {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    const self = process.pid;
-    return out
-      .split(/\n/)
-      .map((s) => Number(s.trim()))
-      .filter((n) => Number.isFinite(n) && n > 0 && n !== self);
-  } catch {
-    return [];
-  }
+  return findProcessIdentitiesForScanDir(scanDir).map((identity) => identity.pid);
 }
 
 export function processAlive(pid: number | null | undefined): boolean {

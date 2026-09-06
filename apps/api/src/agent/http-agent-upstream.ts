@@ -22,6 +22,10 @@ import {
   mimoTokenPlanOpenAiBase,
 } from "../connections/http-model-discovery.js";
 import { DEFAULT_AGENT_LIMITS, createAgentSession } from "./session-runner.js";
+import {
+  createPinnedCustomEndpointDispatcher,
+  PinnedCustomEndpointError,
+} from "./pinned-custom-endpoint.js";
 import { createWorkspaceToolHost } from "./workspace-tool-host.js";
 import {
   AgentSessionError,
@@ -63,11 +67,13 @@ export function createLongHorizonHttpAgentTransport(
   },
 ): typeof fetch {
   return (async (input: string | URL | Request, init?: RequestInit) => {
+    const suppliedDispatcher = (init as (RequestInit & { dispatcher?: UndiciDispatcher }) | undefined)
+      ?.dispatcher;
     return await dependencies.fetch(
       input as Parameters<typeof undiciFetch>[0],
       {
         ...init,
-        dispatcher: dependencies.dispatcher,
+        dispatcher: suppliedDispatcher ?? dependencies.dispatcher,
       } as Parameters<typeof undiciFetch>[1],
     ) as unknown as Response;
   }) as typeof fetch;
@@ -122,6 +128,8 @@ export interface HttpAgentUpstreamOptions {
   credentials: ConnectionSecretBundle;
   /** Injectable solely for deterministic tests; production defaults to fetch. */
   transport?: typeof fetch;
+  /** Injectable solely for deterministic custom-endpoint transport tests. */
+  pinnedCustomEndpointDispatcher?: (endpoint: string, allowInsecureLocalhost: boolean) => Promise<UndiciDispatcher>;
 }
 
 /**
@@ -262,6 +270,10 @@ class HttpAgentUpstream implements AgentUpstream {
   readonly #headers: Record<string, string>;
   readonly #operation: AgentWireOperation | null;
   readonly #transport: typeof fetch;
+  readonly #customEndpointLocalOverride: boolean | null;
+  readonly #pinnedCustomEndpointDispatcher:
+    | ((endpoint: string, allowInsecureLocalhost: boolean) => Promise<UndiciDispatcher>)
+    | null;
   readonly #active = new Set<AbortController>();
 
   constructor(options: HttpAgentUpstreamOptions) {
@@ -270,6 +282,12 @@ class HttpAgentUpstream implements AgentUpstream {
     this.#headers = route?.headers ?? {};
     this.#operation = route?.operation ?? null;
     this.#transport = options.transport ?? DEFAULT_HTTP_AGENT_TRANSPORT;
+    this.#customEndpointLocalOverride = route?.customEndpointLocalOverride ?? null;
+    this.#pinnedCustomEndpointDispatcher = this.#customEndpointLocalOverride === null
+      ? null
+      : options.pinnedCustomEndpointDispatcher ?? (options.transport === undefined
+        ? createPinnedCustomEndpointDispatcher
+        : null);
   }
 
   async request(request: AgentUpstreamRequest): Promise<unknown> {
@@ -280,9 +298,19 @@ class HttpAgentUpstream implements AgentUpstream {
     const controller = new AbortController();
     const detach = followAbort(request.signal, controller);
     this.#active.add(controller);
+    let pinnedDispatcher: UndiciDispatcher | null = null;
+    let response: Response | null = null;
+    let responseCompleted = false;
     try {
-      let response: Response;
       try {
+        if (this.#pinnedCustomEndpointDispatcher !== null && this.#customEndpointLocalOverride !== null) {
+          pinnedDispatcher = await createAbortablePinnedDispatcher(
+            this.#pinnedCustomEndpointDispatcher,
+            this.#endpoint,
+            this.#customEndpointLocalOverride,
+            controller.signal,
+          );
+        }
         response = await raceWithAbort(
           Promise.resolve().then(() => this.#transport(this.#endpoint as string, {
             method: "POST",
@@ -290,17 +318,27 @@ class HttpAgentUpstream implements AgentUpstream {
             body: serialized,
             redirect: "error",
             signal: controller.signal,
+            ...(pinnedDispatcher === null ? {} : { dispatcher: pinnedDispatcher }),
           })),
           controller.signal,
         );
       } catch (error) {
         if (error instanceof AgentSessionError || error instanceof HttpAgentUpstreamError) throw error;
+        if (error instanceof PinnedCustomEndpointError) {
+          throw new HttpAgentUpstreamError("protocol_unsupported");
+        }
         throw new HttpAgentUpstreamError("provider_unreachable");
       }
+      if (response === null) throw new HttpAgentUpstreamError("provider_unreachable");
       const statusCode = statusError(response.status);
-      if (statusCode !== null) throw new HttpAgentUpstreamError(statusCode);
+      if (statusCode !== null) {
+        cancelResponseBody(response);
+        throw new HttpAgentUpstreamError(statusCode);
+      }
       try {
-        return await readBoundedJson(response, controller.signal);
+        const parsed = await readBoundedJson(response, controller.signal);
+        responseCompleted = true;
+        return parsed;
       } catch (error) {
         if (error instanceof AgentSessionError || error instanceof HttpAgentUpstreamError) throw error;
         throw new HttpAgentUpstreamError("protocol_unsupported");
@@ -308,6 +346,9 @@ class HttpAgentUpstream implements AgentUpstream {
     } finally {
       this.#active.delete(controller);
       detach();
+      if (pinnedDispatcher !== null) {
+        disposePinnedDispatcher(pinnedDispatcher, !responseCompleted || controller.signal.aborted);
+      }
     }
   }
 
@@ -318,10 +359,51 @@ class HttpAgentUpstream implements AgentUpstream {
   }
 }
 
+async function createAbortablePinnedDispatcher(
+  factory: (endpoint: string, allowInsecureLocalhost: boolean) => Promise<UndiciDispatcher>,
+  endpoint: string,
+  allowInsecureLocalhost: boolean,
+  signal: AbortSignal,
+): Promise<UndiciDispatcher> {
+  let abandoned = false;
+  const pending = factory(endpoint, allowInsecureLocalhost).then((dispatcher) => {
+    if (abandoned || signal.aborted) {
+      void dispatcher.destroy().catch(() => undefined);
+      throw new AgentSessionError("agent_cancelled");
+    }
+    return dispatcher;
+  });
+  try {
+    return await raceWithAbort(pending, signal);
+  } catch (error) {
+    abandoned = true;
+    void pending.then(
+      (dispatcher) => dispatcher.destroy().catch(() => undefined),
+      () => undefined,
+    );
+    throw error;
+  }
+}
+
+function cancelResponseBody(response: Response): void {
+  void response.body?.cancel().catch(() => undefined);
+}
+
+function disposePinnedDispatcher(dispatcher: UndiciDispatcher, destroy: boolean): void {
+  if (destroy) {
+    void dispatcher.destroy().catch(() => undefined);
+    return;
+  }
+  void dispatcher.close().catch(() => {
+    void dispatcher.destroy().catch(() => undefined);
+  });
+}
+
 interface ResolvedRoute {
   endpoint: string;
   headers: Record<string, string>;
   operation: AgentWireOperation;
+  customEndpointLocalOverride?: boolean;
 }
 
 function resolveRoute(
@@ -386,13 +468,23 @@ function resolveRoute(
       const endpoint = customEndpoint(credentials, protocol === "openai-responses" ? "/responses" : "/chat/completions");
       return endpoint === null || (protocol !== "openai-responses" && protocol !== "openai-chat")
         ? null
-        : { endpoint, headers: openAiHeaders, operation: protocol === "openai-responses" ? "responses" : "chat-completions" };
+        : {
+          endpoint,
+          headers: openAiHeaders,
+          operation: protocol === "openai-responses" ? "responses" : "chat-completions",
+          customEndpointLocalOverride: credentials.allowInsecureLocalhost === true,
+        };
     }
     case "custom-anthropic-compatible": {
       const endpoint = customEndpoint(credentials, "/v1/messages");
       return endpoint === null || protocol !== "anthropic-messages"
         ? null
-        : { endpoint, headers: anthropicHeaders, operation: "messages" };
+        : {
+          endpoint,
+          headers: anthropicHeaders,
+          operation: "messages",
+          customEndpointLocalOverride: credentials.allowInsecureLocalhost === true,
+        };
     }
     case "mimo-token-plan": {
       const baseUrl = mimoTokenPlanOpenAiBase(credentials.baseUrl);

@@ -3,8 +3,60 @@ import test from "node:test";
 import Database from "better-sqlite3";
 
 import * as dbModule from "./db.js";
-import { deleteRun, getRun, hideRun, parseCostJson, upsertRun } from "./db.js";
+import {
+  deleteRun,
+  getRun,
+  hideRun,
+  parseCostJson,
+  releaseScanCapacity,
+  renewScanCapacity,
+  reserveScanCapacity,
+  upsertRun,
+} from "./db.js";
 import type { ScanRun } from "@csb/shared";
+
+test("scan capacity reservation is atomic across preflight failure and a restarted worker", () => {
+  const database = new Database(":memory:");
+  const now = new Date("2026-09-07T10:00:00.000Z");
+  database.exec(`
+    CREATE TABLE runs (
+      id TEXT PRIMARY KEY,
+      status TEXT NOT NULL
+    );
+  `);
+
+  try {
+    assert.equal(reserveScanCapacity("preflight-a", 1, { database, now }), true);
+    assert.equal(reserveScanCapacity("preflight-b", 1, { database, now }), false);
+
+    // A slow preflight refreshes its lease, so TTL cleanup cannot admit a
+    // second launch while the first process remains alive.
+    const renewedAt = new Date(now.getTime() + 4 * 60_000);
+    assert.equal(renewScanCapacity("preflight-a", { database, now: renewedAt }), true);
+    assert.equal(
+      reserveScanCapacity("still-held", 1, {
+        database,
+        now: new Date(now.getTime() + 8 * 60_000),
+      }),
+      false,
+    );
+
+    // A rejected preflight releases immediately, so another launch gets the slot.
+    releaseScanCapacity("preflight-a", database);
+    assert.equal(reserveScanCapacity("preflight-b", 1, { database, now }), true);
+
+    // The reservation must not be the only source of truth after an API restart:
+    // a worker-backed running row still consumes the slot.
+    releaseScanCapacity("preflight-b", database);
+    database.prepare("INSERT INTO runs (id, status) VALUES (?, 'running')").run("surviving-worker");
+    assert.equal(reserveScanCapacity("after-restart", 1, { database, now }), false);
+
+    database.prepare("UPDATE runs SET status = 'failed' WHERE id = ?").run("surviving-worker");
+    assert.equal(reserveScanCapacity("after-restart", 1, { database, now }), true);
+  } finally {
+    database.close();
+  }
+});
 
 test("hides a run from the ledger, preserves its audit row and clears its baseline", () => {
   const database = new Database(":memory:");

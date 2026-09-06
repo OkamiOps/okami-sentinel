@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import type { ProviderModel, ScanConnectionSelection } from "@csb/shared";
+import type { Dispatcher } from "undici";
 import type { StoredProviderConnection } from "../connections-store.js";
 import type { ConnectionSecretBundle, CredentialVault } from "../credentials/credential-vault.js";
 import { resolveCompatibility } from "../connections/compatibility-resolver.js";
@@ -136,6 +137,90 @@ test("AgentUpstream preserves the approved MiMo Token Plan region for OpenAI cha
   assert.equal(mimoTransport.calls[0]?.headers.get("api-key"), "tp-mimo-secret");
   assert.equal(mimoTransport.calls[0]?.headers.get("authorization"), null);
   assert.equal(JSON.stringify(mimoTransport.calls).includes("attacker.example"), false);
+});
+
+test("custom agent transport uses and closes the dispatcher pinned for that request", async () => {
+  let pinnedEndpoint: string | null = null;
+  let pinnedLocalOverride: boolean | null = null;
+  let dispatcherClosed = false;
+  const dispatcher = { close: async () => { dispatcherClosed = true; } } as Dispatcher;
+  const transport = (async (_url: string | URL | Request, init?: RequestInit) => {
+    assert.equal((init as RequestInit & { dispatcher?: Dispatcher }).dispatcher, dispatcher);
+    return json(200, {});
+  }) as typeof fetch;
+  const upstream = createHttpAgentUpstream({
+    routeKind: "custom-openai-compatible",
+    protocol: "openai-chat",
+    credentials: { apiKey: "custom-secret", baseUrl: "https://gateway.example/v1" },
+    transport,
+    pinnedCustomEndpointDispatcher: async (endpoint, allowInsecureLocalhost) => {
+      pinnedEndpoint = endpoint;
+      pinnedLocalOverride = allowInsecureLocalhost;
+      return dispatcher;
+    },
+  });
+
+  await upstream.request({ operation: "chat-completions", body: {}, signal: new AbortController().signal });
+
+  assert.equal(pinnedEndpoint, "https://gateway.example/v1/chat/completions");
+  assert.equal(pinnedLocalOverride, false);
+  assert.equal(dispatcherClosed, true);
+});
+
+test("custom endpoint aborts during DNS pinning and destroys a dispatcher resolved afterwards", async () => {
+  let resolveDispatcher!: (dispatcher: Dispatcher) => void;
+  const pendingDispatcher = new Promise<Dispatcher>((resolve) => { resolveDispatcher = resolve; });
+  let destroyed = false;
+  const lateDispatcher = {
+    close: async () => undefined,
+    destroy: async () => { destroyed = true; },
+  } as Dispatcher;
+  const transport = (async () => json(200, {})) as typeof fetch;
+  const upstream = createHttpAgentUpstream({
+    routeKind: "custom-openai-compatible",
+    protocol: "openai-chat",
+    credentials: { apiKey: "custom-secret", baseUrl: "https://gateway.example/v1" },
+    transport,
+    pinnedCustomEndpointDispatcher: async () => await pendingDispatcher,
+  });
+  const controller = new AbortController();
+  const request = upstream.request({ operation: "chat-completions", body: {}, signal: controller.signal });
+
+  controller.abort();
+  await assert.rejects(request, { code: "agent_cancelled" });
+  resolveDispatcher(lateDispatcher);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(destroyed, true);
+});
+
+test("custom endpoint destroys its pinned dispatcher and cancels an unread HTTP error body", async () => {
+  let destroyed = false;
+  let bodyCancelled = false;
+  const dispatcher = {
+    close: async () => { throw new Error("close must not wait for an unread error body"); },
+    destroy: async () => { destroyed = true; },
+  } as unknown as Dispatcher;
+  const response = new Response(new ReadableStream({
+    cancel() { bodyCancelled = true; },
+  }), { status: 403 });
+  const transport = (async () => response) as typeof fetch;
+  const upstream = createHttpAgentUpstream({
+    routeKind: "custom-openai-compatible",
+    protocol: "openai-chat",
+    credentials: { apiKey: "custom-secret", baseUrl: "https://gateway.example/v1" },
+    transport,
+    pinnedCustomEndpointDispatcher: async () => dispatcher,
+  });
+
+  await assert.rejects(
+    upstream.request({ operation: "chat-completions", body: {}, signal: new AbortController().signal }),
+    { code: "model_access_denied" },
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(bodyCancelled, true);
+  assert.equal(destroyed, true);
 });
 
 test("custom HTTPS rejects deterministic local, private, link-local, and reserved targets", async () => {

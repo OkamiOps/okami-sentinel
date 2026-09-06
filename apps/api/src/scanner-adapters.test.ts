@@ -1099,6 +1099,81 @@ test("failed Mantis runs with normalized findings remain explicit partial result
   }
 });
 
+test("Mantis restart recovery terminalizes a stale worker that never wrote runtime while preserving findings and cost", () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-mantis-no-runtime-"));
+  const startedAt = "2026-08-10T10:00:00.000Z";
+  fs.writeFileSync(
+    path.join(fixtureRoot, "findings.json"),
+    JSON.stringify({ findings: [{ severity: { level: "high" } }] }),
+  );
+  const cost = {
+    estimatedUsd: 0.42,
+    inputTokens: 100,
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    outputTokens: 20,
+    model: "gpt-5.6-sol",
+  };
+  try {
+    const refreshed = refreshMantisRunFromDisk({
+      id: "mantis-no-runtime",
+      displayName: "fixture",
+      repositoryPath: fixtureRoot,
+      revision: null,
+      scanDir: fixtureRoot,
+      status: "running",
+      model: "gpt-5.6-sol",
+      effort: "high",
+      mode: "standard",
+      engine: "mantis",
+      provider: "openai",
+      authMode: "api-key",
+      scannerVersion: null,
+      recipeHash: "fixture",
+      startedAt,
+      completedAt: null,
+      durationMs: null,
+      cost,
+      severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0, total: 0 },
+      source: "benchmark",
+      pid: null,
+      execution: null,
+    });
+    assert.equal(refreshed.status, "incomplete");
+    assert.equal(refreshed.severity.high, 1);
+    assert.equal(refreshed.pid, null);
+    assert.deepEqual(refreshed.cost, cost);
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("Mantis reconciliation preserves an explicit cancellation over a late running runtime", () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-mantis-cancelled-runtime-"));
+  const startedAt = "2026-08-10T10:00:00.000Z";
+  try {
+    writeMantisRuntime(fixtureRoot, {
+      engine: "mantis", status: "running", stage: "review", stageLabel: "Review", percent: 60,
+      detail: null, startedAt, updatedAt: startedAt, completedAt: null, snapshotId: null,
+      sourceRef: "fixture", findings: 0,
+      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 }, error: null,
+    });
+    const cancelled: ScanRun = {
+      id: "mantis-cancelled", displayName: "fixture", repositoryPath: fixtureRoot, revision: null,
+      scanDir: fixtureRoot, status: "cancelled", model: "gpt-5.6-sol", effort: "high",
+      mode: "standard", engine: "mantis", provider: "openai", authMode: "api-key",
+      scannerVersion: null, recipeHash: "fixture", startedAt,
+      completedAt: "2026-08-10T10:01:00.000Z", durationMs: 60_000,
+      cost: { estimatedUsd: 0.42, inputTokens: 100, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 20 },
+      severity: { critical: 0, high: 1, medium: 0, low: 0, info: 0, unknown: 0, total: 1 },
+      source: "benchmark", pid: null, execution: null,
+    };
+    assert.deepEqual(refreshMantisRunFromDisk(cancelled), cancelled);
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
 test("Mantis reconciliation preserves cache-write usage from a legacy reported runtime", () => {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-mantis-cost-"));
   const startedAt = "2026-08-10T10:00:00.000Z";
@@ -1392,6 +1467,32 @@ test("VulnHunter reconciliation closes an orphaned running record without runtim
     assert.equal(refreshed.status, "failed");
     assert.equal(refreshed.pid, null);
     assert.ok(refreshed.completedAt);
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("VulnHunter reconciliation preserves an explicit cancellation over a late running runtime", () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-vulnhunter-cancelled-runtime-"));
+  const startedAt = "2026-08-10T10:00:00.000Z";
+  try {
+    writeVulnHunterRuntime(fixtureRoot, {
+      engine: "vulnhunter", status: "running", stage: "verify", stageLabel: "Verify", percent: 60,
+      detail: null, startedAt, updatedAt: startedAt, completedAt: null, snapshotId: null,
+      sourceRef: "fixture", findings: 0,
+      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 }, error: null,
+    });
+    const cancelled: ScanRun = {
+      id: "vulnhunter-cancelled", displayName: "fixture", repositoryPath: fixtureRoot, revision: null,
+      scanDir: fixtureRoot, status: "cancelled", model: "gpt-5.6-sol", effort: "high",
+      mode: "standard", engine: "vulnhunter", provider: "openai", authMode: "api-key",
+      scannerVersion: null, recipeHash: "fixture", startedAt,
+      completedAt: "2026-08-10T10:01:00.000Z", durationMs: 60_000,
+      cost: { estimatedUsd: 0.42, inputTokens: 100, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 20 },
+      severity: { critical: 0, high: 1, medium: 0, low: 0, info: 0, unknown: 0, total: 1 },
+      source: "benchmark", pid: null, execution: null,
+    };
+    assert.deepEqual(refreshVulnHunterRunFromDisk(cancelled), cancelled);
   } finally {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }

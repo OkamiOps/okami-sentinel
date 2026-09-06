@@ -12,6 +12,10 @@ import {
   readCliLogSnapshot,
   readCliLogTail,
 } from "./activity.js";
+import {
+  persistProcessIdentity,
+  processIdentityPath,
+} from "./process-identity.js";
 
 test("persists runtime telemetry without writing into the scanner output directory", () => {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "csb-activity-"));
@@ -57,14 +61,22 @@ test("purges a managed scan directory together with its runtime log", () => {
   fs.mkdirSync(scanDir, { recursive: true });
   fs.writeFileSync(path.join(scanDir, "partial-result.json"), "{}", "utf8");
   appendCliLog(scanDir, "scan failed");
+  persistProcessIdentity(scanDir, {
+    version: 1,
+    pid: 999_999,
+    startTime: "test-start-time",
+    commandFingerprint: "a".repeat(64),
+  });
 
   try {
     purgeScanArtifacts(scanDir, [managedRoot]);
 
     assert.equal(fs.existsSync(scanDir), false);
     assert.equal(fs.existsSync(cliLogPath(scanDir)), false);
+    assert.equal(fs.existsSync(processIdentityPath(scanDir)), false);
   } finally {
     fs.rmSync(cliLogPath(scanDir), { force: true });
+    fs.rmSync(processIdentityPath(scanDir), { force: true });
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }
 });

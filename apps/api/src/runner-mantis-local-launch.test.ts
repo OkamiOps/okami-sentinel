@@ -16,7 +16,7 @@ import {
   MANTIS_SOURCE_REF,
   SCANS_ROOT,
 } from "./config.js";
-import { deleteRun } from "./db.js";
+import { deleteRun, listRuns } from "./db.js";
 import type { ScanLaunchPlan } from "./connections/launch-plan.js";
 import { MantisSourceError } from "./scanners/mantis-source.js";
 import { CodexSecurityApiBridgeError } from "./scanners/codex-security-api-bridge.js";
@@ -82,6 +82,28 @@ function fakeChild(): ChildProcess {
 function waitForClose(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
+
+test("a synchronous spawn failure does not leave a running record", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "runner-spawn-failure-"));
+  const displayName = `spawn-failure-${randomUUID()}`;
+  try {
+    await assert.rejects(startScan({ repositoryPath: root, displayName, engine: "mantis", connection: { connectionId: "claude-local", modelSelectionMode: "runtime-default", modelId: null } }, {
+      dependencies: {
+        validateScannerRequest: async () => scanner,
+        providerRuntime: { launchPlans: { resolve: ({ scanId }) => localPlan(scanId) }, store: {} as never, vault: {} as never },
+        resolveMantisLocalSource: async () => ({ sourceCacheDir: root, skillsRoot: root, ref: MANTIS_SOURCE_REF }),
+        spawn: () => { throw new Error("fixture spawn failed"); },
+      },
+    }), /fixture spawn failed/);
+    const run = listRuns().find((item) => item.displayName === displayName);
+    assert.equal(run?.status, "failed");
+    assert.equal(run?.pid, null);
+  } finally {
+    const run = listRuns().find((item) => item.displayName === displayName);
+    if (run) { deleteRun(run.id); fs.rmSync(run.scanDir, { recursive: true, force: true }); }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("startScan launches only the dedicated local Mantis worker with a null runtime-default model and no API keys", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "runner-mantis-local-"));

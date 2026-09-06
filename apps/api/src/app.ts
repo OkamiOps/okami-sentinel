@@ -115,6 +115,7 @@ import { createConnectionsApp } from "./connections-api.js";
 import { getProviderRuntime } from "./provider-runtime.js";
 import { createScanStartApp } from "./scan-start-api.js";
 import { getScannerCatalog } from "./scanners/catalog.js";
+import { listActiveRuns, listRunPage, parseScanListOptions } from "./scan-list.js";
 import {
   cancelScan,
   getActiveScanIds,
@@ -748,8 +749,25 @@ app.get("/metrics/summary", async (c) => {
 });
 
 app.get("/scans", async (c) => {
+  let options;
+  try { options = parseScanListOptions(c.req.query()); }
+  catch { return c.json({ error: "Invalid scan pagination" }, 400); }
   await refreshOpenRouterPricing();
+  if (options) {
+    // Reconcile running work and the requested page. Ingestion remains the
+    // authority for off-page artifacts; no per-directory history sweep here.
+    for (const run of listActiveRuns()) readRunWithEngineRefresh(run.id);
+    for (const run of listRunPage(options, false).scans) readRunWithEngineRefresh(run.id);
+    const page = listRunPage(options);
+    return c.json({ ...page, scans: withProgressMany(page.scans) });
+  }
   return c.json({ scans: withProgressMany(readRunsWithEngineRefresh()) });
+});
+
+app.get("/scans/active", (c) => {
+  const scans = listActiveRuns().map((run) => readRunWithEngineRefresh(run.id) ?? run)
+    .filter((run) => run.status === "queued" || run.status === "running");
+  return c.json({ scans: withProgressMany(scans) });
 });
 
 app.delete("/scans/:id", (c) => {

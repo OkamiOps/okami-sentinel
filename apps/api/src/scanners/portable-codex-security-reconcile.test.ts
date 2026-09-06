@@ -118,6 +118,75 @@ const frozenPricing = {
   outputUsdPerMillionTokens: 4,
 };
 
+test("Portable restart recovery terminalizes a stale worker without runtime and retains partial findings", () => {
+  const scanDir = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-no-runtime-"));
+  try {
+    fs.writeFileSync(path.join(scanDir, "findings.json"), JSON.stringify({
+      findings: [{ severity: { level: "medium" } }],
+    }));
+    const refreshed = refreshPortableCodexSecurityRunFromDisk({
+      ...run(scanDir),
+      startedAt: "2026-08-10T10:00:00.000Z",
+      pid: null,
+      cost: {
+        estimatedUsd: 0.18,
+        inputTokens: 120,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        outputTokens: 30,
+        model: "mimo-v2.5",
+      },
+    });
+    assert.equal(refreshed.status, "incomplete");
+    assert.equal(refreshed.severity.medium, 1);
+    assert.equal(refreshed.cost?.estimatedUsd, 0.18);
+    assert.equal(refreshed.pid, null);
+  } finally {
+    fs.rmSync(scanDir, { recursive: true, force: true });
+  }
+});
+
+test("Portable restart recovery retains persisted evidence when findings artifact is absent", () => {
+  const scanDir = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-preserved-evidence-"));
+  try {
+    const refreshed = refreshPortableCodexSecurityRunFromDisk({
+      ...run(scanDir),
+      startedAt: "2026-08-10T10:00:00.000Z",
+      pid: null,
+      severity: { critical: 0, high: 1, medium: 0, low: 0, info: 0, unknown: 0, total: 1 },
+    });
+    assert.equal(refreshed.status, "incomplete");
+    assert.equal(refreshed.severity.high, 1);
+    assert.equal(refreshed.severity.total, 1);
+  } finally {
+    fs.rmSync(scanDir, { recursive: true, force: true });
+  }
+});
+
+test("Portable reconciliation preserves an explicit cancellation over a late running runtime", () => {
+  const scanDir = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-cancelled-runtime-"));
+  try {
+    writePortableCodexSecurityRuntime(scanDir, runtime({ status: "running", completedAt: null }));
+    const cancelled = {
+      ...run(scanDir),
+      status: "cancelled" as const,
+      completedAt: "2026-08-11T18:00:00.000Z",
+      cost: {
+        estimatedUsd: 0.18,
+        inputTokens: 120,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        outputTokens: 30,
+        model: "mimo-v2.5",
+      },
+      severity: { critical: 0, high: 1, medium: 0, low: 0, info: 0, unknown: 0, total: 1 },
+    };
+    assert.deepEqual(refreshPortableCodexSecurityRunFromDisk(cancelled), cancelled);
+  } finally {
+    fs.rmSync(scanDir, { recursive: true, force: true });
+  }
+});
+
 test("reconciles completed Portable runtime from disk with findings, frozen cost, and progress", () => {
   const scanDir = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-reconcile-"));
   try {

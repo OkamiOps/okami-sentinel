@@ -120,6 +120,13 @@ export function getDb(): Database.Database {
       updated_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS runs_by_updated ON runs(updated_at DESC);
+    CREATE INDEX IF NOT EXISTS runs_by_status ON runs(status);
+    CREATE TABLE IF NOT EXISTS scan_capacity_reservations (
+      scan_id TEXT PRIMARY KEY,
+      reserved_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS scan_capacity_reservations_by_reserved_at
+      ON scan_capacity_reservations(reserved_at ASC);
     CREATE TABLE IF NOT EXISTS hidden_runs (
       id TEXT PRIMARY KEY,
       hidden_at TEXT NOT NULL
@@ -172,6 +179,102 @@ export function ensureRunMetadataColumns(database: Database.Database): void {
   for (const [name, definition] of additions) {
     if (!columns.has(name)) database.exec(`ALTER TABLE runs ADD COLUMN ${name} ${definition}`);
   }
+}
+
+const CAPACITY_RESERVATION_GRACE_MS = 5 * 60_000;
+export const SCAN_CAPACITY_RENEWAL_MS = 30_000;
+
+interface ScanCapacityOptions {
+  database?: Database.Database;
+  now?: Date;
+}
+
+/**
+ * Atomically reserves one local scan slot. Rows already promoted to queued or
+ * running scans are counted from `runs`; preflight-only reservations cover the
+ * period before a run row can safely be written.
+ */
+export function reserveScanCapacity(
+  scanId: string,
+  maximum: number,
+  options: ScanCapacityOptions = {},
+): boolean {
+  if (!Number.isSafeInteger(maximum) || maximum < 1) return false;
+  const database = options.database ?? getDb();
+  ensureScanCapacitySchema(database);
+  const now = options.now ?? new Date();
+  const reservedAt = now.toISOString();
+  const staleBefore = new Date(now.getTime() - CAPACITY_RESERVATION_GRACE_MS).toISOString();
+  const reserve = database.transaction(() => {
+    // Terminal runs can never consume a slot. A reservation without a run is
+    // normally released by startScan's catch; retain it only through the short
+    // bootstrap grace in case the API process died during preflight.
+    database.prepare(`
+      DELETE FROM scan_capacity_reservations
+      WHERE scan_id IN (
+        SELECT id FROM runs WHERE status NOT IN ('queued', 'running')
+      )
+    `).run();
+    database.prepare(`
+      DELETE FROM scan_capacity_reservations
+      WHERE reserved_at < ?
+        AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.id = scan_capacity_reservations.scan_id)
+    `).run(staleBefore);
+
+    const activeRuns = database.prepare(`
+      SELECT COUNT(*) AS count FROM runs WHERE status IN ('queued', 'running')
+    `).get() as { count: number };
+    const preflightReservations = database.prepare(`
+      SELECT COUNT(*) AS count
+      FROM scan_capacity_reservations
+      WHERE NOT EXISTS (SELECT 1 FROM runs WHERE runs.id = scan_capacity_reservations.scan_id)
+    `).get() as { count: number };
+    if (activeRuns.count + preflightReservations.count >= maximum) return false;
+    database.prepare(`
+      INSERT INTO scan_capacity_reservations (scan_id, reserved_at)
+      VALUES (?, ?)
+      ON CONFLICT(scan_id) DO UPDATE SET reserved_at = excluded.reserved_at
+    `).run(scanId, reservedAt);
+    return true;
+  });
+  // `BEGIN IMMEDIATE` obtains the writer lock before either count can observe
+  // a free slot. A deferred read transaction could let two API processes both
+  // decide to launch before one writes its reservation.
+  return reserve.immediate();
+}
+
+/** Refreshes a preflight lease while capability/vault checks are still running. */
+export function renewScanCapacity(
+  scanId: string,
+  options: ScanCapacityOptions = {},
+): boolean {
+  const database = options.database ?? getDb();
+  ensureScanCapacitySchema(database);
+  const now = options.now ?? new Date();
+  const updated = database
+    .prepare(`UPDATE scan_capacity_reservations SET reserved_at = ? WHERE scan_id = ?`)
+    .run(now.toISOString(), scanId);
+  return updated.changes > 0;
+}
+
+/** Idempotent release for every terminal or failed launch path. */
+export function releaseScanCapacity(
+  scanId: string,
+  database: Database.Database = getDb(),
+): void {
+  ensureScanCapacitySchema(database);
+  database.prepare(`DELETE FROM scan_capacity_reservations WHERE scan_id = ?`).run(scanId);
+}
+
+function ensureScanCapacitySchema(database: Database.Database): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS scan_capacity_reservations (
+      scan_id TEXT PRIMARY KEY,
+      reserved_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS scan_capacity_reservations_by_reserved_at
+      ON scan_capacity_reservations(reserved_at ASC);
+  `);
 }
 
 export function rowToScanRun(row: BenchmarkRow): ScanRun {
@@ -258,7 +361,8 @@ export function upsertRun(run: ScanRun): void {
   const execution = run.execution;
   const connection = run.connection ?? null;
   const launchSelection = sanitizeLaunchSelection(run.launchSelection);
-  getDb()
+  const database = getDb();
+  database
     .prepare(
       `INSERT INTO runs (
         id, display_name, repository_path, revision, scan_dir, status,
@@ -367,6 +471,9 @@ export function upsertRun(run: ScanRun): void {
       created_at: now,
       updated_at: now,
     });
+  if (run.status !== "queued" && run.status !== "running") {
+    releaseScanCapacity(run.id, database);
+  }
 }
 
 export function listRuns(): ScanRun[] {
@@ -387,6 +494,20 @@ export function getRun(id: string): ScanRun | null {
     | BenchmarkRow
     | undefined;
   return row ? rowToScanRun(row) : null;
+}
+
+/** Active rows are a narrow indexed lookup so health/restart checks never scan history. */
+export function listActiveRunIds(): string[] {
+  return (getDb()
+    .prepare(`SELECT id FROM runs WHERE status IN ('queued', 'running')`)
+    .all() as Array<{ id: string }>)
+    .map((row) => row.id);
+}
+
+export function isPersistedRunActive(id: string): boolean {
+  return getDb()
+    .prepare(`SELECT 1 FROM runs WHERE id = ? AND status IN ('queued', 'running') LIMIT 1`)
+    .get(id) !== undefined;
 }
 
 export function getRepositoryBaseline(repositoryKey: string): string | null {
@@ -453,7 +574,12 @@ export function upsertFindingTriage(
 }
 
 export function deleteRun(id: string): void {
-  getDb().prepare(`DELETE FROM runs WHERE id = ?`).run(id);
+  const database = getDb();
+  const remove = database.transaction((scanId: string) => {
+    database.prepare(`DELETE FROM runs WHERE id = ?`).run(scanId);
+    database.prepare(`DELETE FROM scan_capacity_reservations WHERE scan_id = ?`).run(scanId);
+  });
+  remove(id);
 }
 
 export function hideRun(

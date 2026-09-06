@@ -28,6 +28,13 @@ import {
 import { normalizeAttackPath } from "./attack-path.js";
 import { withOpenRouterPricingEstimate } from "./openrouter-pricing.js";
 import { dirsMatch } from "./progress.js";
+import {
+  findProcessIdentitiesForScanDir,
+  isProcessIdentityCurrent,
+  persistProcessIdentity,
+  readProcessIdentity,
+} from "./process-identity.js";
+import { listActiveRuns } from "./scan-list.js";
 import { refreshMantisRunFromDisk } from "./scanners/mantis-reconcile.js";
 import { refreshPortableCodexSecurityRunFromDisk } from "./scanners/portable-codex-security-reconcile.js";
 import { refreshVulnHunterRunFromDisk } from "./scanners/vulnhunter-reconcile.js";
@@ -48,21 +55,27 @@ interface WorkbenchScanRow {
 }
 
 export function countSeverityFromFindings(findingsPath: string): SeverityCounts {
+  return readValidSeverityFromFindings(findingsPath) ?? emptySeverityCounts();
+}
+
+/** Null distinguishes absent or malformed output from a valid empty report. */
+function readValidSeverityFromFindings(findingsPath: string): SeverityCounts | null {
   const counts = emptySeverityCounts();
-  if (!fs.existsSync(findingsPath)) return counts;
+  if (!fs.existsSync(findingsPath)) return null;
   try {
     const raw = JSON.parse(fs.readFileSync(findingsPath, "utf8")) as {
       findings?: Array<{ severity?: unknown }>;
     };
+    if (!Array.isArray(raw.findings)) return null;
     for (const f of raw.findings ?? []) {
       const sev = normalizeSeverity(f.severity);
       counts[sev] += 1;
       counts.total += 1;
     }
+    return counts;
   } catch {
-    // ignore malformed findings
+    return null;
   }
-  return counts;
 }
 
 /**
@@ -1423,11 +1436,54 @@ export function refreshRunByScanDir(scanDir: string, fallbackId?: string): ScanR
   return null;
 }
 
-/** Sync terminal status/cost from workbench for benchmark runs still marked running. */
+const NATIVE_BOOTSTRAP_GRACE_MS = 45_000;
+
+function withinNativeBootstrapGrace(run: ScanRun, now = Date.now()): boolean {
+  const startedAt = run.startedAt === null ? Number.NaN : Date.parse(run.startedAt);
+  return Number.isFinite(startedAt) && now >= startedAt && now - startedAt < NATIVE_BOOTSTRAP_GRACE_MS;
+}
+
+function nativeWorkerIsCurrent(run: ScanRun): boolean {
+  const persisted = readProcessIdentity(run.scanDir);
+  if (persisted !== null && isProcessIdentityCurrent(persisted, run.scanDir)) return true;
+
+  // A failed sidecar must never be rebound to a new identity at the same PID:
+  // that is exactly the PID-reuse case the sidecar protects against.
+  const discovered = findProcessIdentitiesForScanDir(run.scanDir)
+    .find((identity) => persisted === null || identity.pid !== persisted.pid);
+  if (!discovered) return false;
+  persistProcessIdentity(run.scanDir, discovered);
+  return true;
+}
+
+function terminalizeOrphanedNativeBenchmarkRun(run: ScanRun): ScanRun | null {
+  if (
+    run.source !== "benchmark" ||
+    run.engine !== "codex-security" ||
+    isPortableCodexSecurityRun(run) ||
+    (run.status !== "running" && run.status !== "queued") ||
+    nativeWorkerIsCurrent(run) ||
+    withinNativeBootstrapGrace(run)
+  ) return null;
+
+  const severity = readValidSeverityFromFindings(path.join(run.scanDir, "findings.json"))
+    ?? run.severity;
+  const completedAt = run.completedAt ?? new Date().toISOString();
+  return {
+    ...run,
+    status: severity.total > 0 ? "incomplete" : "failed",
+    completedAt,
+    durationMs: durationMs(run.startedAt, completedAt) ?? run.durationMs,
+    severity,
+    pid: null,
+    progress: null,
+  };
+}
+
+/** Sync terminal status/cost from workbench for active persisted scans. */
 export function reconcileRunningScans(): number {
   let updated = 0;
-  for (const run of listRuns()) {
-    if (run.status !== "running") continue;
+  for (const run of listActiveRuns()) {
     const before = `${run.status}|${run.cost?.estimatedUsd ?? 0}|${run.severity.total}`;
     if (run.engine === "mantis") {
       const refreshed = refreshMantisRunFromDisk(run);
@@ -1451,9 +1507,15 @@ export function reconcileRunningScans(): number {
       continue;
     }
     const refreshed = refreshRunByScanDir(run.scanDir, run.id);
-    if (!refreshed) continue;
-    const after = `${refreshed.status}|${refreshed.cost?.estimatedUsd ?? 0}|${refreshed.severity.total}`;
-    if (before !== after) updated += 1;
+    if (refreshed) {
+      const after = `${refreshed.status}|${refreshed.cost?.estimatedUsd ?? 0}|${refreshed.severity.total}`;
+      if (before !== after) updated += 1;
+      continue;
+    }
+    const terminal = terminalizeOrphanedNativeBenchmarkRun(run);
+    if (!terminal) continue;
+    upsertRun(terminal);
+    updated += 1;
   }
   return updated;
 }

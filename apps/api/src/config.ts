@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { localApiHost } from "./api-host.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -189,7 +190,7 @@ export const VULNHUNTER_WORKER_ENTRY = path.join(
   "vulnhunter-worker.ts",
 );
 
-export const API_HOST = process.env.CSB_HOST || "127.0.0.1";
+export const API_HOST = localApiHost(process.env.CSB_HOST);
 export const API_PORT = Number(process.env.CSB_PORT || 8787);
 
 /** GitHub Manifest callbacks remain loopback-only in the local-first desktop API. */

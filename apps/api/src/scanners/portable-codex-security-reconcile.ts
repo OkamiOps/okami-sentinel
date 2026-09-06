@@ -9,7 +9,12 @@ import {
   type SeverityCounts,
 } from "@csb/shared";
 
-import { processAlive } from "../activity.js";
+import {
+  findProcessIdentitiesForScanDir,
+  isProcessIdentityCurrent,
+  persistProcessIdentity,
+  readProcessIdentity,
+} from "../process-identity.js";
 import {
   estimateFrozenCatalogUsageCost,
   readPortableCodexSecurityPricing,
@@ -23,11 +28,11 @@ import {
 } from "./portable-codex-security-runtime.js";
 import { scannerUsageSummary } from "./usage.js";
 
-function countSeverity(findingsPath: string): SeverityCounts {
+function countSeverity(findingsPath: string): SeverityCounts | null {
   const counts = emptySeverityCounts();
   try {
     const payload: unknown = JSON.parse(fs.readFileSync(findingsPath, "utf8"));
-    if (!isRecord(payload) || !Array.isArray(payload.findings)) return counts;
+    if (!isRecord(payload) || !Array.isArray(payload.findings)) return null;
     for (const finding of payload.findings) {
       if (!isRecord(finding)) continue;
       const rawSeverity = typeof finding.severity === "string"
@@ -39,21 +44,55 @@ function countSeverity(findingsPath: string): SeverityCounts {
       counts[normalizeSeverity(rawSeverity)] += 1;
       counts.total += 1;
     }
+    return counts;
   } catch {
-    // A malformed partial artifact never becomes evidence.
+    // Retain prior persisted evidence when a partial artifact is malformed.
+    return null;
   }
-  return counts;
+}
+
+const BOOTSTRAP_GRACE_MS = 45_000;
+
+function workerIsCurrent(run: ScanRun): boolean {
+  const persisted = readProcessIdentity(run.scanDir);
+  if (persisted !== null && isProcessIdentityCurrent(persisted, run.scanDir)) return true;
+  const discovered = findProcessIdentitiesForScanDir(run.scanDir)
+    .find((identity) => persisted === null || identity.pid !== persisted.pid);
+  if (!discovered) return false;
+  persistProcessIdentity(run.scanDir, discovered);
+  return true;
+}
+
+function withinBootstrapGrace(run: ScanRun, now = Date.now()): boolean {
+  const startedAt = run.startedAt === null ? Number.NaN : Date.parse(run.startedAt);
+  return Number.isFinite(startedAt) && now >= startedAt && now - startedAt < BOOTSTRAP_GRACE_MS;
+}
+
+function noRuntimeFallback(run: ScanRun, severity: SeverityCounts): ScanRun {
+  if (run.status !== "running" || workerIsCurrent(run) || withinBootstrapGrace(run)) return run;
+  const completedAt = run.completedAt ?? new Date().toISOString();
+  return {
+    ...run,
+    status: severity.total > 0 ? "incomplete" : "failed",
+    completedAt,
+    durationMs: run.startedAt === null
+      ? run.durationMs
+      : durationBetween(run.startedAt, completedAt) ?? run.durationMs,
+    severity,
+    pid: null,
+    progress: null,
+  };
 }
 
 function mappedStatus(
   runtimeStatus: string,
   hasFindings: boolean,
-  pid: number | null,
+  run: ScanRun,
 ): ScanStatus {
   if (runtimeStatus === "completed") return "completed";
   if (runtimeStatus === "cancelled") return "cancelled";
   if (runtimeStatus === "failed") return hasFindings ? "incomplete" : "failed";
-  if (processAlive(pid)) return "running";
+  if (workerIsCurrent(run) || withinBootstrapGrace(run)) return "running";
   return hasFindings ? "incomplete" : "failed";
 }
 
@@ -62,15 +101,17 @@ export function refreshPortableCodexSecurityRunFromDisk(run: ScanRun): ScanRun {
   if (run.engine !== "codex-security" || run.execution?.executionProfile !== "portable") {
     return run;
   }
+  // Cancellation is authoritative while an old worker runtime may still say running.
+  if (run.status === "cancelled") return run;
   const runtime = readPortableCodexSecurityRuntime(run.scanDir);
+  const severity = countSeverity(path.join(run.scanDir, "findings.json")) ?? run.severity;
   if (
     runtime === null ||
     runtime.profileVersion !== run.execution.profileVersion ||
     runtime.methodologyRef !== run.execution.methodologyRef
-  ) return run;
+  ) return noRuntimeFallback(run, severity);
 
-  const severity = countSeverity(path.join(run.scanDir, "findings.json"));
-  const status = mappedStatus(runtime.status, severity.total > 0, run.pid);
+  const status = mappedStatus(runtime.status, severity.total > 0, run);
   const completedAt = status === "running"
     ? null
     : runtime.completedAt ?? run.completedAt;

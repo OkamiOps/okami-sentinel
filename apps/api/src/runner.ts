@@ -22,14 +22,25 @@ import {
 } from "./config.js";
 import {
   appendCliLog,
-  findPidsForScanDir,
-  processAlive,
   readCliLogSince,
   readCliLogTail,
   readDetachedActivity,
 } from "./activity.js";
-import { getRun, upsertRun } from "./db.js";
-import { readWorkbenchScan, refreshRunByScanDir } from "./ingest.js";
+import {
+  getRun,
+  isPersistedRunActive,
+  listActiveRunIds,
+  releaseScanCapacity,
+  renewScanCapacity,
+  reserveScanCapacity,
+  SCAN_CAPACITY_RENEWAL_MS,
+  upsertRun,
+} from "./db.js";
+import {
+  readWorkbenchScan,
+  reconcileRunningScans,
+  refreshRunByScanDir,
+} from "./ingest.js";
 import {
   isInternalProgressMarker,
   parseCliPhaseHint,
@@ -77,6 +88,17 @@ import {
   processSecretValues,
   redactText,
 } from "./redaction.js";
+import {
+  captureProcessIdentity,
+  findProcessIdentitiesForScanDir,
+  isProcessIdentityCurrent,
+  persistProcessIdentity,
+  readProcessIdentity,
+  removeProcessIdentity,
+  signalVerifiedProcess,
+  type ProcessIdentity,
+  type ProcessIdentityService,
+} from "./process-identity.js";
 
 type Listener = (event: ScanEvent) => void;
 
@@ -159,7 +181,11 @@ function emitDetached(
 }
 
 export function getActiveScanIds(): string[] {
-  return [...active.keys()];
+  return [...new Set([
+    ...active.keys(),
+    ...detached.keys(),
+    ...listActiveRunIds(),
+  ])];
 }
 
 /** @deprecated prefer getActiveScanIds — kept for older clients */
@@ -168,7 +194,7 @@ export function getActiveScanId(): string | null {
 }
 
 export function isScanActive(id: string): boolean {
-  return active.has(id) || detached.has(id);
+  return active.has(id) || detached.has(id) || isPersistedRunActive(id);
 }
 
 export function subscribe(
@@ -509,13 +535,54 @@ export async function startScan(
   options: StartScanOptions = {},
 ): Promise<ScanRun> {
   throwIfLaunchAborted(options.signal);
-  const dependencies = options.dependencies ?? {};
-
-  if (active.size >= MAX_CONCURRENT_SCANS) {
+  // Recover persistent worker-backed runs before counting slots. This matters
+  // after an API restart, when the in-memory `active` map starts empty.
+  reconcileRunningScans();
+  const id = nanoid(12);
+  if (!reserveScanCapacity(id, MAX_CONCURRENT_SCANS)) {
     throw new Error(
       `Limite de scans simultâneos atingido (${MAX_CONCURRENT_SCANS}). Cancele um ou aumente CSB_MAX_CONCURRENT_SCANS.`,
     );
   }
+  const stopCapacityLease = maintainScanCapacityLease(id);
+  try {
+    return await startReservedScan(req, id, options);
+  } catch (error) {
+    const failed = getRun(id);
+    if (failed && !active.has(id) && failed.pid === null && (failed.status === "running" || failed.status === "queued")) {
+      const completedAt = new Date().toISOString();
+      upsertRun({ ...failed, status: "failed", completedAt, durationMs: failed.startedAt ? Date.parse(completedAt) - Date.parse(failed.startedAt) : null, progress: null });
+      removeProcessIdentity(failed.scanDir);
+    }
+    releaseScanCapacity(id);
+    throw error;
+  } finally {
+    // A persisted queued/running row becomes the durable capacity record.
+    // Until then, refresh the preflight-only row so a long vault/capability
+    // probe cannot be mistaken for an abandoned launch.
+    stopCapacityLease();
+  }
+}
+
+function maintainScanCapacityLease(id: string): () => void {
+  const timer = setInterval(() => {
+    try {
+      renewScanCapacity(id);
+    } catch {
+      // The original reservation remains authoritative. A later tick can
+      // retry a transient SQLite writer conflict without unblocking a slot.
+    }
+  }, SCAN_CAPACITY_RENEWAL_MS);
+  timer.unref();
+  return () => clearInterval(timer);
+}
+
+async function startReservedScan(
+  req: StartScanRequest,
+  id: string,
+  options: StartScanOptions,
+): Promise<ScanRun> {
+  const dependencies = options.dependencies ?? {};
 
   const repositoryPath = path.resolve(options.executionPath ?? req.repositoryPath);
   if (!fs.existsSync(repositoryPath) || !fs.statSync(repositoryPath).isDirectory()) {
@@ -533,7 +600,6 @@ export async function startScan(
   throwIfLaunchAborted(options.signal);
 
   const displayName = req.displayName?.trim() || path.basename(repositoryPath);
-  const id = nanoid(12);
   const outputDir = path.join(SCANS_ROOT, safeName(displayName), `csb-${safeName(displayName)}-${id}`);
   const providerRuntime = dependencies.providerRuntime ?? getProviderRuntime();
   const selection = await resolveScanLaunchSelectionAfterCapabilityProbe({
@@ -774,6 +840,10 @@ export async function startScan(
   }
 
   run.pid = child.pid ?? null;
+  if (run.pid !== null) {
+    const identity = captureProcessIdentity(run.pid, outputDir);
+    if (identity !== null) persistProcessIdentity(outputDir, identity);
+  }
   upsertRun(run);
 
   const activeScan: ActiveScan = {
@@ -831,6 +901,8 @@ export async function startScan(
       scan: run,
     });
     active.delete(id);
+    releaseScanCapacity(id);
+    removeProcessIdentity(outputDir);
     activeScan.releaseRedactionScope();
   });
 
@@ -869,10 +941,17 @@ export async function startScan(
       progress: refreshed.progress ?? undefined,
     });
     active.delete(id);
+    releaseScanCapacity(id);
+    removeProcessIdentity(outputDir);
     activeScan.releaseRedactionScope();
   });
 
   return run;
+}
+
+/** Exposed so cancellation can release the durable slot before worker exit. */
+export function releaseScanCapacityReservation(id: string): void {
+  releaseScanCapacity(id);
 }
 
 /** Converts an already-persisted server plan into the child-safe DTO. */
@@ -1005,6 +1084,13 @@ function applyProgress(
 }
 
 function pollWorkbenchProgress(activeScan: ActiveScan, run: ScanRun): void {
+  if (activeScan.child.pid && activeScan.child.exitCode === null && activeScan.child.signalCode === null) {
+    const identity = captureProcessIdentity(activeScan.child.pid, activeScan.scanDir);
+    const persisted = readProcessIdentity(activeScan.scanDir);
+    if (identity && (persisted?.startTime !== identity.startTime || persisted.commandFingerprint !== identity.commandFingerprint)) {
+      persistProcessIdentity(activeScan.scanDir, identity);
+    }
+  }
   try {
     const progress = progressForStatus(
       "running",
@@ -1182,38 +1268,46 @@ export function refreshAfterClose(
   return existing;
 }
 
-export function cancelScan(id: string): boolean {
+export interface CancelScanDependencies {
+  processes: ProcessIdentityService;
+  readIdentity(scanDir: string): ProcessIdentity | null;
+  scheduleEscalation(callback: () => void): void;
+}
+
+const cancelDependencies: CancelScanDependencies = {
+  processes: { captureProcessIdentity, findProcessIdentitiesForScanDir, isProcessIdentityCurrent, signalVerifiedProcess },
+  readIdentity: readProcessIdentity,
+  scheduleEscalation(callback) { setTimeout(callback, 5000).unref(); },
+};
+
+export function cancelScan(id: string, dependencies: CancelScanDependencies = cancelDependencies): boolean {
   const scan = active.get(id);
   const run = getRun(id);
   if (!scan && (!run || run.status !== "running")) return false;
 
   if (scan?.progressTimer) clearInterval(scan.progressTimer);
 
-  const pids = new Set<number>();
-  if (scan?.child.pid) pids.add(scan.child.pid);
-  if (run?.pid && processAlive(run.pid)) pids.add(run.pid);
-  if (run?.scanDir) {
-    for (const pid of findPidsForScanDir(run.scanDir)) pids.add(pid);
+  const scanDir = scan?.scanDir ?? run!.scanDir;
+  const identities = new Map<number, ProcessIdentity>();
+  const persisted = dependencies.readIdentity(scanDir);
+  const persistedIsCurrent = persisted !== null && dependencies.processes.isProcessIdentityCurrent(persisted, scanDir);
+  if (persistedIsCurrent) identities.set(persisted.pid, persisted);
+  // An unreaped direct child is still owned by this launch. Capture again to
+  // account for the initial wrapper exec; recovered bare PIDs have no authority.
+  if (scan?.child.pid && scan.child.exitCode === null && scan.child.signalCode === null) {
+    const identity = dependencies.processes.captureProcessIdentity(scan.child.pid, scanDir);
+    if (identity) identities.set(identity.pid, identity);
   }
-
-  // Kill only the target PIDs — never the process group (-pid). Orphaned Contion
-  // jobs often share a shell PGID; group kill would wipe unrelated scans.
-  for (const pid of pids) {
-    try {
-      process.kill(pid, "SIGTERM");
-    } catch {
-      // already gone
-    }
+  for (const identity of dependencies.processes.findProcessIdentitiesForScanDir(scanDir)) {
+    // A stale persisted PID cannot be rebound to a new process during discovery.
+    if (persisted?.pid === identity.pid && !persistedIsCurrent && !identities.has(identity.pid)) continue;
+    identities.set(identity.pid, identity);
   }
-  setTimeout(() => {
-    for (const pid of pids) {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // already gone
-      }
-    }
-  }, 5000);
+  const signalled = [...identities.values()].filter((identity) =>
+    dependencies.processes.signalVerifiedProcess(identity, scanDir, "SIGTERM"));
+  if (signalled.length) dependencies.scheduleEscalation(() => {
+    for (const identity of signalled) dependencies.processes.signalVerifiedProcess(identity, scanDir, "SIGKILL");
+  });
 
   if (run) {
     run.status = "cancelled";
@@ -1244,6 +1338,8 @@ export function cancelScan(id: string): boolean {
     }
   }
   active.delete(id);
+  releaseScanCapacityReservation(id);
+  removeProcessIdentity(scanDir);
   const watch = detached.get(id);
   if (watch) {
     clearInterval(watch.timer);
