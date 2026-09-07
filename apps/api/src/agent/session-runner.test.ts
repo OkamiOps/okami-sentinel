@@ -1187,6 +1187,63 @@ test("an artifact-terminal session corrects a Portable discovery anchor before a
     typeof event === "object" && event !== null && (event as { type?: unknown }).type === "completion"), false);
 });
 
+test("Portable assessment repair distinguishes a verdict status from its reason before writing", async (t) => {
+  const fixture = await fixtureRoots("runner-portable-assessment-status");
+  t.after(fixture.cleanup);
+  const requestedWith: AgentToolResult[][] = [];
+  const anchor = { path: "index.ts", startLine: 1, endLine: 1, role: "source" as const };
+  const assessment = (status: string, reason: string) => ({
+    schemaVersion: 1,
+    stage: "dataflow",
+    summary: "The carried candidate was assessed against its pinned source.",
+    observations: [],
+    assessments: [{ candidateId: "candidate-index", status, reason, evidence: [anchor] }],
+  });
+  const invalid = assessment("not-vulnerable", "control-not-present");
+  const corrected = assessment("rejected", "not-vulnerable");
+  const replies: NormalizedModelReply[] = [invalid, corrected].map((content, index) => ({
+    toolCalls: [{ id: `write-assessment-${index}`, name: "results.write", input: { path: "04-dataflow.json", content } }],
+    text: null, structured: null, usage: null,
+  }));
+  const hostInputs: unknown[] = [];
+  const session = createConstrainedWireSession({
+    limits: { ...DEFAULT_AGENT_LIMITS, maxModelTurns: 2 },
+    signal: new AbortController().signal,
+    terminalMode: "artifact-write",
+    resultArtifactContract: "portable-stage-json-v1",
+    resultArtifactSnapshotRoot: fixture.snapshotRoot,
+    resultArtifactValidationContext: {
+      dossier: {
+        schemaVersion: 1, stageSummaries: [],
+        candidates: [{ id: "candidate-index", category: "authorization", anchors: [anchor] }],
+        assessments: [], scope: { inspected: ["index.ts"], unexamined: [] },
+      },
+    },
+    host: {
+      minimumOutputBytes() { return 0; },
+      async call(_name, input) {
+        hostInputs.push(input);
+        return { content: "artifact-written", artifact: { path: "04-dataflow.json", bytes: 128 } };
+      },
+    },
+    upstream: { async request() { return {}; } },
+    adapter: transcriptAdapter(replies, requestedWith),
+  });
+  const events: unknown[] = [];
+  await collect(session.run(), events);
+  assert.equal(requestedWith.length, 2);
+  assert.equal(requestedWith[1]![0]!.ok, false);
+  const feedback = JSON.parse(requestedWith[1]![0]!.content) as { reason: string; hint: string };
+  assert.equal(feedback.reason, "stage-assessments-invalid");
+  assert.match(feedback.hint, /status MUST be confirmed, rejected, or inconclusive/);
+  assert.match(feedback.hint, /not-vulnerable is a reason, NEVER a status/);
+  assert.match(feedback.hint, /do not blindly substitute a verdict/);
+  assert.match(feedback.hint, /Preserve every carried candidateId and its pinned evidence/);
+  assert.deepEqual(hostInputs, [{ path: "04-dataflow.json", content: JSON.stringify(corrected) }]);
+  assert.deepEqual(invalid.assessments[0]!.status, "not-vulnerable", "validator must not coerce the provider verdict");
+  assert.equal(events.filter((event) => isArtifact(event, "04-dataflow.json")).length, 1);
+});
+
 test("an artifact-terminal session repairs within its total model-turn budget", async (t) => {
   const fixture = await fixtureRoots("runner-portable-repair-window");
   t.after(fixture.cleanup);

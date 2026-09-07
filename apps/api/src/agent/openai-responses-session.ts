@@ -12,6 +12,7 @@ import {
   type WireSessionAdapter,
 } from "./session-types.js";
 import {
+  PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT,
   resultArtifactContentSchema,
   resultArtifactPathSchema,
   type AgentResultArtifactContract,
@@ -119,7 +120,7 @@ function openAiResponsesTools(
     responseTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("results.write"), WORKSPACE_TOOL_WIRE_DESCRIPTIONS["results.write"], {
       path: resultArtifactPathSchema(resultArtifactContract),
       content: resultArtifactContentSchema(resultArtifactContract),
-    }, ["path", "content"]),
+    }, ["path", "content"], resultArtifactContract !== PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT),
   ];
   return resultsWriteOnly ? [tools[3]!] : tools;
 }
@@ -129,12 +130,13 @@ function responseTool(
   description: string,
   properties: Record<string, unknown>,
   required: readonly string[] = [],
+  strict = true,
 ) {
   return {
     type: "function",
     name,
     description,
-    strict: true,
+    strict,
     parameters: { type: "object", additionalProperties: false, properties, required },
   };
 }

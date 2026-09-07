@@ -343,9 +343,10 @@ export async function runPortableCodexSecurity(
         detail: `running ${stage.label.toLowerCase()}`,
       });
       const shards = stage.id === "report"
-        ? createPortableCodexSecurityReportShards(dossier, {
-          maxShards: Math.max(1, Math.floor(safeConfiguration.limits.maxModelTurns / 4)),
-        })
+        // Model-turn limits apply to each bounded session, not to the number
+        // of report pages. The scan deadline/cost budget remains authoritative;
+        // smaller pages must not silently lower the supported finding count.
+        ? createPortableCodexSecurityReportShards(dossier)
         : null;
       const discoveryPartitions = stage.id === "discovery" && deepCoveragePlan !== null
         ? deepCoveragePlan.partitions

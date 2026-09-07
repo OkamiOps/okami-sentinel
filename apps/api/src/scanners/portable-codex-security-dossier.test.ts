@@ -150,6 +150,16 @@ test("Portable dataflow discards provider candidates while retaining assessments
   }), null);
 });
 
+test("Portable artifacts normalize only the exact serialized empty observations array", () => {
+  const artifact = { schemaVersion: 1, stage: "discovery", summary: "Discovery inspected the assigned files.", observations: [], candidates: [] };
+  const expected = normalizePortableCodexSecurityStageArtifact("03-discovery.json", artifact);
+  assert.ok(expected);
+  assert.deepEqual(normalizePortableCodexSecurityStageArtifact("03-discovery.json", { ...artifact, observations: " [] " }), expected);
+  for (const observations of ['["claim"]', "[", "null", {}, null]) {
+    assert.equal(normalizePortableCodexSecurityStageArtifact("03-discovery.json", { ...artifact, observations }), null);
+  }
+});
+
 test("Portable coverage dossier keeps candidate creation exclusive to discovery", () => {
   let dossier = createPortableCodexSecurityDossier();
   dossier = applyPortableCodexSecurityStageArtifact(dossier, {

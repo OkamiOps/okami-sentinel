@@ -216,6 +216,18 @@ test("OpenAI Responses keeps the VulnHunter result tool on the strict string con
   }])).tools.length, 4);
 });
 
+test("OpenAI Responses Portable allows optional stage fields and keeps workspace tools strict", () => {
+  const adapter = createOpenAiResponsesWireAdapter({
+    model: model("portable-model"), instructions: "Write the stage object.",
+    resultArtifactContract: "portable-stage-json-v1",
+  });
+  const tools = responsesBody(adapter.nextRequest([])).tools;
+  assert.equal(tools[3]!.strict, false);
+  const properties = (tools[3]!.parameters as { properties: Record<string, { type: string }> }).properties;
+  assert.equal(properties.content!.type, "object");
+  assert.equal(tools.slice(0, 3).every((tool) => tool.strict === true), true);
+});
+
 function responsesBody(request: AgentWireRequest): {
   tools: Array<{ name: string; description: string; strict?: boolean; parameters?: unknown }>;
 } {

@@ -13,8 +13,9 @@ import {
   type PortableReportFinding,
 } from "./portable-codex-security-dossier.js";
 
-/** Small enough that a complete findings-only page fits ordinary compatible APIs. */
-export const PORTABLE_CODEX_SECURITY_REPORT_SHARD_MAX_CANDIDATES = 16;
+/** Bound structural repair to four findings instead of regenerating a large
+ * report page. All confirmed candidates remain covered by separate pages. */
+export const PORTABLE_CODEX_SECURITY_REPORT_SHARD_MAX_CANDIDATES = 4;
 
 export interface PortableCodexSecurityReportShard {
   index: number;

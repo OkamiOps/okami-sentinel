@@ -7,9 +7,73 @@ import test from "node:test";
 import {
   PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT,
   normalizeResultArtifactInput,
+  resultArtifactContentSchema,
+  resultArtifactPathSchema,
 } from "./result-artifact-contract.js";
 import { createPortableCodexSecurityReportShards } from "../scanners/portable-codex-security-report-shards.js";
 import { MANTIS_REPORT_RESULT_ARTIFACT_CONTRACT } from "../scanners/mantis-report-contract.js";
+
+test("Portable uses an object tool argument while other artifact contracts retain strings", () => {
+  assert.equal(resultArtifactContentSchema(PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT).type, "object");
+  for (const contract of [undefined, "vulnhunter-report-v1", MANTIS_REPORT_RESULT_ARTIFACT_CONTRACT] as const) {
+    assert.deepEqual(resultArtifactContentSchema(contract), { type: "string", minLength: 1 });
+    assert.deepEqual(resultArtifactPathSchema(contract), { type: "string", minLength: 1 });
+  }
+  assert.deepEqual(resultArtifactPathSchema(PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT), {
+    type: "string",
+    enum: ["01-inventory.json", "02-threat-model.json", "03-discovery.json", "04-dataflow.json", "05-validation.json", "sentinel-findings.json"],
+  });
+});
+
+test("Portable object content preserves source characters without bypassing stage validation", () => {
+  const artifact = {
+    schemaVersion: 1,
+    stage: "inventory",
+    summary: 'Source contains "quotes", a \\ path, and a newline\nfollowed by ```json.',
+    observations: [],
+  };
+  const normalized = normalizeResultArtifactInput({ path: "01-inventory.json", content: artifact },
+    PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT);
+  assert.notEqual(normalized, null);
+  assert.deepEqual(JSON.parse(normalized!.content as string), artifact);
+  assert.equal(normalizeResultArtifactInput({
+    path: "03-discovery.json", content: artifact,
+  }, PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT), null);
+  assert.equal(normalizeResultArtifactInput({
+    path: "01-inventory.json", content: { ...artifact, schemaVersion: 99 },
+  }, PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT), null);
+});
+
+test("Portable schema declares every stage field and nested evidence instead of an opaque object", () => {
+  const schema = resultArtifactContentSchema(PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT);
+  const properties = schema.properties as Record<string, Record<string, unknown>>;
+  assert.deepEqual(Object.keys(properties).sort(), [
+    "assessments", "candidates", "coverage", "findings", "observations", "schemaVersion", "scope", "stage", "summary",
+  ]);
+  const itemKeys = (name: string) => Object.keys(
+    (properties[name]!.items as Record<string, unknown>).properties as Record<string, unknown>,
+  ).sort();
+  assert.deepEqual(itemKeys("candidates"), ["anchors", "category", "id"]);
+  assert.deepEqual(itemKeys("assessments"), ["candidateId", "evidence", "reason", "status"]);
+  assert.deepEqual(itemKeys("findings"), [
+    "anchors", "candidateId", "category", "confidence", "cwe", "id", "impact", "remediation",
+    "rootCause", "severity", "severityRationale", "summary", "title",
+  ]);
+  const inspect = (node: Record<string, unknown>) => {
+    if (node.type === "object") {
+      assert.equal(node.additionalProperties, false);
+      const children = node.properties as Record<string, Record<string, unknown>>;
+      assert.ok(Object.keys(children).length > 0, "opaque object loses fields on provider projection");
+      for (const child of Object.values(children)) inspect(child);
+    }
+    if (node.type === "array") inspect(node.items as Record<string, unknown>);
+  };
+  inspect(schema);
+  const candidate = properties.candidates!.items as { properties: Record<string, Record<string, unknown>> };
+  const anchor = candidate.properties.anchors!.items as { properties: Record<string, unknown>; required: string[] };
+  assert.deepEqual(Object.keys(anchor.properties).sort(), ["endLine", "explanation", "path", "role", "startLine"]);
+  assert.deepEqual(anchor.required, ["path", "startLine", "endLine", "role"]);
+});
 
 test("VulnHunter reports return a closed evidence repair reason before artifact I/O", (t) => {
   const snapshotRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vulnhunter-report-repair-"));
@@ -382,9 +446,7 @@ test("Portable report shard accepts findings-only output and derives page covera
   };
   const shard = createPortableCodexSecurityReportShards(dossier)[0]!;
 
-  const normalized = normalizeResultArtifactInput({
-    path: "sentinel-findings.json",
-    content: JSON.stringify({
+  const content = JSON.stringify({
       schemaVersion: 1,
       stage: "report",
       findings: [{
@@ -400,13 +462,27 @@ test("Portable report shard accepts findings-only output and derives page covera
         remediation: "Bind the sensitive operation to the authenticated identity and reject unauthorized callers before access.",
         anchors: [{ ...anchor, explanation: "The pinned operation reaches the sensitive access without an authorization control." }],
       }],
-    }),
-  }, PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, snapshotRoot, {
+    });
+  const context = {
     dossier: shard.dossier,
     reportShard: shard,
-  });
+  };
+  const normalized = normalizeResultArtifactInput({
+    path: "sentinel-findings.json", content,
+  }, PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, snapshotRoot, context);
 
   assert.ok(normalized !== null);
+  assert.deepEqual(normalizeResultArtifactInput({ content },
+    PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, snapshotRoot, context), normalized,
+  "an omitted path uses only the server-owned report shard destination");
+  for (const invalidPath of ["wrong.json", "03-discovery.json", "../sentinel-findings.json", "", null]) {
+    assert.equal(normalizeResultArtifactInput({ path: invalidPath, content },
+      PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, snapshotRoot, context), null,
+    "an explicit invalid path must never be replaced");
+  }
+  assert.equal(normalizeResultArtifactInput({ content },
+    PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, snapshotRoot, { dossier: shard.dossier }), null,
+  "missing paths outside report shards must be rejected");
   const canonical = JSON.parse(String(normalized.content));
   assert.notEqual(canonical.findings[0].id, "PCS-001");
   assert.match(canonical.findings[0].id, /^PCS-[A-F0-9]{24}$/);

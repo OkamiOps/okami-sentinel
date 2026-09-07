@@ -88,19 +88,87 @@ const VALID_EVIDENCE_ROLES = new Set(["source", "entrypoint", "control", "sink",
 const MAX_FINDINGS = 1_000;
 
 export function resultArtifactPathSchema(
-  _contract: AgentResultArtifactContract | undefined,
+  contract: AgentResultArtifactContract | undefined,
 ): Record<string, unknown> {
+  if (contract === PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT) {
+    return { type: "string", enum: ["01-inventory.json", "02-threat-model.json", "03-discovery.json", "04-dataflow.json", "05-validation.json", "sentinel-findings.json"] };
+  }
   return { type: "string", minLength: 1 };
 }
 
 /**
- * Keep the provider-facing contract on the same primitive string shape proven
- * by the capability probe. Scanner semantics are validated locally before I/O.
+ * Portable artifacts travel as tool argument objects, avoiding a second JSON
+ * serialization layer for source excerpts. Stage semantics remain validated
+ * locally before I/O. Other consumers retain their existing string contract.
  */
 export function resultArtifactContentSchema(
-  _contract: AgentResultArtifactContract | undefined,
+  contract: AgentResultArtifactContract | undefined,
 ): Record<string, unknown> {
+  if (contract === PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT) {
+    return portableStageContentSchema();
+  }
   return { type: "string", minLength: 1 };
+}
+
+/** Explicit properties are necessary for providers that project tool arguments
+ * through their declared schema. An unconstrained object can lose every field. */
+function portableStageContentSchema(): Record<string, unknown> {
+  const text = { type: "string", minLength: 1 };
+  const enumeration = (values: readonly string[]) => ({ type: "string", enum: values });
+  const object = (properties: Record<string, unknown>, required = Object.keys(properties)) => ({
+    type: "object", additionalProperties: false, properties, required,
+  });
+  const array = (items: Record<string, unknown>) => ({ type: "array", items });
+  const reason = enumeration([
+    "control-not-present", "untrusted-flow-reaches-sink", "no-untrusted-source",
+    "not-reachable", "sanitized", "requires-privilege", "out-of-scope",
+    "insufficient-evidence", "not-vulnerable",
+  ]);
+  const anchor = object({
+    path: text,
+    startLine: { type: "integer", minimum: 1 },
+    endLine: { type: "integer", minimum: 1 },
+    role: enumeration(["source", "entrypoint", "control", "sink", "evidence"]),
+    explanation: text,
+  }, ["path", "startLine", "endLine", "role"]);
+  const anchors = { ...array(anchor), minItems: 1 };
+  const scopeProperties = {
+    inspected: array(text),
+    unexamined: array(object({ path: text, reason })),
+  };
+  const finding = object({
+    id: text, candidateId: text, title: text,
+    severity: enumeration(["critical", "high", "medium", "low"]),
+    confidence: enumeration(["high", "medium", "low"]),
+    category: text, summary: text, rootCause: text, impact: text,
+    remediation: text, anchors, cwe: array(text), severityRationale: text,
+  }, [
+    "id", "candidateId", "title", "severity", "confidence", "category", "summary",
+    "rootCause", "impact", "remediation", "anchors",
+  ]);
+  return {
+    ...object({
+      schemaVersion: { type: "integer", enum: [1] },
+      stage: enumeration(["inventory", "threat-model", "discovery", "dataflow", "validation", "report"]),
+      summary: text,
+      observations: { ...array({ type: "string" }), maxItems: 0 },
+      scope: object(scopeProperties),
+      candidates: array(object({ id: text, category: text, anchors })),
+      assessments: array(object({
+        candidateId: text,
+        status: enumeration(["confirmed", "rejected", "inconclusive"]),
+        reason, evidence: anchors,
+      })),
+      findings: array(finding),
+      coverage: object({
+        ...scopeProperties,
+        candidates: array(object({
+          candidateId: text, disposition: enumeration(["reported", "rejected"]), reason, evidence: anchors,
+        })),
+      }),
+    }, ["schemaVersion"]),
+    description: "The complete stage artifact as a JSON object matching the supplied stage contract. Pass the object directly; do not stringify it or wrap it in Markdown. Include only fields required by the current stage: summary and observations for non-report stages; candidates for discovery; assessments for dataflow/validation; findings for report. Report pages omit coverage because the server derives it.",
+  };
 }
 
 /**
@@ -185,7 +253,12 @@ export function normalizeResultArtifactInput(
     return { ...input, content: JSON.stringify(parsed) };
   }
   if (contract === PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT) {
-    return normalizePortableStageArtifact(input.path, parsed, snapshotRoot, portableContext, onReject);
+    // Report shards have exactly one server-owned destination. An omitted
+    // envelope path must not force regeneration of a complete findings page.
+    // Supplied paths remain validated, and no finding/evidence is synthesized.
+    const artifactPath = input.path === undefined && portableContext?.reportShard !== undefined
+      ? VULNHUNTER_RESULT_ARTIFACT_PATH : input.path;
+    return normalizePortableStageArtifact(artifactPath, parsed, snapshotRoot, portableContext, onReject);
   }
   if (contract === MANTIS_REPORT_RESULT_ARTIFACT_CONTRACT) {
     let repairDetail: MantisReportRepairDetail | undefined;

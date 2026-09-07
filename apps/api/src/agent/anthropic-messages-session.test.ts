@@ -199,6 +199,23 @@ test("Anthropic Messages keeps the VulnHunter result tool on the universal strin
   }])).tools.length, 4);
 });
 
+test("Anthropic Portable writes a stage object without nesting serialized JSON", () => {
+  const adapter = createAnthropicMessagesWireAdapter({
+    model: model("MiniMax-M3"),
+    instructions: "Write the Portable artifact.",
+    resultArtifactContract: "portable-stage-json-v1",
+  });
+  const tool = messagesBody(adapter.nextRequest([])).tools[3]!;
+  const properties = (tool.input_schema as { properties: Record<string, { type: string }> }).properties;
+  assert.equal(properties.content!.type, "object");
+  const artifact = { schemaVersion: 1, stage: "inventory", summary: 'Contains "quotes"\n', observations: [] };
+  const reply = adapter.readResponse({ content: [{
+    type: "tool_use", id: "write-object", name: "results_write",
+    input: { path: "01-inventory.json", content: artifact },
+  }] });
+  assert.deepEqual(reply.toolCalls[0]!.input.content, artifact);
+});
+
 function messagesBody(request: AgentWireRequest): {
   tools: Array<{ name: string; description: string; input_schema?: unknown }>;
 } {

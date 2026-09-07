@@ -75,7 +75,7 @@ test("Portable report shards retain every confirmed candidate and assemble deter
 
   const shards = createPortableCodexSecurityReportShards(dossier);
 
-  assert.equal(shards.length, 5);
+  assert.equal(shards.length, 17);
   assert.ok(shards.every((shard) => shard.dossier.candidates.length <= PORTABLE_CODEX_SECURITY_REPORT_SHARD_MAX_CANDIDATES));
   assert.deepEqual(
     shards.flatMap((shard) => shard.dossier.candidates.map((candidate) => candidate.id)),
@@ -126,11 +126,11 @@ test("Portable report assembly derives a verified zero report when every candida
   assert.ok(report.coverage.candidates.every((entry) => entry.disposition === "rejected"));
 });
 
-test("Portable report shards fail closed instead of exceeding the 16-candidate page bound", () => {
+test("Portable report shards fail closed instead of exceeding the four-candidate page bound", () => {
   const dossier = dossierWith65ConfirmedAnd2Rejected();
 
   assert.throws(
-    () => createPortableCodexSecurityReportShards(dossier, { maxShards: 4 }),
+    () => createPortableCodexSecurityReportShards(dossier, { maxShards: 16 }),
     /bounded shard execution budget/i,
   );
 });

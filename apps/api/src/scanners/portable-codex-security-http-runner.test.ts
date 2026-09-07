@@ -758,7 +758,7 @@ test("Portable Codex Security gives every report page 128 bounded turns and tool
     routeKind: "minimax-token-plan",
     protocol: "anthropic-messages",
   }));
-  // Five report pages remain independently bounded while deadline and cost are global.
+  // Seventeen report pages remain independently bounded while deadline and cost are global.
   config.limits.maxModelTurns = 32;
   config.limits.maxToolCalls = 128;
   const specs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }> = [];
@@ -777,7 +777,7 @@ test("Portable Codex Security gives every report page 128 bounded turns and tool
 
     const reportSpecs = specs.filter((item) => /stage "report"/.test(item.spec.instructions))
       .map((item) => item.spec);
-    assert.equal(reportSpecs.length, 1, "the factory stops at the first of five report pages");
+    assert.equal(reportSpecs.length, 1, "the factory stops at the first of seventeen report pages");
     assert.ok((reportSpecs[0]!.maxCompletionTokens ?? 0) > 10_240);
     assert.ok((reportSpecs[0]!.maxCompletionTokens ?? Infinity) <= 65_536);
     assert.equal(reportSpecs[0]!.limits.maxModelTurns, 128);

@@ -162,6 +162,14 @@ test("Portable Codex Security makes carried candidate ids explicit for assessmen
 
     assert.match(prompt, /BEGIN_PORTABLE_CANDIDATE_IDS_JSON\n\["candidate-auth","candidate-sqli"\]\nEND_PORTABLE_CANDIDATE_IDS_JSON/);
     assert.match(prompt, /candidateId values exactly as listed/i);
+    assert.match(prompt, /not-vulnerable is a reason code, never a status/);
+    if (stageId === "validation") {
+      assert.match(prompt, /"status":"confirmed\|rejected"/);
+      assert.doesNotMatch(prompt, /"status":"confirmed\|rejected\|inconclusive"/);
+      assert.match(prompt, /reject unsubstantiated candidates using insufficient-evidence without claiming that the code is safe/);
+    } else {
+      assert.match(prompt, /"status":"confirmed\|rejected\|inconclusive"/);
+    }
     assert.equal(prompt.includes("/snapshot"), false);
   }
 });

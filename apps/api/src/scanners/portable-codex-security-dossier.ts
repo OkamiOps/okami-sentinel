@@ -584,7 +584,12 @@ function parsePortableStageArtifact(
     "schemaVersion", "stage", "summary", "observations", "scope", "candidates", "assessments",
   ]))) return reject("stage-fields-invalid");
   const summary = text(record.summary, MAX_STAGE_SUMMARY_BYTES);
-  if (summary === null || !Array.isArray(record.observations) || record.observations.length > 128) {
+  // Some tool providers encode the mandatory empty observations array as the
+  // literal string "[]". This exact, lossless normalization carries no claims
+  // or evidence; non-empty strings and malformed values remain invalid.
+  const observations = typeof record.observations === "string" && record.observations.trim() === "[]"
+    ? [] : record.observations;
+  if (summary === null || !Array.isArray(observations) || observations.length > 128) {
     return reject("stage-summary-invalid");
   }
   // Dataflow and validation assess a server-owned candidate page. Their scope is

@@ -229,7 +229,7 @@ function stageArtifactContract(stage: PortableCodexSecurityStage): string {
   if (stage.id === "dataflow" || stage.id === "validation") {
     stageArtifact.assessments = [{
       candidateId: "candidate-id",
-      status: "confirmed|rejected|inconclusive",
+      status: stage.id === "validation" ? "confirmed|rejected" : "confirmed|rejected|inconclusive",
       reason: "control-not-present|not-vulnerable|insufficient-evidence",
       evidence: [{
         path: "repository/relative/path",
@@ -301,6 +301,7 @@ export function buildPortableCodexSecurityStagePrompt(
       : `Analyze the projected source directly, then call ${writeTool} without a preliminary workspace tool turn. The ${writeTool} call must be the only tool call in its model turn.`,
     "Write strict JSON matching this artifact contract:",
     stageArtifactContract(stage),
+    `Pass the artifact as the structured object in ${writeTool}.content. Do not JSON-stringify it, wrap it in a string, or surround it with Markdown fences.`,
     stage.id === "report"
       ? "The JSON must be complete in one tool call. Use a unique page-local finding id; the server replaces it with a stable global id. Do not include observations, coverage, or scope. Keep every required narrative field substantive and concise."
       : "The JSON must be complete in one tool call. Never exhaust the model output limit. Stage artifacts must use observations: [] and may only add structured scope and assessments where their stage contract permits. The server forwards only compact stage summaries, structured candidate ids, scope paths, reason codes, and line anchors; never embed source snippets or secrets in those fields.",
@@ -309,7 +310,7 @@ export function buildPortableCodexSecurityStagePrompt(
       : stage.id === "discovery"
         ? "Keep summaries concise. Discovery is the only stage that creates candidates. Each candidate needs a stable id, category, and repository-backed anchors."
         : stage.id === "dataflow" || stage.id === "validation"
-          ? "Keep summaries concise. The dossier already carries candidate ids; do not include candidates or scope. Produce exactly one assessment for every carried candidateId and no others, with repository-backed evidence."
+          ? `Keep summaries concise. The dossier already carries candidate ids; do not include candidates or scope. Produce exactly one assessment for every carried candidateId and no others, with repository-backed evidence. The status field is ${stage.id === "validation" ? "confirmed or rejected; final validation cannot leave candidates inconclusive. Confirm only with supported evidence; reject unsubstantiated candidates using insufficient-evidence without claiming that the code is safe" : "confirmed, rejected, or inconclusive"}. not-vulnerable is a reason code, never a status. Return only candidateId, status, reason, and evidence in each assessment.`
         : "Keep summaries concise; never exhaust the model output limit.",
     ...(input.deepCoveragePartition === undefined
       ? []
