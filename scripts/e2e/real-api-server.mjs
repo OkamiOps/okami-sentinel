@@ -28,6 +28,11 @@ function startApi() {
     cwd: repositoryRoot,
     env: {
       ...process.env,
+      // Isolate application state without relocating Playwright's installed
+      // browser cache (Linux resolves that cache through XDG_CACHE_HOME).
+      XDG_CONFIG_HOME: path.join(fixtureRoot, "xdg-config"),
+      XDG_DATA_HOME: path.join(fixtureRoot, "xdg-data"),
+      XDG_CACHE_HOME: path.join(fixtureRoot, "xdg-cache"),
       NODE_OPTIONS: appendNodeImport(process.env.NODE_OPTIONS, networkGuard),
     },
     stdio: "inherit",
