@@ -47,6 +47,7 @@ export function App() {
   const [shellState, setShellState] = useState<"checking" | "ready" | "offline">("checking");
   const [lastActiveUpdate, setLastActiveUpdate] = useState<string | null>(null);
   const [launcherOpen, setLauncherOpen] = useState(false);
+  const [modulesOpen, setModulesOpen] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [reindexFailed, setReindexFailed] = useState(false);
   const activeRequestRef = useRef(0);
@@ -112,9 +113,9 @@ export function App() {
           <ThemeSwitcher />
           <LanguageSwitcher />
           <Button asChild className="h-full border-y-0 border-r-0 px-3 sm:px-4"><Link to="/scans/new"><HugeiconsIcon icon={PlusSignIcon} size={13} />{t("shell.launch")}</Link></Button>
-          <Sheet>
+          <Sheet open={modulesOpen} onOpenChange={setModulesOpen}>
             <SheetTrigger asChild><Button variant="ghost" size="icon" className="h-full border-y-0 border-r-0 xl:hidden" aria-label={t("shell.openModules")}><HugeiconsIcon icon={Menu01Icon} size={16} /></Button></SheetTrigger>
-            <SheetContent side="right" className="w-72 border-border bg-background p-0"><SheetTitle className="border-b px-4 py-4 font-mono text-xs">{t("shell.moduleIndex")}</SheetTitle><NavStrip /></SheetContent>
+            <SheetContent side="right" className="w-72 border-border bg-background p-0"><SheetTitle className="border-b px-4 py-4 font-mono text-xs">{t("shell.moduleIndex")}</SheetTitle><NavStrip onNavigate={() => setModulesOpen(false)} /></SheetContent>
           </Sheet>
         </div>
       </div>

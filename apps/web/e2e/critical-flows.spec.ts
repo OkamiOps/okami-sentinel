@@ -221,3 +221,16 @@ test("quick-action reindex reports failure and recovers through its retry withou
   await expect(page.getByRole("link", { name: "Repository alpha", exact: true })).toBeVisible();
   expect(pageErrors).toEqual([]);
 });
+
+test("mobile module navigation closes the menu and reveals the destination", async ({ page }) => {
+  await mockApi(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/scans");
+  await page.getByRole("button", { name: translate("en", "shell.openModules"), exact: true }).click();
+  const menu = page.getByRole("dialog");
+  await expect(menu).toBeVisible();
+  await menu.getByRole("link", { name: `06 ${translate("en", "nav.activity")}`, exact: true }).click();
+  await expect(page).toHaveURL(/\/activity$/);
+  await expect(menu).toBeHidden();
+  await expect(page.locator("main")).toBeVisible();
+});
