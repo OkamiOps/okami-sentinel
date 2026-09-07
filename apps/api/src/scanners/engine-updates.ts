@@ -453,6 +453,10 @@ class EngineUpdatesServiceImpl implements EngineUpdatesService {
         }
         return existing;
       }
+      // Each installation has its own npm cache. It is never reused by the
+      // selected executable or a future staging directory, so do not retain
+      // a second copy of all downloaded packages with every engine version.
+      safeRemoveTaskStaging(path.join(staging, ".npm-cache"), staging);
       fs.renameSync(staging, destination);
       return runtimeRecord(id, version);
     } catch (error) {
