@@ -14,6 +14,8 @@ export interface ResolveChangeSetInput {
   headRef: string;
   maxChangedPaths: number;
   fallback: "repository" | "error";
+  /** Local execution reads this checkout, so it must be clean and match headRef. */
+  requireMatchingCheckout?: boolean;
 }
 
 export class GitChangeSetError extends Error {
@@ -96,6 +98,25 @@ export async function resolveChangeSet(
   )).trim();
   if (!baseSha) throw new GitChangeSetError("git returned an empty base SHA", "baseRef");
   if (!headSha) throw new GitChangeSetError("git returned an empty head SHA", "headRef");
+
+  // A local checkout is scanned in place. Until it is materialized, a dirty
+  // HEAD cannot truthfully be represented by the committed headSha.
+  if (input.requireMatchingCheckout) {
+    const checkoutSha = (await runner(["rev-parse", "--verify", "HEAD^{commit}"], gitRoot)).trim();
+    if (checkoutSha !== headSha) {
+      throw new GitChangeSetError(
+        "The local checkout does not match the selected head revision. Check out that revision before running the gate.",
+        "headRef",
+      );
+    }
+    const dirty = await runner(["status", "--porcelain=v1", "-z", "--untracked-files=normal"], gitRoot);
+    if (dirty.length > 0) {
+      throw new GitChangeSetError(
+        "Uncommitted changes are not supported by local gates. Commit or stash them before running the gate.",
+        "headRef",
+      );
+    }
+  }
 
   const output = await runner(
     ["diff", "--name-status", "--find-renames", "-z", `${baseSha}...${headSha}`],

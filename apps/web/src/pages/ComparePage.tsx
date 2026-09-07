@@ -511,10 +511,11 @@ function UnitEconomicsSummary({ rows, baselineScanId }: { rows: ScanDecisionRow[
 }
 
 function EconomicsLeader({ label, row, value, detail }: { label: string; row?: ScanDecisionRow; value: string; detail: string }) {
+  const { t } = useI18n();
   return <div className="min-h-36 border-b border-r p-4">
     <div className="bench-label text-primary">{label}</div>
     <div className="mt-3 font-mono text-2xl font-semibold tracking-[-.04em]">{value}</div>
-    <div className="mt-3 truncate text-xs font-semibold">{row ? decisionProfile(row.scan) : "Sem vencedor"}</div>
+    <div className="mt-3 truncate text-xs font-semibold">{row ? decisionProfile(row.scan) : t("compare.noWinner")}</div>
     {row && <PartialScanBadges scan={row.scan} compact />}
     <div className="mt-1 text-[9px] leading-relaxed text-muted-foreground">{detail}</div>
   </div>;

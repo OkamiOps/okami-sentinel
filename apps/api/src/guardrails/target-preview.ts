@@ -59,6 +59,7 @@ export interface TargetPreviewRequest {
 }
 
 export interface StartGateRequest {
+  scanSelection?: GuardrailScanSelection;
   repositoryKey: string;
   target: GateTarget;
   executor?: GateExecutorKind;
@@ -308,7 +309,7 @@ function resolvedCostBudget(
   };
 }
 
-async function resolvedScanSelection(
+export async function resolvedScanSelection(
   selection: GuardrailScanSelection,
   executor: GateExecutorKind,
   resolve: TargetPreviewDependencies["resolveScanSelection"],
@@ -334,17 +335,22 @@ export function parseStartGateRequest(value: unknown): StartGateRequest {
   const input = record(value);
   exactKeys(
     input,
-    new Set(["repositoryKey", "target", "executor", "previewIdentity"]),
-    new Set(["executor", "previewIdentity"]),
+    new Set(["repositoryKey", "target", "executor", "previewIdentity", "scanSelection"]),
+    new Set(["executor", "previewIdentity", "scanSelection"]),
   );
   const repositoryKey = boundedString(input.repositoryKey, 255);
-  const target = parsedTarget(input.target);
+  // Local gates accept Git HEAD; remote targets still resolve through the stricter preview parser.
+  const rawTarget = record(input.target);
+  const localHead = rawTarget.kind === "compare" && rawTarget.headRef === "HEAD";
+  const target = parsedTarget(localHead ? { ...rawTarget, headRef: "main" } : rawTarget);
+  if (localHead && target.kind === "compare") target.headRef = "HEAD";
   const executor = optionalExecutor(input.executor);
   const previewIdentity = input.previewIdentity === undefined
     ? undefined
     : boundedString(input.previewIdentity, 255);
   return {
     repositoryKey,
+    ...(input.scanSelection === undefined ? {} : { scanSelection: parsedScanSelection(input.scanSelection) }),
     target,
     ...(executor === undefined ? {} : { executor }),
     ...(previewIdentity === undefined ? {} : { previewIdentity }),

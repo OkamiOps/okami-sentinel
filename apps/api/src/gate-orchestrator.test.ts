@@ -227,9 +227,15 @@ function githubBaseline(headSha = "remote-head"): GateArtifact {
 
 test("finishes no_changes without starting a scan", async () => {
   const deps = fakeDeps({ changeSet: changeSet([]) });
+  let checkoutValidationRequested = false;
+  deps.resolveChangeSet = async (input) => {
+    checkoutValidationRequested = input.requireMatchingCheckout === true;
+    return changeSet([]);
+  };
   const gate = await startLocalGate(request(), deps);
   await waitForGate(gate.id);
 
+  assert.equal(checkoutValidationRequested, true);
   assert.equal(deps.startScanCalls, 0);
   assert.equal(deps.runs.get(gate.id)?.outcome, "no_changes");
 });
@@ -636,4 +642,19 @@ test("fails closed when a completed linked scan lost gate finalization", () => {
 
   assert.equal(reconciled?.status, "error");
   assert.equal(reconciled?.error, "gate_finalization_interrupted");
+});
+
+test("local gates pass explicit routes and selected cost controls to the scanner", async () => {
+  for (const costLimit of [{ kind: "manual", maxCostUsd: 3.5 }, { kind: "none" }] as const) {
+    const deps = fakeDeps({ changeSet: changeSet(["src/a.ts"]) });
+    const selection = { engine: "codex-security" as const, connection: { connectionId: "qa-cli", modelSelectionMode: "runtime-default" as const, modelId: null }, mode: "deep" as const, costLimit };
+    const gate = await startLocalGate({ ...request(), scanSelection: selection }, deps);
+    await waitForGate(gate.id);
+    assert.deepEqual(deps.lastScanRequest?.connection, selection.connection);
+    assert.equal(deps.lastScanRequest?.engine, "codex-security");
+    assert.equal(deps.lastScanRequest?.model, undefined);
+    assert.equal(deps.lastScanRequest?.mode, "deep");
+    assert.equal(deps.lastScanRequest?.maxCostUsd, costLimit.kind === "manual" ? 3.5 : undefined);
+    assert.equal(gate.costCeilingUsd, costLimit.kind === "manual" ? 3.5 : 0);
+  }
 });

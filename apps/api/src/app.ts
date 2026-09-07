@@ -83,6 +83,7 @@ import {
   TargetPreviewService,
   nativeScanCostCeilingSupported,
   parseStartGateRequest,
+  resolvedScanSelection,
   parseTargetPreviewRequest,
   type AcceptedGateTargetPreview,
   type GateTargetPreview,
@@ -238,27 +239,29 @@ const targetPreviewService = new TargetPreviewService({
       ? { ready: true, code: "ready" }
       : { ready: false, code: "github_actions_unavailable" };
   },
-  resolveScanSelection: async (selection) => {
-    const scanner = (await getScannerCatalog()).scanners.find((candidate) => candidate.engine === selection.engine);
-    if (!scanner?.enabled || !scanner.modes.includes(selection.mode)) {
-      throw new TargetPreviewError("target_preview_invalid");
-    }
-    const compatibility = getProviderRuntime().compatibility.resolve({
-      engine: selection.engine,
-      selection: selection.connection,
-      remoteRepositoryConfirmed: true,
-      ...(selection.engine === "codex-security" ? { executionProfilePreference: "auto" as const } : {}),
-    });
-    if (!nativeScanCostCeilingSupported(
-      selection,
-      compatibility,
-      scanner.models.map((model) => model.id),
-    )) {
-      throw new TargetPreviewError("target_preview_invalid");
-    }
-    return compatibility;
-  },
+  resolveScanSelection: resolveGuardrailScanSelection,
 });
+
+async function resolveGuardrailScanSelection(selection: import("@csb/shared").GuardrailScanSelection) {
+  const scanner = (await getScannerCatalog()).scanners.find((candidate) => candidate.engine === selection.engine);
+  if (!scanner?.enabled || !scanner.modes.includes(selection.mode)) {
+    throw new TargetPreviewError("target_preview_invalid");
+  }
+  const compatibility = getProviderRuntime().compatibility.resolve({
+    engine: selection.engine,
+    selection: selection.connection,
+    remoteRepositoryConfirmed: true,
+    ...(selection.engine === "codex-security" ? { executionProfilePreference: "auto" as const } : {}),
+  });
+  if (!nativeScanCostCeilingSupported(
+    selection,
+    compatibility,
+    scanner.models.map((model) => model.id),
+  )) {
+    throw new TargetPreviewError("target_preview_invalid");
+  }
+  return compatibility;
+}
 
 const guardrailsDependencies: GuardrailsApiDependencies = {
   listRepositories: listGuardrailRepositories,
@@ -530,6 +533,7 @@ export function createGuardrailsApp(
       if (
         request.repositoryKey !== repository.repositoryKey
         || request.executor !== "github-actions"
+        || request.scanSelection !== undefined
       ) throw new TargetPreviewError("target_preview_invalid");
       const preview = await deps.acceptTargetPreview(repository, {
         previewIdentity: requiredPreviewIdentity(request.previewIdentity),
@@ -566,6 +570,7 @@ export function createGuardrailsApp(
       const repository = deps.getRepository(request.repositoryKey);
       if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
       const executor = request.executor ?? repository.defaultExecutor;
+      if (repository.source === "github" && request.scanSelection !== undefined) throw new TargetPreviewError("target_preview_invalid");
       const acceptedPreview = repository.source === "github"
         ? await deps.acceptTargetPreview(repository, {
             previewIdentity: requiredPreviewIdentity(request.previewIdentity),
@@ -1046,6 +1051,7 @@ async function startGuardrailGate(
       repositoryKey: repository.repositoryKey,
       baseRef: request.target.baseRef,
       headRef: request.target.headRef,
+      ...(request.scanSelection ? { scanSelection: await resolvedScanSelection(request.scanSelection, executor, resolveGuardrailScanSelection) } : {}),
     });
   }
   if (acceptedPreview === null) {

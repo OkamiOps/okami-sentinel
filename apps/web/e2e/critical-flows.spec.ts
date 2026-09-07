@@ -170,3 +170,54 @@ test("overview defers code for comparison, launch, detail, and reports", async (
   expect(scripts.some((script) => script.includes("DashboardPage-"))).toBe(true);
   expect(scripts.filter((script) => /\/(ComparePage|CompareReportPage|NewScanPage|ScanDetailPage|ScanReportPage)-/.test(script))).toEqual([]);
 });
+
+test("local preflight exposes its scan route and explains how to add a missing connection", async ({ page }) => {
+  await mockApi(page);
+  await page.route("**/api/connections", (route) => route.fulfill({ json: { connections: [] } }));
+  await page.route("**/api/guardrails/repositories", (route) => route.fulfill({ json: { repositories: [{
+    repositoryKey: "local:qa", repositoryPath: "/fixture/alpha", displayName: "QA protected project",
+    source: "local", defaultBranch: "main", defaultExecutor: "sentinel-managed", remoteOwner: null,
+    remoteName: null, githubConnectionId: null, githubInstallationId: null, githubRepositoryId: null,
+    enabled: true, policyPath: ".sentinel/policy.json", lastGateId: null, githubStatus: "not_configured",
+  }] } }));
+  await page.route("**/api/guardrails/gates", (route) => route.fulfill({ json: { gates: [] } }));
+  await page.goto("/guardrails");
+  await page.getByRole("button", { name: translate("en", "guardrails.preflight"), exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("radiogroup", { name: translate("en", "newScan.scannerEngine") }).scrollIntoViewIfNeeded();
+  await expect(dialog.getByRole("radiogroup", { name: translate("en", "newScan.scannerEngine") })).toBeVisible();
+  await expect(dialog.getByRole("combobox", { name: translate("en", "newScan.connectionRoute") })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: translate("en", "guardrails.start"), exact: true })).toBeDisabled();
+  const explanation = dialog.getByText(translate("en", "newScan.connectionRequired"), { exact: true }).last();
+  await explanation.scrollIntoViewIfNeeded();
+  await expect(explanation).toBeVisible();
+  const manage = dialog.getByRole("link", { name: translate("en", "newScan.manageConnections"), exact: true });
+  await expect(manage).toHaveAttribute("href", "/settings/connections");
+  await manage.click();
+  await expect(page).toHaveURL(/\/settings\/connections$/);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+});
+
+test("quick-action reindex reports failure and recovers through its retry without page errors", async ({ page }) => {
+  await mockApi(page);
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  let attempts = 0;
+  await page.route("**/api/ingest", (route) => {
+    attempts++;
+    return attempts === 1
+      ? route.fulfill({ status: 503, contentType: "text/plain", body: "Service unavailable" })
+      : route.fulfill({ json: { imported: 0 } });
+  });
+  await page.goto("/scans");
+  await page.getByRole("button", { name: translate("en", "shell.openQuickActions"), exact: true }).click();
+  await page.getByRole("menuitem").filter({ hasText: translate("en", "shell.reindex") }).click();
+  const alert = page.getByRole("alert").filter({ hasText: translate("en", "settings.reindexError") });
+  await expect(alert).toBeVisible();
+  expect(attempts).toBe(1);
+  await alert.getByRole("button", { name: translate("en", "common.retry"), exact: true }).click();
+  await expect.poll(() => attempts).toBe(2);
+  await expect(alert).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Repository alpha", exact: true })).toBeVisible();
+  expect(pageErrors).toEqual([]);
+});

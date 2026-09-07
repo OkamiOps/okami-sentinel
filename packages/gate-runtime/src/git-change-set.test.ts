@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import {
   GitChangeSetError,
+  defaultGitRunner,
   parseNameStatusZ,
   resolveChangeSet,
   type GitRunner,
@@ -14,6 +18,7 @@ function fakeGit(status: string, root = "/repo"): GitRunner {
     if (command === "rev-parse --show-toplevel") return `${root}\n`;
     if (command === "rev-parse --verify main^{commit}") return "base-sha\n";
     if (command === "rev-parse --verify HEAD^{commit}") return "head-sha\n";
+    if (command === "status --porcelain=v1 -z --untracked-files=normal") return "";
     if (command === "diff --name-status --find-renames -z base-sha...head-sha") return status;
     throw new Error(`unexpected git call: ${command}`);
   };
@@ -125,4 +130,34 @@ test("rejects a renamed previous path that escapes the repository", async () => 
     }, fakeGit("R100\0../old.ts\0src/new.ts\0")),
     (error: unknown) => error instanceof GitChangeSetError && error.path === "files[0].previousPath",
   );
+});
+
+test("local execution requires a matching clean checkout for HEAD and explicit refs", async () => {
+  const repositoryPath = await mkdtemp(path.join(tmpdir(), "gate-head-dirty-"));
+  const git = (args: string[]) => defaultGitRunner(args, repositoryPath);
+  const input = { repositoryPath, baseRef: "main", headRef: "HEAD", maxChangedPaths: 10, fallback: "error" as const, requireMatchingCheckout: true };
+  try {
+    await git(["init", "-b", "main"]);
+    await mkdir(path.join(repositoryPath, "src"));
+    await writeFile(path.join(repositoryPath, "src", "app.ts"), "export const value = 1;\n");
+    await git(["add", "src/app.ts"]);
+    await git(["-c", "user.name=Gate QA", "-c", "user.email=gate-qa@example.test", "commit", "-m", "fixture"]);
+    assert.deepEqual((await resolveChangeSet(input)).files, []);
+    assert.deepEqual((await resolveChangeSet({ ...input, headRef: "main" })).files, []);
+    await writeFile(path.join(repositoryPath, "src", "app.ts"), "export const value = 2;\n");
+    await assert.rejects(resolveChangeSet(input), /Uncommitted changes/);
+    await assert.rejects(resolveChangeSet({ ...input, headRef: "main" }), /Uncommitted changes/);
+    await git(["add", "src/app.ts"]);
+    await assert.rejects(resolveChangeSet(input), /Uncommitted changes/);
+    await git(["-c", "user.name=Gate QA", "-c", "user.email=gate-qa@example.test", "commit", "-m", "updated fixture"]);
+    assert.deepEqual((await resolveChangeSet(input)).files, []);
+    await git(["branch", "previous", "HEAD~1"]);
+    await assert.rejects(resolveChangeSet({ ...input, headRef: "previous" }), /checkout does not match/);
+    // Revision-only consumers remain independent of the current checkout.
+    await resolveChangeSet({ ...input, headRef: "previous", requireMatchingCheckout: false });
+    await writeFile(path.join(repositoryPath, "src", "new.ts"), "export const added = true;\n");
+    await assert.rejects(resolveChangeSet(input), /Uncommitted changes/);
+  } finally {
+    await rm(repositoryPath, { recursive: true, force: true });
+  }
 });

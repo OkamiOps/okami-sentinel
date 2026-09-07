@@ -7,7 +7,7 @@ import { api } from "./api";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuShortcut, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { LiveDuration, Loading, cx } from "./components/ui";
+import { AlertBanner, LiveDuration, Loading, cx } from "./components/ui";
 import { formatDate, formatScanUsd } from "./format";
 import { LanguageSwitcher } from "./components/LanguageSwitcher";
 import { ThemeSwitcher } from "./components/ThemeSwitcher";
@@ -48,6 +48,7 @@ export function App() {
   const [lastActiveUpdate, setLastActiveUpdate] = useState<string | null>(null);
   const [launcherOpen, setLauncherOpen] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [reindexFailed, setReindexFailed] = useState(false);
   const activeRequestRef = useRef(0);
   const loadActive = useCallback(async () => {
     const requestId = ++activeRequestRef.current;
@@ -68,7 +69,18 @@ export function App() {
     return () => window.clearInterval(id);
   }, [loadActive]);
   useEffect(() => { const onKeyDown = (event: KeyboardEvent) => { if (!(event.metaKey || event.ctrlKey)) return; if (event.key.toLowerCase() === "k") { event.preventDefault(); setLauncherOpen((open) => !open); } if (event.key === "Enter") { event.preventDefault(); navigate("/scans/new"); } }; window.addEventListener("keydown", onKeyDown); return () => window.removeEventListener("keydown", onKeyDown); }, [navigate]);
-  async function reindex() { setSyncing(true); try { await api.ingest(); await loadActive(); } finally { setSyncing(false); } }
+  async function reindex() {
+    setSyncing(true);
+    setReindexFailed(false);
+    try {
+      await api.ingest();
+      await loadActive();
+    } catch {
+      setReindexFailed(true);
+    } finally {
+      setSyncing(false);
+    }
+  }
   const current = active[0];
   const shellStatus = shellState === "offline"
     ? t("shell.apiOffline")
@@ -113,6 +125,10 @@ export function App() {
     </header>
 
     <main className="mx-auto w-full max-w-[112rem] px-3 py-5 sm:px-5 lg:px-7">
+      {reindexFailed && <AlertBanner>
+        {t("settings.reindexError")}
+        <Button type="button" variant="outline" size="sm" disabled={syncing} onClick={() => void reindex()}>{t("common.retry")}</Button>
+      </AlertBanner>}
       <Suspense fallback={<Loading />}>
       <Routes>
         <Route path="/" element={<DashboardPage />} />

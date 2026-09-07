@@ -30,6 +30,7 @@ import {
   type GuardrailException,
   type GuardrailPolicy,
   type GuardrailRepository,
+  type GuardrailScanSelection,
   type ScanRun,
   type StartScanRequest,
   type GateCoverageEnvelope,
@@ -112,6 +113,7 @@ import {
 } from "./runner.js";
 
 export interface LocalGateRequest {
+  scanSelection?: GuardrailScanSelection;
   repositoryKey: string;
   baseRef: string;
   headRef: string;
@@ -247,7 +249,10 @@ export async function startLocalGate(
   const repository = deps.getRepository(request.repositoryKey);
   if (!repository) throw new Error(`Repositório não configurado: ${request.repositoryKey}`);
   const repositoryPath = requiredLocalRepositoryPath(repository);
-  const costCeilingUsd = localCostCeiling(repositoryPath, deps);
+  const selection = request.scanSelection;
+  const costCeilingUsd = selection?.costLimit?.kind === "none" ? 0
+    : selection?.costLimit?.kind === "manual" ? selection.costLimit.maxCostUsd
+    : localCostCeiling(repositoryPath, deps);
   const baselineSource = request.baselineSource ?? "local";
   if (
     baselineSource === "github" &&
@@ -292,7 +297,7 @@ export async function startLocalGate(
   };
   deps.insertGateRun(run);
   emit(run.id, "status", { gateId: run.id, status: "queued" }, deps);
-  launchGate(run.id, deps, false, baselineSource);
+  launchGate(run.id, deps, false, baselineSource, selection);
   return run;
 }
 
@@ -699,9 +704,10 @@ function launchGate(
   deps: LocalGateDependencies,
   recoverScan: boolean,
   baselineSource: "local" | "github",
+  selection?: GuardrailScanSelection,
 ): void {
   if (activeGates.has(gateId)) return;
-  const task = runGate(gateId, deps, recoverScan, baselineSource).finally(() => {
+  const task = runGate(gateId, deps, recoverScan, baselineSource, selection).finally(() => {
     if (activeGates.get(gateId) === task) activeGates.delete(gateId);
   });
   activeGates.set(gateId, task);
@@ -712,6 +718,7 @@ async function runGate(
   deps: LocalGateDependencies,
   recoverScan: boolean,
   baselineSource: "local" | "github",
+  selection?: GuardrailScanSelection,
 ): Promise<void> {
   const gate = requiredGate(gateId, deps);
   const repository = requiredRepository(gate.repositoryKey, deps);
@@ -727,6 +734,7 @@ async function runGate(
       repositoryPath,
       baseRef: gate.baseRef,
       headRef: gate.headRef,
+      requireMatchingCheckout: true,
       maxChangedPaths: policy.scope.maxChangedPaths,
       fallback: policy.scope.fallback,
     });
@@ -754,10 +762,13 @@ async function runGate(
       scan = await deps.startScan({
         repositoryPath,
         displayName: repository.displayName,
-        model: policy.scan.model,
-        effort: policy.scan.effort,
-        mode: policy.scan.mode,
-        maxCostUsd: policy.scan.maxCostUsd,
+        ...(selection ? {
+          engine: selection.engine, connection: selection.connection,
+          ...(selection.engine === "codex-security" ? { executionProfilePreference: "auto" as const } : {}),
+          ...(selection.effort === undefined ? {} : { effort: selection.effort }),
+        } : { model: policy.scan.model, effort: policy.scan.effort }),
+        mode: selection?.mode ?? policy.scan.mode,
+        ...(selection?.costLimit?.kind === "none" ? {} : { maxCostUsd: gate.costCeilingUsd }),
         paths: changeSet.scopeMode === "changed" ? changeSet.scanPaths : [],
       });
       deps.updateGateRun(gateId, { scanId: scan.id });

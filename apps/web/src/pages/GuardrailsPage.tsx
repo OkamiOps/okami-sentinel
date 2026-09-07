@@ -332,10 +332,10 @@ export function GuardrailsPage() {
       {readyState.selectedGate && (readyState.selectedGate.executor !== "sentinel-managed" || !readyState.selectedGate.scanId) && !readyState.artifact && (
         <section className="bench-panel mt-4">
           <EmptyState
-            title={selectedGateActive ? t("guardrails.scanStartingTitle") : "Artifact indisponível"}
+            title={selectedGateActive ? t("guardrails.scanStartingTitle") : t("guardrails.artifactUnavailable")}
             description={selectedGateActive
               ? t("guardrails.scanStartingDescription")
-              : "Este gate não produziu evidência causal para inspecionar."}
+              : t("guardrails.noCausalEvidence")}
           />
         </section>
       )}

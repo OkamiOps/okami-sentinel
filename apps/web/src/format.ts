@@ -1,4 +1,4 @@
-import { getIntlLocale } from "./i18n";
+import { getIntlLocale, translate, type Locale, type TranslationKey } from "./i18n";
 import { scanEstimatedUsd, type ScanProgress, type ScanRun } from "@csb/shared";
 
 export function formatUsd(value: number | null | undefined, upperBound = false): string {
@@ -67,8 +67,39 @@ export function elapsedFrom(
   return Math.max(0, nowMs - start);
 }
 
+// Translate only the API's known labels. Provider telemetry may carry a more
+// specific phase name and must remain visible verbatim.
+const progressLabelKeys: Record<string, TranslationKey> = {
+  "Concluído": "scanDetail.progress.completed",
+  "Preflight": "scanDetail.progress.preflight",
+  "Threat model": "scanDetail.progress.threatModel",
+  "Discovery": "scanDetail.progress.discovery",
+  "Validação": "scanDetail.progress.validation",
+  "Attack path": "scanDetail.progress.attackPath",
+  "Relatório": "scanDetail.progress.reporting",
+  "Setup (deep)": "scanDetail.progress.setup",
+  "Redução (deep)": "scanDetail.progress.reducing",
+  "Finalização (deep)": "scanDetail.progress.terminal",
+  "Na fila": "scanDetail.progress.queued",
+  "Iniciando": "scanDetail.progress.starting",
+  "Travado": "scanDetail.progress.stalled",
+  "Em andamento": "scanDetail.progress.running",
+};
+
+export function formatProgressLabel(
+  progress: ScanProgress | null | undefined,
+  locale: Locale = getIntlLocale(),
+): string {
+  if (!progress) return "—";
+  const key = Object.hasOwn(progressLabelKeys, progress.phaseLabel)
+    ? progressLabelKeys[progress.phaseLabel]
+    : undefined;
+  return key ? translate(locale, key) : progress.phaseLabel;
+}
+
 export function formatProgressMetric(
   progress: ScanProgress | null | undefined,
+  locale: Locale = getIntlLocale(),
 ): string {
   if (!progress) return "—";
   if (
@@ -76,16 +107,17 @@ export function formatProgressMetric(
     progress.currentItem != null &&
     progress.itemsTotal > 0
   ) {
-    return `STAGE ${String(progress.currentItem).padStart(2, "0")}/${String(progress.itemsTotal).padStart(2, "0")}`;
+    return `${translate(locale, "scanDetail.stage")} ${String(progress.currentItem).padStart(2, "0")}/${String(progress.itemsTotal).padStart(2, "0")}`;
   }
   return `${Math.round(progress.percent)}%`;
 }
 
 export function formatActivityState(
   state: ScanProgress["activityState"],
+  locale: Locale = getIntlLocale(),
 ): string {
-  if (state === "active") return "ACTIVE";
-  if (state === "quiet") return "QUIET";
-  if (state === "stale") return "NO EVENTS";
+  if (state === "active") return translate(locale, "scanDetail.activity.active");
+  if (state === "quiet") return translate(locale, "scanDetail.activity.quiet");
+  if (state === "stale") return translate(locale, "scanDetail.activity.stale");
   return "—";
 }

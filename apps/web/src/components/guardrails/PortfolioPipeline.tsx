@@ -18,7 +18,7 @@ import { formatDuration, formatUsd, shortId } from "../../format";
 import { prCheckLabel } from "../../lib/github-guardrails";
 import { gateStageLabel, isGateActive } from "../../lib/guardrails";
 import { scanLedgerIdentity } from "../../lib/scan-ledger";
-import { useI18n } from "../../i18n";
+import { useI18n, getIntlLocale, translate } from "../../i18n";
 import { Badge } from "@/components/ui/badge";
 import { cx } from "../ui";
 import { GateOutcomeBadge } from "./GateOutcomeBadge";
@@ -300,12 +300,12 @@ function gateQueueTitle(gate: GateRun, repositoryLabels: ReadonlyMap<string, str
 
 function descriptiveTargetLabel(gate: GateRun): string {
   if (gate.pullRequestNumber) return `Pull request #${gate.pullRequestNumber} · ${gate.headRef}`;
-  if (gate.baseRef === gate.headRef) return `Branch completa · ${gate.headRef}`;
-  return `Comparação · ${gate.baseRef} → ${gate.headRef}`;
+  if (gate.baseRef === gate.headRef) return `${translate(getIntlLocale(), "guardrails.fullBranch")} · ${gate.headRef}`;
+  return `${translate(getIntlLocale(), "guardrails.comparisonTarget")} · ${gate.baseRef} → ${gate.headRef}`;
 }
 
 function gateDuration(gate: GateRun): string {
-  if (!gate.completedAt) return "EM CURSO";
+  if (!gate.completedAt) return translate(getIntlLocale(), "guardrails.inProgress");
   const duration = Date.parse(gate.completedAt) - Date.parse(gate.startedAt);
   return Number.isFinite(duration) && duration >= 0 ? formatDuration(duration) : "—";
 }

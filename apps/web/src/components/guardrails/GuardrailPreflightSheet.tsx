@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import type {
   ConnectionCompatibility,
   GateExecutorKind,
@@ -363,7 +364,7 @@ export function GuardrailPreflightSheet({
   }
 
   async function start() {
-    if (!selected || !target) return;
+    if (!selected || !target || !routeReady) return;
     if (selected.source === "github" && (!previewAccepted || !preview?.executorCapability.ready)) return;
     setBusy(true);
     setError(null);
@@ -374,6 +375,7 @@ export function GuardrailPreflightSheet({
         target,
         executor,
         ...(preview ? { previewIdentity: preview.previewIdentity } : {}),
+        ...(selected.source === "local" && scanSelection ? { scanSelection } : {}),
       };
       const response = executor === "github-actions"
         ? await api.dispatchGuardrailActionsGate(
@@ -412,6 +414,7 @@ export function GuardrailPreflightSheet({
 
         <ScrollArea className="min-h-0 flex-1">
           <div className="grid gap-5 p-4 pb-8">
+            {selected?.source === "local" && error && <AlertBanner>{error}</AlertBanner>}
             <section aria-labelledby="preflight-authority-title">
               <StepHeading code="01 / AUTHORITY" id="preflight-authority-title" title={t("guardrails.authorityTitle")} />
               <Field label={t("guardrails.repository")} htmlFor="guardrail-preflight-repository">
@@ -489,7 +492,7 @@ export function GuardrailPreflightSheet({
               </section>
             )}
 
-            {selected?.source === "github" && executor === "sentinel-managed" && (
+            {selected && executor === "sentinel-managed" && (
               <section aria-labelledby="preflight-scan-route-title">
                 <StepHeading code="03 / SCAN ROUTE" id="preflight-scan-route-title" title={t("newScan.strategy")}>
                   {t("newScan.engineHelp")}
@@ -616,10 +619,13 @@ export function GuardrailPreflightSheet({
                               ? t("guardrails.nativeCostLimitRequiresPrice")
                             : routeReady
                             ? `${scanner?.name ?? engine} · ${connection?.name ?? "—"} · ${modelId ?? t("newScan.providerManagedEffort")}`
+                            : connection === null
+                              ? t("newScan.connectionRequired")
                             : compatibility === null
                               ? t("newScan.routeUnavailable")
                               : t(compatibilityReasonKey(compatibility.reasons))}
                   </span>
+                  {connections.length === 0 && <Button asChild variant="outline" size="sm" className="w-fit"><Link to="/settings/connections" onClick={() => onOpenChange(false)}>{t("newScan.manageConnections")}</Link></Button>}
                   {(providerValidation === "failed" || providerValidation === "error") && connectionSelection?.modelSelectionMode === "catalog" && (
                     <Button
                       type="button"

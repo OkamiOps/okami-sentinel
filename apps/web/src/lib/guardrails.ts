@@ -1,3 +1,4 @@
+import { getIntlLocale, translate } from "../i18n";
 import type {
   DecisionGraph,
   DecisionGraphNode,
@@ -136,17 +137,7 @@ export function guardrailHref(gateId: string, nodeId?: string | null): string {
 }
 
 export function gateStageLabel(status: GateStatus): string {
-  const labels: Record<GateStatus, string> = {
-    queued: "Na fila",
-    resolving: "Resolvendo diff",
-    scanning: "Scan em curso",
-    evaluating: "Avaliando política",
-    publishing: "Publicando check",
-    completed: "Concluído",
-    cancelled: "Cancelado",
-    error: "Falha operacional",
-  };
-  return labels[status];
+  return translate(getIntlLocale(), `guardrails.status.${status}`);
 }
 
 export function gateOutcomeTone(outcome: GateOutcome | null): GateTone {
@@ -228,7 +219,7 @@ export function evidenceForNode(
   const finding = node.findingIdentity
     ? artifact.findings.find((item) => item.identity === node.findingIdentity) ?? null
     : null;
-  const fallback = "Não determinado";
+  const fallback = translate(getIntlLocale(), "guardrails.undetermined");
 
   if (node.kind === "changeset") {
     return {
@@ -238,7 +229,7 @@ export function evidenceForNode(
         { label: "Base", value: artifact.changeSet.baseSha || fallback },
         { label: "Head", value: artifact.changeSet.headSha || fallback },
         {
-          label: "Paths enviados",
+          label: translate(getIntlLocale(), "guardrails.evidencePaths"),
           value: artifact.changeSet.scanPaths.length
             ? artifact.changeSet.scanPaths.join(", ")
             : fallback,
@@ -253,8 +244,8 @@ export function evidenceForNode(
       title: node.label,
       summary: artifact.decision.summary || fallback,
       rows: [
-        { label: "Resultado", value: artifact.decision.outcome },
-        { label: "Conclusão GitHub", value: artifact.decision.githubConclusion },
+        { label: translate(getIntlLocale(), "guardrails.evidenceResult"), value: artifact.decision.outcome },
+        { label: translate(getIntlLocale(), "guardrails.evidenceConclusion"), value: artifact.decision.githubConclusion },
         {
           label: "Baseline",
           value: artifact.baselineCommit ?? fallback,
@@ -272,11 +263,11 @@ export function evidenceForNode(
       summary: node.value || fallback,
       rows: [
         {
-          label: "Regra",
+          label: translate(getIntlLocale(), "guardrails.evidenceRule"),
           value: violation ? String(violation.ruleIndex + 1) : fallback,
         },
-        { label: "Decisão", value: violation?.decision ?? fallback },
-        { label: "Motivo", value: violation?.reason ?? fallback },
+        { label: translate(getIntlLocale(), "guardrails.decision"), value: violation?.decision ?? fallback },
+        { label: translate(getIntlLocale(), "guardrails.evidenceReason"), value: violation?.reason ?? fallback },
       ],
       finding,
     };
@@ -287,7 +278,7 @@ export function evidenceForNode(
     summary: node.value || fallback,
     rows: [
       { label: "Finding", value: finding?.title ?? fallback },
-      { label: "Severidade", value: finding?.severity ?? fallback },
+      { label: translate(getIntlLocale(), "guardrails.severity"), value: finding?.severity ?? fallback },
       { label: "Lifecycle", value: finding?.lifecycle ?? fallback },
       { label: "Path", value: finding?.primaryPath ?? fallback },
     ],

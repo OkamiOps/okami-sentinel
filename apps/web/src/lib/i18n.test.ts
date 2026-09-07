@@ -352,3 +352,18 @@ test("core scan flows declare every translation explicitly and retain placeholde
     }
   }
 });
+
+
+test("gate details localize operational outcomes and publication without claiming an uncommitted snapshot", () => {
+  const expected = { "pt-BR": "Sem mudanças", en: "No changes", es: "Sin cambios", de: "Keine Änderungen", fr: "Aucun changement" } as const;
+  for (const locale of ["pt-BR", "en", "es", "de", "fr"] as const) {
+    assert.equal(translate(locale, "guardrails.outcome.no_changes"), expected[locale]);
+    assert.match(translate(locale, "guardrails.localTargetHelp"), /HEAD/);
+    assert.ok(!translate(locale, "guardrails.localTargetHelp").includes("content:"));
+    if (locale !== "pt-BR") {
+      for (const key of ["guardrails.publishTitle", "guardrails.publishDetail", "guardrails.publishConfirmDetail", "guardrails.status.completed", "guardrails.noCausalEvidence"] as const) {
+        assert.notEqual(translate(locale, key), translate("pt-BR", key));
+      }
+    }
+  }
+});

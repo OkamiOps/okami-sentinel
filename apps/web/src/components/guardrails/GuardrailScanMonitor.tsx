@@ -7,6 +7,7 @@ import { api } from "../../api";
 import {
   formatActivityState,
   formatDate,
+  formatProgressLabel,
   formatProgressMetric,
   formatScanUsd,
   formatTokens,
@@ -143,7 +144,7 @@ export function GuardrailScanMonitor({ gate, onScanTerminal }: { gate: GateRun; 
   const reasoning = scan.effort ?? t("guardrails.providerManaged");
   const displayedProgress = guardrailDisplayedProgress(scan);
   const progressLabel = scan.progress
-    ? `${scan.status === "failed" || scan.status === "cancelled" ? `${t("guardrails.failed")} · ` : ""}${scan.progress.phaseLabel}${scan.progress.detail ? ` / ${scan.progress.detail}` : ""}`
+    ? `${scan.status === "failed" || scan.status === "cancelled" ? `${t("guardrails.failed")} · ` : ""}${formatProgressLabel(scan.progress)}${scan.progress.detail ? ` / ${scan.progress.detail}` : ""}`
     : t("guardrails.progressPending");
 
   return (
@@ -171,7 +172,7 @@ export function GuardrailScanMonitor({ gate, onScanTerminal }: { gate: GateRun; 
       <div className="grid min-w-0 xl:grid-cols-[minmax(25rem,.82fr)_minmax(0,1.18fr)]">
         <div className="min-w-0 border-b xl:border-b-0 xl:border-r">
           <div className="grid border-b sm:grid-cols-2">
-            <MonitorMetric label={t("guardrails.stage")} value={displayedProgress.metric} detail={scan.progress?.phaseLabel ?? "—"} tone={scan.status === "failed" || scan.status === "cancelled" ? "risk" : "signal"} />
+            <MonitorMetric label={t("guardrails.stage")} value={displayedProgress.metric} detail={formatProgressLabel(scan.progress)} tone={scan.status === "failed" || scan.status === "cancelled" ? "risk" : "signal"} />
             <MonitorMetric label={t("guardrails.activity")} value={activityLabel} detail={scan.progress?.lastActivityAt ? `${t("guardrails.lastEvent")} ${formatDate(scan.progress.lastActivityAt)}` : undefined} tone={activityTone} />
             <MonitorMetric label={t("guardrails.duration")} value={<LiveDuration startedAt={scan.startedAt} completedAt={scan.completedAt} status={scan.status} durationMs={scan.durationMs} showDot={false} />} />
             <MonitorMetric label={t("guardrails.findings")} value={scan.severity.total} detail={`${highPlus} HIGH+`} tone={highPlus > 0 ? "risk" : undefined} />

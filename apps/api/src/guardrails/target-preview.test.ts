@@ -356,7 +356,7 @@ test("strict request parsers reject implicit refs and client-supplied SHAs", () 
     },
   }).scanSelection?.engine, "vulnhunter");
   for (const input of [
-    { repositoryKey: "github:991122", target: { kind: "compare", baseRef: "main", headRef: "HEAD" } },
+    { repositoryKey: "github:991122", target: { kind: "compare", baseRef: "main", headRef: "" } },
     { repositoryKey: "github:991122", target: { kind: "pull_request", number: 42 }, headSha: FIRST_HEAD_SHA },
   ]) {
     assert.throws(() => parseStartGateRequest(input), TargetPreviewError);
@@ -439,3 +439,10 @@ function repository(): GuardrailRepository {
     githubStatus: "not_checked",
   };
 }
+
+test("local start accepts HEAD and preserves the selected scan route", () => {
+  const scanSelection = { engine: "codex-security", connection: { connectionId: "local-cli", modelSelectionMode: "runtime-default", modelId: null }, mode: "standard", costLimit: { kind: "none" } };
+  const parsed = parseStartGateRequest({ repositoryKey: "local:qa", target: { kind: "compare", baseRef: "main", headRef: "HEAD" }, scanSelection });
+  assert.deepEqual(parsed.target, { kind: "compare", baseRef: "main", headRef: "HEAD" });
+  assert.deepEqual(parsed.scanSelection, scanSelection);
+});

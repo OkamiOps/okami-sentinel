@@ -1,3 +1,4 @@
+import { useI18n } from "../../i18n";
 import type { GateOutcome, GateStatus } from "@csb/shared";
 import {
   CircleAlert,
@@ -11,15 +12,6 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { cx } from "../ui";
 import { gateOutcomeTone, gateStageLabel } from "../../lib/guardrails";
-
-const outcomeLabels: Record<GateOutcome, string> = {
-  no_changes: "Sem mudanças",
-  bootstrap: "Baseline ausente",
-  pass: "Aprovado",
-  warning: "Revisão necessária",
-  blocked: "Bloqueado",
-  error: "Erro",
-};
 
 const toneClass = {
   neutral: "border-border bg-transparent text-muted-foreground",
@@ -43,6 +35,7 @@ export function GateOutcomeBadge({
   outcome: GateOutcome | null;
   status: GateStatus;
 }) {
+  const { t } = useI18n();
   const active = ["queued", "resolving", "scanning", "evaluating", "publishing"].includes(status);
   const tone = active ? "active" : gateOutcomeTone(outcome);
   return (
@@ -62,7 +55,7 @@ export function GateOutcomeBadge({
       ) : (
         <CircleDashed aria-hidden />
       )}
-      {active ? gateStageLabel(status) : outcome ? outcomeLabels[outcome] : gateStageLabel(status)}
+      {active ? gateStageLabel(status) : outcome ? t(`guardrails.outcome.${outcome}`) : gateStageLabel(status)}
     </Badge>
   );
 }

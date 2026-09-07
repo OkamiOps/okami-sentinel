@@ -187,6 +187,7 @@ export type EnrollGuardrailRepositoryRequest =
     };
 
 export interface StartGuardrailGateRequest {
+  scanSelection?: GuardrailScanSelection;
   repositoryKey: string;
   target: GateTarget;
   executor?: GateExecutorKind;

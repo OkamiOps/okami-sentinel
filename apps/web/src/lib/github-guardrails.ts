@@ -1,3 +1,4 @@
+import { getIntlLocale, translate } from "../i18n";
 import type {
   GateArtifact,
   GateOutcome,
@@ -109,14 +110,7 @@ export function prCheckLabel(input: {
   outcome: GateOutcome | null;
   publishStatus: GatePublishStatus;
 }): string {
-  const labels: Record<GatePublishStatus, string> = {
-    not_configured: "NOT CONFIGURED",
-    waiting: "WAITING",
-    publishing: "PUBLISHING",
-    published: "PUBLISHED",
-    failed: "PUBLICAÇÃO FALHOU",
-  };
-  return labels[input.publishStatus];
+  return translate(getIntlLocale(), `guardrails.publication.${input.publishStatus}`).toLocaleUpperCase(getIntlLocale());
 }
 
 export function publicationTarget(artifact: GateArtifact): {
