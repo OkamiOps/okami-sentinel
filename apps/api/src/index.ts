@@ -7,9 +7,14 @@ import {
   DATA_DIR,
   RUNS_DIR,
 } from "./config.js";
-import { getDb } from "./db.js";
+import { backfillRunMetricProjections, getDb } from "./db.js";
 import { ensureConnectionSchema } from "./connections-store.js";
-import { importExternalScans, reconcileRunningScans } from "./ingest.js";
+import {
+  backfillFindingCategoryMetrics,
+  backfillTerminalMetricArtifacts,
+  importExternalScans,
+  reconcileRunningScans,
+} from "./ingest.js";
 import {
   reconcileGitHubActionsGates,
   reconcileManagedMaterializations,
@@ -30,11 +35,35 @@ if (materializations.released.length > 0 || materializations.retryable.length > 
   );
 }
 
-const { imported, pruned } = importExternalScans();
+const { imported, pruned } = importExternalScans({ reindexCategories: false });
 console.log(
   `[csb-api] Indexed ${imported} scan(s) from Codex Security state` +
     (pruned ? ` (pruned ${pruned} duplicate(s))` : ""),
 );
+
+// Historical artifacts are indexed once before serving requests. The backfills
+// persist an explicit marker for absent/empty data, so every batch advances and
+// a 10k-row legacy database cannot expose partial totals.
+function drainBackfill(backfill: (limit: number) => number): number {
+  const limit = 2_000;
+  let total = 0;
+  for (;;) {
+    const indexed = backfill(limit);
+    total += indexed;
+    if (indexed < limit) return total;
+  }
+}
+
+const terminalArtifactsBackfilled = drainBackfill(backfillTerminalMetricArtifacts);
+const metricBackfilled = drainBackfill(backfillRunMetricProjections);
+const categoriesBackfilled = drainBackfill(backfillFindingCategoryMetrics);
+if (terminalArtifactsBackfilled > 0 || metricBackfilled > 0 || categoriesBackfilled > 0) {
+  console.log(
+    `[csb-api] Recovered ${terminalArtifactsBackfilled} terminal artifact(s), ` +
+      `backfilled ${metricBackfilled} metric projection(s) and ` +
+      `${categoriesBackfilled} category snapshot(s)`,
+  );
+}
 
 const reconciled = reconcileRunningScans();
 if (reconciled > 0) {

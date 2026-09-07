@@ -2,6 +2,10 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./e2e",
+  // Real API/SQLite coverage owns private processes and has a dedicated
+  // launcher; keeping it out of the mocked CI grid prevents accidental use of
+  // workstation state or ports.
+  testIgnore: "real-api.spec.ts",
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,

@@ -417,6 +417,8 @@ okami-sentinel/
 - [Produktprinzipien](apps/web/PRODUCT.de.md)
 - [Designsystem](apps/web/DESIGN.de.md)
 
+- [Repository-Struktur und Wartung](docs/repository-map.md) (English).
+
 ## Projektstatus
 
 Dieses Repository wird aktiv entwickelt. Oberflächen, lokale Schemas und das wiederverwendbare Gate können sich vor einer stabilen Version ändern. Das Gate sollte an eine versionierte Release-Referenz gebunden und jedes Upgrade geprüft werden.

@@ -414,6 +414,8 @@ okami-sentinel/
 - [Product principles](apps/web/PRODUCT.md)
 - [Design system](apps/web/DESIGN.md)
 
+- [Repository map and maintenance](docs/repository-map.md) (English).
+
 ## Status
 
 This repository is under active development. Interfaces, local schemas, and the reusable gate may change before a stable release. Pin the gate to a versioned release reference and review changes before upgrading.

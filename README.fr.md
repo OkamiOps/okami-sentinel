@@ -417,6 +417,8 @@ okami-sentinel/
 - [Principes produit](apps/web/PRODUCT.fr.md)
 - [Système de design](apps/web/DESIGN.fr.md)
 
+- [Structure du dépôt et maintenance](docs/repository-map.md) (English).
+
 ## État du projet
 
 Ce dépôt est en développement actif. Les interfaces, schémas locaux et le gate réutilisable peuvent évoluer avant une version stable. Épinglez le gate à une référence versionnée et examinez les changements avant toute mise à niveau.

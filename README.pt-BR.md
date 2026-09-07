@@ -414,6 +414,8 @@ okami-sentinel/
 - [Princípios do produto](apps/web/PRODUCT.pt-BR.md)
 - [Design system](apps/web/DESIGN.pt-BR.md)
 
+- [Mapa do repositório e manutenção](docs/repository-map.md) (English).
+
 ## Estado do projeto
 
 Este repositório está em desenvolvimento ativo. Interfaces, schemas locais e o gate reutilizável podem mudar antes de uma versão estável. Fixe o gate em uma referência versionada e revise as mudanças antes de atualizar.

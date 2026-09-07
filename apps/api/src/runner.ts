@@ -37,6 +37,7 @@ import {
   upsertRun,
 } from "./db.js";
 import {
+  indexFindingCategoryMetrics,
   readWorkbenchScan,
   reconcileRunningScans,
   refreshRunByScanDir,
@@ -932,6 +933,9 @@ async function startReservedScan(
       ? sanitizeScanProgress(completedProgress)
       : null;
     upsertRun(refreshed);
+    // The terminal event is the last chance to index a completed scanner
+    // artifact before it leaves the active-only reconciliation set.
+    indexFindingCategoryMetrics(refreshed, { force: true });
     emit(activeScan, {
       type: "done",
       status: refreshed.status,

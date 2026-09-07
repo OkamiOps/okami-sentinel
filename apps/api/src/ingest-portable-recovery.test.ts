@@ -2,28 +2,33 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 
 import type { ScanRun } from "@csb/shared";
 
-import { app } from "./app.js";
-import { deleteRun, getRun, upsertRun } from "./db.js";
-import { reconcileRunningScans, refreshRunFromDisk } from "./ingest.js";
-import {
-  writePortableCodexSecurityPricing,
-  writeScannerPricingQuote,
-} from "./model-pricing.js";
-import { refreshOpenRouterPricing } from "./openrouter-pricing.js";
-import { withProgress } from "./progress.js";
-import { resolveScannerPricingQuote } from "./provider-pricing.js";
-import {
-  writeMantisRuntime,
-  type MantisRuntimeState,
-} from "./scanners/mantis-runtime.js";
-import {
-  writePortableCodexSecurityRuntime,
-  type PortableCodexSecurityRuntimeState,
-} from "./scanners/portable-codex-security-runtime.js";
+// Large-history and startup fixtures must not share a database with other test workers.
+const isolatedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-recovery-suite-"));
+process.env.CSB_DATA_DIR = path.join(isolatedRoot, "data");
+process.env.CODEX_SECURITY_STATE_DIR = path.join(isolatedRoot, "state");
+process.env.CSB_NPM_CACHE_DIR = path.join(isolatedRoot, "cache");
+after(async () => {
+  const { getDb } = await import("./db.js");
+  getDb().close();
+  fs.rmSync(isolatedRoot, { recursive: true, force: true });
+});
+
+const { app } = await import("./app.js");
+const { deleteRun, getRun, upsertRun } = await import("./db.js");
+const { backfillTerminalMetricArtifacts, reconcileRunningScans, refreshRunFromDisk } = await import("./ingest.js");
+const { writePortableCodexSecurityPricing,
+  writeScannerPricingQuote } = await import("./model-pricing.js");
+const { refreshOpenRouterPricing } = await import("./openrouter-pricing.js");
+const { withProgress } = await import("./progress.js");
+const { resolveScannerPricingQuote } = await import("./provider-pricing.js");
+import type { MantisRuntimeState } from "./scanners/mantis-runtime.js";
+const { writeMantisRuntime } = await import("./scanners/mantis-runtime.js");
+import type { PortableCodexSecurityRuntimeState } from "./scanners/portable-codex-security-runtime.js";
+const { writePortableCodexSecurityRuntime } = await import("./scanners/portable-codex-security-runtime.js");
 
 const STARTED_AT = "2026-08-11T18:00:00.000Z";
 
@@ -284,6 +289,11 @@ test("all read surfaces rehydrate terminal Mantis cost through the shared engine
     assert.equal(ledger.scans.find((scan) => scan.id === id)?.cost?.estimatedUsd, expectedUsd);
 
     upsertRun(mantisRun(id, scanDir));
+    // Metrics polling reads the persisted projection; terminal sidecar recovery
+    // is an ingestion/startup concern, never a repeated dashboard read.
+    assert.equal(backfillTerminalMetricArtifacts(), 1);
+    assert.equal(getRun(id)?.cost?.estimatedUsd, expectedUsd);
+    assert.equal(backfillTerminalMetricArtifacts(), 0);
     const metrics = await (await app.request("/metrics/summary")).json() as { recent: ScanRun[] };
     assert.equal(metrics.recent.find((scan) => scan.id === id)?.cost?.estimatedUsd, expectedUsd);
 

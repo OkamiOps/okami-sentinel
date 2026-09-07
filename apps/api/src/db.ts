@@ -3,6 +3,7 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import {
   emptySeverityCounts,
+  scanEstimatedUsd,
   type FindingTriage,
   type FindingTriageStatus,
   type ScanCost,
@@ -53,6 +54,11 @@ export interface BenchmarkRow {
   cached_input_tokens: number | null;
   cache_write_tokens: number | null;
   output_tokens: number | null;
+  metric_pricing_version?: number | null;
+  metric_estimated_usd?: number | null;
+  metric_input_tokens?: number | null;
+  metric_output_tokens?: number | null;
+  metric_upper_bound?: number | null;
   severity_critical: number;
   severity_high: number;
   severity_medium: number;
@@ -107,6 +113,11 @@ export function getDb(): Database.Database {
       cached_input_tokens INTEGER,
       cache_write_tokens INTEGER,
       output_tokens INTEGER,
+      metric_pricing_version INTEGER,
+      metric_estimated_usd REAL,
+      metric_input_tokens INTEGER,
+      metric_output_tokens INTEGER,
+      metric_upper_bound INTEGER NOT NULL DEFAULT 0,
       severity_critical INTEGER NOT NULL DEFAULT 0,
       severity_high INTEGER NOT NULL DEFAULT 0,
       severity_medium INTEGER NOT NULL DEFAULT 0,
@@ -121,6 +132,7 @@ export function getDb(): Database.Database {
     );
     CREATE INDEX IF NOT EXISTS runs_by_updated ON runs(updated_at DESC);
     CREATE INDEX IF NOT EXISTS runs_by_status ON runs(status);
+    CREATE INDEX IF NOT EXISTS runs_by_metrics_started ON runs(started_at DESC, created_at DESC);
     CREATE TABLE IF NOT EXISTS scan_capacity_reservations (
       scan_id TEXT PRIMARY KEY,
       reserved_at TEXT NOT NULL
@@ -130,6 +142,24 @@ export function getDb(): Database.Database {
     CREATE TABLE IF NOT EXISTS hidden_runs (
       id TEXT PRIMARY KEY,
       hidden_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS run_finding_category_metrics (
+      scan_id TEXT NOT NULL,
+      category TEXT NOT NULL,
+      finding_count INTEGER NOT NULL,
+      high_count INTEGER NOT NULL,
+      PRIMARY KEY (scan_id, category)
+    );
+    CREATE INDEX IF NOT EXISTS run_finding_category_metrics_by_category
+      ON run_finding_category_metrics(category);
+    CREATE TABLE IF NOT EXISTS run_finding_category_index (
+      scan_id TEXT PRIMARY KEY,
+      source_key TEXT NOT NULL DEFAULT '',
+      indexed_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS run_metric_artifact_index (
+      scan_id TEXT PRIMARY KEY,
+      indexed_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS repository_baselines (
       repository_key TEXT PRIMARY KEY,
@@ -149,6 +179,8 @@ export function getDb(): Database.Database {
       ON finding_triage(repository_key, updated_at DESC);
   `);
   ensureRunMetadataColumns(db);
+  ensureMetricProjectionColumns(db);
+  ensureFindingCategoryIndexColumns(db);
   migrateGuardrailsSchema(db);
   return db;
 }
@@ -178,6 +210,41 @@ export function ensureRunMetadataColumns(database: Database.Database): void {
   ] as const;
   for (const [name, definition] of additions) {
     if (!columns.has(name)) database.exec(`ALTER TABLE runs ADD COLUMN ${name} ${definition}`);
+  }
+}
+
+/**
+ * Metrics must not reparse cost JSON for every historical row on each poll.
+ * This projection is written alongside the canonical run and backfilled once
+ * for rows created before it existed.
+ */
+export function ensureMetricProjectionColumns(database: Database.Database): void {
+  const columns = new Set(
+    (database.prepare(`PRAGMA table_info(runs)`).all() as Array<{ name: string }>).map(
+      (column) => column.name,
+    ),
+  );
+  const additions = [
+    ["metric_pricing_version", "INTEGER"],
+    ["metric_estimated_usd", "REAL"],
+    ["metric_input_tokens", "INTEGER"],
+    ["metric_output_tokens", "INTEGER"],
+    ["metric_upper_bound", "INTEGER NOT NULL DEFAULT 0"],
+  ] as const;
+  for (const [name, definition] of additions) {
+    if (!columns.has(name)) database.exec(`ALTER TABLE runs ADD COLUMN ${name} ${definition}`);
+  }
+  database.exec(`CREATE INDEX IF NOT EXISTS runs_by_metrics_started ON runs(started_at DESC, created_at DESC)`);
+}
+
+function ensureFindingCategoryIndexColumns(database: Database.Database): void {
+  const columns = new Set(
+    (database.prepare(`PRAGMA table_info(run_finding_category_index)`).all() as Array<{ name: string }>).map(
+      (column) => column.name,
+    ),
+  );
+  if (!columns.has("source_key")) {
+    database.exec(`ALTER TABLE run_finding_category_index ADD COLUMN source_key TEXT NOT NULL DEFAULT ''`);
   }
 }
 
@@ -320,7 +387,7 @@ export function rowToScanRun(row: BenchmarkRow): ScanRun {
   const connection = rowToConnectionProvenance(row);
   const launchSelection = parseLaunchSelection(row.launch_selection_json);
 
-  return withOpenRouterPricingEstimate({
+  const run: ScanRun = {
     id: row.id,
     displayName: row.display_name,
     repositoryPath: row.repository_path,
@@ -346,18 +413,33 @@ export function rowToScanRun(row: BenchmarkRow): ScanRun {
     execution,
     connection,
     launchSelection,
-  });
+  };
+  // A metrics projection is a price snapshot. Unquoted legacy rows remain
+  // deliberately unquoted until an explicit re-ingest/reindex, rather than
+  // changing a detail view after a later catalog refresh.
+  if (row.metric_pricing_version === METRIC_PRICING_VERSION) return run;
+  return withOpenRouterPricingEstimate(run);
 }
 
 export function upsertRun(run: ScanRun): void {
   const now = new Date().toISOString();
-  const cost = run.cost === null ? null : sanitizeScanCost(run.cost);
-  const usage = sanitizeUsageSummary(run.usage) ?? (cost === null ? null : {
-    inputTokens: cost.inputTokens,
-    cachedInputTokens: cost.cachedInputTokens,
-    cacheWriteInputTokens: cost.cacheWriteInputTokens,
-    outputTokens: cost.outputTokens,
+  const suppliedCost = run.cost === null ? null : sanitizeScanCost(run.cost);
+  const usage = sanitizeUsageSummary(run.usage) ?? (suppliedCost === null ? null : {
+    inputTokens: suppliedCost.inputTokens,
+    cachedInputTokens: suppliedCost.cachedInputTokens,
+    cacheWriteInputTokens: suppliedCost.cacheWriteInputTokens,
+    outputTokens: suppliedCost.outputTokens,
   });
+  // Keep a post-hoc OpenRouter quote as a frozen cost snapshot. Without this,
+  // a mutable catalog could make the persisted metric disagree with the detail
+  // view after a process restart.
+  const metricRun = withOpenRouterPricingEstimate({
+    ...run,
+    cost: suppliedCost,
+    usage: metricVisibleUsage(run, usage),
+  });
+  const cost = metricRun.cost;
+  const metric = metricProjection(metricRun);
   const execution = run.execution;
   const connection = run.connection ?? null;
   const launchSelection = sanitizeLaunchSelection(run.launchSelection);
@@ -371,6 +453,7 @@ export function upsertRun(run: ScanRun): void {
         connection_id, route_kind, protocol, auth_kind, launch_selection_json, cost_json,
         started_at, completed_at, duration_ms,
         estimated_usd, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens,
+        metric_pricing_version, metric_estimated_usd, metric_input_tokens, metric_output_tokens, metric_upper_bound,
         severity_critical, severity_high, severity_medium, severity_low, severity_info, severity_unknown, severity_total,
         source, pid, created_at, updated_at
       ) VALUES (
@@ -380,6 +463,7 @@ export function upsertRun(run: ScanRun): void {
         @connection_id, @route_kind, @protocol, @auth_kind, @launch_selection_json, @cost_json,
         @started_at, @completed_at, @duration_ms,
         @estimated_usd, @input_tokens, @cached_input_tokens, @cache_write_tokens, @output_tokens,
+        @metric_pricing_version, @metric_estimated_usd, @metric_input_tokens, @metric_output_tokens, @metric_upper_bound,
         @severity_critical, @severity_high, @severity_medium, @severity_low, @severity_info, @severity_unknown, @severity_total,
         @source, @pid, @created_at, @updated_at
       )
@@ -415,6 +499,11 @@ export function upsertRun(run: ScanRun): void {
         cached_input_tokens=excluded.cached_input_tokens,
         cache_write_tokens=excluded.cache_write_tokens,
         output_tokens=excluded.output_tokens,
+        metric_pricing_version=excluded.metric_pricing_version,
+        metric_estimated_usd=excluded.metric_estimated_usd,
+        metric_input_tokens=excluded.metric_input_tokens,
+        metric_output_tokens=excluded.metric_output_tokens,
+        metric_upper_bound=excluded.metric_upper_bound,
         severity_critical=excluded.severity_critical,
         severity_high=excluded.severity_high,
         severity_medium=excluded.severity_medium,
@@ -459,6 +548,11 @@ export function upsertRun(run: ScanRun): void {
       cached_input_tokens: usage?.cachedInputTokens ?? null,
       cache_write_tokens: usage?.cacheWriteInputTokens ?? null,
       output_tokens: usage?.outputTokens ?? null,
+      metric_pricing_version: METRIC_PRICING_VERSION,
+      metric_estimated_usd: metric.estimatedUsd,
+      metric_input_tokens: metric.inputTokens,
+      metric_output_tokens: metric.outputTokens,
+      metric_upper_bound: metric.upperBound ? 1 : 0,
       severity_critical: run.severity.critical,
       severity_high: run.severity.high,
       severity_medium: run.severity.medium,
@@ -474,6 +568,175 @@ export function upsertRun(run: ScanRun): void {
   if (run.status !== "queued" && run.status !== "running") {
     releaseScanCapacity(run.id, database);
   }
+}
+
+export const METRIC_PRICING_VERSION = 1;
+
+export interface RunMetricProjection {
+  estimatedUsd: number | null;
+  inputTokens: number;
+  outputTokens: number;
+  upperBound: boolean;
+}
+
+/** Mirrors the public scan price/usage semantics without reparsing rows at read time. */
+export function metricProjection(
+  run: Pick<ScanRun, "engine" | "authMode" | "cost" | "usage">,
+): RunMetricProjection {
+  const estimatedUsd = scanEstimatedUsd(run);
+  return {
+    estimatedUsd,
+    inputTokens: run.usage?.inputTokens ?? run.cost?.inputTokens ?? 0,
+    outputTokens: run.usage?.outputTokens ?? run.cost?.outputTokens ?? 0,
+    upperBound: estimatedUsd !== null && run.cost?.estimateKind === "upper-bound",
+  };
+}
+
+function metricVisibleUsage(
+  run: Pick<ScanRun, "engine" | "authMode">,
+  usage: ScanUsageSummary | null,
+): ScanUsageSummary | null {
+  if (run.engine === "mantis" && run.authMode === "existing-session") return null;
+  const allZero = usage !== null &&
+    (usage.inputTokens ?? 0) <= 0 &&
+    (usage.cachedInputTokens ?? 0) <= 0 &&
+    (usage.cacheWriteInputTokens ?? 0) <= 0 &&
+    (usage.outputTokens ?? 0) <= 0;
+  if ((run.engine === "mantis" || run.engine === "vulnhunter") &&
+      run.authMode === "chatgpt" && allZero) return null;
+  return usage;
+}
+
+/**
+ * Legacy rows did not persist metrics eligibility. A row is marked even when
+ * it has no comparable USD quote, so completed backfills do not recur.
+ */
+export function backfillRunMetricProjections(limit = 200): number {
+  const database = getDb();
+  const rows = database.prepare(`
+    SELECT runs.*
+    FROM runs
+    WHERE runs.metric_pricing_version IS NULL
+    ORDER BY runs.created_at ASC, runs.id ASC
+    LIMIT ?
+  `).all(Math.max(1, Math.min(2_000, Math.trunc(limit)))) as BenchmarkRow[];
+  if (rows.length === 0) return 0;
+  const update = database.prepare(`
+    UPDATE runs
+    SET metric_pricing_version = ?, metric_estimated_usd = ?,
+        metric_input_tokens = ?, metric_output_tokens = ?, metric_upper_bound = ?
+        , cost_json = CASE WHEN ? IS NOT NULL THEN ? ELSE cost_json END
+        , estimated_usd = CASE WHEN ? IS NOT NULL THEN ? ELSE estimated_usd END
+    WHERE id = ?
+  `);
+  const write = database.transaction((pending: BenchmarkRow[]) => {
+    for (const row of pending) {
+      const normalized = rowToScanRun(row);
+      const projection = metricProjection(normalized);
+      const storedCost = parseCostJson(row.cost_json);
+      const needsFrozenSnapshot = normalized.cost !== null &&
+        (storedCost === null ||
+          (storedCost.pricingSource === undefined && storedCost.pricingSnapshot === undefined));
+      const frozenCostJson = needsFrozenSnapshot
+        ? JSON.stringify(normalized.cost)
+        : null;
+      update.run(
+        METRIC_PRICING_VERSION,
+        projection.estimatedUsd,
+        projection.inputTokens,
+        projection.outputTokens,
+        projection.upperBound ? 1 : 0,
+        frozenCostJson,
+        frozenCostJson,
+        frozenCostJson,
+        normalized.cost?.estimatedUsd ?? null,
+        row.id,
+      );
+    }
+  });
+  write(rows);
+  return rows.length;
+}
+
+export interface FindingCategoryMetric {
+  category: string;
+  count: number;
+  high: number;
+}
+
+/** Replaces a scan's category snapshot, including an explicit empty snapshot. */
+export function replaceFindingCategoryMetrics(
+  scanId: string,
+  categories: Iterable<FindingCategoryMetric>,
+  sourceKey: string,
+  database: Database.Database = getDb(),
+): void {
+  const now = new Date().toISOString();
+  const replace = database.transaction((entries: FindingCategoryMetric[]) => {
+    database.prepare(`DELETE FROM run_finding_category_metrics WHERE scan_id = ?`).run(scanId);
+    const insert = database.prepare(`
+      INSERT INTO run_finding_category_metrics (scan_id, category, finding_count, high_count)
+      VALUES (?, ?, ?, ?)
+    `);
+    for (const entry of entries) {
+      if (!entry.category || entry.count < 1 || entry.high < 0) continue;
+      insert.run(scanId, entry.category, entry.count, entry.high);
+    }
+    database.prepare(`
+      INSERT INTO run_finding_category_index (scan_id, source_key, indexed_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(scan_id) DO UPDATE SET
+        source_key = excluded.source_key,
+        indexed_at = excluded.indexed_at
+    `).run(scanId, sourceKey, now);
+  });
+  replace([...categories]);
+}
+
+export function findingCategoryMetricsAreCurrent(scanId: string, sourceKey: string): boolean {
+  return getDb().prepare(`
+    SELECT 1 FROM run_finding_category_index WHERE scan_id = ? AND source_key = ?
+  `).get(scanId, sourceKey) !== undefined;
+}
+
+/** A null marker distinguishes a pending historical scan from a scanned empty artifact. */
+export function listRunsMissingFindingCategoryMetrics(limit = 200): ScanRun[] {
+  const rows = getDb().prepare(`
+    SELECT runs.*
+    FROM runs
+    LEFT JOIN run_finding_category_index ON run_finding_category_index.scan_id = runs.id
+    WHERE runs.status = 'completed' AND run_finding_category_index.scan_id IS NULL
+    ORDER BY COALESCE(runs.started_at, runs.created_at) ASC, runs.id ASC
+    LIMIT ?
+  `).all(Math.max(1, Math.min(2_000, Math.trunc(limit)))) as BenchmarkRow[];
+  return rows.map(rowToScanRun);
+}
+
+/** Terminal sidecars are probed once before the metrics projection is final. */
+export function listTerminalRunsMissingMetricArtifactIndex(limit = 200): ScanRun[] {
+  const rows = getDb().prepare(`
+    SELECT runs.*
+    FROM runs
+    LEFT JOIN run_metric_artifact_index ON run_metric_artifact_index.scan_id = runs.id
+    WHERE run_metric_artifact_index.scan_id IS NULL
+      AND runs.status NOT IN ('queued', 'running')
+      AND runs.metric_estimated_usd IS NULL
+      AND runs.cost_json IS NULL
+    ORDER BY COALESCE(runs.started_at, runs.created_at) ASC, runs.id ASC
+    LIMIT ?
+  `).all(Math.max(1, Math.min(2_000, Math.trunc(limit)))) as BenchmarkRow[];
+  return rows.map(rowToScanRun);
+}
+
+export function markTerminalMetricArtifactIndexed(
+  scanId: string,
+  database: Database.Database = getDb(),
+): void {
+  database.prepare(`
+    INSERT INTO run_metric_artifact_index (scan_id, indexed_at)
+    VALUES (?, ?)
+    ON CONFLICT(scan_id) DO UPDATE SET indexed_at = excluded.indexed_at
+  `).run(scanId, new Date().toISOString());
 }
 
 export function listRuns(): ScanRun[] {
@@ -578,6 +841,9 @@ export function deleteRun(id: string): void {
   const remove = database.transaction((scanId: string) => {
     database.prepare(`DELETE FROM runs WHERE id = ?`).run(scanId);
     database.prepare(`DELETE FROM scan_capacity_reservations WHERE scan_id = ?`).run(scanId);
+    database.prepare(`DELETE FROM run_finding_category_metrics WHERE scan_id = ?`).run(scanId);
+    database.prepare(`DELETE FROM run_finding_category_index WHERE scan_id = ?`).run(scanId);
+    database.prepare(`DELETE FROM run_metric_artifact_index WHERE scan_id = ?`).run(scanId);
   });
   remove(id);
 }

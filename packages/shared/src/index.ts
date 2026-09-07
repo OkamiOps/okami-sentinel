@@ -831,6 +831,10 @@ export interface MetricsSummary {
     high: number;
   }>;
   recent: ScanRun[];
+  /** Total matching rows before the bounded dashboard preview. */
+  recentTotal?: number;
+  /** Total matching priced rows with a start date before the trend window. */
+  costTrendTotal?: number;
 }
 
 export interface StartScanRequest {

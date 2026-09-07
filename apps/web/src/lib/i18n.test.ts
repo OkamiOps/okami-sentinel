@@ -13,6 +13,18 @@ test("resolves supported browser locale variants", () => {
   assert.equal(resolveLocale("fr-CA"), "fr");
 });
 
+test("dashboard windows explicitly distinguish the preview from filtered totals in every language", () => {
+  for (const locale of ["pt-BR", "en", "es", "de", "fr"] as const) {
+    for (const key of ["dashboard.recentWindow", "dashboard.trendWindow"] as const) {
+      const message = translate(locale, key, { shown: 100, total: 10000 });
+      assert.ok(message.includes("100"));
+      assert.ok(message.includes("10000"));
+      assert.ok(!message.includes("{shown}") && !message.includes("{total}"));
+      if (locale !== "pt-BR" && key === "dashboard.trendWindow") assert.notEqual(message, translate("pt-BR", key, { shown: 100, total: 10000 }));
+    }
+  }
+});
+
 test("falls back to pt-BR and interpolates variables", () => {
   assert.equal(resolveLocale("ja-JP"), "pt-BR");
   assert.equal(translate("de", "compare.run", { count: 6 }), "6 SCANS VERGLEICHEN");

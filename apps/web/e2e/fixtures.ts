@@ -50,7 +50,7 @@ export async function mockApi(page: Page, locale = "en") {
       const status = url.searchParams.get("status");
       const runs = state.runs.filter((run) => run.displayName.toLowerCase().includes(query)
         && (!repository || run.displayName === repository) && (!engine || run.engine === engine)
-        && (!status || (status === "active" ? ["running", "queued"].includes(run.status) : status === "attention" ? ["failed", "cancelled"].includes(run.status) : run.status === status)));
+        && (!status || (status === "active" ? ["running", "queued"].includes(run.status) : status === "attention" ? ["failed", "incomplete"].includes(run.status) : run.status === status)));
       return json(fixtureMetrics(runs));
     }
     if (path === "/ingest") return json({ imported: 0 });
@@ -109,7 +109,7 @@ export function fixtureMetrics(runs: ScanRun[]): MetricsSummary {
   return {
     totalScans: runs.length, completedScans: runs.filter((run) => run.status === "completed").length,
     runningScans: runs.filter((run) => ["running", "queued"].includes(run.status)).length,
-    attentionScans: runs.filter((run) => ["failed", "cancelled"].includes(run.status)).length,
+    attentionScans: runs.filter((run) => ["failed", "incomplete"].includes(run.status)).length,
     pricedScans: 0, totalEstimatedUsd: 0, avgUsdPerScan: 0, hasUpperBoundCost: false,
     avgDurationMs: 60000, totalInputTokens: 0, totalOutputTokens: 0,
     highPerDollar: null, findingsPerDollar: null, severity,

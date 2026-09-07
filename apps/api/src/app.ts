@@ -726,7 +726,8 @@ app.post("/ingest", (c) => {
 
 app.get("/metrics/summary", async (c) => {
   await refreshOpenRouterPricing();
-  readRunsWithEngineRefresh();
+  // Terminal history is indexed by ingestion; polling only reconciles live work.
+  for (const run of listActiveRuns()) readRunWithEngineRefresh(run.id);
   const daysValue = c.req.query("days");
   const days = daysValue === "7" || daysValue === "14" || daysValue === "21" || daysValue === "30"
     ? Number(daysValue) as 7 | 14 | 21 | 30

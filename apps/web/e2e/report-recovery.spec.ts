@@ -78,6 +78,38 @@ test("dashboard lets a slow response finish before polling again", async ({ page
   await expect(page.getByRole("link", { name: "Repository alpha", exact: true })).toBeVisible();
 });
 
+test("dashboard labels capped metric previews and keeps the full ledger reachable", async ({ page }) => {
+  const state = await mockApi(page);
+  await page.route("**/api/metrics/summary**", async (route) => {
+    const metrics = fixtureMetrics(state.runs);
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        ...metrics,
+        totalScans: 1_000,
+        recentTotal: 1_000,
+        costTrendTotal: 1_000,
+        costTrend: state.runs.map((run) => ({
+          scanId: run.id,
+          displayName: run.displayName,
+          startedAt: run.startedAt!,
+          estimatedUsd: 1.25,
+          findingsHigh: 0,
+          findingsTotal: 0,
+          model: run.model,
+          effort: run.effort,
+          estimateKind: null,
+        })),
+      }),
+    });
+  });
+
+  await page.goto("/");
+  await expect(page.getByText("Latest 2 of 1000 scans", { exact: true })).toHaveCount(2);
+  await expect(page.getByText("Latest 2 of 1000 points. Indicators include the entire filter.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: /open ledger/i }).last()).toHaveAttribute("href", "/scans");
+});
+
 for (const kind of ["scan", "compare"] as const) {
   const path = kind === "scan" ? "/scans/scan-one/report" : "/compare/report?ids=scan-one,scan-two&objective=speed";
   const request = kind === "scan" ? "GET /scans/scan-one/report" : "POST /compare";

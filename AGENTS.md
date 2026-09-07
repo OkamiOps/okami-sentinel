@@ -13,3 +13,10 @@
 - Conclua a limpeza das worktrees criadas pela tarefa e já integradas; preserve as de outras tarefas, mesmo quando parecerem paradas.
 - Nunca remova uma worktree dirty ou com commits ainda não integrados. Preserve primeiro o trabalho em commit, stash ou arquivo de handoff e informe onde ele ficou.
 - Antes de encerrar a tarefa, rode `git worktree list --porcelain` e confirme que as worktrees da tarefa elegíveis para limpeza foram removidas e que os demais checkouts permaneceram íntegros.
+
+## Higiene do repositório
+
+- Consulte `docs/repository-map.md` antes de remover ou reorganizar arquivos por volume.
+- Não confunda testes co-localizados, workers de processos filhos ou entrypoints MCP com código sem uso.
+- Mantenha estado de ferramentas, relatórios temporários, dados de execução e dependências fora do Git; execute `pnpm check:repository` antes de integrar.
+- Preserve decisões duráveis em `docs/architecture`; planos de execução concluídos devem ficar no histórico, sem acumular duplicatas no checkout.

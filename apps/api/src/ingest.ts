@@ -18,11 +18,16 @@ import {
   deleteRun,
   displayNameFromPaths,
   durationMs,
+  findingCategoryMetricsAreCurrent,
   getRun,
+  listRunsMissingFindingCategoryMetrics,
+  listTerminalRunsMissingMetricArtifactIndex,
   listRuns,
+  markTerminalMetricArtifactIndexed,
   mapWorkbenchStatus,
   parseCostJson,
   parseRecipe,
+  replaceFindingCategoryMetrics,
   upsertRun,
 } from "./db.js";
 import { normalizeAttackPath } from "./attack-path.js";
@@ -1062,6 +1067,85 @@ export function readFindingsFile(
   });
 }
 
+function findingCategorySourceKey(run: ScanRun): string {
+  return JSON.stringify([
+    run.status,
+    run.scanDir,
+    run.severity.critical,
+    run.severity.high,
+    run.severity.medium,
+    run.severity.low,
+    run.severity.info,
+    run.severity.unknown,
+    run.severity.total,
+  ]);
+}
+
+/**
+ * Persists an explicit category snapshot (including an empty or absent report)
+ * after a scan becomes complete. Metrics polling never calls this filesystem path.
+ */
+export function indexFindingCategoryMetrics(
+  run: ScanRun,
+  options: { force?: boolean } = {},
+): boolean {
+  if (run.status !== "completed") return false;
+  const sourceKey = findingCategorySourceKey(run);
+  if (!options.force && findingCategoryMetricsAreCurrent(run.id, sourceKey)) return false;
+
+  const categories = new Map<string, { count: number; high: number }>();
+  if (run.severity.total > 0) {
+    try {
+      for (const finding of readFindingsFile(run.scanDir)) {
+        const category = finding.category ?? "Uncategorized";
+        const value = categories.get(category) ?? { count: 0, high: 0 };
+        value.count += 1;
+        if (finding.severity === "high" || finding.severity === "critical") value.high += 1;
+        categories.set(category, value);
+      }
+    } catch {
+      // An absent/malformed historical artifact is intentionally indexed empty.
+    }
+  }
+  replaceFindingCategoryMetrics(
+    run.id,
+    [...categories].map(([category, value]) => ({ category, ...value })),
+    sourceKey,
+  );
+  return true;
+}
+
+/**
+ * Reads only scans with no persisted category state. Empty/missing artifacts are
+ * marked too, so a large historical backfill makes monotonic progress.
+ */
+export function backfillFindingCategoryMetrics(limit = 200): number {
+  const pending = listRunsMissingFindingCategoryMetrics(limit);
+  for (const run of pending) indexFindingCategoryMetrics(run, { force: true });
+  return pending.length;
+}
+
+/**
+ * Recovers terminal scanner sidecars once during startup ingestion, before a
+ * legacy unpriced row is treated as a final metrics snapshot.
+ */
+export function backfillTerminalMetricArtifacts(limit = 200): number {
+  const pending = listTerminalRunsMissingMetricArtifactIndex(limit);
+  for (const run of pending) {
+    refreshRunFromDisk(run.id);
+    markTerminalMetricArtifactIndexed(run.id);
+  }
+  return pending.length;
+}
+
+function persistRunWithFindingCategoryMetrics(
+  run: ScanRun,
+  refreshFindingCategories = false,
+): void {
+  upsertRun(run);
+  indexFindingCategoryMetrics(run, { force: refreshFindingCategories });
+}
+
 function pickLevel(value: unknown): {
   level: string | null;
   rationale: string | null;
@@ -1332,7 +1416,9 @@ function mergeRuns(a: ScanRun, b: ScanRun): ScanRun {
   };
 }
 
-export function importExternalScans(): { imported: number; pruned: number } {
+export function importExternalScans(
+  options: { reindexCategories?: boolean } = { reindexCategories: true },
+): { imported: number; pruned: number } {
   const byDir = new Map<string, ScanRun>();
 
   // Seed with DB rows so we can merge/prune prior duplicates.
@@ -1353,7 +1439,9 @@ export function importExternalScans(): { imported: number; pruned: number } {
 
   const winners = [...byDir.values()];
   const winnerIds = new Set(winners.map((r) => r.id));
-  for (const run of winners) upsertRun(run);
+  for (const run of winners) {
+    persistRunWithFindingCategoryMetrics(run, options.reindexCategories === true);
+  }
 
   let pruned = 0;
   for (const run of listRuns()) {
@@ -1375,19 +1463,19 @@ export function refreshRunFromDisk(id: string): ScanRun | null {
   const stored = getRun(id);
   if (stored?.engine === "mantis") {
     const refreshed = withOpenRouterPricingEstimate(refreshMantisRunFromDisk(stored));
-    upsertRun(refreshed);
+    persistRunWithFindingCategoryMetrics(refreshed, true);
     return refreshed;
   }
   if (stored?.engine === "vulnhunter") {
     const refreshed = withOpenRouterPricingEstimate(refreshVulnHunterRunFromDisk(stored));
-    upsertRun(refreshed);
+    persistRunWithFindingCategoryMetrics(refreshed, true);
     return refreshed;
   }
   if (stored && isPortableCodexSecurityRun(stored)) {
     const refreshed = withOpenRouterPricingEstimate(
       refreshPortableCodexSecurityRunFromDisk(stored),
     );
-    upsertRun(refreshed);
+    persistRunWithFindingCategoryMetrics(refreshed, true);
     return refreshed;
   }
   const fromWb = readWorkbenchScan(id);
@@ -1396,7 +1484,7 @@ export function refreshRunFromDisk(id: string): ScanRun | null {
     fromWb.severity = countSeverityFromFindings(
       path.join(fromWb.scanDir, "findings.json"),
     );
-    upsertRun(fromWb);
+    persistRunWithFindingCategoryMetrics(fromWb, true);
     return fromWb;
   }
   return null;
@@ -1409,7 +1497,7 @@ export function refreshRunByScanDir(scanDir: string, fallbackId?: string): ScanR
     : getRun(fallbackId) ?? listRuns().find((run) => dirsMatch(run.scanDir, scanDir)) ?? null;
   if (stored && isPortableCodexSecurityRun(stored) && dirsMatch(stored.scanDir, scanDir)) {
     const refreshed = refreshPortableCodexSecurityRunFromDisk(stored);
-    upsertRun(refreshed);
+    persistRunWithFindingCategoryMetrics(refreshed, true);
     return refreshed;
   }
   for (const wb of readWorkbenchScans()) {
@@ -1427,10 +1515,10 @@ export function refreshRunByScanDir(scanDir: string, fallbackId?: string): ScanR
         },
         wb,
       );
-      upsertRun(merged);
+      persistRunWithFindingCategoryMetrics(merged, true);
       return merged;
     }
-    upsertRun(wb);
+    persistRunWithFindingCategoryMetrics(wb, true);
     return wb;
   }
   return null;
@@ -1487,21 +1575,21 @@ export function reconcileRunningScans(): number {
     const before = `${run.status}|${run.cost?.estimatedUsd ?? 0}|${run.severity.total}`;
     if (run.engine === "mantis") {
       const refreshed = refreshMantisRunFromDisk(run);
-      upsertRun(refreshed);
+      persistRunWithFindingCategoryMetrics(refreshed, true);
       const after = `${refreshed.status}|${refreshed.cost?.estimatedUsd ?? 0}|${refreshed.severity.total}`;
       if (before !== after) updated += 1;
       continue;
     }
     if (run.engine === "vulnhunter") {
       const refreshed = refreshVulnHunterRunFromDisk(run);
-      upsertRun(refreshed);
+      persistRunWithFindingCategoryMetrics(refreshed, true);
       const after = `${refreshed.status}|${refreshed.cost?.estimatedUsd ?? 0}|${refreshed.severity.total}`;
       if (before !== after) updated += 1;
       continue;
     }
     if (isPortableCodexSecurityRun(run)) {
       const refreshed = refreshPortableCodexSecurityRunFromDisk(run);
-      upsertRun(refreshed);
+      persistRunWithFindingCategoryMetrics(refreshed, true);
       const after = `${refreshed.status}|${refreshed.cost?.estimatedUsd ?? 0}|${refreshed.severity.total}`;
       if (before !== after) updated += 1;
       continue;
@@ -1514,7 +1602,7 @@ export function reconcileRunningScans(): number {
     }
     const terminal = terminalizeOrphanedNativeBenchmarkRun(run);
     if (!terminal) continue;
-    upsertRun(terminal);
+    persistRunWithFindingCategoryMetrics(terminal, true);
     updated += 1;
   }
   return updated;

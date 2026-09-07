@@ -7,11 +7,13 @@
     "node": ">=24 <25"
   },
   "scripts": {
+    "check:repository": "node scripts/check-repository.mjs",
     "dev": "pnpm -r --parallel --filter @csb/api --filter @csb/web run dev",
     "dev:api": "pnpm --filter @csb/api dev",
     "dev:web": "pnpm --filter @csb/web dev",
     "build": "pnpm -r run build",
     "typecheck": "pnpm -r run typecheck",
-    "test": "pnpm -r --if-present test"
+    "test": "pnpm -r --if-present test",
+    "test:e2e:real-api": "node scripts/e2e/real-api.mjs"
   }
 }
