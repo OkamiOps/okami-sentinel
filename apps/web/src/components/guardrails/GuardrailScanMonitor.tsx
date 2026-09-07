@@ -8,7 +8,7 @@ import {
   formatActivityState,
   formatDate,
   formatProgressLabel,
-  formatProgressMetric,
+  formatScanProgress,
   formatScanUsd,
   formatTokens,
   formatUsd,
@@ -142,7 +142,7 @@ export function GuardrailScanMonitor({ gate, onScanTerminal }: { gate: GateRun; 
   const logs = telemetry.lines.slice(-120);
   const route = [scan.engine, scan.provider, scan.model].filter(Boolean).join(" · ");
   const reasoning = scan.effort ?? t("guardrails.providerManaged");
-  const displayedProgress = guardrailDisplayedProgress(scan);
+  const displayedProgress = formatScanProgress(scan);
   const progressLabel = scan.progress
     ? `${scan.status === "failed" || scan.status === "cancelled" ? `${t("guardrails.failed")} · ` : ""}${formatProgressLabel(scan.progress)}${scan.progress.detail ? ` / ${scan.progress.detail}` : ""}`
     : t("guardrails.progressPending");
@@ -218,26 +218,7 @@ export function guardrailDisplayedActivity(scan: Pick<ScanRun, "status">): "live
   return "closed";
 }
 
-export function guardrailDisplayedProgress(
-  scan: Pick<ScanRun, "status" | "progress">,
-): { value: number; metric: string; indeterminate: boolean } {
-  const progress = scan.progress;
-  if (!progress) return { value: 0, metric: "—", indeterminate: scan.status === "running" };
-  const terminal = scan.status !== "running";
-  if (terminal && progress.unit === "stages" && progress.itemsTotal > 0) {
-    const completed = Math.min(progress.itemsCompleted, progress.itemsTotal);
-    return {
-      value: Math.max(0, Math.min(100, (completed / progress.itemsTotal) * 100)),
-      metric: `${completed}/${progress.itemsTotal}`,
-      indeterminate: false,
-    };
-  }
-  return {
-    value: progress.percent,
-    metric: formatProgressMetric(progress),
-    indeterminate: scan.status === "running" && progress.indeterminate === true,
-  };
-}
+export { formatScanProgress as guardrailDisplayedProgress } from "../../format";
 
 export function ScanResultActions({ scan }: { scan: ScanRun }) {
   const { t } = useI18n();

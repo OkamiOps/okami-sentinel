@@ -210,7 +210,7 @@ export type AgentEvent =
   | { type: "artifact"; path: string; bytes: number }
   | { type: "usage"; usage: AgentUsage }
   | { type: "completion"; text: string | null; structured: unknown | null }
-  | { type: "failure"; code: AgentSessionErrorCode }
+  | { type: "failure"; code: AgentSessionErrorCode; reason?: ResultArtifactValidationIssue }
   | { type: "cancellation"; remote: boolean };
 
 export interface AgentSession {
@@ -411,6 +411,7 @@ class ConstrainedWireSession implements AgentSession {
     let toolResults: AgentToolResult[] = [];
     let artifactWritten = false;
     let artifactRepairActive = false;
+    let lastArtifactValidationIssue: ResultArtifactValidationIssue | undefined;
     let artifactRepairTurns = 0;
     let artifactRepairInspectionAvailable = false;
     let artifactRepairReminder = false;
@@ -660,6 +661,7 @@ class ConstrainedWireSession implements AgentSession {
             this.#options.terminalMode === "artifact-write"
           ) {
             artifactRepairActive = true;
+            lastArtifactValidationIssue = artifactValidationIssue;
             artifactRepairInspectionAvailable = true;
           } else if (call.name === "results.write" && !recoveredBeforeIo) {
             artifactRepairActive = false;
@@ -704,7 +706,12 @@ class ConstrainedWireSession implements AgentSession {
       }
       this.#controller.abort();
       const remote = await this.#requestRemoteCancellation();
-      yield { type: "failure", code: failure.code };
+      yield {
+        type: "failure",
+        code: failure.code,
+        ...(failure.code === "agent_turn_limit" && artifactRepairActive &&
+          lastArtifactValidationIssue !== undefined ? { reason: lastArtifactValidationIssue } : {}),
+      };
       yield { type: "cancellation", remote };
       this.#completed = true;
       throw failure;
@@ -796,7 +803,9 @@ function recoverableWorkspaceToolFailure(
   const hint = error.code === "tool_path_denied"
     ? "Use '.' for the virtual root or a repository-relative path."
     : call.name === "results.write"
-      ? resultArtifactContract === PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT
+      ? artifactRepairDetail?.kind === "json"
+        ? "The content could not be decoded as structured JSON. Repair the complete content value: use valid JSON syntax with quoted keys, correctly escaped strings, and closed delimiters. Return one complete JSON object matching the declared stage contract, not a scalar, multiple values, or multiple code fences. Do not discard supported findings to shorten the repair."
+        : resultArtifactContract === PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT
         ? reportShard
           ? "Use the declared result path and pass one complete compact JSON object containing only schemaVersion:1, optional stage:'report', and findings. Include exactly one substantive finding for every carried candidateId, with non-empty rootCause, impact, remediation, and pinned anchors. Do not include summary, observations, scope, coverage, disposition, or reason fields."
           : artifactRepairDetail?.kind === "candidate-contract"

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { parseStructuredResult } from "./structured-result.js";
+import { parseStructuredResult, type StructuredResultRejection } from "./structured-result.js";
 import { validateVulnHunterReportEvidence } from "./result-artifact-evidence.js";
 import {
   applyPortableCodexSecurityStageArtifact,
@@ -73,7 +73,8 @@ export type DeepCoverageRepairDetail = {
   /** Server-owned paths that were assigned to this partition but not fully observed yet. */
   missingPaths: readonly string[];
 };
-export type ResultArtifactRepairDetail = PortableArtifactRepairDetail | MantisReportRepairDetail |
+export type JsonRepairDetail = { kind: "json"; reason: StructuredResultRejection };
+export type ResultArtifactRepairDetail = JsonRepairDetail | PortableArtifactRepairDetail | MantisReportRepairDetail |
   VulnHunterReportRepairDetail | DeepCoverageRepairDetail;
 
 const REPORT_KEYS = new Set(["schemaVersion", "findings"]);
@@ -171,11 +172,13 @@ export function normalizeResultArtifactInput(
   portableContext?: PortableResultArtifactValidationContext,
   onReject?: (issue: ResultArtifactValidationIssue, detail?: ResultArtifactRepairDetail) => void,
 ): Record<string, unknown> | null {
+  let jsonReason: StructuredResultRejection = "syntax";
+  const onJsonReject = (reason: StructuredResultRejection) => { jsonReason = reason; };
   const parsed = typeof input.content === "string"
-    ? parseStructuredResult(undefined, input.content)
-    : parseStructuredResult(input.content, null);
+    ? parseStructuredResult(undefined, input.content, onJsonReject)
+    : parseStructuredResult(input.content, null, onJsonReject);
   if (parsed === null) {
-    onReject?.("json-invalid");
+    onReject?.("json-invalid", { kind: "json", reason: jsonReason });
     return null;
   }
   if (contract === undefined) {

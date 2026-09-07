@@ -121,3 +121,24 @@ export function formatActivityState(
   if (state === "stale") return translate(locale, "scanDetail.activity.stale");
   return "—";
 }
+
+export function formatScanProgress(
+  scan: Pick<ScanRun, "status" | "progress">,
+): { value: number; metric: string; indeterminate: boolean } {
+  const progress = scan.progress;
+  if (!progress) return { value: 0, metric: "—", indeterminate: scan.status === "running" };
+  const terminal = scan.status !== "running";
+  if (terminal && progress.unit === "stages" && progress.itemsTotal > 0) {
+    const completed = Math.min(progress.itemsCompleted, progress.itemsTotal);
+    return {
+      value: Math.max(0, Math.min(100, (completed / progress.itemsTotal) * 100)),
+      metric: `${completed}/${progress.itemsTotal}`,
+      indeterminate: false,
+    };
+  }
+  return {
+    value: progress.percent,
+    metric: formatProgressMetric(progress),
+    indeterminate: scan.status === "running" && progress.indeterminate === true,
+  };
+}

@@ -320,7 +320,9 @@ export async function observePortableCodexSecurityStage(
           break;
         case "failure":
           throw new PortableCodexSecurityStageError(
-            portableAgentFailureCode(event.code),
+            event.code === "agent_turn_limit" && event.reason !== undefined
+              ? "stage_artifact_invalid"
+              : portableAgentFailureCode(event.code),
           );
         case "cancellation":
           throw new PortableCodexSecurityStageError("agent_cancelled");

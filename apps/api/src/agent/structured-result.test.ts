@@ -41,3 +41,18 @@ test("keeps invalid and scalar fenced values unstructured", () => {
   assert.equal(parseStructuredResult(undefined, "Result:\n```json\nnot-json\n```"), null);
   assert.equal(parseStructuredResult(undefined, "Result:\n```json\ntrue\n```"), null);
 });
+
+
+test("rejection diagnostics classify malformed JSON without exposing provider content", () => {
+  for (const [content, expected] of [
+    ['{"private-value":', "syntax"],
+    ['"private-value"', "non-structured"],
+    ['```json\n{}\n```\n```json\n{}\n```', "ambiguous-fences"],
+    ['```json\n{"private-value":\n```', "syntax"],
+  ] as const) {
+    let diagnostic: string | undefined;
+    assert.equal(parseStructuredResult(undefined, content, (reason) => { diagnostic = reason; }), null);
+    assert.equal(diagnostic, expected);
+    assert.ok(!diagnostic?.includes("private-value"));
+  }
+});

@@ -1297,6 +1297,9 @@ test("an artifact-terminal session repairs within its total model-turn budget", 
   assert.equal(controls[2], undefined);
   assert.equal(controls[3]?.finalizationRequired, true);
   assert.equal(requestedWith[1]![0]!.validationIssue, "json-invalid");
+  const jsonFeedback = JSON.parse(requestedWith[1]![0]!.content);
+  assert.deepEqual(jsonFeedback.repair, { kind: "json", reason: "syntax" });
+  assert.match(jsonFeedback.hint, /closed delimiters/);
   assert.equal(requestedWith[2]![0]!.validationIssue, "stage-anchor-invalid");
   assert.equal(events.filter((event) => isArtifact(event, "03-discovery.json")).length, 1);
 });
@@ -1715,8 +1718,12 @@ test("an artifact repair window stops before a fifth repair response", async (t)
     },
   });
 
-  await assert.rejects(collect(session.run(), []), { code: "agent_turn_limit" });
+  const events: unknown[] = [];
+  await assert.rejects(collect(session.run(), events), { code: "agent_turn_limit" });
   assert.equal(upstreamRequests, 5);
+  assert.ok(events.some((event) => JSON.stringify(event) === JSON.stringify({
+    type: "failure", code: "agent_turn_limit", reason: "json-invalid",
+  })));
 });
 
 test("a deep artifact repair can consume a closed anchor diagnostic before the corrected write", async (t) => {

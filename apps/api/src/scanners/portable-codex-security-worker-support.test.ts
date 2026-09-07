@@ -405,3 +405,21 @@ test("Portable Codex Security usage preserves missing counters and aggregates ca
     outputTokens: 2,
   });
 });
+
+
+test("Portable identifies exhausted artifact repair separately from generic turn limits", async () => {
+  for (const reason of [undefined, "json-invalid"] as const) {
+    await assert.rejects(
+      observePortableCodexSecurityStage({
+        session: stageSession([{ type: "failure", code: "agent_turn_limit", ...(reason ? { reason } : {}) }]),
+        stage: PORTABLE_CODEX_SECURITY_STAGES[0]!,
+        artifactRoot: "unused-no-artifact-read",
+        dossier: createPortableCodexSecurityDossier(),
+        usage: { reported: false, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+        redact: (value) => value,
+      }),
+      (error: unknown) => error instanceof PortableCodexSecurityStageError &&
+        error.code === (reason ? "stage_artifact_invalid" : "agent_turn_limit"),
+    );
+  }
+});
