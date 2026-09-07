@@ -4,6 +4,7 @@ import type { ModelReasoningEffort } from "@csb/shared";
 import type { SafeProviderErrorCode } from "@csb/shared";
 import { redactText } from "../redaction.js";
 import { reasoningEffortFromModelRecord } from "./model-reasoning-metadata.js";
+import { CODEX_BIN } from "../config.js";
 
 export interface AppServerNotification {
   method: string;
@@ -114,8 +115,11 @@ class StdioCodexAppServerJsonRpc implements CodexAppServerJsonRpc {
   #nextId = 1;
   #lineSubscription: (() => void) | undefined;
   #closeSubscription: (() => void) | undefined;
+  readonly #usesDefaultTransport: boolean;
+  #runtimeCommand: string | undefined;
 
   constructor(options: CodexAppServerJsonRpcOptions) {
+    this.#usesDefaultTransport = options.createTransport === undefined && options.transport === undefined;
     this.#makeTransport = options.createTransport ?? (() => options.transport ?? createStdioTransport());
     this.#timeoutMs = validTimeout(options.timeoutMs);
     if (options.transport !== undefined) this.#bind(options.transport);
@@ -147,6 +151,12 @@ class StdioCodexAppServerJsonRpc implements CodexAppServerJsonRpc {
   }
 
   #ensureTransport(): AppServerLineTransport {
+    // A verified runtime update applies to the next connection operation too.
+    // Injected transports deliberately retain their existing test contract.
+    if (this.#usesDefaultTransport && this.#runtimeCommand !== CODEX_BIN) {
+      this.close();
+      this.#runtimeCommand = CODEX_BIN;
+    }
     if (this.#transport !== undefined) return this.#transport;
     const transport = this.#makeTransport();
     this.#bind(transport);
@@ -252,7 +262,7 @@ function isSafeParams(value: unknown): value is Record<string, unknown> {
 }
 
 function createStdioTransport(): AppServerLineTransport {
-  const child = spawn("codex", ["app-server", "--stdio"], {
+  const child = spawn(CODEX_BIN, ["app-server", "--stdio"], {
     cwd: process.cwd(),
     shell: false,
     windowsHide: true,

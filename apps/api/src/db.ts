@@ -249,6 +249,7 @@ function ensureFindingCategoryIndexColumns(database: Database.Database): void {
 }
 
 const CAPACITY_RESERVATION_GRACE_MS = 5 * 60_000;
+export const ENGINE_UPDATE_RESERVATION_PREFIX = "engine-update:";
 export const SCAN_CAPACITY_RENEWAL_MS = 30_000;
 
 interface ScanCapacityOptions {
@@ -288,6 +289,14 @@ export function reserveScanCapacity(
         AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.id = scan_capacity_reservations.scan_id)
     `).run(staleBefore);
 
+    // Maintenance takes an exclusive slot in this same transaction. Counting
+    // it as an ordinary scan would still allow launches below the scan limit.
+    const maintenance = database.prepare(`
+      SELECT 1 FROM scan_capacity_reservations
+      WHERE substr(scan_id, 1, ?) = ? LIMIT 1
+    `).get(ENGINE_UPDATE_RESERVATION_PREFIX.length, ENGINE_UPDATE_RESERVATION_PREFIX);
+    if (maintenance) return false;
+
     const activeRuns = database.prepare(`
       SELECT COUNT(*) AS count FROM runs WHERE status IN ('queued', 'running')
     `).get() as { count: number };
@@ -308,6 +317,23 @@ export function reserveScanCapacity(
   // a free slot. A deferred read transaction could let two API processes both
   // decide to launch before one writes its reservation.
   return reserve.immediate();
+}
+
+/** Includes preflight reservations, before a worker/run row exists. */
+export function engineUpdateBlockingReason(
+  options: ScanCapacityOptions = {},
+): "scan_active" | "update_in_progress" | null {
+  const database = options.database ?? getDb();
+  ensureScanCapacitySchema(database);
+  const staleBefore = new Date((options.now ?? new Date()).getTime() - CAPACITY_RESERVATION_GRACE_MS).toISOString();
+  const reservation = database.prepare(`
+    SELECT scan_id FROM scan_capacity_reservations WHERE reserved_at >= ?
+      AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.id = scan_capacity_reservations.scan_id
+        AND runs.status NOT IN ('queued', 'running'))
+  `).all(staleBefore) as Array<{ scan_id: string }>;
+  if (reservation.some((row) => row.scan_id.startsWith(ENGINE_UPDATE_RESERVATION_PREFIX))) return "update_in_progress";
+  if (reservation.length > 0 || database.prepare("SELECT 1 FROM runs WHERE status IN ('queued', 'running') LIMIT 1").get()) return "scan_active";
+  return null;
 }
 
 /** Refreshes a preflight lease while capability/vault checks are still running. */

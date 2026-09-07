@@ -352,14 +352,22 @@ Les dates et les nombres suivent la locale active. Les valeurs financières rest
 
 Voir l’[architecture de localisation](docs/localization.fr.md).
 
+## Mises à jour des moteurs
+
+Ouvrez **Paramètres → Mises à jour des moteurs** pour consulter les versions npm officielles et les révisions upstream. Cette vérification ne lance ni scan ni appel de modèle. Codex Security et Codex CLI sont installés dans le répertoire privé `data/engine-updates/` de Sentinel. Les exécutables explicitement définis par `CODEX_SECURITY_BIN` et `CODEX_BIN` restent gérés à l’extérieur.
+
+L’installation exige que les scans et les vérifications préalables soient terminés. Sentinel vérifie l’exécutable et les options CLI requises avant de l’activer. Une installation échouée conserve la version sélectionnée. Après deux versions gérées, **Revenir à la version précédente** restaure l’exécutable précédent, sans annuler les migrations de base de données upstream. Les paquets npm globaux et l’application ChatGPT restent inchangés. Sans version gérée, la détection du runtime existant continue.
+
+Mantis et VulnHunter sont des méthodologies adaptées et intégrées à Sentinel. Les nouvelles révisions upstream sont signalées pour examen et intégrées par une nouvelle version de Sentinel. Vérifications et installations sont explicites ; aucun changement silencieux n’a lieu au démarrage d’un scan.
+
 ## Configuration
 
 | Variable | Valeur par défaut | Rôle |
 |---|---|---|
 | `CODEX_SECURITY_STATE_DIR` | État global s’il est accessible en écriture ; sinon `data/codex-security-state` | État et sortie du scanner |
-| `CODEX_SECURITY_BIN` | `npx` | Exécutable CLI du scanner |
+| `CODEX_SECURITY_BIN` | Version gérée, sinon `npx`| Exécutable CLI du scanner |
 | `CSB_NPM_CACHE_DIR` | `data/npm-cache` | Cache npm isolé du scanner |
-| `CODEX_BIN` | CLI incluse dans ChatGPT Desktop sur macOS, sinon `codex` | Hôte d’inférence de Mantis et VulnHunter |
+| `CODEX_BIN` | Version gérée, sinon CLI incluse dans ChatGPT Desktop sur macOS, sinon `codex`| Hôte d’inférence de Mantis et VulnHunter |
 | `MANTIS_REPOSITORY_URL` | `https://github.com/google/mantis.git` | Dépôt source Mantis revu |
 | `MANTIS_SOURCE_REF` | Commit revu épinglé | Révision Mantis exacte utilisée par les nouveaux runs |
 | `MANTIS_CACHE_DIR` | `data/mantis-cache` | Cache local des skills Mantis épinglés |

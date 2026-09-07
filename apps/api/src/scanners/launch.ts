@@ -11,6 +11,7 @@ import type {
 import {
   CODEX_SECURITY_ARGS_PREFIX,
   CODEX_SECURITY_BIN,
+  CODEX_SECURITY_MANAGED_VERSION,
   codexSecurityEnvironment,
   MANTIS_CACHE_DIR,
   MANTIS_HTTP_WORKER_BIN,
@@ -350,7 +351,7 @@ function prepareCodexSecurity(
     effort: input.effort,
     mode: input.mode,
     paths: input.request.paths ?? [],
-    scannerVersion: null,
+    scannerVersion: CODEX_SECURITY_MANAGED_VERSION,
     ...(providerOptions.provider === undefined
       ? {}
       : { provider: providerOptions.provider }),
@@ -359,7 +360,7 @@ function prepareCodexSecurity(
     engine: "codex-security",
     authMode,
     provider: providerOptions.provider ?? "openai",
-    scannerVersion: null,
+    scannerVersion: CODEX_SECURITY_MANAGED_VERSION,
     recipeHash: hash,
     command: CODEX_SECURITY_BIN,
     args,

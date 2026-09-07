@@ -359,13 +359,20 @@ function nodePrefixRunsWorker(prefix: readonly string[]): boolean {
 
 function invocationRunsOfficialCodexSecurity(arguments_: readonly string[]): boolean {
   const executable = executableName(arguments_[0]!);
-  if (executable === "codex-security") return true;
+  if (executable === "codex-security" || isCodexSecurityPackageEntry(arguments_[0]!)) return true;
   if (executable === "npx" || executable === "npm") {
     return arguments_.includes("@openai/codex-security");
   }
   return isNodeRuntime(executable)
-    && isNpxCliModule(arguments_[1] ?? "")
-    && arguments_.includes("@openai/codex-security");
+    && (isCodexSecurityPackageEntry(arguments_[1] ?? "") ||
+      (isNpxCliModule(arguments_[1] ?? "") && arguments_.includes("@openai/codex-security")));
+}
+
+// npm's executable entry uses a Node shebang. Both the private installer and
+// npx can therefore appear as `node <package>/bin/codex-security.mjs` in ps.
+function isCodexSecurityPackageEntry(value: string): boolean {
+  return path.isAbsolute(value) && value.replace(/\\/g, "/")
+    .endsWith("/node_modules/@openai/codex-security/bin/codex-security.mjs");
 }
 
 function executableName(value: string): string {

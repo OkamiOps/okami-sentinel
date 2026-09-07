@@ -352,14 +352,22 @@ Datums- und Zahlenformate folgen dem aktiven Locale. Finanzwerte bleiben ausdrü
 
 Siehe [Lokalisierungsarchitektur](docs/localization.de.md).
 
+## Engine-Updates
+
+Unter **Einstellungen → Engine-Updates** können offizielle npm-Releases und neue Upstream-Revisionen geprüft werden. Die Prüfung startet weder Scans noch Modellaufrufe. Codex Security und Codex CLI werden in Sentinels privatem Verzeichnis `data/engine-updates/` installiert. Explizite `CODEX_SECURITY_BIN`- und `CODEX_BIN`-Vorgaben bleiben extern verwaltet.
+
+Installationen sind erst möglich, wenn alle Scans und Vorprüfungen beendet sind. Sentinel prüft das Programm und die benötigten CLI-Optionen vor der Aktivierung. Fehlgeschlagene Installationen erhalten die gewählte Version. Nach zwei verwalteten Versionen stellt **Zurücksetzen** das vorherige Programm wieder her, jedoch keine Upstream-Datenbankmigrationen. Globale npm-Pakete und die ChatGPT-App bleiben unverändert. Ohne verwaltete Version gilt die bisherige Runtime-Erkennung.
+
+Mantis und VulnHunter sind in Sentinel integrierte Methodik-Adaptionen. Neue Upstream-Revisionen werden zur Prüfung angezeigt und über ein Sentinel-Release integriert. Prüfungen und Installationen sind explizit; beim Scanstart erfolgen keine stillen Updates.
+
 ## Konfiguration
 
 | Variable | Standard | Zweck |
 |---|---|---|
 | `CODEX_SECURITY_STATE_DIR` | Globaler State, wenn beschreibbar; sonst `data/codex-security-state` | Scanner-State und Ausgabe |
-| `CODEX_SECURITY_BIN` | `npx` | Scanner-CLI |
+| `CODEX_SECURITY_BIN` | Verwaltete Version, sonst `npx`| Scanner-CLI |
 | `CSB_NPM_CACHE_DIR` | `data/npm-cache` | Isolierter npm-Cache für den Scanner |
-| `CODEX_BIN` | Im ChatGPT Desktop enthaltene CLI unter macOS, sonst `codex` | Inferenz-Host für Mantis und VulnHunter |
+| `CODEX_BIN` | Verwaltete Version, sonst Im ChatGPT Desktop enthaltene CLI unter macOS, sonst `codex`| Inferenz-Host für Mantis und VulnHunter |
 | `MANTIS_REPOSITORY_URL` | `https://github.com/google/mantis.git` | Geprüftes Mantis-Quell-Repository |
 | `MANTIS_SOURCE_REF` | Angehefteter geprüfter Commit | Exakte Mantis-Revision für neue Läufe |
 | `MANTIS_CACHE_DIR` | `data/mantis-cache` | Lokaler Cache für die angehefteten Mantis-Skills |

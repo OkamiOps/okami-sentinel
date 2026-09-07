@@ -14,9 +14,10 @@ import {
   type GhRunner,
 } from "./github-cli.js";
 import { githubAppServiceErrorCode } from "./github-app/github-app-service.js";
+import { CODEX_BIN } from "./config.js";
 
 const SECRET_NAME = "OPENAI_API_KEY";
-const defaultCodexRunner = createGhRunner("codex");
+const defaultCodexRunner: GhRunner = (args, options) => createGhRunner(CODEX_BIN)(args, options);
 const WORKFLOW_PATH = path.join(
   ".github",
   "workflows",

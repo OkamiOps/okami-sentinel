@@ -9,6 +9,7 @@ import { AlertBanner, Loading, PageHeader, Panel, Readout, cx } from "../compone
 import { Button } from "@/components/ui/button";
 import { useI18n } from "../i18n";
 import { SettingsSectionNav } from "../components/settings/SettingsSectionNav";
+import { EngineUpdatesPanel } from "../components/settings/EngineUpdatesPanel";
 
 type LoadErrors = Partial<Record<"health" | "scanners" | "connections", true>>;
 
@@ -201,6 +202,7 @@ export function SettingsPage() {
           </div>
         </Panel>
       </div>
+      <EngineUpdatesPanel />
     </>}
   </div>;
 }

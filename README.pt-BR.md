@@ -347,14 +347,22 @@ Datas e números seguem o locale ativo. Valores financeiros continuam explicitam
 
 Veja a [arquitetura de localização](docs/localization.pt-BR.md).
 
+## Atualizações das engines
+
+Abra **Configurações → Atualizações das engines** para consultar releases oficiais do npm e revisões upstream das metodologias. A consulta não inicia scans nem chama modelos. Instale a versão exibida do Codex Security ou Codex CLI no diretório privado `data/engine-updates/` do Sentinel; overrides explícitos de `CODEX_SECURITY_BIN` e `CODEX_BIN` continuam sob gestão externa.
+
+A instalação exige que todos os scans e preflights terminem, verifica o executável e as opções necessárias, e ativa a versão para novas operações. Uma instalação malsucedida preserva a versão selecionada. Após duas versões gerenciadas, **Reverter** restaura o executável anterior; não desfaz migrações de banco feitas pelo upstream. Pacotes npm globais e o aplicativo ChatGPT permanecem intactos. Sem uma versão gerenciada, a descoberta de runtime existente continua funcionando.
+
+Mantis e VulnHunter são metodologias adaptadas dentro do Sentinel, não CLIs upstream instalados separadamente. Novas revisões upstream aparecem para revisão e são integradas por um release do Sentinel. Consultas e instalações são explícitas; não há atualização silenciosa ao iniciar scans.
+
 ## Configuração
 
 | Variável | Default | Finalidade |
 |---|---|---|
 | `CODEX_SECURITY_STATE_DIR` | State global quando gravável; senão `data/codex-security-state` | State e saída do scanner |
-| `CODEX_SECURITY_BIN` | `npx` | Executável do scanner |
+| `CODEX_SECURITY_BIN` | Versão gerenciada; senão `npx`| Executável do scanner |
 | `CSB_NPM_CACHE_DIR` | `data/npm-cache` | Cache npm isolado usado pelo scanner |
-| `CODEX_BIN` | CLI incluída no ChatGPT Desktop no macOS; senão `codex` | Host de inferência do Mantis e VulnHunter |
+| `CODEX_BIN` | Versão gerenciada; senão CLI incluída no ChatGPT Desktop no macOS; senão `codex`| Host de inferência do Mantis e VulnHunter |
 | `MANTIS_REPOSITORY_URL` | `https://github.com/google/mantis.git` | Repositório Mantis revisado |
 | `MANTIS_SOURCE_REF` | Commit revisado e fixado | Revisão exata do Mantis usada em novos scans |
 | `MANTIS_CACHE_DIR` | `data/mantis-cache` | Cache local das skills Mantis fixadas |

@@ -26,6 +26,10 @@ interface RuntimeProbe {
 
 let cached: { expiresAt: number; value: ScannerCatalogResponse } | null = null;
 
+export function invalidateScannerCatalog(): void {
+  cached = null;
+}
+
 function withoutApiKeys(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env = { ...source };
   delete env.OPENAI_API_KEY;

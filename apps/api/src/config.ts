@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { localApiHost } from "./api-host.js";
+import { getManagedRuntimeCommand } from "./scanners/managed-runtime-store.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -82,7 +83,12 @@ export function resolveCodexBin(
   return bundledCandidates.find(isExecutable) ?? "codex";
 }
 
-export const CODEX_BIN = resolveCodexBin();
+export let CODEX_BIN = selectedCodexBin();
+
+function selectedCodexBin(): string {
+  if (process.env.CODEX_BIN?.trim()) return resolveCodexBin();
+  return getManagedRuntimeCommand(DATA_DIR, "codex-cli")?.command ?? resolveCodexBin();
+}
 
 export const MANTIS_REPOSITORY_URL =
   process.env.MANTIS_REPOSITORY_URL?.trim() ||
@@ -257,13 +263,31 @@ export const MAX_CONCURRENT_SCANS = Math.max(
   Number(process.env.CSB_MAX_CONCURRENT_SCANS || 8) || 8,
 );
 
-export const CODEX_SECURITY_BIN =
-  process.env.CODEX_SECURITY_BIN?.trim() || "npx";
+export let CODEX_SECURITY_BIN = selectedCodexSecurityBin();
 
-export const CODEX_SECURITY_ARGS_PREFIX =
-  process.env.CODEX_SECURITY_BIN?.trim()
+export let CODEX_SECURITY_ARGS_PREFIX =
+  process.env.CODEX_SECURITY_BIN?.trim() || getManagedRuntimeCommand(DATA_DIR, "codex-security")
     ? []
     : ["--yes", "@openai/codex-security"];
+
+export let CODEX_SECURITY_MANAGED_VERSION = process.env.CODEX_SECURITY_BIN?.trim()
+  ? null : getManagedRuntimeCommand(DATA_DIR, "codex-security")?.version ?? null;
+
+function selectedCodexSecurityBin(): string {
+  return process.env.CODEX_SECURITY_BIN?.trim()
+    || getManagedRuntimeCommand(DATA_DIR, "codex-security")?.command || "npx";
+}
+
+/** Live bindings are refreshed only after an idle, verified atomic activation. */
+export function refreshManagedRuntimeCommands(): void {
+  CODEX_BIN = selectedCodexBin();
+  CODEX_SECURITY_BIN = selectedCodexSecurityBin();
+  const selected = process.env.CODEX_SECURITY_BIN?.trim()
+    ? null : getManagedRuntimeCommand(DATA_DIR, "codex-security");
+  CODEX_SECURITY_MANAGED_VERSION = selected?.version ?? null;
+  CODEX_SECURITY_ARGS_PREFIX = process.env.CODEX_SECURITY_BIN?.trim() || selected
+    ? [] : ["--yes", "@openai/codex-security"];
+}
 
 const configuredCodexSecurityVaultTimeout = Number(
   process.env.CSB_CODEX_SECURITY_VAULT_TIMEOUT_MS,

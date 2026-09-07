@@ -116,6 +116,7 @@ import { createConnectionsApp } from "./connections-api.js";
 import { getProviderRuntime } from "./provider-runtime.js";
 import { createScanStartApp } from "./scan-start-api.js";
 import { getScannerCatalog } from "./scanners/catalog.js";
+import { createEngineUpdatesApp } from "./engine-updates-api.js";
 import { listActiveRuns, listRunPage, parseScanListOptions, scanCatalog } from "./scan-list.js";
 import {
   cancelScan,
@@ -700,6 +701,7 @@ export function createGuardrailsApp(
 
 app.route("/", createGuardrailsApp());
 app.route("/", createGitHubAppApi());
+app.route("/", createEngineUpdatesApp());
 const providerRuntime = getProviderRuntime();
 app.route("/", createConnectionsApp({
   service: providerRuntime.connections,

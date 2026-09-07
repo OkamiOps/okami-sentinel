@@ -347,14 +347,22 @@ Dates and numbers follow the active locale. Financial values remain explicitly d
 
 See [localization architecture](docs/localization.md).
 
+## Engine updates
+
+Open **Settings → Engine updates** to check official npm releases and upstream methodology revisions. Checking does not run a scan or call a model. Install a displayed Codex Security or Codex CLI version into Sentinel's private `data/engine-updates/` directory; explicit `CODEX_SECURITY_BIN` and `CODEX_BIN` overrides remain externally managed.
+
+Installation waits for all scans and preflights to finish, verifies the executable and required CLI options, then activates it for new operations. A failed installation preserves the selected version. Once two managed versions exist, **Rollback** restores the previous executable; it does not undo upstream database migrations. Global npm packages and the ChatGPT application are unchanged. Without a managed version, existing runtime discovery continues to work.
+
+Mantis and VulnHunter are adapted methodologies bundled with Sentinel, not independently installed upstream CLIs. Their newer upstream revisions are shown for review and are integrated through a Sentinel release. Checks and installations are explicit; there are no silent updates when scans start.
+
 ## Configuration
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `CODEX_SECURITY_STATE_DIR` | Global state when writable; otherwise `data/codex-security-state` | Scanner state and output |
-| `CODEX_SECURITY_BIN` | `npx` | Scanner CLI executable |
+| `CODEX_SECURITY_BIN` | Managed version, otherwise `npx`| Scanner CLI executable |
 | `CSB_NPM_CACHE_DIR` | `data/npm-cache` | Isolated npm cache used by scanner `npx` |
-| `CODEX_BIN` | ChatGPT Desktop bundled CLI on macOS, otherwise `codex` | Explicit Codex CLI override used as the Mantis and VulnHunter inference host |
+| `CODEX_BIN` | Managed version, otherwise ChatGPT Desktop bundled CLI on macOS, otherwise `codex`| Explicit Codex CLI override used as the Mantis and VulnHunter inference host |
 | `MANTIS_REPOSITORY_URL` | `https://github.com/google/mantis.git` | Reviewed Mantis source repository |
 | `MANTIS_SOURCE_REF` | Pinned reviewed commit | Exact Mantis revision used by new runs |
 | `MANTIS_CACHE_DIR` | `data/mantis-cache` | Local cache for the pinned Mantis skills |

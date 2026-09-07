@@ -110,6 +110,27 @@ test("discovery preserves direct Node, tsx-loader, and MantisPython worker invoc
   assert.deepEqual(identities.map((identity) => identity.pid), [71, 72, 73, 74]);
 });
 
+test("discovers managed Codex Security after restart only as the actual script and exact scan output", () => {
+  const scanDir = path.join(os.tmpdir(), "csb-managed-security-scan");
+  const entry = path.join(os.tmpdir(), "engine-updates/versions/codex-security/0.1.25/node_modules/@openai/codex-security/bin/codex-security.mjs");
+  const argv = [
+    ["node", entry, "scan", "--output-dir", scanDir],
+    [entry, "scan", "--output-dir", scanDir],
+    ["node", "/other/script.mjs", entry, "scan", "--output-dir", scanDir],
+    ["vim", entry, "scan", "--output-dir", scanDir],
+    ["node", entry, "scan", "--output-dir", `${scanDir}-other`],
+    ["node", entry, "--output-dir", scanDir],
+    ["node", `${entry}.other`, "scan", "--output-dir", scanDir],
+  ];
+  const { runtime } = runtimeFixture({
+    candidates: argv.map((_, index) => 101 + index),
+    snapshots: new Map(argv.map((args, index) => [101 + index, {
+      pid: 101 + index, startTime: `linux:boot:${index}`, command: args.join("\0"),
+    }])),
+  });
+  assert.deepEqual(createProcessIdentityService(runtime).findProcessIdentitiesForScanDir(scanDir).map(({ pid }) => pid), [101, 102]);
+});
+
 test("never sends TERM or delayed KILL after the stored process identity changes", () => {
   const scanDir = path.join(os.tmpdir(), "csb-process-identity-test");
   const snapshot: ProcessSnapshot = {

@@ -1274,3 +1274,40 @@ export interface GuardrailGitHubStatus {
   baseline: GitHubCapabilityStatus;
   ready: boolean;
 }
+
+export type EngineUpdateId = "codex-security" | "codex-cli" | "mantis" | "vulnhunter";
+export type ManagedRuntimeId = "codex-security" | "codex-cli";
+export type EngineUpdateErrorCode =
+  | "scan_active" | "update_in_progress" | "check_required" | "version_changed"
+  | "external_runtime" | "bundled_engine" | "registry_unavailable"
+  | "install_failed" | "verification_failed" | "rollback_unavailable" | "state_invalid";
+
+export interface EngineUpdateItem {
+  id: EngineUpdateId;
+  name: string;
+  kind: "cli" | "methodology";
+  source: "managed" | "external" | "on-demand" | "bundled";
+  currentVersion: string | null;
+  latestVersion: string | null;
+  previousVersion: string | null;
+  status: "unchecked" | "current" | "available" | "review_required" | "unavailable";
+  checkedAt: string | null;
+  error: EngineUpdateErrorCode | null;
+  canUpdate: boolean;
+  canRollback: boolean;
+  sourceUrl: string;
+}
+
+export interface EngineUpdatesResponse {
+  items: EngineUpdateItem[];
+  busy: { id: ManagedRuntimeId; action: "update" | "rollback" } | null;
+  blockedReason: "scan_active" | "update_in_progress" | null;
+  lastOperation: {
+    id: ManagedRuntimeId;
+    action: "update" | "rollback";
+    status: "succeeded" | "failed";
+    version: string | null;
+    at: string;
+    error: EngineUpdateErrorCode | null;
+  } | null;
+}
