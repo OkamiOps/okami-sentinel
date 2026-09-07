@@ -467,6 +467,7 @@ export async function runPortableCodexSecurity(
             : {}),
         resultArtifactContract: PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT,
         resultArtifactValidationContext: {
+          expectedArtifactPath: stage.artifact,
           dossier: stageDossier,
           ...(shard === null ? {} : { reportShard: shard }),
           ...(deepCoverage === undefined ? {} : { deepCoverage }),

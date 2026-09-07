@@ -17,6 +17,7 @@ import {
   resultArtifactContentSchema,
   resultArtifactPathSchema,
   type AgentResultArtifactContract,
+  type PortableResultArtifactValidationContext,
 } from "./result-artifact-contract.js";
 import {
   WORKSPACE_TOOL_WIRE_CODEC,
@@ -29,6 +30,7 @@ export interface AnthropicMessagesSessionSpec {
   instructions: string;
   reasoningEffort?: string;
   resultArtifactContract?: AgentResultArtifactContract;
+  resultArtifactValidationContext?: PortableResultArtifactValidationContext;
   terminalMode?: AgentSessionTerminalMode;
   maxCompletionTokens?: number;
 }
@@ -76,6 +78,7 @@ export function createAnthropicMessagesWireAdapter(
               tools: anthropicTools(
                 spec.resultArtifactContract,
                 control?.finalizationRequired === true,
+                spec.resultArtifactValidationContext,
               ),
               ...(control?.finalizationRequired === true
                 ? { tool_choice: { type: "any" } }
@@ -85,10 +88,13 @@ export function createAnthropicMessagesWireAdapter(
         },
       };
     },
+    readUsage(response: unknown) {
+      return anthropicUsage(optionalRecord(response)?.usage);
+    },
     readResponse(response: unknown): NormalizedModelReply {
       const root = record(response);
       const content = root.content;
-      if (!Array.isArray(content)) throw protocolError();
+      if (!Array.isArray(content)) throw protocolError("anthropic_content_invalid");
       const toolCalls: AgentToolCall[] = [];
       const textParts: string[] = [];
       for (const rawBlock of content) {
@@ -99,7 +105,7 @@ export function createAnthropicMessagesWireAdapter(
           textParts.push(block.text);
         }
       }
-      if (finalizing && toolCalls.length > 0) throw protocolError();
+      if (finalizing && toolCalls.length > 0) throw protocolError("anthropic_tools_after_completion");
       messages.push({ role: "assistant", content });
       const text = textParts.join("") || null;
       return {
@@ -150,6 +156,7 @@ function anthropicMaxTokens(
 function anthropicTools(
   resultArtifactContract?: AgentResultArtifactContract,
   resultsWriteOnly = false,
+  context?: PortableResultArtifactValidationContext,
 ): readonly unknown[] {
   const tools = [
     anthropicTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.list"), WORKSPACE_TOOL_WIRE_DESCRIPTIONS["workspace.list"], {
@@ -162,8 +169,8 @@ function anthropicTools(
       query: requiredStringSchema(), path: stringSchema(), maxResults: integerSchema(), maxBytes: integerSchema(),
     }, ["query"]),
     anthropicTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("results.write"), WORKSPACE_TOOL_WIRE_DESCRIPTIONS["results.write"], {
-      path: resultArtifactPathSchema(resultArtifactContract),
-      content: resultArtifactContentSchema(resultArtifactContract),
+      path: resultArtifactPathSchema(resultArtifactContract, context),
+      content: resultArtifactContentSchema(resultArtifactContract, context),
     }, ["path", "content"]),
   ];
   return resultsWriteOnly ? [tools[3]!] : tools;
@@ -184,11 +191,12 @@ function anthropicTool(
 
 function readToolUse(value: Record<string, unknown>): AgentToolCall {
   if (typeof value.id !== "string" || value.id.length === 0 || typeof value.name !== "string") {
-    throw protocolError();
+    throw protocolError("anthropic_tool_identity_invalid");
   }
   const name = WORKSPACE_TOOL_WIRE_CODEC.toInternal(value.name);
-  if (name === null) throw protocolError();
-  return { id: value.id, name, input: record(value.input) };
+  if (name === null) throw protocolError("anthropic_tool_name_invalid");
+  if (!isPlainRecord(value.input)) throw protocolError("anthropic_tool_input_invalid");
+  return { id: value.id, name, input: value.input };
 }
 
 function anthropicUsage(value: unknown) {
@@ -242,8 +250,8 @@ function finiteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
-function protocolError(): AgentSessionError {
-  return new AgentSessionError("agent_protocol_error");
+function protocolError(issue = "anthropic_object_invalid"): AgentSessionError {
+  return new AgentSessionError("agent_protocol_error", issue);
 }
 
 function stringSchema() {

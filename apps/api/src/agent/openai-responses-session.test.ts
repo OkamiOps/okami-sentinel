@@ -1,3 +1,4 @@
+import { createPortableCodexSecurityDossier } from "../scanners/portable-codex-security-dossier.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -264,3 +265,56 @@ function model(id: string, patch: Partial<ProviderModel> = {}): ProviderModel {
     ...patch,
   };
 }
+
+
+test("a malformed Responses frame never becomes the continuation cursor", () => {
+  const adapter = createOpenAiResponsesWireAdapter({ model: model("gpt-test"), instructions: "Inspect." });
+  adapter.readResponse({ id: "accepted-response", output: [] });
+  const rejected = { id: "bad-response", output: [{ type: "function_call", call_id: "bad", name: "results_write", arguments: "{" }], usage: { input_tokens: 20, output_tokens: 7 } };
+  assert.throws(() => adapter.readResponse(rejected), { code: "agent_protocol_error" });
+  assert.equal(responseBody(adapter.nextRequest([])).previous_response_id, "accepted-response");
+  assert.equal(adapter.readUsage!(rejected).outputTokens, 7);
+});
+
+
+test("openai-responses-session exposes only the current Portable stage contract", () => {
+  const adapter = createOpenAiResponsesWireAdapter({
+    model: model("MiniMax-M3"), instructions: "Write the current stage.",
+
+    resultArtifactContract: "portable-stage-json-v1",
+    resultArtifactValidationContext: { dossier: createPortableCodexSecurityDossier(), expectedArtifactPath: "02-threat-model.json" },
+  });
+  const body = adapter.nextRequest([]).body as { tools: Array<any> };
+  const tool = body.tools.find((entry) => (entry.function?.name ?? entry.name) === "results_write");
+  const schema = tool.input_schema ?? tool.parameters ?? tool.function.parameters;
+  assert.deepEqual(schema.properties.path.enum, ["02-threat-model.json"]);
+  assert.deepEqual(schema.properties.content.properties.stage.enum, ["threat-model"]);
+  assert.deepEqual(schema.properties.content.required, ["schemaVersion", "stage", "summary", "observations"]);
+  assert.equal("candidates" in schema.properties.content.properties, false);
+});
+
+
+test("Responses replays pending tool outputs after a malformed continuation until accepted", () => {
+  const adapter = createOpenAiResponsesWireAdapter({ model: model("gpt-test"), instructions: "Inspect." });
+  adapter.readResponse({ id: "read-response", output: [{ type: "function_call", call_id: "read-1", name: "workspace_read", arguments: '{"path":"index.ts"}' }] });
+  const result = { callId: "read-1", name: "workspace.read" as const, content: "file contents" };
+  const first = responseBody(adapter.nextRequest([result]));
+  const expectedOutput = { type: "function_call_output", call_id: "read-1", output: "file contents" };
+  assert.deepEqual(first.input, [expectedOutput]);
+  assert.throws(() => adapter.readResponse({ id: "bad-response", output: [{ type: "function_call", call_id: "bad", name: "results_write", arguments: "{" }] }), { code: "agent_protocol_error" });
+  const retry = responseBody(adapter.nextRequest([], { finalizationRequired: true, artifactRepairReminder: true }));
+  assert.equal(retry.previous_response_id, "read-response");
+  const retryInput = retry.input as Array<Record<string, unknown>>;
+  assert.equal(retryInput.length, 2);
+  assert.deepEqual(retryInput[0], expectedOutput);
+  assert.equal(retryInput[1]!.role, "user");
+  assert.match(String(retryInput[1]!.content), /results.write/);
+  assert.throws(() => adapter.readResponse({ id: "bad-again", output: null }), { code: "agent_protocol_error" });
+  assert.deepEqual(responseBody(adapter.nextRequest([], { finalizationRequired: true, artifactRepairReminder: true })).input, retryInput);
+  adapter.readResponse({ id: "accepted-response", output: [{ type: "function_call", call_id: "read-2", name: "workspace_read", arguments: '{"path":"other.ts"}' }] });
+  const next = responseBody(adapter.nextRequest([{ callId: "read-2", name: "workspace.read", content: "other contents" }]));
+  assert.equal(next.previous_response_id, "accepted-response");
+  assert.deepEqual(next.input, [{ type: "function_call_output", call_id: "read-2", output: "other contents" }]);
+  adapter.readResponse({ id: "complete", output: [] });
+  assert.deepEqual(responseBody(adapter.nextRequest([])).input, [{ role: "user", content: "Inspect." }]);
+});

@@ -1,3 +1,4 @@
+import { createPortableCodexSecurityDossier } from "../scanners/portable-codex-security-dossier.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -247,3 +248,36 @@ function model(id: string, patch: Partial<ProviderModel> = {}): ProviderModel {
     ...patch,
   };
 }
+
+
+test("malformed Anthropic tool input preserves billed usage and a content-free diagnostic", () => {
+  const adapter = createAnthropicMessagesWireAdapter({ model: model("MiniMax-M3"), instructions: "Inspect." });
+  const response = {
+    content: [{ type: "tool_use", id: "call-1", name: "results_write", input: "sensitive payload" }],
+    usage: { input_tokens: 12, cache_read_input_tokens: 8, cache_creation_input_tokens: 0, output_tokens: 7 },
+  };
+  assert.throws(() => adapter.readResponse(response), {
+    code: "agent_protocol_error", protocolIssue: "anthropic_tool_input_invalid",
+  });
+  assert.deepEqual(adapter.readUsage!(response), {
+    inputTokens: 20, cachedInputTokens: 8, cacheWriteInputTokens: 0, outputTokens: 7, reasoningTokens: null,
+  });
+  assert.equal(JSON.stringify(adapter.nextRequest([]).body).includes("sensitive payload"), false);
+});
+
+
+test("anthropic-messages-session exposes only the current Portable stage contract", () => {
+  const adapter = createAnthropicMessagesWireAdapter({
+    model: model("MiniMax-M3"), instructions: "Write the current stage.",
+
+    resultArtifactContract: "portable-stage-json-v1",
+    resultArtifactValidationContext: { dossier: createPortableCodexSecurityDossier(), expectedArtifactPath: "02-threat-model.json" },
+  });
+  const body = adapter.nextRequest([]).body as { tools: Array<any> };
+  const tool = body.tools.find((entry) => (entry.function?.name ?? entry.name) === "results_write");
+  const schema = tool.input_schema ?? tool.parameters ?? tool.function.parameters;
+  assert.deepEqual(schema.properties.path.enum, ["02-threat-model.json"]);
+  assert.deepEqual(schema.properties.content.properties.stage.enum, ["threat-model"]);
+  assert.deepEqual(schema.properties.content.required, ["schemaVersion", "stage", "summary", "observations"]);
+  assert.equal("candidates" in schema.properties.content.properties, false);
+});

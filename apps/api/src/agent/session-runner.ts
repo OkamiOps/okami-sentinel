@@ -78,6 +78,7 @@ function adapterFor(input: CreateAgentSessionInput): WireSessionAdapter {
         model: input.model,
         instructions: input.instructions,
         routeKind: input.routeKind,
+        ...(input.resultArtifactValidationContext === undefined ? {} : { resultArtifactValidationContext: input.resultArtifactValidationContext }),
         ...(input.reasoningEffort === undefined ? {} : { reasoningEffort: input.reasoningEffort }),
         ...(input.resultArtifactContract === undefined
           ? {}

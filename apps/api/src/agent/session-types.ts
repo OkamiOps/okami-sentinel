@@ -51,7 +51,7 @@ export type AgentSessionErrorCode =
   | SafeProviderErrorCode;
 
 export class AgentSessionError extends Error {
-  constructor(readonly code: AgentSessionErrorCode) {
+  constructor(readonly code: AgentSessionErrorCode, readonly protocolIssue?: string) {
     super(code);
     this.name = "AgentSessionError";
   }
@@ -210,7 +210,7 @@ export type AgentEvent =
   | { type: "artifact"; path: string; bytes: number }
   | { type: "usage"; usage: AgentUsage }
   | { type: "completion"; text: string | null; structured: unknown | null }
-  | { type: "failure"; code: AgentSessionErrorCode; reason?: ResultArtifactValidationIssue }
+  | { type: "failure"; code: AgentSessionErrorCode; reason?: ResultArtifactValidationIssue; protocolIssue?: string }
   | { type: "cancellation"; remote: boolean };
 
 export interface AgentSession {
@@ -291,6 +291,7 @@ export interface WireSessionAdapter {
     control?: AgentWireRequestControl,
   ): AgentWireRequest;
   readResponse(response: unknown): NormalizedModelReply;
+  readUsage?(response: unknown): AgentUsage;
 }
 
 /** Bump whenever a fresh provider probe must prove a changed wire/session contract. */
@@ -411,6 +412,7 @@ class ConstrainedWireSession implements AgentSession {
     let toolResults: AgentToolResult[] = [];
     let artifactWritten = false;
     let artifactRepairActive = false;
+    let protocolRepairAttempts = 0;
     let lastArtifactValidationIssue: ResultArtifactValidationIssue | undefined;
     let artifactRepairTurns = 0;
     let artifactRepairInspectionAvailable = false;
@@ -497,11 +499,17 @@ class ConstrainedWireSession implements AgentSession {
           outputBytes += responseBytes;
           reply = this.#options.adapter.readResponse(response);
         } catch (error) {
+          if (this.#options.adapter.readUsage !== undefined) {
+            yield { type: "usage", usage: this.#options.adapter.readUsage(response) };
+          }
           if (
-            artifactRepairActive &&
+            this.#options.terminalMode === "artifact-write" &&
+            !artifactWritten && protocolRepairAttempts < 2 &&
             error instanceof AgentSessionError &&
             error.code === "agent_protocol_error"
           ) {
+            protocolRepairAttempts += 1;
+            artifactRepairActive = true;
             artifactRepairInspectionAvailable = false;
             artifactRepairReminder = true;
             toolResults = [];
@@ -511,6 +519,46 @@ class ConstrainedWireSession implements AgentSession {
         }
         const usage = reply.usage ?? emptyUsage();
         yield { type: "usage", usage };
+
+        // Reject the entire batch before I/O. The adapter has recorded every tool_use,
+        // so return one failed result per unique ID before requesting an isolated write.
+        if (this.#options.terminalMode === "artifact-write" &&
+            reply.toolCalls.length > 1 &&
+            reply.toolCalls.some((call) => call.name === "results.write")) {
+          const batchIds = new Set<string>();
+          for (const call of reply.toolCalls) {
+            if (seenCallIds.has(call.id) || batchIds.has(call.id)) {
+              throw new AgentSessionError("agent_protocol_error", "duplicate_tool_call_id");
+            }
+            batchIds.add(call.id);
+          }
+          if (protocolRepairAttempts >= 2) throw new AgentSessionError("agent_protocol_error", "artifact_terminal_batch_invalid");
+          if (toolCalls + reply.toolCalls.length > this.#options.limits.maxToolCalls) {
+            throw new AgentSessionError("agent_tool_limit");
+          }
+          const content = JSON.stringify({
+            error: "artifact_terminal_batch_invalid",
+            hint: "No calls in this batch were executed. Call results.write alone, after consuming any required inspection results.",
+          });
+          const resultBytes = Buffer.byteLength(content, "utf8") * reply.toolCalls.length;
+          if (outputBytes + resultBytes > this.#options.limits.maxOutputBytes) {
+            throw new AgentSessionError("agent_output_byte_limit");
+          }
+          outputBytes += resultBytes;
+          toolResults = [];
+          for (const call of reply.toolCalls) {
+            seenCallIds.add(call.id);
+            toolCalls += 1;
+            yield { type: "tool", phase: "requested", callId: call.id, name: call.name };
+            toolResults.push({ callId: call.id, name: call.name, content, ok: false });
+            yield { type: "tool", phase: "result", callId: call.id, name: call.name, ok: false };
+          }
+          protocolRepairAttempts += 1;
+          artifactRepairActive = true;
+          artifactRepairInspectionAvailable = false;
+          artifactRepairReminder = true;
+          continue;
+        }
 
         const exhaustiveDeepReadRepair = repairInspectionAllowed &&
           this.#options.resultArtifactValidationContext?.deepCoverage !== undefined &&
@@ -709,6 +757,7 @@ class ConstrainedWireSession implements AgentSession {
       yield {
         type: "failure",
         code: failure.code,
+        ...(failure.protocolIssue === undefined ? {} : { protocolIssue: failure.protocolIssue }),
         ...(failure.code === "agent_turn_limit" && artifactRepairActive &&
           lastArtifactValidationIssue !== undefined ? { reason: lastArtifactValidationIssue } : {}),
       };

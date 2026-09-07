@@ -16,6 +16,7 @@ import {
   resultArtifactContentSchema,
   resultArtifactPathSchema,
   type AgentResultArtifactContract,
+  type PortableResultArtifactValidationContext,
 } from "./result-artifact-contract.js";
 import {
   WORKSPACE_TOOL_WIRE_CODEC,
@@ -28,6 +29,7 @@ export interface OpenAiResponsesSessionSpec {
   instructions: string;
   reasoningEffort?: string;
   resultArtifactContract?: AgentResultArtifactContract;
+  resultArtifactValidationContext?: PortableResultArtifactValidationContext;
 }
 
 /** Translates the four fixed local tools to OpenAI Responses wire objects. */
@@ -37,6 +39,8 @@ export function createOpenAiResponsesWireAdapter(
   validateAgentSessionReasoningEffort(spec.model, spec.reasoningEffort);
   let previousResponseId: string | undefined;
   let finalizing = false;
+  // Outputs remain pending until a valid response advances the server-side history.
+  let pendingToolResults: readonly AgentToolResult[] = [];
 
   return {
     nextRequest(
@@ -44,18 +48,20 @@ export function createOpenAiResponsesWireAdapter(
       control?: AgentWireRequestControl,
     ): AgentWireRequest {
       if (toolResults.some((result) => result.name === "results.write" && result.ok !== false)) finalizing = true;
-      const input = toolResults.length === 0
+      if (toolResults.length > 0) pendingToolResults = toolResults;
+      const input = pendingToolResults.length === 0
         ? [{
           role: "user",
           content: control?.artifactRepairReminder === true
             ? AGENT_ARTIFACT_REPAIR_REMINDER
             : spec.instructions,
         }]
-        : toolResults.map((result) => ({
+        : [...pendingToolResults.map((result) => ({
           type: "function_call_output",
           call_id: result.callId,
           output: result.content,
-        }));
+        })), ...(toolResults.length === 0 && control?.artifactRepairReminder === true
+          ? [{ role: "user", content: AGENT_ARTIFACT_REPAIR_REMINDER }] : [])];
       return {
         operation: "responses",
         body: {
@@ -68,6 +74,7 @@ export function createOpenAiResponsesWireAdapter(
               tools: openAiResponsesTools(
                 spec.resultArtifactContract,
                 control?.finalizationRequired === true,
+                spec.resultArtifactValidationContext,
               ),
               ...(control?.finalizationRequired === true ? { tool_choice: "required" } : {}),
             }),
@@ -76,9 +83,11 @@ export function createOpenAiResponsesWireAdapter(
         },
       };
     },
+    readUsage(response: unknown) {
+      return responseUsage(optionalRecord(response)?.usage);
+    },
     readResponse(response: unknown): NormalizedModelReply {
       const root = record(response);
-      if (typeof root.id === "string" && root.id.length > 0) previousResponseId = root.id;
       const output = root.output;
       if (!Array.isArray(output)) throw protocolError();
       const toolCalls: AgentToolCall[] = [];
@@ -92,6 +101,8 @@ export function createOpenAiResponsesWireAdapter(
         if (item.type === "message") textParts.push(...responseMessageText(item.content));
       }
       if (finalizing && toolCalls.length > 0) throw protocolError();
+      if (typeof root.id === "string" && root.id.length > 0) previousResponseId = root.id;
+      pendingToolResults = [];
       const text = textParts.join("") || optionalText(root.output_text);
       return {
         toolCalls,
@@ -106,6 +117,7 @@ export function createOpenAiResponsesWireAdapter(
 function openAiResponsesTools(
   resultArtifactContract?: AgentResultArtifactContract,
   resultsWriteOnly = false,
+  context?: PortableResultArtifactValidationContext,
 ): readonly unknown[] {
   const tools = [
     responseTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.list"), WORKSPACE_TOOL_WIRE_DESCRIPTIONS["workspace.list"], {
@@ -118,8 +130,8 @@ function openAiResponsesTools(
       query: requiredStringSchema(), path: stringSchema(), maxResults: integerSchema(), maxBytes: integerSchema(),
     }, ["query"]),
     responseTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("results.write"), WORKSPACE_TOOL_WIRE_DESCRIPTIONS["results.write"], {
-      path: resultArtifactPathSchema(resultArtifactContract),
-      content: resultArtifactContentSchema(resultArtifactContract),
+      path: resultArtifactPathSchema(resultArtifactContract, context),
+      content: resultArtifactContentSchema(resultArtifactContract, context),
     }, ["path", "content"], resultArtifactContract !== PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT),
   ];
   return resultsWriteOnly ? [tools[3]!] : tools;

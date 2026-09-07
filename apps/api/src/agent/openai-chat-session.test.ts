@@ -1,3 +1,4 @@
+import { createPortableCodexSecurityDossier } from "../scanners/portable-codex-security-dossier.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -340,3 +341,20 @@ function model(id: string, patch: Partial<ProviderModel> = {}): ProviderModel {
     ...patch,
   };
 }
+
+
+test("openai-chat-session exposes only the current Portable stage contract", () => {
+  const adapter = openAiChat.createOpenAiChatWireAdapter({
+    model: model("MiniMax-M3"), instructions: "Write the current stage.",
+    routeKind: "custom-openai-compatible",
+    resultArtifactContract: "portable-stage-json-v1",
+    resultArtifactValidationContext: { dossier: createPortableCodexSecurityDossier(), expectedArtifactPath: "02-threat-model.json" },
+  });
+  const body = adapter.nextRequest([]).body as { tools: Array<any> };
+  const tool = body.tools.find((entry) => (entry.function?.name ?? entry.name) === "results_write");
+  const schema = tool.input_schema ?? tool.parameters ?? tool.function.parameters;
+  assert.deepEqual(schema.properties.path.enum, ["02-threat-model.json"]);
+  assert.deepEqual(schema.properties.content.properties.stage.enum, ["threat-model"]);
+  assert.deepEqual(schema.properties.content.required, ["schemaVersion", "stage", "summary", "observations"]);
+  assert.equal("candidates" in schema.properties.content.properties, false);
+});

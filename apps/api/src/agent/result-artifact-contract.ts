@@ -42,9 +42,21 @@ export type AgentResultArtifactContract =
   | typeof MANTIS_REPORT_RESULT_ARTIFACT_CONTRACT
   | "vulnhunter-report-v1";
 
+export const PORTABLE_ARTIFACT_STAGES = {
+  "01-inventory.json": "inventory",
+  "02-threat-model.json": "threat-model",
+  "03-discovery.json": "discovery",
+  "04-dataflow.json": "dataflow",
+  "05-validation.json": "validation",
+  "sentinel-findings.json": "report",
+} as const;
+export type PortableArtifactPath = keyof typeof PORTABLE_ARTIFACT_STAGES;
+
 /** Server-owned Portable state used only to validate a terminal artifact before host I/O. */
 export interface PortableResultArtifactValidationContext {
   dossier: PortableCodexSecurityDossier;
+  /** Fixed destination of the current server-owned stage. */
+  expectedArtifactPath?: PortableArtifactPath;
   /** Report-page membership; causes the model-facing artifact to be findings-only. */
   reportShard?: PortableCodexSecurityReportShard;
   /** Deep discovery partition whose files must be read before artifact I/O. */
@@ -89,9 +101,11 @@ const MAX_FINDINGS = 1_000;
 
 export function resultArtifactPathSchema(
   contract: AgentResultArtifactContract | undefined,
+  context?: PortableResultArtifactValidationContext,
 ): Record<string, unknown> {
   if (contract === PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT) {
-    return { type: "string", enum: ["01-inventory.json", "02-threat-model.json", "03-discovery.json", "04-dataflow.json", "05-validation.json", "sentinel-findings.json"] };
+    return { type: "string", enum: context?.expectedArtifactPath === undefined
+      ? Object.keys(PORTABLE_ARTIFACT_STAGES) : [context.expectedArtifactPath] };
   }
   return { type: "string", minLength: 1 };
 }
@@ -103,16 +117,17 @@ export function resultArtifactPathSchema(
  */
 export function resultArtifactContentSchema(
   contract: AgentResultArtifactContract | undefined,
+  context?: PortableResultArtifactValidationContext,
 ): Record<string, unknown> {
   if (contract === PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT) {
-    return portableStageContentSchema();
+    return portableStageContentSchema(context);
   }
   return { type: "string", minLength: 1 };
 }
 
 /** Explicit properties are necessary for providers that project tool arguments
  * through their declared schema. An unconstrained object can lose every field. */
-function portableStageContentSchema(): Record<string, unknown> {
+function portableStageContentSchema(context?: PortableResultArtifactValidationContext): Record<string, unknown> {
   const text = { type: "string", minLength: 1 };
   const enumeration = (values: readonly string[]) => ({ type: "string", enum: values });
   const object = (properties: Record<string, unknown>, required = Object.keys(properties)) => ({
@@ -146,8 +161,7 @@ function portableStageContentSchema(): Record<string, unknown> {
     "id", "candidateId", "title", "severity", "confidence", "category", "summary",
     "rootCause", "impact", "remediation", "anchors",
   ]);
-  return {
-    ...object({
+  const properties: Record<string, unknown> = {
       schemaVersion: { type: "integer", enum: [1] },
       stage: enumeration(["inventory", "threat-model", "discovery", "dataflow", "validation", "report"]),
       summary: text,
@@ -166,7 +180,26 @@ function portableStageContentSchema(): Record<string, unknown> {
           candidateId: text, disposition: enumeration(["reported", "rejected"]), reason, evidence: anchors,
         })),
       }),
-    }, ["schemaVersion"]),
+    };
+  const expectedStage = context?.expectedArtifactPath === undefined
+    ? undefined : PORTABLE_ARTIFACT_STAGES[context.expectedArtifactPath];
+  if (expectedStage !== undefined) {
+    const fields = expectedStage === "report"
+      ? ["schemaVersion", "stage", "findings", ...(context?.reportShard === undefined ? ["coverage"] : [])]
+      : ["schemaVersion", "stage", "summary", "observations",
+        ...(expectedStage === "inventory" || expectedStage === "threat-model" || expectedStage === "discovery" ? ["scope"] : []),
+        ...(expectedStage === "discovery" ? ["candidates"] : []),
+        ...(expectedStage === "dataflow" || expectedStage === "validation" ? ["assessments"] : [])];
+    const selected = Object.fromEntries(fields.map((field) => [field, properties[field]]));
+    selected.stage = enumeration([expectedStage]);
+    if (expectedStage === "validation") {
+      selected.assessments = array(object({ candidateId: text,
+        status: enumeration(["confirmed", "rejected"]), reason, evidence: anchors }));
+    }
+    return object(selected, fields.filter((field) => field !== "scope"));
+  }
+  return {
+    ...object(properties, ["schemaVersion"]),
     description: "The complete stage artifact as a JSON object matching the supplied stage contract. Pass the object directly; do not stringify it or wrap it in Markdown. Include only fields required by the current stage: summary and observations for non-report stages; candidates for discovery; assessments for dataflow/validation; findings for report. Report pages omit coverage because the server derives it.",
   };
 }
@@ -296,6 +329,10 @@ function normalizePortableStageArtifact(
   context: PortableResultArtifactValidationContext | undefined,
   onReject?: (issue: ResultArtifactValidationIssue, detail?: ResultArtifactRepairDetail) => void,
 ): Record<string, unknown> | null {
+  if (context?.expectedArtifactPath !== undefined && path !== context.expectedArtifactPath) {
+    onReject?.("path-or-stage-invalid");
+    return null;
+  }
   let repairDetail: ResultArtifactRepairDetail | undefined;
   let modelValue = value;
   if (path === VULNHUNTER_RESULT_ARTIFACT_PATH && context?.reportShard !== undefined) {

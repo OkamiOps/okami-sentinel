@@ -21,6 +21,7 @@ import {
   resultArtifactContentSchema,
   resultArtifactPathSchema,
   type AgentResultArtifactContract,
+  type PortableResultArtifactValidationContext,
 } from "./result-artifact-contract.js";
 import {
   WORKSPACE_TOOL_WIRE_CODEC,
@@ -34,6 +35,7 @@ export interface OpenAiChatSessionSpec {
   routeKind: string;
   reasoningEffort?: string;
   resultArtifactContract?: AgentResultArtifactContract;
+  resultArtifactValidationContext?: PortableResultArtifactValidationContext;
 }
 
 export interface OpenAiChatProbeSpec {
@@ -96,12 +98,16 @@ export function createOpenAiChatWireAdapter(spec: OpenAiChatSessionSpec): WireSe
               tools: openAiChatTools(
                 spec.resultArtifactContract,
                 control?.finalizationRequired === true,
+                spec.resultArtifactValidationContext,
               ),
               tool_choice: "required",
             }),
           ...reasoningField(spec.routeKind, spec.reasoningEffort),
         },
       };
+    },
+    readUsage(response: unknown) {
+      return openAiUsage(optionalRecord(response)?.usage);
     },
     readResponse(response: unknown): NormalizedModelReply {
       const root = record(response);
@@ -234,6 +240,7 @@ function advanceProbeEvidence(
 function openAiChatTools(
   resultArtifactContract?: AgentResultArtifactContract,
   resultsWriteOnly = false,
+  context?: PortableResultArtifactValidationContext,
 ): readonly unknown[] {
   const tools = [
     {
@@ -266,8 +273,8 @@ function openAiChatTools(
         name: WORKSPACE_TOOL_WIRE_CODEC.toWire("results.write"),
         description: WORKSPACE_TOOL_WIRE_DESCRIPTIONS["results.write"],
         parameters: objectSchema({
-          path: resultArtifactPathSchema(resultArtifactContract),
-          content: resultArtifactContentSchema(resultArtifactContract),
+          path: resultArtifactPathSchema(resultArtifactContract, context),
+          content: resultArtifactContentSchema(resultArtifactContract, context),
         }, ["path", "content"]),
       },
     },

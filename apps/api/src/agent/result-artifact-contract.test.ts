@@ -6,10 +6,13 @@ import test from "node:test";
 
 import {
   PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT,
+  PORTABLE_ARTIFACT_STAGES,
+  type PortableArtifactPath,
   normalizeResultArtifactInput,
   resultArtifactContentSchema,
   resultArtifactPathSchema,
 } from "./result-artifact-contract.js";
+import { createPortableCodexSecurityDossier } from "../scanners/portable-codex-security-dossier.js";
 import { createPortableCodexSecurityReportShards } from "../scanners/portable-codex-security-report-shards.js";
 import { MANTIS_REPORT_RESULT_ARTIFACT_CONTRACT } from "../scanners/mantis-report-contract.js";
 
@@ -531,4 +534,37 @@ test("Portable report never accepts an informational coverage statement as a vul
       },
     }),
   }, PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT), null);
+});
+
+
+test("Portable stage schema fixes the destination, stage and required stage fields", () => {
+  for (const [artifactPath, stage] of Object.entries(PORTABLE_ARTIFACT_STAGES)) {
+    const context = { dossier: createPortableCodexSecurityDossier(), expectedArtifactPath: artifactPath as PortableArtifactPath };
+    assert.deepEqual(resultArtifactPathSchema(PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, context), { type: "string", enum: [artifactPath] });
+    const schema = resultArtifactContentSchema(PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, context) as { properties: Record<string, any>; required: string[]; additionalProperties: boolean };
+    assert.equal(schema.additionalProperties, false);
+    assert.deepEqual(schema.properties.stage.enum, [stage]);
+    assert.ok(schema.required.includes("stage"));
+    if (stage === "report") {
+      assert.deepEqual(Object.keys(schema.properties), ["schemaVersion", "stage", "findings", "coverage"]);
+    } else {
+      assert.ok(schema.required.includes("summary"));
+      assert.ok(schema.required.includes("observations"));
+      assert.equal("findings" in schema.properties, false);
+      assert.equal("coverage" in schema.properties, false);
+      assert.equal("candidates" in schema.properties, stage === "discovery");
+      assert.equal("assessments" in schema.properties, stage === "dataflow" || stage === "validation");
+    }
+    if (stage === "validation") assert.deepEqual(schema.properties.assessments.items.properties.status.enum, ["confirmed", "rejected"]);
+  }
+});
+
+test("Portable expected stage rejects an otherwise valid artifact for a different destination", () => {
+  let issue: unknown;
+  const content = { schemaVersion: 1, stage: "inventory", summary: "Inventory completed.", observations: [] };
+  assert.notEqual(normalizeResultArtifactInput({ path: "01-inventory.json", content }, PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT), null);
+  assert.equal(normalizeResultArtifactInput({ path: "01-inventory.json", content }, PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, undefined,
+    { dossier: createPortableCodexSecurityDossier(), expectedArtifactPath: "02-threat-model.json" },
+    (value) => { issue = value; }), null);
+  assert.equal(issue, "path-or-stage-invalid");
 });

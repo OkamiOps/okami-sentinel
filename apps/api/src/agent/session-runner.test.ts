@@ -5,6 +5,7 @@ import test from "node:test";
 
 import type { ModelCapabilities, ProviderModel } from "@csb/shared";
 import { createAgentSession, DEFAULT_AGENT_LIMITS } from "./session-runner.js";
+import { createAnthropicMessagesWireAdapter } from "./anthropic-messages-session.js";
 import { probeOpenAiChatSession } from "./openai-chat-session.js";
 import {
   AgentSessionError,
@@ -838,7 +839,7 @@ test("an artifact-terminal session ends after the accepted artifact without anot
     (event as { type?: unknown }).type === "completion"), false);
 });
 
-test("an artifact-terminal session rejects an unconsumed read and write batch before host I/O", async () => {
+test("an artifact-terminal session rejects duplicate IDs in a read and write batch before host I/O", async () => {
   let hostCalls = 0;
   const session = createConstrainedWireSession({
     limits: DEFAULT_AGENT_LIMITS,
@@ -855,7 +856,7 @@ test("an artifact-terminal session rejects an unconsumed read and write batch be
     adapter: transcriptAdapter([{
       toolCalls: [
         { id: "read-unconsumed", name: "workspace.read", input: { path: "index.ts" } },
-        { id: "write-unconsumed", name: "results.write", input: { path: "report.json", content: "{}" } },
+        { id: "read-unconsumed", name: "results.write", input: { path: "report.json", content: "{}" } },
       ],
       text: null,
       structured: null,
@@ -2778,4 +2779,138 @@ async function withTestDeadline<T>(promise: Promise<T>, timeoutMs: number): Prom
   } finally {
     if (timeout !== undefined) clearTimeout(timeout);
   }
+}
+
+
+test("artifact protocol recovery handles a fresh malformed Anthropic reply and preserves usage", async () => {
+  const adapter = createAnthropicMessagesWireAdapter({ model: model("MiniMax-M3"), instructions: "Write the result.", terminalMode: "artifact-write" });
+  let requests = 0;
+  let writes = 0;
+  const events: unknown[] = [];
+  const session = createConstrainedWireSession({
+    limits: DEFAULT_AGENT_LIMITS,
+    signal: new AbortController().signal,
+    terminalMode: "artifact-write",
+    adapter,
+    upstream: { async request() {
+      requests += 1;
+      return requests === 1
+        ? { content: "invalid", usage: { input_tokens: 7, output_tokens: 3 } }
+        : { content: [{ type: "tool_use", id: "valid", name: "results_write", input: { path: "report.json", content: "{}" } }] };
+    } },
+    host: { minimumOutputBytes() { return 0; }, async call() { writes += 1; return { content: "written", artifact: { path: "report.json", bytes: 2 } }; } },
+  });
+  await collect(session.run(), events);
+  assert.equal(requests, 2);
+  assert.equal(writes, 1);
+  assert.equal(events.filter(isUsage).length, 2);
+});
+
+for (const writeFirst of [false, true]) {
+  test(`artifact protocol recovery returns every mixed Anthropic call as an error (write first: ${writeFirst})`, async () => {
+    const adapter = createAnthropicMessagesWireAdapter({ model: model("MiniMax-M3"), instructions: "Write the result.", terminalMode: "artifact-write" });
+    let requests = 0;
+    const hostCalls: string[] = [];
+    const session = createConstrainedWireSession({
+      limits: DEFAULT_AGENT_LIMITS,
+      signal: new AbortController().signal,
+      terminalMode: "artifact-write",
+      adapter,
+      upstream: { async request(request) {
+        requests += 1;
+        if (requests === 1) {
+          const calls = [
+            { type: "tool_use", id: "read", name: "workspace_read", input: { path: "index.ts" } },
+            { type: "tool_use", id: "write", name: "results_write", input: { path: "report.json", content: "{}" } },
+          ];
+          return { content: writeFirst ? calls.reverse() : calls };
+        }
+        assert.deepEqual(hostCalls, []);
+        const body = request.body as { messages: Array<{ role: string; content: unknown }> };
+        const results = body.messages.at(-1)!.content as Array<{ tool_use_id: string; content: string }>;
+        assert.equal(results.length, 2);
+        assert.deepEqual(new Set(results.map((result) => result.tool_use_id)), new Set(["read", "write"]));
+        assert.ok(results.every((result) => result.content.includes("artifact_terminal_batch_invalid")));
+        return { content: [{ type: "tool_use", id: "corrected", name: "results_write", input: { path: "report.json", content: "{}" } }] };
+      } },
+      host: { minimumOutputBytes() { return 0; }, async call(name) { hostCalls.push(name); return { content: "written", artifact: { path: "report.json", bytes: 2 } }; } },
+    });
+    await collect(session.run(), []);
+    assert.equal(requests, 2);
+    assert.deepEqual(hostCalls, ["results.write"]);
+  });
+}
+
+test("artifact protocol recovery permits only two malformed-response retries", async () => {
+  let requests = 0;
+  const session = createConstrainedWireSession({
+    limits: DEFAULT_AGENT_LIMITS,
+    signal: new AbortController().signal,
+    terminalMode: "artifact-write",
+    adapter: { nextRequest() { return { operation: "messages", body: {} }; }, readResponse() { throw new AgentSessionError("agent_protocol_error", "malformed_test_frame"); } },
+    upstream: { async request() { requests += 1; return {}; } },
+    host: { minimumOutputBytes() { throw new Error("no I/O"); }, async call() { throw new Error("no I/O"); } },
+  });
+  const events: unknown[] = [];
+  await assert.rejects(collect(session.run(), events), { code: "agent_protocol_error" });
+  assert.equal(requests, 3);
+  assert.ok(events.some((event) => (event as { protocolIssue?: string }).protocolIssue === "malformed_test_frame"));
+});
+
+test("artifact protocol recovery still honors the total model turn limit", async () => {
+  let requests = 0;
+  const session = createConstrainedWireSession({
+    limits: { ...DEFAULT_AGENT_LIMITS, maxModelTurns: 1 },
+    signal: new AbortController().signal,
+    terminalMode: "artifact-write",
+    adapter: { nextRequest() { return { operation: "messages", body: {} }; }, readResponse() { throw new AgentSessionError("agent_protocol_error"); } },
+    upstream: { async request() { requests += 1; return {}; } },
+    host: { minimumOutputBytes() { throw new Error("no I/O"); }, async call() { throw new Error("no I/O"); } },
+  });
+  await assert.rejects(collect(session.run(), []), { code: "agent_turn_limit" });
+  assert.equal(requests, 1);
+});
+
+test("artifact protocol retries share one budget across malformed replies and mixed batches", async () => {
+  let requests = 0;
+  const session = createConstrainedWireSession({
+    limits: DEFAULT_AGENT_LIMITS,
+    signal: new AbortController().signal,
+    terminalMode: "artifact-write",
+    adapter: {
+      nextRequest() { return { operation: "messages", body: {} }; },
+      readResponse() {
+        if (requests === 1) throw new AgentSessionError("agent_protocol_error");
+        return { toolCalls: [
+          { id: `read-${requests}`, name: "workspace.read" as const, input: {} },
+          { id: `write-${requests}`, name: "results.write" as const, input: {} },
+        ], text: null, structured: null, usage: null };
+      },
+    },
+    upstream: { async request() { requests += 1; return {}; } },
+    host: { minimumOutputBytes() { throw new Error("no I/O"); }, async call() { throw new Error("no I/O"); } },
+  });
+  await assert.rejects(collect(session.run(), []), { code: "agent_protocol_error" });
+  assert.equal(requests, 3);
+});
+
+for (const limit of ["tools", "output"] as const) {
+  test(`artifact mixed-batch rejection honors the ${limit} budget before recovery`, async () => {
+    let requests = 0;
+    const session = createConstrainedWireSession({
+      limits: { ...DEFAULT_AGENT_LIMITS, ...(limit === "tools" ? { maxToolCalls: 1 } : { maxOutputBytes: 3 }) },
+      signal: new AbortController().signal,
+      terminalMode: "artifact-write",
+      adapter: transcriptAdapter([{
+        toolCalls: [
+          { id: "read", name: "workspace.read", input: {} },
+          { id: "write", name: "results.write", input: {} },
+        ], text: null, structured: null, usage: null,
+      }]),
+      upstream: { async request() { requests += 1; return {}; } },
+      host: { minimumOutputBytes() { throw new Error("no I/O"); }, async call() { throw new Error("no I/O"); } },
+    });
+    await assert.rejects(collect(session.run(), []), { code: limit === "tools" ? "agent_tool_limit" : "agent_output_byte_limit" });
+    assert.equal(requests, 1);
+  });
 }
