@@ -115,7 +115,7 @@ import { createConnectionsApp } from "./connections-api.js";
 import { getProviderRuntime } from "./provider-runtime.js";
 import { createScanStartApp } from "./scan-start-api.js";
 import { getScannerCatalog } from "./scanners/catalog.js";
-import { listActiveRuns, listRunPage, parseScanListOptions } from "./scan-list.js";
+import { listActiveRuns, listRunPage, parseScanListOptions, scanCatalog } from "./scan-list.js";
 import {
   cancelScan,
   getActiveScanIds,
@@ -769,6 +769,8 @@ app.get("/scans/active", (c) => {
     .filter((run) => run.status === "queued" || run.status === "running");
   return c.json({ scans: withProgressMany(scans) });
 });
+
+app.get("/scans/catalog", (c) => c.json(scanCatalog()));
 
 app.delete("/scans/:id", (c) => {
   const id = c.req.param("id");

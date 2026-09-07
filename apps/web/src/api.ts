@@ -432,6 +432,7 @@ export const api = {
   },
   listScans: (options?: ScanListOptions) => request<ScanListResponse>(`/scans${scanListQuery(options)}`),
   listActiveScans: () => request<{ scans: ScanRun[] }>("/scans/active"),
+  scanCatalog: () => request<{ total: number; repositories: string[] }>("/scans/catalog"),
   getScan: (id: string) =>
     request<{ scan: ScanRun; findings: FindingSummary[] }>(`/scans/${id}`),
   getTelemetry: (id: string) =>

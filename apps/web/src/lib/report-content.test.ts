@@ -24,3 +24,19 @@ test("projects structured evidence into bounded printable blocks", () => {
   assert.equal(projected.blocks[0]?.code.truncated, true);
   assert.equal((source[0]?.code ?? "").length, 2_000);
 });
+
+test("localizes evidence fallbacks and truncation without translating scanner content", () => {
+  const copy = { artifact: "artefato", role: "evidência", explanation: "Consulte o original.", noSource: "Sem trecho.", marker: "[abreviado]" };
+  const empty = reportEvidenceBlocks([{}], 2, copy).blocks[0]!;
+  assert.equal(empty.path, "artefato");
+  assert.equal(empty.role, "evidência");
+  assert.equal(empty.explanation.text, "Consulte o original.");
+  assert.equal(empty.code.text, "Sem trecho.");
+  const source = { path: "src/original.ts", role: "source", explanation: "Original explanation", code: "x".repeat(2000) };
+  const block = reportEvidenceBlocks([source], 2, copy).blocks[0]!;
+  assert.equal(block.path, source.path);
+  assert.equal(block.role, source.role);
+  assert.equal(block.explanation.text, source.explanation);
+  assert.ok(block.code.text.endsWith(copy.marker));
+  assert.equal(source.code.length, 2000);
+});

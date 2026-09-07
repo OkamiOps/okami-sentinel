@@ -82,3 +82,21 @@ test("active endpoint returns only active visible scans with a large terminal hi
   assert.deepEqual((await response.json()).scans.map((run: ScanRun) => run.id).sort(), ["live", "queued"]);
   assert.equal((await app.request("/scans?limit=101")).status, 400);
 });
+
+test("scan catalog returns distinct visible filter names without loading full history", async () => {
+  getDb().transaction(() => {
+    for (let index = 0; index < 1000; index++) {
+      upsertRun(fixture(`history-${index}`, { displayName: `Repository ${index % 10}`, scanDir: path.join(root, "absent-artifacts", String(index)) }));
+    }
+    upsertRun(fixture("hidden", { displayName: "Hidden repository" }));
+    hideRun("hidden");
+    upsertRun(fixture("accented", { displayName: "Ação 100%_'" }));
+    upsertRun(fixture("empty", { displayName: "" }));
+  })();
+  const response = await app.request("/scans/catalog");
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.deepEqual(body, { total: 1002, repositories: ["Ação 100%_'", ...Array.from({ length: 10 }, (_, index) => `Repository ${index}`)] });
+  assert.ok(JSON.stringify(body).length < 500, "The filter payload must not grow with repeated scans");
+  assert.equal((getDb().prepare("SELECT COUNT(*) AS count FROM runs WHERE status = 'completed'").get() as { count: number }).count, 1003);
+});

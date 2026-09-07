@@ -10,7 +10,7 @@ export function LanguageSwitcher() {
         <Languages aria-hidden size={13} className="text-primary" /><span>{localeMeta[locale].short}</span>
       </button>
     </DropdownMenuTrigger>
-    <DropdownMenuContent align="end" className="w-52 rounded-none border-border bg-popover p-1.5">
+    <DropdownMenuContent align="end" className="report-no-print w-52 rounded-none border-border bg-popover p-1.5">
       <DropdownMenuLabel className="font-mono text-[8px] uppercase tracking-[.14em] text-primary">{t("language.label")}</DropdownMenuLabel>
       {supportedLocales.map((item) => <DropdownMenuItem key={item} onSelect={() => setLocale(item)} className="rounded-none px-2 py-2.5">
         <span className="w-6 font-mono text-[8px] text-primary">{localeMeta[item].short}</span><span className="flex-1 text-[11px]">{localeMeta[item].label}</span>{locale === item && <Check aria-hidden size={12} className="text-chart-2" />}

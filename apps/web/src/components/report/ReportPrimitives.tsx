@@ -1,4 +1,6 @@
 import type { ReactNode } from "react";
+import { useScopedI18n } from "../../i18n/scoped";
+import { reportCommonMessages } from "../../i18n/report-common";
 
 export function ReportSheet({ children, className = "" }: { children: ReactNode; className?: string }) {
   return <article className={`report-sheet relative flex flex-col ${className}`}>
@@ -8,15 +10,18 @@ export function ReportSheet({ children, className = "" }: { children: ReactNode;
 }
 
 export function ReportBrand() {
-  return <div className="report-brand flex items-center justify-between border-b border-border pb-5"><div className="flex items-center gap-3"><img src="/brand/okami-sentinel-mark.png" alt="" className="h-11 w-11 object-contain" /><div><div className="font-heading text-sm font-bold tracking-[.18em]">OKAMI</div><div className="font-mono text-[7px] uppercase tracking-[.38em] text-muted-foreground">Sentinel</div></div></div><div className="hidden font-mono text-[8px] uppercase tracking-[.16em] text-primary sm:block">Local security intelligence</div></div>;
+  const { t } = useScopedI18n(reportCommonMessages);
+  return <div className="report-brand flex items-center justify-between border-b border-border pb-5"><div className="flex items-center gap-3"><img src="/brand/okami-sentinel-mark.png" alt="" className="h-11 w-11 object-contain" /><div><div className="font-heading text-sm font-bold tracking-[.18em]">OKAMI</div><div className="font-mono text-[7px] uppercase tracking-[.38em] text-muted-foreground">Sentinel</div></div></div><div className="hidden font-mono text-[8px] uppercase tracking-[.16em] text-primary sm:block">{t("reportCommon.intelligence")}</div></div>;
 }
 
 export function ReportHeader({ section, title, reportId }: { section: string; title: string; reportId: string }) {
-  return <header className="report-header"><ReportBrand /><div className="mt-9 flex min-w-0 items-end justify-between gap-6 border-b border-border pb-5"><div className="min-w-0"><Kicker>{section} / Report section</Kicker><h2 className="report-copy mt-2 font-heading text-3xl font-semibold tracking-[-.045em]">{title}</h2></div><span className="report-copy max-w-[13rem] text-right font-mono text-[8px] text-muted-foreground">{reportId}</span></div></header>;
+  const { t } = useScopedI18n(reportCommonMessages);
+  return <header className="report-header"><ReportBrand /><div className="mt-9 flex min-w-0 items-end justify-between gap-6 border-b border-border pb-5"><div className="min-w-0"><Kicker>{section} / {t("reportCommon.section")}</Kicker><h2 className="report-copy mt-2 font-heading text-3xl font-semibold tracking-[-.045em]">{title}</h2></div><span className="report-copy max-w-[13rem] text-right font-mono text-[8px] text-muted-foreground">{reportId}</span></div></header>;
 }
 
 export function ReportFooter({ reportId }: { reportId: string }) {
-  return <footer className="report-footer mt-auto flex items-center justify-between border-t border-border pt-4 font-mono text-[7px] uppercase tracking-[.14em] text-muted-foreground"><span>{reportId} / confidential</span><span>OKAMI SENTINEL · <span className="report-page-number" /></span></footer>;
+  const { t } = useScopedI18n(reportCommonMessages);
+  return <footer className="report-footer mt-auto flex items-center justify-between border-t border-border pt-4 font-mono text-[7px] uppercase tracking-[.14em] text-muted-foreground"><span>{reportId} / {t("reportCommon.confidential")}</span><span>OKAMI SENTINEL · <span className="report-page-number" /></span></footer>;
 }
 
 export function Kicker({ children }: { children: ReactNode }) {

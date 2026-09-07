@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowLeft01Icon, ArrowRight01Icon, PlusSignIcon, RefreshIcon, Search01Icon } from "@hugeicons/core-free-icons";
@@ -10,12 +10,15 @@ import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { formatDate, formatScanUsd, formatUsd, shortId } from "../format";
+import { formatApiError } from "../lib/http";
 import { useI18n } from "../i18n";
 
+type DashboardCatalog = { total: number; repositories: string[] };
+
 export function DashboardPage() {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const [data, setData] = useState<MetricsSummary | null>(null);
-  const [inventory, setInventory] = useState<ScanRun[]>([]);
+  const [catalog, setCatalog] = useState<DashboardCatalog>({ total: 0, repositories: [] });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [period, setPeriod] = useState<7 | 14 | 21 | 30 | "all">(30);
   const [status, setStatus] = useState<"all" | "active" | "completed" | "attention">("all");
@@ -23,49 +26,114 @@ export function DashboardPage() {
   const [repository, setRepository] = useState("all");
   const [query, setQuery] = useState("");
   const [ledgerPage, setLedgerPage] = useState(0);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  async function load() { try { setError(null); const [next, scanIndex] = await Promise.all([api.metrics({ days: period === "all" ? null : period, status: status === "all" ? null : status, engine: engine === "all" ? null : engine, repository: repository === "all" ? null : repository, query }), api.listScans()]); setData(next); setInventory(scanIndex.scans); setSelectedId((id) => { if (id && next.recent.some((scan) => scan.id === id)) return id; const running = next.recent.find((scan) => scan.status === "running"); const strongest = [...next.recent].filter((scan) => scan.status === "completed").sort((a, b) => b.severity.total - a.severity.total)[0]; return running?.id ?? strongest?.id ?? next.recent[0]?.id ?? null; }); } catch (err) { setError(err instanceof Error ? err.message : "Falha ao ler a bancada"); } }
-  useEffect(() => { const initial = window.setTimeout(() => void load(), query ? 250 : 0); const id = window.setInterval(() => void load(), 8000); return () => { window.clearTimeout(initial); window.clearInterval(id); }; }, [period, status, engine, repository, query]);
+  const requestRef = useRef(0);
+  const reindexRef = useRef(false);
+
+  const load = useCallback(async () => {
+    const requestId = ++requestRef.current;
+    setLoading(true);
+    try {
+      const [next, nextCatalog] = await Promise.all([
+        api.metrics({ days: period === "all" ? null : period, status: status === "all" ? null : status, engine: engine === "all" ? null : engine, repository: repository === "all" ? null : repository, query }),
+        api.scanCatalog(),
+      ]);
+      if (requestId !== requestRef.current) return;
+      setData(next);
+      setCatalog(nextCatalog);
+      setSelectedId((id) => {
+        if (id && next.recent.some((scan) => scan.id === id)) return id;
+        const running = next.recent.find((scan) => scan.status === "running");
+        const strongest = [...next.recent].filter((scan) => scan.status === "completed").sort((a, b) => b.severity.total - a.severity.total)[0];
+        return running?.id ?? strongest?.id ?? next.recent[0]?.id ?? null;
+      });
+      setLastUpdated(new Date().toISOString());
+      setError(null);
+    } catch (reason) {
+      if (requestId === requestRef.current) setError(reason);
+    } finally {
+      if (requestId === requestRef.current) setLoading(false);
+    }
+  }, [engine, period, query, repository, status]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    const schedule = (delay: number) => {
+      timer = window.setTimeout(() => {
+        void (async () => {
+          if (!reindexRef.current) await load();
+          if (!cancelled) schedule(8000);
+        })();
+      }, delay);
+    };
+    schedule(query ? 250 : 0);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+      requestRef.current += 1;
+    };
+  }, [load, query]);
   useEffect(() => { setLedgerPage(0); }, [period, status, engine, repository, query]);
-  async function reindex() { setBusy(true); try { await api.ingest(); await load(); } catch (err) { setError(err instanceof Error ? err.message : "Falha ao reindexar"); } finally { setBusy(false); } }
-  if (!data && !error) return <Loading />;
-  if (!data) return <AlertBanner>{error}</AlertBanner>;
+  const invalidatePending = () => { requestRef.current += 1; };
+  const choosePeriod = (value: typeof period) => { if (value !== period) { invalidatePending(); setPeriod(value); } };
+  const chooseStatus = (value: typeof status) => { if (value !== status) { invalidatePending(); setStatus(value); } };
+  const chooseEngine = (value: typeof engine) => { if (value !== engine) { invalidatePending(); setEngine(value); } };
+  const chooseRepository = (value: string) => { if (value !== repository) { invalidatePending(); setRepository(value); } };
+  const chooseQuery = (value: string) => { if (value !== query) { invalidatePending(); setQuery(value); } };
+  const clearFilters = () => { invalidatePending(); setPeriod("all"); setStatus("all"); setEngine("all"); setRepository("all"); setQuery(""); };
+  async function reindex() {
+    const actionId = ++requestRef.current;
+    reindexRef.current = true;
+    setBusy(true);
+    try {
+      await api.ingest();
+      if (actionId === requestRef.current) await load();
+    } catch (reason) {
+      if (actionId === requestRef.current) setError(reason);
+    } finally {
+      reindexRef.current = false;
+      setBusy(false);
+    }
+  }
+  if (!data && loading) return <Loading label={t("common.loading")} />;
+  if (!data) return <section className="bench-panel bench-corners"><div role="alert" aria-live="assertive" className="flex min-h-72 flex-col items-center justify-center gap-4 px-5 py-12 text-center"><p className="text-sm font-semibold text-destructive">{formatApiError(error, t)}</p><Button type="button" onClick={() => void load()}>{t("common.retry")}</Button></div></section>;
 
   const channels = data.recent;
   const selected = channels.find((s) => s.id === selectedId) ?? channels[0] ?? null;
   const selectedIndex = selected ? channels.findIndex((scan) => scan.id === selected.id) : -1;
   const highPlus = data.severity.critical + data.severity.high;
   const chart = (data.costTrend ?? []).map((p) => ({ ...p, label: compactDate(p.startedAt) }));
-  const repositories = [...new Set(inventory.map((scan) => scan.displayName).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const repositories = [...catalog.repositories].sort((a, b) => a.localeCompare(b, locale));
   const pageSize = 12;
   const ledgerPages = Math.max(1, Math.ceil(channels.length / pageSize));
   const ledgerRows = channels.slice(ledgerPage * pageSize, (ledgerPage + 1) * pageSize);
   const activeFilterCount = Number(period !== "all") + Number(status !== "all") + Number(engine !== "all") + Number(repository !== "all") + Number(Boolean(query.trim()));
-  const clearFilters = () => { setPeriod("all"); setStatus("all"); setEngine("all"); setRepository("all"); setQuery(""); };
-
   return <div>
     <PageHeader code="01 / OVERVIEW" title={t("dashboard.title")} description={t("dashboard.description")} actions={<><Button variant="ghost" size="sm" onClick={() => void reindex()} disabled={busy}><HugeiconsIcon icon={RefreshIcon} size={13} className={busy ? "animate-spin" : ""} />{t("dashboard.reindex")}</Button><Button asChild size="sm"><Link to="/scans/new"><HugeiconsIcon icon={PlusSignIcon} size={13} />{t("dashboard.launch")}</Link></Button></>} />
-    {error && <AlertBanner>{error}</AlertBanner>}
+    {error !== null && <AlertBanner tone="warning"><div className="flex flex-wrap items-center justify-between gap-3"><span>{formatApiError(error, t)}{lastUpdated ? ` · ${t("scans.stale", { date: formatDate(lastUpdated) })}` : ""}</span><Button type="button" variant="outline" size="sm" onClick={() => void load()}>{t("common.retry")}</Button></div></AlertBanner>}
 
     <section className="bench-panel bench-corners mb-4 overflow-hidden" aria-label={t("dashboard.scopeTitle")}>
       <div className="grid border-b xl:grid-cols-[minmax(0,1fr)_auto]">
         <div className="min-w-0 p-3 xl:border-r">
           <div className="flex flex-wrap items-center gap-2"><span className="bench-label text-primary">{t("dashboard.scopeTitle")}</span><span className="border border-primary/30 bg-primary/8 px-1.5 py-0.5 font-mono text-[7px] uppercase text-primary">{t("dashboard.activeFilters", { count: activeFilterCount })}</span></div>
-          <p className="mt-1 text-[10px] text-muted-foreground">{t("dashboard.scopeDescription", { count: data.totalScans, total: inventory.length })}</p>
+          <p className="mt-1 text-[10px] text-muted-foreground">{t("dashboard.scopeDescription", { count: data.totalScans, total: catalog.total })}</p>
         </div>
         <div className="flex min-w-0 items-stretch border-t xl:border-t-0">
           <span className="hidden items-center border-r px-3 font-mono text-[7px] uppercase tracking-[.14em] text-muted-foreground sm:flex">{t("dashboard.period")}</span>
           <div className="grid flex-1 grid-cols-5" role="group" aria-label={t("dashboard.period")}>
-            {([7, 14, 21, 30, "all"] as const).map((value) => <button key={value} type="button" className={cx("relative min-w-12 border-r px-3 py-3 font-mono text-[9px] uppercase transition last:border-r-0 hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring", period === value ? "bg-primary/10 text-primary shadow-[inset_0_-2px_0_var(--primary)]" : "text-muted-foreground")} aria-pressed={period === value} onClick={() => setPeriod(value)}>{value === "all" ? t("common.all") : `${value}D`}</button>)}
+            {([7, 14, 21, 30, "all"] as const).map((value) => <button key={value} type="button" className={cx("relative min-w-12 border-r px-3 py-3 font-mono text-[9px] uppercase transition last:border-r-0 hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring", period === value ? "bg-primary/10 text-primary shadow-[inset_0_-2px_0_var(--primary)]" : "text-muted-foreground")} aria-pressed={period === value} onClick={() => choosePeriod(value)}>{value === "all" ? t("common.all") : `${value}D`}</button>)}
           </div>
         </div>
       </div>
       <div className="grid gap-px bg-border lg:grid-cols-[minmax(15rem,1.35fr)_repeat(3,minmax(10rem,.65fr))_auto]">
-        <DashboardSearch value={query} onValueChange={setQuery} label={t("dashboard.search")} placeholder={t("dashboard.searchPlaceholder")} clearLabel={t("dashboard.clearFilters")} />
-        <DashboardFilter value={status} onValueChange={(value) => setStatus(value as typeof status)} label={t("dashboard.status")} allLabel={t("common.all")} items={[{ value: "all", label: t("common.all") }, { value: "active", label: t("common.live") }, { value: "completed", label: t("common.complete") }, { value: "attention", label: t("dashboard.attention") }]} />
-        <DashboardFilter value={engine} onValueChange={(value) => setEngine(value as typeof engine)} label={t("dashboard.engine")} allLabel={t("common.all")} items={[{ value: "all", label: t("common.all") }, { value: "codex-security", label: "Codex Security" }, { value: "mantis", label: "Google Mantis" }, { value: "vulnhunter", label: "VulnHunter" }]} />
-        <DashboardFilter value={repository} onValueChange={setRepository} label={t("dashboard.repository")} allLabel={t("common.all")} items={[{ value: "all", label: t("common.all") }, ...repositories.map((value) => ({ value, label: value }))]} />
+        <DashboardSearch value={query} onValueChange={chooseQuery} label={t("dashboard.search")} placeholder={t("dashboard.searchPlaceholder")} clearLabel={t("dashboard.clearFilters")} />
+        <DashboardFilter value={status} onValueChange={(value) => chooseStatus(value as typeof status)} label={t("dashboard.status")} allLabel={t("common.all")} items={[{ value: "all", label: t("common.all") }, { value: "active", label: t("common.live") }, { value: "completed", label: t("common.complete") }, { value: "attention", label: t("dashboard.attention") }]} />
+        <DashboardFilter value={engine} onValueChange={(value) => chooseEngine(value as typeof engine)} label={t("dashboard.engine")} allLabel={t("common.all")} items={[{ value: "all", label: t("common.all") }, { value: "codex-security", label: "Codex Security" }, { value: "mantis", label: "Google Mantis" }, { value: "vulnhunter", label: "VulnHunter" }]} />
+        <DashboardFilter value={repository} onValueChange={chooseRepository} label={t("dashboard.repository")} allLabel={t("common.all")} items={[{ value: "all", label: t("common.all") }, ...repositories.map((value) => ({ value, label: value }))]} />
         <button type="button" onClick={clearFilters} disabled={!activeFilterCount} className="flex min-h-14 items-center justify-center gap-2 bg-background px-4 font-mono text-[8px] uppercase tracking-wider text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-30"><span aria-hidden="true">×</span>{t("dashboard.clearFilters")}</button>
       </div>
     </section>

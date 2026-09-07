@@ -20,6 +20,14 @@ export interface ReportEvidenceBlock {
   code: ReportExcerpt;
 }
 
+export interface ReportEvidenceCopy {
+  artifact?: string;
+  role?: string;
+  explanation?: string;
+  noSource?: string;
+  marker?: string;
+}
+
 export function normalizeReportText(value: string): string {
   return value
     .replaceAll("\\r\\n", "\n")
@@ -49,12 +57,12 @@ export function reportExcerpt(value: string, options: ReportExcerptOptions = {})
   };
 }
 
-export function reportEvidenceBlocks(value: unknown, limit = 2): { blocks: ReportEvidenceBlock[]; hidden: number } {
+export function reportEvidenceBlocks(value: unknown, limit = 2, copy: ReportEvidenceCopy = {}): { blocks: ReportEvidenceBlock[]; hidden: number } {
   const entries = Array.isArray(value) ? value : [];
   const blocks = entries.slice(0, limit).flatMap((entry, index) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
     const record = entry as Record<string, unknown>;
-    const path = text(record.path) ?? "Evidence artifact";
+    const path = text(record.path) ?? copy.artifact ?? "Evidence artifact";
     const start = integer(record.startLine);
     const end = integer(record.endLine);
     const range = start == null ? "" : `:${start}${end != null && end !== start ? `–${end}` : ""}`;
@@ -62,9 +70,9 @@ export function reportEvidenceBlocks(value: unknown, limit = 2): { blocks: Repor
       id: text(record.id) ?? `evidence-${index + 1}`,
       label: text(record.label) ?? `${path}${range}`,
       path: `${path}${range}`,
-      role: text(record.role) ?? "evidence",
-      explanation: reportExcerpt(text(record.explanation) ?? "Structured evidence attached by the scanner.", { maxChars: 160, maxLines: 2 }),
-      code: reportExcerpt(text(record.code) ?? "No source excerpt was attached.", { maxChars: 300, maxLines: 5 }),
+      role: text(record.role) ?? copy.role ?? "evidence",
+      explanation: reportExcerpt(text(record.explanation) ?? copy.explanation ?? "Structured evidence attached by the scanner.", { maxChars: 160, maxLines: 2, marker: copy.marker }),
+      code: reportExcerpt(text(record.code) ?? copy.noSource ?? "No source excerpt was attached.", { maxChars: 300, maxLines: 5, marker: copy.marker }),
     } satisfies ReportEvidenceBlock];
   });
   return { blocks, hidden: Math.max(0, entries.length - blocks.length) };

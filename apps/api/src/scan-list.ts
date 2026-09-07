@@ -33,6 +33,16 @@ export function listActiveRuns(): ScanRun[] {
     .all() as BenchmarkRow[]).map(rowToScanRun);
 }
 
+/** Filter choices need names and a count, not scan artifacts or full run records. */
+export function scanCatalog(): { total: number; repositories: string[] } {
+  const rows = getDb().prepare(`SELECT runs.display_name AS name, COUNT(*) AS count ${visibleRuns} GROUP BY runs.display_name ORDER BY runs.display_name`)
+    .all() as Array<{ name: string; count: number }>;
+  return {
+    total: rows.reduce((total, row) => total + row.count, 0),
+    repositories: rows.map((row) => row.name).filter(Boolean),
+  };
+}
+
 /** Pagination happens in SQLite. Summary costs use the same pricing rules as detail views. */
 export function listRunPage(options: ScanListOptions, summarize = true) {
   const db = getDb();
