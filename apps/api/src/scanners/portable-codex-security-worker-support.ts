@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -27,7 +28,7 @@ export const PORTABLE_CODEX_SECURITY_TOOL_SURFACE = Object.freeze([
 
 const SNAPSHOT_EXCLUDES = new Set([
   ".git", ".hg", ".svn", "node_modules", ".next", ".nuxt", ".turbo",
-  "dist", "build", "coverage", ".cache",
+  "dist", "build", "coverage", ".cache", ".pnpm-store", ".worktrees",
 ]);
 const AGENT_INSTRUCTION_DIRECTORIES = new Set([
   ".claude", ".cursor", ".continue", ".codeium", ".junie",
@@ -148,6 +149,7 @@ export function createPortableCodexSecuritySnapshot(
 
   let entries = 0;
   try {
+    const gitPaths = gitSnapshotPaths(sourceRoot);
     fs.mkdirSync(resolvedOutput, { recursive: true, mode: 0o700 });
     fs.cpSync(sourceRoot, snapshotRoot, {
       recursive: true,
@@ -159,6 +161,7 @@ export function createPortableCodexSecuritySnapshot(
         if (isSnapshotExcluded(relative)) {
           return false;
         }
+        if (gitPaths !== null && !gitPaths.has(relative)) return false;
         const info = fs.lstatSync(source);
         if (info.isSymbolicLink()) return false;
         entries += 1;
@@ -184,6 +187,64 @@ export function createPortableCodexSecuritySnapshot(
     if (error instanceof PortableCodexSecurityStageError) throw error;
     throw new PortableCodexSecurityStageError("snapshot_invalid");
   }
+}
+
+/** Keep tracked files and visible local source, excluding ignored runtime state. */
+function gitSnapshotPaths(sourceRoot: string, depth = 0): Set<string> | null {
+  if (depth > 8) throw new PortableCodexSecurityStageError("snapshot_invalid");
+  // Materialized remote trees and source archives intentionally have no Git
+  // metadata. A present but broken repository must fail closed instead of
+  // silently falling back to copying ignored execution state.
+  try {
+    fs.lstatSync(path.join(sourceRoot, ".git"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  const environment = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")),
+  );
+  const files = execFileSync("git", [
+    "--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+    "ls-files", "--cached", "--others", "--exclude-standard", "-z",
+  ], {
+    cwd: sourceRoot,
+    env: environment,
+    encoding: "utf8",
+    timeout: 10_000,
+    maxBuffer: 64 * 1_048_576,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const allowed = new Set<string>();
+  const index = execFileSync("git", [
+    "--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+    "ls-files", "--stage", "-z",
+  ], {
+    cwd: sourceRoot, env: environment, encoding: "utf8", timeout: 10_000,
+    maxBuffer: 64 * 1_048_576, stdio: ["ignore", "pipe", "pipe"],
+  });
+  const submodules = new Set(index.split("\0")
+    .filter((entry) => entry.startsWith("160000 "))
+    .map((entry) => entry.slice(entry.indexOf("\t") + 1)));
+  for (const file of files.split("\0")) {
+    if (!file) continue;
+    if (path.isAbsolute(file) || file.split("/").includes("..")) {
+      throw new PortableCodexSecurityStageError("snapshot_invalid");
+    }
+    let relative = path.normalize(file);
+    allowed.add(relative);
+    const absolute = path.join(sourceRoot, relative);
+    // Git emits a submodule as one directory entry. Enumerate its own index
+    // and ignore rules rather than silently omitting its source or copying
+    // its ignored runtime files. Uninitialized submodules cannot prove scope.
+    if (submodules.has(file) || (fs.existsSync(absolute) && fs.lstatSync(absolute).isDirectory())) {
+      const children = gitSnapshotPaths(absolute, depth + 1);
+      if (children === null) throw new PortableCodexSecurityStageError("snapshot_invalid");
+      for (const child of children) allowed.add(path.join(relative, child));
+    }
+    while ((relative = path.dirname(relative)) !== ".") allowed.add(relative);
+  }
+  return allowed;
 }
 
 function isSnapshotExcluded(relative: string): boolean {

@@ -539,7 +539,9 @@ export async function startScan(
   // Recover persistent worker-backed runs before counting slots. This matters
   // after an API restart, when the in-memory `active` map starts empty.
   reconcileRunningScans();
-  const id = nanoid(12);
+  // Worker launch contracts require an alphanumeric first character; nanoid
+  // may otherwise start with '-' or '_' and randomly reject a valid scan.
+  const id = `s${nanoid(11)}`;
   if (!reserveScanCapacity(id, MAX_CONCURRENT_SCANS)) {
     throw new Error(
       `Limite de scans simultâneos atingido (${MAX_CONCURRENT_SCANS}). Cancele um ou aumente CSB_MAX_CONCURRENT_SCANS.`,

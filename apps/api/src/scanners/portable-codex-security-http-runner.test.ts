@@ -721,7 +721,7 @@ test("Portable Deep partitions the immutable auditable universe and merges every
       },
     }));
     const discovery = specs.filter((spec) => /stage "discovery"/.test(spec.instructions));
-    assert.equal(discovery.length, 1);
+    assert.equal(discovery.length, 4);
     assert.match(discovery[0]!.instructions, /BEGIN_PORTABLE_DEEP_SOURCE_FILES_JSON/);
     assert.match(discovery[0]!.instructions, /export const deep0 = true/);
     assert.equal(discovery[0]!.maxCompletionTokens, 32_768);

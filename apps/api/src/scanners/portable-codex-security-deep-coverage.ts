@@ -8,15 +8,13 @@ import type {
 
 const MAX_AUDITABLE_FILES = 4_096;
 const MAX_AUDITABLE_FILE_BYTES = 1_048_576;
-const MAX_PARTITION_FILES = 128;
-// workspace.read returns JSON-escaped source and the session retains those
-// results in later requests. Keep raw pages below route pricing/context
-// ceilings while deriving a larger bounded output allowance per partition.
-// Keep projected source comfortably below common frozen pricing/context
-// thresholds. JSON escaping and the stage envelope add bytes on top of the
-// source itself; 768 KiB kept the real MiniMax-M3 request below its pinned
-// 512k-token rate-card ceiling where a 1.5 MiB page crossed it.
-const MAX_PARTITION_BYTES = 786_432;
+const MAX_PARTITION_FILES = 32;
+// Discovery must emit a complete candidate artifact in one model response.
+// Bound both source volume and file count so dense repositories do not turn
+// one large page into repeated, truncated artifact writes. Larger individual
+// files remain intact in their own partition; this is a packing target, not
+// permission to truncate source or reduce coverage.
+const MAX_PARTITION_BYTES = 131_072;
 
 const SOURCE_EXTENSIONS = new Set([
   ".c", ".cc", ".cpp", ".cs", ".css", ".go", ".h", ".hpp", ".html",

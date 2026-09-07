@@ -29,8 +29,9 @@ test("Deep coverage deterministically partitions every auditable source and conf
     fs.writeFileSync(path.join(root, "image.png"), "not source\n");
     const plan = createPortableDeepCoveragePlan(root);
     assert.equal(plan.files.length, 100);
-    assert.equal(plan.partitions.length, 1);
-    assert.ok(plan.partitions.every((partition) => partition.paths.length <= 128));
+    assert.equal(plan.partitions.length, 4);
+    assert.ok(plan.partitions.every((partition) => partition.paths.length <= 32));
+    assert.deepEqual(createPortableDeepCoveragePlan(root), plan);
     assert.deepEqual(plan.partitions.flatMap((partition) => partition.paths), plan.files);
     assert.equal(new Set(plan.files).size, plan.files.length);
     assert.equal(plan.files.includes("image.png"), false);
@@ -38,10 +39,41 @@ test("Deep coverage deterministically partitions every auditable source and conf
     assert.equal(plan.files.includes(".env.example"), true);
     assert.equal(plan.files.includes("requirements.txt"), true);
     const sourceFiles = readPortableDeepCoveragePartition(root, plan.partitions[0]!);
-    assert.equal(sourceFiles.length, 100);
+    assert.equal(sourceFiles.length, 32);
     assert.equal(sourceFiles.find((file) => file.path === "src/file-00.ts")?.content,
       "export const value = true;\n");
     assert.equal(sourceFiles.find((file) => file.path === "src/file-00.ts")?.lineCount, 1);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Deep coverage bounds source pages while preserving oversized files without truncation", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-deep-coverage-bytes-"));
+  try {
+    const contents = new Map([
+      ["a.ts", "a".repeat(65_536)],
+      ["b.ts", "b".repeat(65_536)],
+      ["c.ts", "c".repeat(65_537)],
+      ["d.ts", "d".repeat(65_536)],
+      ["e.ts", "e".repeat(262_144)],
+      ["f.ts", "f".repeat(100)],
+    ]);
+    for (const [file, content] of contents) fs.writeFileSync(path.join(root, file), content);
+    const plan = createPortableDeepCoveragePlan(root);
+    assert.deepEqual(plan.partitions.map((partition) => partition.paths), [
+      ["a.ts", "b.ts"], ["c.ts"], ["d.ts"], ["e.ts"], ["f.ts"],
+    ]);
+    assert.equal(plan.totalBytes, [...contents.values()].reduce((sum, content) => sum + content.length, 0));
+    assert.deepEqual(plan.partitions.flatMap((partition) => partition.paths), [...contents.keys()]);
+    for (const partition of plan.partitions) {
+      assert.ok(partition.bytes <= 131_072 || partition.paths.length === 1);
+      assert.equal(partition.total, plan.partitions.length);
+      for (const file of readPortableDeepCoveragePartition(root, partition)) {
+        assert.equal(file.content, contents.get(file.path));
+        assert.equal(Buffer.byteLength(file.content), partition.fileBytes[file.path]);
+      }
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

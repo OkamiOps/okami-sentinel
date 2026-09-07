@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -99,6 +100,113 @@ test("Portable Codex Security snapshot preserves application code but excludes a
       path.join(".github", "copilot-instructions.md"),
     ]) {
       assert.equal(fs.existsSync(path.join(snapshot.snapshotRoot, item)), false, item);
+    }
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test("Portable Codex Security Git snapshots exclude ignored runtime but retain tracked and untracked source", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-git-source-"));
+  const repository = path.join(root, "repository");
+  try {
+    fs.mkdirSync(repository);
+    execFileSync("git", ["init", "--quiet", repository]);
+    for (const directory of ["data", "src", "output", ".pnpm-store"]) {
+      fs.mkdirSync(path.join(repository, directory));
+    }
+    fs.writeFileSync(path.join(repository, ".gitignore"), "data/\noutput/\n.pnpm-store/\n");
+    fs.writeFileSync(path.join(repository, "data", "schema.json"), "{\"tracked\":true}\n");
+    execFileSync("git", ["-C", repository, "add", "-f", "data/schema.json"]);
+    fs.writeFileSync(path.join(repository, "data", "old-scan.json"), "{}\n");
+    fs.writeFileSync(path.join(repository, "output", "report.json"), "{}\n");
+    fs.writeFileSync(path.join(repository, ".pnpm-store", "dependency.js"), "old dependency\n");
+    fs.writeFileSync(path.join(repository, "src", "new local file.ts"), "export const local = true;\n");
+    fs.writeFileSync(path.join(repository, "AGENTS.md"), "Untrusted agent instructions\n");
+    execFileSync("git", ["-C", repository, "add", "AGENTS.md"]);
+    const snapshot = createPortableCodexSecuritySnapshot(repository, path.join(root, "snapshot"));
+    for (const file of ["data/schema.json", "src/new local file.ts", ".gitignore"]) {
+      assert.equal(fs.existsSync(path.join(snapshot.snapshotRoot, file)), true, file);
+    }
+    for (const file of ["data/old-scan.json", "output", ".pnpm-store", ".git", "AGENTS.md"]) {
+      assert.equal(fs.existsSync(path.join(snapshot.snapshotRoot, file)), false, file);
+    }
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test("Portable Codex Security snapshots initialized submodules with their own ignore rules", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-submodule-"));
+  try {
+    const repository = path.join(root, "repository");
+    const submodule = path.join(repository, "vendor", "module");
+    fs.mkdirSync(submodule, { recursive: true });
+    execFileSync("git", ["init", "--quiet", repository]);
+    execFileSync("git", ["init", "--quiet", submodule]);
+    fs.writeFileSync(path.join(submodule, ".gitignore"), "runtime/\n");
+    fs.mkdirSync(path.join(submodule, "runtime"));
+    fs.writeFileSync(path.join(submodule, "runtime", "tracked.ts"), "export const tracked = true;\n");
+    fs.writeFileSync(path.join(submodule, "runtime", "old-scan.json"), "{}\n");
+    fs.writeFileSync(path.join(submodule, "local.ts"), "export const local = true;\n");
+    execFileSync("git", ["-C", submodule, "add", "-f", "runtime/tracked.ts"]);
+    execFileSync("git", ["-C", repository, "update-index", "--add", "--cacheinfo",
+      "160000,1111111111111111111111111111111111111111,vendor/module"]);
+    const snapshot = createPortableCodexSecuritySnapshot(repository, path.join(root, "output"));
+    for (const file of ["runtime/tracked.ts", "local.ts"]) {
+      assert.equal(fs.existsSync(path.join(snapshot.snapshotRoot, "vendor", "module", file)), true, file);
+    }
+    assert.equal(fs.existsSync(path.join(snapshot.snapshotRoot, "vendor", "module", "runtime", "old-scan.json")), false);
+    assert.equal(fs.existsSync(path.join(snapshot.snapshotRoot, "vendor", "module", ".git")), false);
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test("Portable Codex Security refuses an uninitialized submodule instead of omitting its source", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-uninitialized-submodule-"));
+  try {
+    const repository = path.join(root, "repository");
+    fs.mkdirSync(path.join(repository, "vendor", "module"), { recursive: true });
+    execFileSync("git", ["init", "--quiet", repository]);
+    execFileSync("git", ["-C", repository, "update-index", "--add", "--cacheinfo",
+      "160000,1111111111111111111111111111111111111111,vendor/module"]);
+    assert.throws(() => createPortableCodexSecuritySnapshot(repository, path.join(root, "output")),
+      (error: unknown) => error instanceof PortableCodexSecurityStageError && error.code === "snapshot_invalid");
+    fs.rmdirSync(path.join(repository, "vendor", "module"));
+    assert.throws(() => createPortableCodexSecuritySnapshot(repository, path.join(root, "missing-output")),
+      (error: unknown) => error instanceof PortableCodexSecurityStageError && error.code === "snapshot_invalid");
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test("Portable Codex Security refuses broken Git metadata rather than copying ignored state", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-broken-git-"));
+  try {
+    const repository = path.join(root, "repository");
+    fs.mkdirSync(repository);
+    fs.writeFileSync(path.join(repository, ".git"), "gitdir: missing-git-directory\n");
+    fs.writeFileSync(path.join(repository, "source.ts"), "export const source = true;\n");
+    assert.throws(() => createPortableCodexSecuritySnapshot(repository, path.join(root, "output")),
+      (error: unknown) => error instanceof PortableCodexSecurityStageError && error.code === "snapshot_invalid");
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test("Portable Codex Security source archives retain legitimate data but exclude package and worktree caches", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-source-archive-"));
+  try {
+    const repository = path.join(root, "repository");
+    for (const directory of ["data", ".pnpm-store", ".worktrees"]) {
+      fs.mkdirSync(path.join(repository, directory), { recursive: true });
+      fs.writeFileSync(path.join(repository, directory, "source.json"), "{}\n");
+    }
+    const snapshot = createPortableCodexSecuritySnapshot(repository, path.join(root, "output"));
+    assert.equal(fs.existsSync(path.join(snapshot.snapshotRoot, "data", "source.json")), true);
+    for (const directory of [".pnpm-store", ".worktrees"]) {
+      assert.equal(fs.existsSync(path.join(snapshot.snapshotRoot, directory)), false);
     }
   } finally {
     removeFixture(root);
