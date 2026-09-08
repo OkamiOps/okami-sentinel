@@ -1,3 +1,4 @@
+import { scanAnalysisMetrics } from "./scan-analysis-metrics.js";
 import { getGitHubMonitorRule } from "./github-monitor/store.js";
 import { GitHubMonitorService } from "./github-monitor/service.js";
 import { createGitHubMonitorApi } from "./github-monitor/api.js";
@@ -874,6 +875,12 @@ app.get("/scans/:id", async (c) => {
   if (!run) return c.json({ error: "Scan não encontrado" }, 404);
   const findings = toFindingSummaries(readFindingsFile(run.scanDir));
   return c.json({ scan: withProgress(run), findings });
+});
+
+app.get("/scans/:id/analysis-metrics", (c) => {
+  const run = readRunWithEngineRefresh(c.req.param("id"));
+  if (!run) return c.json({ error: "Scan not found" }, 404);
+  return c.json(scanAnalysisMetrics(run));
 });
 
 app.get("/scans/:id/telemetry", (c) => {

@@ -8,11 +8,15 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Fixed
 
+- Portable workers tolerate closed API output pipes and persist their redacted events independently, so a development API reload does not lose metrics or terminate a scan through a broken output pipe.
+
 - Portable Codex Security scans no longer expire after a fixed elapsed time in Standard or Deep mode. Manual cancellation and configured cost, turn, tool and byte limits remain enforced.
 
 - Registering an already enrolled repository now returns a conflict instead of overwriting its name, executor or settings. GitHub repositories already enrolled are identified and disabled in the registration picker.
 
 ### Added
+
+- Scan details now show live snapshot files, physical LOC, source size, discovery batches, provisional candidates, rejected result writes, output rate and provider-reported reasoning tokens. Missing metrics remain unavailable; the panel refreshes during active scans.
 
 - Search repository names and organizations during GitHub enrollment, with result counts and archived-state preservation.
 - Wider desktop enrollment panel with expand/collapse control and a full-width repository picker.

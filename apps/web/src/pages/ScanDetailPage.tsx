@@ -1,3 +1,4 @@
+import { ScanAnalysisMetrics } from "../components/scans/ScanAnalysisMetrics";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -123,6 +124,7 @@ export function ScanDetailPage() {
       {scan.progress && <div className="border-t px-4 py-3"><div className="mb-2 flex items-center justify-between gap-4 font-mono text-[9px]"><span className="truncate">{formatProgressLabel(scan.progress)}{scan.progress.detail ? ` / ${scan.progress.detail}` : ""}</span><span className="shrink-0 text-primary">{formatProgressMetric(scan.progress)}</span></div><ProgressTrack value={displayedProgress.value} indeterminate={displayedProgress.indeterminate} /></div>}
     </header>
     {errorBanner}
+    <ScanAnalysisMetrics key={scan.id} scan={scan} />
     <div className="mb-4 flex overflow-x-auto border border-border">{(["evidence", "telemetry", "profile"] as View[]).map((id, i) => <button key={id} type="button" onClick={() => setView(id)} className={cx("h-10 border-r px-4 font-mono text-[9px] uppercase tracking-wider", view === id ? "bg-accent text-primary" : "text-muted-foreground hover:text-foreground")}>0{i + 1} / {t(`scanDetail.view${id[0].toUpperCase()}${id.slice(1)}` as "scanDetail.viewEvidence")}</button>)}</div>
     {view === "evidence" && <EvidenceWorkbench scan={scan} findings={filtered} allFindings={findings} selected={selected} selectedSignal={selectedSignal} query={query} severity={severity} lifecycle={lifecycle} onQuery={setQuery} onSeverity={setSeverity} onLifecycle={setLifecycle} onOpen={(f) => void openFinding(f)} onSaveTriage={saveTriage} />}
     {view === "telemetry" && <Telemetry scan={scan} logs={telemetry.lines} logRef={logRef} />}

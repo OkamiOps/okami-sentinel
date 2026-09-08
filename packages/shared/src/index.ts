@@ -1408,3 +1408,16 @@ export interface GitHubMonitorOverview {
     recentActionsWindowDays: number;
   };
 }
+
+export interface ScanAnalysisMetrics {
+  measuredAt: string;
+  files: number | null;
+  bytes: number | null;
+  lines: number | null;
+  batchesCompleted: number | null;
+  batchesTotal: number | null;
+  candidates: number | null;
+  rejections: number | null;
+  reasoningTokens: number | null;
+  outputTokensPerSecond: number | null;
+}

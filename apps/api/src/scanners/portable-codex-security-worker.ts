@@ -1,3 +1,4 @@
+import { appendPortableWorkerEvent, tolerateClosedWorkerPipe } from "./portable-worker-output.js";
 import fs from "node:fs";
 
 import { getProviderRuntime } from "../provider-runtime.js";
@@ -102,6 +103,8 @@ export function portableCodexSecurityWorkerErrorCode(error: unknown): string {
 }
 
 async function main(): Promise<void> {
+  tolerateClosedWorkerPipe(process.stdout);
+  tolerateClosedWorkerPipe(process.stderr);
   const configPath = process.argv[2];
   if (!configPath) throw new PortableCodexSecurityRunnerError("provider_plan_invalid");
   const configuration = readPortableCodexSecurityWorkerConfiguration(configPath);
@@ -115,7 +118,11 @@ async function main(): Promise<void> {
     xaiOAuth: runtime.xaiOAuthTokenResolver,
     signal: controller.signal,
     redactor: globalSecretRedactor,
-    log: (line) => process.stdout.write(`${globalSecretRedactor.redactText(line)}\n`),
+    log: (line) => {
+      const redacted = globalSecretRedactor.redactText(line);
+      appendPortableWorkerEvent(configuration.outputDir, redacted);
+      process.stdout.write(`${redacted}\n`);
+    },
   });
 }
 
