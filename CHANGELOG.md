@@ -8,6 +8,9 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Added
 
+- Search repository names and organizations during GitHub enrollment, with result counts and archived-state preservation.
+- Wider desktop enrollment panel with expand/collapse control and a full-width repository picker.
+
 - Follow all current and future branches without maintaining a fixed selection. Initial state and duplicate heads do not trigger redundant scans.
 - New GitHub enrollment and monitoring flows use Sentinel execution with supported subscription/API connections; existing Actions configurations remain compatible.
 

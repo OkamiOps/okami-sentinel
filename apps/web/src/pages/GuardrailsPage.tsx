@@ -1,3 +1,5 @@
+import { repositoryPickerMessages } from "../i18n/repository-picker";
+import { useScopedI18n } from "../i18n/scoped";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   DecisionGraphNode,
@@ -511,13 +513,17 @@ function EnrollmentSheet({
   onEnroll: (request: EnrollGuardrailRepositoryRequest) => Promise<void>;
 }) {
   const { t } = useI18n();
+  const { t: tr } = useScopedI18n(repositoryPickerMessages);
+  const [expanded, setExpanded] = useState(false);
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetTrigger asChild>
         <Button variant="outline" className="min-h-11"><Plus aria-hidden size={14} />{t("guardrails.register")}</Button>
       </SheetTrigger>
-      <SheetContent className="w-full gap-0 border-border bg-background sm:max-w-3xl">
-        <SheetHeader className="border-b">
+      <SheetContent className={`w-full gap-0 border-border bg-background ${expanded ? "data-[side=right]:sm:max-w-[min(92vw,1200px)]" : "data-[side=right]:sm:max-w-[48rem]"}`}>
+
+        <SheetHeader className="border-b pr-14">
+          <Button type="button" variant="outline" size="sm" aria-pressed={expanded} onClick={() => setExpanded((value) => !value)} className="hidden w-fit sm:inline-flex">{expanded ? tr("collapse") : tr("expand")}</Button>
           <SheetTitle className="font-heading">{t("guardrails.enrollTitle")}</SheetTitle>
           <SheetDescription>{t("guardrails.enrollDescription")}</SheetDescription>
         </SheetHeader>

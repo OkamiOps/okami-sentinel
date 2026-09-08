@@ -1,3 +1,4 @@
+import { SearchableRepositorySelect } from "./SearchableRepositorySelect";
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
 import {
@@ -281,7 +282,7 @@ export function RepositoryEnrollmentForm({ active, busy, onEnroll }: {
                 </div>
               )}
 
-              <div className="grid gap-4 sm:grid-cols-3">
+              <div className="grid gap-4 sm:grid-cols-2">
                 <Field label={t("guardrails.connection")} htmlFor="guardrail-github-connection">
                   <Select value={state.connectionId} onValueChange={(value) => setState((current) => selectEnrollmentConnection(current, value))}>
                     <SelectTrigger id="guardrail-github-connection" className="min-h-11 w-full rounded-none"><SelectValue placeholder={t("guardrails.select")} /></SelectTrigger>
@@ -294,12 +295,9 @@ export function RepositoryEnrollmentForm({ active, busy, onEnroll }: {
                     <SelectContent position="popper" className="rounded-none border-border bg-popover">{installations.filter((item) => item.status === "ready").map((item) => <SelectItem key={item.id} value={item.id} className="min-h-11 rounded-none">{item.accountLogin}</SelectItem>)}</SelectContent>
                   </Select>
                 </Field>
-                <Field label={t("guardrails.repository")} htmlFor="guardrail-github-repository">
-                  <Select disabled={!state.installationId} value={state.repositoryId} onValueChange={(repositoryId) => setState((current) => ({ ...current, repositoryId }))}>
-                    <SelectTrigger id="guardrail-github-repository" className="min-h-11 w-full rounded-none"><SelectValue placeholder={t("guardrails.select")} /></SelectTrigger>
-                    <SelectContent position="popper" className="rounded-none border-border bg-popover">{repositories.map((item) => <SelectItem key={item.repositoryId} value={item.repositoryId} disabled={item.archived} className="min-h-11 rounded-none">{item.owner}/{item.name}</SelectItem>)}</SelectContent>
-                  </Select>
-                </Field>
+                <div className="sm:col-span-2"><Field label={t("guardrails.repository")} htmlFor="guardrail-github-repository">
+                  <SearchableRepositorySelect key={`${state.connectionId}:${state.installationId}`} id="guardrail-github-repository" disabled={!state.installationId || loading} value={state.repositoryId} options={repositories.map((item) => ({ id: item.repositoryId, label: `${item.owner}/${item.name}`, disabled: item.archived }))} onChange={(repositoryId) => setState((current) => ({ ...current, repositoryId }))} />
+                </Field></div>
               </div>
 
               <div>
