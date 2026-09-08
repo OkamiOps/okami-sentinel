@@ -55,6 +55,7 @@ type RepositoryReadiness = {
 
 export function GuardrailsPage() {
   const { t, locale } = useI18n();
+  const { t: tr } = useScopedI18n(repositoryPickerMessages);
   const { gateId = null } = useParams();
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
@@ -208,7 +209,8 @@ export function GuardrailsPage() {
       setEnrollOpen(false);
       await load();
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : "Falha ao cadastrar repositório");
+      setActionError(error instanceof Error && error.message.includes("repository_already_registered") ? tr("duplicate") : error instanceof Error ? error.message : "Falha ao cadastrar repositório");
+      throw error;
     } finally {
       setBusy(false);
     }

@@ -570,6 +570,7 @@ test("actions dispatch requires a stable idempotency key and accepted frozen pre
 
 test("enrollment persists only the server-resolved repository identity", async () => {
   const deps = dependencies();
+  deps.getRepository = () => null;
   const response = await createGuardrailsApp(deps).request("/guardrails/repositories", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -799,4 +800,19 @@ test("POST publish keeps the local outcome when github fails", async () => {
     deps.store.listGatePublicationAttempts("gate-1").map((attempt) => attempt.status),
     ["failed"],
   );
+});
+
+ test("registering an existing identity rejects without overwriting its configuration", async () => {
+  const deps = dependencies();
+  const existing = deps.getRepository(repository.repositoryKey)!;
+  const before = structuredClone(existing);
+  deps.enrollRepository = async () => ({ ...existing, displayName: "Renamed repository", defaultExecutor: "sentinel-managed", policyPath: ".csb/replaced.json", lastGateId: null });
+  const response = await createGuardrailsApp(deps).request("/guardrails/repositories", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source: "local", repositoryPath: "/workspace/csb/nested" }),
+  });
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error, "repository_already_registered");
+  assert.deepEqual(deps.enrolled, []);
+  assert.deepEqual(deps.getRepository(repository.repositoryKey), before);
 });

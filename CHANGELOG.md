@@ -6,6 +6,10 @@ with the Docker and engine-update work; earlier history remains in
 
 ## Unreleased
 
+### Fixed
+
+- Registering an already enrolled repository now returns a conflict instead of overwriting its name, executor or settings. GitHub repositories already enrolled are identified and disabled in the registration picker.
+
 ### Added
 
 - Search repository names and organizations during GitHub enrollment, with result counts and archived-state preservation.

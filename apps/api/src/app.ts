@@ -393,6 +393,9 @@ export function createGuardrailsApp(
     try {
       const request = parseEnrollGuardrailRepositoryRequest(await c.req.json<unknown>());
       const repository = await deps.enrollRepository(request);
+      if (deps.getRepository(repository.repositoryKey)) {
+        return c.json({ error: "repository_already_registered", repositoryKey: repository.repositoryKey }, 409);
+      }
       deps.upsertRepository(repository);
       return c.json({ repository }, 201);
     } catch (error) {

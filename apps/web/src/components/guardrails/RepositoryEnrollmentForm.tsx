@@ -1,3 +1,5 @@
+import { repositoryPickerMessages } from "../../i18n/repository-picker";
+import { useScopedI18n } from "../../i18n/scoped";
 import { SearchableRepositorySelect } from "./SearchableRepositorySelect";
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
@@ -44,6 +46,14 @@ export function RepositoryEnrollmentForm({ active, busy, onEnroll }: {
   onEnroll: (request: EnrollGuardrailRepositoryRequest) => Promise<void>;
 }) {
   const { t } = useI18n();
+  const { t: tr } = useScopedI18n(repositoryPickerMessages);
+  const [registeredIds, setRegisteredIds] = useState<string[]>([]);
+  useEffect(() => {
+    if (!active) return;
+    let current = true;
+    void api.listGuardrailRepositories().then(({ repositories }) => { if (current) setRegisteredIds(repositories.flatMap((item) => item.githubRepositoryId ? [item.githubRepositoryId] : [])); }).catch(() => undefined);
+    return () => { current = false; };
+  }, [active]);
   const [state, setState] = useState(initialEnrollmentState);
   const [connections, setConnections] = useState<GitHubAppConnection[]>([]);
   const [installations, setInstallations] = useState<GitHubAppInstallation[]>([]);
@@ -61,7 +71,7 @@ export function RepositoryEnrollmentForm({ active, busy, onEnroll }: {
     managed: selectedRepository !== null && !selectedRepository.archived,
     actions: selectedRepository !== null && !selectedRepository.archived,
   }), [selectedRepository]);
-  const canSubmit = canEnrollGuardrailRepository(state, availability);
+  const canSubmit = canEnrollGuardrailRepository(state, availability) && (state.source !== "github" || !registeredIds.includes(state.repositoryId));
 
   const loadConnections = useCallback(async (preferredId?: string) => {
     setLoading(true);
@@ -190,9 +200,12 @@ export function RepositoryEnrollmentForm({ active, busy, onEnroll }: {
     );
   }
 
-  function submit(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault();
-    if (canSubmit) void onEnroll(enrollmentRequest(state));
+    if (!canSubmit) return;
+    setError(null);
+    try { await onEnroll(enrollmentRequest(state)); }
+    catch (cause) { setError(cause instanceof Error && cause.message.includes("repository_already_registered") ? tr("duplicate") : cause instanceof Error ? cause.message : t("guardrails.repositoriesError")); }
   }
 
   return (
@@ -296,7 +309,7 @@ export function RepositoryEnrollmentForm({ active, busy, onEnroll }: {
                   </Select>
                 </Field>
                 <div className="sm:col-span-2"><Field label={t("guardrails.repository")} htmlFor="guardrail-github-repository">
-                  <SearchableRepositorySelect key={`${state.connectionId}:${state.installationId}`} id="guardrail-github-repository" disabled={!state.installationId || loading} value={state.repositoryId} options={repositories.map((item) => ({ id: item.repositoryId, label: `${item.owner}/${item.name}`, disabled: item.archived }))} onChange={(repositoryId) => setState((current) => ({ ...current, repositoryId }))} />
+                  <SearchableRepositorySelect key={`${state.connectionId}:${state.installationId}`} id="guardrail-github-repository" disabled={!state.installationId || loading} value={state.repositoryId} options={repositories.map((item) => ({ id: item.repositoryId, label: `${item.owner}/${item.name}`, disabled: item.archived || registeredIds.includes(item.repositoryId), disabledLabel: registeredIds.includes(item.repositoryId) ? tr("registered") : undefined }))} onChange={(repositoryId) => setState((current) => ({ ...current, repositoryId }))} />
                 </Field></div>
               </div>
 
