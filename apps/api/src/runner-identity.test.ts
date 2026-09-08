@@ -3,16 +3,21 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import type { ScanRun, StartScanRequest } from "@csb/shared";
 
-import { CodexSecurityApiBridgeError } from "./scanners/codex-security-api-bridge.js";
+// Other test files create and close scans concurrently. This file must observe
+// only its own database when asserting that an aborted launch creates no work.
+const isolatedData = fs.mkdtempSync(path.join(os.tmpdir(), "csb-runner-identity-data-"));
+process.env.CSB_DATA_DIR = isolatedData;
+after(() => fs.rmSync(isolatedData, { recursive: true, force: true }));
 
 test("startScan honors an already-aborted request before output or child creation", async () => {
   const missingRepository = path.join(
     os.tmpdir(),
     `csb-aborted-scan-${randomUUID()}`,
   );
+  const { CodexSecurityApiBridgeError } = await import("./scanners/codex-security-api-bridge.js");
   const runner = await import("./runner.js");
   const startScan = runner.startScan as (
     request: StartScanRequest,
