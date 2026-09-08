@@ -24,7 +24,7 @@ dados antigos como recém-atualizados.
 
 ## Scans automáticos com orçamento
 
-1. Escolha as branches cujos pushes devem ser acompanhados. PRs novos e
+1. Selecione na lista carregada do GitHub as branches cujos pushes devem ser acompanhados. A busca filtra nomes existentes; seleções antigas são preservadas e podem ser removidas. PRs novos e
    atualizados também podem entrar na fila.
 2. Escolha o executor: **Sentinel** ou **GitHub Actions**.
 3. Configure um teto em USD por scan e a reserva máxima diária em USD.
@@ -83,3 +83,15 @@ scans são materializados pelo SHA, sem depender de um pull dessa pasta.
   contornar essa limitação.
 - Atualizar a imagem Docker ou reiniciar a API preserva regras e eventos no
   SQLite. Não remova o volume persistente para atualizar a aplicação.
+
+## O que executa dentro do GitHub Actions
+
+O runner faz checkout de uma revisão fixa do Sentinel, instala a dependência do
+`@csb/gate-cli` com pnpm e chama `npx --yes @openai/codex-security scan`. Portanto,
+os CLIs rodam na máquina do Actions; o servidor e a interface do Sentinel não
+precisam estar nessa máquina. O modelo usa `OPENAI_API_KEY` do repositório.
+
+Este adapter suporta apenas Codex Security. Ele não executa os workers de
+Mantis/VulnHunter nem reutiliza conexões locais como MiniMax. A integração não
+é uma execução sem CLI. O workflow está fixado por SHA, mas a resolução do
+pacote `@openai/codex-security` via npx ainda não fixa uma versão.

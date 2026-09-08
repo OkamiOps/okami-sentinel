@@ -226,3 +226,24 @@ test("atomic claims reserve a daily ceiling once and expired crash leases reconc
   assert.equal(getGitHubMonitorEvent(events[0]!.id)?.error, "automatic_dispatch_uncertain");
   assert.equal(launches.length, 0, "the uncertain paid dispatch keeps the day's reservation");
 });
+
+test("branch picker paginates enrolled remote branches and rejects unknown repositories", async () => {
+  const remote = repository("github:branch-picker-test", "branch-picker-test");
+  const paths: string[] = [];
+  const service = new GitHubMonitorService({
+    listRepositories: () => [remote],
+    readRepositoryJson: async (_repository, path) => {
+      paths.push(path);
+      return path.endsWith("page=1")
+        ? Array.from({ length: 100 }, (_, index) => ({ name: `topic-${index}`, commit: { sha: SHA_A } }))
+        : [{ name: "main", commit: { sha: SHA_B } }];
+    },
+    startAutomatic: async () => { throw new Error("must not scan while listing branches"); },
+  });
+  const branches = await service.availableBranches(remote.repositoryKey);
+  assert.equal(branches.length, 101);
+  assert.equal(branches[0], "main");
+  assert.deepEqual(paths, ["/branches?per_page=100&page=1", "/branches?per_page=100&page=2"]);
+  await assert.rejects(service.availableBranches("github:unknown"));
+  assert.equal(paths.length, 2);
+});

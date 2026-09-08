@@ -17,6 +17,7 @@ import type {
 } from "@csb/shared";
 
 import { api, type EnrollGuardrailRepositoryRequest } from "../api";
+import { GitHubBranchPicker } from "../components/guardrails/GitHubBranchPicker";
 import { RepositoryEnrollmentForm } from "../components/guardrails";
 import { AlertBanner, EmptyState, Loading, PageHeader, Panel, Readout, cx } from "../components/ui";
 import { Button } from "@/components/ui/button";
@@ -316,8 +317,8 @@ export function GitHubMonitorPage() {
                 </div>
               </section>
 
-              <Field label={t("githubMonitor.branches")} htmlFor="github-monitor-branches" hint={t("githubMonitor.branchesHint")}>
-                <Input id="github-monitor-branches" value={draft.followBranches} aria-invalid={!branchesValid} onChange={(event) => updateDraft({ followBranches: event.target.value })} placeholder="main, release/**" />
+              <Field label={t("githubMonitor.branches")} htmlFor="github-monitor-branches">
+                <GitHubBranchPicker id="github-monitor-branches" repositoryKey={selectedRepositoryKey} value={followedBranches} onChange={(branches) => updateDraft({ followBranches: branches.join(", ") })} />
                 {!branchesValid && <p role="alert" className="mt-2 text-xs text-destructive">{t("githubMonitor.branchesInvalid")}</p>}
               </Field>
 

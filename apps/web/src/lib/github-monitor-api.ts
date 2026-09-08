@@ -52,6 +52,7 @@ export function createGitHubMonitorClient(fetcher?: Fetcher) {
   }));
 
   return {
+    branches: (repositoryKey: string) => read<{ branches: string[] }>(`/github-monitor/branches${query({ repositoryKey })}`).then(({ branches }) => branches),
     overview: (repositoryKey?: string) => read<{ overview: GitHubMonitorOverview }>(`/github-monitor/overview${query({ repositoryKey })}`).then(({ overview }) => overview),
     rules: (repositoryKey?: string) => read<{ rules: GitHubMonitorRule[] }>(`/github-monitor/rules${query({ repositoryKey })}`).then(({ rules }) => rules),
     events: (ruleId?: string, repositoryKey?: string) => read<{ events: GitHubMonitorEvent[] }>(`/github-monitor/events${query({ ruleId, repositoryKey })}`).then(({ events }) => events),

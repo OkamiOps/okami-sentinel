@@ -8,6 +8,9 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Added
 
+- Searchable GitHub branch lists for monitoring and Actions filters, with multiple selection, retry and preserved saved selections.
+- Actions executor descriptions identify Codex Security, its CLI execution on the runner and the required repository credential.
+
 - A dedicated GitHub workspace for repository enrollment, observed PR/branch
   activity, recent external Actions runs, and persisted automation rules.
 - Opt-in automatic Codex Security scans with per-scan ceilings, daily budget

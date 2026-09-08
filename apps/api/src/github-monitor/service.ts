@@ -139,6 +139,11 @@ export class GitHubMonitorService {
     this.#createActionsRunId = dependencies.createActionsRunId ?? randomUUID;
   }
 
+  async availableBranches(repositoryKey: string): Promise<string[]> {
+    const repository = this.#repository(repositoryKey);
+    return (await this.#listBranches(repository)).map((branch) => branch.name).sort();
+  }
+
   listRules(repositoryKey: string | null = null): GitHubMonitorRule[] {
     return listGitHubMonitorRules(repositoryKey);
   }

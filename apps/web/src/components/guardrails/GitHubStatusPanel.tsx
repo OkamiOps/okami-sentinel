@@ -1,10 +1,10 @@
+import { GitHubBranchPicker } from "./GitHubBranchPicker";
 import { useEffect, useState } from "react";
 import type { GuardrailGitHubStatus, GuardrailRepository } from "@csb/shared";
 import { Check, Clipboard, Download, ExternalLink, GitBranch, KeyRound, RotateCw, ShieldAlert, Sparkles, Workflow } from "lucide-react";
 
 import type { GuardrailActionsStatus, GuardrailAutomationTriggers, GuardrailCallerWorkflow } from "../../api";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { githubBranchesMessages } from "../../i18n/github-branches";
 import { useScopedI18n } from "../../i18n/scoped";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -136,7 +136,7 @@ export function GitHubStatusPanel({
               </div>
               <div className="mt-4 space-y-2">
                 <label htmlFor="actions-branches" className="text-xs font-semibold">{tb("label")}</label>
-                <Input id="actions-branches" value={branchInput} onChange={(event) => setBranchInput(event.target.value)} placeholder="main, release/**" aria-describedby="actions-branches-hint" aria-invalid={!branchesValid} disabled={busy} />
+                <GitHubBranchPicker id="actions-branches" repositoryKey={repository.repositoryKey} value={branches} onChange={(values) => setBranchInput(values.join(", "))} />
                 <p id="actions-branches-hint" className="text-xs text-muted-foreground">{tb("hint")}</p>
                 {!branchesValid && <p role="alert" className="text-xs text-destructive">{tb("invalid")}</p>}
               </div>

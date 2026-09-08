@@ -19,6 +19,12 @@ export function createGitHubMonitorApi(dependencies: GitHubMonitorApiDependencie
   const api = new Hono();
   const service = dependencies.service ?? new GitHubMonitorService(dependencies);
 
+  api.get("/github-monitor/branches", async (c) => {
+    try {
+      return c.json({ branches: await service.availableBranches(string(c.req.query("repositoryKey"), 512)) });
+    } catch (error) { return monitorError(c, error); }
+  });
+
   api.get("/github-monitor/overview", (c) => {
     const repositoryKey = optionalQuery(c.req.query("repositoryKey"));
     return c.json({ overview: service.overview(repositoryKey) });
