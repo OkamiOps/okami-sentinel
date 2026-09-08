@@ -1311,3 +1311,100 @@ export interface EngineUpdatesResponse {
     error: EngineUpdateErrorCode | null;
   } | null;
 }
+
+/**
+ * A persisted GitHub monitoring rule. Rules stay disabled until their scan
+ * route and per-scan ceiling are deliberately configured.
+ */
+export type GitHubMonitorCheckoutMode = "none" | "fetch" | "pull";
+export type GitHubMonitorEventKind = "pull_request" | "push" | "actions_run";
+export type GitHubMonitorEventStatus = "observed" | "queued" | "dispatching" | "launched" | "skipped" | "failed";
+
+/** The scanner route freezes provider selection, but keeps the USD ceiling on the rule. */
+export interface GitHubMonitorScannerSelection {
+  engine: "codex-security";
+  connection: ScanConnectionSelection;
+  effort?: string;
+  mode: ScanMode;
+}
+
+export interface GitHubMonitorRule {
+  id: string;
+  repositoryKey: string;
+  /** GitHub App authority copied from the enrolled repository, never user-entered. */
+  connectionId: string;
+  installationId: string;
+  repositoryId: string;
+  executor: GateExecutorKind;
+  scanner: GitHubMonitorScannerSelection | null;
+  /** Immutable maximum passed to each automatic scan. */
+  costCeilingUsd: number | null;
+  /** Maximum reserved ceiling for automatic scans started in one UTC day. */
+  dailyCostCeilingUsd: number | null;
+  /** Exact names or `*` branch patterns whose pushes are followed. */
+  followBranches: string[];
+  checkoutMode: GitHubMonitorCheckoutMode;
+  enabled: boolean;
+  /** Incremented whenever a material rule change invalidates event deduplication. */
+  revision: number;
+  /** The first successful poll after enable establishes a no-scan baseline. */
+  baselineInitializedAt: string | null;
+  lastPolledAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GitHubMonitorEvent {
+  id: string;
+  ruleId: string;
+  repositoryKey: string;
+  ruleRevision: number;
+  kind: Exclude<GitHubMonitorEventKind, "actions_run">;
+  status: GitHubMonitorEventStatus;
+  headSha: string;
+  baseRef: string | null;
+  headRef: string;
+  pullRequestNumber: number | null;
+  title: string | null;
+  gateId: string | null;
+  costCeilingUsd: number | null;
+  reason: string | null;
+  error: string | null;
+  detectedAt: string;
+  dispatchedAt: string | null;
+  completedAt: string | null;
+}
+
+/** A GitHub Actions run observed independently of Sentinel-created gates. */
+export interface GitHubMonitorActionsRun {
+  id: string;
+  ruleId: string;
+  repositoryKey: string;
+  workflowRunId: string;
+  name: string;
+  event: string;
+  headBranch: string | null;
+  headSha: string;
+  status: string;
+  conclusion: string | null;
+  url: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GitHubMonitorOverview {
+  rules: GitHubMonitorRule[];
+  events: GitHubMonitorEvent[];
+  actionsRuns: GitHubMonitorActionsRun[];
+  summary: {
+    enabledRules: number;
+    queuedEvents: number;
+    dispatchingEvents: number;
+    lastPolledAt: string | null;
+    lastError: string | null;
+    checkoutAvailable: boolean;
+    /** External Actions are intentionally a recent activity view, never an unbounded history import. */
+    recentActionsWindowDays: number;
+  };
+}

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { serve } from "@hono/node-server";
-import { app } from "./app.js";
+import { app, githubMonitor } from "./app.js";
 import {
   API_HOST,
   API_PORT,
@@ -110,6 +110,8 @@ const gateReconciler = setInterval(() => {
   });
 }, 15_000).unref();
 
+const stopGitHubMonitoring = githubMonitor.startPolling();
+
 const serverApp = createServerApp(app, {
   settings,
   webRoot: process.env.CSB_WEB_DIST_DIR || path.join(ROOT_DIR, "apps", "web", "dist"),
@@ -132,6 +134,7 @@ if (settings.mode === "server") {
     stopHttp() {
       clearInterval(scanReconciler);
       clearInterval(gateReconciler);
+      stopGitHubMonitoring();
       server.close();
       if ("closeAllConnections" in server) server.closeAllConnections();
     },

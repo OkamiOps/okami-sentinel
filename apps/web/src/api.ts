@@ -279,6 +279,7 @@ export interface GuardrailAutomationTriggers {
   push: boolean;
   pullRequest: boolean;
   merge: boolean;
+  branches?: string[];
 }
 
 export interface GuardrailCallerWorkflow {

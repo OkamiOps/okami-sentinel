@@ -27,8 +27,9 @@ const ScanReportPage = lazy(() => import("./pages/ScanReportPage").then(({ ScanR
 const ScansPage = lazy(() => import("./pages/ScansPage").then(({ ScansPage: page }) => ({ default: page })));
 const SettingsPage = lazy(() => import("./pages/SettingsPage").then(({ SettingsPage: page }) => ({ default: page })));
 const ConnectionsPage = lazy(() => import("./pages/ConnectionsPage").then(({ ConnectionsPage: page }) => ({ default: page })));
+const GitHubMonitorPage = lazy(() => import("./pages/GitHubMonitorPage").then(({ GitHubMonitorPage: page }) => ({ default: page })));
 
-const nav: ReadonlyArray<readonly [string, TranslationKey]> = [["/", "nav.overview"], ["/scans", "nav.runs"], ["/guardrails", "nav.guardrails"], ["/scans/new", "nav.operate"], ["/compare", "nav.compare"], ["/activity", "nav.activity"], ["/settings", "nav.system"]];
+const nav: ReadonlyArray<readonly [string, TranslationKey]> = [["/", "nav.overview"], ["/scans", "nav.runs"], ["/guardrails", "nav.guardrails"], ["/github", "nav.github"], ["/scans/new", "nav.operate"], ["/compare", "nav.compare"], ["/activity", "nav.activity"], ["/settings", "nav.system"]];
 
 function NavStrip({ onNavigate }: { onNavigate?: () => void }) {
   const { pathname } = useLocation();
@@ -140,6 +141,7 @@ export function App() {
         <Route path="/guardrails/setup" element={<GuardrailSetupPage />} />
         <Route path="/guardrails/repositories/:repositoryKey/policy" element={<GuardrailPolicyPage />} />
         <Route path="/guardrails/:gateId" element={<GuardrailsPage />} />
+        <Route path="/github" element={<GitHubMonitorPage />} />
         <Route path="/scans/:id/findings/:findingId/path" element={<AttackPathPage />} />
         <Route path="/scans/:id" element={<ScanDetailPage />} />
         <Route path="/compare" element={<ComparePage />} />

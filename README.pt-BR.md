@@ -86,6 +86,7 @@ Todo scan concluído pode gerar um relatório com identidade da execução, dist
 
 ## Principais recursos
 
+- **Workspace GitHub** — acompanhe PRs, branches e Actions, configure scans automáticos com orçamento e execute fetch/pull de checkouts locais cadastrados. [Configuração e limites](docs/github-monitoring.md).
 - **Roteamento por capacidades** — escolha a metodologia; a interface exibe apenas combinações de autenticação, modelo, effort e modo que o adapter consegue executar.
 - **Conexões de provider** — configure sessões locais, autenticação gerenciada por navegador/dispositivo, chaves de API, endpoints Token Plan ou APIs compatíveis sem colocar credenciais no manifesto do scan.
 - **Catálogo de modelos ao vivo** — escolha somente modelos retornados pela conexão autenticada; o Sentinel não inventa um catálogo de fallback.

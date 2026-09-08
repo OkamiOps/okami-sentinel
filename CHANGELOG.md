@@ -8,6 +8,18 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Added
 
+- A dedicated GitHub workspace for repository enrollment, observed PR/branch
+  activity, recent external Actions runs, and persisted automation rules.
+- Opt-in automatic Codex Security scans with per-scan ceilings, daily budget
+  reservations, frozen commit identity, and restart-safe event deduplication.
+  Actions automation uses the protected repository policy and rejects ceilings
+  above the configured rule budget.
+- Manual fetch and fast-forward-only pull for enrolled local checkouts, with
+  clean-worktree checks and scan/maintenance admission protection.
+- Optional branch filters for generated Actions callers, including PR target
+  branches. See [GitHub monitoring](docs/github-monitoring.md) for setup and
+  the difference between monitoring, automatic scans, and local Git operations.
+
 - Optional Docker Compose installation for Linux amd64, alongside the existing
   pnpm installation. Docker setup does not require Node or pnpm on the host.
 - A production image serving the UI, API, and scan workers, with non-root

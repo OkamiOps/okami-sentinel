@@ -86,6 +86,7 @@ Chaque scan terminé peut produire un rapport de marque avec identité d’exéc
 
 ## Fonctionnalités principales
 
+- **Espace GitHub** — suivez les PR, branches et Actions, configurez des scans automatiques avec budget et utilisez fetch/pull pour les checkouts locaux enregistrés. [Configuration et limites](docs/github-monitoring.md) (portugais).
 - **Routage selon les capacités** — choisissez d’abord la méthodologie ; l’interface ne propose ensuite que les combinaisons d’authentification, modèle, effort et mode réellement exécutables.
 - **Connexions de fournisseurs** — configurez des sessions locales, l’authentification gérée par navigateur/appareil, des clés API, des endpoints Token Plan ou des API personnalisées compatibles sans placer de secrets dans les manifestes de scan.
 - **Catalogue de modèles en direct** — choisissez uniquement les modèles renvoyés par la connexion authentifiée sélectionnée ; Sentinel n’invente pas de catalogue de repli.

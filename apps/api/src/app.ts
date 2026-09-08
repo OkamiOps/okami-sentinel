@@ -1,3 +1,10 @@
+import { getGitHubMonitorRule } from "./github-monitor/store.js";
+import { GitHubMonitorService } from "./github-monitor/service.js";
+import { createGitHubMonitorApi } from "./github-monitor/api.js";
+import { automaticGitHubScanDispatcher } from "./github-monitor-dispatch.js";
+import { createGitHubCheckoutsApp } from "./github-checkouts.js";
+import { githubIntegrationSecurity } from "./github-integration-security.js";
+import { isDraining } from "./shutdown.js";
 import { randomUUID } from "node:crypto";
 import { runtimeMode, repositoryRoots } from "./deployment-settings.js";
 import { securitySessionToken } from "./security-session.js";
@@ -97,6 +104,7 @@ import {
   callerWorkflowDocument,
   DEFAULT_GUARDRAIL_AUTOMATION,
   type GuardrailAutomationTriggers,
+  normalizeBranchFilters,
   type CallerWorkflowDocument,
 } from "./github-workflow.js";
 import {
@@ -710,6 +718,46 @@ export function createGuardrailsApp(
 app.route("/", createGuardrailsApp());
 app.route("/", createGitHubAppApi());
 app.route("/", createEngineUpdatesApp());
+
+const startAutomaticGitHubScan = automaticGitHubScanDispatcher({
+  getRepository: findRepository,
+  getRule: getGitHubMonitorRule,
+  validateActions: async (repository) => {
+    const status = await getGitHubActionsStatus(repository, getSystemGitHubAppService(), GITHUB_ACTIONS_WORKFLOW_SHA);
+    if (!status.ready || !status.triggers) throw new Error("target_preview_executor_unavailable");
+    if (status.triggers.push || status.triggers.pullRequest || status.triggers.merge) throw new Error("monitor_actions_duplicate_triggers");
+  },
+  preview: (repository, request) => targetPreviewService.create(repository, request),
+  accept: (repository, preview) => targetPreviewService.accept(repository, {
+    previewIdentity: preview.previewIdentity, target: preview.target, executor: preview.executor,
+  }),
+  startManaged: startRemoteManagedGate,
+  startActions: startRemoteActionsGate,
+});
+const githubMonitorDependencies = {
+  listRepositories: listGuardrailRepositories,
+  readRepositoryJson: (repository: GuardrailRepository, resourcePath: string, permissions: import("./github-app/github-app-client.js").GitHubInstallationPermissions) =>
+    getSystemGitHubAppService().readAuthorizedRepositoryJson(
+      requiredRemoteAuthority(repository.githubConnectionId),
+      requiredRemoteAuthority(repository.githubInstallationId),
+      requiredRemoteAuthority(repository.githubRepositoryId),
+      `/repos/${encodeURIComponent(requiredRemoteAuthority(repository.remoteOwner))}/${encodeURIComponent(requiredRemoteAuthority(repository.remoteName))}${resourcePath}`, permissions,
+    ),
+  startAutomatic: async (input: import("./github-monitor/service.js").GitHubMonitorStartInput) => {
+    if (isDraining()) throw new Error("server_draining");
+    return startAutomaticGitHubScan(input);
+  },
+  // Remote snapshots have no mutable host checkout. Local checkouts use the
+  // separate explicit fetch/pull API below, protected by the maintenance lease.
+  checkoutAvailable: () => false,
+};
+export const githubMonitor = new GitHubMonitorService(githubMonitorDependencies);
+for (const route of ["/github-monitor/*", "/github-checkouts", "/github-checkouts/*"]) {
+  app.use(route, githubIntegrationSecurity());
+}
+app.route("/", createGitHubMonitorApi({ ...githubMonitorDependencies, service: githubMonitor }));
+app.route("/", createGitHubCheckoutsApp({ getRepository: findRepository }));
+
 const providerRuntime = getProviderRuntime();
 app.route("/", createConnectionsApp({
   service: providerRuntime.connections,
@@ -1129,11 +1177,11 @@ function requiredIdempotencyKey(value: string | undefined): string {
 function parseAutomationTriggers(value: unknown): GuardrailAutomationTriggers {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("automation_triggers_invalid");
   const record = value as Record<string, unknown>;
-  if (Object.keys(record).sort().join(",") !== "merge,pullRequest,push") throw new Error("automation_triggers_invalid");
+  if (Object.keys(record).some((key) => !["merge", "pullRequest", "push", "branches"].includes(key))) throw new Error("automation_triggers_invalid");
   if (typeof record.push !== "boolean" || typeof record.pullRequest !== "boolean" || typeof record.merge !== "boolean") {
     throw new Error("automation_triggers_invalid");
   }
-  return { push: record.push, pullRequest: record.pullRequest, merge: record.merge };
+  return { push: record.push, pullRequest: record.pullRequest, merge: record.merge, ...(record.branches === undefined ? {} : { branches: normalizeBranchFilters(record.branches) }) };
 }
 
 function targetPreviewStatus(error: unknown): 400 | 409 {

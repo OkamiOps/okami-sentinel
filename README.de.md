@@ -86,6 +86,7 @@ Jeder abgeschlossene Scan kann einen Markenbericht mit Ausführungsidentität, S
 
 ## Kernfunktionen
 
+- **GitHub-Arbeitsbereich** — PRs, Branches und Actions verfolgen, automatische Scans mit Budget konfigurieren und registrierte lokale Checkouts per Fetch/Pull aktualisieren. [Einrichtung und Grenzen](docs/github-monitoring.md) (Portugiesisch).
 - **Fähigkeitsbasiertes Routing** — zuerst die Methodik wählen; die UI zeigt danach nur ausführbare Authentifizierungs-, Modell-, Effort- und Modus-Kombinationen.
 - **Provider-Verbindungen** — lokale Sitzungen, verwaltete Browser-/Geräteauthentifizierung, API-Schlüssel, Token-Plan-Endpunkte oder kompatible eigene APIs konfigurieren, ohne Credentials in Scan-Manifeste zu schreiben.
 - **Live-Modellkatalog** — nur Modelle wählen, die von der ausgewählten authentifizierten Verbindung zurückgegeben werden; Sentinel erfindet keinen Fallback-Katalog.

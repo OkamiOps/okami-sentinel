@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { callerWorkflowDocument, renderCallerWorkflow } from "./github-workflow.js";
+import { callerWorkflowDocument, renderCallerWorkflow, parseCallerAutomation } from "./github-workflow.js";
 
 const RELEASE_SHA = "9".repeat(40);
 
@@ -56,4 +56,16 @@ test("caller rendering is pure and accepts only bounded YAML-safe values", () =>
     secretName: "OPENAI_API_KEY",
     workflowSha: "v2",
   }), /immutable release SHA/i);
+});
+
+
+test("branch filters constrain push and PR base branches and survive status parsing", () => {
+  const triggers = { push: true, pullRequest: true, merge: true, branches: ["main", "release/**"] };
+  const content = renderCallerWorkflow({ defaultBranch: "main", secretName: "OPENAI_API_KEY", workflowSha: RELEASE_SHA, triggers });
+  assert.equal((content.match(/branches: \["main","release\/\*\*"\]/g) ?? []).length, 3);
+  assert.deepEqual(parseCallerAutomation(content), triggers);
+  for (const branches of [["main\npermissions: write-all"], ["!main"], ["../main"], Array(21).fill("main")]) {
+    assert.throws(() => renderCallerWorkflow({ defaultBranch: "main", secretName: "OPENAI_API_KEY", workflowSha: RELEASE_SHA, triggers: { ...triggers, branches } }), /branches_invalid/);
+  }
+  assert.equal(parseCallerAutomation(content.replace('# csb-branches: ["main","release/**"]', '# csb-branches: ["!main"]')), null);
 });

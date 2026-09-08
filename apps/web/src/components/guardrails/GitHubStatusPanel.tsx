@@ -4,6 +4,9 @@ import { Check, Clipboard, Download, ExternalLink, GitBranch, KeyRound, RotateCw
 
 import type { GuardrailActionsStatus, GuardrailAutomationTriggers, GuardrailCallerWorkflow } from "../../api";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { githubBranchesMessages } from "../../i18n/github-branches";
+import { useScopedI18n } from "../../i18n/scoped";
 import { Checkbox } from "@/components/ui/checkbox";
 import { cx } from "../ui";
 import { useI18n } from "../../i18n";
@@ -35,6 +38,10 @@ export function GitHubStatusPanel({
   onSyncBaseline: () => Promise<void>;
 }) {
   const { t } = useI18n();
+  const { t: tb } = useScopedI18n(githubBranchesMessages);
+  const [branchInput, setBranchInput] = useState(actionsStatus?.triggers?.branches?.join(", ") ?? "");
+  const branches = branchInput.split(",").map((value) => value.trim()).filter(Boolean);
+  const branchesValid = branches.length <= 20 && branches.every((value) => value.length <= 255 && /^[A-Za-z0-9*][A-Za-z0-9._/*-]*$/.test(value) && !value.includes(".."));
   const [copied, setCopied] = useState(false);
   const [triggers, setTriggers] = useState<GuardrailAutomationTriggers>(() => actionsStatus?.triggers ?? { push: false, pullRequest: true, merge: true });
   const remoteReady = status.remote.ready && status.auth.ready && status.permissions.ready;
@@ -43,8 +50,11 @@ export function GitHubStatusPanel({
   const actionStatusLabel = actionsStatus ? t(`guardrails.actionsStatus.${actionsStatus.code}`) : t("guardrails.actionsChecking");
 
   useEffect(() => {
-    if (actionsStatus?.triggers) setTriggers(actionsStatus.triggers);
-  }, [actionsStatus?.triggers?.push, actionsStatus?.triggers?.pullRequest, actionsStatus?.triggers?.merge]);
+    if (actionsStatus?.triggers) {
+      setTriggers(actionsStatus.triggers);
+      setBranchInput(actionsStatus.triggers.branches?.join(", ") ?? "");
+    }
+  }, [actionsStatus?.triggers?.push, actionsStatus?.triggers?.pullRequest, actionsStatus?.triggers?.merge, JSON.stringify(actionsStatus?.triggers?.branches)]);
 
   async function copyCaller() {
     if (!callerWorkflow) return;
@@ -124,7 +134,13 @@ export function GitHubStatusPanel({
                 <TriggerChoice checked={triggers.pullRequest} label={t("guardrails.triggerPullRequest")} detail={t("guardrails.triggerPullRequestDetail")} onChange={(pullRequest) => setTriggers((current) => ({ ...current, pullRequest }))} />
                 <TriggerChoice checked={triggers.merge} label={t("guardrails.triggerMerge")} detail={t("guardrails.triggerMergeDetail")} onChange={(merge) => setTriggers((current) => ({ ...current, merge }))} />
               </div>
-              <Button className="mt-4 min-h-11 w-full" disabled={busy || !remoteReady} onClick={() => void onConfigureWorkflow(triggers)}><Sparkles aria-hidden size={14} />{workflowPermissionBlocked ? t("guardrails.verifyAndConfigure") : actionsReady ? t("guardrails.updateAutomation") : t("guardrails.configureAutomatically")}</Button>
+              <div className="mt-4 space-y-2">
+                <label htmlFor="actions-branches" className="text-xs font-semibold">{tb("label")}</label>
+                <Input id="actions-branches" value={branchInput} onChange={(event) => setBranchInput(event.target.value)} placeholder="main, release/**" aria-describedby="actions-branches-hint" aria-invalid={!branchesValid} disabled={busy} />
+                <p id="actions-branches-hint" className="text-xs text-muted-foreground">{tb("hint")}</p>
+                {!branchesValid && <p role="alert" className="text-xs text-destructive">{tb("invalid")}</p>}
+              </div>
+              <Button className="mt-4 min-h-11 w-full" disabled={busy || !remoteReady || !branchesValid} onClick={() => void onConfigureWorkflow({ ...triggers, branches })}><Sparkles aria-hidden size={14} />{workflowPermissionBlocked ? t("guardrails.verifyAndConfigure") : actionsReady ? t("guardrails.updateAutomation") : t("guardrails.configureAutomatically")}</Button>
               <p className="mt-2 text-[10px] leading-4 text-muted-foreground">{t("guardrails.configureAutomaticallyDetail")}</p>
               <div className="mt-4 grid gap-2 sm:grid-cols-2">
                 <Button variant="outline" className="min-h-11" disabled={!callerWorkflow} onClick={() => void copyCaller()}><Clipboard aria-hidden size={14} />{copied ? t("guardrails.copied") : t("guardrails.copyYaml")}</Button>

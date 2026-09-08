@@ -86,6 +86,7 @@ Every completed scan can produce a branded report with execution identity, sever
 
 ## Core capabilities
 
+- **GitHub workspace** — follow PR and branch activity, inspect Actions runs, configure budgeted automatic scans, and fetch/pull enrolled local checkouts. [Setup and limits](docs/github-monitoring.md).
 - **Capability-aware scanner routing** — choose a methodology first; the UI then exposes only authentication, model, effort, and mode combinations the adapter can actually run.
 - **Provider connections** — configure local sessions, managed browser/device authentication, API keys, Token Plan endpoints, or compatible custom APIs without putting credentials in scan manifests.
 - **Live model discovery** — choose only models returned by the selected authenticated connection; Sentinel does not invent a fallback catalog.

@@ -9,6 +9,8 @@ export interface GuardrailAutomationTriggers {
   push: boolean;
   pullRequest: boolean;
   merge: boolean;
+  /** Empty or omitted means all branches; PR filters apply to the base branch. */
+  branches?: string[];
 }
 
 export const DEFAULT_GUARDRAIL_AUTOMATION = Object.freeze({
@@ -55,7 +57,7 @@ export function renderCallerWorkflow(options: CallerWorkflowOptions): string {
     : "";
   return `# csb-guardrail-caller: 3
 # csb-automation: push=${Number(triggers.push)},pr=${Number(triggers.pullRequest)},merge=${Number(triggers.merge)}
-name: CSB Security Change Gate
+${triggers.branches?.length ? `# csb-branches: ${JSON.stringify(triggers.branches)}\n` : ""}name: CSB Security Change Gate
 run-name: CSB gate \${{ inputs.gate_id || github.run_id }} · \${{ inputs.head_sha || github.sha }}
 on:
 ${automaticEvents}${automaticEvents ? "\n" : ""}  workflow_dispatch:
@@ -128,25 +130,41 @@ ${mergeGuard}    uses: OkamiOps/okami-sentinel/.github/workflows/security-change
 export function parseCallerAutomation(content: string): GuardrailAutomationTriggers | null {
   const match = /^# csb-automation: push=([01]),pr=([01]),merge=([01])$/m.exec(content);
   if (!match) return null;
-  return { push: match[1] === "1", pullRequest: match[2] === "1", merge: match[3] === "1" };
+  const branchLine = /^# csb-branches: (.+)$/m.exec(content);
+  try {
+    const branches = branchLine ? normalizeBranchFilters(JSON.parse(branchLine[1]!)) : undefined;
+    return { push: match[1] === "1", pullRequest: match[2] === "1", merge: match[3] === "1", ...(branches ? { branches } : {}) };
+  } catch { return null; }
 }
 
 function automationTriggers(value: GuardrailAutomationTriggers): GuardrailAutomationTriggers {
   if (!value || typeof value.push !== "boolean" || typeof value.pullRequest !== "boolean" || typeof value.merge !== "boolean") {
     throw new Error("Invalid guardrail automation triggers");
   }
-  return value;
+  return { ...value, ...(value.branches === undefined ? {} : { branches: normalizeBranchFilters(value.branches) }) };
+}
+
+export function normalizeBranchFilters(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 20 || value.some((branch) => typeof branch !== "string" || branch.length > 255 || !/^[A-Za-z0-9*][A-Za-z0-9._/*-]*$/.test(branch) || branch.includes(".."))) {
+    throw new Error("automation_branches_invalid");
+  }
+  return [...new Set(value as string[])];
 }
 
 function renderAutomaticEvents(triggers: GuardrailAutomationTriggers): string {
   const lines: string[] = [];
-  if (triggers.push) lines.push("  push:");
+  const filters = triggers.branches?.length ? `    branches: ${JSON.stringify(triggers.branches)}` : null;
+  if (triggers.push) {
+    lines.push("  push:");
+    if (filters) lines.push(filters);
+  }
   if (triggers.pullRequest || triggers.merge) {
     const types = [
       ...(triggers.pullRequest ? ["opened", "synchronize", "reopened", "ready_for_review"] : []),
       ...(triggers.merge ? ["closed"] : []),
     ];
     lines.push("  pull_request:", `    types: [${types.join(", ")}]`);
+    if (filters) lines.push(filters);
   }
   return lines.join("\n");
 }
