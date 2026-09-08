@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, realpath, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -159,5 +159,46 @@ test("local execution requires a matching clean checkout for HEAD and explicit r
     await assert.rejects(resolveChangeSet(input), /Uncommitted changes/);
   } finally {
     await rm(repositoryPath, { recursive: true, force: true });
+  }
+});
+
+test("server runner scopes safe-directory and disables Git hooks per invocation", async () => {
+  const fixtureRoot = await mkdtemp(path.join(tmpdir(), "gate-server-git-"));
+  const binDir = path.join(fixtureRoot, "bin");
+  const argsPath = path.join(fixtureRoot, "git-args.json");
+  const gitPath = path.join(binDir, "git");
+  const originalPath = process.env.PATH;
+  const originalMode = process.env.CSB_RUNTIME_MODE;
+  const originalArgsPath = process.env.CSB_TEST_GIT_ARGS_PATH;
+  try {
+    await mkdir(binDir);
+    await writeFile(gitPath, `#!${process.execPath}\nconst fs = require("node:fs");\nfs.writeFileSync(process.env.CSB_TEST_GIT_ARGS_PATH, JSON.stringify(process.argv.slice(2)));\nprocess.stdout.write("ok\\n");\n`);
+    await chmod(gitPath, 0o700);
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.CSB_TEST_GIT_ARGS_PATH = argsPath;
+    process.env.CSB_RUNTIME_MODE = "server";
+
+    await defaultGitRunner(["rev-parse", "--show-toplevel"], fixtureRoot);
+    const canonicalRoot = await realpath(fixtureRoot);
+    assert.deepEqual(JSON.parse(await readFile(argsPath, "utf8")), [
+      "-c", `safe.directory=${canonicalRoot}`,
+      "-c", "core.fsmonitor=false",
+      "-c", "core.hooksPath=/dev/null",
+      "rev-parse", "--show-toplevel",
+    ]);
+
+    process.env.CSB_RUNTIME_MODE = "local";
+    await defaultGitRunner(["rev-parse", "--show-toplevel"], fixtureRoot);
+    assert.deepEqual(JSON.parse(await readFile(argsPath, "utf8")), [
+      "rev-parse", "--show-toplevel",
+    ]);
+  } finally {
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+    if (originalMode === undefined) delete process.env.CSB_RUNTIME_MODE;
+    else process.env.CSB_RUNTIME_MODE = originalMode;
+    if (originalArgsPath === undefined) delete process.env.CSB_TEST_GIT_ARGS_PATH;
+    else process.env.CSB_TEST_GIT_ARGS_PATH = originalArgsPath;
+    await rm(fixtureRoot, { recursive: true, force: true });
   }
 });

@@ -204,8 +204,14 @@ function gitSnapshotPaths(sourceRoot: string, depth = 0): Set<string> | null {
   const environment = Object.fromEntries(
     Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")),
   );
+  // Bind mounts retain their host UID. Authorize only this already bounded
+  // checkout for this invocation, without modifying global Git trust.
+  const ownership = process.env.CSB_RUNTIME_MODE === "server"
+    ? ["-c", `safe.directory=${fs.realpathSync(sourceRoot)}`]
+    : [];
   const files = execFileSync("git", [
     "--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+    ...ownership,
     "ls-files", "--cached", "--others", "--exclude-standard", "-z",
   ], {
     cwd: sourceRoot,
@@ -218,6 +224,7 @@ function gitSnapshotPaths(sourceRoot: string, depth = 0): Set<string> | null {
   const allowed = new Set<string>();
   const index = execFileSync("git", [
     "--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+    ...ownership,
     "ls-files", "--stage", "-z",
   ], {
     cwd: sourceRoot, env: environment, encoding: "utf8", timeout: 10_000,

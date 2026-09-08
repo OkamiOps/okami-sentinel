@@ -36,6 +36,7 @@ import {
   assertVulnHunterNonOperationalArtifacts,
   createVulnHunterSnapshot,
   inferVulnHunterStage,
+  vulnhunterGitArgs,
 } from "./vulnhunter-worker-support.js";
 
 let currentChild: ChildProcess | null = null;
@@ -69,7 +70,7 @@ function progress(
 }
 
 function gitValue(repositoryPath: string, args: string[]): string | null {
-  const result = spawnSync("git", ["-C", repositoryPath, ...args], {
+  const result = spawnSync("git", vulnhunterGitArgs(repositoryPath, args), {
     encoding: "utf8",
     timeout: 10_000,
     maxBuffer: 1024 * 1024,

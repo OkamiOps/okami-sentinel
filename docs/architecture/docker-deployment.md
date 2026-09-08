@@ -31,6 +31,10 @@ root initializer prepares five fixed directories in the named state volume.
 SQLite, reports, temporary snapshots, private home and managed runtimes persist
 there. Repository mounts live under `/repos`, are read-only and pass a canonical
 path boundary check. Symlinks cannot escape the configured repository roots.
+Git operations authorize the exact canonical checkout per invocation in server
+mode because bind mounts retain the host UID. No global `safe.directory=*`
+exception is installed. Docker CI exercises a repository owned by UID 1001
+while the application remains UID 1000.
 
 The vault stores AES-256-GCM ciphertext under the data volume; its 32-byte key
 is supplied separately as a mounted secret file. Authentication binds each

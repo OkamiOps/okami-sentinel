@@ -35,4 +35,7 @@ jobs:
         run: node scripts/docker/smoke.mjs csb-sentinel:${{ github.sha }}
 
       - name: Exercise bundled HTTP engines
+        env:
+          # Bind mounts retain the host UID, which can differ from app UID 1000.
+          CSB_DOCKER_QA_FIXTURE_UID: "1001"
         run: node scripts/docker/workflow-smoke.mjs csb-sentinel:${{ github.sha }}

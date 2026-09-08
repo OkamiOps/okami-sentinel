@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -29,8 +30,18 @@ export class GitChangeSetError extends Error {
 }
 
 export const defaultGitRunner: GitRunner = async (args, cwd) => {
-  const { stdout } = await execFileAsync("git", args, {
-    cwd,
+  const server = process.env.CSB_RUNTIME_MODE?.trim() === "server";
+  const canonicalCwd = server ? fs.realpathSync.native(cwd) : cwd;
+  const commandArgs = server
+    ? [
+      "-c", `safe.directory=${canonicalCwd}`,
+      "-c", "core.fsmonitor=false",
+      "-c", "core.hooksPath=/dev/null",
+      ...args,
+    ]
+    : args;
+  const { stdout } = await execFileAsync("git", commandArgs, {
+    cwd: canonicalCwd,
     encoding: "utf8",
     maxBuffer: 10 * 1024 * 1024,
   });

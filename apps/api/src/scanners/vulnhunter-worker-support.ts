@@ -31,6 +31,25 @@ const ROOT_AGENT_INSTRUCTION_FILES = new Set([
   ".windsurfrules",
 ]);
 
+/**
+ * Container scans may read a bind-mounted repository owned by the host user.
+ * Scope Git's ownership exception to this one read-only invocation; never
+ * mutate a worker or image-wide Git configuration.
+ */
+export function vulnhunterGitArgs(repositoryPath: string, args: string[]): string[] {
+  if (process.env.CSB_RUNTIME_MODE?.trim() !== "server") {
+    return ["-C", repositoryPath, ...args];
+  }
+  const canonicalRepositoryPath = fs.realpathSync.native(repositoryPath);
+  return [
+    "-c", `safe.directory=${canonicalRepositoryPath}`,
+    "-c", "core.fsmonitor=false",
+    "-c", "core.hooksPath=/dev/null",
+    "-C", canonicalRepositoryPath,
+    ...args,
+  ];
+}
+
 export interface VulnHunterStageSnapshot {
   id: "recon" | "hunt" | "verify" | "validation-notes" | "sweep" | "report";
   label: string;

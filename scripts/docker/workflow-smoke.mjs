@@ -33,20 +33,24 @@ const vaultKeyPath = path.join(workDir, "vault_key");
 const password = randomBytes(32).toString("base64url");
 const vaultKey = randomBytes(32).toString("hex");
 const fixtureApiKey = "docker-qa-fixture-key";
-const authorization = `Basic ${Buffer.from(`admin:${password}`).toString("base64")}`;
-const sensitiveValues = [password, vaultKey, fixtureApiKey, authorization];
+const basicToken = Buffer.from(`admin:${password}`).toString("base64");
+const authorization = `Basic ${basicToken}`;
+const sensitiveValues = [password, vaultKey, fixtureApiKey, basicToken, authorization];
 const providerPort = 8788;
 const scanRepositoryPath = "/repos/fixture";
 // This is an existing runtime file, so Docker can bind-mount the QA provider
 // before the read-only root filesystem is applied. The image never copies the
 // provider itself and does not invoke this helper as its application command.
 const providerRuntimePath = "/app/scripts/docker/healthcheck.mjs";
+const fixtureOwnerUid = fixtureOwnerFromEnvironment();
+const hostUid = typeof process.getuid === "function" ? process.getuid() : null;
 
 let hostPort;
 let baseUrl;
 let csrfToken;
 let volumeCreated = false;
 let containerCreated = false;
+let workflowFailed = false;
 
 try {
   hostPort = await availableLoopbackPort();
@@ -54,6 +58,8 @@ try {
   createFixtureRepository();
   createSecretFile(passwordPath, password);
   createSecretFile(vaultKeyPath, vaultKey);
+
+  if (fixtureOwnerUid !== null) setFixtureOwner(fixtureOwnerUid);
 
   docker(["volume", "create", volume]);
   volumeCreated = true;
@@ -106,12 +112,24 @@ try {
 
   console.log(`Docker workflow smoke passed for ${image}`);
 } catch (error) {
+  workflowFailed = true;
   printSafeContainerLogs();
   throw sanitizedError(error);
 } finally {
   if (containerCreated) runDocker(["rm", "--force", name]);
   if (volumeCreated) runDocker(["volume", "rm", "--force", volume]);
-  fs.rmSync(workDir, { recursive: true, force: true });
+  const cleanupError = restoreFixtureOwnerForCleanup();
+  try {
+    fs.rmSync(workDir, { recursive: true, force: true });
+  } catch (error) {
+    const message = `Docker workflow smoke cleanup failed: ${redact(error instanceof Error ? error.message : String(error))}`;
+    process.stderr.write(`${message}\n`);
+    if (!workflowFailed) throw new Error(message);
+  }
+  if (cleanupError !== null) {
+    process.stderr.write(`${cleanupError}\n`);
+    if (!workflowFailed) throw new Error(cleanupError);
+  }
 }
 
 function createFixtureRepository() {
@@ -132,6 +150,35 @@ function createFixtureRepository() {
 function createSecretFile(filePath, value) {
   fs.writeFileSync(filePath, `${value}\n`, { mode: 0o444 });
   fs.chmodSync(filePath, 0o444);
+}
+
+function setFixtureOwner(uid) {
+  // CI bind mounts preserve the host checkout UID. This QA-only switch lets
+  // a local Docker run reproduce that boundary without changing the app image.
+  docker([
+    "run", "--rm", "--user", "0:0",
+    "--mount", `type=bind,source=${repositoryPath},target=/fixture`,
+    image,
+    "chown", "-R", `${uid}:${uid}`, "/fixture",
+  ]);
+}
+
+function restoreFixtureOwnerForCleanup() {
+  if (fixtureOwnerUid === null || hostUid === null || !fs.existsSync(repositoryPath)) return null;
+  try {
+    // This runs only after the app and its disposable volume are removed. It
+    // restores deletion rights to the host user; it never changes the UID
+    // exercised by the scan itself.
+    docker([
+      "run", "--rm", "--user", "0:0",
+      "--mount", `type=bind,source=${repositoryPath},target=/fixture`,
+      image,
+      "chown", "-R", `${hostUid}:${hostUid}`, "/fixture",
+    ]);
+    return null;
+  } catch (error) {
+    return `Docker workflow smoke could not restore fixture cleanup ownership: ${redact(error instanceof Error ? error.message : String(error))}`;
+  }
 }
 
 function assertContainerSecurity() {
@@ -168,6 +215,7 @@ async function loadSecuritySession() {
   assert.equal(typeof session.csrfToken, "string");
   assert.ok(session.csrfToken.length >= 32);
   csrfToken = session.csrfToken;
+  sensitiveValues.push(csrfToken);
 }
 
 async function startProvider() {
@@ -254,11 +302,14 @@ async function completeScans(connectionId) {
     const scan = await startScan(engine, selection);
     await assertSseDeliversEvent(scan.id);
     const result = await waitForTerminalScan(scan.id, 120_000);
-    assert.equal(result.scan?.status, "completed", `${engine} scan must complete`);
-    assert.equal(result.findings?.length, 1, `${engine} scan must produce one fixture finding`);
+    if (result.scan?.status !== "completed" || result.findings?.length !== 1) {
+      await throwScanFailure(scan.id, `${engine} scan must complete with one fixture finding; received status=${result.scan?.status}, findings=${result.findings?.length}`);
+    }
 
     const report = await api(`/scans/${encodeURIComponent(scan.id)}/report`);
-    assert.equal(report.findings?.length, 1, `${engine} report must retain the finding`);
+    if (report.findings?.length !== 1) {
+      await throwScanFailure(scan.id, `${engine} report must retain one finding; received ${report.findings?.length}`);
+    }
     assert.match(JSON.stringify(report.findings[0]), /src\/auth\.ts/);
   }
 }
@@ -372,6 +423,16 @@ async function waitForTerminalScan(scanId, timeoutMs) {
   throw new Error(`scan ${scanId} did not finish within ${timeoutMs}ms; last status was ${current?.scan?.status ?? "unknown"}`);
 }
 
+async function throwScanFailure(scanId, message) {
+  let telemetry;
+  try {
+    telemetry = await api(`/scans/${encodeURIComponent(scanId)}/telemetry`);
+  } catch (error) {
+    telemetry = { unavailable: redact(error instanceof Error ? error.message : String(error)) };
+  }
+  throw new Error(`${message}; telemetry=${safeJson(telemetry).slice(0, 12_000)}`);
+}
+
 async function api(endpoint, { method = "GET", body, expected = 200 } = {}) {
   const mutation = !["GET", "HEAD"].includes(method);
   const headers = { Authorization: authorization, Origin: baseUrl };
@@ -459,6 +520,19 @@ function safeJson(value) {
 function assertHostNodeVersion() {
   const major = Number(process.versions.node.split(".")[0]);
   if (!Number.isInteger(major) || major < 20) throw new Error("Docker workflow smoke requires Node.js 20 or newer");
+}
+
+function fixtureOwnerFromEnvironment() {
+  const value = process.env.CSB_DOCKER_QA_FIXTURE_UID;
+  if (value === undefined || value === "") return null;
+  if (!/^\d{1,10}$/.test(value)) {
+    throw new Error("CSB_DOCKER_QA_FIXTURE_UID must be a numeric Unix UID");
+  }
+  const uid = Number(value);
+  if (!Number.isSafeInteger(uid) || uid < 0 || uid > 2_147_483_647) {
+    throw new Error("CSB_DOCKER_QA_FIXTURE_UID must be a valid Unix UID");
+  }
+  return uid;
 }
 
 function availableLoopbackPort() {
