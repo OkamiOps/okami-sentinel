@@ -318,16 +318,16 @@ export function GitHubMonitorPage() {
               </section>
 
               <Field label={t("githubMonitor.branches")} htmlFor="github-monitor-branches">
-                <GitHubBranchPicker id="github-monitor-branches" repositoryKey={selectedRepositoryKey} value={followedBranches} onChange={(branches) => updateDraft({ followBranches: branches.join(", ") })} />
+                <GitHubBranchPicker key={selectedRepositoryKey} allowAll id="github-monitor-branches" repositoryKey={selectedRepositoryKey} value={followedBranches} onChange={(branches) => updateDraft({ followBranches: branches.join(", ") })} />
                 {!branchesValid && <p role="alert" className="mt-2 text-xs text-destructive">{t("githubMonitor.branchesInvalid")}</p>}
               </Field>
 
               <section className="border-t pt-5">
                 <div className="bench-label text-primary">{t("githubMonitor.execution")}</div>
                 <h3 className="mt-1 text-sm font-semibold">{t("githubMonitor.executionTitle")}</h3>
-                <div className="mt-3 grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label={t("githubMonitor.executionTitle")}>
+                <div className={cx("mt-3 grid gap-2", selectedRule?.executor === "github-actions" && "sm:grid-cols-2")} role="radiogroup" aria-label={t("githubMonitor.executionTitle")}>
                   <ExecutionChoice checked={draft.executor === "sentinel-managed"} icon={<ShieldCheck aria-hidden className="size-4" />} title="SENTINEL MANAGED" description={globalT("guardrails.managedDescription")} onSelect={() => updateDraft({ executor: "sentinel-managed" })} />
-                  <ExecutionChoice checked={draft.executor === "github-actions"} icon={<Workflow aria-hidden className="size-4" />} title="GITHUB ACTIONS" description={globalT("guardrails.actionsDescription")} onSelect={() => updateDraft({ executor: "github-actions" })} />
+                  {selectedRule?.executor === "github-actions" && <ExecutionChoice checked={draft.executor === "github-actions"} icon={<Workflow aria-hidden className="size-4" />} title="GITHUB ACTIONS" description={globalT("guardrails.actionsDescription")} onSelect={() => updateDraft({ executor: "github-actions" })} />}
                 </div>
                 {draft.executor === "github-actions" ? <div className="mt-3 border border-chart-3/40 bg-chart-3/[.06] p-3 text-xs leading-relaxed text-chart-3"><p>{globalT("guardrails.actionsDescription")}</p><p className="mt-2">{t("githubMonitor.actionsScheduling")}</p></div> : <div className="mt-4 grid gap-4 md:grid-cols-2">
                   <Field label={t("githubMonitor.engine")} htmlFor="github-monitor-engine" hint={t("githubMonitor.engineHint")}>

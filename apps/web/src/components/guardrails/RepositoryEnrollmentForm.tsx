@@ -11,7 +11,6 @@ import {
   Radio,
   RefreshCw,
   UserRound,
-  Workflow,
 } from "lucide-react";
 
 import {
@@ -305,9 +304,8 @@ export function RepositoryEnrollmentForm({ active, busy, onEnroll }: {
 
               <div>
                 <StepHeading code="03 / EXECUTION PLANE" title={t("guardrails.executionQuestion")} />
-                <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label={t("guardrails.executionQuestion")}>
+                <div className="grid gap-2" role="radiogroup" aria-label={t("guardrails.executionQuestion")}>
                   <ChoiceCard checked={state.defaultExecutor === "sentinel-managed"} disabled={selectedRepository?.archived === true} icon={<Cloud aria-hidden size={17} />} title="Sentinel managed" meta="APP TOKEN" description={t("guardrails.managedEnrollmentDescription")} onSelect={() => setState((current) => ({ ...current, defaultExecutor: "sentinel-managed" }))} />
-                  <ChoiceCard checked={state.defaultExecutor === "github-actions"} disabled={selectedRepository?.archived === true} icon={<Workflow aria-hidden size={17} />} title="GitHub Actions" meta="CALLER PINNED" description={t("guardrails.actionsEnrollmentDescription")} onSelect={() => setState((current) => ({ ...current, defaultExecutor: "github-actions" }))} />
                 </div>
               </div>
 

@@ -8,6 +8,9 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Added
 
+- Follow all current and future branches without maintaining a fixed selection. Initial state and duplicate heads do not trigger redundant scans.
+- New GitHub enrollment and monitoring flows use Sentinel execution with supported subscription/API connections; existing Actions configurations remain compatible.
+
 - Searchable GitHub branch lists for monitoring and Actions filters, with multiple selection, retry and preserved saved selections.
 - Actions executor descriptions identify Codex Security, its CLI execution on the runner and the required repository credential.
 

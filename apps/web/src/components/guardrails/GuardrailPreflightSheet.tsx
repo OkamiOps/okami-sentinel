@@ -35,7 +35,7 @@ import {
   targetFromDraft,
   type GuardrailTargetDraft,
 } from "../../lib/guardrails-target";
-import { AlertBanner } from "../ui";
+import { AlertBanner, cx } from "../ui";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -77,7 +77,7 @@ export function GuardrailPreflightSheet({
   const [draft, setDraft] = useState<GuardrailTargetDraft>(() => selected
     ? initialGuardrailTargetDraft(selected)
     : { kind: "compare", pullRequestNumber: "", baseRef: "main", headRef: "HEAD" });
-  const [executor, setExecutor] = useState<GateExecutorKind>(selected?.defaultExecutor ?? "sentinel-managed");
+  const [executor, setExecutor] = useState<GateExecutorKind>("sentinel-managed");
   const [preview, setPreview] = useState<GuardrailTargetPreview | null>(null);
   const [acceptedFingerprint, setAcceptedFingerprint] = useState<string | null>(null);
   const [idempotencyKey, setIdempotencyKey] = useState<string | null>(null);
@@ -162,7 +162,7 @@ export function GuardrailPreflightSheet({
     if (!repository) return;
     setRepositoryKey(repository.repositoryKey);
     setDraft(initialGuardrailTargetDraft(repository));
-    setExecutor(repository.defaultExecutor);
+    setExecutor("sentinel-managed");
     setPreview(null);
     setAcceptedFingerprint(null);
     setIdempotencyKey(null);
@@ -348,7 +348,7 @@ export function GuardrailPreflightSheet({
     if (!repository) return;
     setRepositoryKey(value);
     setDraft(initialGuardrailTargetDraft(repository));
-    setExecutor(repository.defaultExecutor);
+    setExecutor("sentinel-managed");
     setPreview(null);
     setAcceptedFingerprint(null);
     setIdempotencyKey(null);
@@ -647,9 +647,9 @@ export function GuardrailPreflightSheet({
             {selected?.source === "github" && (
               <section aria-labelledby="preflight-executor-title">
                 <StepHeading code="04 / EXECUTION PLANE" id="preflight-executor-title" title={t("guardrails.executorTitle")} />
-                <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label={t("guardrails.executorTitle")}>
+                <div className={cx("grid gap-2", selected.defaultExecutor === "github-actions" && "sm:grid-cols-2")} role="radiogroup" aria-label={t("guardrails.executorTitle")}>
                   <ChoiceCard checked={executor === "sentinel-managed"} icon={<Cloud aria-hidden size={17} />} title="Sentinel managed" meta="IMMUTABLE SNAPSHOT" description={t("guardrails.managedDescription")} onSelect={() => selectExecutor("sentinel-managed")} />
-                  <ChoiceCard checked={executor === "github-actions"} icon={<Workflow aria-hidden size={17} />} title="GitHub Actions" meta="PINNED CALLER" description={t("guardrails.actionsDescription")} onSelect={() => selectExecutor("github-actions")} />
+                  {selected.defaultExecutor === "github-actions" && <ChoiceCard checked={executor === "github-actions"} icon={<Workflow aria-hidden size={17} />} title="GitHub Actions" meta="PINNED CALLER" description={t("guardrails.actionsDescription")} onSelect={() => selectExecutor("github-actions")} />}
                 </div>
                 {managedFallback && <div className="mt-3 border border-primary/40 bg-primary/[.06] px-4 py-3 text-xs leading-5 text-muted-foreground"><span className="font-semibold text-primary">Sentinel managed</span> · {t("guardrails.managedFallbackReady")}</div>}
               </section>

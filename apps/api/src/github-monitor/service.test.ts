@@ -247,3 +247,25 @@ test("branch picker paginates enrolled remote branches and rejects unknown repos
   await assert.rejects(service.availableBranches("github:unknown"));
   assert.equal(paths.length, 2);
 });
+
+test("following all branches catches newly created branches without scanning the initial inventory or duplicate heads", async () => {
+  const remote = repository("github:all-branches-test", "all-branches-test");
+  const branches = [{ name: "main", commit: { sha: SHA_A } }];
+  const launches: string[] = [];
+  const service = new GitHubMonitorService({
+    listRepositories: () => [remote],
+    readRepositoryJson: async (_repository, path) => path.startsWith("/branches?") ? branches : path.startsWith("/pulls?") ? [] : { workflow_runs: [] },
+    startAutomatic: async ({ event }) => { launches.push(event.headSha); return { gateId: `all-${event.headSha}`, headSha: event.headSha }; },
+  });
+  service.createRule({ repositoryKey: remote.repositoryKey, executor: "sentinel-managed", scanner: scanner(), costCeilingUsd: 1, dailyCostCeilingUsd: 5, followBranches: ["*"], checkoutMode: "none", enabled: true });
+  await service.poll(remote.repositoryKey);
+  assert.deepEqual(launches, []);
+  branches.push({ name: "feature/created-after-setup", commit: { sha: SHA_B } });
+  await service.poll(remote.repositoryKey);
+  assert.deepEqual(launches, [SHA_B]);
+  await service.poll(remote.repositoryKey);
+  assert.deepEqual(launches, [SHA_B]);
+  branches.push({ name: "another-name-same-head", commit: { sha: SHA_B } });
+  await service.poll(remote.repositoryKey);
+  assert.deepEqual(launches, [SHA_B]);
+});

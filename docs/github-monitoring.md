@@ -24,9 +24,9 @@ dados antigos como recém-atualizados.
 
 ## Scans automáticos com orçamento
 
-1. Selecione na lista carregada do GitHub as branches cujos pushes devem ser acompanhados. A busca filtra nomes existentes; seleções antigas são preservadas e podem ser removidas. PRs novos e
+1. Escolha **Todas as branches, incluindo novas** para acompanhar automaticamente branches criadas depois, ou selecione branches específicas na lista do GitHub. A busca filtra nomes existentes; seleções antigas são preservadas e podem ser removidas. PRs novos e
    atualizados também podem entrar na fila.
-2. Escolha o executor: **Sentinel** ou **GitHub Actions**.
+2. O scan é executado pelo **Sentinel**, usando a conexão de modelo selecionada. Configurações antigas de Actions continuam acessíveis para compatibilidade.
 3. Configure um teto em USD por scan e a reserva máxima diária em USD.
 4. Configure a rota do scanner ou a policy remota, conforme o executor.
 5. Ative a automação. O primeiro sincronismo estabelece o estado inicial sem
@@ -95,3 +95,19 @@ Este adapter suporta apenas Codex Security. Ele não executa os workers de
 Mantis/VulnHunter nem reutiliza conexões locais como MiniMax. A integração não
 é uma execução sem CLI. O workflow está fixado por SHA, mas a resolução do
 pacote `@openai/codex-security` via npx ainda não fixa uma versão.
+
+## Direção de execução e novas branches
+
+Novas configurações usam o Sentinel como executor para aproveitar conexões de
+assinatura e API compatíveis. O GitHub fornece snapshots, PRs, branches e
+atividade do Actions; a sessão do modelo permanece no ambiente do Sentinel.
+Não há cópia de credenciais de assinatura para runners GitHub. Regras e
+repositórios antigos configurados para Actions mantêm sua execução, sem
+migração automática nem exclusão de histórico.
+
+**Todas as branches, incluindo novas** é persistido como um acompanhamento
+dinâmico: uma branch criada após o primeiro sincronismo entra na próxima
+consulta. Alterar o modo cria uma nova referência inicial sem scans retroativos.
+Um SHA já observado não inicia outra análise só por aparecer com outro nome.
+Os mesmos tetos por scan e diário continuam valendo. O monitor precisa da API
+do Sentinel ligada; sessões de assinatura precisam continuar autenticadas.
