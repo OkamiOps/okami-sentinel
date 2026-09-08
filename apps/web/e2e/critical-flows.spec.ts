@@ -229,7 +229,7 @@ test("mobile module navigation closes the menu and reveals the destination", asy
   await page.getByRole("button", { name: translate("en", "shell.openModules"), exact: true }).click();
   const menu = page.getByRole("dialog");
   await expect(menu).toBeVisible();
-  await menu.getByRole("link", { name: `06 ${translate("en", "nav.activity")}`, exact: true }).click();
+  await menu.locator('a[href="/activity"]').click();
   await expect(page).toHaveURL(/\/activity$/);
   await expect(menu).toBeHidden();
   await expect(page.locator("main")).toBeVisible();
