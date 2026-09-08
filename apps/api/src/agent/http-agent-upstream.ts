@@ -46,7 +46,7 @@ import { WORKSPACE_TOOL_WIRE_CODEC } from "./workspace-tool-wire-codec.js";
  */
 export const HTTP_AGENT_BODY_LIMIT_BYTES = 16_777_216;
 
-/** The scan/session AbortSignal is the authoritative liveness deadline. */
+/** Cancellation (and any explicitly configured deadline) comes from the session signal. */
 export const HTTP_AGENT_TRANSPORT_TIMEOUTS = Object.freeze({
   headersTimeout: 0,
   bodyTimeout: 0,
@@ -59,7 +59,7 @@ interface LongHorizonTransportDependencies {
   dispatcher: UndiciDispatcher;
 }
 
-/** Avoids Undici's shorter 300s defaults without weakening the bounded scan deadline. */
+/** Slow model responses must not expire under Undici's shorter 300s defaults. */
 export function createLongHorizonHttpAgentTransport(
   dependencies: LongHorizonTransportDependencies = {
     fetch: undiciFetch,

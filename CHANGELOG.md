@@ -8,6 +8,8 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Fixed
 
+- Portable Codex Security scans no longer expire after a fixed elapsed time in Standard or Deep mode. Manual cancellation and configured cost, turn, tool and byte limits remain enforced.
+
 - Registering an already enrolled repository now returns a conflict instead of overwriting its name, executor or settings. GitHub repositories already enrolled are identified and disabled in the registration picker.
 
 ### Added

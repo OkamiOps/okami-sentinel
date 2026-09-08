@@ -153,8 +153,8 @@ function isConfigurationShape(value: unknown): value is Record<string, unknown> 
     !onlyKeys(value.limits, [
       "totalTimeoutMs", "maxModelTurns", "maxToolCalls", "maxInputBytes", "maxOutputBytes",
     ]) ||
-    !Object.values(value.limits).every((item) =>
-      typeof item === "number" && Number.isSafeInteger(item) && item > 0,
+    !Object.entries(value.limits).every(([key, item]) =>
+      typeof item === "number" && Number.isSafeInteger(item) && item >= (key === "totalTimeoutMs" ? 0 : 1),
     ) ||
     (value.reasoningEffort !== undefined && !safeText(value.reasoningEffort, 64)) ||
     (value.costBudget !== undefined && !validCostBudget(value.costBudget))

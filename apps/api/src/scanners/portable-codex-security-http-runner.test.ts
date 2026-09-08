@@ -948,6 +948,7 @@ test("Portable Codex Security rejects an incomplete cost quote before its first 
 test("Portable Codex Security stops before the next agent event when the frozen cost ceiling is reached", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-cost-limit-"));
   const config = configuration(root);
+  config.limits.totalTimeoutMs = 0;
   config.costBudget = costBudget();
   let sessions = 0;
   let cancelCalls = 0;
@@ -1099,4 +1100,27 @@ test("Portable Codex Security never persists or logs private credential material
   } finally {
     remove(root);
   }
+});
+
+
+test("Portable untimed scans finish all stages after more than 90 minutes", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-untimed-"));
+  const config = configuration(root);
+  config.limits.totalTimeoutMs = 0;
+  let clockMs = 0;
+  const specs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }> = [];
+  const factory = stageSessionFactory(specs);
+  try {
+    await runPortableCodexSecurity(config, dependencies({
+      clockMs: () => clockMs,
+      createSession: async (input: Parameters<typeof factory>[0]) => {
+        clockMs += 24 * 60 * 60_000;
+        return factory(input);
+      },
+    }));
+    assert.equal(specs.length, 5); // Empty discovery skips candidate assessment.
+    assert.ok(specs.every(({ spec }) => spec.limits.timeoutMs === 0));
+    const runtime = JSON.parse(fs.readFileSync(path.join(config.outputDir, "portable-codex-security-runtime.json"), "utf8"));
+    assert.equal(runtime.status, "completed");
+  } finally { remove(root); }
 });

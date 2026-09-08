@@ -166,21 +166,23 @@ const PORTABLE_LIMIT_BYTES = {
 
 type PortableExecutionBudgetTier = "constrained" | "balanced" | "extended" | "maximum";
 
+// Scans have no wall-clock expiry. Zero is serialized explicitly to workers;
+// cost ceilings, bounded tool/model work and user cancellation remain active.
 const PORTABLE_EXECUTION_LIMITS: Record<
   ScanMode,
   Record<PortableExecutionBudgetTier, Omit<PortableCodexSecurityExecutionLimits, keyof typeof PORTABLE_LIMIT_BYTES>>
 > = {
   standard: {
-    constrained: { totalTimeoutMs: 1_200_000, maxModelTurns: 24, maxToolCalls: 96 },
-    balanced: { totalTimeoutMs: 1_800_000, maxModelTurns: 32, maxToolCalls: 128 },
-    extended: { totalTimeoutMs: 2_700_000, maxModelTurns: 48, maxToolCalls: 192 },
-    maximum: { totalTimeoutMs: 3_600_000, maxModelTurns: 64, maxToolCalls: 256 },
+    constrained: { totalTimeoutMs: 0, maxModelTurns: 24, maxToolCalls: 96 },
+    balanced: { totalTimeoutMs: 0, maxModelTurns: 32, maxToolCalls: 128 },
+    extended: { totalTimeoutMs: 0, maxModelTurns: 48, maxToolCalls: 192 },
+    maximum: { totalTimeoutMs: 0, maxModelTurns: 64, maxToolCalls: 256 },
   },
   deep: {
-    constrained: { totalTimeoutMs: 5_400_000, maxModelTurns: 48, maxToolCalls: 384 },
-    balanced: { totalTimeoutMs: 5_400_000, maxModelTurns: 64, maxToolCalls: 512 },
-    extended: { totalTimeoutMs: 5_400_000, maxModelTurns: 96, maxToolCalls: 768 },
-    maximum: { totalTimeoutMs: 5_400_000, maxModelTurns: 128, maxToolCalls: 1_024 },
+    constrained: { totalTimeoutMs: 0, maxModelTurns: 48, maxToolCalls: 384 },
+    balanced: { totalTimeoutMs: 0, maxModelTurns: 64, maxToolCalls: 512 },
+    extended: { totalTimeoutMs: 0, maxModelTurns: 96, maxToolCalls: 768 },
+    maximum: { totalTimeoutMs: 0, maxModelTurns: 128, maxToolCalls: 1_024 },
   },
 };
 

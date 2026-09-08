@@ -86,6 +86,7 @@ import {
 } from "../model-pricing.js";
 
 export interface PortableCodexSecurityExecutionLimits {
+  /** Zero disables the scan-wide wall-clock deadline. */
   totalTimeoutMs: number;
   maxModelTurns: number;
   maxToolCalls: number;
@@ -851,7 +852,7 @@ function sessionLimits(
     maxToolCalls: limits.maxToolCalls,
     maxInputBytes: limits.maxInputBytes,
     maxOutputBytes: limits.maxOutputBytes,
-    timeoutMs: Math.max(1, Math.floor(remainingMs)),
+    timeoutMs: Number.isFinite(remainingMs) ? Math.max(1, Math.floor(remainingMs)) : 0,
   };
   validateAgentSessionLimits(result);
   return result;
@@ -932,12 +933,12 @@ function createTotalDeadline(
   clockMs: () => number = Date.now,
 ): TotalDeadline {
   const controller = new AbortController();
-  const deadlineAt = clockMs() + timeoutMs;
+  const deadlineAt = timeoutMs === 0 ? Infinity : clockMs() + timeoutMs;
   let timeoutElapsed = false;
   const forwardAbort = () => controller.abort();
   if (signal.aborted) forwardAbort();
   else signal.addEventListener("abort", forwardAbort, { once: true });
-  const timer = setTimeout(() => {
+  const timer = timeoutMs === 0 ? undefined : setTimeout(() => {
     timeoutElapsed = true;
     controller.abort();
   }, timeoutMs);
@@ -946,7 +947,7 @@ function createTotalDeadline(
     timedOut: () => timeoutElapsed || clockMs() >= deadlineAt,
     remainingMs: () => Math.max(0, deadlineAt - clockMs()),
     dispose() {
-      clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
       signal.removeEventListener("abort", forwardAbort);
     },
   };
@@ -1057,7 +1058,8 @@ function validLimits(value: unknown): value is PortableCodexSecurityExecutionLim
   const maxToolCalls = value.maxToolCalls;
   const maxInputBytes = value.maxInputBytes;
   const maxOutputBytes = value.maxOutputBytes;
-  if (![totalTimeoutMs, maxModelTurns, maxToolCalls, maxInputBytes, maxOutputBytes].every(
+  if (typeof totalTimeoutMs !== "number" || !Number.isSafeInteger(totalTimeoutMs) || totalTimeoutMs < 0) return false;
+  if (![maxModelTurns, maxToolCalls, maxInputBytes, maxOutputBytes].every(
     (item) => typeof item === "number" && Number.isSafeInteger(item) && item > 0,
   )) return false;
   const safeLimits: PortableCodexSecurityExecutionLimits = {

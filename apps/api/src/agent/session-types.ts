@@ -97,6 +97,7 @@ export interface AgentSessionLimits {
   maxToolCalls: number;
   maxInputBytes: number;
   maxOutputBytes: number;
+  /** Zero disables elapsed-time expiration; cancellation and usage limits still apply. */
   timeoutMs: number;
 }
 
@@ -361,7 +362,7 @@ export function validateAgentSessionLimits(limits: AgentSessionLimits): void {
   ];
   for (const [key, maximum] of entries) {
     const value = limits[key];
-    if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) {
+    if (!Number.isSafeInteger(value) || value < (key === "timeoutMs" ? 0 : 1) || value > maximum) {
       throw new AgentSessionError("runner_invalid_spec");
     }
   }
@@ -395,9 +396,10 @@ class ConstrainedWireSession implements AgentSession {
   async *run(): AsyncIterable<AgentEvent> {
     if (this.#started) throw new AgentSessionError("runner_invalid_spec");
     this.#started = true;
-    this.#deadline = this.#now() + this.#options.limits.timeoutMs;
+    this.#deadline = this.#options.limits.timeoutMs === 0
+      ? null : this.#now() + this.#options.limits.timeoutMs;
     const detachAbort = this.#attachExternalAbort();
-    const timeout = this.#timer.setTimeout(
+    const timeout = this.#deadline === null ? undefined : this.#timer.setTimeout(
       () => {
         this.#timedOut = true;
         this.#controller.abort();
@@ -765,7 +767,7 @@ class ConstrainedWireSession implements AgentSession {
       this.#completed = true;
       throw failure;
     } finally {
-      this.#timer.clearTimeout(timeout);
+      if (timeout !== undefined) this.#timer.clearTimeout(timeout);
       detachAbort();
     }
   }

@@ -2914,3 +2914,38 @@ for (const limit of ["tools", "output"] as const) {
     assert.equal(requests, 1);
   });
 }
+
+
+test("untimed sessions survive elapsed wall time and remain cancellable", async () => {
+  let now = 0;
+  const started = deferred<void>();
+  const controller = new AbortController();
+  const session = createConstrainedWireSession({
+    limits: { ...DEFAULT_AGENT_LIMITS, timeoutMs: 0 },
+    signal: controller.signal,
+    host: noToolHost(),
+    upstream: {
+      async request() {
+        now = 24 * 60 * 60_000;
+        started.resolve();
+        return await new Promise<never>(() => {});
+      },
+      async cancel() { return true; },
+    },
+    adapter: finalOnlyAdapter(),
+    now: () => now,
+    timer: {
+      setTimeout(callback, delay) {
+        assert.equal(controller.signal.aborted, true, "no deadline before cancellation");
+        return setTimeout(callback, delay);
+      },
+      clearTimeout(handle) { clearTimeout(handle as ReturnType<typeof setTimeout>); },
+    },
+  });
+  const events: unknown[] = [];
+  const running = collect(session.run(), events);
+  await started.promise;
+  controller.abort();
+  await running;
+  assert.equal(events.some((event) => isCancellation(event, true)), true);
+});
