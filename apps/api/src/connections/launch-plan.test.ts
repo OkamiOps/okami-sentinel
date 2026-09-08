@@ -92,6 +92,7 @@ function fixture(
     connection?: StoredProviderConnection | null;
     model?: ProviderModel | null;
     probe?: CapabilityReport | null;
+    runtimeMode?: "local" | "server";
   } = {},
 ) {
   const snapshots: ScanConnectionSnapshot[] = [];
@@ -112,6 +113,7 @@ function fixture(
         : null,
     writeSnapshot: (snapshot) => snapshots.push(snapshot),
     now: () => NOW,
+    runtimeMode: overrides.runtimeMode,
   });
   return { resolver, snapshots };
 }
@@ -368,6 +370,49 @@ test("Codex Security maps existing Native routes without reading a vault", () =>
     },
   }).scannerAuthMode, "api-key");
 
+});
+
+test("server launch resolution selects Codex HTTP Portable and blocks native runtimes before snapshot", () => {
+  const http = fixture({ runtimeMode: "server" });
+  const selection = {
+    connectionId: "conn-a",
+    modelSelectionMode: "catalog" as const,
+    modelId: "model-a",
+  };
+  const plan = http.resolver.resolve({
+    scanId: "scan-server-portable",
+    engine: "codex-security",
+    selection,
+  });
+  assert.equal(plan.runnerKind, "agent-session");
+  assert.equal(plan.execution?.executionProfile, "portable");
+
+  assert.throws(() => http.resolver.resolve({
+    scanId: "scan-server-native-request",
+    engine: "codex-security",
+    selection,
+    executionProfilePreference: "native",
+  }), (error: unknown) =>
+    error instanceof LaunchPlanError && error.code === "codex_native_contract_unavailable");
+
+  const native = fixture({
+    runtimeMode: "server",
+    connection: connection({
+      routeKind: "openai-chatgpt-app-server",
+      transport: "codex-app-server",
+      authKind: "device-code",
+      protocol: "codex-app-server",
+      credentialRef: null,
+    }),
+    probe: null,
+  });
+  assert.throws(() => native.resolver.resolve({
+    scanId: "scan-server-native-runtime",
+    engine: "vulnhunter",
+    selection,
+  }), (error: unknown) =>
+    error instanceof LaunchPlanError && error.code === "runner_capability_missing");
+  assert.deepEqual(native.snapshots, []);
 });
 
 test("Codex Security persists its Portable profile and exact capability ID from server facts", () => {

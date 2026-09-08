@@ -101,8 +101,9 @@ export function refreshPortableCodexSecurityRunFromDisk(run: ScanRun): ScanRun {
   if (run.engine !== "codex-security" || run.execution?.executionProfile !== "portable") {
     return run;
   }
-  // Cancellation is authoritative while an old worker runtime may still say running.
-  if (run.status === "cancelled") return run;
+  // A cancellation or server-restart interruption is authoritative while an
+  // old worker runtime may still say running.
+  if (run.status === "cancelled" || run.status === "incomplete") return run;
   const runtime = readPortableCodexSecurityRuntime(run.scanDir);
   const severity = countSeverity(path.join(run.scanDir, "findings.json")) ?? run.severity;
   if (

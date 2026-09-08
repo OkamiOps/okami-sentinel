@@ -185,6 +185,12 @@ export function getDb(): Database.Database {
   return db;
 }
 
+export function closeDb(): void {
+  if (!db) return;
+  db.close();
+  db = null;
+}
+
 export function ensureRunMetadataColumns(database: Database.Database): void {
   const columns = new Set(
     (database.prepare(`PRAGMA table_info(runs)`).all() as Array<{ name: string }>).map(

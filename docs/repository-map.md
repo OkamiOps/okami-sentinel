@@ -11,6 +11,8 @@ installed dependencies, and engineering reports have different lifecycles.
 | `apps/web/e2e` | Browser regressions; separate mocked and real-API suites | Real-API tests use a temporary SQLite database and controlled executable, never a real provider. |
 | `packages` | Shared contracts and reusable gate core/runtime | Preserve API and web contract compatibility. |
 | `scripts` | Repository checks and isolated E2E supervision | No production-only test routes or credentials. |
+| `scripts/docker` | Operator setup, health/volume initialization and isolated container QA | Only health and volume initialization enter the runtime image. HTTP fixtures are mounted into disposable QA containers, never shipped in production. |
+| `Dockerfile`, `compose*.yaml` | Optional Linux server distribution | Preserve the pnpm installation. Keep credentials and host state outside the build context; one replica per SQLite volume. |
 | `docs/architecture` | Dated product and security design records | Historical design intent, not proof that every proposed feature is implemented. Validate against source and tests. |
 | `data` | Local database, scan evidence, engine state and caches | Ignored except `.gitkeep`. Never clean indiscriminately; retention needs an explicit policy and recovery path. |
 | `node_modules`, `.pnpm-store` | Installed packages and pnpm store | Ignored and reproducible. Apparent sizes can overlap through shared files. |

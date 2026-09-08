@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 
+import { DATA_DIR } from "./config.js";
 import { ConnectionStore } from "./connections-store.js";
 import {
   createConnectionsService,
@@ -28,6 +29,7 @@ import {
   type XaiOAuthTransport,
 } from "./connections/xai-oauth-flow.js";
 import type { CredentialVault, SecretRedactorRegistry } from "./credentials/credential-vault.js";
+import { EncryptedSecretStore } from "./credentials/encrypted-secret-store.js";
 import { createSystemCredentialVault } from "./credentials/system-credential-vault.js";
 import { SystemXaiOAuthCredentialStore } from "./credentials/system-xai-oauth-credential-store.js";
 import { globalSecretRedactor } from "./redaction.js";
@@ -56,6 +58,11 @@ export interface ProviderRuntimeDependencies {
   oauthSleep?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   redactor?: SecretRedactorRegistry;
   now?: () => Date;
+  /** Server composition uses one shared encrypted backend for connection and OAuth secrets. */
+  runtimeMode?: "local" | "server";
+  encryptedStore?: EncryptedSecretStore;
+  dataDir?: string;
+  vaultKeyFile?: string;
   routeDependencies?: Pick<RouteRegistryDependencies, "codex" | "local" | "http" | "cursor">;
 }
 
@@ -67,10 +74,30 @@ export function createProviderRuntime(
   dependencies: ProviderRuntimeDependencies = {},
 ): ProviderRuntime {
   const redactor = dependencies.redactor ?? globalSecretRedactor;
-  const vault = dependencies.vault ?? createSystemCredentialVault({ redactor });
+  const runtimeMode = dependencies.runtimeMode ?? configuredRuntimeMode();
+  const needsEncryptedStore = dependencies.vault === undefined || dependencies.xaiCredentialStore === undefined;
+  const encryptedStore = dependencies.encryptedStore ?? (runtimeMode === "server" && needsEncryptedStore
+    ? new EncryptedSecretStore({
+      dataDir: dependencies.dataDir ?? DATA_DIR,
+      keyFile: dependencies.vaultKeyFile ?? process.env.CSB_VAULT_KEY_FILE?.trim() ?? "",
+    })
+    : undefined);
+  const vault = dependencies.vault ?? createSystemCredentialVault({
+    redactor,
+    runtimeMode,
+    encryptedStore,
+    dataDir: dependencies.dataDir,
+    vaultKeyFile: dependencies.vaultKeyFile,
+  });
   const store = new ConnectionStore(dependencies.database);
   const xaiCredentialStore = dependencies.xaiCredentialStore ??
-    new SystemXaiOAuthCredentialStore({ redactor });
+    new SystemXaiOAuthCredentialStore({
+      redactor,
+      runtimeMode,
+      encryptedStore,
+      dataDir: dependencies.dataDir,
+      vaultKeyFile: dependencies.vaultKeyFile,
+    });
   const xaiFlow = createXaiOAuthFlow({
     transport: dependencies.xaiTransport ?? createXaiOAuthHttpTransport(),
     credentialStore: xaiCredentialStore,
@@ -115,6 +142,7 @@ export function createProviderRuntime(
       store.getLatestCapabilityCheck(connectionId, modelId, protocol),
     writeSnapshot: (snapshot) => store.writeSnapshot(snapshot),
     now: dependencies.now,
+    runtimeMode,
   });
   const compatibility = createScanCompatibilityResolver({
     getConnection: (id) => store.get(id),
@@ -122,6 +150,7 @@ export function createProviderRuntime(
     getLatestCapabilityCheck: (connectionId, modelId, protocol) =>
       store.getLatestCapabilityCheck(connectionId, modelId, protocol),
     now: dependencies.now,
+    runtimeMode,
   });
 
   return {
@@ -136,6 +165,10 @@ export function createProviderRuntime(
       getAccessToken: (connectionId, signal) => xaiFlow.getAccessToken(connectionId, signal),
     },
   };
+}
+
+function configuredRuntimeMode(): "local" | "server" {
+  return process.env.CSB_RUNTIME_MODE?.trim() === "server" ? "server" : "local";
 }
 
 let processRuntime: ProviderRuntime | undefined;

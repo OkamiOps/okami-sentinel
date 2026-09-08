@@ -185,7 +185,9 @@ flowchart LR
 | Shared contracts | Cross-package types and schemas | `packages/shared` |
 | Metadata | SQLite | `data/benchmark.db` |
 
-## Requirements
+## Install with pnpm
+
+The local desktop mode requires:
 
 - Node.js `24.x` (`>=24 <25`)
 - pnpm `11.5.2`
@@ -199,8 +201,6 @@ flowchart LR
   - Claude Code local session and Anthropic API;
   - Cursor local detection and Cursor Background Agents API;
   - OpenRouter, Gemini, DeepSeek, MiniMax Token Plan, Xiaomi MiMo Token Plan, and custom OpenAI- or Anthropic-compatible APIs.
-
-## Quick start
 
 ```bash
 git clone https://github.com/OkamiOps/okami-sentinel.git
@@ -238,6 +238,22 @@ claude auth login
 ```
 
 At startup, the API indexes compatible scans already present in the configured Codex Security state directory.
+
+## Docker self-hosting
+
+The Docker Compose deployment runs the UI, API, and workers in one Linux amd64 container with SQLite and private state in a named volume. Its base Compose file publishes no host port; the local override binds only `127.0.0.1:8787`, and a Dokploy domain routes HTTPS to the internal port.
+
+Docker Engine with Docker Compose v2 is required. Node and pnpm are not required on the host: the setup wrapper runs in a temporary Node 24 container.
+
+```bash
+git clone https://github.com/OkamiOps/okami-sentinel.git
+cd okami-sentinel
+sh scripts/docker/setup.sh
+docker compose --env-file .env.local -f compose.yaml -f compose.local.yaml up --build -d
+curl --fail http://127.0.0.1:8787/readyz
+```
+
+The setup creates secret files outside the checkout and does not print their values. Read the operational guides before hosting it: [Docker](docs/docker.md) and [Dokploy](docs/dokploy.md).
 
 ## Typical workflow
 

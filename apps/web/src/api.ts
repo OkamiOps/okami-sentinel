@@ -39,11 +39,18 @@ import type {
   UpdateProviderConnectionRequest,
 } from "@csb/shared";
 import { parseApiResponse } from "./lib/http.js";
+import {
+  API_BASE,
+  apiFetch,
+  createSecuritySessionClient,
+  securitySession,
+  type Fetcher,
+} from "./lib/security-session.js";
 
-const BASE = "/api";
+const BASE = API_BASE;
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await apiFetch(`${BASE}${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
@@ -53,14 +60,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return parseApiResponse<T>(res);
 }
 
-type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-
-export function createScanRoutingClient(fetcher: Fetcher = fetch): {
+export function createScanRoutingClient(fetcher?: Fetcher): {
   resolveCompatibility(body: ResolveScanCompatibilityRequest): Promise<ConnectionCompatibility>;
 } {
+  const csrf = fetcher ? createSecuritySessionClient(fetcher) : securitySession;
   return {
     async resolveCompatibility(body) {
-      return parseApiResponse<ConnectionCompatibility>(await fetcher(`${BASE}/connections/compatibility`, {
+      return parseApiResponse<ConnectionCompatibility>(await csrf.request(`${BASE}/connections/compatibility`, {
         method: "POST",
         headers: { Accept: "application/json", "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -70,7 +76,7 @@ export function createScanRoutingClient(fetcher: Fetcher = fetch): {
 }
 
 /** Keeps the CSRF token in the browser process only; public DTOs omit vault data. */
-export function createConnectionsClient(fetcher: Fetcher = fetch): {
+export function createConnectionsClient(fetcher?: Fetcher): {
   list(): Promise<ProviderConnection[]>;
   create(body: CreateProviderConnectionRequest): Promise<ProviderConnection>;
   update(id: string, body: UpdateProviderConnectionRequest): Promise<ProviderConnection>;
@@ -84,49 +90,27 @@ export function createConnectionsClient(fetcher: Fetcher = fetch): {
   cancelAuth(id: string, flowId: string): Promise<void>;
   disconnectAuth(id: string): Promise<ProviderDisconnectResponse["result"]>;
 } {
-  let csrfToken: Promise<string> | null = null;
-  const getCsrfToken = () => {
-    if (csrfToken === null) {
-      const pending = fetcher(`${BASE}/connections/security-session`, { headers: { Accept: "application/json" } })
-        .then((response) => parseApiResponse<{ csrfToken: string }>(response))
-        .then(({ csrfToken: token }) => token);
-      csrfToken = pending;
-      void pending.catch(() => {
-        if (csrfToken === pending) csrfToken = null;
-      });
-    }
-    return csrfToken;
-  };
-  const withCsrfRetry = async <T>(operation: (token: string) => Promise<T>): Promise<T> => {
-    try {
-      return await operation(await getCsrfToken());
-    } catch (error) {
-      if (!(error instanceof Error) || error.message !== "csrf_invalid") throw error;
-      csrfToken = null;
-      return operation(await getCsrfToken());
-    }
-  };
+  const rawFetch = fetcher ?? fetch;
+  const csrf = fetcher ? createSecuritySessionClient(fetcher) : securitySession;
   const read = async <T>(path: string): Promise<T> =>
-    parseApiResponse<T>(await fetcher(`${BASE}${path}`, { headers: { Accept: "application/json" } }));
+    parseApiResponse<T>(await rawFetch(`${BASE}${path}`, { headers: { Accept: "application/json" } }));
   const write = async <T>(path: string, method: "POST" | "PATCH" | "DELETE", body?: unknown): Promise<T> =>
-    withCsrfRetry(async (token) => parseApiResponse<T>(await fetcher(`${BASE}${path}`, {
+    parseApiResponse<T>(await csrf.request(`${BASE}${path}`, {
       method,
-      headers: { Accept: "application/json", "Content-Type": "application/json", "X-CSRF-Token": token },
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    })));
+    }));
   return {
     async list() { return (await read<ProviderConnectionsResponse>("/connections")).connections; },
     async create(body) { return (await write<ProviderConnectionResponse>("/connections", "POST", body)).connection; },
     async update(id, body) { return (await write<ProviderConnectionResponse>(`/connections/${encodeURIComponent(id)}`, "PATCH", body)).connection; },
     async remove(id) {
-      await withCsrfRetry(async (token) => {
-        const response = await fetcher(`${BASE}/connections/${encodeURIComponent(id)}`, {
-          method: "DELETE",
-          headers: { Accept: "application/json", "X-CSRF-Token": token },
-        });
-        if (response.status === 204) return;
-        await parseApiResponse<unknown>(response);
+      const response = await csrf.request(`${BASE}/connections/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: { Accept: "application/json" },
       });
+      if (response.status === 204) return;
+      await parseApiResponse<unknown>(response);
     },
     async listModels(id) {
       return (await read<ProviderModelsResponse>(`/connections/${encodeURIComponent(id)}/models`)).models;
@@ -304,13 +288,15 @@ export interface GuardrailCallerWorkflow {
   content: string;
 }
 
-export function createGuardrailsGitHubAppClient(fetcher: Fetcher = fetch) {
+export function createGuardrailsGitHubAppClient(fetcher?: Fetcher) {
+  const rawFetch = fetcher ?? fetch;
+  const csrf = fetcher ? createSecuritySessionClient(fetcher) : securitySession;
   const read = async <T>(path: string): Promise<T> =>
-    parseApiResponse<T>(await fetcher(`${BASE}${path}`, {
+    parseApiResponse<T>(await rawFetch(`${BASE}${path}`, {
       headers: { Accept: "application/json" },
     }));
   const post = async <T>(path: string): Promise<T> =>
-    parseApiResponse<T>(await fetcher(`${BASE}${path}`, {
+    parseApiResponse<T>(await csrf.request(`${BASE}${path}`, {
       method: "POST",
       headers: { Accept: "application/json", "Content-Type": "application/json" },
     }));
@@ -405,6 +391,7 @@ function scanListQuery(options: ScanListOptions = {}): string {
 }
 
 export const api = {
+  getSecuritySession: () => securitySession.get(),
   health: () => request<HealthResponse>("/health"),
   listConnections: () => connections.list(),
   createConnection: (body: CreateProviderConnectionRequest) => connections.create(body),

@@ -1,11 +1,16 @@
 import { createPrivateKey, randomUUID } from "node:crypto";
 
+import { DATA_DIR } from "../config.js";
 import type { SecretRedactorRegistry } from "./credential-vault.js";
 import { VaultError } from "./credential-vault.js";
+import { EncryptedSecretStore } from "./encrypted-secret-store.js";
 import type { NativeCredentialBackend } from "./system-credential-vault.js";
 
 const SERVICE = "com.okamiops.sentinel.scm.github-app";
+const ENCRYPTED_NAMESPACE = "scm/github-app";
 const IDENTIFIER = /^[A-Za-z0-9-]{1,100}$/;
+
+type RuntimeMode = "local" | "server";
 
 export interface GitHubAppCredentials {
   privateKeyPem: string;
@@ -21,19 +26,32 @@ export interface SystemGitHubAppCredentialStoreDependencies {
   redactor: SecretRedactorRegistry;
   loadBackend?: () => Promise<NativeCredentialBackend>;
   platform?: NodeJS.Platform;
+  runtimeMode?: RuntimeMode;
+  encryptedStore?: EncryptedSecretStore;
+  dataDir?: string;
+  vaultKeyFile?: string;
 }
 
-/** Native-only GitHub App private-key store, isolated from model credentials. */
+/** GitHub App private-key store, isolated from model credentials. */
 export class SystemGitHubAppCredentialStore implements GitHubAppCredentialStore {
   readonly #redactor: SecretRedactorRegistry;
   readonly #loadBackend: () => Promise<NativeCredentialBackend>;
   readonly #platform: NodeJS.Platform;
+  readonly #runtimeMode: RuntimeMode;
+  readonly #encryptedStore: EncryptedSecretStore | undefined;
   #backend: Promise<NativeCredentialBackend> | undefined;
 
   constructor(dependencies: SystemGitHubAppCredentialStoreDependencies) {
     this.#redactor = dependencies.redactor;
     this.#loadBackend = dependencies.loadBackend ?? loadKeytarBackend;
     this.#platform = dependencies.platform ?? process.platform;
+    this.#runtimeMode = dependencies.runtimeMode ?? configuredRuntimeMode();
+    this.#encryptedStore = this.#runtimeMode === "server"
+      ? dependencies.encryptedStore ?? new EncryptedSecretStore({
+        dataDir: dependencies.dataDir ?? DATA_DIR,
+        keyFile: dependencies.vaultKeyFile ?? process.env.CSB_VAULT_KEY_FILE?.trim() ?? "",
+      })
+      : undefined;
   }
 
   async put(connectionId: string, value: GitHubAppCredentials): Promise<void> {
@@ -48,18 +66,18 @@ export class SystemGitHubAppCredentialStore implements GitHubAppCredentialStore 
       throw new VaultError("credential_write_failed");
     }
 
-    let backend: NativeCredentialBackend;
     try {
-      backend = await this.#resolveBackend();
+      if (this.#runtimeMode === "server") {
+        await this.#resolveEncryptedStore().put(ENCRYPTED_NAMESPACE, id, credentials);
+      } else {
+        await (await this.#resolveBackend()).setPassword(SERVICE, id, JSON.stringify(credentials));
+      }
     } catch (error) {
-      safeUnregister(this.#redactor, pendingScope);
-      throw asVaultError(error, "secure_storage_unavailable");
-    }
-
-    try {
-      await backend.setPassword(SERVICE, id, JSON.stringify(credentials));
-    } catch {
       // Native rejection does not prove the write was not committed.
+      if (error instanceof VaultError) {
+        if (this.#runtimeMode !== "server") safeUnregister(this.#redactor, pendingScope);
+        throw error;
+      }
       throw new VaultError("credential_write_failed");
     }
     try {
@@ -73,26 +91,29 @@ export class SystemGitHubAppCredentialStore implements GitHubAppCredentialStore 
 
   async get(connectionId: string): Promise<GitHubAppCredentials | null> {
     const id = validConnectionId(connectionId);
-    let encoded: string | null;
     try {
-      encoded = await (await this.#resolveBackend()).getPassword(SERVICE, id);
-    } catch (error) {
-      throw asVaultError(error, "secure_storage_unavailable");
-    }
-    if (encoded === null) return null;
-    try {
-      const credentials = validCredentials(JSON.parse(encoded));
+      const value = this.#runtimeMode === "server"
+        ? await this.#resolveEncryptedStore().get(ENCRYPTED_NAMESPACE, id)
+        : await (await this.#resolveBackend()).getPassword(SERVICE, id);
+      if (value === null) return null;
+      const credentials = validCredentials(
+        typeof value === "string" ? JSON.parse(value) : value,
+      );
       this.#redactor.register(scopeFor(id), [credentials.privateKeyPem]);
       return { ...credentials };
-    } catch {
-      throw new VaultError("secure_storage_unavailable");
+    } catch (error) {
+      throw asVaultError(error, "secure_storage_unavailable");
     }
   }
 
   async delete(connectionId: string): Promise<void> {
     const id = validConnectionId(connectionId);
     try {
-      await (await this.#resolveBackend()).deletePassword(SERVICE, id);
+      if (this.#runtimeMode === "server") {
+        await this.#resolveEncryptedStore().delete(ENCRYPTED_NAMESPACE, id);
+      } else {
+        await (await this.#resolveBackend()).deletePassword(SERVICE, id);
+      }
       this.#redactor.unregister(scopeFor(id));
     } catch (error) {
       throw asVaultError(error, "secure_storage_unavailable");
@@ -111,6 +132,15 @@ export class SystemGitHubAppCredentialStore implements GitHubAppCredentialStore 
       throw new VaultError("secure_storage_unavailable");
     }
   }
+
+  #resolveEncryptedStore(): EncryptedSecretStore {
+    if (this.#encryptedStore === undefined) throw new VaultError("secure_storage_unavailable");
+    return this.#encryptedStore;
+  }
+}
+
+function configuredRuntimeMode(): RuntimeMode {
+  return process.env.CSB_RUNTIME_MODE?.trim() === "server" ? "server" : "local";
 }
 
 function validConnectionId(value: string): string {

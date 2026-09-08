@@ -93,6 +93,8 @@ function hasReasoningEffortCodec(
 
 export interface CompatibilityInput {
   engine: ScannerEngine;
+  /** Docker's first release supports only the proven HTTP scanner paths. */
+  runtimeMode?: "local" | "server";
   /** Stored callers supply the vault reference; generic HTTP callers may omit it. */
   connection: ProviderConnection & { credentialRef?: string | null };
   selection: ScanConnectionSelection;
@@ -137,6 +139,13 @@ export function resolveCompatibility(
   if (input.connection.status !== "ready") reasons.push("connection_not_ready");
   reasons.push(...selectionReasons(input));
   if (reasons.length > 0) return blocked(base, unique(reasons));
+
+  // Native Codex/Claude runtimes require a separately validated headless
+  // release. Keep server launch selection on the HTTP workers before any
+  // credential lookup or capability re-probe can occur.
+  if (input.runtimeMode === "server" && input.connection.transport !== "http-inference") {
+    return blocked(base, ["runner_capability_missing"]);
+  }
 
   if (input.engine === "codex-security") {
     const profiles = resolveCodexSecurityProfiles(input);
@@ -224,7 +233,7 @@ export interface CodexSecurityProfileResolution {
 export function resolveCodexSecurityProfiles(
   input: CompatibilityInput,
 ): CodexSecurityProfileResolution {
-  const native = isCodexSecurityRoute(input.connection);
+  const native = input.runtimeMode !== "server" && isCodexSecurityRoute(input.connection);
   const portableReasons = validateAgentProbe(input);
   const portable = input.connection.transport === "http-inference" &&
     portableReasons.length === 0 &&

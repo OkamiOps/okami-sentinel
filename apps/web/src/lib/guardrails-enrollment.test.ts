@@ -85,7 +85,9 @@ test("GitHub enrollment client calls only Guardrails GitHub App endpoints", asyn
   const calls: string[] = [];
   const fetcher: typeof fetch = async (input, init) => {
     calls.push(`${init?.method ?? "GET"} ${String(input)}`);
-    const body = String(input).endsWith("/manifest/start")
+    const body = String(input).endsWith("/security-session")
+      ? { csrfToken: "github-token", runtimeMode: "local", repositoryRoots: [] }
+      : String(input).endsWith("/manifest/start")
       ? { flowId: "flow-1", authorizeUrl: "/api/guardrails/github-app/manifest/authorize/flow-1" }
       : { connections: [] };
     return new Response(JSON.stringify(body), {
@@ -98,6 +100,7 @@ test("GitHub enrollment client calls only Guardrails GitHub App endpoints", asyn
   await client.listConnections();
 
   assert.deepEqual(calls, [
+    "GET /api/security-session",
     "POST /api/guardrails/github-app/manifest/start",
     "GET /api/guardrails/github-app/connections",
   ]);

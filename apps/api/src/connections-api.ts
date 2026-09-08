@@ -1,4 +1,5 @@
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
+import { securitySessionToken } from "./security-session.js";
 
 import { Hono, type Context } from "hono";
 import type {
@@ -35,7 +36,7 @@ export function createConnectionsApp(
     authFlows: supplied?.authFlows,
     compatibility: supplied?.compatibility,
   };
-  const csrfToken = randomBytes(32).toString("base64url");
+  const csrfToken = securitySessionToken;
   const connections = new Hono();
 
   connections.use("*", async (c, next) => {

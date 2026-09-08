@@ -83,8 +83,10 @@ export async function mockApi(page: Page, locale = "en") {
       if (match[2] === "report") return json({ scan: run, findings: state.reportFindings, regression, generatedAt: "2026-09-07T10:02:00Z" });
       if (match[2] === "events") return route.fulfill({ contentType: "text/event-stream", body: ": fixture\n\n" });
     }
+    if (path === "/security-session" || path === "/connections/security-session" || path === "/engine-updates/security-session") {
+      return json({ csrfToken: "fixture-token", runtimeMode: "local", repositoryRoots: [] });
+    }
     if (path === "/connections") return state.connectionsFail ? json({ error: "fixture unavailable" }, 503) : json({ connections: [state.connection] });
-    if (path === "/connections/security-session") return json({ csrfToken: "fixture-token" });
     if (path === "/connections/fixture-connection/models" || path === "/connections/fixture-connection/models/refresh") {
       if (state.modelsFail) return json({ error: "fixture unavailable" }, 503);
       const models = [{ connectionId: "fixture-connection", id: "fixture-model", displayName: "Fixture model", contextWindow: 8192, capabilities: {}, pricing: null, discoveredAt: "2026-09-07T10:00:00Z", source: "runtime" }];

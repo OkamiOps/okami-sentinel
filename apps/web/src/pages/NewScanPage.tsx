@@ -30,6 +30,7 @@ import type {
 } from "@csb/shared";
 import { api } from "../api";
 import { formatApiError } from "../lib/http";
+import { isUnderRepositoryRoot, type SecuritySession } from "../lib/security-session";
 import { AlertBanner, PageHeader, Panel, Readout, cx } from "../components/ui";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -169,6 +170,7 @@ export function NewScanPage() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [catalog, setCatalog] = useState<ScannerCatalogResponse | null>(null);
   const [fsState, setFsState] = useState<FsListResponse | null>(null);
+  const [securitySession, setSecuritySession] = useState<SecuritySession | null>(null);
   const [repositoryPath, setRepositoryPath] = useState(initial.repositoryPath ?? "");
   const [engine, setEngine] = useState<ScannerEngine>(initial.engine ?? "codex-security");
   const [connections, setConnections] = useState<ProviderConnection[] | null>(null);
@@ -279,18 +281,29 @@ export function NewScanPage() {
       })
       .catch((caught) =>
         setError(formatApiError(caught, t)),
-      );
+    );
     void loadConnections();
-    void api
-      .listFs(initial.repositoryPath || undefined)
-      .then((response) => {
-        setFsState(response);
-        setRepositoryPath((current) => current || response.path);
+    const loadFilesystem = (repositoryPath?: string, preserveSelectedPath = true) => {
+      void api
+        .listFs(repositoryPath)
+        .then((response) => {
+          setFsState(response);
+          setRepositoryPath((current) => preserveSelectedPath && current ? current : response.path);
+        })
+        .catch((caught) => setError(formatApiError(caught, t)));
+    };
+    void api.getSecuritySession()
+      .then((session) => {
+        setSecuritySession(session);
+        const canReuseSavedPath = session.runtimeMode !== "server"
+          || !initial.repositoryPath
+          || isUnderRepositoryRoot(initial.repositoryPath, session.repositoryRoots);
+        loadFilesystem(canReuseSavedPath ? initial.repositoryPath || undefined : undefined, canReuseSavedPath);
       })
-      .catch((caught) =>
-        setError(formatApiError(caught, t)),
-      );
+      .catch(() => loadFilesystem(initial.repositoryPath || undefined));
   }, [initial.repositoryPath, loadConnections, t]);
+
+  const serverMode = securitySession?.runtimeMode === "server";
 
   useEffect(() => {
     localStorage.setItem(
@@ -525,6 +538,17 @@ export function NewScanPage() {
       <form onSubmit={(event) => void submit(event)}>
         <div className="grid gap-4 xl:grid-cols-[minmax(18rem,.88fr)_minmax(36rem,1.45fr)_minmax(19rem,.78fr)]">
           <Panel label="STAGE 01 / TARGET" title={t("newScan.target")}>
+            {serverMode && (
+              <div className="border-b bg-info/[.045] px-4 py-3">
+                <div className="bench-label text-info">{t("newScan.serverRepositories")}</div>
+                <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">{t("newScan.serverRepositoriesDescription")}</p>
+                {securitySession.repositoryRoots.length > 0 && (
+                  <p className="mt-1 truncate font-mono text-[9px] text-muted-foreground" title={securitySession.repositoryRoots.join(", ")}>
+                    {securitySession.repositoryRoots.join(" · ")}
+                  </p>
+                )}
+              </div>
+            )}
             <div className="border-b p-4">
               <label className="bench-label" htmlFor="repo">
                 {t("newScan.absolutePath")}
@@ -539,7 +563,7 @@ export function NewScanPage() {
             </div>
             <div className="flex items-center justify-between border-b px-4 py-2">
               <span className="truncate font-mono text-[9px] text-muted-foreground">
-                FILESYSTEM / {fsState?.path ?? "LOADING"}
+                {serverMode ? t("newScan.serverRepositories") : "FILESYSTEM"} / {fsState?.path ?? "LOADING"}
               </span>
               {fsState?.parent && (
                 <Button type="button" variant="ghost" size="sm" onClick={() => void open(fsState.parent!)}>

@@ -497,7 +497,7 @@ export function prepareMantisHttpLaunch(input: MantisHttpLaunchInput): ScannerLa
     // API-key labels are accounting metadata here, never a request to source
     // an API key from this process. The worker reads either its selected vault
     // ref or the dedicated xAI OAuth resolver after plan revalidation.
-    env: explicitAuthEnvironment("chatgpt", { ...process.env, NO_COLOR: "1", CI: "1" }),
+    env: explicitAuthEnvironment("chatgpt", workerEnvironment()),
     displayCommand: `sentinel-mantis-http ${path.basename(configPath)}`,
   };
 }
@@ -599,11 +599,15 @@ function prepareVulnHunter(input: ScannerLaunchInput): ScannerLaunch {
 }
 
 function workerEnvironment(): NodeJS.ProcessEnv {
-  return {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     NO_COLOR: "1",
     CI: "1",
   };
+  // The HTTP worker resolves only its selected provider credential from the
+  // vault. It has no use for the application's Basic Auth password path.
+  delete env.CSB_ADMIN_PASSWORD_FILE;
+  return env;
 }
 
 const LOCAL_MANTIS_CHILD_ENV_KEYS = [
@@ -624,6 +628,12 @@ const PORTABLE_CODEX_SECURITY_CHILD_ENV_KEYS = [
   "TMP",
   "TEMP",
   "XDG_CONFIG_HOME",
+  "CSB_DATA_DIR",
+  "CSB_RUNTIME_MODE",
+  "CSB_PUBLIC_ORIGIN",
+  "CSB_VAULT_KEY_FILE",
+  "CODEX_SECURITY_STATE_DIR",
+  "CSB_BUNDLED_RUNTIME_DIR",
 ] as const;
 
 /**

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import { assertRepositoryAccess } from "./repository-access.js";
 import path from "node:path";
 
 import {
@@ -1207,7 +1208,7 @@ function requiredLocalRepositoryPath(repository: GuardrailRepository): string {
   if (repository.source !== "local" || repository.repositoryPath === null) {
     throw new Error("Gate local exige uma pasta de repositório configurada");
   }
-  return repository.repositoryPath;
+  return assertRepositoryAccess(repository.repositoryPath);
 }
 
 function localCostCeiling(

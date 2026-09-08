@@ -1,0 +1,11 @@
+services:
+  sentinel:
+    ports:
+      - "127.0.0.1:${CSB_LOCAL_PORT:-8787}:8787"
+    volumes:
+      - type: bind
+        source: ${CSB_REPOSITORY_PATH:?Defina o checkout que o Sentinel pode ler}
+        target: /repos/projeto
+        read_only: true
+        bind:
+          create_host_path: false

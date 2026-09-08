@@ -1,6 +1,8 @@
 import { Hono, type Context } from "hono";
+import path from "node:path";
+import { runtimeMode } from "./deployment-settings.js";
 
-import { GITHUB_APP_CALLBACK_URL, GITHUB_APP_LOCAL_ORIGIN } from "./config.js";
+import { GITHUB_APP_CALLBACK_URL, GITHUB_APP_LOCAL_ORIGIN, DATA_DIR } from "./config.js";
 import { SystemGitHubAppCredentialStore } from "./credentials/system-github-app-credential-store.js";
 import type {
   GitHubAppConnectionMetadata,
@@ -160,6 +162,10 @@ export function getSystemGitHubAppService(): GitHubAppService {
     flow: new GitHubAppManifestFlow({
       callbackUrl: GITHUB_APP_CALLBACK_URL,
       localOrigin: GITHUB_APP_LOCAL_ORIGIN,
+      ...(runtimeMode() === "server" ? {
+        serverOrigin: GITHUB_APP_LOCAL_ORIGIN,
+        stateFile: path.join(DATA_DIR, "github-manifest-flows.json"),
+      } : {}),
     }),
     credentials,
     client,

@@ -20,6 +20,7 @@ import {
   durationMs,
   findingCategoryMetricsAreCurrent,
   getRun,
+  listActiveRunIds,
   listRunsMissingFindingCategoryMetrics,
   listTerminalRunsMissingMetricArtifactIndex,
   listRuns,
@@ -1461,6 +1462,7 @@ export function importExternalScans(
 
 export function refreshRunFromDisk(id: string): ScanRun | null {
   const stored = getRun(id);
+  if (stored?.status === "incomplete") return stored;
   if (stored?.engine === "mantis") {
     const refreshed = withOpenRouterPricingEstimate(refreshMantisRunFromDisk(stored));
     persistRunWithFindingCategoryMetrics(refreshed, true);
@@ -1606,6 +1608,43 @@ export function reconcileRunningScans(): number {
     updated += 1;
   }
   return updated;
+}
+
+/**
+ * A server boot follows a container replacement: its PID namespace and every
+ * scanner child ended with the prior container. Reconcile terminal artifacts
+ * when present, then close every remaining active record as interrupted.
+ *
+ * This must not be used for the local API, where an API restart deliberately
+ * retains detached scanner children and their process identities.
+ */
+export function interruptActiveRunsAfterServerRestart(now = new Date()): number {
+  let updated = 0;
+  for (const id of listActiveRunIds()) {
+    const run = getRun(id);
+    if (run === null) continue;
+    const refreshed = refreshActiveRunFromDisk(run);
+    const terminal = refreshed.status === "completed" || refreshed.status === "cancelled"
+      ? refreshed
+      : {
+        ...refreshed,
+        status: "incomplete" as const,
+        completedAt: now.toISOString(),
+        durationMs: durationMs(refreshed.startedAt, now.toISOString()) ?? refreshed.durationMs,
+        pid: null,
+        progress: null,
+      };
+    persistRunWithFindingCategoryMetrics(terminal, true);
+    updated += 1;
+  }
+  return updated;
+}
+
+function refreshActiveRunFromDisk(run: ScanRun): ScanRun {
+  if (run.engine === "mantis") return refreshMantisRunFromDisk(run);
+  if (run.engine === "vulnhunter") return refreshVulnHunterRunFromDisk(run);
+  if (isPortableCodexSecurityRun(run)) return refreshPortableCodexSecurityRunFromDisk(run);
+  return refreshRunByScanDir(run.scanDir, run.id) ?? run;
 }
 
 function isPortableCodexSecurityRun(run: ScanRun): boolean {

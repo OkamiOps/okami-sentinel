@@ -74,9 +74,10 @@ export interface LaunchPlanResolver {
  * runner adapter after this boundary succeeds.
  */
 export function createLaunchPlanResolver(
-  dependencies: LaunchPlanStore & { now?: () => Date },
+  dependencies: LaunchPlanStore & { now?: () => Date; runtimeMode?: "local" | "server" },
 ): LaunchPlanResolver {
   const now = dependencies.now ?? (() => new Date());
+  const runtimeMode = dependencies.runtimeMode ?? "local";
   return {
     resolve(input) {
       const resolvedAt = now();
@@ -97,6 +98,7 @@ export function createLaunchPlanResolver(
 
       const compatibility = resolveCompatibility({
         engine: input.engine,
+        runtimeMode,
         connection,
         selection: input.selection,
         model,

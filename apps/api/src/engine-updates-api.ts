@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
+import { securitySessionToken } from "./security-session.js";
+import { publicOrigin, runtimeMode } from "./deployment-settings.js";
 import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -7,7 +9,7 @@ import { Hono } from "hono";
 import type { ManagedRuntimeId } from "@csb/shared";
 import {
   CODEX_SECURITY_NPM_CACHE_DIR, DATA_DIR, MANTIS_SOURCE_REF, VULNHUNTER_SOURCE_REF,
-  refreshManagedRuntimeCommands, resolveCodexBin,
+  refreshManagedRuntimeCommands, resolveCodexBin, getBundledRuntimeCommand,
 } from "./config.js";
 import {
   ENGINE_UPDATE_RESERVATION_PREFIX, engineUpdateBlockingReason, releaseScanCapacity,
@@ -33,7 +35,7 @@ export function createEngineUpdatesApp(supplied?: UpdatesService): Hono {
       invalidateScannerCatalog();
     },
   });
-  const token = randomBytes(32).toString("base64url");
+  const token = securitySessionToken;
   const app = new Hono();
   app.use("/engine-updates/*", async (c, next) => {
     c.header("Cache-Control", "no-store");
@@ -41,7 +43,10 @@ export function createEngineUpdatesApp(supplied?: UpdatesService): Hono {
     const origin = c.req.header("Origin");
     // This endpoint installs executable software; protect against rebinding
     // as well as cross-origin requests to the loopback API.
-    if (!LOCAL_HOSTS.has(url.hostname) || (origin && origin !== url.origin && !DEV_ORIGINS.has(origin))) {
+    const allowed = runtimeMode() === "server"
+      ? url.host === new URL(publicOrigin()).host && (!origin || origin === publicOrigin())
+      : LOCAL_HOSTS.has(url.hostname) && (!origin || origin === url.origin || DEV_ORIGINS.has(origin));
+    if (!allowed) {
       return c.json({ error: "origin_denied" }, 403);
     }
     if (!origin && c.req.header("Sec-Fetch-Site") === "cross-site") return c.json({ error: "origin_denied" }, 403);
@@ -138,6 +143,8 @@ export function acquireEngineMaintenance(): () => void {
 /** Never invoke npx here: a read-only status page must not install a CLI. */
 async function unmanagedRuntime(id: ManagedRuntimeId) {
   const explicit = (id === "codex-cli" ? process.env.CODEX_BIN : process.env.CODEX_SECURITY_BIN)?.trim();
+  const bundled = explicit ? null : getBundledRuntimeCommand(id);
+  if (bundled) return { ...bundled, source: "external" as const, explicitOverride: false };
   if (id === "codex-security" && !explicit) {
     return { command: null, source: "on-demand" as const, version: cachedSecurityVersion(), explicitOverride: false };
   }

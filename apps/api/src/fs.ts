@@ -2,10 +2,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { FsListResponse } from "@csb/shared";
+import { assertRepositoryAccess } from "./repository-access.js";
+import { repositoryRoots, runtimeMode } from "./deployment-settings.js";
 
 export function listDirectory(requested?: string): FsListResponse {
   const home = os.homedir();
-  const target = path.resolve(requested?.trim() || path.join(home, "Documents", "Git"));
+  const target = assertRepositoryAccess(requested?.trim() ||
+    (runtimeMode() === "server" ? repositoryRoots()[0] : path.join(home, "Documents", "Git")));
 
   if (!fs.existsSync(target)) {
     throw new Error(`Caminho não existe: ${target}`);
@@ -28,7 +31,8 @@ export function listDirectory(requested?: string): FsListResponse {
       return a.name.localeCompare(b.name);
     });
 
-  const parent = path.dirname(target);
+  let parent: string | null = path.dirname(target);
+  try { assertRepositoryAccess(parent); } catch { parent = null; }
   return {
     path: target,
     parent: parent !== target ? parent : null,

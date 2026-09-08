@@ -47,7 +47,6 @@ test("updates are checked and installed through the Sentinel-owned updater only"
     const request = route.request();
     const path = new URL(request.url()).pathname;
     calls.push({ path, method: request.method(), body: request.postDataJSON() ?? null, csrf: request.headers()["x-csrf-token"] ?? null });
-    if (path.endsWith("/security-session")) return route.fulfill({ json: { csrfToken: "fixture-updater-token" } });
     if (path.endsWith("/check")) {
       current = snapshot();
       return route.fulfill({ json: current });
@@ -75,7 +74,7 @@ test("updates are checked and installed through the Sentinel-owned updater only"
   await expect(codexRow.getByText("0.81.0", { exact: true })).toHaveCount(2);
   await expect(codexRow.getByRole("button", { name: "INSTALL 0.81.0 FOR SENTINEL" })).toHaveCount(0);
 
-  expect(calls).toContainEqual(expect.objectContaining({ path: "/api/engine-updates/check", method: "POST", body: {}, csrf: "fixture-updater-token" }));
-  expect(calls).toContainEqual(expect.objectContaining({ path: "/api/engine-updates/codex-cli/update", method: "POST", body: { version: "0.81.0" }, csrf: "fixture-updater-token" }));
+  expect(calls).toContainEqual(expect.objectContaining({ path: "/api/engine-updates/check", method: "POST", body: {}, csrf: "fixture-token" }));
+  expect(calls).toContainEqual(expect.objectContaining({ path: "/api/engine-updates/codex-cli/update", method: "POST", body: { version: "0.81.0" }, csrf: "fixture-token" }));
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });

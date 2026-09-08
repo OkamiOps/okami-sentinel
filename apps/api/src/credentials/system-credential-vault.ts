@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { DATA_DIR } from "../config.js";
 import {
   connectionSecretValues,
   type ConnectionSecretBundle,
@@ -8,11 +9,16 @@ import {
   validateConnectionSecretBundle,
   VaultError,
 } from "./credential-vault.js";
+import { EncryptedSecretStore } from "./encrypted-secret-store.js";
 
 export { VaultError } from "./credential-vault.js";
 
 const SERVICE = "com.okamiops.sentinel.connections";
 const AVAILABILITY_PROBE_VALUE = "okami-sentinel-vault-probe";
+const ENCRYPTED_NAMESPACE = "connections";
+
+type RuntimeMode = "local" | "server";
+type VaultBackend = "keychain" | "secret-service" | "encrypted-file" | "unsupported";
 
 export interface NativeCredentialBackend {
   getPassword(service: string, account: string): Promise<string | null>;
@@ -23,20 +29,40 @@ export interface NativeCredentialBackend {
 export interface SystemCredentialVaultDependencies {
   redactor: SecretRedactorRegistry;
   loadBackend?: () => Promise<NativeCredentialBackend>;
+  /** Testable composition hook. Production selection comes from CSB_RUNTIME_MODE. */
+  runtimeMode?: RuntimeMode;
+  encryptedStore?: EncryptedSecretStore;
+  dataDir?: string;
+  vaultKeyFile?: string;
 }
 
 export class SystemCredentialVault implements CredentialVault {
   private readonly redactor: SecretRedactorRegistry;
   private readonly loadBackend: () => Promise<NativeCredentialBackend>;
+  private readonly mode: RuntimeMode;
+  private readonly encryptedStore: EncryptedSecretStore | undefined;
   private backendPromise: Promise<NativeCredentialBackend> | undefined;
 
   constructor(deps: SystemCredentialVaultDependencies) {
     if (!deps?.redactor) throw new VaultError("secure_storage_unavailable");
     this.redactor = deps.redactor;
     this.loadBackend = deps.loadBackend ?? loadKeytarBackend;
+    this.mode = deps.runtimeMode ?? configuredRuntimeMode();
+    this.encryptedStore = this.mode === "server"
+      ? deps.encryptedStore ?? new EncryptedSecretStore({
+        dataDir: deps.dataDir ?? DATA_DIR,
+        keyFile: deps.vaultKeyFile ?? process.env.CSB_VAULT_KEY_FILE?.trim() ?? "",
+      })
+      : undefined;
   }
 
   async available() {
+    if (this.mode === "server") {
+      return {
+        available: await this.resolveEncryptedStore().available(),
+        backend: "encrypted-file" as const,
+      };
+    }
     const backendName = nativeBackend();
     if (backendName === "unsupported") {
       return { available: false, backend: backendName };
@@ -73,7 +99,7 @@ export class SystemCredentialVault implements CredentialVault {
   }
 
   async put(ref: string, value: ConnectionSecretBundle): Promise<void> {
-    this.assertSupported();
+    if (this.mode !== "server") this.assertSupported();
     const bundle = validateConnectionSecretBundle(value);
     const values = connectionSecretValues(bundle);
     const pendingScope = `${ref}:pending:${randomUUID()}`;
@@ -85,19 +111,21 @@ export class SystemCredentialVault implements CredentialVault {
       throw new VaultError("credential_write_failed");
     }
 
-    let backend: NativeCredentialBackend;
     try {
-      backend = await this.resolveBackend();
-    } catch {
-      this.safeUnregister(pendingScope);
-      throw new VaultError("secure_storage_unavailable");
-    }
-
-    try {
-      await backend.setPassword(SERVICE, ref, JSON.stringify(bundle));
-    } catch {
+      if (this.mode === "server") {
+        await this.resolveEncryptedStore().put(ENCRYPTED_NAMESPACE, ref, bundle);
+      } else {
+        this.assertSupported();
+        const backend = await this.resolveBackend();
+        await backend.setPassword(SERVICE, ref, JSON.stringify(bundle));
+      }
+    } catch (error) {
       // Keep the pending scope registered: a rejected native promise does not
       // prove that the backend failed before committing the replacement.
+      if (error instanceof VaultError) {
+        if (this.mode !== "server") this.safeUnregister(pendingScope);
+        throw error;
+      }
       throw new VaultError("credential_write_failed");
     }
 
@@ -117,34 +145,35 @@ export class SystemCredentialVault implements CredentialVault {
   }
 
   async get(ref: string): Promise<ConnectionSecretBundle> {
-    this.assertSupported();
-    const backend = await this.resolveBackend();
-    let encoded: string | null;
-
-    try {
-      encoded = await backend.getPassword(SERVICE, ref);
-    } catch {
-      throw new VaultError("secure_storage_unavailable");
-    }
-
-    if (encoded === null) throw new VaultError("credential_not_found");
-
     let bundle: ConnectionSecretBundle;
     try {
-      bundle = validateConnectionSecretBundle(JSON.parse(encoded));
+      if (this.mode === "server") {
+        const stored = await this.resolveEncryptedStore().get(ENCRYPTED_NAMESPACE, ref);
+        if (stored === null) throw new VaultError("credential_not_found");
+        bundle = validateConnectionSecretBundle(stored);
+      } else {
+        this.assertSupported();
+        const backend = await this.resolveBackend();
+        const encoded = await backend.getPassword(SERVICE, ref);
+        if (encoded === null) throw new VaultError("credential_not_found");
+        bundle = validateConnectionSecretBundle(JSON.parse(encoded));
+      }
       this.redactor.register(ref, connectionSecretValues(bundle));
-    } catch {
+    } catch (error) {
+      if (error instanceof VaultError && error.code === "credential_not_found") throw error;
       throw new VaultError("secure_storage_unavailable");
     }
     return bundle;
   }
 
   async delete(ref: string): Promise<void> {
-    this.assertSupported();
-    const backend = await this.resolveBackend();
-
     try {
-      await backend.deletePassword(SERVICE, ref);
+      if (this.mode === "server") {
+        await this.resolveEncryptedStore().delete(ENCRYPTED_NAMESPACE, ref);
+      } else {
+        this.assertSupported();
+        await (await this.resolveBackend()).deletePassword(SERVICE, ref);
+      }
     } catch {
       throw new VaultError("secure_storage_unavailable");
     }
@@ -174,6 +203,11 @@ export class SystemCredentialVault implements CredentialVault {
     }
   }
 
+  private resolveEncryptedStore(): EncryptedSecretStore {
+    if (this.encryptedStore === undefined) throw new VaultError("secure_storage_unavailable");
+    return this.encryptedStore;
+  }
+
   private safeUnregister(scope: string): void {
     try {
       this.redactor.unregister(scope);
@@ -196,7 +230,11 @@ async function loadKeytarBackend(): Promise<NativeCredentialBackend> {
   return imported.default ?? imported;
 }
 
-function nativeBackend(): "keychain" | "secret-service" | "unsupported" {
+function configuredRuntimeMode(): RuntimeMode {
+  return process.env.CSB_RUNTIME_MODE?.trim() === "server" ? "server" : "local";
+}
+
+function nativeBackend(): Exclude<VaultBackend, "encrypted-file"> {
   if (process.platform === "darwin") return "keychain";
   if (process.platform === "linux") return "secret-service";
   return "unsupported";

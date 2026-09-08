@@ -1,4 +1,6 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 
 const MANIFEST_FLOW_TTL_MS = 10 * 60_000;
 const FLOW_ID = /^[A-Za-z0-9-]{1,100}$/;
@@ -55,6 +57,9 @@ export interface GitHubAppManifestFlowDependencies {
   now?: () => Date;
   createFlowId?: () => string;
   createState?: () => string;
+  /** Explicit deployment origin; absent means the original loopback-only flow. */
+  serverOrigin?: string;
+  stateFile?: string;
 }
 
 interface ManifestFlowRecord {
@@ -73,13 +78,33 @@ export class GitHubAppManifestFlow {
   readonly #createFlowId: () => string;
   readonly #createState: () => string;
   readonly #flows = new Map<string, ManifestFlowRecord>();
+  readonly #stateFile: string | undefined;
+  readonly #apiBasePath: string;
 
   constructor(dependencies: GitHubAppManifestFlowDependencies) {
-    this.#callbackUrl = loopbackUrl(dependencies.callbackUrl).toString();
-    this.#localOrigin = loopbackOrigin(dependencies.localOrigin);
+    if (dependencies.serverOrigin) {
+      const origin = new URL(dependencies.serverOrigin);
+      const callback = new URL(dependencies.callbackUrl);
+      const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(origin.hostname);
+      if ((origin.protocol !== "https:" && !(loopback && origin.protocol === "http:")) ||
+          origin.username || origin.password || origin.pathname !== "/" || origin.search || origin.hash ||
+          callback.origin !== origin.origin || callback.username || callback.password ||
+          callback.pathname !== "/api/guardrails/github-app/manifest/callback" || callback.search || callback.hash) {
+        throw new ManifestFlowError("manifest_state_invalid");
+      }
+      this.#callbackUrl = callback.toString();
+      this.#localOrigin = origin.origin;
+      this.#apiBasePath = "/api";
+    } else {
+      this.#callbackUrl = loopbackUrl(dependencies.callbackUrl).toString();
+      this.#localOrigin = loopbackOrigin(dependencies.localOrigin);
+      this.#apiBasePath = "";
+    }
     this.#now = dependencies.now ?? (() => new Date());
     this.#createFlowId = dependencies.createFlowId ?? randomUUID;
     this.#createState = dependencies.createState ?? (() => randomBytes(32).toString("base64url"));
+    this.#stateFile = dependencies.stateFile;
+    this.#restore();
   }
 
   start(): { flowId: string; authorizeUrl: string } {
@@ -96,9 +121,10 @@ export class GitHubAppManifestFlow {
       expiresAtMs: nowMs + MANIFEST_FLOW_TTL_MS,
       connectionId: null,
     });
+    this.#persist();
     return {
       flowId,
-      authorizeUrl: `${this.#localOrigin}/guardrails/github-app/manifest/authorize/${encodeURIComponent(flowId)}`,
+      authorizeUrl: `${this.#localOrigin}${this.#apiBasePath}/guardrails/github-app/manifest/authorize/${encodeURIComponent(flowId)}`,
     };
   }
 
@@ -138,9 +164,11 @@ export class GitHubAppManifestFlow {
     flow.state = "";
     if (error !== null) {
       flow.status = "denied";
+      this.#persist();
       return { flowId: flow.flowId, status: "denied" };
     }
     flow.status = "exchanging";
+    this.#persist();
     return { flowId: flow.flowId, status: "exchanging" };
   }
 
@@ -151,6 +179,7 @@ export class GitHubAppManifestFlow {
     if (flow.status !== "exchanging") throw new ManifestFlowError("manifest_state_invalid");
     flow.connectionId = flowIdentifier(connectionId);
     flow.status = "completed";
+    this.#persist();
   }
 
   fail(flowId: string): void {
@@ -158,6 +187,7 @@ export class GitHubAppManifestFlow {
     if (flow.status === "completed" || flow.status === "denied" || flow.status === "expired") return;
     flow.state = "";
     flow.status = "failed";
+    this.#persist();
   }
 
   publicState(flowId: string): PublicManifestFlowState {
@@ -202,6 +232,36 @@ export class GitHubAppManifestFlow {
       this.#expire(flow);
       if (flow.expiresAtMs + retentionMs < nowMs) this.#flows.delete(flowId);
     }
+  }
+
+  #restore(): void {
+    if (!this.#stateFile || !fs.existsSync(this.#stateFile)) return;
+    try {
+      const stat = fs.lstatSync(this.#stateFile);
+      if (!stat.isFile() || stat.size > 512_000) throw new Error();
+      const flows: unknown = JSON.parse(fs.readFileSync(this.#stateFile, "utf8"));
+      if (!Array.isArray(flows) || flows.length > 512) throw new Error();
+      for (const flow of flows) {
+        if (!flow || !FLOW_ID.test(flow.flowId) ||
+            !["pending", "exchanging", "completed", "expired", "denied", "failed"].includes(flow.status) ||
+            typeof flow.state !== "string" || (flow.status === "pending" && !/^[A-Za-z0-9_-]{43,128}$/.test(flow.state)) ||
+            !Number.isFinite(flow.createdAtMs) || !Number.isFinite(flow.expiresAtMs) ||
+            (flow.connectionId !== null && (typeof flow.connectionId !== "string" || !FLOW_ID.test(flow.connectionId)))) throw new Error();
+        this.#flows.set(flow.flowId, flow);
+      }
+      this.#sweep();
+    } catch { throw new ManifestFlowError("manifest_state_invalid"); }
+  }
+
+  #persist(): void {
+    if (!this.#stateFile) return;
+    if (this.#flows.size > 512) throw new ManifestFlowError("manifest_state_invalid");
+    fs.mkdirSync(path.dirname(this.#stateFile), { recursive: true, mode: 0o700 });
+    const temporary = `${this.#stateFile}.${randomUUID()}.tmp`;
+    try {
+      fs.writeFileSync(temporary, JSON.stringify([...this.#flows.values()]), { mode: 0o600, flag: "wx" });
+      fs.renameSync(temporary, this.#stateFile);
+    } finally { fs.rmSync(temporary, { force: true }); }
   }
 }
 

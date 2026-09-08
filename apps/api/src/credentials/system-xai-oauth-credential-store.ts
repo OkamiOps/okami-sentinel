@@ -1,20 +1,29 @@
 import { randomUUID } from "node:crypto";
 
+import { DATA_DIR } from "../config.js";
 import type {
   XaiOAuthCredentials,
   XaiOAuthCredentialStore,
 } from "../connections/xai-oauth-flow.js";
 import type { SecretRedactorRegistry } from "./credential-vault.js";
+import { EncryptedSecretStore } from "./encrypted-secret-store.js";
 import { VaultError, type NativeCredentialBackend } from "./system-credential-vault.js";
 
 const SERVICE = "com.okamiops.sentinel.oauth.xai";
+const ENCRYPTED_NAMESPACE = "oauth/xai";
 const IDENTIFIER = /^[A-Za-z0-9-]{1,100}$/;
 const CONTROL_CHARACTER = /[\u0000-\u001F\u007F]/;
+
+type RuntimeMode = "local" | "server";
 
 export interface SystemXaiOAuthCredentialStoreDependencies {
   redactor: SecretRedactorRegistry;
   loadBackend?: () => Promise<NativeCredentialBackend>;
   platform?: NodeJS.Platform;
+  runtimeMode?: RuntimeMode;
+  encryptedStore?: EncryptedSecretStore;
+  dataDir?: string;
+  vaultKeyFile?: string;
 }
 
 /** Native-only OAuth token store. It deliberately does not share the API-key bundle schema. */
@@ -22,12 +31,21 @@ export class SystemXaiOAuthCredentialStore implements XaiOAuthCredentialStore {
   readonly #redactor: SecretRedactorRegistry;
   readonly #loadBackend: () => Promise<NativeCredentialBackend>;
   readonly #platform: NodeJS.Platform;
+  readonly #runtimeMode: RuntimeMode;
+  readonly #encryptedStore: EncryptedSecretStore | undefined;
   #backend: Promise<NativeCredentialBackend> | undefined;
 
   constructor(dependencies: SystemXaiOAuthCredentialStoreDependencies) {
     this.#redactor = dependencies.redactor;
     this.#loadBackend = dependencies.loadBackend ?? loadKeytarBackend;
     this.#platform = dependencies.platform ?? process.platform;
+    this.#runtimeMode = dependencies.runtimeMode ?? configuredRuntimeMode();
+    this.#encryptedStore = this.#runtimeMode === "server"
+      ? dependencies.encryptedStore ?? new EncryptedSecretStore({
+        dataDir: dependencies.dataDir ?? DATA_DIR,
+        keyFile: dependencies.vaultKeyFile ?? process.env.CSB_VAULT_KEY_FILE?.trim() ?? "",
+      })
+      : undefined;
   }
 
   async put(connectionId: string, value: XaiOAuthCredentials): Promise<void> {
@@ -42,18 +60,19 @@ export class SystemXaiOAuthCredentialStore implements XaiOAuthCredentialStore {
       safeUnregister(this.#redactor, pendingScope);
       throw new VaultError("credential_write_failed");
     }
-    let backend: NativeCredentialBackend;
     try {
-      backend = await this.#resolveBackend();
+      if (this.#runtimeMode === "server") {
+        await this.#resolveEncryptedStore().put(ENCRYPTED_NAMESPACE, id, credentials);
+      } else {
+        await (await this.#resolveBackend()).setPassword(SERVICE, id, JSON.stringify(credentials));
+      }
     } catch (error) {
-      safeUnregister(this.#redactor, pendingScope);
-      throw asVaultError(error, "secure_storage_unavailable");
-    }
-    try {
-      await backend.setPassword(SERVICE, id, JSON.stringify(credentials));
-    } catch {
       // A rejected native promise does not prove the backend failed before
       // committing. Preserve the pending scope so those bytes stay redacted.
+      if (error instanceof VaultError) {
+        if (this.#runtimeMode !== "server") safeUnregister(this.#redactor, pendingScope);
+        throw error;
+      }
       throw new VaultError("credential_write_failed");
     }
     try {
@@ -67,26 +86,29 @@ export class SystemXaiOAuthCredentialStore implements XaiOAuthCredentialStore {
 
   async get(connectionId: string): Promise<XaiOAuthCredentials | null> {
     const id = validConnectionId(connectionId);
-    let encoded: string | null;
     try {
-      encoded = await (await this.#resolveBackend()).getPassword(SERVICE, id);
-    } catch (error) {
-      throw asVaultError(error, "secure_storage_unavailable");
-    }
-    if (encoded === null) return null;
-    try {
-      const credentials = validCredentials(JSON.parse(encoded));
+      const value = this.#runtimeMode === "server"
+        ? await this.#resolveEncryptedStore().get(ENCRYPTED_NAMESPACE, id)
+        : await (await this.#resolveBackend()).getPassword(SERVICE, id);
+      if (value === null) return null;
+      const credentials = validCredentials(
+        typeof value === "string" ? JSON.parse(value) : value,
+      );
       this.#redactor.register(scopeFor(id), [credentials.accessToken, credentials.refreshToken]);
       return { ...credentials };
-    } catch {
-      throw new VaultError("secure_storage_unavailable");
+    } catch (error) {
+      throw asVaultError(error, "secure_storage_unavailable");
     }
   }
 
   async delete(connectionId: string): Promise<void> {
     const id = validConnectionId(connectionId);
     try {
-      await (await this.#resolveBackend()).deletePassword(SERVICE, id);
+      if (this.#runtimeMode === "server") {
+        await this.#resolveEncryptedStore().delete(ENCRYPTED_NAMESPACE, id);
+      } else {
+        await (await this.#resolveBackend()).deletePassword(SERVICE, id);
+      }
       this.#redactor.unregister(scopeFor(id));
     } catch (error) {
       throw asVaultError(error, "secure_storage_unavailable");
@@ -105,6 +127,15 @@ export class SystemXaiOAuthCredentialStore implements XaiOAuthCredentialStore {
       throw new VaultError("secure_storage_unavailable");
     }
   }
+
+  #resolveEncryptedStore(): EncryptedSecretStore {
+    if (this.#encryptedStore === undefined) throw new VaultError("secure_storage_unavailable");
+    return this.#encryptedStore;
+  }
+}
+
+function configuredRuntimeMode(): RuntimeMode {
+  return process.env.CSB_RUNTIME_MODE?.trim() === "server" ? "server" : "local";
 }
 
 function validConnectionId(value: string): string {

@@ -549,3 +549,71 @@ test("advertises resolved Portable Codex Security only through its dedicated wor
   assert.equal(native.eligible, false);
   assert.deepEqual(native.reasons, ["codex_native_contract_unavailable"]);
 });
+
+test("server mode permits only HTTP runners and makes Codex Security Auto portable", () => {
+  const http = connection({
+    providerKind: "openai",
+    routeKind: "openai-api",
+    transport: "http-inference",
+    authKind: "api-key",
+    protocol: "openai-responses",
+  });
+  const resolver = createScanCompatibilityResolver({
+    getConnection: () => http,
+    getModel: () => model(),
+    getLatestCapabilityCheck: () => probe({ protocol: "openai-responses" }),
+    now: () => NOW,
+    runtimeMode: "server",
+  });
+  const selection = {
+    connectionId: "connection-a",
+    modelSelectionMode: "catalog" as const,
+    modelId: "provider/model-a",
+  };
+
+  const auto = resolver.resolve({ engine: "codex-security", selection });
+  assert.equal(auto.eligible, true);
+  assert.equal(auto.selectedProfile, "portable");
+
+  const native = resolver.resolve({
+    engine: "codex-security",
+    selection,
+    executionProfilePreference: "native",
+  });
+  assert.equal(native.eligible, false);
+  assert.deepEqual(native.reasons, ["codex_native_contract_unavailable"]);
+
+  for (const blocked of [
+    connection({
+      providerKind: "openai",
+      routeKind: "openai-chatgpt-app-server",
+      transport: "codex-app-server",
+      authKind: "device-code",
+      protocol: "codex-app-server",
+      credentialRef: null,
+    }),
+    connection({
+      providerKind: "anthropic",
+      routeKind: "claude-code-local",
+      transport: "local-cli",
+      authKind: "existing-session",
+      protocol: "claude-code-cli",
+      credentialRef: null,
+      modelSelectionMode: "runtime-default",
+    }),
+  ]) {
+    const server = createScanCompatibilityResolver({
+      getConnection: () => blocked,
+      getModel: () => model(),
+      getLatestCapabilityCheck: () => probe({ protocol: blocked.protocol }),
+      now: () => NOW,
+      runtimeMode: "server",
+    });
+    const blockedSelection = blocked.modelSelectionMode === "runtime-default"
+      ? { connectionId: "connection-a", modelSelectionMode: "runtime-default" as const, modelId: null }
+      : selection;
+    const decision = server.resolve({ engine: "mantis", selection: blockedSelection });
+    assert.equal(decision.eligible, false, blocked.routeKind);
+    assert.deepEqual(decision.reasons, ["runner_capability_missing"], blocked.routeKind);
+  }
+});

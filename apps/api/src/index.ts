@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import { serve } from "@hono/node-server";
 import { app } from "./app.js";
 import {
@@ -6,19 +7,31 @@ import {
   API_PORT,
   DATA_DIR,
   RUNS_DIR,
+  ROOT_DIR,
 } from "./config.js";
-import { backfillRunMetricProjections, getDb } from "./db.js";
+import { backfillRunMetricProjections, getDb, closeDb, listActiveRunIds } from "./db.js";
+import { createServerApp } from "./server-app.js";
+import { loadServerSettings } from "./deployment-settings.js";
+import { createShutdownHandler, isDraining } from "./shutdown.js";
+import { cancelScan } from "./runner.js";
+import { getProviderRuntime } from "./provider-runtime.js";
 import { ensureConnectionSchema } from "./connections-store.js";
 import {
   backfillFindingCategoryMetrics,
   backfillTerminalMetricArtifacts,
   importExternalScans,
+  interruptActiveRunsAfterServerRestart,
   reconcileRunningScans,
 } from "./ingest.js";
 import {
   reconcileGitHubActionsGates,
   reconcileManagedMaterializations,
 } from "./gate-orchestrator.js";
+
+const settings = loadServerSettings();
+if (settings.mode === "server" && !(await getProviderRuntime().vault.available()).available) {
+  throw new Error("Server credential storage is unavailable. Check the vault key and data volume.");
+}
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(RUNS_DIR, { recursive: true });
@@ -65,9 +78,13 @@ if (terminalArtifactsBackfilled > 0 || metricBackfilled > 0 || categoriesBackfil
   );
 }
 
-const reconciled = reconcileRunningScans();
+const reconciled = settings.mode === "server"
+  ? interruptActiveRunsAfterServerRestart()
+  : reconcileRunningScans();
 if (reconciled > 0) {
-  console.log(`[csb-api] Reconciled ${reconciled} running scan(s) from workbench`);
+  console.log(settings.mode === "server"
+    ? `[csb-api] Marked ${reconciled} active scan(s) interrupted after server restart`
+    : `[csb-api] Reconciled ${reconciled} running scan(s) from workbench`);
 }
 
 void reconcileGitHubActionsGates().then((gates) => {
@@ -79,7 +96,7 @@ void reconcileGitHubActionsGates().then((gates) => {
 });
 
 // Keep orphaned CLI jobs (surviving an API restart) in sync with workbench.
-setInterval(() => {
+const scanReconciler = setInterval(() => {
   try {
     reconcileRunningScans();
   } catch {
@@ -87,15 +104,21 @@ setInterval(() => {
   }
 }, 15_000).unref();
 
-setInterval(() => {
+const gateReconciler = setInterval(() => {
   void reconcileGitHubActionsGates().catch(() => {
     // A persisted dispatch remains retryable after transient App/API failures.
   });
 }, 15_000).unref();
 
-serve(
+const serverApp = createServerApp(app, {
+  settings,
+  webRoot: process.env.CSB_WEB_DIST_DIR || path.join(ROOT_DIR, "apps", "web", "dist"),
+  isReady: () => !isDraining(),
+});
+
+const server = serve(
   {
-    fetch: app.fetch,
+    fetch: serverApp.fetch,
     hostname: API_HOST,
     port: API_PORT,
   },
@@ -103,3 +126,23 @@ serve(
     console.log(`[csb-api] Listening on http://${info.address}:${info.port}`);
   },
 );
+
+if (settings.mode === "server") {
+  const shutdown = createShutdownHandler({
+    stopHttp() {
+      clearInterval(scanReconciler);
+      clearInterval(gateReconciler);
+      server.close();
+      if ("closeAllConnections" in server) server.closeAllConnections();
+    },
+    cancelWork() {
+      const ids = listActiveRunIds();
+      for (const id of ids) cancelScan(id);
+      return ids.length > 0;
+    },
+    closeStore: closeDb,
+  });
+  for (const signal of ["SIGTERM", "SIGINT"] as const) process.on(signal, () => {
+    void shutdown().then(() => process.exit(0)).catch(() => process.exit(1));
+  });
+}

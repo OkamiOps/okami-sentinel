@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { localApiHost } from "./api-host.js";
+import { publicOrigin, runtimeMode } from "./deployment-settings.js";
 import { getManagedRuntimeCommand } from "./scanners/managed-runtime-store.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -87,7 +88,20 @@ export let CODEX_BIN = selectedCodexBin();
 
 function selectedCodexBin(): string {
   if (process.env.CODEX_BIN?.trim()) return resolveCodexBin();
-  return getManagedRuntimeCommand(DATA_DIR, "codex-cli")?.command ?? resolveCodexBin();
+  return getManagedRuntimeCommand(DATA_DIR, "codex-cli")?.command
+    ?? getBundledRuntimeCommand("codex-cli")?.command ?? resolveCodexBin();
+}
+
+export function getBundledRuntimeCommand(id: "codex-cli" | "codex-security"): { command: string; version: string } | null {
+  const root = process.env.CSB_BUNDLED_RUNTIME_DIR?.trim();
+  if (!root) return null;
+  const packageName = id === "codex-cli" ? "codex" : "codex-security";
+  const command = path.join(root, id, "node_modules", ".bin", packageName);
+  try {
+    const metadata = JSON.parse(fs.readFileSync(path.join(root, id, "node_modules", "@openai", packageName, "package.json"), "utf8"));
+    return isExecutableFile(command) && /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(metadata.version)
+      ? { command, version: metadata.version } : null;
+  } catch { return null; }
 }
 
 export const MANTIS_REPOSITORY_URL =
@@ -196,14 +210,20 @@ export const VULNHUNTER_WORKER_ENTRY = path.join(
   "vulnhunter-worker.ts",
 );
 
-export const API_HOST = localApiHost(process.env.CSB_HOST);
+export const API_HOST = runtimeMode() === "server" ? serverHost(process.env.CSB_HOST) : localApiHost(process.env.CSB_HOST);
 export const API_PORT = Number(process.env.CSB_PORT || 8787);
+
+function serverHost(value: string | undefined): string {
+  const host = value?.trim() || "0.0.0.0";
+  if (["0.0.0.0", "::"].includes(host)) return host;
+  return localApiHost(host);
+}
 
 /** GitHub Manifest callbacks remain loopback-only in the local-first desktop API. */
 export const GITHUB_APP_LOCAL_ORIGIN =
-  process.env.CSB_GITHUB_APP_LOCAL_ORIGIN?.trim() || `http://127.0.0.1:${API_PORT}`;
+  runtimeMode() === "server" ? publicOrigin() : process.env.CSB_GITHUB_APP_LOCAL_ORIGIN?.trim() || `http://127.0.0.1:${API_PORT}`;
 export const GITHUB_APP_CALLBACK_URL =
-  `${GITHUB_APP_LOCAL_ORIGIN}/guardrails/github-app/manifest/callback`;
+  `${GITHUB_APP_LOCAL_ORIGIN}${runtimeMode() === "server" ? "/api" : ""}/guardrails/github-app/manifest/callback`;
 
 const configuredGitHubActionsWorkflowSha =
   process.env.CSB_GITHUB_ACTIONS_WORKFLOW_SHA?.trim() ?? "";
@@ -260,13 +280,13 @@ function readGitRef(rootDir: string, ref: string): string | null {
 /** Soft cap so a click-storm doesn't spawn unbounded Codex jobs. */
 export const MAX_CONCURRENT_SCANS = Math.max(
   1,
-  Number(process.env.CSB_MAX_CONCURRENT_SCANS || 8) || 8,
+  Number(process.env.CSB_MAX_CONCURRENT_SCANS || (runtimeMode() === "server" ? 1 : 8)) || (runtimeMode() === "server" ? 1 : 8),
 );
 
 export let CODEX_SECURITY_BIN = selectedCodexSecurityBin();
 
 export let CODEX_SECURITY_ARGS_PREFIX =
-  process.env.CODEX_SECURITY_BIN?.trim() || getManagedRuntimeCommand(DATA_DIR, "codex-security")
+  process.env.CODEX_SECURITY_BIN?.trim() || getManagedRuntimeCommand(DATA_DIR, "codex-security") || getBundledRuntimeCommand("codex-security") || runtimeMode() === "server"
     ? []
     : ["--yes", "@openai/codex-security"];
 
@@ -275,7 +295,9 @@ export let CODEX_SECURITY_MANAGED_VERSION = process.env.CODEX_SECURITY_BIN?.trim
 
 function selectedCodexSecurityBin(): string {
   return process.env.CODEX_SECURITY_BIN?.trim()
-    || getManagedRuntimeCommand(DATA_DIR, "codex-security")?.command || "npx";
+    || getManagedRuntimeCommand(DATA_DIR, "codex-security")?.command
+    || getBundledRuntimeCommand("codex-security")?.command
+    || (runtimeMode() === "server" ? "codex-security" : "npx");
 }
 
 /** Live bindings are refreshed only after an idle, verified atomic activation. */
@@ -285,7 +307,7 @@ export function refreshManagedRuntimeCommands(): void {
   const selected = process.env.CODEX_SECURITY_BIN?.trim()
     ? null : getManagedRuntimeCommand(DATA_DIR, "codex-security");
   CODEX_SECURITY_MANAGED_VERSION = selected?.version ?? null;
-  CODEX_SECURITY_ARGS_PREFIX = process.env.CODEX_SECURITY_BIN?.trim() || selected
+  CODEX_SECURITY_ARGS_PREFIX = process.env.CODEX_SECURITY_BIN?.trim() || selected || getBundledRuntimeCommand("codex-security") || runtimeMode() === "server"
     ? [] : ["--yes", "@openai/codex-security"];
 }
 

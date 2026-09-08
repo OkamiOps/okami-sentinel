@@ -1,0 +1,41 @@
+# Source control and local dependency state
+.git
+.github
+node_modules
+**/node_modules
+.pnpm-store
+
+# Runtime data and local output
+data
+output
+test-results
+.playwright-cli
+tmp
+*.log
+.DS_Store
+
+# Development-only source and browser tooling
+**/*.test.ts
+**/*.test.tsx
+**/*.test.mjs
+apps/web/e2e
+apps/web/playwright*.ts
+apps/api/scripts
+apps/api/src/fixtures
+scripts/e2e
+scripts/docker/test-provider.mjs
+scripts/docker/setup.mjs
+scripts/docker/setup.sh
+scripts/docker/smoke.mjs
+scripts/docker/workflow-smoke.mjs
+
+# Local operator configuration and secrets
+.env*
+!.env.example
+*.pem
+*.key
+
+# Editor and task-local state
+.superpowers
+.worktrees
+apps/web/.impeccable

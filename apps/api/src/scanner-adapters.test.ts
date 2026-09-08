@@ -346,8 +346,12 @@ test("VulnHunter direct xAI OAuth launch serializes only the immutable provider 
   const oauthToken = "private-xai-oauth-token-must-not-reach-worker-config";
   const previousOpenAiKey = process.env.OPENAI_API_KEY;
   const previousCodexKey = process.env.CODEX_API_KEY;
+  const previousAdminPasswordFile = process.env.CSB_ADMIN_PASSWORD_FILE;
+  const previousVaultKeyFile = process.env.CSB_VAULT_KEY_FILE;
   process.env.OPENAI_API_KEY = "global-openai-key-must-not-reach-vulnhunter";
   process.env.CODEX_API_KEY = "global-codex-key-must-not-reach-vulnhunter";
+  process.env.CSB_ADMIN_PASSWORD_FILE = "/run/secrets/admin_password";
+  process.env.CSB_VAULT_KEY_FILE = "/run/secrets/vault_key";
 
   try {
     const launch = prepareScannerLaunch({
@@ -392,12 +396,18 @@ test("VulnHunter direct xAI OAuth launch serializes only the immutable provider 
     assert.equal(launch.authMode, "api-key");
     assert.equal(launch.env.OPENAI_API_KEY, undefined);
     assert.equal(launch.env.CODEX_API_KEY, undefined);
+    assert.equal(launch.env.CSB_ADMIN_PASSWORD_FILE, undefined);
+    assert.equal(launch.env.CSB_VAULT_KEY_FILE, "/run/secrets/vault_key");
     assert.equal(readScannerPricingQuote(outputDir)?.modelId, "grok-4.5");
   } finally {
     if (previousOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = previousOpenAiKey;
     if (previousCodexKey === undefined) delete process.env.CODEX_API_KEY;
     else process.env.CODEX_API_KEY = previousCodexKey;
+    if (previousAdminPasswordFile === undefined) delete process.env.CSB_ADMIN_PASSWORD_FILE;
+    else process.env.CSB_ADMIN_PASSWORD_FILE = previousAdminPasswordFile;
+    if (previousVaultKeyFile === undefined) delete process.env.CSB_VAULT_KEY_FILE;
+    else process.env.CSB_VAULT_KEY_FILE = previousVaultKeyFile;
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }
 });
@@ -408,6 +418,10 @@ test("Mantis HTTP launch serializes only the revalidated provider identifiers", 
   const outputDir = path.join(fixtureRoot, "output");
   fs.mkdirSync(repositoryPath);
   fs.mkdirSync(outputDir);
+  const previousAdminPasswordFile = process.env.CSB_ADMIN_PASSWORD_FILE;
+  const previousVaultKeyFile = process.env.CSB_VAULT_KEY_FILE;
+  process.env.CSB_ADMIN_PASSWORD_FILE = "/run/secrets/admin_password";
+  process.env.CSB_VAULT_KEY_FILE = "/run/secrets/vault_key";
 
   try {
     const providerPlan = createSafeMantisProviderPlan({
@@ -491,8 +505,14 @@ test("Mantis HTTP launch serializes only the revalidated provider identifiers", 
     ]);
     assert.equal(JSON.stringify(config).includes("apiKey"), false);
     assert.equal(JSON.stringify(config).includes("secret"), false);
+    assert.equal(launch.env.CSB_ADMIN_PASSWORD_FILE, undefined);
+    assert.equal(launch.env.CSB_VAULT_KEY_FILE, "/run/secrets/vault_key");
     assert.equal(readScannerPricingQuote(outputDir)?.pricingSource, "provider-catalog");
   } finally {
+    if (previousAdminPasswordFile === undefined) delete process.env.CSB_ADMIN_PASSWORD_FILE;
+    else process.env.CSB_ADMIN_PASSWORD_FILE = previousAdminPasswordFile;
+    if (previousVaultKeyFile === undefined) delete process.env.CSB_VAULT_KEY_FILE;
+    else process.env.CSB_VAULT_KEY_FILE = previousVaultKeyFile;
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }
 });

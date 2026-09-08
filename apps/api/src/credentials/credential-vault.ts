@@ -10,7 +10,7 @@ export interface ConnectionSecretBundle {
 export interface CredentialVault {
   available(): Promise<{
     available: boolean;
-    backend: "keychain" | "secret-service" | "unsupported";
+    backend: "keychain" | "secret-service" | "encrypted-file" | "unsupported";
   }>;
   put(ref: string, value: ConnectionSecretBundle): Promise<void>;
   get(ref: string): Promise<ConnectionSecretBundle>;

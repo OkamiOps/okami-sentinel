@@ -406,6 +406,8 @@ const ptBR = {
   "newScan.activeProcesses": "{count} processo(s) ativos · capacidade {capacity}.",
   "newScan.reusedManifest": "Manifesto reaproveitado do canal",
   "newScan.absolutePath": "CAMINHO ABSOLUTO",
+  "newScan.serverRepositories": "REPOSITÓRIOS NO SERVIDOR",
+  "newScan.serverRepositoriesDescription": "Selecione apenas os checkouts montados e autorizados nesta instância.",
   "newScan.parent": "PASTA ACIMA",
   "newScan.selected": "SELECIONADO",
   "newScan.select": "SELECIONAR",
@@ -929,6 +931,9 @@ const ptBR = {
   "guardrails.directoryOpenError": "Não foi possível abrir esta pasta.",
   "guardrails.up": "Subir",
   "guardrails.currentFolder": "Pasta atual / será cadastrada",
+  "guardrails.currentServerFolder": "Pasta atual no servidor / será cadastrada",
+  "guardrails.serverRepositories": "REPOSITÓRIOS NO SERVIDOR",
+  "guardrails.serverRepositoriesDescription": "Este navegador acessa somente os checkouts montados e autorizados nesta instância.",
   "guardrails.readingDirectories": "Lendo diretórios…",
   "guardrails.openDirectory": "Abrir",
   "guardrails.emptyFolder": "Esta pasta não contém outros diretórios. Você ainda pode cadastrá-la como repositório.",
@@ -1354,6 +1359,11 @@ const ptBR = {
 export type TranslationKey = keyof typeof ptBR;
 
 const enUi: Partial<Record<TranslationKey, string>> = {
+  "newScan.serverRepositories": "SERVER REPOSITORIES",
+  "newScan.serverRepositoriesDescription": "Select only checkouts mounted and authorized for this instance.",
+  "guardrails.currentServerFolder": "Current server folder / will be registered",
+  "guardrails.serverRepositories": "SERVER REPOSITORIES",
+  "guardrails.serverRepositoriesDescription": "This browser can access only checkouts mounted and authorized for this instance.",
   "scanDetail.progress.completed": "Completed",
   "scanDetail.progress.preflight": "Preflight",
   "scanDetail.progress.threatModel": "Threat model",
@@ -1489,6 +1499,11 @@ const enUi: Partial<Record<TranslationKey, string>> = {
 const esUi: Partial<Record<TranslationKey, string>> = {
 
   ...enUi,
+  "newScan.serverRepositories": "REPOSITORIOS DEL SERVIDOR",
+  "newScan.serverRepositoriesDescription": "Selecciona solo los checkouts montados y autorizados para esta instancia.",
+  "guardrails.currentServerFolder": "Carpeta actual del servidor / se registrará",
+  "guardrails.serverRepositories": "REPOSITORIOS DEL SERVIDOR",
+  "guardrails.serverRepositoriesDescription": "Este explorador solo puede acceder a checkouts montados y autorizados para esta instancia.",
   "scanDetail.progress.completed": "Completado",
   "scanDetail.progress.preflight": "Preflight",
   "scanDetail.progress.threatModel": "Modelo de amenazas",
@@ -1753,6 +1768,11 @@ const esUi: Partial<Record<TranslationKey, string>> = {
 const deUi: Partial<Record<TranslationKey, string>> = {
 
   ...enUi,
+  "newScan.serverRepositories": "REPOSITORIES AUF DEM SERVER",
+  "newScan.serverRepositoriesDescription": "Wähle nur Checkouts aus, die für diese Instanz eingebunden und autorisiert sind.",
+  "guardrails.currentServerFolder": "Aktueller Serverordner / wird registriert",
+  "guardrails.serverRepositories": "REPOSITORIES AUF DEM SERVER",
+  "guardrails.serverRepositoriesDescription": "Dieser Browser kann nur auf Checkouts zugreifen, die für diese Instanz eingebunden und autorisiert sind.",
   "scanDetail.progress.completed": "Abgeschlossen",
   "scanDetail.progress.preflight": "Preflight",
   "scanDetail.progress.threatModel": "Bedrohungsmodell",
@@ -2010,6 +2030,11 @@ const deUi: Partial<Record<TranslationKey, string>> = {
 const frUi: Partial<Record<TranslationKey, string>> = {
 
   ...enUi,
+  "newScan.serverRepositories": "DÉPÔTS SUR LE SERVEUR",
+  "newScan.serverRepositoriesDescription": "Sélectionnez uniquement les checkouts montés et autorisés pour cette instance.",
+  "guardrails.currentServerFolder": "Dossier actuel du serveur / sera enregistré",
+  "guardrails.serverRepositories": "DÉPÔTS SUR LE SERVEUR",
+  "guardrails.serverRepositoriesDescription": "Ce navigateur accède uniquement aux checkouts montés et autorisés pour cette instance.",
   "scanDetail.progress.completed": "Terminé",
   "scanDetail.progress.preflight": "Preflight",
   "scanDetail.progress.threatModel": "Modèle de menace",

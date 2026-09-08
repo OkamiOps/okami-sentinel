@@ -86,9 +86,10 @@ function mappedStatus(
 
 export function refreshMantisRunFromDisk(run: ScanRun): ScanRun {
   if (run.engine !== "mantis") return run;
-  // Cancellation is an API decision. A worker may still flush an old running
-  // runtime snapshot during TERM/KILL grace, which must not resurrect the run.
-  if (run.status === "cancelled") return run;
+  // Terminal API/restart decisions are authoritative. A worker may still
+  // flush an old running snapshot during TERM/KILL grace, which must not
+  // resurrect a cancelled or interrupted run.
+  if (run.status === "cancelled" || run.status === "incomplete") return run;
   const runtime = readMantisRuntime(run.scanDir);
   const findingsPath = path.join(run.scanDir, "findings.json");
   const severity = countSeverity(findingsPath) ?? run.severity;

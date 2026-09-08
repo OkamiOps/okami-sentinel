@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { runtimeMode, repositoryRoots } from "./deployment-settings.js";
+import { securitySessionToken } from "./security-session.js";
+import { assertRepositoryAccess } from "./repository-access.js";
 import path from "node:path";
 
 import { Hono } from "hono";
@@ -131,11 +134,16 @@ export const app = new Hono();
 app.use(
   "*",
   cors({
-    origin: ["http://127.0.0.1:5173", "http://localhost:5173"],
+    origin: runtimeMode() === "server" ? [] : ["http://127.0.0.1:5173", "http://localhost:5173"],
     allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowHeaders: ["Content-Type", "X-CSRF-Token", "Idempotency-Key"],
   }),
 );
+
+app.get("/security-session", (c) => {
+  c.header("Cache-Control", "no-store");
+  return c.json({ csrfToken: securitySessionToken, runtimeMode: runtimeMode(), repositoryRoots: repositoryRoots() });
+});
 
 export interface GuardrailsApiDependencies {
   listRepositories(): GuardrailRepository[];
@@ -1000,9 +1008,11 @@ async function inspectRepository(
   repositoryPath: string,
   requestedDisplayName?: string,
 ): Promise<GuardrailRepository> {
+  repositoryPath = assertRepositoryAccess(repositoryPath);
   const repositoryRoot = path.resolve(
     (await defaultGitRunner(["rev-parse", "--show-toplevel"], repositoryPath)).trim(),
   );
+  assertRepositoryAccess(repositoryRoot);
   const remoteUrl = await optionalGit(["config", "--get", "remote.origin.url"], repositoryRoot);
   const remote = parseGitHubRemote(remoteUrl);
   const remoteHead = await optionalGit(
@@ -1069,7 +1079,7 @@ function localRepositoryPath(repository: GuardrailRepository): string {
   if (repository.source !== "local" || repository.repositoryPath === null) {
     throw new Error("A operação local exige uma pasta de repositório configurada");
   }
-  return repository.repositoryPath;
+  return assertRepositoryAccess(repository.repositoryPath);
 }
 
 async function optionalGit(args: string[], cwd: string): Promise<string | null> {

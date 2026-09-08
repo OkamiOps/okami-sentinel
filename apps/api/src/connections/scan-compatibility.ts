@@ -40,9 +40,10 @@ export interface ScanCompatibilityResolver {
  * concrete scanner worker is wired.
  */
 export function createScanCompatibilityResolver(
-  dependencies: ScanCompatibilityStore & { now?: () => Date },
+  dependencies: ScanCompatibilityStore & { now?: () => Date; runtimeMode?: "local" | "server" },
 ): ScanCompatibilityResolver {
   const now = dependencies.now ?? (() => new Date());
+  const runtimeMode = dependencies.runtimeMode ?? "local";
   return {
     resolve(input) {
       const selection = copySelection(input);
@@ -61,6 +62,7 @@ export function createScanCompatibilityResolver(
         : null;
       const resolved = resolveCompatibility({
         engine: input.engine,
+        runtimeMode,
         connection,
         selection,
         model,

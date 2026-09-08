@@ -53,7 +53,7 @@ test("sends exact update actions with one in-memory CSRF token", async () => {
   await client.rollback("codex-security");
 
   assert.deepEqual(calls, [
-    { method: "GET", path: "/api/engine-updates/security-session", csrf: null, body: "" },
+    { method: "GET", path: "/api/security-session", csrf: null, body: "" },
     { method: "POST", path: "/api/engine-updates/check", csrf: "browser-only-token", body: "{}" },
     { method: "POST", path: "/api/engine-updates/codex-security/update", csrf: "browser-only-token", body: "{\"version\":\"1.1.0\"}" },
     { method: "POST", path: "/api/engine-updates/codex-security/rollback", csrf: "browser-only-token", body: "{}" },
@@ -79,9 +79,9 @@ test("refreshes an invalid CSRF session exactly once for an updater mutation", a
 
   assert.deepEqual(await client.update("codex-security", "1.1.0"), response);
   assert.deepEqual(calls, [
-    { method: "GET", path: "/api/engine-updates/security-session", csrf: null },
+    { method: "GET", path: "/api/security-session", csrf: null },
     { method: "POST", path: "/api/engine-updates/codex-security/update", csrf: "expired" },
-    { method: "GET", path: "/api/engine-updates/security-session", csrf: null },
+    { method: "GET", path: "/api/security-session", csrf: null },
     { method: "POST", path: "/api/engine-updates/codex-security/update", csrf: "fresh" },
   ]);
 });
@@ -98,7 +98,7 @@ test("does not retry an updater mutation for a non-CSRF failure", async () => {
 
   await assert.rejects(client.update("codex-security", "1.1.0"), /check_required/);
   assert.deepEqual(calls, [
-    "GET /api/engine-updates/security-session",
+    "GET /api/security-session",
     "POST /api/engine-updates/codex-security/update",
   ]);
 });

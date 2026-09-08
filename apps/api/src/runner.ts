@@ -2,6 +2,9 @@ import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { nanoid } from "nanoid";
+import { assertRepositoryAccess } from "./repository-access.js";
+import { runtimeMode } from "./deployment-settings.js";
+import { isDraining } from "./shutdown.js";
 import type {
   ScanCost,
   ScanEvent,
@@ -19,6 +22,7 @@ import {
   MANTIS_SOURCE_REF,
   RUNS_DIR,
   SCANS_ROOT,
+  GUARDRAIL_MATERIALIZATIONS_DIR,
 } from "./config.js";
 import {
   appendCliLog,
@@ -535,6 +539,8 @@ export async function startScan(
   req: StartScanRequest,
   options: StartScanOptions = {},
 ): Promise<ScanRun> {
+  if (isDraining()) throw new Error("server_draining");
+  if (runtimeMode() === "server" && req.connection == null) throw new Error("server_http_connection_required");
   throwIfLaunchAborted(options.signal);
   // Recover persistent worker-backed runs before counting slots. This matters
   // after an API restart, when the in-memory `active` map starts empty.
@@ -587,7 +593,8 @@ async function startReservedScan(
 ): Promise<ScanRun> {
   const dependencies = options.dependencies ?? {};
 
-  const repositoryPath = path.resolve(options.executionPath ?? req.repositoryPath);
+  const repositoryPath = assertRepositoryAccess(options.executionPath ?? req.repositoryPath,
+    options.executionPath === undefined ? {} : { managedRoot: GUARDRAIL_MATERIALIZATIONS_DIR });
   if (!fs.existsSync(repositoryPath) || !fs.statSync(repositoryPath).isDirectory()) {
     throw new Error(`Repositório inválido: ${repositoryPath}`);
   }
@@ -1159,6 +1166,7 @@ function maybeParseCost(line: string, activeScan: ActiveScan, run: ScanRun): voi
 }
 
 function throwIfLaunchAborted(signal: AbortSignal | undefined): void {
+  if (isDraining()) throw new Error("server_draining");
   if (signal?.aborted) throw new CodexSecurityApiBridgeError("credential_unavailable");
 }
 

@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useI18n } from "../../i18n";
+import { isUnderRepositoryRoot, type SecuritySession } from "../../lib/security-session";
 
 export function RepositoryDirectoryBrowser({
   active,
@@ -25,6 +26,8 @@ export function RepositoryDirectoryBrowser({
   const [initialRequested, setInitialRequested] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [securitySession, setSecuritySession] = useState<SecuritySession | null>(null);
+  const serverMode = securitySession?.runtimeMode === "server";
 
   const openDirectory = useCallback(async (path?: string) => {
     setLoading(true);
@@ -44,7 +47,15 @@ export function RepositoryDirectoryBrowser({
   useEffect(() => {
     if (!active || initialRequested) return;
     setInitialRequested(true);
-    void openDirectory(value || undefined);
+    void api.getSecuritySession()
+      .then((session) => {
+        setSecuritySession(session);
+        const requestedPath = session.runtimeMode === "server" && value && !isUnderRepositoryRoot(value, session.repositoryRoots)
+          ? undefined
+          : value || undefined;
+        return openDirectory(requestedPath);
+      })
+      .catch(() => void openDirectory(value || undefined));
   }, [active, initialRequested, openDirectory, value]);
 
   const folders = useMemo(
@@ -65,13 +76,25 @@ export function RepositoryDirectoryBrowser({
           <ArrowUp aria-hidden size={14} />{t("guardrails.up")}
         </Button>
         <div className="min-w-0">
-          <div className="bench-label text-primary">{t("guardrails.currentFolder")}</div>
+          <div className="bench-label text-primary">{t(serverMode ? "guardrails.currentServerFolder" : "guardrails.currentFolder")}</div>
           <div className="mt-1 flex min-w-0 items-center gap-2">
             <FolderOpen aria-hidden size={14} className="shrink-0 text-primary" />
             <span className="truncate font-mono text-[10px]" title={directory?.path ?? t("common.loading")}>{directory?.path ?? t("common.loading")}</span>
           </div>
         </div>
       </div>
+
+      {serverMode && (
+        <div className="border-b bg-info/[.045] px-3 py-2">
+          <div className="bench-label text-info">{t("guardrails.serverRepositories")}</div>
+          <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">{t("guardrails.serverRepositoriesDescription")}</p>
+          {securitySession.repositoryRoots.length > 0 && (
+            <p className="mt-1 truncate font-mono text-[9px] text-muted-foreground" title={securitySession.repositoryRoots.join(", ")}>
+              {securitySession.repositoryRoots.join(" · ")}
+            </p>
+          )}
+        </div>
+      )}
 
       {error && (
         <div role="alert" className="flex items-center justify-between gap-3 border-b border-destructive/50 bg-destructive/[.08] px-3 py-2 text-xs text-destructive">

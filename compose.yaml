@@ -1,0 +1,66 @@
+name: ${CSB_COMPOSE_PROJECT_NAME:-okami-sentinel}
+
+services:
+  volume-init:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        CSB_GITHUB_ACTIONS_WORKFLOW_SHA: ${CSB_GITHUB_ACTIONS_WORKFLOW_SHA:?Defina o SHA imutável do release}
+    user: "0:0"
+    restart: "no"
+    command: ["node", "/app/scripts/docker/init-volume.mjs"]
+    volumes:
+      - sentinel_data:/var/lib/sentinel
+
+  sentinel:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        CSB_GITHUB_ACTIONS_WORKFLOW_SHA: ${CSB_GITHUB_ACTIONS_WORKFLOW_SHA:?Defina o SHA imutável do release}
+    depends_on:
+      volume-init:
+        condition: service_completed_successfully
+    user: "1000:1000"
+    restart: unless-stopped
+    stop_grace_period: 90s
+    read_only: true
+    expose:
+      - "8787"
+    environment:
+      NODE_ENV: production
+      CSB_RUNTIME_MODE: server
+      CSB_HOST: 0.0.0.0
+      CSB_PORT: "8787"
+      CSB_PUBLIC_ORIGIN: ${CSB_PUBLIC_ORIGIN:?Defina a origem pública}
+      CSB_ADMIN_USER: ${CSB_ADMIN_USER:-admin}
+      CSB_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
+      CSB_VAULT_KEY_FILE: /run/secrets/vault_key
+      CSB_DATA_DIR: /var/lib/sentinel/data
+      CSB_REPOSITORY_ROOTS: /repos
+      CSB_MAX_CONCURRENT_SCANS: "1"
+      HOME: /var/lib/sentinel/home
+      TMPDIR: /var/lib/sentinel/tmp
+      CODEX_HOME: /var/lib/sentinel/codex-home
+      CODEX_SECURITY_STATE_DIR: /var/lib/sentinel/codex-security-state
+    volumes:
+      - sentinel_data:/var/lib/sentinel
+    secrets:
+      - admin_password
+      - vault_key
+    healthcheck:
+      test: ["CMD", "node", "/app/scripts/docker/healthcheck.mjs"]
+      interval: 30s
+      timeout: 5s
+      start_period: 120s
+      retries: 3
+
+volumes:
+  sentinel_data:
+
+secrets:
+  admin_password:
+    file: ${CSB_ADMIN_PASSWORD_PATH:?Defina o arquivo externo da senha administrativa}
+  vault_key:
+    file: ${CSB_VAULT_KEY_PATH:?Defina o arquivo externo da chave do vault}

@@ -70,8 +70,9 @@ function mappedStatus(
 
 export function refreshVulnHunterRunFromDisk(run: ScanRun): ScanRun {
   if (run.engine !== "vulnhunter") return run;
-  // Do not let a final worker flush resurrect an explicit cancellation.
-  if (run.status === "cancelled") return run;
+  // Do not let a late worker flush resurrect an explicit cancellation or
+  // server-restart interruption.
+  if (run.status === "cancelled" || run.status === "incomplete") return run;
   const runtime = readVulnHunterRuntime(run.scanDir);
   if (!runtime) {
     if (run.status !== "running" || workerIsCurrent(run) || withinBootstrapGrace(run)) return run;
