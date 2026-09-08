@@ -16,6 +16,8 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Added
 
+- Local operators can resume interrupted Portable Deep discovery with `pnpm --filter @csb/api exec tsx src/scanners/resume-portable-scan.ts SCAN_ID`. Add `--dry-run` to verify the snapshot and checkpoints without launching. Recovery creates a separate run, preserves accumulated usage and original evidence, refreshes provider capability checks, and reuses validated discovery batches. Later-stage interruptions are not supported by this recovery command.
+
 - Scan details now show live snapshot files, physical LOC, source size, discovery batches, provisional candidates, rejected result writes, output rate and provider-reported reasoning tokens. Missing metrics remain unavailable; the panel refreshes during active scans.
 
 - Search repository names and organizations during GitHub enrollment, with result counts and archived-state preservation.

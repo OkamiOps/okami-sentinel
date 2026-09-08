@@ -626,7 +626,7 @@ export function materializePortableCodexSecurityReportArtifact(
   fs.chmodSync(target, 0o600);
 }
 
-function assertExactStageArtifact(
+export function assertExactStageArtifact(
   artifactRoot: string,
   stage: Pick<PortableCodexSecurityStage, "artifact">,
 ): Record<string, unknown> {

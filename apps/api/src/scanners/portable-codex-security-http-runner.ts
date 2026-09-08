@@ -49,6 +49,8 @@ import {
 } from "./portable-codex-security-profile.js";
 import {
   assertPortableCodexSecuritySnapshot,
+  assertExactStageArtifact,
+  assertPortableCodexSecurityDossierAnchors,
   createPortableCodexSecurityAnchorValidationCache,
   createPortableCodexSecuritySnapshot,
   observePortableCodexSecurityStage,
@@ -58,6 +60,7 @@ import {
 } from "./portable-codex-security-worker-support.js";
 import {
   createPortableCodexSecurityDossier,
+  applyPortableCodexSecurityStageArtifact,
   portableCodexSecurityDossierBase64,
   writePortableCodexSecurityDossier,
 } from "./portable-codex-security-dossier.js";
@@ -75,6 +78,7 @@ import {
 } from "./portable-codex-security-deep-coverage.js";
 import {
   writePortableCodexSecurityRuntime,
+  readPortableCodexSecurityRuntime,
   type PortableCodexSecurityRuntimeState,
 } from "./portable-codex-security-runtime.js";
 import type { ScannerUsage } from "./usage.js";
@@ -154,6 +158,8 @@ export interface PortableCodexSecuritySessionInput {
 }
 
 export interface PortableCodexSecurityRunnerDependencies {
+  /** Explicit local recovery of interrupted inventory/threat-model/discovery only. */
+  resumeDiscovery?: boolean;
   getSnapshot(scanId: string): ScanConnectionSnapshot | null;
   getConnection(connectionId: string): StoredProviderConnection | null;
   getModel(connectionId: string, modelId: string): ProviderModel | null;
@@ -266,10 +272,20 @@ export async function runPortableCodexSecurity(
       authorizationTime,
     );
     assertPortableCostBudget(safeConfiguration.costBudget, plan, resolved);
-    const snapshot = createPortableCodexSecuritySnapshot(
-      safeConfiguration.repositoryPath,
-      outputDir,
-    );
+    const previous = dependencies.resumeDiscovery ? readPortableCodexSecurityRuntime(outputDir) : null;
+    if (dependencies.resumeDiscovery && (!previous || previous.stage !== "discovery" || previous.status === "completed" ||
+        previous.sourceRef !== safeConfiguration.sourceRef || !previous.snapshotId)) {
+      throw new PortableCodexSecurityRunnerError("snapshot_invalid");
+    }
+    const snapshot = previous
+      ? { snapshotRoot: path.join(outputDir, "portable-codex-security-snapshot"), snapshotId: previous.snapshotId! }
+      : createPortableCodexSecuritySnapshot(safeConfiguration.repositoryPath, outputDir);
+    if (previous) {
+      runtime = { ...runtime, startedAt: previous.startedAt, usage: previous.usage };
+      const stop = costBudgetStopCode(safeConfiguration.costBudget, runtime.usage);
+      if (stop !== null) throw new PortableCodexSecurityRunnerError(stop);
+    }
+
     assertPortableCodexSecuritySnapshot(snapshot);
     throwIfStopped(deadline);
     // Snapshotting is local-only; repeat metadata validation immediately
@@ -409,7 +425,27 @@ export async function runPortableCodexSecurity(
               ? `${stage.id}-${String(assessmentPage.index + 1).padStart(2, "0")}`
               : shard === null ? stage.id : `${stage.id}-${String(shard.index + 1).padStart(2, "0")}`,
         );
-        fs.mkdirSync(artifactRoot, { recursive: false, mode: 0o700 });
+        if (dependencies.resumeDiscovery && fs.existsSync(artifactRoot) && fs.readdirSync(artifactRoot).length > 0) {
+          if (!["inventory", "threat-model", "discovery"].includes(stage.id)) {
+            throw new PortableCodexSecurityRunnerError("stage_artifact_invalid");
+          }
+          const artifact = assertExactStageArtifact(artifactRoot, stage);
+          const restored = applyPortableCodexSecurityStageArtifact(stageDossier, artifact);
+          assertPortableCodexSecurityDossierAnchors(snapshot.snapshotRoot, restored, deadline.remainingMs, anchorValidationCache);
+          if (partition !== null) {
+            const inspected = new Set(restored.scope.inspected);
+            if (partition.paths.some((file) => !inspected.has(file))) {
+              throw new PortableCodexSecurityRunnerError("stage_artifact_invalid");
+            }
+            discoveryResults.push(restored);
+          } else {
+            dossier = restored;
+            dossierStateBase64 = portableCodexSecurityDossierBase64(dossier);
+          }
+          log(JSON.stringify({ type: "checkpoint_reused", stage: stage.id, batch: partition === null ? null : partition.index + 1 }));
+          continue;
+        }
+        fs.mkdirSync(artifactRoot, { recursive: dependencies.resumeDiscovery === true, mode: 0o700 });
         const stageSessionLimits = partition !== null
           ? deepCoveragePartitionSessionLimits(
             safeConfiguration.limits,

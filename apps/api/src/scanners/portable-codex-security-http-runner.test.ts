@@ -1124,3 +1124,44 @@ test("Portable untimed scans finish all stages after more than 90 minutes", asyn
     assert.equal(runtime.status, "completed");
   } finally { remove(root); }
 });
+
+test("discovery recovery reuses validated artifacts and retains prior usage without repeating model stages", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-resume-"));
+  const config = configuration(root);
+  config.limits.totalTimeoutMs = 0;
+  const factory = stageSessionFactory();
+  try {
+    await assert.rejects(runPortableCodexSecurity(config, dependencies({
+      createSession: async (input: Parameters<typeof factory>[0]) => {
+        const session = await factory(input);
+        if (/stage "discovery"/.test(input.spec.instructions)) throw new Error("lost process after artifact write");
+        return session;
+      },
+    })));
+    const runtimePath = path.join(config.outputDir, "portable-codex-security-runtime.json");
+    const before = JSON.parse(fs.readFileSync(runtimePath, "utf8"));
+    const specs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }> = [];
+    await runPortableCodexSecurity(config, dependencies({ resumeDiscovery: true, createSession: stageSessionFactory(specs) }));
+    assert.ok(specs.every(({ spec }) => !/stage "(inventory|threat-model|discovery)"/.test(spec.instructions)));
+    const after = JSON.parse(fs.readFileSync(runtimePath, "utf8"));
+    assert.equal(after.status, "completed");
+    assert.equal(after.snapshotId, before.snapshotId);
+    assert.ok(after.usage.inputTokens >= before.usage.inputTokens);
+  } finally { remove(root); }
+});
+
+test("discovery recovery rejects corrupted checkpoints before another model call", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-resume-invalid-"));
+  const config = configuration(root);
+  const factory = stageSessionFactory();
+  try {
+    await assert.rejects(runPortableCodexSecurity(config, dependencies({ createSession: async (input: Parameters<typeof factory>[0]) => {
+      if (/stage "discovery"/.test(input.spec.instructions)) throw new Error("interrupted");
+      return factory(input);
+    } })));
+    fs.writeFileSync(path.join(config.outputDir, "portable-codex-security-artifacts/inventory/01-inventory.json"), '{"schemaVersion":1,"stage":"wrong"}');
+    let calls = 0;
+    await assert.rejects(runPortableCodexSecurity(config, dependencies({ resumeDiscovery: true, createSession: async (input: Parameters<typeof factory>[0]) => { calls++; return factory(input); } })));
+    assert.equal(calls, 0);
+  } finally { remove(root); }
+});

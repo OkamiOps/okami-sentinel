@@ -117,6 +117,7 @@ async function main(): Promise<void> {
     vault: runtime.vault,
     xaiOAuth: runtime.xaiOAuthTokenResolver,
     signal: controller.signal,
+    resumeDiscovery: process.argv[3] === "--resume-discovery",
     redactor: globalSecretRedactor,
     log: (line) => {
       const redacted = globalSecretRedactor.redactText(line);
