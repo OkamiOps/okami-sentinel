@@ -813,3 +813,34 @@ function deferred<T>() {
   const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise; });
   return { promise, resolve };
 }
+
+
+test("xAI OAuth resolves the current token before each request in the same session", async () => {
+  let current = "first-token";
+  const headers: string[] = [];
+  const upstream = createHttpAgentUpstream({
+    routeKind: "xai-oauth", protocol: "xai-oauth-responses", credentials: { apiKey: "stale-token" },
+    resolveAccessToken: async () => current,
+    transport: async (_url, init) => {
+      headers.push(new Headers(init?.headers).get("authorization")!);
+      return new Response("{}", { status: 200 });
+    },
+  });
+  const request = { operation: "responses" as const, body: {}, signal: new AbortController().signal };
+  await upstream.request(request);
+  current = "renewed-token";
+  await upstream.request(request);
+  assert.deepEqual(headers, ["Bearer first-token", "Bearer renewed-token"]);
+});
+
+test("xAI OAuth refresh failure stops before inference and never leaks resolver errors", async () => {
+  let calls = 0;
+  const upstream = createHttpAgentUpstream({
+    routeKind: "xai-oauth", protocol: "xai-oauth-responses", credentials: { apiKey: "stale-token" },
+    resolveAccessToken: async () => { throw new Error("secret refresh detail"); },
+    transport: async () => { calls++; return new Response("{}"); },
+  });
+  await assert.rejects(upstream.request({ operation: "responses", body: {}, signal: new AbortController().signal }),
+    (error: unknown) => error instanceof HttpAgentUpstreamError && error.code === "credential_rejected" && !error.message.includes("secret"));
+  assert.equal(calls, 0);
+});

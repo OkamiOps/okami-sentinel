@@ -126,6 +126,8 @@ export interface HttpAgentUpstreamOptions {
   protocol: HttpAgentProtocol;
   /** Passed only by trusted server code that has just read the vault. */
   credentials: ConnectionSecretBundle;
+  /** Trusted OAuth resolver, consulted before every inference request. */
+  resolveAccessToken?: (signal: AbortSignal) => Promise<string>;
   /** Injectable solely for deterministic tests; production defaults to fetch. */
   transport?: typeof fetch;
   /** Injectable solely for deterministic custom-endpoint transport tests. */
@@ -274,9 +276,11 @@ class HttpAgentUpstream implements AgentUpstream {
   readonly #pinnedCustomEndpointDispatcher:
     | ((endpoint: string, allowInsecureLocalhost: boolean) => Promise<UndiciDispatcher>)
     | null;
+  readonly #resolveAccessToken: HttpAgentUpstreamOptions["resolveAccessToken"];
   readonly #active = new Set<AbortController>();
 
   constructor(options: HttpAgentUpstreamOptions) {
+    this.#resolveAccessToken = options.routeKind === "xai-oauth" ? options.resolveAccessToken : undefined;
     const route = resolveRoute(options.routeKind, options.protocol, options.credentials);
     this.#endpoint = route?.endpoint ?? null;
     this.#headers = route?.headers ?? {};
@@ -311,10 +315,21 @@ class HttpAgentUpstream implements AgentUpstream {
             controller.signal,
           );
         }
+        let headers = this.#headers;
+        if (this.#resolveAccessToken) {
+          try {
+            const token = await raceWithAbort(this.#resolveAccessToken(controller.signal), controller.signal);
+            if (!token || /[\r\n]/.test(token)) throw new Error("invalid token");
+            headers = { ...headers, [headerKey(headers, "authorization") ?? "Authorization"]: `Bearer ${token}` };
+          } catch {
+            if (controller.signal.aborted) throw new AgentSessionError("agent_cancelled");
+            throw new HttpAgentUpstreamError("credential_rejected");
+          }
+        }
         response = await raceWithAbort(
           Promise.resolve().then(() => this.#transport(this.#endpoint as string, {
             method: "POST",
-            headers: this.#headers,
+            headers,
             body: serialized,
             redirect: "error",
             signal: controller.signal,

@@ -58,6 +58,9 @@ export type PortableCodexSecurityStageErrorCode =
   | "agent_input_byte_limit"
   | "agent_output_byte_limit"
   | "agent_time_limit"
+  | "model_access_denied"
+  | "credential_rejected"
+  | "provider_unreachable"
   | "rate_limited"
   | "cost_limit_reached"
   | "stage_evidence_incomplete"
@@ -555,6 +558,9 @@ function portableAgentFailureCode(
     case "agent_input_byte_limit":
     case "agent_output_byte_limit":
     case "agent_time_limit":
+    case "model_access_denied":
+    case "credential_rejected":
+    case "provider_unreachable":
     case "rate_limited":
       return code;
     default:

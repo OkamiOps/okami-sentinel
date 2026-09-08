@@ -131,6 +131,8 @@ export type PortableCodexSecurityRunnerErrorCode =
   | "agent_tool_limit"
   | "agent_input_byte_limit"
   | "agent_output_byte_limit"
+  | "model_access_denied"
+  | "provider_unreachable"
   | "rate_limited"
   | "cost_budget_unavailable"
   | "cost_limit_reached"
@@ -329,7 +331,12 @@ export async function runPortableCodexSecurity(
       snapshotId: snapshot.snapshotId,
     });
 
-    const createSession = dependencies.createSession ?? productionSessionFactory(dependencies.createUpstream);
+    const createSession = dependencies.createSession ?? productionSessionFactory(dependencies.createUpstream, resolved.directXaiOAuth ? async (signal) => {
+      const token = await dependencies.xaiOAuth!.getAccessToken(resolved.connection.id, signal);
+      configuredRedactor.register(scope, [...values, token]);
+      if (configuredRedactor !== globalSecretRedactor) globalSecretRedactor.register(scope, [...values, token]);
+      return token;
+    } : undefined);
     const anchorValidationCache = createPortableCodexSecurityAnchorValidationCache();
     let deepCoveragePlan = null;
     if (safeConfiguration.mode === "deep") {
@@ -829,6 +836,7 @@ function costBudgetStopCode(
 
 function productionSessionFactory(
   createUpstream: (options: HttpAgentUpstreamOptions) => AgentUpstream = createHttpAgentUpstream,
+  resolveAccessToken?: HttpAgentUpstreamOptions["resolveAccessToken"],
 ): (input: PortableCodexSecuritySessionInput) => Promise<AgentSession> {
   return async (input) => {
     if (!isHttpAgentRouteProtocolSupported(input.connection.routeKind, input.connection.protocol)) {
@@ -838,6 +846,7 @@ function productionSessionFactory(
       routeKind: input.connection.routeKind,
       protocol: input.connection.protocol,
       credentials: input.credentials,
+      resolveAccessToken,
     });
     return createAgentSession({ ...input.spec, probe: input.capability.capabilities }, upstream);
   };

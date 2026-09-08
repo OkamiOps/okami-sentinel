@@ -8,6 +8,8 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Fixed
 
+- Portable Codex Security refreshes xAI OAuth credentials before each inference request, including subsequent turns in one stage. Authentication, access-denied and provider-unreachable errors retain their specific failure codes.
+
 - Portable workers tolerate closed API output pipes and persist their redacted events independently, so a development API reload does not lose metrics or terminate a scan through a broken output pipe.
 
 - Portable Codex Security scans no longer expire after a fixed elapsed time in Standard or Deep mode. Manual cancellation and configured cost, turn, tool and byte limits remain enforced.
