@@ -160,7 +160,7 @@ flowchart LR
     DB[("SQLite\nBenchmark-Metadaten")]
     STATE[("Codex-Security-State\nAusgabe + Belege")]
     CONNECTIONS["Provider-Verbindungen\nlokal · OAuth · API · Token Plan"]
-    VAULT[("OS-Credential-Vault")]
+    VAULT[("OS-Vault / verschlüsselter Server-Vault")]
     MODELS[("Live-Modellkataloge\n+ Capability Probes")]
     ROUTER["Capability Router\nEngine × Verbindung × Modell"]
     CODEXSEC["Codex-Security-Adapter"]
@@ -193,7 +193,18 @@ flowchart LR
 | Gemeinsame Verträge | Paketübergreifende Typen und Schemas | `packages/shared` |
 | Metadaten | SQLite | `data/benchmark.db` |
 
-## Voraussetzungen
+## Installation auswählen
+
+| Option | Einsatz | Unterstützte Ausführungswege |
+|---|---|---|
+| [pnpm](#installation-mit-pnpm) | Lokaler Arbeitsplatz und Entwicklung; Node 24 und pnpm 11.5.2 erforderlich | Lokale CLI-Sitzungen und HTTP-Verbindungen mit bestandener Fähigkeitsprüfung |
+| [Docker Compose](#installation-mit-docker) | Eigener Linux-amd64-Server; kein Node oder pnpm auf dem Host nötig | Codex Security Portable, Mantis HTTP und VulnHunter HTTP |
+
+Jede Docker-Installation besitzt eigene Daten und Zugangsdaten; sie ist kein mandantenfähiges SaaS. Native und lokale CLI-Sitzungen bleiben über pnpm verfügbar. Aktuelle Änderungen stehen im [Changelog](CHANGELOG.md).
+
+## Installation mit pnpm
+
+### Voraussetzungen
 
 - Node.js `24.x` (`>=24 <25`)
 - pnpm `11.5.2`
@@ -208,7 +219,7 @@ flowchart LR
   - lokale Cursor-Erkennung und Cursor Background Agents API;
   - OpenRouter, Gemini, DeepSeek, MiniMax Token Plan, Xiaomi MiMo Token Plan sowie eigene OpenAI- oder Anthropic-kompatible APIs.
 
-## Schnellstart
+### Schnellstart
 
 ```bash
 git clone https://github.com/OkamiOps/okami-sentinel.git
@@ -247,6 +258,24 @@ claude auth login
 
 Beim Start indexiert die API kompatible Scans, die bereits im konfigurierten Codex-Security-State vorhanden sind.
 
+## Installation mit Docker
+
+Erfordert Docker Engine mit Docker Compose v2 auf Linux amd64. Oberfläche, API und Worker laufen in einem Container; SQLite und private Zustandsdaten liegen in einem persistenten Volume. Das Setup verwendet einen temporären Node-24-Container. Node und pnpm werden auf dem Host nicht benötigt.
+
+```bash
+git clone https://github.com/OkamiOps/okami-sentinel.git
+cd okami-sentinel
+sh scripts/docker/setup.sh
+docker compose --env-file .env.local -f compose.yaml -f compose.local.yaml up --build -d
+curl --fail http://127.0.0.1:8787/readyz
+```
+
+Öffnen Sie <http://127.0.0.1:8787> und melden Sie sich als `admin` an. Das Passwort liegt außerhalb des Checkouts in `~/.local/share/okami-sentinel/admin_password`; das Setup gibt keine Secrets aus. Konfigurieren Sie Provider-Verbindungen im Server-Vault.
+
+Standardmäßig wird der Sentinel-Checkout freigegeben. Für ein anderes Projekt verwenden Sie beim ersten Setup `sh scripts/docker/setup.sh --repository /pfad/zum/projekt` und wählen in der Oberfläche `/repos/projeto`. Der Quellpfad muss auf dem Docker-Host existieren; der Browser überträgt keine lokalen Dateien zum Server.
+
+Der lokale Zugriff ist auf `127.0.0.1:8787` beschränkt. Für eine HTTPS-Domain folgen Sie der [Dokploy-Anleitung](docs/dokploy.md). Alternative Ports, Backups, Wiederherstellung und Updates beschreibt die [Docker-Anleitung](docs/docker.md) (beide auf Portugiesisch). Validiert sind Linux amd64 und die drei HTTP-Engines; Native, CLI-Sitzungen des Hosts, Apple Silicon, Windows und Linux arm64 gehören nicht zur ersten Validierung.
+
 ## Typischer Ablauf
 
 1. **Übersicht** — indexierte Kanäle, Schweregrade, Kosten und Dauer prüfen.
@@ -266,7 +295,7 @@ Beim Start indexiert die API kompatible Scans, die bereits im konfigurierten Cod
 | **Cursor** | Lokale CLI-Erkennung, Background Agents API | Verbindung und Live-Katalog sind verfügbar; Scanner-Ausführung wird erst nach vollständigem Remote-/Local-Artefaktvertrag angeboten. |
 | **Andere HTTP** | OpenRouter, Gemini, DeepSeek, MiniMax Token Plan, MiMo Token Plan, benutzerdefinierte kompatible URLs | Codex Security Portable, Mantis und VulnHunter sind nur verfügbar, wenn das exakte Tupel aus Verbindung, Modell und Protokoll Sentinels begrenzte Tool-, Artefakt-, Abbruch- und Snapshot-Probe besteht. |
 
-Modelle und gültige Effort-Stufen kommen aus dem authentifizierten Katalog und den Live-Fähigkeiten des Providers. Die einzige Ausnahme für einen Runtime-Default ist eine ausdrücklich konfigurierte lokale Claude-Code-Sitzung. Bei OpenRouter bedeutet `reasoning.supported_efforts: null`, dass der Gateway-Effort-Satz verfügbar ist; ist `reasoning.mandatory` wahr, wird `none` entfernt. Der von Sentinel gesendete Effort und sein Wire-Feld werden bei Kenntnis erhalten; andernfalls wird der Provider-Default festgehalten, ohne zu behaupten, was der Provider angewendet hat. Secrets und OAuth-Tokens sind über die API write-only, werden im Credential Vault des Betriebssystems gespeichert und in SQLite nur durch undurchsichtige Referenzen repräsentiert. Sentinel orchestriert den öffentlichen xAI-Gerätefluss lokal und hängt nicht von einer Grok-CLI ab; Modellzugriff wird erst nach erfolgreichem Live-Katalog und Fähigkeitsprüfungen akzeptiert.
+Modelle und gültige Effort-Stufen kommen aus dem authentifizierten Katalog und den Live-Fähigkeiten des Providers. Die einzige Ausnahme für einen Runtime-Default ist eine ausdrücklich konfigurierte lokale Claude-Code-Sitzung. Bei OpenRouter bedeutet `reasoning.supported_efforts: null`, dass der Gateway-Effort-Satz verfügbar ist; ist `reasoning.mandatory` wahr, wird `none` entfernt. Der von Sentinel gesendete Effort und sein Wire-Feld werden bei Kenntnis erhalten; andernfalls wird der Provider-Default festgehalten, ohne zu behaupten, was der Provider angewendet hat. Secrets und OAuth-Tokens sind über die API write-only, werden lokal im Credential Vault des Betriebssystems oder bei Docker im verschlüsselten Server-Vault gespeichert und in SQLite nur durch undurchsichtige Referenzen repräsentiert. Sentinel orchestriert den öffentlichen xAI-Gerätefluss lokal und hängt nicht von einer Grok-CLI ab; Modellzugriff wird erst nach erfolgreichem Live-Katalog und Fähigkeitsprüfungen akzeptiert.
 
 ## Lokale und Remote-Guardrails
 

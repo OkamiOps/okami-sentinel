@@ -152,7 +152,7 @@ flowchart LR
     DB[("SQLite\nmetadados do benchmark")]
     STATE[("State do Codex Security\nsaída + evidências")]
     CONNECTIONS["Conexões de provider\nlocal · OAuth · API · Token Plan"]
-    VAULT[("Cofre de credenciais do SO")]
+    VAULT[("Cofre do SO / vault criptografado do servidor")]
     MODELS[("Catálogos de modelos ao vivo\n+ probes de capability")]
     ROUTER["Router de capacidades\nengine + auth + modelo"]
     CODEXSEC["Adapter Codex Security"]
@@ -185,7 +185,18 @@ flowchart LR
 | Contratos compartilhados | Tipos e schemas entre pacotes | `packages/shared` |
 | Metadados | SQLite | `data/benchmark.db` |
 
-## Pré-requisitos
+## Escolha a instalação
+
+| Opção | Uso recomendado | Rotas de execução suportadas |
+|---|---|---|
+| [pnpm](#instalação-via-pnpm) | Estação local e desenvolvimento; requer Node 24 e pnpm 11.5.2 | Sessões CLI locais e rotas HTTP com capability aprovada |
+| [Docker Compose](#instalação-via-docker) | Servidor próprio Linux amd64; dispensa Node e pnpm no host | Codex Security Portable, Mantis HTTP e VulnHunter HTTP |
+
+Cada instalação Docker possui seus próprios dados e credenciais; não é um SaaS multi-tenant. Native e sessões CLI locais continuam disponíveis via pnpm. Consulte as mudanças recentes no [changelog](CHANGELOG.md).
+
+## Instalação via pnpm
+
+### Pré-requisitos
 
 - Node.js `24.x` (`>=24 <25`)
 - pnpm `11.5.2`
@@ -200,7 +211,7 @@ flowchart LR
   - detecção local do Cursor e Cursor Background Agents API;
   - OpenRouter, Gemini, DeepSeek, MiniMax Token Plan, Xiaomi MiMo Token Plan e APIs compatíveis OpenAI ou Anthropic customizadas.
 
-## Início rápido
+### Início rápido
 
 ```bash
 git clone https://github.com/OkamiOps/okami-sentinel.git
@@ -239,6 +250,24 @@ claude auth login
 
 Na inicialização, a API indexa scans compatíveis já existentes no state configurado do Codex Security.
 
+## Instalação via Docker
+
+Requer Docker Engine com Docker Compose v2 em Linux amd64. Interface, API e workers rodam no mesmo container, com SQLite e estado privado em volume persistente. O setup usa um container temporário de Node 24; não exige Node ou pnpm no host.
+
+```bash
+git clone https://github.com/OkamiOps/okami-sentinel.git
+cd okami-sentinel
+sh scripts/docker/setup.sh
+docker compose --env-file .env.local -f compose.yaml -f compose.local.yaml up --build -d
+curl --fail http://127.0.0.1:8787/readyz
+```
+
+Abra <http://127.0.0.1:8787> e entre com o usuário `admin`. A senha fica no arquivo `~/.local/share/okami-sentinel/admin_password`, fora do checkout; o setup não imprime secrets. Configure as conexões de provider no vault do servidor.
+
+Por padrão, o setup autoriza o checkout do Sentinel. Para analisar outro projeto, use `sh scripts/docker/setup.sh --repository /caminho/do/projeto` no primeiro setup e selecione `/repos/projeto` na interface. O caminho de origem precisa existir no host Docker; abrir o navegador não envia arquivos do visitante ao servidor.
+
+O acesso local fica restrito a `127.0.0.1:8787`. Para hospedagem com domínio HTTPS, siga o [guia do Dokploy](docs/dokploy.md). Consulte o [guia Docker](docs/docker.md) para portas alternativas, backup, restauração e atualização. O suporte validado é Linux amd64 com as três engines HTTP; Native, sessões CLI do host, Apple Silicon, Windows e Linux arm64 não fazem parte da validação inicial.
+
 ## Fluxo principal
 
 1. **Visão** — inspecione canais indexados, severidade, custo e duração.
@@ -261,7 +290,7 @@ Na inicialização, a API indexa scans compatíveis já existentes no state conf
 | **Cursor** | Detecção de CLI local, Background Agents API | Conexão e catálogo ao vivo disponíveis; execução de scanner não é anunciada até que o contrato de artefatos remoto/local esteja completo. |
 | **Outros HTTP** | OpenRouter, Gemini, DeepSeek, MiniMax Token Plan, MiMo Token Plan, URLs compatíveis customizadas | Codex Security Portable, Mantis e VulnHunter ficam disponíveis somente quando a tupla exata conexão/modelo/protocolo passa a probe limitada de ferramentas, artefatos, cancelamento e snapshot do Sentinel. |
 
-Os modelos e os níveis de effort válidos vêm do catálogo autenticado e das capacidades ao vivo do provider. A única exceção de default de runtime é uma sessão local Claude Code configurada explicitamente. No OpenRouter, `reasoning.supported_efforts: null` significa que o conjunto de efforts do gateway está disponível; se `reasoning.mandatory` é `true`, `none` é removido. Quando conhecido, o effort enviado pelo Sentinel e seu campo wire são preservados; caso contrário o run registra o default do provider sem afirmar o que ele aplicou. Secrets e tokens OAuth são write-only pela API, armazenados no cofre de credenciais do sistema operacional e representados no SQLite apenas por referências opacas. O Sentinel orquestra localmente o device flow público da xAI e não depende da CLI do Grok; o acesso ao modelo é aceito somente após catálogo ao vivo e verificações de capability aprovadas.
+Os modelos e os níveis de effort válidos vêm do catálogo autenticado e das capacidades ao vivo do provider. A única exceção de default de runtime é uma sessão local Claude Code configurada explicitamente. No OpenRouter, `reasoning.supported_efforts: null` significa que o conjunto de efforts do gateway está disponível; se `reasoning.mandatory` é `true`, `none` é removido. Quando conhecido, o effort enviado pelo Sentinel e seu campo wire são preservados; caso contrário o run registra o default do provider sem afirmar o que ele aplicou. Secrets e tokens OAuth são write-only pela API, armazenados no cofre do sistema operacional no modo local ou no vault criptografado do servidor em Docker e representados no SQLite apenas por referências opacas. O Sentinel orquestra localmente o device flow público da xAI e não depende da CLI do Grok; o acesso ao modelo é aceito somente após catálogo ao vivo e verificações de capability aprovadas.
 
 ## Guardrails locais e remotos
 

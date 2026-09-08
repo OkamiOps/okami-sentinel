@@ -152,7 +152,7 @@ flowchart LR
     DB[("SQLite\nbenchmark metadata")]
     STATE[("Codex Security state\nscan output + evidence")]
     CONNECTIONS["Provider connections\nlocal · OAuth · API · Token Plan"]
-    VAULT[("OS credential vault")]
+    VAULT[("OS vault / encrypted server vault")]
     MODELS[("Live model catalogs\n+ capability probes")]
     ROUTER["Capability router\nengine × connection × model"]
     CODEXSEC["Codex Security adapter"]
@@ -184,6 +184,15 @@ flowchart LR
 | Gate engine | Policy evaluation and runtime integration | `packages/gate-core`, `packages/gate-runtime` |
 | Shared contracts | Cross-package types and schemas | `packages/shared` |
 | Metadata | SQLite | `data/benchmark.db` |
+
+## Choose your installation
+
+| Option | Best fit | Supported execution routes |
+|---|---|---|
+| [pnpm](#install-with-pnpm) | Local workstation and development; Node 24 and pnpm 11.5.2 required | Local CLI sessions and capability-proven HTTP routes |
+| [Docker Compose](#docker-self-hosting) | Self-hosted Linux amd64; no host Node or pnpm required | Codex Security Portable, Mantis HTTP, and VulnHunter HTTP |
+
+Each Docker installation has its own data and credentials; it is not a multi-tenant SaaS. Native and host-local CLI sessions remain available through pnpm. See the [changelog](CHANGELOG.md) for recent changes.
 
 ## Install with pnpm
 
@@ -253,7 +262,11 @@ docker compose --env-file .env.local -f compose.yaml -f compose.local.yaml up --
 curl --fail http://127.0.0.1:8787/readyz
 ```
 
-The setup creates secret files outside the checkout and does not print their values. Read the operational guides before hosting it: [Docker](docs/docker.md) and [Dokploy](docs/dokploy.md).
+Open <http://127.0.0.1:8787> and sign in as `admin`. The password is stored outside the checkout at `~/.local/share/okami-sentinel/admin_password`; setup does not print secrets. Configure provider connections in the server vault.
+
+Setup authorizes the Sentinel checkout by default. To scan another project, use `sh scripts/docker/setup.sh --repository /path/to/project` during the first setup, then select `/repos/projeto` in the UI. The source path must exist on the Docker host; opening the browser does not upload the visitor’s local files.
+
+Docker supports Codex Security Portable, Mantis HTTP, and VulnHunter HTTP. Native and host-local CLI sessions remain pnpm-only. Linux amd64 is validated; Apple Silicon, Windows, and Linux arm64 are not part of the initial validation. See the operational guides for alternate ports, backups, restoration, and HTTPS hosting: [Docker](docs/docker.md) and [Dokploy](docs/dokploy.md) (Portuguese).
 
 ## Typical workflow
 
@@ -277,7 +290,7 @@ The setup creates secret files outside the checkout and does not print their val
 | **Cursor** | Local CLI detection, Background Agents API | Connection and live catalog support are available; scanner execution is not advertised until the remote/local artifact contract is complete. |
 | **Other HTTP** | OpenRouter, Gemini, DeepSeek, MiniMax Token Plan, MiMo Token Plan, custom compatible URLs | Codex Security Portable, Mantis, and VulnHunter are available only when the exact connection/model/protocol tuple passes Sentinel's bounded tool, artifact, cancellation, and snapshot probe. |
 
-Models come from the authenticated provider catalog. The only runtime-default exception is an explicitly configured Claude Code local session. For OpenRouter, `reasoning.supported_efforts: null` means the gateway effort set is available; if `reasoning.mandatory` is true, `none` is removed. The exact effort Sentinel sent is preserved with its wire field when known; otherwise the run records provider-default behavior without claiming what the provider applied. Secrets and OAuth tokens are write-only through the API, stored in the OS credential vault, and represented in SQLite only by opaque references. Sentinel orchestrates xAI's public device flow locally and does not invoke or depend on Grok CLI; model access is accepted only after live catalog and capability checks succeed.
+Models come from the authenticated provider catalog. The only runtime-default exception is an explicitly configured Claude Code local session. For OpenRouter, `reasoning.supported_efforts: null` means the gateway effort set is available; if `reasoning.mandatory` is true, `none` is removed. The exact effort Sentinel sent is preserved with its wire field when known; otherwise the run records provider-default behavior without claiming what the provider applied. Secrets and OAuth tokens are write-only through the API, stored in the OS credential vault in local mode or the encrypted server vault in Docker mode, and represented in SQLite only by opaque references. Sentinel orchestrates xAI's public device flow locally and does not invoke or depend on Grok CLI; model access is accepted only after live catalog and capability checks succeed.
 
 ## Local and remote guardrails
 
