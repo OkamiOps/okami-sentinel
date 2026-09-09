@@ -46,26 +46,55 @@ export function queryGraph(index: GraphIndex, input: unknown, maxOutputBytes: nu
   if (!value || typeof value.query !== "string" || !value.query.trim() || value.query.length > 200) throw new Error("tool_argument_invalid");
   const maxResults = value.maxResults ?? 10;
   if (!Number.isSafeInteger(maxResults) || (maxResults as number) < 1 || (maxResults as number) > 20) throw new Error("tool_argument_invalid");
-  const terms = value.query.trim().toLowerCase().split(/\s+/);
-  const matches = index.nodes.filter(node => terms.every(term => `${node.id} ${node.label} ${node.file}`.toLowerCase().includes(term)));
-  const nodes: GraphNode[] = [];
-  const edges: GraphEdge[] = [];
-  const output = () => JSON.stringify({ status: "ready", nodes, edges, truncated: true,
-    note: "Navigation evidence only. Read source to validate reachability, controls and vulnerabilities. Missing edges do not prove absence." });
-  if (Buffer.byteLength(output()) > maxOutputBytes) throw new Error("agent_output_byte_limit");
-  for (const node of matches.slice(0, maxResults as number)) {
-    nodes.push(node);
-    if (Buffer.byteLength(output()) > maxOutputBytes) { nodes.pop(); break; }
-  }
-  const selected = new Set(nodes.map(node => node.id));
+  const query = value.query.trim().toLowerCase();
+  const terms = query.split(/\s+/);
+  const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
+  const rank = (node: GraphNode) => node.id.toLowerCase() === query || node.label.toLowerCase() === query
+    ? 0 : node.file.toLowerCase() === query ? 1 : 2;
+  const matches = index.nodes
+    .filter(node => terms.every(term => `${node.id} ${node.label} ${node.file}`.toLowerCase().includes(term)))
+    .sort((a, b) => rank(a) - rank(b) || compare(a.file, b.file) || compare(a.label, b.label) || compare(a.id, b.id));
+  const seeds = matches.slice(0, maxResults as number);
   const byId = new Map(index.nodes.map(node => [node.id, node]));
-  for (const edge of index.edges) {
-    if (!selected.has(edge.source) && !selected.has(edge.target)) continue;
-    if (edges.length >= (maxResults as number) * 2) break;
-    const additions = [edge.source, edge.target].filter((id, i, ids) => ids.indexOf(id) === i && !nodes.some(node => node.id === id)).map(id => byId.get(id)!);
-    nodes.push(...additions); edges.push(edge);
-    if (Buffer.byteLength(output()) > maxOutputBytes) { edges.pop(); nodes.splice(nodes.length - additions.length, additions.length); break; }
+  let neighborhood: GraphEdge[] = [];
+  const edges: GraphEdge[] = [];
+  const nodes = () => {
+    const returned = new Map(seeds.map(node => [node.id, node]));
+    for (const edge of edges) {
+      for (const id of [edge.source, edge.target]) {
+        if (!returned.has(id)) returned.set(id, byId.get(id)!);
+      }
+    }
+    return [...returned.values()];
+  };
+  const output = () => {
+    const resultsTruncated = seeds.length < matches.length;
+    const neighborhoodTruncated = edges.length < neighborhood.length;
+    return JSON.stringify({ status: "ready", nodes: nodes(), edges,
+      matchesTotal: matches.length, matchesReturned: seeds.length,
+      neighborhoodEdgesTotal: neighborhood.length, neighborhoodEdgesReturned: edges.length,
+      resultsTruncated, neighborhoodTruncated, truncated: resultsTruncated || neighborhoodTruncated,
+      note: "Navigation evidence only. Read source to validate reachability, controls and vulnerabilities. Missing edges do not prove absence." });
+  };
+  const selectNeighborhood = () => {
+    // Freeze seed identities: a returned neighbor must never expand to a second hop.
+    const selected = new Set(seeds.map(node => node.id));
+    neighborhood = index.edges.filter(edge => byId.has(edge.source) && byId.has(edge.target) &&
+      (selected.has(edge.source) || selected.has(edge.target)))
+      .sort((a, b) => compare(a.source, b.source) || compare(a.target, b.target) ||
+        compare(a.relation, b.relation) || compare(a.confidence, b.confidence));
+  };
+  selectNeighborhood();
+  // Recompute the entire envelope on every change, including counts and flags.
+  while (Buffer.byteLength(output()) > maxOutputBytes && seeds.length > 0) {
+    seeds.pop();
+    selectNeighborhood();
   }
-  // Bounded neighborhoods deliberately do not claim exhaustive graph coverage.
+  if (Buffer.byteLength(output()) > maxOutputBytes) throw new Error("agent_output_byte_limit");
+  for (const edge of neighborhood) {
+    if (edges.length >= (maxResults as number) * 2) break;
+    edges.push(edge);
+    if (Buffer.byteLength(output()) > maxOutputBytes) { edges.pop(); break; }
+  }
   return output();
 }

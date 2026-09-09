@@ -8,6 +8,7 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Fixed
 
+- Graph navigation prioritizes exact symbols and paths and reports actual result/neighborhood truncation. Portable guidance uses graph queries for unresolved relationships, avoids re-reading supplied Deep source pages, and excludes graph exploration from final report generation.
 - Portable discovery repairs identify the exact rejected scope field and allowed reason values, with safe structural diagnostics in telemetry. Prompt examples keep inspected and unexamined paths disjoint; repairs preserve candidate claims and source-evidence requirements.
 - Portable workers preserve the configured managed Graphify location, including the bundled Docker runtime. Generated graph caches stay outside Git.
 - Native scanner usage exhaustion is classified as an incomplete scan with a quota-specific terminal message. Other nonzero exits remain failures, and partial scanner output stays available.

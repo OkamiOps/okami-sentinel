@@ -696,9 +696,15 @@ test("Portable stages receive the prepared graph once without treating graph que
     assert.equal(builds, 1);
     assert.ok(specs.length > 0);
     for (const { spec, toolSurface } of specs) {
-      assert.equal(spec.graphIndex, index);
-      assert.ok(toolSurface.includes("workspace.graph"));
-      assert.match(spec.instructions, /not source reads, coverage proof/);
+      if (spec.resultArtifactValidationContext?.expectedArtifactPath === "sentinel-findings.json") {
+        assert.equal(spec.graphIndex, undefined);
+        assert.equal(toolSurface.includes("workspace.graph"), false);
+      } else {
+        assert.equal(spec.graphIndex, index);
+        assert.ok(toolSurface.includes("workspace.graph"));
+        assert.match(spec.instructions, /not source reads, coverage proof/);
+        assert.match(spec.instructions, /graph lookup is not a required step/);
+      }
     }
     const status = JSON.parse(fs.readFileSync(path.join(config.outputDir, "graphify-status.json"), "utf8"));
     assert.equal(status.status, "ready");

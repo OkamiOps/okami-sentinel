@@ -23,7 +23,7 @@ test("graph references stay inside the snapshot and preserve uncertain edge prov
     const result = JSON.parse(queryGraph(graph, { query: "route" }, 2048));
     assert.equal(result.edges[0].confidence, "INFERRED");
     assert.match(result.note, /Read source/);
-    assert.ok(Buffer.byteLength(queryGraph(graph, { query: "route" }, 280)) <= 280);
+    assert.ok(Buffer.byteLength(queryGraph(graph, { query: "route" }, 512)) <= 512);
     assert.throws(() => queryGraph(graph, { query: "route", maxResults: 100 }, 2048));
     assert.throws(() => queryGraph(graph, { query: "route" }, 10));
   } finally { await fs.rm(root, { recursive: true, force: true }); }
