@@ -27,7 +27,9 @@ export function scanAnalysisMetrics(scan: ScanRun, now = Date.now()): ScanAnalys
         return total + (text.length === 0 ? 0 : text.split("\n").length - (text.endsWith("\n") ? 1 : 0));
       }, 0);
       const artifacts = path.join(scan.scanDir, "portable-codex-security-artifacts");
-      const dirs = fs.readdirSync(artifacts).filter((name) => /^discovery(?:-\d+)?$/.test(name));
+      const dirs = fs.readdirSync(artifacts).filter((name) =>
+        /^discovery(?:-\d+)?$/.test(name) || (scan.mode === "standard" && name === "discovery-review")
+      );
       let completed = 0;
       let candidates = 0;
       for (const dir of dirs) {
@@ -38,7 +40,8 @@ export function scanAnalysisMetrics(scan: ScanRun, now = Date.now()): ScanAnalys
           candidates += value.candidates.length;
         } catch { /* A worker may not have finished its atomic artifact write yet. */ }
       }
-      result.batchesTotal = scan.mode === "deep" ? plan.partitions.length : 1;
+      result.batchesTotal = scan.mode === "deep" ? plan.partitions.length
+        : dirs.includes("discovery-review") ? 2 : 1;
       result.batchesCompleted = completed;
       result.candidates = candidates;
     } catch { /* Missing legacy snapshots remain unavailable, not zero. */ }

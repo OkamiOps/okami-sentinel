@@ -287,6 +287,73 @@ function stageSessionFactory(
   };
 }
 
+function discoveryReviewStageSessionFactory(
+  specs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }>,
+  candidatePass: "initial" | "review",
+): (input: { spec: AgentSessionSpec; toolSurface: readonly string[] }) => Promise<AgentSession> {
+  const anchor = { path: "src/auth.ts", startLine: 1, endLine: 1, role: "sink" as const };
+  const candidate = {
+    id: "candidate-auth-boundary",
+    category: "authorization",
+    hypothesis: "The authorization control may not protect this sensitive sink.",
+    attacker: "authenticated" as const,
+    prerequisites: "The attacker has an ordinary authenticated account and reaches the endpoint.",
+    expectedImpact: "The attacker could access another account's protected state.",
+    controlHypothesis: "The route may rely on an authorization check that is absent or bypassed.",
+    anchors: [anchor],
+  };
+  const rejectedAssessment = {
+    candidateId: candidate.id,
+    status: "rejected" as const,
+    reason: "not-vulnerable",
+    evidence: [anchor],
+  };
+  return async (input) => {
+    specs.push(input);
+    const stage = String(input.spec.instructions.match(/stage "([a-z-]+)"/)?.[1]);
+    const artifact = PORTABLE_CODEX_SECURITY_STAGES.find((item) => item.id === stage)?.artifact;
+    assert.ok(artifact, `unknown stage ${stage}`);
+    const isReview = path.basename(input.spec.artifactRoot) === "discovery-review";
+    if (stage === "discovery") {
+      const observed = input.spec.resultArtifactValidationContext?.discoveryCoverage?.observedReadPaths;
+      assert.ok(observed instanceof Set);
+      assert.equal(observed.size, 0, "each discovery pass starts with only its own successful full reads");
+      observed.add("src/auth.ts");
+    }
+    const contents = stage === "discovery"
+      ? {
+        schemaVersion: 1,
+        stage,
+        summary: isReview
+          ? "Independent false-negative review examined the mapped authorization boundary."
+          : "Initial mapped attack-surface review completed without a surviving candidate.",
+        observations: [],
+        scope: { inspected: ["src/auth.ts"], unexamined: [] },
+        candidates: (candidatePass === "review" ? isReview : !isReview) ? [candidate] : [],
+      }
+      : stage === "dataflow" || stage === "validation"
+        ? {
+          schemaVersion: 1,
+          stage,
+          summary: `${stage} independently tested the carried candidate.`,
+          observations: [],
+          scope: { inspected: ["src/auth.ts"], unexamined: [] },
+          assessments: [rejectedAssessment],
+        }
+        : {
+          schemaVersion: 1,
+          stage,
+          summary: `${stage} completed the mapped repository review.`,
+          observations: [],
+          scope: { inspected: ["src/auth.ts"], unexamined: [] },
+          candidates: [],
+          assessments: [],
+        };
+    fs.writeFileSync(path.join(input.spec.artifactRoot, artifact!), JSON.stringify(contents), { mode: 0o600 });
+    return completedStageSession(stage, artifact!, `${stage} complete`);
+  };
+}
+
 function reportBudgetStageSessionFactory(
   specs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }>,
 ): (input: { spec: AgentSessionSpec; toolSurface: readonly string[] }) => Promise<AgentSession> {
@@ -467,8 +534,8 @@ test("Portable Codex Security pins probe freshness at scan authorization across 
     assert.equal(result.runtime.status, "completed");
     assert.equal(
       specs.length,
-      PORTABLE_CODEX_SECURITY_STAGES.length - 1,
-      "an all-rejected dossier completes report coverage server-side without a paid empty model turn",
+      PORTABLE_CODEX_SECURITY_STAGES.length,
+      "an empty first discovery gets one bounded independent review while the final empty report stays server-owned",
     );
     assert.ok(
       currentNow.getTime() - Date.parse(report().checkedAt) > 60 * 60 * 1000,
@@ -648,27 +715,31 @@ test("Portable Codex Security completes six methodology stages with a server-own
     }));
     assert.equal(result.runtime.status, "completed");
     assert.deepEqual(specs.map(({ spec }) =>
-      String(spec.instructions.match(/stage "([a-z-]+)"/)?.[1])), PORTABLE_CODEX_SECURITY_STAGES
-        .filter((stage) => stage.id !== "report")
-        .map((stage) => stage.id));
+      String(spec.instructions.match(/stage "([a-z-]+)"/)?.[1])), [
+      "inventory", "threat-model", "discovery", "discovery", "dataflow", "validation",
+    ]);
     assert.deepEqual(specs.map(({ toolSurface }) => [...toolSurface]),
-      Array.from({ length: 5 }, () => ["workspace.list", "workspace.read", "workspace.search", "results.write"]));
-    assert.equal(new Set(specs.map(({ spec }) => spec.artifactRoot)).size, 5);
-    assert.deepEqual(specs.map(({ spec }) => spec.reasoningEffort), Array(5).fill("high"));
-    assert.deepEqual(specs.map(({ spec }) => spec.terminalMode), Array(5).fill("artifact-write"));
+      Array.from({ length: 6 }, () => ["workspace.list", "workspace.read", "workspace.search", "results.write"]));
+    assert.equal(new Set(specs.map(({ spec }) => spec.artifactRoot)).size, 6);
+    assert.deepEqual(specs.map(({ spec }) => spec.reasoningEffort), Array(6).fill("high"));
+    assert.deepEqual(specs.map(({ spec }) => spec.terminalMode), Array(6).fill("artifact-write"));
     const standardDiscovery = specs.find(({ spec }) => spec.resultArtifactValidationContext?.expectedArtifactPath === "03-discovery.json")!.spec;
     assert.equal(standardDiscovery.artifactWriteByTurn, undefined, "Standard discovery uses the session's finalization reserve, not the early 2/3 cutoff");
     assert.equal(standardDiscovery.resultArtifactValidationContext?.requireDiscoveryCandidateContext, true);
     assert.ok(standardDiscovery.resultArtifactValidationContext?.discoveryCoverage?.observedReadPaths instanceof Set);
     assert.deepEqual(
       specs.map(({ spec }) => spec.resultArtifactContract),
-      Array(5).fill("portable-stage-json-v1"),
+      Array(6).fill("portable-stage-json-v1"),
     );
     assert.deepEqual(
       validationDossiers.map((context) => context?.dossier.stageSummaries),
       [
         [],
         [{ stage: "inventory", summary: "ok" }],
+        [
+          { stage: "inventory", summary: "ok" },
+          { stage: "threat-model", summary: "ok" },
+        ],
         [
           { stage: "inventory", summary: "ok" },
           { stage: "threat-model", summary: "ok" },
@@ -704,6 +775,12 @@ test("Portable Codex Security completes six methodology stages with a server-own
       { stage: "inventory", summary: "ok" },
       { stage: "threat-model", summary: "ok" },
     ]);
+    const reviewState = specs[3]!.spec.instructions.match(/BEGIN_PORTABLE_COVERAGE_DOSSIER_BASE64\n([A-Za-z0-9+/=]+)\nEND_PORTABLE_COVERAGE_DOSSIER_BASE64/)?.[1];
+    assert.ok(reviewState);
+    assert.deepEqual(JSON.parse(Buffer.from(reviewState!, "base64").toString("utf8")).stageSummaries, [
+      { stage: "inventory", summary: "ok" },
+      { stage: "threat-model", summary: "ok" },
+    ]);
     const finalReport = JSON.parse(fs.readFileSync(
       path.join(config.outputDir, "portable-codex-security-results", "sentinel-findings.json"),
       "utf8",
@@ -712,6 +789,79 @@ test("Portable Codex Security completes six methodology stages with a server-own
     assert.deepEqual(finalReport.coverage.candidates, []);
   } finally {
     remove(root);
+  }
+});
+
+test("Standard independently reviews an empty discovery once and carries only the review candidate forward", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-zero-review-candidate-"));
+  const config = configuration(root);
+  config.limits.maxModelTurns = 32;
+  config.limits.maxToolCalls = 128;
+  const specs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }> = [];
+  const logs: string[] = [];
+  try {
+    const result = await runPortableCodexSecurity(config, dependencies({
+      createSession: discoveryReviewStageSessionFactory(specs, "review"),
+      log: (line: string) => logs.push(line),
+    }));
+    assert.equal(result.runtime.status, "completed");
+    const discoverySpecs = specs.filter(({ spec }) => /stage "discovery"/.test(spec.instructions)).map(({ spec }) => spec);
+    assert.equal(discoverySpecs.length, 2);
+    assert.equal(path.basename(discoverySpecs[0]!.artifactRoot), "discovery");
+    assert.equal(path.basename(discoverySpecs[1]!.artifactRoot), "discovery-review");
+    assert.deepEqual(
+      [discoverySpecs[0]!.limits.maxModelTurns, discoverySpecs[0]!.limits.maxToolCalls],
+      [32, 128],
+    );
+    assert.deepEqual(
+      [discoverySpecs[1]!.limits.maxModelTurns, discoverySpecs[1]!.limits.maxToolCalls],
+      [16, 64],
+      "the review stays within its fixed ceiling and the configured allowance",
+    );
+    assert.match(discoverySpecs[1]!.instructions, /INDEPENDENT FALSE-NEGATIVE REVIEW/);
+    assert.match(discoverySpecs[1]!.instructions, /entrypoint, the relevant control, and a sensitive sink/);
+    const reviewContext = discoverySpecs[1]!.resultArtifactValidationContext?.dossier;
+    assert.deepEqual(reviewContext?.stageSummaries.map((summary) => summary.stage), ["inventory", "threat-model"]);
+    assert.deepEqual(reviewContext?.scope.inspected, ["src/auth.ts"]);
+    assert.ok(logs.some((line) => line.includes("zero_candidate_discovery_review_started")));
+    const artifacts = path.join(config.outputDir, "portable-codex-security-artifacts");
+    const firstArtifact = JSON.parse(fs.readFileSync(path.join(artifacts, "discovery", "03-discovery.json"), "utf8"));
+    const reviewArtifact = JSON.parse(fs.readFileSync(path.join(artifacts, "discovery-review", "03-discovery.json"), "utf8"));
+    assert.deepEqual(firstArtifact.candidates, [], "the original zero artifact remains intact");
+    assert.equal(reviewArtifact.candidates.length, 1);
+    const finalDossier = readPortableCodexSecurityDossier(path.join(config.outputDir, "portable-codex-security-results"));
+    assert.deepEqual(finalDossier?.candidates.map((candidate) => candidate.id), ["candidate-auth-boundary"]);
+    assert.ok(specs.some(({ spec }) => /stage "dataflow"/.test(spec.instructions)));
+    assert.ok(specs.some(({ spec }) => /stage "validation"/.test(spec.instructions)));
+  } finally {
+    remove(root);
+  }
+});
+
+test("Standard stops after two empty discovery passes and does not review a nonempty first pass", async () => {
+  const emptyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-zero-review-empty-"));
+  const nonemptyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-zero-review-nonempty-"));
+  try {
+    const emptySpecs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }> = [];
+    await runPortableCodexSecurity(configuration(emptyRoot), dependencies({ createSession: stageSessionFactory(emptySpecs) }));
+    assert.deepEqual(
+      emptySpecs.filter(({ spec }) => /stage "discovery"/.test(spec.instructions)).map(({ spec }) => path.basename(spec.artifactRoot)),
+      ["discovery", "discovery-review"],
+      "two empty passes terminate without a retry loop",
+    );
+    const nonemptySpecs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }> = [];
+    await runPortableCodexSecurity(configuration(nonemptyRoot), dependencies({
+      createSession: discoveryReviewStageSessionFactory(nonemptySpecs, "initial"),
+    }));
+    assert.deepEqual(
+      nonemptySpecs.filter(({ spec }) => /stage "discovery"/.test(spec.instructions)).map(({ spec }) => path.basename(spec.artifactRoot)),
+      ["discovery"],
+      "a first-pass candidate does not spend a review session",
+    );
+    assert.equal(fs.existsSync(path.join(nonemptyRoot, "output", "portable-codex-security-artifacts", "discovery-review")), false);
+  } finally {
+    remove(emptyRoot);
+    remove(nonemptyRoot);
   }
 });
 
@@ -742,6 +892,11 @@ test("Portable Deep partitions the immutable auditable universe and merges every
     }));
     const discovery = specs.filter((spec) => /stage "discovery"/.test(spec.instructions));
     assert.equal(discovery.length, 4);
+    assert.equal(
+      specs.some((spec) => path.basename(spec.artifactRoot) === "discovery-review"),
+      false,
+      "Deep keeps its mandatory partition coverage semantics and never adds the Standard review",
+    );
     assert.match(discovery[0]!.instructions, /BEGIN_PORTABLE_DEEP_SOURCE_FILES_JSON/);
     assert.match(discovery[0]!.instructions, /export const deep0 = true/);
     assert.equal(discovery[0]!.maxCompletionTokens, 32_768);
@@ -1138,7 +1293,7 @@ test("Portable untimed scans finish all stages after more than 90 minutes", asyn
         return factory(input);
       },
     }));
-    assert.equal(specs.length, 5); // Empty discovery skips candidate assessment.
+    assert.equal(specs.length, 6); // Empty discovery receives one independent review.
     assert.ok(specs.every(({ spec }) => spec.limits.timeoutMs === 0));
     const runtime = JSON.parse(fs.readFileSync(path.join(config.outputDir, "portable-codex-security-runtime.json"), "utf8"));
     assert.equal(runtime.status, "completed");
@@ -1162,7 +1317,12 @@ test("discovery recovery reuses validated artifacts and retains prior usage with
     const before = JSON.parse(fs.readFileSync(runtimePath, "utf8"));
     const specs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }> = [];
     await runPortableCodexSecurity(config, dependencies({ resumeDiscovery: true, createSession: stageSessionFactory(specs) }));
-    assert.ok(specs.every(({ spec }) => !/stage "(inventory|threat-model|discovery)"/.test(spec.instructions)));
+    assert.ok(specs.every(({ spec }) => !/stage "(inventory|threat-model)"/.test(spec.instructions)));
+    assert.deepEqual(
+      specs.filter(({ spec }) => /stage "discovery"/.test(spec.instructions)).map(({ spec }) => path.basename(spec.artifactRoot)),
+      ["discovery-review"],
+      "a resumed zero checkpoint preserves the original artifact and runs only its missing review",
+    );
     const after = JSON.parse(fs.readFileSync(runtimePath, "utf8"));
     assert.equal(after.status, "completed");
     assert.equal(after.snapshotId, before.snapshotId);

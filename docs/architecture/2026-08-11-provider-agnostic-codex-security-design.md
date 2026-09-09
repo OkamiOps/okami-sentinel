@@ -139,6 +139,18 @@ forcing terminal output at two thirds of its turn allowance. Finalization must
 consolidate retained work and disclose remaining scope, never replace it with a
 placeholder. This does not establish model recall or guarantee nonzero findings.
 
+A real repeat of the same Standard configuration still missed a previously
+corroborated issue despite producing a substantive empty review. Standard now
+challenges a zero-candidate discovery with exactly one fresh discovery session,
+capped at 16 model turns and 64 tool calls (or smaller configured allowances).
+The independent reviewer receives the source map and must read its own evidence;
+the prior discovery conclusion is not carried as proof. Its artifact is stored
+in `discovery-review`, preserving the first artifact, observed scope and total
+usage. Any new candidates pass through the normal dataflow and independent
+validation stages. Two empty reviews remain a valid result; there is no loop
+until a finding appears. This reduces reliance on one negative review and does
+not guarantee recall or a fixed provider response time. Deep is unchanged.
+
 Discovery candidates need their original hypothesis and context carried into
 later stages, not just an ID, category and line numbers. Independent validation
 must be able to inspect callers, middleware and mitigations elsewhere in the

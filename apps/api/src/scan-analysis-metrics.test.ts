@@ -32,3 +32,26 @@ test("missing legacy evidence is unavailable instead of zero", () => {
   assert.equal(metrics.files, null); assert.equal(metrics.batchesTotal, null);
   assert.equal(metrics.candidates, null); assert.equal(metrics.rejections, null); assert.equal(metrics.reasoningTokens, null);
 });
+
+test("Standard metrics expose a pending independent review and its eventual candidates", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-review-metrics-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const snapshot = path.join(root, "portable-codex-security-snapshot");
+  const artifacts = path.join(root, "portable-codex-security-artifacts");
+  fs.mkdirSync(snapshot);
+  fs.writeFileSync(path.join(snapshot, "index.ts"), "export const value = 1;\n");
+  fs.mkdirSync(path.join(artifacts, "discovery"), { recursive: true });
+  fs.writeFileSync(path.join(artifacts, "discovery", "03-discovery.json"), JSON.stringify({ stage: "discovery", candidates: [] }));
+  const scan = { scanDir: root, engine: "codex-security", mode: "standard", execution: { executionProfile: "portable" } } as ScanRun;
+  assert.equal(scanAnalysisMetrics(scan, 20_000).batchesTotal, 1);
+  fs.mkdirSync(path.join(artifacts, "discovery-review"));
+  const pending = scanAnalysisMetrics(scan, 40_000);
+  assert.equal(pending.batchesTotal, 2);
+  assert.equal(pending.batchesCompleted, 1);
+  assert.equal(pending.candidates, 0);
+  fs.writeFileSync(path.join(artifacts, "discovery-review", "03-discovery.json"), JSON.stringify({ stage: "discovery", candidates: [{ id: "review-lead" }] }));
+  const complete = scanAnalysisMetrics(scan, 60_000);
+  assert.equal(complete.batchesCompleted, 2);
+  assert.equal(complete.candidates, 1);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(artifacts, "discovery", "03-discovery.json"), "utf8")).candidates.length, 0);
+});

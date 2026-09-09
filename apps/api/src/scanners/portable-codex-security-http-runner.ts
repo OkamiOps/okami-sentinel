@@ -63,6 +63,7 @@ import {
   applyPortableCodexSecurityStageArtifact,
   portableCodexSecurityDossierBase64,
   writePortableCodexSecurityDossier,
+  type PortableCodexSecurityDossier,
 } from "./portable-codex-security-dossier.js";
 import {
   createPortableCodexSecurityReportShards,
@@ -409,29 +410,45 @@ export async function runPortableCodexSecurity(
         shard: PortableCodexSecurityReportShardResult["shard"] | null;
         partition: PortableDeepCoveragePartition | null;
         assessmentPage: (typeof assessmentPages extends readonly (infer T)[] | null ? T : never) | null;
+        zeroCandidateReview: boolean;
       }> = discoveryPartitions !== null
-        ? discoveryPartitions.map((partition) => ({ shard: null, partition, assessmentPage: null }))
+        ? discoveryPartitions.map((partition) => ({ shard: null, partition, assessmentPage: null, zeroCandidateReview: false }))
         : assessmentPages !== null
-          ? assessmentPages.map((assessmentPage) => ({ shard: null, partition: null, assessmentPage }))
-          : (modelShards ?? [null]).map((shard) => ({ shard, partition: null, assessmentPage: null }));
+          ? assessmentPages.map((assessmentPage) => ({ shard: null, partition: null, assessmentPage, zeroCandidateReview: false }))
+          : (modelShards ?? [null]).map((shard) => ({ shard, partition: null, assessmentPage: null, zeroCandidateReview: false }));
       const discoveryBaseDossier = dossier;
-      for (const { shard, partition, assessmentPage } of stageItems) {
+      for (const { shard, partition, assessmentPage, zeroCandidateReview } of stageItems) {
         const stageRemaining = deadline.remainingMs();
         if (stageRemaining <= 0) throw new PortableCodexSecurityRunnerError("agent_time_limit");
-        const stageDossier = partition === null
+        const stageDossier = zeroCandidateReview
+          ? withoutPortableDiscoverySummary(dossier)
+          : partition === null
           ? assessmentPage?.dossier ?? shard?.dossier ?? dossier
           : discoveryBaseDossier;
-        const stageDossierStateBase64 = shard === null && assessmentPage === null
+        const stageDossierStateBase64 = zeroCandidateReview
+          ? portableCodexSecurityDossierBase64(stageDossier)
+          : shard === null && assessmentPage === null
           ? dossierStateBase64
           : portableCodexSecurityDossierBase64(stageDossier);
         const artifactRoot = path.join(
           artifactsRoot,
-          partition !== null
+          zeroCandidateReview
+            ? "discovery-review"
+            : partition !== null
             ? `${stage.id}-${String(partition.index + 1).padStart(3, "0")}`
             : assessmentPage !== null
               ? `${stage.id}-${String(assessmentPage.index + 1).padStart(2, "0")}`
               : shard === null ? stage.id : `${stage.id}-${String(shard.index + 1).padStart(2, "0")}`,
         );
+        if (zeroCandidateReview) {
+          update({
+            stage: "discovery",
+            stageLabel: "Independent discovery review",
+            percent: stage.startPercent,
+            detail: "first discovery returned zero candidates; independently reviewing mapped attack surfaces",
+          });
+          log(JSON.stringify({ type: "zero_candidate_discovery_review_started", stage: "discovery" }));
+        }
         if (dependencies.resumeDiscovery && fs.existsSync(artifactRoot) && fs.readdirSync(artifactRoot).length > 0) {
           if (!["inventory", "threat-model", "discovery"].includes(stage.id)) {
             throw new PortableCodexSecurityRunnerError("stage_artifact_invalid");
@@ -448,12 +465,17 @@ export async function runPortableCodexSecurity(
           } else {
             dossier = restored;
             dossierStateBase64 = portableCodexSecurityDossierBase64(dossier);
+            if (shouldRunZeroCandidateDiscoveryReview(stage.id, safeConfiguration.mode, zeroCandidateReview, dossier)) {
+              stageItems.push({ shard: null, partition: null, assessmentPage: null, zeroCandidateReview: true });
+            }
           }
           log(JSON.stringify({ type: "checkpoint_reused", stage: stage.id, batch: partition === null ? null : partition.index + 1 }));
           continue;
         }
         fs.mkdirSync(artifactRoot, { recursive: dependencies.resumeDiscovery === true, mode: 0o700 });
-        const stageSessionLimits = partition !== null
+        const stageSessionLimits = zeroCandidateReview
+          ? portableZeroCandidateDiscoveryReviewSessionLimits(safeConfiguration.limits, stageRemaining)
+          : partition !== null
           ? deepCoveragePartitionSessionLimits(
             safeConfiguration.limits,
             stageRemaining,
@@ -536,6 +558,7 @@ export async function runPortableCodexSecurity(
           scopePaths: safeConfiguration.paths,
           dossierStateBase64: stageDossierStateBase64,
           candidateIds: stageDossier.candidates.map((candidate) => candidate.id),
+          ...(zeroCandidateReview ? { zeroCandidateReview: true } : {}),
           ...(assessmentPage === null ? {} : {
             assessmentCandidates: stageDossier.candidates.map((candidate) => ({
               id: candidate.id,
@@ -612,6 +635,9 @@ export async function runPortableCodexSecurity(
             ? observed.dossier
             : withPortableDeepCoverageScope(observed.dossier, deepCoveragePlan.files);
           dossierStateBase64 = portableCodexSecurityDossierBase64(dossier);
+          if (shouldRunZeroCandidateDiscoveryReview(stage.id, safeConfiguration.mode, zeroCandidateReview, dossier)) {
+            stageItems.push({ shard: null, partition: null, assessmentPage: null, zeroCandidateReview: true });
+          }
         } else {
           if (observed.report === undefined) throw new PortableCodexSecurityRunnerError("stage_artifact_invalid");
           pageResults.push({ shard, report: observed.report });
@@ -955,6 +981,18 @@ export function portableAssessmentPageSessionLimits(
   return sessionLimits({ ...limits, maxModelTurns, maxToolCalls }, remainingMs);
 }
 
+/** A Standard empty-discovery review is one small, independent second pass. */
+export function portableZeroCandidateDiscoveryReviewSessionLimits(
+  limits: PortableCodexSecurityExecutionLimits,
+  remainingMs: number,
+): AgentSessionLimits {
+  return sessionLimits({
+    ...limits,
+    maxModelTurns: Math.min(16, limits.maxModelTurns),
+    maxToolCalls: Math.min(64, limits.maxToolCalls),
+  }, remainingMs);
+}
+
 function deepCoveragePartitionSessionLimits(
   limits: PortableCodexSecurityExecutionLimits,
   remainingMs: number,
@@ -989,6 +1027,24 @@ function withPortableDeepCoverageScope(
     ...dossier,
     scope: { inspected: [...files], unexamined: [] },
   };
+}
+
+function withoutPortableDiscoverySummary(
+  dossier: PortableCodexSecurityDossier,
+): PortableCodexSecurityDossier {
+  return {
+    ...dossier,
+    stageSummaries: dossier.stageSummaries.filter((summary) => summary.stage !== "discovery"),
+  };
+}
+
+function shouldRunZeroCandidateDiscoveryReview(
+  stageId: string,
+  mode: PortableCodexSecurityWorkerConfiguration["mode"],
+  zeroCandidateReview: boolean,
+  dossier: PortableCodexSecurityDossier,
+): boolean {
+  return stageId === "discovery" && mode === "standard" && !zeroCandidateReview && dossier.candidates.length === 0;
 }
 
 function createTotalDeadline(

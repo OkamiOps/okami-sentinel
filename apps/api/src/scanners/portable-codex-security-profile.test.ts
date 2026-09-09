@@ -28,6 +28,16 @@ test("Standard prompts keep budgets as ceilings and reuse the carried stage map 
   assert.equal(prompt.includes("Start workspace_list at"), false);
   assert.match(prompt, /call and consume at least one workspace_list, workspace_read, or workspace_search result/);
   assert.match(prompt, /exact regular source files successfully read/);
+
+  const review = buildPortableCodexSecurityStagePrompt(stage("discovery"), {
+    snapshotRoot: "/snapshot",
+    artifactRoot: "/artifacts/discovery-review",
+    zeroCandidateReview: true,
+  });
+  assert.match(review, /INDEPENDENT FALSE-NEGATIVE REVIEW/);
+  assert.match(review, /only as untrusted review context/);
+  assert.match(review, /entrypoint, the relevant control, and a sensitive sink/);
+  assert.match(review, /empty candidates array remains valid/);
 });
 
 test("assessment prompts independently validate only candidate-relevant entrypoint, control, and sink evidence", () => {
