@@ -96,8 +96,14 @@ export type DeepCoverageRepairDetail = {
 };
 export type DiscoveryReviewRepairDetail = {
   kind: "discovery-review";
-  reason: "summary" | "scope";
-};
+} & ({
+  reason: "summary";
+} | {
+  reason: "scope";
+  /** Server-observed successful reads the model can safely reuse in scope.inspected. */
+  successfulReadPaths: readonly string[];
+  pathsTruncated: boolean;
+});
 export type JsonRepairDetail = { kind: "json"; reason: StructuredResultRejection };
 export type ResultArtifactRepairDetail = JsonRepairDetail | PortableArtifactRepairDetail | MantisReportRepairDetail |
   VulnHunterReportRepairDetail | DeepCoverageRepairDetail | DiscoveryReviewRepairDetail;
@@ -433,13 +439,13 @@ function normalizePortableStageArtifact(
     snapshotRoot,
     (issue) => onReject?.(issue, repairDetail ??
       (context?.requireDiscoveryCandidateContext === true && path === "03-discovery.json" && issue === "stage-scope-invalid"
-        ? { kind: "discovery-review", reason: "scope" } : undefined)),
+        ? discoveryScopeRepairDetail(context) : undefined)),
     (detail) => { repairDetail = detail; },
   );
   if (artifact === null || typeof path !== "string") return null;
   if (context?.requireDiscoveryCandidateContext === true && path === "03-discovery.json" &&
       !hasLiveDiscoveryScope(artifact, snapshotRoot, context)) {
-    onReject?.("stage-scope-invalid", { kind: "discovery-review", reason: "scope" });
+    onReject?.("stage-scope-invalid", discoveryScopeRepairDetail(context));
     return null;
   }
   if (context?.requireCalibratedSeverityRationale === true && path === VULNHUNTER_RESULT_ARTIFACT_PATH &&
@@ -481,6 +487,23 @@ function normalizePortableStageArtifact(
     }
   }
   return { path, content: JSON.stringify(artifact) };
+}
+
+const MAX_DISCOVERY_REPAIR_PATHS = 64;
+
+function discoveryScopeRepairDetail(
+  context: PortableResultArtifactValidationContext,
+): DiscoveryReviewRepairDetail {
+  const successfulReadPaths = [...(context.discoveryCoverage?.observedReadPaths ?? [])]
+    .map((candidate) => nodePath.posix.normalize(candidate.replaceAll("\\", "/")))
+    .filter((candidate) => candidate !== "." && !candidate.startsWith("../") && !nodePath.posix.isAbsolute(candidate))
+    .sort();
+  return {
+    kind: "discovery-review",
+    reason: "scope",
+    successfulReadPaths: successfulReadPaths.slice(0, MAX_DISCOVERY_REPAIR_PATHS),
+    pathsTruncated: successfulReadPaths.length > MAX_DISCOVERY_REPAIR_PATHS,
+  };
 }
 
 function hasCalibratedHighSeverityRationale(artifact: Record<string, unknown>): boolean {

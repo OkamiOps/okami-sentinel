@@ -8,7 +8,8 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Fixed
 
-- A Standard discovery with zero candidates receives one independent, bounded review before normal assessment. Both artifacts and accumulated usage are retained; the review can still conclude zero, and Deep's exhaustive partitions are unchanged.
+- Portable Standard runs one bounded complementary discovery pass before assessment, even when the first pass finds a candidate. It prioritizes different trust boundaries and unexamined scope, retains both artifacts and total usage, and leaves Deep's exhaustive partitions unchanged.
+- Discovery scope repair now returns a bounded server-observed list of successful source reads, so the model can correct an invalid artifact directly instead of spending turns rediscovering files. Candidate telemetry counts unique carried IDs across both Standard discovery passes.
 - Portable source-read guidance now explains full-file reads and hard byte limits, with actionable recovery instructions instead of repeated undersized reads. Rejected workspace tools expose safe error codes in telemetry without recording source content or arguments.
 - Portable stages reuse their source map, avoid repeated reads within a stage and focus assessment/report work on the carried candidates. Independent validation and mandatory Deep coverage remain required; tool and turn budgets are ceilings rather than exploration targets.
 - Portable Standard no longer accepts a discovery placeholder as a successful zero-finding review. Live discovery requires a substantive summary and explicit file scope backed by successful source reads; listings, search hits and failed reads do not count. Standard exploration uses the normal finalization reserve, and Portable finalization/repair guidance preserves candidate context instead of requesting an empty completion.

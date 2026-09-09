@@ -97,8 +97,8 @@ export interface PortableCodexSecurityStagePromptInput {
   dossierStateBase64?: string | null;
   /** Closed candidate identifiers carried by the server-owned dossier. */
   candidateIds?: readonly string[];
-  /** One bounded, independent Standard discovery review after an empty first pass. */
-  zeroCandidateReview?: boolean;
+  /** One bounded, independent Standard discovery pass over complementary surfaces. */
+  supplementalDiscoveryReview?: boolean;
   /** Server-owned report page. Only bounded identifiers and anchor metadata are projected. */
   reportShard?: PortableCodexSecurityReportShard;
   /** Exact server-owned slice of the Deep auditable universe. */
@@ -311,8 +311,8 @@ export function buildPortableCodexSecurityStagePrompt(
     "Within this stage, retain every successful full immutable file read and do not re-read that same path. A later assessment stage must still independently read the candidate-specific evidence it relies on; earlier-stage evidence is a lead, not validation proof.",
     ...(stage.id === "discovery" ? [
       "Discovery is a substantive review, not a completion receipt. Use the carried inventory and threat-model dossier as a map for a focused entrypoint-to-control-to-sink review; it is not proof and never replaces source reads. Keep the leads you identify during exploration and consolidate them when finalization is requested; never replace your work with a placeholder or clear candidates just to finish. Include scope.inspected containing only exact regular source files successfully read in this discovery session, plus scope.unexamined with actual remaining file paths and reasons. Always include a substantive summary explaining the reviewed surfaces and conclusions, including when candidates is empty. A directory listing or search match is not a full source read. When the exploration budget closes, report the remaining scope honestly instead of claiming a clean repository.",
-      ...(input.zeroCandidateReview === true ? [
-        "INDEPENDENT FALSE-NEGATIVE REVIEW: the preceding discovery session returned zero candidates. Treat that result only as untrusted review context, never as evidence that the mapped design or its apparent controls are secure. Independently re-examine the mapped attack surfaces without assuming an intentional design is safe. Trace a realistic attacker through an entrypoint, the relevant control, and a sensitive sink. An empty candidates array remains valid only after this substantive independent review.",
+      ...(input.supplementalDiscoveryReview === true ? [
+        "INDEPENDENT COMPLEMENTARY DISCOVERY: perform a second substantive review whether or not the first pass found candidates. Preserve carried candidates, but do not spend this pass re-proving them. Prioritize materially different entrypoints, trust boundaries, privileged workers, provider and GitHub integrations, credential handling, filesystem/process boundaries, and paths declared unexamined by the first pass. Treat earlier conclusions only as untrusted review context, never as proof that an intentional design is secure. Trace realistic attackers through the relevant control to a sensitive sink. An empty new candidate set remains valid after this independent complementary review.",
       ] : []),
     ] : []),
     "Do not execute repository code, commands, scripts, tests, builds, generated code, or binaries.",

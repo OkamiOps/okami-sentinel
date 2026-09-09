@@ -140,16 +140,21 @@ consolidate retained work and disclose remaining scope, never replace it with a
 placeholder. This does not establish model recall or guarantee nonzero findings.
 
 A real repeat of the same Standard configuration still missed a previously
-corroborated issue despite producing a substantive empty review. Standard now
-challenges a zero-candidate discovery with exactly one fresh discovery session,
-capped at 16 model turns and 64 tool calls (or smaller configured allowances).
-The independent reviewer receives the source map and must read its own evidence;
-the prior discovery conclusion is not carried as proof. Its artifact is stored
-in `discovery-review`, preserving the first artifact, observed scope and total
-usage. Any new candidates pass through the normal dataflow and independent
-validation stages. Two empty reviews remain a valid result; there is no loop
-until a finding appears. This reduces reliance on one negative review and does
-not guarantee recall or a fixed provider response time. Deep is unchanged.
+corroborated issue despite producing a substantive empty review. Another run
+found one candidate but stopped discovery before examining several different
+trust boundaries that an earlier, broader run had reached. Standard therefore
+runs exactly one fresh complementary discovery session after the first pass,
+whether or not the first pass found candidates. It is capped at 24 model turns
+and 96 tool calls (or smaller configured allowances) and targets materially
+different entrypoints, privileged workers, integrations, credential and process
+boundaries, plus scope declared unexamined. The reviewer receives the source map
+and carried candidates so it can avoid re-proving them, but it must read its own
+evidence. Its artifact is stored in `discovery-review`, preserving the first
+artifact, observed scope and total usage. All candidates then pass through the
+normal dataflow and independent validation stages. Two passes remain the hard
+limit and may both conclude empty; there is no loop until a finding appears.
+This increases Standard breadth without promising a finding count or fixed
+provider response time. Deep is unchanged.
 
 Discovery candidates need their original hypothesis and context carried into
 later stages, not just an ID, category and line numbers. Independent validation

@@ -31,19 +31,23 @@ export function scanAnalysisMetrics(scan: ScanRun, now = Date.now()): ScanAnalys
         /^discovery(?:-\d+)?$/.test(name) || (scan.mode === "standard" && name === "discovery-review")
       );
       let completed = 0;
-      let candidates = 0;
+      const candidateIds = new Set<string>();
       for (const dir of dirs) {
         try {
           const value = JSON.parse(fs.readFileSync(path.join(artifacts, dir, "03-discovery.json"), "utf8"));
           if (value.stage !== "discovery" || !Array.isArray(value.candidates)) continue;
           completed += 1;
-          candidates += value.candidates.length;
+          for (const candidate of value.candidates) {
+            if (candidate && typeof candidate === "object" && typeof candidate.id === "string") {
+              candidateIds.add(candidate.id);
+            }
+          }
         } catch { /* A worker may not have finished its atomic artifact write yet. */ }
       }
       result.batchesTotal = scan.mode === "deep" ? plan.partitions.length
         : dirs.includes("discovery-review") ? 2 : 1;
       result.batchesCompleted = completed;
-      result.candidates = candidates;
+      result.candidates = candidateIds.size;
     } catch { /* Missing legacy snapshots remain unavailable, not zero. */ }
   }
   const durableLog = path.join(scan.scanDir, "portable-worker-events.log");

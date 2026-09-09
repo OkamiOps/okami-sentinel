@@ -32,12 +32,15 @@ test("Standard prompts keep budgets as ceilings and reuse the carried stage map 
   const review = buildPortableCodexSecurityStagePrompt(stage("discovery"), {
     snapshotRoot: "/snapshot",
     artifactRoot: "/artifacts/discovery-review",
-    zeroCandidateReview: true,
+    supplementalDiscoveryReview: true,
   });
-  assert.match(review, /INDEPENDENT FALSE-NEGATIVE REVIEW/);
+  assert.match(review, /INDEPENDENT COMPLEMENTARY DISCOVERY/);
+  assert.match(review, /whether or not the first pass found candidates/);
+  assert.match(review, /do not spend this pass re-proving them/);
+  assert.match(review, /paths declared unexamined/);
   assert.match(review, /only as untrusted review context/);
-  assert.match(review, /entrypoint, the relevant control, and a sensitive sink/);
-  assert.match(review, /empty candidates array remains valid/);
+  assert.match(review, /relevant control to a sensitive sink/);
+  assert.match(review, /empty new candidate set remains valid/);
 });
 
 test("assessment prompts independently validate only candidate-relevant entrypoint, control, and sink evidence", () => {

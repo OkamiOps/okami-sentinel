@@ -410,29 +410,29 @@ export async function runPortableCodexSecurity(
         shard: PortableCodexSecurityReportShardResult["shard"] | null;
         partition: PortableDeepCoveragePartition | null;
         assessmentPage: (typeof assessmentPages extends readonly (infer T)[] | null ? T : never) | null;
-        zeroCandidateReview: boolean;
+        supplementalDiscoveryReview: boolean;
       }> = discoveryPartitions !== null
-        ? discoveryPartitions.map((partition) => ({ shard: null, partition, assessmentPage: null, zeroCandidateReview: false }))
+        ? discoveryPartitions.map((partition) => ({ shard: null, partition, assessmentPage: null, supplementalDiscoveryReview: false }))
         : assessmentPages !== null
-          ? assessmentPages.map((assessmentPage) => ({ shard: null, partition: null, assessmentPage, zeroCandidateReview: false }))
-          : (modelShards ?? [null]).map((shard) => ({ shard, partition: null, assessmentPage: null, zeroCandidateReview: false }));
+          ? assessmentPages.map((assessmentPage) => ({ shard: null, partition: null, assessmentPage, supplementalDiscoveryReview: false }))
+          : (modelShards ?? [null]).map((shard) => ({ shard, partition: null, assessmentPage: null, supplementalDiscoveryReview: false }));
       const discoveryBaseDossier = dossier;
-      for (const { shard, partition, assessmentPage, zeroCandidateReview } of stageItems) {
+      for (const { shard, partition, assessmentPage, supplementalDiscoveryReview } of stageItems) {
         const stageRemaining = deadline.remainingMs();
         if (stageRemaining <= 0) throw new PortableCodexSecurityRunnerError("agent_time_limit");
-        const stageDossier = zeroCandidateReview
+        const stageDossier = supplementalDiscoveryReview
           ? withoutPortableDiscoverySummary(dossier)
           : partition === null
           ? assessmentPage?.dossier ?? shard?.dossier ?? dossier
           : discoveryBaseDossier;
-        const stageDossierStateBase64 = zeroCandidateReview
+        const stageDossierStateBase64 = supplementalDiscoveryReview
           ? portableCodexSecurityDossierBase64(stageDossier)
           : shard === null && assessmentPage === null
           ? dossierStateBase64
           : portableCodexSecurityDossierBase64(stageDossier);
         const artifactRoot = path.join(
           artifactsRoot,
-          zeroCandidateReview
+          supplementalDiscoveryReview
             ? "discovery-review"
             : partition !== null
             ? `${stage.id}-${String(partition.index + 1).padStart(3, "0")}`
@@ -440,14 +440,14 @@ export async function runPortableCodexSecurity(
               ? `${stage.id}-${String(assessmentPage.index + 1).padStart(2, "0")}`
               : shard === null ? stage.id : `${stage.id}-${String(shard.index + 1).padStart(2, "0")}`,
         );
-        if (zeroCandidateReview) {
+        if (supplementalDiscoveryReview) {
           update({
             stage: "discovery",
-            stageLabel: "Independent discovery review",
+            stageLabel: "Complementary discovery review",
             percent: stage.startPercent,
-            detail: "first discovery returned zero candidates; independently reviewing mapped attack surfaces",
+            detail: "independently reviewing complementary attack surfaces and unexamined scope",
           });
-          log(JSON.stringify({ type: "zero_candidate_discovery_review_started", stage: "discovery" }));
+          log(JSON.stringify({ type: "supplemental_discovery_review_started", stage: "discovery" }));
         }
         if (dependencies.resumeDiscovery && fs.existsSync(artifactRoot) && fs.readdirSync(artifactRoot).length > 0) {
           if (!["inventory", "threat-model", "discovery"].includes(stage.id)) {
@@ -465,16 +465,16 @@ export async function runPortableCodexSecurity(
           } else {
             dossier = restored;
             dossierStateBase64 = portableCodexSecurityDossierBase64(dossier);
-            if (shouldRunZeroCandidateDiscoveryReview(stage.id, safeConfiguration.mode, zeroCandidateReview, dossier)) {
-              stageItems.push({ shard: null, partition: null, assessmentPage: null, zeroCandidateReview: true });
+            if (shouldRunSupplementalDiscoveryReview(stage.id, safeConfiguration.mode, supplementalDiscoveryReview)) {
+              stageItems.push({ shard: null, partition: null, assessmentPage: null, supplementalDiscoveryReview: true });
             }
           }
           log(JSON.stringify({ type: "checkpoint_reused", stage: stage.id, batch: partition === null ? null : partition.index + 1 }));
           continue;
         }
         fs.mkdirSync(artifactRoot, { recursive: dependencies.resumeDiscovery === true, mode: 0o700 });
-        const stageSessionLimits = zeroCandidateReview
-          ? portableZeroCandidateDiscoveryReviewSessionLimits(safeConfiguration.limits, stageRemaining)
+        const stageSessionLimits = supplementalDiscoveryReview
+          ? portableSupplementalDiscoveryReviewSessionLimits(safeConfiguration.limits, stageRemaining)
           : partition !== null
           ? deepCoveragePartitionSessionLimits(
             safeConfiguration.limits,
@@ -558,7 +558,7 @@ export async function runPortableCodexSecurity(
           scopePaths: safeConfiguration.paths,
           dossierStateBase64: stageDossierStateBase64,
           candidateIds: stageDossier.candidates.map((candidate) => candidate.id),
-          ...(zeroCandidateReview ? { zeroCandidateReview: true } : {}),
+          ...(supplementalDiscoveryReview ? { supplementalDiscoveryReview: true } : {}),
           ...(assessmentPage === null ? {} : {
             assessmentCandidates: stageDossier.candidates.map((candidate) => ({
               id: candidate.id,
@@ -635,8 +635,8 @@ export async function runPortableCodexSecurity(
             ? observed.dossier
             : withPortableDeepCoverageScope(observed.dossier, deepCoveragePlan.files);
           dossierStateBase64 = portableCodexSecurityDossierBase64(dossier);
-          if (shouldRunZeroCandidateDiscoveryReview(stage.id, safeConfiguration.mode, zeroCandidateReview, dossier)) {
-            stageItems.push({ shard: null, partition: null, assessmentPage: null, zeroCandidateReview: true });
+          if (shouldRunSupplementalDiscoveryReview(stage.id, safeConfiguration.mode, supplementalDiscoveryReview)) {
+            stageItems.push({ shard: null, partition: null, assessmentPage: null, supplementalDiscoveryReview: true });
           }
         } else {
           if (observed.report === undefined) throw new PortableCodexSecurityRunnerError("stage_artifact_invalid");
@@ -981,15 +981,15 @@ export function portableAssessmentPageSessionLimits(
   return sessionLimits({ ...limits, maxModelTurns, maxToolCalls }, remainingMs);
 }
 
-/** A Standard empty-discovery review is one small, independent second pass. */
-export function portableZeroCandidateDiscoveryReviewSessionLimits(
+/** A Standard supplemental discovery is one bounded, independent second pass. */
+export function portableSupplementalDiscoveryReviewSessionLimits(
   limits: PortableCodexSecurityExecutionLimits,
   remainingMs: number,
 ): AgentSessionLimits {
   return sessionLimits({
     ...limits,
-    maxModelTurns: Math.min(16, limits.maxModelTurns),
-    maxToolCalls: Math.min(64, limits.maxToolCalls),
+    maxModelTurns: Math.min(24, limits.maxModelTurns),
+    maxToolCalls: Math.min(96, limits.maxToolCalls),
   }, remainingMs);
 }
 
@@ -1038,13 +1038,12 @@ function withoutPortableDiscoverySummary(
   };
 }
 
-function shouldRunZeroCandidateDiscoveryReview(
+function shouldRunSupplementalDiscoveryReview(
   stageId: string,
   mode: PortableCodexSecurityWorkerConfiguration["mode"],
-  zeroCandidateReview: boolean,
-  dossier: PortableCodexSecurityDossier,
+  supplementalDiscoveryReview: boolean,
 ): boolean {
-  return stageId === "discovery" && mode === "standard" && !zeroCandidateReview && dossier.candidates.length === 0;
+  return stageId === "discovery" && mode === "standard" && !supplementalDiscoveryReview;
 }
 
 function createTotalDeadline(

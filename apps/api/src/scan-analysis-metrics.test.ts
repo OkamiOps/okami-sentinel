@@ -41,17 +41,23 @@ test("Standard metrics expose a pending independent review and its eventual cand
   fs.mkdirSync(snapshot);
   fs.writeFileSync(path.join(snapshot, "index.ts"), "export const value = 1;\n");
   fs.mkdirSync(path.join(artifacts, "discovery"), { recursive: true });
-  fs.writeFileSync(path.join(artifacts, "discovery", "03-discovery.json"), JSON.stringify({ stage: "discovery", candidates: [] }));
+  fs.writeFileSync(path.join(artifacts, "discovery", "03-discovery.json"), JSON.stringify({
+    stage: "discovery",
+    candidates: [{ id: "initial-lead" }],
+  }));
   const scan = { scanDir: root, engine: "codex-security", mode: "standard", execution: { executionProfile: "portable" } } as ScanRun;
   assert.equal(scanAnalysisMetrics(scan, 20_000).batchesTotal, 1);
   fs.mkdirSync(path.join(artifacts, "discovery-review"));
   const pending = scanAnalysisMetrics(scan, 40_000);
   assert.equal(pending.batchesTotal, 2);
   assert.equal(pending.batchesCompleted, 1);
-  assert.equal(pending.candidates, 0);
-  fs.writeFileSync(path.join(artifacts, "discovery-review", "03-discovery.json"), JSON.stringify({ stage: "discovery", candidates: [{ id: "review-lead" }] }));
+  assert.equal(pending.candidates, 1);
+  fs.writeFileSync(path.join(artifacts, "discovery-review", "03-discovery.json"), JSON.stringify({
+    stage: "discovery",
+    candidates: [{ id: "initial-lead" }, { id: "review-lead" }],
+  }));
   const complete = scanAnalysisMetrics(scan, 60_000);
   assert.equal(complete.batchesCompleted, 2);
-  assert.equal(complete.candidates, 1);
-  assert.equal(JSON.parse(fs.readFileSync(path.join(artifacts, "discovery", "03-discovery.json"), "utf8")).candidates.length, 0);
+  assert.equal(complete.candidates, 2, "candidate IDs carried into the second pass are counted only once");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(artifacts, "discovery", "03-discovery.json"), "utf8")).candidates.length, 1);
 });

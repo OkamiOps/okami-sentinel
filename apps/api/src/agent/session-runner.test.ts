@@ -77,6 +77,59 @@ test("real Standard placeholder is rejected before I/O and repaired without losi
   assert.deepEqual(persisted.candidates, [candidate]);
 });
 
+test("discovery scope repair returns the bounded successful-read allowlist", async (t) => {
+  const root = await mkdtemp(join(process.cwd(), ".test-standard-scope-repair-"));
+  t.after(async () => rm(root, { recursive: true, force: true }));
+  const snapshotRoot = join(root, "snapshot");
+  const artifactRoot = join(root, "artifacts");
+  await mkdir(snapshotRoot);
+  await mkdir(artifactRoot, { mode: 0o700 });
+  await writeFile(join(snapshotRoot, "index.ts"), "export const reviewed = true;\n");
+  const valid = {
+    schemaVersion: 1, stage: "discovery", observations: [], candidates: [],
+    summary: "Reviewed the source-backed route and found no supported security candidate in the inspected file.",
+    scope: { inspected: ["index.ts"], unexamined: [] },
+  };
+  const reply = (toolCalls: AgentToolCall[]): NormalizedModelReply => ({
+    toolCalls, text: null, structured: null, usage: null,
+  });
+  const requestedWith: AgentToolResult[][] = [];
+  const session = createConstrainedWireSession({
+    limits: { ...DEFAULT_AGENT_LIMITS, maxModelTurns: 8, maxToolCalls: 8 },
+    signal: new AbortController().signal,
+    terminalMode: "artifact-write",
+    resultArtifactContract: "portable-stage-json-v1",
+    resultArtifactSnapshotRoot: snapshotRoot,
+    resultArtifactValidationContext: {
+      expectedArtifactPath: "03-discovery.json",
+      requireDiscoveryCandidateContext: true,
+      discoveryCoverage: { observedReadPaths: new Set<string>() },
+      dossier: { schemaVersion: 1, stageSummaries: [], candidates: [], assessments: [], scope: { inspected: [], unexamined: [] } },
+    },
+    host: await createWorkspaceToolHost({ snapshotRoot, artifactRoot }),
+    upstream: { async request() { return {}; } },
+    adapter: transcriptAdapter([
+      reply([{ id: "read", name: "workspace.read", input: { path: "index.ts" } }]),
+      reply([{ id: "invalid-scope", name: "results.write", input: {
+        path: "03-discovery.json", content: { ...valid, scope: { inspected: ["invented.ts"], unexamined: [] } },
+      } }]),
+      reply([{ id: "corrected", name: "results.write", input: { path: "03-discovery.json", content: valid } }]),
+    ], requestedWith),
+  });
+
+  await collect(session.run(), []);
+
+  const failure = JSON.parse(requestedWith[2]![0]!.content) as {
+    repair: unknown; hint: string;
+  };
+  assert.deepEqual(failure.repair, {
+    kind: "discovery-review", reason: "scope",
+    successfulReadPaths: ["index.ts"], pathsTruncated: false,
+  });
+  assert.match(failure.hint, /repair\.successfulReadPaths/);
+  assert.match(failure.hint, /do not call workspace\.list or workspace\.search/i);
+});
+
 test("a session cannot be created from an unmeasured tool capability", async () => {
   await assert.rejects(createAgentSession({
     probe: { ...capability(), tools: "unsupported" },

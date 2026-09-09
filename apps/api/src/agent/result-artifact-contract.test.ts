@@ -618,8 +618,12 @@ test("live discovery rejects the real empty placeholder and unsubstantiated scop
     };
     const placeholder = { schemaVersion: 1, stage: "discovery", summary: "placeholder", observations: [], candidates: [] };
     let issue: unknown;
+    let detail: unknown;
     const normalize = (content: unknown) => normalizeResultArtifactInput({ path: "03-discovery.json", content },
-      PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, root, context, (next) => { issue = next; });
+      PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, root, context, (next, nextDetail) => {
+        issue = next;
+        detail = nextDetail;
+      });
     assert.equal(normalize(placeholder), null);
     assert.equal(issue, "stage-summary-invalid");
     assert.notEqual(normalizeResultArtifactInput({ path: "03-discovery.json", content: placeholder },
@@ -637,6 +641,12 @@ test("live discovery rejects the real empty placeholder and unsubstantiated scop
       { inspected: ["src/routes.ts"], unexamined: [{ path: "invented.ts", reason: "out-of-scope" }] }]) {
       assert.equal(normalize({ ...reviewed, scope }), null, `must reject ungrounded scope ${JSON.stringify(scope)}`);
       assert.equal(issue, "stage-scope-invalid");
+      assert.deepEqual(detail, {
+        kind: "discovery-review",
+        reason: "scope",
+        successfulReadPaths: ["src/routes.ts"],
+        pathsTruncated: false,
+      });
     }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

@@ -815,15 +815,15 @@ test("Standard independently reviews an empty discovery once and carries only th
     );
     assert.deepEqual(
       [discoverySpecs[1]!.limits.maxModelTurns, discoverySpecs[1]!.limits.maxToolCalls],
-      [16, 64],
+      [24, 96],
       "the review stays within its fixed ceiling and the configured allowance",
     );
-    assert.match(discoverySpecs[1]!.instructions, /INDEPENDENT FALSE-NEGATIVE REVIEW/);
-    assert.match(discoverySpecs[1]!.instructions, /entrypoint, the relevant control, and a sensitive sink/);
+    assert.match(discoverySpecs[1]!.instructions, /INDEPENDENT COMPLEMENTARY DISCOVERY/);
+    assert.match(discoverySpecs[1]!.instructions, /relevant control to a sensitive sink/);
     const reviewContext = discoverySpecs[1]!.resultArtifactValidationContext?.dossier;
     assert.deepEqual(reviewContext?.stageSummaries.map((summary) => summary.stage), ["inventory", "threat-model"]);
     assert.deepEqual(reviewContext?.scope.inspected, ["src/auth.ts"]);
-    assert.ok(logs.some((line) => line.includes("zero_candidate_discovery_review_started")));
+    assert.ok(logs.some((line) => line.includes("supplemental_discovery_review_started")));
     const artifacts = path.join(config.outputDir, "portable-codex-security-artifacts");
     const firstArtifact = JSON.parse(fs.readFileSync(path.join(artifacts, "discovery", "03-discovery.json"), "utf8"));
     const reviewArtifact = JSON.parse(fs.readFileSync(path.join(artifacts, "discovery-review", "03-discovery.json"), "utf8"));
@@ -838,7 +838,7 @@ test("Standard independently reviews an empty discovery once and carries only th
   }
 });
 
-test("Standard stops after two empty discovery passes and does not review a nonempty first pass", async () => {
+test("Standard runs exactly two discovery passes for empty and nonempty first passes", async () => {
   const emptyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-zero-review-empty-"));
   const nonemptyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-zero-review-nonempty-"));
   try {
@@ -855,10 +855,16 @@ test("Standard stops after two empty discovery passes and does not review a none
     }));
     assert.deepEqual(
       nonemptySpecs.filter(({ spec }) => /stage "discovery"/.test(spec.instructions)).map(({ spec }) => path.basename(spec.artifactRoot)),
-      ["discovery"],
-      "a first-pass candidate does not spend a review session",
+      ["discovery", "discovery-review"],
+      "a first-pass candidate still receives one complementary discovery pass",
     );
-    assert.equal(fs.existsSync(path.join(nonemptyRoot, "output", "portable-codex-security-artifacts", "discovery-review")), false);
+    assert.equal(fs.existsSync(path.join(nonemptyRoot, "output", "portable-codex-security-artifacts", "discovery-review")), true);
+    assert.deepEqual(
+      readPortableCodexSecurityDossier(path.join(nonemptyRoot, "output", "portable-codex-security-results"))
+        ?.candidates.map((candidate) => candidate.id),
+      ["candidate-auth-boundary"],
+      "the complementary pass preserves candidates from the first pass",
+    );
   } finally {
     remove(emptyRoot);
     remove(nonemptyRoot);
@@ -960,7 +966,7 @@ test("Portable Codex Security gives every report page 128 bounded turns and tool
     assert.equal(reportSpecs[0]!.instructions.includes("BEGIN_PORTABLE_COVERAGE_DOSSIER_BASE64"), false);
     assert.equal(reportSpecs[0]!.instructions.includes("BEGIN_PORTABLE_REPORT_PAGE_JSON"), true);
     assert.deepEqual(specs.filter((item) => !/stage "report"/.test(item.spec.instructions))
-      .map((item) => item.spec.maxCompletionTokens), Array(5).fill(undefined));
+      .map((item) => item.spec.maxCompletionTokens), Array(6).fill(undefined));
   } finally {
     remove(root);
   }
