@@ -10,6 +10,7 @@ import type {
   ScanEvent,
   ScanProgress,
   ScanRun,
+  ScanStatus,
   StartScanRequest,
 } from "@csb/shared";
 import { emptySeverityCounts, reasoningWireFieldForRoute } from "@csb/shared";
@@ -116,6 +117,28 @@ interface ActiveScan {
   releaseRedactionScope: () => void;
   progressTimer?: ReturnType<typeof setInterval>;
   lastProgressKey?: string;
+  terminationReason?: ScannerTerminationReason;
+  terminationProbe?: string;
+}
+
+type ScannerTerminationReason = "usage_limit_exceeded";
+
+export function classifyScannerTerminationLine(line: string): ScannerTerminationReason | null {
+  return /(?:you(?:'|’)ve hit your usage limit for|"codex_error_info"\s*:\s*"usage_limit_exceeded")/i.test(line)
+    ? "usage_limit_exceeded"
+    : null;
+}
+
+export function scanStatusAfterClose(
+  current: ScanStatus,
+  exitCode: number | null,
+  terminationReason: ScannerTerminationReason | null,
+): ScanStatus {
+  if (current === "completed" || current === "cancelled") return current;
+  if (terminationReason === "usage_limit_exceeded") return "incomplete";
+  if (current === "incomplete") return current;
+  if (exitCode === 0 && current !== "failed") return "completed";
+  return exitCode === null ? "cancelled" : "failed";
 }
 
 interface DetachedWatch {
@@ -891,6 +914,9 @@ async function startReservedScan(
 
   const onChunk = (chunk: Buffer, stream: "stdout" | "stderr") => {
     const text = chunk.toString("utf8");
+    activeScan.terminationProbe = `${activeScan.terminationProbe ?? ""}${text}`.slice(-2_048);
+    activeScan.terminationReason ??=
+      classifyScannerTerminationLine(activeScan.terminationProbe) ?? undefined;
     for (const line of text.split(/\r?\n/)) {
       if (!line.trim()) continue;
       if (!isInternalProgressMarker(line)) {
@@ -935,15 +961,11 @@ async function startReservedScan(
   child.on("close", (code) => {
     if (activeScan.progressTimer) clearInterval(activeScan.progressTimer);
     const refreshed = refreshAfterClose(outputDir, run);
-    if (refreshed.status === "completed") {
-      // Keep the scanner's terminal state.
-    } else if (refreshed.status === "cancelled" || refreshed.status === "incomplete") {
-      // keep
-    } else if (code === 0 && refreshed.status !== "failed") {
-      refreshed.status = "completed";
-    } else {
-      refreshed.status = code === null ? "cancelled" : "failed";
-    }
+    refreshed.status = scanStatusAfterClose(
+      refreshed.status,
+      code,
+      activeScan.terminationReason ?? null,
+    );
     refreshed.completedAt = refreshed.completedAt ?? new Date().toISOString();
     refreshed.durationMs =
       refreshed.durationMs ??
@@ -964,7 +986,9 @@ async function startReservedScan(
     emit(activeScan, {
       type: "done",
       status: refreshed.status,
-      message: `Scan finalizado (exit ${code})`,
+      message: activeScan.terminationReason === "usage_limit_exceeded"
+        ? `Scan interrompido: cota do modelo esgotada (exit ${code})`
+        : `Scan finalizado (exit ${code})`,
       scan: refreshed,
       cost: refreshed.cost ?? undefined,
       progress: refreshed.progress ?? undefined,
