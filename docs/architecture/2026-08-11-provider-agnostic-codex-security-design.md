@@ -115,6 +115,42 @@ The runtime consists of six defensive stages:
 
 `standard` mode runs one bounded session per stage. `deep` mode uses the same stages and tool surface but allows bounded partitioned discovery and independent validation sessions. Deep mode does not gain shell, browser, network, or arbitrary filesystem access.
 
+### Quality requirements after the September 2026 scan audit
+
+The installed upstream `@openai/codex-security` 0.1.25 `references/core-scan.md`
+describes Standard as a complete audit with baseline discovery, focused
+investigation and independent source validation. The portable runtime exists
+because providers cannot all satisfy the native orchestration contract. That
+compatibility boundary is not a reason to omit discovery results or validation.
+Portable Standard remains bounded exploration; it must trace relevant entry
+points through caller controls to sensitive operations, retain explicit
+candidates, and distinguish examined scope from remaining scope. It must not
+manufacture findings to satisfy a minimum count.
+
+Discovery candidates need their original hypothesis and context carried into
+later stages, not just an ID, category and line numbers. Independent validation
+must be able to inspect callers, middleware and mitigations elsewhere in the
+immutable snapshot. Providing source in discovery does not establish that a
+later validator has checked a claimed exploit path. Source projection records
+what was supplied, not proof of model comprehension.
+
+Severity and confidence answer different questions. Severity reflects the
+source-supported impact, likelihood and prerequisites; confidence reflects
+remaining uncertainty in that conclusion. An unsupported allegation belongs
+outside confirmed findings, with an `insufficient-evidence` disposition retained
+in coverage. It must not be relabeled as a confirmed medium or low vulnerability
+merely to keep it in the result count. Conversely, a source-supported boundary
+violation does not require executing an exploit or proving a production
+deployment. Missing runtime evidence alone is not a rejection criterion.
+
+Deduplication requires the same broken control and effective remediation.
+Sharing a CWE or category is insufficient. Deterministic consolidation must be
+conservative and preserve affected locations; wording similarity alone cannot
+prove that two security failures are equivalent. Model output still requires
+security review even when its schema, line anchors and candidate accounting are
+valid. Contract tests demonstrate these invariants, not real-model precision or
+recall. Historical scan results remain unchanged.
+
 ### Tool boundary
 
 Portable sessions receive only:

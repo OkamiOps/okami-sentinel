@@ -56,7 +56,9 @@ test("Portable schema declares every stage field and nested evidence instead of 
   const itemKeys = (name: string) => Object.keys(
     (properties[name]!.items as Record<string, unknown>).properties as Record<string, unknown>,
   ).sort();
-  assert.deepEqual(itemKeys("candidates"), ["anchors", "category", "id"]);
+  assert.deepEqual(itemKeys("candidates"), [
+    "anchors", "attacker", "category", "controlHypothesis", "expectedImpact", "hypothesis", "id", "prerequisites",
+  ]);
   assert.deepEqual(itemKeys("assessments"), ["candidateId", "evidence", "reason", "status"]);
   assert.deepEqual(itemKeys("findings"), [
     "anchors", "candidateId", "category", "confidence", "cwe", "id", "impact", "remediation",
@@ -475,6 +477,14 @@ test("Portable report shard accepts findings-only output and derives page covera
   }, PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, snapshotRoot, context);
 
   assert.ok(normalized !== null);
+  const calibratedContext = { ...context, requireCalibratedSeverityRationale: true };
+  assert.equal(normalizeResultArtifactInput({ path: "sentinel-findings.json", content },
+    PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, snapshotRoot, calibratedContext), null,
+  "a new high finding cannot omit its severity rationale");
+  const calibrated = JSON.parse(content);
+  calibrated.findings[0].severityRationale = "The public operation exposes protected records to ordinary authenticated callers with no additional privilege, supporting high impact and likelihood.";
+  assert.notEqual(normalizeResultArtifactInput({ path: "sentinel-findings.json", content: calibrated },
+    PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, snapshotRoot, calibratedContext), null);
   assert.deepEqual(normalizeResultArtifactInput({ content },
     PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, snapshotRoot, context), normalized,
   "an omitted path uses only the server-owned report shard destination");
@@ -536,6 +546,61 @@ test("Portable report never accepts an informational coverage statement as a vul
   }, PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT), null);
 });
 
+test("live Portable discovery requires an explicit, reviewable candidate claim while historical parsing remains permissive", () => {
+  const context = {
+    dossier: createPortableCodexSecurityDossier(),
+    expectedArtifactPath: "03-discovery.json" as const,
+    requireDiscoveryCandidateContext: true,
+  };
+  let issue: unknown;
+  const emptyDiscovery = {
+    schemaVersion: 1, stage: "discovery", observations: [],
+    summary: "The directed source review did not establish any candidate vulnerability.",
+  };
+  assert.equal(normalizeResultArtifactInput({ path: "03-discovery.json", content: emptyDiscovery },
+    PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, undefined, context), null, "omitted candidates must not mean zero findings");
+  assert.notEqual(normalizeResultArtifactInput({ path: "03-discovery.json", content: { ...emptyDiscovery, candidates: [] } },
+    PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, undefined, context), null, "explicit zero remains valid without forcing findings");
+  assert.equal(normalizeResultArtifactInput({
+    path: "03-discovery.json",
+    content: {
+      schemaVersion: 1,
+      stage: "discovery",
+      summary: "Discovery identified an authorization lead for later independent validation.",
+      observations: [],
+      candidates: [{
+        id: "candidate-authorization",
+        category: "authorization",
+        anchors: [{ path: "src/routes.ts", startLine: 12, endLine: 12, role: "entrypoint" }],
+      }],
+    },
+  }, PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, undefined, context, (nextIssue) => { issue = nextIssue; }), null);
+  assert.equal(issue, "stage-candidates-invalid");
+
+  const live = {
+    schemaVersion: 1,
+    stage: "discovery",
+    summary: "Discovery identified an authorization lead for later independent validation.",
+    observations: [],
+    candidates: [{
+      id: "candidate-authorization",
+      category: "authorization",
+      hypothesis: "The route may mutate another account without an ownership authorization check.",
+      attacker: "authenticated",
+      prerequisites: "An authenticated account can invoke the public mutation route with another account identifier.",
+      expectedImpact: "A successful bypass could modify data belonging to a different account.",
+      controlHypothesis: "The route may lack an ownership control before the state-changing service call.",
+      anchors: [{ path: "src/routes.ts", startLine: 12, endLine: 12, role: "entrypoint" }],
+    }],
+  };
+  assert.notEqual(normalizeResultArtifactInput({ path: "03-discovery.json", content: live },
+    PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, undefined, context), null);
+  assert.notEqual(normalizeResultArtifactInput({ path: "03-discovery.json", content: {
+    ...live,
+    candidates: [{ id: "historical-candidate", category: "authorization", anchors: live.candidates[0]!.anchors }],
+  } }, PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT), null, "old artifacts remain readable without the live context flag");
+});
+
 
 test("Portable stage schema fixes the destination, stage and required stage fields", () => {
   for (const [artifactPath, stage] of Object.entries(PORTABLE_ARTIFACT_STAGES)) {
@@ -557,6 +622,14 @@ test("Portable stage schema fixes the destination, stage and required stage fiel
     }
     if (stage === "validation") assert.deepEqual(schema.properties.assessments.items.properties.status.enum, ["confirmed", "rejected"]);
   }
+  const liveDiscoverySchema = resultArtifactContentSchema(PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, {
+    dossier: createPortableCodexSecurityDossier(),
+    expectedArtifactPath: "03-discovery.json",
+    requireDiscoveryCandidateContext: true,
+  }) as { properties: Record<string, any> };
+  assert.deepEqual(liveDiscoverySchema.properties.candidates.items.required, [
+    "id", "category", "hypothesis", "attacker", "prerequisites", "expectedImpact", "controlHypothesis", "anchors",
+  ]);
 });
 
 test("Portable expected stage rejects an otherwise valid artifact for a different destination", () => {

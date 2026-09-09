@@ -166,7 +166,7 @@ test("Portable Codex Security makes carried candidate ids explicit for assessmen
     if (stageId === "validation") {
       assert.match(prompt, /"status":"confirmed\|rejected"/);
       assert.doesNotMatch(prompt, /"status":"confirmed\|rejected\|inconclusive"/);
-      assert.match(prompt, /reject unsubstantiated candidates using insufficient-evidence without claiming that the code is safe/);
+      assert.match(prompt, /reject unsubstantiated candidates using insufficient-evidence without claiming that the code is safe/i);
     } else {
       assert.match(prompt, /"status":"confirmed\|rejected\|inconclusive"/);
     }

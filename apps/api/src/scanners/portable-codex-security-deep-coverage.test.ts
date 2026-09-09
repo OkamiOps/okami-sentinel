@@ -15,6 +15,49 @@ import {
   portableCodexSecurityDossierBase64,
 } from "./portable-codex-security-dossier.js";
 
+test("Deep merges repeated control claims while preserving affected locations and distinct failures", () => {
+  const plan: PortableDeepCoveragePlan = {
+    files: ["a.ts", "b.ts"], totalBytes: 20,
+    partitions: [
+      { index: 0, total: 2, paths: ["a.ts"], fileBytes: { "a.ts": 10 }, bytes: 10 },
+      { index: 1, total: 2, paths: ["b.ts"], fileBytes: { "b.ts": 10 }, bytes: 10 },
+    ],
+  };
+  const candidate = {
+    id: "page-a", category: "authorization", attacker: "authenticated" as const,
+    hypothesis: "The shared write service omits an ownership check.",
+    prerequisites: "An ordinary account can call either mutation route.",
+    expectedImpact: "Another account's protected records may be modified.",
+    controlHypothesis: "The shared service does not bind the record owner to the caller.",
+    anchors: [
+      { path: "service.ts", startLine: 12, endLine: 12, role: "control" as const },
+      { path: "a.ts", startLine: 1, endLine: 1, role: "entrypoint" as const },
+    ],
+  };
+  const repeated = { ...candidate, id: "page-b", anchors: [candidate.anchors[0]!,
+    { path: "b.ts", startLine: 1, endLine: 1, role: "entrypoint" as const }] };
+  const different = { ...repeated, id: "other-control", anchors: [
+    { path: "other-service.ts", startLine: 12, endLine: 12, role: "control" as const },
+  ] };
+  const differentImpact = { ...repeated, id: "other-impact", expectedImpact: "Protected records may be disclosed through a different operation." };
+  const pages = [[candidate], [repeated, different, differentImpact]].map((candidates) => ({
+    ...createPortableCodexSecurityDossier(), candidates,
+  }));
+  const merged = mergePortableDeepDiscoveryDossiers(createPortableCodexSecurityDossier(), pages, plan);
+  assert.equal(merged.candidates.length, 3);
+  assert.deepEqual(merged.candidates[0]!.anchors.map((anchor) => anchor.path), ["service.ts", "a.ts", "b.ts"]);
+  assert.equal(pages[0]!.candidates[0]!.anchors.length, 2, "input checkpoint evidence stays unchanged");
+  const roundTrip = JSON.parse(Buffer.from(portableCodexSecurityDossierBase64(merged), "base64").toString());
+  assert.equal(roundTrip.candidates[0].hypothesis, candidate.hypothesis);
+  const manyLocations = { ...repeated, anchors: [candidate.anchors[0]!, ...Array.from({ length: 19 }, (_, i) => ({
+    path: `route-${i}.ts`, startLine: 1, endLine: 1, role: "entrypoint" as const,
+  }))] };
+  const unmerged = mergePortableDeepDiscoveryDossiers(createPortableCodexSecurityDossier(), [
+    pages[0]!, { ...createPortableCodexSecurityDossier(), candidates: [manyLocations] },
+  ], plan);
+  assert.equal(unmerged.candidates.length, 2, "anchor limits must never silently discard affected locations");
+});
+
 test("Deep coverage deterministically partitions every auditable source and configuration file", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-deep-coverage-"));
   try {

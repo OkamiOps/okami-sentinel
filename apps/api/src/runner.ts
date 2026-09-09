@@ -368,7 +368,23 @@ function tickDetached(scanId: string): void {
 }
 
 function safeName(input: string): string {
-  return input.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "repo";
+  const sanitized = input.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+  return sanitized === "." || sanitized === ".." || sanitized.length === 0 ? "repo" : sanitized;
+}
+
+function isWithin(root: string, target: string): boolean {
+  const relative = path.relative(root, target);
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+}
+
+/** Builds a new scan's private artifact directory without allowing name segments to escape the scans root. */
+export function scanOutputDirectory(scansRoot: string, displayName: string, scanId: string): string {
+  const root = path.resolve(scansRoot);
+  const repositorySegment = safeName(displayName);
+  const scanSegment = `csb-${repositorySegment}-${safeName(scanId)}`;
+  const outputDir = path.resolve(root, repositorySegment, scanSegment);
+  if (!isWithin(root, outputDir)) throw new Error("scan_output_path_invalid");
+  return outputDir;
 }
 
 function publicRepositoryLocator(value: string): string {
@@ -610,7 +626,7 @@ async function startReservedScan(
   throwIfLaunchAborted(options.signal);
 
   const displayName = req.displayName?.trim() || path.basename(repositoryPath);
-  const outputDir = path.join(SCANS_ROOT, safeName(displayName), `csb-${safeName(displayName)}-${id}`);
+  const outputDir = scanOutputDirectory(SCANS_ROOT, displayName, id);
   const providerRuntime = dependencies.providerRuntime ?? getProviderRuntime();
   const selection = await resolveScanLaunchSelectionAfterCapabilityProbe({
     request: executionRequest,

@@ -106,10 +106,15 @@ export interface PortableCodexSecurityStagePromptInput {
     paths: readonly string[];
     sourceFiles?: readonly { path: string; content: string }[];
   };
-  /** Source-free, server-owned candidates for one assessment page. */
+  /** Server-owned candidate claims for one Deep assessment page. */
   assessmentCandidates?: readonly {
     id: string;
     category: string;
+    hypothesis?: string;
+    attacker?: "unauthenticated" | "authenticated" | "privileged" | "local" | "unknown";
+    prerequisites?: string;
+    expectedImpact?: string;
+    controlHypothesis?: string;
     anchors: readonly { path: string; startLine: number; endLine: number; role: string }[];
   }[];
 }
@@ -194,6 +199,7 @@ function stageArtifactContract(stage: PortableCodexSecurityStage): string {
         rootCause: "Substantive root cause tied to the reviewed code.",
         impact: "Substantive security impact.",
         remediation: "Validate the input and enforce the missing authorization or sanitization control.",
+        severityRationale: "Source-backed impact, likelihood, attacker prerequisites, and deployment limitations.",
         anchors: [{
           path: "repository/relative/path",
           startLine: 1,
@@ -218,6 +224,11 @@ function stageArtifactContract(stage: PortableCodexSecurityStage): string {
     stageArtifact.candidates = [{
       id: "candidate-id",
       category: "...",
+      hypothesis: "Concrete, repository-backed claim to be falsified later.",
+      attacker: "unauthenticated|authenticated|privileged|local|unknown",
+      prerequisites: "Concrete prerequisites required by the claim.",
+      expectedImpact: "Concrete impact if the claim is true.",
+      controlHypothesis: "The authorization, validation, or invariant alleged to be absent or bypassed.",
       anchors: [{
         path: "repository/relative/path",
         startLine: 1,
@@ -273,6 +284,12 @@ export function buildPortableCodexSecurityStagePrompt(
         );
         return {
           id: candidate.id,
+          category: candidate.category,
+          ...(candidate.hypothesis === undefined ? {} : { hypothesis: candidate.hypothesis }),
+          ...(candidate.attacker === undefined ? {} : { attacker: candidate.attacker }),
+          ...(candidate.prerequisites === undefined ? {} : { prerequisites: candidate.prerequisites }),
+          ...(candidate.expectedImpact === undefined ? {} : { expectedImpact: candidate.expectedImpact }),
+          ...(candidate.controlHypothesis === undefined ? {} : { controlHypothesis: candidate.controlHypothesis }),
           anchors: candidate.anchors.map(projectAnchor),
           assessment: assessment === undefined
             ? null
@@ -292,11 +309,11 @@ export function buildPortableCodexSecurityStagePrompt(
     "Do not use network access, browser access, MCP, or any external service.",
     "Do not generate exploit payloads, PoC material, or procedural misuse instructions.",
     "Do not publish, send, upload, or otherwise disclose any result.",
-    input.deepCoveragePartition === undefined && input.assessmentCandidates === undefined
+    input.deepCoveragePartition === undefined
       ? `Your supplied workspace is a virtual immutable filesystem. Its canonical workspace root is JSON path \".\". Start ${listTool} at \".\" and pass repository-relative paths to ${readTool} and ${searchTool}. Never use physical host paths.`
       : `Your supplied workspace is a virtual immutable filesystem. Its canonical workspace root is JSON path \".\". The complete assigned source page is already projected below. Do not call ${listTool}, ${readTool}, or ${searchTool} unless a rejected anchor must be repaired. Never use physical host paths.`,
     `The only expected artifact for this stage is the fixed result-relative name ${JSON.stringify(stage.artifact)}. Write it with ${writeTool}; never prefix it with an artifact directory or host path.`,
-    input.deepCoveragePartition === undefined && input.assessmentCandidates === undefined
+    input.deepCoveragePartition === undefined
       ? `Before ${writeTool}, call and consume at least one ${listTool}, ${readTool}, or ${searchTool} result in an earlier model turn. The ${writeTool} call must be the only tool call in its model turn.`
       : `Analyze the projected source directly, then call ${writeTool} without a preliminary workspace tool turn. The ${writeTool} call must be the only tool call in its model turn.`,
     "Write strict JSON matching this artifact contract:",
@@ -304,13 +321,13 @@ export function buildPortableCodexSecurityStagePrompt(
     `Pass the artifact as the structured object in ${writeTool}.content. Do not JSON-stringify it, wrap it in a string, or surround it with Markdown fences.`,
     stage.id === "report"
       ? "The JSON must be complete in one tool call. Use a unique page-local finding id; the server replaces it with a stable global id. Do not include observations, coverage, or scope. Keep every required narrative field substantive and concise."
-      : "The JSON must be complete in one tool call. Never exhaust the model output limit. Stage artifacts must use observations: [] and may only add structured scope and assessments where their stage contract permits. The server forwards only compact stage summaries, structured candidate ids, scope paths, reason codes, and line anchors; never embed source snippets or secrets in those fields.",
+      : "The JSON must be complete in one tool call. Never exhaust the model output limit. Stage artifacts must use observations: [] and may only add structured scope and assessments where their stage contract permits. The server forwards compact stage summaries, candidate claims, scope paths, reason codes, and line anchors; never embed source snippets or secrets in those fields.",
     stage.id === "report"
-      ? "This is one internal confirmed-candidate report page. Inspect the pinned anchors and output exactly one substantive vulnerability finding for every listed candidateId. Include concrete root cause, impact, non-empty remediation, and repository-backed anchors. Output only schemaVersion, optional stage:'report', and findings. Never emit coverage, scope, disposition, or reason fields; the server derives them from its frozen dossier."
+      ? "This is one internal confirmed-candidate report page. Inspect the candidate anchors and output exactly one substantive vulnerability finding for every listed candidateId. Include concrete root cause, impact, non-empty remediation, repository-backed anchors, and severityRationale. Output only schemaVersion, optional stage:'report', and findings. Never emit coverage, scope, disposition, or reason fields; the server derives them from its frozen dossier. For high or critical, severityRationale must state the source-backed impact, realistic likelihood, attacker prerequisites, and any deployment/runtime limitation. High requires both high impact and a realistic high likelihood. High impact with medium or unknown likelihood is normally medium; a constrained local/internal path is normally lower. Missing runtime proof lowers confidence but does not erase a source-backed vulnerability."
       : stage.id === "discovery"
-        ? "Keep summaries concise. Discovery is the only stage that creates candidates. Each candidate needs a stable id, category, and repository-backed anchors."
+        ? "Keep summaries concise. Discovery is the only stage that creates candidates. Run a directed review from externally reachable entrypoints through caller registration, middleware and authorization/validation controls into sensitive state-changing or disclosure sinks. Do not infer coverage from a directory listing: declare only source actually inspected, and mark material unexamined paths honestly. Each candidate needs a stable id, category, repository-backed anchors, a substantive hypothesis, attacker class, prerequisites, expected impact, and control hypothesis. Explain prerequisites concretely, for example the required account state, exposed route, or deployment assumption; do not write a one-word placeholder. A candidate is a lead to falsify, never a confirmed finding. Emit candidates: [] explicitly when none survive this directed review."
         : stage.id === "dataflow" || stage.id === "validation"
-          ? `Keep summaries concise. The dossier already carries candidate ids; do not include candidates or scope. Produce exactly one assessment for every carried candidateId and no others, with repository-backed evidence. The status field is ${stage.id === "validation" ? "confirmed or rejected; final validation cannot leave candidates inconclusive. Confirm only with supported evidence; reject unsubstantiated candidates using insufficient-evidence without claiming that the code is safe" : "confirmed, rejected, or inconclusive"}. not-vulnerable is a reason code, never a status. Return only candidateId, status, reason, and evidence in each assessment.`
+          ? `Keep summaries concise. The dossier carries candidate claims as leads; do not include candidates or scope. Re-read the alleged code and inspect relevant callers, route registration, middleware, wrappers, authorization controls, and sinks across the immutable snapshot before deciding. Produce exactly one assessment for every carried candidateId and no others, with repository-backed evidence. The status field is ${stage.id === "validation" ? "confirmed or rejected; final validation cannot leave candidates inconclusive. Confirm only when the validation evidence supports the candidate's attacker, prerequisites, control hypothesis and impact. Reject unsubstantiated candidates using insufficient-evidence without claiming that the code is safe" : "confirmed, rejected, or inconclusive"}. not-vulnerable is a reason code, never a status. A confirmed untrusted-flow-reaches-sink assessment must itself include both a source/entrypoint anchor and a sink anchor. A confirmed control-not-present assessment must itself include entrypoint plus control/sink evidence, or control plus separate evidence/sink anchors. Discovery anchors alone cannot supply missing validation evidence. Return only candidateId, status, reason, and evidence in each assessment.`
         : "Keep summaries concise; never exhaust the model output limit.",
     ...(input.deepCoveragePartition === undefined
       ? []
@@ -327,7 +344,7 @@ export function buildPortableCodexSecurityStagePrompt(
     ...(input.assessmentCandidates === undefined
       ? []
       : [
-        "ASSESSMENT PAGE. Discovery already analyzed the complete Deep source universe. Do not call workspace tools. Assess every carried candidate and call results.write immediately. Reuse only the exact pinned anchors supplied below as assessment evidence; do not invent or alter paths or line ranges.",
+        "ASSESSMENT PAGE. The carried candidate claims below are leads, not proof. Use workspace.read and workspace.search across the immutable snapshot to inspect the relevant source plus cross-file callers, middleware, wrappers, controls, and sinks. Do not reuse a discovery claim as validation evidence without checking it. Assess every carried candidate before results.write; evidence must remain repository-backed and use real paths and line ranges.",
         "BEGIN_PORTABLE_ASSESSMENT_CANDIDATES_JSON",
         JSON.stringify(input.assessmentCandidates),
         "END_PORTABLE_ASSESSMENT_CANDIDATES_JSON",

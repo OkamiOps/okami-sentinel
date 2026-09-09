@@ -8,6 +8,13 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Fixed
 
+- Portable discovery requires an explicit candidate array and preserves each new candidate's hypothesis, attacker, prerequisites, expected impact and suspected control failure. Missing candidate output can no longer silently become a successful zero-finding Standard scan.
+- Portable validation can inspect callers and controls across the immutable snapshot, including paginated Deep assessments. Unsupported confirmation reasons are rejected; new high/critical report findings require a severity rationale. These checks strengthen the evidence contract and do not replace security review.
+- Deep discovery conservatively consolidates repeated claims at the same control location while retaining affected anchors. Assessment pages retain a usable bounded turn allowance regardless of the total page count, avoiding a late failure caused solely by a dense candidate set.
+- Local API mutations require the process CSRF token and reject untrusted browser origins. The UI supplies the token automatically; CLI clients must obtain it from `/api/security-session`.
+- Local gate history is scoped to the repository checkout, preventing another repository's findings from changing lifecycle classification.
+- Dot-segment scan names remain inside the configured scan output root.
+
 - Portable Codex Security refreshes xAI OAuth credentials before each inference request, including subsequent turns in one stage. Authentication, access-denied and provider-unreachable errors retain their specific failure codes.
 
 - Portable workers tolerate closed API output pipes and persist their redacted events independently, so a development API reload does not lose metrics or terminate a scan through a broken output pipe.

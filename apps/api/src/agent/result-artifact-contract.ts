@@ -5,6 +5,7 @@ import { validateVulnHunterReportEvidence } from "./result-artifact-evidence.js"
 import {
   applyPortableCodexSecurityStageArtifact,
   normalizePortableCodexSecurityStageArtifact,
+  validatePortableCodexSecurityDiscoveryCandidateContext,
   validatePortableCodexSecurityReportCoverage,
   type PortableArtifactValidationIssue,
   type PortableArtifactRepairDetail,
@@ -67,6 +68,10 @@ export interface PortableResultArtifactValidationContext {
     requiredBytes: Readonly<Record<string, number>>;
     observedReadPaths: Set<string>;
   };
+  /** New live discovery writes preserve the claim required by later validation. */
+  requireDiscoveryCandidateContext?: boolean;
+  /** High/critical live reports must explain source-backed impact and likelihood. */
+  requireCalibratedSeverityRationale?: boolean;
 }
 
 export type ResultArtifactValidationIssue = PortableArtifactValidationIssue
@@ -129,6 +134,7 @@ export function resultArtifactContentSchema(
  * through their declared schema. An unconstrained object can lose every field. */
 function portableStageContentSchema(context?: PortableResultArtifactValidationContext): Record<string, unknown> {
   const text = { type: "string", minLength: 1 };
+  const candidateContextText = { type: "string", minLength: 24, maxLength: 512 };
   const enumeration = (values: readonly string[]) => ({ type: "string", enum: values });
   const object = (properties: Record<string, unknown>, required = Object.keys(properties)) => ({
     type: "object", additionalProperties: false, properties, required,
@@ -160,14 +166,27 @@ function portableStageContentSchema(context?: PortableResultArtifactValidationCo
   }, [
     "id", "candidateId", "title", "severity", "confidence", "category", "summary",
     "rootCause", "impact", "remediation", "anchors",
+    ...(context?.requireCalibratedSeverityRationale === true ? ["severityRationale"] : []),
   ]);
+  const candidate = object({
+    id: text,
+    category: text,
+    hypothesis: candidateContextText,
+    attacker: enumeration(["unauthenticated", "authenticated", "privileged", "local", "unknown"]),
+    prerequisites: candidateContextText,
+    expectedImpact: candidateContextText,
+    controlHypothesis: candidateContextText,
+    anchors,
+  }, context?.requireDiscoveryCandidateContext === true
+    ? ["id", "category", "hypothesis", "attacker", "prerequisites", "expectedImpact", "controlHypothesis", "anchors"]
+    : ["id", "category", "anchors"]);
   const properties: Record<string, unknown> = {
       schemaVersion: { type: "integer", enum: [1] },
       stage: enumeration(["inventory", "threat-model", "discovery", "dataflow", "validation", "report"]),
       summary: text,
       observations: { ...array({ type: "string" }), maxItems: 0 },
       scope: object(scopeProperties),
-      candidates: array(object({ id: text, category: text, anchors })),
+      candidates: array(candidate),
       assessments: array(object({
         candidateId: text,
         status: enumeration(["confirmed", "rejected", "inconclusive"]),
@@ -335,6 +354,18 @@ function normalizePortableStageArtifact(
   }
   let repairDetail: ResultArtifactRepairDetail | undefined;
   let modelValue = value;
+  if (context?.requireDiscoveryCandidateContext === true && path === "03-discovery.json") {
+    const record = value !== null && typeof value === "object" && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : null;
+    const detail = record === null
+      ? { kind: "candidate-contract" as const, reason: "array-or-limit" as const }
+      : validatePortableCodexSecurityDiscoveryCandidateContext(record.candidates);
+    if (detail !== null) {
+      onReject?.("stage-candidates-invalid", detail);
+      return null;
+    }
+  }
   if (path === VULNHUNTER_RESULT_ARTIFACT_PATH && context?.reportShard !== undefined) {
     try {
       modelValue = materializePortableCodexSecurityReportShard(context.reportShard, value);
@@ -375,6 +406,11 @@ function normalizePortableStageArtifact(
     (detail) => { repairDetail = detail; },
   );
   if (artifact === null || typeof path !== "string") return null;
+  if (context?.requireCalibratedSeverityRationale === true && path === VULNHUNTER_RESULT_ARTIFACT_PATH &&
+      !hasCalibratedHighSeverityRationale(artifact)) {
+    onReject?.("report-contract-invalid");
+    return null;
+  }
   if (context !== undefined) {
     try {
       if (path === VULNHUNTER_RESULT_ARTIFACT_PATH) {
@@ -411,10 +447,29 @@ function normalizePortableStageArtifact(
   return { path, content: JSON.stringify(artifact) };
 }
 
+function hasCalibratedHighSeverityRationale(artifact: Record<string, unknown>): boolean {
+  const findings = artifact.findings;
+  if (!Array.isArray(findings)) return false;
+  return findings.every((value) => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+    const finding = value as Record<string, unknown>;
+    if (finding.severity !== "critical" && finding.severity !== "high") return true;
+    return typeof finding.severityRationale === "string" && finding.severityRationale.trim().length >= 24;
+  });
+}
+
 function canonicalDeepCandidate(value: unknown): unknown {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
   const candidate = value as Record<string, unknown>;
-  const fingerprint = JSON.stringify({ category: candidate.category, anchors: candidate.anchors });
+  const fingerprint = JSON.stringify({
+    category: candidate.category,
+    hypothesis: candidate.hypothesis,
+    attacker: candidate.attacker,
+    prerequisites: candidate.prerequisites,
+    expectedImpact: candidate.expectedImpact,
+    controlHypothesis: candidate.controlHypothesis,
+    anchors: candidate.anchors,
+  });
   return {
     ...candidate,
     id: `deep-${createHash("sha256").update(fingerprint).digest("hex").slice(0, 24)}`,

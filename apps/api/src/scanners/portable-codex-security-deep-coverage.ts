@@ -157,6 +157,7 @@ export function mergePortableDeepDiscoveryDossiers(
       candidates.set(candidate.id, candidate);
     }
   }
+  const deduplicatedCandidates = deduplicatePortableDeepCandidates([...candidates.values()]);
   return {
     schemaVersion: 1,
     stageSummaries: [
@@ -166,7 +167,7 @@ export function mergePortableDeepDiscoveryDossiers(
         summary: `Deep discovery inspected ${plan.files.length}/${plan.files.length} auditable files across ${plan.partitions.length} server-owned partitions.`,
       },
     ],
-    candidates: [...candidates.values()],
+    candidates: deduplicatedCandidates,
     assessments: [...base.assessments],
     scope: {
       // Deep scope is the exact server-enumerated auditable universe. Broad
@@ -175,6 +176,82 @@ export function mergePortableDeepDiscoveryDossiers(
       unexamined: [],
     },
   };
+}
+
+/**
+ * Discovery pages can independently describe the same missing control. Do not
+ * collapse candidates merely because their CWE/category matches: a duplicate
+ * is only safe to merge when the normalized claim and its primary broken
+ * control location agree. The merged candidate keeps every affected anchor so
+ * later validation and reporting retain the full evidence surface.
+ */
+function deduplicatePortableDeepCandidates(
+  candidates: readonly PortableCandidate[],
+): PortableCandidate[] {
+  const unique = new Map<string, PortableCandidate>();
+  for (const candidate of candidates) {
+    const identity = portableDeepCandidateIssueIdentity(candidate);
+    const prior = unique.get(identity);
+    if (prior === undefined) {
+      unique.set(identity, copyCandidate(candidate));
+      continue;
+    }
+    const anchors = mergeAnchors(prior.anchors, candidate.anchors);
+    // A report finding is structurally limited to 20 anchors. Keeping both
+    // candidates is safer than silently truncating affected locations.
+    if (anchors.length > 20) {
+      unique.set(`${identity}\u0000${candidate.id}`, copyCandidate(candidate));
+      continue;
+    }
+    prior.anchors = anchors;
+  }
+  return [...unique.values()];
+}
+
+function portableDeepCandidateIssueIdentity(candidate: PortableCandidate): string {
+  // Historical candidate artifacts did not preserve a hypothesis. Keep them
+  // separate rather than inventing equivalence from broad labels alone.
+  if (candidate.hypothesis === undefined || candidate.controlHypothesis === undefined) {
+    return `historical\u0000${candidate.id}`;
+  }
+  const primary = candidate.anchors.find((anchor) => anchor.role === "control") ??
+    candidate.anchors.find((anchor) => anchor.role === "sink") ??
+    candidate.anchors[0];
+  const anchor = primary === undefined
+    ? "no-anchor"
+    : `${primary.path}:${primary.startLine}-${primary.endLine}:${primary.role}`;
+  return [
+    normalizeIssueText(candidate.category),
+    normalizeIssueText(candidate.hypothesis),
+    normalizeIssueText(candidate.controlHypothesis),
+    candidate.attacker ?? "unknown",
+    normalizeIssueText(candidate.prerequisites ?? ""),
+    normalizeIssueText(candidate.expectedImpact ?? ""),
+    anchor,
+  ].join("\u0000");
+}
+
+function normalizeIssueText(value: string): string {
+  return value.trim().toLocaleLowerCase("en-US").replace(/\s+/g, " ");
+}
+
+function mergeAnchors(
+  left: readonly PortableCandidate["anchors"][number][],
+  right: readonly PortableCandidate["anchors"][number][],
+): PortableCandidate["anchors"] {
+  const merged: PortableCandidate["anchors"] = [];
+  const keys = new Set<string>();
+  for (const anchor of [...left, ...right]) {
+    const key = `${anchor.path}\u0000${anchor.startLine}\u0000${anchor.endLine}\u0000${anchor.role}\u0000${anchor.explanation ?? ""}`;
+    if (keys.has(key)) continue;
+    keys.add(key);
+    merged.push({ ...anchor });
+  }
+  return merged;
+}
+
+function copyCandidate(candidate: PortableCandidate): PortableCandidate {
+  return { ...candidate, anchors: candidate.anchors.map((anchor) => ({ ...anchor })) };
 }
 
 function isAuditable(relative: string): boolean {

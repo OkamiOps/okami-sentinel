@@ -501,7 +501,10 @@ export async function runPortableCodexSecurity(
           )
           : partition !== null
             ? Math.min(16, Math.max(1, stageSessionLimits.maxModelTurns - 8))
-            : Math.min(5, stageSessionLimits.maxModelTurns - 1),
+            : Math.min(
+              stageSessionLimits.maxModelTurns - 1,
+              Math.max(3, Math.floor(stageSessionLimits.maxModelTurns * 2 / 3)),
+            ),
         ...(stage.id === "report"
           ? { maxCompletionTokens: portableCodexSecurityReportCompletionTokens(stageDossier) }
           : assessmentPage !== null
@@ -513,6 +516,8 @@ export async function runPortableCodexSecurity(
         resultArtifactValidationContext: {
           expectedArtifactPath: stage.artifact,
           dossier: stageDossier,
+          requireDiscoveryCandidateContext: stage.id === "discovery",
+          requireCalibratedSeverityRationale: stage.id === "report",
           ...(shard === null ? {} : { reportShard: shard }),
           ...(deepCoverage === undefined ? {} : { deepCoverage }),
         },
@@ -528,6 +533,11 @@ export async function runPortableCodexSecurity(
             assessmentCandidates: stageDossier.candidates.map((candidate) => ({
               id: candidate.id,
               category: candidate.category,
+              ...(candidate.hypothesis === undefined ? {} : { hypothesis: candidate.hypothesis }),
+              ...(candidate.attacker === undefined ? {} : { attacker: candidate.attacker }),
+              ...(candidate.prerequisites === undefined ? {} : { prerequisites: candidate.prerequisites }),
+              ...(candidate.expectedImpact === undefined ? {} : { expectedImpact: candidate.expectedImpact }),
+              ...(candidate.controlHypothesis === undefined ? {} : { controlHypothesis: candidate.controlHypothesis }),
               anchors: candidate.anchors.map(({ path, startLine, endLine, role }) => ({
                 path, startLine, endLine, role,
               })),
@@ -561,8 +571,6 @@ export async function runPortableCodexSecurity(
         snapshotRoot: snapshot.snapshotRoot,
         ...(
           partition !== null ||
-          assessmentPage !== null ||
-          shard !== null ||
           stage.id === "threat-model"
             ? { sourceEvidenceProjected: true }
             : {}
@@ -922,15 +930,19 @@ export function portableReportShardSessionLimits(
 export function portableAssessmentPageSessionLimits(
   limits: PortableCodexSecurityExecutionLimits,
   remainingMs: number,
-  pageCount: number,
+  _pageCount: number,
 ): AgentSessionLimits {
-  const maxModelTurns = Math.floor(limits.maxModelTurns / pageCount);
+  // Candidate pages are independent bounded sessions. Dividing turns by the
+  // number of pages made a large Deep audit fail only after discovery had
+  // already spent its budget. Keep each validation page usable; scan-wide
+  // cost and cancellation remain authoritative across the page sequence.
+  const maxModelTurns = Math.min(64, limits.maxModelTurns);
   // Assessment pages carry at most 32 candidates, but a candidate can require
   // several source/sink reads before the terminal artifact. Dividing tools by
   // the number of pages repeatedly starved dense deep scans. Give every page a
   // fixed, bounded allowance; cost and the hard deadline remain scan-global.
   const maxToolCalls = 128;
-  if (maxModelTurns < 4) {
+  if (maxModelTurns < 8) {
     throw new PortableCodexSecurityRunnerError("agent_tool_limit");
   }
   return sessionLimits({ ...limits, maxModelTurns, maxToolCalls }, remainingMs);

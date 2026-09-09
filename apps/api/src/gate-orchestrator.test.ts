@@ -94,6 +94,22 @@ function scan(status: ScanRun["status"]): ScanRun {
   };
 }
 
+function highFinding(): FindingSummary {
+  return {
+    findingId: "finding-1",
+    occurrenceId: null,
+    title: "Stored XSS",
+    severity: "high",
+    confidence: "high",
+    ruleId: "CWE-79",
+    summary: null,
+    primaryPath: "src/report.ts:88",
+    fingerprints: ["sha256:stable-xss"],
+    category: "Stored cross-site scripting",
+    cwe: ["CWE-79"],
+  };
+}
+
 interface FakeDeps extends LocalGateDependencies {
   readonly runs: Map<string, GateRun>;
   startScanCalls: number;
@@ -291,6 +307,58 @@ test("keeps the local baseline provider intact by default", async () => {
 
   assert.equal(deps.githubBaselineCalls, 0);
   assert.equal(deps.runs.get(gate.id)?.outcome, "bootstrap");
+});
+
+test("does not classify an identical finding from another checkout as reopened", async () => {
+  const deps = fakeDeps();
+  const baseline = { ...scan("completed"), id: "baseline", scanDir: "/workspace/csb/baseline" };
+  const foreignHistorical = {
+    ...scan("completed"),
+    id: "foreign-history",
+    repositoryPath: "/workspace/other-repository",
+    scanDir: "/workspace/other-repository/history",
+  };
+  const captured = { artifact: null as GateArtifact | null };
+  deps.getBaselineScanId = () => baseline.id;
+  deps.getScan = (id) => id === baseline.id ? baseline : id === "scan-1" ? scan("completed") : null;
+  deps.listScans = () => [foreignHistorical];
+  deps.readFindings = (scanDir) =>
+    scanDir === "/workspace/scan-1" || scanDir === foreignHistorical.scanDir ? [highFinding()] : [];
+  deps.writeArtifact = (_id, candidate) => {
+    captured.artifact = candidate;
+    return "/gates/gate-1/csb-gate-result.json";
+  };
+
+  const gate = await startLocalGate(request(), deps);
+  await waitForGate(gate.id);
+
+  assert.equal(captured.artifact?.findings[0]?.lifecycle, "new");
+});
+
+test("keeps same-checkout historical findings eligible for reopened lifecycle", async () => {
+  const deps = fakeDeps();
+  const baseline = { ...scan("completed"), id: "baseline", scanDir: "/workspace/csb/baseline" };
+  const localHistorical = {
+    ...scan("completed"),
+    id: "local-history",
+    repositoryPath: "/workspace/csb",
+    scanDir: "/workspace/csb/history",
+  };
+  const captured = { artifact: null as GateArtifact | null };
+  deps.getBaselineScanId = () => baseline.id;
+  deps.getScan = (id) => id === baseline.id ? baseline : id === "scan-1" ? scan("completed") : null;
+  deps.listScans = () => [localHistorical];
+  deps.readFindings = (scanDir) =>
+    scanDir === "/workspace/scan-1" || scanDir === localHistorical.scanDir ? [highFinding()] : [];
+  deps.writeArtifact = (_id, candidate) => {
+    captured.artifact = candidate;
+    return "/gates/gate-1/csb-gate-result.json";
+  };
+
+  const gate = await startLocalGate(request(), deps);
+  await waitForGate(gate.id);
+
+  assert.equal(captured.artifact?.findings[0]?.lifecycle, "reopened");
 });
 
 test("rejects github baseline selection when the repository has no ready remote", async () => {

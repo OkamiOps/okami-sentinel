@@ -69,6 +69,59 @@ test("local production wrapper retains direct API paths and /api for compiled fr
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test("local wrapper protects every mutation from foreign browser origins while retaining tokenized CLI and callback flows", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "csb-local-security-web-"));
+  let writes = 0;
+  const api = new Hono();
+  api.post("/scans", (c) => {
+    writes += 1;
+    return c.json({ created: true }, 201);
+  });
+  // GitHub redirects to this GET route after the signed flow state is checked
+  // by the handler itself. It is not a browser mutation.
+  api.get("/guardrails/github-app/manifest/callback", (c) => c.json({ callback: true }));
+  try {
+    fs.writeFileSync(path.join(root, "index.html"), "<!doctype html><h1>Local Sentinel</h1>");
+    const server = createServerApp(api, {
+      webRoot: root,
+      settings: loadServerSettings({ CSB_RUNTIME_MODE: "local" }),
+    });
+    const local = "http://127.0.0.1:8787";
+    const withToken = { "X-CSRF-Token": securitySessionToken };
+
+    const foreign = await server.request(`${local}/api/scans`, {
+      method: "POST",
+      headers: { ...withToken, Origin: "https://attacker.example", "Content-Type": "text/plain" },
+      body: "{}",
+    });
+    assert.equal(foreign.status, 403);
+    assert.deepEqual(await foreign.json(), { error: "origin_denied" });
+    assert.equal(writes, 0);
+
+    const missingToken = await server.request(`${local}/api/scans`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(missingToken.status, 403);
+    assert.deepEqual(await missingToken.json(), { error: "csrf_invalid" });
+    assert.equal(writes, 0);
+
+    // Non-browser automation has no Origin header, but still needs the
+    // process-local token. The Vite frontend remains a valid browser caller.
+    assert.equal((await server.request(`${local}/api/scans`, { method: "POST", headers: withToken, body: "{}" })).status, 201);
+    assert.equal((await server.request(`${local}/api/scans`, {
+      method: "POST",
+      headers: { ...withToken, Origin: "http://localhost:5173" }, body: "{}",
+    })).status, 201);
+    assert.equal(writes, 2);
+
+    assert.equal((await server.request(`${local}/api/guardrails/github-app/manifest/callback`, {
+      headers: { Origin: "https://github.com" },
+    })).status, 200);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test("server configuration rejects remote HTTP, missing credentials and broad origins", () => {
   assert.throws(() => publicOrigin({ CSB_PUBLIC_ORIGIN: "http://server.example" }));
   assert.throws(() => publicOrigin({ CSB_PUBLIC_ORIGIN: "https://server.example/path" }));

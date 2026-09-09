@@ -17,6 +17,7 @@ const MAX_SCOPE_ENTRIES = 4_096;
 const MAX_ANCHORS = 20;
 const MAX_TEXT_BYTES = 1_024;
 const MIN_SUBSTANTIVE_TEXT_BYTES = 24;
+const MAX_CANDIDATE_CONTEXT_BYTES = 512;
 const MAX_SNAPSHOT_ANCHOR_FILE_BYTES = 1_048_576;
 // A report shard may legitimately span evidence from the full Deep coverage
 // universe. Keep pre-I/O validation aligned with the server-owned Deep plan;
@@ -49,6 +50,9 @@ const COVERAGE_REASONS = new Set([
 const ANCHOR_ROLES = new Set(["source", "entrypoint", "control", "sink", "evidence"]);
 const SEVERITIES = new Set(["critical", "high", "medium", "low"]);
 const CONFIDENCES = new Set(["high", "medium", "low"]);
+const CANDIDATE_ATTACKERS = new Set([
+  "unauthenticated", "authenticated", "privileged", "local", "unknown",
+]);
 
 export interface PortableCoverageAnchor {
   path: string;
@@ -62,6 +66,16 @@ export interface PortableCandidate {
   id: string;
   category: string;
   anchors: PortableCoverageAnchor[];
+  /**
+   * New live artifacts retain the security claim that later stages must
+   * attempt to disprove. These remain optional when reading a historical
+   * dossier written before the live candidate contract existed.
+   */
+  hypothesis?: string;
+  attacker?: "unauthenticated" | "authenticated" | "privileged" | "local" | "unknown";
+  prerequisites?: string;
+  expectedImpact?: string;
+  controlHypothesis?: string;
 }
 
 export interface PortableCandidateAssessment {
@@ -182,7 +196,8 @@ export interface PortableAnchorRepairDetail {
 
 export interface PortableCandidateRepairDetail {
   kind: "candidate-contract";
-  reason: "array-or-limit" | "entry-keys" | "id" | "category" | "anchors" | "duplicate-id";
+  reason: "array-or-limit" | "entry-keys" | "id" | "category" | "anchors" | "duplicate-id" |
+    "hypothesis" | "attacker" | "prerequisites" | "expected-impact" | "control-hypothesis";
   itemIndex?: number;
 }
 
@@ -238,6 +253,17 @@ export function normalizePortableCodexSecurityStageArtifact(
     return reject("stage-anchor-invalid");
   }
   return artifact as unknown as Record<string, unknown>;
+}
+
+/**
+ * New live discovery sessions must preserve enough of the original security
+ * claim for a later independent stage to verify it. Historical artifacts stay
+ * readable through the permissive stage parser above.
+ */
+export function validatePortableCodexSecurityDiscoveryCandidateContext(
+  value: unknown,
+): PortableCandidateRepairDetail | null {
+  return parseCandidatesWithRepair(value, MAX_STAGE_CANDIDATES, true).detail ?? null;
 }
 
 /**
@@ -387,8 +413,16 @@ export function applyPortableCodexSecurityStageArtifact(
     }
   }
   for (const assessment of artifact.assessments ?? []) {
-    if (!next.candidates.some((candidate) => candidate.id === assessment.candidateId)) {
+    const candidate = next.candidates.find((item) => item.id === assessment.candidateId);
+    if (candidate === undefined) {
       throw new PortableCodexSecurityDossierError("assessment references an unknown candidate");
+    }
+    if (artifact.stage === "validation" && assessment.status === "confirmed" &&
+        hasLiveCandidateContext(candidate) && !hasSupportedConfirmation(candidate, assessment)) {
+      throw new PortableCodexSecurityDossierError(
+        "confirmed candidate is not supported by its validation evidence",
+        "report-candidate-assessment-inconclusive",
+      );
     }
     const existing = next.assessments.find((item) =>
       item.candidateId === assessment.candidateId && item.stage === artifact.stage
@@ -460,6 +494,14 @@ export function validatePortableCodexSecurityReportCoverage(
     if (assessment === undefined || assessment.status === "inconclusive") {
       throw new PortableCodexSecurityDossierError(
         "candidate has no conclusive assessment",
+        "report-candidate-assessment-inconclusive",
+      );
+    }
+    const candidate = dossier.candidates.find((item) => item.id === candidateId)!;
+    if (assessment.status === "confirmed" && hasLiveCandidateContext(candidate) &&
+        !hasSupportedConfirmation(candidate, assessment)) {
+      throw new PortableCodexSecurityDossierError(
+        "confirmed candidate is not supported by its validation evidence",
         "report-candidate-assessment-inconclusive",
       );
     }
@@ -698,6 +740,7 @@ function parseCandidates(
 function parseCandidatesWithRepair(
   value: unknown,
   limit = MAX_STAGE_CANDIDATES,
+  requireLiveContext = false,
 ): { value: PortableCandidate[] | null; detail?: PortableCandidateRepairDetail } {
   if (!Array.isArray(value) || value.length > limit) {
     return { value: null, detail: { kind: "candidate-contract", reason: "array-or-limit" } };
@@ -706,18 +749,52 @@ function parseCandidatesWithRepair(
   const candidates: PortableCandidate[] = [];
   for (const [itemIndex, item] of value.entries()) {
     const record = asRecord(item);
-    if (record === null || !hasOnlyKeys(record, new Set(["id", "category", "anchors"]))) {
+    if (record === null || !hasOnlyKeys(record, new Set([
+      "id", "category", "anchors", "hypothesis", "attacker", "prerequisites", "expectedImpact", "controlHypothesis",
+    ]))) {
       return { value: null, detail: { kind: "candidate-contract", reason: "entry-keys", itemIndex } };
     }
     const id = identifier(record.id);
     const category = text(record.category, MAX_TEXT_BYTES);
     const anchors = parseAnchors(record.anchors, false);
+    const hypothesis = record.hypothesis === undefined
+      ? undefined : substantiveText(record.hypothesis, MAX_CANDIDATE_CONTEXT_BYTES);
+    const attacker = record.attacker === undefined
+      ? undefined : enumValue(record.attacker, CANDIDATE_ATTACKERS);
+    const prerequisites = record.prerequisites === undefined
+      ? undefined : substantiveText(record.prerequisites, MAX_CANDIDATE_CONTEXT_BYTES);
+    const expectedImpact = record.expectedImpact === undefined
+      ? undefined : substantiveText(record.expectedImpact, MAX_CANDIDATE_CONTEXT_BYTES);
+    const controlHypothesis = record.controlHypothesis === undefined
+      ? undefined : substantiveText(record.controlHypothesis, MAX_CANDIDATE_CONTEXT_BYTES);
     if (id === null) return { value: null, detail: { kind: "candidate-contract", reason: "id", itemIndex } };
     if (category === null) return { value: null, detail: { kind: "candidate-contract", reason: "category", itemIndex } };
     if (anchors === null) return { value: null, detail: { kind: "candidate-contract", reason: "anchors", itemIndex } };
+    if ((record.hypothesis !== undefined && hypothesis === null) || (requireLiveContext && hypothesis === undefined)) {
+      return { value: null, detail: { kind: "candidate-contract", reason: "hypothesis", itemIndex } };
+    }
+    if ((record.attacker !== undefined && attacker === null) || (requireLiveContext && attacker === undefined)) {
+      return { value: null, detail: { kind: "candidate-contract", reason: "attacker", itemIndex } };
+    }
+    if ((record.prerequisites !== undefined && prerequisites === null) || (requireLiveContext && prerequisites === undefined)) {
+      return { value: null, detail: { kind: "candidate-contract", reason: "prerequisites", itemIndex } };
+    }
+    if ((record.expectedImpact !== undefined && expectedImpact === null) || (requireLiveContext && expectedImpact === undefined)) {
+      return { value: null, detail: { kind: "candidate-contract", reason: "expected-impact", itemIndex } };
+    }
+    if ((record.controlHypothesis !== undefined && controlHypothesis === null) || (requireLiveContext && controlHypothesis === undefined)) {
+      return { value: null, detail: { kind: "candidate-contract", reason: "control-hypothesis", itemIndex } };
+    }
     if (ids.has(id)) return { value: null, detail: { kind: "candidate-contract", reason: "duplicate-id", itemIndex } };
     ids.add(id);
-    candidates.push({ id, category, anchors });
+    candidates.push({
+      id, category, anchors,
+      ...(typeof hypothesis === "string" ? { hypothesis } : {}),
+      ...(typeof attacker === "string" ? { attacker: attacker as PortableCandidate["attacker"] } : {}),
+      ...(typeof prerequisites === "string" ? { prerequisites } : {}),
+      ...(typeof expectedImpact === "string" ? { expectedImpact } : {}),
+      ...(typeof controlHypothesis === "string" ? { controlHypothesis } : {}),
+    });
   }
   return { value: candidates };
 }
@@ -960,7 +1037,53 @@ function copyCandidate(candidate: PortableCandidate): PortableCandidate {
 }
 
 function sameCandidate(left: PortableCandidate, right: PortableCandidate): boolean {
-  return left.category === right.category && JSON.stringify(left.anchors) === JSON.stringify(right.anchors);
+  return left.category === right.category && left.hypothesis === right.hypothesis &&
+    left.attacker === right.attacker && left.prerequisites === right.prerequisites &&
+    left.expectedImpact === right.expectedImpact && left.controlHypothesis === right.controlHypothesis &&
+    JSON.stringify(left.anchors) === JSON.stringify(right.anchors);
+}
+
+function hasLiveCandidateContext(candidate: PortableCandidate): candidate is PortableCandidate & {
+  hypothesis: string;
+  attacker: NonNullable<PortableCandidate["attacker"]>;
+  prerequisites: string;
+  expectedImpact: string;
+  controlHypothesis: string;
+} {
+  return candidate.hypothesis !== undefined && candidate.attacker !== undefined &&
+    candidate.prerequisites !== undefined && candidate.expectedImpact !== undefined &&
+    candidate.controlHypothesis !== undefined;
+}
+
+/**
+ * A confirmation needs code-backed reasoning, but access-control and invariant
+ * defects do not always have a conventional external-source-to-sink trace.
+ * The candidate context binds the claimed attacker/control/impact; validation
+ * must still tie it to the candidate's source location and expose a meaningful
+ * role combination. Uncertainty is rejected as insufficient evidence instead
+ * of being emitted with a lower severity.
+ */
+function hasSupportedConfirmation(
+  candidate: PortableCandidate,
+  assessment: Omit<PortableCandidateAssessment, "stage"> | PortableCandidateAssessment,
+): boolean {
+  if (assessment.reason !== "control-not-present" && assessment.reason !== "untrusted-flow-reaches-sink") {
+    return false;
+  }
+  if (!assessment.evidence.some((evidence) => candidate.anchors.some((anchor) => anchor.path === evidence.path))) {
+    return false;
+  }
+  // Discovery is an allegation, not independent validation evidence. Both
+  // ends of a flow (or the control/invariant evidence) must be supplied by the
+  // validator itself instead of borrowing the missing half from discovery.
+  const roles = new Set(assessment.evidence.map((anchor) => anchor.role));
+  const hasEntry = roles.has("source") || roles.has("entrypoint");
+  const hasSink = roles.has("sink");
+  const hasControlOrEvidence = roles.has("control") || roles.has("evidence");
+  return assessment.reason === "untrusted-flow-reaches-sink"
+    ? hasEntry && hasSink
+    : (hasEntry && (hasSink || hasControlOrEvidence)) ||
+      (roles.has("control") && (roles.has("evidence") || hasSink));
 }
 
 function sameAssessment(

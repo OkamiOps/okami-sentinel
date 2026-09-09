@@ -3,12 +3,18 @@ import type { MiddlewareHandler } from "hono";
 import type { ServerSettings } from "./deployment-settings.js";
 import { validSecurityToken } from "./security-session.js";
 
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+const LOCAL_FRONTEND_ORIGINS = new Set([
+  "http://127.0.0.1:5173",
+  "http://localhost:5173",
+]);
+
 export function serverSecurity(settings: ServerSettings): MiddlewareHandler {
   const expected = createHash("sha256").update(`${settings.username}:${settings.password}`).digest();
   let failedAttempts = 0;
   let windowStart = Date.now();
   return async (c, next) => {
-    if (settings.mode === "local") return next();
+    if (settings.mode === "local") return localMutationSecurity(c, next);
     c.header("X-Content-Type-Options", "nosniff");
     c.header("Referrer-Policy", "same-origin");
     c.header("Cache-Control", "no-store");
@@ -36,4 +42,31 @@ export function serverSecurity(settings: ServerSettings): MiddlewareHandler {
     }
     await next();
   };
+}
+
+/**
+ * The local runtime is loopback-only, but browsers on another origin can still
+ * send a request to it. Every local mutation therefore needs the process-only
+ * session token; browser callers must also be the compiled app or Vite dev
+ * server. A CLI can omit Origin, provided it obtained the same local token.
+ */
+async function localMutationSecurity(
+  c: Parameters<MiddlewareHandler>[0],
+  next: Parameters<MiddlewareHandler>[1],
+): Promise<Response | void> {
+  if (["GET", "HEAD", "OPTIONS"].includes(c.req.method)) return next();
+
+  const url = new URL(c.req.url);
+  const origin = c.req.header("Origin");
+  const fetchSite = c.req.header("Sec-Fetch-Site");
+  const trustedBrowserOrigin = origin === url.origin || LOCAL_FRONTEND_ORIGINS.has(origin ?? "");
+  const trustedCaller = LOCAL_HOSTS.has(url.hostname)
+    && (origin ? trustedBrowserOrigin : !fetchSite);
+  if (!trustedCaller || fetchSite === "cross-site") {
+    return c.json({ error: "origin_denied" }, 403);
+  }
+  if (!validSecurityToken(c.req.header("X-CSRF-Token"))) {
+    return c.json({ error: "csrf_invalid" }, 403);
+  }
+  await next();
 }

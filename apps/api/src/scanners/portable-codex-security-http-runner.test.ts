@@ -48,7 +48,7 @@ test("Portable Deep grants 128 tools to every assessment page", () => {
     maxInputBytes: 64 * 1_048_576,
     maxOutputBytes: 1_048_576,
   }, 2_000_000, 4);
-  assert.equal(limits.maxModelTurns, 16);
+  assert.equal(limits.maxModelTurns, 64);
   assert.equal(limits.maxToolCalls, 128);
   assert.equal(limits.timeoutMs, 2_000_000);
 });
@@ -64,6 +64,22 @@ test("Portable report grants 128 turns and tools to every shard", () => {
   assert.equal(limits.maxModelTurns, 128);
   assert.equal(limits.maxToolCalls, 128);
   assert.equal(limits.timeoutMs, 1_500_000);
+});
+
+test("dense Deep assessment does not exhaust its turn budget merely by adding pages", () => {
+  const base = {
+    totalTimeoutMs: 0,
+    maxModelTurns: 64,
+    maxToolCalls: 512,
+    maxInputBytes: 64 * 1_048_576,
+    maxOutputBytes: 1_048_576,
+  };
+  const sparse = portableAssessmentPageSessionLimits(base, Infinity, 1);
+  const dense = portableAssessmentPageSessionLimits(base, Infinity, 32);
+  assert.deepEqual(dense, sparse);
+  assert.equal(dense.timeoutMs, 0);
+  assert.equal(dense.maxModelTurns, 64);
+  assert.equal(dense.maxToolCalls, 128);
 });
 const CAPABILITIES: ModelCapabilities = {
   tools: "supported",

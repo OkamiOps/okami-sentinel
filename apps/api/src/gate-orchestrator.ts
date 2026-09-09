@@ -823,11 +823,14 @@ async function evaluateAndComplete(
   const baselineScanId = baseline.scanId;
   const baselineFindings = baseline.findings;
   const currentFindings = scan === null ? [] : deps.readFindings(scan.scanDir);
+  const repositoryPath = requiredLocalRepositoryPath(repository);
+  const repositoryIdentity = localRepositoryIdentity(repositoryPath);
   const historicalFindings = deps.listScans()
     .filter((candidate) =>
       candidate.status === "completed" &&
       candidate.id !== scan?.id &&
-      candidate.id !== baselineScanId,
+      candidate.id !== baselineScanId &&
+      isScanForLocalRepository(candidate, repositoryIdentity),
     )
     .flatMap((candidate) => deps.readFindings(candidate.scanDir));
   const evaluation = deps.evaluateGate({
@@ -838,7 +841,7 @@ async function evaluateAndComplete(
     baselineFindings,
     historicalFindings,
     triageByIdentity: deps.readTriage(repository.repositoryKey),
-    exceptions: deps.readExceptions(requiredLocalRepositoryPath(repository)),
+    exceptions: deps.readExceptions(repositoryPath),
     sourceScanId: scan?.id ?? "no-scan",
     baselineScanId,
     now: deps.now(),
@@ -916,6 +919,30 @@ async function failGate(
     completedAt,
     artifactAvailable: artifactPath !== null,
   }, deps);
+}
+
+/**
+ * ScanRun intentionally stores the resolved local checkout path instead of a
+ * guardrail repository key. Historical lifecycle evidence must therefore be
+ * scoped by that checkout before it can classify a finding as reopened.
+ *
+ * A managed scan exposes a public locator in repositoryPath, which is not a
+ * local checkout and must never contribute to a local gate's history.
+ */
+function isScanForLocalRepository(scan: ScanRun, repositoryIdentity: string): boolean {
+  if (scan.repositoryPath === null || !path.isAbsolute(scan.repositoryPath)) return false;
+  return localRepositoryIdentity(scan.repositoryPath) === repositoryIdentity;
+}
+
+function localRepositoryIdentity(repositoryPath: string): string {
+  const resolved = path.resolve(repositoryPath);
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch {
+    // Historical rows can outlive a removed checkout. Resolving still keeps
+    // their identity local and deterministic without trusting a relative path.
+    return resolved;
+  }
 }
 
 async function resolveBaseline(

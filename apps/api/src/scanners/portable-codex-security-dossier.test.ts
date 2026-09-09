@@ -230,6 +230,88 @@ test("Portable report rejects a verified-zero claim when a carried candidate is 
   );
 });
 
+test("a live candidate without supporting validation evidence is rejected instead of becoming a lower-severity finding", () => {
+  const candidate = {
+    id: "candidate-live-authz",
+    category: "authorization",
+    hypothesis: "The mutation route may allow one account to update a record owned by another account.",
+    attacker: "authenticated" as const,
+    prerequisites: "An authenticated user can call the public mutation route with a different account record identifier.",
+    expectedImpact: "A successful authorization bypass could modify another account's protected record.",
+    controlHypothesis: "The route may invoke the state-changing service without an ownership authorization control.",
+    anchors: [
+      { path: "src/routes.ts", startLine: 12, endLine: 12, role: "entrypoint" as const },
+      { path: "src/service.ts", startLine: 41, endLine: 41, role: "sink" as const },
+    ],
+  };
+  let dossier = applyPortableCodexSecurityStageArtifact(createPortableCodexSecurityDossier(), {
+    schemaVersion: 1,
+    stage: "discovery",
+    summary: "Discovery retained one authorization candidate for independent validation.",
+    observations: [],
+    scope: { inspected: ["src/routes.ts", "src/service.ts"], unexamined: [] },
+    candidates: [candidate],
+  });
+  const supported = applyPortableCodexSecurityStageArtifact(dossier, {
+    schemaVersion: 1, stage: "validation", observations: [],
+    summary: "The route and service evidence support the claimed cross-account write.",
+    assessments: [{ candidateId: candidate.id, status: "confirmed",
+      reason: "untrusted-flow-reaches-sink", evidence: candidate.anchors }],
+  });
+  assert.equal(supported.assessments[0]?.status, "confirmed", "supported findings must remain reportable");
+  assert.equal(supported.candidates[0]?.hypothesis, candidate.hypothesis);
+  for (const partialEvidence of [[candidate.anchors[0]], [candidate.anchors[1]]]) {
+    assert.throws(() => applyPortableCodexSecurityStageArtifact(dossier, {
+      schemaVersion: 1, stage: "validation", observations: [],
+      summary: "Only one end of the alleged flow was checked in validation.",
+      assessments: [{ candidateId: candidate.id, status: "confirmed",
+        reason: "untrusted-flow-reaches-sink", evidence: partialEvidence }],
+    }), /not supported by its validation evidence/i,
+    "discovery anchors cannot supply the missing half of validation evidence");
+  }
+  assert.throws(() => applyPortableCodexSecurityStageArtifact(dossier, {
+    schemaVersion: 1,
+    stage: "validation",
+    summary: "Validation did not establish the alleged authorization bypass.",
+    observations: [],
+    assessments: [{
+      candidateId: candidate.id,
+      status: "confirmed",
+      reason: "insufficient-evidence",
+      evidence: [{ path: "src/routes.ts", startLine: 12, endLine: 12, role: "evidence" }],
+    }],
+  }), /not supported by its validation evidence/i);
+
+  dossier = applyPortableCodexSecurityStageArtifact(dossier, {
+    schemaVersion: 1,
+    stage: "validation",
+    summary: "Validation rejected the candidate because the alleged bypass was not established.",
+    observations: [],
+    assessments: [{
+      candidateId: candidate.id,
+      status: "rejected",
+      reason: "insufficient-evidence",
+      evidence: [{ path: "src/routes.ts", startLine: 12, endLine: 12, role: "evidence" }],
+    }],
+  });
+  const report = validatePortableCodexSecurityReportCoverage({
+    schemaVersion: 1,
+    stage: "report",
+    findings: [],
+    coverage: {
+      inspected: ["src/routes.ts", "src/service.ts"],
+      unexamined: [],
+      candidates: [{
+        candidateId: candidate.id,
+        disposition: "rejected",
+        reason: "insufficient-evidence",
+        evidence: [{ path: "src/routes.ts", startLine: 12, endLine: 12, role: "evidence" }],
+      }],
+    },
+  }, dossier);
+  assert.deepEqual(report.findings, []);
+});
+
 test("Portable report cannot erase a candidate confirmed by the validation stage", () => {
   let dossier = createPortableCodexSecurityDossier();
   dossier = applyPortableCodexSecurityStageArtifact(dossier, {
