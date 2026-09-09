@@ -280,3 +280,52 @@ function errorCode(result: PromiseSettledResult<unknown>): string | null {
     ? (reason as { code: string }).code
     : null;
 }
+
+
+test("workspace.graph is safely unavailable without an index and rejects unbounded arguments", async (t) => {
+  const root = await mkdtemp(join(process.cwd(), ".test-agent-graph-"));
+  t.after(async () => rm(root, { recursive: true, force: true }));
+  const snapshotRoot = join(root, "snapshot");
+  const artifactRoot = join(root, "artifacts");
+  await mkdir(snapshotRoot);
+  await mkdir(artifactRoot, { mode: 0o700 });
+  const host = await createWorkspaceToolHost({ snapshotRoot, artifactRoot });
+  assert.deepEqual(JSON.parse((await host.call("workspace.graph", { query: "upload" })).content), {
+    available: false, reason: "graph_unavailable",
+  });
+  for (const input of [{ query: "" }, { query: " \t" }, { query: "x".repeat(201) },
+    { query: "upload", maxResults: 21 }, { query: "upload", maxResults: 0 },
+    { query: "upload", command: "sh" }, { query: "upload", indexPath: "/etc/passwd" }]) {
+    await assert.rejects(host.call("workspace.graph", input), { code: "tool_argument_invalid" });
+  }
+  await assert.rejects(host.call("workspace.graph", { query: "upload" }, { maxOutputBytes: 2 }), {
+    code: "tool_output_limit",
+  });
+});
+
+
+test("workspace.graph returns source navigation within the output budget without an artifact", async (t) => {
+  const root = await mkdtemp(join(process.cwd(), ".test-agent-graph-index-"));
+  t.after(async () => rm(root, { recursive: true, force: true }));
+  const snapshotRoot = join(root, "snapshot");
+  const artifactRoot = join(root, "artifacts");
+  await mkdir(snapshotRoot);
+  await mkdir(artifactRoot, { mode: 0o700 });
+  const host = await createWorkspaceToolHost({ snapshotRoot, artifactRoot, graphIndex: {
+    nodes: [
+      { id: "upload", label: "upload", file: "route.ts", location: "1" },
+      { id: "save", label: "save", file: "storage.ts", location: "2" },
+    ],
+    edges: [{ source: "upload", target: "save", relation: "calls", confidence: "EXTRACTED" }],
+  } });
+  const result = await host.call("workspace.graph", { query: "upload", maxResults: 1 }, { maxOutputBytes: 1_024 });
+  const content = JSON.parse(result.content);
+  assert.equal(result.artifact, undefined);
+  assert.equal(content.status, "ready");
+  assert.equal(content.edges[0].target, "save");
+  assert.match(content.note, /Read source/);
+  assert.ok(Buffer.byteLength(result.content) <= 1_024);
+  await assert.rejects(host.call("workspace.graph", { query: "upload" }, { maxOutputBytes: 2 }), {
+    code: "tool_output_limit",
+  });
+});

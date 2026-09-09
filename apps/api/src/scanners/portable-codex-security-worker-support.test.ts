@@ -48,11 +48,12 @@ function removeFixture(root: string): void {
   fs.rmSync(root, { recursive: true, force: true });
 }
 
-test("Portable Codex Security exposes exactly four local workspace tools", () => {
+test("Portable Codex Security allows only bounded workspace tools including optional graph navigation", () => {
   assert.deepEqual(PORTABLE_CODEX_SECURITY_TOOL_SURFACE, [
     "workspace.list",
     "workspace.read",
     "workspace.search",
+    "workspace.graph",
     "results.write",
   ]);
 });

@@ -1,3 +1,4 @@
+import type { GraphIndex } from "../graphify/graph-index.js";
 import type { ProviderModel } from "@csb/shared";
 
 import {
@@ -28,6 +29,7 @@ import {
 import { parseStructuredResult } from "./structured-result.js";
 
 export interface AnthropicMessagesSessionSpec {
+  graphIndex?: GraphIndex;
   model: ProviderModel;
   instructions: string;
   reasoningEffort?: string;
@@ -85,6 +87,7 @@ export function createAnthropicMessagesWireAdapter(
                 spec.resultArtifactContract,
                 control?.finalizationRequired === true,
                 spec.resultArtifactValidationContext,
+                spec.graphIndex !== undefined,
               ),
               ...(control?.finalizationRequired === true
                 ? { tool_choice: { type: "any" } }
@@ -163,6 +166,7 @@ function anthropicTools(
   resultArtifactContract?: AgentResultArtifactContract,
   resultsWriteOnly = false,
   context?: PortableResultArtifactValidationContext,
+  graphAvailable = false,
 ): readonly unknown[] {
   const tools = [
     anthropicTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.list"), WORKSPACE_TOOL_WIRE_DESCRIPTIONS["workspace.list"], {
@@ -178,6 +182,9 @@ function anthropicTools(
       path: resultArtifactPathSchema(resultArtifactContract, context),
       content: resultArtifactContentSchema(resultArtifactContract, context),
     }, ["path", "content"]),
+    ...(graphAvailable ? [anthropicTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.graph"), WORKSPACE_TOOL_WIRE_DESCRIPTIONS["workspace.graph"], {
+      query: { type: "string", minLength: 1, maxLength: 200 }, maxResults: { type: "integer", minimum: 1, maximum: 20 },
+    }, ["query"])] : []),
   ];
   return resultsWriteOnly ? [tools[3]!] : tools;
 }

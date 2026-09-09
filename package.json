@@ -14,6 +14,8 @@
     "build": "pnpm -r run build",
     "typecheck": "pnpm -r run typecheck",
     "test": "pnpm -r --if-present test",
-    "test:e2e:real-api": "node scripts/e2e/real-api.mjs"
+    "test:e2e:real-api": "node scripts/e2e/real-api.mjs",
+    "postinstall": "node scripts/setup-graphify.mjs",
+    "setup:graphify": "node scripts/setup-graphify.mjs"
   }
 }

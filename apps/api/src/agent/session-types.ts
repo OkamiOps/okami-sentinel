@@ -1,3 +1,4 @@
+import type { GraphIndex } from "../graphify/graph-index.js";
 import path from "node:path";
 import type {
   ModelCapabilities,
@@ -20,6 +21,7 @@ export const WORKSPACE_TOOL_NAMES = [
   "workspace.list",
   "workspace.read",
   "workspace.search",
+  "workspace.graph",
   "results.write",
 ] as const;
 
@@ -82,6 +84,8 @@ export interface WorkspaceToolHost {
 }
 
 export interface WorkspaceToolHostOptions {
+  /** Server-built index for this immutable snapshot; never provider supplied. */
+  graphIndex?: GraphIndex;
   snapshotRoot: string;
   /** Existing, unique 0700 directory provisioned for this one session only. */
   artifactRoot: string;
@@ -108,6 +112,8 @@ export type AgentSessionTerminalMode = "provider-completion" | "artifact-write";
 export const MAX_AGENT_SESSION_COMPLETION_TOKENS = 65_536;
 
 export interface AgentSessionSpec {
+  /** Server-built index for this immutable snapshot. */
+  graphIndex?: GraphIndex;
   connectionId: string;
   routeKind: string;
   protocol: Extract<ProviderProtocol,

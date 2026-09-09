@@ -39,3 +39,6 @@ scripts/docker/workflow-smoke.mjs
 .superpowers
 .worktrees
 apps/web/.impeccable
+
+# Sentinel-managed Graphify runtime
+.sentinel-tools/

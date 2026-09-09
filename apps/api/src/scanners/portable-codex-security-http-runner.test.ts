@@ -241,6 +241,7 @@ function costBudget(
 
 function dependencies(overrides: Record<string, unknown> = {}) {
   return {
+    prepareGraph: async () => ({ status: "unavailable" as const, cacheHit: false, durationMs: 0, nodes: 0, edges: 0, reason: "runtime_unavailable" as const }),
     getSnapshot: () => snapshot(),
     getConnection: () => connection(),
     getModel: () => model(),
@@ -678,6 +679,31 @@ test("Portable Codex Security reads only the persisted vault reference for an AP
   } finally {
     remove(root);
   }
+});
+
+test("Portable stages receive the prepared graph once without treating graph queries as source reads", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-graph-stages-"));
+  const specs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }> = [];
+  let builds = 0;
+  const index = { nodes: [{ id: "auth", label: "auth", file: "src/auth.ts", location: "L1" }], edges: [] };
+  try {
+    const config = configuration(root);
+    const result = await runPortableCodexSecurity(config, dependencies({
+      prepareGraph: async () => { builds++; return { index, status: "ready", cacheHit: false, durationMs: 1, nodes: 1, edges: 0 }; },
+      createSession: stageSessionFactory(specs),
+    }));
+    assert.equal(result.runtime.status, "completed");
+    assert.equal(builds, 1);
+    assert.ok(specs.length > 0);
+    for (const { spec, toolSurface } of specs) {
+      assert.equal(spec.graphIndex, index);
+      assert.ok(toolSurface.includes("workspace.graph"));
+      assert.match(spec.instructions, /not source reads, coverage proof/);
+    }
+    const status = JSON.parse(fs.readFileSync(path.join(config.outputDir, "graphify-status.json"), "utf8"));
+    assert.equal(status.status, "ready");
+    assert.equal(status.index, undefined, "metrics never serialize the graph into telemetry");
+  } finally { remove(root); }
 });
 
 test("Portable Codex Security completes six methodology stages with a server-owned bounded coverage dossier", async () => {

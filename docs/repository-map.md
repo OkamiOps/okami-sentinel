@@ -16,6 +16,8 @@ installed dependencies, and engineering reports have different lifecycles.
 | `docs/architecture` | Dated product and security design records | Historical design intent, not proof that every proposed feature is implemented. Validate against source and tests. |
 | `data` | Local database, scan evidence, engine state and caches | Ignored except `.gitkeep`. Never clean indiscriminately; retention needs an explicit policy and recovery path. |
 | `node_modules`, `.pnpm-store` | Installed packages and pnpm store | Ignored and reproducible. Apparent sizes can overlap through shared files. |
+| `.sentinel-tools/graphify` | Sentinel-managed Graphify and isolated Python for pnpm installations | Ignored; provisioned by the installation script. Docker bundles the runtime under `/opt/sentinel-engines/graphify`. Never copy into build contexts or source control. |
+| `apps/api/src/graphify` | Local code indexing and bounded source-relationship queries for Codex Portable | Indexes live under `CSB_DATA_DIR/graphify-cache`, keyed by snapshot content and extractor version/settings. Graph references never count as source-read coverage or vulnerability proof. |
 | `output` | Local reports and retained verification evidence | Ignored. Remove only task-owned temporary artifacts; preserve `output/worktree-archives`. |
 | `.superpowers` | Local agent/brainstorm working state | Ignored, not application source. Keep secrets out of general-purpose archives. |
 

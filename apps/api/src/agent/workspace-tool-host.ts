@@ -1,3 +1,4 @@
+import { queryGraph } from "../graphify/graph-index.js";
 import { constants, type Dirent, type Stats } from "node:fs";
 import {
   type FileHandle,
@@ -115,6 +116,23 @@ export async function createWorkspaceToolHost(
           return readWorkspace(snapshotRoot, input, limits, maxOutputBytes);
         case "workspace.search":
           return searchWorkspace(snapshotRoot, input, limits, maxOutputBytes);
+        case "workspace.graph": {
+          let content: string;
+          try {
+            content = options.graphIndex === undefined
+              ? JSON.stringify({ available: false, reason: "graph_unavailable" })
+              : queryGraph(options.graphIndex, input, Math.min(maxOutputBytes, 16_384));
+          } catch (error) {
+            if (error instanceof Error && error.message === "agent_output_byte_limit") {
+              throw new AgentSessionError("tool_output_limit");
+            }
+            throw new AgentSessionError("tool_argument_invalid");
+          }
+          if (Buffer.byteLength(content, "utf8") > maxOutputBytes) {
+            throw new AgentSessionError("tool_output_limit");
+          }
+          return { content };
+        }
         case "results.write":
           return writeArtifact(artifactRoot, input, limits, maxOutputBytes);
         default:
@@ -147,6 +165,17 @@ function minimumToolOutputBytes(
       boundedPositive(value.maxResults, limits.maxSearchResults, "tool_argument_invalid");
       boundedPositive(value.maxBytes, limits.maxSearchBytes, "tool_argument_invalid");
       return serializedBytes({ matches: [], truncated: false });
+    case "workspace.graph":
+      if (typeof value.query !== "string" || value.query.trim().length === 0 || value.query.length > 200 ||
+          Object.keys(value).some((key) => key !== "query" && key !== "maxResults")) {
+        throw new AgentSessionError("tool_argument_invalid");
+      }
+      if (value.maxResults !== undefined &&
+          (typeof value.maxResults !== "number" || !Number.isSafeInteger(value.maxResults) ||
+           value.maxResults < 1 || value.maxResults > 20)) {
+        throw new AgentSessionError("tool_argument_invalid");
+      }
+      return 2;
     case "results.write": {
       const path = requiredPath(value.path);
       const content = artifactContent(value.content);

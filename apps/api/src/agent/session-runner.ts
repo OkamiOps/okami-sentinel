@@ -44,6 +44,7 @@ export async function createAgentSession(
   }
 
   const host = await createWorkspaceToolHost({
+    ...(input.graphIndex === undefined ? {} : { graphIndex: input.graphIndex }),
     snapshotRoot: input.snapshotRoot,
     artifactRoot: input.artifactRoot,
     maxReadBytes: Math.min(input.limits.maxOutputBytes, 4 * 1_048_576),
@@ -76,6 +77,7 @@ function adapterFor(input: CreateAgentSessionInput): WireSessionAdapter {
     case "openai-chat":
       return createOpenAiChatWireAdapter({
         model: input.model,
+        ...(input.graphIndex === undefined ? {} : { graphIndex: input.graphIndex }),
         instructions: input.instructions,
         routeKind: input.routeKind,
         ...(input.resultArtifactValidationContext === undefined ? {} : { resultArtifactValidationContext: input.resultArtifactValidationContext }),

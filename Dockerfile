@@ -31,7 +31,8 @@ COPY packages/gate-core/package.json packages/gate-core/package.json
 COPY packages/gate-runtime/package.json packages/gate-runtime/package.json
 COPY packages/shared/package.json packages/shared/package.json
 
-RUN pnpm install --frozen-lockfile
+COPY scripts/setup-graphify.mjs scripts/setup-graphify.mjs
+RUN CSB_SKIP_GRAPHIFY_SETUP=1 pnpm install --frozen-lockfile
 
 COPY . .
 
@@ -39,7 +40,7 @@ COPY . .
 # the only artifact compiled for the final image.
 RUN pnpm --filter @csb/web build \
   && pnpm --filter @csb/api build \
-  && pnpm --filter @csb/api deploy --prod --legacy /opt/api-runtime
+  && CSB_SKIP_GRAPHIFY_SETUP=1 pnpm --filter @csb/api deploy --prod --legacy /opt/api-runtime
 
 FROM base AS sentinel-engines
 
@@ -55,12 +56,21 @@ RUN npm install --prefix /opt/sentinel-engines/codex-cli \
   && test -x /opt/sentinel-engines/codex-cli/node_modules/.bin/codex \
   && test -x /opt/sentinel-engines/codex-security/node_modules/.bin/codex-security
 
+FROM base AS sentinel-graphify
+
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+COPY scripts/setup-graphify.mjs /app/scripts/setup-graphify.mjs
+RUN CSB_GRAPHIFY_INSTALL_DIR=/opt/sentinel-engines/graphify node /app/scripts/setup-graphify.mjs \
+  && rm -rf /opt/sentinel-engines/graphify/cache
+
 FROM base AS runtime
 
 ARG CSB_GITHUB_ACTIONS_WORKFLOW_SHA
 
 ENV NODE_ENV=production \
     CSB_BUNDLED_RUNTIME_DIR=/opt/sentinel-engines \
+    CSB_GRAPHIFY_BIN=/opt/sentinel-engines/graphify/venv/bin/graphify \
     PATH=/opt/sentinel-engines/codex-cli/node_modules/.bin:/opt/sentinel-engines/codex-security/node_modules/.bin:$PATH \
     CSB_GITHUB_ACTIONS_WORKFLOW_SHA=${CSB_GITHUB_ACTIONS_WORKFLOW_SHA}
 
@@ -87,6 +97,7 @@ COPY --from=build /app/apps/web/dist ./apps/web/dist
 COPY --from=build /app/scripts/docker/init-volume.mjs ./scripts/docker/init-volume.mjs
 COPY --from=build /app/scripts/docker/healthcheck.mjs ./scripts/docker/healthcheck.mjs
 COPY --from=sentinel-engines /opt/sentinel-engines /opt/sentinel-engines
+COPY --from=sentinel-graphify /opt/sentinel-engines/graphify /opt/sentinel-engines/graphify
 
 # The container is started explicitly as the Node image's non-root account by
 # Compose. The directory is initialized separately to avoid recursive chown of

@@ -31,6 +31,9 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Added
 
+- Sentinel bundles Graphify 0.9.51 with an isolated Python runtime: pnpm provisions it automatically and Docker includes it at build time. The managed installation does not depend on a host Graphify executable or modify global Python packages.
+- Codex Security Portable now builds and reuses a code-only snapshot graph, exposes bounded symbol/relationship queries to model workers, and records indexing telemetry. Source reads remain required for evidence; indexing failure falls back to the existing scan flow. Other engines do not consume the graph yet.
+
 - Local operators can resume interrupted Portable Deep discovery with `pnpm --filter @csb/api exec tsx src/scanners/resume-portable-scan.ts SCAN_ID`. Add `--dry-run` to verify the snapshot and checkpoints without launching. Recovery creates a separate run, preserves accumulated usage and original evidence, refreshes provider capability checks, and reuses validated discovery batches. Later-stage interruptions are not supported by this recovery command.
 
 - Scan details now show live snapshot files, physical LOC, source size, discovery batches, provisional candidates, rejected result writes, output rate and provider-reported reasoning tokens. Missing metrics remain unavailable; the panel refreshes during active scans.

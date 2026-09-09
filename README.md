@@ -223,6 +223,33 @@ pnpm install
 pnpm dev
 ```
 
+Sentinel provisions Graphify automatically during `pnpm install`: a pinned
+`graphifyy==0.9.51` distribution and an isolated Python 3.12 runtime live in
+`.sentinel-tools/graphify/`. Neither Graphify nor Python needs to be installed
+separately for this component. The initial setup downloads dependencies from
+GitHub and PyPI; subsequent installs reuse the verified version. macOS and glibc
+Linux on x64/arm64 are supported by this bootstrap; use Docker on other hosts.
+If installation scripts were disabled, run `pnpm setup:graphify` before scanning.
+Graphify updates ship with Sentinel; no global Python packages or CLI sessions
+are modified. The existing Python requirement above still applies to native
+Codex Security.
+
+Codex Security Portable builds a code-only relationship index from its immutable
+snapshot before starting model stages. This local AST pass uses no model tokens.
+Workers can query symbols, paths and adjacent relationships through the bounded
+`workspace_graph` tool, then read source to verify their hypotheses. The graph
+does not count as inspected coverage or confirmed security evidence. Native Codex,
+Mantis and VulnHunter do not consume this index yet.
+
+Indexes are cached under `data/graphify-cache` (or `CSB_DATA_DIR`) by snapshot
+content, Graphify version and extraction settings. Scans record indexing status,
+duration, cache reuse, symbol and relationship counts in `graphify-status.json`
+and their event stream. An unavailable runtime or failed extraction falls back
+to ordinary source inspection; cancellation still stops the indexing process.
+The graph and its cache are local runtime data, never repository source.
+Token savings and finding-quality improvements are not yet measured against a
+real model baseline.
+
 If pnpm requests build-script approval:
 
 ```bash
@@ -270,6 +297,8 @@ curl --fail http://127.0.0.1:8787/readyz
 Open <http://127.0.0.1:8787> and sign in as `admin`. The password is stored outside the checkout at `~/.local/share/okami-sentinel/admin_password`; setup does not print secrets. Configure provider connections in the server vault.
 
 Setup authorizes the Sentinel checkout by default. To scan another project, use `sh scripts/docker/setup.sh --repository /path/to/project` during the first setup, then select `/repos/projeto` in the UI. The source path must exist on the Docker host; opening the browser does not upload the visitor’s local files.
+
+The Docker image also includes the managed Graphify runtime; no host installation or startup download is required.
 
 Docker supports Codex Security Portable, Mantis HTTP, and VulnHunter HTTP. Native and host-local CLI sessions remain pnpm-only. Linux amd64 is validated; Apple Silicon, Windows, and Linux arm64 are not part of the initial validation. See the operational guides for alternate ports, backups, restoration, and HTTPS hosting: [Docker](docs/docker.md) and [Dokploy](docs/dokploy.md) (Portuguese).
 

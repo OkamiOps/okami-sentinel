@@ -848,8 +848,8 @@ async function proveWorkspaceBoundary(
       extraToolDenied = error instanceof AgentSessionError && error.code === "tool_name_denied";
     }
     const closedToolSurfaceEnforced = extraToolDenied &&
-      WORKSPACE_TOOL_NAMES.length === 4 &&
-      WORKSPACE_TOOL_NAMES.join("|") === "workspace.list|workspace.read|workspace.search|results.write";
+      WORKSPACE_TOOL_NAMES.length === 5 &&
+      WORKSPACE_TOOL_NAMES.join("|") === "workspace.list|workspace.read|workspace.search|workspace.graph|results.write";
     return { privatePinnedRootsEnforced, closedToolSurfaceEnforced };
   } catch {
     return { privatePinnedRootsEnforced: false, closedToolSurfaceEnforced: false };

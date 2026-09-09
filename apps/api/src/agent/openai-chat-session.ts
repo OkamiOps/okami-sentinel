@@ -1,3 +1,4 @@
+import type { GraphIndex } from "../graphify/graph-index.js";
 import type { ModelCapabilities, ProviderModel } from "@csb/shared";
 
 import { createWorkspaceToolHost } from "./workspace-tool-host.js";
@@ -32,6 +33,7 @@ import {
 import { parseStructuredResult } from "./structured-result.js";
 
 export interface OpenAiChatSessionSpec {
+  graphIndex?: GraphIndex;
   model: ProviderModel;
   instructions: string;
   routeKind: string;
@@ -105,6 +107,7 @@ export function createOpenAiChatWireAdapter(spec: OpenAiChatSessionSpec): WireSe
                 spec.resultArtifactContract,
                 control?.finalizationRequired === true,
                 spec.resultArtifactValidationContext,
+                spec.graphIndex !== undefined,
               ),
               tool_choice: "required",
             }),
@@ -247,6 +250,7 @@ function openAiChatTools(
   resultArtifactContract?: AgentResultArtifactContract,
   resultsWriteOnly = false,
   context?: PortableResultArtifactValidationContext,
+  graphAvailable = false,
 ): readonly unknown[] {
   const tools = [
     {
@@ -284,6 +288,14 @@ function openAiChatTools(
         }, ["path", "content"]),
       },
     },
+    ...(graphAvailable ? [{
+      type: "function",
+      function: {
+        name: WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.graph"),
+        description: WORKSPACE_TOOL_WIRE_DESCRIPTIONS["workspace.graph"],
+        parameters: objectSchema({ query: { type: "string", minLength: 1, maxLength: 200 }, maxResults: { type: "integer", minimum: 1, maximum: 20 } }, ["query"]),
+      },
+    }] : []),
   ];
   return resultsWriteOnly ? [tools[3]!] : tools;
 }
