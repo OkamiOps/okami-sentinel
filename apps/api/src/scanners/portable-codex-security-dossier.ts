@@ -194,6 +194,14 @@ export interface PortableAnchorRepairDetail {
   violations: PortableAnchorRangeViolation[];
 }
 
+export interface PortableAnchorContractRepairDetail {
+  kind: "anchor-contract";
+  /** Generated structural location, never a provider-supplied identifier or path. */
+  field: string;
+  code: "array" | "type" | "keys" | "path" | "path-unavailable" | "line-range" | "role" | "explanation" | "read-limit";
+  allowedRoles?: readonly string[];
+}
+
 export interface PortableCandidateRepairDetail {
   kind: "candidate-contract";
   reason: "array-or-limit" | "entry-keys" | "id" | "category" | "anchors" | "duplicate-id" |
@@ -203,6 +211,7 @@ export interface PortableCandidateRepairDetail {
 
 export type PortableArtifactRepairDetail =
   | PortableAnchorRepairDetail
+  | PortableAnchorContractRepairDetail
   | PortableCandidateRepairDetail;
 
 export function createPortableCodexSecurityDossier(): PortableCodexSecurityDossier {
@@ -235,7 +244,11 @@ export function normalizePortableCodexSecurityStageArtifact(
   if (typeof artifactPath !== "string") return reject("path-or-stage-invalid");
   if (artifactPath === "sentinel-findings.json") {
     const report = parsePortableReportArtifact(value);
-    if (report === null) return reject("report-contract-invalid");
+    if (report === null) {
+      const detail = diagnoseArtifactAnchorArrays(value);
+      if (detail) onRepairDetail?.(detail);
+      return reject("report-contract-invalid");
+    }
     const resolution = portableArtifactAnchorsResolve(snapshotRoot, report);
     if (!resolution.ok) {
       if (resolution.detail !== undefined) onRepairDetail?.(resolution.detail);
@@ -262,7 +275,7 @@ export function normalizePortableCodexSecurityStageArtifact(
  */
 export function validatePortableCodexSecurityDiscoveryCandidateContext(
   value: unknown,
-): PortableCandidateRepairDetail | null {
+): PortableCandidateRepairDetail | PortableAnchorContractRepairDetail | null {
   return parseCandidatesWithRepair(value, MAX_STAGE_CANDIDATES, true).detail ?? null;
 }
 
@@ -275,16 +288,16 @@ export function validatePortableCodexSecurityDiscoveryCandidateContext(
 function portableArtifactAnchorsResolve(
   snapshotRoot: string | undefined,
   artifact: PortableStageArtifact | PortableReportArtifact,
-): { ok: true } | { ok: false; detail?: PortableAnchorRepairDetail } {
+): { ok: true } | { ok: false; detail?: PortableAnchorRepairDetail | PortableAnchorContractRepairDetail } {
   if (snapshotRoot === undefined) return { ok: true };
   const anchors = "findings" in artifact
     ? [
-      ...artifact.findings.flatMap((finding) => finding.anchors),
-      ...artifact.coverage.candidates.flatMap((coverage) => coverage.evidence),
+      ...artifact.findings.flatMap((finding, i) => finding.anchors.map((anchor, j) => ({ anchor, field: `findings[${i}].anchors[${j}]` }))),
+      ...artifact.coverage.candidates.flatMap((coverage, i) => coverage.evidence.map((anchor, j) => ({ anchor, field: `coverage.candidates[${i}].evidence[${j}]` }))),
     ]
     : [
-      ...(artifact.candidates ?? []).flatMap((candidate) => candidate.anchors),
-      ...(artifact.assessments ?? []).flatMap((assessment) => assessment.evidence),
+      ...(artifact.candidates ?? []).flatMap((candidate, i) => candidate.anchors.map((anchor, j) => ({ anchor, field: `candidates[${i}].anchors[${j}]` }))),
+      ...(artifact.assessments ?? []).flatMap((assessment, i) => assessment.evidence.map((anchor, j) => ({ anchor, field: `assessments[${i}].evidence[${j}]` }))),
     ];
   if (anchors.length === 0) return { ok: true };
 
@@ -295,16 +308,17 @@ function portableArtifactAnchorsResolve(
   try {
     const rootInfo = fs.lstatSync(root);
     if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) return { ok: false };
-    for (const anchor of anchors) {
+    for (const { anchor, field } of anchors) {
+      const failure = (code: PortableAnchorContractRepairDetail["code"]) => ({ ok: false as const, detail: { kind: "anchor-contract" as const, field: `${field}.path`, code } });
       const candidate = path.resolve(root, anchor.path);
-      if (!isPathInside(root, candidate)) return { ok: false };
+      if (!isPathInside(root, candidate)) return failure("path");
       let lines = lineCounts.get(candidate);
       if (lines === undefined) {
-        if (lineCounts.size >= MAX_SNAPSHOT_ANCHOR_FILES) return { ok: false };
+        if (lineCounts.size >= MAX_SNAPSHOT_ANCHOR_FILES) return failure("read-limit");
         const contents = readPinnedPortableAnchorFile(candidate, MAX_SNAPSHOT_ANCHOR_FILE_BYTES);
-        if (contents === null) return { ok: false };
+        if (contents === null) return failure("path-unavailable");
         totalBytes += contents.length;
-        if (totalBytes > MAX_SNAPSHOT_ANCHOR_BYTES) return { ok: false };
+        if (totalBytes > MAX_SNAPSHOT_ANCHOR_BYTES) return failure("read-limit");
         lines = countLines(contents);
         lineCounts.set(candidate, lines);
       }
@@ -657,6 +671,8 @@ function parsePortableStageArtifact(
     ? undefined
     : parseAssessments(record.assessments);
   if (!narrativeStage && record.assessments !== undefined && assessments === null) {
+    const detail = diagnoseArtifactAnchorArrays(record);
+    if (detail) onRepairDetail?.(detail);
     return reject("stage-assessments-invalid");
   }
   if (!CANDIDATE_STAGES.has(record.stage) && (candidates?.length ?? 0) > 0) {
@@ -741,7 +757,7 @@ function parseCandidatesWithRepair(
   value: unknown,
   limit = MAX_STAGE_CANDIDATES,
   requireLiveContext = false,
-): { value: PortableCandidate[] | null; detail?: PortableCandidateRepairDetail } {
+): { value: PortableCandidate[] | null; detail?: PortableCandidateRepairDetail | PortableAnchorContractRepairDetail } {
   if (!Array.isArray(value) || value.length > limit) {
     return { value: null, detail: { kind: "candidate-contract", reason: "array-or-limit" } };
   }
@@ -769,7 +785,7 @@ function parseCandidatesWithRepair(
       ? undefined : substantiveText(record.controlHypothesis, MAX_CANDIDATE_CONTEXT_BYTES);
     if (id === null) return { value: null, detail: { kind: "candidate-contract", reason: "id", itemIndex } };
     if (category === null) return { value: null, detail: { kind: "candidate-contract", reason: "category", itemIndex } };
-    if (anchors === null) return { value: null, detail: { kind: "candidate-contract", reason: "anchors", itemIndex } };
+    if (anchors === null) return { value: null, detail: diagnoseAnchorArray(record.anchors, `candidates[${itemIndex}].anchors`, false)! };
     if ((record.hypothesis !== undefined && hypothesis === null) || (requireLiveContext && hypothesis === undefined)) {
       return { value: null, detail: { kind: "candidate-contract", reason: "hypothesis", itemIndex } };
     }
@@ -949,6 +965,49 @@ function parseCwe(value: unknown): string[] | null {
     entries.push(candidate);
   }
   return entries;
+}
+
+function diagnoseArtifactAnchorArrays(value: unknown): PortableAnchorContractRepairDetail | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const groups = [
+    { values: record.findings, field: "findings", key: "anchors", explanation: true },
+    { values: record.assessments, field: "assessments", key: "evidence", explanation: false },
+    { values: asRecord(record.coverage)?.candidates, field: "coverage.candidates", key: "evidence", explanation: false },
+  ];
+  for (const group of groups) {
+    if (!Array.isArray(group.values)) continue;
+    for (const [i, value] of group.values.entries()) {
+      const item = asRecord(value);
+      if (!item) continue;
+      const detail = diagnoseAnchorArray(item[group.key], `${group.field}[${i}].${group.key}`, group.explanation);
+      if (detail) return detail;
+    }
+  }
+  return null;
+}
+
+/** Explain the existing parser rejection without normalizing or discarding evidence. */
+function diagnoseAnchorArray(value: unknown, field: string, requireExplanation: boolean): PortableAnchorContractRepairDetail | null {
+  const issue = (field: string, code: PortableAnchorContractRepairDetail["code"]): PortableAnchorContractRepairDetail => ({ kind: "anchor-contract", field, code });
+  if (!Array.isArray(value) || value.length > MAX_ANCHORS) return issue(field, "array");
+  for (const [i, valueEntry] of value.entries()) {
+    const target = `${field}[${i}]`;
+    const item = asRecord(valueEntry);
+    if (!item) return issue(target, "type");
+    if (!hasOnlyKeys(item, new Set(["path", "startLine", "endLine", "role", "explanation"]))) return issue(target, "keys");
+    if (repositoryPath(item.path) === null) return issue(`${target}.path`, "path");
+    const start = positiveInteger(item.startLine);
+    const end = positiveInteger(item.endLine);
+    if (start === null) return issue(`${target}.startLine`, "line-range");
+    if (end === null || end < start) return issue(`${target}.endLine`, "line-range");
+    if (enumValue(item.role, ANCHOR_ROLES) === null) return { ...issue(`${target}.role`, "role"), allowedRoles: [...ANCHOR_ROLES] };
+    if ((requireExplanation && item.explanation === undefined) || (item.explanation !== undefined &&
+      (requireExplanation ? substantiveText(item.explanation, MAX_TEXT_BYTES) : text(item.explanation, MAX_TEXT_BYTES)) === null)) {
+      return issue(`${target}.explanation`, "explanation");
+    }
+  }
+  return null;
 }
 
 function parseAnchors(value: unknown, requireExplanation: boolean): PortableCoverageAnchor[] | null {

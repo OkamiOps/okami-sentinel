@@ -587,3 +587,39 @@ test("Portable pre-I/O anchor validation rejects a symlink swapped before descri
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("rejected candidate anchors identify the exact structural field without echoing or deleting claims", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-anchor-diagnostic-"));
+  try {
+    fs.writeFileSync(path.join(root, "source.ts"), "export const source = true;\n");
+    const valid = { path: "source.ts", startLine: 1, endLine: 1, role: "sink" };
+    const cases: Array<{ value: unknown; field: string; code: string }> = [
+      { value: [null], field: "candidates[0].anchors[0]", code: "type" },
+      { value: [{ ...valid, secretField: "private-provider-content" }], field: "candidates[0].anchors[0]", code: "keys" },
+      { value: [{ ...valid, path: "../private-provider-content" }], field: "candidates[0].anchors[0].path", code: "path" },
+      { value: [{ ...valid, path: "private-provider-content.ts" }], field: "candidates[0].anchors[0].path", code: "path-unavailable" },
+      { value: [{ ...valid, startLine: "1" }], field: "candidates[0].anchors[0].startLine", code: "line-range" },
+      { value: [{ ...valid, endLine: 0 }], field: "candidates[0].anchors[0].endLine", code: "line-range" },
+      { value: [{ ...valid, role: "private-provider-content" }], field: "candidates[0].anchors[0].role", code: "role" },
+      { value: "private-provider-content", field: "candidates[0].anchors", code: "array" },
+    ];
+    for (const entry of cases) {
+      const artifact = { schemaVersion: 1, stage: "discovery", summary: "Candidate remains pending verification.", observations: [],
+        candidates: [{ id: "retained-candidate", category: "authorization", anchors: entry.value }] };
+      const before = JSON.stringify(artifact);
+      let detail: unknown;
+      assert.equal(normalizePortableCodexSecurityStageArtifact("03-discovery.json", artifact, root,
+        undefined, value => { detail = value; }), null);
+      assert.equal((detail as { kind: string }).kind, "anchor-contract");
+      assert.equal((detail as { field: string }).field, entry.field);
+      assert.equal((detail as { code: string }).code, entry.code);
+      assert.doesNotMatch(JSON.stringify(detail), /private-provider-content/);
+      assert.equal(JSON.stringify(artifact), before);
+      if (entry.code === "role") assert.ok((detail as { allowedRoles: string[] }).allowedRoles.includes("sink"));
+    }
+    const corrected = { schemaVersion: 1, stage: "discovery", summary: "Candidate remains pending verification.", observations: [],
+      candidates: [{ id: "retained-candidate", category: "authorization", anchors: [valid] }] };
+    const normalized = normalizePortableCodexSecurityStageArtifact("03-discovery.json", corrected, root);
+    assert.deepEqual(normalized?.candidates, corrected.candidates);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

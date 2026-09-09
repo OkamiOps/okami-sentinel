@@ -1371,8 +1371,8 @@ test("an artifact-terminal session corrects a Portable discovery anchor before a
   assert.match(requestedWith[1]![0]!.content, /"path":"index.ts"/);
   assert.match(requestedWith[1]![0]!.content, /"violations":\[/);
   assert.match(requestedWith[1]![0]!.content, /"maxLine":1/);
-  assert.match(requestedWith[1]![0]!.content, /schemaVersion 1/);
-  assert.match(requestedWith[1]![0]!.content, /scope paths as '\.'/);
+  assert.match(requestedWith[1]![0]!.content, /repair\.violations/);
+  assert.match(requestedWith[1]![0]!.content, /Do not blindly clamp/);
   assert.equal(events.some((event) =>
     typeof event === "object" && event !== null &&
     (event as { phase?: unknown }).phase === "result" &&
