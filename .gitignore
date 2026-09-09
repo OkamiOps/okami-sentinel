@@ -9,6 +9,7 @@ data/mantis-cache/
 data/vulnhunter-cache/
 data/engine-updates/
 data/gates/
+data/graphify-cache/
 .DS_Store
 *.log
 .env

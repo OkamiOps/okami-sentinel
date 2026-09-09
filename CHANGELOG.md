@@ -8,6 +8,7 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Fixed
 
+- Portable workers preserve the configured managed Graphify location, including the bundled Docker runtime. Generated graph caches stay outside Git.
 - Native scanner usage exhaustion is classified as an incomplete scan with a quota-specific terminal message. Other nonzero exits remain failures, and partial scanner output stays available.
 - Portable Standard runs one bounded complementary discovery pass before assessment, even when the first pass finds a candidate. It prioritizes different trust boundaries and unexamined scope, retains both artifacts and total usage, and leaves Deep's exhaustive partitions unchanged.
 - Discovery scope repair now returns a bounded server-observed list of successful source reads, so the model can correct an invalid artifact directly instead of spending turns rediscovering files. Candidate telemetry counts unique carried IDs across both Standard discovery passes.
