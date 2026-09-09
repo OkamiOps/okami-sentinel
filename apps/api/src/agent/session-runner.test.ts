@@ -11,6 +11,7 @@ import {
   AgentSessionError,
   createConstrainedWireSession,
   type AgentSessionTimer,
+  type AgentEvent,
   type AgentToolCall,
   type AgentToolResult,
   type AgentUpstreamRequest,
@@ -117,7 +118,8 @@ test("discovery scope repair returns the bounded successful-read allowlist", asy
     ], requestedWith),
   });
 
-  await collect(session.run(), []);
+  const events: AgentEvent[] = [];
+  await collect(session.run(), events);
 
   const failure = JSON.parse(requestedWith[2]![0]!.content) as {
     repair: unknown; hint: string;
@@ -125,9 +127,18 @@ test("discovery scope repair returns the bounded successful-read allowlist", asy
   assert.deepEqual(failure.repair, {
     kind: "discovery-review", reason: "scope",
     successfulReadPaths: ["index.ts"], pathsTruncated: false,
+    scopeIssue: { field: "scope.inspected[0]", code: "path-unavailable" },
   });
   assert.match(failure.hint, /repair\.successfulReadPaths/);
-  assert.match(failure.hint, /do not call workspace\.list or workspace\.search/i);
+  assert.match(failure.hint, /Do not repeat unrelated exploration/);
+  const rejected = events.filter(event => event.type === "tool" && event.ok === false);
+  assert.equal(rejected.length, 2);
+  for (const event of rejected) {
+    assert.equal(event.type, "tool");
+    if (event.type !== "tool") continue;
+    assert.deepEqual(event.scopeIssue, { field: "scope.inspected[0]", code: "path-unavailable" });
+    assert.doesNotMatch(JSON.stringify(event), /invented\.ts/);
+  }
 });
 
 test("a session cannot be created from an unmeasured tool capability", async () => {

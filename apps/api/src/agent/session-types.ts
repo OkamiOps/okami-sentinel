@@ -14,6 +14,7 @@ import {
   type PortableResultArtifactValidationContext,
   type ResultArtifactValidationIssue,
   type ResultArtifactRepairDetail,
+  type DiscoveryScopeIssue,
 } from "./result-artifact-contract.js";
 import { MANTIS_REPORT_RESULT_ARTIFACT_CONTRACT } from "../scanners/mantis-report-contract.js";
 
@@ -222,6 +223,7 @@ export type AgentEvent =
     errorCode?: RecoverableWorkspaceToolErrorCode;
     /** Closed, non-content diagnostic for a rejected terminal artifact. */
     reason?: ResultArtifactValidationIssue;
+    scopeIssue?: DiscoveryScopeIssue;
   }
   | { type: "artifact"; path: string; bytes: number }
   | { type: "usage"; usage: AgentUsage }
@@ -284,6 +286,7 @@ export interface AgentToolResult {
   errorCode?: RecoverableWorkspaceToolErrorCode;
   /** Closed, non-content diagnostic retained only for safe telemetry. */
   validationIssue?: ResultArtifactValidationIssue;
+  scopeIssue?: DiscoveryScopeIssue;
 }
 
 export interface NormalizedModelReply {
@@ -498,6 +501,7 @@ class ConstrainedWireSession implements AgentSession {
             ...(result.ok === false ? { ok: false } : {}),
             ...(result.errorCode === undefined ? {} : { errorCode: result.errorCode }),
             ...(result.validationIssue === undefined ? {} : { reason: result.validationIssue }),
+            ...(result.scopeIssue === undefined ? {} : { scopeIssue: result.scopeIssue }),
           };
         }
         modelTurns += 1;
@@ -752,6 +756,8 @@ class ConstrainedWireSession implements AgentSession {
             throw new AgentSessionError("agent_output_byte_limit");
           }
           outputBytes += resultBytes;
+          const scopeIssue = artifactRepairDetail?.kind === "discovery-review" && artifactRepairDetail.reason === "scope"
+            ? artifactRepairDetail.scopeIssue : undefined;
           toolResults.push({
             callId: call.id,
             name: call.name,
@@ -759,6 +765,7 @@ class ConstrainedWireSession implements AgentSession {
             ...(recoveredBeforeIo ? { ok: false } : {}),
             ...(recoveredWorkspaceErrorCode === undefined ? {} : { errorCode: recoveredWorkspaceErrorCode }),
             ...(artifactValidationIssue === undefined ? {} : { validationIssue: artifactValidationIssue }),
+            ...(scopeIssue === undefined ? {} : { scopeIssue }),
           });
           yield {
             type: "tool",
@@ -768,6 +775,7 @@ class ConstrainedWireSession implements AgentSession {
             ...(recoveredBeforeIo ? { ok: false } : {}),
             ...(recoveredWorkspaceErrorCode === undefined ? {} : { errorCode: recoveredWorkspaceErrorCode }),
             ...(artifactValidationIssue === undefined ? {} : { reason: artifactValidationIssue }),
+            ...(scopeIssue === undefined ? {} : { scopeIssue }),
           };
           if (result.artifact !== undefined) {
             if (call.name === "results.write" && !recoveredBeforeIo) artifactWritten = true;
@@ -907,7 +915,7 @@ function recoverableWorkspaceToolFailure(
           : artifactRepairDetail?.kind === "discovery-review"
             ? artifactRepairDetail.reason === "summary"
               ? "Replace the placeholder with a substantive review summary of at least 40 characters explaining the actual inspected attack surfaces, controls and remaining uncertainty. Preserve supported candidates; an empty candidate array is not proof of a completed review."
-              : "Set scope.inspected to exact paths from repair.successfulReadPaths and remove every other inspected entry. Keep scope.unexamined disjoint and preserve every candidate. If the supplied list is empty, make one workspace.read call for a regular source file before writing again. During this final repair, do not call workspace.list or workspace.search."
+              : "Correct the exact structural field identified by repair.scopeIssue.field according to repair.scopeIssue.code. For invalid-reason, choose an honest value from repair.scopeIssue.allowedReasons; do not invent reason codes. Set scope.inspected to exact paths from repair.successfulReadPaths; graph queries and search matches are not successful source reads. scope.unexamined entries contain only path and reason, use actual repository-relative files, and remain disjoint from inspected. Preserve every candidate and its claim. If successfulReadPaths is empty, make one workspace.read call for a regular source file before writing again. Do not repeat unrelated exploration to repair a structural field."
           : artifactValidationIssue === "stage-assessments-invalid"
           ? "Each assessment must contain only candidateId, status, reason, and evidence. status MUST be confirmed, rejected, or inconclusive; not-vulnerable is a reason, NEVER a status. reason MUST be control-not-present, untrusted-flow-reaches-sink, no-untrusted-source, not-reachable, sanitized, requires-privilege, out-of-scope, insufficient-evidence, or not-vulnerable. Reevaluate the assessment and choose the appropriate status and reason; do not blindly substitute a verdict. Preserve every carried candidateId and its pinned evidence. Evidence must be a non-empty array of anchors containing only path, startLine, endLine, role, and optional explanation. Return the full corrected artifact as an object."
           : artifactValidationIssue === "stage-fields-invalid"

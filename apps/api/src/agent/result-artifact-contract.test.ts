@@ -641,7 +641,8 @@ test("live discovery rejects the real empty placeholder and unsubstantiated scop
       { inspected: ["src/routes.ts"], unexamined: [{ path: "invented.ts", reason: "out-of-scope" }] }]) {
       assert.equal(normalize({ ...reviewed, scope }), null, `must reject ungrounded scope ${JSON.stringify(scope)}`);
       assert.equal(issue, "stage-scope-invalid");
-      assert.deepEqual(detail, {
+      assert.deepEqual({ ...(detail as object), scopeIssue: undefined }, {
+        scopeIssue: undefined,
         kind: "discovery-review",
         reason: "scope",
         successfulReadPaths: ["src/routes.ts"],
@@ -692,4 +693,53 @@ test("Portable expected stage rejects an otherwise valid artifact for a differen
     { dossier: createPortableCodexSecurityDossier(), expectedArtifactPath: "02-threat-model.json" },
     (value) => { issue = value; }), null);
   assert.equal(issue, "path-or-stage-invalid");
+});
+
+
+test("discovery scope repair identifies the rejected field without modifying candidates or echoing invalid content", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-scope-diagnostics-"));
+  try {
+    fs.mkdirSync(path.join(root, "src"));
+    for (const file of ["read.ts", "other.ts"]) fs.writeFileSync(path.join(root, "src", file), "export const value = true;\n");
+    const context = {
+      dossier: createPortableCodexSecurityDossier(), expectedArtifactPath: "03-discovery.json" as const,
+      requireDiscoveryCandidateContext: true,
+      discoveryCoverage: { observedReadPaths: new Set(["src/read.ts"]) },
+    };
+    const candidate = {
+      id: "ownership-lead", category: "authorization", attacker: "authenticated",
+      hypothesis: "Record lookup may not bind ownership to the authenticated caller.",
+      prerequisites: "Caller can supply another account record identifier to the lookup.",
+      expectedImpact: "Records belonging to another account could be disclosed to the caller.",
+      controlHypothesis: "An ownership authorization check may be missing before lookup.",
+      anchors: [{ path: "src/read.ts", startLine: 1, endLine: 1, role: "sink" }],
+    };
+    const artifact = { schemaVersion: 1, stage: "discovery", observations: [], candidates: [candidate],
+      summary: "Reviewed the route authorization and persistence controls; the remaining file was not reviewed.",
+      scope: { inspected: ["src/read.ts"], unexamined: [{ path: "src/other.ts", reason: "insufficient-evidence" }] } };
+    const cases = [
+      { scope: { ...artifact.scope, unexamined: [{ path: "src/other.ts", reason: "private arbitrary provider prose" }] }, field: "scope.unexamined[0].reason", code: "invalid-reason" },
+      { scope: { ...artifact.scope, unexamined: [{ path: "src", reason: "out-of-scope" }] }, field: "scope.unexamined[0].path", code: "not-regular-file" },
+      { scope: { ...artifact.scope, unexamined: [{ path: "missing.ts", reason: "out-of-scope" }] }, field: "scope.unexamined[0].path", code: "path-unavailable" },
+      { scope: { ...artifact.scope, unexamined: [{ path: "../outside.ts", reason: "out-of-scope" }] }, field: "scope.unexamined[0].path", code: "invalid-path" },
+      { scope: { ...artifact.scope, unexamined: [{ path: "src/read.ts", reason: "out-of-scope" }] }, field: "scope.unexamined[0].path", code: "overlap" },
+      { scope: { ...artifact.scope, inspected: ["src/other.ts"] }, field: "scope.inspected[0]", code: "unobserved-read" },
+      { scope: { ...artifact.scope, inspected: [] }, field: "scope.inspected", code: "empty-inspected" },
+    ];
+    for (const entry of cases) {
+      const input = { ...artifact, scope: entry.scope };
+      const before = JSON.stringify(input);
+      let detail: any;
+      assert.equal(normalizeResultArtifactInput({ path: "03-discovery.json", content: input },
+        PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, root, context, (_issue, repair) => { detail = repair; }), null);
+      assert.equal(detail.scopeIssue.field, entry.field);
+      assert.equal(detail.scopeIssue.code, entry.code);
+      assert.deepEqual(detail.successfulReadPaths, ["src/read.ts"]);
+      assert.equal(JSON.stringify(input), before, "rejection must not mutate claims");
+      assert.doesNotMatch(JSON.stringify(detail), /private arbitrary provider prose/);
+      if (entry.code === "invalid-reason") assert.ok(detail.scopeIssue.allowedReasons.includes("insufficient-evidence"));
+    }
+    assert.notEqual(normalizeResultArtifactInput({ path: "03-discovery.json", content: artifact },
+      PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, root, context), null);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

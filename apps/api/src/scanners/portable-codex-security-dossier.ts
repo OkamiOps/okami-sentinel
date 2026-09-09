@@ -36,7 +36,7 @@ const CANDIDATE_STAGES = new Set(["discovery"]);
 const ASSESSMENT_STAGES = new Set(["dataflow", "validation"]);
 const ASSESSMENT_STATUSES = new Set(["confirmed", "rejected", "inconclusive"]);
 const COVERAGE_DISPOSITIONS = new Set(["reported", "rejected"]);
-const COVERAGE_REASONS = new Set([
+export const COVERAGE_REASONS = new Set([
   "control-not-present",
   "untrusted-flow-reaches-sink",
   "no-untrusted-source",

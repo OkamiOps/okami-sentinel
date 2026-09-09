@@ -6,6 +6,7 @@ import { parseStructuredResult, type StructuredResultRejection } from "./structu
 import { validateVulnHunterReportEvidence } from "./result-artifact-evidence.js";
 import {
   applyPortableCodexSecurityStageArtifact,
+  COVERAGE_REASONS,
   normalizePortableCodexSecurityStageArtifact,
   validatePortableCodexSecurityDiscoveryCandidateContext,
   validatePortableCodexSecurityReportCoverage,
@@ -94,6 +95,14 @@ export type DeepCoverageRepairDetail = {
   /** Server-owned paths that were assigned to this partition but not fully observed yet. */
   missingPaths: readonly string[];
 };
+export interface DiscoveryScopeIssue {
+  /** Structural field only; never echo provider content into diagnostics. */
+  field: string;
+  code: "object-required" | "unexpected-fields" | "array-required" | "entry-limit" |
+    "empty-inspected" | "invalid-path" | "not-regular-file" | "path-unavailable" |
+    "unobserved-read" | "overlap" | "invalid-reason" | "invalid-scope";
+  allowedReasons?: readonly string[];
+}
 export type DiscoveryReviewRepairDetail = {
   kind: "discovery-review";
 } & ({
@@ -103,6 +112,7 @@ export type DiscoveryReviewRepairDetail = {
   /** Server-observed successful reads the model can safely reuse in scope.inspected. */
   successfulReadPaths: readonly string[];
   pathsTruncated: boolean;
+  scopeIssue: DiscoveryScopeIssue;
 });
 export type JsonRepairDetail = { kind: "json"; reason: StructuredResultRejection };
 export type ResultArtifactRepairDetail = JsonRepairDetail | PortableArtifactRepairDetail | MantisReportRepairDetail |
@@ -154,11 +164,7 @@ function portableStageContentSchema(context?: PortableResultArtifactValidationCo
     type: "object", additionalProperties: false, properties, required,
   });
   const array = (items: Record<string, unknown>) => ({ type: "array", items });
-  const reason = enumeration([
-    "control-not-present", "untrusted-flow-reaches-sink", "no-untrusted-source",
-    "not-reachable", "sanitized", "requires-privilege", "out-of-scope",
-    "insufficient-evidence", "not-vulnerable",
-  ]);
+  const reason = enumeration(PORTABLE_COVERAGE_REASONS);
   const anchor = object({
     path: text,
     startLine: { type: "integer", minimum: 1 },
@@ -439,13 +445,13 @@ function normalizePortableStageArtifact(
     snapshotRoot,
     (issue) => onReject?.(issue, repairDetail ??
       (context?.requireDiscoveryCandidateContext === true && path === "03-discovery.json" && issue === "stage-scope-invalid"
-        ? discoveryScopeRepairDetail(context) : undefined)),
+        ? discoveryScopeRepairDetail(context, modelValue, snapshotRoot) : undefined)),
     (detail) => { repairDetail = detail; },
   );
   if (artifact === null || typeof path !== "string") return null;
   if (context?.requireDiscoveryCandidateContext === true && path === "03-discovery.json" &&
       !hasLiveDiscoveryScope(artifact, snapshotRoot, context)) {
-    onReject?.("stage-scope-invalid", discoveryScopeRepairDetail(context));
+    onReject?.("stage-scope-invalid", discoveryScopeRepairDetail(context, artifact, snapshotRoot));
     return null;
   }
   if (context?.requireCalibratedSeverityRationale === true && path === VULNHUNTER_RESULT_ARTIFACT_PATH &&
@@ -490,9 +496,69 @@ function normalizePortableStageArtifact(
 }
 
 const MAX_DISCOVERY_REPAIR_PATHS = 64;
+const PORTABLE_COVERAGE_REASONS = [...COVERAGE_REASONS];
+
+/** Diagnose a rejected scope without altering the artifact or its candidates. */
+function discoveryScopeIssue(value: unknown, snapshotRoot: string | undefined,
+  context: PortableResultArtifactValidationContext): DiscoveryScopeIssue {
+  const scope = record(record(value)?.scope);
+  if (scope === null) return { field: "scope", code: "object-required" };
+  if (Object.keys(scope).some(key => key !== "inspected" && key !== "unexamined")) {
+    return { field: "scope", code: "unexpected-fields" };
+  }
+  for (const field of ["inspected", "unexamined"] as const) {
+    if (!Array.isArray(scope[field])) return { field: `scope.${field}`, code: "array-required" };
+    if (scope[field].length > 4_096) return { field: `scope.${field}`, code: "entry-limit" };
+  }
+  const inspected = scope.inspected as unknown[];
+  const unexamined = scope.unexamined as unknown[];
+  if (inspected.length === 0) return { field: "scope.inspected", code: "empty-inspected" };
+  const normalized = (value: unknown) => typeof value === "string"
+    ? value.trim().replaceAll("\\", "/").replace(/^(?:\.\/)+/, "").replace(/\/+$/, "") : value;
+  const checkPath = (value: unknown, field: string): DiscoveryScopeIssue | undefined => {
+    if (typeof value !== "string" || !repositoryRelativePath(value)) return { field, code: "invalid-path" };
+    if (snapshotRoot !== undefined) {
+      try {
+        const root = fs.realpathSync(snapshotRoot);
+        const lexical = nodePath.resolve(root, value);
+        if (!fs.lstatSync(lexical).isFile()) return { field, code: "not-regular-file" };
+        const relative = nodePath.relative(root, fs.realpathSync(lexical));
+        if (!relative || relative === ".." || relative.startsWith(`..${nodePath.sep}`) || nodePath.isAbsolute(relative)) {
+          return { field, code: "invalid-path" };
+        }
+      } catch { return { field, code: "path-unavailable" }; }
+    }
+    return undefined;
+  };
+  const observed = context.discoveryCoverage?.observedReadPaths ?? context.deepCoverage?.observedReadPaths;
+  const inspectedSet = new Set(inspected.map(normalized));
+  for (const [index, value] of inspected.entries()) {
+    const field = `scope.inspected[${index}]`;
+    const file = normalized(value);
+    const issue = checkPath(file, field);
+    if (issue) return issue;
+    if (observed !== undefined && !observed.has(file as string)) return { field, code: "unobserved-read" };
+  }
+  for (const [index, value] of unexamined.entries()) {
+    const field = `scope.unexamined[${index}]`;
+    const entry = record(value);
+    if (entry === null) return { field, code: "object-required" };
+    if (Object.keys(entry).some(key => key !== "path" && key !== "reason")) return { field, code: "unexpected-fields" };
+    const file = normalized(entry.path);
+    const issue = checkPath(file, `${field}.path`);
+    if (issue) return issue;
+    if (!PORTABLE_COVERAGE_REASONS.includes(entry.reason as typeof PORTABLE_COVERAGE_REASONS[number])) {
+      return { field: `${field}.reason`, code: "invalid-reason", allowedReasons: PORTABLE_COVERAGE_REASONS };
+    }
+    if (inspectedSet.has(file)) return { field: `${field}.path`, code: "overlap" };
+  }
+  return { field: "scope", code: "invalid-scope" };
+}
 
 function discoveryScopeRepairDetail(
   context: PortableResultArtifactValidationContext,
+  value: unknown,
+  snapshotRoot: string | undefined,
 ): DiscoveryReviewRepairDetail {
   const successfulReadPaths = [...(context.discoveryCoverage?.observedReadPaths ?? [])]
     .map((candidate) => nodePath.posix.normalize(candidate.replaceAll("\\", "/")))
@@ -503,6 +569,7 @@ function discoveryScopeRepairDetail(
     reason: "scope",
     successfulReadPaths: successfulReadPaths.slice(0, MAX_DISCOVERY_REPAIR_PATHS),
     pathsTruncated: successfulReadPaths.length > MAX_DISCOVERY_REPAIR_PATHS,
+    scopeIssue: discoveryScopeIssue(value, snapshotRoot, context),
   };
 }
 
