@@ -23,7 +23,7 @@ export const WORKSPACE_TOOL_WIRE_CODEC = createWorkspaceToolWireCodec();
 /** Provider-neutral path contract shown on every upstream tool declaration. */
 export const WORKSPACE_TOOL_WIRE_DESCRIPTIONS = {
   "workspace.list": "List read-only files. Use '.' for the virtual root or a repository-relative path; never use an absolute path.",
-  "workspace.read": "Read a file using a repository-relative path; never use an absolute path.",
+  "workspace.read": "Read one complete regular file using a repository-relative path; never use an absolute path or a directory (use the listing tool for directories). This tool never truncates: maxBytes is an optional hard full-file limit, so omit it unless you know the whole file fits; a too-small value rejects the read.",
   "workspace.search": "Search read-only files using '.' for the virtual root or a repository-relative path; never use an absolute path.",
   "results.write": "Write a result artifact using a result-relative path; never use an absolute path.",
 } as const satisfies Record<WorkspaceToolName, string>;

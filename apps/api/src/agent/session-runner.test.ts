@@ -961,11 +961,85 @@ test("the constrained session returns a safe workspace path error so the model c
     adapter: transcriptAdapter(replies, requestedWith),
   });
 
-  await collect(session.run(), []);
+  const events: unknown[] = [];
+  await collect(session.run(), events);
   assert.equal(hostCalls, 2);
   assert.match(requestedWith[1]![0]!.content, /tool_path_denied/);
+  assert.match(requestedWith[1]![0]!.content, /one regular file/);
+  assert.match(requestedWith[1]![0]!.content, /workspace\.list to inspect directories/);
   assert.equal(requestedWith[1]![0]!.content.includes("/private/secret.ts"), false);
   assert.equal(requestedWith[2]![0]!.content, "safe read");
+  const rejectedToolEvents = events.filter((event) =>
+    typeof event === "object" && event !== null &&
+    (event as { type?: unknown }).type === "tool" &&
+    (event as { callId?: unknown }).callId === "read-invalid",
+  );
+  assert.deepEqual(rejectedToolEvents.map((event) => ({
+    phase: (event as { phase?: unknown }).phase,
+    errorCode: (event as { errorCode?: unknown }).errorCode,
+  })), [
+    { phase: "requested", errorCode: undefined },
+    { phase: "result", errorCode: "tool_path_denied" },
+    { phase: "consumed", errorCode: "tool_path_denied" },
+  ]);
+  assert.equal(JSON.stringify(rejectedToolEvents).includes("/private/secret.ts"), false);
+});
+
+test("the constrained session explains a complete-file read limit and records its safe code", async () => {
+  const requestedWith: AgentToolResult[][] = [];
+  const replies: NormalizedModelReply[] = [
+    {
+      toolCalls: [{ id: "read-limited", name: "workspace.read", input: { path: "src/large.ts", maxBytes: 64 } }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    {
+      toolCalls: [{ id: "read-repaired", name: "workspace.read", input: { path: "src/small.ts" } }],
+      text: null,
+      structured: null,
+      usage: null,
+    },
+    { toolCalls: [], text: "complete", structured: null, usage: null },
+  ];
+  let hostCalls = 0;
+  const session = createConstrainedWireSession({
+    limits: DEFAULT_AGENT_LIMITS,
+    signal: new AbortController().signal,
+    host: {
+      minimumOutputBytes() { return 0; },
+      async call() {
+        hostCalls += 1;
+        if (hostCalls === 1) throw new AgentSessionError("tool_read_limit");
+        return { content: "complete source" };
+      },
+    },
+    upstream: { async request() { return {}; } },
+    adapter: transcriptAdapter(replies, requestedWith),
+  });
+
+  const events: unknown[] = [];
+  await collect(session.run(), events);
+
+  assert.equal(hostCalls, 2);
+  const feedback = JSON.parse(requestedWith[1]![0]!.content) as { error: string; hint: string };
+  assert.equal(feedback.error, "tool_read_limit");
+  assert.match(feedback.hint, /whole file and never truncates/);
+  assert.match(feedback.hint, /Omit maxBytes/);
+  assert.match(feedback.hint, /record it as unexamined instead of repeating/);
+  assert.equal(requestedWith[2]![0]!.content, "complete source");
+  assert.deepEqual(events.filter((event) =>
+    typeof event === "object" && event !== null &&
+    (event as { type?: unknown }).type === "tool" &&
+    (event as { callId?: unknown }).callId === "read-limited",
+  ).map((event) => ({
+    phase: (event as { phase?: unknown }).phase,
+    errorCode: (event as { errorCode?: unknown }).errorCode,
+  })), [
+    { phase: "requested", errorCode: undefined },
+    { phase: "result", errorCode: "tool_read_limit" },
+    { phase: "consumed", errorCode: "tool_read_limit" },
+  ]);
 });
 
 test("the constrained session corrects a malformed terminal report before any artifact I/O", async () => {

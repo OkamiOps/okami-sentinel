@@ -8,6 +8,8 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Fixed
 
+- Portable source-read guidance now explains full-file reads and hard byte limits, with actionable recovery instructions instead of repeated undersized reads. Rejected workspace tools expose safe error codes in telemetry without recording source content or arguments.
+- Portable stages reuse their source map, avoid repeated reads within a stage and focus assessment/report work on the carried candidates. Independent validation and mandatory Deep coverage remain required; tool and turn budgets are ceilings rather than exploration targets.
 - Portable Standard no longer accepts a discovery placeholder as a successful zero-finding review. Live discovery requires a substantive summary and explicit file scope backed by successful source reads; listings, search hits and failed reads do not count. Standard exploration uses the normal finalization reserve, and Portable finalization/repair guidance preserves candidate context instead of requesting an empty completion.
 - Portable discovery requires an explicit candidate array and preserves each new candidate's hypothesis, attacker, prerequisites, expected impact and suspected control failure. Missing candidate output can no longer silently become a successful zero-finding Standard scan.
 - Portable validation can inspect callers and controls across the immutable snapshot, including paginated Deep assessments. Unsupported confirmation reasons are rejected; new high/critical report findings require a severity rationale. These checks strengthen the evidence contract and do not replace security review.

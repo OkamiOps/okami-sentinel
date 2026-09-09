@@ -4,6 +4,15 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { createWorkspaceToolHost } from "./workspace-tool-host.js";
+import { WORKSPACE_TOOL_WIRE_DESCRIPTIONS } from "./workspace-tool-wire-codec.js";
+
+test("workspace.read declaration requires a complete regular file and explains maxBytes", () => {
+  const description = WORKSPACE_TOOL_WIRE_DESCRIPTIONS["workspace.read"];
+  assert.match(description, /complete regular file/);
+  assert.match(description, /listing tool for directories/);
+  assert.match(description, /never truncates/);
+  assert.match(description, /omit it unless you know the whole file fits/);
+});
 
 test("workspace tools reject traversal and symlink escape while artifacts stay in the run root", async (t) => {
   const root = await mkdtemp(join(process.cwd(), ".test-agent-host-"));

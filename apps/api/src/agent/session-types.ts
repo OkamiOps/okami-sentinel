@@ -198,6 +198,12 @@ export interface AgentUsage {
   reasoningTokens: number | null;
 }
 
+/** Codes that are safe to expose in local tool telemetry after a recoverable rejection. */
+export type RecoverableWorkspaceToolErrorCode = Extract<
+  AgentSessionErrorCode,
+  "tool_path_denied" | "tool_argument_invalid" | "tool_read_limit" | "tool_output_limit"
+>;
+
 export type AgentEvent =
   | {
     type: "tool";
@@ -206,6 +212,8 @@ export type AgentEvent =
     name: WorkspaceToolName;
     /** False only when the tool result is a safe local rejection, not host evidence. */
     ok?: boolean;
+    /** Closed, non-content code for a recoverable workspace tool rejection. */
+    errorCode?: RecoverableWorkspaceToolErrorCode;
     /** Closed, non-content diagnostic for a rejected terminal artifact. */
     reason?: ResultArtifactValidationIssue;
   }
@@ -266,6 +274,8 @@ export interface AgentToolResult {
   content: string;
   /** False only for a safe pre-I/O validation failure the model may correct. */
   ok?: boolean;
+  /** Closed, non-content code for a recoverable workspace tool rejection. */
+  errorCode?: RecoverableWorkspaceToolErrorCode;
   /** Closed, non-content diagnostic retained only for safe telemetry. */
   validationIssue?: ResultArtifactValidationIssue;
 }
@@ -480,6 +490,7 @@ class ConstrainedWireSession implements AgentSession {
             callId: result.callId,
             name: result.name,
             ...(result.ok === false ? { ok: false } : {}),
+            ...(result.errorCode === undefined ? {} : { errorCode: result.errorCode }),
             ...(result.validationIssue === undefined ? {} : { reason: result.validationIssue }),
           };
         }
@@ -641,6 +652,7 @@ class ConstrainedWireSession implements AgentSession {
           const remainingOutputBytes = this.#options.limits.maxOutputBytes - outputBytes;
           let result: WorkspaceToolResult;
           let recoveredBeforeIo = false;
+          let recoveredWorkspaceErrorCode: RecoverableWorkspaceToolErrorCode | undefined;
           let hostCallStarted = false;
           let artifactValidationIssue: ResultArtifactValidationIssue | undefined;
           let artifactRepairDetail: ResultArtifactRepairDetail | undefined;
@@ -716,6 +728,7 @@ class ConstrainedWireSession implements AgentSession {
             if (recovered === null) throw error;
             result = recovered;
             recoveredBeforeIo = true;
+            recoveredWorkspaceErrorCode = recoverableWorkspaceToolErrorCode(error);
           }
           if (
             call.name === "results.write" && recoveredBeforeIo &&
@@ -738,6 +751,7 @@ class ConstrainedWireSession implements AgentSession {
             name: call.name,
             content: result.content,
             ...(recoveredBeforeIo ? { ok: false } : {}),
+            ...(recoveredWorkspaceErrorCode === undefined ? {} : { errorCode: recoveredWorkspaceErrorCode }),
             ...(artifactValidationIssue === undefined ? {} : { validationIssue: artifactValidationIssue }),
           });
           yield {
@@ -746,6 +760,7 @@ class ConstrainedWireSession implements AgentSession {
             callId: call.id,
             name: call.name,
             ...(recoveredBeforeIo ? { ok: false } : {}),
+            ...(recoveredWorkspaceErrorCode === undefined ? {} : { errorCode: recoveredWorkspaceErrorCode }),
             ...(artifactValidationIssue === undefined ? {} : { reason: artifactValidationIssue }),
           };
           if (result.artifact !== undefined) {
@@ -844,12 +859,19 @@ function validateArtifactTerminalWrite(toolCalls: readonly AgentToolCall[]): voi
   }
 }
 
-const RECOVERABLE_WORKSPACE_TOOL_ERRORS = new Set<AgentSessionErrorCode>([
+const RECOVERABLE_WORKSPACE_TOOL_ERRORS = new Set<RecoverableWorkspaceToolErrorCode>([
   "tool_path_denied",
   "tool_argument_invalid",
   "tool_read_limit",
   "tool_output_limit",
 ]);
+
+function recoverableWorkspaceToolErrorCode(error: unknown): RecoverableWorkspaceToolErrorCode | undefined {
+  return error instanceof AgentSessionError &&
+    RECOVERABLE_WORKSPACE_TOOL_ERRORS.has(error.code as RecoverableWorkspaceToolErrorCode)
+    ? error.code as RecoverableWorkspaceToolErrorCode
+    : undefined;
+}
 
 function recoverableWorkspaceToolFailure(
   call: AgentToolCall,
@@ -860,10 +882,14 @@ function recoverableWorkspaceToolFailure(
   artifactRepairDetail?: ResultArtifactRepairDetail,
   reportShard = false,
 ): WorkspaceToolResult | null {
-  if ((call.name === "results.write" && !beforeHostIo) || !(error instanceof AgentSessionError) ||
-      !RECOVERABLE_WORKSPACE_TOOL_ERRORS.has(error.code)) return null;
-  const hint = error.code === "tool_path_denied"
-    ? "Use '.' for the virtual root or a repository-relative path."
+  const errorCode = recoverableWorkspaceToolErrorCode(error);
+  if ((call.name === "results.write" && !beforeHostIo) || errorCode === undefined) return null;
+  const hint = errorCode === "tool_path_denied"
+    ? call.name === "workspace.read"
+      ? "Use a repository-relative path to one regular file. Use workspace.list to inspect directories; do not pass '.' or a directory to workspace.read."
+      : "Use '.' for the virtual root or a repository-relative path."
+    : errorCode === "tool_read_limit" && call.name === "workspace.read"
+      ? "workspace.read returns the whole file and never truncates. Omit maxBytes if a smaller ceiling risks rejection, or increase it only up to the declared limit. If the file still does not fit, record it as unexamined instead of repeating the read."
     : call.name === "results.write"
       ? artifactRepairDetail?.kind === "json"
         ? "The content could not be decoded as structured JSON. Repair the complete content value: use valid JSON syntax with quoted keys, correctly escaped strings, and closed delimiters. Return one complete JSON object matching the declared stage contract, not a scalar, multiple values, or multiple code fences. Do not discard supported findings to shorten the repair."
@@ -899,7 +925,7 @@ function recoverableWorkspaceToolFailure(
       : "Correct the tool arguments and stay within the declared read limits.";
   return {
     content: JSON.stringify({
-      error: error.code,
+      error: errorCode,
       ...(artifactValidationIssue === undefined ? {} : { reason: artifactValidationIssue }),
       ...(artifactRepairDetail === undefined ? {} : { repair: artifactRepairDetail }),
       hint,
