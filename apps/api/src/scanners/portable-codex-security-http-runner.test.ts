@@ -51,6 +51,7 @@ test("Portable Deep grants 128 tools to every assessment page", () => {
   assert.equal(limits.maxModelTurns, 64);
   assert.equal(limits.maxToolCalls, 128);
   assert.equal(limits.timeoutMs, 2_000_000);
+  assert.equal(limits.maxOutputBytes, 4 * 1_048_576);
 });
 
 test("Portable report grants 128 turns and tools to every shard", () => {
@@ -1381,5 +1382,55 @@ test("discovery recovery rejects corrupted checkpoints before another model call
     let calls = 0;
     await assert.rejects(runPortableCodexSecurity(config, dependencies({ resumeDiscovery: true, createSession: async (input: Parameters<typeof factory>[0]) => { calls++; return factory(input); } })));
     assert.equal(calls, 0);
+  } finally { remove(root); }
+});
+
+
+test("Deep recovery reuses discovery, dataflow and a whole legacy validation page before bounded segments", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-validation-recovery-"));
+  const config = configuration(root);
+  config.mode = "deep";
+  config.limits.totalTimeoutMs = 0;
+  config.limits.maxToolCalls = 128;
+  const anchor = { path: "src/auth.ts", startLine: 1, endLine: 1, role: "sink" };
+  const candidates = Array.from({ length: 67 }, (_, index) => ({
+    id: `candidate-${index}`, category: `boundary-${index}`, anchors: [anchor],
+    hypothesis: `Candidate ${index} has a distinct control hypothesis to verify.`,
+  }));
+  const calls: string[] = [];
+  let failValidation = true;
+  const base = stageSessionFactory();
+  const factory = async (input: { spec: AgentSessionSpec; toolSurface: readonly string[] }) => {
+    const stage = String(input.spec.instructions.match(/stage "([a-z-]+)"/)?.[1]);
+    calls.push(path.basename(input.spec.artifactRoot));
+    if (stage === "validation" && failValidation) throw new Error("interrupted validation");
+    if (!["discovery", "dataflow", "validation"].includes(stage)) return base(input);
+    const stageCandidates = stage === "discovery" ? candidates : input.spec.resultArtifactValidationContext!.dossier!.candidates;
+    const artifact = PORTABLE_CODEX_SECURITY_STAGES.find(item => item.id === stage)!.artifact;
+    const content = { schemaVersion: 1, stage, summary: "Independent evidence review of the assigned candidates.", observations: [],
+      ...(stage === "discovery" ? { scope: { inspected: ["src/auth.ts"], unexamined: [] }, candidates }
+        : { assessments: stageCandidates.map(candidate => ({ candidateId: candidate.id, status: "rejected", reason: "not-vulnerable", evidence: [anchor] })) }) };
+    fs.writeFileSync(path.join(input.spec.artifactRoot, artifact), JSON.stringify(content));
+    return completedStageSession(stage, artifact, `${stage} complete`);
+  };
+  try {
+    await assert.rejects(runPortableCodexSecurity(config, dependencies({ createSession: factory })));
+    const artifacts = path.join(config.outputDir, "portable-codex-security-artifacts");
+    const accepted = JSON.parse(fs.readFileSync(path.join(artifacts, "dataflow-01", "04-dataflow.json"), "utf8"));
+    accepted.stage = "validation";
+    const legacy = path.join(artifacts, "validation-01");
+    fs.mkdirSync(legacy);
+    fs.writeFileSync(path.join(legacy, "05-validation.json"), JSON.stringify(accepted));
+    const legacyBytes = fs.readFileSync(path.join(legacy, "05-validation.json"));
+    calls.length = 0;
+    failValidation = false;
+    const result = await runPortableCodexSecurity(config, dependencies({ resumeDiscovery: true, createSession: factory }));
+    assert.equal(result.runtime.status, "completed");
+    assert.deepEqual(calls, ["validation-02-part-01", "validation-02-part-02", "validation-02-part-03", "validation-02-part-04", "validation-03"]);
+    assert.deepEqual(fs.readFileSync(path.join(legacy, "05-validation.json")), legacyBytes);
+    const dossier = readPortableCodexSecurityDossier(path.join(config.outputDir, "portable-codex-security-results"))!;
+    const assessments = dossier.assessments.filter(item => item.stage === "validation");
+    assert.equal(assessments.length, 67);
+    assert.equal(new Set(assessments.map(item => item.candidateId)).size, 67);
   } finally { remove(root); }
 });

@@ -11,8 +11,97 @@ import { readPortableCodexSecurityWorkerConfiguration } from "./portable-codex-s
 import { readPortableCodexSecurityRuntime } from "./portable-codex-security-runtime.js";
 import { assertPortableCodexSecuritySnapshot, assertExactStageArtifact, assertPortableCodexSecurityDossierAnchors } from "./portable-codex-security-worker-support.js";
 import { createPortableCodexSecurityDossier, applyPortableCodexSecurityStageArtifact } from "./portable-codex-security-dossier.js";
-import { createPortableDeepCoveragePlan } from "./portable-codex-security-deep-coverage.js";
+import { createPortableDeepCoveragePlan, mergePortableDeepDiscoveryDossiers } from "./portable-codex-security-deep-coverage.js";
+import { createPortableAssessmentPages, assessmentPageDirectory } from "./portable-codex-security-assessment-pages.js";
 import { PORTABLE_CODEX_SECURITY_STAGES } from "./portable-codex-security-profile.js";
+
+/** Read-only checkpoint validation, shared by dry-run and actual recovery. */
+export function preflightPortableResume(scanDir: string, mode: "standard" | "deep") {
+  const previous = readPortableCodexSecurityRuntime(scanDir);
+  const resumable = ["discovery", "dataflow", "validation"];
+  if (!previous?.snapshotId || !resumable.includes(previous.stage ?? "") || previous.status === "completed") throw new Error("resume_requires_checkpoint");
+  const snapshotRoot = path.join(scanDir, "portable-codex-security-snapshot");
+  assertPortableCodexSecuritySnapshot({ snapshotRoot, snapshotId: previous.snapshotId });
+  const artifacts = path.join(scanDir, "portable-codex-security-artifacts");
+  const accepted = new Set<string>();
+  function read(name: string, artifact: (typeof PORTABLE_CODEX_SECURITY_STAGES)[number]["artifact"]) {
+    const root = path.join(artifacts, name);
+    if (!fs.existsSync(root)) return null;
+    const stat = fs.lstatSync(root);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("resume_invalid_checkpoint_directory");
+    accepted.add(name);
+    if (fs.readdirSync(root).length === 0) return null;
+    return assertExactStageArtifact(root, { artifact });
+  }
+  let dossier = createPortableCodexSecurityDossier();
+  for (const stage of PORTABLE_CODEX_SECURITY_STAGES.slice(0, 2)) {
+    const artifact = read(stage.id, stage.artifact);
+    if (!artifact) throw new Error("resume_missing_prerequisite_checkpoint");
+    dossier = applyPortableCodexSecurityStageArtifact(dossier, artifact);
+    assertPortableCodexSecurityDossierAnchors(snapshotRoot, dossier);
+  }
+  let completed = 0;
+  let totalBatches = 1;
+  let discoveryComplete = false;
+  if (mode === "deep") {
+    const plan = createPortableDeepCoveragePlan(snapshotRoot);
+    totalBatches = plan.partitions.length;
+    const pages: typeof dossier[] = [];
+    for (const partition of plan.partitions) {
+      const artifact = read(`discovery-${String(partition.index + 1).padStart(3, "0")}`, "03-discovery.json");
+      if (!artifact) continue;
+      const restored = applyPortableCodexSecurityStageArtifact(dossier, artifact);
+      assertPortableCodexSecurityDossierAnchors(snapshotRoot, restored);
+      if (partition.paths.some(file => !restored.scope.inspected.includes(file))) throw new Error("resume_incomplete_partition");
+      pages.push(restored); completed++;
+    }
+    discoveryComplete = completed === totalBatches;
+    if (discoveryComplete) dossier = mergePortableDeepDiscoveryDossiers(dossier, pages, plan);
+  } else {
+    for (const name of ["discovery", "discovery-review"]) {
+      const artifact = read(name, "03-discovery.json");
+      if (!artifact) continue;
+      if (name === "discovery-review" && completed === 0) throw new Error("resume_missing_prerequisite_checkpoint");
+      dossier = applyPortableCodexSecurityStageArtifact({ ...dossier, stageSummaries: dossier.stageSummaries.filter(s => s.stage !== "discovery") }, artifact);
+      assertPortableCodexSecurityDossierAnchors(snapshotRoot, dossier);
+      completed++;
+    }
+    totalBatches = 2;
+    discoveryComplete = completed === 2;
+  }
+  if (previous.stage !== "discovery" && !discoveryComplete) throw new Error("resume_missing_prerequisite_checkpoint");
+  const verifiedStages: Record<string, number> = { discovery: completed };
+  let prerequisiteComplete = discoveryComplete;
+  for (const stage of PORTABLE_CODEX_SECURITY_STAGES.filter(s => s.id === "dataflow" || s.id === "validation")) {
+    const paged = mode === "deep" && dossier.candidates.length > (stage.id === "validation" ? 8 : 32);
+    const pages = paged ? createPortableAssessmentPages(dossier, stage.id, index => {
+      // Validate an existing legacy page even when it is not selected for replay.
+      return read(assessmentPageDirectory(stage.id, { index }), stage.artifact) !== null;
+    }) : [{ index: 0, total: 1, dossier }];
+    const count = pages.length;
+    const restoredPages: typeof dossier[] = [];
+    for (const page of pages) {
+      const artifact = read(paged ? assessmentPageDirectory(stage.id, page) : stage.id, stage.artifact);
+      if (!artifact) continue;
+      if (!prerequisiteComplete) throw new Error("resume_missing_prerequisite_checkpoint");
+      const restored = applyPortableCodexSecurityStageArtifact(page.dossier, artifact);
+      assertPortableCodexSecurityDossierAnchors(snapshotRoot, restored);
+      const assessments = restored.assessments.filter(a => a.stage === stage.id);
+      if (assessments.length !== page.dossier.candidates.length || page.dossier.candidates.some(c => !assessments.some(a => a.candidateId === c.id))) throw new Error("resume_incomplete_assessment_page");
+      restoredPages.push(restored);
+    }
+    verifiedStages[stage.id] = restoredPages.length;
+    prerequisiteComplete = prerequisiteComplete && restoredPages.length === count;
+    if (prerequisiteComplete) dossier = { ...dossier,
+      stageSummaries: [...dossier.stageSummaries, ...restoredPages[0]!.stageSummaries.filter(s => s.stage === stage.id)],
+      assessments: [...dossier.assessments, ...restoredPages.flatMap(p => p.assessments.filter(a => a.stage === stage.id))] };
+    if (resumable.indexOf(previous.stage!) > resumable.indexOf(stage.id) && !prerequisiteComplete) throw new Error("resume_missing_prerequisite_checkpoint");
+  }
+  for (const entry of fs.readdirSync(artifacts)) {
+    if (!accepted.has(entry)) throw new Error("resume_unrecognized_checkpoint");
+  }
+  return { previous, completed, totalBatches, verifiedStages };
+}
 
 /** Local operator recovery. Does not mutate or overwrite the interrupted run. */
 async function resume(scanId: string, dryRun: boolean) {
@@ -20,27 +109,8 @@ async function resume(scanId: string, dryRun: boolean) {
   if (!original || !["failed", "cancelled"].includes(original.status) || original.engine !== "codex-security" || original.execution?.executionProfile !== "portable") throw new Error("resume_requires_interrupted_portable_scan");
   if (findProcessIdentitiesForScanDir(original.scanDir).length > 0) throw new Error("resume_source_still_running");
   const config = readPortableCodexSecurityWorkerConfiguration(path.join(original.scanDir, "portable-codex-security-run.json"));
-  const previous = readPortableCodexSecurityRuntime(original.scanDir);
-  if (!previous?.snapshotId || previous.stage !== "discovery") throw new Error("resume_requires_discovery_checkpoint");
-  const snapshotRoot = path.join(original.scanDir, "portable-codex-security-snapshot");
-  assertPortableCodexSecuritySnapshot({ snapshotRoot, snapshotId: previous.snapshotId });
-  const plan = createPortableDeepCoveragePlan(snapshotRoot);
-  const artifacts = path.join(original.scanDir, "portable-codex-security-artifacts");
-  let base = createPortableCodexSecurityDossier();
-  for (const stage of PORTABLE_CODEX_SECURITY_STAGES.slice(0, 2)) {
-    base = applyPortableCodexSecurityStageArtifact(base, assertExactStageArtifact(path.join(artifacts, stage.id), stage));
-    assertPortableCodexSecurityDossierAnchors(snapshotRoot, base);
-  }
-  let completed = 0;
-  for (const partition of plan.partitions) {
-    const root = path.join(artifacts, `discovery-${String(partition.index + 1).padStart(3, "0")}`);
-    if (!fs.existsSync(root) || fs.readdirSync(root).length === 0) continue;
-    const restored = applyPortableCodexSecurityStageArtifact(base, assertExactStageArtifact(root, { artifact: "03-discovery.json" }));
-    assertPortableCodexSecurityDossierAnchors(snapshotRoot, restored);
-    if (partition.paths.some(file => !restored.scope.inspected.includes(file))) throw new Error("resume_incomplete_partition");
-    completed++;
-  }
-  console.log(JSON.stringify({ sourceScanId: scanId, snapshotId: previous.snapshotId, verifiedBatches: completed, totalBatches: plan.partitions.length, dryRun }));
+  const { previous, completed, totalBatches, verifiedStages } = preflightPortableResume(original.scanDir, config.mode);
+  console.log(JSON.stringify({ sourceScanId: scanId, snapshotId: previous.snapshotId, verifiedBatches: completed, totalBatches, verifiedStages, dryRun }));
   if (dryRun) return;
   const id = nanoid(12);
   if (!reserveScanCapacity(id, MAX_CONCURRENT_SCANS)) throw new Error("scan_capacity_full");
@@ -75,7 +145,7 @@ async function resume(scanId: string, dryRun: boolean) {
     const resumedConfig = { ...config, outputDir, limits: { ...config.limits, totalTimeoutMs: 0 }, providerPlan: { ...config.providerPlan, scanId: id, capabilityCheckId: probe.report.id } };
     const configPath = path.join(outputDir, "portable-codex-security-run.json");
     fs.writeFileSync(configPath, JSON.stringify(resumedConfig), { mode: 0o600 });
-    fs.writeFileSync(path.join(outputDir, "resume-source.json"), JSON.stringify({ scanId, resumedAt: new Date().toISOString(), verifiedBatches: completed, snapshotId: previous.snapshotId }), { mode: 0o600 });
+    fs.writeFileSync(path.join(outputDir, "resume-source.json"), JSON.stringify({ scanId, resumedAt: new Date().toISOString(), verifiedBatches: completed, verifiedStages, snapshotId: previous.snapshotId }), { mode: 0o600 });
     runtime.store.writeSnapshot({ ...frozen, scanId: id, capabilityCheckId: probe.report.id, capturedAt: new Date().toISOString() });
     const run = { ...original, id, scanDir: outputDir, status: "queued" as const, displayName: `${original.displayName} · resumed`, pid: null, completedAt: null, durationMs: null, progress: null, execution: { ...original.execution, capabilityCheckId: probe.report.id } };
     upsertRun(run);
@@ -87,7 +157,7 @@ async function resume(scanId: string, dryRun: boolean) {
     if (!identity || !persistProcessIdentity(outputDir, identity)) { child.kill("SIGTERM"); throw new Error("resume_process_identity_failed"); }
     upsertRun({ ...run, status: "running", pid: child.pid! });
     child.unref();
-    console.log(JSON.stringify({ resumedScanId: id, pid: child.pid, verifiedBatches: completed, outputDir }));
+    console.log(JSON.stringify({ resumedScanId: id, pid: child.pid, verifiedBatches: completed, verifiedStages, outputDir }));
   } catch (error) { releaseScanCapacity(id); throw error; }
 }
 if (process.argv[1]?.endsWith("resume-portable-scan.ts")) {

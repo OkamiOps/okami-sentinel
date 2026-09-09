@@ -437,6 +437,12 @@ class ConstrainedWireSession implements AgentSession {
     let toolCalls = 0;
     let inputBytes = 0;
     let outputBytes = 0;
+    // Small probe/test budgets retain their original behavior. This reserve is
+    // for terminal model output and bounded repair, not extra total capacity.
+    const outputReserve = this.#options.terminalMode === "artifact-write" &&
+      this.#options.limits.maxOutputBytes >= 65_536
+      ? Math.min(262_144, Math.floor(this.#options.limits.maxOutputBytes / 4)) : 0;
+    let outputFinalizationRequired = false;
     let toolResults: AgentToolResult[] = [];
     let artifactWritten = false;
     let artifactRepairActive = false;
@@ -473,7 +479,8 @@ class ConstrainedWireSession implements AgentSession {
 
         const repairInspectionAllowed = artifactRepairActive && artifactRepairInspectionAvailable;
         const finalizationRequired = !artifactWritten && !repairInspectionAllowed && (
-          artifactRepairActive ||
+          artifactRepairActive || outputFinalizationRequired ||
+          (outputReserve > 0 && outputBytes >= this.#options.limits.maxOutputBytes - outputReserve) ||
           (this.#options.artifactWriteByTurn !== undefined &&
             modelTurns >= this.#options.artifactWriteByTurn) ||
           this.#options.limits.maxModelTurns - modelTurns <= finalizationReserveTurns ||
@@ -664,6 +671,8 @@ class ConstrainedWireSession implements AgentSession {
           toolCalls += 1;
           yield { type: "tool", phase: "requested", callId: call.id, name: call.name };
           const remainingOutputBytes = this.#options.limits.maxOutputBytes - outputBytes;
+          const explorationBudget = call.name !== "results.write" && !artifactRepairActive && outputReserve > 0
+            ? Math.max(0, remainingOutputBytes - outputReserve) : remainingOutputBytes;
           let result: WorkspaceToolResult;
           let recoveredBeforeIo = false;
           let recoveredWorkspaceErrorCode: RecoverableWorkspaceToolErrorCode | undefined;
@@ -671,7 +680,11 @@ class ConstrainedWireSession implements AgentSession {
           let artifactValidationIssue: ResultArtifactValidationIssue | undefined;
           let artifactRepairDetail: ResultArtifactRepairDetail | undefined;
           try {
-            if (finalizationRequired && call.name !== "results.write") {
+            if (call.name !== "results.write" && (finalizationRequired ||
+                (outputReserve > 0 && !artifactRepairActive &&
+                  (outputFinalizationRequired ||
+                    this.#options.host.minimumOutputBytes(call.name, call.input) > explorationBudget)))) {
+              if (!finalizationRequired) outputFinalizationRequired = true;
               result = terminalArtifactRequiredResult();
               recoveredBeforeIo = true;
             } else {
@@ -693,7 +706,7 @@ class ConstrainedWireSession implements AgentSession {
               }
               hostCallStarted = true;
               result = await this.#options.host.call(call.name, normalizedInput, {
-                maxOutputBytes: remainingOutputBytes,
+                maxOutputBytes: explorationBudget,
               });
               if (call.name === "workspace.read" && typeof normalizedInput.path === "string") {
                 // workspace.read returns a complete file or throws. Listings,
@@ -716,6 +729,10 @@ class ConstrainedWireSession implements AgentSession {
               }
             }
           } catch (error) {
+            if (call.name !== "results.write" && !artifactRepairActive && outputReserve > 0 &&
+                error instanceof AgentSessionError && error.code === "tool_output_limit") {
+              outputFinalizationRequired = true;
+            }
             if (
               call.name === "results.write" &&
               artifactValidationIssue === "deep-coverage-incomplete" &&

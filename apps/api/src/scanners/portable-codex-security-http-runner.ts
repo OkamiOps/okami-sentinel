@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createPortableAssessmentPages, assessmentPageDirectory } from "./portable-codex-security-assessment-pages.js";
 import { prepareManagedGraph } from "../graphify/managed-graph.js";
 
 import type {
@@ -278,7 +279,7 @@ export async function runPortableCodexSecurity(
     );
     assertPortableCostBudget(safeConfiguration.costBudget, plan, resolved);
     const previous = dependencies.resumeDiscovery ? readPortableCodexSecurityRuntime(outputDir) : null;
-    if (dependencies.resumeDiscovery && (!previous || previous.stage !== "discovery" || previous.status === "completed" ||
+    if (dependencies.resumeDiscovery && (!previous || !["discovery", "dataflow", "validation"].includes(previous.stage) || previous.status === "completed" ||
         previous.sourceRef !== safeConfiguration.sourceRef || !previous.snapshotId)) {
       throw new PortableCodexSecurityRunnerError("snapshot_invalid");
     }
@@ -393,19 +394,12 @@ export async function runPortableCodexSecurity(
         ? deepCoveragePlan.partitions
         : null;
       const assessmentPages = deepCoveragePlan !== null &&
-          (stage.id === "dataflow" || stage.id === "validation") && dossier.candidates.length > 32
-        ? Array.from({ length: Math.ceil(dossier.candidates.length / 32) }, (_, index) => ({
-          index,
-          total: Math.ceil(dossier.candidates.length / 32),
-          dossier: {
-            ...dossier,
-            candidates: dossier.candidates.slice(index * 32, (index + 1) * 32),
-            assessments: dossier.assessments.filter((assessment) =>
-              dossier.candidates.slice(index * 32, (index + 1) * 32)
-                .some((candidate) => candidate.id === assessment.candidateId)
-            ),
-          },
-        }))
+          (stage.id === "dataflow" || stage.id === "validation") &&
+          dossier.candidates.length > (stage.id === "validation" ? 8 : 32)
+        ? createPortableAssessmentPages(dossier, stage.id, (index) =>
+          dependencies.resumeDiscovery === true && fs.existsSync(path.join(
+            artifactsRoot, assessmentPageDirectory(stage.id, { index }), stage.artifact,
+          )))
         : null;
       const pageResults: PortableCodexSecurityReportShardResult[] = [];
       const discoveryResults: typeof dossier[] = [];
@@ -453,7 +447,7 @@ export async function runPortableCodexSecurity(
             : partition !== null
             ? `${stage.id}-${String(partition.index + 1).padStart(3, "0")}`
             : assessmentPage !== null
-              ? `${stage.id}-${String(assessmentPage.index + 1).padStart(2, "0")}`
+              ? assessmentPageDirectory(stage.id, assessmentPage)
               : shard === null ? stage.id : `${stage.id}-${String(shard.index + 1).padStart(2, "0")}`,
         );
         if (supplementalDiscoveryReview) {
@@ -466,7 +460,7 @@ export async function runPortableCodexSecurity(
           log(JSON.stringify({ type: "supplemental_discovery_review_started", stage: "discovery" }));
         }
         if (dependencies.resumeDiscovery && fs.existsSync(artifactRoot) && fs.readdirSync(artifactRoot).length > 0) {
-          if (!["inventory", "threat-model", "discovery"].includes(stage.id)) {
+          if (!["inventory", "threat-model", "discovery", "dataflow", "validation"].includes(stage.id)) {
             throw new PortableCodexSecurityRunnerError("stage_artifact_invalid");
           }
           const artifact = assertExactStageArtifact(artifactRoot, stage);
@@ -478,6 +472,8 @@ export async function runPortableCodexSecurity(
               throw new PortableCodexSecurityRunnerError("stage_artifact_invalid");
             }
             discoveryResults.push(restored);
+          } else if (assessmentPage !== null) {
+            assessmentResults.push(restored);
           } else {
             dossier = restored;
             dossierStateBase64 = portableCodexSecurityDossierBase64(dossier);
@@ -1002,7 +998,11 @@ export function portableAssessmentPageSessionLimits(
   if (maxModelTurns < 8) {
     throw new PortableCodexSecurityRunnerError("agent_tool_limit");
   }
-  return sessionLimits({ ...limits, maxModelTurns, maxToolCalls }, remainingMs);
+  // Tool source reads and model responses share this byte counter. A 1 MiB
+  // scan default can be consumed before an assessment's terminal repair.
+  // Keep it bounded, with smaller validation segments limiting context growth.
+  const maxOutputBytes = Math.max(limits.maxOutputBytes, 4 * 1_048_576);
+  return sessionLimits({ ...limits, maxModelTurns, maxToolCalls, maxOutputBytes }, remainingMs);
 }
 
 /** A Standard supplemental discovery is one bounded, independent second pass. */
