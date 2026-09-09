@@ -87,5 +87,7 @@ test("report prompts remain limited to the validated dossier and Deep prompts re
   assert.match(report, /do not begin a new repository audit or discover new candidates/);
   assert.match(deepDiscovery, /mandatory server-owned partition of the immutable auditable universe/);
   assert.match(deepDiscovery, /Analyze every entry before results.write/);
-  assert.match(deepDiscovery, /Do not call workspace_list, workspace_read, or workspace_search unless a rejected anchor must be repaired/);
+  assert.match(deepDiscovery, /Do not call workspace_list, workspace_read, or workspace_search to rediscover or re-read that page/);
+  assert.match(deepDiscovery, /inspect a relevant caller or control outside the page/);
+  assert.match(deepDiscovery, /does not replace analysis of every assigned file/);
 });
