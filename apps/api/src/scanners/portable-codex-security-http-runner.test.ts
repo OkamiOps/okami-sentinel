@@ -656,6 +656,10 @@ test("Portable Codex Security completes six methodology stages with a server-own
     assert.equal(new Set(specs.map(({ spec }) => spec.artifactRoot)).size, 5);
     assert.deepEqual(specs.map(({ spec }) => spec.reasoningEffort), Array(5).fill("high"));
     assert.deepEqual(specs.map(({ spec }) => spec.terminalMode), Array(5).fill("artifact-write"));
+    const standardDiscovery = specs.find(({ spec }) => spec.resultArtifactValidationContext?.expectedArtifactPath === "03-discovery.json")!.spec;
+    assert.equal(standardDiscovery.artifactWriteByTurn, undefined, "Standard discovery uses the session's finalization reserve, not the early 2/3 cutoff");
+    assert.equal(standardDiscovery.resultArtifactValidationContext?.requireDiscoveryCandidateContext, true);
+    assert.ok(standardDiscovery.resultArtifactValidationContext?.discoveryCoverage?.observedReadPaths instanceof Set);
     assert.deepEqual(
       specs.map(({ spec }) => spec.resultArtifactContract),
       Array(5).fill("portable-stage-json-v1"),

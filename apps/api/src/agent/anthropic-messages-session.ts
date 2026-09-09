@@ -2,6 +2,7 @@ import type { ProviderModel } from "@csb/shared";
 
 import {
   AGENT_ARTIFACT_REPAIR_REMINDER,
+  AGENT_PORTABLE_FINALIZATION_REMINDER,
   AgentSessionError,
   MAX_AGENT_SESSION_COMPLETION_TOKENS,
   validateAgentSessionReasoningEffort,
@@ -14,6 +15,7 @@ import {
   type WireSessionAdapter,
 } from "./session-types.js";
 import {
+  PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT,
   resultArtifactContentSchema,
   resultArtifactPathSchema,
   type AgentResultArtifactContract,
@@ -61,6 +63,10 @@ export function createAnthropicMessagesWireAdapter(
       }
       if (control?.artifactRepairReminder === true && toolResults.length === 0) {
         messages.push({ role: "user", content: AGENT_ARTIFACT_REPAIR_REMINDER });
+      }
+      if (!finalizing && control?.finalizationRequired === true &&
+          spec.resultArtifactContract === PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT) {
+        messages.push({ role: "user", content: AGENT_PORTABLE_FINALIZATION_REMINDER });
       }
       return {
         operation: "messages",

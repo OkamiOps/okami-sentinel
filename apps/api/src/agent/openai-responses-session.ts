@@ -2,6 +2,7 @@ import type { ProviderModel } from "@csb/shared";
 
 import {
   AGENT_ARTIFACT_REPAIR_REMINDER,
+  AGENT_PORTABLE_FINALIZATION_REMINDER,
   AgentSessionError,
   validateAgentSessionReasoningEffort,
   type AgentToolCall,
@@ -62,6 +63,10 @@ export function createOpenAiResponsesWireAdapter(
           output: result.content,
         })), ...(toolResults.length === 0 && control?.artifactRepairReminder === true
           ? [{ role: "user", content: AGENT_ARTIFACT_REPAIR_REMINDER }] : [])];
+      if (!finalizing && control?.finalizationRequired === true &&
+          spec.resultArtifactContract === PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT) {
+        input.push({ role: "user", content: AGENT_PORTABLE_FINALIZATION_REMINDER });
+      }
       return {
         operation: "responses",
         body: {

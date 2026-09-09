@@ -1,3 +1,4 @@
+import path from "node:path";
 import type {
   ModelCapabilities,
   ProviderModel,
@@ -285,6 +286,9 @@ export interface AgentWireRequestControl {
 
 export const AGENT_ARTIFACT_REPAIR_REMINDER =
   "The previous reply did not call results.write. Call results.write now with one complete corrected artifact and no other tool call.";
+
+export const AGENT_PORTABLE_FINALIZATION_REMINDER =
+  "Exploration is ending. Consolidate the evidence already collected into the complete declared stage artifact now. Preserve all candidate hypotheses and findings; do not discard work or emit a placeholder to finish. Discovery must include a substantive review summary, explicit candidates (empty only if the reviewed evidence supports no leads), and exact inspected source files plus honest unexamined scope. Do not claim a directory listing or search snippet as a completed file review. Call results.write alone with the complete artifact.";
 
 export interface WireSessionAdapter {
   nextRequest(
@@ -665,6 +669,13 @@ class ConstrainedWireSession implements AgentSession {
               result = await this.#options.host.call(call.name, normalizedInput, {
                 maxOutputBytes: remainingOutputBytes,
               });
+              if (call.name === "workspace.read" && typeof normalizedInput.path === "string") {
+                // workspace.read returns a complete file or throws. Listings,
+                // search hits, failed reads and denied finalization calls do
+                // not establish file review coverage.
+                this.#options.resultArtifactValidationContext?.discoveryCoverage?.observedReadPaths
+                  .add(path.posix.normalize(normalizedInput.path.replaceAll("\\", "/")));
+              }
               if (call.name === "workspace.read" &&
                   this.#options.resultArtifactValidationContext?.deepCoverage !== undefined &&
                   typeof normalizedInput.path === "string") {
@@ -860,7 +871,11 @@ function recoverableWorkspaceToolFailure(
         ? reportShard
           ? "Use the declared result path and pass one complete compact JSON object containing only schemaVersion:1, optional stage:'report', and findings. Include exactly one substantive finding for every carried candidateId, with non-empty rootCause, impact, remediation, and pinned anchors. Do not include summary, observations, scope, coverage, disposition, or reason fields."
           : artifactRepairDetail?.kind === "candidate-contract"
-            ? "Discovery candidates must be an array of at most 100 exact objects with only id, category, and anchors. IDs must be unique identifiers. Each anchors value must be an array of exact path, startLine, endLine, role, and optional explanation objects. Correct the indicated item and do not add extra keys."
+            ? "Discovery candidates must be an array of at most 100 objects with id, category, anchors and the declared hypothesis, attacker, prerequisites, expectedImpact and controlHypothesis fields. Preserve the security claim and correct the indicated item; never remove candidates to bypass validation. IDs must be unique. Anchors contain path, startLine, endLine, role and optional explanation. Follow the supplied schema for bounded field lengths and attacker values."
+          : artifactRepairDetail?.kind === "discovery-review"
+            ? artifactRepairDetail.reason === "summary"
+              ? "Replace the placeholder with a substantive review summary of at least 40 characters explaining the actual inspected attack surfaces, controls and remaining uncertainty. Preserve supported candidates; an empty candidate array is not proof of a completed review."
+              : "Discovery requires scope.inspected with exact regular source files successfully read in this session, and scope.unexamined with actual remaining file paths and reasons. Do not claim directories, listings, failed reads or search snippets as reviewed files. Keep inspected and unexamined disjoint and preserve every candidate."
           : artifactValidationIssue === "stage-assessments-invalid"
           ? "Each assessment must contain only candidateId, status, reason, and evidence. status MUST be confirmed, rejected, or inconclusive; not-vulnerable is a reason, NEVER a status. reason MUST be control-not-present, untrusted-flow-reaches-sink, no-untrusted-source, not-reachable, sanitized, requires-privilege, out-of-scope, insufficient-evidence, or not-vulnerable. Reevaluate the assessment and choose the appropriate status and reason; do not blindly substitute a verdict. Preserve every carried candidateId and its pinned evidence. Evidence must be a non-empty array of anchors containing only path, startLine, endLine, role, and optional explanation. Return the full corrected artifact as an object."
           : artifactValidationIssue === "stage-fields-invalid"

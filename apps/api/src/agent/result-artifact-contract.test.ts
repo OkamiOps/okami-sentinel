@@ -556,6 +556,7 @@ test("live Portable discovery requires an explicit, reviewable candidate claim w
   const emptyDiscovery = {
     schemaVersion: 1, stage: "discovery", observations: [],
     summary: "The directed source review did not establish any candidate vulnerability.",
+    scope: { inspected: ["src/routes.ts"], unexamined: [] },
   };
   assert.equal(normalizeResultArtifactInput({ path: "03-discovery.json", content: emptyDiscovery },
     PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, undefined, context), null, "omitted candidates must not mean zero findings");
@@ -582,6 +583,7 @@ test("live Portable discovery requires an explicit, reviewable candidate claim w
     stage: "discovery",
     summary: "Discovery identified an authorization lead for later independent validation.",
     observations: [],
+    scope: { inspected: ["src/routes.ts"], unexamined: [] },
     candidates: [{
       id: "candidate-authorization",
       category: "authorization",
@@ -601,6 +603,45 @@ test("live Portable discovery requires an explicit, reviewable candidate claim w
   } }, PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT), null, "old artifacts remain readable without the live context flag");
 });
 
+
+test("live discovery rejects the real empty placeholder and unsubstantiated scope without rejecting supported zero", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-discovery-scope-"));
+  try {
+    fs.mkdirSync(path.join(root, "src"));
+    fs.writeFileSync(path.join(root, "src/routes.ts"), "export const guarded = true;\n");
+    fs.writeFileSync(path.join(root, "src/other.ts"), "export const other = true;\n");
+    const context = {
+      dossier: createPortableCodexSecurityDossier(),
+      expectedArtifactPath: "03-discovery.json" as const,
+      requireDiscoveryCandidateContext: true,
+      discoveryCoverage: { observedReadPaths: new Set(["src/routes.ts"]) },
+    };
+    const placeholder = { schemaVersion: 1, stage: "discovery", summary: "placeholder", observations: [], candidates: [] };
+    let issue: unknown;
+    const normalize = (content: unknown) => normalizeResultArtifactInput({ path: "03-discovery.json", content },
+      PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, root, context, (next) => { issue = next; });
+    assert.equal(normalize(placeholder), null);
+    assert.equal(issue, "stage-summary-invalid");
+    assert.notEqual(normalizeResultArtifactInput({ path: "03-discovery.json", content: placeholder },
+      PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, root), null, "archived artifact parsing is unchanged");
+    const reviewed = {
+      ...placeholder,
+      summary: "Reviewed route mutations and found an ownership guard before each state-changing call; no supported candidate remains.",
+      scope: { inspected: ["src/routes.ts"], unexamined: [{ path: "src/other.ts", reason: "out-of-scope" }] },
+    };
+    assert.notEqual(normalize(reviewed), null, "source-supported zero remains valid");
+    for (const scope of [undefined, { inspected: [], unexamined: [] }, { inspected: ["."], unexamined: [] },
+      { inspected: ["src"], unexamined: [] }, { inspected: ["invented.ts"], unexamined: [] },
+      { inspected: ["src/other.ts"], unexamined: [] },
+      { inspected: ["src/routes.ts"], unexamined: [{ path: "src/routes.ts", reason: "out-of-scope" }] },
+      { inspected: ["src/routes.ts"], unexamined: [{ path: "invented.ts", reason: "out-of-scope" }] }]) {
+      assert.equal(normalize({ ...reviewed, scope }), null, `must reject ungrounded scope ${JSON.stringify(scope)}`);
+      assert.equal(issue, "stage-scope-invalid");
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("Portable stage schema fixes the destination, stage and required stage fields", () => {
   for (const [artifactPath, stage] of Object.entries(PORTABLE_ARTIFACT_STAGES)) {
@@ -626,7 +667,8 @@ test("Portable stage schema fixes the destination, stage and required stage fiel
     dossier: createPortableCodexSecurityDossier(),
     expectedArtifactPath: "03-discovery.json",
     requireDiscoveryCandidateContext: true,
-  }) as { properties: Record<string, any> };
+  }) as { properties: Record<string, any>; required: string[] };
+  assert.ok(liveDiscoverySchema.required.includes("scope"));
   assert.deepEqual(liveDiscoverySchema.properties.candidates.items.required, [
     "id", "category", "hypothesis", "attacker", "prerequisites", "expectedImpact", "controlHypothesis", "anchors",
   ]);

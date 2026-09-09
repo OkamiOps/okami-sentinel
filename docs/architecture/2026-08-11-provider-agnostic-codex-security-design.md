@@ -127,6 +127,18 @@ points through caller controls to sensitive operations, retain explicit
 candidates, and distinguish examined scope from remaining scope. It must not
 manufacture findings to satisfy a minimum count.
 
+The subsequent real Standard regression produced a discovery artifact with
+`summary: "placeholder"` and `candidates: []` after the early write boundary.
+This is invalid review evidence even though the candidate array is explicit.
+Live discovery therefore also requires substantive conclusions and exact file
+scope backed by successful full-file reads in that discovery session. Directory
+listings, search matches and failed reads do not qualify. Historical artifacts
+remain readable; an empty candidate array is still valid with a supported review.
+Standard discovery uses the session's normal finalization reserve rather than
+forcing terminal output at two thirds of its turn allowance. Finalization must
+consolidate retained work and disclose remaining scope, never replace it with a
+placeholder. This does not establish model recall or guarantee nonzero findings.
+
 Discovery candidates need their original hypothesis and context carried into
 later stages, not just an ID, category and line numbers. Independent validation
 must be able to inspect callers, middleware and mitigations elsewhere in the

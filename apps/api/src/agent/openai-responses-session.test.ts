@@ -5,7 +5,7 @@ import test from "node:test";
 import type { ProviderModel } from "@csb/shared";
 
 import { createOpenAiResponsesWireAdapter } from "./openai-responses-session.js";
-import type { AgentWireRequest } from "./session-types.js";
+import { AGENT_ARTIFACT_REPAIR_REMINDER, AGENT_PORTABLE_FINALIZATION_REMINDER, type AgentWireRequest } from "./session-types.js";
 
 test("OpenAI Responses encodes declared tool names and decodes only portable wire calls", () => {
   const adapter = createOpenAiResponsesWireAdapter({
@@ -317,4 +317,36 @@ test("Responses replays pending tool outputs after a malformed continuation unti
   assert.deepEqual(next.input, [{ type: "function_call_output", call_id: "read-2", output: "other contents" }]);
   adapter.readResponse({ id: "complete", output: [] });
   assert.deepEqual(responseBody(adapter.nextRequest([])).input, [{ role: "user", content: "Inspect." }]);
+});
+
+
+test("Portable finalization preserves collected tool output before explicit consolidation guidance", () => {
+  for (const resultArtifactContract of ["portable-stage-json-v1", undefined] as const) {
+    const adapter = createOpenAiResponsesWireAdapter({
+      model: model("portable-model"), instructions: "Inspect source and write a stage artifact.",
+
+      resultArtifactContract,
+    });
+    adapter.nextRequest([]);
+    adapter.readResponse({ id: "response-read", output: [{ type: "function_call", call_id: "read-1", name: "workspace_read", arguments: '{"path":"index.ts"}' }] });
+    const request = adapter.nextRequest([
+      { callId: "read-1", name: "workspace.read", content: "collected source evidence" },
+    ], { finalizationRequired: true }).body as Record<string, unknown>;
+    const input = request.input as Array<Record<string, unknown>>;
+    const expectedOutput = [{ type: "function_call_output", call_id: "read-1", output: "collected source evidence" }];
+    if (resultArtifactContract === "portable-stage-json-v1") {
+      assert.deepEqual(input.slice(-2), [...expectedOutput, { role: "user", content: AGENT_PORTABLE_FINALIZATION_REMINDER }]);
+    } else {
+      assert.deepEqual(input.slice(-1), expectedOutput);
+      assert.equal(input.some((item) => item.content === AGENT_PORTABLE_FINALIZATION_REMINDER), false);
+    }
+    const retry = adapter.nextRequest([], { finalizationRequired: true, artifactRepairReminder: true }).body as Record<string, unknown>;
+    const retryInput = retry.input as Array<Record<string, unknown>>;
+    if (resultArtifactContract === "portable-stage-json-v1") {
+      assert.deepEqual(retryInput.slice(-2), [
+        { role: "user", content: AGENT_ARTIFACT_REPAIR_REMINDER },
+        { role: "user", content: AGENT_PORTABLE_FINALIZATION_REMINDER },
+      ]);
+    }
+  }
 });

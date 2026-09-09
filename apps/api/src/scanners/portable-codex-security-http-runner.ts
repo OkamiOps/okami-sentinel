@@ -494,6 +494,10 @@ export async function runPortableCodexSecurity(
           ? {}
           : { reasoningEffort: safeConfiguration.reasoningEffort }),
         terminalMode: "artifact-write",
+        // Standard discovery needs its exploration allowance. The session
+        // already reserves finalization/repair turns near the actual limit;
+        // forcing a write at 2/3 of the budget prematurely ended real reviews.
+        ...(stage.id === "discovery" && partition === null ? {} : {
         artifactWriteByTurn: partition === null && assessmentPage === null
           ? Math.min(
             stageSessionLimits.maxModelTurns - 1,
@@ -505,6 +509,7 @@ export async function runPortableCodexSecurity(
               stageSessionLimits.maxModelTurns - 1,
               Math.max(3, Math.floor(stageSessionLimits.maxModelTurns * 2 / 3)),
             ),
+        }),
         ...(stage.id === "report"
           ? { maxCompletionTokens: portableCodexSecurityReportCompletionTokens(stageDossier) }
           : assessmentPage !== null
@@ -517,6 +522,8 @@ export async function runPortableCodexSecurity(
           expectedArtifactPath: stage.artifact,
           dossier: stageDossier,
           requireDiscoveryCandidateContext: stage.id === "discovery",
+          ...(stage.id === "discovery" && partition === null
+            ? { discoveryCoverage: { observedReadPaths: new Set<string>() } } : {}),
           requireCalibratedSeverityRationale: stage.id === "report",
           ...(shard === null ? {} : { reportShard: shard }),
           ...(deepCoverage === undefined ? {} : { deepCoverage }),

@@ -19,6 +19,63 @@ import {
   type WireSessionAdapter,
 } from "./session-types.js";
 import { createPortableCodexSecurityReportShards } from "../scanners/portable-codex-security-report-shards.js";
+import { createWorkspaceToolHost } from "./workspace-tool-host.js";
+
+test("real Standard placeholder is rejected before I/O and repaired without losing the discovered candidate", async (t) => {
+  const root = await mkdtemp(join(process.cwd(), ".test-standard-review-"));
+  t.after(async () => rm(root, { recursive: true, force: true }));
+  const snapshotRoot = join(root, "snapshot");
+  const artifactRoot = join(root, "artifacts");
+  await mkdir(snapshotRoot);
+  await mkdir(artifactRoot, { mode: 0o700 });
+  await writeFile(join(snapshotRoot, "index.ts"), "export function read(request, db) { return db.get(request.params.id); }\n");
+  const candidate = {
+    id: "ownership-lead", category: "authorization", attacker: "authenticated",
+    hypothesis: "The record lookup may not bind the owner to the authenticated caller.",
+    prerequisites: "A caller can supply a record identifier to this public operation.",
+    expectedImpact: "Records belonging to other callers could be disclosed by the lookup.",
+    controlHypothesis: "An ownership authorization check may be missing before record access.",
+    anchors: [{ path: "index.ts", startLine: 1, endLine: 1, role: "sink" }],
+  };
+  const corrected = { schemaVersion: 1, stage: "discovery", observations: [],
+    summary: "Reviewed the record lookup and retained an ownership hypothesis for caller/control validation.",
+    candidates: [candidate], scope: { inspected: ["index.ts"], unexamined: [] } };
+  const reply = (toolCalls: AgentToolCall[]): NormalizedModelReply => ({ toolCalls, text: null, structured: null, usage: null });
+  const observedReadPaths = new Set<string>();
+  const requestedWith: AgentToolResult[][] = [];
+  const session = createConstrainedWireSession({
+    limits: { ...DEFAULT_AGENT_LIMITS, maxModelTurns: 12, maxToolCalls: 16 },
+    signal: new AbortController().signal, terminalMode: "artifact-write",
+    resultArtifactContract: "portable-stage-json-v1", resultArtifactSnapshotRoot: snapshotRoot,
+    resultArtifactValidationContext: {
+      expectedArtifactPath: "03-discovery.json", requireDiscoveryCandidateContext: true,
+      discoveryCoverage: { observedReadPaths },
+      dossier: { schemaVersion: 1, stageSummaries: [], candidates: [], assessments: [], scope: { inspected: [], unexamined: [] } },
+    },
+    host: await createWorkspaceToolHost({ snapshotRoot, artifactRoot }),
+    upstream: { async request() { return {}; } },
+    adapter: transcriptAdapter([
+      reply([
+        { id: "list", name: "workspace.list", input: { path: "." } },
+        { id: "search", name: "workspace.search", input: { query: "db", path: "." } },
+        { id: "failed", name: "workspace.read", input: { path: "missing.ts" } },
+        { id: "read", name: "workspace.read", input: { path: "index.ts" } },
+      ]),
+      reply([{ id: "placeholder", name: "results.write", input: { path: "03-discovery.json",
+        content: { schemaVersion: 1, stage: "discovery", summary: "placeholder", observations: [], candidates: [] } } }]),
+      reply([{ id: "corrected", name: "results.write", input: { path: "03-discovery.json", content: corrected } }]),
+    ], requestedWith),
+  });
+  const events: unknown[] = [];
+  await collect(session.run(), events);
+  assert.deepEqual([...observedReadPaths], ["index.ts"]);
+  assert.equal(requestedWith[2]![0]?.ok, false);
+  assert.match(requestedWith[2]![0]!.content, /stage-summary-invalid/);
+  assert.match(requestedWith[2]![0]!.content, /substantive review summary/);
+  assert.equal(events.filter((event) => isArtifact(event, "03-discovery.json")).length, 1);
+  const persisted = JSON.parse(await readFile(join(artifactRoot, "03-discovery.json"), "utf8"));
+  assert.deepEqual(persisted.candidates, [candidate]);
+});
 
 test("a session cannot be created from an unmeasured tool capability", async () => {
   await assert.rejects(createAgentSession({

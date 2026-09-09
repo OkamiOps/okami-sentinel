@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import fs from "node:fs";
+import nodePath from "node:path";
 
 import { parseStructuredResult, type StructuredResultRejection } from "./structured-result.js";
 import { validateVulnHunterReportEvidence } from "./result-artifact-evidence.js";
@@ -70,6 +72,8 @@ export interface PortableResultArtifactValidationContext {
   };
   /** New live discovery writes preserve the claim required by later validation. */
   requireDiscoveryCandidateContext?: boolean;
+  /** Successful source reads made available to the live discovery session. */
+  discoveryCoverage?: { observedReadPaths: Set<string> };
   /** High/critical live reports must explain source-backed impact and likelihood. */
   requireCalibratedSeverityRationale?: boolean;
 }
@@ -90,9 +94,13 @@ export type DeepCoverageRepairDetail = {
   /** Server-owned paths that were assigned to this partition but not fully observed yet. */
   missingPaths: readonly string[];
 };
+export type DiscoveryReviewRepairDetail = {
+  kind: "discovery-review";
+  reason: "summary" | "scope";
+};
 export type JsonRepairDetail = { kind: "json"; reason: StructuredResultRejection };
 export type ResultArtifactRepairDetail = JsonRepairDetail | PortableArtifactRepairDetail | MantisReportRepairDetail |
-  VulnHunterReportRepairDetail | DeepCoverageRepairDetail;
+  VulnHunterReportRepairDetail | DeepCoverageRepairDetail | DiscoveryReviewRepairDetail;
 
 const REPORT_KEYS = new Set(["schemaVersion", "findings"]);
 const FINDING_KEYS = new Set([
@@ -211,11 +219,24 @@ function portableStageContentSchema(context?: PortableResultArtifactValidationCo
         ...(expectedStage === "dataflow" || expectedStage === "validation" ? ["assessments"] : [])];
     const selected = Object.fromEntries(fields.map((field) => [field, properties[field]]));
     selected.stage = enumeration([expectedStage]);
+    if (expectedStage === "discovery" && context?.requireDiscoveryCandidateContext === true) {
+      selected.summary = { type: "string", minLength: 40, maxLength: 32_768,
+        description: "Summarize the source review, tested control hypotheses and result. Do not submit a placeholder or interpret incomplete review as clean." };
+      if (context.deepCoverage === undefined) {
+        selected.scope = object({
+          inspected: { ...array(text), minItems: 1,
+            description: "Exact repository-relative source file paths successfully read in this discovery session; directories, invented paths and merely listed files are not reviewed evidence." },
+          unexamined: { ...scopeProperties.unexamined,
+            description: "Known source file paths not reviewed, with the reason. Do not claim that unexamined code is clean." },
+        });
+      }
+    }
     if (expectedStage === "validation") {
       selected.assessments = array(object({ candidateId: text,
         status: enumeration(["confirmed", "rejected"]), reason, evidence: anchors }));
     }
-    return object(selected, fields.filter((field) => field !== "scope"));
+    return object(selected, fields.filter((field) => field !== "scope" ||
+      (expectedStage === "discovery" && context?.requireDiscoveryCandidateContext === true && context.deepCoverage === undefined)));
   }
   return {
     ...object(properties, ["schemaVersion"]),
@@ -365,6 +386,14 @@ function normalizePortableStageArtifact(
       onReject?.("stage-candidates-invalid", detail);
       return null;
     }
+    // A syntactically valid empty candidate array is not evidence of a review.
+    // Keep this live-only so historical artifacts remain readable.
+    const summary = boundedText(record?.summary, 32_768)?.trim();
+    if (summary === undefined || summary.length < 40 ||
+        /^(?:placeholder|todo|tbd|pending|n[\/\.]?a)(?:\b|$)/i.test(summary)) {
+      onReject?.("stage-summary-invalid", { kind: "discovery-review", reason: "summary" });
+      return null;
+    }
   }
   if (path === VULNHUNTER_RESULT_ARTIFACT_PATH && context?.reportShard !== undefined) {
     try {
@@ -402,10 +431,17 @@ function normalizePortableStageArtifact(
     path,
     modelValue,
     snapshotRoot,
-    (issue) => onReject?.(issue, repairDetail),
+    (issue) => onReject?.(issue, repairDetail ??
+      (context?.requireDiscoveryCandidateContext === true && path === "03-discovery.json" && issue === "stage-scope-invalid"
+        ? { kind: "discovery-review", reason: "scope" } : undefined)),
     (detail) => { repairDetail = detail; },
   );
   if (artifact === null || typeof path !== "string") return null;
+  if (context?.requireDiscoveryCandidateContext === true && path === "03-discovery.json" &&
+      !hasLiveDiscoveryScope(artifact, snapshotRoot, context)) {
+    onReject?.("stage-scope-invalid", { kind: "discovery-review", reason: "scope" });
+    return null;
+  }
   if (context?.requireCalibratedSeverityRationale === true && path === VULNHUNTER_RESULT_ARTIFACT_PATH &&
       !hasCalibratedHighSeverityRationale(artifact)) {
     onReject?.("report-contract-invalid");
@@ -455,6 +491,39 @@ function hasCalibratedHighSeverityRationale(artifact: Record<string, unknown>): 
     const finding = value as Record<string, unknown>;
     if (finding.severity !== "critical" && finding.severity !== "high") return true;
     return typeof finding.severityRationale === "string" && finding.severityRationale.trim().length >= 24;
+  });
+}
+
+function hasLiveDiscoveryScope(
+  artifact: Record<string, unknown>,
+  snapshotRoot: string | undefined,
+  context: PortableResultArtifactValidationContext,
+): boolean {
+  const scope = record(artifact.scope);
+  if (scope === null || !Array.isArray(scope.inspected) || scope.inspected.length === 0 ||
+      !Array.isArray(scope.unexamined)) return false;
+  const inspected = scope.inspected;
+  const unexamined = scope.unexamined.map((entry) => record(entry)?.path);
+  const observed = context.discoveryCoverage?.observedReadPaths ?? context.deepCoverage?.observedReadPaths;
+  if (inspected.some((file) => typeof file !== "string" || (observed !== undefined && !observed.has(file)))) {
+    return false;
+  }
+  const inspectedSet = new Set(inspected);
+  if (unexamined.some((file) => inspectedSet.has(file))) return false;
+  return [...inspected, ...unexamined].every((file) => {
+    if (!repositoryRelativePath(file) || typeof file !== "string") return false;
+    if (snapshotRoot === undefined) return true;
+    try {
+      const root = fs.realpathSync(snapshotRoot);
+      const lexicalTarget = nodePath.resolve(root, file);
+      if (!fs.lstatSync(lexicalTarget).isFile()) return false;
+      const target = fs.realpathSync(lexicalTarget);
+      const relative = nodePath.relative(root, target);
+      return relative !== "" && relative !== ".." && !relative.startsWith(`..${nodePath.sep}`) &&
+        !nodePath.isAbsolute(relative) && fs.statSync(target).isFile();
+    } catch {
+      return false;
+    }
   });
 }
 
