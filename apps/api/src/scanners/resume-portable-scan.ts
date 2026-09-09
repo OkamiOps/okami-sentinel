@@ -140,8 +140,10 @@ async function resume(scanId: string, dryRun: boolean) {
     const legacyLog = cliLogPath(original.scanDir);
     if (fs.existsSync(legacyLog)) {
       fs.copyFileSync(legacyLog, cliLogPath(outputDir));
-      fs.copyFileSync(legacyLog, path.join(outputDir, "portable-worker-events.log"));
     }
+    const workerLog = path.join(original.scanDir, "portable-worker-events.log");
+    const eventLog = fs.existsSync(workerLog) ? workerLog : legacyLog;
+    if (fs.existsSync(eventLog)) fs.copyFileSync(eventLog, path.join(outputDir, "portable-worker-events.log"));
     const resumedConfig = { ...config, outputDir, limits: { ...config.limits, totalTimeoutMs: 0 }, providerPlan: { ...config.providerPlan, scanId: id, capabilityCheckId: probe.report.id } };
     const configPath = path.join(outputDir, "portable-codex-security-run.json");
     fs.writeFileSync(configPath, JSON.stringify(resumedConfig), { mode: 0o600 });
