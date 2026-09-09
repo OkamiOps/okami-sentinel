@@ -478,9 +478,11 @@ test("Portable report shard accepts findings-only output and derives page covera
 
   assert.ok(normalized !== null);
   const calibratedContext = { ...context, requireCalibratedSeverityRationale: true };
+  let rationaleRepair: unknown;
   assert.equal(normalizeResultArtifactInput({ path: "sentinel-findings.json", content },
-    PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, snapshotRoot, calibratedContext), null,
+    PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, snapshotRoot, calibratedContext, (_issue, detail) => { rationaleRepair = detail; }), null,
   "a new high finding cannot omit its severity rationale");
+  assert.deepEqual(rationaleRepair, { kind: "report-contract", field: "findings[0].severityRationale", code: "text", minChars: 24 });
   const calibrated = JSON.parse(content);
   calibrated.findings[0].severityRationale = "The public operation exposes protected records to ordinary authenticated callers with no additional privilege, supporting high impact and likelihood.";
   assert.notEqual(normalizeResultArtifactInput({ path: "sentinel-findings.json", content: calibrated },

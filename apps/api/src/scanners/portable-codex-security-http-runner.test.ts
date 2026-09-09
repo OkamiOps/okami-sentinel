@@ -1,3 +1,4 @@
+import { materializePortableCodexSecurityReportShard } from "./portable-codex-security-report-shards.js";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -1432,5 +1433,52 @@ test("Deep recovery reuses discovery, dataflow and a whole legacy validation pag
     const assessments = dossier.assessments.filter(item => item.stage === "validation");
     assert.equal(assessments.length, 67);
     assert.equal(new Set(assessments.map(item => item.candidateId)).size, 67);
+  } finally { remove(root); }
+});
+
+
+test("report recovery preserves accepted pages and requests only the remaining findings", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-report-recovery-"));
+  const config = configuration(root);
+  config.limits.totalTimeoutMs = 0;
+  const specs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }> = [];
+  const base = reportBudgetStageSessionFactory(specs);
+  const calls: string[] = [];
+  let interrupted = true;
+  const factory = async (input: { spec: AgentSessionSpec; toolSurface: readonly string[] }) => {
+    const stage = String(input.spec.instructions.match(/stage "([a-z-]+)"/)?.[1]);
+    calls.push(path.basename(input.spec.artifactRoot));
+    if (stage !== "report") {
+      const session = await base(input);
+      if (stage === "validation") {
+        const target = path.join(input.spec.artifactRoot, "05-validation.json");
+        const artifact = JSON.parse(fs.readFileSync(target, "utf8"));
+        artifact.assessments = input.spec.resultArtifactValidationContext!.dossier!.assessments.map(({ stage: _stage, ...assessment }) => assessment);
+        fs.writeFileSync(target, JSON.stringify(artifact));
+      }
+      return session;
+    }
+    const shard = input.spec.resultArtifactValidationContext!.reportShard!;
+    if (interrupted && shard.index === 1) throw new Error("interrupted report");
+    const report = materializePortableCodexSecurityReportShard(shard, { schemaVersion: 1, findings: shard.dossier.candidates.map(candidate => ({
+      id: candidate.id, candidateId: candidate.id, title: "Source-backed boundary finding", severity: "medium", confidence: "high", category: candidate.category,
+      summary: "A concrete boundary failure affects a protected operation.", rootCause: "The expected boundary check is absent at the reviewed location.",
+      impact: "An authenticated caller can modify protected application state.", remediation: "Enforce the boundary check before the sensitive operation.",
+      severityRationale: "An authenticated attacker is required and the deployment limits the affected scope.",
+      anchors: candidate.anchors.map(anchor => ({ ...anchor, explanation: "Reviewed source evidence for this candidate." })),
+    })) });
+    fs.writeFileSync(path.join(input.spec.artifactRoot, "sentinel-findings.json"), JSON.stringify(report));
+    return completedStageSession(stage, "sentinel-findings.json", "Report page complete");
+  };
+  try {
+    await assert.rejects(runPortableCodexSecurity(config, dependencies({ createSession: factory })));
+    const saved = path.join(config.outputDir, "portable-codex-security-artifacts", "report-01", "sentinel-findings.json");
+    const bytes = fs.readFileSync(saved);
+    calls.length = 0; interrupted = false;
+    const result = await runPortableCodexSecurity(config, dependencies({ resumeDiscovery: true, createSession: factory }));
+    assert.equal(result.runtime.status, "completed");
+    assert.equal(result.runtime.findings, 65);
+    assert.deepEqual(calls, Array.from({ length: 16 }, (_, index) => `report-${String(index + 2).padStart(2, "0")}`));
+    assert.deepEqual(fs.readFileSync(saved), bytes);
   } finally { remove(root); }
 });

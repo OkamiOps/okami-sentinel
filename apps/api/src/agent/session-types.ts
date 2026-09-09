@@ -1,4 +1,4 @@
-import type { PortableAnchorContractRepairDetail } from "../scanners/portable-codex-security-dossier.js";
+import type { PortableAnchorContractRepairDetail, PortableReportRepairDetail } from "../scanners/portable-codex-security-dossier.js";
 import type { GraphIndex } from "../graphify/graph-index.js";
 import path from "node:path";
 import type {
@@ -226,6 +226,7 @@ export type AgentEvent =
     reason?: ResultArtifactValidationIssue;
     scopeIssue?: DiscoveryScopeIssue;
     anchorIssue?: PortableAnchorContractRepairDetail;
+    reportIssue?: PortableReportRepairDetail;
   }
   | { type: "artifact"; path: string; bytes: number }
   | { type: "usage"; usage: AgentUsage }
@@ -290,6 +291,7 @@ export interface AgentToolResult {
   validationIssue?: ResultArtifactValidationIssue;
   scopeIssue?: DiscoveryScopeIssue;
   anchorIssue?: PortableAnchorContractRepairDetail;
+    reportIssue?: PortableReportRepairDetail;
 }
 
 export interface NormalizedModelReply {
@@ -513,6 +515,7 @@ class ConstrainedWireSession implements AgentSession {
             ...(result.validationIssue === undefined ? {} : { reason: result.validationIssue }),
             ...(result.scopeIssue === undefined ? {} : { scopeIssue: result.scopeIssue }),
             ...(result.anchorIssue === undefined ? {} : { anchorIssue: result.anchorIssue }),
+            ...(result.reportIssue === undefined ? {} : { reportIssue: result.reportIssue }),
           };
         }
         modelTurns += 1;
@@ -777,6 +780,7 @@ class ConstrainedWireSession implements AgentSession {
             throw new AgentSessionError("agent_output_byte_limit");
           }
           outputBytes += resultBytes;
+          const reportIssue = artifactRepairDetail?.kind === "report-contract" ? artifactRepairDetail : undefined;
           const anchorIssue = artifactRepairDetail?.kind === "anchor-contract" ? artifactRepairDetail : undefined;
           const scopeIssue = artifactRepairDetail?.kind === "discovery-review" && artifactRepairDetail.reason === "scope"
             ? artifactRepairDetail.scopeIssue : undefined;
@@ -789,6 +793,7 @@ class ConstrainedWireSession implements AgentSession {
             ...(artifactValidationIssue === undefined ? {} : { validationIssue: artifactValidationIssue }),
             ...(scopeIssue === undefined ? {} : { scopeIssue }),
             ...(anchorIssue === undefined ? {} : { anchorIssue }),
+            ...(reportIssue === undefined ? {} : { reportIssue }),
           });
           yield {
             type: "tool",
@@ -800,6 +805,7 @@ class ConstrainedWireSession implements AgentSession {
             ...(artifactValidationIssue === undefined ? {} : { reason: artifactValidationIssue }),
             ...(scopeIssue === undefined ? {} : { scopeIssue }),
             ...(anchorIssue === undefined ? {} : { anchorIssue }),
+            ...(reportIssue === undefined ? {} : { reportIssue }),
           };
           if (result.artifact !== undefined) {
             if (call.name === "results.write" && !recoveredBeforeIo) artifactWritten = true;
@@ -932,12 +938,14 @@ function recoverableWorkspaceToolFailure(
       ? artifactRepairDetail?.kind === "json"
         ? "The content could not be decoded as structured JSON. Repair the complete content value: use valid JSON syntax with quoted keys, correctly escaped strings, and closed delimiters. Return one complete JSON object matching the declared stage contract, not a scalar, multiple values, or multiple code fences. Do not discard supported findings to shorten the repair."
         : resultArtifactContract === PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT
-        ? reportShard
-          ? "Use the declared result path and pass one complete compact JSON object containing only schemaVersion:1, optional stage:'report', and findings. Include exactly one substantive finding for every carried candidateId, with non-empty rootCause, impact, remediation, and pinned anchors. Do not include summary, observations, scope, coverage, disposition, or reason fields."
+        ? artifactRepairDetail?.kind === "report-contract"
+          ? "Correct only the structural field identified by repair.field according to repair.code. For enum use repair.allowedValues; for text supply substantive evidence-backed text within supplied repair.minBytes and repair.maxBytes; repair.minChars requires that many trimmed characters. Identifier fields use the declared identifier format. For duplicate-id keep both findings and give each a unique id. Candidate membership must match the server-carried candidateIds exactly, one finding per candidate; preserve every supported finding and its claim. For keys remove only undeclared fields, not findings. Do not invent evidence or change severity merely to pass validation. Return the complete corrected report page."
           : artifactRepairDetail?.kind === "anchor-contract"
             ? "Repair only the anchor field identified by repair.field according to repair.code. Use a real repository-relative regular source file already verified with workspace.read, positive integer startLine/endLine within the file, and one role from repair.allowedRoles when supplied. Anchors contain only path, startLine, endLine, role and optional explanation. Graph symbol IDs and labels are not source paths. Preserve every candidate and its security claim; correct the locator without dropping the finding."
           : artifactRepairDetail?.kind === "anchor-ranges-out-of-bounds"
             ? "Correct each range listed in repair.violations using the supplied maxLine and the actual source location. Re-read only the relevant file if needed to locate the evidence. Do not blindly clamp a range to make it pass, invent line numbers, or discard the candidate."
+          : reportShard
+            ? "Use the declared result path and pass one complete compact JSON object containing only schemaVersion:1, optional stage:'report', and findings. Include exactly one substantive finding for every carried candidateId, with non-empty rootCause, impact, remediation, and pinned anchors. Do not include summary, observations, scope, coverage, disposition, or reason fields."
           : artifactRepairDetail?.kind === "candidate-contract"
             ? "Discovery candidates must be an array of at most 100 objects with id, category, anchors and the declared hypothesis, attacker, prerequisites, expectedImpact and controlHypothesis fields. Preserve the security claim and correct the indicated item; never remove candidates to bypass validation. IDs must be unique. Anchors contain path, startLine, endLine, role and optional explanation. Follow the supplied schema for bounded field lengths and attacker values."
           : artifactRepairDetail?.kind === "discovery-review"

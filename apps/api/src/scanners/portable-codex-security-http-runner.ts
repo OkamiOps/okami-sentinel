@@ -53,6 +53,7 @@ import {
   assertPortableCodexSecuritySnapshot,
   assertExactStageArtifact,
   assertPortableCodexSecurityDossierAnchors,
+  assertPortableCodexSecurityReportAnchors,
   createPortableCodexSecurityAnchorValidationCache,
   createPortableCodexSecuritySnapshot,
   observePortableCodexSecurityStage,
@@ -62,6 +63,7 @@ import {
 } from "./portable-codex-security-worker-support.js";
 import {
   createPortableCodexSecurityDossier,
+  validatePortableCodexSecurityReportCoverage,
   applyPortableCodexSecurityStageArtifact,
   portableCodexSecurityDossierBase64,
   writePortableCodexSecurityDossier,
@@ -279,7 +281,7 @@ export async function runPortableCodexSecurity(
     );
     assertPortableCostBudget(safeConfiguration.costBudget, plan, resolved);
     const previous = dependencies.resumeDiscovery ? readPortableCodexSecurityRuntime(outputDir) : null;
-    if (dependencies.resumeDiscovery && (!previous || !["discovery", "dataflow", "validation"].includes(previous.stage) || previous.status === "completed" ||
+    if (dependencies.resumeDiscovery && (!previous || !["discovery", "dataflow", "validation", "report"].includes(previous.stage) || previous.status === "completed" ||
         previous.sourceRef !== safeConfiguration.sourceRef || !previous.snapshotId)) {
       throw new PortableCodexSecurityRunnerError("snapshot_invalid");
     }
@@ -460,10 +462,17 @@ export async function runPortableCodexSecurity(
           log(JSON.stringify({ type: "supplemental_discovery_review_started", stage: "discovery" }));
         }
         if (dependencies.resumeDiscovery && fs.existsSync(artifactRoot) && fs.readdirSync(artifactRoot).length > 0) {
-          if (!["inventory", "threat-model", "discovery", "dataflow", "validation"].includes(stage.id)) {
+          if (!["inventory", "threat-model", "discovery", "dataflow", "validation", "report"].includes(stage.id)) {
             throw new PortableCodexSecurityRunnerError("stage_artifact_invalid");
           }
           const artifact = assertExactStageArtifact(artifactRoot, stage);
+          if (shard !== null) {
+            const report = validatePortableCodexSecurityReportCoverage(artifact, stageDossier);
+            assertPortableCodexSecurityReportAnchors(snapshot.snapshotRoot, report, deadline.remainingMs, anchorValidationCache);
+            pageResults.push({ shard, report });
+            log(JSON.stringify({ type: "checkpoint_reused", stage: stage.id, page: shard.index + 1 }));
+            continue;
+          }
           const restored = applyPortableCodexSecurityStageArtifact(stageDossier, artifact);
           assertPortableCodexSecurityDossierAnchors(snapshot.snapshotRoot, restored, deadline.remainingMs, anchorValidationCache);
           if (partition !== null) {

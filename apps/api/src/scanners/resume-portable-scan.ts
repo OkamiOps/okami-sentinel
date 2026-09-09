@@ -9,16 +9,17 @@ import { cliLogPath } from "../activity.js";
 import { captureProcessIdentity, persistProcessIdentity, findProcessIdentitiesForScanDir } from "../process-identity.js";
 import { readPortableCodexSecurityWorkerConfiguration } from "./portable-codex-security-worker.js";
 import { readPortableCodexSecurityRuntime } from "./portable-codex-security-runtime.js";
-import { assertPortableCodexSecuritySnapshot, assertExactStageArtifact, assertPortableCodexSecurityDossierAnchors } from "./portable-codex-security-worker-support.js";
-import { createPortableCodexSecurityDossier, applyPortableCodexSecurityStageArtifact } from "./portable-codex-security-dossier.js";
+import { assertPortableCodexSecuritySnapshot, assertExactStageArtifact, assertPortableCodexSecurityDossierAnchors, assertPortableCodexSecurityReportAnchors } from "./portable-codex-security-worker-support.js";
+import { createPortableCodexSecurityDossier, applyPortableCodexSecurityStageArtifact, validatePortableCodexSecurityReportCoverage } from "./portable-codex-security-dossier.js";
 import { createPortableDeepCoveragePlan, mergePortableDeepDiscoveryDossiers } from "./portable-codex-security-deep-coverage.js";
 import { createPortableAssessmentPages, assessmentPageDirectory } from "./portable-codex-security-assessment-pages.js";
+import { createPortableCodexSecurityReportShards } from "./portable-codex-security-report-shards.js";
 import { PORTABLE_CODEX_SECURITY_STAGES } from "./portable-codex-security-profile.js";
 
 /** Read-only checkpoint validation, shared by dry-run and actual recovery. */
 export function preflightPortableResume(scanDir: string, mode: "standard" | "deep") {
   const previous = readPortableCodexSecurityRuntime(scanDir);
-  const resumable = ["discovery", "dataflow", "validation"];
+  const resumable = ["discovery", "dataflow", "validation", "report"];
   if (!previous?.snapshotId || !resumable.includes(previous.stage ?? "") || previous.status === "completed") throw new Error("resume_requires_checkpoint");
   const snapshotRoot = path.join(scanDir, "portable-codex-security-snapshot");
   assertPortableCodexSecuritySnapshot({ snapshotRoot, snapshotId: previous.snapshotId });
@@ -97,10 +98,19 @@ export function preflightPortableResume(scanDir: string, mode: "standard" | "dee
       assessments: [...dossier.assessments, ...restoredPages.flatMap(p => p.assessments.filter(a => a.stage === stage.id))] };
     if (resumable.indexOf(previous.stage!) > resumable.indexOf(stage.id) && !prerequisiteComplete) throw new Error("resume_missing_prerequisite_checkpoint");
   }
+  verifiedStages.report = 0;
+  for (const shard of createPortableCodexSecurityReportShards(dossier)) {
+    const artifact = read(`report-${String(shard.index + 1).padStart(2, "0")}`, "sentinel-findings.json");
+    if (!artifact) continue;
+    if (!prerequisiteComplete) throw new Error("resume_missing_prerequisite_checkpoint");
+    const report = validatePortableCodexSecurityReportCoverage(artifact, shard.dossier);
+    assertPortableCodexSecurityReportAnchors(snapshotRoot, report);
+    verifiedStages.report++;
+  }
   for (const entry of fs.readdirSync(artifacts)) {
     if (!accepted.has(entry)) throw new Error("resume_unrecognized_checkpoint");
   }
-  return { previous, completed, totalBatches, verifiedStages };
+  return { previous, completed, totalBatches, verifiedStages, dossier };
 }
 
 /** Local operator recovery. Does not mutate or overwrite the interrupted run. */

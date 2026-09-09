@@ -409,12 +409,12 @@ function normalizePortableStageArtifact(
   }
   if (path === VULNHUNTER_RESULT_ARTIFACT_PATH && context?.reportShard !== undefined) {
     try {
-      modelValue = materializePortableCodexSecurityReportShard(context.reportShard, value);
+      modelValue = materializePortableCodexSecurityReportShard(context.reportShard, value, detail => { repairDetail = detail; });
     } catch (error) {
       const issue = error instanceof PortableCodexSecurityDossierError && error.issue !== undefined
         ? error.issue
         : "report-contract-invalid";
-      onReject?.(issue);
+      onReject?.(issue, repairDetail);
       return null;
     }
   }
@@ -456,7 +456,13 @@ function normalizePortableStageArtifact(
   }
   if (context?.requireCalibratedSeverityRationale === true && path === VULNHUNTER_RESULT_ARTIFACT_PATH &&
       !hasCalibratedHighSeverityRationale(artifact)) {
-    onReject?.("report-contract-invalid");
+    const findings = artifact.findings as Record<string, unknown>[];
+    const index = findings.findIndex((finding) =>
+      (finding.severity === "critical" || finding.severity === "high") &&
+      (typeof finding.severityRationale !== "string" || finding.severityRationale.trim().length < 24));
+    onReject?.("report-contract-invalid", {
+      kind: "report-contract", field: `findings[${index}].severityRationale`, code: "text", minChars: 24,
+    });
     return null;
   }
   if (context !== undefined) {

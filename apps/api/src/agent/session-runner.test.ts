@@ -2212,7 +2212,7 @@ test("an artifact-terminal session corrects Portable report coverage before arti
   );
 });
 
-test("a Portable report shard repair repeats the findings-only contract", async (t) => {
+test("a Portable report shard repair identifies the exact enum and preserves its finding", async (t) => {
   const fixture = await fixtureRoots("runner-portable-report-shard-repair");
   t.after(fixture.cleanup);
   const requestedWith: AgentToolResult[][] = [];
@@ -2247,7 +2247,7 @@ test("a Portable report shard repair repeats the findings-only contract", async 
   const replies: NormalizedModelReply[] = [
     { toolCalls: [{ id: "bad", name: "results.write", input: {
       path: "sentinel-findings.json",
-      content: JSON.stringify({ schemaVersion: 1, stage: "report", findings: [] }),
+      content: JSON.stringify({ schemaVersion: 1, stage: "report", findings: [{ ...validFinding, severity: "private-invalid-severity" }] }),
     } }], text: null, structured: null, usage: null },
     { toolCalls: [{ id: "good", name: "results.write", input: {
       path: "sentinel-findings.json",
@@ -2273,12 +2273,27 @@ test("a Portable report shard repair repeats the findings-only contract", async 
     adapter: transcriptAdapter(replies, requestedWith),
   });
 
-  await collect(session.run(), []);
+  const events: AgentEvent[] = [];
+  await collect(session.run(), events);
 
   assert.equal(hostInputs.length, 1);
-  assert.match(requestedWith[1]![0]!.content, /containing only schemaVersion:1/i);
-  assert.match(requestedWith[1]![0]!.content, /Do not include summary, observations, scope, coverage/i);
-  assert.equal(requestedWith[1]![0]!.content.includes("Include a non-empty summary"), false);
+  const feedback = JSON.parse(requestedWith[1]![0]!.content);
+  assert.deepEqual(feedback.repair, {
+    kind: "report-contract", field: "findings[0].severity", code: "enum",
+    allowedValues: ["critical", "high", "medium", "low"],
+  });
+  assert.match(feedback.hint, /preserve every supported finding/i);
+  assert.equal(JSON.stringify(feedback).includes("private-invalid"), false);
+  for (const phase of ["result", "consumed"]) {
+    const event = events.find((event) => event.type === "tool" && event.phase === phase && event.callId === "bad");
+    assert.ok(event?.type === "tool");
+    assert.deepEqual(event.reportIssue, feedback.repair);
+    assert.equal(JSON.stringify(event).includes("private-invalid"), false);
+  }
+  const written = JSON.parse((hostInputs[0] as { content: string }).content);
+  assert.equal(written.findings.length, 1);
+  assert.equal(written.findings[0].candidateId, validFinding.candidateId);
+  assert.equal(written.findings[0].summary, validFinding.summary);
 });
 
 test("the constrained session rejects nonexistent and out-of-range evidence before artifact I/O", async (t) => {

@@ -164,11 +164,13 @@ test("Portable Codex Security makes carried candidate ids explicit for assessmen
     assert.match(prompt, /candidateId values exactly as listed/i);
     assert.match(prompt, /not-vulnerable is a reason code, never a status/);
     if (stageId === "validation") {
-      assert.match(prompt, /"status":"confirmed\|rejected"/);
+      assert.match(prompt, /"status":"rejected"/);
+      assert.match(prompt, /final validation cannot leave candidates inconclusive/);
       assert.doesNotMatch(prompt, /"status":"confirmed\|rejected\|inconclusive"/);
       assert.match(prompt, /reject unsubstantiated candidates using insufficient-evidence without claiming that the code is safe/i);
     } else {
-      assert.match(prompt, /"status":"confirmed\|rejected\|inconclusive"/);
+      assert.match(prompt, /"status":"rejected"/);
+      assert.match(prompt, /The status field is confirmed, rejected, or inconclusive/);
     }
     assert.equal(prompt.includes("/snapshot"), false);
   }

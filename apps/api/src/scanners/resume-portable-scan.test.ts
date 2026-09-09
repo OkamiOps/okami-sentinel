@@ -21,7 +21,7 @@ function fixture(candidateCount = 1) {
   const anchor = { path: "route.ts", startLine: 1, endLine: 1, role: "control" };
   const write = (dir: string, file: string, stage: string, extra = {}) => {
     const target = path.join(scan, "portable-codex-security-artifacts", dir); fs.mkdirSync(target, {recursive: true});
-    fs.writeFileSync(path.join(target, file), JSON.stringify({schemaVersion:1, stage, summary: `Verified ${stage} checkpoint`, observations: [], ...extra}));
+    fs.writeFileSync(path.join(target, file), JSON.stringify(stage === "report" ? extra : {schemaVersion:1, stage, summary: `Verified ${stage} checkpoint`, observations: [], ...extra}));
   };
   write("inventory", "01-inventory.json", "inventory");
   write("threat-model", "02-threat-model.json", "threat-model");
@@ -63,6 +63,34 @@ test("validation recovery accepts legacy whole page plus new bounded part and re
     assert.equal(result.verifiedStages.dataflow,2);
     assert.equal(result.verifiedStages.validation,2);
     f.write("validation-01-part-01","05-validation.json","validation",{assessments:f.assessments.slice(0,8)});
+    assert.throws(()=>preflightPortableResume(f.scan,"deep"),/resume_unrecognized_checkpoint/);
+  } finally {cleanup(f.root);}
+});
+
+test("report recovery validates completed pages and rejects altered coverage or unknown pages", async () => {
+  const { createPortableCodexSecurityReportShards, materializePortableCodexSecurityReportShard } = await import("./portable-codex-security-report-shards.js");
+  const f=fixture(); try {
+    f.write("validation","05-validation.json","validation",{assessments:f.assessments});
+    const runtimePath=path.join(f.scan,"portable-codex-security-runtime.json");
+    const runtime=JSON.parse(fs.readFileSync(runtimePath,"utf8"));
+    fs.writeFileSync(runtimePath,JSON.stringify({...runtime,stage:"report"}));
+    const initial=preflightPortableResume(f.scan,"deep");
+    const shard=createPortableCodexSecurityReportShards(initial.dossier)[0]!;
+    const report=materializePortableCodexSecurityReportShard(shard,{schemaVersion:1,stage:"report",findings:[{
+      id:"F-1",candidateId:"c1",title:"Untrusted request reaches protected operation",severity:"medium",confidence:"high",category:"authorization",
+      summary:"The untrusted caller can reach the protected operation without a validated ownership check.",
+      rootCause:"The protected operation does not validate ownership of the requested record.",
+      impact:"A caller could read another account's protected records through this operation.",
+      remediation:"Validate the authenticated caller's ownership before returning the record.",
+      anchors:[{path:"route.ts",startLine:1,endLine:1,role:"control",explanation:"The protected operation lacks the ownership check."}],
+    }]});
+    f.write("report-01","sentinel-findings.json","report",report);
+    assert.equal(preflightPortableResume(f.scan,"deep").verifiedStages.report,1);
+    const bad={...report,coverage:{...report.coverage,candidates:[]}};
+    f.write("report-01","sentinel-findings.json","report",bad);
+    assert.throws(()=>preflightPortableResume(f.scan,"deep"));
+    f.write("report-01","sentinel-findings.json","report",report);
+    f.write("report-99","sentinel-findings.json","report",report);
     assert.throws(()=>preflightPortableResume(f.scan,"deep"),/resume_unrecognized_checkpoint/);
   } finally {cleanup(f.root);}
 });

@@ -194,8 +194,8 @@ function stageArtifactContract(stage: PortableCodexSecurityStage): string {
         id: "page-finding-01",
         candidateId: "candidate-id-from-dossier",
         title: "Caller-controlled input reaches a sensitive operation",
-        severity: "critical|high|medium|low",
-        confidence: "high|medium|low",
+        severity: "medium",
+        confidence: "high",
         category: "...",
         summary: "Substantive security finding summary.",
         rootCause: "Substantive root cause tied to the reviewed code.",
@@ -206,7 +206,7 @@ function stageArtifactContract(stage: PortableCodexSecurityStage): string {
           path: "repository/relative/path",
           startLine: 1,
           endLine: 1,
-          role: "source|entrypoint|control|sink|evidence",
+          role: "evidence",
           explanation: "...",
         }],
       }],
@@ -227,7 +227,7 @@ function stageArtifactContract(stage: PortableCodexSecurityStage): string {
       id: "candidate-id",
       category: "...",
       hypothesis: "Concrete, repository-backed claim to be falsified later.",
-      attacker: "unauthenticated|authenticated|privileged|local|unknown",
+      attacker: "authenticated",
       prerequisites: "Concrete prerequisites required by the claim.",
       expectedImpact: "Concrete impact if the claim is true.",
       controlHypothesis: "The authorization, validation, or invariant alleged to be absent or bypassed.",
@@ -235,20 +235,20 @@ function stageArtifactContract(stage: PortableCodexSecurityStage): string {
         path: "repository/relative/path",
         startLine: 1,
         endLine: 1,
-        role: "source|entrypoint|control|sink|evidence",
+        role: "evidence",
       }],
     }];
   }
   if (stage.id === "dataflow" || stage.id === "validation") {
     stageArtifact.assessments = [{
       candidateId: "candidate-id",
-      status: stage.id === "validation" ? "confirmed|rejected" : "confirmed|rejected|inconclusive",
-      reason: "control-not-present|not-vulnerable|insufficient-evidence",
+      status: "rejected",
+      reason: "not-vulnerable",
       evidence: [{
         path: "repository/relative/path",
         startLine: 1,
         endLine: 1,
-        role: "source|entrypoint|control|sink|evidence",
+        role: "evidence",
       }],
     }];
   }
@@ -326,6 +326,7 @@ export function buildPortableCodexSecurityStagePrompt(
     input.deepCoveragePartition === undefined
       ? `Before ${writeTool}, call and consume at least one ${listTool}, ${readTool}, or ${searchTool} result in an earlier model turn. The ${writeTool} call must be the only tool call in its model turn.`
       : `Analyze the projected source directly, then call ${writeTool} without a preliminary workspace tool turn. The ${writeTool} call must be the only tool call in its model turn.`,
+    "Choose one enum value, never a pipe-separated list. Severity: critical, high, medium, low. Confidence: high, medium, low. Attacker: unauthenticated, authenticated, privileged, local, unknown. Anchor role: source, entrypoint, control, sink, evidence. Assessment status: confirmed, rejected, or (dataflow only) inconclusive. Examples illustrate structure; calibrate claims and classifications from the actual evidence.",
     "Write strict JSON matching this artifact contract:",
     stageArtifactContract(stage),
     `Pass the artifact as the structured object in ${writeTool}.content. Do not JSON-stringify it, wrap it in a string, or surround it with Markdown fences.`,

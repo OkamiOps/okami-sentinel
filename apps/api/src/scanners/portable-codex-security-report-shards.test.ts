@@ -10,6 +10,7 @@ import type {
 import {
   PORTABLE_CODEX_SECURITY_REPORT_SHARD_MAX_CANDIDATES,
   assemblePortableCodexSecurityReportShards,
+  materializePortableCodexSecurityReportShard,
   createPortableCodexSecurityReportShards,
   writePortableCodexSecurityReportShards,
   type PortableCodexSecurityReportShardArtifact,
@@ -171,4 +172,38 @@ test("Portable report shard assembly writes exactly one mode-0600 final report",
   assert.equal(report.findings.length, 65);
   assert.deepEqual(fs.readdirSync(root), ["sentinel-findings.json"]);
   assert.equal(fs.statSync(path.join(root, "sentinel-findings.json")).mode & 0o777, 0o600);
+});
+
+
+test("report shard diagnostics identify invalid fields, enums and membership without changing claims", () => {
+  const shard = createPortableCodexSecurityReportShards(dossierWith65ConfirmedAnd2Rejected())[0]!;
+  const valid = validShardReport(shard);
+  const cases: Array<{ field: string; code: string; change: (value: any) => void }> = [
+    { field: "findings[0].severity", code: "enum", change: v => { v.findings[0].severity = "private-invalid-severity"; } },
+    { field: "findings[0]", code: "keys", change: v => { v.findings[0].unexpected = "private-provider-value"; } },
+    { field: "findings[0].rootCause", code: "text", change: v => { v.findings[0].rootCause = "short"; } },
+    { field: "findings[1].id", code: "duplicate-id", change: v => { v.findings[1].id = v.findings[0].id; } },
+    { field: "findings[0].candidateId", code: "candidate-membership", change: v => { v.findings[0].candidateId = "private-unknown-id"; } },
+    { field: "findings[1].candidateId", code: "duplicate-candidate", change: v => { v.findings[1].candidateId = v.findings[0].candidateId; } },
+    { field: "findings", code: "missing-candidate", change: v => { v.findings.pop(); } },
+    { field: "findings[0].anchors[0].role", code: "role", change: v => { v.findings[0].anchors[0].role = "private-invalid-role"; } },
+  ];
+  for (const entry of cases) {
+    const input = structuredClone(valid);
+    entry.change(input);
+    const before = JSON.stringify(input);
+    let detail: any;
+    assert.throws(() => materializePortableCodexSecurityReportShard(shard, input, next => { detail = next; }));
+    assert.equal(detail.field, entry.field);
+    assert.equal(detail.code, entry.code);
+    assert.equal(JSON.stringify(input), before);
+    assert.doesNotMatch(JSON.stringify(detail), /private-/);
+    if (entry.code === "enum") assert.deepEqual(detail.allowedValues, ["critical", "high", "medium", "low"]);
+    if (entry.code === "text") assert.equal(detail.minBytes, 24);
+  }
+  const before = JSON.stringify(valid);
+  const report = materializePortableCodexSecurityReportShard(shard, valid, () => assert.fail("valid page must not request repair"));
+  assert.equal(report.findings.length, valid.findings.length);
+  assert.deepEqual(report.findings.map(f => f.candidateId), valid.findings.map(f => f.candidateId));
+  assert.equal(JSON.stringify(valid), before);
 });

@@ -209,8 +209,20 @@ export interface PortableCandidateRepairDetail {
   itemIndex?: number;
 }
 
+export interface PortableReportRepairDetail {
+  kind: "report-contract";
+  field: string;
+  code: "type" | "keys" | "version" | "enum" | "array-or-limit" | "identifier" |
+    "text" | "duplicate-id" | "candidate-membership" | "duplicate-candidate" | "missing-candidate" | "cwe";
+  allowedValues?: readonly string[];
+  minBytes?: number;
+  maxBytes?: number;
+  minChars?: number;
+}
+
 export type PortableArtifactRepairDetail =
   | PortableAnchorRepairDetail
+  | PortableReportRepairDetail
   | PortableAnchorContractRepairDetail
   | PortableCandidateRepairDetail;
 
@@ -245,7 +257,7 @@ export function normalizePortableCodexSecurityStageArtifact(
   if (artifactPath === "sentinel-findings.json") {
     const report = parsePortableReportArtifact(value);
     if (report === null) {
-      const detail = diagnoseArtifactAnchorArrays(value);
+      const detail = diagnosePortableReportStructure(value) ?? diagnoseArtifactAnchorArrays(value);
       if (detail) onRepairDetail?.(detail);
       return reject("report-contract-invalid");
     }
@@ -906,6 +918,50 @@ function parseCoverageEntries(value: unknown): PortableReportCoverageEntry[] | n
     });
   }
   return entries;
+}
+
+/** Diagnostics only: invoked after strict report validation rejects, never changes the report. */
+export function diagnosePortableReportStructure(
+  value: unknown, candidateIds?: readonly string[], findingsOnly = false,
+): PortableReportRepairDetail | PortableAnchorContractRepairDetail | null {
+  const problem = (field: string, code: PortableReportRepairDetail["code"], extra = {}): PortableReportRepairDetail => ({ kind: "report-contract", field, code, ...extra });
+  const record = asRecord(value);
+  if (!record) return problem("report", "type");
+  if (!hasOnlyKeys(record, new Set(["schemaVersion", "stage", "findings", ...(findingsOnly ? [] : ["coverage"])]))) return problem("report", "keys");
+  if (record.schemaVersion !== 1) return problem("schemaVersion", "version");
+  if (record.stage !== undefined && record.stage !== "report") return problem("stage", "enum", { allowedValues: ["report"] });
+  if (!Array.isArray(record.findings) || record.findings.length > MAX_DOSSIER_CANDIDATES) return problem("findings", "array-or-limit");
+  const ids = new Set<string>(), candidates = new Set<string>();
+  for (const [i, raw] of record.findings.entries()) {
+    const field = `findings[${i}]`;
+    const finding = asRecord(raw);
+    if (!finding) return problem(field, "type");
+    if (!hasOnlyKeys(finding, new Set(["id", "candidateId", "title", "severity", "confidence", "category", "summary", "rootCause", "impact", "remediation", "anchors", "cwe", "severityRationale"]))) return problem(field, "keys");
+    const id = identifier(finding.id), candidate = identifier(finding.candidateId);
+    if (id === null) return problem(`${field}.id`, "identifier");
+    if (candidate === null) return problem(`${field}.candidateId`, "identifier");
+    if (ids.has(id)) return problem(`${field}.id`, "duplicate-id");
+    if (candidateIds !== undefined && !candidateIds.includes(candidate)) return problem(`${field}.candidateId`, "candidate-membership");
+    if (candidates.has(candidate)) return problem(`${field}.candidateId`, "duplicate-candidate");
+    ids.add(id); candidates.add(candidate);
+    for (const [key, allowed] of [["severity", SEVERITIES], ["confidence", CONFIDENCES]] as const) {
+      if (enumValue(finding[key], allowed) === null) return problem(`${field}.${key}`, "enum", { allowedValues: [...allowed] });
+    }
+    for (const key of ["title", "category", "summary", "rootCause", "impact", "remediation", "severityRationale"] as const) {
+      if (key === "severityRationale" && finding[key] === undefined) continue;
+      const substantive = key !== "category" && key !== "severityRationale";
+      const maxBytes = key === "title" ? MAX_STAGE_SUMMARY_BYTES * 2 : key === "category" ? MAX_TEXT_BYTES : MAX_STAGE_SUMMARY_BYTES;
+      if ((substantive ? substantiveText(finding[key], maxBytes) : text(finding[key], maxBytes)) === null) {
+        return problem(`${field}.${key}`, "text", { minBytes: substantive ? MIN_SUBSTANTIVE_TEXT_BYTES : 1, maxBytes });
+      }
+    }
+    const anchors = diagnoseAnchorArray(finding.anchors, `${field}.anchors`, true);
+    if (anchors) return anchors;
+    if ((finding.anchors as unknown[]).length === 0) return { kind: "anchor-contract", field: `${field}.anchors`, code: "array" };
+    if (finding.cwe !== undefined && parseCwe(finding.cwe) === null) return problem(`${field}.cwe`, "cwe");
+  }
+  if (candidateIds !== undefined && candidateIds.some(id => !candidates.has(id))) return problem("findings", "missing-candidate");
+  return null;
 }
 
 function parseFindings(value: unknown): PortableReportFinding[] | null {

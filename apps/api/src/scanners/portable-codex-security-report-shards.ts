@@ -4,6 +4,8 @@ import path from "node:path";
 
 import {
   PortableCodexSecurityDossierError,
+  diagnosePortableReportStructure,
+  type PortableArtifactRepairDetail,
   validatePortableCodexSecurityReportCoverage,
   type PortableCandidateAssessment,
   type PortableCodexSecurityDossier,
@@ -106,7 +108,17 @@ export function createPortableCodexSecurityReportShards(
 export function materializePortableCodexSecurityReportShard(
   shard: PortableCodexSecurityReportShard,
   value: unknown,
+  onRepairDetail?: (detail: PortableArtifactRepairDetail) => void,
 ): PortableReportArtifact {
+  try { return materializeReportShard(shard, value); }
+  catch (error) {
+    const detail = diagnosePortableReportStructure(value, shard.candidateIds, true);
+    if (detail) onRepairDetail?.(detail);
+    throw error;
+  }
+}
+
+function materializeReportShard(shard: PortableCodexSecurityReportShard, value: unknown): PortableReportArtifact {
   const record = asRecord(value);
   if (
     record === null ||
