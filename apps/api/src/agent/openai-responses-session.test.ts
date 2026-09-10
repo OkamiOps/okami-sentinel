@@ -264,6 +264,39 @@ test("OpenAI Responses Portable allows optional stage fields and keeps workspace
   assert.equal(tools.slice(0, 3).every((tool) => tool.strict === true), true);
 });
 
+test("Responses concrete Portable stages enforce complete nested strict tool schemas", () => {
+  const paths = ["01-inventory.json", "02-threat-model.json", "03-discovery.json", "04-dataflow.json", "05-validation.json", "sentinel-findings.json"] as const;
+  const verify = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) { value.forEach(verify); return; }
+    const node = value as Record<string, unknown>;
+    if (node.type === "object") {
+      assert.equal(node.additionalProperties, false);
+      assert.deepEqual(node.required, Object.keys(node.properties as object));
+    }
+    Object.values(node).forEach(verify);
+  };
+  for (const expectedArtifactPath of paths) {
+    const adapter = createOpenAiResponsesWireAdapter({
+      model: model("portable-model"), instructions: "Write the required stage artifact.",
+      maxCompletionTokens: 32_768,
+      resultArtifactContract: "portable-stage-json-v1",
+      resultArtifactValidationContext: { dossier: createPortableCodexSecurityDossier(), expectedArtifactPath, requireDiscoveryCandidateContext: expectedArtifactPath === "03-discovery.json" },
+    });
+    for (const control of [undefined, { finalizationRequired: true as const }]) {
+      const body = responseBody(adapter.nextRequest([], control));
+      const tool = (body.tools as Array<{ name: string; strict: boolean; parameters: Record<string, unknown> }>).find(t => t.name === "results_write")!;
+      assert.equal(tool.strict, true);
+      verify(tool.parameters);
+      assert.equal(body.max_output_tokens, 32_768);
+      const content = (tool.parameters.properties as Record<string, Record<string, unknown>>).content!;
+      const props = content.properties as Record<string, unknown>;
+      assert.equal("candidates" in props, expectedArtifactPath === "03-discovery.json");
+      if (expectedArtifactPath === "03-discovery.json") assert.ok((content.required as string[]).includes("candidates"));
+    }
+  }
+});
+
 test("Responses reasserts a missing discovery candidates field after its paired safe tool error", () => {
   const adapter = createOpenAiResponsesWireAdapter({
     model: model("portable-model"), instructions: "Inspect the assigned source and write discovery.",
@@ -374,7 +407,7 @@ test("openai-responses-session exposes only the current Portable stage contract"
   const schema = tool.input_schema ?? tool.parameters ?? tool.function.parameters;
   assert.deepEqual(schema.properties.path.enum, ["02-threat-model.json"]);
   assert.deepEqual(schema.properties.content.properties.stage.enum, ["threat-model"]);
-  assert.deepEqual(schema.properties.content.required, ["schemaVersion", "stage", "summary", "observations"]);
+  assert.deepEqual(schema.properties.content.required, ["schemaVersion", "stage", "summary", "observations", "scope"]);
   assert.equal("candidates" in schema.properties.content.properties, false);
 });
 

@@ -35,6 +35,13 @@ not enforce generation length. The context guard includes this wire output reser
 These ceilings do not replace mode-specific reasoning controls or prove latency gains;
 provider truncation must not be interpreted as a successful empty scan.
 
+Responses uses strict function schemas for concrete Portable stages. Every declared
+nested property is required on the wire, including explanatory anchor fields, so
+the provider receives a strict-compatible schema instead of an optional mixed-stage
+shape. This narrows generated structure only: local source, coverage, candidate and
+evidence validation remains authoritative. Legacy calls without a concrete stage
+retain their optional union schema; other protocol adapters are unchanged.
+
 Responses transports put the complete task/source in one persistent system input
 item. They do not duplicate it in both top-level `instructions` and user input;
 continuations carry tool outputs and concise control messages. For direct xAI

@@ -143,6 +143,9 @@ function openAiResponsesTools(
   context?: PortableResultArtifactValidationContext,
   graphAvailable = false,
 ): readonly unknown[] {
+  const strictPortableStage = resultArtifactContract === PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT &&
+    context?.expectedArtifactPath !== undefined;
+  const contentSchema = resultArtifactContentSchema(resultArtifactContract, context);
   const tools = [
     responseTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.list"), WORKSPACE_TOOL_WIRE_DESCRIPTIONS["workspace.list"], {
       path: stringSchema(), maxEntries: integerSchema(), maxDepth: integerSchema(),
@@ -155,13 +158,32 @@ function openAiResponsesTools(
     }, ["query"]),
     responseTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("results.write"), WORKSPACE_TOOL_WIRE_DESCRIPTIONS["results.write"], {
       path: resultArtifactPathSchema(resultArtifactContract, context),
-      content: resultArtifactContentSchema(resultArtifactContract, context),
-    }, ["path", "content"], resultArtifactContract !== PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT),
+      content: strictPortableStage ? requireAllSchemaProperties(contentSchema) : contentSchema,
+    }, ["path", "content"], strictPortableStage || resultArtifactContract !== PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT),
     ...(graphAvailable ? [responseTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.graph"), WORKSPACE_TOOL_WIRE_DESCRIPTIONS["workspace.graph"], {
       query: { type: "string", minLength: 1, maxLength: 200 }, maxResults: { type: "integer", minimum: 1, maximum: 20 },
     }, ["query"])] : []),
   ];
   return resultsWriteOnly ? [tools[3]!] : tools;
+}
+
+/**
+ * Responses strict function schemas require every declared property, including
+ * nested ones. A concrete stage can supply its optional explanatory fields;
+ * the legacy multi-stage union must remain optional to avoid mixing stages.
+ * This narrows generation only: source/coverage/evidence validation is unchanged.
+ */
+function requireAllSchemaProperties(schema: Record<string, unknown>): Record<string, unknown> {
+  const visit = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(visit);
+    if (value === null || typeof value !== "object") return value;
+    const result = Object.fromEntries(Object.entries(value).map(([key, child]) => [key, visit(child)]));
+    if (result.type === "object" && result.properties !== null && typeof result.properties === "object") {
+      result.required = Object.keys(result.properties);
+    }
+    return result;
+  };
+  return visit(schema) as Record<string, unknown>;
 }
 
 function responseTool(
