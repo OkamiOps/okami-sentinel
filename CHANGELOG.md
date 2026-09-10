@@ -37,6 +37,7 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Added
 
+- Standard now receives bounded graph-based discovery priorities, with complementary suggestions excluding already inspected paths. Candidate assessment follows up to three extracted call links and distributes source windows among candidates; telemetry exposes traversal work and truncation. Static paths and control-name hints never count as vulnerability proof.
 - Deep uses persisted Graphify relationship-based partitions without dropping source files. Dataflow and validation receive bounded candidate-specific source windows, and workers can read explicit line ranges without claiming full-file coverage. Legacy partition plans remain compatible with recovery.
 - Sentinel bundles Graphify 0.9.51 with an isolated Python runtime: pnpm provisions it automatically and Docker includes it at build time. The managed installation does not depend on a host Graphify executable or modify global Python packages.
 - Codex Security Portable now builds and reuses a code-only snapshot graph, exposes bounded symbol/relationship queries to model workers, and records indexing telemetry. Source reads remain required for evidence; indexing failure falls back to the existing scan flow. Other engines do not consume the graph yet.

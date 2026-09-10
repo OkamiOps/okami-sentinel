@@ -13,8 +13,18 @@ Files absent from the graph are retained. INFERRED edges do not drive packing.
 recovery validates membership, uniqueness, sizes and limits without recomputing
 the graph layout. Runs without a saved plan use their legacy lexical layout.
 
-Assessment contexts select source windows around candidate anchors and direct
-EXTRACTED callers/callees, at most 8 windows/16 KiB per page. Graphify point-only
+Standard discovery receives a navigation map of up to 12 files/8 KiB, ranked by
+extracted cross-file connections and security-related names, with directory diversity.
+The initial pass does not exclude inventory paths; the complementary pass excludes
+already inspected exact paths from suggestions only. Neither map restricts allowed
+inspection nor counts as source evidence. Tests remain available for verification.
+
+Assessment contexts traverse EXTRACTED calls up to three steps in both directions,
+with explicit paths (including reverse caller steps), at most 8 windows/16 KiB per
+page. Traversal is bounded to 1,024 symbols and 4,096 edges, shared among anchors;
+related windows are selected round-robin so eight anchors cannot consume every slot.
+Control-related names prioritize navigation but do not prove effective controls.
+Intermediate path references are not source excerpts and may require further reads. Graphify point-only
 locations use the next source symbol as a navigation heuristic, explicitly labeled.
 They are not verified function extents, control-flow or vulnerability proof.
 Source is read through the pinned workspace host. Missing/invalid windows remain
@@ -22,7 +32,8 @@ omitted explicitly, and normal source inspection remains available.
 
 `workspace.read` accepts paired inclusive `startLine`/`endLine` (maximum 400 lines).
 Full-file behavior remains unchanged; partial reads never satisfy full discovery
-coverage. Telemetry reports plan size and graph context windows/bytes/truncation.
+coverage. Telemetry reports plan size, discovery priorities, graph context windows/bytes,
+visited symbols, inspected edges and traversal/output truncation.
 
 ## Context and artifact failures
 

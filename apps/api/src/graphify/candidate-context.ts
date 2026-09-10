@@ -2,9 +2,17 @@ import type { WorkspaceToolHost } from "../agent/session-types.js";
 import type { GraphIndex, GraphNode } from "./graph-index.js";
 
 export interface CandidateContextAnchor { path: string; startLine: number; endLine: number }
+export interface CandidateNavigationStep {
+  from: { path: string; line: number; symbol: string };
+  to: { path: string; line: number; symbol: string };
+  relation: string; confidence: "EXTRACTED";
+  traversal: "caller" | "callee";
+}
 export interface CandidateSourceWindow {
   path: string; startLine: number; endLine: number; content: string;
   boundary: "declared" | "next-symbol-inferred";
+  navigationPath: CandidateNavigationStep[];
+  selection: "anchor" | "nearby-call" | "control-name-hint";
   symbol: string; relation: string; direction: "anchor" | "caller" | "callee";
 }
 export interface CandidateGraphContext {
@@ -12,6 +20,10 @@ export interface CandidateGraphContext {
   eligibleSymbols: number;
   omittedSymbols: number;
   truncated: boolean;
+  traversalTruncated: boolean;
+  anchorsTruncated: boolean;
+  visitedSymbols: number;
+  inspectedEdges: number;
   note: string;
 }
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
@@ -33,6 +45,7 @@ export async function buildCandidateGraphContext(
 ): Promise<CandidateGraphContext | null> {
   if (!Number.isSafeInteger(maxOutputBytes) || maxOutputBytes < 0) throw new Error("graph_context_budget_invalid");
   const budget = Math.min(maxOutputBytes, 32_768);
+  if (index.nodes.length > 100_000 || index.edges.length > 300_000) throw new Error("graph_context_index_limit");
   const byId = new Map(index.nodes.map(node => [node.id, node]));
   const fileLines = new Map<string, number[]>();
   for (const node of index.nodes) {
@@ -70,20 +83,84 @@ export async function buildCandidateGraphContext(
       if (!seedAnchors.has(matches[0].id)) seedAnchors.set(matches[0].id, anchor);
     }
   }
-  const choices = [...seeds.values()].map(node => ({ node, relation: "anchor", direction: "anchor" as CandidateSourceWindow["direction"], rank: 0 }));
+  type Choice = { node: GraphNode; seedId: string; relation: string; direction: CandidateSourceWindow["direction"];
+    navigationPath: CandidateNavigationStep[]; selection: CandidateSourceWindow["selection"] };
+  // Names affect navigation priority only. They do not establish that a control exists.
+  const controlHint = (node: GraphNode) => /(?:authoriz|permission|confine|saniti|validat|guard|ownership|accesscheck)/i.test(node.label);
+  const adjacency = new Map<string, Array<{ node: GraphNode; relation: string; direction: "caller" | "callee" }>>();
   for (const edge of index.edges) {
     if (edge.confidence !== "EXTRACTED" || !/^(calls|call|invokes)$/i.test(edge.relation)) continue;
-    const incoming = seeds.has(edge.target); const outgoing = seeds.has(edge.source);
-    if (incoming === outgoing) continue;
-    const node = byId.get(incoming ? edge.source : edge.target);
-    if (node && location(node)) choices.push({ node, relation: edge.relation, direction: incoming ? "caller" : "callee", rank: incoming ? 1 : 2 });
+    const source = byId.get(edge.source), target = byId.get(edge.target);
+    if (!source || !target || source.id === target.id || !location(source) || !location(target)) continue;
+    for (const [id, node, direction] of [[source.id, target, "callee"], [target.id, source, "caller"]] as const) {
+      const list = adjacency.get(id) ?? [];
+      list.push({ node, relation: edge.relation, direction }); adjacency.set(id, list);
+    }
   }
-  choices.sort((a, b) => a.rank - b.rank || compare(a.node.file, b.node.file) || compare(a.node.id, b.node.id));
-  const unique = [...new Map(choices.map(choice => [choice.node.id, choice])).values()];
+  for (const list of adjacency.values()) list.sort((a, b) => Number(controlHint(b.node)) - Number(controlHint(a.node)) ||
+    Number(b.direction === "caller") - Number(a.direction === "caller") || compare(a.node.file, b.node.file) || compare(a.node.id, b.node.id) || compare(a.relation, b.relation));
+  const choices: Choice[] = [...seeds.values()].sort((a, b) => compare(a.file, b.file) || compare(a.id, b.id))
+    .map(node => ({ node, seedId: node.id, relation: "anchor", direction: "anchor", navigationPath: [], selection: "anchor" }));
+  const visited = new Set(choices.map(choice => choice.node.id));
+  const seedVisits = new Map([...seeds.keys()].map(id => [id, 1]));
+  const seedEdges = new Map([...seeds.keys()].map(id => [id, 0]));
+  const maxVisitsPerSeed = Math.floor(1024 / Math.max(1, seeds.size));
+  const maxEdgesPerSeed = Math.floor(4096 / Math.max(1, seeds.size));
+  let inspectedEdges = 0;
+  let traversalTruncated = false;
+  const reference = (node: GraphNode) => ({ path: node.file, line: location(node)!.startLine, symbol: node.label });
+  // Multi-source BFS keeps shortest paths, suppresses cycles and bounds expansion.
+  // Incoming/outgoing steps may mix: a caller's other callee can be a relevant control.
+  walk: for (let cursor = 0; cursor < choices.length; cursor++) {
+    const current = choices[cursor]!;
+    if (current.navigationPath.length >= 3) continue;
+    for (const edge of adjacency.get(current.node.id) ?? []) {
+      if ((seedVisits.get(current.seedId) ?? 0) >= maxVisitsPerSeed ||
+          (seedEdges.get(current.seedId) ?? 0) >= maxEdgesPerSeed) { traversalTruncated = true; break; }
+      if (inspectedEdges >= 4096 || visited.size >= 1024) { traversalTruncated = true; break walk; }
+      inspectedEdges++;
+      seedEdges.set(current.seedId, (seedEdges.get(current.seedId) ?? 0) + 1);
+      if (visited.has(edge.node.id)) continue;
+      visited.add(edge.node.id);
+      seedVisits.set(current.seedId, (seedVisits.get(current.seedId) ?? 0) + 1);
+      const step: CandidateNavigationStep = { from: reference(current.node), to: reference(edge.node),
+        relation: edge.relation, confidence: "EXTRACTED", traversal: edge.direction };
+      choices.push({ node: edge.node, seedId: current.seedId, direction: edge.direction, relation: edge.relation,
+        navigationPath: [...current.navigationPath, step], selection: controlHint(edge.node) ? "control-name-hint" : "nearby-call" });
+    }
+  }
+  // A page normally has eight candidates. Do not let eight anchor excerpts
+  // occupy every slot: reserve at least half for related source, when available.
+  // Round-robin by originating seed prevents one large neighborhood monopolizing
+  // the projected windows. Paths retain the source seed even when its excerpt is omitted.
+  const rank = (choice: Choice) => choice.selection === "anchor" ? 0 : choice.selection === "control-name-hint" ? 1 : 2;
+  const sorted = [...choices].sort((a, b) => rank(a) - rank(b) || a.navigationPath.length - b.navigationPath.length ||
+    Number(b.direction === "caller") - Number(a.direction === "caller") || compare(a.node.file, b.node.file) || compare(a.node.id, b.node.id));
+  const anchorChoices = sorted.filter(choice => choice.selection === "anchor");
+  const neighborQueues = new Map(anchorChoices.map(choice => [choice.seedId, [] as Choice[]]));
+  for (const choice of sorted) if (choice.selection !== "anchor") neighborQueues.get(choice.seedId)!.push(choice);
+  const neighbors: Choice[] = [];
+  for (let depth = 0; ; depth++) {
+    let added = false;
+    for (const queue of neighborQueues.values()) {
+      if (queue[depth]) { neighbors.push(queue[depth]); added = true; }
+    }
+    if (!added) break;
+  }
+  const neighborSlots = Math.min(neighbors.length, Math.max(4, Math.min(8, anchorChoices.length)));
+  const preferredNeighbors = neighbors.slice(0, neighborSlots);
+  const represented = new Set(preferredNeighbors.map(choice => choice.seedId));
+  const fairAnchors = [...anchorChoices].sort((a, b) => Number(represented.has(a.seedId)) - Number(represented.has(b.seedId)) || compare(a.node.id, b.node.id));
+  const anchorSlots = Math.min(fairAnchors.length, 8 - neighborSlots);
+  const unique = anchorChoices.length === 1
+    ? [anchorChoices[0]!, ...neighbors]
+    : [...preferredNeighbors, ...fairAnchors.slice(0, anchorSlots), ...neighbors.slice(neighborSlots), ...fairAnchors.slice(anchorSlots)];
   const windows: CandidateSourceWindow[] = [];
   const output = (): CandidateGraphContext => ({ windows: [...windows], eligibleSymbols: unique.length,
-    omittedSymbols: unique.length - windows.length, truncated: windows.length < unique.length,
-    note: "Source excerpts selected through EXTRACTED syntax relationships. Verify attacker reachability and controls; these are not proven vulnerabilities or complete-file review. Point-location boundaries use the next symbol as a heuristic, not verified function extents. Missing relations do not establish safety." });
+    omittedSymbols: unique.length - windows.length, truncated: anchors.length > 32 || traversalTruncated || windows.length < unique.length, traversalTruncated,
+    anchorsTruncated: anchors.length > 32,
+    visitedSymbols: visited.size, inspectedEdges,
+    note: "Source excerpts selected through EXTRACTED syntax relationships. Verify attacker reachability and controls; these are not proven vulnerabilities or complete-file review. Point-location boundaries use the next symbol as a heuristic, not verified function extents. Paths describe graph traversal, including reverse caller steps, not executable attacker flows. Control-name priority is a search heuristic only. Missing relations do not establish safety." });
   if (Buffer.byteLength(JSON.stringify(output())) > budget) return null;
   // A fixed read cap prevents pathological graphs from turning omitted hints into unbounded I/O.
   for (const choice of unique.slice(0, 12)) {
@@ -97,6 +174,7 @@ export async function buildCandidateGraphContext(
       const source = JSON.parse(result.content) as { content: string };
       windows.push({ path: span.path, startLine, endLine, content: source.content,
         boundary: /-/.test(choice.node.location) ? "declared" : "next-symbol-inferred",
+        navigationPath: choice.navigationPath, selection: choice.selection,
         symbol: choice.node.label, relation: choice.relation, direction: choice.direction });
       if (Buffer.byteLength(JSON.stringify(output())) > budget) windows.pop();
     } catch {

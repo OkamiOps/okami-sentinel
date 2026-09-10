@@ -244,7 +244,11 @@ Mantis and VulnHunter do not consume this index yet.
 Deep now groups source files using extracted graph relationships and persists its
 partition plan with the snapshot. Every auditable file remains included; older
 checkpoints retain their original ordering. Dataflow and validation receive bounded
-candidate-specific source windows selected through the graph. Workers can also
+candidate-specific source windows selected through up to three extracted call links,
+including related controls and explicit navigation paths, within 16 KiB per page.
+Standard receives bounded graph priorities and complementary suggestions for paths
+not already inspected. These are navigation heuristics, not vulnerability proof.
+Workers can also
 request line ranges; these never count as a complete-file review.
 
 Portable sessions guard estimated context at 300,000 tokens or the model's smaller

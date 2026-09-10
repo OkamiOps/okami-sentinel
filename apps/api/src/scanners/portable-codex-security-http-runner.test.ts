@@ -836,12 +836,18 @@ test("Standard independently reviews an empty discovery once and carries only th
   const logs: string[] = [];
   try {
     const result = await runPortableCodexSecurity(config, dependencies({
+      prepareGraph: async () => ({ status: "ready", cacheHit: false, durationMs: 1, nodes: 1, edges: 0,
+        index: { nodes: [{ id: "auth", label: "authorize", file: "src/auth.ts", location: "L1" }], edges: [] } }),
       createSession: discoveryReviewStageSessionFactory(specs, "review"),
       log: (line: string) => logs.push(line),
     }));
     assert.equal(result.runtime.status, "completed");
     const discoverySpecs = specs.filter(({ spec }) => /stage "discovery"/.test(spec.instructions)).map(({ spec }) => spec);
     assert.equal(discoverySpecs.length, 2);
+    const priorities = logs.filter(line => line.startsWith('{')).map(line => JSON.parse(line)).filter(event => event.type === "graph_priorities");
+    assert.deepEqual(priorities.map(event => [event.review, event.selectedFiles, event.excludedReviewedFiles]),
+      [[false, 1, 0], [true, 0, 1]], "inventory scope must not hide the initial discovery; complementary suggestions exclude inspected paths");
+    for (const spec of discoverySpecs) assert.match(spec.instructions, /not inspected source/);
     assert.equal(path.basename(discoverySpecs[0]!.artifactRoot), "discovery");
     assert.equal(path.basename(discoverySpecs[1]!.artifactRoot), "discovery-review");
     assert.deepEqual(
