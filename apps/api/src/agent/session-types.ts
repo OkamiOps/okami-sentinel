@@ -107,6 +107,7 @@ export interface AgentSessionLimits {
   /** Optional per-request estimated context ceiling including completion reserve; not a tokenizer guarantee. */
   maxContextTokens?: number;
   maxModelTurns: number;
+  /** Zero disables the cumulative call-count ceiling; context, turns and cancellation remain enforced. */
   maxToolCalls: number;
   maxInputBytes: number;
   maxOutputBytes: number;
@@ -408,7 +409,7 @@ export function validateAgentSessionLimits(limits: AgentSessionLimits): void {
   ];
   for (const [key, maximum] of entries) {
     const value = limits[key];
-    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < (key === "timeoutMs" ? 0 : 1) || value > maximum) {
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < (key === "timeoutMs" || key === "maxToolCalls" ? 0 : 1) || value > maximum) {
       throw new AgentSessionError("runner_invalid_spec");
     }
   }
@@ -456,6 +457,8 @@ class ConstrainedWireSession implements AgentSession {
     const contextEstimator = new ContextBudgetEstimator();
     let modelTurns = 0;
     let toolCalls = 0;
+    const toolCallLimit = this.#options.limits.maxToolCalls === 0
+      ? Infinity : this.#options.limits.maxToolCalls;
     let inputBytes = 0;
     let outputBytes = 0;
     // Small probe/test budgets retain their original behavior. This reserve is
@@ -487,7 +490,7 @@ class ConstrainedWireSession implements AgentSession {
         this.#throwIfStopped();
         if (
           toolResults.length > 0 &&
-          toolCalls >= this.#options.limits.maxToolCalls &&
+          toolCalls >= toolCallLimit &&
           !artifactWritten
         ) {
           throw new AgentSessionError("agent_tool_limit");
@@ -506,7 +509,7 @@ class ConstrainedWireSession implements AgentSession {
           (this.#options.artifactWriteByTurn !== undefined &&
             modelTurns >= this.#options.artifactWriteByTurn) ||
           this.#options.limits.maxModelTurns - modelTurns <= finalizationReserveTurns ||
-          this.#options.limits.maxToolCalls - toolCalls <= 2
+          toolCallLimit - toolCalls <= 2
         );
         const requestInArtifactRepair = artifactRepairActive;
         const request = this.#options.adapter.nextRequest(
@@ -602,7 +605,7 @@ class ConstrainedWireSession implements AgentSession {
             batchIds.add(call.id);
           }
           if (protocolRepairAttempts >= 2) throw new AgentSessionError("agent_protocol_error", "artifact_terminal_batch_invalid");
-          if (toolCalls + reply.toolCalls.length > this.#options.limits.maxToolCalls) {
+          if (toolCalls + reply.toolCalls.length > toolCallLimit) {
             throw new AgentSessionError("agent_tool_limit");
           }
           const content = JSON.stringify({
@@ -640,8 +643,8 @@ class ConstrainedWireSession implements AgentSession {
         ) {
           toolResults = [];
           for (const call of reply.toolCalls) {
-            if (seenCallIds.has(call.id) || toolCalls >= this.#options.limits.maxToolCalls) {
-              throw new AgentSessionError(toolCalls >= this.#options.limits.maxToolCalls
+            if (seenCallIds.has(call.id) || toolCalls >= toolCallLimit) {
+              throw new AgentSessionError(toolCalls >= toolCallLimit
                 ? "agent_tool_limit"
                 : "agent_protocol_error");
             }
@@ -693,8 +696,8 @@ class ConstrainedWireSession implements AgentSession {
         toolResults = [];
         for (const call of reply.toolCalls) {
           this.#throwIfStopped();
-          if (seenCallIds.has(call.id) || toolCalls >= this.#options.limits.maxToolCalls) {
-            throw new AgentSessionError(toolCalls >= this.#options.limits.maxToolCalls
+          if (seenCallIds.has(call.id) || toolCalls >= toolCallLimit) {
+            throw new AgentSessionError(toolCalls >= toolCallLimit
               ? "agent_tool_limit"
               : "agent_protocol_error");
           }

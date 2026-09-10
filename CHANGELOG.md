@@ -8,6 +8,8 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Fixed
 
+- Deep scans no longer stop or force artifact finalization because a session reaches a cumulative tool-call count. Context, model-turn, output, artifact-repair and cancellation checks remain enforced; Standard and capability probes keep their existing tool limits.
+
 - Responses now sends strict, stage-specific Portable artifact schemas with complete nested required fields, preventing omitted discovery candidates from relying solely on repeated model repair prompts. Legacy mixed-stage and other provider contracts remain unchanged; local source and evidence validation still applies.
 - Responses artifact repair repeats a concise structural instruction when discovery omits its required candidates array, preserving paired tool outputs and existing retry and validation limits.
 - New scans default to low reasoning effort in Standard and high in Deep when the selected route supports those values. Explicit supported choices remain available; routes without effort controls omit the parameter and use provider-managed behavior.

@@ -177,6 +177,32 @@ test("an endless valid tool transcript stops before an N+1 model or tool call", 
   assert.equal(events.filter(isCompletedTool).length, 2);
 });
 
+test("zero tool ceiling allows more than 128 distinct reads and still completes", async (t) => {
+  const fixture = await fixtureRoots("unlimited-tools");
+  t.after(() => fixture.cleanup());
+  const calls = [];
+  for (let index = 0; index < 130; index += 1) {
+    const path = `source-${index}.ts`;
+    await writeFile(join(fixture.snapshotRoot, path), `export const value = ${index};\n`);
+    calls.push({ id: `read-${index}`, type: "function", function: {
+      name: "workspace_read", arguments: JSON.stringify({ path }),
+    } });
+  }
+  const upstream = fakeOpenAiChat([
+    { choices: [{ message: { tool_calls: calls } }] },
+    { choices: [{ message: { content: "done" } }] },
+  ]);
+  const session = await createAgentSession({
+    ...sessionSpec(fixture, "openai-chat", "gemini-api", { maxToolCalls: 0 }),
+    probe: capability(),
+  }, upstream);
+  const events: AgentEvent[] = [];
+  await collect(session.run(), events);
+  assert.equal(events.filter(isCompletedTool).length, 130);
+  assert.equal(upstream.requests.length, 2);
+  assert.ok(events.some(event => event.type === "completion"));
+});
+
 test("the shared session reserves its final turns for artifact write and completion", async () => {
   const requestedTools: string[] = [];
   const controls: Array<{ finalizationRequired?: boolean } | undefined> = [];

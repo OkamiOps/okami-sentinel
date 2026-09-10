@@ -220,3 +220,7 @@ paths from both suggested files and related-file lists, without denying needed r
 
 These changes remove redundant workflow instructions; real provider runtime and
 finding-quality improvements still require measurement.
+
+## Deep tool-call accounting
+
+Deep production sessions use `maxToolCalls: 0` to disable cumulative call-count termination across all stages and recovery attempts. The wire runner interprets zero as unbounded only for that counter, including finalization reservation and batched calls. It does not disable context, model-turn, input/output byte, artifact validation, repair-stall or cancellation checks. Standard and capability probes retain their bounded tool policies. A running worker must reload the implementation to apply this change; an update restart must be identified separately from spontaneous recovery.

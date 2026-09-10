@@ -1021,6 +1021,8 @@ test("Standard covers the same complete source universe as Deep even when the gr
     assert.ok(discovery("standard").every(spec => spec.limits.maxModelTurns <= 16), "Standard bounds depth per batch rather than total file coverage");
     assert.ok(discovery("standard").every(spec => spec.maxCompletionTokens === 16_384));
     assert.ok(discovery("deep").every(spec => spec.maxCompletionTokens === 32_768));
+    assert.ok(specsByMode.get("deep")!.every(spec => spec.limits.maxToolCalls === 0), "all Deep stages disable the cumulative tool counter");
+    assert.ok(specsByMode.get("standard")!.every(spec => spec.limits.maxToolCalls > 0), "Standard keeps its existing policy");
     assert.ok(discovery("standard").every(spec => /BEGIN_PORTABLE_DEEP_SOURCE_FILES_JSON/.test(spec.instructions)), "complete source contents are projected, not candidate-only excerpts");
     assert.ok(discovery("standard").every(spec => /STANDARD BREADTH-FIRST REVIEW/.test(spec.instructions)));
     assert.equal(specsByMode.get("standard")!.some(spec => path.basename(spec.artifactRoot) === "discovery-review"), false);

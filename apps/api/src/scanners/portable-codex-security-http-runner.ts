@@ -525,7 +525,11 @@ export async function runPortableCodexSecurity(
           shard: PortableCodexSecurityReportShardResult["shard"] | null, artifactRoot: string): Promise<PortableCodexSecurityStageObservation> => {
         const effectiveSessionLimits = safeConfiguration.mode === "standard" && partition !== null
           ? { ...stageSessionLimits, maxModelTurns: Math.min(16, stageSessionLimits.maxModelTurns), maxToolCalls: Math.min(64, stageSessionLimits.maxToolCalls) }
-          : stageSessionLimits;
+          : safeConfiguration.mode === "deep"
+            // Deep exploration must not exhaust a fixed counter while reading
+            // distinct source/sink paths. Context and repair limits still apply.
+            ? { ...stageSessionLimits, maxToolCalls: 0 }
+            : stageSessionLimits;
         const graphProjection = (partition as StandardRecoveryPartition | null)?.sourceProjection === "graph-windows-v1";
         const stageDossierStateBase64 = portableCodexSecurityDossierBase64(stageDossier);
         fs.mkdirSync(artifactRoot, { recursive: true, mode: 0o700 });
