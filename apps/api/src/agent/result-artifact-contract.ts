@@ -238,8 +238,10 @@ function portableStageContentSchema(context?: PortableResultArtifactValidationCo
         description: "Summarize the source review, tested control hypotheses and result. Do not submit a placeholder or interpret incomplete review as clean." };
       if (context.deepCoverage === undefined) {
         selected.scope = object({
-          inspected: { ...array(text), minItems: 1,
-            description: "Exact repository-relative source file paths successfully read in this discovery session; directories, invented paths and merely listed files are not reviewed evidence." },
+          inspected: { ...array(text), minItems: context.discoveryCoverage?.projectedSourcePaths?.size ? 0 : 1,
+            description: context.discoveryCoverage?.projectedSourcePaths?.size
+              ? "Only source files fully read in this session. May be empty when reviewing supplied partial excerpts: put every partially projected path in unexamined with insufficient-evidence."
+              : "Exact repository-relative source file paths successfully read in this discovery session; directories, invented paths and merely listed files are not reviewed evidence." },
           unexamined: { ...scopeProperties.unexamined,
             description: "Known source file paths not reviewed, with the reason. Do not claim that unexamined code is clean." },
         });

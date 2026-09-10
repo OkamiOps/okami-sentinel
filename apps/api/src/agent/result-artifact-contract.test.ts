@@ -773,3 +773,15 @@ test("projected discovery accepts honest partial source coverage without promoti
     ...context, discoveryCoverage: { ...context.discoveryCoverage, observedReadPaths: new Set(["src/routes.ts"]) },
   }), null, "a real full read can resolve the partial coverage");
 });
+
+
+test("provider discovery schema permits empty inspected exactly when server source excerpts exist", () => {
+  for (const [paths, expectedMinimum] of [[[], 1], [["src/routes.ts"], 0]] as const) {
+    const schema = resultArtifactContentSchema(PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, {
+      dossier: createPortableCodexSecurityDossier(), expectedArtifactPath: "03-discovery.json",
+      requireDiscoveryCandidateContext: true,
+      discoveryCoverage: { observedReadPaths: new Set<string>(), projectedSourcePaths: new Set(paths) },
+    }) as { properties: Record<string, any> };
+    assert.equal(schema.properties.scope.properties.inspected.minItems, expectedMinimum);
+  }
+});
