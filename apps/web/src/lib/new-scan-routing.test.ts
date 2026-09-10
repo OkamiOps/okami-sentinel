@@ -8,6 +8,7 @@ import {
   compatibilityReasonKey,
   connectionSelectionFor,
   defaultReasoningEffortForCompatibility,
+  defaultReasoningEffortForMode,
   loadLiveConnectionModels,
   isProbeOnlyCompatibilityBlock,
   validateConnectionCapability,
@@ -359,6 +360,37 @@ test("resets a route change to the server-published default", () => {
   assert.equal(defaultReasoningEffortForCompatibility(null), null);
 });
 
+test("selects low for Standard and high for Deep only when the route supports each effort", () => {
+  const selection = connectionSelectionFor(connection(), [model("configured")], "configured")!;
+  const supportsBoth: ConnectionCompatibility = {
+    ...selection,
+    eligible: true,
+    reasons: [],
+    reasoningEffort: { options: ["low", "medium", "high"], default: "medium" },
+  };
+  assert.equal(defaultReasoningEffortForMode(supportsBoth, "standard"), "low");
+  assert.equal(defaultReasoningEffortForMode(supportsBoth, "deep"), "high");
+  assert.deepEqual(reasoningEffortForCompatibility(supportsBoth, null, "standard"), {
+    kind: "configurable",
+    options: ["low", "medium", "high"],
+    selected: "low",
+  });
+  assert.deepEqual(reasoningEffortForCompatibility(supportsBoth, null, "deep"), {
+    kind: "configurable",
+    options: ["low", "medium", "high"],
+    selected: "high",
+  });
+  assert.equal(defaultReasoningEffortForMode({
+    ...supportsBoth,
+    reasoningEffort: { options: ["medium", "high"], default: "medium" },
+  }, "standard"), "medium");
+  assert.equal(defaultReasoningEffortForMode({
+    ...supportsBoth,
+    reasoningEffort: { options: ["adaptive"], default: null },
+  }, "deep"), null);
+  assert.equal(defaultReasoningEffortForMode(null, "standard"), null);
+});
+
 test("preserves a selected effort through authorization revalidation until the server contract changes", () => {
   const selection = connectionSelectionFor(connection(), [model("configured")], "configured")!;
   const contract: ConnectionCompatibility = {
@@ -368,16 +400,17 @@ test("preserves a selected effort through authorization revalidation until the s
     reasoningEffort: { options: ["low", "high", "max", "ultra"], default: "high" },
   };
 
-  assert.equal(reconcileReasoningEffort("ultra", null), "ultra");
-  assert.equal(reconcileReasoningEffort("ultra", contract), "ultra");
+  assert.equal(reconcileReasoningEffort("ultra", null, "standard"), "ultra");
+  assert.equal(reconcileReasoningEffort("ultra", contract, "standard"), "ultra");
+  assert.equal(reconcileReasoningEffort(null, contract, "deep"), "high");
   assert.equal(reconcileReasoningEffort("ultra", {
     ...contract,
     reasoningEffort: { options: ["low", "high"], default: "high" },
-  }), "high");
+  }, "standard"), "low");
   assert.equal(reconcileReasoningEffort("ultra", {
     ...contract,
     reasoningEffort: undefined,
-  }), null);
+  }, "standard"), null);
 });
 
 test("loads a live model catalog for every connection and falls back to cache safely", async () => {

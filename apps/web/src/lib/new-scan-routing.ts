@@ -6,6 +6,7 @@ import type {
   ResolveScanCompatibilityRequest,
   ScanConnectionSelection,
   ScannerEngine,
+  ScanMode,
   StartScanRequest,
 } from "@csb/shared";
 
@@ -128,16 +129,20 @@ export async function validateConnectionCapability(
 export function reasoningEffortForCompatibility(
   compatibility: ConnectionCompatibility | null,
   selectedEffort: string | null,
+  mode?: ScanMode,
 ): ReasoningEffortControl {
   const metadata = compatibility?.reasoningEffort;
   if (metadata === undefined || metadata.options.length === 0) {
     return { kind: "provider-managed", options: [], selected: null };
   }
+  const fallback = mode === undefined
+    ? metadata.default !== null && metadata.options.includes(metadata.default)
+      ? metadata.default
+      : null
+    : defaultReasoningEffortForMode(compatibility, mode);
   const selected = selectedEffort !== null && metadata.options.includes(selectedEffort)
     ? selectedEffort
-    : metadata.default !== null && metadata.options.includes(metadata.default)
-      ? metadata.default
-      : null;
+    : fallback;
   return {
     kind: "configurable",
     options: [...metadata.options],
@@ -158,6 +163,22 @@ export function defaultReasoningEffortForCompatibility(
 }
 
 /**
+ * The scan mode supplies the product default only when the server-published
+ * route can encode it. Otherwise retain the provider's declared default.
+ */
+export function defaultReasoningEffortForMode(
+  compatibility: ConnectionCompatibility | null,
+  mode: ScanMode,
+): string | null {
+  const metadata = compatibility?.reasoningEffort;
+  if (metadata === undefined || metadata.options.length === 0) return null;
+  const preferred = mode === "deep" ? "high" : "low";
+  return metadata.options.includes(preferred)
+    ? preferred
+    : defaultReasoningEffortForCompatibility(compatibility);
+}
+
+/**
  * A revalidation temporarily clears compatibility. Keep the user's still
  * valid choice during that gap, then reconcile it only against the returned
  * server contract.
@@ -165,6 +186,7 @@ export function defaultReasoningEffortForCompatibility(
 export function reconcileReasoningEffort(
   currentEffort: string | null,
   compatibility: ConnectionCompatibility | null,
+  mode: ScanMode,
 ): string | null {
   if (compatibility === null) return currentEffort;
   const metadata = compatibility.reasoningEffort;
@@ -172,7 +194,7 @@ export function reconcileReasoningEffort(
   if (currentEffort !== null && metadata.options.includes(currentEffort)) {
     return currentEffort;
   }
-  return defaultReasoningEffortForCompatibility(compatibility);
+  return defaultReasoningEffortForMode(compatibility, mode);
 }
 
 type ConnectionAwareStartInput = Omit<StartScanRequest, "connection" | "provider" | "authMode" | "model"> & {

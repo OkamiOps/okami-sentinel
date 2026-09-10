@@ -146,7 +146,7 @@ test("connection launch accepts only reasoning efforts published by the resolved
     scanId: "scan-123",
     launchPlans: fixture.resolver,
   });
-  assert.equal(selected.request.effort, "high");
+  assert.equal(selected.request.effort, "low");
 
   const allowed = resolveScanLaunchSelection({
     request: {
@@ -216,6 +216,24 @@ test("connection launch accepts only reasoning efforts published by the resolved
     })).resolver,
   });
   assert.equal("effort" in noPublishedDefault.request, false);
+});
+
+test("scan mode defaults respect route capabilities and explicit effort", () => {
+  const select = (mode: "standard" | "deep", options: string[], publishedDefault: string | null, effort?: string) => resolveScanLaunchSelection({
+    request: {
+      repositoryPath: "/repo", engine: "mantis", mode,
+      ...(effort === undefined ? {} : { effort }),
+      connection: { connectionId: "openai-session", modelSelectionMode: "catalog", modelId: "gpt-live" },
+    },
+    scanId: "mode-default",
+    launchPlans: resolver(plan({ reasoningEffort: { options, default: publishedDefault } })).resolver,
+  }).request;
+  assert.equal(select("standard", ["low", "high", "xhigh"], "high").effort, "low");
+  assert.equal(select("deep", ["low", "high", "xhigh"], "low").effort, "high");
+  assert.equal(select("deep", ["low", "high", "xhigh"], "low", "xhigh").effort, "xhigh");
+  assert.equal(select("standard", ["medium", "high"], "medium").effort, "medium");
+  assert.equal("effort" in select("deep", [], null, "high"), false);
+  assert.equal("effort" in select("standard", ["adaptive"], null), false);
 });
 
 test("Mantis HTTP agent sessions retain the server plan instead of mapping to the old Codex worker", () => {

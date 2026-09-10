@@ -39,8 +39,11 @@ Responses transports put the complete task/source in one persistent system input
 item. They do not duplicate it in both top-level `instructions` and user input;
 continuations carry tool outputs and concise control messages. For direct xAI
 `grok-4.6`, missing catalog reasoning metadata is supplemented from the official
-model documentation; explicit metadata always wins. Selecting `low` is explicit
-in the scan request and recorded as sent effort, not hidden behind provider default.
+model documentation; explicit metadata always wins. New scans select `low` for
+Standard and `high` for Deep when supported by the resolved route. Explicit valid
+user choices are preserved. If the mode preference is unavailable, the route's
+published default applies; without effort metadata the parameter is omitted.
+The effective choice is recorded as sent effort, not hidden behind provider default.
 
 Standard persists `portable-standard-plan.json`, binding membership, order and sizes
 to the immutable snapshot. Checkpoint recovery reuses accepted batches and examines

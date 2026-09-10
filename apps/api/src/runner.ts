@@ -746,7 +746,7 @@ async function startReservedScan(
   // Legacy launches retain the historical high default. A resolved provider
   // model without effort metadata is provider-managed, so no synthetic flag
   // or persisted value may be introduced after selection normalization.
-  const effort = selection.request.effort ?? (selection.connectionAware ? null : "high");
+  const effort = selection.request.effort ?? (selection.connectionAware ? null : selection.request.mode === "deep" ? "high" : "low");
   const mode = req.mode || "standard";
   const pricingQuote = selection.plan?.model === null || selection.plan === null
     ? null

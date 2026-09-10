@@ -8,6 +8,7 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Fixed
 
+- New scans default to low reasoning effort in Standard and high in Deep when the selected route supports those values. Explicit supported choices remain available; routes without effort controls omit the parameter and use provider-managed behavior.
 - Same-ID recovery updates only the verified capability-check reference with a conditional write, instead of attempting to insert a duplicate frozen connection snapshot. Connection, model, methodology and original capture time remain unchanged.
 - Worker detection recognizes the paired `tsx` preflight/loader Node child, so losing its launcher does not leave an active scan mistaken for a dead process.
 - Status reads and live reconciliation preserve queued recovery during its capability check; local startup still recovers an interrupted queue.

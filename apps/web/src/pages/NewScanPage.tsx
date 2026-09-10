@@ -47,6 +47,7 @@ import {
   canResolveConnectionWithEngine,
   compatibilityReasonKey,
   connectionSelectionFor,
+  defaultReasoningEffortForMode,
   isProbeOnlyCompatibilityBlock,
   loadLiveConnectionModels,
   reasoningEffortPanelClass,
@@ -229,8 +230,8 @@ export function NewScanPage() {
     [resolvedSelection, retryIntent],
   );
   const reasoning = useMemo(
-    () => reasoningEffortForCompatibility(compatibility, effort),
-    [compatibility, effort],
+    () => reasoningEffortForCompatibility(compatibility, effort, mode),
+    [compatibility, effort, mode],
   );
   const reasoningDeliveryCopyValue = reasoningDeliveryCopy(
     connectionReasoningDelivery(selectedConnection, reasoning.selected),
@@ -334,12 +335,16 @@ export function NewScanPage() {
   useEffect(() => {
     if (!catalog || !scanner) return;
     if (retryIntent !== null) return;
-    if (!scanner.modes.includes(mode) && scanner.modes[0]) setMode(scanner.modes[0]);
-  }, [catalog, mode, retryIntent, scanner]);
+    if (!scanner.modes.includes(mode) && scanner.modes[0]) {
+      const nextMode = scanner.modes[0];
+      setMode(nextMode);
+      setEffort(defaultReasoningEffortForMode(compatibility, nextMode));
+    }
+  }, [catalog, compatibility, mode, retryIntent, scanner]);
 
   useEffect(() => {
-    setEffort((current) => reconcileReasoningEffort(current, compatibility));
-  }, [reasoningEffortContractKey]);
+    setEffort((current) => reconcileReasoningEffort(current, compatibility, mode));
+  }, [mode, reasoningEffortContractKey]);
 
   useEffect(() => {
     let active = true;
@@ -452,6 +457,12 @@ export function NewScanPage() {
     setEngine(next.engine);
     setAuthorized(false);
     setError(null);
+  }
+
+  function selectMode(next: ScanMode) {
+    if (next === mode) return;
+    setMode(next);
+    setEffort(defaultReasoningEffortForMode(compatibility, next));
   }
 
   async function submit(event: FormEvent) {
@@ -769,7 +780,7 @@ export function NewScanPage() {
                       key={candidate}
                       type="button"
                       aria-pressed={mode === candidate}
-                      onClick={() => setMode(candidate)}
+                      onClick={() => selectMode(candidate)}
                       className={cx(
                         "relative border-l border-border px-3 py-3 font-mono text-[9px] uppercase first:border-l-0 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary",
                         mode === candidate

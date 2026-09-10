@@ -227,7 +227,7 @@ function isPortableCodexSecurityPlan(
 /**
  * A connection plan is the trust boundary for model capabilities. Browser
  * effort is accepted only when the exact resolved launch plan exposed it;
- * stale/missing values use the provider-published default, while absent plan
+ * stale/missing values prefer the scan-mode default when supported, while absent plan
  * metadata leaves effort omitted for provider-managed behavior.
  */
 function normalizeReasoningEffort(
@@ -240,6 +240,10 @@ function normalizeReasoningEffort(
   }
   if (request.effort !== undefined && metadata.options.includes(request.effort)) {
     return { ...request, effort: request.effort };
+  }
+  const modeDefault = request.mode === "deep" ? "high" : "low";
+  if (metadata.options.includes(modeDefault)) {
+    return { ...request, effort: modeDefault };
   }
   if (metadata.default !== null && metadata.options.includes(metadata.default)) {
     return { ...request, effort: metadata.default };

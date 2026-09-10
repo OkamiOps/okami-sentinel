@@ -46,6 +46,7 @@ import { useI18n } from "../../i18n";
 import {
   compatibilityReasonKey,
   connectionSelectionFor,
+  defaultReasoningEffortForMode,
   isProbeOnlyCompatibilityBlock,
   reasoningEffortForCompatibility,
   reconcileReasoningEffort,
@@ -119,7 +120,7 @@ export function GuardrailPreflightSheet({
     && !nativeScannerModelIds.has(modelId);
   const scannerCostLimitUnsupported = costMode !== "none" && engine !== "codex-security";
   const connectionSelection = connectionSelectionFor(connection, connectionModels, modelId);
-  const reasoning = reasoningEffortForCompatibility(compatibility, effort);
+  const reasoning = reasoningEffortForCompatibility(compatibility, effort, mode);
   const capabilityProbeOnlyBlock = isProbeOnlyCompatibilityBlock(compatibility);
   const capabilityProbeKey = connectionSelection !== null && connection !== null
     ? [engine, connectionSelection.connectionId, connectionSelection.modelId ?? "runtime-default", connection.protocol, capabilityRetry].join("|")
@@ -263,12 +264,16 @@ export function GuardrailPreflightSheet({
   }, [open, executor, engine, connectionSelection?.connectionId, connectionSelection?.modelId, connectionSelection?.modelSelectionMode, capabilityProbeKey, capabilityProbeOnlyBlock]);
 
   useEffect(() => {
-    setEffort((current) => reconcileReasoningEffort(current, compatibility));
-  }, [compatibility]);
+    setEffort((current) => reconcileReasoningEffort(current, compatibility, mode));
+  }, [compatibility, mode]);
 
   useEffect(() => {
-    if (scanner !== null && !scanner.modes.includes(mode) && scanner.modes[0]) setMode(scanner.modes[0]);
-  }, [scanner, mode]);
+    if (scanner !== null && !scanner.modes.includes(mode) && scanner.modes[0]) {
+      const nextMode = scanner.modes[0];
+      setMode(nextMode);
+      setEffort(defaultReasoningEffortForMode(compatibility, nextMode));
+    }
+  }, [compatibility, scanner, mode]);
 
   useEffect(() => {
     if (!open || selected?.source !== "github") {
@@ -601,7 +606,7 @@ export function GuardrailPreflightSheet({
                     <div className="text-sm font-semibold">{t("newScan.scanMode")}</div>
                     <div className="mt-2 grid grid-cols-2 gap-px border bg-border">
                       {["standard", "deep"].map((option) => (
-                        <button key={option} type="button" disabled={scanner?.modes.includes(option as ScanMode) === false} aria-pressed={mode === option} onClick={() => { setMode(option as ScanMode); invalidatePreview(); }} className={`min-h-11 bg-background px-3 font-mono text-[9px] uppercase transition-colors disabled:opacity-40 ${mode === option ? "text-primary shadow-[inset_0_-2px_var(--primary)]" : "text-muted-foreground hover:text-foreground"}`}>{option}</button>
+                        <button key={option} type="button" disabled={scanner?.modes.includes(option as ScanMode) === false} aria-pressed={mode === option} onClick={() => { const nextMode = option as ScanMode; if (nextMode !== mode) { setMode(nextMode); setEffort(defaultReasoningEffortForMode(compatibility, nextMode)); } invalidatePreview(); }} className={`min-h-11 bg-background px-3 font-mono text-[9px] uppercase transition-colors disabled:opacity-40 ${mode === option ? "text-primary shadow-[inset_0_-2px_var(--primary)]" : "text-muted-foreground hover:text-foreground"}`}>{option}</button>
                       ))}
                     </div>
                   </div>
