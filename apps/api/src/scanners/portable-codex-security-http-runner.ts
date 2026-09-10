@@ -725,7 +725,13 @@ export async function runPortableCodexSecurity(
               attempt, priorErrorCode }));
             const splitFiles = recoveryPartition !== null;
             const splitCandidates = ["dataflow", "validation", "report"].includes(stage.id) && stageDossier.candidates.length > 1;
-            if (!priorErrorCode || (!splitFiles && !splitCandidates)) return execute(stageDossier, partition, shard, artifactRoot);
+            // A policy update starts a new retry journal, but accepted child
+            // artifacts still belong to this same snapshot and must be reused.
+            const savedRecoveryChildren = dependencies.resumeDiscovery === true &&
+              ["chunks", "source-units-v1"].some(prefix => fs.existsSync(path.join(
+                outputDir, "portable-recovery", `${prefix}-${path.basename(artifactRoot)}`,
+              )));
+            if ((!priorErrorCode && !savedRecoveryChildren) || (!splitFiles && !splitCandidates)) return execute(stageDossier, partition, shard, artifactRoot);
             const graphRecovery = (recoveryPartition as StandardRecoveryPartition | null)?.sourceProjection === "graph-windows-v1";
             const groupSize = graphRecovery ? 4 : 1;
             const sourceUnits = splitFiles && !graphRecovery

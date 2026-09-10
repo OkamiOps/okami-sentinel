@@ -1594,6 +1594,28 @@ test("automatic validation recovery splits a failed page and never repeats a com
     assert.equal(events.filter(l => l.includes('"type":"stage_recovery"')).length, 2);
     const dossier = readPortableCodexSecurityDossier(path.join(config.outputDir, "portable-codex-security-results"))!;
     assert.equal(dossier.assessments.filter(a => a.stage === "validation").length, 3);
+    // Simulate a new execution-policy journal after interruption before the
+    // parent aggregate is saved. All accepted children remain authoritative.
+    fs.unlinkSync(path.join(config.outputDir, "portable-codex-security-artifacts", "validation", "05-validation.json"));
+    fs.unlinkSync(path.join(config.outputDir, "portable-codex-security-results", "sentinel-findings.json"));
+    fs.unlinkSync(path.join(config.outputDir, "portable-codex-security-results", "portable-codex-security-dossier.json"));
+    const recoveryDir = path.join(config.outputDir, "portable-recovery");
+    for (const entry of fs.readdirSync(recoveryDir)) {
+      if (!entry.endsWith(".json")) continue;
+      const file = path.join(recoveryDir, entry);
+      if (JSON.parse(fs.readFileSync(file, "utf8")).stage === "validation") fs.renameSync(file, `${file}.previous-policy`);
+    }
+    const runtimePath = path.join(config.outputDir, "portable-codex-security-runtime.json");
+    const interrupted = JSON.parse(fs.readFileSync(runtimePath, "utf8"));
+    fs.writeFileSync(runtimePath, JSON.stringify({ ...interrupted, status: "running", stage: "validation" }));
+    calls.length = 0;
+    const resumed = await runPortableCodexSecurity(config, dependencies({ resumeDiscovery: true,
+      prepareGraph: async () => ({ status: "ready", cacheHit: true, durationMs: 0, nodes: 1, edges: 0,
+        index: { nodes: [{ id: "auth", label: "authenticate()", file: "src/auth.ts", location: "L1" }], edges: [] } }),
+      createSession: factory }));
+    assert.equal(resumed.runtime.status, "completed");
+    assert.deepEqual(calls, [], "a fresh policy journal must reuse saved children before dispatching the parent again");
+
   } finally { remove(root); }
 });
 
