@@ -173,7 +173,7 @@ function anthropicTools(
       path: stringSchema(), maxEntries: integerSchema(), maxDepth: integerSchema(),
     }),
     anthropicTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.read"), WORKSPACE_TOOL_WIRE_DESCRIPTIONS["workspace.read"], {
-      path: requiredStringSchema(), maxBytes: integerSchema(),
+      path: requiredStringSchema(), startLine: integerSchema(), endLine: integerSchema(), maxBytes: integerSchema(),
     }, ["path"]),
     anthropicTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.search"), WORKSPACE_TOOL_WIRE_DESCRIPTIONS["workspace.search"], {
       query: requiredStringSchema(), path: stringSchema(), maxResults: integerSchema(), maxBytes: integerSchema(),

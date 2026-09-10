@@ -241,6 +241,27 @@ Workers can query symbols, paths and adjacent relationships through the bounded
 does not count as inspected coverage or confirmed security evidence. Native Codex,
 Mantis and VulnHunter do not consume this index yet.
 
+Deep now groups source files using extracted graph relationships and persists its
+partition plan with the snapshot. Every auditable file remains included; older
+checkpoints retain their original ordering. Dataflow and validation receive bounded
+candidate-specific source windows selected through the graph. Workers can also
+request line ranges; these never count as a complete-file review.
+
+Portable sessions guard estimated context at 300,000 tokens or the model's smaller
+published context window, including a completion reserve. This provider-independent
+estimate is not an exact tokenizer or a guarantee about a provider's pricing tier.
+Recoverable session failures get at most two additional page attempts with fresh
+history; multi-file or multi-candidate pages are split into single units on recovery,
+and accepted subpages are reused. Three identical invalid artifact writes stop the
+stalled session early. Existing cost limits and cancellation remain authoritative.
+
+In server/Docker mode, startup can resume scans interrupted by server failure with
+the same scan ID after verifying the snapshot, checkpoints, credentials and absence
+of a live worker. Restart attempts are limited to two. Explicitly cancelled or
+terminal runs, missing prerequisites, unavailable credentials/capacity and exhausted
+recovery budgets require operator action; the system never marks them successful.
+See [recovery and context contracts](docs/architecture/portable-graph-recovery.md).
+
 Indexes are cached under `data/graphify-cache` (or `CSB_DATA_DIR`) by snapshot
 content, Graphify version and extraction settings. Scans record indexing status,
 duration, cache reuse, symbol and relationship counts in `graphify-status.json`

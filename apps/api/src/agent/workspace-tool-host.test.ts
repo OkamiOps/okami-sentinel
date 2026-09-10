@@ -329,3 +329,20 @@ test("workspace.graph returns source navigation within the output budget without
     code: "tool_output_limit",
   });
 });
+
+test("ranged reads return exact lines without claiming complete review and retain path/byte limits", async t => {
+  const root = await mkdtemp(join(process.cwd(), ".test-agent-host-range-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const snapshotRoot = join(root, "snapshot"); const artifactRoot = join(root, "artifacts");
+  await mkdir(snapshotRoot); await mkdir(artifactRoot, { mode: 0o700 });
+  await writeFile(join(snapshotRoot, "source.ts"), "one\r\ntwo\r\nthree\r\n");
+  const host = await createWorkspaceToolHost({ snapshotRoot, artifactRoot });
+  const result = await host.call("workspace.read", { path: "source.ts", startLine: 2, endLine: 2, maxBytes: 3 });
+  assert.deepEqual(JSON.parse(result.content), { path: "source.ts", content: "two", startLine: 2, endLine: 2, completeFile: false });
+  for (const range of [{ startLine: 1 }, { endLine: 2 }, { startLine: 0, endLine: 1 }, { startLine: 2, endLine: 1 }, { startLine: 1, endLine: 401 }, { startLine: 4, endLine: 4 }]) {
+    await assert.rejects(host.call("workspace.read", { path: "source.ts", ...range }), { code: "tool_argument_invalid" });
+  }
+  await assert.rejects(host.call("workspace.read", { path: "source.ts", startLine: 2, endLine: 3, maxBytes: 3 }), { code: "tool_read_limit" });
+  await assert.rejects(host.call("workspace.read", { path: "../outside", startLine: 1, endLine: 1 }), { code: "tool_path_denied" });
+  assert.equal(JSON.parse((await host.call("workspace.read", { path: "source.ts" })).content).content, "one\r\ntwo\r\nthree\r\n");
+});

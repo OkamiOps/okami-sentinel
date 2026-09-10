@@ -1,3 +1,4 @@
+import { resolveDeepPlan, DEEP_PLAN_FILE } from "./portable-deep-plan.js";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -11,7 +12,7 @@ import { readPortableCodexSecurityWorkerConfiguration } from "./portable-codex-s
 import { readPortableCodexSecurityRuntime } from "./portable-codex-security-runtime.js";
 import { assertPortableCodexSecuritySnapshot, assertExactStageArtifact, assertPortableCodexSecurityDossierAnchors, assertPortableCodexSecurityReportAnchors } from "./portable-codex-security-worker-support.js";
 import { createPortableCodexSecurityDossier, applyPortableCodexSecurityStageArtifact, validatePortableCodexSecurityReportCoverage } from "./portable-codex-security-dossier.js";
-import { createPortableDeepCoveragePlan, mergePortableDeepDiscoveryDossiers } from "./portable-codex-security-deep-coverage.js";
+import { mergePortableDeepDiscoveryDossiers } from "./portable-codex-security-deep-coverage.js";
 import { createPortableAssessmentPages, assessmentPageDirectory } from "./portable-codex-security-assessment-pages.js";
 import { createPortableCodexSecurityReportShards } from "./portable-codex-security-report-shards.js";
 import { PORTABLE_CODEX_SECURITY_STAGES } from "./portable-codex-security-profile.js";
@@ -45,7 +46,7 @@ export function preflightPortableResume(scanDir: string, mode: "standard" | "dee
   let totalBatches = 1;
   let discoveryComplete = false;
   if (mode === "deep") {
-    const plan = createPortableDeepCoveragePlan(snapshotRoot);
+    const plan = resolveDeepPlan({ snapshotRoot, snapshotId: previous.snapshotId!, outputDir: scanDir, resume: true });
     totalBatches = plan.partitions.length;
     const pages: typeof dossier[] = [];
     for (const partition of plan.partitions) {
@@ -146,7 +147,17 @@ async function resume(scanId: string, dryRun: boolean) {
     }
     assertPortableCodexSecuritySnapshot({ snapshotRoot: path.join(outputDir, "portable-codex-security-snapshot"), snapshotId: previous.snapshotId! });
     fs.writeFileSync(path.join(outputDir, "portable-codex-security-runtime.json"), JSON.stringify(previous), { mode: 0o600 });
-    for (const name of ["portable-codex-security-pricing.json", "scanner-pricing.json"]) if (fs.existsSync(path.join(original.scanDir, name))) fs.copyFileSync(path.join(original.scanDir, name), path.join(outputDir, name));
+    for (const name of ["portable-codex-security-pricing.json", "scanner-pricing.json", DEEP_PLAN_FILE]) if (fs.existsSync(path.join(original.scanDir, name))) fs.copyFileSync(path.join(original.scanDir, name), path.join(outputDir, name));
+    // Preserve accepted recovery fragments and attempt budgets across a new run ID.
+    const recoveryRoot = path.join(original.scanDir, "portable-recovery");
+    if (fs.existsSync(recoveryRoot)) {
+      fs.cpSync(recoveryRoot, path.join(outputDir, "portable-recovery"), { recursive: true, preserveTimestamps: true,
+        errorOnExist: true, force: false, filter: source => {
+          const stat = fs.lstatSync(source);
+          if (stat.isSymbolicLink() || (!stat.isDirectory() && !stat.isFile())) throw new Error("resume_invalid_recovery_state");
+          return !/^[a-f0-9]{64}\.lock$/.test(path.basename(source));
+        } });
+    }
     const legacyLog = cliLogPath(original.scanDir);
     if (fs.existsSync(legacyLog)) {
       fs.copyFileSync(legacyLog, cliLogPath(outputDir));

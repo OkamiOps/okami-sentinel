@@ -1,4 +1,6 @@
-import type { PortableAnchorContractRepairDetail, PortableReportRepairDetail } from "../scanners/portable-codex-security-dossier.js";
+import { createHash } from "node:crypto";
+import { ContextBudgetEstimator, completionContextReserve, carriesRemoteContext } from "./context-budget.js";
+import type { PortableAnchorContractRepairDetail, PortableReportRepairDetail, PortableAssessmentRepairDetail } from "../scanners/portable-codex-security-dossier.js";
 import type { GraphIndex } from "../graphify/graph-index.js";
 import path from "node:path";
 import type {
@@ -38,6 +40,8 @@ export type AgentSessionErrorCode =
   | "agent_turn_limit"
   | "agent_tool_limit"
   | "agent_input_byte_limit"
+  | "agent_context_limit"
+  | "agent_artifact_stalled"
   | "agent_output_byte_limit"
   | "agent_time_limit"
   | "agent_protocol_error"
@@ -100,6 +104,8 @@ export interface WorkspaceToolHostOptions {
 }
 
 export interface AgentSessionLimits {
+  /** Optional per-request estimated context ceiling including completion reserve; not a tokenizer guarantee. */
+  maxContextTokens?: number;
   maxModelTurns: number;
   maxToolCalls: number;
   maxInputBytes: number;
@@ -227,6 +233,7 @@ export type AgentEvent =
     scopeIssue?: DiscoveryScopeIssue;
     anchorIssue?: PortableAnchorContractRepairDetail;
     reportIssue?: PortableReportRepairDetail;
+    assessmentIssue?: PortableAssessmentRepairDetail;
   }
   | { type: "artifact"; path: string; bytes: number }
   | { type: "usage"; usage: AgentUsage }
@@ -292,6 +299,7 @@ export interface AgentToolResult {
   scopeIssue?: DiscoveryScopeIssue;
   anchorIssue?: PortableAnchorContractRepairDetail;
     reportIssue?: PortableReportRepairDetail;
+    assessmentIssue?: PortableAssessmentRepairDetail;
 }
 
 export interface NormalizedModelReply {
@@ -381,6 +389,10 @@ function validateResultArtifactValidationContext(options: ConstrainedWireSession
 }
 
 export function validateAgentSessionLimits(limits: AgentSessionLimits): void {
+  if (limits.maxContextTokens !== undefined && (!Number.isSafeInteger(limits.maxContextTokens) ||
+      limits.maxContextTokens < 1 || limits.maxContextTokens > 2_000_000)) {
+    throw new AgentSessionError("runner_invalid_spec");
+  }
   const entries: ReadonlyArray<[keyof AgentSessionLimits, number]> = [
     ["maxModelTurns", 256],
     ["maxToolCalls", 1_024],
@@ -390,7 +402,7 @@ export function validateAgentSessionLimits(limits: AgentSessionLimits): void {
   ];
   for (const [key, maximum] of entries) {
     const value = limits[key];
-    if (!Number.isSafeInteger(value) || value < (key === "timeoutMs" ? 0 : 1) || value > maximum) {
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < (key === "timeoutMs" ? 0 : 1) || value > maximum) {
       throw new AgentSessionError("runner_invalid_spec");
     }
   }
@@ -435,6 +447,7 @@ class ConstrainedWireSession implements AgentSession {
       Math.max(0, this.#deadline - this.#now()),
     );
     const seenCallIds = new Set<string>();
+    const contextEstimator = new ContextBudgetEstimator();
     let modelTurns = 0;
     let toolCalls = 0;
     let inputBytes = 0;
@@ -448,6 +461,7 @@ class ConstrainedWireSession implements AgentSession {
     let toolResults: AgentToolResult[] = [];
     let artifactWritten = false;
     let artifactRepairActive = false;
+    let repeatedArtifactFailure: { digest: string; count: number } | undefined;
     let protocolRepairAttempts = 0;
     let lastArtifactValidationIssue: ResultArtifactValidationIssue | undefined;
     let artifactRepairTurns = 0;
@@ -500,6 +514,11 @@ class ConstrainedWireSession implements AgentSession {
         );
         artifactRepairReminder = false;
         const requestBytes = serializedByteLength(request.body);
+        if (this.#options.limits.maxContextTokens !== undefined &&
+            contextEstimator.estimate(requestBytes, carriesRemoteContext(request.body)) + completionContextReserve(request.body) >
+              this.#options.limits.maxContextTokens) {
+          throw new AgentSessionError("agent_context_limit");
+        }
         if (inputBytes + requestBytes > this.#options.limits.maxInputBytes) {
           throw new AgentSessionError("agent_input_byte_limit");
         }
@@ -516,6 +535,7 @@ class ConstrainedWireSession implements AgentSession {
             ...(result.scopeIssue === undefined ? {} : { scopeIssue: result.scopeIssue }),
             ...(result.anchorIssue === undefined ? {} : { anchorIssue: result.anchorIssue }),
             ...(result.reportIssue === undefined ? {} : { reportIssue: result.reportIssue }),
+            ...(result.assessmentIssue === undefined ? {} : { assessmentIssue: result.assessmentIssue }),
           };
         }
         modelTurns += 1;
@@ -559,6 +579,7 @@ class ConstrainedWireSession implements AgentSession {
           throw error;
         }
         const usage = reply.usage ?? emptyUsage();
+        contextEstimator.observe(requestBytes, usage.inputTokens, carriesRemoteContext(request.body), usage.outputTokens, completionContextReserve(request.body));
         yield { type: "usage", usage };
 
         // Reject the entire batch before I/O. The adapter has recorded every tool_use,
@@ -711,8 +732,9 @@ class ConstrainedWireSession implements AgentSession {
               result = await this.#options.host.call(call.name, normalizedInput, {
                 maxOutputBytes: explorationBudget,
               });
-              if (call.name === "workspace.read" && typeof normalizedInput.path === "string") {
-                // workspace.read returns a complete file or throws. Listings,
+              if (call.name === "workspace.read" && typeof normalizedInput.path === "string" &&
+                  normalizedInput.startLine === undefined && normalizedInput.endLine === undefined) {
+                // Only a full workspace.read establishes file coverage. Ranges, listings,
                 // search hits, failed reads and denied finalization calls do
                 // not establish file review coverage.
                 this.#options.resultArtifactValidationContext?.discoveryCoverage?.observedReadPaths
@@ -720,7 +742,8 @@ class ConstrainedWireSession implements AgentSession {
               }
               if (call.name === "workspace.read" &&
                   this.#options.resultArtifactValidationContext?.deepCoverage !== undefined &&
-                  typeof normalizedInput.path === "string") {
+                  typeof normalizedInput.path === "string" &&
+                  normalizedInput.startLine === undefined && normalizedInput.endLine === undefined) {
                 const deepCoverage = this.#options.resultArtifactValidationContext.deepCoverage;
                 const requiredBytes = deepCoverage.requiredBytes[normalizedInput.path];
                 const requestedBytes = normalizedInput.maxBytes;
@@ -780,6 +803,7 @@ class ConstrainedWireSession implements AgentSession {
             throw new AgentSessionError("agent_output_byte_limit");
           }
           outputBytes += resultBytes;
+          const assessmentIssue = artifactRepairDetail?.kind === "assessment-contract" ? artifactRepairDetail : undefined;
           const reportIssue = artifactRepairDetail?.kind === "report-contract" ? artifactRepairDetail : undefined;
           const anchorIssue = artifactRepairDetail?.kind === "anchor-contract" ? artifactRepairDetail : undefined;
           const scopeIssue = artifactRepairDetail?.kind === "discovery-review" && artifactRepairDetail.reason === "scope"
@@ -794,6 +818,7 @@ class ConstrainedWireSession implements AgentSession {
             ...(scopeIssue === undefined ? {} : { scopeIssue }),
             ...(anchorIssue === undefined ? {} : { anchorIssue }),
             ...(reportIssue === undefined ? {} : { reportIssue }),
+            ...(assessmentIssue === undefined ? {} : { assessmentIssue }),
           });
           yield {
             type: "tool",
@@ -806,7 +831,18 @@ class ConstrainedWireSession implements AgentSession {
             ...(scopeIssue === undefined ? {} : { scopeIssue }),
             ...(anchorIssue === undefined ? {} : { anchorIssue }),
             ...(reportIssue === undefined ? {} : { reportIssue }),
+            ...(assessmentIssue === undefined ? {} : { assessmentIssue }),
           };
+          if (call.name === "results.write" && recoveredBeforeIo && artifactValidationIssue !== undefined &&
+              this.#options.terminalMode === "artifact-write") {
+            // Keep only a digest in memory, never log candidate/source content.
+            const digest = createHash("sha256").update(JSON.stringify([artifactValidationIssue, call.input])).digest("hex");
+            repeatedArtifactFailure = repeatedArtifactFailure?.digest === digest
+              ? { digest, count: repeatedArtifactFailure.count + 1 } : { digest, count: 1 };
+            if (repeatedArtifactFailure.count >= 3) throw new AgentSessionError("agent_artifact_stalled");
+          } else if (call.name === "results.write") {
+            repeatedArtifactFailure = undefined;
+          }
           if (result.artifact !== undefined) {
             if (call.name === "results.write" && !recoveredBeforeIo) artifactWritten = true;
             yield { type: "artifact", path: result.artifact.path, bytes: result.artifact.bytes };
@@ -938,7 +974,9 @@ function recoverableWorkspaceToolFailure(
       ? artifactRepairDetail?.kind === "json"
         ? "The content could not be decoded as structured JSON. Repair the complete content value: use valid JSON syntax with quoted keys, correctly escaped strings, and closed delimiters. Return one complete JSON object matching the declared stage contract, not a scalar, multiple values, or multiple code fences. Do not discard supported findings to shorten the repair."
         : resultArtifactContract === PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT
-        ? artifactRepairDetail?.kind === "report-contract"
+        ? artifactRepairDetail?.kind === "assessment-contract"
+          ? "Repair only the assessment for repair.candidateId and field repair.field. confirmation-reason: a confirmed assessment requires control-not-present or untrusted-flow-reaches-sink. candidate-path-missing: its evidence must include an actually inspected path from this candidate. flow-roles-missing: prove both source/entrypoint and sink in the assessment evidence. control-roles-missing: prove the relevant entry, sink and/or control using the observed code. assessment-missing or assessment-inconclusive: supply the missing decisive assessment from verified evidence. Do not relabel anchors, fabricate evidence, or force confirmation merely to pass. Inspect the relevant code; reject an unsupported claim with an honest reason. Preserve all other candidates and return the complete corrected artifact."
+          : artifactRepairDetail?.kind === "report-contract"
           ? "Correct only the structural field identified by repair.field according to repair.code. For enum use repair.allowedValues; for text supply substantive evidence-backed text within supplied repair.minBytes and repair.maxBytes; repair.minChars requires that many trimmed characters. Identifier fields use the declared identifier format. For duplicate-id keep both findings and give each a unique id. Candidate membership must match the server-carried candidateIds exactly, one finding per candidate; preserve every supported finding and its claim. For keys remove only undeclared fields, not findings. Do not invent evidence or change severity merely to pass validation. Return the complete corrected report page."
           : artifactRepairDetail?.kind === "anchor-contract"
             ? "Repair only the anchor field identified by repair.field according to repair.code. Use a real repository-relative regular source file already verified with workspace.read, positive integer startLine/endLine within the file, and one role from repair.allowedRoles when supplied. Anchors contain only path, startLine, endLine, role and optional explanation. Graph symbol IDs and labels are not source paths. Preserve every candidate and its security claim; correct the locator without dropping the finding."

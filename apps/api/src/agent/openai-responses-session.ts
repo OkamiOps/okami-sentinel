@@ -133,7 +133,7 @@ function openAiResponsesTools(
       path: stringSchema(), maxEntries: integerSchema(), maxDepth: integerSchema(),
     }),
     responseTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.read"), WORKSPACE_TOOL_WIRE_DESCRIPTIONS["workspace.read"], {
-      path: requiredStringSchema(), maxBytes: integerSchema(),
+      path: requiredStringSchema(), startLine: integerSchema(), endLine: integerSchema(), maxBytes: integerSchema(),
     }, ["path"]),
     responseTool(WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.search"), WORKSPACE_TOOL_WIRE_DESCRIPTIONS["workspace.search"], {
       query: requiredStringSchema(), path: stringSchema(), maxResults: integerSchema(), maxBytes: integerSchema(),

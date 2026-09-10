@@ -78,6 +78,7 @@ if (terminalArtifactsBackfilled > 0 || metricBackfilled > 0 || categoriesBackfil
   );
 }
 
+const interruptedAtBoot = settings.mode === "server" ? listActiveRunIds() : [];
 const reconciled = settings.mode === "server"
   ? interruptActiveRunsAfterServerRestart()
   : reconcileRunningScans();
@@ -85,6 +86,14 @@ if (reconciled > 0) {
   console.log(settings.mode === "server"
     ? `[csb-api] Marked ${reconciled} active scan(s) interrupted after server restart`
     : `[csb-api] Reconciled ${reconciled} running scan(s) from workbench`);
+}
+
+if (interruptedAtBoot.length > 0) {
+  const { recoverPortableScansAfterServerRestart } = await import("./scanners/portable-server-recovery.js");
+  const recovery = await recoverPortableScansAfterServerRestart(interruptedAtBoot);
+  for (const outcome of recovery) {
+    console.log(`[csb-api] Portable restart recovery ${JSON.stringify(outcome)}`);
+  }
 }
 
 void reconcileGitHubActionsGates().then((gates) => {

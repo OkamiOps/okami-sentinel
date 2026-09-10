@@ -282,6 +282,25 @@ test("a live candidate without supporting validation evidence is rejected instea
     }],
   }), /not supported by its validation evidence/i);
 
+  for (const [reason, evidence, expectedCode] of [
+    ["insufficient-evidence", candidate.anchors, "confirmation-reason"],
+    ["untrusted-flow-reaches-sink", [{ ...candidate.anchors[0], path: "other.ts" }], "candidate-path-missing"],
+    ["untrusted-flow-reaches-sink", [candidate.anchors[0]], "flow-roles-missing"],
+    ["control-not-present", [candidate.anchors[1]], "control-roles-missing"],
+  ] as const) {
+    assert.throws(() => applyPortableCodexSecurityStageArtifact(dossier, {
+      schemaVersion: 1, stage: "validation", observations: [],
+      summary: "Validation must diagnose the exact unsupported confirmation without leaking prose.",
+      assessments: [{ candidateId: candidate.id, status: "confirmed", reason, evidence }],
+    }), (error: unknown) => {
+      const detail = (error as { repairDetail: unknown }).repairDetail;
+      assert.deepEqual(detail, { kind: "assessment-contract", candidateId: candidate.id,
+        field: `assessments[0].${expectedCode === "confirmation-reason" ? "reason" : "evidence"}`, code: expectedCode });
+      assert.equal(JSON.stringify(detail).includes(candidate.hypothesis), false);
+      return true;
+    });
+  }
+
   dossier = applyPortableCodexSecurityStageArtifact(dossier, {
     schemaVersion: 1,
     stage: "validation",

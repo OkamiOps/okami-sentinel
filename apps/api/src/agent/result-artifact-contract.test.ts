@@ -253,6 +253,7 @@ test("Portable validation rejects an inconclusive carried candidate before artif
     anchors: [{ path: "routes/auth.ts", startLine: 1, endLine: 1, role: "source" as const }],
   };
   let issue: unknown;
+  let detail: unknown;
   const normalized = normalizeResultArtifactInput({
     path: "05-validation.json",
     content: JSON.stringify({
@@ -275,10 +276,11 @@ test("Portable validation rejects an inconclusive carried candidate before artif
       assessments: [],
       scope: { inspected: ["."], unexamined: [] },
     },
-  }, (nextIssue) => { issue = nextIssue; });
+  }, (nextIssue, nextDetail) => { issue = nextIssue; detail = nextDetail; });
 
   assert.equal(normalized, null);
   assert.equal(issue, "report-candidate-assessment-inconclusive");
+  assert.deepEqual(detail, { kind: "assessment-contract", field: "assessments", candidateId: candidate.id, code: "assessment-inconclusive" });
 });
 
 test("Portable discovery rejects an anchor beyond the pinned snapshot before artifact I/O", (t) => {

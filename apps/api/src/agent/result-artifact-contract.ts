@@ -414,7 +414,7 @@ function normalizePortableStageArtifact(
       const issue = error instanceof PortableCodexSecurityDossierError && error.issue !== undefined
         ? error.issue
         : "report-contract-invalid";
-      onReject?.(issue, repairDetail);
+      onReject?.(issue, repairDetail ?? (error instanceof PortableCodexSecurityDossierError ? error.repairDetail : undefined));
       return null;
     }
   }
@@ -477,13 +477,15 @@ function normalizePortableStageArtifact(
               .filter((assessment) => assessment.stage === "validation")
               .map((assessment) => [assessment.candidateId, assessment.status] as const),
           );
-          if (nextDossier.candidates.some((candidate) => {
+          const undecided = nextDossier.candidates.find((candidate) => {
             const status = validationByCandidate.get(candidate.id);
             return status !== "confirmed" && status !== "rejected";
-          })) {
+          });
+          if (undecided) {
             throw new PortableCodexSecurityDossierError(
               "validation must decide every carried candidate",
               "report-candidate-assessment-inconclusive",
+              { kind: "assessment-contract", field: "assessments", candidateId: undecided.id, code: validationByCandidate.has(undecided.id) ? "assessment-inconclusive" : "assessment-missing" },
             );
           }
         }
@@ -494,7 +496,7 @@ function normalizePortableStageArtifact(
         : path === VULNHUNTER_RESULT_ARTIFACT_PATH
           ? "report-contract-invalid"
           : "dossier-semantics-invalid";
-      onReject?.(issue);
+      onReject?.(issue, error instanceof PortableCodexSecurityDossierError ? error.repairDetail : undefined);
       return null;
     }
   }

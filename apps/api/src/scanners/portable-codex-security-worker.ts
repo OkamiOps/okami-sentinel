@@ -19,8 +19,6 @@ const NO_FOLLOW = typeof fs.constants.O_NOFOLLOW === "number"
 const READ_NO_FOLLOW = fs.constants.O_RDONLY | NO_FOLLOW;
 const controller = new AbortController();
 
-process.on("SIGTERM", () => controller.abort());
-process.on("SIGINT", () => controller.abort());
 
 /** Reads a strictly local, secret-free worker manifest. */
 export function readPortableCodexSecurityWorkerConfiguration(
@@ -103,6 +101,8 @@ export function portableCodexSecurityWorkerErrorCode(error: unknown): string {
 }
 
 async function main(): Promise<void> {
+  process.on("SIGTERM", () => controller.abort());
+  process.on("SIGINT", () => controller.abort());
   tolerateClosedWorkerPipe(process.stdout);
   tolerateClosedWorkerPipe(process.stderr);
   const configPath = process.argv[2];

@@ -57,6 +57,8 @@ export type PortableCodexSecurityStageErrorCode =
   | "agent_tool_limit"
   | "agent_input_byte_limit"
   | "agent_output_byte_limit"
+  | "agent_context_limit"
+  | "agent_artifact_stalled"
   | "agent_time_limit"
   | "model_access_denied"
   | "credential_rejected"
@@ -557,6 +559,8 @@ function portableAgentFailureCode(
     case "agent_tool_limit":
     case "agent_input_byte_limit":
     case "agent_output_byte_limit":
+    case "agent_context_limit":
+    case "agent_artifact_stalled":
     case "agent_time_limit":
     case "model_access_denied":
     case "credential_rejected":

@@ -21,6 +21,7 @@ import {
 import type { XaiOAuthFlow } from "../connections/xai-oauth-flow.js";
 import {
   PortableCodexSecurityRunnerError,
+  uniqueRecoveredCandidates,
   portableAssessmentPageSessionLimits,
   portableReportShardSessionLimits,
   runPortableCodexSecurity,
@@ -1067,7 +1068,7 @@ test("Portable Codex Security persists usage emitted by a stage before it fails"
         }),
       })),
       (error: unknown) => error instanceof PortableCodexSecurityRunnerError &&
-        error.code === "agent_turn_limit",
+        error.code === "stage_recovery_exhausted",
     );
     const runtime = JSON.parse(fs.readFileSync(
       path.join(config.outputDir, "portable-codex-security-runtime.json"),
@@ -1080,10 +1081,10 @@ test("Portable Codex Security persists usage emitted by a stage before it fails"
       cacheWriteInputTokensKnown: true,
       outputTokensKnown: true,
       maximumInputTokensPerRequest: 660_820,
-      inputTokens: 660_820,
-      cachedInputTokens: 586_860,
+      inputTokens: 3 * 660_820,
+      cachedInputTokens: 3 * 586_860,
       cacheWriteInputTokens: 0,
-      outputTokens: 1_989,
+      outputTokens: 3 * 1_989,
     });
   } finally {
     remove(root);
@@ -1480,5 +1481,102 @@ test("report recovery preserves accepted pages and requests only the remaining f
     assert.equal(result.runtime.findings, 65);
     assert.deepEqual(calls, Array.from({ length: 16 }, (_, index) => `report-${String(index + 2).padStart(2, "0")}`));
     assert.deepEqual(fs.readFileSync(saved), bytes);
+  } finally { remove(root); }
+});
+
+test("automatic validation recovery splits a failed page and never repeats a completed child", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-auto-recovery-"));
+  const config = configuration(root); config.mode = "deep"; config.limits.totalTimeoutMs = 0;
+  const anchor = { path: "src/auth.ts", startLine: 1, endLine: 1, role: "sink" };
+  const candidates = Array.from({ length: 3 }, (_, i) => ({ id: `c-${i}`, category: `boundary-${i}`, anchors: [anchor], hypothesis: `Investigate independently the specific boundary number ${i}.` }));
+  const calls: string[] = []; const events: string[] = []; let failedChild = false;
+  const base = stageSessionFactory();
+  const factory = async (input: { spec: AgentSessionSpec; toolSurface: readonly string[] }) => {
+    assert.equal(input.spec.limits.maxContextTokens, Math.min(300_000, model().contextWindow!));
+    const stage = String(input.spec.instructions.match(/stage "([a-z-]+)"/)?.[1]);
+    if (!["discovery", "dataflow", "validation"].includes(stage)) return base(input);
+    const page = path.basename(input.spec.artifactRoot);
+    const carried = input.spec.resultArtifactValidationContext!.dossier!.candidates;
+    if (stage === "validation") {
+      calls.push(page);
+      if (page === "validation" || (page === "2" && !failedChild)) {
+        if (page === "2") failedChild = true;
+        return { async *run() { yield { type: "failure", code: "agent_output_byte_limit" } as const; }, async cancel() { return { remote: false }; } };
+      }
+    }
+    const artifact = PORTABLE_CODEX_SECURITY_STAGES.find(s => s.id === stage)!.artifact;
+    fs.writeFileSync(path.join(input.spec.artifactRoot, artifact), JSON.stringify({ schemaVersion: 1, stage, summary: "Source-backed assessment of assigned work.", observations: [],
+      ...(stage === "discovery" ? { scope: { inspected: ["src/auth.ts"], unexamined: [] }, candidates }
+        : { assessments: carried.map(c => ({ candidateId: c.id, status: "rejected", reason: "not-vulnerable", evidence: [anchor] })) }),
+    }));
+    const session = completedStageSession(stage, artifact, "Completed source-backed page");
+    if (stage === "validation" || stage === "dataflow") {
+      assert.match(input.spec.instructions, /Server-selected candidate source windows/);
+      return { async *run() { for await (const event of session.run()) {
+        if (event.type !== "tool" || event.name !== "workspace.read") yield event;
+      } }, cancel: session.cancel.bind(session) };
+    }
+    return session;
+  };
+  try {
+    const result = await runPortableCodexSecurity(config, dependencies({ prepareGraph: async () => ({ status: "ready", cacheHit: true, durationMs: 0, nodes: 1, edges: 0,
+      index: { nodes: [{ id: "auth", label: "authenticate()", file: "src/auth.ts", location: "L1" }], edges: [] } }), createSession: factory, log: (line: string) => events.push(line) }));
+    assert.equal(result.runtime.status, "completed");
+    assert.deepEqual(calls, ["validation", "1", "2", "2", "3"]);
+    assert.equal(events.filter(l => l.includes('"type":"stage_recovery"')).length, 2);
+    const dossier = readPortableCodexSecurityDossier(path.join(config.outputDir, "portable-codex-security-results"))!;
+    assert.equal(dossier.assessments.filter(a => a.stage === "validation").length, 3);
+  } finally { remove(root); }
+});
+
+ test("recovered discovery candidates merge exact duplicates but preserve conflicts as errors", () => {
+   const candidate = { id: "shared", category: "authorization", anchors: [{ path: "src/auth.ts", startLine: 1, endLine: 1, role: "sink" as const }] };
+   assert.deepEqual(uniqueRecoveredCandidates([candidate, structuredClone(candidate)]), [candidate]);
+   assert.throws(() => uniqueRecoveredCandidates([candidate, { ...candidate, category: "different" }]), { code: "stage_artifact_invalid" });
+ });
+
+test("automatic report recovery isolates malformed page findings without replaying earlier pages", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-report-recovery-"));
+  const config = configuration(root);
+  config.limits.totalTimeoutMs = 0;
+  const specs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }> = [];
+  const base = reportBudgetStageSessionFactory(specs);
+  const calls: string[] = [];
+  let interrupted = true;
+  const factory = async (input: { spec: AgentSessionSpec; toolSurface: readonly string[] }) => {
+    const stage = String(input.spec.instructions.match(/stage "([a-z-]+)"/)?.[1]);
+    calls.push(path.basename(input.spec.artifactRoot));
+    if (stage !== "report") {
+      const session = await base(input);
+      if (stage === "validation") {
+        const target = path.join(input.spec.artifactRoot, "05-validation.json");
+        const artifact = JSON.parse(fs.readFileSync(target, "utf8"));
+        artifact.assessments = input.spec.resultArtifactValidationContext!.dossier!.assessments.map(({ stage: _stage, ...assessment }) => assessment);
+        fs.writeFileSync(target, JSON.stringify(artifact));
+      }
+      return session;
+    }
+    const shard = input.spec.resultArtifactValidationContext!.reportShard!;
+    if (interrupted && shard.index === 1) {
+      interrupted = false;
+      return { async *run() { yield { type: "failure", code: "agent_artifact_stalled" } as const; }, async cancel() { return { remote: false }; } };
+    }
+    const report = materializePortableCodexSecurityReportShard(shard, { schemaVersion: 1, findings: shard.dossier.candidates.map(candidate => ({
+      id: candidate.id, candidateId: candidate.id, title: "Source-backed boundary finding", severity: "medium", confidence: "high", category: candidate.category,
+      summary: "A concrete boundary failure affects a protected operation.", rootCause: "The expected boundary check is absent at the reviewed location.",
+      impact: "An authenticated caller can modify protected application state.", remediation: "Enforce the boundary check before the sensitive operation.",
+      severityRationale: "An authenticated attacker is required and the deployment limits the affected scope.",
+      anchors: candidate.anchors.map(anchor => ({ ...anchor, explanation: "Reviewed source evidence for this candidate." })),
+    })) });
+    fs.writeFileSync(path.join(input.spec.artifactRoot, "sentinel-findings.json"), JSON.stringify(report));
+    return completedStageSession(stage, "sentinel-findings.json", "Report page complete");
+  };
+  try {
+    const result = await runPortableCodexSecurity(config, dependencies({ createSession: factory }));
+    assert.equal(result.runtime.status, "completed");
+    assert.equal(result.runtime.findings, 65);
+    assert.equal(calls.filter(name => name === "report-01").length, 1);
+    assert.equal(calls.filter(name => name === "report-02").length, 1);
+    assert.deepEqual(calls.filter(name => /^\d+$/.test(name)), ["1", "2", "3", "4"]);
   } finally { remove(root); }
 });

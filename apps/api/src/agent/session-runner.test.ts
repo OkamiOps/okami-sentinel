@@ -1440,6 +1440,65 @@ test("Portable assessment repair distinguishes a verdict status from its reason 
   assert.equal(events.filter((event) => isArtifact(event, "04-dataflow.json")).length, 1);
 });
 
+test("Portable confirmation repair identifies candidate and missing flow roles without exposing source content", async (t) => {
+  const fixture = await fixtureRoots("runner-portable-assessment-evidence");
+  t.after(fixture.cleanup);
+  const requestedWith: AgentToolResult[][] = [];
+  const anchor = { path: "index.ts", startLine: 1, endLine: 1, role: "source" as const };
+  const assessment = (status: string, reason: string) => ({
+    schemaVersion: 1,
+    stage: "validation",
+    summary: "The carried candidate was assessed against its pinned source.",
+    observations: [],
+    assessments: [{ candidateId: "candidate-index", status, reason, evidence: [anchor] }],
+  });
+  const invalid = assessment("confirmed", "untrusted-flow-reaches-sink");
+  const corrected = assessment("rejected", "not-vulnerable");
+  const replies: NormalizedModelReply[] = [invalid, corrected].map((content, index) => ({
+    toolCalls: [{ id: `write-assessment-${index}`, name: "results.write", input: { path: "05-validation.json", content } }],
+    text: null, structured: null, usage: null,
+  }));
+  const hostInputs: unknown[] = [];
+  const session = createConstrainedWireSession({
+    limits: { ...DEFAULT_AGENT_LIMITS, maxModelTurns: 2 },
+    signal: new AbortController().signal,
+    terminalMode: "artifact-write",
+    resultArtifactContract: "portable-stage-json-v1",
+    resultArtifactSnapshotRoot: fixture.snapshotRoot,
+    resultArtifactValidationContext: {
+      dossier: {
+        schemaVersion: 1, stageSummaries: [],
+        candidates: [{ id: "candidate-index", category: "authorization", attacker: "authenticated", hypothesis: "An authenticated caller may reach another owner record.", prerequisites: "The caller supplies a record identifier to the endpoint.", expectedImpact: "Another owner record could become visible to the caller.", controlHypothesis: "The endpoint might lack an ownership check before the read.", anchors: [anchor] }],
+        assessments: [], scope: { inspected: ["index.ts"], unexamined: [] },
+      },
+    },
+    host: {
+      minimumOutputBytes() { return 0; },
+      async call(_name, input) {
+        hostInputs.push(input);
+        return { content: "artifact-written", artifact: { path: "05-validation.json", bytes: 128 } };
+      },
+    },
+    upstream: { async request() { return {}; } },
+    adapter: transcriptAdapter(replies, requestedWith),
+  });
+  const events: unknown[] = [];
+  await collect(session.run(), events);
+  assert.equal(requestedWith.length, 2);
+  assert.equal(requestedWith[1]![0]!.ok, false);
+  const feedback = JSON.parse(requestedWith[1]![0]!.content);
+  assert.equal(feedback.repair.candidateId, "candidate-index");
+  assert.equal(feedback.repair.code, "flow-roles-missing");
+  assert.match(feedback.hint, /Do not relabel anchors, fabricate evidence/);
+  const diagnosticEvents = events.filter((event: any) => event.assessmentIssue !== undefined) as any[];
+  assert.deepEqual(diagnosticEvents.map(event => event.phase), ["result", "consumed"]);
+  for (const event of diagnosticEvents) assert.deepEqual(event.assessmentIssue, feedback.repair);
+  assert.equal(JSON.stringify(diagnosticEvents).includes("index.ts"), false);
+  assert.deepEqual(hostInputs, [{ path: "05-validation.json", content: JSON.stringify(corrected) }]);
+  assert.deepEqual(invalid.assessments[0]!.status, "confirmed", "validator must not coerce the provider verdict");
+  assert.equal(events.filter((event) => isArtifact(event, "05-validation.json")).length, 1);
+});
+
 test("an artifact-terminal session repairs within its total model-turn budget", async (t) => {
   const fixture = await fixtureRoots("runner-portable-repair-window");
   t.after(fixture.cleanup);
@@ -1933,7 +1992,7 @@ test("an artifact repair window stops before a fifth repair response", async (t)
     toolCalls: [{
       id,
       name: "results.write",
-      input: { path: "result.json", content: "{\"status\":" },
+      input: { path: "result.json", content: `{"status":${JSON.stringify(id)}` },
     }],
     text: null,
     structured: null,

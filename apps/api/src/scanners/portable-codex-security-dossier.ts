@@ -151,6 +151,7 @@ export class PortableCodexSecurityDossierError extends Error {
   constructor(
     readonly reason: string,
     readonly issue?: PortableReportCoverageValidationIssue,
+    readonly repairDetail?: PortableAssessmentRepairDetail,
   ) {
     super(reason);
     this.name = "PortableCodexSecurityDossierError";
@@ -220,7 +221,15 @@ export interface PortableReportRepairDetail {
   minChars?: number;
 }
 
+export interface PortableAssessmentRepairDetail {
+  kind: "assessment-contract";
+  field: string;
+  candidateId: string;
+  code: "confirmation-reason" | "candidate-path-missing" | "flow-roles-missing" | "control-roles-missing" | "assessment-missing" | "assessment-inconclusive";
+}
+
 export type PortableArtifactRepairDetail =
+  | PortableAssessmentRepairDetail
   | PortableAnchorRepairDetail
   | PortableReportRepairDetail
   | PortableAnchorContractRepairDetail
@@ -448,6 +457,7 @@ export function applyPortableCodexSecurityStageArtifact(
       throw new PortableCodexSecurityDossierError(
         "confirmed candidate is not supported by its validation evidence",
         "report-candidate-assessment-inconclusive",
+        confirmationRepairDetail(candidate, assessment, `assessments[${(artifact.assessments ?? []).indexOf(assessment)}]`),
       );
     }
     const existing = next.assessments.find((item) =>
@@ -521,6 +531,7 @@ export function validatePortableCodexSecurityReportCoverage(
       throw new PortableCodexSecurityDossierError(
         "candidate has no conclusive assessment",
         "report-candidate-assessment-inconclusive",
+        { kind: "assessment-contract", candidateId, field: "assessments", code: assessment ? "assessment-inconclusive" : "assessment-missing" },
       );
     }
     const candidate = dossier.candidates.find((item) => item.id === candidateId)!;
@@ -529,6 +540,7 @@ export function validatePortableCodexSecurityReportCoverage(
       throw new PortableCodexSecurityDossierError(
         "confirmed candidate is not supported by its validation evidence",
         "report-candidate-assessment-inconclusive",
+        confirmationRepairDetail(candidate, assessment, `assessments[${dossier.assessments.indexOf(assessment)}]`),
       );
     }
     const coverage = coverageByCandidate.get(candidateId)!;
@@ -1182,23 +1194,33 @@ function hasSupportedConfirmation(
   candidate: PortableCandidate,
   assessment: Omit<PortableCandidateAssessment, "stage"> | PortableCandidateAssessment,
 ): boolean {
+  return confirmationRepairDetail(candidate, assessment, "assessments") === undefined;
+}
+
+function confirmationRepairDetail(
+  candidate: PortableCandidate,
+  assessment: Omit<PortableCandidateAssessment, "stage"> | PortableCandidateAssessment,
+  field: string,
+): PortableAssessmentRepairDetail | undefined {
+  const problem = (code: PortableAssessmentRepairDetail["code"], suffix: string): PortableAssessmentRepairDetail =>
+    ({ kind: "assessment-contract", candidateId: candidate.id, field: `${field}.${suffix}`, code });
   if (assessment.reason !== "control-not-present" && assessment.reason !== "untrusted-flow-reaches-sink") {
-    return false;
+    return problem("confirmation-reason", "reason");
   }
-  if (!assessment.evidence.some((evidence) => candidate.anchors.some((anchor) => anchor.path === evidence.path))) {
-    return false;
+  if (!assessment.evidence.some(evidence => candidate.anchors.some(anchor => anchor.path === evidence.path))) {
+    return problem("candidate-path-missing", "evidence");
   }
-  // Discovery is an allegation, not independent validation evidence. Both
-  // ends of a flow (or the control/invariant evidence) must be supplied by the
-  // validator itself instead of borrowing the missing half from discovery.
-  const roles = new Set(assessment.evidence.map((anchor) => anchor.role));
+  // Roles must originate in this assessment, not be borrowed from discovery.
+  const roles = new Set(assessment.evidence.map(anchor => anchor.role));
   const hasEntry = roles.has("source") || roles.has("entrypoint");
   const hasSink = roles.has("sink");
   const hasControlOrEvidence = roles.has("control") || roles.has("evidence");
-  return assessment.reason === "untrusted-flow-reaches-sink"
-    ? hasEntry && hasSink
-    : (hasEntry && (hasSink || hasControlOrEvidence)) ||
-      (roles.has("control") && (roles.has("evidence") || hasSink));
+  if (assessment.reason === "untrusted-flow-reaches-sink") {
+    return hasEntry && hasSink ? undefined : problem("flow-roles-missing", "evidence");
+  }
+  return (hasEntry && (hasSink || hasControlOrEvidence)) ||
+    (roles.has("control") && (roles.has("evidence") || hasSink))
+    ? undefined : problem("control-roles-missing", "evidence");
 }
 
 function sameAssessment(

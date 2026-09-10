@@ -266,7 +266,7 @@ function openAiChatTools(
       function: {
         name: WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.read"),
         description: WORKSPACE_TOOL_WIRE_DESCRIPTIONS["workspace.read"],
-        parameters: objectSchema({ path: requiredStringSchema(), maxBytes: integerSchema() }, ["path"]),
+        parameters: objectSchema({ path: requiredStringSchema(), startLine: integerSchema(), endLine: integerSchema(), maxBytes: integerSchema() }, ["path"]),
       },
     },
     {

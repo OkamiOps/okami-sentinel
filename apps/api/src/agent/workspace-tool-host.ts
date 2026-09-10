@@ -157,7 +157,8 @@ function minimumToolOutputBytes(
     case "workspace.read": {
       const path = requiredPath(value.path);
       boundedPositive(value.maxBytes, limits.maxReadBytes, "tool_argument_invalid");
-      return serializedBytes({ path, content: "" });
+      const range = readRange(value);
+      return serializedBytes({ path, content: "", ...(range ? { ...range, completeFile: false } : {}) });
     }
     case "workspace.search":
       nonEmptyString(value.query);
@@ -230,6 +231,15 @@ async function listWorkspace(
   return textResult({ entries, truncated }, maxOutputBytes);
 }
 
+function readRange(value: Record<string, unknown>): { startLine: number; endLine: number } | null {
+  if (value.startLine === undefined && value.endLine === undefined) return null;
+  const { startLine, endLine } = value;
+  if (typeof startLine !== "number" || typeof endLine !== "number" ||
+      !Number.isSafeInteger(startLine) || !Number.isSafeInteger(endLine) || startLine < 1 ||
+      endLine < startLine || endLine - startLine >= 400) throw new AgentSessionError("tool_argument_invalid");
+  return { startLine, endLine };
+}
+
 async function readWorkspace(
   snapshotRoot: RootRef,
   input: unknown,
@@ -241,12 +251,20 @@ async function readWorkspace(
   const maxBytes = boundedPositive(value.maxBytes, limits.maxReadBytes, "tool_argument_invalid");
   const target = await snapshotTarget(snapshotRoot, requestedPath);
   if (!target.info.isFile()) throw new AgentSessionError("tool_path_denied");
-  if (target.info.size > maxBytes) throw new AgentSessionError("tool_read_limit");
-  const content = (await readPinnedSnapshotFile(snapshotRoot, target, maxBytes)).toString("utf8");
-  if (serializedBytes({ path: requestedPath, content }) > maxOutputBytes) {
-    throw new AgentSessionError("agent_output_byte_limit");
+  const range = readRange(value);
+  // Range selection bounds returned context; the existing host limit still bounds disk I/O.
+  const diskLimit = range ? limits.maxReadBytes : maxBytes;
+  if (target.info.size > diskLimit) throw new AgentSessionError("tool_read_limit");
+  const fullContent = (await readPinnedSnapshotFile(snapshotRoot, target, diskLimit)).toString("utf8");
+  let content = fullContent;
+  if (range) {
+    const lines = fullContent.split(/\r?\n/);
+    if (fullContent.endsWith("\n")) lines.pop();
+    if (range.endLine > lines.length) throw new AgentSessionError("tool_argument_invalid");
+    content = lines.slice(range.startLine - 1, range.endLine).join("\n");
+    if (Buffer.byteLength(content, "utf8") > maxBytes) throw new AgentSessionError("tool_read_limit");
   }
-  return textResult({ path: requestedPath, content }, maxOutputBytes);
+  return textResult({ path: requestedPath, content, ...(range ? { ...range, completeFile: false } : {}) }, maxOutputBytes);
 }
 
 async function searchWorkspace(

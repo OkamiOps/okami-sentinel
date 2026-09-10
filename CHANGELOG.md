@@ -8,6 +8,7 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Fixed
 
+- Portable sessions guard estimated context (300K including completion reserve, or the selected model's smaller window), stop three identical invalid writes and expose candidate-specific evidence repair diagnostics. Failed pages retry with fresh histories and smaller units while preserving accepted subpages and accumulated usage. Server startup can recover interrupted Portable runs under the same ID with strict checkpoint validation and a persistent two-restart limit; terminal/cancelled runs are not restarted.
 - Portable report recovery validates and reuses completed report pages. Rejected report writes identify the exact structural field, allowed values or required rationale length, instead of repeating generic repair instructions; prompt examples now use individual valid enum values.
 - Deep validation processes pending candidates in groups of at most eight and reserves output capacity for terminal artifacts and repairs. Operator recovery verifies and reuses discovery, dataflow and accepted validation checkpoints, including legacy 32-candidate pages, without repeating completed model work.
 - Graph navigation prioritizes exact symbols and paths and reports actual result/neighborhood truncation. Portable guidance uses graph queries for unresolved relationships, avoids re-reading supplied Deep source pages, and excludes graph exploration from final report generation.
@@ -36,10 +37,11 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Added
 
+- Deep uses persisted Graphify relationship-based partitions without dropping source files. Dataflow and validation receive bounded candidate-specific source windows, and workers can read explicit line ranges without claiming full-file coverage. Legacy partition plans remain compatible with recovery.
 - Sentinel bundles Graphify 0.9.51 with an isolated Python runtime: pnpm provisions it automatically and Docker includes it at build time. The managed installation does not depend on a host Graphify executable or modify global Python packages.
 - Codex Security Portable now builds and reuses a code-only snapshot graph, exposes bounded symbol/relationship queries to model workers, and records indexing telemetry. Source reads remain required for evidence; indexing failure falls back to the existing scan flow. Other engines do not consume the graph yet.
 
-- Local operators can resume interrupted Portable Deep discovery with `pnpm --filter @csb/api exec tsx src/scanners/resume-portable-scan.ts SCAN_ID`. Add `--dry-run` to verify the snapshot and checkpoints without launching. Recovery creates a separate run, preserves accumulated usage and original evidence, refreshes provider capability checks, and reuses validated discovery batches. Later-stage interruptions are not supported by this recovery command.
+- Local operators can resume failed/cancelled Portable scans interrupted in discovery, dataflow, validation or reporting with `pnpm --filter @csb/api exec tsx src/scanners/resume-portable-scan.ts SCAN_ID`. Add `--dry-run` to verify the snapshot and checkpoints without launching. Recovery creates a separate run, preserves accumulated usage, partition plans, recovery budgets and accepted subpages, refreshes provider capability checks, and reuses validated work.
 
 - Scan details now show live snapshot files, physical LOC, source size, discovery batches, provisional candidates, rejected result writes, output rate and provider-reported reasoning tokens. Missing metrics remain unavailable; the panel refreshes during active scans.
 
