@@ -445,6 +445,21 @@ export class ConnectionStore {
       .get(scanId) as SnapshotRow | undefined;
     return row === undefined ? null : rowToSnapshot(row);
   }
+
+  /** Recovery may refresh probe authority, never the frozen connection/model selection. */
+  refreshSnapshotCapability(scanId: string, previousCheckId: string | null, nextCheckId: string): void {
+    this.database.transaction(() => {
+      const snapshot = this.getSnapshot(scanId);
+      const check = this.getCapabilityCheck(nextCheckId);
+      if (!snapshot || !check || check.status !== "passed" || check.connectionId !== snapshot.connectionId ||
+          check.modelId !== snapshot.modelId || check.protocol !== snapshot.protocol) {
+        throw new Error("snapshot_capability_invalid");
+      }
+      const changed = this.database.prepare(`UPDATE scan_connection_snapshots SET capability_check_id = ?
+        WHERE scan_id = ? AND capability_check_id IS ?`).run(nextCheckId, scanId, previousCheckId).changes;
+      if (changed !== 1) throw new Error("snapshot_capability_changed");
+    }).immediate();
+  }
 }
 
 /** SQLite sink for safe Codex app-server account state; OAuth handoffs are never accepted here. */

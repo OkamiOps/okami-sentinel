@@ -771,3 +771,23 @@ test("deletion cascades models and checks while scan snapshots remain", () => {
     db.close();
   }
 });
+
+test("same-ID recovery refreshes only the probe reference without reinserting or changing frozen selection", () => {
+  const db = new Database(":memory:");
+  try {
+    const store = new ConnectionStore(db); store.insert(connectionFixture());
+    const frozen: ScanConnectionSnapshot = {scanId: "same-id", connectionId: "conn-1", routeKind: "openai-api", modelSelectionMode: "catalog", modelId: "model-a", capabilityCheckId: "old-check", executionProfile: "portable", profileVersion: "profile-v1", methodologyRef: "method-v1", protocol: "openai-responses", authKind: "api-key", capturedAt: "2026-09-10T00:00:00.000Z"};
+    store.writeSnapshot(frozen);
+    assert.throws(()=>store.writeSnapshot({...frozen, capabilityCheckId: "next-check"}), /UNIQUE/);
+    const check = {id: "next-check", connectionId: "conn-1", modelId: "model-a", protocol: "openai-responses" as const, status: "passed" as const, capabilities: {tools:"supported",artifactOutput:"supported",structuredOutput:"supported",boundedExecution:"supported",osIsolation:"unknown",streaming:"unknown",usage:"supported",cancellation:"unknown"} as const, errorCode:null, checkedAt:"2026-09-10T01:00:00.000Z"};
+    store.writeCapabilityCheck(check);
+    store.refreshSnapshotCapability("same-id", "old-check", "next-check");
+    assert.deepEqual(store.getSnapshot("same-id"), {...frozen,capabilityCheckId:"next-check"});
+    assert.throws(()=>store.refreshSnapshotCapability("same-id","old-check","next-check"),/snapshot_capability_changed/);
+    store.writeCapabilityCheck({...check,id:"wrong-model",modelId:"other"});
+    assert.throws(()=>store.refreshSnapshotCapability("same-id","next-check","wrong-model"),/snapshot_capability_invalid/);
+    store.writeCapabilityCheck({...check,id:"failed-check",status:"failed"});
+    assert.throws(()=>store.refreshSnapshotCapability("same-id","next-check","failed-check"),/snapshot_capability_invalid/);
+    assert.deepEqual(store.getSnapshot("same-id"), {...frozen,capabilityCheckId:"next-check"});
+  } finally {db.close();}
+});

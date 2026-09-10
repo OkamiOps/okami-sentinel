@@ -8,6 +8,7 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Fixed
 
+- Same-ID recovery updates only the verified capability-check reference with a conditional write, instead of attempting to insert a duplicate frozen connection snapshot. Connection, model, methodology and original capture time remain unchanged.
 - Worker detection recognizes the paired `tsx` preflight/loader Node child, so losing its launcher does not leave an active scan mistaken for a dead process.
 - Status reads and live reconciliation preserve queued recovery during its capability check; local startup still recovers an interrupted queue.
 - Portable scans automatically recover interrupted workers under the same scan ID in local and server modes, including worker exits while the API remains running. Accepted checkpoints, accumulated usage, cancellation and persistent restart limits are preserved.

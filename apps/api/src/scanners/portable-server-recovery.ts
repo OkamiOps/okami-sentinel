@@ -143,7 +143,7 @@ export async function recoverPortableScansAfterWorkerInterruption(ids: readonly 
           if (identity.findProcessIdentitiesForScanDir(run.scanDir).length) throw new Error("restart_state_invalid");
           releaseInterruptedSessionLocks(path.join(run.scanDir, "portable-recovery"));
           atomicJson(configPath, { ...config, providerPlan: { ...config.providerPlan, capabilityCheckId: probe.report.id } });
-          runtime.store.writeSnapshot({ ...frozen, capabilityCheckId: probe.report.id, capturedAt: new Date().toISOString() });
+          runtime.store.refreshSnapshotCapability(run.id, frozen.capabilityCheckId, probe.report.id);
           const descriptor = fs.openSync(cliLogPath(run.scanDir), "a", 0o600);
           let child;
           try { child = spawn(process.execPath, ["--import", "tsx", path.join(import.meta.dirname, "portable-codex-security-worker.ts"), configPath, "--resume-discovery"],
