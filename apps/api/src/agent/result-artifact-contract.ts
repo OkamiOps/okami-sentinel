@@ -396,7 +396,13 @@ function normalizePortableStageArtifact(
       ? value as Record<string, unknown>
       : null;
     const detail = record === null
-      ? { kind: "candidate-contract" as const, reason: "array-or-limit" as const }
+      ? {
+        kind: "candidate-contract" as const,
+        reason: "array-or-limit" as const,
+        field: "payload" as const,
+        expected: "object" as const,
+        actualType: structuralType(value),
+      }
       : validatePortableCodexSecurityDiscoveryCandidateContext(record.candidates);
     if (detail !== null) {
       onReject?.("stage-candidates-invalid", detail);
@@ -680,6 +686,13 @@ function record(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+function structuralType(value: unknown): string {
+  if (value === undefined) return "missing";
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
 }
 
 function hasOnlyKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {

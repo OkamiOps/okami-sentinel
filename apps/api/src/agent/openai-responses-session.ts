@@ -31,6 +31,7 @@ export interface OpenAiResponsesSessionSpec {
   model: ProviderModel;
   instructions: string;
   reasoningEffort?: string;
+  maxCompletionTokens?: number;
   resultArtifactContract?: AgentResultArtifactContract;
   resultArtifactValidationContext?: PortableResultArtifactValidationContext;
 }
@@ -73,6 +74,7 @@ export function createOpenAiResponsesWireAdapter(
         operation: "responses",
         body: {
           model: spec.model.id,
+          ...(spec.maxCompletionTokens === undefined ? {} : { max_output_tokens: spec.maxCompletionTokens }),
           ...(previousResponseId === undefined ? { instructions: spec.instructions } : {}),
           input,
           ...(finalizing

@@ -28,6 +28,13 @@ input/cache/output tokens and recovery overhead. Full source projection demonstr
 coverage availability, not model attention, detection quality or achieved speed.
 The revised full-coverage modes still require that real-run performance validation.
 
+Completion ceilings must reach the provider wire request on every turn: OpenAI and
+OpenRouter chat use `max_completion_tokens`, other chat-compatible routes use
+`max_tokens`, and Responses uses `max_output_tokens`. Session validation alone does
+not enforce generation length. The context guard includes this wire output reserve.
+These ceilings do not replace mode-specific reasoning controls or prove latency gains;
+provider truncation must not be interpreted as a successful empty scan.
+
 Standard persists `portable-standard-plan.json`, binding membership, order and sizes
 to the immutable snapshot. Checkpoint recovery reuses accepted batches and examines
 only remaining work in that same scan. This is not incremental scanning and does not

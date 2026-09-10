@@ -207,6 +207,12 @@ export interface PortableCandidateRepairDetail {
   kind: "candidate-contract";
   reason: "array-or-limit" | "entry-keys" | "id" | "category" | "anchors" | "duplicate-id" |
     "hypothesis" | "attacker" | "prerequisites" | "expected-impact" | "control-hypothesis";
+  /** Safe structural coordinates for array-or-limit failures; never provider content. */
+  field?: "payload" | "candidates";
+  expected?: "object" | "array";
+  actualType?: string;
+  count?: number;
+  limit?: number;
   itemIndex?: number;
 }
 
@@ -783,7 +789,16 @@ function parseCandidatesWithRepair(
   requireLiveContext = false,
 ): { value: PortableCandidate[] | null; detail?: PortableCandidateRepairDetail | PortableAnchorContractRepairDetail } {
   if (!Array.isArray(value) || value.length > limit) {
-    return { value: null, detail: { kind: "candidate-contract", reason: "array-or-limit" } };
+    const detail: PortableCandidateRepairDetail = {
+      kind: "candidate-contract",
+      reason: "array-or-limit",
+      field: "candidates",
+      expected: "array",
+      actualType: structuralType(value),
+      limit,
+      ...(Array.isArray(value) ? { count: value.length } : {}),
+    };
+    return { value: null, detail };
   }
   const ids = new Set<string>();
   const candidates: PortableCandidate[] = [];
@@ -1264,6 +1279,13 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+function structuralType(value: unknown): string {
+  if (value === undefined) return "missing";
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
 }
 
 function hasOnlyKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {

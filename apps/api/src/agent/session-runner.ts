@@ -77,6 +77,7 @@ function adapterFor(input: CreateAgentSessionInput): WireSessionAdapter {
     case "openai-chat":
       return createOpenAiChatWireAdapter({
         model: input.model,
+        ...(input.maxCompletionTokens === undefined ? {} : { maxCompletionTokens: input.maxCompletionTokens }),
         ...(input.graphIndex === undefined ? {} : { graphIndex: input.graphIndex }),
         instructions: input.instructions,
         routeKind: input.routeKind,

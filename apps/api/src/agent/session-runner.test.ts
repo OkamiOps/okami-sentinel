@@ -531,7 +531,33 @@ test("plain chat completion never enters the tool loop", async (t) => {
   const events: unknown[] = [];
   await collect(session.run(), events);
   assert.equal(upstream.requests.length, 1);
+  assert.equal((upstream.requests[0]!.body as Record<string, unknown>).max_completion_tokens, undefined);
+  assert.equal((upstream.requests[0]!.body as Record<string, unknown>).max_tokens, undefined);
   assert.equal(events.some((event) => isCompletedTool(event)), false);
+});
+
+test("completion ceilings reach every chat request including repair and finalization", async (t) => {
+  for (const route of ["openai-api", "openrouter-api", "gemini-api", "custom-openai-compatible", "xai-api", "mimo-token-plan"]) {
+    const fixture = await fixtureRoots(`completion-ceiling-${route}`);
+    t.after(fixture.cleanup);
+    const upstream = fakeOpenAiChat([
+      chatToolCall("workspace.read", { path: "missing.ts" }, "bad-read"),
+      chatToolCall("workspace.read", { path: "index.ts" }, "read"),
+      chatToolCall("results.write", { path: "report.json", content: "{}" }, "write"),
+      chatFinalStructured({ status: "ok" }),
+    ]);
+    const session = await createAgentSession({
+      ...sessionSpec(fixture, "openai-chat", route), probe: capability(), maxCompletionTokens: 32_768,
+    }, upstream);
+    await collect(session.run(), []);
+    assert.equal(upstream.requests.length, 4);
+    for (const request of upstream.requests) {
+      const body = request.body as Record<string, unknown>;
+      const modern = route === "openai-api" || route === "openrouter-api";
+      assert.equal(body[modern ? "max_completion_tokens" : "max_tokens"], 32_768);
+      assert.equal(body[modern ? "max_tokens" : "max_completion_tokens"], undefined);
+    }
+  }
 });
 
 test("session runner forwards only a published effort over a proven route codec", async (t) => {
@@ -2613,7 +2639,7 @@ test("OpenAI Responses and Anthropic Messages complete the same constrained arti
   t.after(responsesFixture.cleanup);
   t.after(anthropicFixture.cleanup);
 
-  const responses = fakeTranscript([
+  const responses = fakeOpenAiChat([
     responsesToolCall("workspace.read", { path: "index.ts" }, "response-read"),
     responsesToolCall("results.write", { path: "report.json", content: JSON.stringify({ status: "ok" }) }, "response-write"),
     responsesFinalStructured({ status: "ok" }),
@@ -2621,10 +2647,14 @@ test("OpenAI Responses and Anthropic Messages complete the same constrained arti
   const responseSession = await createAgentSession({
     ...sessionSpec(responsesFixture, "openai-responses", "openai-api"),
     probe: capability(),
+    maxCompletionTokens: 32_768,
   }, responses);
   const responseEvents: unknown[] = [];
   await collect(responseSession.run(), responseEvents);
   assert.equal(responseEvents.some((event) => isArtifact(event, "report.json")), true);
+  for (const request of responses.requests) {
+    assert.equal((request.body as Record<string, unknown>).max_output_tokens, 32_768);
+  }
 
   const anthropic = fakeTranscript([
     anthropicToolCall("workspace.read", { path: "index.ts" }, "anthropic-read"),
@@ -3235,12 +3265,15 @@ test("candidate contract diagnostics persist structural reasons without logging 
       anchors: [{ path: "index.ts", startLine: 1, endLine: 1, role: "source" }],
     }],
   });
-  const replies: NormalizedModelReply[] = [content("PRIVATE_INVALID_VALUE"), content("authenticated")].map((artifact, index) => ({
+  const replies: NormalizedModelReply[] = [
+    { ...content("authenticated"), candidates: "PRIVATE_WRONG_TYPE" },
+    content("PRIVATE_INVALID_VALUE"), content("authenticated"),
+  ].map((artifact, index) => ({
     toolCalls: [{ id: `write-${index}`, name: "results.write", input: { path: "03-discovery.json", content: artifact } }],
     text: null, structured: null, usage: null,
   }));
   const session = createConstrainedWireSession({
-    limits: { ...DEFAULT_AGENT_LIMITS, maxModelTurns: 2 }, signal: new AbortController().signal,
+    limits: { ...DEFAULT_AGENT_LIMITS, maxModelTurns: 3 }, signal: new AbortController().signal,
     terminalMode: "artifact-write", resultArtifactContract: "portable-stage-json-v1",
     resultArtifactSnapshotRoot: fixture.snapshotRoot,
     resultArtifactValidationContext: { dossier: { schemaVersion: 1, stageSummaries: [], candidates: [], assessments: [], scope: { inspected: [], unexamined: [] } }, requireDiscoveryCandidateContext: true,
@@ -3252,10 +3285,14 @@ test("candidate contract diagnostics persist structural reasons without logging 
   const events: unknown[] = [];
   await collect(session.run(), events);
   const diagnosticEvents = events.filter((event: any) => event.candidateIssue !== undefined) as any[];
-  assert.deepEqual(diagnosticEvents.map(event => event.phase), ["result", "consumed"]);
-  for (const event of diagnosticEvents) assert.deepEqual(event.candidateIssue,
+  assert.deepEqual(diagnosticEvents.map(event => event.phase), ["result", "consumed", "result", "consumed"]);
+  for (const event of diagnosticEvents.slice(0, 2)) assert.deepEqual(event.candidateIssue,
+    { kind: "candidate-contract", reason: "array-or-limit", field: "candidates", expected: "array", actualType: "string", limit: 100 });
+  for (const event of diagnosticEvents.slice(2)) assert.deepEqual(event.candidateIssue,
     { kind: "candidate-contract", reason: "attacker", itemIndex: 0 });
+  assert.equal(JSON.stringify(diagnosticEvents).includes("PRIVATE_WRONG_TYPE"), false);
   assert.equal(JSON.stringify(diagnosticEvents).includes("PRIVATE_INVALID_VALUE"), false);
   assert.equal(JSON.stringify(diagnosticEvents).includes("private-candidate"), false);
   assert.match(JSON.parse(requestedWith[1]![0]!.content).hint, /Do not restart discovery/);
+  assert.match(JSON.parse(requestedWith[1]![0]!.content).hint, /repair.field, repair.expected and repair.actualType/);
 });

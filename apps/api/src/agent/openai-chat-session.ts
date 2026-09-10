@@ -38,6 +38,7 @@ export interface OpenAiChatSessionSpec {
   instructions: string;
   routeKind: string;
   reasoningEffort?: string;
+  maxCompletionTokens?: number;
   resultArtifactContract?: AgentResultArtifactContract;
   resultArtifactValidationContext?: PortableResultArtifactValidationContext;
 }
@@ -99,6 +100,10 @@ export function createOpenAiChatWireAdapter(spec: OpenAiChatSessionSpec): WireSe
         operation: "chat-completions",
         body: {
           model: spec.model.id,
+          ...(spec.maxCompletionTokens === undefined ? {} :
+            spec.routeKind === "openai-api" || spec.routeKind === "openrouter-api"
+              ? { max_completion_tokens: spec.maxCompletionTokens }
+              : { max_tokens: spec.maxCompletionTokens }),
           messages,
           ...(finalizing
             ? { response_format: { type: "json_object" } }

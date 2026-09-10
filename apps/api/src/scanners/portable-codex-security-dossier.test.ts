@@ -8,6 +8,7 @@ import {
   applyPortableCodexSecurityStageArtifact,
   createPortableCodexSecurityDossier,
   normalizePortableCodexSecurityStageArtifact,
+  validatePortableCodexSecurityDiscoveryCandidateContext,
   validatePortableCodexSecurityReportCoverage,
 } from "./portable-codex-security-dossier.js";
 import {
@@ -157,6 +158,29 @@ test("Portable artifacts normalize only the exact serialized empty observations 
   assert.deepEqual(normalizePortableCodexSecurityStageArtifact("03-discovery.json", { ...artifact, observations: " [] " }), expected);
   for (const observations of ['["claim"]', "[", "null", {}, null]) {
     assert.equal(normalizePortableCodexSecurityStageArtifact("03-discovery.json", { ...artifact, observations }), null);
+  }
+});
+
+test("Portable candidate contract diagnostics expose only structural array metadata", () => {
+  const cases = [
+    {
+      value: undefined,
+      expected: { field: "candidates", expected: "array", actualType: "missing", limit: 100 },
+    },
+    {
+      value: "provider-secret-candidates",
+      expected: { field: "candidates", expected: "array", actualType: "string", limit: 100 },
+    },
+    {
+      value: Array.from({ length: 101 }, () => "provider-secret-candidate"),
+      expected: { field: "candidates", expected: "array", actualType: "array", count: 101, limit: 100 },
+    },
+  ] as const;
+
+  for (const { value, expected } of cases) {
+    const detail = validatePortableCodexSecurityDiscoveryCandidateContext(value);
+    assert.deepEqual(detail, { kind: "candidate-contract", reason: "array-or-limit", ...expected });
+    assert.doesNotMatch(JSON.stringify(detail), /provider-secret/);
   }
 });
 

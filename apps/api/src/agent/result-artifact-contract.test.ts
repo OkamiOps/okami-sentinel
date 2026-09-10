@@ -347,6 +347,50 @@ test("Portable discovery returns a closed candidate-contract repair reason", () 
   assert.deepEqual(detail, { kind: "candidate-contract", reason: "entry-keys", itemIndex: 0 });
 });
 
+test("Portable discovery distinguishes candidate array shape failures without echoing payload content", () => {
+  const context = {
+    dossier: createPortableCodexSecurityDossier(),
+    requireDiscoveryCandidateContext: true,
+  } as const;
+  const base = {
+    schemaVersion: 1,
+    stage: "discovery",
+    summary: "Discovery recorded a repository-backed candidate review.",
+    observations: [],
+  };
+  const cases = [
+    {
+      content: ["provider-secret-payload"],
+      expected: { field: "payload", expected: "object", actualType: "array" },
+    },
+    {
+      content: base,
+      expected: { field: "candidates", expected: "array", actualType: "missing", limit: 100 },
+    },
+    {
+      content: { ...base, candidates: "provider-secret-candidates" },
+      expected: { field: "candidates", expected: "array", actualType: "string", limit: 100 },
+    },
+    {
+      content: { ...base, candidates: Array.from({ length: 101 }, () => "provider-secret-candidate") },
+      expected: { field: "candidates", expected: "array", actualType: "array", count: 101, limit: 100 },
+    },
+  ] as const;
+
+  for (const { content, expected } of cases) {
+    let issue: unknown;
+    let detail: unknown;
+    assert.equal(normalizeResultArtifactInput({ path: "03-discovery.json", content },
+      PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, undefined, context, (nextIssue, nextDetail) => {
+        issue = nextIssue;
+        detail = nextDetail;
+      }), null);
+    assert.equal(issue, "stage-candidates-invalid");
+    assert.deepEqual(detail, { kind: "candidate-contract", reason: "array-or-limit", ...expected });
+    assert.doesNotMatch(JSON.stringify(detail), /provider-secret/);
+  }
+});
+
 test("Deep discovery requires a complete read of every server-owned partition path", () => {
   const deepCoverage = {
     index: 0,

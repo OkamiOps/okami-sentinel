@@ -8,6 +8,8 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Fixed
 
+- Portable completion-token ceilings now reach Chat Completions and Responses requests, including repair/finalization turns, instead of being silently dropped after session validation. Existing configured ceilings are preserved; this does not impose a scan-duration timeout or reduce source coverage.
+- Discovery write diagnostics now distinguish a non-object payload, a missing or incorrectly typed candidate list, and too many candidates. Repair hints use safe structural metadata without logging rejected claims or discarding leads.
 - Portable Standard and Deep now carry distinct investigation-depth guidance into dataflow and validation: focused main-path decisions for Standard, relevant alternate paths and counterevidence for Deep, with identical confirmation requirements and no repeated investigation during reporting.
 - New full Standard scans cover the same complete source/configuration universe as Deep, using immutable graph-ordered batches with full source projection. Standard limits investigation depth per batch rather than selecting a subset of files. Missing graph nodes never exclude source, and incomplete batches prevent successful completion.
 - Standard batch plans and accepted checkpoints survive recovery without importing findings from other scans. Historical sampled Standard runs retain their existing resume contract; new runs no longer use the two-pass sample or twelve-target fallback.
