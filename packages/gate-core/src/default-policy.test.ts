@@ -11,5 +11,10 @@ test("default policy blocks new or reopened critical and high findings", () => {
     { severity: ["high"], lifecycle: ["new", "reopened"], decision: "block" },
     { severity: ["high"], lifecycle: ["persistent"], decision: "review" },
   ]);
-  assert.equal(policy.scan.maxCostUsd, 18);
+  assert.deepEqual(policy.scan, {
+    model: "gpt-5.6-sol",
+    effort: "low",
+    mode: "standard",
+    maxCostUsd: 18,
+  });
 });

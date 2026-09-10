@@ -142,7 +142,7 @@ test("returns frozen target, policy, executor, scan, cost and publication facts 
     maxChangedPaths: 50,
     fallback: "repository",
     model: "gpt-5.6-sol",
-    effort: "high",
+    effort: "low",
     mode: "standard",
   });
   assert.deepEqual(preview.costBudget, {

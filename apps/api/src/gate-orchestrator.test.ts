@@ -264,6 +264,8 @@ test("passes changed paths and cost envelope to the scanner", async () => {
   await waitForGate(gate.id);
 
   assert.deepEqual(deps.lastScanRequest?.paths, ["src/a.ts", "src/b.ts"]);
+  assert.equal(deps.lastScanRequest?.effort, "low");
+  assert.equal(deps.lastScanRequest?.mode, "standard");
   assert.equal(deps.lastScanRequest?.maxCostUsd, 18);
   assert.equal(deps.runs.get(gate.id)?.costCeilingUsd, 18);
   assert.equal(deps.runs.get(gate.id)?.estimatedUsd, 0);

@@ -338,6 +338,7 @@ test("spawns the scanner with argument arrays and shell disabled", async () => {
   assert.equal(captured?.command, "npx");
   assert.equal(captured?.shell, false);
   assert.deepEqual(captured?.args.slice(0, 4), ["--yes", "@openai/codex-security", "scan", "/checkout/head"]);
+  assert.deepEqual(captured?.args.slice(4, 10), ["--model", "gpt-5.6-sol", "--effort", "low", "--mode", "standard"]);
   assert.deepEqual(captured?.args.slice(-2), ["--path", "src/report.ts"]);
   assert.equal(result.scanId, "scan-42");
 });
