@@ -43,7 +43,7 @@ import {
 
 const NOW = new Date("2026-08-11T12:00:00.000Z");
 
-test("Portable Deep grants 128 tools to every assessment page", () => {
+test("Portable assessments do not impose cumulative action ceilings", () => {
   const limits = portableAssessmentPageSessionLimits({
     totalTimeoutMs: 2_700_000,
     maxModelTurns: 64,
@@ -51,13 +51,13 @@ test("Portable Deep grants 128 tools to every assessment page", () => {
     maxInputBytes: 64 * 1_048_576,
     maxOutputBytes: 1_048_576,
   }, 2_000_000, 4);
-  assert.equal(limits.maxModelTurns, 64);
-  assert.equal(limits.maxToolCalls, 128);
+  assert.equal(limits.maxModelTurns, 0);
+  assert.equal(limits.maxToolCalls, 0);
   assert.equal(limits.timeoutMs, 2_000_000);
   assert.equal(limits.maxOutputBytes, 4 * 1_048_576);
 });
 
-test("Portable report grants 128 turns and tools to every shard", () => {
+test("Portable reports do not impose cumulative action ceilings", () => {
   const limits = portableReportShardSessionLimits({
     totalTimeoutMs: 2_700_000,
     maxModelTurns: 64,
@@ -65,8 +65,8 @@ test("Portable report grants 128 turns and tools to every shard", () => {
     maxInputBytes: 64 * 1_048_576,
     maxOutputBytes: 1_048_576,
   }, 1_500_000, 5);
-  assert.equal(limits.maxModelTurns, 128);
-  assert.equal(limits.maxToolCalls, 128);
+  assert.equal(limits.maxModelTurns, 0);
+  assert.equal(limits.maxToolCalls, 0);
   assert.equal(limits.timeoutMs, 1_500_000);
 });
 
@@ -82,8 +82,8 @@ test("dense Deep assessment does not exhaust its turn budget merely by adding pa
   const dense = portableAssessmentPageSessionLimits(base, Infinity, 32);
   assert.deepEqual(dense, sparse);
   assert.equal(dense.timeoutMs, 0);
-  assert.equal(dense.maxModelTurns, 64);
-  assert.equal(dense.maxToolCalls, 128);
+  assert.equal(dense.maxModelTurns, 0);
+  assert.equal(dense.maxToolCalls, 0);
 });
 const CAPABILITIES: ModelCapabilities = {
   tools: "supported",
@@ -868,11 +868,11 @@ test("Legacy Standard independently reviews an empty discovery once and carries 
     assert.equal(path.basename(discoverySpecs[1]!.artifactRoot), "discovery-review");
     assert.deepEqual(
       [discoverySpecs[0]!.limits.maxModelTurns, discoverySpecs[0]!.limits.maxToolCalls],
-      [32, 128],
+      [0, 0],
     );
     assert.deepEqual(
       [discoverySpecs[1]!.limits.maxModelTurns, discoverySpecs[1]!.limits.maxToolCalls],
-      [24, 96],
+      [0, 0],
       "the review stays within its fixed ceiling and the configured allowance",
     );
     assert.match(discoverySpecs[1]!.instructions, /INDEPENDENT COMPLEMENTARY DISCOVERY/);
@@ -963,8 +963,8 @@ test("Portable Deep partitions the immutable auditable universe and merges every
     assert.match(discovery[0]!.instructions, /BEGIN_PORTABLE_DEEP_SOURCE_FILES_JSON/);
     assert.match(discovery[0]!.instructions, /export const deep0 = true/);
     assert.equal(discovery[0]!.maxCompletionTokens, 32_768);
-    assert.equal(discovery[0]!.artifactWriteByTurn, 1);
-    assert.equal(discovery[0]!.limits.maxModelTurns, config.limits.maxModelTurns);
+    assert.equal(discovery[0]!.artifactWriteByTurn, undefined);
+    assert.equal(discovery[0]!.limits.maxModelTurns, 0);
     assert.ok(discovery.every((spec) => spec.limits.maxOutputBytes >= 262_144));
     assert.ok(discovery.every((spec) => spec.limits.timeoutMs >= 10 * 60_000));
     assert.deepEqual(
@@ -1018,11 +1018,11 @@ test("Standard covers the same complete source universe as Deep even when the gr
     assert.deepEqual(paths("standard"), expected, "graph omissions and priorities must never remove source files from Standard");
     assert.deepEqual(paths("standard"), paths("deep"));
     assert.equal(new Set(paths("standard")).size, 98, "every source file is assigned once");
-    assert.ok(discovery("standard").every(spec => spec.limits.maxModelTurns <= 16), "Standard bounds depth per batch rather than total file coverage");
+    assert.ok([...specsByMode.values()].flat().every(spec => spec.limits.maxModelTurns === 0 && spec.artifactWriteByTurn === undefined), "neither mode forces completion by cumulative turn count");
     assert.ok(discovery("standard").every(spec => spec.maxCompletionTokens === 16_384));
     assert.ok(discovery("deep").every(spec => spec.maxCompletionTokens === 32_768));
     assert.ok(specsByMode.get("deep")!.every(spec => spec.limits.maxToolCalls === 0), "all Deep stages disable the cumulative tool counter");
-    assert.ok(specsByMode.get("standard")!.every(spec => spec.limits.maxToolCalls > 0), "Standard keeps its existing policy");
+    assert.ok(specsByMode.get("standard")!.every(spec => spec.limits.maxToolCalls === 0), "Standard also permits productive tool calls without a cumulative ceiling");
     assert.ok(discovery("standard").every(spec => /BEGIN_PORTABLE_DEEP_SOURCE_FILES_JSON/.test(spec.instructions)), "complete source contents are projected, not candidate-only excerpts");
     assert.ok(discovery("standard").every(spec => /STANDARD BREADTH-FIRST REVIEW/.test(spec.instructions)));
     assert.equal(specsByMode.get("standard")!.some(spec => path.basename(spec.artifactRoot) === "discovery-review"), false);
@@ -1033,7 +1033,7 @@ test("Standard covers the same complete source universe as Deep even when the gr
   } finally { remove(root); }
 });
 
-test("Legacy Portable Codex Security gives every report page 128 bounded turns and tools", async () => {
+test("Legacy Portable report pages permit productive actions without cumulative ceilings", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-report-budget-"));
   const config = configuration(root, plan({
     routeKind: "minimax-token-plan",
@@ -1061,8 +1061,8 @@ test("Legacy Portable Codex Security gives every report page 128 bounded turns a
     assert.equal(reportSpecs.length, 1, "the factory stops at the first of seventeen report pages");
     assert.ok((reportSpecs[0]!.maxCompletionTokens ?? 0) > 10_240);
     assert.ok((reportSpecs[0]!.maxCompletionTokens ?? Infinity) <= 65_536);
-    assert.equal(reportSpecs[0]!.limits.maxModelTurns, 128);
-    assert.equal(reportSpecs[0]!.limits.maxToolCalls, 128);
+    assert.equal(reportSpecs[0]!.limits.maxModelTurns, 0);
+    assert.equal(reportSpecs[0]!.limits.maxToolCalls, 0);
     assert.equal(reportSpecs[0]!.instructions.includes("BEGIN_PORTABLE_COVERAGE_DOSSIER_JSON"), false);
     assert.equal(reportSpecs[0]!.instructions.includes("BEGIN_PORTABLE_REPORT_PAGE_JSON"), true);
     assert.deepEqual(specs.filter((item) => !/stage "report"/.test(item.spec.instructions))
@@ -1670,7 +1670,7 @@ test("Legacy Standard recovery replaces broad complementary retries with pinned 
           return { async *run() { yield { type: "failure", code: "agent_turn_limit" } as const; }, async cancel() { return { remote: false }; } };
         }
         if (page === "1" || page === "2") {
-          assert.ok(input.spec.limits.maxModelTurns <= 16);
+          assert.equal(input.spec.limits.maxModelTurns, 0);
           assert.ok(input.spec.limits.maxToolCalls <= 64);
           const assigned = [...input.spec.resultArtifactValidationContext!.deepCoverage!.requiredPaths];
           assert.ok(assigned.every(file => input.spec.resultArtifactValidationContext!.deepCoverage!.observedReadPaths.has(file)));
@@ -1716,7 +1716,7 @@ test("Legacy Standard graph recovery groups partial neighborhoods and reuses acc
             assert.equal(input.spec.resultArtifactValidationContext!.deepCoverage, undefined);
             const projected = input.spec.resultArtifactValidationContext!.discoveryCoverage!.projectedSourcePaths!;
             assert.ok(projected.size > 0);
-            assert.ok(input.spec.artifactWriteByTurn! < input.spec.limits.maxModelTurns);
+            assert.equal(input.spec.artifactWriteByTurn, undefined);
             fs.writeFileSync(path.join(input.spec.artifactRoot, "03-discovery.json"), JSON.stringify({
               schemaVersion: 1, stage: "discovery", summary: "Analyzed projected relationships; remaining file contents remain explicitly unexamined.",
               observations: [], candidates: [], scope: { inspected: [], unexamined: [...projected].map(path => ({ path, reason: "insufficient-evidence" })) },

@@ -1,3 +1,4 @@
+import { ToolProgressTracker, TOOL_PROGRESS_GUIDANCE } from "./tool-progress.js";
 import { createHash } from "node:crypto";
 import { ContextBudgetEstimator, completionContextReserve, carriesRemoteContext } from "./context-budget.js";
 import type { PortableCandidateRepairDetail, PortableAnchorContractRepairDetail, PortableReportRepairDetail, PortableAssessmentRepairDetail } from "../scanners/portable-codex-security-dossier.js";
@@ -106,6 +107,7 @@ export interface WorkspaceToolHostOptions {
 export interface AgentSessionLimits {
   /** Optional per-request estimated context ceiling including completion reserve; not a tokenizer guarantee. */
   maxContextTokens?: number;
+  /** Zero disables cumulative model-turn termination. */
   maxModelTurns: number;
   /** Zero disables the cumulative call-count ceiling; context, turns and cancellation remain enforced. */
   maxToolCalls: number;
@@ -409,7 +411,7 @@ export function validateAgentSessionLimits(limits: AgentSessionLimits): void {
   ];
   for (const [key, maximum] of entries) {
     const value = limits[key];
-    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < (key === "timeoutMs" || key === "maxToolCalls" ? 0 : 1) || value > maximum) {
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < (key === "timeoutMs" || key === "maxToolCalls" || key === "maxModelTurns" ? 0 : 1) || value > maximum) {
       throw new AgentSessionError("runner_invalid_spec");
     }
   }
@@ -456,7 +458,9 @@ class ConstrainedWireSession implements AgentSession {
     const seenCallIds = new Set<string>();
     const contextEstimator = new ContextBudgetEstimator();
     let modelTurns = 0;
+    const modelTurnLimit = this.#options.limits.maxModelTurns === 0 ? Infinity : this.#options.limits.maxModelTurns;
     let toolCalls = 0;
+    const toolProgress = this.#options.limits.maxToolCalls === 0 ? new ToolProgressTracker() : undefined;
     const toolCallLimit = this.#options.limits.maxToolCalls === 0
       ? Infinity : this.#options.limits.maxToolCalls;
     let inputBytes = 0;
@@ -498,7 +502,7 @@ class ConstrainedWireSession implements AgentSession {
         if (artifactRepairActive && artifactRepairTurns >= artifactRepairTurnLimit) {
           throw new AgentSessionError("agent_turn_limit");
         }
-        if (modelTurns >= this.#options.limits.maxModelTurns) {
+        if (modelTurns >= modelTurnLimit) {
           throw new AgentSessionError("agent_turn_limit");
         }
 
@@ -508,7 +512,7 @@ class ConstrainedWireSession implements AgentSession {
           (outputReserve > 0 && outputBytes >= this.#options.limits.maxOutputBytes - outputReserve) ||
           (this.#options.artifactWriteByTurn !== undefined &&
             modelTurns >= this.#options.artifactWriteByTurn) ||
-          this.#options.limits.maxModelTurns - modelTurns <= finalizationReserveTurns ||
+          modelTurnLimit - modelTurns <= finalizationReserveTurns ||
           toolCallLimit - toolCalls <= 2
         );
         const requestInArtifactRepair = artifactRepairActive;
@@ -808,6 +812,9 @@ class ConstrainedWireSession implements AgentSession {
             artifactRepairActive = false;
           }
           this.#throwIfStopped();
+          if (toolProgress?.observe(call.name, call.input, result.content, recoveredBeforeIo)) {
+            result = { ...result, content: `${result.content}\n\n${TOOL_PROGRESS_GUIDANCE}` };
+          }
           const resultBytes = Buffer.byteLength(result.content, "utf8");
           if (outputBytes + resultBytes > this.#options.limits.maxOutputBytes) {
             throw new AgentSessionError("agent_output_byte_limit");

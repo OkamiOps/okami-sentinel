@@ -8,6 +8,8 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Fixed
 
+- Standard and Deep no longer terminate or force result writing at a cumulative number of tool calls or model turns. Repeated inspection results and failed inspection streaks receive actionable model guidance; new evidence resets that detection. Context, byte/usage, cancellation and artifact validation remain enforced.
+
 - Recovery progress distinguishes the previous failure from current activity, including legacy workers already running. New worker recovery pages report analyzing/completed parts and reused checkpoints instead of repeating a stale failure label; raw failure events remain unchanged.
 
 - Deep scans no longer stop or force artifact finalization because a session reaches a cumulative tool-call count. Context, model-turn, output, artifact-repair and cancellation checks remain enforced; Standard and capability probes keep their existing tool limits.

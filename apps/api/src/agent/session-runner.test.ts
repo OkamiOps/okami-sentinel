@@ -177,11 +177,11 @@ test("an endless valid tool transcript stops before an N+1 model or tool call", 
   assert.equal(events.filter(isCompletedTool).length, 2);
 });
 
-test("zero tool ceiling allows more than 128 distinct reads and still completes", async (t) => {
+test("disabled cumulative ceilings allow 301 distinct reads across 302 model turns", async (t) => {
   const fixture = await fixtureRoots("unlimited-tools");
   t.after(() => fixture.cleanup());
   const calls = [];
-  for (let index = 0; index < 130; index += 1) {
+  for (let index = 0; index < 301; index += 1) {
     const path = `source-${index}.ts`;
     await writeFile(join(fixture.snapshotRoot, path), `export const value = ${index};\n`);
     calls.push({ id: `read-${index}`, type: "function", function: {
@@ -189,18 +189,42 @@ test("zero tool ceiling allows more than 128 distinct reads and still completes"
     } });
   }
   const upstream = fakeOpenAiChat([
-    { choices: [{ message: { tool_calls: calls } }] },
+    ...calls.map(call => ({ choices: [{ message: { tool_calls: [call] } }] })),
     { choices: [{ message: { content: "done" } }] },
   ]);
   const session = await createAgentSession({
-    ...sessionSpec(fixture, "openai-chat", "gemini-api", { maxToolCalls: 0 }),
+    ...sessionSpec(fixture, "openai-chat", "gemini-api", { maxToolCalls: 0, maxModelTurns: 0 }),
     probe: capability(),
   }, upstream);
   const events: AgentEvent[] = [];
   await collect(session.run(), events);
-  assert.equal(events.filter(isCompletedTool).length, 130);
-  assert.equal(upstream.requests.length, 2);
+  assert.equal(events.filter(isCompletedTool).length, 301);
+  assert.equal(upstream.requests.length, 302);
   assert.ok(events.some(event => event.type === "completion"));
+});
+
+test("repeated inspections receive model-visible guidance and can continue to new evidence", async (t) => {
+  const fixture = await fixtureRoots("tool-loop-guidance");
+  t.after(() => fixture.cleanup());
+  await writeFile(join(fixture.snapshotRoot, "other.ts"), "export const other = 2;\n");
+  const upstream = fakeOpenAiChat([
+    ...["index.ts", "index.ts", "index.ts", "index.ts", "other.ts"].map((path, index) => ({
+      choices: [{ message: { tool_calls: [{ id: `read-${index}`, type: "function", function: {
+        name: "workspace_read", arguments: JSON.stringify({ path }),
+      } }] } }],
+    })),
+    { choices: [{ message: { content: "done" } }] },
+  ]);
+  const session = await createAgentSession({
+    ...sessionSpec(fixture, "openai-chat", "gemini-api", { maxToolCalls: 0, maxModelTurns: 0 }),
+    probe: capability(),
+  }, upstream);
+  const events: AgentEvent[] = [];
+  await collect(session.run(), events);
+  assert.match(JSON.stringify(upstream.requests[4]!.body), /Sentinel guidance:/);
+  assert.equal(events.filter(isCompletedTool).length, 5);
+  assert.ok(events.some(event => event.type === "completion"));
+  assert.equal(events.some(event => event.type === "failure"), false);
 });
 
 test("the shared session reserves its final turns for artifact write and completion", async () => {

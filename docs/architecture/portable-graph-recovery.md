@@ -221,6 +221,10 @@ paths from both suggested files and related-file lists, without denying needed r
 These changes remove redundant workflow instructions; real provider runtime and
 finding-quality improvements still require measurement.
 
-## Deep tool-call accounting
+## Productive actions and loop guidance
 
-Deep production sessions use `maxToolCalls: 0` to disable cumulative call-count termination across all stages and recovery attempts. The wire runner interprets zero as unbounded only for that counter, including finalization reservation and batched calls. It does not disable context, model-turn, input/output byte, artifact validation, repair-stall or cancellation checks. Standard and capability probes retain their bounded tool policies. A running worker must reload the implementation to apply this change; an update restart must be identified separately from spontaneous recovery.
+Standard and Deep sessions use `maxToolCalls: 0` and `maxModelTurns: 0`, with no `artifactWriteByTurn`. The shared runner interprets zero as disabling cumulative action ceilings, including forced-finalization reserves derived from those counts. Mode-specific prompts and reasoning effort distinguish breadth from depth. Explicitly bounded capability probes retain their limits.
+
+Inspection progress tracking stores only bounded hashes of tool inputs and original results. New successful evidence resets stagnation. Three consecutive already-seen results or failed inspections trigger model-visible guidance to reuse evidence, correct arguments or follow a different relevant relationship; no action is blocked by this advisory. Cyclic repetitions are detected as well as identical consecutive calls. Source, graph and tool-result content remain untrusted. Artifact repair has its separate validation/stall handling.
+
+Context, input/output byte budgets, configured consumption controls, cancellation and evidence checks remain in force. This change does not introduce a duration timeout. An already-running worker retains its loaded policy until restarted; an operator update restart must be identified separately from spontaneous recovery.

@@ -523,13 +523,9 @@ export async function runPortableCodexSecurity(
             : portableReportShardSessionLimits(safeConfiguration.limits, stageRemaining, shards!.length);
         const execute = async (stageDossier: PortableCodexSecurityDossier, partition: PortableDeepCoveragePartition | null,
           shard: PortableCodexSecurityReportShardResult["shard"] | null, artifactRoot: string): Promise<PortableCodexSecurityStageObservation> => {
-        const effectiveSessionLimits = safeConfiguration.mode === "standard" && partition !== null
-          ? { ...stageSessionLimits, maxModelTurns: Math.min(16, stageSessionLimits.maxModelTurns), maxToolCalls: Math.min(64, stageSessionLimits.maxToolCalls) }
-          : safeConfiguration.mode === "deep"
-            // Deep exploration must not exhaust a fixed counter while reading
-            // distinct source/sink paths. Context and repair limits still apply.
-            ? { ...stageSessionLimits, maxToolCalls: 0 }
-            : stageSessionLimits;
+        // Legitimate exploration is not terminated by cumulative action counts.
+        // Mode-specific prompts and effort control depth; repeats receive guidance.
+        const effectiveSessionLimits = { ...stageSessionLimits, maxModelTurns: 0, maxToolCalls: 0 };
         const graphProjection = (partition as StandardRecoveryPartition | null)?.sourceProjection === "graph-windows-v1";
         const stageDossierStateBase64 = portableCodexSecurityDossierBase64(stageDossier);
         fs.mkdirSync(artifactRoot, { recursive: true, mode: 0o700 });
@@ -588,22 +584,6 @@ export async function runPortableCodexSecurity(
           ? {}
           : { reasoningEffort: safeConfiguration.reasoningEffort }),
         terminalMode: "artifact-write",
-        // Standard discovery needs its exploration allowance. The session
-        // already reserves finalization/repair turns near the actual limit;
-        // forcing a write at 2/3 of the budget prematurely ended real reviews.
-        ...(stage.id === "discovery" && partition === null ? {} : {
-        artifactWriteByTurn: partition === null && assessmentPage === null
-          ? Math.min(
-            effectiveSessionLimits.maxModelTurns - 1,
-            Math.max(8, Math.floor(effectiveSessionLimits.maxModelTurns * 2 / 3)),
-          )
-          : partition !== null
-            ? Math.min(16, Math.max(1, effectiveSessionLimits.maxModelTurns - 8))
-            : Math.min(
-              effectiveSessionLimits.maxModelTurns - 1,
-              Math.max(3, Math.floor(effectiveSessionLimits.maxModelTurns * 2 / 3)),
-            ),
-        }),
         ...(stage.id === "report"
           ? { maxCompletionTokens: portableCodexSecurityReportCompletionTokens(stageDossier) }
           : assessmentPage !== null
@@ -724,9 +704,7 @@ export async function runPortableCodexSecurity(
         const observed = await runPortableStageWithRecovery({
           metadataDir: path.join(outputDir, "portable-recovery"), snapshotId: snapshot.snapshotId,
           stage: stage.id, page: path.basename(artifactRoot), signal: deadline.signal,
-          ...(safeConfiguration.mode === "standard" && partition !== null
-            ? { executionPolicyId: `standard-discovery-source-units-v1-output-16384-context-${Math.min(300_000, resolved.model.contextWindow ?? 300_000)}` }
-            : {}),
+          executionPolicyId: `productive-actions-v1-${safeConfiguration.mode}-context-${Math.min(300_000, resolved.model.contextWindow ?? 300_000)}`,
           recoverCheckpoint: async () => checkpoint(artifactRoot, stageDossier, partition),
           onRecovery: event => {
             log(JSON.stringify({ type: "stage_recovery", ...event }));
@@ -1118,12 +1096,8 @@ export function portableReportShardSessionLimits(
   remainingMs: number,
   _shardCount: number,
 ): AgentSessionLimits {
-  // Report pages are independent terminal sessions. Dividing either turns or
-  // tools by page count repeatedly starved dense reports near final assembly.
-  // Keep each page bounded while the scan-global deadline and cost ceiling
-  // remain authoritative across every page.
-  const maxModelTurns = 128;
-  const maxToolCalls = 128;
+  const maxModelTurns = 0;
+  const maxToolCalls = 0;
   return sessionLimits({ ...limits, maxModelTurns, maxToolCalls }, remainingMs);
 }
 
@@ -1133,19 +1107,8 @@ export function portableAssessmentPageSessionLimits(
   remainingMs: number,
   _pageCount: number,
 ): AgentSessionLimits {
-  // Candidate pages are independent bounded sessions. Dividing turns by the
-  // number of pages made a large Deep audit fail only after discovery had
-  // already spent its budget. Keep each validation page usable; scan-wide
-  // cost and cancellation remain authoritative across the page sequence.
-  const maxModelTurns = Math.min(64, limits.maxModelTurns);
-  // Assessment pages carry at most 32 candidates, but a candidate can require
-  // several source/sink reads before the terminal artifact. Dividing tools by
-  // the number of pages repeatedly starved dense deep scans. Give every page a
-  // fixed, bounded allowance; cost and the hard deadline remain scan-global.
-  const maxToolCalls = 128;
-  if (maxModelTurns < 8) {
-    throw new PortableCodexSecurityRunnerError("agent_tool_limit");
-  }
+  const maxModelTurns = 0;
+  const maxToolCalls = 0;
   // Tool source reads and model responses share this byte counter. A 1 MiB
   // scan default can be consumed before an assessment's terminal repair.
   // Keep it bounded, with smaller validation segments limiting context growth.
@@ -1160,8 +1123,8 @@ export function portableSupplementalDiscoveryReviewSessionLimits(
 ): AgentSessionLimits {
   return sessionLimits({
     ...limits,
-    maxModelTurns: Math.min(24, limits.maxModelTurns),
-    maxToolCalls: Math.min(96, limits.maxToolCalls),
+    maxModelTurns: 0,
+    maxToolCalls: 0,
   }, remainingMs);
 }
 
@@ -1170,16 +1133,8 @@ function deepCoveragePartitionSessionLimits(
   remainingMs: number,
   partition: PortableDeepCoveragePartition,
 ): AgentSessionLimits {
-  // Deep pages are exhaustive, not best-effort. Preserve enough bounded
-  // turns for premature write repair and failed-read correction without
-  // granting a fresh scan-wide budget to each page.
-  const maxModelTurns = limits.maxModelTurns;
-  // Providers may retry an incomplete page and re-read assigned paths. Bound
-  // that behavior to at most two full passes plus repair overhead.
-  const maxToolCalls = Math.min(limits.maxToolCalls, partition.paths.length * 2 + 24);
-  if (maxModelTurns < 8 || maxToolCalls < partition.paths.length + 1) {
-    throw new PortableCodexSecurityRunnerError("agent_tool_limit");
-  }
+  const maxModelTurns = 0;
+  const maxToolCalls = 0;
   // The bounded counter includes escaped workspace results plus every model
   // response in the page. A raw 1 MiB partition can therefore exceed a
   // simple source-size multiplier even though the provider request remains
