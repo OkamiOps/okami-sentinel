@@ -1588,6 +1588,9 @@ test("automatic validation recovery splits a failed page and never repeats a com
       index: { nodes: [{ id: "auth", label: "authenticate()", file: "src/auth.ts", location: "L1" }], edges: [] } }), createSession: factory, log: (line: string) => events.push(line) }));
     assert.equal(result.runtime.status, "completed");
     assert.deepEqual(calls, ["validation", "1", "2", "2", "3"]);
+    assert.ok(events.some(line => line.includes("part 2/3 (analyzing)")));
+    assert.ok(events.some(line => line.includes("part 1/3 (checkpoint reused)")));
+    assert.ok(events.some(line => line.includes("3/3 parts completed")));
     assert.equal(events.filter(l => l.includes('"type":"stage_recovery"')).length, 2);
     const dossier = readPortableCodexSecurityDossier(path.join(config.outputDir, "portable-codex-security-results"))!;
     assert.equal(dossier.assessments.filter(a => a.stage === "validation").length, 3);

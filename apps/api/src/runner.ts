@@ -48,6 +48,7 @@ import {
   refreshRunByScanDir,
 } from "./ingest.js";
 import {
+  describeRecoveryProgress,
   isInternalProgressMarker,
   parseCliPhaseHint,
   progressEventMessage,
@@ -184,7 +185,7 @@ export function sanitizeScanProgress(progress: ScanProgress): ScanProgress {
     ...progress,
     phase: redactProgressString(progress.phase),
     phaseLabel: redactText(progress.phaseLabel),
-    detail: redactProgressString(progress.detail),
+    detail: describeRecoveryProgress(redactProgressString(progress.detail)),
     unit: redactProgressString(progress.unit),
     deepPhase: redactProgressString(progress.deepPhase),
     activityState: redactProgressString(progress.activityState),

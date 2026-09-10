@@ -1832,3 +1832,11 @@ test("internal Sentinel progress markers are not presented as operator log lines
 test("Mantis Codex sessions disable unrelated user plugins", () => {
   assert.deepEqual(MANTIS_CODEX_ISOLATION_ARGS, ["--disable", "plugins"]);
 });
+
+
+test("legacy recovery heartbeats identify the prior failure rather than a new failure", () => {
+  const hint = parseCliPhaseHint('SENTINEL_PROGRESS {"percent":56,"stage":"dataflow","phaseLabel":"Source-to-sink traces","detail":"recovering source-to-sink traces: agent_tool_limit, attempt 3/3"}');
+  assert.equal(hint?.detail, "resuming source-to-sink traces — attempt 3/3; previous failure: agent_tool_limit");
+  const actualFailure = parseCliPhaseHint('SENTINEL_PROGRESS {"percent":56,"stage":"dataflow","detail":"agent_tool_limit"}');
+  assert.equal(actualFailure?.detail, "agent_tool_limit", "actual failures must remain visible");
+});

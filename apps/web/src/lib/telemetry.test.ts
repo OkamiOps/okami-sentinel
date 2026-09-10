@@ -63,3 +63,12 @@ test("a newer disk snapshot does not erase a cursorless live diagnostic", () => 
   ]);
   assert.equal(merged.cursor, 31);
 });
+
+
+test("recovery display distinguishes prior failures from raw failure events", async () => {
+  const { formatRecoveryProgressText } = await import("./telemetry");
+  assert.equal(formatRecoveryProgressText("Source-to-sink traces · recovering source-to-sink traces: agent_tool_limit, attempt 3/3 (stage 4/6)"),
+    "Source-to-sink traces · resuming source-to-sink traces — attempt 3/3; previous failure: agent_tool_limit (stage 4/6)");
+  const raw = '[stdout] {"type":"failure","code":"agent_tool_limit"}';
+  assert.equal(formatRecoveryProgressText(raw), raw);
+});

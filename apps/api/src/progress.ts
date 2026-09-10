@@ -68,6 +68,15 @@ export function isInternalProgressMarker(line: string): boolean {
   return /(?:^|\s)SENTINEL_PROGRESS\s+\{/.test(line);
 }
 
+/** Legacy workers retain the prior failure in their recovery heartbeat. */
+export function describeRecoveryProgress(detail: string | null | undefined): string | null {
+  if (!detail) return detail ?? null;
+  const recovery = /^recovering (.+): (agent_[a-z_]+|stage_[a-z_]+), attempt (\d+)\/(\d+)$/.exec(detail);
+  return recovery
+    ? `resuming ${recovery[1]} — attempt ${recovery[3]}/${recovery[4]}; previous failure: ${recovery[2]}`
+    : detail;
+}
+
 export function progressEventMessage(progress: ScanProgress): string {
   const metric =
     progress.indeterminate &&
@@ -76,7 +85,7 @@ export function progressEventMessage(progress: ScanProgress): string {
       ? `stage ${progress.currentItem}/${progress.itemsTotal}`
       : `${progress.percent}%`;
   return progress.detail
-    ? `${progress.phaseLabel} · ${progress.detail} (${metric})`
+    ? `${progress.phaseLabel} · ${describeRecoveryProgress(progress.detail)} (${metric})`
     : `${progress.phaseLabel} (${metric})`;
 }
 
@@ -391,7 +400,7 @@ export function parseCliPhaseHint(line: string): Partial<ScanProgress> | null {
           phase: typeof marker.stage === "string" ? marker.stage : "discovery",
           phaseLabel:
             typeof marker.phaseLabel === "string" ? marker.phaseLabel : "Mantis",
-          detail: typeof marker.detail === "string" ? marker.detail : null,
+          detail: describeRecoveryProgress(typeof marker.detail === "string" ? marker.detail : null),
           reportableFindings: Number(marker.findings ?? 0) || 0,
         };
       }

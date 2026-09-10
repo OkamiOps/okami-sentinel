@@ -770,7 +770,9 @@ export async function runPortableCodexSecurity(
               // Separate versioned slice layout from historical whole-file checkpoint numbering.
               const childRoot = path.join(outputDir, "portable-recovery", `${sourceUnits ? "source-units-v1" : "chunks"}-${path.basename(artifactRoot)}`, String(i + 1));
               const saved = checkpoint(childRoot, childDossier, childPart);
+              update({ detail: `resuming ${stage.label.toLowerCase()}: part ${i + 1}/${count}${saved ? " (checkpoint reused)" : " (analyzing)"}` });
               childResults.push(saved ?? await execute(childDossier, childPart, childShard, childRoot));
+              update({ detail: `resuming ${stage.label.toLowerCase()}: ${i + 1}/${count} parts completed` });
             }
             let artifact: unknown;
             if (shard !== null) {

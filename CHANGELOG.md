@@ -8,6 +8,8 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Fixed
 
+- Recovery progress distinguishes the previous failure from current activity, including legacy workers already running. New worker recovery pages report analyzing/completed parts and reused checkpoints instead of repeating a stale failure label; raw failure events remain unchanged.
+
 - Deep scans no longer stop or force artifact finalization because a session reaches a cumulative tool-call count. Context, model-turn, output, artifact-repair and cancellation checks remain enforced; Standard and capability probes keep their existing tool limits.
 
 - Responses now sends strict, stage-specific Portable artifact schemas with complete nested required fields, preventing omitted discovery candidates from relying solely on repeated model repair prompts. Legacy mixed-stage and other provider contracts remain unchanged; local source and evidence validation still applies.

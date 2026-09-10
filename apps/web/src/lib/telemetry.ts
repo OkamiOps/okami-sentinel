@@ -49,3 +49,9 @@ export function appendTelemetryEvent(
     volatileLines,
   };
 }
+
+/** Clarify legacy recovery status without rewriting raw failure events. */
+export function formatRecoveryProgressText(text: string): string {
+  return text.replace(/(^| · )recovering ([^\n:]+): ((?:agent|stage)_[a-z_]+), attempt (\d+\/\d+)(?= \(stage|$)/,
+    "$1resuming $2 — attempt $4; previous failure: $3");
+}
