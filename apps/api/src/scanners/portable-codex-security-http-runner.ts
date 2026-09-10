@@ -604,7 +604,7 @@ export async function runPortableCodexSecurity(
           : assessmentPage !== null
             ? { maxCompletionTokens: 32_768 }
           : partition !== null
-            ? { maxCompletionTokens: 32_768 }
+            ? { maxCompletionTokens: safeConfiguration.mode === "standard" ? 16_384 : 32_768 }
             : {}),
         resultArtifactContract: PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT,
         resultArtifactValidationContext: {
@@ -719,6 +719,9 @@ export async function runPortableCodexSecurity(
         const observed = await runPortableStageWithRecovery({
           metadataDir: path.join(outputDir, "portable-recovery"), snapshotId: snapshot.snapshotId,
           stage: stage.id, page: path.basename(artifactRoot), signal: deadline.signal,
+          ...(safeConfiguration.mode === "standard" && partition !== null
+            ? { executionPolicyId: `standard-discovery-output-16384-context-${Math.min(300_000, resolved.model.contextWindow ?? 300_000)}-v1` }
+            : {}),
           recoverCheckpoint: async () => checkpoint(artifactRoot, stageDossier, partition),
           onRecovery: event => {
             log(JSON.stringify({ type: "stage_recovery", ...event }));

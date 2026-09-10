@@ -8,6 +8,7 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Fixed
 
+- Standard discovery reserves 16K output tokens instead of 32K, keeping large source batches within the 300K context guard without removing source. Recovery journals retain prior failures and allow bounded attempts under an explicitly changed execution policy.
 - Portable discovery instructions no longer contradict the required `candidates` array, reducing avoidable structural repair requests.
 
 - Responses sessions project task instructions and source once as persistent system input, avoiding duplicate first-request context while preserving instructions across continuation turns.

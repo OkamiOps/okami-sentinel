@@ -29,6 +29,12 @@ export interface PortableStageRecoveryOptions<T> {
   snapshotId: string;
   stage: string;
   page: string;
+  /**
+   * Stable, explicit execution-envelope identity. Supplying it creates a
+   * distinct retry journal when a real policy change can affect the result.
+   * Omitting it retains the v1 identity and journal format.
+   */
+  executionPolicyId?: string;
   /** At most two additional sessions. Counters survive subsequent invocations. */
   maxRetries?: number;
   signal?: AbortSignal;
@@ -43,6 +49,7 @@ interface RecoveryState {
   snapshotId: string;
   stage: string;
   page: string;
+  executionPolicyId?: string;
   attempts: number;
   lastErrorCode?: string;
 }
@@ -56,12 +63,22 @@ function errorCode(error: unknown): string | undefined {
 export async function runPortableStageWithRecovery<T>(options: PortableStageRecoveryOptions<T>): Promise<T> {
   const retries = options.maxRetries ?? 2;
   if (!Number.isInteger(retries) || retries < 0 || retries > 2 ||
-      !options.snapshotId || !options.stage || !options.page) {
+      !options.snapshotId || !options.stage || !options.page ||
+      (options.executionPolicyId !== undefined &&
+        (typeof options.executionPolicyId !== "string" || options.executionPolicyId.length === 0 ||
+          Buffer.byteLength(options.executionPolicyId, "utf8") > 512))) {
     throw new PortableStageRecoveryError("stage_recovery_state_invalid", 0);
   }
   options.signal?.throwIfAborted();
   fs.mkdirSync(options.metadataDir, { recursive: true, mode: 0o700 });
-  const identity = { snapshotId: options.snapshotId, stage: options.stage, page: options.page };
+  // Keep the v1 key byte-for-byte stable when no policy is supplied. A policy
+  // is an intentional execution-envelope version, never a per-resume nonce.
+  const identity = {
+    snapshotId: options.snapshotId,
+    stage: options.stage,
+    page: options.page,
+    ...(options.executionPolicyId === undefined ? {} : { executionPolicyId: options.executionPolicyId }),
+  };
   const key = createHash("sha256").update(JSON.stringify(identity)).digest("hex");
   const file = path.join(options.metadataDir, `${key}.json`);
   const lock = path.join(options.metadataDir, `${key}.lock`);
@@ -78,7 +95,8 @@ export async function runPortableStageWithRecovery<T>(options: PortableStageReco
         if (!fs.lstatSync(file).isFile() || fs.statSync(file).size > 4096) throw new Error();
         const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as RecoveryState;
         if (parsed.version !== 1 || parsed.snapshotId !== identity.snapshotId || parsed.stage !== identity.stage ||
-            parsed.page !== identity.page || !Number.isInteger(parsed.attempts) || parsed.attempts < 0 || parsed.attempts > 3 ||
+            parsed.page !== identity.page || parsed.executionPolicyId !== options.executionPolicyId ||
+            !Number.isInteger(parsed.attempts) || parsed.attempts < 0 || parsed.attempts > 3 ||
             (parsed.lastErrorCode !== undefined && !RECOVERABLE.has(parsed.lastErrorCode))) throw new Error();
         state = parsed;
       } catch { throw new PortableStageRecoveryError("stage_recovery_state_invalid", 0); }

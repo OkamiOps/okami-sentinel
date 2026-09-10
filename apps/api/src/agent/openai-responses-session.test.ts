@@ -5,7 +5,33 @@ import test from "node:test";
 import type { ProviderModel } from "@csb/shared";
 
 import { createOpenAiResponsesWireAdapter } from "./openai-responses-session.js";
+import { buildPortableCodexSecurityStagePrompt, PORTABLE_CODEX_SECURITY_STAGES } from "../scanners/portable-codex-security-profile.js";
+import { ContextBudgetEstimator, completionContextReserve } from "./context-budget.js";
 import { AGENT_ARTIFACT_REPAIR_REMINDER, AGENT_PORTABLE_FINALIZATION_REMINDER, type AgentWireRequest } from "./session-types.js";
+
+test("a large quoted source page fits Standard context without dropping source or raising the context ceiling", () => {
+  const content = '{\n' + '  "key": "value",\n'.repeat(16_500) + '}\n';
+  const source = { path: "i18n.tsx", lineCount: 16_502, content };
+  const instructions = "g".repeat(10_000) + buildPortableCodexSecurityStagePrompt(
+    PORTABLE_CODEX_SECURITY_STAGES.find(stage => stage.id === "discovery")!, {
+      snapshotRoot: "/snapshot", artifactRoot: "/artifacts", scanMode: "standard",
+      deepCoveragePartition: { index: 0, total: 1, paths: [source.path], sourceFiles: [source] },
+    });
+  const request = (cap: number) => createOpenAiResponsesWireAdapter({
+    model: model("grok-4.6"), instructions, maxCompletionTokens: cap,
+    resultArtifactContract: "portable-stage-json-v1",
+    resultArtifactValidationContext: {
+      dossier: createPortableCodexSecurityDossier(), expectedArtifactPath: "03-discovery.json",
+      requireDiscoveryCandidateContext: true,
+    },
+  }).nextRequest([]).body;
+  const standard = request(16_384);
+  const projected = (standard as { input: Array<{content: string}> }).input[0]!.content;
+  assert.ok(projected.includes(JSON.stringify([source])), "every original source byte remains projected");
+  const estimate = (body: unknown) => new ContextBudgetEstimator().estimate(Buffer.byteLength(JSON.stringify(body))) + completionContextReserve(body);
+  assert.ok(estimate(standard) <= 300_000, `estimated ${estimate(standard)}`);
+  assert.ok(estimate(request(32_768)) > 300_000, `estimated ${estimate(request(32_768))}`);
+});
 
 test("OpenAI Responses encodes declared tool names and decodes only portable wire calls", () => {
   const adapter = createOpenAiResponsesWireAdapter({
