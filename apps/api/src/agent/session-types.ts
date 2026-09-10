@@ -324,6 +324,10 @@ export const AGENT_ARTIFACT_REPAIR_REMINDER =
 export const AGENT_PORTABLE_FINALIZATION_REMINDER =
   "Exploration is ending. Consolidate the evidence already collected into the complete declared stage artifact now. Preserve all candidate hypotheses and findings; do not discard work or emit a placeholder to finish. Discovery must include a substantive review summary, explicit candidates (empty only if the reviewed evidence supports no leads), and exact inspected source files plus honest unexamined scope. Do not claim a directory listing or search snippet as a completed file review. Call results.write alone with the complete artifact.";
 
+/** Safe, structural repair cue for a rejected live discovery artifact. */
+export const AGENT_PORTABLE_MISSING_CANDIDATES_REPAIR_REMINDER =
+  "The preceding results.write omitted the required discovery candidates field. Submit the complete artifact with an explicit candidates array; use [] only when the completed review found no leads. Preserve evidence-backed candidate claims.";
+
 export interface WireSessionAdapter {
   nextRequest(
     toolResults: readonly AgentToolResult[],

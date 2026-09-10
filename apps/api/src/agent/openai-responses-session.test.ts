@@ -7,7 +7,12 @@ import type { ProviderModel } from "@csb/shared";
 import { createOpenAiResponsesWireAdapter } from "./openai-responses-session.js";
 import { buildPortableCodexSecurityStagePrompt, PORTABLE_CODEX_SECURITY_STAGES } from "../scanners/portable-codex-security-profile.js";
 import { ContextBudgetEstimator, completionContextReserve } from "./context-budget.js";
-import { AGENT_ARTIFACT_REPAIR_REMINDER, AGENT_PORTABLE_FINALIZATION_REMINDER, type AgentWireRequest } from "./session-types.js";
+import {
+  AGENT_ARTIFACT_REPAIR_REMINDER,
+  AGENT_PORTABLE_FINALIZATION_REMINDER,
+  AGENT_PORTABLE_MISSING_CANDIDATES_REPAIR_REMINDER,
+  type AgentWireRequest,
+} from "./session-types.js";
 
 test("a large quoted source page fits Standard context without dropping source or raising the context ceiling", () => {
   const content = '{\n' + '  "key": "value",\n'.repeat(16_500) + '}\n';
@@ -257,6 +262,56 @@ test("OpenAI Responses Portable allows optional stage fields and keeps workspace
   const properties = (tools[3]!.parameters as { properties: Record<string, { type: string }> }).properties;
   assert.equal(properties.content!.type, "object");
   assert.equal(tools.slice(0, 3).every((tool) => tool.strict === true), true);
+});
+
+test("Responses reasserts a missing discovery candidates field after its paired safe tool error", () => {
+  const adapter = createOpenAiResponsesWireAdapter({
+    model: model("portable-model"), instructions: "Inspect the assigned source and write discovery.",
+    resultArtifactContract: "portable-stage-json-v1",
+  });
+  adapter.readResponse({
+    id: "response-write",
+    output: [{
+      type: "function_call",
+      call_id: "read-1",
+      name: "workspace_read",
+      arguments: '{"path":"route.ts"}',
+    }, {
+      type: "function_call",
+      call_id: "write-1",
+      name: "results_write",
+      arguments: '{"path":"03-discovery.json","content":{"schemaVersion":1,"stage":"discovery"}}',
+    }],
+  });
+
+  const rejected = {
+    callId: "write-1",
+    name: "results.write" as const,
+    content: JSON.stringify({
+      error: "tool_argument_invalid",
+      reason: "stage-candidates-invalid",
+      repair: { kind: "candidate-contract", reason: "array-or-limit", field: "candidates", expected: "array", actualType: "missing" },
+    }),
+    ok: false,
+    validationIssue: "stage-candidates-invalid" as const,
+    candidateIssue: {
+      kind: "candidate-contract" as const,
+      reason: "array-or-limit" as const,
+      field: "candidates" as const,
+      expected: "array" as const,
+      actualType: "missing",
+    },
+  };
+  const source = { callId: "read-1", name: "workspace.read" as const, content: "source evidence" };
+  const body = responseBody(adapter.nextRequest([source, rejected]));
+  const input = body.input as Array<Record<string, unknown>>;
+
+  assert.deepEqual(input, [
+    { type: "function_call_output", call_id: "read-1", output: source.content },
+    { type: "function_call_output", call_id: "write-1", output: rejected.content },
+    { role: "user", content: AGENT_PORTABLE_MISSING_CANDIDATES_REPAIR_REMINDER },
+  ]);
+  assert.equal((body.tools as Array<{ name: string }>).some((tool) => tool.name === "results_write"), true);
 });
 
 function responsesBody(request: AgentWireRequest): {

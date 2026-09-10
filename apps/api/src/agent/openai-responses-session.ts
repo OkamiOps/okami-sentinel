@@ -3,6 +3,7 @@ import type { ProviderModel } from "@csb/shared";
 
 import {
   AGENT_ARTIFACT_REPAIR_REMINDER,
+  AGENT_PORTABLE_MISSING_CANDIDATES_REPAIR_REMINDER,
   AGENT_PORTABLE_FINALIZATION_REMINDER,
   AgentSessionError,
   validateAgentSessionReasoningEffort,
@@ -53,6 +54,14 @@ export function createOpenAiResponsesWireAdapter(
     ): AgentWireRequest {
       if (toolResults.some((result) => result.name === "results.write" && result.ok !== false)) finalizing = true;
       if (toolResults.length > 0) pendingToolResults = toolResults;
+      const missingDiscoveryCandidates = pendingToolResults.some((result) =>
+        result.name === "results.write" &&
+        result.ok === false &&
+        result.validationIssue === "stage-candidates-invalid" &&
+        result.candidateIssue?.reason === "array-or-limit" &&
+        result.candidateIssue.field === "candidates" &&
+        result.candidateIssue.actualType === "missing",
+      );
       const input = pendingToolResults.length === 0
         ? [...(previousResponseId === undefined ? [{ role: "system", content: spec.instructions }] : []), {
           role: "user",
@@ -64,7 +73,9 @@ export function createOpenAiResponsesWireAdapter(
           type: "function_call_output",
           call_id: result.callId,
           output: result.content,
-        })), ...(toolResults.length === 0 && control?.artifactRepairReminder === true
+        })), ...(missingDiscoveryCandidates
+          ? [{ role: "user", content: AGENT_PORTABLE_MISSING_CANDIDATES_REPAIR_REMINDER }]
+          : []), ...(toolResults.length === 0 && control?.artifactRepairReminder === true
           ? [{ role: "user", content: AGENT_ARTIFACT_REPAIR_REMINDER }] : [])];
       if (!finalizing && control?.finalizationRequired === true &&
           spec.resultArtifactContract === PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT) {
