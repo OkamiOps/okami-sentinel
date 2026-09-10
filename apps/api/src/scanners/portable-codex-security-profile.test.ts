@@ -18,7 +18,7 @@ test("Standard prompts keep budgets as ceilings and reuse the carried stage map 
     snapshotRoot: "/snapshot",
     artifactRoot: "/artifacts",
     scopePaths: ["src"],
-    dossierStateBase64: "dossier",
+    dossierStateBase64: Buffer.from(JSON.stringify({ candidates: [] })).toString("base64"),
   });
 
   assert.match(prompt, /budgets are safety ceilings, never coverage targets/);
@@ -108,4 +108,19 @@ test("projected source permits direct assessment without redundant tool reads wh
   });
   assert.match(withoutSource, /call and consume at least one/);
   assert.doesNotMatch(withoutSource, /ACTUAL SOURCE AVAILABLE/);
+});
+
+test("projected discovery presents a readable dossier and explicit partial coverage without a forced full read", () => {
+  const dossier = { candidates: [{ id: "existing", hypothesis: "Untrusted claim with Unicode: autorização" }] };
+  const encoded = Buffer.from(JSON.stringify(dossier)).toString("base64");
+  const prompt = buildPortableCodexSecurityStagePrompt(stage("discovery"), {
+    snapshotRoot: "/snapshot", artifactRoot: "/artifacts", dossierStateBase64: encoded, sourceExcerptsProjected: true,
+  });
+  const json = prompt.match(/BEGIN_PORTABLE_COVERAGE_DOSSIER_JSON\n([^\n]+)\nEND_PORTABLE_COVERAGE_DOSSIER_JSON/)?.[1];
+  assert.deepEqual(JSON.parse(json!), dossier);
+  assert.equal(prompt.includes(encoded), false);
+  assert.match(prompt, /scope.inspected may be empty/);
+  assert.match(prompt, /reason 'insufficient-evidence'/);
+  assert.match(prompt, /24 to 512 UTF-8 bytes/);
+  assert.doesNotMatch(prompt, /call and consume at least one/);
 });

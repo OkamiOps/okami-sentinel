@@ -794,9 +794,9 @@ test("Portable Codex Security completes six methodology stages with a server-own
       ],
     );
     assert.equal(specs[1]!.spec.instructions.includes(injection), false);
-    const prior = specs[1]!.spec.instructions.match(/BEGIN_PORTABLE_COVERAGE_DOSSIER_BASE64\n([A-Za-z0-9+/=]+)\nEND_PORTABLE_COVERAGE_DOSSIER_BASE64/)?.[1];
+    const prior = specs[1]!.spec.instructions.match(/BEGIN_PORTABLE_COVERAGE_DOSSIER_JSON\n([^\n]+)\nEND_PORTABLE_COVERAGE_DOSSIER_JSON/)?.[1];
     assert.ok(prior);
-    const decodedPrior = Buffer.from(prior!, "base64").toString("utf8");
+    const decodedPrior = prior!;
     assert.deepEqual(JSON.parse(decodedPrior), {
       schemaVersion: 1,
       stageSummaries: [{ stage: "inventory", summary: "ok" }],
@@ -805,15 +805,15 @@ test("Portable Codex Security completes six methodology stages with a server-own
       scope: { inspected: ["src"], unexamined: [] },
     });
     assert.equal(decodedPrior.includes(injection), false);
-    const discoveryState = specs[2]!.spec.instructions.match(/BEGIN_PORTABLE_COVERAGE_DOSSIER_BASE64\n([A-Za-z0-9+/=]+)\nEND_PORTABLE_COVERAGE_DOSSIER_BASE64/)?.[1];
+    const discoveryState = specs[2]!.spec.instructions.match(/BEGIN_PORTABLE_COVERAGE_DOSSIER_JSON\n([^\n]+)\nEND_PORTABLE_COVERAGE_DOSSIER_JSON/)?.[1];
     assert.ok(discoveryState);
-    assert.deepEqual(JSON.parse(Buffer.from(discoveryState!, "base64").toString("utf8")).stageSummaries, [
+    assert.deepEqual(JSON.parse(discoveryState!).stageSummaries, [
       { stage: "inventory", summary: "ok" },
       { stage: "threat-model", summary: "ok" },
     ]);
-    const reviewState = specs[3]!.spec.instructions.match(/BEGIN_PORTABLE_COVERAGE_DOSSIER_BASE64\n([A-Za-z0-9+/=]+)\nEND_PORTABLE_COVERAGE_DOSSIER_BASE64/)?.[1];
+    const reviewState = specs[3]!.spec.instructions.match(/BEGIN_PORTABLE_COVERAGE_DOSSIER_JSON\n([^\n]+)\nEND_PORTABLE_COVERAGE_DOSSIER_JSON/)?.[1];
     assert.ok(reviewState);
-    assert.deepEqual(JSON.parse(Buffer.from(reviewState!, "base64").toString("utf8")).stageSummaries, [
+    assert.deepEqual(JSON.parse(reviewState!).stageSummaries, [
       { stage: "inventory", summary: "ok" },
       { stage: "threat-model", summary: "ok" },
     ]);
@@ -1005,7 +1005,7 @@ test("Portable Codex Security gives every report page 128 bounded turns and tool
     assert.ok((reportSpecs[0]!.maxCompletionTokens ?? Infinity) <= 65_536);
     assert.equal(reportSpecs[0]!.limits.maxModelTurns, 128);
     assert.equal(reportSpecs[0]!.limits.maxToolCalls, 128);
-    assert.equal(reportSpecs[0]!.instructions.includes("BEGIN_PORTABLE_COVERAGE_DOSSIER_BASE64"), false);
+    assert.equal(reportSpecs[0]!.instructions.includes("BEGIN_PORTABLE_COVERAGE_DOSSIER_JSON"), false);
     assert.equal(reportSpecs[0]!.instructions.includes("BEGIN_PORTABLE_REPORT_PAGE_JSON"), true);
     assert.deepEqual(specs.filter((item) => !/stage "report"/.test(item.spec.instructions))
       .map((item) => item.spec.maxCompletionTokens), Array(6).fill(undefined));
@@ -1626,5 +1626,55 @@ test("Standard recovery replaces broad complementary retries with pinned source 
     assert.deepEqual(calls, ["discovery", "discovery-review", "1", "2", "2"]);
     const dossier = readPortableCodexSecurityDossier(path.join(config.outputDir, "portable-codex-security-results"))!;
     assert.equal(dossier.candidates.length, 1, "accepted first-pass candidate survives recovery");
+  } finally { remove(root); }
+});
+
+test("Standard graph recovery groups partial neighborhoods and reuses accepted groups without claiming full coverage", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-standard-graph-recovery-"));
+  const config = configuration(root);
+  const nodes = Array.from({ length: 9 }, (_, i) => ({ id: String(i), file: `src/route${i}.ts`, label: `authorize${i}`, location: "1-2" }));
+  for (const node of nodes) fs.writeFileSync(path.join(config.repositoryPath, node.file), "export function authorize() {\n return false; }\n");
+  const specs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }> = [];
+  const base = discoveryReviewStageSessionFactory(specs, "initial");
+  const calls: string[] = [];
+  let failed = false;
+  try {
+    const result = await runPortableCodexSecurity(config, dependencies({
+      prepareGraph: async () => ({ status: "ready", cacheHit: true, durationMs: 0, nodes: nodes.length, edges: 0, index: { nodes, edges: [] } }),
+      createSession: async (input: { spec: AgentSessionSpec; toolSurface: readonly string[] }) => {
+        const page = path.basename(input.spec.artifactRoot);
+        if (/stage "discovery"/.test(input.spec.instructions)) {
+          calls.push(page);
+          if (page === "discovery-review" || (page === "2" && !failed)) {
+            if (page === "2") failed = true;
+            return { async *run() { yield { type: "failure", code: "agent_turn_limit" } as const; }, async cancel() { return { remote: false }; } };
+          }
+          if (/^\d+$/.test(page)) {
+            assert.match(input.spec.instructions, /STANDARD RECOVERY NEIGHBORHOOD/);
+            assert.doesNotMatch(input.spec.instructions, /BEGIN_PORTABLE_DEEP_SOURCE_FILES_JSON/);
+            assert.equal(input.spec.resultArtifactValidationContext!.deepCoverage, undefined);
+            const projected = input.spec.resultArtifactValidationContext!.discoveryCoverage!.projectedSourcePaths!;
+            assert.ok(projected.size > 0);
+            assert.ok(input.spec.artifactWriteByTurn! < input.spec.limits.maxModelTurns);
+            fs.writeFileSync(path.join(input.spec.artifactRoot, "03-discovery.json"), JSON.stringify({
+              schemaVersion: 1, stage: "discovery", summary: "Analyzed projected relationships; remaining file contents remain explicitly unexamined.",
+              observations: [], candidates: [], scope: { inspected: [], unexamined: [...projected].map(path => ({ path, reason: "insufficient-evidence" })) },
+            }));
+            return completedStageSession("discovery", "03-discovery.json", "Analyzed graph source");
+          }
+          if (page === "discovery") {
+            assert.match(input.spec.instructions, /actual source|ACTUAL SOURCE/i);
+            assert.ok(input.spec.resultArtifactValidationContext!.discoveryCoverage!.projectedSourcePaths!.size > 0);
+          }
+        }
+        return base(input);
+      },
+    }));
+    assert.equal(result.runtime.status, "completed");
+    assert.deepEqual(calls, ["discovery", "discovery-review", "1", "2", "2", "3"]);
+    const dossier = readPortableCodexSecurityDossier(path.join(config.outputDir, "portable-codex-security-results"))!;
+    assert.equal(dossier.candidates.length, 1);
+    assert.ok(dossier.scope.unexamined.some(entry => entry.path.startsWith("src/route")));
+    assert.equal(dossier.scope.inspected.some(file => file.startsWith("src/route")), false);
   } finally { remove(root); }
 });

@@ -74,7 +74,7 @@ export interface PortableResultArtifactValidationContext {
   /** New live discovery writes preserve the claim required by later validation. */
   requireDiscoveryCandidateContext?: boolean;
   /** Successful source reads made available to the live discovery session. */
-  discoveryCoverage?: { observedReadPaths: Set<string> };
+  discoveryCoverage?: { observedReadPaths: Set<string>; projectedSourcePaths?: ReadonlySet<string> };
   /** High/critical live reports must explain source-backed impact and likelihood. */
   requireCalibratedSeverityRationale?: boolean;
 }
@@ -100,7 +100,7 @@ export interface DiscoveryScopeIssue {
   field: string;
   code: "object-required" | "unexpected-fields" | "array-required" | "entry-limit" |
     "empty-inspected" | "invalid-path" | "not-regular-file" | "path-unavailable" |
-    "unobserved-read" | "overlap" | "invalid-reason" | "invalid-scope";
+    "unobserved-read" | "overlap" | "invalid-reason" | "partial-coverage-missing" | "invalid-scope";
   allowedReasons?: readonly string[];
 }
 export type DiscoveryReviewRepairDetail = {
@@ -112,6 +112,7 @@ export type DiscoveryReviewRepairDetail = {
   /** Server-observed successful reads the model can safely reuse in scope.inspected. */
   successfulReadPaths: readonly string[];
   pathsTruncated: boolean;
+  projectedSourcePaths?: readonly string[];
   scopeIssue: DiscoveryScopeIssue;
 });
 export type JsonRepairDetail = { kind: "json"; reason: StructuredResultRejection };
@@ -158,7 +159,8 @@ export function resultArtifactContentSchema(
  * through their declared schema. An unconstrained object can lose every field. */
 function portableStageContentSchema(context?: PortableResultArtifactValidationContext): Record<string, unknown> {
   const text = { type: "string", minLength: 1 };
-  const candidateContextText = { type: "string", minLength: 24, maxLength: 512 };
+  const candidateContextText = { type: "string", minLength: 24, maxLength: 512,
+    description: "A concrete claim or condition, 24–512 UTF-8 bytes after trimming. Use concise text; the byte limit includes multi-byte characters." };
   const enumeration = (values: readonly string[]) => ({ type: "string", enum: values });
   const object = (properties: Record<string, unknown>, required = Object.keys(properties)) => ({
     type: "object", additionalProperties: false, properties, required,
@@ -520,7 +522,7 @@ function discoveryScopeIssue(value: unknown, snapshotRoot: string | undefined,
   }
   const inspected = scope.inspected as unknown[];
   const unexamined = scope.unexamined as unknown[];
-  if (inspected.length === 0) return { field: "scope.inspected", code: "empty-inspected" };
+  if (inspected.length === 0 && !context.discoveryCoverage?.projectedSourcePaths?.size) return { field: "scope.inspected", code: "empty-inspected" };
   const normalized = (value: unknown) => typeof value === "string"
     ? value.trim().replaceAll("\\", "/").replace(/^(?:\.\/)+/, "").replace(/\/+$/, "") : value;
   const checkPath = (value: unknown, field: string): DiscoveryScopeIssue | undefined => {
@@ -560,6 +562,10 @@ function discoveryScopeIssue(value: unknown, snapshotRoot: string | undefined,
     }
     if (inspectedSet.has(file)) return { field: `${field}.path`, code: "overlap" };
   }
+  if ([...(context.discoveryCoverage?.projectedSourcePaths ?? [])].some(file =>
+    !inspectedSet.has(file) && !unexamined.some(entry => normalized(record(entry)?.path) === file))) {
+    return { field: "scope.unexamined", code: "partial-coverage-missing" };
+  }
   return { field: "scope", code: "invalid-scope" };
 }
 
@@ -577,6 +583,9 @@ function discoveryScopeRepairDetail(
     reason: "scope",
     successfulReadPaths: successfulReadPaths.slice(0, MAX_DISCOVERY_REPAIR_PATHS),
     pathsTruncated: successfulReadPaths.length > MAX_DISCOVERY_REPAIR_PATHS,
+    ...(context.discoveryCoverage?.projectedSourcePaths?.size ? {
+      projectedSourcePaths: [...context.discoveryCoverage.projectedSourcePaths].sort().slice(0, MAX_DISCOVERY_REPAIR_PATHS),
+    } : {}),
     scopeIssue: discoveryScopeIssue(value, snapshotRoot, context),
   };
 }
@@ -598,8 +607,10 @@ function hasLiveDiscoveryScope(
   context: PortableResultArtifactValidationContext,
 ): boolean {
   const scope = record(artifact.scope);
-  if (scope === null || !Array.isArray(scope.inspected) || scope.inspected.length === 0 ||
+  if (scope === null || !Array.isArray(scope.inspected) ||
       !Array.isArray(scope.unexamined)) return false;
+  const projected = context.discoveryCoverage?.projectedSourcePaths;
+  if (scope.inspected.length === 0 && !projected?.size) return false;
   const inspected = scope.inspected;
   const unexamined = scope.unexamined.map((entry) => record(entry)?.path);
   const observed = context.discoveryCoverage?.observedReadPaths ?? context.deepCoverage?.observedReadPaths;
@@ -608,6 +619,7 @@ function hasLiveDiscoveryScope(
   }
   const inspectedSet = new Set(inspected);
   if (unexamined.some((file) => inspectedSet.has(file))) return false;
+  if ([...(projected ?? [])].some(file => !inspectedSet.has(file) && !unexamined.includes(file))) return false;
   return [...inspected, ...unexamined].every((file) => {
     if (!repositoryRelativePath(file) || typeof file !== "string") return false;
     if (snapshotRoot === undefined) return true;

@@ -19,6 +19,30 @@ The initial pass does not exclude inventory paths; the complementary pass exclud
 already inspected exact paths from suggestions only. Neither map restricts allowed
 inspection nor counts as source evidence. Tests remain available for verification.
 
+Standard now also projects actual source neighborhoods before discovery: up to eight
+seed paths, two bounded EXTRACTED caller/callee traversals and at most 24 KiB of
+source/context. The complementary pass rotates paths already projected by the initial
+pass as navigation hints only. Partial excerpts remain `scope.unexamined` with
+`insufficient-evidence`; only successful full reads count as `scope.inspected`.
+A nonempty server projection permits an empty inspected list, without manufacturing
+coverage. Missing source and unresolved controls remain available through workspace tools.
+The carried dossier is rendered as untrusted JSON, rather than asking the model to
+reconstruct Base64. Persistent dossier transport remains unchanged.
+
+New Standard recovery plans pin `sourceProjection: graph-windows-v1`. They group up to
+12 target paths into at most three four-path neighborhoods instead of 12 whole-file
+sessions. Empty projections still name the assigned paths for directed source reads.
+Each accepted group is checkpointed; later retries reuse it. Legacy saved plans retain
+their original full-file behavior and layout. Missing Graphify on a saved graph plan
+fails explicitly rather than silently changing the recovery contract. Partial coverage
+survives group aggregation.
+
+Candidate rejection telemetry includes the structural reason and item index, never
+the rejected source or claim. Candidate narrative bounds are stated in UTF-8 bytes
+in both the tool schema and prompt. Historic generic rejection events cannot establish
+which field failed; improved diagnostics apply to new sessions.
+
+
 Assessment contexts traverse EXTRACTED calls up to three steps in both directions,
 with explicit paths (including reverse caller steps), at most 8 windows/16 KiB per
 page. Traversal is bounded to 1,024 symbols and 4,096 edges, shared among anchors;
@@ -94,7 +118,8 @@ it does not replace a Docker/provider end-to-end test or a paid scan comparison.
 
 A recoverable failure in Standard discovery (including the complementary pass)
 now changes strategy: at most 12 deterministic source targets, prioritized through
-the graph when available, are processed as individual projected-source units.
+the graph when available, are processed as three groups of up to four source
+neighborhoods with Graphify. Legacy/no-graph plans retain individual full-source units.
 Each gets a fresh history, at most 16 turns and 64 tool calls (or smaller configured
 limits). This is targeted Standard inspection, not Deep or whole-repository coverage.
 Accepted candidates remain immutable, completed units are reused, and the existing

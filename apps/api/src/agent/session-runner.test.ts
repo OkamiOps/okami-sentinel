@@ -3218,3 +3218,44 @@ test("untimed sessions survive elapsed wall time and remain cancellable", async 
   await running;
   assert.equal(events.some((event) => isCancellation(event, true)), true);
 });
+
+test("candidate contract diagnostics persist structural reasons without logging rejected claims", async (t) => {
+  const fixture = await fixtureRoots("runner-candidate-diagnostic");
+  t.after(fixture.cleanup);
+  const requestedWith: AgentToolResult[][] = [];
+  const content = (attacker: string) => ({
+    schemaVersion: 1, stage: "discovery", observations: [],
+    summary: "Reviewed the supplied source and identified a candidate requiring validation.",
+    scope: { inspected: ["index.ts"], unexamined: [] },
+    candidates: [{ id: "private-candidate", category: "authorization", attacker,
+      hypothesis: "An external request may access another account resource.",
+      prerequisites: "The caller must have an authenticated session for the route.",
+      expectedImpact: "The caller could receive another account private data.",
+      controlHypothesis: "Ownership may not be verified before reading the resource.",
+      anchors: [{ path: "index.ts", startLine: 1, endLine: 1, role: "source" }],
+    }],
+  });
+  const replies: NormalizedModelReply[] = [content("PRIVATE_INVALID_VALUE"), content("authenticated")].map((artifact, index) => ({
+    toolCalls: [{ id: `write-${index}`, name: "results.write", input: { path: "03-discovery.json", content: artifact } }],
+    text: null, structured: null, usage: null,
+  }));
+  const session = createConstrainedWireSession({
+    limits: { ...DEFAULT_AGENT_LIMITS, maxModelTurns: 2 }, signal: new AbortController().signal,
+    terminalMode: "artifact-write", resultArtifactContract: "portable-stage-json-v1",
+    resultArtifactSnapshotRoot: fixture.snapshotRoot,
+    resultArtifactValidationContext: { dossier: { schemaVersion: 1, stageSummaries: [], candidates: [], assessments: [], scope: { inspected: [], unexamined: [] } }, requireDiscoveryCandidateContext: true,
+      discoveryCoverage: { observedReadPaths: new Set(["index.ts"]) } },
+    host: { minimumOutputBytes() { return 0; }, async call() {
+      return { content: "written", artifact: { path: "03-discovery.json", bytes: 128 } };
+    } }, upstream: { async request() { return {}; } }, adapter: transcriptAdapter(replies, requestedWith),
+  });
+  const events: unknown[] = [];
+  await collect(session.run(), events);
+  const diagnosticEvents = events.filter((event: any) => event.candidateIssue !== undefined) as any[];
+  assert.deepEqual(diagnosticEvents.map(event => event.phase), ["result", "consumed"]);
+  for (const event of diagnosticEvents) assert.deepEqual(event.candidateIssue,
+    { kind: "candidate-contract", reason: "attacker", itemIndex: 0 });
+  assert.equal(JSON.stringify(diagnosticEvents).includes("PRIVATE_INVALID_VALUE"), false);
+  assert.equal(JSON.stringify(diagnosticEvents).includes("private-candidate"), false);
+  assert.match(JSON.parse(requestedWith[1]![0]!.content).hint, /Do not restart discovery/);
+});

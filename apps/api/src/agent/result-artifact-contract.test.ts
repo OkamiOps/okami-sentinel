@@ -747,3 +747,29 @@ test("discovery scope repair identifies the rejected field without modifying can
       PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, root, context), null);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test("projected discovery accepts honest partial source coverage without promoting it to full reads", () => {
+  const content = {
+    schemaVersion: 1, stage: "discovery", observations: [], candidates: [],
+    summary: "Reviewed the supplied source windows; remaining file contents and callers remain unexamined.",
+    scope: { inspected: [], unexamined: [{ path: "src/routes.ts", reason: "insufficient-evidence" }] },
+  };
+  const context = {
+    dossier: createPortableCodexSecurityDossier(), requireDiscoveryCandidateContext: true,
+    discoveryCoverage: { observedReadPaths: new Set<string>(), projectedSourcePaths: new Set(["src/routes.ts"]) },
+  };
+  const normalize = (scope: unknown, validationContext = context) => normalizeResultArtifactInput(
+    { path: "03-discovery.json", content: { ...content, scope } }, PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT,
+    undefined, validationContext);
+  const accepted = normalize(content.scope);
+  assert.notEqual(accepted, null);
+  assert.deepEqual(JSON.parse(accepted!.content as string).scope, content.scope);
+  assert.equal(normalize({ inspected: [], unexamined: [] }), null, "partial coverage cannot disappear");
+  assert.equal(normalize({ inspected: ["src/routes.ts"], unexamined: [] }), null, "projected windows are not full reads");
+  assert.equal(normalize(content.scope, { ...context, discoveryCoverage: {
+    observedReadPaths: new Set(), projectedSourcePaths: new Set(),
+  } }), null, "graph metadata alone does not qualify as inspected source");
+  assert.notEqual(normalize({ inspected: ["src/routes.ts"], unexamined: [] }, {
+    ...context, discoveryCoverage: { ...context.discoveryCoverage, observedReadPaths: new Set(["src/routes.ts"]) },
+  }), null, "a real full read can resolve the partial coverage");
+});

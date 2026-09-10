@@ -8,6 +8,9 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Fixed
 
+- Standard discovery receives bounded Graphify source neighborhoods before model exploration. New graph recovery plans group targets into at most three checkpointed partial-source sessions instead of twelve whole-file sessions; legacy plans retain their existing layout. Partial coverage remains explicitly unexamined.
+- Portable prompts render the carried dossier as readable JSON and state candidate narrative byte bounds. Candidate rejection telemetry now retains safe structural details, and projected discovery can finish without a redundant whole-file read.
+
 - Portable sessions guard estimated context (300K including completion reserve, or the selected model's smaller window), stop three identical invalid writes and expose candidate-specific evidence repair diagnostics. Failed pages retry with fresh histories and smaller units while preserving accepted subpages and accumulated usage. Server startup can recover interrupted Portable runs under the same ID with strict checkpoint validation and a persistent two-restart limit; terminal/cancelled runs are not restarted.
 - Portable report recovery validates and reuses completed report pages. Rejected report writes identify the exact structural field, allowed values or required rationale length, instead of repeating generic repair instructions; prompt examples now use individual valid enum values.
 - Deep validation processes pending candidates in groups of at most eight and reserves output capacity for terminal artifacts and repairs. Operator recovery verifies and reuses discovery, dataflow and accepted validation checkpoints, including legacy 32-candidate pages, without repeating completed model work.

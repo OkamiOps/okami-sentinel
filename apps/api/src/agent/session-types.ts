@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { ContextBudgetEstimator, completionContextReserve, carriesRemoteContext } from "./context-budget.js";
-import type { PortableAnchorContractRepairDetail, PortableReportRepairDetail, PortableAssessmentRepairDetail } from "../scanners/portable-codex-security-dossier.js";
+import type { PortableCandidateRepairDetail, PortableAnchorContractRepairDetail, PortableReportRepairDetail, PortableAssessmentRepairDetail } from "../scanners/portable-codex-security-dossier.js";
 import type { GraphIndex } from "../graphify/graph-index.js";
 import path from "node:path";
 import type {
@@ -234,6 +234,7 @@ export type AgentEvent =
     anchorIssue?: PortableAnchorContractRepairDetail;
     reportIssue?: PortableReportRepairDetail;
     assessmentIssue?: PortableAssessmentRepairDetail;
+    candidateIssue?: PortableCandidateRepairDetail;
   }
   | { type: "artifact"; path: string; bytes: number }
   | { type: "usage"; usage: AgentUsage }
@@ -300,6 +301,7 @@ export interface AgentToolResult {
   anchorIssue?: PortableAnchorContractRepairDetail;
     reportIssue?: PortableReportRepairDetail;
     assessmentIssue?: PortableAssessmentRepairDetail;
+    candidateIssue?: PortableCandidateRepairDetail;
 }
 
 export interface NormalizedModelReply {
@@ -536,6 +538,7 @@ class ConstrainedWireSession implements AgentSession {
             ...(result.anchorIssue === undefined ? {} : { anchorIssue: result.anchorIssue }),
             ...(result.reportIssue === undefined ? {} : { reportIssue: result.reportIssue }),
             ...(result.assessmentIssue === undefined ? {} : { assessmentIssue: result.assessmentIssue }),
+            ...(result.candidateIssue === undefined ? {} : { candidateIssue: result.candidateIssue }),
           };
         }
         modelTurns += 1;
@@ -803,6 +806,7 @@ class ConstrainedWireSession implements AgentSession {
             throw new AgentSessionError("agent_output_byte_limit");
           }
           outputBytes += resultBytes;
+          const candidateIssue = artifactRepairDetail?.kind === "candidate-contract" ? artifactRepairDetail : undefined;
           const assessmentIssue = artifactRepairDetail?.kind === "assessment-contract" ? artifactRepairDetail : undefined;
           const reportIssue = artifactRepairDetail?.kind === "report-contract" ? artifactRepairDetail : undefined;
           const anchorIssue = artifactRepairDetail?.kind === "anchor-contract" ? artifactRepairDetail : undefined;
@@ -819,6 +823,7 @@ class ConstrainedWireSession implements AgentSession {
             ...(anchorIssue === undefined ? {} : { anchorIssue }),
             ...(reportIssue === undefined ? {} : { reportIssue }),
             ...(assessmentIssue === undefined ? {} : { assessmentIssue }),
+            ...(candidateIssue === undefined ? {} : { candidateIssue }),
           });
           yield {
             type: "tool",
@@ -832,6 +837,7 @@ class ConstrainedWireSession implements AgentSession {
             ...(anchorIssue === undefined ? {} : { anchorIssue }),
             ...(reportIssue === undefined ? {} : { reportIssue }),
             ...(assessmentIssue === undefined ? {} : { assessmentIssue }),
+            ...(candidateIssue === undefined ? {} : { candidateIssue }),
           };
           if (call.name === "results.write" && recoveredBeforeIo && artifactValidationIssue !== undefined &&
               this.#options.terminalMode === "artifact-write") {
@@ -985,11 +991,11 @@ function recoverableWorkspaceToolFailure(
           : reportShard
             ? "Use the declared result path and pass one complete compact JSON object containing only schemaVersion:1, optional stage:'report', and findings. Include exactly one substantive finding for every carried candidateId, with non-empty rootCause, impact, remediation, and pinned anchors. Do not include summary, observations, scope, coverage, disposition, or reason fields."
           : artifactRepairDetail?.kind === "candidate-contract"
-            ? "Discovery candidates must be an array of at most 100 objects with id, category, anchors and the declared hypothesis, attacker, prerequisites, expectedImpact and controlHypothesis fields. Preserve the security claim and correct the indicated item; never remove candidates to bypass validation. IDs must be unique. Anchors contain path, startLine, endLine, role and optional explanation. Follow the supplied schema for bounded field lengths and attacker values."
+            ? "Discovery candidates must be an array of at most 100 objects with id, category, anchors and the declared hypothesis, attacker, prerequisites, expectedImpact and controlHypothesis fields. Preserve the security claim and correct the indicated item; never remove candidates to bypass validation. IDs must be unique. Anchors contain path, startLine, endLine, role and optional explanation. Correct only repair.itemIndex and repair.reason; context fields hypothesis, prerequisites, expectedImpact and controlHypothesis require 24–512 UTF-8 bytes after trimming, not just a short label. attacker must be unauthenticated, authenticated, privileged, local or unknown. Do not restart discovery for structural repairs."
           : artifactRepairDetail?.kind === "discovery-review"
             ? artifactRepairDetail.reason === "summary"
               ? "Replace the placeholder with a substantive review summary of at least 40 characters explaining the actual inspected attack surfaces, controls and remaining uncertainty. Preserve supported candidates; an empty candidate array is not proof of a completed review."
-              : "Correct the exact structural field identified by repair.scopeIssue.field according to repair.scopeIssue.code. For invalid-reason, choose an honest value from repair.scopeIssue.allowedReasons; do not invent reason codes. Set scope.inspected to exact paths from repair.successfulReadPaths; graph queries and search matches are not successful source reads. scope.unexamined entries contain only path and reason, use actual repository-relative files, and remain disjoint from inspected. Preserve every candidate and its claim. If successfulReadPaths is empty, make one workspace.read call for a regular source file before writing again. Do not repeat unrelated exploration to repair a structural field."
+              : "Correct the exact structural field identified by repair.scopeIssue.field according to repair.scopeIssue.code. For invalid-reason, choose an honest value from repair.scopeIssue.allowedReasons; do not invent reason codes. Set scope.inspected to exact paths from repair.successfulReadPaths; graph queries and search matches are not successful source reads. scope.unexamined entries contain only path and reason, use actual repository-relative files, and remain disjoint from inspected. Preserve every candidate and its claim. If projectedSourcePaths is provided, supplied source excerpts can support this review with inspected: []; every projected path not fully read must remain in unexamined with insufficient-evidence. Partial excerpts never count as full-file inspection. If neither successfulReadPaths nor projectedSourcePaths has entries, read a relevant regular source file before writing again. Do not repeat unrelated exploration to repair a structural field."
           : artifactValidationIssue === "stage-assessments-invalid"
           ? "Each assessment must contain only candidateId, status, reason, and evidence. status MUST be confirmed, rejected, or inconclusive; not-vulnerable is a reason, NEVER a status. reason MUST be control-not-present, untrusted-flow-reaches-sink, no-untrusted-source, not-reachable, sanitized, requires-privilege, out-of-scope, insufficient-evidence, or not-vulnerable. Reevaluate the assessment and choose the appropriate status and reason; do not blindly substitute a verdict. Preserve every carried candidateId and its pinned evidence. Evidence must be a non-empty array of anchors containing only path, startLine, endLine, role, and optional explanation. Return the full corrected artifact as an object."
           : artifactValidationIssue === "stage-fields-invalid"
