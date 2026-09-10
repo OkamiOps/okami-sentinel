@@ -8,6 +8,8 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Fixed
 
+- Portable discovery instructions no longer contradict the required `candidates` array, reducing avoidable structural repair requests.
+
 - Responses sessions project task instructions and source once as persistent system input, avoiding duplicate first-request context while preserving instructions across continuation turns.
 - Direct xAI catalogs that omit Grok 4.6 reasoning metadata now expose its documented low/medium/high/xhigh levels; explicit provider metadata takes precedence.
 - Portable completion-token ceilings now reach Chat Completions and Responses requests, including repair/finalization turns, instead of being silently dropped after session validation. Existing configured ceilings are preserved; this does not impose a scan-duration timeout or reduce source coverage.

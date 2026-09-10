@@ -20,6 +20,8 @@ test("mode depth follows discovery into assessment without weakening evidence or
         snapshotRoot: "/snapshot", artifactRoot: "/artifacts", scanMode,
       });
       assert.match(prompt, /same repository-backed standard of evidence/);
+      assert.match(prompt, /candidates for discovery/);
+      assert.doesNotMatch(prompt, /may only add structured scope and assessments/);
       assert.match(prompt, /Missing graph edges do not prove that a flow is absent/);
       if (scanMode === "standard") {
         assert.match(prompt, /STANDARD INVESTIGATION DEPTH/);
