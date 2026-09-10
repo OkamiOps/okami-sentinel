@@ -1,3 +1,4 @@
+import { resolveDeepPlan, STANDARD_PLAN_FILE, DEEP_PLAN_FILE } from "./scanners/portable-deep-plan.js";
 import fs from "node:fs";
 import path from "node:path";
 import type { ScanRun, ScanAnalysisMetrics } from "@csb/shared";
@@ -19,7 +20,12 @@ export function scanAnalysisMetrics(scan: ScanRun, now = Date.now()): ScanAnalys
   if (scan.execution?.executionProfile === "portable" && scan.engine === "codex-security") {
     try {
       const root = path.join(scan.scanDir, "portable-codex-security-snapshot");
-      const plan = createPortableDeepCoveragePlan(root);
+      const planFile = path.join(scan.scanDir, scan.mode === "standard" ? STANDARD_PLAN_FILE : DEEP_PLAN_FILE);
+      const hasPlan = fs.existsSync(planFile);
+      const plan = hasPlan && scan.revision
+        ? resolveDeepPlan({ snapshotRoot: root, snapshotId: scan.revision, outputDir: scan.scanDir,
+          resume: true, mode: scan.mode === "standard" ? "standard" : "deep" })
+        : createPortableDeepCoveragePlan(root);
       result.files = plan.files.length;
       result.bytes = plan.totalBytes;
       result.lines = plan.files.reduce((total, file) => {
@@ -44,7 +50,7 @@ export function scanAnalysisMetrics(scan: ScanRun, now = Date.now()): ScanAnalys
           }
         } catch { /* A worker may not have finished its atomic artifact write yet. */ }
       }
-      result.batchesTotal = scan.mode === "deep" ? plan.partitions.length
+      result.batchesTotal = scan.mode === "deep" || hasPlan ? plan.partitions.length
         : dirs.includes("discovery-review") ? 2 : 1;
       result.batchesCompleted = completed;
       result.candidates = candidateIds.size;

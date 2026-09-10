@@ -1,3 +1,4 @@
+import { createPortableCodexSecuritySnapshot } from "./portable-codex-security-worker-support.js";
 import { materializePortableCodexSecurityReportShard } from "./portable-codex-security-report-shards.js";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -214,6 +215,20 @@ function configuration(
   };
 }
 
+// Model an interrupted pre-partition Standard run without inventing a new-mode override.
+function legacyConfiguration(config: PortableCodexSecurityWorkerConfiguration): PortableCodexSecurityWorkerConfiguration {
+  const snapshot = createPortableCodexSecuritySnapshot(config.repositoryPath, config.outputDir);
+  fs.writeFileSync(path.join(config.outputDir, "portable-codex-security-runtime.json"), JSON.stringify({
+    engine: "codex-security", executionProfile: "portable", profileVersion: config.providerPlan.profileVersion,
+    methodologyRef: config.providerPlan.methodologyRef, status: "failed", stage: "discovery", stageLabel: "Discovery",
+    percent: 33, detail: "Legacy interrupted run", startedAt: NOW.toISOString(), updatedAt: NOW.toISOString(),
+    completedAt: null, snapshotId: snapshot.snapshotId, sourceRef: config.sourceRef, findings: 0,
+    usage: { reported: false, inputTokensKnown: false, cachedInputTokensKnown: false, cacheWriteInputTokensKnown: false,
+      outputTokensKnown: false, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 }, error: null, errorCode: null,
+  }));
+  return config;
+}
+
 function costBudget(
   patch: Partial<PortableCodexSecurityCostBudget> = {},
 ): PortableCodexSecurityCostBudget {
@@ -281,7 +296,7 @@ function stageSessionFactory(
           stage,
           summary: "ok",
           observations: [],
-          scope: { inspected: ["src"], unexamined: [] },
+          scope: { inspected: stage === "discovery" ? [...input.spec.resultArtifactValidationContext?.deepCoverage?.requiredPaths ?? ["src"]] : ["src"], unexamined: [] },
           candidates: [],
           assessments: [],
         }),
@@ -386,7 +401,7 @@ function reportBudgetStageSessionFactory(
         stage,
         summary: "Discovery produced carried candidates.",
         observations: [],
-        scope: { inspected: ["src"], unexamined: [] },
+        scope: { inspected: [...input.spec.resultArtifactValidationContext?.deepCoverage?.requiredPaths ?? ["src"]], unexamined: [] },
         candidates,
       }
       : stage === "dataflow"
@@ -538,8 +553,8 @@ test("Portable Codex Security pins probe freshness at scan authorization across 
     assert.equal(result.runtime.status, "completed");
     assert.equal(
       specs.length,
-      PORTABLE_CODEX_SECURITY_STAGES.length,
-      "an empty first discovery gets one bounded independent review while the final empty report stays server-owned",
+      5,
+      "one complete Standard partition is followed by assessment, with the empty report server-owned",
     );
     assert.ok(
       currentNow.getTime() - Date.parse(report().checkedAt) > 60 * 60 * 1000,
@@ -716,7 +731,7 @@ test("Portable stages receive the prepared graph once without treating graph que
   } finally { remove(root); }
 });
 
-test("Portable Codex Security completes six methodology stages with a server-owned bounded coverage dossier", async () => {
+test("Legacy Portable Codex Security completes six methodology stages with a server-owned bounded coverage dossier", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-stages-"));
   const config = configuration(root, plan({
     routeKind: "openai-api",
@@ -731,7 +746,7 @@ test("Portable Codex Security completes six methodology stages with a server-own
       specs,
       (stage) => stage === "inventory" ? injection : `${stage} complete`,
     );
-    const result = await runPortableCodexSecurity(config, dependencies({
+    const result = await runPortableCodexSecurity(legacyConfiguration(config), dependencies({ resumeDiscovery: true,
       getSnapshot: () => snapshot({
         routeKind: "openai-api",
         protocol: "openai-responses",
@@ -828,7 +843,7 @@ test("Portable Codex Security completes six methodology stages with a server-own
   }
 });
 
-test("Standard independently reviews an empty discovery once and carries only the review candidate forward", async () => {
+test("Legacy Standard independently reviews an empty discovery once and carries only the review candidate forward", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-zero-review-candidate-"));
   const config = configuration(root);
   config.limits.maxModelTurns = 32;
@@ -836,7 +851,7 @@ test("Standard independently reviews an empty discovery once and carries only th
   const specs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }> = [];
   const logs: string[] = [];
   try {
-    const result = await runPortableCodexSecurity(config, dependencies({
+    const result = await runPortableCodexSecurity(legacyConfiguration(config), dependencies({ resumeDiscovery: true,
       prepareGraph: async () => ({ status: "ready", cacheHit: false, durationMs: 1, nodes: 1, edges: 0,
         index: { nodes: [{ id: "auth", label: "authorize", file: "src/auth.ts", location: "L1" }], edges: [] } }),
       createSession: discoveryReviewStageSessionFactory(specs, "review"),
@@ -880,19 +895,19 @@ test("Standard independently reviews an empty discovery once and carries only th
   }
 });
 
-test("Standard runs exactly two discovery passes for empty and nonempty first passes", async () => {
+test("Legacy Standard runs exactly two discovery passes for empty and nonempty first passes", async () => {
   const emptyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-zero-review-empty-"));
   const nonemptyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-zero-review-nonempty-"));
   try {
     const emptySpecs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }> = [];
-    await runPortableCodexSecurity(configuration(emptyRoot), dependencies({ createSession: stageSessionFactory(emptySpecs) }));
+    await runPortableCodexSecurity(legacyConfiguration(configuration(emptyRoot)), dependencies({ resumeDiscovery: true, createSession: stageSessionFactory(emptySpecs) }));
     assert.deepEqual(
       emptySpecs.filter(({ spec }) => /stage "discovery"/.test(spec.instructions)).map(({ spec }) => path.basename(spec.artifactRoot)),
       ["discovery", "discovery-review"],
       "two empty passes terminate without a retry loop",
     );
     const nonemptySpecs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }> = [];
-    await runPortableCodexSecurity(configuration(nonemptyRoot), dependencies({
+    await runPortableCodexSecurity(legacyConfiguration(configuration(nonemptyRoot)), dependencies({ resumeDiscovery: true,
       createSession: discoveryReviewStageSessionFactory(nonemptySpecs, "initial"),
     }));
     assert.deepEqual(
@@ -975,7 +990,46 @@ test("Portable Deep partitions the immutable auditable universe and merges every
   }
 });
 
-test("Portable Codex Security gives every report page 128 bounded turns and tools", async () => {
+test("Standard covers the same complete source universe as Deep even when the graph omits files", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-standard-complete-universe-"));
+  const config = configuration(root);
+  config.limits.totalTimeoutMs = 20 * 60_000;
+  config.limits.maxModelTurns = 32;
+  config.limits.maxToolCalls = 128;
+  for (let index = 0; index < 97; index += 1) {
+    fs.writeFileSync(path.join(config.repositoryPath, "src", `surface-${String(index).padStart(2, "0")}.ts`),
+      `export function entry${index}(input: string) { return input; }\n`);
+  }
+  const graph = { nodes: [{ id: "auth", label: "authorize", file: "src/auth.ts", location: "L1" }], edges: [] };
+  const specsByMode = new Map<string, AgentSessionSpec[]>();
+  try {
+    for (const mode of ["standard", "deep"] as const) {
+      const specs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }> = [];
+      const result = await runPortableCodexSecurity({ ...config, mode, outputDir: path.join(root, mode) }, dependencies({
+        prepareGraph: async () => ({ status: "ready", cacheHit: true, durationMs: 0, nodes: 1, edges: 0, index: graph }),
+        createSession: stageSessionFactory(specs),
+      }));
+      assert.equal(result.runtime.status, "completed");
+      specsByMode.set(mode, specs.map(({ spec }) => spec));
+    }
+    const discovery = (mode: string) => specsByMode.get(mode)!.filter(spec => /stage "discovery"/.test(spec.instructions));
+    const paths = (mode: string) => discovery(mode).flatMap(spec => [...spec.resultArtifactValidationContext!.deepCoverage!.requiredPaths]).sort();
+    const expected = ["src/auth.ts", ...Array.from({ length: 97 }, (_, index) => `src/surface-${String(index).padStart(2, "0")}.ts`)].sort();
+    assert.deepEqual(paths("standard"), expected, "graph omissions and priorities must never remove source files from Standard");
+    assert.deepEqual(paths("standard"), paths("deep"));
+    assert.equal(new Set(paths("standard")).size, 98, "every source file is assigned once");
+    assert.ok(discovery("standard").every(spec => spec.limits.maxModelTurns <= 16), "Standard bounds depth per batch rather than total file coverage");
+    assert.ok(discovery("standard").every(spec => /BEGIN_PORTABLE_DEEP_SOURCE_FILES_JSON/.test(spec.instructions)), "complete source contents are projected, not candidate-only excerpts");
+    assert.ok(discovery("standard").every(spec => /STANDARD BREADTH-FIRST REVIEW/.test(spec.instructions)));
+    assert.equal(specsByMode.get("standard")!.some(spec => path.basename(spec.artifactRoot) === "discovery-review"), false);
+    assert.equal(fs.existsSync(path.join(root, "standard", "portable-standard-plan.json")), true);
+    const dossier = readPortableCodexSecurityDossier(path.join(root, "standard", "portable-codex-security-results"))!;
+    assert.deepEqual([...dossier.scope.inspected].sort(), expected);
+    assert.equal(dossier.scope.unexamined.length, 0);
+  } finally { remove(root); }
+});
+
+test("Legacy Portable Codex Security gives every report page 128 bounded turns and tools", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-report-budget-"));
   const config = configuration(root, plan({
     routeKind: "minimax-token-plan",
@@ -987,7 +1041,7 @@ test("Portable Codex Security gives every report page 128 bounded turns and tool
   const specs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }> = [];
   try {
     await assert.rejects(
-      runPortableCodexSecurity(config, dependencies({
+      runPortableCodexSecurity(legacyConfiguration(config), dependencies({ resumeDiscovery: true,
         getSnapshot: () => snapshot({ routeKind: "minimax-token-plan", protocol: "anthropic-messages" }),
         getConnection: () => connection({ routeKind: "minimax-token-plan", protocol: "anthropic-messages" }),
         getCapabilityCheck: () => report({ protocol: "anthropic-messages" }),
@@ -1341,7 +1395,7 @@ test("Portable untimed scans finish all stages after more than 90 minutes", asyn
         return factory(input);
       },
     }));
-    assert.equal(specs.length, 6); // Empty discovery receives one independent review.
+    assert.equal(specs.length, 5); // One complete Standard source partition.
     assert.ok(specs.every(({ spec }) => spec.limits.timeoutMs === 0));
     const runtime = JSON.parse(fs.readFileSync(path.join(config.outputDir, "portable-codex-security-runtime.json"), "utf8"));
     assert.equal(runtime.status, "completed");
@@ -1368,8 +1422,8 @@ test("discovery recovery reuses validated artifacts and retains prior usage with
     assert.ok(specs.every(({ spec }) => !/stage "(inventory|threat-model)"/.test(spec.instructions)));
     assert.deepEqual(
       specs.filter(({ spec }) => /stage "discovery"/.test(spec.instructions)).map(({ spec }) => path.basename(spec.artifactRoot)),
-      ["discovery-review"],
-      "a resumed zero checkpoint preserves the original artifact and runs only its missing review",
+      [],
+      "a resumed complete partition preserves its original artifact without a complementary sampling pass",
     );
     const after = JSON.parse(fs.readFileSync(runtimePath, "utf8"));
     assert.equal(after.status, "completed");
@@ -1445,7 +1499,7 @@ test("Deep recovery reuses discovery, dataflow and a whole legacy validation pag
 });
 
 
-test("report recovery preserves accepted pages and requests only the remaining findings", async () => {
+test("Legacy report recovery preserves accepted pages and requests only the remaining findings", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-report-recovery-"));
   const config = configuration(root);
   config.limits.totalTimeoutMs = 0;
@@ -1479,7 +1533,7 @@ test("report recovery preserves accepted pages and requests only the remaining f
     return completedStageSession(stage, "sentinel-findings.json", "Report page complete");
   };
   try {
-    await assert.rejects(runPortableCodexSecurity(config, dependencies({ createSession: factory })));
+    await assert.rejects(runPortableCodexSecurity(legacyConfiguration(config), dependencies({ resumeDiscovery: true, createSession: factory })));
     const saved = path.join(config.outputDir, "portable-codex-security-artifacts", "report-01", "sentinel-findings.json");
     const bytes = fs.readFileSync(saved);
     calls.length = 0; interrupted = false;
@@ -1542,7 +1596,7 @@ test("automatic validation recovery splits a failed page and never repeats a com
    assert.throws(() => uniqueRecoveredCandidates([candidate, { ...candidate, category: "different" }]), { code: "stage_artifact_invalid" });
  });
 
-test("automatic report recovery isolates malformed page findings without replaying earlier pages", async () => {
+test("Legacy automatic report recovery isolates malformed page findings without replaying earlier pages", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-report-recovery-"));
   const config = configuration(root);
   config.limits.totalTimeoutMs = 0;
@@ -1579,7 +1633,7 @@ test("automatic report recovery isolates malformed page findings without replayi
     return completedStageSession(stage, "sentinel-findings.json", "Report page complete");
   };
   try {
-    const result = await runPortableCodexSecurity(config, dependencies({ createSession: factory }));
+    const result = await runPortableCodexSecurity(legacyConfiguration(config), dependencies({ resumeDiscovery: true, createSession: factory }));
     assert.equal(result.runtime.status, "completed");
     assert.equal(result.runtime.findings, 65);
     assert.equal(calls.filter(name => name === "report-01").length, 1);
@@ -1588,7 +1642,7 @@ test("automatic report recovery isolates malformed page findings without replayi
   } finally { remove(root); }
 });
 
-test("Standard recovery replaces broad complementary retries with pinned source units and preserves initial candidates", async () => {
+test("Legacy Standard recovery replaces broad complementary retries with pinned source units and preserves initial candidates", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-standard-recovery-"));
   const config = configuration(root);
   fs.writeFileSync(path.join(config.repositoryPath, "src/second.ts"), "export const second = 2;\n");
@@ -1597,7 +1651,7 @@ test("Standard recovery replaces broad complementary retries with pinned source 
   const calls: string[] = [];
   let failedChild = false;
   try {
-    const result = await runPortableCodexSecurity(config, dependencies({ createSession: async (input: { spec: AgentSessionSpec; toolSurface: readonly string[] }) => {
+    const result = await runPortableCodexSecurity(legacyConfiguration(config), dependencies({ resumeDiscovery: true, createSession: async (input: { spec: AgentSessionSpec; toolSurface: readonly string[] }) => {
       const page = path.basename(input.spec.artifactRoot);
       if (input.spec.artifactWriteByTurn !== undefined) {
         assert.ok(input.spec.artifactWriteByTurn < input.spec.limits.maxModelTurns, "recovery finalization must fit the effective session limit");
@@ -1629,7 +1683,7 @@ test("Standard recovery replaces broad complementary retries with pinned source 
   } finally { remove(root); }
 });
 
-test("Standard graph recovery groups partial neighborhoods and reuses accepted groups without claiming full coverage", async () => {
+test("Legacy Standard graph recovery groups partial neighborhoods and reuses accepted groups without claiming full coverage", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-standard-graph-recovery-"));
   const config = configuration(root);
   const nodes = Array.from({ length: 9 }, (_, i) => ({ id: String(i), file: `src/route${i}.ts`, label: `authorize${i}`, location: "1-2" }));
@@ -1639,7 +1693,7 @@ test("Standard graph recovery groups partial neighborhoods and reuses accepted g
   const calls: string[] = [];
   let failed = false;
   try {
-    const result = await runPortableCodexSecurity(config, dependencies({
+    const result = await runPortableCodexSecurity(legacyConfiguration(config), dependencies({ resumeDiscovery: true,
       prepareGraph: async () => ({ status: "ready", cacheHit: true, durationMs: 0, nodes: nodes.length, edges: 0, index: { nodes, edges: [] } }),
       createSession: async (input: { spec: AgentSessionSpec; toolSurface: readonly string[] }) => {
         const page = path.basename(input.spec.artifactRoot);

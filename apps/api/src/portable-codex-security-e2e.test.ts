@@ -198,7 +198,7 @@ test("Portable Codex Security completes a local API-key HTTP route through launc
     assert.equal(execution.runtime.percent, 100);
     assert.deepEqual(
       createdStages,
-      PORTABLE_CODEX_SECURITY_STAGES.flatMap((stage) => stage.id === "discovery" ? [stage.id, stage.id] : [stage.id]),
+      PORTABLE_CODEX_SECURITY_STAGES.map((stage) => stage.id),
     );
     assert.deepEqual(execution.runtime.usage, {
       reported: true,
@@ -207,10 +207,10 @@ test("Portable Codex Security completes a local API-key HTTP route through launc
       cacheWriteInputTokensKnown: true,
       outputTokensKnown: true,
       maximumInputTokensPerRequest: 3,
-      inputTokens: 21,
-      cachedInputTokens: 7,
-      cacheWriteInputTokens: 14,
-      outputTokens: 28,
+      inputTokens: 18,
+      cachedInputTokens: 6,
+      cacheWriteInputTokens: 12,
+      outputTokens: 24,
     });
 
     child.emit("close", 0);

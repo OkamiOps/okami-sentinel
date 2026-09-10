@@ -2,6 +2,26 @@ import type { WorkspaceToolHost } from "../agent/session-types.js";
 import type { GraphIndex } from "./graph-index.js";
 import { buildCandidateGraphContext, type CandidateContextAnchor, type CandidateGraphContext } from "./candidate-context.js";
 
+/** Bounded navigation metadata accompanies a complete source page; never filters its files. */
+export function buildPartitionRelations(index: GraphIndex, paths: readonly string[]) {
+  const assigned = new Set(paths);
+  const nodes = new Map(index.nodes.map(node => [node.id, node]));
+  const relations: Array<{ from: string; to: string; relation: string }> = [];
+  let eligible = 0;
+  let bytes = 0;
+  for (const edge of index.edges) {
+    if (edge.confidence !== "EXTRACTED") continue;
+    const from = nodes.get(edge.source), to = nodes.get(edge.target);
+    if (!from || !to || from.file === to.file || (!assigned.has(from.file) && !assigned.has(to.file))) continue;
+    eligible++;
+    const item = { from: `${from.file}:${from.location} ${from.label}`, to: `${to.file}:${to.location} ${to.label}`, relation: edge.relation };
+    const size = Buffer.byteLength(JSON.stringify(item)) + 1;
+    if (relations.length < 64 && bytes + size <= 7_168) { relations.push(item); bytes += size; }
+  }
+  return { relations, eligible, omitted: eligible - relations.length,
+    note: "EXTRACTED navigation relationships, not proof of attacker reachability. The complete assigned source is supplied separately; omitted relationships do not remove files from coverage. Query the graph and inspect source when an external caller or control is unresolved." };
+}
+
 const sensitive = /auth|permission|credential|token|sanitize|exec|spawn|upload|redirect|write|fetch|request|route/i;
 
 /** Select source-backed entry points, then project their callers and callees.

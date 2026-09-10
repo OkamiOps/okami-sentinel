@@ -167,7 +167,7 @@ test("Portable Codex Security makes carried candidate ids explicit for assessmen
       assert.match(prompt, /"status":"rejected"/);
       assert.match(prompt, /final validation cannot leave candidates inconclusive/);
       assert.doesNotMatch(prompt, /"status":"confirmed\|rejected\|inconclusive"/);
-      assert.match(prompt, /reject unsubstantiated candidates using insufficient-evidence without claiming that the code is safe/i);
+      assert.match(prompt, /Before rejecting for insufficient-evidence, use focused source reads or graph navigation/i);
     } else {
       assert.match(prompt, /"status":"rejected"/);
       assert.match(prompt, /The status field is confirmed, rejected, or inconclusive/);

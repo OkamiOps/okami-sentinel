@@ -5,6 +5,7 @@ import type { GraphIndex } from "../graphify/graph-index.js";
 import { createPortableDeepCoveragePlan, type PortableDeepCoveragePlan } from "./portable-codex-security-deep-coverage.js";
 
 export const DEEP_PLAN_FILE = "portable-deep-plan.json";
+export const STANDARD_PLAN_FILE = "portable-standard-plan.json";
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 
 /** Graph relations change locality, never the auditable file universe. */
@@ -55,10 +56,11 @@ export function packDeepPlan(baseline: PortableDeepCoveragePlan, graph: GraphInd
 
 /** Resume uses the persisted partition identities, even if Graphify later changes. Legacy runs retain their old ordering. */
 export function resolveDeepPlan(input: {
-  snapshotRoot: string; snapshotId: string; outputDir: string; resume: boolean; graph?: GraphIndex;
+  snapshotRoot: string; snapshotId: string; outputDir: string; resume: boolean; graph?: GraphIndex; mode?: "standard" | "deep";
 }): PortableDeepCoveragePlan {
   const baseline = createPortableDeepCoveragePlan(input.snapshotRoot);
-  const file = path.join(input.outputDir, DEEP_PLAN_FILE);
+  const planFile = input.mode === "standard" ? STANDARD_PLAN_FILE : DEEP_PLAN_FILE;
+  const file = path.join(input.outputDir, planFile);
   if (fs.existsSync(file)) {
     const stat = fs.lstatSync(file);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 4_194_304) throw new Error("deep_plan_invalid");
@@ -71,7 +73,7 @@ export function resolveDeepPlan(input: {
   if (input.resume) return baseline;
   const plan = input.graph ? packDeepPlan(baseline, input.graph) : baseline;
   const saved = { version: 1, snapshotId: input.snapshotId, algorithm: plan === baseline ? "lexical-v1" : "graph-affinity-v1", plan, digest: digest(plan) };
-  const temporary = path.join(input.outputDir, `${DEEP_PLAN_FILE}.${randomUUID()}.tmp`);
+  const temporary = path.join(input.outputDir, `${planFile}.${randomUUID()}.tmp`);
   try {
     const descriptor = fs.openSync(temporary, "wx", 0o600);
     try { fs.writeFileSync(descriptor, JSON.stringify(saved)); fs.fsyncSync(descriptor); }

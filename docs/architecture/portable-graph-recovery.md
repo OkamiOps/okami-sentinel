@@ -3,6 +3,30 @@
 Applies to Codex Security Portable in pnpm and server/Docker installations.
 Native Codex Security, Mantis and VulnHunter retain their existing executors.
 
+## Complete Standard and Deep coverage
+
+New full Standard scans enumerate the same auditable source/configuration universe as
+Deep, independently of graph membership or priority scores. The graph changes batch
+locality, never membership. Every batch projects every assigned file's complete source.
+Standard uses an overview-first review with at most 16 model turns per discovery
+batch; Deep uses its deeper exploration allowance. These per-session limits constrain
+investigation depth and context, never how many files are included. Source absent
+from the graph is still assigned. Missing or failed batches prevent completion.
+
+Standard persists `portable-standard-plan.json`, binding membership, order and sizes
+to the immutable snapshot. Checkpoint recovery reuses accepted batches and examines
+only remaining work in that same scan. This is not incremental scanning and does not
+import findings from any other scan. Oversized/unsupported input fails explicitly
+under the existing snapshot/source policies rather than silently dropping code.
+
+Complete pages also receive bounded cross-file graph navigation references; omitted
+references can be queried and do not remove source coverage. Validation must inspect
+available missing callers/controls before using insufficient-evidence to reject a lead.
+
+The historical two-pass/sample Standard behavior below is retained only for resuming
+old Standard runs without a persisted complete plan. New Standard scans do not use
+that sampling or its 12-target recovery fallback.
+
 ## Graph integration
 
 The immutable snapshot remains the authority. Deep enumerates the same complete
@@ -13,13 +37,13 @@ Files absent from the graph are retained. INFERRED edges do not drive packing.
 recovery validates membership, uniqueness, sizes and limits without recomputing
 the graph layout. Runs without a saved plan use their legacy lexical layout.
 
-Standard discovery receives a navigation map of up to 12 files/8 KiB, ranked by
+Legacy Standard discovery receives a navigation map of up to 12 files/8 KiB, ranked by
 extracted cross-file connections and security-related names, with directory diversity.
 The initial pass does not exclude inventory paths; the complementary pass excludes
 already inspected exact paths from suggestions only. Neither map restricts allowed
 inspection nor counts as source evidence. Tests remain available for verification.
 
-Standard now also projects actual source neighborhoods before discovery: up to eight
+Legacy Standard also projects actual source neighborhoods before discovery: up to eight
 seed paths, two bounded EXTRACTED caller/callee traversals and at most 24 KiB of
 source/context. The complementary pass rotates paths already projected by the initial
 pass as navigation hints only. Partial excerpts remain `scope.unexamined` with
@@ -29,7 +53,7 @@ coverage. Missing source and unresolved controls remain available through worksp
 The carried dossier is rendered as untrusted JSON, rather than asking the model to
 reconstruct Base64. Persistent dossier transport remains unchanged.
 
-New Standard recovery plans pin `sourceProjection: graph-windows-v1`. They group up to
+Legacy sampled Standard recovery plans pin `sourceProjection: graph-windows-v1`. They group up to
 12 target paths into at most three four-path neighborhoods instead of 12 whole-file
 sessions. Empty projections still name the assigned paths for directed source reads.
 Each accepted group is checkpointed; later retries reuse it. Legacy saved plans retain
@@ -114,7 +138,7 @@ budgets, source protection, context limits and cancellation. A disposable real N
 worker crash test verifies same-ID coordination and checkpoint hash preservation;
 it does not replace a Docker/provider end-to-end test or a paid scan comparison.
 
-## Standard discovery recovery
+## Legacy sampled Standard discovery recovery
 
 A recoverable failure in Standard discovery (including the complementary pass)
 now changes strategy: at most 12 deterministic source targets, prioritized through

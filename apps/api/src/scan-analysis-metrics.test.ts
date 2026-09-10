@@ -61,3 +61,21 @@ test("Standard metrics expose a pending independent review and its eventual cand
   assert.equal(complete.candidates, 2, "candidate IDs carried into the second pass are counted only once");
   assert.equal(JSON.parse(fs.readFileSync(path.join(artifacts, "discovery", "03-discovery.json"), "utf8")).candidates.length, 1);
 });
+
+test("full Standard metrics use the complete persisted batch plan instead of the legacy one-pass count", async t => {
+  const { resolveDeepPlan } = await import("./scanners/portable-deep-plan.js");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-full-standard-metrics-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const snapshot = path.join(root, "portable-codex-security-snapshot");
+  fs.mkdirSync(snapshot);
+  for (let i = 0; i < 70; i++) fs.writeFileSync(path.join(snapshot, `file${i}.ts`), "export const value = 1;\n");
+  const plan = resolveDeepPlan({ snapshotRoot: snapshot, snapshotId: "fixture", outputDir: root, mode: "standard", resume: false });
+  const artifact = path.join(root, "portable-codex-security-artifacts", "discovery-001");
+  fs.mkdirSync(artifact, { recursive: true });
+  fs.writeFileSync(path.join(artifact, "03-discovery.json"), JSON.stringify({ stage: "discovery", candidates: [] }));
+  const metrics = scanAnalysisMetrics({ scanDir: root, engine: "codex-security", mode: "standard", revision: "fixture", execution: { executionProfile: "portable" } } as ScanRun);
+  assert.equal(metrics.files, 70);
+  assert.equal(metrics.batchesTotal, plan.partitions.length);
+  assert.ok(metrics.batchesTotal! > 1);
+  assert.equal(metrics.batchesCompleted, 1);
+});

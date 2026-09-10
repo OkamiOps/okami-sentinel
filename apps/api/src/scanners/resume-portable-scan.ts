@@ -1,4 +1,4 @@
-import { resolveDeepPlan, DEEP_PLAN_FILE } from "./portable-deep-plan.js";
+import { resolveDeepPlan, DEEP_PLAN_FILE, STANDARD_PLAN_FILE } from "./portable-deep-plan.js";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -45,8 +45,9 @@ export function preflightPortableResume(scanDir: string, mode: "standard" | "dee
   let completed = 0;
   let totalBatches = 1;
   let discoveryComplete = false;
-  if (mode === "deep") {
-    const plan = resolveDeepPlan({ snapshotRoot, snapshotId: previous.snapshotId!, outputDir: scanDir, resume: true });
+  const fullCoverage = mode === "deep" || fs.existsSync(path.join(scanDir, STANDARD_PLAN_FILE));
+  if (fullCoverage) {
+    const plan = resolveDeepPlan({ snapshotRoot, snapshotId: previous.snapshotId!, outputDir: scanDir, resume: true, mode });
     totalBatches = plan.partitions.length;
     const pages: typeof dossier[] = [];
     for (const partition of plan.partitions) {
@@ -75,7 +76,7 @@ export function preflightPortableResume(scanDir: string, mode: "standard" | "dee
   const verifiedStages: Record<string, number> = { discovery: completed };
   let prerequisiteComplete = discoveryComplete;
   for (const stage of PORTABLE_CODEX_SECURITY_STAGES.filter(s => s.id === "dataflow" || s.id === "validation")) {
-    const paged = mode === "deep" && dossier.candidates.length > (stage.id === "validation" ? 8 : 32);
+    const paged = fullCoverage && dossier.candidates.length > (stage.id === "validation" ? 8 : 32);
     const pages = paged ? createPortableAssessmentPages(dossier, stage.id, index => {
       // Validate an existing legacy page even when it is not selected for replay.
       return read(assessmentPageDirectory(stage.id, { index }), stage.artifact) !== null;
@@ -147,7 +148,7 @@ async function resume(scanId: string, dryRun: boolean) {
     }
     assertPortableCodexSecuritySnapshot({ snapshotRoot: path.join(outputDir, "portable-codex-security-snapshot"), snapshotId: previous.snapshotId! });
     fs.writeFileSync(path.join(outputDir, "portable-codex-security-runtime.json"), JSON.stringify(previous), { mode: 0o600 });
-    for (const name of ["portable-codex-security-pricing.json", "scanner-pricing.json", DEEP_PLAN_FILE]) if (fs.existsSync(path.join(original.scanDir, name))) fs.copyFileSync(path.join(original.scanDir, name), path.join(outputDir, name));
+    for (const name of ["portable-codex-security-pricing.json", "scanner-pricing.json", DEEP_PLAN_FILE, STANDARD_PLAN_FILE]) if (fs.existsSync(path.join(original.scanDir, name))) fs.copyFileSync(path.join(original.scanDir, name), path.join(outputDir, name));
     // Preserve accepted recovery fragments and attempt budgets across a new run ID.
     const recoveryRoot = path.join(original.scanDir, "portable-recovery");
     if (fs.existsSync(recoveryRoot)) {

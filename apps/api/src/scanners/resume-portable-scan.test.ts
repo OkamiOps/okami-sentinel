@@ -3,14 +3,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { resolveDeepPlan, STANDARD_PLAN_FILE } from "./portable-deep-plan.js";
 import { preflightPortableResume } from "./resume-portable-scan.js";
 import { createPortableCodexSecuritySnapshot } from "./portable-codex-security-worker-support.js";
 
-function fixture(candidateCount = 1) {
+function fixture(candidateCount = 1, extraFiles = 0) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "resume-checkpoint-test-"));
   const source = path.join(root, "source"); const scan = path.join(root, "scan");
   fs.mkdirSync(source); fs.mkdirSync(scan);
   fs.writeFileSync(path.join(source, "route.ts"), "export const route = 1;\n");
+  for (let i = 0; i < extraFiles; i++) fs.writeFileSync(path.join(source, `source-${i}.ts`), "export const value = 1;\n");
   const snapshot = createPortableCodexSecuritySnapshot(source, scan);
   fs.writeFileSync(path.join(scan, "portable-codex-security-runtime.json"), JSON.stringify({
     engine: "codex-security", executionProfile: "portable", profileVersion: "sentinel-codex-security-portable-v1",
@@ -108,5 +110,58 @@ test("Standard discovery recovery accepts pending candidates without prematurely
     assert.equal(result.completed, 1);
     assert.equal(result.dossier.candidates.length, 1);
     assert.equal(result.verifiedStages.report, 0);
+  } finally { cleanup(f.root); }
+});
+
+
+test("full-coverage Standard resumes persisted discovery and paginated assessments without changing checkpoints", () => {
+  const f = fixture(48);
+  try {
+    resolveDeepPlan({ snapshotRoot: f.snapshot.snapshotRoot, snapshotId: f.snapshot.snapshotId,
+      outputDir: f.scan, resume: false, mode: "standard" });
+    f.write("validation-01-part-01", "05-validation.json", "validation", { assessments: f.assessments.slice(0, 8) });
+    const planFile = path.join(f.scan, STANDARD_PLAN_FILE);
+    const discoveryFile = path.join(f.scan, "portable-codex-security-artifacts/discovery-001/03-discovery.json");
+    const planBefore = fs.readFileSync(planFile, "utf8");
+    const discoveryBefore = fs.readFileSync(discoveryFile, "utf8");
+    const result = preflightPortableResume(f.scan, "standard");
+    assert.equal(result.completed, 1);
+    assert.equal(result.totalBatches, 1);
+    assert.equal(result.verifiedStages.dataflow, 2);
+    assert.equal(result.verifiedStages.validation, 1);
+    assert.equal(result.dossier.candidates.length, 48);
+    assert.equal(fs.readFileSync(planFile, "utf8"), planBefore);
+    assert.equal(fs.readFileSync(discoveryFile, "utf8"), discoveryBefore);
+  } finally { cleanup(f.root); }
+});
+
+test("full-coverage Standard preserves missing discovery batches as pending and requires them before validation", () => {
+  const f = fixture(1, 40);
+  try {
+    const plan = resolveDeepPlan({ snapshotRoot: f.snapshot.snapshotRoot, snapshotId: f.snapshot.snapshotId,
+      outputDir: f.scan, resume: false, mode: "standard" });
+    assert.ok(plan.partitions.length > 1);
+    f.write("discovery-001", "03-discovery.json", "discovery", {
+      scope: { inspected: plan.partitions[0]!.paths, unexamined: [] }, candidates: [],
+    });
+    fs.rmSync(path.join(f.scan, "portable-codex-security-artifacts/dataflow"), { recursive: true });
+    const runtimePath = path.join(f.scan, "portable-codex-security-runtime.json");
+    const runtime = JSON.parse(fs.readFileSync(runtimePath, "utf8"));
+    fs.writeFileSync(runtimePath, JSON.stringify({ ...runtime, stage: "discovery" }));
+    const result = preflightPortableResume(f.scan, "standard");
+    assert.equal(result.completed, 1);
+    assert.equal(result.totalBatches, plan.partitions.length);
+    assert.equal(result.verifiedStages.dataflow, 0);
+    assert.equal(result.verifiedStages.report, 0);
+    fs.writeFileSync(runtimePath, JSON.stringify({ ...runtime, stage: "validation" }));
+    assert.throws(() => preflightPortableResume(f.scan, "standard"), /resume_missing_prerequisite_checkpoint/);
+  } finally { cleanup(f.root); }
+});
+
+test("full-coverage Standard rejects a corrupted plan instead of reverting to legacy discovery", () => {
+  const f = fixture();
+  try {
+    fs.writeFileSync(path.join(f.scan, STANDARD_PLAN_FILE), JSON.stringify({ version: 1, snapshotId: "other-snapshot" }));
+    assert.throws(() => preflightPortableResume(f.scan, "standard"), /deep_plan_invalid/);
   } finally { cleanup(f.root); }
 });

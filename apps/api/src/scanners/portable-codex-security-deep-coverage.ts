@@ -164,7 +164,7 @@ export function mergePortableDeepDiscoveryDossiers(
       ...base.stageSummaries.filter((summary) => summary.stage !== "discovery"),
       {
         stage: "discovery",
-        summary: `Deep discovery inspected ${plan.files.length}/${plan.files.length} auditable files across ${plan.partitions.length} server-owned partitions.`,
+        summary: `Discovery inspected ${plan.files.length}/${plan.files.length} auditable files across ${plan.partitions.length} server-owned partitions.`,
       },
     ],
     candidates: deduplicatedCandidates,

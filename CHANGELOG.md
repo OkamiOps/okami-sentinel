@@ -8,6 +8,9 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Fixed
 
+- New full Standard scans cover the same complete source/configuration universe as Deep, using immutable graph-ordered batches with full source projection. Standard limits investigation depth per batch rather than selecting a subset of files. Missing graph nodes never exclude source, and incomplete batches prevent successful completion.
+- Standard batch plans and accepted checkpoints survive recovery without importing findings from other scans. Historical sampled Standard runs retain their existing resume contract; new runs no longer use the two-pass sample or twelve-target fallback.
+
 - Standard discovery receives bounded Graphify source neighborhoods before model exploration. New graph recovery plans group targets into at most three checkpointed partial-source sessions instead of twelve whole-file sessions; legacy plans retain their existing layout. Partial coverage remains explicitly unexamined.
 - Portable prompts render the carried dossier as readable JSON and state candidate narrative byte bounds. Candidate rejection telemetry now retains safe structural details, and projected discovery can finish without a redundant whole-file read.
 
