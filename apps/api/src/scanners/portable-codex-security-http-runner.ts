@@ -83,6 +83,7 @@ import {
 } from "./portable-codex-security-report-shards.js";
 import { portableCodexSecurityReportCompletionTokens } from "./portable-codex-security-report-budget.js";
 import {
+  createPortableDeepCoveragePlan,
   mergePortableDeepDiscoveryDossiers,
   type PortableDeepCoveragePartition,
   readPortableDeepCoveragePartition,
@@ -630,7 +631,7 @@ export async function runPortableCodexSecurity(
             deepCoveragePartition: { ...partition, sourceFiles: deepCoverageSourceFiles },
           }),
         }),
-        limits: { ...stageSessionLimits, maxContextTokens: Math.min(300_000, resolved.model.contextWindow ?? 300_000) },
+        limits: { ...stageSessionLimits, ...(safeConfiguration.mode === "standard" && partition !== null ? { maxModelTurns: Math.min(16, stageSessionLimits.maxModelTurns), maxToolCalls: Math.min(64, stageSessionLimits.maxToolCalls) } : {}), maxContextTokens: Math.min(300_000, resolved.model.contextWindow ?? 300_000) },
         signal: deadline.signal,
         };
         activeSession = await raceWithDeadline(
@@ -706,18 +707,25 @@ export async function runPortableCodexSecurity(
             if (stop) throw new PortableCodexSecurityRunnerError(stop);
             // Retry a smaller unit with a fresh history. Accepted child checkpoints
             // survive further retries and process restarts; aggregate only when all pass.
-            const splitFiles = partition !== null && partition.paths.length > 1;
+            const standardRecovery = priorErrorCode && stage.id === "discovery" && safeConfiguration.mode === "standard" && partition === null;
+            const recoveryPartition = standardRecovery ? standardRecoveryPartition(snapshot.snapshotRoot, graphIndex,
+              supplementalDiscoveryReview ? stageDossier.scope.inspected : [],
+              path.join(outputDir, "portable-recovery", `standard-${path.basename(artifactRoot)}-plan.json`)) : partition;
+            if (standardRecovery) log(JSON.stringify({ type: "standard_recovery_plan", stage: stage.id,
+              page: path.basename(artifactRoot), strategy: "projected-source-units", files: recoveryPartition!.paths.length,
+              attempt, priorErrorCode }));
+            const splitFiles = recoveryPartition !== null && (standardRecovery || recoveryPartition.paths.length > 1);
             const splitCandidates = ["dataflow", "validation", "report"].includes(stage.id) && stageDossier.candidates.length > 1;
             if (!priorErrorCode || (!splitFiles && !splitCandidates)) return execute(stageDossier, partition, shard, artifactRoot);
-            const count = splitFiles ? partition!.paths.length : stageDossier.candidates.length;
+            const count = splitFiles ? recoveryPartition!.paths.length : stageDossier.candidates.length;
             const childResults: PortableCodexSecurityStageObservation[] = [];
             for (let i = 0; i < count; i++) {
               throwIfStopped(deadline);
               const candidates = splitCandidates ? [stageDossier.candidates[i]!] : stageDossier.candidates;
               const ids = new Set(candidates.map(c => c.id));
               const childDossier = { ...stageDossier, candidates, assessments: stageDossier.assessments.filter(a => ids.has(a.candidateId)) };
-              const file = splitFiles ? partition!.paths[i]! : null;
-              const childPart = file === null ? null : { ...partition!, paths: [file], bytes: partition!.fileBytes[file]!, fileBytes: { [file]: partition!.fileBytes[file]! } };
+              const file = splitFiles ? recoveryPartition!.paths[i]! : null;
+              const childPart = file === null ? null : { ...recoveryPartition!, paths: [file], bytes: recoveryPartition!.fileBytes[file]!, fileBytes: { [file]: recoveryPartition!.fileBytes[file]! } };
               const childShard = shard === null ? null : { ...shard, dossier: childDossier, candidateIds: candidates.map(c => c.id) };
               const childRoot = path.join(outputDir, "portable-recovery", `chunks-${path.basename(artifactRoot)}`, String(i + 1));
               const saved = checkpoint(childRoot, childDossier, childPart);
@@ -728,7 +736,7 @@ export async function runPortableCodexSecurity(
               artifact = materializePortableCodexSecurityReportShard(shard, { schemaVersion: 1, stage: "report", findings: childResults.flatMap(r => r.report!.findings) });
             } else {
               artifact = { schemaVersion: 1, stage: stage.id, summary: "Completed all recovered subpages with independently validated evidence.", observations: [],
-                ...(splitFiles ? { scope: { inspected: [...partition!.paths], unexamined: [] }, candidates: uniqueRecoveredCandidates(childResults.flatMap(r => r.dossier.candidates.filter(c => !stageDossier.candidates.some(old => old.id === c.id)))) }
+                ...(splitFiles ? { scope: { inspected: [...new Set(childResults.flatMap(r => r.dossier.scope.inspected))], unexamined: [] }, candidates: uniqueRecoveredCandidates(childResults.flatMap(r => r.dossier.candidates.filter(c => !stageDossier.candidates.some(old => old.id === c.id)))) }
                   : { assessments: childResults.flatMap(r => r.dossier.assessments.filter(a => a.stage === stage.id).map(({ stage: _stage, ...a }) => a)) }),
               };
               const restored = applyPortableCodexSecurityStageArtifact(stageDossier, artifact);
@@ -1372,4 +1380,30 @@ export function uniqueRecoveredCandidates(candidates: PortableCodexSecurityDossi
     unique.set(candidate.id, candidate);
   }
   return [...unique.values()];
+}
+
+/** Bounded Standard retry targets; source projection does not claim repository-wide coverage. */
+function standardRecoveryPartition(snapshotRoot: string, graph: Parameters<typeof buildDiscoveryPriorities>[0] | undefined,
+  inspected: readonly string[], planFile: string): PortableDeepCoveragePartition {
+  const plan = createPortableDeepCoveragePlan(snapshotRoot);
+  const sizes = Object.assign({}, ...plan.partitions.map(p => p.fileBytes)) as Record<string, number>;
+  if (fs.existsSync(planFile)) {
+    const saved = JSON.parse(fs.readFileSync(planFile, "utf8")) as PortableDeepCoveragePartition;
+    if (!Array.isArray(saved.paths) || saved.paths.length < 1 || saved.paths.length > 12 ||
+        new Set(saved.paths).size !== saved.paths.length || saved.paths.some(f => sizes[f] === undefined || saved.fileBytes?.[f] !== sizes[f]) ||
+        saved.bytes !== saved.paths.reduce((sum, f) => sum + sizes[f]!, 0)) {
+      throw new PortableCodexSecurityRunnerError("stage_artifact_invalid");
+    }
+    return saved;
+  }
+  const priorities = graph ? buildDiscoveryPriorities(graph, inspected)?.files.map(f => f.path) ?? [] : [];
+  const reviewed = new Set(inspected);
+  const available = plan.files.filter(f => !reviewed.has(f));
+  const paths = [...new Set([...priorities, ...available, ...plan.files])].filter(f => sizes[f] !== undefined).slice(0, 12);
+  if (!paths.length) throw new PortableCodexSecurityRunnerError("stage_artifact_invalid");
+  const fileBytes = Object.fromEntries(paths.map(f => [f, sizes[f]!]));
+  const result = { index: 0, total: 1, paths, fileBytes, bytes: paths.reduce((sum, f) => sum + sizes[f]!, 0) };
+  fs.writeFileSync(`${planFile}.tmp`, JSON.stringify(result), { mode: 0o600 });
+  fs.renameSync(`${planFile}.tmp`, planFile);
+  return result;
 }

@@ -995,7 +995,7 @@ function recoverableWorkspaceToolFailure(
           : artifactValidationIssue === "stage-fields-invalid"
           ? "Remove undeclared top-level fields. Non-report artifacts permit only schemaVersion, stage, summary, observations, scope, candidates, and assessments. Dataflow and validation must include assessments, omit candidates and scope, and keep observations as the empty array []. Return the full corrected artifact as an object."
           : artifactValidationIssue === "dossier-semantics-invalid"
-          ? "Use the declared result path and pass one complete compact JSON object. For dataflow and validation, omit candidates and use only candidateId values from BEGIN_PORTABLE_CANDIDATE_IDS_JSON exactly as listed. Do not rename or invent candidate ids."
+          ? "Use the declared result path and pass one complete compact JSON object. For discovery, return only NEW candidates; carried candidates are preserved by the server. Never rewrite an existing candidate id with changed anchors, hypothesis or category. If repeating a carried candidate, preserve its exact fields. Use scope with inspected paths and structured unexamined entries. For dataflow and validation, omit candidates and use only candidateId values from BEGIN_PORTABLE_CANDIDATE_IDS_JSON exactly as listed. Do not rename or invent candidate ids."
           : artifactValidationIssue === "report-candidate-assessment-inconclusive"
           ? "Validation must include exactly one decisive assessment for every carried candidateId. Set each status to confirmed or rejected with a valid reason and pinned evidence; do not leave any candidate inconclusive."
           : artifactValidationIssue === "deep-coverage-incomplete"

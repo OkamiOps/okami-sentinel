@@ -89,3 +89,17 @@ Automated tests inject validation/report failures, verify child reuse, persisten
 budgets, source protection, context limits and cancellation. A disposable real Node
 worker crash test verifies same-ID coordination and checkpoint hash preservation;
 it does not replace a Docker/provider end-to-end test or a paid scan comparison.
+
+## Standard discovery recovery
+
+A recoverable failure in Standard discovery (including the complementary pass)
+now changes strategy: at most 12 deterministic source targets, prioritized through
+the graph when available, are processed as individual projected-source units.
+Each gets a fresh history, at most 16 turns and 64 tool calls (or smaller configured
+limits). This is targeted Standard inspection, not Deep or whole-repository coverage.
+Accepted candidates remain immutable, completed units are reused, and the existing
+three-attempt page budget remains enforced. `standard_recovery_plan` reports this
+strategy. All units must validate before the stage advances; exhausted recovery is
+still a failure, never a successful empty report. Authentication and cost failures
+remain terminal. Discovery repair instructions explicitly prohibit rewriting carried
+candidate IDs with changed content.

@@ -1586,3 +1586,41 @@ test("automatic report recovery isolates malformed page findings without replayi
     assert.deepEqual(calls.filter(name => /^\d+$/.test(name)), ["1", "2", "3", "4"]);
   } finally { remove(root); }
 });
+
+test("Standard recovery replaces broad complementary retries with pinned source units and preserves initial candidates", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-standard-recovery-"));
+  const config = configuration(root);
+  fs.writeFileSync(path.join(config.repositoryPath, "src/second.ts"), "export const second = 2;\n");
+  const specs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }> = [];
+  const base = discoveryReviewStageSessionFactory(specs, "initial");
+  const calls: string[] = [];
+  let failedChild = false;
+  try {
+    const result = await runPortableCodexSecurity(config, dependencies({ createSession: async (input: { spec: AgentSessionSpec; toolSurface: readonly string[] }) => {
+      const page = path.basename(input.spec.artifactRoot);
+      if (/stage "discovery"/.test(input.spec.instructions)) {
+        calls.push(page);
+        if (page === "discovery-review" || (page === "2" && !failedChild)) {
+          if (page === "2") failedChild = true;
+          return { async *run() { yield { type: "failure", code: "agent_turn_limit" } as const; }, async cancel() { return { remote: false }; } };
+        }
+        if (page === "1" || page === "2") {
+          assert.ok(input.spec.limits.maxModelTurns <= 16);
+          assert.ok(input.spec.limits.maxToolCalls <= 64);
+          const assigned = [...input.spec.resultArtifactValidationContext!.deepCoverage!.requiredPaths];
+          assert.ok(assigned.every(file => input.spec.resultArtifactValidationContext!.deepCoverage!.observedReadPaths.has(file)));
+          fs.writeFileSync(path.join(input.spec.artifactRoot, "03-discovery.json"), JSON.stringify({
+            schemaVersion: 1, stage: "discovery", summary: "Completed the projected source unit with no new candidate.",
+            observations: [], scope: { inspected: assigned, unexamined: [] }, candidates: [],
+          }));
+          return completedStageSession("discovery", "03-discovery.json", "Verified projected source");
+        }
+      }
+      return base(input);
+    } }));
+    assert.equal(result.runtime.status, "completed");
+    assert.deepEqual(calls, ["discovery", "discovery-review", "1", "2", "2"]);
+    const dossier = readPortableCodexSecurityDossier(path.join(config.outputDir, "portable-codex-security-results"))!;
+    assert.equal(dossier.candidates.length, 1, "accepted first-pass candidate survives recovery");
+  } finally { remove(root); }
+});
