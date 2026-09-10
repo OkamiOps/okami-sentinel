@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type {
   ModelCapabilities,
   ModelPricing,
+  ModelReasoningEffort,
   ProviderModel,
   SafeProviderError,
   SafeProviderErrorCode,
@@ -121,6 +122,20 @@ const MIMO_TOKEN_PLAN_OPENAI_BASES = new Set([
 const MIMO_RESPONSES_AGENT_MODELS = new Set([
   "mimo-v2.5",
   "mimo-v2.5-pro",
+]);
+const XAI_GROK_4_6_REASONING_EFFORT: ModelReasoningEffort = Object.freeze({
+  options: ["low", "medium", "high", "xhigh"],
+  default: "high",
+});
+const REASONING_METADATA_KEYS = new Set([
+  "supportedReasoningEfforts",
+  "supported_reasoning_efforts",
+  "supported_reasoning_levels",
+  "reasoningEfforts",
+  "reasoning_efforts",
+  "defaultReasoningEffort",
+  "default_reasoning_effort",
+  "default_reasoning_level",
 ]);
 
 /**
@@ -313,7 +328,7 @@ export async function discoverXaiModels(
     transport,
     cursorQuery: "after",
     readPage: readXaiPage,
-    normalize: (rows, discoveredAt, sensitiveValues) => normalizeOpenAiRows(rows, {
+    normalize: (rows, discoveredAt, sensitiveValues) => normalizeXaiRows(rows, {
       connectionId: credentials.connectionId ?? "unbound",
       discoveredAt,
     }, sensitiveValues),
@@ -569,6 +584,30 @@ function normalizeOpenAiRows(
   }, sensitiveValues);
 }
 
+/**
+ * The xAI catalog currently omits this documented model field. Keep this
+ * exact, direct-xAI fallback here rather than treating a provider name as a
+ * capability elsewhere. Explicit catalog metadata always wins.
+ * https://docs.x.ai/developers/model-capabilities/text/reasoning
+ */
+function normalizeXaiRows(
+  rows: readonly unknown[],
+  metadata: { connectionId: string; discoveredAt: string },
+  sensitiveValues: readonly string[],
+): DiscoveredProviderModel[] {
+  return normalizeRows(rows, metadata, (row) => {
+    const pricing = explicitCatalogPricing(row.pricing);
+    return {
+      id: stringAt(row, "id"),
+      displayName: stringAt(row, "name") ?? stringAt(row, "id"),
+      contextWindow: numberAt(row, "context_window") ?? numberAt(row, "context_length"),
+      pricing,
+      reasoningEffort: documentedXaiReasoningEffort(row),
+      unverifiedHints: pricing === null ? undefined : { supportedParameters: [], pricingReported: true },
+    };
+  }, sensitiveValues);
+}
+
 function normalizeAnthropicRows(
   rows: readonly unknown[],
   metadata: { connectionId: string; discoveredAt: string },
@@ -614,6 +653,7 @@ function normalizeRows(
     displayName: string | null;
     contextWindow: number | null;
     pricing: ModelPricing | null;
+    reasoningEffort?: ModelReasoningEffort;
     unverifiedHints?: DiscoveredProviderModel["unverifiedHints"];
   },
   sensitiveValues: readonly string[],
@@ -628,7 +668,7 @@ function normalizeRows(
     if (result.id === null || secrets.contains(result.id) || ids.has(result.id)) continue;
     ids.add(result.id);
     const reasoningEffort = safeReasoningEffort(
-      reasoningEffortFromModelRecord(row),
+      reasoningEffortFromModelRecord(row) ?? result.reasoningEffort,
       secrets,
     );
     normalized.push({
@@ -652,6 +692,21 @@ function normalizeRows(
     });
   }
   return normalized;
+}
+
+function documentedXaiReasoningEffort(
+  record: Record<string, unknown>,
+): ModelReasoningEffort | undefined {
+  return stringAt(record, "id") === "grok-4.6" && !hasPublishedReasoningMetadata(record)
+    ? XAI_GROK_4_6_REASONING_EFFORT
+    : undefined;
+}
+
+function hasPublishedReasoningMetadata(record: Record<string, unknown>): boolean {
+  if (Object.keys(record).some((key) => REASONING_METADATA_KEYS.has(key))) return true;
+  const reasoning = record.reasoning;
+  return typeof reasoning === "object" && reasoning !== null && !Array.isArray(reasoning) &&
+    (Object.hasOwn(reasoning, "supported_efforts") || Object.hasOwn(reasoning, "default_effort"));
 }
 
 function safeReasoningEffort(

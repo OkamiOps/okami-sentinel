@@ -35,6 +35,13 @@ not enforce generation length. The context guard includes this wire output reser
 These ceilings do not replace mode-specific reasoning controls or prove latency gains;
 provider truncation must not be interpreted as a successful empty scan.
 
+Responses transports put the complete task/source in one persistent system input
+item. They do not duplicate it in both top-level `instructions` and user input;
+continuations carry tool outputs and concise control messages. For direct xAI
+`grok-4.6`, missing catalog reasoning metadata is supplemented from the official
+model documentation; explicit metadata always wins. Selecting `low` is explicit
+in the scan request and recorded as sent effort, not hidden behind provider default.
+
 Standard persists `portable-standard-plan.json`, binding membership, order and sizes
 to the immutable snapshot. Checkpoint recovery reuses accepted batches and examines
 only remaining work in that same scan. This is not incremental scanning and does not

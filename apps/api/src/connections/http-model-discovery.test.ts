@@ -6,6 +6,7 @@ import {
   discoverGeminiModels,
   discoverOpenAiModels,
   discoverOpenRouterModels,
+  discoverXaiModels,
   safeFetchJson,
   type HttpFetch,
 } from "./http-model-discovery.js";
@@ -116,6 +117,41 @@ test("preserves provider-published reasoning metadata without model or provider 
     { options: ["low", "high"], default: "high" },
     { options: ["minimal", "low", "medium", "high", "max"], default: "medium" },
   ]);
+});
+
+test("fills documented Grok 4.6 reasoning only when the direct xAI catalog omits it", async () => {
+  const missing = await discoverXaiModels({
+    connectionId: "conn-xai",
+    apiKey: "xai-secret",
+  }, fakeFetch({
+    "GET https://api.x.ai/v1/models": json(200, {
+      data: [{ id: "grok-4.6" }, { id: "grok-4.5" }],
+    }),
+  }));
+
+  assert.deepEqual(missing.models.map((model) => [model.id, model.reasoningEffort]), [
+    ["grok-4.6", { options: ["low", "medium", "high", "xhigh"], default: "high" }],
+    ["grok-4.5", undefined],
+  ]);
+
+  const published = await discoverXaiModels({
+    connectionId: "conn-xai",
+    apiKey: "xai-secret",
+  }, fakeFetch({
+    "GET https://api.x.ai/v1/models": json(200, {
+      data: [{
+        id: "grok-4.6",
+        supported_reasoning_efforts: ["low", "high"],
+        default_reasoning_effort: "low",
+      }],
+    }),
+  }));
+
+  assert.deepEqual(published.models[0]?.reasoningEffort, {
+    options: ["low", "high"],
+    default: "low",
+  });
+  assert.equal(JSON.stringify([missing, published]).includes("xai-secret"), false);
 });
 
 test("materializes all documented gateway efforts when a catalog publishes null", async () => {

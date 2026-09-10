@@ -51,18 +51,22 @@ test("OpenAI Responses encodes declared tool names and decodes only portable wir
   }), { code: "agent_protocol_error" });
 });
 
-test("OpenAI Responses continuation omits instructions while preserving response and tool-call state", () => {
+test("Responses projects task/source once as persistent system input and continues with tool deltas", () => {
   const adapter = createOpenAiResponsesWireAdapter({
     model: model("grok-4.5"),
     instructions: "Inspect only the supplied workspace snapshot.",
   });
 
   const firstRequest = responseBody(adapter.nextRequest([]));
-  assert.equal(firstRequest.instructions, "Inspect only the supplied workspace snapshot.");
+  assert.equal(firstRequest.instructions, undefined);
   assert.deepEqual(firstRequest.input, [{
-    role: "user",
+    role: "system",
     content: "Inspect only the supplied workspace snapshot.",
+  }, {
+    role: "user",
+    content: "Continue the assigned task using the supplied instructions and tool results.",
   }]);
+  assert.equal(JSON.stringify(firstRequest).split("Inspect only the supplied workspace snapshot.").length - 1, 1);
 
   adapter.readResponse({
     id: "response-turn-1",
@@ -185,7 +189,7 @@ test("OpenAI Responses exposes only the required artifact tool during reserved f
 
   assert.deepEqual(tools.map((tool) => tool.name), ["results_write"]);
   assert.equal(request.tool_choice, "required");
-  assert.match(input[0]?.content ?? "", /call results\.write now/i);
+  assert.match(input.find(item => item.role === "user")?.content ?? "", /call results\.write now/i);
 });
 
 test("OpenAI Responses keeps the VulnHunter result tool on the strict string contract", () => {
@@ -316,7 +320,7 @@ test("Responses replays pending tool outputs after a malformed continuation unti
   assert.equal(next.previous_response_id, "accepted-response");
   assert.deepEqual(next.input, [{ type: "function_call_output", call_id: "read-2", output: "other contents" }]);
   adapter.readResponse({ id: "complete", output: [] });
-  assert.deepEqual(responseBody(adapter.nextRequest([])).input, [{ role: "user", content: "Inspect." }]);
+  assert.deepEqual(responseBody(adapter.nextRequest([])).input, [{ role: "user", content: "Continue the assigned task using the supplied instructions and tool results." }]);
 });
 
 

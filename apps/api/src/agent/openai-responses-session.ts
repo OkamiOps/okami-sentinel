@@ -54,11 +54,11 @@ export function createOpenAiResponsesWireAdapter(
       if (toolResults.some((result) => result.name === "results.write" && result.ok !== false)) finalizing = true;
       if (toolResults.length > 0) pendingToolResults = toolResults;
       const input = pendingToolResults.length === 0
-        ? [{
+        ? [...(previousResponseId === undefined ? [{ role: "system", content: spec.instructions }] : []), {
           role: "user",
           content: control?.artifactRepairReminder === true
             ? AGENT_ARTIFACT_REPAIR_REMINDER
-            : spec.instructions,
+            : "Continue the assigned task using the supplied instructions and tool results.",
         }]
         : [...pendingToolResults.map((result) => ({
           type: "function_call_output",
@@ -75,7 +75,9 @@ export function createOpenAiResponsesWireAdapter(
         body: {
           model: spec.model.id,
           ...(spec.maxCompletionTokens === undefined ? {} : { max_output_tokens: spec.maxCompletionTokens }),
-          ...(previousResponseId === undefined ? { instructions: spec.instructions } : {}),
+          // Keep the full task/source once as a persistent system input item.
+          // The top-level instructions field is not carried by Responses
+          // continuations; duplicating it into user input doubled every page.
           input,
           ...(finalizing
             ? {}

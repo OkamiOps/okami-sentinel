@@ -8,6 +8,8 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Fixed
 
+- Responses sessions project task instructions and source once as persistent system input, avoiding duplicate first-request context while preserving instructions across continuation turns.
+- Direct xAI catalogs that omit Grok 4.6 reasoning metadata now expose its documented low/medium/high/xhigh levels; explicit provider metadata takes precedence.
 - Portable completion-token ceilings now reach Chat Completions and Responses requests, including repair/finalization turns, instead of being silently dropped after session validation. Existing configured ceilings are preserved; this does not impose a scan-duration timeout or reduce source coverage.
 - Discovery write diagnostics now distinguish a non-object payload, a missing or incorrectly typed candidate list, and too many candidates. Repair hints use safe structural metadata without logging rejected claims or discarding leads.
 - Portable Standard and Deep now carry distinct investigation-depth guidance into dataflow and validation: focused main-path decisions for Standard, relevant alternate paths and counterevidence for Deep, with identical confirmation requirements and no repeated investigation during reporting.
