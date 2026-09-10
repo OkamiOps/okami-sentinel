@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   MANTIS_HTTP_WORKER_ENTRY,
@@ -353,6 +354,17 @@ function nodePrefixRunsWorker(prefix: readonly string[]): boolean {
   if (prefix.length === 1 && isTsxCliModule(prefix[0]!)) return true;
   if (prefix.length === 2 && (prefix[0] === "--import" || prefix[0] === "--loader") && prefix[1] === "tsx") {
     return true;
+  }
+  // tsx's CLI forks this concrete Node child. Recognize the paired modules
+  // from the same package directory, not arbitrary --require/--import code.
+  if (prefix.length === 4 && prefix[0] === "--require" && prefix[2] === "--import") {
+    try {
+      const preflight = prefix[1]!;
+      const loader = fileURLToPath(prefix[3]!);
+      return path.isAbsolute(preflight) &&
+        preflight.replace(/\\/g, "/").endsWith("/tsx/dist/preflight.cjs") &&
+        path.basename(loader) === "loader.mjs" && path.dirname(loader) === path.dirname(preflight);
+    } catch { return false; }
   }
   return false;
 }

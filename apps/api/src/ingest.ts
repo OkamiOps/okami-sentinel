@@ -1586,7 +1586,7 @@ export interface RunningScanReconciliationResult {
 }
 
 /** Sync terminal status/cost from workbench for active persisted scans. */
-function reconcileRunningScansInternal(): RunningScanReconciliation {
+function reconcileRunningScansInternal(recoverInterruptedQueue = false): RunningScanReconciliation {
   let updated = 0;
   const recoverablePortableIds: string[] = [];
   for (const run of listActiveRuns()) {
@@ -1606,7 +1606,9 @@ function reconcileRunningScansInternal(): RunningScanReconciliation {
       continue;
     }
     if (isPortableCodexSecurityRun(run)) {
-      const refreshed = refreshPortableCodexSecurityRunFromDisk(run);
+      const refreshed = refreshPortableCodexSecurityRunFromDisk(
+        recoverInterruptedQueue && run.status === "queued" ? { ...run, status: "running" } : run,
+      );
       persistRunWithFindingCategoryMetrics(refreshed, true);
       const after = `${refreshed.status}|${refreshed.cost?.estimatedUsd ?? 0}|${refreshed.severity.total}`;
       if (before !== after) updated += 1;
@@ -1637,8 +1639,8 @@ export function reconcileRunningScans(): number {
 }
 
 /** Reconciles local workers and resumes interrupted Portable runs under the same ID. */
-export async function reconcileRunningScansAndRecover(): Promise<RunningScanReconciliationResult> {
-  const result = reconcileRunningScansInternal();
+export async function reconcileRunningScansAndRecover(options: { afterLocalRestart?: boolean } = {}): Promise<RunningScanReconciliationResult> {
+  const result = reconcileRunningScansInternal(options.afterLocalRestart === true);
   const recovery = result.recoverablePortableIds.length === 0
     ? []
     : await recoverPortableScansAfterWorkerInterruption(result.recoverablePortableIds);

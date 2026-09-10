@@ -352,3 +352,12 @@ test("progressForStatus recovers Portable stage telemetry directly from disk aft
     fs.rmSync(scanDir, { recursive: true, force: true });
   }
 });
+
+test("status reads preserve queued recovery while its capability probe has no worker yet", () => {
+  const scanDir = fs.mkdtempSync(path.join(os.tmpdir(), "portable-queued-recovery-"));
+  try {
+    writePortableCodexSecurityRuntime(scanDir, runtime({status: "running", completedAt: null}));
+    const queued = {...run(scanDir), status: "queued" as const, pid: null};
+    assert.equal(refreshPortableCodexSecurityRunFromDisk(queued).status, "queued");
+  } finally { fs.rmSync(scanDir, {recursive: true, force: true}); }
+});

@@ -199,3 +199,21 @@ test("persists only a verifiable identity sidecar, not the command line", () => 
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }
 });
+
+test("discovers the actual tsx child loader pair but rejects injected or unrelated preload scripts", () => {
+  const scanDir = path.join(os.tmpdir(), "csb-tsx-child");
+  const config = path.join(scanDir, "mantis-run.json");
+  const preflight = "/repo/node_modules/.pnpm/tsx@4.23.1/node_modules/tsx/dist/preflight.cjs";
+  const loader = "file:///repo/node_modules/.pnpm/tsx@4.23.1/node_modules/tsx/dist/loader.mjs";
+  const prefixes = [
+    ["--require", preflight, "--import", loader],
+    ["--require", "/tmp/evil.cjs", "--import", loader],
+    ["--require", preflight, "--import", "file:///other/tsx/dist/loader.mjs"],
+    ["--require", preflight, "--import", loader, "/tmp/another-script.js"],
+  ];
+  const { runtime } = runtimeFixture({ candidates: [301,302,303,304,305], snapshots: new Map([
+    ...prefixes.map((prefix, i) => [301+i, {pid:301+i,startTime:`linux:boot:${301+i}`,command:["node",...prefix,MANTIS_WORKER_ENTRY,config].join("\0")}] as const),
+    [305,{pid:305,startTime:"mac:boot:305",command:["node",...prefixes[0]!,MANTIS_WORKER_ENTRY,config].join(" ")}],
+  ]) });
+  assert.deepEqual(createProcessIdentityService(runtime).findProcessIdentitiesForScanDir(scanDir).map(identity=>identity.pid), [301,305]);
+});

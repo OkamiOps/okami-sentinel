@@ -80,7 +80,7 @@ if (terminalArtifactsBackfilled > 0 || metricBackfilled > 0 || categoriesBackfil
 
 const interruptedAtBoot = settings.mode === "server" ? listActiveRunIds() : [];
 const localReconciliation = settings.mode === "local"
-  ? await reconcileRunningScansAndRecover()
+  ? await reconcileRunningScansAndRecover({ afterLocalRestart: true })
   : undefined;
 const reconciled = settings.mode === "server"
   ? interruptActiveRunsAfterServerRestart()

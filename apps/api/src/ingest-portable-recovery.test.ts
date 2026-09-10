@@ -377,3 +377,18 @@ test("reconciliation captures a checkpointed interrupted Portable run before it 
     fs.rmSync(scanDir, { recursive: true, force: true });
   }
 });
+
+test("queued recovery survives live reconciliation and is recovered after local restart", async () => {
+  const scanDir = fs.mkdtempSync(path.join(os.tmpdir(), "portable-queued-restart-"));
+  const id = `portable-queued-restart-${Date.now()}`;
+  try {
+    writePortableCodexSecurityRuntime(scanDir, runtime({status: "running", completedAt: null}));
+    upsertRun({...portableRun(id, scanDir), status: "queued", pid: null});
+    assert.deepEqual(await reconcileRunningScansAndRecover(), {reconciled: 0, recovery: []});
+    assert.equal(getRun(id)?.status, "queued");
+    const afterBoot = await reconcileRunningScansAndRecover({afterLocalRestart: true});
+    assert.equal(afterBoot.recovery.length, 1);
+    assert.equal(afterBoot.recovery[0]?.scanId, id);
+    assert.equal(getRun(id)?.status, "incomplete");
+  } finally { deleteRun(id); fs.rmSync(scanDir, {recursive: true, force: true}); }
+});

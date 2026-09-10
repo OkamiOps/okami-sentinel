@@ -8,6 +8,8 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Fixed
 
+- Worker detection recognizes the paired `tsx` preflight/loader Node child, so losing its launcher does not leave an active scan mistaken for a dead process.
+- Status reads and live reconciliation preserve queued recovery during its capability check; local startup still recovers an interrupted queue.
 - Portable scans automatically recover interrupted workers under the same scan ID in local and server modes, including worker exits while the API remains running. Accepted checkpoints, accumulated usage, cancellation and persistent restart limits are preserved.
 - Discovery recovery can split a single large file into complete consecutive source slices instead of repeating an oversized request. Full-file coverage is published only after every slice succeeds; accepted slices survive later failures.
 - Temporary inference transport failures (network, HTTP 408/429/5xx) receive up to two abortable retries inside the current model turn, without replaying local tools.
