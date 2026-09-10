@@ -13,6 +13,21 @@ batch; Deep uses its deeper exploration allowance. These per-session limits cons
 investigation depth and context, never how many files are included. Source absent
 from the graph is still assigned. Missing or failed batches prevent completion.
 
+The depth distinction also applies to dataflow and validation. Standard resolves the
+concrete candidate through its main caller/control/sink path, fetching any decisive
+missing source. Deep additionally investigates relevant alternate callers, control
+ordering, bypass hypotheses, transformations and state/deployment prerequisites.
+Both require the same evidence to confirm a finding. Reporting synthesizes accepted
+evidence in both modes and never starts another discovery pass.
+
+Performance acceptance targets for the benchmark are at most 90 minutes for Standard
+and five hours for Deep, including recovery. These are measurement targets, not new
+timeouts or permission to skip code. Compare fresh independent runs on the same
+snapshot/model using elapsed time, completed batches/files, validated distinct findings,
+input/cache/output tokens and recovery overhead. Full source projection demonstrates
+coverage availability, not model attention, detection quality or achieved speed.
+The revised full-coverage modes still require that real-run performance validation.
+
 Standard persists `portable-standard-plan.json`, binding membership, order and sizes
 to the immutable snapshot. Checkpoint recovery reuses accepted batches and examines
 only remaining work in that same scan. This is not incremental scanning and does not

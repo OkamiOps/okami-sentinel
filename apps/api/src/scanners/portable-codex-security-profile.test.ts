@@ -13,6 +13,33 @@ function stage(id: PortableCodexSecurityStage["id"]): PortableCodexSecurityStage
   return value;
 }
 
+test("mode depth follows discovery into assessment without weakening evidence or expanding reports", () => {
+  for (const id of ["discovery", "dataflow", "validation"] as const) {
+    for (const scanMode of ["standard", "deep"] as const) {
+      const prompt = buildPortableCodexSecurityStagePrompt(stage(id), {
+        snapshotRoot: "/snapshot", artifactRoot: "/artifacts", scanMode,
+      });
+      assert.match(prompt, /same repository-backed standard of evidence/);
+      assert.match(prompt, /Missing graph edges do not prove that a flow is absent/);
+      if (scanMode === "standard") {
+        assert.match(prompt, /STANDARD INVESTIGATION DEPTH/);
+        assert.match(prompt, /missing decisive control or caller still requires a focused source lookup/);
+        assert.doesNotMatch(prompt, /DEEP INVESTIGATION DEPTH/);
+      } else {
+        assert.match(prompt, /DEEP INVESTIGATION DEPTH/);
+        assert.match(prompt, /actively seek counterevidence and realistic alternative paths/);
+        assert.doesNotMatch(prompt, /STANDARD INVESTIGATION DEPTH/);
+      }
+    }
+  }
+  for (const scanMode of ["standard", "deep"] as const) {
+    const prompt = buildPortableCodexSecurityStagePrompt(stage("report"), {
+      snapshotRoot: "/snapshot", artifactRoot: "/artifacts", scanMode,
+    });
+    assert.doesNotMatch(prompt, /INVESTIGATION DEPTH/);
+  }
+});
+
 test("Standard prompts keep budgets as ceilings and reuse the carried stage map without mandatory root listing", () => {
   const prompt = buildPortableCodexSecurityStagePrompt(stage("discovery"), {
     snapshotRoot: "/snapshot",
