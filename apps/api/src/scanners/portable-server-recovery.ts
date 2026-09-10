@@ -79,7 +79,7 @@ export async function recoverPortableServerRuns(ids: readonly string[], dependen
   return outcomes;
 }
 
-/** Server/container-only: old worker absence is checked before cleaning task-owned empty locks. */
+/** Old worker absence is checked before cleaning task-owned empty locks. */
 function releaseInterruptedSessionLocks(directory: string): void {
   if (!fs.existsSync(directory)) return;
   const stat = fs.lstatSync(directory);
@@ -96,6 +96,11 @@ function releaseInterruptedSessionLocks(directory: string): void {
 }
 
 export async function recoverPortableScansAfterServerRestart(ids: readonly string[]): Promise<ServerRecoveryOutcome[]> {
+  return recoverPortableScansAfterWorkerInterruption(ids);
+}
+
+/** Reconcile an interrupted Portable worker under its existing scan ID. */
+export async function recoverPortableScansAfterWorkerInterruption(ids: readonly string[]): Promise<ServerRecoveryOutcome[]> {
   const [{ getRun, getDb, upsertRun, reserveScanCapacity, releaseScanCapacity }, { MAX_CONCURRENT_SCANS },
     { getProviderRuntime }, { cliLogPath }, identity, { readPortableCodexSecurityWorkerConfiguration },
     { preflightPortableResume }, { spawn }, { isDraining }] = await Promise.all([

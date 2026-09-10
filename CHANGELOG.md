@@ -8,6 +8,9 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Fixed
 
+- Portable scans automatically recover interrupted workers under the same scan ID in local and server modes, including worker exits while the API remains running. Accepted checkpoints, accumulated usage, cancellation and persistent restart limits are preserved.
+- Discovery recovery can split a single large file into complete consecutive source slices instead of repeating an oversized request. Full-file coverage is published only after every slice succeeds; accepted slices survive later failures.
+- Temporary inference transport failures (network, HTTP 408/429/5xx) receive up to two abortable retries inside the current model turn, without replaying local tools.
 - Standard discovery reserves 16K output tokens instead of 32K, keeping large source batches within the 300K context guard without removing source. Recovery journals retain prior failures and allow bounded attempts under an explicitly changed execution policy.
 - Portable discovery instructions no longer contradict the required `candidates` array, reducing avoidable structural repair requests.
 

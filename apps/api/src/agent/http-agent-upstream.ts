@@ -3,6 +3,7 @@ import { chmod, lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 import {
   Agent as UndiciAgent,
@@ -295,6 +296,31 @@ class HttpAgentUpstream implements AgentUpstream {
   }
 
   async request(request: AgentUpstreamRequest): Promise<unknown> {
+    // Retry only inference transport failures, inside the same model turn. No
+    // tool execution or accepted stage checkpoint is replayed by this loop.
+    const controller = new AbortController();
+    const detach = followAbort(request.signal, controller);
+    this.#active.add(controller);
+    try {
+      for (let attempt = 0; ; attempt++) {
+        if (controller.signal.aborted) throw new AgentSessionError("agent_cancelled");
+        try {
+          return await this.#requestOnce({ ...request, signal: controller.signal });
+        } catch (error) {
+          if (controller.signal.aborted) throw new AgentSessionError("agent_cancelled");
+          if (attempt >= 2 || !(error instanceof HttpAgentUpstreamError) ||
+              (error.code !== "provider_unreachable" && error.code !== "rate_limited")) throw error;
+          try { await delay(1_000 * 2 ** attempt, undefined, { signal: controller.signal }); }
+          catch { throw new AgentSessionError("agent_cancelled"); }
+        }
+      }
+    } finally {
+      this.#active.delete(controller);
+      detach();
+    }
+  }
+
+  async #requestOnce(request: AgentUpstreamRequest): Promise<unknown> {
     if (this.#endpoint === null || this.#operation === null || request.operation !== this.#operation) {
       throw new HttpAgentUpstreamError("protocol_unsupported");
     }
@@ -700,7 +726,7 @@ const PROBE_LIMITS: Readonly<AgentSessionLimits> = Object.freeze({
   maxInputBytes: 1_048_576,
   maxOutputBytes: 1_048_576,
   // The bounded probe may require read, write, and completion turns. Keep one
-  // global deadline (no retry) while allowing a slow provider 22.5 s per turn.
+  // global deadline (including transport retries) while allowing slow provider turns.
   timeoutMs: 90_000,
 });
 

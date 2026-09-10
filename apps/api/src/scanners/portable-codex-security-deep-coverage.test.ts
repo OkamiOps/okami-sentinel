@@ -182,3 +182,26 @@ test("Deep discovery keeps more than one stage artifact worth of unique candidat
   ) as { candidates?: unknown[] };
   assert.equal(roundTrip.candidates?.length, 140);
 });
+
+test("recovery slices preserve every source character, Unicode and global line coordinates", async () => {
+  const { splitPortableDiscoveryRecoveryPartition } = await import("./portable-codex-security-deep-coverage.js");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "source-slices-"));
+  try {
+    const content = ('const msg = "😀\\\"hello";\n').repeat(6000) + '"' + '😀'.repeat(40000) + '"';
+    fs.writeFileSync(path.join(root, "large.ts"), content);
+    const bytes = Buffer.byteLength(content);
+    const partition = { index: 0, total: 1, paths: ["large.ts"], bytes, fileBytes: { "large.ts": bytes } };
+    const parts = splitPortableDiscoveryRecoveryPartition(root, partition);
+    assert.ok(parts.length > 2);
+    const projected = parts.flatMap(part => readPortableDeepCoveragePartition(root, part));
+    assert.equal(projected.map(file => file.content).join(""), content);
+    let offset = 0;
+    for (const file of projected) {
+      assert.ok(Buffer.byteLength(JSON.stringify(file.content)) <= 65_536);
+      assert.equal(file.startLine, content.slice(0, offset).split("\n").length);
+      assert.ok(!/[\uD800-\uDBFF]$/.test(file.content));
+      offset += file.content.length;
+    }
+    assert.deepEqual(parts, splitPortableDiscoveryRecoveryPartition(root, partition), "restart rebuilds exactly the same checkpoint units");
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

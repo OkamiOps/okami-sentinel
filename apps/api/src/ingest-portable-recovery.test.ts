@@ -19,7 +19,12 @@ after(async () => {
 
 const { app } = await import("./app.js");
 const { deleteRun, getRun, upsertRun } = await import("./db.js");
-const { backfillTerminalMetricArtifacts, reconcileRunningScans, refreshRunFromDisk } = await import("./ingest.js");
+const {
+  backfillTerminalMetricArtifacts,
+  reconcileRunningScans,
+  reconcileRunningScansAndRecover,
+  refreshRunFromDisk,
+} = await import("./ingest.js");
 const { writePortableCodexSecurityPricing,
   writeScannerPricingQuote } = await import("./model-pricing.js");
 const { refreshOpenRouterPricing } = await import("./openrouter-pricing.js");
@@ -339,6 +344,34 @@ test("startup reconciliation preserves Portable failed-stage evidence as incompl
       modelId: "mimo-v2.5",
       paths: ["src/auth"],
     });
+  } finally {
+    deleteRun(id);
+    fs.rmSync(scanDir, { recursive: true, force: true });
+  }
+});
+
+test("reconciliation captures a checkpointed interrupted Portable run before it leaves active rows", async () => {
+  const scanDir = fs.mkdtempSync(path.join(os.tmpdir(), "portable-ingest-auto-recovery-"));
+  const id = `portable-auto-recovery-${Date.now()}-${Math.random()}`;
+  try {
+    writePortableCodexSecurityRuntime(scanDir, runtime({
+      status: "running",
+      stage: "discovery",
+      stageLabel: "Discovering source relationships",
+      percent: 42,
+      completedAt: null,
+      findings: 0,
+    }));
+    upsertRun(portableRun(id, scanDir));
+
+    const result = await reconcileRunningScansAndRecover();
+    assert.equal(result.reconciled, 1);
+    assert.deepEqual(result.recovery, [{
+      scanId: id,
+      status: "blocked",
+      reason: "restart_validation_or_launch_failed",
+    }]);
+    assert.equal(getRun(id)?.status, "incomplete");
   } finally {
     deleteRun(id);
     fs.rmSync(scanDir, { recursive: true, force: true });

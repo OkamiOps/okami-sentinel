@@ -1734,3 +1734,53 @@ test("Legacy Standard graph recovery groups partial neighborhoods and reuses acc
     assert.equal(dossier.scope.inspected.some(file => file.startsWith("src/route")), false);
   } finally { remove(root); }
 });
+
+test("Standard automatically recovers an oversized singleton and preserves accepted slices after another failure", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "standard-singleton-recovery-"));
+  const config = configuration(root); config.limits.totalTimeoutMs = 0;
+  const source = ('export const message = "Unicode 😀 and quoted text";\n').repeat(9000);
+  fs.writeFileSync(path.join(config.repositoryPath, "src/auth.ts"), source);
+  const base = stageSessionFactory(); const accepted: string[] = []; const attempts: string[] = [];
+  let transientChildFailed = false; const events: string[] = [];
+  const factory = async (input: { spec: AgentSessionSpec; toolSurface: readonly string[] }) => {
+    const stage = String(input.spec.instructions.match(/stage "([a-z-]+)"/)?.[1]);
+    if (stage !== "discovery") return base(input);
+    const files = JSON.parse(input.spec.instructions.split("BEGIN_PORTABLE_DEEP_SOURCE_FILES_JSON\n")[1]!.split("\nEND_PORTABLE_DEEP_SOURCE_FILES_JSON")[0]!) as Array<{content: string; partial?: boolean}>;
+    const page = path.basename(input.spec.artifactRoot); attempts.push(page);
+    if (files[0]!.content.length > 100_000 || (accepted.length === 1 && !transientChildFailed)) {
+      if (files[0]!.partial) transientChildFailed = true;
+      return { async *run() { yield { type: "failure", code: "agent_context_limit" } as const; }, async cancel() { return { remote: false }; } };
+    }
+    assert.equal(fs.existsSync(path.join(config.outputDir, "portable-codex-security-artifacts/discovery-001/03-discovery.json")), false, "parent coverage must not be complete before every slice");
+    assert.match(input.spec.instructions, /RECOVERY SOURCE SLICE/);
+    accepted.push(files[0]!.content);
+    return base(input);
+  };
+  try {
+    const result = await runPortableCodexSecurity(config, dependencies({ createSession: factory, log: (line: string) => events.push(line) }));
+    assert.equal(result.runtime.status, "completed");
+    assert.equal(accepted.join(""), source, "completed slices are never repeated or omitted");
+    assert.equal(attempts.filter(name => name === "discovery-001").length, 1, "oversized request is not retried unchanged");
+    assert.equal(events.filter(line => line.includes('"type":"stage_recovery"')).length, 2);
+    const dossier = readPortableCodexSecurityDossier(path.join(config.outputDir, "portable-codex-security-results"))!;
+    assert.deepEqual(dossier.scope.inspected, ["src/auth.ts"]);
+  } finally { remove(root); }
+});
+
+test("failed recovery slice cannot publish complete parent coverage", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "standard-slice-incomplete-"));
+  const config = configuration(root); config.limits.totalTimeoutMs = 0;
+  fs.writeFileSync(path.join(config.repositoryPath, "src/auth.ts"), 'const value = "large source";\n'.repeat(12000));
+  const base = stageSessionFactory(); let accepted = 0;
+  try {
+    await assert.rejects(runPortableCodexSecurity(config, dependencies({ createSession: async (input: { spec: AgentSessionSpec; toolSurface: readonly string[] }) => {
+      const stage = String(input.spec.instructions.match(/stage "([a-z-]+)"/)?.[1]);
+      if (stage !== "discovery") return base(input);
+      const page = path.basename(input.spec.artifactRoot);
+      if (page === "1") { accepted++; return base(input); }
+      return { async *run() { yield { type: "failure", code: "agent_context_limit" } as const; }, async cancel() { return { remote: false }; } };
+    } })), { code: "stage_recovery_exhausted" });
+    assert.equal(accepted, 1, "accepted slice survives the next retry");
+    assert.equal(fs.existsSync(path.join(config.outputDir, "portable-codex-security-artifacts/discovery-001/03-discovery.json")), false);
+  } finally { remove(root); }
+});

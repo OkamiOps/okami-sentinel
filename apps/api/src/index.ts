@@ -21,7 +21,7 @@ import {
   backfillTerminalMetricArtifacts,
   importExternalScans,
   interruptActiveRunsAfterServerRestart,
-  reconcileRunningScans,
+  reconcileRunningScansAndRecover,
 } from "./ingest.js";
 import {
   reconcileGitHubActionsGates,
@@ -79,13 +79,20 @@ if (terminalArtifactsBackfilled > 0 || metricBackfilled > 0 || categoriesBackfil
 }
 
 const interruptedAtBoot = settings.mode === "server" ? listActiveRunIds() : [];
+const localReconciliation = settings.mode === "local"
+  ? await reconcileRunningScansAndRecover()
+  : undefined;
 const reconciled = settings.mode === "server"
   ? interruptActiveRunsAfterServerRestart()
-  : reconcileRunningScans();
+  : localReconciliation?.reconciled ?? 0;
 if (reconciled > 0) {
   console.log(settings.mode === "server"
     ? `[csb-api] Marked ${reconciled} active scan(s) interrupted after server restart`
     : `[csb-api] Reconciled ${reconciled} running scan(s) from workbench`);
+}
+
+for (const outcome of localReconciliation?.recovery ?? []) {
+  console.log(`[csb-api] Portable worker recovery ${JSON.stringify(outcome)}`);
 }
 
 if (interruptedAtBoot.length > 0) {
@@ -105,12 +112,19 @@ void reconcileGitHubActionsGates().then((gates) => {
 });
 
 // Keep orphaned CLI jobs (surviving an API restart) in sync with workbench.
+let scanReconciliationInFlight = false;
 const scanReconciler = setInterval(() => {
-  try {
-    reconcileRunningScans();
-  } catch {
-    // ignore transient sqlite locks
-  }
+  if (scanReconciliationInFlight) return;
+  scanReconciliationInFlight = true;
+  void reconcileRunningScansAndRecover().then((result) => {
+    for (const outcome of result.recovery) {
+      console.log(`[csb-api] Portable worker recovery ${JSON.stringify(outcome)}`);
+    }
+  }).catch(() => {
+    // ignore transient sqlite/provider locks
+  }).finally(() => {
+    scanReconciliationInFlight = false;
+  });
 }, 15_000).unref();
 
 const gateReconciler = setInterval(() => {

@@ -43,6 +43,11 @@ import {
 import { listActiveRuns } from "./scan-list.js";
 import { refreshMantisRunFromDisk } from "./scanners/mantis-reconcile.js";
 import { refreshPortableCodexSecurityRunFromDisk } from "./scanners/portable-codex-security-reconcile.js";
+import { readPortableCodexSecurityRuntime } from "./scanners/portable-codex-security-runtime.js";
+import {
+  recoverPortableScansAfterWorkerInterruption,
+  type ServerRecoveryOutcome,
+} from "./scanners/portable-server-recovery.js";
 import { refreshVulnHunterRunFromDisk } from "./scanners/vulnhunter-reconcile.js";
 
 interface WorkbenchScanRow {
@@ -1570,9 +1575,20 @@ function terminalizeOrphanedNativeBenchmarkRun(run: ScanRun): ScanRun | null {
   };
 }
 
+interface RunningScanReconciliation {
+  updated: number;
+  recoverablePortableIds: string[];
+}
+
+export interface RunningScanReconciliationResult {
+  reconciled: number;
+  recovery: ServerRecoveryOutcome[];
+}
+
 /** Sync terminal status/cost from workbench for active persisted scans. */
-export function reconcileRunningScans(): number {
+function reconcileRunningScansInternal(): RunningScanReconciliation {
   let updated = 0;
+  const recoverablePortableIds: string[] = [];
   for (const run of listActiveRuns()) {
     const before = `${run.status}|${run.cost?.estimatedUsd ?? 0}|${run.severity.total}`;
     if (run.engine === "mantis") {
@@ -1594,6 +1610,12 @@ export function reconcileRunningScans(): number {
       persistRunWithFindingCategoryMetrics(refreshed, true);
       const after = `${refreshed.status}|${refreshed.cost?.estimatedUsd ?? 0}|${refreshed.severity.total}`;
       if (before !== after) updated += 1;
+      const runtime = readPortableCodexSecurityRuntime(run.scanDir);
+      if ((run.status === "running" || run.status === "queued") && refreshed.status === "incomplete" &&
+          runtime !== null && (runtime.status === "running" || runtime.status === "preparing") &&
+          typeof runtime.snapshotId === "string" && runtime.snapshotId.length > 0) {
+        recoverablePortableIds.push(run.id);
+      }
       continue;
     }
     const refreshed = refreshRunByScanDir(run.scanDir, run.id);
@@ -1607,7 +1629,20 @@ export function reconcileRunningScans(): number {
     persistRunWithFindingCategoryMetrics(terminal, true);
     updated += 1;
   }
-  return updated;
+  return { updated, recoverablePortableIds };
+}
+
+export function reconcileRunningScans(): number {
+  return reconcileRunningScansInternal().updated;
+}
+
+/** Reconciles local workers and resumes interrupted Portable runs under the same ID. */
+export async function reconcileRunningScansAndRecover(): Promise<RunningScanReconciliationResult> {
+  const result = reconcileRunningScansInternal();
+  const recovery = result.recoverablePortableIds.length === 0
+    ? []
+    : await recoverPortableScansAfterWorkerInterruption(result.recoverablePortableIds);
+  return { reconciled: result.updated, recovery };
 }
 
 /**

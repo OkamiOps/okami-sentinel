@@ -44,7 +44,7 @@ import {
 import {
   indexFindingCategoryMetrics,
   readWorkbenchScan,
-  reconcileRunningScans,
+  reconcileRunningScansAndRecover,
   refreshRunByScanDir,
 } from "./ingest.js";
 import {
@@ -85,6 +85,9 @@ import {
 } from "./scanners/codex-security-api-bridge.js";
 import { refreshMantisRunFromDisk } from "./scanners/mantis-reconcile.js";
 import { refreshPortableCodexSecurityRunFromDisk } from "./scanners/portable-codex-security-reconcile.js";
+import { readPortableCodexSecurityRuntime } from "./scanners/portable-codex-security-runtime.js";
+import type { PortableCodexSecurityRuntimeState } from "./scanners/portable-codex-security-runtime.js";
+import { recoverPortableScansAfterWorkerInterruption } from "./scanners/portable-server-recovery.js";
 import { refreshVulnHunterRunFromDisk } from "./scanners/vulnhunter-reconcile.js";
 import { getProviderRuntime, type ProviderRuntime } from "./provider-runtime.js";
 import { resolveScannerPricingQuote } from "./provider-pricing.js";
@@ -139,6 +142,26 @@ export function scanStatusAfterClose(
   if (current === "incomplete") return current;
   if (exitCode === 0 && current !== "failed") return "completed";
   return exitCode === null ? "cancelled" : "failed";
+}
+
+export function shouldAutoRecoverPortableWorkerInterruption(
+  status: ScanStatus,
+  runtime: Pick<PortableCodexSecurityRuntimeState, "status" | "snapshotId"> | null,
+  terminationReason: ScannerTerminationReason | null,
+): boolean {
+  return status === "incomplete" &&
+    hasPortableWorkerResumeCheckpoint(runtime, terminationReason);
+}
+
+export function hasPortableWorkerResumeCheckpoint(
+  runtime: Pick<PortableCodexSecurityRuntimeState, "status" | "snapshotId"> | null,
+  terminationReason: ScannerTerminationReason | null,
+): boolean {
+  return terminationReason === null &&
+    runtime !== null &&
+    (runtime.status === "running" || runtime.status === "preparing") &&
+    typeof runtime.snapshotId === "string" &&
+    runtime.snapshotId.length > 0;
 }
 
 interface DetachedWatch {
@@ -583,7 +606,7 @@ export async function startScan(
   throwIfLaunchAborted(options.signal);
   // Recover persistent worker-backed runs before counting slots. This matters
   // after an API restart, when the in-memory `active` map starts empty.
-  reconcileRunningScans();
+  await reconcileRunningScansAndRecover();
   // Worker launch contracts require an alphanumeric first character; nanoid
   // may otherwise start with '-' or '_' and randomly reject a valid scan.
   const id = `s${nanoid(11)}`;
@@ -961,11 +984,24 @@ async function startReservedScan(
   child.on("close", (code) => {
     if (activeScan.progressTimer) clearInterval(activeScan.progressTimer);
     const refreshed = refreshAfterClose(outputDir, run);
-    refreshed.status = scanStatusAfterClose(
+    const runtime = isPortableCodexSecurityRun(refreshed)
+      ? readPortableCodexSecurityRuntime(refreshed.scanDir)
+      : null;
+    const previousStatus = refreshed.status;
+    const closedStatus = scanStatusAfterClose(
       refreshed.status,
       code,
       activeScan.terminationReason ?? null,
     );
+    // A signal/nonzero exit can be reported as cancelled/failed while the
+    // worker ledger still proves that a checkpointed stage was in flight.
+    // Preserve an explicit persisted cancellation and quota termination.
+    refreshed.status = closedStatus !== "completed" &&
+      closedStatus !== "incomplete" &&
+      previousStatus !== "cancelled" &&
+      hasPortableWorkerResumeCheckpoint(runtime, activeScan.terminationReason ?? null)
+      ? "incomplete"
+      : closedStatus;
     refreshed.completedAt = refreshed.completedAt ?? new Date().toISOString();
     refreshed.durationMs =
       refreshed.durationMs ??
@@ -997,6 +1033,24 @@ async function startReservedScan(
     releaseScanCapacity(id);
     removeProcessIdentity(outputDir);
     activeScan.releaseRedactionScope();
+
+    // The close handler changes an interrupted run to `incomplete` before it
+    // leaves the active-only reconciliation set. Schedule same-ID recovery
+    // only after the child lease and identity have been released.
+    const resumable = shouldAutoRecoverPortableWorkerInterruption(
+      refreshed.status,
+      runtime,
+      activeScan.terminationReason ?? null,
+    );
+    if (resumable) {
+      void recoverPortableScansAfterWorkerInterruption([id]).then((outcomes) => {
+        for (const outcome of outcomes) {
+          console.log(`[csb-api] Portable worker recovery ${JSON.stringify(outcome)}`);
+        }
+      }).catch(() => {
+        console.warn("[csb-api] Portable worker recovery deferred");
+      });
+    }
   });
 
   return run;

@@ -93,6 +93,10 @@ function mappedStatus(
   if (runtimeStatus === "cancelled") return "cancelled";
   if (runtimeStatus === "failed") return hasFindings ? "incomplete" : "failed";
   if (workerIsCurrent(run) || withinBootstrapGrace(run)) return "running";
+  // A dead worker with a live/preparing runtime is still resumable. Keep the
+  // row recoverable even when no finding has been persisted yet; the recovery
+  // coordinator will validate the snapshot/checkpoints before dispatch.
+  if (runtimeStatus === "running" || runtimeStatus === "preparing") return "incomplete";
   return hasFindings ? "incomplete" : "failed";
 }
 

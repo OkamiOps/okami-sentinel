@@ -163,6 +163,23 @@ test("Portable restart recovery retains persisted evidence when findings artifac
   }
 });
 
+test("Portable worker interruption with a resumable runtime remains incomplete for automatic recovery", () => {
+  const scanDir = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-auto-recovery-state-"));
+  try {
+    writePortableCodexSecurityRuntime(scanDir, runtime({
+      status: "running",
+      stage: "discovery",
+      completedAt: null,
+      snapshotId: "content:fixture",
+      findings: 0,
+    }));
+    const refreshed = refreshPortableCodexSecurityRunFromDisk({ ...run(scanDir), pid: null });
+    assert.equal(refreshed.status, "incomplete");
+  } finally {
+    fs.rmSync(scanDir, { recursive: true, force: true });
+  }
+});
+
 test("Portable reconciliation preserves an explicit cancellation over a late running runtime", () => {
   const scanDir = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-cancelled-runtime-"));
   try {

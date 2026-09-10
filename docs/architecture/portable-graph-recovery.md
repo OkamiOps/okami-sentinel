@@ -136,26 +136,35 @@ bind snapshot/stage/page and count each attempt before dispatch. At most three p
 attempts are permitted (initial plus two); this is not a three-model-request cap.
 Recoverable context/byte/turn/tool/invalid-artifact failures start fresh histories.
 Multi-file discovery and multi-candidate assessment/report pages split into single
-units on retry. Accepted child artifacts are verified and reused across subsequent
+units on retry. Oversized discovery files, including singleton batches, split into
+consecutive source slices bounded by 64 KiB of JSON-encoded content. Slices preserve
+Unicode, all source characters and original line/column coordinates; large single
+lines are split rather than omitted. Their versioned child checkpoint layout is
+deterministic. A slice is internal partial work, never full-file completion: all
+slices must validate before the parent artifact can claim the file inspected.
+Accepted child artifacts are verified and reused across subsequent
 attempts. Parent artifacts are assembled only after all children validate; exact
 duplicate candidate IDs merge, conflicting claims fail closed. Usage accumulates
 across failures and configured cost ceilings remain enforced.
 
+Inference transport retries network/408/429/5xx failures at most twice, with
+abortable 1s/2s backoff, within the current model turn. It does not replay local
+tools or stage checkpoints. A lost response may still have incurred provider
+usage, so transport retries cannot guarantee zero additional inference cost.
 Authentication, cancellation, cost limits and unknown/protocol errors are not
 blindly repeated. A singleton that still cannot fit or produce valid evidence
 eventually exhausts its recovery budget and remains incomplete/failed. No elapsed
 scan timeout is introduced. Manual recovery copies child checkpoints and journals,
 not stale session locks, while preserving the immutable source and plan.
 
-Server startup captures previously active run IDs before reconciliation. It can
+Startup and periodic reconciliation capture previously active run IDs before reconciliation. The runner also schedules recovery after an interrupted child closes, only after releasing its capacity and process identity. Both local and server modes use this protocol. It can
 resume only those now incomplete with nonterminal runtime, validated prerequisite
 checkpoints and no live worker. Capacity reservation and a database claim prevent
 duplicate launches; the selected connection is probed again. Recovery retains the
-same ID, cost state and snapshot, and allows at most two server restart attempts.
+same ID, cost state and snapshot, and allows at most two automatic worker restart attempts.
 Only verified dead-worker, empty hash-named locks are removed. Explicit cancellations
 and terminal errors are not auto-restarted. Missing early checkpoints, unavailable
-credentials/capacity or an exhausted budget require operator action. Local desktop
-mode retains its existing reconciliation behavior.
+credentials/capacity or an exhausted budget stop recovery explicitly. Automatic recovery does not modify an exhausted journal or restart historical terminal scans.
 
 ## Verification boundaries
 

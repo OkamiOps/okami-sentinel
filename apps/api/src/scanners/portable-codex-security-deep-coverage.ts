@@ -41,12 +41,17 @@ export interface PortableDeepCoveragePartition {
   paths: readonly string[];
   fileBytes: Readonly<Record<string, number>>;
   bytes: number;
+  /** Internal recovery unit: UTF-16 offsets into a single immutable file. */
+  sourceSlice?: { start: number; end: number };
 }
 
 export interface PortableDeepCoverageSourceFile {
   path: string;
   lineCount: number;
   content: string;
+  startLine?: number;
+  startColumn?: number;
+  partial?: true;
 }
 
 /**
@@ -71,8 +76,44 @@ export function readPortableDeepCoveragePartition(
     const lineCount = content.length === 0
       ? 0
       : content.split("\n").length - (content.endsWith("\n") ? 1 : 0);
+    if (partition.sourceSlice) {
+      const { start, end } = partition.sourceSlice;
+      if (partition.paths.length !== 1 || !Number.isInteger(start) || !Number.isInteger(end) ||
+          start < 0 || end <= start || end > content.length) throw new Error("deep_coverage_unavailable");
+      const prefix = content.slice(0, start);
+      return { path: relativePath, lineCount, content: content.slice(start, end), partial: true,
+        startLine: prefix.split("\n").length, startColumn: start - prefix.lastIndexOf("\n") };
+    }
     return { path: relativePath, lineCount, content };
   });
+}
+
+/** Stable recovery units; all characters remain assigned, including oversized single lines. */
+export function splitPortableDiscoveryRecoveryPartition(
+  snapshotRoot: string, partition: PortableDeepCoveragePartition,
+): PortableDeepCoveragePartition[] {
+  const result: PortableDeepCoveragePartition[] = [];
+  for (const file of readPortableDeepCoveragePartition(snapshotRoot, partition)) {
+    const single = { ...partition, paths: [file.path], bytes: partition.fileBytes[file.path]!,
+      fileBytes: { [file.path]: partition.fileBytes[file.path]! } };
+    if (Buffer.byteLength(JSON.stringify(file.content)) <= 65_536) { result.push(single); continue; }
+    let start = 0;
+    while (start < file.content.length) {
+      let lo = start + 1, hi = Math.min(file.content.length, start + 65_536), end = lo;
+      while (lo <= hi) {
+        const mid = Math.floor((lo + hi) / 2);
+        if (Buffer.byteLength(JSON.stringify(file.content.slice(start, mid))) <= 65_536) { end = mid; lo = mid + 1; }
+        else hi = mid - 1;
+      }
+      // Prefer whole lines, but never omit a minified/oversized line or split a surrogate pair.
+      const newline = file.content.lastIndexOf("\n", end - 1) + 1;
+      if (newline > start && newline - start >= (end - start) / 2) end = newline;
+      if (end < file.content.length && /[\uD800-\uDBFF]/.test(file.content[end - 1]!)) end--;
+      result.push({ ...single, sourceSlice: { start, end } });
+      start = end;
+    }
+  }
+  return result;
 }
 
 export interface PortableDeepCoveragePlan {

@@ -6,6 +6,7 @@ import test from "node:test";
 
 import type { ProviderModel, ScanConnectionSelection } from "@csb/shared";
 import type { Dispatcher } from "undici";
+import { AgentSessionError } from "./session-types.js";
 import type { StoredProviderConnection } from "../connections-store.js";
 import type { ConnectionSecretBundle, CredentialVault } from "../credentials/credential-vault.js";
 import { resolveCompatibility } from "../connections/compatibility-resolver.js";
@@ -842,5 +843,77 @@ test("xAI OAuth refresh failure stops before inference and never leaks resolver 
   });
   await assert.rejects(upstream.request({ operation: "responses", body: {}, signal: new AbortController().signal }),
     (error: unknown) => error instanceof HttpAgentUpstreamError && error.code === "credential_rejected" && !error.message.includes("secret"));
+  assert.equal(calls, 0);
+});
+
+test("transient transport errors retry the same model request at most twice", async () => {
+  for (const first of [408, 429, 503, "network"] as const) {
+    const bodies: unknown[] = [];
+    let calls = 0;
+    const upstream = createHttpAgentUpstream({
+      routeKind: "openai-api", protocol: "openai-responses", credentials: { apiKey: "test-secret" },
+      transport: (async (_url, init) => {
+        bodies.push(init?.body);
+        calls++;
+        if (calls === 1) {
+          if (first === "network") throw new TypeError("socket closed");
+          return json(first, {});
+        }
+        return json(200, { id: "recovered", output: [] });
+      }) as typeof fetch,
+    });
+    assert.deepEqual(await upstream.request({ operation: "responses", body: { input: [{ role: "user", content: "same turn" }] },
+      signal: new AbortController().signal }), { id: "recovered", output: [] });
+    assert.equal(calls, 2);
+    assert.equal(bodies[0], bodies[1]);
+  }
+});
+
+test("persistent HTTP unavailability stops after three requests with a safe error", async () => {
+  let calls = 0;
+  const upstream = createHttpAgentUpstream({ routeKind: "openai-api", protocol: "openai-responses", credentials: { apiKey: "test-secret" },
+    transport: (async () => { calls++; return json(502, { secret: "never expose" }); }) as typeof fetch });
+  await assert.rejects(upstream.request({ operation: "responses", body: {}, signal: new AbortController().signal }),
+    { code: "provider_unreachable" });
+  assert.equal(calls, 3);
+});
+
+test("HTTP recovery does not retry auth, protocol errors or cancellation during backoff", async () => {
+  for (const status of [400, 401, 403]) {
+    let calls = 0;
+    const upstream = createHttpAgentUpstream({ routeKind: "openai-api", protocol: "openai-responses", credentials: { apiKey: "test-secret" },
+      transport: (async () => { calls++; return json(status, {}); }) as typeof fetch });
+    await assert.rejects(upstream.request({ operation: "responses", body: {}, signal: new AbortController().signal }));
+    assert.equal(calls, 1);
+  }
+  for (const cancelThroughUpstream of [false, true]) {
+    const controller = new AbortController();
+    let calls = 0;
+    const upstream = createHttpAgentUpstream({ routeKind: "openai-api", protocol: "openai-responses", credentials: { apiKey: "test-secret" },
+      transport: (async () => {
+        calls++;
+        setTimeout(() => { if (cancelThroughUpstream) void upstream.cancel?.(); else controller.abort(); }, 20);
+        return json(503, {});
+      }) as typeof fetch });
+    await assert.rejects(upstream.request({ operation: "responses", body: {}, signal: controller.signal }), { code: "agent_cancelled" });
+    assert.equal(calls, 1);
+  }
+});
+
+
+test("HTTP recovery never retries a session budget stop or a pre-cancelled request", async () => {
+  for (const code of ["agent_time_limit", "agent_input_byte_limit", "agent_cancelled"] as const) {
+    let calls = 0;
+    const upstream = createHttpAgentUpstream({ routeKind: "openai-api", protocol: "openai-responses", credentials: { apiKey: "test-secret" },
+      transport: (async () => { calls++; throw new AgentSessionError(code); }) as typeof fetch });
+    await assert.rejects(upstream.request({ operation: "responses", body: {}, signal: new AbortController().signal }), { code });
+    assert.equal(calls, 1);
+  }
+  const controller = new AbortController();
+  controller.abort();
+  let calls = 0;
+  const upstream = createHttpAgentUpstream({ routeKind: "openai-api", protocol: "openai-responses", credentials: { apiKey: "test-secret" },
+    transport: (async () => { calls++; return json(200, {}); }) as typeof fetch });
+  await assert.rejects(upstream.request({ operation: "responses", body: {}, signal: controller.signal }), { code: "agent_cancelled" });
   assert.equal(calls, 0);
 });
