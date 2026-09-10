@@ -1,3 +1,4 @@
+import { scanCandidatePreview } from "./scan-candidate-preview.js";
 import { scanAnalysisMetrics } from "./scan-analysis-metrics.js";
 import { getGitHubMonitorRule } from "./github-monitor/store.js";
 import { GitHubMonitorService } from "./github-monitor/service.js";
@@ -881,6 +882,12 @@ app.get("/scans/:id/analysis-metrics", (c) => {
   const run = readRunWithEngineRefresh(c.req.param("id"));
   if (!run) return c.json({ error: "Scan not found" }, 404);
   return c.json(scanAnalysisMetrics(run));
+});
+
+app.get("/scans/:id/candidate-preview", (c) => {
+  const run = readRunWithEngineRefresh(c.req.param("id"));
+  if (!run) return c.json({ error: "Scan not found" }, 404);
+  return c.json(scanCandidatePreview(run));
 });
 
 app.get("/scans/:id/telemetry", (c) => {

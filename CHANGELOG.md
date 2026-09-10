@@ -6,6 +6,10 @@ with the Docker and engine-update work; earlier history remains in
 
 ## Unreleased
 
+### Added
+
+- Portable Codex Security scans show a live, searchable preview of saved discovery candidates, including hypotheses, potential impact and source locations. Candidates remain explicitly provisional until final validation and are never counted as confirmed findings.
+
 ### Fixed
 
 - Resuming after an execution-policy update reuses validated recovery child checkpoints even when the new policy has a fresh retry journal, avoiding a repeated full parent analysis.

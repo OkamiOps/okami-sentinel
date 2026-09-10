@@ -1421,3 +1421,20 @@ export interface ScanAnalysisMetrics {
   reasoningTokens: number | null;
   outputTokensPerSecond: number | null;
 }
+
+/** Current-run discovery hypotheses, not validated findings or severity counts. */
+export interface ScanCandidatePreviewItem {
+  id: string;
+  category: string;
+  hypothesis: string;
+  prerequisites?: string;
+  expectedImpact?: string;
+  anchors: Array<{ path: string; line: number; explanation: string }>;
+}
+
+export interface ScanCandidatePreview {
+  scanId: string;
+  measuredAt: string;
+  provisional: true;
+  candidates: ScanCandidatePreviewItem[];
+}

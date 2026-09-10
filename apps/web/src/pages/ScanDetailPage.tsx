@@ -1,3 +1,4 @@
+import { ScanCandidatePreview } from "../components/scans/ScanCandidatePreview";
 import { ScanAnalysisMetrics } from "../components/scans/ScanAnalysisMetrics";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
@@ -126,7 +127,8 @@ export function ScanDetailPage() {
     {errorBanner}
     <ScanAnalysisMetrics key={scan.id} scan={scan} />
     <div className="mb-4 flex overflow-x-auto border border-border">{(["evidence", "telemetry", "profile"] as View[]).map((id, i) => <button key={id} type="button" onClick={() => setView(id)} className={cx("h-10 border-r px-4 font-mono text-[9px] uppercase tracking-wider", view === id ? "bg-accent text-primary" : "text-muted-foreground hover:text-foreground")}>0{i + 1} / {t(`scanDetail.view${id[0].toUpperCase()}${id.slice(1)}` as "scanDetail.viewEvidence")}</button>)}</div>
-    {view === "evidence" && <EvidenceWorkbench scan={scan} findings={filtered} allFindings={findings} selected={selected} selectedSignal={selectedSignal} query={query} severity={severity} lifecycle={lifecycle} onQuery={setQuery} onSeverity={setSeverity} onLifecycle={setLifecycle} onOpen={(f) => void openFinding(f)} onSaveTriage={saveTriage} />}
+    {scan.status !== "completed" && scan.execution?.executionProfile === "portable" && scan.engine === "codex-security" && <ScanCandidatePreview key={`preview:${scan.id}`} scan={scan} expanded={view === "evidence"} />}
+    {view === "evidence" && (findings.length > 0 || scan.status === "completed" || scan.execution?.executionProfile !== "portable" || scan.engine !== "codex-security") && <EvidenceWorkbench scan={scan} findings={filtered} allFindings={findings} selected={selected} selectedSignal={selectedSignal} query={query} severity={severity} lifecycle={lifecycle} onQuery={setQuery} onSeverity={setSeverity} onLifecycle={setLifecycle} onOpen={(f) => void openFinding(f)} onSaveTriage={saveTriage} />}
     {view === "telemetry" && <Telemetry scan={scan} logs={telemetry.lines} logRef={logRef} />}
     {view === "profile" && <Profile scan={scan} />}
   </div>;
