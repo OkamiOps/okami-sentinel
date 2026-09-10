@@ -521,6 +521,9 @@ export async function runPortableCodexSecurity(
             : portableReportShardSessionLimits(safeConfiguration.limits, stageRemaining, shards!.length);
         const execute = async (stageDossier: PortableCodexSecurityDossier, partition: PortableDeepCoveragePartition | null,
           shard: PortableCodexSecurityReportShardResult["shard"] | null, artifactRoot: string): Promise<PortableCodexSecurityStageObservation> => {
+        const effectiveSessionLimits = safeConfiguration.mode === "standard" && partition !== null
+          ? { ...stageSessionLimits, maxModelTurns: Math.min(16, stageSessionLimits.maxModelTurns), maxToolCalls: Math.min(64, stageSessionLimits.maxToolCalls) }
+          : stageSessionLimits;
         const stageDossierStateBase64 = portableCodexSecurityDossierBase64(stageDossier);
         fs.mkdirSync(artifactRoot, { recursive: true, mode: 0o700 });
         const deepCoverage = partition === null
@@ -571,14 +574,14 @@ export async function runPortableCodexSecurity(
         ...(stage.id === "discovery" && partition === null ? {} : {
         artifactWriteByTurn: partition === null && assessmentPage === null
           ? Math.min(
-            stageSessionLimits.maxModelTurns - 1,
-            Math.max(8, Math.floor(stageSessionLimits.maxModelTurns * 2 / 3)),
+            effectiveSessionLimits.maxModelTurns - 1,
+            Math.max(8, Math.floor(effectiveSessionLimits.maxModelTurns * 2 / 3)),
           )
           : partition !== null
-            ? Math.min(16, Math.max(1, stageSessionLimits.maxModelTurns - 8))
+            ? Math.min(16, Math.max(1, effectiveSessionLimits.maxModelTurns - 8))
             : Math.min(
-              stageSessionLimits.maxModelTurns - 1,
-              Math.max(3, Math.floor(stageSessionLimits.maxModelTurns * 2 / 3)),
+              effectiveSessionLimits.maxModelTurns - 1,
+              Math.max(3, Math.floor(effectiveSessionLimits.maxModelTurns * 2 / 3)),
             ),
         }),
         ...(stage.id === "report"
@@ -634,7 +637,7 @@ export async function runPortableCodexSecurity(
             deepCoveragePartition: { ...partition, sourceFiles: deepCoverageSourceFiles },
           }),
         }),
-        limits: { ...stageSessionLimits, ...(safeConfiguration.mode === "standard" && partition !== null ? { maxModelTurns: Math.min(16, stageSessionLimits.maxModelTurns), maxToolCalls: Math.min(64, stageSessionLimits.maxToolCalls) } : {}), maxContextTokens: Math.min(300_000, resolved.model.contextWindow ?? 300_000) },
+        limits: { ...effectiveSessionLimits, maxContextTokens: Math.min(300_000, resolved.model.contextWindow ?? 300_000) },
         signal: deadline.signal,
         };
         activeSession = await raceWithDeadline(

@@ -37,6 +37,7 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Added
 
+- Standard recovery now derives artifact-finalization timing from its reduced session limits. Resume preflight no longer constructs report pages before pending discovery candidates have been validated.
 - Portable assessment now uses projected snapshot source directly without mandatory duplicate reads. Report pages receive validated-anchor source context and expose only precise reads and artifact writing; complementary graph hints avoid previously inspected related files.
 - Standard discovery recovery now uses bounded, projected source units instead of repeating the broad failed pass; carried candidates and accepted recovery units are preserved. Discovery artifact repair explains candidate identity conflicts.
 - Standard now receives bounded graph-based discovery priorities, with complementary suggestions excluding already inspected paths. Candidate assessment follows up to three extracted call links and distributes source windows among candidates; telemetry exposes traversal work and truncation. Static paths and control-name hints never count as vulnerability proof.

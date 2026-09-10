@@ -94,3 +94,19 @@ test("report recovery validates completed pages and rejects altered coverage or 
     assert.throws(()=>preflightPortableResume(f.scan,"deep"),/resume_unrecognized_checkpoint/);
   } finally {cleanup(f.root);}
 });
+
+test("Standard discovery recovery accepts pending candidates without prematurely constructing report shards", () => {
+  const f = fixture();
+  try {
+    const artifacts = path.join(f.scan, "portable-codex-security-artifacts");
+    fs.renameSync(path.join(artifacts, "discovery-001"), path.join(artifacts, "discovery"));
+    fs.rmSync(path.join(artifacts, "dataflow"), { recursive: true });
+    const runtimePath = path.join(f.scan, "portable-codex-security-runtime.json");
+    const runtime = JSON.parse(fs.readFileSync(runtimePath, "utf8"));
+    fs.writeFileSync(runtimePath, JSON.stringify({ ...runtime, stage: "discovery" }));
+    const result = preflightPortableResume(f.scan, "standard");
+    assert.equal(result.completed, 1);
+    assert.equal(result.dossier.candidates.length, 1);
+    assert.equal(result.verifiedStages.report, 0);
+  } finally { cleanup(f.root); }
+});

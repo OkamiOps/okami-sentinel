@@ -1599,6 +1599,9 @@ test("Standard recovery replaces broad complementary retries with pinned source 
   try {
     const result = await runPortableCodexSecurity(config, dependencies({ createSession: async (input: { spec: AgentSessionSpec; toolSurface: readonly string[] }) => {
       const page = path.basename(input.spec.artifactRoot);
+      if (input.spec.artifactWriteByTurn !== undefined) {
+        assert.ok(input.spec.artifactWriteByTurn < input.spec.limits.maxModelTurns, "recovery finalization must fit the effective session limit");
+      }
       if (/stage "discovery"/.test(input.spec.instructions)) {
         calls.push(page);
         if (page === "discovery-review" || (page === "2" && !failedChild)) {

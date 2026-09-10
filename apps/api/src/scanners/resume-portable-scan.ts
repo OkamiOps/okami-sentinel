@@ -100,7 +100,7 @@ export function preflightPortableResume(scanDir: string, mode: "standard" | "dee
     if (resumable.indexOf(previous.stage!) > resumable.indexOf(stage.id) && !prerequisiteComplete) throw new Error("resume_missing_prerequisite_checkpoint");
   }
   verifiedStages.report = 0;
-  for (const shard of createPortableCodexSecurityReportShards(dossier)) {
+  for (const shard of prerequisiteComplete ? createPortableCodexSecurityReportShards(dossier) : []) {
     const artifact = read(`report-${String(shard.index + 1).padStart(2, "0")}`, "sentinel-findings.json");
     if (!artifact) continue;
     if (!prerequisiteComplete) throw new Error("resume_missing_prerequisite_checkpoint");
