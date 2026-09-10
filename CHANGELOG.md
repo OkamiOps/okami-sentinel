@@ -37,6 +37,7 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Added
 
+- Portable assessment now uses projected snapshot source directly without mandatory duplicate reads. Report pages receive validated-anchor source context and expose only precise reads and artifact writing; complementary graph hints avoid previously inspected related files.
 - Standard discovery recovery now uses bounded, projected source units instead of repeating the broad failed pass; carried candidates and accepted recovery units are preserved. Discovery artifact repair explains candidate identity conflicts.
 - Standard now receives bounded graph-based discovery priorities, with complementary suggestions excluding already inspected paths. Candidate assessment follows up to three extracted call links and distributes source windows among candidates; telemetry exposes traversal work and truncation. Static paths and control-name hints never count as vulnerability proof.
 - Deep uses persisted Graphify relationship-based partitions without dropping source files. Dataflow and validation receive bounded candidate-specific source windows, and workers can read explicit line ranges without claiming full-file coverage. Legacy partition plans remain compatible with recovery.

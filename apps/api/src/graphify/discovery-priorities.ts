@@ -53,7 +53,7 @@ export function buildDiscoveryPriorities(index: GraphIndex, inspected: readonly 
     const area = file.slice(0, file.lastIndexOf("/"));
     if ((selectedAreas.get(area) ?? 0) >= 3) continue;
     const item = { path: file, symbols: [...info.symbols].sort(compare).slice(0, 3),
-      relatedFiles: [...info.neighbors.entries()].sort((a, b) => b[1] - a[1] || compare(a[0], b[0])).slice(0, 3).map(([name]) => name),
+      relatedFiles: [...info.neighbors.entries()].filter(([name]) => !alreadyRead.has(name)).sort((a, b) => b[1] - a[1] || compare(a[0], b[0])).slice(0, 3).map(([name]) => name),
       crossFileRelations: [...info.neighbors.values()].reduce((a, b) => a + b, 0),
       reason: info.sensitive ? "security-related symbols and cross-file connections" : "cross-file connectivity and source location" };
     selected.push(item);

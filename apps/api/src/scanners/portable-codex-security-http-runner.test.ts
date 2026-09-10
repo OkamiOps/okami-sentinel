@@ -702,6 +702,7 @@ test("Portable stages receive the prepared graph once without treating graph que
       if (spec.resultArtifactValidationContext?.expectedArtifactPath === "sentinel-findings.json") {
         assert.equal(spec.graphIndex, undefined);
         assert.equal(toolSurface.includes("workspace.graph"), false);
+        assert.deepEqual(toolSurface, ["workspace.read", "results.write"]);
       } else {
         assert.equal(spec.graphIndex, index);
         assert.ok(toolSurface.includes("workspace.graph"));

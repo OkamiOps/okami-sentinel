@@ -103,3 +103,23 @@ strategy. All units must validate before the stage advances; exhausted recovery 
 still a failure, never a successful empty report. Authentication and cost failures
 remain terminal. Discovery repair instructions explicitly prohibit rewriting carried
 candidate IDs with changed content.
+
+## Avoiding duplicate navigation
+
+Actual snapshot windows supplied to assessment stages can be inspected directly:
+there is no mandatory tool round-trip when source is already projected. The model
+must independently assess that code, rather than trust candidate claims or graph
+relationships. Missing ranges and unresolved callers/controls still require source
+inspection; excerpts never imply complete-file coverage. Known unresolved call
+relationships are directed to an exact graph lookup before repository-wide search.
+
+Report pages receive bounded source windows selected from confirmed validation
+anchors when the graph can locate them. Reporting exposes only workspace.read and
+results.write: it synthesizes the validated dossier and reads precise missing ranges,
+without directory listing or discovery searches. If no source windows are available,
+a source read remains required. Existing candidate, coverage, severity and anchor
+validation remains authoritative. Complementary graph hints omit already inspected
+paths from both suggested files and related-file lists, without denying needed reads.
+
+These changes remove redundant workflow instructions; real provider runtime and
+finding-quality improvements still require measurement.

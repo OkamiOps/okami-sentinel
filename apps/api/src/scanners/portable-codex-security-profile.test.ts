@@ -56,7 +56,7 @@ test("assessment prompts independently validate only candidate-relevant entrypoi
     }],
   });
 
-  assert.match(prompt, /later assessment stage must still independently read/);
+  assert.match(prompt, /later assessment stage must independently evaluate actual source/);
   assert.match(prompt, /entrypoint or source, alleged control, sink/);
   assert.match(prompt, /Do not expand into unrelated discovery or an unrelated repository audit/);
   assert.match(prompt, /realistic attacker capability and prerequisites/);
@@ -83,11 +83,29 @@ test("report prompts remain limited to the validated dossier and Deep prompts re
   });
 
   assert.match(report, /Use the validated dossier as the report scope/);
-  assert.match(report, /Verify only the relevant candidate anchors/);
-  assert.match(report, /do not begin a new repository audit or discover new candidates/);
+  assert.match(report, /Use workspace_read only for an exact anchor range/);
+  assert.match(report, /Do not list directories, search for new evidence, repeat discovery, or redo the validation audit/);
   assert.match(deepDiscovery, /mandatory server-owned partition of the immutable auditable universe/);
   assert.match(deepDiscovery, /Analyze every entry before results.write/);
   assert.match(deepDiscovery, /Do not call workspace_list, workspace_read, or workspace_search to rediscover or re-read that page/);
   assert.match(deepDiscovery, /inspect a relevant caller or control outside the page/);
   assert.match(deepDiscovery, /does not replace analysis of every assigned file/);
+});
+
+test("projected source permits direct assessment without redundant tool reads while retaining evidence requirements", () => {
+  for (const id of ["dataflow", "validation", "report"] as const) {
+    const prompt = buildPortableCodexSecurityStagePrompt(stage(id), {
+      snapshotRoot: "/snapshot", artifactRoot: "/artifacts", sourceExcerptsProjected: true,
+    });
+    assert.match(prompt, /ACTUAL SOURCE AVAILABLE/);
+    assert.match(prompt, /No preliminary workspace call is required/);
+    assert.doesNotMatch(prompt, /Before .*call and consume at least one/);
+    assert.match(prompt, /partial excerpts never establish full-file coverage/);
+    if (id === "report") assert.match(prompt, /Do not list directories, search for new evidence/);
+  }
+  const withoutSource = buildPortableCodexSecurityStagePrompt(stage("validation"), {
+    snapshotRoot: "/snapshot", artifactRoot: "/artifacts",
+  });
+  assert.match(withoutSource, /call and consume at least one/);
+  assert.doesNotMatch(withoutSource, /ACTUAL SOURCE AVAILABLE/);
 });

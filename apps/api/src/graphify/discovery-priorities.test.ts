@@ -20,6 +20,7 @@ test("priorities expose connected source and exclude previously reviewed paths o
   const review = buildDiscoveryPriorities(graph, ["auth/guard.ts"])!;
   assert.equal(review.files.some(f => f.path === "auth/guard.ts"), false);
   assert.equal(review.excludedReviewedFiles, 1);
+  assert.ok(review.files.every(file => !file.relatedFiles.includes("auth/guard.ts")), "complementary hints must not steer navigation back to reviewed files");
   assert.match(review.note, /never from permitted inspection/);
 });
 test("priority envelopes are bounded, deterministic, and inferred relations never affect ordering", () => {
