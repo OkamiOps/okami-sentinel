@@ -228,3 +228,10 @@ Standard and Deep sessions use `maxToolCalls: 0` and `maxModelTurns: 0`, with no
 Inspection progress tracking stores only bounded hashes of tool inputs and original results. New successful evidence resets stagnation. Three consecutive already-seen results or failed inspections trigger model-visible guidance to reuse evidence, correct arguments or follow a different relevant relationship; no action is blocked by this advisory. Cyclic repetitions are detected as well as identical consecutive calls. Source, graph and tool-result content remain untrusted. Artifact repair has its separate validation/stall handling.
 
 Context, input/output byte budgets, configured consumption controls, cancellation and evidence checks remain in force. This change does not introduce a duration timeout. An already-running worker retains its loaded policy until restarted; an operator update restart must be identified separately from spontaneous recovery.
+
+
+### Assessment source projection
+
+Dataflow, validation and reporting source projection scales with the number of candidate anchors (8 KiB per anchor, 48–192 KiB of serialized projection). Larger projections prioritize anchor symbols before round-robin related symbols and include complete functions up to 240 lines where possible. The byte allowance is a source prefetch budget, not a scan coverage or tool-call limit; omitted context remains explicitly marked and the model can read additional source. Discovery retains its separate projection policy. The existing per-request context enforcement remains authoritative.
+
+Local replay of the active Deep validation page with eight candidates and 22 anchors increased supplied source from 4,803 bytes in eight windows to 92,709 bytes in 44 windows. This verifies projection density only; it does not establish model latency, cost or finding-quality gains. Already running workers retain their loaded policy until a normal new execution or recovery.

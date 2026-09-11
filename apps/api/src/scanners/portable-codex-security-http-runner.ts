@@ -570,7 +570,8 @@ export async function runPortableCodexSecurity(
           ? await buildCandidateGraphContext(graphIndex, stage.id === "report"
               ? stageDossier.assessments.filter(a => a.stage === "validation" && a.status === "confirmed").flatMap(a => a.evidence)
               : stageDossier.candidates.flatMap(c => c.anchors),
-            await createWorkspaceToolHost({ snapshotRoot: snapshot.snapshotRoot, artifactRoot }), 16_384)
+            await createWorkspaceToolHost({ snapshotRoot: snapshot.snapshotRoot, artifactRoot }),
+            Math.min(196_608, Math.max(49_152, stageDossier.candidates.reduce((total, candidate) => total + candidate.anchors.length, 0) * 8192)))
           : null);
         if (graphContext) log(JSON.stringify({ type: "graph_context", stage: stage.id, page: path.basename(artifactRoot),
           windows: graphContext.windows.length, visitedSymbols: graphContext.visitedSymbols, inspectedEdges: graphContext.inspectedEdges,

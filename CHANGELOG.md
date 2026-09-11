@@ -12,6 +12,8 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Fixed
 
+- Candidate assessment source projection now scales with candidate anchors instead of the fixed 16 KiB/eight-window sample. Larger pages prioritize anchor symbols, include more related source and expand excerpts to whole small functions while preserving context enforcement and unrestricted productive tool use.
+
 - Resuming after an execution-policy update reuses validated recovery child checkpoints even when the new policy has a fresh retry journal, avoiding a repeated full parent analysis.
 
 - Standard and Deep no longer terminate or force result writing at a cumulative number of tool calls or model turns. Repeated inspection results and failed inspection streaks receive actionable model guidance; new evidence resets that detection. Context, byte/usage, cancellation and artifact validation remain enforced.

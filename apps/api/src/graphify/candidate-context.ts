@@ -44,7 +44,13 @@ export async function buildCandidateGraphContext(
   maxOutputBytes = 16_384,
 ): Promise<CandidateGraphContext | null> {
   if (!Number.isSafeInteger(maxOutputBytes) || maxOutputBytes < 0) throw new Error("graph_context_budget_invalid");
-  const budget = Math.min(maxOutputBytes, 32_768);
+  const budget = Math.min(maxOutputBytes, 196_608);
+  // Large assessment pages project source in proportion to their anchors.
+  // Small discovery projections retain their existing footprint.
+  const expanded = budget > 32_768;
+  const anchorLimit = expanded ? Math.max(32, anchors.length) : 32;
+  const windowLimit = expanded ? Math.max(8, Math.floor(budget / 4096)) : 8;
+  const readLimit = expanded ? windowLimit * 2 : 12;
   if (index.nodes.length > 100_000 || index.edges.length > 300_000) throw new Error("graph_context_index_limit");
   const byId = new Map(index.nodes.map(node => [node.id, node]));
   const fileLines = new Map<string, number[]>();
@@ -62,14 +68,14 @@ export async function buildCandidateGraphContext(
     if (!span || /-/.test(node.location)) return span;
     const next = nextLines.get(node.file)?.get(span.startLine);
     // Point declarations have no proven extent. Infer only navigation ownership.
-    const lastAnchor = Math.max(span.startLine, ...anchors.slice(0, 32).filter(anchor => anchor.path === node.file &&
+    const lastAnchor = Math.max(span.startLine, ...anchors.slice(0, anchorLimit).filter(anchor => anchor.path === node.file &&
       Number.isSafeInteger(anchor.endLine)).map(anchor => anchor.endLine));
     return { ...span, endLine: next ? next - 1 : lastAnchor };
   };
   // Pick the smallest enclosing symbol, not every unrelated symbol in the anchor file.
   const seeds = new Map<string, GraphNode>();
   const seedAnchors = new Map<string, CandidateContextAnchor>();
-  for (const anchor of anchors.slice(0, 32)) {
+  for (const anchor of anchors.slice(0, anchorLimit)) {
     if (!Number.isSafeInteger(anchor.startLine) || !Number.isSafeInteger(anchor.endLine) || anchor.startLine < 1 || anchor.endLine < anchor.startLine) continue;
     const matches = index.nodes.filter(node => {
       const span = spanFor(node);
@@ -152,25 +158,28 @@ export async function buildCandidateGraphContext(
   const represented = new Set(preferredNeighbors.map(choice => choice.seedId));
   const fairAnchors = [...anchorChoices].sort((a, b) => Number(represented.has(a.seedId)) - Number(represented.has(b.seedId)) || compare(a.node.id, b.node.id));
   const anchorSlots = Math.min(fairAnchors.length, 8 - neighborSlots);
-  const unique = anchorChoices.length === 1
+  const unique = expanded
+    ? [...anchorChoices, ...neighbors]
+    : anchorChoices.length === 1
     ? [anchorChoices[0]!, ...neighbors]
     : [...preferredNeighbors, ...fairAnchors.slice(0, anchorSlots), ...neighbors.slice(neighborSlots), ...fairAnchors.slice(anchorSlots)];
   const windows: CandidateSourceWindow[] = [];
   const output = (): CandidateGraphContext => ({ windows: [...windows], eligibleSymbols: unique.length,
-    omittedSymbols: unique.length - windows.length, truncated: anchors.length > 32 || traversalTruncated || windows.length < unique.length, traversalTruncated,
-    anchorsTruncated: anchors.length > 32,
+    omittedSymbols: unique.length - windows.length, truncated: anchors.length > anchorLimit || traversalTruncated || windows.length < unique.length, traversalTruncated,
+    anchorsTruncated: anchors.length > anchorLimit,
     visitedSymbols: visited.size, inspectedEdges,
     note: "Source excerpts selected through EXTRACTED syntax relationships. Verify attacker reachability and controls; these are not proven vulnerabilities or complete-file review. Point-location boundaries use the next symbol as a heuristic, not verified function extents. Paths describe graph traversal, including reverse caller steps, not executable attacker flows. Control-name priority is a search heuristic only. Missing relations do not establish safety." });
   if (Buffer.byteLength(JSON.stringify(output())) > budget) return null;
   // A fixed read cap prevents pathological graphs from turning omitted hints into unbounded I/O.
-  for (const choice of unique.slice(0, 12)) {
-    if (windows.length >= 8) break;
+  for (const choice of unique.slice(0, readLimit)) {
+    if (windows.length >= windowLimit) break;
     const span = spanFor(choice.node)!;
     const anchor = seedAnchors.get(choice.node.id);
-    const startLine = anchor ? Math.max(span.startLine, anchor.startLine - 8) : span.startLine;
-    const endLine = Math.min(span.endLine, startLine + 79);
+    const completeSymbol = expanded && span.endLine - span.startLine < 240;
+    const startLine = completeSymbol ? span.startLine : anchor ? Math.max(span.startLine, anchor.startLine - 8) : span.startLine;
+    const endLine = Math.min(span.endLine, startLine + (expanded ? 239 : 79));
     try {
-      const result = await host.call("workspace.read", { path: span.path, startLine, endLine, maxBytes: 4096 }, { maxOutputBytes: 8192 });
+      const result = await host.call("workspace.read", { path: span.path, startLine, endLine, maxBytes: expanded ? 12_288 : 4096 }, { maxOutputBytes: expanded ? 24_576 : 8192 });
       const source = JSON.parse(result.content) as { content: string };
       windows.push({ path: span.path, startLine, endLine, content: source.content,
         boundary: /-/.test(choice.node.location) ? "declared" : "next-symbol-inferred",

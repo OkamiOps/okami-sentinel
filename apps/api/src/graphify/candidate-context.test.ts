@@ -186,3 +186,24 @@ test("a huge first neighborhood cannot consume traversal budget reserved for lat
   assert.ok(context!.visitedSymbols <= 1024);
   assert.ok(context!.inspectedEdges <= 4096);
 });
+
+test("assessment context supplies every candidate anchor and related controls beyond eight windows", async () => {
+  const graph: GraphIndex = { nodes: [], edges: [] };
+  const anchors = [];
+  for (let i = 0; i < 16; i++) {
+    anchors.push({ path: `route${i}.ts`, startLine: 10, endLine: 15 });
+    graph.nodes.push({ id: `r${i}`, label: `route${i}`, file: `route${i}.ts`, location: "1-100" },
+      { id: `c${i}`, label: `authorize${i}`, file: `control${i}.ts`, location: "1-100" });
+    graph.edges.push({ source: `r${i}`, target: `c${i}`, relation: "calls", confidence: "EXTRACTED" });
+  }
+  const host = { minimumOutputBytes: () => 0, async call() { return { content: JSON.stringify({ content: "verified source\n".repeat(80) }) }; } };
+  const old = await buildCandidateGraphContext(graph, anchors, host, 16_384);
+  const result = await buildCandidateGraphContext(graph, anchors, host, 196_608);
+  assert.ok(old!.windows.length <= 8);
+  assert.equal(result!.windows.length, 32);
+  assert.equal(result!.windows.filter(w => w.selection === "anchor").length, 16);
+  assert.equal(result!.windows.filter(w => w.selection !== "anchor").length, 16);
+  assert.ok(result!.windows.every(w => w.startLine === 1 && w.endLine === 100));
+  assert.equal(result!.truncated, false);
+  assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 196_608);
+});
