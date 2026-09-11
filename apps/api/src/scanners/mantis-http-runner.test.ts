@@ -231,7 +231,7 @@ test("Mantis HTTP stages do not impose cumulative action ceilings", () => {
   assert.equal(MANTIS_HTTP_STAGE_LIMITS.maxToolCalls, 0);
   assert.equal(MANTIS_HTTP_STAGE_LIMITS.maxInputBytes, 64 * 1024 * 1024);
   assert.equal(MANTIS_HTTP_STAGE_LIMITS.maxOutputBytes, 1 * 1024 * 1024);
-  assert.ok(MANTIS_HTTP_STAGE_LIMITS.timeoutMs > 0);
+  assert.equal(MANTIS_HTTP_STAGE_LIMITS.timeoutMs, 0);
 });
 
 test("Mantis HTTP runner executes every bounded stage with chained state and never serializes its vault secret", async () => {

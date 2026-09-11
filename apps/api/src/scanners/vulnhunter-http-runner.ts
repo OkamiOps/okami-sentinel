@@ -140,12 +140,14 @@ export interface VulnHunterHttpRunner {
 /**
  * One HTTP session covers the six-stage review. Cumulative tool/turn ceilings
  * would abort productive inspection; the shared runner issues loop guidance
- * instead. Byte, context, cancellation and wall-clock limits stay in force.
+ * instead. Byte, context and cancellation stay in force. `timeoutMs: 0` matches
+ * Portable: a real review is not a 90-minute wall-clock job.
  */
 export const VULNHUNTER_HTTP_SESSION_LIMITS: Readonly<AgentSessionLimits> = Object.freeze({
   ...DEFAULT_AGENT_LIMITS,
   maxModelTurns: 0,
   maxToolCalls: 0,
+  timeoutMs: 0,
 });
 
 /**
@@ -185,8 +187,7 @@ export function createVulnHunterHttpRunner(
           preflight,
         );
         if (preflight.signal.aborted || input.signal.aborted) throw preflight.stopError();
-        const remainingTimeoutMs = limits.timeoutMs - (Date.now() - startedAt);
-        if (remainingTimeoutMs <= 0) throw new AgentSessionError("agent_time_limit");
+        const remainingTimeoutMs = remainingDeadlineMs(limits.timeoutMs, startedAt);
         preflight.dispose();
         const handoffRoot = createVulnHunterHttpHandoffRoot(input.resultsDir);
 
@@ -331,6 +332,13 @@ interface PreflightGuard {
   dispose(): void;
 }
 
+function remainingDeadlineMs(timeoutMs: number, startedAt: number): number {
+  if (timeoutMs === 0) return 0;
+  const remaining = timeoutMs - (Date.now() - startedAt);
+  if (remaining <= 0) throw new AgentSessionError("agent_time_limit");
+  return remaining;
+}
+
 function createPreflightGuard(signal: AbortSignal, timeoutMs: number): PreflightGuard {
   const controller = new AbortController();
   let timedOut = false;
@@ -338,18 +346,20 @@ function createPreflightGuard(signal: AbortSignal, timeoutMs: number): Preflight
   const abort = () => controller.abort();
   if (signal.aborted) abort();
   else signal.addEventListener("abort", abort, { once: true });
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, timeoutMs);
-  timeout.unref();
+  const timeout = timeoutMs === 0
+    ? undefined
+    : setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+  timeout?.unref();
   return {
     signal: controller.signal,
     stopError: () => new AgentSessionError(timedOut ? "agent_time_limit" : "agent_cancelled"),
     dispose() {
       if (disposed) return;
       disposed = true;
-      clearTimeout(timeout);
+      if (timeout !== undefined) clearTimeout(timeout);
       signal.removeEventListener("abort", abort);
     },
   };

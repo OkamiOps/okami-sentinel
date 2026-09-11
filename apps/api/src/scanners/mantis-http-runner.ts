@@ -784,7 +784,8 @@ function validEvidenceLocator(value: unknown, snapshotRoot: string): value is st
 /**
  * Each Mantis HTTP stage is its own session. Cumulative tool/turn ceilings
  * would abort productive inspection; the shared runner issues loop guidance
- * instead. Byte, context, cancellation and wall-clock limits stay in force.
+ * instead. Byte, context and cancellation stay in force. `timeoutMs: 0` matches
+ * Portable: a five-minute stage wall clock cannot complete a real review.
  */
 export const MANTIS_HTTP_STAGE_LIMITS: Readonly<AgentSessionLimits> = Object.freeze({
   ...DEFAULT_AGENT_LIMITS,
@@ -794,7 +795,7 @@ export const MANTIS_HTTP_STAGE_LIMITS: Readonly<AgentSessionLimits> = Object.fre
   // long before the provider context window is approached.
   maxInputBytes: 64 * 1024 * 1024,
   maxOutputBytes: 1 * 1024 * 1024,
-  timeoutMs: 5 * 60_000,
+  timeoutMs: 0,
 });
 
 function stageLimits(overrides: Partial<AgentSessionLimits> = {}): AgentSessionLimits {
@@ -883,9 +884,7 @@ async function readBoundedXaiOAuthCredentials(
       preflight,
     );
     if (preflight.signal.aborted || signal.aborted) throw preflight.stopError();
-    const remainingTimeoutMs = timeoutMs - (Date.now() - startedAt);
-    if (remainingTimeoutMs <= 0) throw new AgentSessionError("agent_time_limit");
-    setRemaining(remainingTimeoutMs);
+    setRemaining(remainingDeadlineMs(timeoutMs, startedAt));
     return credentials;
   } finally {
     preflight.dispose();
@@ -898,6 +897,13 @@ interface PreflightGuard {
   dispose(): void;
 }
 
+function remainingDeadlineMs(timeoutMs: number, startedAt: number): number {
+  if (timeoutMs === 0) return 0;
+  const remaining = timeoutMs - (Date.now() - startedAt);
+  if (remaining <= 0) throw new AgentSessionError("agent_time_limit");
+  return remaining;
+}
+
 function createPreflightGuard(signal: AbortSignal, timeoutMs: number): PreflightGuard {
   const controller = new AbortController();
   let timedOut = false;
@@ -905,18 +911,20 @@ function createPreflightGuard(signal: AbortSignal, timeoutMs: number): Preflight
   const abort = () => controller.abort();
   if (signal.aborted) abort();
   else signal.addEventListener("abort", abort, { once: true });
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, timeoutMs);
-  timeout.unref();
+  const timeout = timeoutMs === 0
+    ? undefined
+    : setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+  timeout?.unref();
   return {
     signal: controller.signal,
     stopError: () => new AgentSessionError(timedOut ? "agent_time_limit" : "agent_cancelled"),
     dispose() {
       if (disposed) return;
       disposed = true;
-      clearTimeout(timeout);
+      if (timeout !== undefined) clearTimeout(timeout);
       signal.removeEventListener("abort", abort);
     },
   };

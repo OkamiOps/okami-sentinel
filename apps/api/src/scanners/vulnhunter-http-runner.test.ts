@@ -1022,7 +1022,7 @@ test("VulnHunter HTTP sessions do not impose cumulative action ceilings", () => 
   assert.equal(VULNHUNTER_HTTP_SESSION_LIMITS.maxToolCalls, 0);
   assert.ok(VULNHUNTER_HTTP_SESSION_LIMITS.maxInputBytes > 0);
   assert.ok(VULNHUNTER_HTTP_SESSION_LIMITS.maxOutputBytes > 0);
-  assert.ok(VULNHUNTER_HTTP_SESSION_LIMITS.timeoutMs > 0);
+  assert.equal(VULNHUNTER_HTTP_SESSION_LIMITS.timeoutMs, 0);
 });
 
 test("VulnHunter HTTP accepts one universal findings report and keeps legacy normalization", async () => {
