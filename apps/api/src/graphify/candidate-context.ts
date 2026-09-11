@@ -24,6 +24,7 @@ export interface CandidateGraphContext {
   anchorsTruncated: boolean;
   visitedSymbols: number;
   inspectedEdges: number;
+  pending?: CandidateContextAnchor[];
   note: string;
 }
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
@@ -42,15 +43,16 @@ export async function buildCandidateGraphContext(
   anchors: readonly CandidateContextAnchor[],
   host: WorkspaceToolHost,
   maxOutputBytes = 16_384,
+  adaptive = false,
 ): Promise<CandidateGraphContext | null> {
   if (!Number.isSafeInteger(maxOutputBytes) || maxOutputBytes < 0) throw new Error("graph_context_budget_invalid");
-  const budget = Math.min(maxOutputBytes, 196_608);
+  const budget = adaptive ? maxOutputBytes : Math.min(maxOutputBytes, 196_608);
   // Large assessment pages project source in proportion to their anchors.
   // Small discovery projections retain their existing footprint.
-  const expanded = budget > 32_768;
+  const expanded = adaptive || budget > 32_768;
   const anchorLimit = expanded ? Math.max(32, anchors.length) : 32;
-  const windowLimit = expanded ? Math.max(8, Math.floor(budget / 4096)) : 8;
-  const readLimit = expanded ? windowLimit * 2 : 12;
+  const windowLimit = adaptive ? Infinity : expanded ? Math.max(8, Math.floor(budget / 4096)) : 8;
+  const readLimit = adaptive ? Infinity : expanded ? windowLimit * 2 : 12;
   if (index.nodes.length > 100_000 || index.edges.length > 300_000) throw new Error("graph_context_index_limit");
   const byId = new Map(index.nodes.map(node => [node.id, node]));
   const fileLines = new Map<string, number[]>();
@@ -164,10 +166,12 @@ export async function buildCandidateGraphContext(
     ? [anchorChoices[0]!, ...neighbors]
     : [...preferredNeighbors, ...fairAnchors.slice(0, anchorSlots), ...neighbors.slice(neighborSlots), ...fairAnchors.slice(anchorSlots)];
   const windows: CandidateSourceWindow[] = [];
+  const pending = new Map(unique.map(choice => [choice.node.id, spanFor(choice.node)!]));
   const output = (): CandidateGraphContext => ({ windows: [...windows], eligibleSymbols: unique.length,
     omittedSymbols: unique.length - windows.length, truncated: anchors.length > anchorLimit || traversalTruncated || windows.length < unique.length, traversalTruncated,
     anchorsTruncated: anchors.length > anchorLimit,
     visitedSymbols: visited.size, inspectedEdges,
+    ...(adaptive ? { pending: [...pending.values()] } : {}),
     note: "Source excerpts selected through EXTRACTED syntax relationships. Verify attacker reachability and controls; these are not proven vulnerabilities or complete-file review. Point-location boundaries use the next symbol as a heuristic, not verified function extents. Paths describe graph traversal, including reverse caller steps, not executable attacker flows. Control-name priority is a search heuristic only. Missing relations do not establish safety." });
   if (Buffer.byteLength(JSON.stringify(output())) > budget) return null;
   // A fixed read cap prevents pathological graphs from turning omitted hints into unbounded I/O.
@@ -175,17 +179,28 @@ export async function buildCandidateGraphContext(
     if (windows.length >= windowLimit) break;
     const span = spanFor(choice.node)!;
     const anchor = seedAnchors.get(choice.node.id);
-    const completeSymbol = expanded && span.endLine - span.startLine < 240;
+    const completeSymbol = adaptive || (expanded && span.endLine - span.startLine < 240);
     const startLine = completeSymbol ? span.startLine : anchor ? Math.max(span.startLine, anchor.startLine - 8) : span.startLine;
-    const endLine = Math.min(span.endLine, startLine + (expanded ? 239 : 79));
+    const endLine = adaptive ? span.endLine : Math.min(span.endLine, startLine + (expanded ? 239 : 79));
     try {
-      const result = await host.call("workspace.read", { path: span.path, startLine, endLine, maxBytes: expanded ? 12_288 : 4096 }, { maxOutputBytes: expanded ? 24_576 : 8192 });
-      const source = JSON.parse(result.content) as { content: string };
+      const chunks: string[] = [];
+      // Host range limits are transport constraints; continue through the full symbol.
+      for (let line = startLine; line <= endLine; line += adaptive ? 399 : endLine - startLine + 1) {
+        const last = adaptive ? Math.min(endLine, line + 398) : endLine;
+        const maxBytes = adaptive ? 65_536 : expanded ? 12_288 : 4096;
+        const result = await host.call("workspace.read", { path: span.path, startLine: line, endLine: last, maxBytes }, { maxOutputBytes: adaptive ? 131_072 : expanded ? 24_576 : 8192 });
+        const source = JSON.parse(result.content) as { content: string };
+        if (typeof source.content !== "string") throw new Error("source_unavailable");
+        chunks.push(source.content);
+        if (adaptive && Buffer.byteLength(JSON.stringify(chunks)) > budget) throw new Error("source_exceeds_projection");
+      }
+      const source = { content: chunks.join("\n") };
       windows.push({ path: span.path, startLine, endLine, content: source.content,
         boundary: /-/.test(choice.node.location) ? "declared" : "next-symbol-inferred",
         navigationPath: choice.navigationPath, selection: choice.selection,
         symbol: choice.node.label, relation: choice.relation, direction: choice.direction });
-      if (Buffer.byteLength(JSON.stringify(output())) > budget) windows.pop();
+      pending.delete(choice.node.id);
+      if (Buffer.byteLength(JSON.stringify(output())) > budget) { windows.pop(); pending.set(choice.node.id, span); }
     } catch {
       // Invalid locations, changed files and denied paths remain explicitly omitted.
     }

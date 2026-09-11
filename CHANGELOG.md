@@ -12,6 +12,8 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Fixed
 
+- Assessment Graphify prefetch now allocates from the complete stage prompt and model context window, reserving completion, protocol and continuation capacity. Adaptive projections have no fixed window count or function-length cutoff; omitted ranges are explicitly supplied for follow-up inspection. Token budgeting remains estimated and the serialized-wire context guard remains authoritative.
+
 - Candidate assessment source projection now scales with candidate anchors instead of the fixed 16 KiB/eight-window sample. Larger pages prioritize anchor symbols, include more related source and expand excerpts to whole small functions while preserving context enforcement and unrestricted productive tool use.
 
 - Resuming after an execution-policy update reuses validated recovery child checkpoints even when the new policy has a fresh retry journal, avoiding a repeated full parent analysis.

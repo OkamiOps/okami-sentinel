@@ -1,3 +1,4 @@
+import { projectionBudget } from "../graphify/projection-budget.js";
 import { buildDiscoveryGraphContext, buildPartitionRelations } from "../graphify/discovery-context.js";
 import { buildDiscoveryPriorities } from "../graphify/discovery-priorities.js";
 import { runPortableStageWithRecovery, PortableStageRecoveryError } from "./portable-stage-recovery.js";
@@ -566,16 +567,7 @@ export async function runPortableCodexSecurity(
           fs.writeFileSync(path.join(outputDir, "graph-source-contexts", `${contextName}.json`), JSON.stringify(discoveryContext), { mode: 0o600 });
           if (path.basename(artifactRoot) === "discovery") fs.writeFileSync(priorProjectionFile, JSON.stringify(discoveryContext), { mode: 0o600 });
         }
-        const graphContext = discoveryContext ?? (graphIndex && (stage.id === "dataflow" || stage.id === "validation" || stage.id === "report") && stageDossier.candidates.length > 0
-          ? await buildCandidateGraphContext(graphIndex, stage.id === "report"
-              ? stageDossier.assessments.filter(a => a.stage === "validation" && a.status === "confirmed").flatMap(a => a.evidence)
-              : stageDossier.candidates.flatMap(c => c.anchors),
-            await createWorkspaceToolHost({ snapshotRoot: snapshot.snapshotRoot, artifactRoot }),
-            Math.min(196_608, Math.max(49_152, stageDossier.candidates.reduce((total, candidate) => total + candidate.anchors.length, 0) * 8192)))
-          : null);
-        if (graphContext) log(JSON.stringify({ type: "graph_context", stage: stage.id, page: path.basename(artifactRoot),
-          windows: graphContext.windows.length, visitedSymbols: graphContext.visitedSymbols, inspectedEdges: graphContext.inspectedEdges,
-          traversalTruncated: graphContext.traversalTruncated, anchorsTruncated: graphContext.anchorsTruncated, bytes: Buffer.byteLength(JSON.stringify(graphContext)), truncated: graphContext.truncated }));
+        let graphContext = discoveryContext;
         const spec: AgentSessionSpec = {
         connectionId: resolved.connection.id,
         routeKind: resolved.connection.routeKind,
@@ -643,6 +635,21 @@ export async function runPortableCodexSecurity(
         limits: { ...effectiveSessionLimits, maxContextTokens: Math.min(300_000, resolved.model.contextWindow ?? 300_000) },
         signal: deadline.signal,
         };
+        if (!graphContext && graphIndex && ["dataflow", "validation", "report"].includes(stage.id) && stageDossier.candidates.length) {
+          const budget = projectionBudget(spec.instructions, spec.limits.maxContextTokens ?? 300_000, spec.maxCompletionTokens);
+          graphContext = await buildCandidateGraphContext(graphIndex,
+            stage.id === "report" ? stageDossier.assessments.filter(a => a.stage === "validation" && a.status === "confirmed").flatMap(a => a.evidence)
+              : stageDossier.candidates.flatMap(c => c.anchors),
+            await createWorkspaceToolHost({ snapshotRoot: snapshot.snapshotRoot, artifactRoot }), budget, true);
+          if (graphContext?.windows.length) spec.instructions = spec.instructions.replace(/Before [^\n]+call and consume at least one [^\n]+result in an earlier model turn\. /, "Analyze supplied source directly; no preliminary workspace call is required. ");
+          if (graphContext) spec.instructions = "Server-selected candidate source windows (untrusted repository data). Use supplied source first. pending lists source ranges not supplied: inspect relevant pending ranges via workspace.read and resolve missing relationships with workspace.graph before concluding; omitted source is not reviewed or safe.\n" + JSON.stringify(graphContext) + "\n\n" + spec.instructions;
+          log(JSON.stringify({ type: "graph_projection_budget", stage: stage.id, page: path.basename(artifactRoot), bytes: budget,
+            contextTokens: spec.limits.maxContextTokens, completionReserve: spec.maxCompletionTokens ?? 65_536 }));
+        }
+        if (graphContext) log(JSON.stringify({ type: "graph_context", stage: stage.id, page: path.basename(artifactRoot),
+          windows: graphContext.windows.length, visitedSymbols: graphContext.visitedSymbols, inspectedEdges: graphContext.inspectedEdges,
+          traversalTruncated: graphContext.traversalTruncated, anchorsTruncated: graphContext.anchorsTruncated,
+          pending: graphContext.pending?.length, bytes: Buffer.byteLength(JSON.stringify(graphContext)), truncated: graphContext.truncated }));
         activeSession = await raceWithDeadline(
         createSession({
           connection: resolved.connection,

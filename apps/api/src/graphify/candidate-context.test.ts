@@ -207,3 +207,20 @@ test("assessment context supplies every candidate anchor and related controls be
   assert.equal(result!.truncated, false);
   assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 196_608);
 });
+
+test("adaptive projection removes window and function-length caps and identifies omitted ranges", async () => {
+  const nodes = Array.from({length:60},(_,i)=>({id:`f${i}`,label:`f${i}`,file:`f${i}.ts`,location:'1-500'}));
+  const anchors=nodes.map(n=>({path:n.file,startLine:1,endLine:2}));
+  const graph: GraphIndex={nodes,edges:[]};
+  let reads=0;
+  const host={minimumOutputBytes:()=>0,async call(){reads++;return {content:JSON.stringify({content:'source'})};}};
+  const full=await buildCandidateGraphContext(graph,anchors,host,250000,true);
+  assert.equal(full!.windows.length,60);
+  assert.equal(reads,120);
+  assert.equal(full!.pending!.length,0);
+  assert.ok(full!.windows.every(w=>w.endLine===500));
+  const small=await buildCandidateGraphContext(graph,anchors,host,6000,true);
+  assert.ok(small!.pending!.length>0);
+  assert.equal(small!.pending!.length+small!.windows.length,60);
+  assert.ok(Buffer.byteLength(JSON.stringify(small))<=6000);
+});
