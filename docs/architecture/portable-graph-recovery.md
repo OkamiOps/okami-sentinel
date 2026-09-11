@@ -303,8 +303,10 @@ are aggregated into directed file pairs. All regular snapshot paths, including
 isolated files, remain searchable; their count can exceed the auditable-source
 count in analysis telemetry. Source contents and credentials are not returned.
 
-The graph focuses on one file and paginates its direct neighbors for readability;
-this display pagination does not alter scan coverage or model budgets. Incoming
-and outgoing counts aggregate extracted relationships. Missing, incompatible or
+The canvas lays out the full file graph using force simulation. Folder colors,
+zoom, pan, node dragging and optional neighbor focus aid navigation without
+changing source membership or model budgets. A searchable HTML file list provides
+a keyboard-accessible selection path alongside the canvas. Incoming and outgoing
+counts aggregate extracted relationships. Missing, incompatible or
 unsafe artifacts return an explicit unavailable state. Deleting the graph cache
 can make historical visualization unavailable; no silent reconstruction occurs.

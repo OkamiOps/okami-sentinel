@@ -19,6 +19,9 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Fixed
 
+- Give scan metrics and file graph panels distinct React identities, preventing repeated Analysis progress sections during refreshes or tab changes.
+- Replace the paginated radial file diagram with a complete force-directed graph: folder colors, zoom, pan, node dragging, search highlighting and optional connection focus.
+
 - Assessment Graphify prefetch now allocates from the complete stage prompt and model context window, reserving completion, protocol and continuation capacity. Adaptive projections have no fixed window count or function-length cutoff; omitted ranges are explicitly supplied for follow-up inspection. Token budgeting remains estimated and the serialized-wire context guard remains authoritative.
 
 - Resuming after an execution-policy update reuses validated recovery child checkpoints even when the new policy has a fresh retry journal, avoiding a repeated full parent analysis.

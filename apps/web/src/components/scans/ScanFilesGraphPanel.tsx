@@ -1,3 +1,5 @@
+import { fileGroup, graphColors } from "../../lib/file-graph";
+import { FileGraphCanvas } from "./FileGraphCanvas";
 import { useEffect, useMemo, useState } from "react";
 import type { ScanRun } from "@csb/shared";
 import { api, type ScanFilesGraph } from "../../api";
@@ -6,29 +8,29 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { filesCopy } from "./files-copy";
 
-const PAGE_SIZE = 12;
+
 export function ScanFilesGraphPanel({ scan }: { scan: ScanRun }) {
   const { locale } = useI18n(); const c = filesCopy[locale];
   const [data, setData] = useState<ScanFilesGraph | null>(null);
   const [error, setError] = useState(false); const [retry, setRetry] = useState(0);
-  const [query, setQuery] = useState(""); const [selected, setSelected] = useState(""); const [page, setPage] = useState(0);
+  const [query, setQuery] = useState(""); const [selected, setSelected] = useState("");
   useEffect(() => {
     let disposed = false;
-    const load = async () => { try { const result = await api.getFilesGraph(scan.id); if (!disposed) { setData(result); setError(false); } } catch { if (!disposed) setError(true); } };
+    const load = async () => { try { const result = await api.getFilesGraph(scan.id); if (!disposed) { setData(previous => JSON.stringify(previous) === JSON.stringify(result) ? previous : result); setError(false); } } catch { if (!disposed) setError(true); } };
     void load(); const timer = scan.status === "running" ? window.setInterval(() => void load(), 15000) : undefined;
     return () => { disposed = true; window.clearInterval(timer); };
   }, [scan.id, scan.status, retry]);
   const degree = useMemo(() => { const map = new Map<string, number>(); for (const e of data?.edges ?? []) { map.set(e.source, (map.get(e.source) ?? 0) + 1); map.set(e.target, (map.get(e.target) ?? 0) + 1); } return map; }, [data]);
   const files = useMemo(() => [...(data?.files ?? [])].sort((a,b) => (degree.get(b.path) ?? 0) - (degree.get(a.path) ?? 0) || a.path.localeCompare(b.path)), [data, degree]);
-  const path = selected || files[0]?.path || "";
+  const path = selected;
   const neighbors = useMemo(() => {
     const map = new Map<string, { path: string; incoming: number; outgoing: number }>();
     for (const e of data?.edges ?? []) { const target = e.source === path ? e.target : e.target === path ? e.source : null; if (!target) continue; const n = map.get(target) ?? { path: target, incoming: 0, outgoing: 0 }; if (e.source === path) n.outgoing += e.count; else n.incoming += e.count; map.set(target,n); }
     return [...map.values()].sort((a,b) => (b.incoming+b.outgoing)-(a.incoming+a.outgoing) || a.path.localeCompare(b.path));
   }, [data,path]);
-  const visible = neighbors.slice(page * PAGE_SIZE, (page+1)*PAGE_SIZE);
+
   const filtered = files.filter(f => f.path.toLowerCase().includes(query.toLowerCase()));
-  const choose = (value:string) => { setSelected(value); setPage(0); };
+  const choose = (value:string) => { setSelected(value); };
   if (error && !data) return <div className="border p-6" role="alert"><p>{c.error}</p><Button className="mt-3" onClick={() => { setError(false); setRetry(x=>x+1); }}>{c.retry}</Button></div>;
   if (!data) return <div className="border p-8 text-muted-foreground" role="status">{c.loading}</div>;
   if (data.status !== "ready") return <section className="border bg-card p-8"><h2 className="font-semibold">{c.title}</h2><p className="mt-3 max-w-2xl text-sm text-muted-foreground">{c.unavailable}</p><Button variant="outline" className="mt-4" onClick={() => setRetry(x=>x+1)}>{c.retry}</Button></section>;
@@ -37,15 +39,11 @@ export function ScanFilesGraphPanel({ scan }: { scan: ScanRun }) {
     {error && <p role="alert" className="border-b p-3 text-xs text-destructive">{c.error} <Button variant="outline" onClick={() => setRetry(x=>x+1)}>{c.retry}</Button></p>}
     <div className="grid min-w-0 lg:grid-cols-[280px_minmax(0,1fr)]">
       <aside className="min-w-0 border-b lg:border-b-0 lg:border-r"><div className="border-b p-3"><Input value={query} onChange={e=>setQuery(e.target.value)} placeholder={c.search} aria-label={c.search}/><p className="mt-2 font-mono text-[10px] text-muted-foreground">{filtered.length} / {files.length} {c.files}</p></div><div className="max-h-64 overflow-y-auto lg:max-h-[700px]" aria-label={c.files}>{filtered.map(f=><button key={f.path} type="button" aria-pressed={path===f.path} onClick={()=>choose(f.path)} title={f.path} className={`flex w-full items-center gap-2 border-b px-3 py-3 text-left text-xs focus-visible:outline-2 focus-visible:outline-primary ${path===f.path ? "bg-primary/10 text-primary" : "hover:bg-accent"}`}><span className="min-w-0 flex-1 break-all">{f.path}</span><span className="font-mono text-muted-foreground">{degree.get(f.path) ?? 0}</span></button>)}{!filtered.length && <p className="p-4 text-sm text-muted-foreground">{c.empty}</p>}</div></aside>
-      <div className="min-w-0"><div className="border-b p-4"><p className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">{c.scope}</p><h3 className="mt-2 break-all font-mono text-sm text-primary">{path || c.select}</h3></div>
-        <div className="relative overflow-hidden bg-background p-2"><svg viewBox="0 0 800 540" className="mx-auto max-h-[560px] w-full min-w-0" role="group" aria-label={c.graph}>
-          <defs><marker id="files-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/></marker></defs>
-          <ellipse cx="400" cy="270" rx="290" ry="215" fill="none" className="stroke-border" strokeDasharray="4 8"/>
-          {visible.map((n,i)=>{const a=2*Math.PI*i/visible.length-Math.PI/2; const x=400+290*Math.cos(a),y=270+215*Math.sin(a); const dx=x-400,dy=y-270; const start=Math.min(102/Math.abs(dx),30/Math.abs(dy)); const end=Math.min(75/Math.abs(dx),18/Math.abs(dy)); return <g key={n.path}><line x1={400+dx*start} y1={270+dy*start} x2={x-dx*end} y2={y-dy*end} className="text-primary stroke-primary/40" strokeWidth="1.5" markerEnd={n.outgoing ? "url(#files-arrow)" : undefined} markerStart={n.incoming ? "url(#files-arrow)" : undefined}/><g role="button" tabIndex={0} aria-label={n.path} onClick={()=>choose(n.path)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();choose(n.path);}}} className="cursor-pointer text-foreground outline-none focus:text-primary"><title>{n.path} · {c.incoming}: {n.incoming} · {c.outgoing}: {n.outgoing}</title><rect x={x-73} y={y-16} width="146" height="32" rx="3" className="fill-card stroke-primary/60"/><text x={x} y={y+4} textAnchor="middle" fontSize="10" fill="currentColor">{(n.path.split('/').pop() ?? n.path).slice(0,22)}</text></g></g>;})}
-          <rect x="300" y="242" width="200" height="56" rx="3" className="fill-card stroke-primary" strokeWidth="2"/><text x="400" y="267" textAnchor="middle" fontSize="12" className="fill-primary">{(path.split('/').pop() ?? path).slice(0,27)}</text><text x="400" y="285" textAnchor="middle" fontSize="10" className="fill-muted-foreground">{neighbors.length} {c.related}</text>
-        </svg>{!neighbors.length && <p className="px-4 pb-5 text-center text-sm text-muted-foreground">{c.isolated}</p>}</div>
-        <div className="flex flex-wrap items-center justify-between gap-2 border-y p-3"><span className="font-mono text-[10px] text-muted-foreground">{visible.length} / {neighbors.length} {c.shown} · {c.page} {page+1} / {Math.max(1,Math.ceil(neighbors.length/PAGE_SIZE))}</span><div className="flex gap-2"><Button variant="outline" size="sm" disabled={page===0} onClick={()=>setPage(p=>p-1)}>{c.previous}</Button><Button variant="outline" size="sm" disabled={(page+1)*PAGE_SIZE>=neighbors.length} onClick={()=>setPage(p=>p+1)}>{c.next}</Button></div></div>
-        <div className="grid max-h-60 overflow-y-auto sm:grid-cols-2">{visible.map(n=><button key={n.path} onClick={()=>choose(n.path)} className="border-b p-3 text-left hover:bg-accent focus-visible:outline-2 focus-visible:outline-primary"><span className="block break-all font-mono text-xs">{n.path}</span><span className="mt-1 block text-[10px] text-muted-foreground">← {c.incoming}: {n.incoming} · {c.outgoing}: {n.outgoing} →</span></button>)}</div>
+      <div className="min-w-0"><div className="border-b p-4"><p className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">{selected ? c.scope : c.all}</p><h3 className="mt-2 break-all font-mono text-sm text-primary">{path || c.select}</h3></div>
+        <div aria-label={c.groups} className="flex flex-wrap gap-x-4 gap-y-2 border-b px-4 py-2 text-[10px] text-muted-foreground">{[...new Set(files.map(f=>fileGroup(f.path)))].sort().map((group,i)=><span key={group} className="inline-flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full" style={{background:graphColors[i%graphColors.length]}}/>{group}</span>)}</div>
+        <FileGraphCanvas data={data} selected={selected} query={query} onSelect={choose}/>
+        {selected && <div className="border-t"><div className="flex items-center justify-between gap-3 p-3"><span className="text-xs text-muted-foreground">{neighbors.length} {c.related}</span><Button variant="ghost" size="sm" onClick={()=>choose("")}>{c.all}</Button></div><div className="grid max-h-48 overflow-y-auto sm:grid-cols-2">{neighbors.map(n=><button key={n.path} onClick={()=>choose(n.path)} className="border-t p-3 text-left hover:bg-accent focus-visible:outline-2 focus-visible:outline-primary"><span className="block break-all font-mono text-xs">{n.path}</span><span className="mt-1 block text-[10px] text-muted-foreground">← {c.incoming}: {n.incoming} · {c.outgoing}: {n.outgoing} →</span></button>)}</div>{!neighbors.length && <p className="p-4 text-xs text-muted-foreground">{c.isolated}</p>}</div>}
+
       </div>
     </div><footer className="break-all border-t p-3 font-mono text-[9px] text-muted-foreground">{c.snapshot}: {data.snapshot ?? c.unknown}</footer>
   </section>;

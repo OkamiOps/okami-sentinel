@@ -126,12 +126,12 @@ export function ScanDetailPage() {
       {scan.progress && <div className="border-t px-4 py-3"><div className="mb-2 flex items-center justify-between gap-4 font-mono text-[9px]"><span className="truncate">{formatProgressLabel(scan.progress)}{scan.progress.detail ? ` / ${formatRecoveryProgressText(scan.progress.detail)}` : ""}</span><span className="shrink-0 text-primary">{formatProgressMetric(scan.progress)}</span></div><ProgressTrack value={displayedProgress.value} indeterminate={displayedProgress.indeterminate} /></div>}
     </header>
     {errorBanner}
-    <ScanAnalysisMetrics key={scan.id} scan={scan} />
+    <ScanAnalysisMetrics key={`metrics:${scan.id}`} scan={scan} />
     <div className="mb-4 flex overflow-x-auto border border-border">{(["evidence", "telemetry", "files", "profile"] as View[]).map((id, i) => <button key={id} type="button" onClick={() => setView(id)} className={cx("h-10 border-r px-4 font-mono text-[9px] uppercase tracking-wider", view === id ? "bg-accent text-primary" : "text-muted-foreground hover:text-foreground")}>0{i + 1} / {t(`scanDetail.view${id[0].toUpperCase()}${id.slice(1)}` as "scanDetail.viewEvidence")}</button>)}</div>
     {scan.status !== "completed" && scan.execution?.executionProfile === "portable" && scan.engine === "codex-security" && <ScanCandidatePreview key={`preview:${scan.id}`} scan={scan} expanded={view === "evidence"} />}
     {view === "evidence" && (findings.length > 0 || scan.status === "completed" || scan.execution?.executionProfile !== "portable" || scan.engine !== "codex-security") && <EvidenceWorkbench scan={scan} findings={filtered} allFindings={findings} selected={selected} selectedSignal={selectedSignal} query={query} severity={severity} lifecycle={lifecycle} onQuery={setQuery} onSeverity={setSeverity} onLifecycle={setLifecycle} onOpen={(f) => void openFinding(f)} onSaveTriage={saveTriage} />}
     {view === "telemetry" && <Telemetry scan={scan} logs={telemetry.lines} logRef={logRef} />}
-    {view === "files" && <ScanFilesGraphPanel key={scan.id} scan={scan} />}
+    {view === "files" && <ScanFilesGraphPanel key={`files:${scan.id}`} scan={scan} />}
     {view === "profile" && <Profile scan={scan} />}
   </div>;
 }
