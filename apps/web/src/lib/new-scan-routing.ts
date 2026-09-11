@@ -37,6 +37,32 @@ export function connectionSelectionFor(
   return { connectionId: connection.id, modelSelectionMode: "catalog", modelId: selectedModelId };
 }
 
+export type CatalogSelectionBlockKey =
+  | "newScan.connectionRequired"
+  | "newScan.modelLoading"
+  | "newScan.modelError"
+  | "newScan.modelEmpty"
+  | "newScan.connectionModelRequired";
+
+/** Distinguishes an empty/unselected catalog from a host that cannot run the route. */
+export function catalogSelectionBlockKey(input: {
+  connection: ProviderConnection | null;
+  models: readonly ProviderModel[];
+  connectionSelection: ScanConnectionSelection | null;
+  modelsLoading?: boolean;
+  modelsError?: boolean;
+}): CatalogSelectionBlockKey | null {
+  if (input.connection === null) return "newScan.connectionRequired";
+  if (input.connection.modelSelectionMode === "runtime-default") {
+    return input.connectionSelection === null ? "newScan.connectionModelRequired" : null;
+  }
+  if (input.modelsLoading) return "newScan.modelLoading";
+  if (input.modelsError) return "newScan.modelError";
+  if (!input.models.some((model) => model.connectionId === input.connection!.id)) return "newScan.modelEmpty";
+  if (input.connectionSelection === null) return "newScan.connectionModelRequired";
+  return null;
+}
+
 export type ReasoningEffortControl =
   | { kind: "provider-managed"; options: []; selected: null }
   | { kind: "configurable"; options: string[]; selected: string | null };

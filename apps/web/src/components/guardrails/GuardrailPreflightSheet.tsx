@@ -44,10 +44,12 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTr
 import { ChoiceCard } from "./ChoiceCard";
 import { useI18n } from "../../i18n";
 import {
+  catalogSelectionBlockKey,
   compatibilityReasonKey,
   connectionSelectionFor,
   defaultReasoningEffortForMode,
   isProbeOnlyCompatibilityBlock,
+  loadLiveConnectionModels,
   reasoningEffortForCompatibility,
   reconcileReasoningEffort,
   validateConnectionCapability,
@@ -101,6 +103,9 @@ export function GuardrailPreflightSheet({
   const [costMode, setCostMode] = useState<"policy" | "manual" | "none">("policy");
   const [manualCostUsd, setManualCostUsd] = useState("18");
   const [compatibility, setCompatibility] = useState<ConnectionCompatibility | null>(null);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState(false);
+  const [modelsRetry, setModelsRetry] = useState(0);
   const [routingBusy, setRoutingBusy] = useState(false);
   const [providerValidation, setProviderValidation] = useState<"validating" | "ready" | "failed" | "error" | null>(null);
   const [capabilityRetry, setCapabilityRetry] = useState(0);
@@ -120,6 +125,13 @@ export function GuardrailPreflightSheet({
     && !nativeScannerModelIds.has(modelId);
   const scannerCostLimitUnsupported = costMode !== "none" && engine !== "codex-security";
   const connectionSelection = connectionSelectionFor(connection, connectionModels, modelId);
+  const catalogBlock = catalogSelectionBlockKey({
+    connection,
+    models: connectionModels,
+    connectionSelection,
+    modelsLoading,
+    modelsError,
+  });
   const reasoning = reasoningEffortForCompatibility(compatibility, effort, mode);
   const capabilityProbeOnlyBlock = isProbeOnlyCompatibilityBlock(compatibility);
   const capabilityProbeKey = connectionSelection !== null && connection !== null
@@ -194,14 +206,24 @@ export function GuardrailPreflightSheet({
     let cancelled = false;
     setModels([]);
     setModelId(null);
-    if (connection.modelSelectionMode === "runtime-default") return;
-    void api.listConnectionModels(connection.id).then((nextModels) => {
+    setModelsError(false);
+    if (connection.modelSelectionMode === "runtime-default") {
+      setModelsLoading(false);
+      return;
+    }
+    setModelsLoading(true);
+    void loadLiveConnectionModels(api, connection.id).then((nextModels) => {
       if (cancelled) return;
       setModels(nextModels);
       setModelId(nextModels[0]?.id ?? null);
-    }).catch(() => { if (!cancelled) setModels([]); });
+    }).catch(() => {
+      if (!cancelled) {
+        setModels([]);
+        setModelsError(true);
+      }
+    }).finally(() => { if (!cancelled) setModelsLoading(false); });
     return () => { cancelled = true; };
-  }, [open, connection?.id, connection?.modelSelectionMode]);
+  }, [open, connection?.id, connection?.modelSelectionMode, modelsRetry]);
 
   useEffect(() => {
     if (!open || connectionSelection === null) {
@@ -612,10 +634,12 @@ export function GuardrailPreflightSheet({
                   </div>
                 </div>
 
-                <div className={`mt-3 grid gap-3 border px-4 py-3 text-xs leading-5 ${routeReady ? "border-chart-2/40 bg-chart-2/[.05] text-chart-2" : "border-destructive/40 bg-destructive/[.05] text-destructive"}`}>
+                <div className={`mt-3 grid gap-3 border px-4 py-3 text-xs leading-5 ${routeReady ? "border-chart-2/40 bg-chart-2/[.05] text-chart-2" : modelsLoading || routingBusy || providerValidation === "validating" ? "border-border bg-muted/20 text-muted-foreground" : "border-destructive/40 bg-destructive/[.05] text-destructive"}`}>
                   <span>
                     {providerValidation === "validating" || routingBusy
                       ? t("newScan.providerValidating")
+                      : modelsLoading
+                        ? t("newScan.modelLoading")
                       : providerValidation === "failed"
                         ? t("newScan.providerValidationFailed")
                         : providerValidation === "error"
@@ -624,13 +648,24 @@ export function GuardrailPreflightSheet({
                               ? t("guardrails.nativeCostLimitRequiresPrice")
                             : routeReady
                             ? `${scanner?.name ?? engine} · ${connection?.name ?? "—"} · ${modelId ?? t("newScan.providerManagedEffort")}`
-                            : connection === null
-                              ? t("newScan.connectionRequired")
+                            : catalogBlock !== null
+                              ? t(catalogBlock)
                             : compatibility === null
-                              ? t("newScan.routeUnavailable")
+                              ? t("newScan.compatibilityError")
                               : t(compatibilityReasonKey(compatibility.reasons))}
                   </span>
                   {connections.length === 0 && <Button asChild variant="outline" size="sm" className="w-fit"><Link to="/settings/connections" onClick={() => onOpenChange(false)}>{t("newScan.manageConnections")}</Link></Button>}
+                  {(catalogBlock === "newScan.modelEmpty" || catalogBlock === "newScan.modelError") && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="w-fit border-current text-current"
+                      onClick={() => setModelsRetry((value) => value + 1)}
+                    >
+                      {t("connections.operations.refreshModels")}
+                    </Button>
+                  )}
                   {(providerValidation === "failed" || providerValidation === "error") && connectionSelection?.modelSelectionMode === "catalog" && (
                     <Button
                       type="button"

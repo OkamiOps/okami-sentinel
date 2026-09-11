@@ -5,6 +5,7 @@ import type { ConnectionCompatibility, ProviderConnection, ProviderModel } from 
 import {
   buildConnectionAwareStartRequest,
   canResolveConnectionWithEngine,
+  catalogSelectionBlockKey,
   compatibilityReasonKey,
   connectionSelectionFor,
   defaultReasoningEffortForCompatibility,
@@ -165,6 +166,54 @@ test("uses runtime default only when the connection declares that selection mode
     modelId: null,
   });
   assert.equal(connectionSelectionFor(connection(), [model("live-model")], null), null);
+});
+
+test("does not call an empty catalog a host-unavailable route", () => {
+  assert.equal(catalogSelectionBlockKey({
+    connection: null,
+    models: [],
+    connectionSelection: null,
+  }), "newScan.connectionRequired");
+  assert.equal(catalogSelectionBlockKey({
+    connection: connection(),
+    models: [],
+    connectionSelection: null,
+    modelsLoading: true,
+  }), "newScan.modelLoading");
+  assert.equal(catalogSelectionBlockKey({
+    connection: connection(),
+    models: [],
+    connectionSelection: null,
+    modelsError: true,
+  }), "newScan.modelError");
+  assert.equal(catalogSelectionBlockKey({
+    connection: connection(),
+    models: [],
+    connectionSelection: null,
+  }), "newScan.modelEmpty");
+  assert.equal(catalogSelectionBlockKey({
+    connection: connection(),
+    models: [model("live-model")],
+    connectionSelection: null,
+  }), "newScan.connectionModelRequired");
+  assert.equal(catalogSelectionBlockKey({
+    connection: connection(),
+    models: [model("live-model")],
+    connectionSelection: {
+      connectionId: "connection-a",
+      modelSelectionMode: "catalog",
+      modelId: "live-model",
+    },
+  }), null);
+  assert.equal(catalogSelectionBlockKey({
+    connection: connection("runtime-default"),
+    models: [],
+    connectionSelection: {
+      connectionId: "connection-a",
+      modelSelectionMode: "runtime-default",
+      modelId: null,
+    },
+  }), null);
 });
 
 test("builds a connection-only scan payload after matching server eligibility", () => {

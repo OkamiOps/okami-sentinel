@@ -12,6 +12,7 @@ import { KeyRound, Link2, LogIn, Pencil, Play, PlugZap, RefreshCw, ShieldCheck, 
 import { api } from "../../api";
 import { type TranslationKey, useI18n } from "../../i18n";
 import { authFlowPresentation, connectionOperationErrorKey, createAuthFlowPoller, disconnectMessageForStatus, isTerminalAuthFlow, probeSelectionForModel } from "../../lib/connection-inspector";
+import { loadLiveConnectionModels } from "../../lib/new-scan-routing";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { EmptyState } from "../ui";
@@ -133,7 +134,7 @@ export function ConnectionInspector({ connection, onConnectionChange, onEdit, on
     setBusy(null);
     setMessage(null);
     if (connectionId !== null) {
-      void api.listConnectionModels(connectionId).then((catalog) => {
+      void loadLiveConnectionModels(api, connectionId).then((catalog) => {
         if (!alive) return;
         setModels(catalog);
         setSelectedModelId(catalog[0]?.id ?? null);

@@ -40,6 +40,7 @@ import {
   ruleInputFromDraft,
   type GitHubMonitorDraft,
 } from "../lib/github-monitor-state";
+import { loadLiveConnectionModels } from "../lib/new-scan-routing";
 
 type CheckoutAction = "fetch" | "pull";
 
@@ -182,8 +183,17 @@ export function GitHubMonitorPage() {
         : { ...current, modelSelectionMode: "runtime-default", modelId: null });
       return () => { active = false; };
     }
-    void api.listConnectionModels(selectedConnection.id)
-      .then((next) => { if (active) setModels(next); })
+    void loadLiveConnectionModels(api, selectedConnection.id)
+      .then((next) => {
+        if (!active) return;
+        setModels(next);
+        setDraft((current) => {
+          if (current.providerConnectionId !== selectedConnection.id) return current;
+          if (current.modelSelectionMode === "runtime-default") return current;
+          if (current.modelId !== null && next.some((model) => model.id === current.modelId)) return current;
+          return { ...current, modelSelectionMode: "catalog", modelId: next[0]?.id ?? null };
+        });
+      })
       .catch(() => { if (active) setModels([]); });
     return () => { active = false; };
   }, [draft.executor, selectedConnection?.id, selectedConnection?.modelSelectionMode]);
