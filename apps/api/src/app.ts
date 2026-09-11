@@ -1,3 +1,4 @@
+import { scanFilesGraph } from "./scan-files-graph.js";
 import { scanCandidatePreview } from "./scan-candidate-preview.js";
 import { scanAnalysisMetrics } from "./scan-analysis-metrics.js";
 import { getGitHubMonitorRule } from "./github-monitor/store.js";
@@ -882,6 +883,12 @@ app.get("/scans/:id/analysis-metrics", (c) => {
   const run = readRunWithEngineRefresh(c.req.param("id"));
   if (!run) return c.json({ error: "Scan not found" }, 404);
   return c.json(scanAnalysisMetrics(run));
+});
+
+app.get("/scans/:id/files-graph", (c) => {
+  const run = readRunWithEngineRefresh(c.req.param("id"));
+  if (!run) return c.json({ error: "Scan not found" }, 404);
+  return c.json(scanFilesGraph(run));
 });
 
 app.get("/scans/:id/candidate-preview", (c) => {

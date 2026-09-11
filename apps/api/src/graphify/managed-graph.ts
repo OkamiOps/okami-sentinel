@@ -30,6 +30,10 @@ export function managedGraphifyExecutable(): string {
     process.platform === "win32" ? "Scripts/graphify.exe" : "bin/graphify");
 }
 
+export function managedGraphCacheKey(snapshotId: string): string {
+  return createHash("sha256").update(JSON.stringify([FORMAT, GRAPHIFY_VERSION, snapshotId, "code-only/no-cluster/1-worker"])).digest("hex");
+}
+
 /** Best-effort code-only index. Cancellation still belongs to the scan, never swallowed. */
 export async function prepareManagedGraph(options: Options): Promise<GraphPreparation> {
   const started = Date.now();
@@ -38,7 +42,7 @@ export async function prepareManagedGraph(options: Options): Promise<GraphPrepar
   const executable = options.executable ?? managedGraphifyExecutable();
   try { await fs.access(executable); } catch { return unavailable("runtime_unavailable"); }
   const cacheRoot = options.cacheRoot ?? path.join(DATA_DIR, "graphify-cache");
-  const key = createHash("sha256").update(JSON.stringify([FORMAT, GRAPHIFY_VERSION, options.snapshotId, "code-only/no-cluster/1-worker"])).digest("hex");
+  const key = managedGraphCacheKey(options.snapshotId);
   const cacheFile = path.join(cacheRoot, `${key}.json`);
   let temporary: string | undefined;
   try {

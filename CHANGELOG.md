@@ -13,6 +13,8 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Added
 
+- Scan details include a Files tab between Telemetry and Profile: searchable snapshot files, directed Graphify relationships, interactive neighbor navigation and explicit missing-index states. The view reads existing artifacts without running a scan or rebuilding a graph; connections do not imply inspected coverage or confirmed vulnerabilities.
+
 - Portable Codex Security scans show a live, searchable preview of saved discovery candidates, including hypotheses, potential impact and source locations. Candidates remain explicitly provisional until final validation and are never counted as confirmed findings.
 
 ### Fixed

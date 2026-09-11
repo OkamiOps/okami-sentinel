@@ -292,3 +292,19 @@ scanner versions and pricing, plus repeated executions to measure variability.
 Evidence was read from scan metadata, final findings, immutable source snapshots,
 worker events, recovery journals and accepted stage artifact timestamps. Raw run
 artifacts and credentials remain outside Git.
+
+
+## Files graph view
+
+The Files tab reads `GET /api/scans/:id/files-graph`. It joins the saved Graphify
+status, matching immutable snapshot marker and managed cache key; it never reads
+the current checkout or builds an index. Only EXTRACTED cross-file relationships
+are aggregated into directed file pairs. All regular snapshot paths, including
+isolated files, remain searchable; their count can exceed the auditable-source
+count in analysis telemetry. Source contents and credentials are not returned.
+
+The graph focuses on one file and paginates its direct neighbors for readability;
+this display pagination does not alter scan coverage or model budgets. Incoming
+and outgoing counts aggregate extracted relationships. Missing, incompatible or
+unsafe artifacts return an explicit unavailable state. Deleting the graph cache
+can make historical visualization unavailable; no silent reconstruction occurs.

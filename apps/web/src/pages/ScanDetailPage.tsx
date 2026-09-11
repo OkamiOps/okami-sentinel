@@ -1,3 +1,4 @@
+import { ScanFilesGraphPanel } from "../components/scans/ScanFilesGraphPanel";
 import { ScanCandidatePreview } from "../components/scans/ScanCandidatePreview";
 import { ScanAnalysisMetrics } from "../components/scans/ScanAnalysisMetrics";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -23,7 +24,7 @@ import { reasoningDeliveryCopy, scanReasoningDelivery } from "../lib/reasoning-d
 import { formatApiError } from "../lib/http";
 import { useI18n, type TranslationKey } from "../i18n";
 
-type View = "evidence" | "telemetry" | "profile";
+type View = "evidence" | "telemetry" | "files" | "profile";
 const triageLabels: Record<FindingTriageStatus, TranslationKey> = {
   unreviewed: "scanDetail.triage.unreviewed", confirmed: "scanDetail.triage.confirmed",
   accepted: "scanDetail.triage.accepted", false_positive: "scanDetail.triage.falsePositive",
@@ -69,7 +70,7 @@ export function ScanDetailPage() {
   useEffect(() => {
     setScan(null); setFindings([]); setRegression(null); setSelected(null); setSelectedSignal(null);
     setTelemetry(telemetrySnapshot([], 0)); setError(null); setLastUpdated(null);
-    void load().then((r) => { if (r) setView(r.scan.status === "running" ? "telemetry" : "evidence"); });
+    void load().then((r) => { if (r) { const requested = new URLSearchParams(window.location.search).get("view"); setView(requested === "files" ? "files" : r.scan.status === "running" ? "telemetry" : "evidence"); } });
     return () => { requestRef.current += 1; };
   }, [load]);
   useEffect(() => { if (!scan || scan.status !== "running") return; const es = new EventSource(`/api/scans/${id}/events?after=${telemetry.cursor}`); const handler = (event: MessageEvent) => { try { const data = JSON.parse(String(event.data)) as ScanEvent; if (data.message) setTelemetry((old) => appendTelemetryEvent(old, data)); if (data.scan) setScan(data.scan); else if (data.progress) setScan((old) => old ? { ...old, progress: data.progress! } : old); if (data.type === "done") { void load(); es.close(); } } catch { /* malformed event */ } }; ["log", "status", "cost", "progress", "done", "error"].forEach((name) => es.addEventListener(name, handler)); const poll = window.setInterval(() => void load().catch(() => undefined), 4500); return () => { es.close(); window.clearInterval(poll); }; }, [id, scan?.status, load]);
@@ -126,10 +127,11 @@ export function ScanDetailPage() {
     </header>
     {errorBanner}
     <ScanAnalysisMetrics key={scan.id} scan={scan} />
-    <div className="mb-4 flex overflow-x-auto border border-border">{(["evidence", "telemetry", "profile"] as View[]).map((id, i) => <button key={id} type="button" onClick={() => setView(id)} className={cx("h-10 border-r px-4 font-mono text-[9px] uppercase tracking-wider", view === id ? "bg-accent text-primary" : "text-muted-foreground hover:text-foreground")}>0{i + 1} / {t(`scanDetail.view${id[0].toUpperCase()}${id.slice(1)}` as "scanDetail.viewEvidence")}</button>)}</div>
+    <div className="mb-4 flex overflow-x-auto border border-border">{(["evidence", "telemetry", "files", "profile"] as View[]).map((id, i) => <button key={id} type="button" onClick={() => setView(id)} className={cx("h-10 border-r px-4 font-mono text-[9px] uppercase tracking-wider", view === id ? "bg-accent text-primary" : "text-muted-foreground hover:text-foreground")}>0{i + 1} / {t(`scanDetail.view${id[0].toUpperCase()}${id.slice(1)}` as "scanDetail.viewEvidence")}</button>)}</div>
     {scan.status !== "completed" && scan.execution?.executionProfile === "portable" && scan.engine === "codex-security" && <ScanCandidatePreview key={`preview:${scan.id}`} scan={scan} expanded={view === "evidence"} />}
     {view === "evidence" && (findings.length > 0 || scan.status === "completed" || scan.execution?.executionProfile !== "portable" || scan.engine !== "codex-security") && <EvidenceWorkbench scan={scan} findings={filtered} allFindings={findings} selected={selected} selectedSignal={selectedSignal} query={query} severity={severity} lifecycle={lifecycle} onQuery={setQuery} onSeverity={setSeverity} onLifecycle={setLifecycle} onOpen={(f) => void openFinding(f)} onSaveTriage={saveTriage} />}
     {view === "telemetry" && <Telemetry scan={scan} logs={telemetry.lines} logRef={logRef} />}
+    {view === "files" && <ScanFilesGraphPanel key={scan.id} scan={scan} />}
     {view === "profile" && <Profile scan={scan} />}
   </div>;
 }

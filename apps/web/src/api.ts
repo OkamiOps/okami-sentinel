@@ -355,6 +355,14 @@ export interface ScanReportData {
   generatedAt: string;
 }
 
+export interface ScanFilesGraph {
+  status: "ready" | "unavailable";
+  reason?: string;
+  snapshot: string | null;
+  files: Array<{ path: string }>;
+  edges: Array<{ source: string; target: string; count: number }>;
+}
+
 export interface ScanTelemetrySnapshot {
   lines: string[];
   cursor: number;
@@ -424,6 +432,7 @@ export const api = {
   scanCatalog: () => request<{ total: number; repositories: string[] }>("/scans/catalog"),
   getScan: (id: string) =>
     request<{ scan: ScanRun; findings: FindingSummary[] }>(`/scans/${id}`),
+  getFilesGraph: (id: string) => request<ScanFilesGraph>(`/scans/${encodeURIComponent(id)}/files-graph`),
   getTelemetry: (id: string) =>
     request<ScanTelemetrySnapshot>(`/scans/${id}/telemetry?limit=500`),
   scanEventsUrl: (id: string, after = 0) =>
