@@ -8,9 +8,9 @@ Native Codex Security, Mantis and VulnHunter retain their existing executors.
 New full Standard scans enumerate the same auditable source/configuration universe as
 Deep, independently of graph membership or priority scores. The graph changes batch
 locality, never membership. Every batch projects every assigned file's complete source.
-Standard uses an overview-first review with at most 16 model turns per discovery
-batch; Deep uses its deeper exploration allowance. These per-session limits constrain
-investigation depth and context, never how many files are included. Source absent
+Standard uses an overview-first review; Deep investigates relevant alternate paths
+and counterevidence. Neither mode has a cumulative model-turn or tool-call ceiling.
+Their prompts and supported reasoning effort distinguish investigation depth. Source absent
 from the graph is still assigned. Missing or failed batches prevent completion.
 
 The depth distinction also applies to dataflow and validation. Standard resolves the
@@ -26,7 +26,7 @@ timeouts or permission to skip code. Compare fresh independent runs on the same
 snapshot/model using elapsed time, completed batches/files, validated distinct findings,
 input/cache/output tokens and recovery overhead. Full source projection demonstrates
 coverage availability, not model attention, detection quality or achieved speed.
-The revised full-coverage modes still require that real-run performance validation.
+The measured runs below document current evidence and its comparison limits.
 
 Completion ceilings must reach the provider wire request on every turn: OpenAI and
 OpenRouter chat use `max_completion_tokens`, other chat-compatible routes use
@@ -107,9 +107,10 @@ which field failed; improved diagnostics apply to new sessions.
 
 
 Assessment contexts traverse EXTRACTED calls up to three steps in both directions,
-with explicit paths (including reverse caller steps), at most 8 windows/16 KiB per
-page. Traversal is bounded to 1,024 symbols and 4,096 edges, shared among anchors;
-related windows are selected round-robin so eight anchors cannot consume every slot.
+with explicit paths (including reverse caller steps). Source allocation uses the
+adaptive context budget described below, not the former 8-window/16-KiB sample.
+Traversal is bounded to 1,024 symbols and 4,096 edges, shared among anchors;
+related symbols are selected round-robin after anchor source.
 Control-related names prioritize navigation but do not prove effective controls.
 Intermediate path references are not source excerpts and may require further reads. Graphify point-only
 locations use the next source symbol as a navigation heuristic, explicitly labeled.
@@ -192,8 +193,9 @@ A recoverable failure in Standard discovery (including the complementary pass)
 now changes strategy: at most 12 deterministic source targets, prioritized through
 the graph when available, are processed as three groups of up to four source
 neighborhoods with Graphify. Legacy/no-graph plans retain individual full-source units.
-Each gets a fresh history, at most 16 turns and 64 tool calls (or smaller configured
-limits). This is targeted Standard inspection, not Deep or whole-repository coverage.
+Each gets a fresh history. The original 16-turn/64-tool policy is historical; newly
+loaded workers apply the productive-action policy below. This legacy strategy is
+targeted inspection, not the complete coverage plan used by new Standard scans.
 Accepted candidates remain immutable, completed units are reused, and the existing
 three-attempt page budget remains enforced. `standard_recovery_plan` reports this
 strategy. All units must validate before the stage advances; exhausted recovery is
@@ -218,8 +220,8 @@ a source read remains required. Existing candidate, coverage, severity and ancho
 validation remains authoritative. Complementary graph hints omit already inspected
 paths from both suggested files and related-file lists, without denying needed reads.
 
-These changes remove redundant workflow instructions; real provider runtime and
-finding-quality improvements still require measurement.
+These changes remove redundant workflow instructions. Measurements below distinguish
+observed runtime improvements from unproven finding-quality gains.
 
 ## Productive actions and loop guidance
 
@@ -236,4 +238,57 @@ Dataflow, validation and report prefetch allocation is calculated after building
 
 Adaptive projection has no fixed 192 KiB cap, window count or 240-line function cutoff. Source is read across transport-sized ranges for complete selected symbols; shared graph symbols are deduplicated. Anchor symbols precede round-robin related symbols. Projection never extends scan coverage: pending source ranges remain explicit and the agent is instructed to inspect relevant missing ranges using its normal tools. Traversal remains bounded against pathological graphs and truncation remains marked. Discovery retains its separate policy.
 
-Tests verify full projection of 60 functions of 500 lines, smaller-budget pending ranges, and reduced allocation for larger prompts, smaller provider windows and larger response reserves. This does not establish latency, cost or finding-quality gains; those require a new model execution. Already-running workers retain their loaded code.
+Tests verify full projection of 60 functions of 500 lines, smaller-budget pending ranges, and reduced allocation for larger prompts, smaller provider windows and larger response reserves. Those tests alone do not establish latency, cost or finding-quality gains. Already-running workers retain their loaded code.
+
+
+## Observed benchmark results — 2026-09-11
+
+These are historical Grok 4.6 / Codex Security Portable executions, not a controlled
+Graphify ON/OFF experiment. Recent Graphify runs used the same immutable snapshot:
+508 files, 138,983 physical lines, 5,737,867 source bytes, 6,612 graph nodes and
+18,529 edges. The two recent Deep runs used `high`; the latest Standard used `low`.
+The historical pre-Graphify runs used different snapshots and did not record an
+explicit effort. Their classification comes from chronology and absent graph
+artifacts/events, not an equivalent current OFF manifest.
+
+| Run | ID | Duration | Reported findings | Normalized PAYG equivalent |
+|---|---|---:|---:|---:|
+| Deep, adaptive Graphify | `sT-JsNoshsVk` | 5h20m44s | 36 | USD 26.32 |
+| Deep, previous Graphify | `s_JXNPGKobSI` | 7h07m29s | 31 | USD 29.35 |
+| Deep, historical pre-Graphify | `sq9y1xiYXd3r` | 7h20m09s | 43 | USD 38.36 |
+| Standard, latest Graphify (before adaptive projection) | `sfzfr-jNZaQ2` | 26m44s | 3 | USD 6.25 |
+| Standard, historical pre-Graphify | `siH9NDrFWECu` | 23m59s | 3 | USD 5.07 |
+
+Costs use the same archived rates: USD 2/M uncached input, USD 0.50/M cached input
+and USD 6/M output. Historical UI upper bounds did not discount cache; comparing
+those directly would exaggerate savings. These are equivalent usage estimates,
+not subscription charges. Unknown cache-write usage was not imputed.
+
+Against the previous Graphify Deep, adaptive Deep took 25.0% less time and cost
+10.3% less, with five additional reported findings. Approximate dataflow time fell
+from 104.1 to 21.3 minutes; discovery still consumed 222.8 minutes (~70% of total).
+The earlier run involved manual recovery/policy updates, so this does not isolate
+the effect of adaptive projection. The latest run exceeded the five-hour target
+by approximately 21 minutes. One `agent_context_limit` on discovery page 39 was
+recovered automatically by splitting source into eight parts; this was successful
+recovery, not a failure-free run.
+
+Against historical pre-Graphify Deep, elapsed time fell 27.1% and normalized cost
+31.4%, while reported findings fell from 43 to 36. Snapshot, policy and effort
+changes prevent attributing those differences solely to Graphify. Findings are
+scanner claims, not an independently adjudicated count of unique vulnerabilities:
+the latest two High entries appear to describe the same execution chain, and the
+historical list also contains likely duplicates. Missing old themes are not proof
+of a fix or a false positive.
+
+The latest recorded Standard was 11.4% slower and 23.4% more expensive than its
+historical baseline, despite 25.5% fewer input tokens: cached-input share fell from
+87.4% to 56.3%. The two lists contain different issues, despite both reporting three
+findings. Standard has not yet been measured with the latest adaptive projection.
+Do not advertise demonstrated Standard speedup, preserved recall or improved
+accuracy from these runs. Further attribution requires matched snapshots, effort,
+scanner versions and pricing, plus repeated executions to measure variability.
+
+Evidence was read from scan metadata, final findings, immutable source snapshots,
+worker events, recovery journals and accepted stage artifact timestamps. Raw run
+artifacts and credentials remain outside Git.

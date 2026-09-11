@@ -6,6 +6,11 @@ with the Docker and engine-update work; earlier history remains in
 
 ## Unreleased
 
+### Documentation
+
+- Refresh English, Portuguese, German and French READMEs with full Standard/Deep source coverage, managed Graphify, adaptive assessment context, mode effort defaults, provisional candidate previews and checkpoint recovery. Remove obsolete cumulative turn/tool budget tables.
+- Record the September 11 historical benchmark and its limits: adaptive Deep completed in about 5h21 with 36 reported findings, 25% faster and 10.3% lower normalized PAYG cost than the previous Graphify Deep on the same snapshot. Standard with the latest adaptive projection remains unmeasured; accuracy and unique vulnerability counts are not established.
+
 ### Added
 
 - Portable Codex Security scans show a live, searchable preview of saved discovery candidates, including hypotheses, potential impact and source locations. Candidates remain explicitly provisional until final validation and are never counted as confirmed findings.
@@ -14,15 +19,11 @@ with the Docker and engine-update work; earlier history remains in
 
 - Assessment Graphify prefetch now allocates from the complete stage prompt and model context window, reserving completion, protocol and continuation capacity. Adaptive projections have no fixed window count or function-length cutoff; omitted ranges are explicitly supplied for follow-up inspection. Token budgeting remains estimated and the serialized-wire context guard remains authoritative.
 
-- Candidate assessment source projection now scales with candidate anchors instead of the fixed 16 KiB/eight-window sample. Larger pages prioritize anchor symbols, include more related source and expand excerpts to whole small functions while preserving context enforcement and unrestricted productive tool use.
-
 - Resuming after an execution-policy update reuses validated recovery child checkpoints even when the new policy has a fresh retry journal, avoiding a repeated full parent analysis.
 
 - Standard and Deep no longer terminate or force result writing at a cumulative number of tool calls or model turns. Repeated inspection results and failed inspection streaks receive actionable model guidance; new evidence resets that detection. Context, byte/usage, cancellation and artifact validation remain enforced.
 
 - Recovery progress distinguishes the previous failure from current activity, including legacy workers already running. New worker recovery pages report analyzing/completed parts and reused checkpoints instead of repeating a stale failure label; raw failure events remain unchanged.
-
-- Deep scans no longer stop or force artifact finalization because a session reaches a cumulative tool-call count. Context, model-turn, output, artifact-repair and cancellation checks remain enforced; Standard and capability probes keep their existing tool limits.
 
 - Responses now sends strict, stage-specific Portable artifact schemas with complete nested required fields, preventing omitted discovery candidates from relying solely on repeated model repair prompts. Legacy mixed-stage and other provider contracts remain unchanged; local source and evidence validation still applies.
 - Responses artifact repair repeats a concise structural instruction when discovery omits its required candidates array, preserving paired tool outputs and existing retry and validation limits.
@@ -41,10 +42,10 @@ with the Docker and engine-update work; earlier history remains in
 - Portable completion-token ceilings now reach Chat Completions and Responses requests, including repair/finalization turns, instead of being silently dropped after session validation. Existing configured ceilings are preserved; this does not impose a scan-duration timeout or reduce source coverage.
 - Discovery write diagnostics now distinguish a non-object payload, a missing or incorrectly typed candidate list, and too many candidates. Repair hints use safe structural metadata without logging rejected claims or discarding leads.
 - Portable Standard and Deep now carry distinct investigation-depth guidance into dataflow and validation: focused main-path decisions for Standard, relevant alternate paths and counterevidence for Deep, with identical confirmation requirements and no repeated investigation during reporting.
-- New full Standard scans cover the same complete source/configuration universe as Deep, using immutable graph-ordered batches with full source projection. Standard limits investigation depth per batch rather than selecting a subset of files. Missing graph nodes never exclude source, and incomplete batches prevent successful completion.
+- New full Standard scans cover the same complete source/configuration universe as Deep, using immutable graph-ordered batches with full source projection. Standard uses overview-first investigation rather than selecting a subset of files. Missing graph nodes never exclude source, and incomplete batches prevent successful completion.
 - Standard batch plans and accepted checkpoints survive recovery without importing findings from other scans. Historical sampled Standard runs retain their existing resume contract; new runs no longer use the two-pass sample or twelve-target fallback.
 
-- Standard discovery receives bounded Graphify source neighborhoods before model exploration. New graph recovery plans group targets into at most three checkpointed partial-source sessions instead of twelve whole-file sessions; legacy plans retain their existing layout. Partial coverage remains explicitly unexamined.
+- Legacy sampled Standard discovery receives bounded Graphify source neighborhoods before model exploration. New graph recovery plans group targets into at most three checkpointed partial-source sessions instead of twelve whole-file sessions; legacy plans retain their existing layout. Partial coverage remains explicitly unexamined.
 - Portable prompts render the carried dossier as readable JSON and state candidate narrative byte bounds. Candidate rejection telemetry now retains safe structural details, and projected discovery can finish without a redundant whole-file read.
 
 - Portable sessions guard estimated context (300K including completion reserve, or the selected model's smaller window), stop three identical invalid writes and expose candidate-specific evidence repair diagnostics. Failed pages retry with fresh histories and smaller units while preserving accepted subpages and accumulated usage. Server startup can recover interrupted Portable runs under the same ID with strict checkpoint validation and a persistent two-restart limit; terminal/cancelled runs are not restarted.
@@ -54,10 +55,10 @@ with the Docker and engine-update work; earlier history remains in
 - Portable discovery repairs identify the exact rejected scope field and allowed reason values, with safe structural diagnostics in telemetry. Prompt examples keep inspected and unexamined paths disjoint; repairs preserve candidate claims and source-evidence requirements.
 - Portable workers preserve the configured managed Graphify location, including the bundled Docker runtime. Generated graph caches stay outside Git.
 - Native scanner usage exhaustion is classified as an incomplete scan with a quota-specific terminal message. Other nonzero exits remain failures, and partial scanner output stays available.
-- Portable Standard runs one bounded complementary discovery pass before assessment, even when the first pass finds a candidate. It prioritizes different trust boundaries and unexamined scope, retains both artifacts and total usage, and leaves Deep's exhaustive partitions unchanged.
+- Legacy sampled Portable Standard runs one bounded complementary discovery pass before assessment, even when the first pass finds a candidate. It prioritizes different trust boundaries and unexamined scope, retains both artifacts and total usage, and leaves Deep's exhaustive partitions unchanged.
 - Discovery scope repair now returns a bounded server-observed list of successful source reads, so the model can correct an invalid artifact directly instead of spending turns rediscovering files. Candidate telemetry counts unique carried IDs across both Standard discovery passes.
 - Portable source-read guidance now explains full-file reads and hard byte limits, with actionable recovery instructions instead of repeated undersized reads. Rejected workspace tools expose safe error codes in telemetry without recording source content or arguments.
-- Portable stages reuse their source map, avoid repeated reads within a stage and focus assessment/report work on the carried candidates. Independent validation and mandatory Deep coverage remain required; tool and turn budgets are ceilings rather than exploration targets.
+- Portable stages reuse their source map, avoid repeated reads within a stage and focus assessment/report work on the carried candidates. Independent validation and mandatory Deep coverage remain required; productive exploration has no cumulative tool/turn ceiling.
 - Portable Standard no longer accepts a discovery placeholder as a successful zero-finding review. Live discovery requires a substantive summary and explicit file scope backed by successful source reads; listings, search hits and failed reads do not count. Standard exploration uses the normal finalization reserve, and Portable finalization/repair guidance preserves candidate context instead of requesting an empty completion.
 - Portable discovery requires an explicit candidate array and preserves each new candidate's hypothesis, attacker, prerequisites, expected impact and suspected control failure. Missing candidate output can no longer silently become a successful zero-finding Standard scan.
 - Portable validation can inspect callers and controls across the immutable snapshot, including paginated Deep assessments. Unsupported confirmation reasons are rejected; new high/critical report findings require a severity rationale. These checks strengthen the evidence contract and do not replace security review.
@@ -70,7 +71,7 @@ with the Docker and engine-update work; earlier history remains in
 
 - Portable workers tolerate closed API output pipes and persist their redacted events independently, so a development API reload does not lose metrics or terminate a scan through a broken output pipe.
 
-- Portable Codex Security scans no longer expire after a fixed elapsed time in Standard or Deep mode. Manual cancellation and configured cost, turn, tool and byte limits remain enforced.
+- Portable Codex Security scans no longer expire after a fixed elapsed time in Standard or Deep mode. Manual cancellation and configured cost, context, byte and artifact checks remain enforced.
 
 - Registering an already enrolled repository now returns a conflict instead of overwriting its name, executor or settings. GitHub repositories already enrolled are identified and disabled in the registration picker.
 
