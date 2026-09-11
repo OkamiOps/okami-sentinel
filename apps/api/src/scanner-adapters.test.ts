@@ -973,6 +973,7 @@ test("VulnHunter agent-session prompt uses only canonical virtual paths", async 
   assert.match(prompt, /repository-relative paths to workspace_(?:read|search)/i);
   assert.match(prompt, /results_write exactly once/i);
   assert.match(prompt, /only tool call in its turn/i);
+  assert.match(prompt, /no cumulative tool-call or model-turn ceiling/i);
   assert.doesNotMatch(prompt, /(?:workspace|results)\./);
   assert.match(prompt, /sentinel-findings\.json/i);
   assert.doesNotMatch(prompt, /artifacts\s*:\s*\[/i);
@@ -1114,6 +1115,57 @@ test("failed Mantis runs with normalized findings remain explicit partial result
     assert.equal(refreshed.cost, null);
     assert.equal(refreshed.usage?.inputTokens, 10);
     assert.equal(refreshed.revision, "content:abc");
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("Mantis worker interruption with a resumable runtime remains incomplete for automatic recovery", () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-mantis-auto-recovery-"));
+  const startedAt = "2026-08-10T10:00:00.000Z";
+  try {
+    writeMantisRuntime(fixtureRoot, {
+      engine: "mantis", status: "running", stage: "researcher", stageLabel: "Research", percent: 40,
+      detail: "running mantis-researcher", startedAt, updatedAt: startedAt, completedAt: null,
+      snapshotId: "content:checkpoint", sourceRef: "fixture", findings: 0,
+      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 }, error: null,
+    });
+    const refreshed = refreshMantisRunFromDisk({
+      id: "mantis-auto-recovery", displayName: "fixture", repositoryPath: fixtureRoot, revision: null,
+      scanDir: fixtureRoot, status: "running", model: "gpt-5.6-sol", effort: "high",
+      mode: "standard", engine: "mantis", provider: "openai", authMode: "api-key",
+      scannerVersion: null, recipeHash: "fixture", startedAt,
+      completedAt: null, durationMs: null, cost: null,
+      severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0, total: 0 },
+      source: "benchmark", pid: null, execution: null,
+    });
+    assert.equal(refreshed.status, "incomplete");
+    assert.equal(refreshed.revision, "content:checkpoint");
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("Mantis reconciliation preserves queued recovery during its capability probe", () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-mantis-queued-recovery-"));
+  const startedAt = "2026-08-10T10:00:00.000Z";
+  try {
+    writeMantisRuntime(fixtureRoot, {
+      engine: "mantis", status: "running", stage: "review", stageLabel: "Review", percent: 60,
+      detail: null, startedAt, updatedAt: startedAt, completedAt: null, snapshotId: "content:checkpoint",
+      sourceRef: "fixture", findings: 0,
+      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 }, error: null,
+    });
+    const queued: ScanRun = {
+      id: "mantis-queued", displayName: "fixture", repositoryPath: fixtureRoot, revision: null,
+      scanDir: fixtureRoot, status: "queued", model: "gpt-5.6-sol", effort: "high",
+      mode: "standard", engine: "mantis", provider: "openai", authMode: "api-key",
+      scannerVersion: null, recipeHash: "fixture", startedAt,
+      completedAt: null, durationMs: null, cost: null,
+      severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0, total: 0 },
+      source: "benchmark", pid: null, execution: null,
+    };
+    assert.deepEqual(refreshMantisRunFromDisk(queued), queued);
   } finally {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }
@@ -1487,6 +1539,57 @@ test("VulnHunter reconciliation closes an orphaned running record without runtim
     assert.equal(refreshed.status, "failed");
     assert.equal(refreshed.pid, null);
     assert.ok(refreshed.completedAt);
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("VulnHunter worker interruption with a resumable runtime remains incomplete for automatic recovery", () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-vulnhunter-auto-recovery-"));
+  const startedAt = "2026-08-10T10:00:00.000Z";
+  try {
+    writeVulnHunterRuntime(fixtureRoot, {
+      engine: "vulnhunter", status: "running", stage: "verify", stageLabel: "Verify", percent: 60,
+      detail: null, startedAt, updatedAt: startedAt, completedAt: null, snapshotId: "content:checkpoint",
+      sourceRef: "fixture", findings: 0,
+      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 }, error: null,
+    });
+    const refreshed = refreshVulnHunterRunFromDisk({
+      id: "vulnhunter-auto-recovery", displayName: "fixture", repositoryPath: fixtureRoot, revision: null,
+      scanDir: fixtureRoot, status: "running", model: "gpt-5.6-sol", effort: "high",
+      mode: "standard", engine: "vulnhunter", provider: "openai", authMode: "api-key",
+      scannerVersion: null, recipeHash: "fixture", startedAt,
+      completedAt: null, durationMs: null, cost: null,
+      severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0, total: 0 },
+      source: "benchmark", pid: null, execution: null,
+    });
+    assert.equal(refreshed.status, "incomplete");
+    assert.equal(refreshed.revision, "content:checkpoint");
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("VulnHunter reconciliation preserves queued recovery during its capability probe", () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-vulnhunter-queued-recovery-"));
+  const startedAt = "2026-08-10T10:00:00.000Z";
+  try {
+    writeVulnHunterRuntime(fixtureRoot, {
+      engine: "vulnhunter", status: "running", stage: "verify", stageLabel: "Verify", percent: 60,
+      detail: null, startedAt, updatedAt: startedAt, completedAt: null, snapshotId: "content:checkpoint",
+      sourceRef: "fixture", findings: 0,
+      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 }, error: null,
+    });
+    const queued: ScanRun = {
+      id: "vulnhunter-queued", displayName: "fixture", repositoryPath: fixtureRoot, revision: null,
+      scanDir: fixtureRoot, status: "queued", model: "gpt-5.6-sol", effort: "high",
+      mode: "standard", engine: "vulnhunter", provider: "openai", authMode: "api-key",
+      scannerVersion: null, recipeHash: "fixture", startedAt,
+      completedAt: null, durationMs: null, cost: null,
+      severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0, total: 0 },
+      source: "benchmark", pid: null, execution: null,
+    };
+    assert.deepEqual(refreshVulnHunterRunFromDisk(queued), queued);
   } finally {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }

@@ -27,6 +27,7 @@ import { buildVulnHunterPrompt } from "./vulnhunter-runtime.js";
 import {
   createVulnHunterHttpRunner,
   validateVulnHunterHttpWorkerConfiguration,
+  VULNHUNTER_HTTP_SESSION_LIMITS,
   VulnHunterHttpRunnerError,
   type SafeVulnHunterProviderPlan,
 } from "./vulnhunter-http-runner.js";
@@ -1016,6 +1017,14 @@ test("VulnHunter direct xAI OAuth preserves bounded external cancellation", asyn
   }
 });
 
+test("VulnHunter HTTP sessions do not impose cumulative action ceilings", () => {
+  assert.equal(VULNHUNTER_HTTP_SESSION_LIMITS.maxModelTurns, 0);
+  assert.equal(VULNHUNTER_HTTP_SESSION_LIMITS.maxToolCalls, 0);
+  assert.ok(VULNHUNTER_HTTP_SESSION_LIMITS.maxInputBytes > 0);
+  assert.ok(VULNHUNTER_HTTP_SESSION_LIMITS.maxOutputBytes > 0);
+  assert.ok(VULNHUNTER_HTTP_SESSION_LIMITS.timeoutMs > 0);
+});
+
 test("VulnHunter HTTP accepts one universal findings report and keeps legacy normalization", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-vulnhunter-http-artifacts-"));
   const snapshotRoot = path.join(root, "vulnhunter-snapshot");
@@ -1034,7 +1043,11 @@ test("VulnHunter HTTP accepts one universal findings report and keeps legacy nor
       assert.match(spec.instructions, new RegExp(VULNHUNTER_HTTP_BUNDLE_NAME));
       assert.equal(spec.resultArtifactContract, "vulnhunter-report-v1");
       assert.equal(spec.terminalMode, "artifact-write");
-      assert.equal(spec.artifactWriteByTurn, 21);
+      assert.equal(spec.limits.maxModelTurns, 0);
+      assert.equal(spec.limits.maxToolCalls, 0);
+      assert.equal(spec.artifactWriteByTurn, undefined);
+      assert.equal(spec.minSourceReadsBeforeArtifact, 3);
+      assert.match(spec.instructions, /no cumulative tool-call or model-turn ceiling/i);
       writeValidBundle(spec.artifactRoot);
       return completedSession([
         { type: "tool", phase: "requested", callId: "list-1", name: "workspace.list" },
@@ -1059,6 +1072,7 @@ test("VulnHunter HTTP accepts one universal findings report and keeps legacy nor
         scopePaths: [],
         pathMode: "agent-session",
       }),
+      minSourceReadsBeforeArtifact: 3,
       signal: new AbortController().signal,
     });
     assert.doesNotThrow(() => assertVulnHunterNonOperationalArtifacts(resultsDir));

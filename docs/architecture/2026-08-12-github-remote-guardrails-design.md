@@ -229,12 +229,16 @@ teste do GitHub não vira a identidade da análise.
 #### `SnapshotMaterializer`
 
 Produz uma pasta somente leitura dentro de uma raiz gerenciada. Para GitHub, o
-materializador baixa archives da base e do head usando commit IDs completos.
-Para Git local com refs commitadas, usa snapshots derivados dos mesmos SHAs.
+materializador clona o SHA congelado da base e do head (`git fetch --depth 1`
+do commit, sem pasta permanente). O tarball da API GitHub permanece como
+fallback. Para Git local com refs commitadas, usa snapshots derivados dos
+mesmos SHAs.
 
 O materializador:
 
 - nunca coloca token na URL persistida ou nos logs;
+- autentica o fetch Git com `http.extraHeader` e apaga `.git` depois do checkout;
+- recusa um snapshot de head sem arquivos;
 - segue redirects somente para hosts permitidos pelo adapter GitHub;
 - rejeita path absoluto, `..`, device nodes e hardlinks perigosos;
 - impede travessia de symlink durante leitura;
@@ -299,8 +303,8 @@ sequenceDiagram
     U->>S: Start gate for PR or refs
     S->>G: Resolve repo, base SHA and head SHA
     S->>G: Read policy from policy SHA
-    S->>G: Download base and head archives
-    S->>S: Safe extract and compute changeset
+    S->>G: Fetch exact base and head SHAs
+    S->>S: Immutable snapshot and changeset
     S->>R: Scan immutable head snapshot
     R-->>S: Findings and usage
     S->>S: Evaluate with gate-core

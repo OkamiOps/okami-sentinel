@@ -42,13 +42,16 @@ import {
 } from "./process-identity.js";
 import { listActiveRuns } from "./scan-list.js";
 import { refreshMantisRunFromDisk } from "./scanners/mantis-reconcile.js";
+import { readMantisRuntime } from "./scanners/mantis-runtime.js";
 import { refreshPortableCodexSecurityRunFromDisk } from "./scanners/portable-codex-security-reconcile.js";
 import { readPortableCodexSecurityRuntime } from "./scanners/portable-codex-security-runtime.js";
 import {
+  httpAgentRecoveryCandidate,
   recoverPortableScansAfterWorkerInterruption,
   type ServerRecoveryOutcome,
 } from "./scanners/portable-server-recovery.js";
 import { refreshVulnHunterRunFromDisk } from "./scanners/vulnhunter-reconcile.js";
+import { readVulnHunterRuntime } from "./scanners/vulnhunter-runtime.js";
 
 interface WorkbenchScanRow {
   id: string;
@@ -1585,37 +1588,47 @@ export interface RunningScanReconciliationResult {
   recovery: ServerRecoveryOutcome[];
 }
 
+function refreshHttpAgentRunFromDisk(run: ScanRun, recoverInterruptedQueue: boolean): ScanRun {
+  const input = recoverInterruptedQueue && run.status === "queued"
+    ? { ...run, status: "running" as const }
+    : run;
+  if (run.engine === "mantis") return refreshMantisRunFromDisk(input);
+  if (run.engine === "vulnhunter") return refreshVulnHunterRunFromDisk(input);
+  if (isPortableCodexSecurityRun(run)) return refreshPortableCodexSecurityRunFromDisk(input);
+  return run;
+}
+
+function readHttpAgentRuntime(run: ScanRun): { status: string; snapshotId: string | null } | null {
+  if (run.engine === "mantis") return readMantisRuntime(run.scanDir);
+  if (run.engine === "vulnhunter") return readVulnHunterRuntime(run.scanDir);
+  if (isPortableCodexSecurityRun(run)) return readPortableCodexSecurityRuntime(run.scanDir);
+  return null;
+}
+
+function isRecoverableHttpAgentInterruption(run: ScanRun, refreshed: ScanRun): boolean {
+  if ((run.status !== "running" && run.status !== "queued") || refreshed.status !== "incomplete") {
+    return false;
+  }
+  if (httpAgentRecoveryCandidate(run) === null) return false;
+  const runtime = readHttpAgentRuntime(run);
+  return runtime !== null &&
+    (runtime.status === "running" || runtime.status === "preparing") &&
+    typeof runtime.snapshotId === "string" &&
+    runtime.snapshotId.length > 0;
+}
+
 /** Sync terminal status/cost from workbench for active persisted scans. */
 function reconcileRunningScansInternal(recoverInterruptedQueue = false): RunningScanReconciliation {
   let updated = 0;
   const recoverablePortableIds: string[] = [];
   for (const run of listActiveRuns()) {
     const before = `${run.status}|${run.cost?.estimatedUsd ?? 0}|${run.severity.total}`;
-    if (run.engine === "mantis") {
-      const refreshed = refreshMantisRunFromDisk(run);
+    if (run.engine === "mantis" || run.engine === "vulnhunter" || isPortableCodexSecurityRun(run)) {
+      const refreshed = refreshHttpAgentRunFromDisk(run, recoverInterruptedQueue);
       persistRunWithFindingCategoryMetrics(refreshed, true);
       const after = `${refreshed.status}|${refreshed.cost?.estimatedUsd ?? 0}|${refreshed.severity.total}`;
       if (before !== after) updated += 1;
-      continue;
-    }
-    if (run.engine === "vulnhunter") {
-      const refreshed = refreshVulnHunterRunFromDisk(run);
-      persistRunWithFindingCategoryMetrics(refreshed, true);
-      const after = `${refreshed.status}|${refreshed.cost?.estimatedUsd ?? 0}|${refreshed.severity.total}`;
-      if (before !== after) updated += 1;
-      continue;
-    }
-    if (isPortableCodexSecurityRun(run)) {
-      const refreshed = refreshPortableCodexSecurityRunFromDisk(
-        recoverInterruptedQueue && run.status === "queued" ? { ...run, status: "running" } : run,
-      );
-      persistRunWithFindingCategoryMetrics(refreshed, true);
-      const after = `${refreshed.status}|${refreshed.cost?.estimatedUsd ?? 0}|${refreshed.severity.total}`;
-      if (before !== after) updated += 1;
-      const runtime = readPortableCodexSecurityRuntime(run.scanDir);
-      if ((run.status === "running" || run.status === "queued") && refreshed.status === "incomplete" &&
-          runtime !== null && (runtime.status === "running" || runtime.status === "preparing") &&
-          typeof runtime.snapshotId === "string" && runtime.snapshotId.length > 0) {
+      if (isRecoverableHttpAgentInterruption(run, refreshed)) {
         recoverablePortableIds.push(run.id);
       }
       continue;
@@ -1638,7 +1651,7 @@ export function reconcileRunningScans(): number {
   return reconcileRunningScansInternal().updated;
 }
 
-/** Reconciles local workers and resumes interrupted Portable runs under the same ID. */
+/** Reconciles local workers and resumes interrupted HTTP-agent runs under the same ID. */
 export async function reconcileRunningScansAndRecover(options: { afterLocalRestart?: boolean } = {}): Promise<RunningScanReconciliationResult> {
   const result = reconcileRunningScansInternal(options.afterLocalRestart === true);
   const recovery = result.recoverablePortableIds.length === 0

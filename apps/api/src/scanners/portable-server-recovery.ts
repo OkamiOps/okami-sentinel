@@ -7,6 +7,7 @@ export interface ServerRecoveryCandidate {
   scanDir: string;
   status: string;
   portable: boolean;
+  journalName?: string;
 }
 export interface ServerRecoveryDependencies {
   getCandidate(id: string): ServerRecoveryCandidate | null;
@@ -51,7 +52,7 @@ export async function recoverPortableServerRuns(ids: readonly string[], dependen
     }
     try {
       const prepared = await dependencies.prepare(candidate);
-      const journal = path.join(candidate.scanDir, "portable-server-recovery.json");
+      const journal = path.join(candidate.scanDir, candidate.journalName ?? "portable-server-recovery.json");
       let attempts = 0;
       if (fs.existsSync(journal)) {
         const stat = fs.lstatSync(journal);
@@ -99,25 +100,101 @@ export async function recoverPortableScansAfterServerRestart(ids: readonly strin
   return recoverPortableScansAfterWorkerInterruption(ids);
 }
 
-/** Reconcile an interrupted Portable worker under its existing scan ID. */
+/** Portable Codex Security, Mantis HTTP, and VulnHunter HTTP share same-ID recovery. */
+export function httpAgentRecoveryCandidate(
+  run: { id: string; engine: string; scanDir: string; status: string; execution?: { executionProfile?: string } | null },
+): ServerRecoveryCandidate | null {
+  if (run.engine === "codex-security" && run.execution?.executionProfile === "portable") {
+    return { id: run.id, scanDir: run.scanDir, status: run.status, portable: true };
+  }
+  if (run.engine === "mantis" && fs.existsSync(path.join(run.scanDir, "mantis-http-run.json"))) {
+    return {
+      id: run.id,
+      scanDir: run.scanDir,
+      status: run.status,
+      portable: true,
+      journalName: "mantis-http-server-recovery.json",
+    };
+  }
+  if (run.engine === "vulnhunter") {
+    const configPath = path.join(run.scanDir, "vulnhunter-run.json");
+    if (!fs.existsSync(configPath)) return null;
+    try {
+      const config = JSON.parse(fs.readFileSync(configPath, "utf8")) as { providerPlan?: unknown };
+      if (config.providerPlan === undefined) return null;
+    } catch {
+      return null;
+    }
+    return {
+      id: run.id,
+      scanDir: run.scanDir,
+      status: run.status,
+      portable: true,
+      journalName: "vulnhunter-http-server-recovery.json",
+    };
+  }
+  return null;
+}
+
+/** Reconcile an interrupted Portable, Mantis HTTP, or VulnHunter HTTP worker under its existing scan ID. */
 export async function recoverPortableScansAfterWorkerInterruption(ids: readonly string[]): Promise<ServerRecoveryOutcome[]> {
-  const [{ getRun, getDb, upsertRun, reserveScanCapacity, releaseScanCapacity }, { MAX_CONCURRENT_SCANS },
+  const [{ getRun, getDb, upsertRun, reserveScanCapacity, releaseScanCapacity }, { MAX_CONCURRENT_SCANS, ROOT_DIR },
     { getProviderRuntime }, { cliLogPath }, identity, { readPortableCodexSecurityWorkerConfiguration },
-    { preflightPortableResume }, { spawn }, { isDraining }] = await Promise.all([
+    { preflightPortableResume }, { spawn }, { isDraining },
+    { readMantisHttpWorkerConfiguration }, { readMantisRuntime },
+    { validateVulnHunterHttpWorkerConfiguration }, { readVulnHunterRuntime }] = await Promise.all([
     import("../db.js"), import("../config.js"), import("../provider-runtime.js"), import("../activity.js"),
     import("../process-identity.js"), import("./portable-codex-security-worker.js"), import("./resume-portable-scan.js"),
     import("node:child_process"), import("../shutdown.js"),
+    import("./mantis-http-runner.js"), import("./mantis-runtime.js"),
+    import("./vulnhunter-http-runner.js"), import("./vulnhunter-runtime.js"),
   ]);
   return recoverPortableServerRuns(ids, {
     getCandidate(id) {
       const run = getRun(id);
-      return run ? { id, scanDir: run.scanDir, status: run.status,
-        portable: run.engine === "codex-security" && run.execution?.executionProfile === "portable" } : null;
+      return run ? httpAgentRecoveryCandidate(run) : null;
     },
     hasProcess: directory => identity.findProcessIdentitiesForScanDir(directory).length > 0,
     async prepare(candidate) {
       if (isDraining()) throw new Error("restart_draining");
       const run = getRun(candidate.id)!;
+      if (run.engine === "mantis") {
+        const configPath = path.join(run.scanDir, "mantis-http-run.json");
+        const config = readMantisHttpWorkerConfiguration(configPath);
+        if (path.resolve(config.outputDir) !== path.resolve(run.scanDir) || config.providerPlan.scanId !== run.id) {
+          throw new Error("restart_state_invalid");
+        }
+        const previous = readMantisRuntime(run.scanDir);
+        if (previous === null || (previous.status !== "running" && previous.status !== "preparing")) {
+          throw new Error("restart_terminal_runtime");
+        }
+        if (!previous.snapshotId) throw new Error("restart_no_checkpoint");
+        return {
+          snapshotId: previous.snapshotId,
+          start: () => startRecoveredHttpWorker({
+            run, configPath, config, workerFile: "mantis-http-worker.ts", extraArgs: [], cwd: ROOT_DIR,
+          }),
+        };
+      }
+      if (run.engine === "vulnhunter") {
+        const configPath = path.join(run.scanDir, "vulnhunter-run.json");
+        const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+        validateVulnHunterHttpWorkerConfiguration(config);
+        if (path.resolve(config.outputDir) !== path.resolve(run.scanDir) || config.providerPlan?.scanId !== run.id) {
+          throw new Error("restart_state_invalid");
+        }
+        const previous = readVulnHunterRuntime(run.scanDir);
+        if (previous === null || (previous.status !== "running" && previous.status !== "preparing")) {
+          throw new Error("restart_terminal_runtime");
+        }
+        if (!previous.snapshotId) throw new Error("restart_no_checkpoint");
+        return {
+          snapshotId: previous.snapshotId,
+          start: () => startRecoveredHttpWorker({
+            run, configPath, config, workerFile: "vulnhunter-worker.ts", extraArgs: [], cwd: ROOT_DIR,
+          }),
+        };
+      }
       const configPath = path.join(run.scanDir, "portable-codex-security-run.json");
       const config = readPortableCodexSecurityWorkerConfiguration(configPath);
       if (path.resolve(config.outputDir) !== path.resolve(run.scanDir) || config.providerPlan.scanId !== run.id) throw new Error("restart_state_invalid");
@@ -125,47 +202,79 @@ export async function recoverPortableScansAfterWorkerInterruption(ids: readonly 
       if (previous.status !== "running" && previous.status !== "preparing") throw new Error("restart_terminal_runtime");
       if (!previous.snapshotId) throw new Error("restart_no_checkpoint");
       return { snapshotId: previous.snapshotId, async start() {
-        if (isDraining()) throw new Error("restart_draining");
-        claimPortableRestartCapacity(
-          () => reserveScanCapacity(run.id, MAX_CONCURRENT_SCANS),
-          () => getDb().prepare("UPDATE runs SET status = 'queued' WHERE id = ? AND status = 'incomplete'").run(run.id).changes === 1,
-          () => releaseScanCapacity(run.id),
-        );
-        try {
-          upsertRun({ ...run, status: "queued", pid: null, completedAt: null, durationMs: null });
-          const runtime = getProviderRuntime();
-          const frozen = runtime.store.getSnapshot(run.id);
-          if (!frozen?.modelId) throw new Error("restart_state_invalid");
-          const probe = await runtime.connections.probe(frozen.connectionId, { connectionId: frozen.connectionId,
-            modelId: frozen.modelId, modelSelectionMode: "catalog" });
-          if (probe?.report.status !== "passed") throw new Error("restart_capability_unavailable");
-          if (isDraining() || getRun(run.id)?.status !== "queued") throw new Error("restart_draining");
-          if (identity.findProcessIdentitiesForScanDir(run.scanDir).length) throw new Error("restart_state_invalid");
-          releaseInterruptedSessionLocks(path.join(run.scanDir, "portable-recovery"));
-          atomicJson(configPath, { ...config, providerPlan: { ...config.providerPlan, capabilityCheckId: probe.report.id } });
-          runtime.store.refreshSnapshotCapability(run.id, frozen.capabilityCheckId, probe.report.id);
-          const descriptor = fs.openSync(cliLogPath(run.scanDir), "a", 0o600);
-          let child;
-          try { child = spawn(process.execPath, ["--import", "tsx", path.join(import.meta.dirname, "portable-codex-security-worker.ts"), configPath, "--resume-discovery"],
-            { cwd: path.resolve(import.meta.dirname, "../.."), detached: true, stdio: ["ignore", descriptor, descriptor], env: process.env }); }
-          finally { fs.closeSync(descriptor); }
-          await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
-          assertPortableRestartLaunchAllowed(getRun(run.id)?.status, isDraining(), () => { child.kill("SIGTERM"); });
-          const processIdentity = identity.captureProcessIdentity(child.pid!, run.scanDir);
-          if (!processIdentity || !identity.persistProcessIdentity(run.scanDir, processIdentity)) {
-            child.kill("SIGTERM"); throw new Error("restart_state_invalid");
-          }
-          assertPortableRestartLaunchAllowed(getRun(run.id)?.status, isDraining(), () => { child.kill("SIGTERM"); });
-          upsertRun({ ...run, status: "running", pid: child.pid!, completedAt: null, durationMs: null,
-            execution: { ...run.execution!, capabilityCheckId: probe.report.id } });
-          child.unref();
-        } catch (error) {
-          const current = getRun(run.id);
-          if (current?.status === "queued") upsertRun({ ...run, status: "incomplete", pid: null });
-          releaseScanCapacity(run.id);
-          throw error;
-        }
+        await startRecoveredHttpWorker({
+          run, configPath, config, workerFile: "portable-codex-security-worker.ts",
+          extraArgs: ["--resume-discovery"], cwd: path.resolve(import.meta.dirname, "../.."),
+          sessionLocksDir: path.join(run.scanDir, "portable-recovery"),
+        });
       } };
     },
   });
+
+  async function startRecoveredHttpWorker(input: {
+    run: NonNullable<ReturnType<typeof getRun>>;
+    configPath: string;
+    config: { providerPlan: { scanId: string; capabilityCheckId?: string } };
+    workerFile: string;
+    extraArgs: string[];
+    cwd: string;
+    sessionLocksDir?: string;
+  }): Promise<void> {
+    const { run, configPath, config } = input;
+    if (isDraining()) throw new Error("restart_draining");
+    claimPortableRestartCapacity(
+      () => reserveScanCapacity(run.id, MAX_CONCURRENT_SCANS),
+      () => getDb().prepare("UPDATE runs SET status = 'queued' WHERE id = ? AND status = 'incomplete'").run(run.id).changes === 1,
+      () => releaseScanCapacity(run.id),
+    );
+    try {
+      upsertRun({ ...run, status: "queued", pid: null, completedAt: null, durationMs: null });
+      const runtime = getProviderRuntime();
+      const frozen = runtime.store.getSnapshot(run.id);
+      if (!frozen?.modelId) throw new Error("restart_state_invalid");
+      const probe = await runtime.connections.probe(frozen.connectionId, {
+        connectionId: frozen.connectionId,
+        modelId: frozen.modelId,
+        modelSelectionMode: "catalog",
+      });
+      if (probe?.report.status !== "passed") throw new Error("restart_capability_unavailable");
+      if (isDraining() || getRun(run.id)?.status !== "queued") throw new Error("restart_draining");
+      if (identity.findProcessIdentitiesForScanDir(run.scanDir).length) throw new Error("restart_state_invalid");
+      if (input.sessionLocksDir) releaseInterruptedSessionLocks(input.sessionLocksDir);
+      atomicJson(configPath, { ...config, providerPlan: { ...config.providerPlan, capabilityCheckId: probe.report.id } });
+      runtime.store.refreshSnapshotCapability(run.id, frozen.capabilityCheckId, probe.report.id);
+      const descriptor = fs.openSync(cliLogPath(run.scanDir), "a", 0o600);
+      let child;
+      try {
+        child = spawn(
+          process.execPath,
+          ["--import", "tsx", path.join(import.meta.dirname, input.workerFile), configPath, ...input.extraArgs],
+          { cwd: input.cwd, detached: true, stdio: ["ignore", descriptor, descriptor], env: process.env },
+        );
+      } finally { fs.closeSync(descriptor); }
+      await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+      assertPortableRestartLaunchAllowed(getRun(run.id)?.status, isDraining(), () => { child.kill("SIGTERM"); });
+      const processIdentity = identity.captureProcessIdentity(child.pid!, run.scanDir);
+      if (!processIdentity || !identity.persistProcessIdentity(run.scanDir, processIdentity)) {
+        child.kill("SIGTERM"); throw new Error("restart_state_invalid");
+      }
+      assertPortableRestartLaunchAllowed(getRun(run.id)?.status, isDraining(), () => { child.kill("SIGTERM"); });
+      upsertRun({
+        ...run,
+        status: "running",
+        pid: child.pid!,
+        completedAt: null,
+        durationMs: null,
+        execution: run.execution === null || run.execution === undefined
+          ? run.execution
+          : { ...run.execution, capabilityCheckId: probe.report.id },
+      });
+      child.unref();
+    } catch (error) {
+      const current = getRun(run.id);
+      if (current?.status === "queued") upsertRun({ ...run, status: "incomplete", pid: null });
+      releaseScanCapacity(run.id);
+      throw error;
+    }
+  }
 }

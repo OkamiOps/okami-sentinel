@@ -118,6 +118,38 @@ export function isProbeOnlyCompatibilityBlock(
     compatibility.reasons.every((reason) => CAPABILITY_PROBE_REASONS.has(reason));
 }
 
+/**
+ * A probe-only result from a previous engine/model must not start (and then
+ * cancel) a probe for the selection currently on screen.
+ */
+export function shouldStartCapabilityProbe(input: {
+  selection: ScanConnectionSelection | null;
+  compatibility: ConnectionCompatibility | null;
+  attemptedKey: string | null;
+  currentKey: string | null;
+}): boolean {
+  if (
+    input.selection === null
+    || input.selection.modelSelectionMode !== "catalog"
+    || input.selection.modelId === null
+    || input.currentKey === null
+    || input.attemptedKey === input.currentKey
+    || !isProbeOnlyCompatibilityBlock(input.compatibility)
+  ) return false;
+  return input.compatibility !== null
+    && input.compatibility.connectionId === input.selection.connectionId
+    && input.compatibility.modelSelectionMode === input.selection.modelSelectionMode
+    && input.compatibility.modelId === input.selection.modelId;
+}
+
+/** A cancelled in-flight attempt must not look like a completed probe for that key. */
+export function releaseCapabilityProbeAttempt(
+  attemptedKey: string | null,
+  currentKey: string | null,
+): string | null {
+  return attemptedKey === currentKey ? null : attemptedKey;
+}
+
 export interface CapabilityValidationClient {
   probeConnection(connectionId: string, selection: ScanConnectionSelection): Promise<{
     report: CapabilityReport;

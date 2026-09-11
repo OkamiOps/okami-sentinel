@@ -19,6 +19,13 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Fixed
 
+- Guardrails Scan now no longer stays on “validating provider” after choosing an engine and model. A cancelled capability probe (including React Strict Mode remount) can retry the same route, so effort options unlock without switching engines.
+- Guardrails GitHub scans in Docker clone the frozen commit SHA into an ephemeral snapshot (HTTPS remote, GitHub App token only as an HTTP header, never in the URL). The GitHub tarball remains a fallback. An empty snapshot fails closed instead of scanning a missing tree.
+- VulnHunter HTTP sessions and Mantis HTTP stages no longer terminate or force result writing at a cumulative number of tool calls or model turns. Repeated inspections receive the same loop guidance as Portable Codex Security; context, byte/usage, cancellation, wall-clock and artifact validation remain enforced.
+- VulnHunter HTTP and Mantis HTTP refuse an empty snapshot and reject the terminal artifact until the session has fully read a scaled number of distinct source files. An empty findings array is no longer accepted after a listing-only or zero-inspection pass, which previously let GitHub/Docker checkouts complete in seconds with no evidence.
+
+- A Guardrails scan of the default/protected branch no longer tells the operator to run the gate on the principal branch. That run is the baseline reference; the missing-baseline instruction is reserved for pull requests and compares that still need it.
+
 - Give scan metrics and file graph panels distinct React identities, preventing repeated Analysis progress sections during refreshes or tab changes.
 - Replace the paginated radial file diagram with a complete force-directed graph: folder colors, zoom, pan, node dragging, search highlighting and optional connection focus.
 
@@ -37,6 +44,7 @@ with the Docker and engine-update work; earlier history remains in
 - Worker detection recognizes the paired `tsx` preflight/loader Node child, so losing its launcher does not leave an active scan mistaken for a dead process.
 - Status reads and live reconciliation preserve queued recovery during its capability check; local startup still recovers an interrupted queue.
 - Portable scans automatically recover interrupted workers under the same scan ID in local and server modes, including worker exits while the API remains running. Accepted checkpoints, accumulated usage, cancellation and persistent restart limits are preserved.
+- Mantis HTTP and VulnHunter HTTP scans use the same same-ID automatic recovery as Portable Codex Security after worker death or API/server restart. Completed Mantis stage artifacts and the existing VulnHunter snapshot are reused, accumulated usage is kept, and restart attempts stay bounded at two. Local CLI Mantis and VulnHunter without an HTTP provider plan stay incomplete and are not auto-resumed.
 - Discovery recovery can split a single large file into complete consecutive source slices instead of repeating an oversized request. Full-file coverage is published only after every slice succeeds; accepted slices survive later failures.
 - Temporary inference transport failures (network, HTTP 408/429/5xx) receive up to two abortable retries inside the current model turn, without replaying local tools.
 - Standard discovery reserves 16K output tokens instead of 32K, keeping large source batches within the 300K context guard without removing source. Recovery journals retain prior failures and allow bounded attempts under an explicitly changed execution policy.

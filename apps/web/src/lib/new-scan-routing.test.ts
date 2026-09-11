@@ -12,6 +12,8 @@ import {
   defaultReasoningEffortForMode,
   loadLiveConnectionModels,
   isProbeOnlyCompatibilityBlock,
+  releaseCapabilityProbeAttempt,
+  shouldStartCapabilityProbe,
   validateConnectionCapability,
   reasoningEffortPanelClass,
   reasoningEffortViewportClass,
@@ -68,6 +70,42 @@ test("recognizes a selected model blocked only by a missing, stale, or failed ca
   assert.equal(isProbeOnlyCompatibilityBlock({ ...selection, eligible: false, reasons: ["capability_probe_missing", "capability_probe_stale"] }), true);
   assert.equal(isProbeOnlyCompatibilityBlock({ ...selection, eligible: false, reasons: ["capability_probe_missing", "connection_not_ready"] }), false);
   assert.equal(isProbeOnlyCompatibilityBlock({ ...selection, eligible: true, reasons: [] }), false);
+});
+
+test("does not start a capability probe from a previous model's probe-only result", () => {
+  const previous = {
+    connectionId: "connection-a",
+    modelSelectionMode: "catalog" as const,
+    modelId: "old-model",
+    eligible: false,
+    reasons: ["capability_probe_missing"],
+  };
+  const selected = { connectionId: "connection-a", modelSelectionMode: "catalog" as const, modelId: "new-model" };
+  const key = "vulnhunter|connection-a|new-model|openai-completions|0";
+  assert.equal(shouldStartCapabilityProbe({
+    selection: selected,
+    compatibility: previous,
+    attemptedKey: null,
+    currentKey: key,
+  }), false);
+  assert.equal(shouldStartCapabilityProbe({
+    selection: selected,
+    compatibility: { ...previous, modelId: "new-model" },
+    attemptedKey: null,
+    currentKey: key,
+  }), true);
+  assert.equal(shouldStartCapabilityProbe({
+    selection: selected,
+    compatibility: { ...previous, modelId: "new-model" },
+    attemptedKey: key,
+    currentKey: key,
+  }), false);
+  assert.equal(shouldStartCapabilityProbe({
+    selection: selected,
+    compatibility: { ...previous, modelId: "new-model" },
+    attemptedKey: releaseCapabilityProbeAttempt(key, key),
+    currentKey: key,
+  }), true);
 });
 
 test("validates one selected provider model before compatibility and never starts a scan", async () => {

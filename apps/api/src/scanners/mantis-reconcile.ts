@@ -81,6 +81,10 @@ function mappedStatus(
   if (runtimeStatus === "cancelled") return "cancelled";
   if (runtimeStatus === "failed") return hasFindings ? "incomplete" : "failed";
   if (workerIsCurrent(run) || withinBootstrapGrace(run)) return "running";
+  // A dead worker with a live/preparing runtime is still resumable. Keep the
+  // row recoverable even when no finding has been persisted yet; the recovery
+  // coordinator will validate the HTTP snapshot/stage artifacts before dispatch.
+  if (runtimeStatus === "running" || runtimeStatus === "preparing") return "incomplete";
   return hasFindings ? "incomplete" : "failed";
 }
 
@@ -89,7 +93,8 @@ export function refreshMantisRunFromDisk(run: ScanRun): ScanRun {
   // Terminal API/restart decisions are authoritative. A worker may still
   // flush an old running snapshot during TERM/KILL grace, which must not
   // resurrect a cancelled or interrupted run.
-  if (run.status === "cancelled" || run.status === "incomplete") return run;
+  // Queued recovery is owned by its launcher while the capability probe runs.
+  if (run.status === "queued" || run.status === "cancelled" || run.status === "incomplete") return run;
   const runtime = readMantisRuntime(run.scanDir);
   const findingsPath = path.join(run.scanDir, "findings.json");
   const severity = countSeverity(findingsPath) ?? run.severity;

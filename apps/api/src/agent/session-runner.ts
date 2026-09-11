@@ -60,6 +60,9 @@ export async function createAgentSession(
     ...(input.artifactWriteByTurn === undefined
       ? {}
       : { artifactWriteByTurn: input.artifactWriteByTurn }),
+    ...(input.minSourceReadsBeforeArtifact === undefined
+      ? {}
+      : { minSourceReadsBeforeArtifact: input.minSourceReadsBeforeArtifact }),
     ...(input.resultArtifactContract === undefined
       ? {}
       : {
@@ -126,6 +129,10 @@ function validateSessionSpec(input: CreateAgentSessionInput): void {
           input.artifactWriteByTurn < 0 ||
           input.artifactWriteByTurn >= input.limits.maxModelTurns ||
           input.terminalMode !== "artifact-write")) ||
+      (input.minSourceReadsBeforeArtifact !== undefined &&
+        (!Number.isSafeInteger(input.minSourceReadsBeforeArtifact) ||
+          input.minSourceReadsBeforeArtifact < 0 ||
+          input.minSourceReadsBeforeArtifact > 256)) ||
       (input.resultArtifactContract !== undefined &&
         input.resultArtifactContract !== "vulnhunter-report-v1" &&
         input.resultArtifactContract !== PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT &&

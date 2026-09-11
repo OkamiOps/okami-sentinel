@@ -9,6 +9,7 @@ import { gzipSync } from "node:zlib";
 import type { GuardrailRepository } from "@csb/shared";
 import tar from "tar-stream";
 
+import { GitHubCommitCheckoutError } from "./github-commit-checkout.js";
 import {
   SnapshotMaterializationError,
   SnapshotMaterializer,
@@ -233,6 +234,130 @@ test("cancellation removes the in-flight lease root and remains a closed error",
     assert.equal(fs.existsSync(path.join(root, "gate-cancelled--lease-cancelled")), false);
     assert.equal(leases.at(-1)?.state, "failed");
     assert.notEqual(leases.at(-1)?.releasedAt, null);
+  } finally {
+    removeTemporaryRoot(root);
+  }
+});
+
+test("prefers a Git SHA checkout and does not download the archive", async () => {
+  const root = temporaryRoot();
+  const downloads: string[] = [];
+  try {
+    const materializer = new SnapshotMaterializer({
+      root,
+      leases: { save: () => undefined },
+      checkoutCommit: async (_repository, sha, destination) => {
+        fs.writeFileSync(path.join(destination, "from-git.ts"), sha);
+      },
+      downloadArchive: async (_repository, sha) => {
+        downloads.push(sha);
+        throw new Error("archive should not run");
+      },
+      createLeaseId: () => "lease-git",
+      limits: tinyLimits(),
+    });
+    const handle = await materializer.materialize({
+      gateId: "gate-git",
+      repository: repository(),
+      baseSha: BASE_SHA,
+      headSha: HEAD_SHA,
+    });
+    assert.deepEqual(downloads, []);
+    assert.equal(fs.readFileSync(path.join(handle.head.path, "from-git.ts"), "utf8"), HEAD_SHA);
+    assert.equal(handle.head.fileCount, 1);
+    await handle.release();
+  } finally {
+    removeTemporaryRoot(root);
+  }
+});
+
+test("falls back to the GitHub archive when git checkout fails", async () => {
+  const root = temporaryRoot();
+  try {
+    const materializer = new SnapshotMaterializer({
+      root,
+      leases: { save: () => undefined },
+      checkoutCommit: async () => {
+        throw new GitHubCommitCheckoutError("checkout_git_failed");
+      },
+      downloadArchive: async (_repository, sha) => Readable.from([await archive("owner-repo", [
+        { name: "src/app.ts", type: "file", content: sha },
+      ])]),
+      createLeaseId: () => "lease-fallback",
+      limits: tinyLimits(),
+    });
+    const handle = await materializer.materialize({
+      gateId: "gate-fallback",
+      repository: repository(),
+      baseSha: BASE_SHA,
+      headSha: HEAD_SHA,
+    });
+    assert.equal(fs.readFileSync(path.join(handle.head.path, "src", "app.ts"), "utf8"), HEAD_SHA);
+    await handle.release();
+  } finally {
+    removeTemporaryRoot(root);
+  }
+});
+
+test("refuses an empty head snapshot instead of scanning nothing", async () => {
+  const root = temporaryRoot();
+  try {
+    const materializer = new SnapshotMaterializer({
+      root,
+      leases: { save: () => undefined },
+      checkoutCommit: async () => undefined,
+      downloadArchive: async () => Readable.from([await archive("owner-repo", [
+        { name: "docs", type: "directory", mode: 0o040755 },
+      ])]),
+      createLeaseId: () => "lease-empty",
+      limits: tinyLimits(),
+    });
+    await assert.rejects(
+      materializer.materialize({
+        gateId: "gate-empty",
+        repository: repository(),
+        baseSha: BASE_SHA,
+        headSha: HEAD_SHA,
+      }),
+      (error: unknown) => error instanceof SnapshotMaterializationError
+        && error.code === "snapshot_empty",
+    );
+    assert.equal(fs.existsSync(path.join(root, "gate-empty--lease-empty")), false);
+  } finally {
+    removeTemporaryRoot(root);
+  }
+});
+
+test("does not fall back to the archive after a cancelled git checkout", async () => {
+  const root = temporaryRoot();
+  let downloads = 0;
+  try {
+    const materializer = new SnapshotMaterializer({
+      root,
+      leases: { save: () => undefined },
+      checkoutCommit: async () => {
+        throw new GitHubCommitCheckoutError("checkout_cancelled");
+      },
+      downloadArchive: async () => {
+        downloads += 1;
+        return Readable.from([await archive("owner-repo", [
+          { name: "src/app.ts", type: "file", content: "source" },
+        ])]);
+      },
+      createLeaseId: () => "lease-cancel-git",
+      limits: tinyLimits(),
+    });
+    await assert.rejects(
+      materializer.materialize({
+        gateId: "gate-cancel-git",
+        repository: repository(),
+        baseSha: BASE_SHA,
+        headSha: HEAD_SHA,
+      }),
+      (error: unknown) => error instanceof SnapshotMaterializationError
+        && error.code === "snapshot_cancelled",
+    );
+    assert.equal(downloads, 0);
   } finally {
     removeTemporaryRoot(root);
   }

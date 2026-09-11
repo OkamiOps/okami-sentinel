@@ -31,13 +31,20 @@ function OutcomeIcon({ outcome }: { outcome: GateOutcome }) {
 export function GateOutcomeBadge({
   outcome,
   status,
+  protectedBaseline = false,
 }: {
   outcome: GateOutcome | null;
   status: GateStatus;
+  protectedBaseline?: boolean;
 }) {
   const { t } = useI18n();
   const active = ["queued", "resolving", "scanning", "evaluating", "publishing"].includes(status);
   const tone = active ? "active" : gateOutcomeTone(outcome);
+  const outcomeLabel = outcome === "bootstrap" && protectedBaseline
+    ? t("guardrails.outcome.bootstrapProtected")
+    : outcome
+      ? t(`guardrails.outcome.${outcome}`)
+      : gateStageLabel(status);
   return (
     <Badge
       variant="outline"
@@ -55,7 +62,7 @@ export function GateOutcomeBadge({
       ) : (
         <CircleDashed aria-hidden />
       )}
-      {active ? gateStageLabel(status) : outcome ? t(`guardrails.outcome.${outcome}`) : gateStageLabel(status)}
+      {active ? gateStageLabel(status) : outcomeLabel}
     </Badge>
   );
 }

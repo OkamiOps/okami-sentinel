@@ -147,6 +147,27 @@ export function gateOutcomeTone(outcome: GateOutcome | null): GateTone {
   return "neutral";
 }
 
+/** A full-branch snapshot on the protected ref establishes the baseline; it is not a missing-baseline PR. */
+export function isProtectedBranchBaselineRun(
+  gate: Pick<GateRun, "baseRef" | "headRef" | "pullRequestNumber">,
+  artifact: GateArtifact | null = null,
+): boolean {
+  if (artifact?.schemaVersion === 2) return artifact.target.kind === "protected_branch";
+  return gate.pullRequestNumber === null && gate.baseRef === gate.headRef;
+}
+
+export function bootstrapBranchLabel(
+  gate: Pick<GateRun, "headRef">,
+  artifact: GateArtifact | null = null,
+  defaultBranch?: string | null,
+): string {
+  if (artifact?.schemaVersion === 2 && artifact.target.kind === "protected_branch") {
+    return artifact.target.ref;
+  }
+  if (typeof defaultBranch === "string" && defaultBranch.length > 0) return defaultBranch;
+  return gate.headRef;
+}
+
 export function isGateActive(status: GateStatus): boolean {
   return activeStatuses.has(status);
 }

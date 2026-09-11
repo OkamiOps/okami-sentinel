@@ -6,6 +6,7 @@ import { Link } from "react-router-dom";
 
 import { api } from "../../api";
 import { prCheckLabel, publicationTarget } from "../../lib/github-guardrails";
+import { isProtectedBranchBaselineRun } from "../../lib/guardrails";
 import { AlertBanner } from "../ui";
 import { Button } from "@/components/ui/button";
 import {
@@ -63,7 +64,7 @@ export function PublishGateControl({
         <div className="border-b px-4 py-3 lg:border-b-0 lg:border-r">
           <div className="bench-label text-primary">PR CHECK / PUBLICATION</div>
           <h2 id="publish-gate-title" className="mt-1 font-heading text-sm font-semibold">{t("guardrails.publishTitle")}</h2>
-          <div className="mt-3"><GateOutcomeBadge outcome={gate.outcome} status={gate.status} /></div>
+          <div className="mt-3"><GateOutcomeBadge outcome={gate.outcome} status={gate.status} protectedBaseline={isProtectedBranchBaselineRun(gate, artifact)} /></div>
         </div>
         <div className="grid min-w-0 grid-cols-1 border-b sm:grid-cols-2 lg:border-b-0 lg:border-r">
           <Readout label="Owner / repo" value={target.repository} />

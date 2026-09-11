@@ -52,6 +52,8 @@ import {
   loadLiveConnectionModels,
   reasoningEffortForCompatibility,
   reconcileReasoningEffort,
+  releaseCapabilityProbeAttempt,
+  shouldStartCapabilityProbe,
   validateConnectionCapability,
 } from "../../lib/new-scan-routing";
 
@@ -254,24 +256,32 @@ export function GuardrailPreflightSheet({
   }, [engine, costMode]);
 
   useEffect(() => {
+    capabilityAttemptRef.current = null;
+  }, [capabilityProbeKey]);
+
+  useEffect(() => {
     if (
       !open
       || executor !== "sentinel-managed"
       || connectionSelection === null
-      || connectionSelection.modelSelectionMode !== "catalog"
-      || connectionSelection.modelId === null
-      || !capabilityProbeOnlyBlock
       || capabilityProbeKey === null
-      || capabilityAttemptRef.current === capabilityProbeKey
+      || !shouldStartCapabilityProbe({
+        selection: connectionSelection,
+        compatibility,
+        attemptedKey: capabilityAttemptRef.current,
+        currentKey: capabilityProbeKey,
+      })
     ) return;
 
-    capabilityAttemptRef.current = capabilityProbeKey;
+    const selection = connectionSelection;
+    const attemptKey = capabilityProbeKey;
+    capabilityAttemptRef.current = attemptKey;
     let cancelled = false;
     setProviderValidation("validating");
     setRoutingBusy(true);
     void validateConnectionCapability(api, {
       engine,
-      selection: connectionSelection,
+      selection,
       remoteRepositoryConfirmed: true,
     }).then(({ report, compatibility: refreshed }) => {
       if (cancelled) return;
@@ -282,8 +292,14 @@ export function GuardrailPreflightSheet({
     }).finally(() => {
       if (!cancelled) setRoutingBusy(false);
     });
-    return () => { cancelled = true; };
-  }, [open, executor, engine, connectionSelection?.connectionId, connectionSelection?.modelId, connectionSelection?.modelSelectionMode, capabilityProbeKey, capabilityProbeOnlyBlock]);
+    return () => {
+      cancelled = true;
+      capabilityAttemptRef.current = releaseCapabilityProbeAttempt(
+        capabilityAttemptRef.current,
+        attemptKey,
+      );
+    };
+  }, [open, executor, engine, connectionSelection?.connectionId, connectionSelection?.modelId, connectionSelection?.modelSelectionMode, compatibility?.connectionId, compatibility?.modelId, compatibility?.modelSelectionMode, capabilityProbeKey, capabilityProbeOnlyBlock]);
 
   useEffect(() => {
     setEffort((current) => reconcileReasoningEffort(current, compatibility, mode));

@@ -25,6 +25,24 @@ const HEAD_SHA = "b".repeat(40);
 const SNAPSHOT_ID = `sha256:${"c".repeat(64)}`;
 const PRIVATE_HEAD = "/private/managed/gate-1/head";
 
+test("refuses an empty GitHub head snapshot instead of starting a scan", async () => {
+  let started = 0;
+  const executor = new SentinelManagedExecutor(dependencies({
+    handle: materialization({ fileCount: 0, entries: [] }),
+    startScan: async () => {
+      started += 1;
+      return scan("running");
+    },
+  }));
+
+  await assert.rejects(
+    executor.execute(executionInput()),
+    (error: unknown) => error instanceof SentinelManagedExecutorError
+      && error.code === "managed_snapshot_empty",
+  );
+  assert.equal(started, 0);
+});
+
 test("scans only the immutable head path and finalizes v2 before cleanup without leaking it", async () => {
   const order: string[] = [];
   const requests: StartScanRequest[] = [];

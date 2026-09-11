@@ -26,6 +26,7 @@ import {
   boundedMantisStageState,
   createSafeMantisProviderPlan,
   hashMantisSnapshot,
+  MANTIS_HTTP_STAGE_LIMITS,
   runMantisHttpAgent,
   stageStateFromArtifact,
   type SafeMantisProviderPlan,
@@ -225,6 +226,14 @@ function xaiSnapshot(patch: Partial<ScanConnectionSnapshot> = {}): ScanConnectio
   });
 }
 
+test("Mantis HTTP stages do not impose cumulative action ceilings", () => {
+  assert.equal(MANTIS_HTTP_STAGE_LIMITS.maxModelTurns, 0);
+  assert.equal(MANTIS_HTTP_STAGE_LIMITS.maxToolCalls, 0);
+  assert.equal(MANTIS_HTTP_STAGE_LIMITS.maxInputBytes, 64 * 1024 * 1024);
+  assert.equal(MANTIS_HTTP_STAGE_LIMITS.maxOutputBytes, 1 * 1024 * 1024);
+  assert.ok(MANTIS_HTTP_STAGE_LIMITS.timeoutMs > 0);
+});
+
 test("Mantis HTTP runner executes every bounded stage with chained state and never serializes its vault secret", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-http-runner-"));
   const repositoryPath = path.join(root, "repository");
@@ -286,17 +295,15 @@ test("Mantis HTTP runner executes every bounded stage with chained state and nev
     assert.deepEqual(specs.map((spec) => spec.terminalMode), Array(STAGES.length).fill("artifact-write"));
     assert.deepEqual(
       specs.map((spec) => spec.limits.maxModelTurns),
-      STAGES.map((stage) => stage === "report" ? 48 : 24),
+      Array(STAGES.length).fill(0),
     );
     assert.deepEqual(
       specs.map((spec) => spec.limits.maxToolCalls),
-      STAGES.map((stage) => stage === "report" ? 192 : 96),
+      Array(STAGES.length).fill(0),
     );
     assert.deepEqual(specs.map((spec) => spec.limits.maxInputBytes), Array(STAGES.length).fill(64 * 1024 * 1024));
-    assert.deepEqual(
-      specs.map((spec) => spec.artifactWriteByTurn),
-      STAGES.map((stage) => stage === "report" ? 16 : 16),
-    );
+    assert.deepEqual(specs.map((spec) => spec.artifactWriteByTurn), Array(STAGES.length).fill(undefined));
+    assert.deepEqual(specs.map((spec) => spec.minSourceReadsBeforeArtifact), Array(STAGES.length).fill(1));
     assert.deepEqual(specs.map((spec) =>
       String(spec.instructions.match(/stage_id=([a-z-]+)/)?.[1])), STAGES);
     for (const spec of specs) {
@@ -309,6 +316,7 @@ test("Mantis HTTP runner executes every bounded stage with chained state and nev
       assert.match(spec.instructions, /result-relative/i);
       assert.match(spec.instructions, /must first call.*workspace_/i);
       assert.match(spec.instructions, /artifact is terminal/i);
+      assert.match(spec.instructions, /no cumulative tool-call or model-turn ceiling/i);
     }
     assert.match(specs[0]!.instructions, /"stage":"architecture","summary":/);
     assert.match(specs[0]!.instructions, /Previous bounded stage state: none\./);
@@ -526,6 +534,41 @@ test("an invalid repository snapshot fails without reading the vault", async () 
         getLatestCapabilityCheck: () => report(),
         vault: {
           available: async () => ({ available: true, backend: "keychain" }),
+          put: async () => undefined,
+          delete: async () => undefined,
+          get: async () => {
+            vaultReads += 1;
+            return { apiKey: "must-not-be-read" };
+          },
+        },
+        createSession: async () => assert.fail("session must not start"),
+        now: () => NOW,
+      }),
+      (error: unknown) => error instanceof MantisHttpRunnerError && error.code === "snapshot_invalid",
+    );
+    assert.equal(vaultReads, 0);
+  } finally {
+    removeTestTree(root);
+  }
+});
+
+test("an empty repository snapshot fails before the vault", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-http-empty-snapshot-"));
+  const repositoryPath = path.join(root, "repository");
+  fs.mkdirSync(repositoryPath);
+  let vaultReads = 0;
+  try {
+    await assert.rejects(
+      runMantisHttpAgent({
+        outputDir: path.join(root, "output"),
+        repositoryPath,
+        paths: [],
+        sourceRef: "a".repeat(40),
+        providerPlan: plan(),
+      }, {
+        ...validDependencies(),
+        vault: {
+          available: async () => ({ available: true, backend: "keychain" as const }),
           put: async () => undefined,
           delete: async () => undefined,
           get: async () => {
@@ -1338,6 +1381,51 @@ test("Mantis HTTP falls back for a session code outside its closed safe vocabula
     assert.equal(failure.code, "agent_session_failed");
     const runtime = JSON.parse(fs.readFileSync(path.join(outputDir, "mantis-runtime.json"), "utf8"));
     assert.equal(runtime.error, "agent_session_failed");
+  } finally {
+    removeTestTree(root);
+  }
+});
+
+test("Mantis HTTP recovery reuses the snapshot and skips completed stage artifacts", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-http-resume-"));
+  const repositoryPath = path.join(root, "repository");
+  const outputDir = path.join(root, "output");
+  fs.mkdirSync(repositoryPath);
+  fs.writeFileSync(path.join(repositoryPath, "app.ts"), "export const safe = true;\n");
+  const stages: string[] = [];
+
+  const runOnce = async () => runMantisHttpAgent({
+    outputDir,
+    repositoryPath,
+    paths: [],
+    sourceRef: "a".repeat(40),
+    providerPlan: plan(),
+  }, {
+    ...validDependencies(),
+    createSession: async (input) => {
+      const stage = String(input.spec.instructions.match(/stage_id=([a-z-]+)/)?.[1]);
+      stages.push(stage);
+      const artifact = `${stage}.json`;
+      fs.writeFileSync(
+        path.join(input.spec.artifactRoot, artifact),
+        JSON.stringify(stage === "report"
+          ? { schemaVersion: 1, engine: "mantis", stage, findings: [] }
+          : { stage, summary: `${stage} complete` }),
+      );
+      return fakeSession(stage, artifact);
+    },
+    now: () => NOW,
+  });
+
+  try {
+    await runOnce();
+    assert.deepEqual(stages, STAGES);
+    fs.rmSync(path.join(outputDir, "mantis-agent-artifacts", "critic"), { recursive: true, force: true });
+    fs.rmSync(path.join(outputDir, "mantis-agent-artifacts", "calibrate"), { recursive: true, force: true });
+    fs.rmSync(path.join(outputDir, "mantis-agent-artifacts", "report"), { recursive: true, force: true });
+    stages.length = 0;
+    await runOnce();
+    assert.deepEqual(stages, ["critic", "calibrate", "report"]);
   } finally {
     removeTestTree(root);
   }

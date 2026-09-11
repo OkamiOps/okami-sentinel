@@ -4,10 +4,12 @@ import test from "node:test";
 import type { DecisionGraph, GateArtifact, GateRun, GuardrailPolicy } from "@csb/shared";
 
 import {
+  bootstrapBranchLabel,
   editorStateFromPolicy,
   findingForDecisionNode,
   guardrailFindingBranches,
   guardrailHref,
+  isProtectedBranchBaselineRun,
   policyFromEditor,
   selectGuardrailFindingNode,
   selectDecisionNode,
@@ -202,4 +204,25 @@ test("rejects an invalid cost before calling the API", () => {
     field: "maxCostUsd",
     message: "O envelope deve ser maior que US$ 0.",
   });
+});
+
+test("a same-ref gate without a pull request is the protected-branch baseline run", () => {
+  const gate = { ...gatesFixture()[0]!, baseRef: "main", headRef: "main", pullRequestNumber: null };
+  assert.equal(isProtectedBranchBaselineRun(gate), true);
+  assert.equal(isProtectedBranchBaselineRun({ ...gate, headRef: "feature" }), false);
+  assert.equal(isProtectedBranchBaselineRun({ ...gate, pullRequestNumber: 7 }), false);
+  assert.equal(bootstrapBranchLabel(gate, null, "main"), "main");
+});
+
+test("a v2 pull-request artifact is not the protected baseline even when refs match", () => {
+  const gate = { ...gatesFixture()[0]!, baseRef: "main", headRef: "main", pullRequestNumber: 7 };
+  const artifact = { schemaVersion: 2, target: { kind: "pull_request", number: 7 } } as unknown as GateArtifact;
+  assert.equal(isProtectedBranchBaselineRun(gate, artifact), false);
+});
+
+test("a v2 protected-branch artifact names the scanned branch as the established baseline", () => {
+  const gate = { ...gatesFixture()[0]!, baseRef: "main", headRef: "feature", pullRequestNumber: null };
+  const artifact = { schemaVersion: 2, target: { kind: "protected_branch", ref: "main" } } as unknown as GateArtifact;
+  assert.equal(isProtectedBranchBaselineRun(gate, artifact), true);
+  assert.equal(bootstrapBranchLabel(gate, artifact, "develop"), "main");
 });

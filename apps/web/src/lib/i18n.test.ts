@@ -367,3 +367,17 @@ test("gate details localize operational outcomes and publication without claimin
     }
   }
 });
+
+test("protected-branch bootstrap copy names the branch and does not send the operator elsewhere", () => {
+  for (const locale of ["pt-BR", "en", "es", "de", "fr"] as const) {
+    const established = translate(locale, "guardrails.bootstrapProtected", { branch: "main" });
+    const missing = translate(locale, "guardrails.bootstrapMissing", { branch: "main" });
+    assert.ok(established.includes("main"), `${locale} established copy must name main`);
+    assert.ok(missing.includes("main"), `${locale} missing copy must name main`);
+    assert.notEqual(established, missing);
+    assert.ok(!established.includes("{branch}"));
+    assert.ok(!missing.includes("{branch}"));
+  }
+  assert.match(translate("pt-BR", "guardrails.bootstrapProtected", { branch: "main" }), /referência/);
+  assert.match(translate("en", "guardrails.bootstrapMissing", { branch: "main" }), /Run the gate on main/);
+});

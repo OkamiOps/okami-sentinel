@@ -203,6 +203,41 @@ test("disabled cumulative ceilings allow 301 distinct reads across 302 model tur
   assert.ok(events.some(event => event.type === "completion"));
 });
 
+test("artifact-write sessions reject the report until the required source files are read", async () => {
+  const requestedWith: AgentToolResult[][] = [];
+  const hostCalls: string[] = [];
+  const emptyReport = JSON.stringify({ schemaVersion: 1, findings: [] });
+  const replies: NormalizedModelReply[] = [
+    { toolCalls: [{ id: "w1", name: "results.write", input: { path: "sentinel-findings.json", content: emptyReport } }], text: null, structured: null, usage: null },
+    { toolCalls: [{ id: "r1", name: "workspace.read", input: { path: "a.ts" } }], text: null, structured: null, usage: null },
+    { toolCalls: [{ id: "r2", name: "workspace.read", input: { path: "b.ts" } }], text: null, structured: null, usage: null },
+    { toolCalls: [{ id: "w2", name: "results.write", input: { path: "sentinel-findings.json", content: emptyReport } }], text: null, structured: null, usage: null },
+  ];
+  const session = createConstrainedWireSession({
+    limits: { ...DEFAULT_AGENT_LIMITS, maxModelTurns: 0, maxToolCalls: 0 },
+    signal: new AbortController().signal,
+    terminalMode: "artifact-write",
+    resultArtifactContract: "vulnhunter-report-v1",
+    minSourceReadsBeforeArtifact: 2,
+    host: {
+      minimumOutputBytes() {
+        return 0;
+      },
+      async call(name) {
+        hostCalls.push(name);
+        return name === "results.write"
+          ? { content: "written", artifact: { path: "sentinel-findings.json", bytes: emptyReport.length } }
+          : { content: "source" };
+      },
+    },
+    upstream: { async request() { return {}; } },
+    adapter: transcriptAdapter(replies, requestedWith),
+  });
+  await collect(session.run(), []);
+  assert.deepEqual(hostCalls, ["workspace.read", "workspace.read", "results.write"]);
+  assert.match(requestedWith[1]![0]!.content, /inspection_incomplete/);
+});
+
 test("repeated inspections receive model-visible guidance and can continue to new evidence", async (t) => {
   const fixture = await fixtureRoots("tool-loop-guidance");
   t.after(() => fixture.cleanup());

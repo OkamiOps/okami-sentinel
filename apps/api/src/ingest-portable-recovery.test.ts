@@ -34,6 +34,8 @@ import type { MantisRuntimeState } from "./scanners/mantis-runtime.js";
 const { writeMantisRuntime } = await import("./scanners/mantis-runtime.js");
 import type { PortableCodexSecurityRuntimeState } from "./scanners/portable-codex-security-runtime.js";
 const { writePortableCodexSecurityRuntime } = await import("./scanners/portable-codex-security-runtime.js");
+const { writeVulnHunterRuntime } = await import("./scanners/vulnhunter-runtime.js");
+import type { VulnHunterRuntimeState } from "./scanners/vulnhunter-runtime.js";
 
 const STARTED_AT = "2026-08-11T18:00:00.000Z";
 
@@ -391,4 +393,194 @@ test("queued recovery survives live reconciliation and is recovered after local 
     assert.equal(afterBoot.recovery[0]?.scanId, id);
     assert.equal(getRun(id)?.status, "incomplete");
   } finally { deleteRun(id); fs.rmSync(scanDir, {recursive: true, force: true}); }
+});
+
+function writeMantisHttpConfig(scanDir: string): void {
+  fs.writeFileSync(path.join(scanDir, "mantis-http-run.json"), "{}\n", { mode: 0o600 });
+}
+
+function writeVulnHunterHttpConfig(scanDir: string): void {
+  fs.writeFileSync(path.join(scanDir, "vulnhunter-run.json"), JSON.stringify({
+    providerPlan: { scanId: "placeholder" },
+  }), { mode: 0o600 });
+}
+
+function runningMantisRuntime(): MantisRuntimeState {
+  return {
+    engine: "mantis",
+    status: "running",
+    stage: "researcher",
+    stageLabel: "Research",
+    percent: 40,
+    detail: "running mantis-researcher",
+    startedAt: STARTED_AT,
+    updatedAt: STARTED_AT,
+    completedAt: null,
+    snapshotId: "content:mantis-checkpoint",
+    sourceRef: "sentinel-mantis-http",
+    findings: 0,
+    usage: {
+      reported: false,
+      inputTokensKnown: false,
+      cachedInputTokensKnown: false,
+      cacheWriteInputTokensKnown: false,
+      outputTokensKnown: false,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      outputTokens: 0,
+    },
+    error: null,
+  };
+}
+
+function runningVulnHunterRuntime(): VulnHunterRuntimeState {
+  return {
+    engine: "vulnhunter",
+    status: "running",
+    stage: "verify",
+    stageLabel: "Candidate verification",
+    percent: 45,
+    detail: "continuing static verification",
+    startedAt: STARTED_AT,
+    updatedAt: STARTED_AT,
+    completedAt: null,
+    snapshotId: "content:vulnhunter-checkpoint",
+    sourceRef: "sentinel-static-v1",
+    findings: 0,
+    usage: {
+      reported: false,
+      inputTokensKnown: false,
+      cachedInputTokensKnown: false,
+      cacheWriteInputTokensKnown: false,
+      outputTokensKnown: false,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      outputTokens: 0,
+    },
+    error: null,
+  };
+}
+
+test("reconciliation captures a checkpointed interrupted Mantis HTTP run before it leaves active rows", async () => {
+  const scanDir = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-http-auto-recovery-"));
+  const id = `mantis-http-auto-recovery-${Date.now()}-${Math.random()}`;
+  try {
+    writeMantisRuntime(scanDir, runningMantisRuntime());
+    writeMantisHttpConfig(scanDir);
+    upsertRun({ ...mantisRun(id, scanDir), status: "running", completedAt: null, durationMs: null });
+
+    const result = await reconcileRunningScansAndRecover();
+    assert.equal(result.reconciled, 1);
+    assert.deepEqual(result.recovery, [{
+      scanId: id,
+      status: "blocked",
+      reason: "restart_validation_or_launch_failed",
+    }]);
+    assert.equal(getRun(id)?.status, "incomplete");
+  } finally {
+    deleteRun(id);
+    fs.rmSync(scanDir, { recursive: true, force: true });
+  }
+});
+
+test("local CLI Mantis without an HTTP worker config is not auto-recovered", async () => {
+  const scanDir = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-cli-no-auto-recovery-"));
+  const id = `mantis-cli-no-auto-recovery-${Date.now()}-${Math.random()}`;
+  try {
+    writeMantisRuntime(scanDir, runningMantisRuntime());
+    upsertRun({ ...mantisRun(id, scanDir), status: "running", completedAt: null, durationMs: null });
+
+    const result = await reconcileRunningScansAndRecover();
+    assert.equal(result.reconciled, 1);
+    assert.deepEqual(result.recovery, []);
+    assert.equal(getRun(id)?.status, "incomplete");
+  } finally {
+    deleteRun(id);
+    fs.rmSync(scanDir, { recursive: true, force: true });
+  }
+});
+
+test("local CLI VulnHunter without an HTTP provider plan is not auto-recovered", async () => {
+  const scanDir = fs.mkdtempSync(path.join(os.tmpdir(), "vulnhunter-cli-no-auto-recovery-"));
+  const id = `vulnhunter-cli-no-auto-recovery-${Date.now()}-${Math.random()}`;
+  try {
+    writeVulnHunterRuntime(scanDir, runningVulnHunterRuntime());
+    fs.writeFileSync(path.join(scanDir, "vulnhunter-run.json"), JSON.stringify({
+      outputDir: scanDir,
+      repositoryPath: "/repository",
+      model: "gpt-5.6-sol",
+      paths: [],
+      readOnly: true,
+      profileVersion: "sentinel-static-v1",
+      source: { repositoryUrl: "https://example.invalid/vulnhunter.git", ref: "abc" },
+    }), { mode: 0o600 });
+    upsertRun({
+      ...mantisRun(id, scanDir),
+      displayName: "VulnHunter CLI fixture",
+      engine: "vulnhunter",
+      scannerVersion: "sentinel-static-v1",
+      status: "running",
+      completedAt: null,
+      durationMs: null,
+    });
+
+    const result = await reconcileRunningScansAndRecover();
+    assert.equal(result.reconciled, 1);
+    assert.deepEqual(result.recovery, []);
+    assert.equal(getRun(id)?.status, "incomplete");
+  } finally {
+    deleteRun(id);
+    fs.rmSync(scanDir, { recursive: true, force: true });
+  }
+});
+
+test("reconciliation captures a checkpointed interrupted VulnHunter HTTP run before it leaves active rows", async () => {
+  const scanDir = fs.mkdtempSync(path.join(os.tmpdir(), "vulnhunter-http-auto-recovery-"));
+  const id = `vulnhunter-http-auto-recovery-${Date.now()}-${Math.random()}`;
+  try {
+    writeVulnHunterRuntime(scanDir, runningVulnHunterRuntime());
+    writeVulnHunterHttpConfig(scanDir);
+    upsertRun({
+      ...mantisRun(id, scanDir),
+      displayName: "VulnHunter recovery fixture",
+      engine: "vulnhunter",
+      scannerVersion: "sentinel-static-v1",
+      status: "running",
+      completedAt: null,
+      durationMs: null,
+    });
+
+    const result = await reconcileRunningScansAndRecover();
+    assert.equal(result.reconciled, 1);
+    assert.deepEqual(result.recovery, [{
+      scanId: id,
+      status: "blocked",
+      reason: "restart_validation_or_launch_failed",
+    }]);
+    assert.equal(getRun(id)?.status, "incomplete");
+  } finally {
+    deleteRun(id);
+    fs.rmSync(scanDir, { recursive: true, force: true });
+  }
+});
+
+test("queued Mantis HTTP recovery survives live reconciliation and is recovered after local restart", async () => {
+  const scanDir = fs.mkdtempSync(path.join(os.tmpdir(), "mantis-http-queued-restart-"));
+  const id = `mantis-http-queued-restart-${Date.now()}`;
+  try {
+    writeMantisRuntime(scanDir, runningMantisRuntime());
+    writeMantisHttpConfig(scanDir);
+    upsertRun({ ...mantisRun(id, scanDir), status: "queued", pid: null, completedAt: null, durationMs: null });
+    assert.deepEqual(await reconcileRunningScansAndRecover(), { reconciled: 0, recovery: [] });
+    assert.equal(getRun(id)?.status, "queued");
+    const afterBoot = await reconcileRunningScansAndRecover({ afterLocalRestart: true });
+    assert.equal(afterBoot.recovery.length, 1);
+    assert.equal(afterBoot.recovery[0]?.scanId, id);
+    assert.equal(getRun(id)?.status, "incomplete");
+  } finally {
+    deleteRun(id);
+    fs.rmSync(scanDir, { recursive: true, force: true });
+  }
 });

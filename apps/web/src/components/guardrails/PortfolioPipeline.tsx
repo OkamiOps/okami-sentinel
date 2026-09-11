@@ -16,7 +16,7 @@ import {
 
 import { formatDuration, formatUsd, shortId } from "../../format";
 import { prCheckLabel } from "../../lib/github-guardrails";
-import { gateStageLabel, isGateActive } from "../../lib/guardrails";
+import { gateStageLabel, isGateActive, isProtectedBranchBaselineRun } from "../../lib/guardrails";
 import { scanLedgerIdentity } from "../../lib/scan-ledger";
 import { useI18n, getIntlLocale, translate } from "../../i18n";
 import { Badge } from "@/components/ui/badge";
@@ -104,7 +104,14 @@ export function PortfolioPipeline({
                   <span className="min-w-0">
                     <span className="flex min-w-0 items-start justify-between gap-2">
                       <span className="truncate text-xs font-semibold" title={gateQueueTitle(gate, repositoryLabels)}>{gateQueueTitle(gate, repositoryLabels)}</span>
-                      <GateOutcomeBadge outcome={gate.outcome} status={gate.status} />
+                      <GateOutcomeBadge
+                        outcome={gate.outcome}
+                        status={gate.status}
+                        protectedBaseline={isProtectedBranchBaselineRun(
+                          gate,
+                          selected && selectedArtifact ? selectedArtifact : null,
+                        )}
+                      />
                     </span>
                     <span className="mt-1.5 block truncate text-[11px] font-medium text-foreground">{descriptiveTargetLabel(gate)}</span>
                     {scanIdentity && <span className="mt-1 block truncate font-mono text-[8px] text-primary">{scanIdentity.engine} · {scanIdentity.model}</span>}
@@ -173,7 +180,11 @@ function SelectedGateHeader({ gate, artifact, repositoryLabels }: { gate: GateRu
     <div className="grid min-w-0 border-b lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
       <div className="min-w-0 px-4 py-5 sm:px-5">
         <div className="flex flex-wrap items-center gap-2">
-          <GateOutcomeBadge outcome={gate.outcome} status={gate.status} />
+          <GateOutcomeBadge
+            outcome={gate.outcome}
+            status={gate.status}
+            protectedBaseline={isProtectedBranchBaselineRun(gate, artifact)}
+          />
           <span className="font-mono text-[8px] uppercase tracking-[0.12em] text-muted-foreground">{gateStageLabel(gate.status)}</span>
         </div>
         <h3 className="mt-3 truncate font-heading text-xl font-semibold tracking-[-0.03em] sm:text-2xl">

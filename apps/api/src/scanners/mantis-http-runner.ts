@@ -44,11 +44,16 @@ import {
   normalizeMantisReport,
 } from "./mantis-report-contract.js";
 import {
+  readMantisRuntime,
   writeMantisRuntime,
   type MantisRuntimeState,
 } from "./mantis-runtime.js";
 import type { ScanLaunchPlan } from "../connections/launch-plan.js";
 import { addScannerUsage } from "./usage.js";
+import {
+  countInspectableSnapshotFiles,
+  minimumSourceReadsForSnapshot,
+} from "./vulnhunter-worker-support.js";
 
 export interface MantisStageDefinition {
   id: string;
@@ -140,7 +145,7 @@ export interface MantisHttpAgentRunnerDependencies {
   log?: (line: string) => void;
   now?: () => Date;
   redactor?: SecretRedactorRegistry;
-  /** Private test seam; production uses bounded Mantis stage limits. */
+  /** Private test seam; production disables cumulative action ceilings. */
   limits?: Partial<AgentSessionLimits>;
 }
 
@@ -214,6 +219,7 @@ export async function runMantisHttpAgent(
   validateAgentSessionLimits(limits);
   const outputDir = path.resolve(configuration.outputDir);
   const startedAt = now().toISOString();
+  const previous = readMantisRuntime(outputDir);
   let runtime: MantisRuntimeState = {
     engine: "mantis",
     status: "preparing",
@@ -221,13 +227,13 @@ export async function runMantisHttpAgent(
     stageLabel: "Mantis bootstrap",
     percent: 2,
     detail: "revalidating the selected HTTP agent session",
-    startedAt,
+    startedAt: previous?.startedAt ?? startedAt,
     updatedAt: startedAt,
     completedAt: null,
-    snapshotId: null,
+    snapshotId: previous?.snapshotId ?? null,
     sourceRef: configuration.sourceRef,
-    findings: 0,
-    usage: emptyUsage(),
+    findings: previous?.findings ?? 0,
+    usage: previous?.usage ?? emptyUsage(),
     error: null,
   };
 
@@ -264,10 +270,16 @@ export async function runMantisHttpAgent(
       now(),
     );
     update({ percent: 5, detail: "creating an immutable source snapshot" });
-    const snapshotRoot = createMantisSnapshot(configuration.repositoryPath, outputDir);
-    const snapshotId = hashMantisSnapshot(snapshotRoot);
+    const snapshot = resolveMantisHttpSnapshot(configuration.repositoryPath, outputDir);
+    const snapshotRoot = snapshot.snapshotRoot;
+    const snapshotId = snapshot.snapshotId;
+    const sourceFiles = countInspectableSnapshotFiles(snapshotRoot);
+    if (sourceFiles === 0) throw new MantisHttpRunnerError("snapshot_invalid");
+    const minSourceReads = minimumSourceReadsForSnapshot(sourceFiles, 8);
     const stateRoot = path.join(outputDir, "mantis");
-    initializeAndLockMantisSnapshot(stateRoot, snapshotRoot, snapshotId, now());
+    if (!snapshot.reused) {
+      initializeAndLockMantisSnapshot(stateRoot, snapshotRoot, snapshotId, now());
+    }
 
     // Metadata and the immutable source snapshot are both pinned before this
     // worker may read a secret or construct a network-capable session.
@@ -291,7 +303,7 @@ export async function runMantisHttpAgent(
     update({
       status: "running",
       percent: 10,
-      detail: "snapshot pinned; starting bounded HTTP-agent stages",
+      detail: `snapshot pinned; ${sourceFiles} source files; starting bounded HTTP-agent stages`,
       snapshotId,
     });
 
@@ -300,6 +312,19 @@ export async function runMantisHttpAgent(
     const createSession = dependencies.createSession ?? createProductionSession;
     for (const stage of MANTIS_STAGES) {
       throwIfAborted(signal);
+      const recovered = tryRecoveredMantisHttpStage(outputDir, stage);
+      if (recovered !== null) {
+        priorState = recovered.state;
+        if (stage.id === "report") reportArtifact = recovered.artifactPath;
+        update({
+          stage: stage.id,
+          stageLabel: stage.label,
+          percent: stage.completePercent,
+          detail: `${stage.label} recovered`,
+          snapshotId,
+        });
+        continue;
+      }
       update({
         stage: stage.id,
         stageLabel: stage.label,
@@ -309,12 +334,9 @@ export async function runMantisHttpAgent(
       const artifactRoot = path.join(artifactsRoot, stage.id);
       fs.mkdirSync(artifactRoot, { recursive: true, mode: 0o700 });
       const expectedArtifact = `${stage.id}.json`;
-      // Reporting has to turn the bounded state accumulated by the eight
-      // preceding stages into a complete evidence artifact. Reasoning models
-      // can legitimately need more terminal attempts here than they need in a
-      // discovery stage, so give the report its own bounded envelope instead
-      // of silently inheriting the smaller exploratory-stage budget.
-      const stageLimits = stage.id === "report"
+      // Injected bounded tests may still enlarge the report envelope. Production
+      // disables cumulative action ceilings, so this doubling is a no-op there.
+      const stageSessionLimits = stage.id === "report" && limits.maxModelTurns > 0
         ? {
             ...limits,
             maxModelTurns: Math.min(256, Math.max(limits.maxModelTurns, limits.maxModelTurns * 2)),
@@ -333,16 +355,21 @@ export async function runMantisHttpAgent(
         ...(stage.id === "report"
           ? { resultArtifactContract: MANTIS_REPORT_RESULT_ARTIFACT_CONTRACT }
           : {}),
-        artifactWriteByTurn: Math.max(
-          1,
-          Math.floor(stageLimits.maxModelTurns * (stage.id === "report" ? 1 / 3 : 2 / 3)),
-        ),
+        ...(stageSessionLimits.maxModelTurns > 0
+          ? {
+              artifactWriteByTurn: Math.max(
+                1,
+                Math.floor(stageSessionLimits.maxModelTurns * (stage.id === "report" ? 1 / 3 : 2 / 3)),
+              ),
+            }
+          : {}),
+        minSourceReadsBeforeArtifact: minSourceReads,
         snapshotRoot,
         artifactRoot,
         instructions: stageInstructions(stage, configuration.paths, priorState, expectedArtifact),
         limits: {
-          ...stageLimits,
-          timeoutMs: stage === MANTIS_STAGES[0] ? firstStageTimeoutMs : stageLimits.timeoutMs,
+          ...stageSessionLimits,
+          timeoutMs: stage === MANTIS_STAGES[0] ? firstStageTimeoutMs : stageSessionLimits.timeoutMs,
         },
         signal,
       };
@@ -594,6 +621,7 @@ function stageInstructions(
     `Before writing a result, you must first call and consume at least one ${WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.list")}, ${WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.read")}, or ${WORKSPACE_TOOL_WIRE_CODEC.toWire("workspace.search")} result in an earlier model turn.`,
     "Do not use network access, shell commands, external tools, generated code, payloads, PoCs, patches, reproduction, or publishing.",
     `Write exactly one compact JSON artifact with ${WORKSPACE_TOOL_WIRE_CODEC.toWire("results.write")} at the result-relative path ${expectedArtifact}. No other artifact is permitted.`,
+    "There is no cumulative tool-call or model-turn ceiling. Repeated inspections receive guidance; write the stage artifact only when this stage's review is complete.",
     ...artifactSchema,
     `The ${WORKSPACE_TOOL_WIRE_CODEC.toWire("results.write")} call must be the only tool call in its model turn. The artifact summary is the bounded analysis state for the next stage. The accepted artifact is terminal.`,
     ...priorStateBlock,
@@ -753,17 +781,25 @@ function validEvidenceLocator(value: unknown, snapshotRoot: string): value is st
   }
 }
 
+/**
+ * Each Mantis HTTP stage is its own session. Cumulative tool/turn ceilings
+ * would abort productive inspection; the shared runner issues loop guidance
+ * instead. Byte, context, cancellation and wall-clock limits stay in force.
+ */
+export const MANTIS_HTTP_STAGE_LIMITS: Readonly<AgentSessionLimits> = Object.freeze({
+  ...DEFAULT_AGENT_LIMITS,
+  maxModelTurns: 0,
+  maxToolCalls: 0,
+  // Tool responses can legitimately cross 4 MiB on a source-heavy repository
+  // long before the provider context window is approached.
+  maxInputBytes: 64 * 1024 * 1024,
+  maxOutputBytes: 1 * 1024 * 1024,
+  timeoutMs: 5 * 60_000,
+});
+
 function stageLimits(overrides: Partial<AgentSessionLimits> = {}): AgentSessionLimits {
   return {
-    ...DEFAULT_AGENT_LIMITS,
-    maxModelTurns: 24,
-    maxToolCalls: 96,
-    // Tool responses are counted cumulatively for the isolated stage. A
-    // source-heavy repository can legitimately cross 4 MiB long before the
-    // provider context window is approached; retain the shared hard ceiling.
-    maxInputBytes: 64 * 1024 * 1024,
-    maxOutputBytes: 1 * 1024 * 1024,
-    timeoutMs: 5 * 60_000,
+    ...MANTIS_HTTP_STAGE_LIMITS,
     ...overrides,
   };
 }
@@ -930,8 +966,46 @@ function validateConfiguration(configuration: MantisHttpWorkerConfiguration): vo
   ) throw new MantisHttpRunnerError("provider_plan_invalid");
 }
 
+export function readMantisHttpWorkerConfiguration(configPath: string): MantisHttpWorkerConfiguration {
+  const configuration = JSON.parse(fs.readFileSync(configPath, "utf8")) as MantisHttpWorkerConfiguration;
+  validateConfiguration(configuration);
+  return configuration;
+}
+
 function hasOnlyKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
   return Object.keys(value).every((key) => allowed.has(key));
+}
+
+export function resolveMantisHttpSnapshot(
+  repositoryPath: string,
+  outputDir: string,
+): { snapshotRoot: string; snapshotId: string; reused: boolean } {
+  const snapshotRoot = path.join(outputDir, "mantis-snapshot");
+  if (!fs.existsSync(snapshotRoot)) {
+    const created = createMantisSnapshot(repositoryPath, outputDir);
+    return { snapshotRoot: created, snapshotId: hashMantisSnapshot(created), reused: false };
+  }
+  const info = fs.lstatSync(snapshotRoot);
+  if (!info.isDirectory() || info.isSymbolicLink()) throw new MantisHttpRunnerError("snapshot_invalid");
+  const snapshotId = hashMantisSnapshot(snapshotRoot);
+  const marker = path.join(snapshotRoot, ".mantis_snapshot_id");
+  if (!fs.existsSync(marker)) throw new MantisHttpRunnerError("snapshot_invalid");
+  const recorded = fs.readFileSync(marker, "utf8").trim();
+  if (recorded !== snapshotId) throw new MantisHttpRunnerError("snapshot_invalid");
+  return { snapshotRoot, snapshotId, reused: true };
+}
+
+export function tryRecoveredMantisHttpStage(
+  outputDir: string,
+  stage: Pick<MantisStageDefinition, "id">,
+): { state: MantisBoundedStageState; artifactPath: string } | null {
+  const artifactRoot = path.join(outputDir, "mantis-agent-artifacts", stage.id);
+  try {
+    const state = stageStateFromArtifact(artifactRoot, `${stage.id}.json`, stage.id);
+    return { state, artifactPath: path.join(artifactRoot, `${stage.id}.json`) };
+  } catch {
+    return null;
+  }
 }
 
 /** Shared immutable snapshot boundary for every Mantis executor. */

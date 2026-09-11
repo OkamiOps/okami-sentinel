@@ -30,12 +30,15 @@ import {
   VULNHUNTER_CODEX_ISOLATION_ARGS,
   type VulnHunterRunConfiguration,
   type VulnHunterRuntimeState,
+  readVulnHunterRuntime,
   writeVulnHunterRuntime,
 } from "./vulnhunter-runtime.js";
 import {
   assertVulnHunterNonOperationalArtifacts,
-  createVulnHunterSnapshot,
+  countInspectableSnapshotFiles,
   inferVulnHunterStage,
+  minimumSourceReadsForSnapshot,
+  openVulnHunterSnapshot,
   vulnhunterGitArgs,
 } from "./vulnhunter-worker-support.js";
 
@@ -185,9 +188,17 @@ async function runVulnHunter(
   resultsDir: string,
   branchLabel: string,
   repositoryUrl: string,
+  minSourceReads: number,
 ): Promise<void> {
   if (config.providerPlan !== undefined) {
-    await runHttpVulnHunter(config, snapshotRoot, resultsDir, branchLabel, repositoryUrl);
+    await runHttpVulnHunter(
+      config,
+      snapshotRoot,
+      resultsDir,
+      branchLabel,
+      repositoryUrl,
+      minSourceReads,
+    );
     return;
   }
   const stateRoot = path.dirname(resultsDir);
@@ -211,6 +222,7 @@ async function runHttpVulnHunter(
   resultsDir: string,
   branchLabel: string,
   repositoryUrl: string,
+  minSourceReads: number,
 ): Promise<void> {
   validateVulnHunterHttpWorkerConfiguration(config);
   const prompt = buildVulnHunterPrompt({
@@ -227,7 +239,7 @@ async function runHttpVulnHunter(
   const eventLogPath = path.join(logDir, "http-agent.jsonl");
   const controller = new AbortController();
   httpAbortController = controller;
-  let aggregateUsage: VulnHunterRuntimeState["usage"] = {
+  let aggregateUsage: VulnHunterRuntimeState["usage"] = runtime?.usage ?? {
     reported: false,
     inputTokensKnown: false,
     cachedInputTokensKnown: false,
@@ -251,6 +263,7 @@ async function runHttpVulnHunter(
       resultsDir,
       instructions: prompt,
       ...(config.effort === undefined ? {} : { reasoningEffort: config.effort }),
+      minSourceReadsBeforeArtifact: minSourceReads,
       signal: controller.signal,
       onEvent: async (event) => {
         fs.appendFileSync(eventLogPath, `${safeAgentEventLine(event)}\n`, {
@@ -588,22 +601,26 @@ async function main(): Promise<void> {
   config.repositoryPath = path.resolve(config.repositoryPath);
   if (config.readOnly !== true) throw new Error("VulnHunter Codex port requires readOnly=true.");
   outputDirForSignal = config.outputDir;
-  const startedAt = new Date().toISOString();
+  const previous = readVulnHunterRuntime(config.outputDir);
+  const startedAt = previous?.startedAt ?? new Date().toISOString();
+  const reusedSnapshot = typeof previous?.snapshotId === "string" && previous.snapshotId.length > 0;
   runtime = {
     engine: "vulnhunter",
     status: "preparing",
-    stage: "bootstrap",
-    stageLabel: "VulnHunter bootstrap",
-    percent: 2,
-    detail: "preparing the audited static methodology profile",
+    stage: previous?.stage ?? "bootstrap",
+    stageLabel: previous?.stageLabel ?? "VulnHunter bootstrap",
+    percent: previous?.percent ?? 2,
+    detail: reusedSnapshot
+      ? "reopening the immutable source snapshot"
+      : "preparing the audited static methodology profile",
     startedAt,
-    updatedAt: startedAt,
+    updatedAt: new Date().toISOString(),
     completedAt: null,
-    snapshotId: null,
+    snapshotId: previous?.snapshotId ?? null,
     sourceRef: config.profileVersion,
     methodologyRef: config.source.ref,
-    findings: 0,
-    usage: {
+    findings: previous?.findings ?? 0,
+    usage: previous?.usage ?? {
       reported: false,
       inputTokens: 0,
       cachedInputTokens: 0,
@@ -615,20 +632,33 @@ async function main(): Promise<void> {
   writeVulnHunterRuntime(config.outputDir, runtime);
 
   const metadata = scanMetadata(config.repositoryPath);
-  progress(config, { percent: 5, detail: "creating an immutable source snapshot" });
-  const { snapshotRoot, snapshotId } = createVulnHunterSnapshot(
+  progress(config, {
+    percent: 5,
+    detail: reusedSnapshot
+      ? "reopening the immutable source snapshot"
+      : "creating an immutable source snapshot",
+  });
+  const { snapshotRoot, snapshotId } = openVulnHunterSnapshot(
     config.repositoryPath,
     config.outputDir,
   );
+  const sourceFiles = countInspectableSnapshotFiles(snapshotRoot);
+  if (sourceFiles === 0) {
+    throw new Error("VulnHunter snapshot contains no inspectable source files.");
+  }
+  const minSourceReads = minimumSourceReadsForSnapshot(sourceFiles, 24);
   const stateRoot = path.join(config.outputDir, "vulnhunter");
   const resultsDir = path.join(stateRoot, "results");
   fs.mkdirSync(resultsDir, { recursive: true, mode: 0o700 });
+  const inferred = inferVulnHunterStage(resultsDir);
   progress(config, {
     status: "running",
-    stage: "recon",
-    stageLabel: "Repository reconnaissance",
-    percent: 8,
-    detail: "snapshot pinned; starting the audited static methodology profile",
+    stage: inferred.id,
+    stageLabel: inferred.label,
+    percent: inferred.percent,
+    detail: reusedSnapshot
+      ? `snapshot reused; ${sourceFiles} source files; continuing the audited static methodology profile`
+      : `snapshot pinned; ${sourceFiles} source files; starting the audited static methodology profile`,
     snapshotId,
   });
 
@@ -638,6 +668,7 @@ async function main(): Promise<void> {
     resultsDir,
     metadata.branchLabel,
     metadata.repositoryUrl,
+    minSourceReads,
   );
   assertVulnHunterNonOperationalArtifacts(resultsDir);
   if (!fs.existsSync(path.join(resultsDir, "coverage-sweep.md"))) {

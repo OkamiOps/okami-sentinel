@@ -29,6 +29,20 @@ test("restart preserves scan identity and persists bounded restart budget", asyn
   assert.equal(state.starts(), 2);
 });
 
+test("HTTP agent recovery journals stay isolated from the Portable default journal", async t => {
+  const state = setup(t);
+  state.candidate.journalName = "mantis-http-server-recovery.json";
+  assert.deepEqual(await recoverPortableServerRuns(["same-id"], state.dependencies), [{ scanId: "same-id", status: "resumed" }]);
+  assert.equal(fs.existsSync(path.join(state.candidate.scanDir, "portable-server-recovery.json")), false);
+  const journal = JSON.parse(fs.readFileSync(
+    path.join(state.candidate.scanDir, "mantis-http-server-recovery.json"),
+    "utf8",
+  )) as { version: number; scanId: string; attempts: number };
+  assert.equal(journal.version, 1);
+  assert.equal(journal.scanId, "same-id");
+  assert.equal(journal.attempts, 1);
+});
+
 test("only explicitly captured incomplete portable runs with no living worker resume", async t => {
   const state = setup(t);
   assert.deepEqual(await recoverPortableServerRuns([], state.dependencies), []);

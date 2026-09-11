@@ -33,12 +33,13 @@ import type {
 import type { AcceptedGateTargetPreview } from "./target-preview.js";
 
 const GATE_CORE_VERSION = "0.2.0";
-const MATERIALIZER_VERSION = "github-archive-v1";
+const MATERIALIZER_VERSION = "github-commit-v1";
 
 export type SentinelManagedExecutorErrorCode =
   | "managed_cancelled"
   | "managed_executor_invalid"
-  | "managed_scan_failed";
+  | "managed_scan_failed"
+  | "managed_snapshot_empty";
 
 export class SentinelManagedExecutorError extends Error {
   constructor(readonly code: SentinelManagedExecutorErrorCode) {
@@ -101,6 +102,9 @@ export class SentinelManagedExecutor {
         ...(input.signal === undefined ? {} : { signal: input.signal }),
       });
       throwIfCancelled(input.signal);
+      if (materialization.head.fileCount <= 0) {
+        throw new SentinelManagedExecutorError("managed_snapshot_empty");
+      }
       await input.hooks.materialized(materialization.identity);
 
       const changeSet = resolveSnapshotChangeSet({

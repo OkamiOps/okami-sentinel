@@ -85,11 +85,16 @@ import {
   resolveCodexSecurityApiKey,
 } from "./scanners/codex-security-api-bridge.js";
 import { refreshMantisRunFromDisk } from "./scanners/mantis-reconcile.js";
+import { readMantisRuntime } from "./scanners/mantis-runtime.js";
 import { refreshPortableCodexSecurityRunFromDisk } from "./scanners/portable-codex-security-reconcile.js";
 import { readPortableCodexSecurityRuntime } from "./scanners/portable-codex-security-runtime.js";
 import type { PortableCodexSecurityRuntimeState } from "./scanners/portable-codex-security-runtime.js";
-import { recoverPortableScansAfterWorkerInterruption } from "./scanners/portable-server-recovery.js";
+import {
+  httpAgentRecoveryCandidate,
+  recoverPortableScansAfterWorkerInterruption,
+} from "./scanners/portable-server-recovery.js";
 import { refreshVulnHunterRunFromDisk } from "./scanners/vulnhunter-reconcile.js";
+import { readVulnHunterRuntime } from "./scanners/vulnhunter-runtime.js";
 import { getProviderRuntime, type ProviderRuntime } from "./provider-runtime.js";
 import { resolveScannerPricingQuote } from "./provider-pricing.js";
 import { refreshOpenRouterPricing } from "./openrouter-pricing.js";
@@ -163,6 +168,15 @@ export function hasPortableWorkerResumeCheckpoint(
     (runtime.status === "running" || runtime.status === "preparing") &&
     typeof runtime.snapshotId === "string" &&
     runtime.snapshotId.length > 0;
+}
+
+function readHttpAgentResumeRuntime(
+  run: ScanRun,
+): Pick<PortableCodexSecurityRuntimeState, "status" | "snapshotId"> | null {
+  if (httpAgentRecoveryCandidate(run) === null) return null;
+  if (run.engine === "mantis") return readMantisRuntime(run.scanDir);
+  if (run.engine === "vulnhunter") return readVulnHunterRuntime(run.scanDir);
+  return readPortableCodexSecurityRuntime(run.scanDir);
 }
 
 interface DetachedWatch {
@@ -985,9 +999,7 @@ async function startReservedScan(
   child.on("close", (code) => {
     if (activeScan.progressTimer) clearInterval(activeScan.progressTimer);
     const refreshed = refreshAfterClose(outputDir, run);
-    const runtime = isPortableCodexSecurityRun(refreshed)
-      ? readPortableCodexSecurityRuntime(refreshed.scanDir)
-      : null;
+    const runtime = readHttpAgentResumeRuntime(refreshed);
     const previousStatus = refreshed.status;
     const closedStatus = scanStatusAfterClose(
       refreshed.status,
@@ -1010,7 +1022,7 @@ async function startReservedScan(
     refreshed.pid = null;
     const completedProgress = refreshed.status === "completed"
       ? progressForStatus("completed", refreshed.scanDir, refreshed.mode)
-      : isPortableCodexSecurityRun(refreshed)
+      : isPortableCodexSecurityRun(refreshed) || runtime !== null
         ? refreshed.progress ?? null
         : null;
     refreshed.progress = completedProgress

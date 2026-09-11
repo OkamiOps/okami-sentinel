@@ -94,6 +94,7 @@ import {
   GitHubActionsGitHubApi,
 } from "./guardrails/github-actions-executor.js";
 import { GitHubArchiveClient } from "./guardrails/github-archive-client.js";
+import { GitHubCommitCheckout } from "./guardrails/github-commit-checkout.js";
 import {
   SentinelManagedExecutor,
   SentinelManagedExecutorError,
@@ -1049,30 +1050,32 @@ function emit(
 
 function systemManagedExecutor(): SentinelManagedExecutor {
   if (managedExecutor !== null) return managedExecutor;
-  const archive = new GitHubArchiveClient({
-    authorize: async (repository) => {
-      const connectionId = requiredRemoteIdentity(repository.githubConnectionId);
-      const installationId = requiredRemoteIdentity(repository.githubInstallationId);
-      const repositoryId = requiredRemoteIdentity(repository.githubRepositoryId);
-      const service = getSystemGitHubAppService();
-      const selection = service.requireAuthorizedRepository(
-        connectionId,
-        installationId,
-        repositoryId,
-      );
-      const token = await service.createAuthorizedRepositoryToken(
-        connectionId,
-        installationId,
-        repositoryId,
-        { contents: "read" },
-      );
-      return { owner: selection.owner, name: selection.name, token: token.token };
-    },
-  });
+  const authorize = async (repository: GuardrailRepository) => {
+    const connectionId = requiredRemoteIdentity(repository.githubConnectionId);
+    const installationId = requiredRemoteIdentity(repository.githubInstallationId);
+    const repositoryId = requiredRemoteIdentity(repository.githubRepositoryId);
+    const service = getSystemGitHubAppService();
+    const selection = service.requireAuthorizedRepository(
+      connectionId,
+      installationId,
+      repositoryId,
+    );
+    const token = await service.createAuthorizedRepositoryToken(
+      connectionId,
+      installationId,
+      repositoryId,
+      { contents: "read" },
+    );
+    return { owner: selection.owner, name: selection.name, token: token.token };
+  };
+  const archive = new GitHubArchiveClient({ authorize });
+  const commitCheckout = new GitHubCommitCheckout({ authorize });
   const materializer = new SnapshotMaterializer({
     root: GUARDRAIL_MATERIALIZATIONS_DIR,
     leases: { save: upsertMaterializationLease },
     downloadArchive: (repository, sha, signal) => archive.download(repository, sha, signal),
+    checkoutCommit: (repository, sha, destination, signal) =>
+      commitCheckout.checkout(repository, sha, destination, signal),
   });
   managedExecutor = new SentinelManagedExecutor({
     materializer,

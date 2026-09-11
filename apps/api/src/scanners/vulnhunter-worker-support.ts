@@ -116,6 +116,43 @@ function isSnapshotExcluded(relative: string): boolean {
     segments[1] === "copilot-instructions.md";
 }
 
+export function openVulnHunterSnapshot(
+  repositoryPath: string,
+  outputDir: string,
+): { snapshotRoot: string; snapshotId: string } {
+  const snapshotRoot = path.join(path.resolve(outputDir), "vulnhunter-snapshot");
+  if (!fs.existsSync(snapshotRoot)) {
+    return createVulnHunterSnapshot(repositoryPath, outputDir);
+  }
+  const info = fs.lstatSync(snapshotRoot);
+  if (!info.isDirectory() || info.isSymbolicLink()) {
+    throw new Error("VulnHunter snapshot directory already exists; refusing to overwrite it.");
+  }
+  return { snapshotRoot, snapshotId: hashSnapshot(snapshotRoot) };
+}
+
+export function countInspectableSnapshotFiles(root: string): number {
+  if (!fs.existsSync(root)) return 0;
+  return listSnapshotFiles(root).filter((file) => {
+    try {
+      if (path.basename(file) === ".mantis_snapshot_id") return false;
+      const info = fs.lstatSync(file);
+      return info.isFile() && !info.isSymbolicLink() && info.size > 0;
+    } catch {
+      return false;
+    }
+  }).length;
+}
+
+/** Require enough full-file reads to prove the snapshot was inspected, without a coverage ceiling. */
+export function minimumSourceReadsForSnapshot(fileCount: number, cap: number): number {
+  if (!Number.isSafeInteger(fileCount) || fileCount <= 0 || !Number.isSafeInteger(cap) || cap <= 0) {
+    return 0;
+  }
+  if (fileCount <= 8) return fileCount;
+  return Math.min(cap, Math.max(8, Math.ceil(fileCount / 16)));
+}
+
 export function createVulnHunterSnapshot(
   repositoryPath: string,
   outputDir: string,

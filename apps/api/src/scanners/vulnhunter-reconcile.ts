@@ -65,6 +65,10 @@ function mappedStatus(
   if (runtimeStatus === "cancelled") return "cancelled";
   if (runtimeStatus === "failed") return hasFindings ? "incomplete" : "failed";
   if (workerIsCurrent(run) || withinBootstrapGrace(run)) return "running";
+  // A dead worker with a live/preparing runtime is still resumable. Keep the
+  // row recoverable even when no finding has been persisted yet; the recovery
+  // coordinator will validate the HTTP snapshot before dispatch.
+  if (runtimeStatus === "running" || runtimeStatus === "preparing") return "incomplete";
   return hasFindings ? "incomplete" : "failed";
 }
 
@@ -72,7 +76,8 @@ export function refreshVulnHunterRunFromDisk(run: ScanRun): ScanRun {
   if (run.engine !== "vulnhunter") return run;
   // Do not let a late worker flush resurrect an explicit cancellation or
   // server-restart interruption.
-  if (run.status === "cancelled" || run.status === "incomplete") return run;
+  // Queued recovery is owned by its launcher while the capability probe runs.
+  if (run.status === "queued" || run.status === "cancelled" || run.status === "incomplete") return run;
   const runtime = readVulnHunterRuntime(run.scanDir);
   if (!runtime) {
     if (run.status !== "running" || workerIsCurrent(run) || withinBootstrapGrace(run)) return run;

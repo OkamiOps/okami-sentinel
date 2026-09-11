@@ -135,6 +135,9 @@ export function buildVulnHunterPrompt(input: VulnHunterPromptInput): string {
     snapshotInstruction,
     "This compatibility profile is deliberately limited to source comprehension, trust-boundary mapping, static data-flow review, defensive control analysis, and remediation guidance.",
     "Work sequentially in this session. Do not delegate work or start additional agents.",
+    ...(agentSession
+      ? ["There is no cumulative tool-call or model-turn ceiling. Repeated inspections receive guidance; write the report only when the six-stage review is complete."]
+      : []),
     `Use the model tag ${input.model.replace(/[^a-z0-9]+/gi, "").toLowerCase()} without introspecting model identity.`,
     scopeInstruction(input.scopePaths),
     "Never edit, delete, rename, or create files inside the snapshot.",

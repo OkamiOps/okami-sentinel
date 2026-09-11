@@ -144,6 +144,12 @@ export interface AgentSessionSpec {
   terminalMode?: AgentSessionTerminalMode;
   /** After this many model replies, artifact-write sessions expose only results.write. */
   artifactWriteByTurn?: number;
+  /**
+   * Full-file workspace.read calls required before results.write. Zero/omitted
+   * keeps probe and Portable coverage rules unchanged. Listings, searches and
+   * ranged reads do not count.
+   */
+  minSourceReadsBeforeArtifact?: number;
   /** Optional server-owned completion budget; wire adapters use it only when their proven protocol supports one. */
   maxCompletionTokens?: number;
   snapshotRoot: string;
@@ -356,6 +362,7 @@ export interface ConstrainedWireSessionOptions {
   terminalMode?: AgentSessionTerminalMode;
   artifactWriteByTurn?: number;
   resultArtifactContract?: AgentResultArtifactContract;
+  minSourceReadsBeforeArtifact?: number;
   /** Snapshot boundary used to prove report evidence before artifact I/O. */
   resultArtifactSnapshotRoot?: string;
   /** Server-owned Portable dossier used to reject semantic terminal artifacts before host I/O. */
@@ -460,6 +467,7 @@ class ConstrainedWireSession implements AgentSession {
     let modelTurns = 0;
     const modelTurnLimit = this.#options.limits.maxModelTurns === 0 ? Infinity : this.#options.limits.maxModelTurns;
     let toolCalls = 0;
+    const sourceReads = new Set<string>();
     const toolProgress = this.#options.limits.maxToolCalls === 0 ? new ToolProgressTracker() : undefined;
     const toolCallLimit = this.#options.limits.maxToolCalls === 0
       ? Infinity : this.#options.limits.maxToolCalls;
@@ -713,12 +721,23 @@ class ConstrainedWireSession implements AgentSession {
             ? Math.max(0, remainingOutputBytes - outputReserve) : remainingOutputBytes;
           let result: WorkspaceToolResult;
           let recoveredBeforeIo = false;
+          let keepExploring = false;
           let recoveredWorkspaceErrorCode: RecoverableWorkspaceToolErrorCode | undefined;
           let hostCallStarted = false;
           let artifactValidationIssue: ResultArtifactValidationIssue | undefined;
           let artifactRepairDetail: ResultArtifactRepairDetail | undefined;
           try {
-            if (call.name !== "results.write" && (finalizationRequired ||
+            if (call.name === "results.write" &&
+                this.#options.minSourceReadsBeforeArtifact !== undefined &&
+                this.#options.minSourceReadsBeforeArtifact > 0 &&
+                sourceReads.size < this.#options.minSourceReadsBeforeArtifact) {
+              result = inspectionIncompleteResult(
+                this.#options.minSourceReadsBeforeArtifact,
+                sourceReads.size,
+              );
+              recoveredBeforeIo = true;
+              keepExploring = true;
+            } else if (call.name !== "results.write" && (finalizationRequired ||
                 (outputReserve > 0 && !artifactRepairActive &&
                   (outputFinalizationRequired ||
                     this.#options.host.minimumOutputBytes(call.name, call.input) > explorationBudget)))) {
@@ -751,8 +770,10 @@ class ConstrainedWireSession implements AgentSession {
                 // Only a full workspace.read establishes file coverage. Ranges, listings,
                 // search hits, failed reads and denied finalization calls do
                 // not establish file review coverage.
+                const readPath = path.posix.normalize(normalizedInput.path.replaceAll("\\", "/"));
+                sourceReads.add(readPath);
                 this.#options.resultArtifactValidationContext?.discoveryCoverage?.observedReadPaths
-                  .add(path.posix.normalize(normalizedInput.path.replaceAll("\\", "/")));
+                  .add(readPath);
               }
               if (call.name === "workspace.read" &&
                   this.#options.resultArtifactValidationContext?.deepCoverage !== undefined &&
@@ -801,7 +822,9 @@ class ConstrainedWireSession implements AgentSession {
             recoveredBeforeIo = true;
             recoveredWorkspaceErrorCode = recoverableWorkspaceToolErrorCode(error);
           }
-          if (
+          if (keepExploring) {
+            // Inspection is still open; do not lock the session into artifact repair.
+          } else if (
             call.name === "results.write" && recoveredBeforeIo &&
             this.#options.terminalMode === "artifact-write"
           ) {
@@ -927,6 +950,20 @@ class ConstrainedWireSession implements AgentSession {
     }
     return this.#remoteCancellation;
   }
+}
+
+function inspectionIncompleteResult(
+  requiredReads: number,
+  successfulReads: number,
+): WorkspaceToolResult {
+  return {
+    content: JSON.stringify({
+      error: "inspection_incomplete",
+      requiredReads,
+      successfulReads,
+      hint: "Read distinct repository source files with workspace.read as a full file before results.write. Listings, searches and ranged reads do not count.",
+    }),
+  };
 }
 
 function terminalArtifactRequiredResult(): WorkspaceToolResult {

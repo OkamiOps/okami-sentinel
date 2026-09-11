@@ -9,6 +9,7 @@ import type { GuardrailRepository } from "@csb/shared";
 import tar, { type Headers } from "tar-stream";
 
 import type { MaterializationLeaseMetadata } from "../gate-store.js";
+import { GitHubCommitCheckoutError } from "./github-commit-checkout.js";
 
 const DEFAULT_LIMITS: SnapshotExtractionLimits = Object.freeze({
   maxEntries: 500_000,
@@ -24,6 +25,7 @@ export type SnapshotMaterializationErrorCode =
   | "snapshot_archive_invalid"
   | "snapshot_cancelled"
   | "snapshot_cleanup_failed"
+  | "snapshot_empty"
   | "snapshot_limit_exceeded"
   | "snapshot_materialization_failed";
 
@@ -78,6 +80,12 @@ export interface SnapshotMaterializerDependencies {
     commitSha: string,
     signal?: AbortSignal,
   ): Promise<Readable>;
+  checkoutCommit?(
+    repository: GuardrailRepository,
+    commitSha: string,
+    destination: string,
+    signal?: AbortSignal,
+  ): Promise<void>;
   limits?: SnapshotExtractionLimits;
   createLeaseId?(): string;
   now?(): Date;
@@ -137,18 +145,11 @@ export class SnapshotMaterializer {
       this.dependencies.leases.save(lease);
       const basePath = path.join(leaseRoot, "base");
       const headPath = path.join(leaseRoot, "head");
-      const baseArchive = await this.dependencies.downloadArchive(
-        input.repository,
-        baseSha,
-        input.signal,
-      );
-      const base = await extractGitHubArchive(baseArchive, basePath, this.#limits, input.signal);
-      const headArchive = await this.dependencies.downloadArchive(
-        input.repository,
-        headSha,
-        input.signal,
-      );
-      const head = await extractGitHubArchive(headArchive, headPath, this.#limits, input.signal);
+      const base = await this.#snapshotAt(input.repository, baseSha, basePath, input.signal);
+      const head = await this.#snapshotAt(input.repository, headSha, headPath, input.signal);
+      if (head.fileCount === 0) {
+        throw new SnapshotMaterializationError("snapshot_empty");
+      }
       const identity = digest(JSON.stringify({ base: base.identity, head: head.identity }));
       lease = { ...lease, snapshotIdentity: identity, state: "ready" };
       this.dependencies.leases.save(lease);
@@ -179,6 +180,35 @@ export class SnapshotMaterializer {
       if (error instanceof SnapshotMaterializationError) throw error;
       throw new SnapshotMaterializationError("snapshot_materialization_failed");
     }
+  }
+
+  async #snapshotAt(
+    repository: GuardrailRepository,
+    commitSha: string,
+    destination: string,
+    signal?: AbortSignal,
+  ): Promise<MaterializedSnapshot> {
+    throwIfCancelled(signal);
+    const checkout = this.dependencies.checkoutCommit;
+    if (checkout !== undefined) {
+      try {
+        prepareDestination(destination);
+        throwIfCancelled(signal);
+        await checkout(repository, commitSha, destination, signal);
+        throwIfCancelled(signal);
+        const snapshot = inventoryExistingTree(destination, this.#limits, signal);
+        if (snapshot.fileCount > 0) return snapshot;
+      } catch (error) {
+        safeRemoveExtraction(destination);
+        if (isCancelledMaterialization(error, signal)) {
+          throw new SnapshotMaterializationError("snapshot_cancelled");
+        }
+        if (error instanceof SnapshotMaterializationError) throw error;
+      }
+      safeRemoveExtraction(destination);
+    }
+    const archive = await this.dependencies.downloadArchive(repository, commitSha, signal);
+    return extractGitHubArchive(archive, destination, this.#limits, signal);
   }
 
   async #release(
@@ -355,6 +385,156 @@ export async function extractGitHubArchive(
     if (error instanceof SnapshotMaterializationError) throw error;
     throw new SnapshotMaterializationError("snapshot_archive_invalid");
   }
+}
+
+function inventoryExistingTree(
+  destination: string,
+  requestedLimits: SnapshotExtractionLimits,
+  signal?: AbortSignal,
+): MaterializedSnapshot {
+  const limits = validatedLimits(requestedLimits);
+  throwIfCancelled(signal);
+  const destStat = fs.lstatSync(destination);
+  if (!destStat.isDirectory() || destStat.isSymbolicLink()) invalid();
+  const entries = new Map<string, SnapshotEntryMetadata>();
+  const materializedDirectories = new Set<string>();
+  const specialContents = new Map<string, Buffer>();
+  let entryCount = 0;
+  let extractedBytes = 0;
+
+  const visit = (relativeDir: string): void => {
+    throwIfCancelled(signal);
+    const dirPath = relativeDir === ""
+      ? destination
+      : path.join(destination, ...relativeDir.split("/"));
+    const listing = fs.readdirSync(dirPath, { withFileTypes: true });
+    for (const dirent of listing) {
+      throwIfCancelled(signal);
+      if (relativeDir === "" && dirent.name === ".git") continue;
+      const relativePath = relativeDir === "" ? dirent.name : `${relativeDir}/${dirent.name}`;
+      if (
+        Buffer.byteLength(relativePath) > limits.maxPathBytes
+        || dirent.name.length === 0
+        || dirent.name === "."
+        || dirent.name === ".."
+        || dirent.name.includes("/")
+        || dirent.name.includes("\\")
+        || dirent.name.includes("\0")
+      ) invalid();
+      entryCount += 1;
+      if (entryCount > limits.maxEntries) limit();
+      const target = path.join(destination, ...relativePath.split("/"));
+      const stat = fs.lstatSync(target);
+      const type: SnapshotEntryMetadata["type"] = stat.isSymbolicLink()
+        ? "symlink"
+        : stat.isDirectory()
+          ? "directory"
+          : stat.isFile()
+            ? "file"
+            : invalid();
+      const mode = normalizedMode(stat.mode, type);
+      if (type === "directory") {
+        materializedDirectories.add(relativePath);
+        entries.set(relativePath, {
+          path: relativePath,
+          type,
+          mode,
+          size: 0,
+          digest: digest(""),
+        });
+        visit(relativePath);
+        continue;
+      }
+      if (type === "symlink") {
+        const linkname = safeSymlinkTarget(
+          relativePath,
+          fs.readlinkSync(target),
+          limits.maxPathBytes,
+        );
+        entries.set(relativePath, {
+          path: relativePath,
+          type,
+          mode,
+          size: Buffer.byteLength(linkname),
+          digest: digest(linkname),
+        });
+        continue;
+      }
+      if (stat.size > limits.maxFileBytes) limit();
+      if (extractedBytes + stat.size > limits.maxExtractedBytes) limit();
+      const descriptor = fs.openSync(
+        target,
+        fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
+      );
+      const hash = createHash("sha256");
+      const prefix: Buffer[] = [];
+      let prefixBytes = 0;
+      let bytes = 0;
+      try {
+        const buffer = Buffer.alloc(64 * 1024);
+        while (true) {
+          const read = fs.readSync(descriptor, buffer, 0, buffer.byteLength, bytes);
+          if (read === 0) break;
+          const chunk = buffer.subarray(0, read);
+          bytes += read;
+          if (bytes > limits.maxFileBytes || extractedBytes + bytes > limits.maxExtractedBytes) limit();
+          hash.update(chunk);
+          if (prefixBytes < 1024 * 1024) {
+            const retained = chunk.subarray(0, Math.min(chunk.byteLength, 1024 * 1024 - prefixBytes));
+            prefix.push(Buffer.from(retained));
+            prefixBytes += retained.byteLength;
+          }
+        }
+      } finally {
+        fs.closeSync(descriptor);
+      }
+      extractedBytes += bytes;
+      fs.chmodSync(target, mode & 0o111 ? 0o500 : 0o400);
+      const retained = Buffer.concat(prefix);
+      if (relativePath === ".gitmodules" && bytes > 1024 * 1024) limit();
+      if (relativePath === ".gitmodules" || LFS_POINTER.test(retained.toString("utf8"))) {
+        specialContents.set(relativePath, retained);
+      }
+      entries.set(relativePath, {
+        path: relativePath,
+        type,
+        mode,
+        size: bytes,
+        digest: `sha256:${hash.digest("hex")}`,
+      });
+    }
+  };
+
+  visit("");
+  const sortedEntries = [...entries.values()].sort((left, right) => left.path.localeCompare(right.path));
+  for (const directory of [...materializedDirectories].sort((left, right) => right.length - left.length)) {
+    fs.chmodSync(path.join(destination, ...directory.split("/")), 0o500);
+  }
+  fs.chmodSync(destination, 0o500);
+  const gitmodules = specialContents.get(".gitmodules")?.toString("utf8") ?? "";
+  const submodules = parseSubmodulePaths(gitmodules);
+  const lfsPointers = [...specialContents.entries()]
+    .filter(([entryPath, content]) => entryPath !== ".gitmodules" && LFS_POINTER.test(content.toString("utf8")))
+    .map(([entryPath]) => entryPath)
+    .sort();
+  return {
+    path: destination,
+    identity: digest(JSON.stringify(sortedEntries)),
+    entries: sortedEntries,
+    fileCount: sortedEntries.filter((entry) => entry.type === "file").length,
+    submodules,
+    lfsPointers,
+  };
+}
+
+function throwIfCancelled(signal?: AbortSignal): void {
+  if (signal?.aborted === true) throw new SnapshotMaterializationError("snapshot_cancelled");
+}
+
+function isCancelledMaterialization(error: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted === true) return true;
+  if (error instanceof SnapshotMaterializationError && error.code === "snapshot_cancelled") return true;
+  return error instanceof GitHubCommitCheckoutError && error.code === "checkout_cancelled";
 }
 
 function archivePath(

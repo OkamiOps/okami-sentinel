@@ -113,7 +113,7 @@ export interface VulnHunterHttpRunnerDependencies {
     input: CreateAgentSessionInput,
     upstream: AgentUpstream,
   ) => Promise<AgentSession>;
-  /** Private test seam; production always uses bounded default session limits. */
+  /** Private test seam; production disables cumulative action ceilings. */
   limits?: Partial<AgentSessionLimits>;
   /** Private test seams; production uses the shared probe TTL and wall clock. */
   now?: () => Date;
@@ -127,6 +127,8 @@ export interface RunVulnHunterHttpPlanInput {
   instructions: string;
   /** Published by the exact selected model; no credential material. */
   reasoningEffort?: string;
+  /** Full-file workspace.read calls required before the terminal report. */
+  minSourceReadsBeforeArtifact?: number;
   signal: AbortSignal;
   onEvent?: (event: AgentEvent) => void | Promise<void>;
 }
@@ -134,6 +136,17 @@ export interface RunVulnHunterHttpPlanInput {
 export interface VulnHunterHttpRunner {
   run(input: RunVulnHunterHttpPlanInput): Promise<void>;
 }
+
+/**
+ * One HTTP session covers the six-stage review. Cumulative tool/turn ceilings
+ * would abort productive inspection; the shared runner issues loop guidance
+ * instead. Byte, context, cancellation and wall-clock limits stay in force.
+ */
+export const VULNHUNTER_HTTP_SESSION_LIMITS: Readonly<AgentSessionLimits> = Object.freeze({
+  ...DEFAULT_AGENT_LIMITS,
+  maxModelTurns: 0,
+  maxToolCalls: 0,
+});
 
 /**
  * Resolves the immutable connection snapshot again inside the child process.
@@ -145,7 +158,7 @@ export function createVulnHunterHttpRunner(
   const createUpstream = dependencies.createUpstream ?? createHttpAgentUpstream;
   const createSession = dependencies.createSession ?? createAgentSession;
   const limits: AgentSessionLimits = {
-    ...DEFAULT_AGENT_LIMITS,
+    ...VULNHUNTER_HTTP_SESSION_LIMITS,
     ...(dependencies.limits ?? {}),
   };
   const now = dependencies.now ?? (() => new Date());
@@ -191,8 +204,13 @@ export function createVulnHunterHttpRunner(
             ? {}
             : { reasoningEffort: input.reasoningEffort }),
           terminalMode: "artifact-write",
-          artifactWriteByTurn: Math.max(1, Math.floor(limits.maxModelTurns * 2 / 3)),
+          ...(limits.maxModelTurns > 0
+            ? { artifactWriteByTurn: Math.max(1, Math.floor(limits.maxModelTurns * 2 / 3)) }
+            : {}),
           resultArtifactContract: "vulnhunter-report-v1",
+          ...(input.minSourceReadsBeforeArtifact === undefined
+            ? {}
+            : { minSourceReadsBeforeArtifact: input.minSourceReadsBeforeArtifact }),
           snapshotRoot: input.snapshotRoot,
           artifactRoot: handoffRoot,
           instructions: input.instructions,
