@@ -117,9 +117,29 @@ export async function runGateCli(
     changeSet = inspection.changeSet;
     coverage = inspection.coverage;
     snapshotIdentity = inspection.identity;
+    lineage = plannedLineage(options, policy, null);
 
     const establishesProtectedBaseline = options.targetKind === "protected_branch";
-    if (changeSet.files.length > 0 || establishesProtectedBaseline) {
+    const requiresBaseline = changeSet.files.length > 0 && !establishesProtectedBaseline;
+    // Read once before spending on a scan. The planned lineage intentionally
+    // cannot reject an artifact as incompatible: its effective scanner version
+    // is only available after the scan finishes.
+    const baselineCandidate = requiresBaseline
+      ? deps.readBaseline(options)
+      : { kind: "absent" } as const;
+    const preflightBaseline = selectGateBaseline({
+      repositoryId: repositoryIdentity(options),
+      protectedBranch: options.protectedBranch,
+      lineage,
+      policySchemaVersion: policy.schemaVersion,
+      coverage,
+    }, baselineCandidate);
+    if (
+      requiresBaseline
+      && (preflightBaseline.kind === "absent" || preflightBaseline.kind === "unavailable")
+    ) {
+      baseline = preflightBaseline;
+    } else if (changeSet.files.length > 0 || establishesProtectedBaseline) {
       const outputDir = path.join(path.dirname(path.resolve(options.output)), `.csb-scan-${options.gateId}`);
       scan = await deps.scanner.run({
         repositoryPath: path.resolve(options.repository),
@@ -128,19 +148,17 @@ export async function runGateCli(
         outputDir,
       });
       if (scan.status !== "completed") throw new Error("managed_scan_failed");
+      lineage = plannedLineage(options, policy, scan);
+      baseline = selectGateBaseline({
+        repositoryId: repositoryIdentity(options),
+        protectedBranch: options.protectedBranch,
+        lineage,
+        policySchemaVersion: policy.schemaVersion,
+        coverage,
+      }, baselineCandidate);
+    } else {
+      baseline = preflightBaseline;
     }
-    lineage = plannedLineage(options, policy, scan);
-
-    const baselineCandidate = changeSet.files.length === 0 || establishesProtectedBaseline
-      ? { kind: "absent" } as const
-      : deps.readBaseline(options);
-    baseline = selectGateBaseline({
-      repositoryId: repositoryIdentity(options),
-      protectedBranch: options.protectedBranch,
-      lineage,
-      policySchemaVersion: policy.schemaVersion,
-      coverage,
-    }, baselineCandidate);
     const envelope = artifactEnvelope({
       options,
       target,

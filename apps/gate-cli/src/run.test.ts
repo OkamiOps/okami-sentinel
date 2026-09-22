@@ -248,13 +248,31 @@ test("returns zero for pass, warning and no_changes using the shared baseline se
 
 test("PR and compare without a baseline fail closed instead of publishing a neutral bootstrap", async () => {
   for (const targetKind of ["pull_request", "compare"] as const) {
+    let scans = 0;
     const result = await runGateCli(options({ targetKind, pullRequest: targetKind === "compare" ? null : 42,
-      baselineState: "absent", baseline: null }), fakeDeps({ outcome: "bootstrap" }));
+      baselineState: "absent", baseline: null }), {
+      ...fakeDeps({ outcome: "bootstrap" }),
+      scanner: { run: async () => { scans += 1; throw new Error("scanner must not start"); } },
+    });
     assert.equal(result.exitCode, 3);
     assert.equal(result.artifact.decision.outcome, "error");
     assert.equal(result.artifact.decision.githubConclusion, "action_required");
     assert.match(result.artifact.decision.summary, /^baseline_absent:/);
+    assert.equal(scans, 0, targetKind);
   }
+});
+
+test("an unavailable PR baseline fails closed without starting the scanner", async () => {
+  let scans = 0;
+  const result = await runGateCli(options({ baselineState: "unavailable", baseline: null }), {
+    ...fakeDeps(),
+    readBaseline: () => ({ kind: "unavailable", reason: "artifact_not_readable" }),
+    scanner: { run: async () => { scans += 1; throw new Error("scanner must not start"); } },
+  });
+
+  assert.equal(result.exitCode, 3);
+  assert.match(result.artifact.decision.summary, /^baseline_unavailable:/);
+  assert.equal(scans, 0);
 });
 
 test("reads policy and exceptions only from the frozen base checkout", async () => {

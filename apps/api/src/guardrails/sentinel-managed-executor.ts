@@ -116,6 +116,52 @@ export class SentinelManagedExecutor {
       const coverage = snapshotCoverage(materialization.head, changeSet);
       let scan: ScanRun | null = null;
       const establishesProtectedBaseline = input.preview.target.kind === "protected_branch";
+      const requiresBaseline = changeSet.files.length > 0 && !establishesProtectedBaseline;
+      // Read the candidate before spending on a scan. A planned lineage can
+      // prove absence or unavailability, but cannot prove compatibility: the
+      // scanner's effective identity is only known after it completes.
+      const preflightLineage = scanLineage(null, input.preview, materialization.head.identity);
+      const preflightCandidate = requiresBaseline
+        ? await this.dependencies.baselineCandidate({
+            repository: input.repository,
+            protectedBranch: input.preview.publication.protectedBranch,
+            lineage: preflightLineage,
+            coverage,
+          })
+        : { kind: "absent" } as const;
+      const preflightBaseline = selectGateBaseline({
+        repositoryId: repositoryIdentity(input.repository),
+        protectedBranch: input.preview.publication.protectedBranch,
+        lineage: preflightLineage,
+        policySchemaVersion: input.preview.policy.schemaVersion,
+        coverage,
+      }, preflightCandidate);
+      if (
+        requiresBaseline
+        && (preflightBaseline.kind === "absent" || preflightBaseline.kind === "unavailable")
+      ) {
+        const artifact = this.#artifact({
+          input,
+          materialization,
+          changeSet,
+          coverage,
+          lineage: preflightLineage,
+          baseline: preflightBaseline,
+          scan: null,
+        });
+        const parsed = parseGateArtifact(artifact);
+        if (parsed.schemaVersion !== 2) {
+          throw new SentinelManagedExecutorError("managed_executor_invalid");
+        }
+        const result: SentinelManagedExecutionResult = {
+          artifact: parsed,
+          changeSet,
+          scan: null,
+          baseline: preflightBaseline,
+        };
+        await input.hooks.finalize(result);
+        return result;
+      }
       if (changeSet.files.length > 0 || establishesProtectedBaseline) {
         const request = scanRequest(input, changeSet);
         scan = await this.dependencies.startScan(request, {
@@ -128,16 +174,17 @@ export class SentinelManagedExecutor {
       }
 
       const lineage = scanLineage(scan, input.preview, materialization.head.identity);
-      const baselineCandidate = changeSet.files.length === 0 && !establishesProtectedBaseline
-        ? { kind: "absent" } as const
-        : establishesProtectedBaseline
-          ? { kind: "absent" } as const
-        : await this.dependencies.baselineCandidate({
+      // `managedBaselineCandidate` selects the best artifact for the supplied
+      // lineage. Re-read after the scan so a newer incompatible artifact cannot
+      // hide an older compatible protected baseline.
+      const baselineCandidate = requiresBaseline
+        ? await this.dependencies.baselineCandidate({
             repository: input.repository,
             protectedBranch: input.preview.publication.protectedBranch,
             lineage,
             coverage,
-          });
+          })
+        : preflightCandidate;
       const baseline = selectGateBaseline({
         repositoryId: repositoryIdentity(input.repository),
         protectedBranch: input.preview.publication.protectedBranch,

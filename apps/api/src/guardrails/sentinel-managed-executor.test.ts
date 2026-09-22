@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { defaultGuardrailPolicy } from "@csb/gate-core";
+import {
+  buildGateArtifactV2,
+  buildScanLineage,
+  defaultGuardrailPolicy,
+} from "@csb/gate-core";
 import type {
   FindingSummary,
   GuardrailRepository,
@@ -81,7 +85,7 @@ test("scans only the immutable head path and finalizes v2 before cleanup without
   assert.equal(result.artifact.resolvedTarget.headSha, HEAD_SHA);
   assert.equal(result.artifact.decision.outcome, "error");
   assert.equal(result.artifact.decision.githubConclusion, "action_required");
-  assert.match(result.artifact.decision.summary, /^baseline_absent:/);
+  assert.match(result.artifact.decision.summary, /^baseline_incompatible:/);
   assert.equal(result.artifact.findings.length, 0);
   assert.equal(finalized.includes(PRIVATE_HEAD), false);
   assert.equal(finalized.includes("/private/managed"), false);
@@ -98,6 +102,55 @@ test("known unavailable baseline closes as action_required and never produces li
   assert.equal(result.artifact.decision.githubConclusion, "action_required");
   assert.equal(result.artifact.findings.length, 0);
   assert.match(result.artifact.decision.summary, /^baseline_unavailable:/);
+});
+
+test("does not start a scan when a PR baseline is absent or unavailable", async () => {
+  for (const candidate of [
+    { kind: "absent" } as const,
+    { kind: "unavailable", reason: "artifact_not_readable" } as const,
+  ]) {
+    let starts = 0;
+    let lookups = 0;
+    const executor = new SentinelManagedExecutor(dependencies({
+      baselineCandidate: async () => {
+        lookups += 1;
+        return candidate;
+      },
+      startScan: async () => {
+        starts += 1;
+        return scan("running");
+      },
+    }));
+
+    const result = await executor.execute(executionInput());
+    assert.equal(lookups, 1, candidate.kind);
+    assert.equal(starts, 0, candidate.kind);
+    assert.equal(result.scan, null, candidate.kind);
+    assert.match(result.artifact.decision.summary, new RegExp(`^baseline_${candidate.kind}:`));
+  }
+});
+
+test("reselects the managed baseline with the real lineage after a planned mismatch", async () => {
+  const observedLineages: string[] = [];
+  const latestIncompatible = retainedBaselineCandidate();
+  const executor = new SentinelManagedExecutor(dependencies({
+    readFindings: () => [],
+    baselineCandidate: async (input) => {
+      observedLineages.push(input.lineage.engineVersion);
+      if (input.lineage.engineVersion === "not-run-v1") return latestIncompatible;
+      const olderCompatible = structuredClone(retainedBaselineCandidate().artifact);
+      olderCompatible.lineage = structuredClone(input.lineage);
+      return { kind: "artifact", artifact: olderCompatible };
+    },
+  }));
+
+  const result = await executor.execute(executionInput());
+
+  assert.equal(observedLineages.length, 2);
+  assert.equal(observedLineages[0], "not-run-v1");
+  assert.equal(result.baseline.kind, "comparable");
+  assert.equal(result.artifact.decision.outcome, "pass");
+  assert.equal(result.artifact.baselineCommit, BASE_SHA);
 });
 
 test("records a changed scan as partial scan coverage without downgrading a complete snapshot", async () => {
@@ -323,8 +376,92 @@ function dependencies(overrides: {
     waitForScan: overrides.waitForScan ?? (async () => scan("completed")),
     readFindings: overrides.readFindings ?? (() => [finding()]),
     readTriage: () => new Map(),
-    baselineCandidate: overrides.baselineCandidate ?? (async () => ({ kind: "absent" })),
+    // Existing scan-request tests need a persisted candidate to pass the new
+    // absence preflight; its deliberately different lineage fails closed later.
+    baselineCandidate: overrides.baselineCandidate ?? (async () => retainedBaselineCandidate()),
     now: () => "2026-08-12T12:00:00.000Z",
+  };
+}
+
+function retainedBaselineCandidate() {
+  const policy = defaultGuardrailPolicy();
+  return {
+    kind: "artifact" as const,
+    artifact: buildGateArtifactV2({
+      gateId: "baseline-gate",
+      repository: {
+        id: "github:991122",
+        key: "github:991122",
+        owner: "OkamiOps",
+        name: "private-sentinel",
+        defaultBranch: "main",
+        locator: { kind: "github", repositoryId: "991122", owner: "OkamiOps", name: "private-sentinel" },
+      },
+      source: "github",
+      executor: "sentinel-managed",
+      target: { kind: "protected_branch", ref: "main" },
+      resolvedTarget: {
+        baseRef: "main",
+        headRef: "main",
+        baseSha: BASE_SHA,
+        headSha: BASE_SHA,
+        policySha: BASE_SHA,
+        pullRequestNumber: null,
+      },
+      policySource: "protected_branch",
+      changeSet: {
+        baseRef: "main",
+        headRef: "main",
+        baseSha: BASE_SHA,
+        headSha: BASE_SHA,
+        files: [],
+        scanPaths: [],
+        scopeMode: "repository",
+        fallbackReason: null,
+      },
+      policy,
+      scan: { id: "scan-baseline", cost: null, status: "completed" },
+      baselineCommit: null,
+      evaluation: {
+        deltas: [],
+        decision: {
+          outcome: "bootstrap",
+          summary: "Protected baseline initialized.",
+          violations: [],
+          warnings: [],
+          exceptionsApplied: [],
+          githubConclusion: "neutral",
+        },
+      },
+      lineage: buildScanLineage({
+        engine: "codex-security",
+        engineVersion: "baseline-v1",
+        route: "openai-api",
+        protocol: "baseline",
+        provider: "openai",
+        model: policy.scan.model,
+        reasoningEffort: policy.scan.effort,
+        methodology: "security-change-gate",
+        profile: policy.scan.mode,
+        recipeHash: `sha256:${"d".repeat(64)}`,
+        sourceRevision: `sha256:${"e".repeat(64)}`,
+      }),
+      coverage: {
+        status: "complete",
+        repositoryFileCount: 1,
+        inspectedFileCount: 1,
+        unexaminedFileCount: 0,
+        submodules: [],
+        lfsPointers: [],
+        materializedFileCount: 1,
+        unmaterializedFileCount: 0,
+        scanScope: "repository",
+      },
+      snapshot: { identity: SNAPSHOT_ID, materializerVersion: "github-commit-v1" },
+      workflowRun: null,
+      versions: { gateCore: "0.2.0", scanner: "baseline" },
+      createdAt: "2026-08-12T12:00:00.000Z",
+    }),
   };
 }
 
