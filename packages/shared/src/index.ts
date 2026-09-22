@@ -989,7 +989,7 @@ export type GateMaterializationState =
   | "ready"
   | "released"
   | "failed";
-export type GateStatus = "queued" | "resolving" | "scanning" | "evaluating" | "publishing" | "completed" | "cancelled" | "error";
+export type GateStatus = "queued" | "resolving" | "scanning" | "evaluating" | "publishing" | "cancelling" | "completed" | "cancelled" | "error";
 export type GateOutcome = "no_changes" | "bootstrap" | "pass" | "warning" | "blocked" | "error";
 export type GatePublishStatus = "not_configured" | "waiting" | "publishing" | "published" | "failed";
 export type GateFindingLifecycle = "new" | "reopened" | "persistent" | "fixed";
@@ -1051,12 +1051,22 @@ export interface EffectiveScanLineage {
 }
 
 export interface GateCoverageEnvelope {
+  /** Whether the immutable snapshot has all required source material. */
   status: "complete" | "partial";
+  /** Total source paths known for this target, including unavailable submodules. */
   repositoryFileCount: number;
+  /** Paths actually selected for the scanner, not the number materialized. */
   inspectedFileCount: number;
   unexaminedFileCount: number;
   submodules: string[];
   lfsPointers: string[];
+  /**
+   * Coverage contract revision 2. Absent only on historical artifacts.
+   * A protected baseline requires these fields and a repository scan scope.
+   */
+  materializedFileCount?: number;
+  unmaterializedFileCount?: number;
+  scanScope?: "changed" | "repository";
 }
 
 export interface GateSnapshotIdentity {

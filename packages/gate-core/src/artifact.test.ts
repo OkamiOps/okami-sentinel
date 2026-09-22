@@ -165,6 +165,9 @@ function artifactV2Input(): BuildGateArtifactV2Input {
       unexaminedFileCount: 0,
       submodules: [],
       lfsPointers: [],
+      materializedFileCount: 20,
+      unmaterializedFileCount: 0,
+      scanScope: "changed",
     },
     snapshot: {
       identity: `sha256:${"c".repeat(64)}`,
@@ -392,6 +395,23 @@ test("rejects a successful v2 decision with incomplete coverage", () => {
   };
 
   assert.throws(() => buildGateArtifactV2(input), /coverage.*pass/);
+});
+
+test("permits success when a complete snapshot is intentionally scanned by changed paths", () => {
+  const input = artifactV2Input();
+  input.evaluation.decision = passDecision();
+  input.evaluation.deltas = [];
+  input.coverage = {
+    ...input.coverage,
+    inspectedFileCount: 1,
+    unexaminedFileCount: 19,
+    scanScope: "changed",
+  };
+
+  const artifact = buildGateArtifactV2(input);
+  assert.equal(artifact.decision.githubConclusion, "success");
+  assert.equal(artifact.coverage.inspectedFileCount, 1);
+  assert.equal(artifact.coverage.unexaminedFileCount, 19);
 });
 
 test("keeps v2 operational failures action_required without findings", () => {

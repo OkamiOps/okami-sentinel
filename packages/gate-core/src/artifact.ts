@@ -346,8 +346,11 @@ function validateGateArtifactV2(value: unknown): asserts value is GateArtifactV2
   validateDecisionInvariants(value as GateArtifactV2);
   validateCanonicalDecisionGraph(value as GateArtifactV2);
   const decision = (value as GateArtifactV2).decision;
-  if (!coverageIsComplete(coverage) && decision.githubConclusion === "success") {
+  if (!materializationIsComplete(coverage) && decision.githubConclusion === "success") {
     fail("GateArtifact.coverage", `incompleta não pode publicar outcome ${decision.outcome} como success`);
+  }
+  if (coverage.scanScope !== undefined && coverage.scanScope !== (artifact.changeSet as ChangeSet).scopeMode) {
+    fail("GateArtifact.coverage.scanScope", "não corresponde ao escopo efetivo do scan");
   }
 }
 
@@ -538,7 +541,21 @@ function validateCoverage(value: unknown): GateCoverageEnvelope {
     "unexaminedFileCount",
     "submodules",
     "lfsPointers",
-  ], "GateArtifact.coverage");
+  ], "GateArtifact.coverage", [
+    "materializedFileCount",
+    "unmaterializedFileCount",
+    "scanScope",
+  ]);
+  const hasMaterializationEvidence = Object.hasOwn(coverage, "materializedFileCount")
+    || Object.hasOwn(coverage, "unmaterializedFileCount")
+    || Object.hasOwn(coverage, "scanScope");
+  if (hasMaterializationEvidence && (
+    !Object.hasOwn(coverage, "materializedFileCount")
+    || !Object.hasOwn(coverage, "unmaterializedFileCount")
+    || !Object.hasOwn(coverage, "scanScope")
+  )) {
+    fail("GateArtifact.coverage", "a prova de materialização e escopo deve ser completa");
+  }
   const parsed: GateCoverageEnvelope = {
     status: enumValue(coverage.status, ["complete", "partial"] as const, "GateArtifact.coverage.status"),
     repositoryFileCount: nonNegativeInteger(coverage.repositoryFileCount, "GateArtifact.coverage.repositoryFileCount"),
@@ -546,19 +563,48 @@ function validateCoverage(value: unknown): GateCoverageEnvelope {
     unexaminedFileCount: nonNegativeInteger(coverage.unexaminedFileCount, "GateArtifact.coverage.unexaminedFileCount"),
     submodules: stringArray(coverage.submodules, "GateArtifact.coverage.submodules"),
     lfsPointers: stringArray(coverage.lfsPointers, "GateArtifact.coverage.lfsPointers"),
+    ...(hasMaterializationEvidence ? {
+      materializedFileCount: nonNegativeInteger(
+        coverage.materializedFileCount,
+        "GateArtifact.coverage.materializedFileCount",
+      ),
+      unmaterializedFileCount: nonNegativeInteger(
+        coverage.unmaterializedFileCount,
+        "GateArtifact.coverage.unmaterializedFileCount",
+      ),
+      scanScope: enumValue(
+        coverage.scanScope,
+        ["changed", "repository"] as const,
+        "GateArtifact.coverage.scanScope",
+      ),
+    } : {}),
   };
   parsed.submodules.forEach((entry, index) => publicPath(entry, `GateArtifact.coverage.submodules[${index}]`));
   parsed.lfsPointers.forEach((entry, index) => publicPath(entry, `GateArtifact.coverage.lfsPointers[${index}]`));
   if (parsed.inspectedFileCount + parsed.unexaminedFileCount !== parsed.repositoryFileCount) {
     fail("GateArtifact.coverage", "contagens não fecham o repositório");
   }
-  if (parsed.status === "complete" && !coverageIsComplete(parsed)) {
-    fail("GateArtifact.coverage", "status complete exige cobertura integral");
+  if (
+    parsed.materializedFileCount !== undefined
+    && parsed.materializedFileCount + parsed.unmaterializedFileCount! !== parsed.repositoryFileCount
+  ) {
+    fail("GateArtifact.coverage", "contagens de materialização não fecham o repositório");
+  }
+  if (parsed.status === "complete" && !materializationIsComplete(parsed)) {
+    fail("GateArtifact.coverage", "status complete exige materialização integral");
   }
   return parsed;
 }
 
-function coverageIsComplete(coverage: GateCoverageEnvelope): boolean {
+function materializationIsComplete(coverage: GateCoverageEnvelope): boolean {
+  if (coverage.materializedFileCount !== undefined) {
+    return coverage.status === "complete"
+      && coverage.materializedFileCount === coverage.repositoryFileCount
+      && coverage.unmaterializedFileCount === 0
+      && coverage.submodules.length === 0
+      && coverage.lfsPointers.length === 0;
+  }
+  // Historical artifacts used scanner coverage for this field. Keep them readable.
   return coverage.status === "complete"
     && coverage.inspectedFileCount === coverage.repositoryFileCount
     && coverage.unexaminedFileCount === 0
@@ -687,6 +733,11 @@ function copyCoverage(coverage: GateCoverageEnvelope): GateCoverageEnvelope {
     unexaminedFileCount: coverage.unexaminedFileCount,
     submodules: [...coverage.submodules],
     lfsPointers: [...coverage.lfsPointers],
+    ...(coverage.materializedFileCount === undefined ? {} : {
+      materializedFileCount: coverage.materializedFileCount,
+      unmaterializedFileCount: coverage.unmaterializedFileCount,
+      scanScope: coverage.scanScope,
+    }),
   };
 }
 

@@ -64,6 +64,8 @@ function v2Input(executor: BuildGateArtifactV2Input["executor"] = "sentinel-mana
   const protectedChangeSet = changeSet();
   protectedChangeSet.baseRef = "main";
   protectedChangeSet.headRef = "main";
+  protectedChangeSet.scanPaths = [];
+  protectedChangeSet.scopeMode = "repository";
   return {
     gateId: "gate-baseline",
     repository: {
@@ -126,6 +128,9 @@ function v2Input(executor: BuildGateArtifactV2Input["executor"] = "sentinel-mana
       unexaminedFileCount: 0,
       submodules: [],
       lfsPointers: [],
+      materializedFileCount: 20,
+      unmaterializedFileCount: 0,
+      scanScope: "repository",
     },
     snapshot: {
       identity: `sha256:${"c".repeat(64)}`,
@@ -174,6 +179,54 @@ test("keeps executor differences comparable", () => {
     kind: "artifact",
     artifact: baseline,
   }).kind, "comparable");
+});
+
+test("permits a complete changed scan to compare against a repository baseline", () => {
+  const baseline = buildGateArtifactV2(v2Input());
+  const current = {
+    ...context(baseline),
+    coverage: {
+      ...baseline.coverage,
+      inspectedFileCount: 1,
+      unexaminedFileCount: 19,
+      scanScope: "changed" as const,
+    },
+  };
+
+  assert.equal(selectGateBaseline(current, {
+    kind: "artifact",
+    artifact: baseline,
+  }).kind, "comparable");
+});
+
+test("fails closed when a baseline has no repository scan proof", () => {
+  const current = buildGateArtifactV2(v2Input());
+
+  const legacy = v2Input();
+  delete legacy.coverage.materializedFileCount;
+  delete legacy.coverage.unmaterializedFileCount;
+  delete legacy.coverage.scanScope;
+  assert.deepEqual(selectGateBaseline(context(current), {
+    kind: "artifact",
+    artifact: buildGateArtifactV2(legacy),
+  }), { kind: "incompatible", reason: "coverage" });
+
+  const changed = v2Input();
+  changed.changeSet = {
+    ...changed.changeSet,
+    scanPaths: ["src/report.ts"],
+    scopeMode: "changed",
+  };
+  changed.coverage = {
+    ...changed.coverage,
+    inspectedFileCount: 1,
+    unexaminedFileCount: 19,
+    scanScope: "changed",
+  };
+  assert.deepEqual(selectGateBaseline(context(current), {
+    kind: "artifact",
+    artifact: buildGateArtifactV2(changed),
+  }), { kind: "incompatible", reason: "coverage" });
 });
 
 test("never uses a pull-request artifact as the protected-branch baseline", () => {

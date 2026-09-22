@@ -102,16 +102,34 @@ export function selectGateBaseline(
   if (baseline.policy.schemaVersion !== current.policySchemaVersion) {
     return { kind: "incompatible", reason: "policy_schema" };
   }
-  if (!coverageComplete(current.coverage) || !coverageComplete(baseline.coverage)) {
+  if (!materializationIsComplete(current.coverage) || !coverageComplete(baseline.coverage)) {
     return { kind: "incompatible", reason: "coverage" };
   }
   return { kind: "comparable", artifact: baseline };
 }
 
 export function coverageComplete(coverage: GateCoverageEnvelope): boolean {
+  // Baselines must prove both complete materialization and a full repository scan.
+  // Historical artifacts remain parseable but do not contain this proof.
   return coverage.status === "complete"
+    && coverage.materializedFileCount === coverage.repositoryFileCount
+    && coverage.unmaterializedFileCount === 0
+    && coverage.scanScope === "repository"
     && coverage.unexaminedFileCount === 0
     && coverage.inspectedFileCount === coverage.repositoryFileCount
+    && coverage.submodules.length === 0
+    && coverage.lfsPointers.length === 0;
+}
+
+function materializationIsComplete(coverage: GateCoverageEnvelope): boolean {
+  if (coverage.materializedFileCount !== undefined) {
+    return coverage.status === "complete"
+      && coverage.materializedFileCount === coverage.repositoryFileCount
+      && coverage.unmaterializedFileCount === 0
+      && coverage.submodules.length === 0
+      && coverage.lfsPointers.length === 0;
+  }
+  return coverage.status === "complete"
     && coverage.submodules.length === 0
     && coverage.lfsPointers.length === 0;
 }
