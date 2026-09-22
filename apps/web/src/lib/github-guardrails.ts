@@ -1,4 +1,5 @@
 import { getIntlLocale, translate } from "../i18n";
+import { localizeOperatorText } from "../i18n/operator-text";
 import type {
   GateArtifact,
   GateOutcome,
@@ -46,25 +47,25 @@ export function githubSetupModel(
   const sharedSteps: GitHubSetupStep[] = [
     {
       id: "repository",
-      title: "Confirme o repositório Git",
+      title: text("Confirme o repositório Git"),
       ready: repositoryReady,
-      message: repository?.repositoryPath ?? "Repositório Git cadastrado localmente.",
-      action: repositoryReady ? null : "Cadastre um repositório Git local.",
+      message: repository?.repositoryPath ?? text("Repositório Git cadastrado localmente."),
+      action: repositoryReady ? null : text("Cadastre um repositório Git local."),
       actionKind: "none",
       command: null,
     },
     ...(accessMode === "subscription"
-      ? [capabilityStep("scanner", "Use sua assinatura Codex", status.subscription, "codex login")]
+      ? [capabilityStep("scanner", text("Use sua assinatura Codex"), status.subscription, "codex login")]
       : []),
-    capabilityStep("remote", "Configure o remote GitHub", status.remote),
-    capabilityStep("cli", "Instale o gh CLI", status.cli),
-    capabilityStep("auth", "Autentique o gh CLI", status.auth, "gh auth login"),
-    capabilityStep("permissions", "Libere Actions e Checks", status.permissions),
+    capabilityStep("remote", text("Configure o remote GitHub"), status.remote),
+    capabilityStep("cli", text("Instale o gh CLI"), status.cli),
+    capabilityStep("auth", text("Autentique o gh CLI"), status.auth, "gh auth login"),
+    capabilityStep("permissions", text("Libere Actions e Checks"), status.permissions),
   ];
   const apiSteps: GitHubSetupStep[] = [
-    capabilityStep("secret", "Configure a API do scanner", status.secret, "gh secret set OPENAI_API_KEY"),
+    capabilityStep("secret", text("Configure a API do scanner"), status.secret, "gh secret set OPENAI_API_KEY"),
     {
-      ...capabilityStep("workflow", "Instale o caller workflow", status.workflow),
+      ...capabilityStep("workflow", text("Instale o caller workflow"), status.workflow),
       actionKind: status.workflow.ready ? "none" : "install",
     },
   ];
@@ -72,21 +73,25 @@ export function githubSetupModel(
     ...sharedSteps,
     ...(accessMode === "api" ? apiSteps : []),
     {
-      ...capabilityStep("baseline", "Sincronize a baseline remota", status.baseline),
+      ...capabilityStep("baseline", text("Sincronize a baseline remota"), status.baseline),
       actionKind: status.baseline.ready ? "none" : "sync",
     },
   ];
   const ready = steps.every((step) => step.ready);
   const primary = steps.find((step) => !step.ready) ?? {
     id: "baseline",
-    title: "Integração GitHub pronta",
+    title: text("Integração GitHub pronta"),
     ready: true,
-    message: "Todas as capacidades exigidas foram verificadas.",
+    message: text("Todas as capacidades exigidas foram verificadas."),
     action: null,
     actionKind: "none",
     command: null,
   };
   return { ready, steps, primary };
+}
+
+function text(value: string): string {
+  return localizeOperatorText(value, getIntlLocale());
 }
 
 function capabilityStep(
@@ -99,8 +104,8 @@ function capabilityStep(
     id,
     title,
     ready: capability.ready,
-    message: capability.message,
-    action: capability.action,
+    message: text(capability.message),
+    action: capability.action === null ? null : text(capability.action),
     actionKind: capability.ready ? "none" : "copy",
     command: capability.ready ? null : command ?? capability.action,
   };

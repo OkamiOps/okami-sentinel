@@ -18,6 +18,9 @@ import { AlertBanner, EmptyState, Loading, SeverityBadge, cx } from "../componen
 import { Button } from "@/components/ui/button";
 import { getAttackPathSelection } from "../lib/attack-path";
 import { useI18n } from "../i18n";
+import { attackPathMessages } from "../i18n/attack-path";
+import { useScopedI18n } from "../i18n/scoped";
+import { formatApiError } from "../lib/http";
 
 type AttackPathLoadState =
   | { status: "loading" }
@@ -31,6 +34,7 @@ type AttackPathLoadState =
 
 export function AttackPathPage() {
   const { t } = useI18n();
+  const { t: path } = useScopedI18n(attackPathMessages);
   const { id = "", findingId = "" } = useParams();
   const [params] = useSearchParams();
   const [state, setState] = useState<AttackPathLoadState>({ status: "loading" });
@@ -59,7 +63,7 @@ export function AttackPathPage() {
           setState({
             status: "error",
             message:
-              error instanceof Error ? error.message : "Falha ao carregar caminho",
+              error instanceof Error ? formatApiError(error, t) : path("loadError"),
           });
         }
       });
@@ -134,6 +138,7 @@ function AttackPathReady({
   signal: LifecycleFinding | null;
   model: AttackPathModel;
 }) {
+  const { t: path } = useScopedI18n(attackPathMessages);
   const [params, setParams] = useSearchParams();
   const selection = getAttackPathSelection(
     model,
@@ -202,12 +207,14 @@ function AttackPathReady({
               <div>
                 <div className="bench-label text-primary">CAUSAL STAGE</div>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Selecione uma etapa; a prova correspondente abre ao lado.
+                  {path("selectStage")}
                 </p>
               </div>
               <span className="font-mono text-[8px] uppercase text-muted-foreground">
-                {selection.lane.nodes.filter((node) => node.evidenceState === "proven").length}/
-                {selection.lane.nodes.length} provados
+                {path("provenCount", {
+                  proven: selection.lane.nodes.filter((node) => node.evidenceState === "proven").length,
+                  total: selection.lane.nodes.length,
+                })}
               </span>
             </div>
           </div>
@@ -219,7 +226,7 @@ function AttackPathReady({
             />
           </div>
           {model.summary && (
-            <InspectorSection label="COMO A CADEIA FECHA">
+            <InspectorSection label={path("howChainCloses")}>
               <p className="max-w-4xl break-words text-sm leading-7 text-muted-foreground">
                 {model.summary}
               </p>
@@ -227,23 +234,23 @@ function AttackPathReady({
           )}
           <div className="grid sm:grid-cols-2">
             <SignalCell
-              label="Impacto"
+              label={path("impact")}
               level={model.impact.level}
               detail={model.impact.rationale}
             />
             <SignalCell
-              label="Probabilidade"
+              label={path("likelihood")}
               level={model.likelihood.level}
               detail={model.likelihood.rationale}
             />
           </div>
           {model.preconditions && (
-            <InspectorSection label="PRÉ-CONDIÇÕES">
+            <InspectorSection label={path("preconditions")}>
               <p className="text-xs leading-6 text-muted-foreground">{model.preconditions}</p>
             </InspectorSection>
           )}
           {model.limitations.length > 0 && (
-            <InspectorSection label="LIMITAÇÕES / CONTRAPROVAS">
+            <InspectorSection label={path("limitations")}>
               <BulletList items={model.limitations} />
             </InspectorSection>
           )}
@@ -252,7 +259,7 @@ function AttackPathReady({
           <div className="border-b px-4 py-3">
             <div className="bench-label text-primary">EVIDENCE READOUT</div>
             <p className="mt-1 text-xs text-muted-foreground">
-              Artefato ligado à etapa ativa, sem reconstrução sintética.
+              {path("evidenceHint")}
             </p>
           </div>
           <AttackPathEvidence node={selection.node} />
@@ -277,6 +284,7 @@ function AttackPathHeader({
   regression: RegressionSummary;
   model: AttackPathModel;
 }) {
+  const { t: path } = useScopedI18n(attackPathMessages);
   return (
     <header className="border-b p-4 sm:p-5">
       <Button asChild variant="ghost" size="sm">
@@ -313,7 +321,7 @@ function AttackPathHeader({
               baseline {regression.baselineSource}
             </span>
             <span>
-              evidência {evidenceScanId === scanId ? "do canal atual" : "preservada do baseline"}
+              {evidenceScanId === scanId ? path("evidenceCurrent") : path("evidenceBaseline")}
             </span>
           </div>
         </div>
@@ -335,6 +343,7 @@ function PathIndex({
   activeLaneId: string;
   onSelect: (lane: AttackPathLane) => void;
 }) {
+  const { t: path } = useScopedI18n(attackPathMessages);
   return (
     <aside className="border-b lg:border-b-0 lg:border-r">
       <div className="bench-label border-b p-3">PATH INDEX</div>
@@ -355,7 +364,7 @@ function PathIndex({
           <span className="min-w-0">
             <strong className="block break-words text-xs">{lane.label}</strong>
             <span className="mt-1 block font-mono text-[8px] uppercase text-muted-foreground">
-              {lane.nodes.length} etapas
+              {path("stages", { count: lane.nodes.length })}
             </span>
           </span>
         </button>

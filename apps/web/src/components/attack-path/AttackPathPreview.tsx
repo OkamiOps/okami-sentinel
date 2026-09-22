@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button";
 import { getAttackPathSelection } from "@/lib/attack-path";
 import { SignalCell } from "../InspectorPrimitives";
 import { EmptyState, cx } from "../ui";
+import { attackPathMessages } from "../../i18n/attack-path";
+import { useScopedI18n } from "../../i18n/scoped";
 import { AttackPathEvidence } from "./AttackPathEvidence";
 import { AttackPathStage } from "./AttackPathStage";
 
@@ -16,11 +18,12 @@ export function AttackPathPreview({
   model: AttackPathModel | null;
   hrefForSelection: (laneId: string, nodeId: string | null) => string;
 }) {
+  const { t } = useScopedI18n(attackPathMessages);
   if (!model || model.lanes.length === 0) {
     return (
       <EmptyState
-        title="Caminho não estruturado"
-        description="Este finding não trouxe evidências suficientes para montar uma cadeia causal."
+        title={t("emptyTitle")}
+        description={t("emptyDescription")}
       />
     );
   }
@@ -42,6 +45,7 @@ function AttackPathPreviewReady({
   const [laneId, setLaneId] = useState(initial.lane.id);
   const [nodeId, setNodeId] = useState(initial.node?.id ?? null);
   const selection = getAttackPathSelection(model, laneId, nodeId);
+  const { t } = useScopedI18n(attackPathMessages);
   const provenCount = selection.lane.nodes.filter((node) => node.evidenceState === "proven").length;
   const openHref = hrefForSelection(selection.lane.id, selection.node?.id ?? null);
 
@@ -69,7 +73,7 @@ function AttackPathPreviewReady({
               ) : (
                 <TriangleAlert aria-hidden size={10} />
               )}
-              {model.status === "validated" ? "validado" : model.status === "partial" ? "parcial" : "não estruturado"}
+              {model.status === "validated" ? t("statusValidated") : model.status === "partial" ? t("statusPartial") : t("statusUnstructured")}
             </span>
           </div>
           {model.summary && (
@@ -80,18 +84,18 @@ function AttackPathPreviewReady({
         </div>
         <div className="flex items-center gap-3 sm:justify-end">
           <span className="font-mono text-[8px] uppercase text-muted-foreground">
-            {provenCount}/{selection.lane.nodes.length} provados
+            {t("provenCount", { proven: provenCount, total: selection.lane.nodes.length })}
           </span>
           <Button asChild variant="outline" size="sm">
             <Link to={openHref}>
-              <Route aria-hidden size={12} />Abrir explorer<ExternalLink aria-hidden size={11} />
+              <Route aria-hidden size={12} />{t("openExplorer")}<ExternalLink aria-hidden size={11} />
             </Link>
           </Button>
         </div>
       </div>
 
       {model.lanes.length > 1 && (
-        <div className="flex min-w-0 overflow-x-auto border-b" aria-label="Rotas alternativas">
+        <div className="flex min-w-0 overflow-x-auto border-b" aria-label={t("altRoutes")}>
           {model.lanes.map((lane) => (
             <button
               key={lane.id}
@@ -125,12 +129,12 @@ function AttackPathPreviewReady({
 
       <div className="grid border-t sm:grid-cols-2">
         <SignalCell
-          label="Impacto"
+          label={t("impact")}
           level={model.impact.level}
           detail={model.impact.rationale}
         />
         <SignalCell
-          label="Probabilidade"
+          label={t("likelihood")}
           level={model.likelihood.level}
           detail={model.likelihood.rationale}
         />

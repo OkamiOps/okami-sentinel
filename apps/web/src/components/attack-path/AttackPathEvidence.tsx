@@ -1,17 +1,19 @@
 import type { AttackPathNode } from "@csb/shared";
 import { AlertTriangle, Copy, FileCode2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { attackPathMessages, type AttackPathKey } from "../../i18n/attack-path";
+import { useScopedI18n } from "../../i18n/scoped";
 import { EmptyState, cx } from "../ui";
 
-const kindLabel: Record<AttackPathNode["kind"], string> = {
-  attacker: "Ator",
-  source: "Origem controlada",
-  entrypoint: "Ponto de entrada",
-  implementation: "Implementação concreta",
-  control: "Controle mais próximo",
-  sink: "Consumidor protegido",
-  evidence: "Evidência corroborante",
-  outcome: "Resultado",
+const kindKey: Record<AttackPathNode["kind"], AttackPathKey> = {
+  attacker: "kindAttacker",
+  source: "kindSource",
+  entrypoint: "kindEntry",
+  implementation: "kindImplementation",
+  control: "kindControl",
+  sink: "kindSink",
+  evidence: "kindEvidence",
+  outcome: "kindOutcome",
 };
 
 function locationLabel(node: AttackPathNode): string | null {
@@ -28,11 +30,12 @@ export function AttackPathEvidence({
   node: AttackPathNode | null;
   compact?: boolean;
 }) {
+  const { t } = useScopedI18n(attackPathMessages);
   if (!node) {
     return (
       <EmptyState
-        title="Etapa sem evidência"
-        description="Selecione uma etapa do caminho para inspecionar sua origem."
+        title={t("noEvidenceTitle")}
+        description={t("noEvidenceDescription")}
       />
     );
   }
@@ -44,7 +47,7 @@ export function AttackPathEvidence({
       <div className="grid min-w-0 gap-4 px-4 py-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="bench-label text-primary">{kindLabel[node.kind]}</span>
+            <span className="bench-label text-primary">{t(kindKey[node.kind])}</span>
             <span
               className={cx(
                 "border px-1.5 py-0.5 font-mono text-[7px] uppercase tracking-wider",
@@ -54,10 +57,10 @@ export function AttackPathEvidence({
               )}
             >
               {node.evidenceState === "proven"
-                ? "evidência provada"
+                ? t("stateProven")
                 : node.evidenceState === "inferred"
-                  ? "contexto inferido"
-                  : "lacuna explícita"}
+                  ? t("stateInferred")
+                  : t("stateGap")}
             </span>
           </div>
           <h3 className="mt-2 break-words text-sm font-semibold leading-6">{node.label}</h3>
@@ -79,7 +82,7 @@ export function AttackPathEvidence({
             size="sm"
             onClick={() => void navigator.clipboard.writeText(node.code ?? "")}
           >
-            <Copy aria-hidden size={12} />Copiar trecho
+            <Copy aria-hidden size={12} />{t("copySnippet")}
           </Button>
         )}
       </div>
@@ -88,8 +91,7 @@ export function AttackPathEvidence({
         <div className="flex items-start gap-3 border-t border-destructive/30 bg-destructive/[.04] px-4 py-4 text-xs leading-6 text-muted-foreground">
           <AlertTriangle aria-hidden className="mt-1 shrink-0 text-destructive" size={14} />
           <p>
-            A referência existe na cadeia, mas o artefato correspondente não foi anexado.
-            A interface mantém a lacuna visível; ela não inventa uma ligação.
+            {t("missingArtifact")}
           </p>
         </div>
       )}

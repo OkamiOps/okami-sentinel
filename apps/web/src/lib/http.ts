@@ -1,4 +1,5 @@
 import { getIntlLocale, translate, type TranslationKey } from "../i18n";
+import { localizeOperatorText } from "../i18n/operator-text";
 
 export type ApiErrorKind = "http" | "invalid" | "empty";
 
@@ -26,12 +27,12 @@ export function formatApiError(error: unknown, t: Translator): string {
     if (error.kind === "invalid") return t("common.apiInvalidResponse");
     if (error.kind === "empty") return t("common.apiEmptyResponse");
     if (error.hasGenericHttpMessage) return t("common.apiUnavailable", { status: error.status ?? "—" });
-    return error.message;
+    return localizeOperatorText(error.message, getIntlLocale());
   }
   if (error instanceof TypeError && /failed to fetch|fetch failed|networkerror|network request failed|load failed/i.test(error.message)) {
     return t("common.requestFailed");
   }
-  return error instanceof Error ? error.message : t("common.requestFailed");
+  return error instanceof Error ? localizeOperatorText(error.message, getIntlLocale()) : t("common.requestFailed");
 }
 
 export async function parseApiResponse<T>(response: Response): Promise<T> {

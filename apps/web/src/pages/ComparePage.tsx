@@ -69,6 +69,8 @@ import { executionProfileLabel, hasExecutionProfileMismatch } from "../lib/execu
 import { scanTokenUsage } from "../lib/scan-cost";
 import { formatApiError } from "../lib/http";
 import { useI18n, type TranslationKey } from "../i18n";
+import { attackPathMessages } from "../i18n/attack-path";
+import { useScopedI18n } from "../i18n/scoped";
 
 const changeOrder: CompareFindingChange[] = [
   "candidate_only",
@@ -523,6 +525,7 @@ function EconomicsLeader({ label, row, value, detail }: { label: string; row?: S
 
 function ComparisonCharts({ result, rows, activeCandidateId, onSelectCandidate }: { result: CompareResult; rows: ScanDecisionRow[]; activeCandidateId: string; onSelectCandidate: (id: string) => void }) {
   const { t } = useI18n();
+  const { t: path } = useScopedI18n(attackPathMessages);
   const severityData = result.scans.map((scan) => ({
     scanId: scan.id,
     label: chartProfile(scan),
@@ -605,7 +608,7 @@ function ComparisonCharts({ result, rows, activeCandidateId, onSelectCandidate }
           </Scatter>
         </ScatterChart></ResponsiveContainer>
       </div>
-      <div className="border-t px-4 py-3 text-[9px] leading-relaxed text-muted-foreground">Tamanho do ponto = High+. O gráfico compara eficiência visualmente; não mede falsos positivos.</div>
+      <div className="border-t px-4 py-3 text-[9px] leading-relaxed text-muted-foreground">{path("scatterHint")}</div>
     </Panel>
     <Panel label={t("compare.unitCost")} title={t("compare.unitCostTitle")} aside={<span className="font-mono text-[8px] text-muted-foreground">{t("compare.lowerIsBetter")}</span>} wrapTitle>
       <div style={{ height: economicsHeight }} className="px-2 py-4">

@@ -19,6 +19,7 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Fixed
 
+- English, Spanish, German and French no longer keep Portuguese labels on the attack path, GitHub setup steps, compare chart note, and known API error sentences. Scanner evidence text is still left in its source language.
 - Guardrails Scan now no longer stays on “validating provider” after choosing an engine and model. A cancelled capability probe (including React Strict Mode remount) can retry the same route, so effort options unlock without switching engines.
 - Guardrails GitHub scans in Docker clone the frozen commit SHA into an ephemeral snapshot (HTTPS remote, GitHub App token only as an HTTP header, never in the URL). The GitHub tarball remains a fallback. An empty snapshot fails closed instead of scanning a missing tree.
 - VulnHunter HTTP sessions and Mantis HTTP stages no longer terminate or force result writing at a cumulative number of tool calls or model turns, and they no longer use a wall-clock session deadline. Repeated inspections receive the same loop guidance as Portable Codex Security; context, byte/usage, cancellation and artifact validation remain enforced. A five-minute Mantis stage or 90-minute VulnHunter session previously aborted a real review.

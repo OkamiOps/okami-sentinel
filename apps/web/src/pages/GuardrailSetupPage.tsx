@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useI18n } from "../i18n";
 import { githubPermissionRecovery, type GitHubPermissionRecovery } from "../lib/github-app-permission-recovery";
+import { formatApiError } from "../lib/http";
 
 export function GuardrailSetupPage() {
   const { t } = useI18n();
@@ -35,7 +36,7 @@ export function GuardrailSetupPage() {
       const response = await api.listGuardrailRepositories();
       setRepositories(response.repositories);
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : t("guardrails.repositoriesLoadError"));
+      setLoadError(formatApiError(error, t));
     }
   }, [t]);
 
@@ -67,7 +68,7 @@ export function GuardrailSetupPage() {
         setCaller(null);
       }
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : t("guardrails.capabilitiesLoadError"));
+      setLoadError(formatApiError(error, t));
     }
   }, [t]);
 

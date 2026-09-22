@@ -13,6 +13,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { useI18n } from "../../i18n";
+import { formatApiError } from "../../lib/http";
 
 export function DeleteScanButton({
   scan,
@@ -39,7 +40,7 @@ export function DeleteScanButton({
       setOpen(false);
       await onDeleted();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Falha ao excluir scan");
+      setError(formatApiError(cause, t));
     } finally {
       setBusy(false);
     }

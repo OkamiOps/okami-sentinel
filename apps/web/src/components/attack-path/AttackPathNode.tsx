@@ -1,23 +1,25 @@
 import type { AttackPathNode as AttackPathNodeModel } from "@csb/shared";
 import { AlertTriangle, Check, CircleDashed } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { attackPathMessages, type AttackPathKey } from "../../i18n/attack-path";
+import { useScopedI18n } from "../../i18n/scoped";
 import { cx } from "../ui";
 
-const kindLabel: Record<AttackPathNodeModel["kind"], string> = {
-  attacker: "Ator",
-  source: "Origem",
-  entrypoint: "Entrada",
-  implementation: "Implementação",
-  control: "Controle",
-  sink: "Destino",
-  evidence: "Evidência",
-  outcome: "Impacto",
+const kindKey: Record<AttackPathNodeModel["kind"], AttackPathKey> = {
+  attacker: "kindAttacker",
+  source: "kindSourceShort",
+  entrypoint: "kindEntryShort",
+  implementation: "kindImplementationShort",
+  control: "kindControlShort",
+  sink: "kindSinkShort",
+  evidence: "kindEvidenceShort",
+  outcome: "kindOutcomeShort",
 };
 
-const stateLabel: Record<AttackPathNodeModel["evidenceState"], string> = {
-  proven: "provado",
-  inferred: "inferido",
-  missing: "lacuna",
+const stateKey: Record<AttackPathNodeModel["evidenceState"], AttackPathKey> = {
+  proven: "nodeProven",
+  inferred: "nodeInferred",
+  missing: "nodeGap",
 };
 
 const stateTone: Record<AttackPathNodeModel["evidenceState"], string> = {
@@ -43,6 +45,7 @@ export function AttackPathNode({
   selected: boolean;
   onSelect: (node: AttackPathNodeModel) => void;
 }) {
+  const { t } = useScopedI18n(attackPathMessages);
   const location = node.location
     ? `${node.location.path}${node.location.startLine != null ? `:${node.location.startLine}` : ""}`
     : null;
@@ -63,11 +66,11 @@ export function AttackPathNode({
       <span className="flex min-w-0 flex-1 flex-col">
         <span className="flex items-center justify-between gap-3 border-b px-3 py-2 font-mono text-[8px] uppercase tracking-[.13em]">
           <span className={selected ? "text-primary" : "text-muted-foreground"}>
-            {String(index + 1).padStart(2, "0")} / {kindLabel[node.kind]}
+            {String(index + 1).padStart(2, "0")} / {t(kindKey[node.kind])}
           </span>
           <span className={cx("inline-flex items-center gap-1", stateTone[node.evidenceState])}>
             <EvidenceStateIcon state={node.evidenceState} />
-            {stateLabel[node.evidenceState]}
+            {t(stateKey[node.evidenceState])}
           </span>
         </span>
         <span className="min-w-0 px-3 py-3">

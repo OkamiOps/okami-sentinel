@@ -4,6 +4,8 @@ import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { getAttackPathStageItems } from "@/lib/attack-path";
 import { cx } from "../ui";
+import { attackPathMessages } from "../../i18n/attack-path";
+import { useScopedI18n } from "../../i18n/scoped";
 import { AttackPathNode } from "./AttackPathNode";
 
 function Connector() {
@@ -31,6 +33,7 @@ export function AttackPathStage({
   expandHref?: string;
   className?: string;
 }) {
+  const { t } = useScopedI18n(attackPathMessages);
   const items = getAttackPathStageItems(lane, compact);
   return (
     <div
@@ -38,7 +41,7 @@ export function AttackPathStage({
         "min-w-0 max-w-full overflow-x-hidden sm:overflow-x-auto sm:overscroll-x-contain",
         className,
       )}
-      aria-label={`Caminho de ataque: ${lane.label}`}
+      aria-label={t("pathAria", { label: lane.label })}
     >
       <ol className="flex min-w-0 flex-col sm:w-max sm:min-w-full sm:flex-row sm:items-stretch">
         {items.map((item, renderedIndex) => (
@@ -62,16 +65,16 @@ export function AttackPathStage({
                 <Link to={expandHref}>
                   <MoreHorizontal aria-hidden size={16} />
                   <span className="font-mono text-[8px] uppercase tracking-wider">
-                    {item.count} etapas
+                    {t("stages", { count: item.count })}
                   </span>
-                  <span className="text-[9px] font-normal">abrir fluxo</span>
+                  <span className="text-[9px] font-normal">{t("openFlow")}</span>
                 </Link>
               </Button>
             ) : (
               <div className="flex min-h-20 min-w-0 flex-col items-center justify-center border border-dashed px-4 text-muted-foreground sm:min-h-28 sm:min-w-32">
                 <MoreHorizontal aria-hidden size={16} />
                 <span className="mt-1 font-mono text-[8px] uppercase tracking-wider">
-                  {item.count} etapas
+                  {t("stages", { count: item.count })}
                 </span>
               </div>
             )}

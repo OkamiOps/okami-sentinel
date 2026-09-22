@@ -128,7 +128,7 @@ export function GuardrailsPage() {
     } catch (error) {
       setState({
         status: "error",
-        message: error instanceof Error ? error.message : "Falha ao carregar Guardrails",
+        message: formatApiError(error, t),
       });
     }
   }, [gateId]);
@@ -145,7 +145,7 @@ export function GuardrailsPage() {
         };
       });
     }).catch((error) => {
-      setActionError(error instanceof Error ? error.message : "Falha ao atualizar gate");
+      setActionError(formatApiError(error, t));
     });
   }, []);
 
@@ -216,7 +216,7 @@ export function GuardrailsPage() {
       setEnrollOpen(false);
       await load();
     } catch (error) {
-      setActionError(error instanceof Error && error.message.includes("repository_already_registered") ? tr("duplicate") : error instanceof Error ? error.message : "Falha ao cadastrar repositório");
+      setActionError(error instanceof Error && error.message.includes("repository_already_registered") ? tr("duplicate") : formatApiError(error, t));
       throw error;
     } finally {
       setBusy(false);
@@ -232,7 +232,7 @@ export function GuardrailsPage() {
       await api.cancelGate(selectedGateId);
       await load();
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : "Falha ao cancelar gate");
+      setActionError(formatApiError(error, t));
     } finally {
       setBusy(false);
     }

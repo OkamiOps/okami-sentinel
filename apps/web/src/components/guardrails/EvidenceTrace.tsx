@@ -3,6 +3,8 @@ import { ArrowUpRight, FileSearch } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
+import { attackPathMessages } from "../../i18n/attack-path";
+import { useScopedI18n } from "../../i18n/scoped";
 import { evidenceForNode } from "../../lib/guardrails";
 
 export function EvidenceTrace({ artifact, node }: { artifact: GateArtifact; node: DecisionGraphNode }) {
@@ -11,6 +13,7 @@ export function EvidenceTrace({ artifact, node }: { artifact: GateArtifact; node
   const attackPathHref = finding?.sourceScanId && finding.findingId
     ? `/scans/${encodeURIComponent(finding.sourceScanId)}/findings/${encodeURIComponent(finding.findingId)}/path?evidenceScan=${encodeURIComponent(finding.sourceScanId)}`
     : null;
+  const { t } = useScopedI18n(attackPathMessages);
   const policyHref = node.kind === "rule"
     ? `/guardrails/repositories/${encodeURIComponent(artifact.repository.key)}/policy`
     : null;
@@ -37,14 +40,14 @@ export function EvidenceTrace({ artifact, node }: { artifact: GateArtifact; node
         {attackPathHref && (
           <Button asChild variant="outline" className="mt-4 min-h-11 w-full justify-between sm:w-auto">
             <Link to={attackPathHref}>
-              Abrir no Attack Path <ArrowUpRight aria-hidden size={14} />
+              {t("openAttackPath")} <ArrowUpRight aria-hidden size={14} />
             </Link>
           </Button>
         )}
         {policyHref && (
           <Button asChild variant="outline" className="mt-4 min-h-11 w-full justify-between sm:w-auto">
             <Link to={policyHref}>
-              Abrir simulação da política <ArrowUpRight aria-hidden size={14} />
+              {t("openPolicy")} <ArrowUpRight aria-hidden size={14} />
             </Link>
           </Button>
         )}
