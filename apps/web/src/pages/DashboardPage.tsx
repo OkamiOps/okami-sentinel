@@ -15,6 +15,10 @@ import { useI18n } from "../i18n";
 
 type DashboardCatalog = { total: number; repositories: string[] };
 
+function scanResultUnavailable(scan: ScanRun): boolean {
+  return scan.severity.total === 0 && (scan.status === "failed" || scan.status === "incomplete");
+}
+
 export function DashboardPage() {
   const { locale, t } = useI18n();
   const [data, setData] = useState<MetricsSummary | null>(null);
@@ -104,6 +108,7 @@ export function DashboardPage() {
 
   const channels = data.recent;
   const selected = channels.find((s) => s.id === selectedId) ?? channels[0] ?? null;
+  const selectedResultUnavailable = selected !== null && scanResultUnavailable(selected);
   const selectedIndex = selected ? channels.findIndex((scan) => scan.id === selected.id) : -1;
   const highPlus = data.severity.critical + data.severity.high;
   const chart = (data.costTrend ?? []).map((p) => ({ ...p, label: compactDate(p.startedAt) }));
@@ -162,8 +167,8 @@ export function DashboardPage() {
             <div className="font-mono text-[9px] text-primary">{shortId(selected.id)} / {selected.status.toUpperCase()}</div>
             <h2 className="mt-2 text-lg font-semibold leading-tight">{selected.displayName}</h2>
             <p className="mt-1 truncate font-mono text-[9px] text-muted-foreground">{selected.repositoryPath ?? selected.scanDir}</p>
-            <div className="mt-5"><SeverityStrip counts={selected.severity} total={selected.severity.total} /></div>
-            <div className="mt-5 grid grid-cols-2 gap-x-4 gap-y-5"><Readout label="HIGH+" value={selected.severity.critical + selected.severity.high} tone="risk" /><Readout label="TOTAL" value={selected.severity.total} /><Readout label={t("dashboard.cost")} value={formatScanUsd(selected)} tone="signal" /><Readout label={t("dashboard.duration")} value={<LiveDuration startedAt={selected.startedAt} completedAt={selected.completedAt} status={selected.status} durationMs={selected.durationMs} showDot={false} />} /></div>
+            <div className="mt-5">{selectedResultUnavailable ? <p className="border border-dashed border-destructive/45 bg-destructive/5 px-3 py-2 font-mono text-[9px] text-destructive">{t("guardrails.scanResultUnavailable")}</p> : <SeverityStrip counts={selected.severity} total={selected.severity.total} />}</div>
+            <div className="mt-5 grid grid-cols-2 gap-x-4 gap-y-5"><Readout label="HIGH+" value={selectedResultUnavailable ? "—" : selected.severity.critical + selected.severity.high} tone="risk" /><Readout label="TOTAL" value={selectedResultUnavailable ? "—" : selected.severity.total} /><Readout label={t("dashboard.cost")} value={formatScanUsd(selected)} tone="signal" /><Readout label={t("dashboard.duration")} value={<LiveDuration startedAt={selected.startedAt} completedAt={selected.completedAt} status={selected.status} durationMs={selected.durationMs} showDot={false} />} /></div>
             <Button asChild size="sm" className="mt-6 min-h-10 w-full justify-between"><Link to={`/scans/${selected.id}`}>{t("dashboard.openChannel")} <HugeiconsIcon icon={ArrowRight01Icon} size={12} /></Link></Button>
           </div> : <EmptyState title={t("dashboard.noSample")} />}
         </div>
@@ -189,7 +194,7 @@ export function DashboardPage() {
     </div>
 
     <Panel className="mt-4" label="RUN LEDGER" title={t("dashboard.latestRuns")} aside={<div className="flex items-center gap-2"><span className="font-mono text-[8px] uppercase text-muted-foreground">{(data.recentTotal ?? data.totalScans) > channels.length ? t("dashboard.recentWindow", { shown: channels.length, total: data.recentTotal ?? data.totalScans }) : `${channels.length} ${t("dashboard.indexed")}`}</span><Button asChild variant="ghost" size="sm"><Link to="/scans">{t("dashboard.openLedger")} <HugeiconsIcon icon={ArrowRight01Icon} size={12} /></Link></Button></div>}>
-      <div className="overflow-x-auto"><table className="table table-sm min-w-[48rem]"><thead><tr className="font-mono text-[9px] uppercase text-muted-foreground"><th>Channel</th><th>Run</th><th>Status</th><th>Engine / model</th><th>{t("dashboard.exposure")}</th><th className="text-right">{t("dashboard.cost")}</th><th>{t("dashboard.started")}</th></tr></thead><tbody>{ledgerRows.map((scan, i) => <tr key={scan.id} className="border-border hover:bg-accent"><td className="font-mono text-[9px] text-primary">CH-{String(ledgerPage * pageSize + i + 1).padStart(2, "0")}</td><td><Link className="font-medium hover:text-primary" to={`/scans/${scan.id}`}>{scan.displayName}</Link></td><td><StatusBadge status={scan.status} /></td><td className="font-mono text-[9px] text-muted-foreground">{scan.engine} · {scan.model}/{scan.effort}</td><td className="font-mono">{scan.severity.critical + scan.severity.high} / {scan.severity.total}</td><td className="text-right font-mono tabular-nums text-primary">{formatScanUsd(scan)}</td><td className="font-mono text-[9px] text-muted-foreground">{formatDate(scan.startedAt)}</td></tr>)}</tbody></table></div>
+      <div className="overflow-x-auto"><table className="table table-sm min-w-[48rem]"><thead><tr className="font-mono text-[9px] uppercase text-muted-foreground"><th>Channel</th><th>Run</th><th>Status</th><th>Engine / model</th><th>{t("dashboard.exposure")}</th><th className="text-right">{t("dashboard.cost")}</th><th>{t("dashboard.started")}</th></tr></thead><tbody>{ledgerRows.map((scan, i) => <tr key={scan.id} className="border-border hover:bg-accent"><td className="font-mono text-[9px] text-primary">CH-{String(ledgerPage * pageSize + i + 1).padStart(2, "0")}</td><td><Link className="font-medium hover:text-primary" to={`/scans/${scan.id}`}>{scan.displayName}</Link></td><td><StatusBadge status={scan.status} /></td><td className="font-mono text-[9px] text-muted-foreground">{scan.engine} · {scan.model}/{scan.effort}</td><td className="font-mono">{scanResultUnavailable(scan) ? "—" : `${scan.severity.critical + scan.severity.high} / ${scan.severity.total}`}</td><td className="text-right font-mono tabular-nums text-primary">{formatScanUsd(scan)}</td><td className="font-mono text-[9px] text-muted-foreground">{formatDate(scan.startedAt)}</td></tr>)}</tbody></table></div>
       {channels.length > pageSize && <div className="flex items-center justify-between border-t px-3 py-2"><span className="font-mono text-[8px] uppercase text-muted-foreground">{t("dashboard.page", { current: ledgerPage + 1, total: ledgerPages })}</span><div className="flex"><Button type="button" variant="ghost" size="sm" disabled={ledgerPage === 0} onClick={() => setLedgerPage((page) => Math.max(0, page - 1))}><HugeiconsIcon icon={ArrowLeft01Icon} size={12} />{t("dashboard.previous")}</Button><Button type="button" variant="ghost" size="sm" disabled={ledgerPage >= ledgerPages - 1} onClick={() => setLedgerPage((page) => Math.min(ledgerPages - 1, page + 1))}>{t("dashboard.next")}<HugeiconsIcon icon={ArrowRight01Icon} size={12} /></Button></div></div>}
     </Panel>
   </div>;
@@ -270,6 +275,7 @@ const severityChannels = [
 function SelectedComposition({ scan, channelIndex }: { scan: ScanRun; channelIndex: number }) {
   const { t } = useI18n();
   const total = scan.severity.total;
+  const resultUnavailable = scanResultUnavailable(scan);
   const values = severityChannels.map((item) => ({
     ...item,
     count: item.key === "info" ? scan.severity.info + scan.severity.unknown : scan.severity[item.key],
@@ -279,27 +285,28 @@ function SelectedComposition({ scan, channelIndex }: { scan: ScanRun; channelInd
     <div className="p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0"><div className="font-mono text-[8px] uppercase tracking-[.12em] text-primary">CH-{String(channelIndex + 1).padStart(2, "0")} / {t("dashboard.focus")}</div><h3 className="mt-1 truncate text-base font-semibold">{scan.displayName}</h3><p className="mt-1 truncate font-mono text-[8px] text-muted-foreground">{scan.engine} · {scan.model}/{scan.effort} · {scan.mode ?? "standard"}</p></div>
-        <div className="flex items-center gap-2"><StatusBadge status={scan.status} /><span className="font-mono text-[9px] text-muted-foreground">{total} findings</span></div>
+        <div className="flex items-center gap-2"><StatusBadge status={scan.status} /><span className="font-mono text-[9px] text-muted-foreground">{resultUnavailable ? t("guardrails.scanResultUnavailable") : `${total} findings`}</span></div>
       </div>
       <p className="mt-4 text-[10px] leading-relaxed text-muted-foreground">{t("dashboard.compositionDescription")}</p>
-      {total > 0 ? <div className="mt-3 flex h-10 w-full overflow-hidden border border-border bg-muted" role="img" aria-label={`${t("dashboard.compositionAria", { name: scan.displayName })}: ${values.map((item) => `${item.label} ${item.count}`).join(", ")}`}>{values.map((item) => { const percent = (item.count / total) * 100; if (!item.count) return null; return <div key={item.key} className={cx("flex min-w-1 items-center justify-center border-r border-background/55 px-1 font-mono text-[8px] font-semibold text-primary-foreground transition-[width] duration-300 last:border-r-0", item.bar)} style={{ width: `${percent}%` }} title={`${item.label}: ${item.count} (${Math.round(percent)}%)`}>{percent >= 13 && <span className="truncate">{item.label.toUpperCase()} {item.count}</span>}</div>; })}</div> : <div className="mt-3 flex h-10 items-center justify-center border border-dashed border-border bg-muted/35 font-mono text-[9px] uppercase text-muted-foreground">0 FINDINGS · {t("dashboard.noEvidence")}</div>}
-      <div className="mt-3 grid grid-cols-2 border-l border-t sm:grid-cols-5">{values.map((item) => <SeverityReadout key={item.key} label={item.label} count={item.count} total={total} tone={item.text} />)}</div>
+      {total > 0 ? <div className="mt-3 flex h-10 w-full overflow-hidden border border-border bg-muted" role="img" aria-label={`${t("dashboard.compositionAria", { name: scan.displayName })}: ${values.map((item) => `${item.label} ${item.count}`).join(", ")}`}>{values.map((item) => { const percent = (item.count / total) * 100; if (!item.count) return null; return <div key={item.key} className={cx("flex min-w-1 items-center justify-center border-r border-background/55 px-1 font-mono text-[8px] font-semibold text-primary-foreground transition-[width] duration-300 last:border-r-0", item.bar)} style={{ width: `${percent}%` }} title={`${item.label}: ${item.count} (${Math.round(percent)}%)`}>{percent >= 13 && <span className="truncate">{item.label.toUpperCase()} {item.count}</span>}</div>; })}</div> : <div className="mt-3 flex h-10 items-center justify-center border border-dashed border-border bg-muted/35 font-mono text-[9px] uppercase text-muted-foreground">{resultUnavailable ? t("guardrails.scanResultUnavailable") : `0 FINDINGS · ${t("dashboard.noEvidence")}`}</div>}
+      <div className="mt-3 grid grid-cols-2 border-l border-t sm:grid-cols-5">{values.map((item) => <SeverityReadout key={item.key} label={item.label} count={item.count} total={total} tone={item.text} unavailable={resultUnavailable} />)}</div>
     </div>
   </div>;
 }
 
-function SeverityReadout({ label, count, total, tone }: { label: string; count: number; total: number; tone: string }) {
+function SeverityReadout({ label, count, total, tone, unavailable = false }: { label: string; count: number; total: number; tone: string; unavailable?: boolean }) {
   const percent = total ? Math.round((count / total) * 100) : 0;
-  return <div className="border-b border-r px-2.5 py-2"><div className={cx("font-mono text-[8px] uppercase", tone)}>{label}</div><div className="mt-1 flex items-baseline gap-1.5"><span className="font-mono text-sm font-semibold">{count}</span><span className="font-mono text-[8px] text-muted-foreground">{percent}%</span></div></div>;
+  return <div className="border-b border-r px-2.5 py-2"><div className={cx("font-mono text-[8px] uppercase", tone)}>{label}</div><div className="mt-1 flex items-baseline gap-1.5"><span className="font-mono text-sm font-semibold">{unavailable ? "—" : count}</span>{!unavailable && <span className="font-mono text-[8px] text-muted-foreground">{percent}%</span>}</div></div>;
 }
 
 function ComparisonLane({ scan, index, focused, onSelect }: { scan: ScanRun; index: number; focused: boolean; onSelect: () => void }) {
   const { t } = useI18n();
+  const resultUnavailable = scanResultUnavailable(scan);
   return <button type="button" aria-pressed={focused} onClick={onSelect} className={cx("grid w-full grid-cols-[2.6rem_minmax(7rem,.7fr)_minmax(9rem,1.3fr)_3rem] items-center gap-2 border-b px-3 py-2.5 text-left transition hover:bg-accent", focused && "bg-primary/8 shadow-[inset_2px_0_0_var(--primary)]")}>
     <span className={cx("font-mono text-[8px]", focused ? "text-primary" : "text-muted-foreground")}>CH-{String(index + 1).padStart(2, "0")}</span>
     <span className="min-w-0"><span className="block truncate text-[10px] font-medium">{scan.displayName}</span><span className="block truncate font-mono text-[7px] text-muted-foreground">{scan.engine} · {scan.model}/{scan.effort}</span></span>
-    <span className="min-w-0">{scan.severity.total ? <SeverityStrip counts={scan.severity} total={scan.severity.total} /> : <span className="flex h-2.5 items-center justify-center border border-dashed border-border font-mono text-[6px] uppercase text-muted-foreground">{t("dashboard.noFindings")}</span>}</span>
-    <span className={cx("text-right font-mono text-[9px]", focused ? "text-primary" : "text-muted-foreground")}>{scan.severity.total}</span>
+    <span className="min-w-0">{scan.severity.total ? <SeverityStrip counts={scan.severity} total={scan.severity.total} /> : <span className="flex h-2.5 items-center justify-center border border-dashed border-border font-mono text-[6px] uppercase text-muted-foreground">{resultUnavailable ? t("guardrails.scanResultUnavailable") : t("dashboard.noFindings")}</span>}</span>
+    <span className={cx("text-right font-mono text-[9px]", focused ? "text-primary" : "text-muted-foreground")}>{resultUnavailable ? "—" : scan.severity.total}</span>
   </button>;
 }
 

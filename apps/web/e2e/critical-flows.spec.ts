@@ -251,6 +251,23 @@ test("guardrail monitor ends a failed scan without progress and preserves its la
   await expect(page.getByText("Waiting for scanner progress", { exact: true })).toHaveCount(0);
 });
 
+test("dashboard marks a failed run without evidence as unavailable instead of no findings", async ({ page }) => {
+  const state = await mockApi(page);
+  state.runs.splice(0, state.runs.length, {
+    ...baseRun,
+    id: "failed-without-evidence",
+    displayName: "Failed without evidence",
+    status: "failed",
+    completedAt: "2026-09-07T10:01:00Z",
+    progress: null,
+  });
+
+  await page.goto("/");
+  await expect(page.getByText("Result unavailable: the scan did not complete.", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("no findings", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("0 / 0", { exact: true })).toHaveCount(0);
+});
+
 test("local preflight exposes its scan route and explains how to add a missing connection", async ({ page }) => {
   await mockApi(page);
   await page.route("**/api/connections", (route) => route.fulfill({ json: { connections: [] } }));
