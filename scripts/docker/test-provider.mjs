@@ -129,6 +129,13 @@ function modelsResponse() {
 function nextMessage(body) {
   if (isJsonFinalization(body)) return finalMessage();
   if (!hasToolResult(body)) return toolMessage("workspace_list", { path: ".", maxDepth: 2, maxEntries: 32 });
+  const system = systemInstruction(body);
+  // Mantis and VulnHunter require a full source read before accepting their
+  // result. The fixture must exercise that requirement, not loop on a denied
+  // results.write until the session byte budget is exhausted.
+  if (requiresFullSourceRead(system) && !hasToolCall(body, "workspace_read")) {
+    return toolMessage("workspace_read", { path: "src/auth.ts" });
+  }
   return toolMessage("results_write", writeArguments(body));
 }
 
@@ -139,7 +146,14 @@ function writeArguments(body) {
   if (portablePath !== null) {
     return {
       path: portablePath,
-      content: portableFixtureArtifact(portablePath, portableReportIsSharded(resultTool)),
+      // Deep discovery canonically assigns candidate ids before later stages.
+      // Reuse the server-carried id from the current stage prompt, as a real
+      // provider must, instead of assuming the fixture's discovery-local id.
+      content: portableFixtureArtifact(
+        portablePath,
+        portableReportIsSharded(resultTool),
+        portableCandidateIdFromInstruction(system),
+      ),
     };
   }
   const mantisStage = system.match(/\bstage_id=([a-z-]+)/)?.[1];
@@ -164,7 +178,7 @@ function writeArguments(body) {
 }
 
 /** The Docker contract test imports this exact fixture generator. */
-export function portableFixtureArtifact(path, reportIsSharded) {
+export function portableFixtureArtifact(path, reportIsSharded, candidateId = FIXTURE_DISCOVERY_CANDIDATE_ID) {
   const anchors = fixtureFlowAnchors(false);
   switch (path) {
     case "01-inventory.json":
@@ -175,7 +189,7 @@ export function portableFixtureArtifact(path, reportIsSharded) {
       return {
         ...stageArtifact("discovery", { inspected: ["src/auth.ts"], unexamined: [] }),
         candidates: [{
-          id: "fixture-authz-missing",
+          id: FIXTURE_DISCOVERY_CANDIDATE_ID,
           category: "authorization",
           hypothesis: "The account route may expose another user's protected record.",
           attacker: "authenticated",
@@ -186,11 +200,11 @@ export function portableFixtureArtifact(path, reportIsSharded) {
         }],
       };
     case "04-dataflow.json":
-      return assessmentArtifact("dataflow", anchors);
+      return assessmentArtifact("dataflow", anchors, candidateId);
     case "05-validation.json":
-      return assessmentArtifact("validation", anchors);
+      return assessmentArtifact("validation", anchors, candidateId);
     case "sentinel-findings.json":
-      return portableReport(anchors, reportIsSharded);
+      return portableReport(anchors, reportIsSharded, candidateId);
     default:
       throw new RequestError(400, "unsupported portable artifact path");
   }
@@ -206,14 +220,14 @@ function stageArtifact(stage, scope) {
   };
 }
 
-function assessmentArtifact(stage, evidence) {
+function assessmentArtifact(stage, evidence, candidateId) {
   return {
     schemaVersion: 1,
     stage,
     summary: `Deterministic Docker QA ${stage} assessment completed.`,
     observations: [],
     assessments: [{
-      candidateId: "fixture-authz-missing",
+      candidateId,
       status: "confirmed",
       reason: "untrusted-flow-reaches-sink",
       evidence,
@@ -221,13 +235,13 @@ function assessmentArtifact(stage, evidence) {
   };
 }
 
-function portableReport(anchors, shardOnly) {
+function portableReport(anchors, shardOnly, candidateId) {
   const report = {
     schemaVersion: 1,
     stage: "report",
     findings: [{
       id: "fixture-authz-missing",
-      candidateId: "fixture-authz-missing",
+      candidateId,
       title: "Fixture authorization check is intentionally absent",
       severity: "high",
       confidence: "high",
@@ -248,13 +262,34 @@ function portableReport(anchors, shardOnly) {
       inspected: [".", "src/auth.ts"],
       unexamined: [],
       candidates: [{
-        candidateId: "fixture-authz-missing",
+        candidateId,
         disposition: "reported",
         reason: "untrusted-flow-reaches-sink",
         evidence: anchors,
       }],
     },
   };
+}
+
+const FIXTURE_DISCOVERY_CANDIDATE_ID = "fixture-authz-missing";
+
+/**
+ * Returns the only carried candidate id from a Portable stage prompt.
+ * Discovery has no carried ids, so it keeps the fixture-local id; subsequent
+ * stages use the server's canonical id (including Deep coverage ids).
+ */
+export function portableCandidateIdFromInstruction(instruction) {
+  const match = /BEGIN_PORTABLE_CANDIDATE_IDS_JSON\s*\n([^\n]+)\nEND_PORTABLE_CANDIDATE_IDS_JSON/.exec(instruction);
+  if (match === null) return FIXTURE_DISCOVERY_CANDIDATE_ID;
+  try {
+    const ids = JSON.parse(match[1]);
+    return Array.isArray(ids) && ids.length === 1 &&
+      typeof ids[0] === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(ids[0])
+      ? ids[0]
+      : FIXTURE_DISCOVERY_CANDIDATE_ID;
+  } catch {
+    return FIXTURE_DISCOVERY_CANDIDATE_ID;
+  }
 }
 
 function mantisReport() {
@@ -362,6 +397,18 @@ function portableReportIsSharded(tool) {
 
 function hasToolResult(body) {
   return Array.isArray(body.messages) && body.messages.some((message) => isRecord(message) && message.role === "tool");
+}
+
+function hasToolCall(body, name) {
+  return Array.isArray(body.messages) && body.messages.some((message) =>
+    isRecord(message) && message.role === "assistant" && Array.isArray(message.tool_calls) &&
+    message.tool_calls.some((call) => isRecord(call) && isRecord(call.function) && call.function.name === name),
+  );
+}
+
+function requiresFullSourceRead(system) {
+  return system.includes("Sentinel Mantis authorized defensive static-analysis stage.") ||
+    system.includes("VulnHunter") || system.includes("sentinel-findings.json");
 }
 
 function isJsonFinalization(body) {

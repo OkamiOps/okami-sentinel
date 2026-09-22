@@ -47,7 +47,7 @@ test("models discovery and the real three-turn capability probe are deterministi
   assert.deepEqual(JSON.parse(final.choices[0].message.content), { ok: true, fixture: "docker" });
 });
 
-test("Portable Codex six stages receive valid object artifacts and the fixture finding", async () => {
+test("Portable Codex six stages receive valid object artifacts and preserve the carried candidate id", async () => {
   const paths = [
     "01-inventory.json",
     "02-threat-model.json",
@@ -56,8 +56,9 @@ test("Portable Codex six stages receive valid object artifacts and the fixture f
     "05-validation.json",
     "sentinel-findings.json",
   ];
+  const carriedCandidateId = "deep-d1a244c0a3fd1e6491876cb7";
   for (const path of paths) {
-    const initial = portableBody(path);
+    const initial = portableBody(path, path === "03-discovery.json" ? [] : [carriedCandidateId]);
     const first = await completion(initial);
     assert.equal(toolName(first), "workspace_list", path);
     const second = await completion(withToolResult(initial, first, { entries: [], truncated: false }));
@@ -76,14 +77,16 @@ test("Portable Codex six stages receive valid object artifacts and the fixture f
     }
     if (path === "04-dataflow.json" || path === "05-validation.json") {
       const assessment = arguments_.content.assessments[0];
-      assert.equal(assessment.candidateId, "fixture-authz-missing");
+      assert.equal(assessment.candidateId, carriedCandidateId);
       assert.equal(assessment.status, "confirmed");
       assert.equal(assessment.reason, "untrusted-flow-reaches-sink");
       assert.deepEqual(assessment.evidence.map((anchor) => anchor.role), ["entrypoint", "sink"]);
     }
     if (path === "sentinel-findings.json") {
+      assert.equal(arguments_.content.findings[0].candidateId, carriedCandidateId);
       assert.deepEqual(arguments_.content.findings[0].anchors.map((anchor) => anchor.role), ["entrypoint", "sink"]);
       if (arguments_.content.coverage !== undefined) {
+        assert.equal(arguments_.content.coverage.candidates[0].candidateId, carriedCandidateId);
         assert.deepEqual(arguments_.content.coverage.candidates[0].evidence.map((anchor) => anchor.role), ["entrypoint", "sink"]);
       }
     }
@@ -94,8 +97,13 @@ test("Mantis stages and VulnHunter receive their exact report artifacts", async 
   for (const stage of ["architecture", "report"]) {
     const initial = mantisBody(stage);
     const first = await completion(initial);
-    const second = await completion(withToolResult(initial, first, { entries: [], truncated: false }));
-    const arguments_ = toolArguments(second);
+    assert.equal(toolName(first), "workspace_list");
+    const afterList = withToolResult(initial, first, { entries: [], truncated: false });
+    const second = await completion(afterList);
+    assert.equal(toolName(second), "workspace_read");
+    assert.deepEqual(toolArguments(second), { path: "src/auth.ts" });
+    const third = await completion(withToolResult(afterList, second, { content: "export const getAccount = true;" }));
+    const arguments_ = toolArguments(third);
     assert.equal(arguments_.path, `${stage}.json`);
     const content = JSON.parse(arguments_.content);
     assert.equal(stage === "report" ? content.findings[0].code_paths[0] : content.stage, stage === "report" ? "src/auth.ts:1" : stage);
@@ -103,8 +111,13 @@ test("Mantis stages and VulnHunter receive their exact report artifacts", async 
 
   const initial = vulnHunterBody();
   const first = await completion(initial);
-  const second = await completion(withToolResult(initial, first, { entries: [], truncated: false }));
-  const arguments_ = toolArguments(second);
+  assert.equal(toolName(first), "workspace_list");
+  const afterList = withToolResult(initial, first, { entries: [], truncated: false });
+  const second = await completion(afterList);
+  assert.equal(toolName(second), "workspace_read");
+  assert.deepEqual(toolArguments(second), { path: "src/auth.ts" });
+  const third = await completion(withToolResult(afterList, second, { content: "export const getAccount = true;" }));
+  const arguments_ = toolArguments(third);
   assert.equal(arguments_.path, "sentinel-findings.json");
   assert.equal(JSON.parse(arguments_.content).findings[0].evidence[0].path, "src/auth.ts");
 });
@@ -154,13 +167,18 @@ function probeBody() {
   };
 }
 
-function portableBody(path) {
+function portableBody(path, candidateIds = []) {
   const write = workspaceTools().at(-1);
   write.function.parameters.properties.path = { type: "string", enum: [path] };
   write.function.parameters.properties.content = { type: "object", properties: {} };
   return {
     model: "docker-fixture",
-    messages: [{ role: "system", content: "Sentinel Portable Codex fixture stage." }],
+    messages: [{ role: "system", content: [
+      "Sentinel Portable Codex fixture stage.",
+      "BEGIN_PORTABLE_CANDIDATE_IDS_JSON",
+      JSON.stringify(candidateIds),
+      "END_PORTABLE_CANDIDATE_IDS_JSON",
+    ].join("\n") }],
     tools: workspaceToolsWithWrite(write),
     tool_choice: "required",
   };

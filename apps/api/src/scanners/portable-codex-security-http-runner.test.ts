@@ -19,6 +19,10 @@ import {
   type AgentSession,
   type AgentSessionSpec,
 } from "../agent/session-types.js";
+import {
+  normalizeResultArtifactInput,
+  PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT,
+} from "../agent/result-artifact-contract.js";
 import type { XaiOAuthFlow } from "../connections/xai-oauth-flow.js";
 import {
   PortableCodexSecurityRunnerError,
@@ -42,7 +46,7 @@ import {
   validatePortableCodexSecurityReportCoverage,
 } from "./portable-codex-security-dossier.js";
 // @ts-expect-error Docker QA fixture is a JavaScript runner without a declaration file.
-import { portableFixtureArtifact } from "../../../../scripts/docker/test-provider.mjs";
+import { portableCandidateIdFromInstruction, portableFixtureArtifact } from "../../../../scripts/docker/test-provider.mjs";
 import {
   portableCodexSecurityWorkerErrorCode,
   readPortableCodexSecurityWorkerConfiguration,
@@ -103,6 +107,29 @@ test("Docker provider fixture satisfies the live Portable discovery, assessment,
   const report = portableFixtureArtifact("sentinel-findings.json", false);
   assert.ok(normalizePortableCodexSecurityStageArtifact("sentinel-findings.json", report));
   assert.doesNotThrow(() => validatePortableCodexSecurityReportCoverage(report, dossier));
+});
+
+test("Docker provider fixture carries the runner's Deep canonical candidate id into assessment and report stages", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-docker-fixture-deep-"));
+  const config = configuration(root);
+  config.mode = "deep";
+  const specs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }> = [];
+  try {
+    const result = await runPortableCodexSecurity(config, dependencies({
+      createSession: dockerPortableFixtureSessionFactory(specs),
+    }));
+    assert.equal(result.runtime.status, "completed");
+
+    const dossier = readPortableCodexSecurityDossier(path.join(config.outputDir, "portable-codex-security-results"));
+    const candidateId = dossier?.candidates[0]?.id;
+    assert.match(candidateId ?? "", /^deep-[a-f0-9]{24}$/);
+    assert.ok(dossier?.assessments.every((assessment) => assessment.candidateId === candidateId));
+    assert.ok(specs.some(({ spec }) =>
+      /stage "dataflow"/.test(spec.instructions) && spec.instructions.includes(JSON.stringify([candidateId])),
+    ));
+  } finally {
+    remove(root);
+  }
 });
 
 test("dense Deep assessment does not exhaust its turn budget merely by adding pages", () => {
@@ -338,6 +365,32 @@ function stageSessionFactory(
       { mode: 0o600 },
     );
     return completedStageSession(stage, artifact!, summaryForStage(stage));
+  };
+}
+
+function dockerPortableFixtureSessionFactory(
+  specs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }>,
+): (input: { spec: AgentSessionSpec; toolSurface: readonly string[] }) => Promise<AgentSession> {
+  return async (input) => {
+    specs.push(input);
+    const stage = String(input.spec.instructions.match(/stage "([a-z-]+)"/)?.[1]);
+    const artifact = PORTABLE_CODEX_SECURITY_STAGES.find((item) => item.id === stage)?.artifact;
+    assert.ok(artifact, `unknown stage ${stage}`);
+    const candidateId = portableCandidateIdFromInstruction(input.spec.instructions);
+    const contents = portableFixtureArtifact(
+      artifact,
+      input.spec.resultArtifactValidationContext?.reportShard !== undefined,
+      candidateId,
+    );
+    const normalized = normalizeResultArtifactInput(
+      { path: artifact, content: contents },
+      PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT,
+      input.spec.snapshotRoot,
+      input.spec.resultArtifactValidationContext,
+    );
+    assert.ok(normalized, `fixture artifact rejected for ${stage}`);
+    fs.writeFileSync(path.join(input.spec.artifactRoot, artifact), normalized.content as string, { mode: 0o600 });
+    return completedStageSession(stage, artifact, `${stage} complete`);
   };
 }
 
