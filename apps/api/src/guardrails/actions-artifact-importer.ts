@@ -19,6 +19,7 @@ const MAX_MANIFEST_BYTES = 32 * 1024;
 const MAX_ZIP_ENTRIES = 4;
 
 export type ActionsArtifactImportErrorCode =
+  | "actions_artifact_baseline_invalid"
   | "actions_artifact_digest_invalid"
   | "actions_artifact_identity_invalid"
   | "actions_artifact_manifest_invalid"
@@ -130,7 +131,7 @@ export class ActionsArtifactImporter {
         artifactStatus: "rejected",
         validatedAt: now,
         gateId: gate.id,
-        dispatchUpdates: {
+        dispatchUpdates: gate.status === "cancelling" || gate.status === "cancelled" ? {} : {
           state: "failed",
           completedAt: now,
           error: artifactImportCode(error),
@@ -140,7 +141,7 @@ export class ActionsArtifactImporter {
     }
 
     const now = this.#now();
-    const terminal = gate.status === "cancelled" || gate.status === "error" || gate.status === "completed";
+    const terminal = gate.status === "cancelling" || gate.status === "cancelled" || gate.status === "error" || gate.status === "completed";
     let artifactPath: string | null = null;
     if (!terminal) artifactPath = this.#writeArtifact(gate.id, bundle.artifact);
     const estimatedUsd = bundle.artifact.scan.cost?.estimatedUsd ?? 0;
@@ -163,7 +164,7 @@ export class ActionsArtifactImporter {
           publishStatus: bundle.artifact.publication.eligible ? "waiting" : "not_configured",
         },
       }),
-      dispatchUpdates: terminal
+      dispatchUpdates: gate.status === "cancelling" ? {} : terminal
         ? {
             state: gate.status === "cancelled" ? "cancelled" : gate.status === "completed" ? "completed" : "failed",
             completedAt: dispatch.completedAt ?? now,
@@ -257,6 +258,12 @@ function validateActionsArtifactIdentity(
     || (artifact.target.kind === "protected_branch" && artifact.target.ref !== dispatch.protectedBranch)
   ) {
     fail("actions_artifact_identity_invalid");
+  }
+  // Bootstrap establishes the protected-branch baseline. A PR or arbitrary
+  // compare artifact cannot establish it, even if it is a valid v2 artifact
+  // produced by an older caller workflow.
+  if (artifact.decision.outcome === "bootstrap" && artifact.target.kind !== "protected_branch") {
+    fail("actions_artifact_baseline_invalid");
   }
 }
 

@@ -286,7 +286,8 @@ export class GitHubMonitorService {
       }
       const firstHealthyPoll = current.baselineInitializedAt === null;
       const detectedAt = this.#now().toISOString();
-      // PRs come first; if a branch and PR point to one SHA, the richer PR target wins.
+      // A PR and a branch retain distinct targets even when they share one SHA:
+      // their base/ref policy context can require separate gates.
       for (const pullRequest of pullRequests) {
         this.#recordObservation(current, {
           kind: "pull_request",

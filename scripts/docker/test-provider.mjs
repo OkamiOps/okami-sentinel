@@ -139,7 +139,7 @@ function writeArguments(body) {
   if (portablePath !== null) {
     return {
       path: portablePath,
-      content: portableArtifact(portablePath, portableReportIsSharded(resultTool)),
+      content: portableFixtureArtifact(portablePath, portableReportIsSharded(resultTool)),
     };
   }
   const mantisStage = system.match(/\bstage_id=([a-z-]+)/)?.[1];
@@ -163,8 +163,9 @@ function writeArguments(body) {
   return { path: "probe.json", content: JSON.stringify({ ok: true, fixture: "docker" }) };
 }
 
-function portableArtifact(path, reportIsSharded) {
-  const anchor = fixtureAnchor(false);
+/** The Docker contract test imports this exact fixture generator. */
+export function portableFixtureArtifact(path, reportIsSharded) {
+  const anchors = fixtureFlowAnchors(false);
   switch (path) {
     case "01-inventory.json":
       return stageArtifact("inventory", { inspected: ["."], unexamined: [] });
@@ -173,14 +174,23 @@ function portableArtifact(path, reportIsSharded) {
     case "03-discovery.json":
       return {
         ...stageArtifact("discovery", { inspected: ["src/auth.ts"], unexamined: [] }),
-        candidates: [{ id: "fixture-authz-missing", category: "authorization", anchors: [anchor] }],
+        candidates: [{
+          id: "fixture-authz-missing",
+          category: "authorization",
+          hypothesis: "The account route may expose another user's protected record.",
+          attacker: "authenticated",
+          prerequisites: "An ordinary authenticated user can request a record identifier.",
+          expectedImpact: "The requester could read a protected record owned by another account.",
+          controlHypothesis: "The route may lack an ownership check before returning protected data.",
+          anchors,
+        }],
       };
     case "04-dataflow.json":
-      return assessmentArtifact("dataflow", anchor);
+      return assessmentArtifact("dataflow", anchors);
     case "05-validation.json":
-      return assessmentArtifact("validation", anchor);
+      return assessmentArtifact("validation", anchors);
     case "sentinel-findings.json":
-      return portableReport(anchor, reportIsSharded);
+      return portableReport(anchors, reportIsSharded);
     default:
       throw new RequestError(400, "unsupported portable artifact path");
   }
@@ -196,7 +206,7 @@ function stageArtifact(stage, scope) {
   };
 }
 
-function assessmentArtifact(stage, anchor) {
+function assessmentArtifact(stage, evidence) {
   return {
     schemaVersion: 1,
     stage,
@@ -206,12 +216,12 @@ function assessmentArtifact(stage, anchor) {
       candidateId: "fixture-authz-missing",
       status: "confirmed",
       reason: "untrusted-flow-reaches-sink",
-      evidence: [anchor],
+      evidence,
     }],
   };
 }
 
-function portableReport(anchor, shardOnly) {
+function portableReport(anchors, shardOnly) {
   const report = {
     schemaVersion: 1,
     stage: "report",
@@ -226,7 +236,7 @@ function portableReport(anchor, shardOnly) {
       rootCause: "The fixture represents a handler path without an ownership predicate before returning protected data.",
       impact: "An authenticated caller could access another account record when the missing ownership check is reachable.",
       remediation: "Require an ownership predicate that binds the requested account to the authenticated principal before returning data.",
-      anchors: [fixtureAnchor(true)],
+      anchors: fixtureFlowAnchors(true),
       cwe: ["CWE-862"],
       severityRationale: "The fixture uses high severity to exercise the report pipeline with an evidence-backed authorization finding.",
     }],
@@ -241,7 +251,7 @@ function portableReport(anchor, shardOnly) {
         candidateId: "fixture-authz-missing",
         disposition: "reported",
         reason: "untrusted-flow-reaches-sink",
-        evidence: [anchor],
+        evidence: anchors,
       }],
     },
   };
@@ -282,21 +292,20 @@ function vulnHunterReport() {
         summary: "Static fixture validation only; no request, payload, exploit, or runtime operation was performed.",
         limitations: ["The deterministic provider validates the wire contract only and does not execute application code."],
       },
-      evidence: [fixtureAnchor(true)],
+      evidence: fixtureFlowAnchors(true),
     }],
   };
 }
 
-function fixtureAnchor(withExplanation) {
-  return {
+function fixtureFlowAnchors(withExplanation) {
+  const explanation = "Fixture source anchor for the deterministic authorization finding used by Docker QA.";
+  return ["entrypoint", "sink"].map((role) => ({
     path: "src/auth.ts",
     startLine: 1,
     endLine: 1,
-    role: "sink",
-    ...(withExplanation
-      ? { explanation: "Fixture source anchor for the deterministic authorization finding used by Docker QA." }
-      : {}),
-  };
+    role,
+    ...(withExplanation ? { explanation } : {}),
+  }));
 }
 
 function finalMessage() {

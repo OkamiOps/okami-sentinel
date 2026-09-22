@@ -26,12 +26,23 @@ function requiredPort(name: string): number {
   return value;
 }
 
+async function securitySessionToken(request: APIRequestContext): Promise<string> {
+  const response = await request.get("/api/security-session");
+  expect(response.status()).toBe(200);
+  const { csrfToken } = await response.json() as { csrfToken?: unknown };
+  assert.equal(typeof csrfToken, "string");
+  assert.ok(csrfToken.length > 0);
+  return csrfToken;
+}
+
 async function startControlledScan(
   request: APIRequestContext,
   displayName: string,
   paths: string[],
+  csrfToken: string,
 ): Promise<ScanRun> {
   const response = await request.post("/api/scans", {
+    headers: { "X-CSRF-Token": csrfToken },
     data: {
       repositoryPath,
       displayName,
@@ -101,8 +112,9 @@ test("real API and SQLite retain an active controlled scan across restart, expos
     }
   });
 
-  const live = await startControlledScan(request, "E2E controlled live scan", ["controlled-live"]);
-  const incomplete = await startControlledScan(request, "E2E interrupted scan", ["controlled-incomplete"]);
+  const initialCsrfToken = await securitySessionToken(request);
+  const live = await startControlledScan(request, "E2E controlled live scan", ["controlled-live"], initialCsrfToken);
+  const incomplete = await startControlledScan(request, "E2E interrupted scan", ["controlled-incomplete"], initialCsrfToken);
   assert.notEqual(live.pid, null, "the live scan must own a real controlled scanner process");
   assert.notEqual(incomplete.pid, null, "the interrupted scan must own a real controlled scanner process");
 
@@ -124,6 +136,8 @@ test("real API and SQLite retain an active controlled scan across restart, expos
   await expect.poll(() => currentApiPid() !== firstApiPid, { timeout: 15_000 }).toBe(true);
   await expect.poll(async () => (await readScan(request, incomplete.id)).status, { timeout: 15_000 }).toBe("incomplete");
   await expect.poll(async () => (await readScan(request, live.id)).status, { timeout: 15_000 }).toBe("running");
+  const restartedCsrfToken = await securitySessionToken(request);
+  expect(restartedCsrfToken).not.toBe(initialCsrfToken);
 
   const attentionResponse = await request.get("/api/metrics/summary?status=attention");
   expect(attentionResponse.status()).toBe(200);
@@ -133,7 +147,11 @@ test("real API and SQLite retain an active controlled scan across restart, expos
 
   await page.reload();
   await expect(page.getByRole("heading", { name: live.displayName, exact: true })).toBeVisible();
+  const cancelRequest = page.waitForRequest((outgoing) =>
+    outgoing.method() === "POST" && new URL(outgoing.url()).pathname === `/api/scans/${live.id}/cancel`,
+  );
   await page.getByRole("button", { name: "Cancel process", exact: true }).click();
+  expect((await cancelRequest).headers()["x-csrf-token"]).toBe(restartedCsrfToken);
   await expect(page.getByRole("button", { name: "Cancel process", exact: true })).toHaveCount(0);
   await expect.poll(async () => (await readScan(request, live.id)).status).toBe("cancelled");
 

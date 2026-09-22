@@ -11,3 +11,13 @@ onlyBuiltDependencies:
   - better-sqlite3
   - esbuild
   - keytar
+
+patchedDependencies:
+  extract-zip@2.0.1: patches/extract-zip@2.0.1.patch
+
+overrides:
+  hono: 4.13.5
+  nanoid@^3.0.0: 3.3.18
+  js-yaml: 4.3.2
+  qs: 6.16.0
+  fast-uri: 3.1.6

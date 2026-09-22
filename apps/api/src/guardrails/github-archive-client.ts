@@ -4,6 +4,9 @@ import type { GuardrailRepository } from "@csb/shared";
 import { request as undiciRequest } from "undici";
 
 const DEFAULT_MAX_COMPRESSED_BYTES = 512 * 1024 * 1024;
+const DEFAULT_ARCHIVE_TIMEOUT_MS = 10 * 60 * 1_000;
+const DEFAULT_HEADERS_TIMEOUT_MS = 30_000;
+const DEFAULT_BODY_TIMEOUT_MS = 60_000;
 const MAX_REDIRECTS = 3;
 const APPROVED_ARCHIVE_HOSTS = new Set(["api.github.com", "codeload.github.com"]);
 
@@ -12,6 +15,7 @@ export type GitHubArchiveClientErrorCode =
   | "archive_not_found"
   | "archive_protocol_error"
   | "archive_redirect_rejected"
+  | "archive_timeout"
   | "archive_too_large";
 
 export class GitHubArchiveClientError extends Error {
@@ -31,6 +35,8 @@ export interface ArchiveHttpRequest {
   url: string;
   headers: Readonly<Record<string, string>>;
   signal?: AbortSignal;
+  headersTimeoutMs: number;
+  bodyTimeoutMs: number;
 }
 
 export interface ArchiveHttpResponse {
@@ -50,16 +56,34 @@ export interface GitHubArchiveClientDependencies {
   authorize(repository: GuardrailRepository): Promise<GitHubArchiveAuthorization>;
   transport?: ArchiveHttpTransport;
   maxCompressedBytes?: number;
+  /** Total wall-clock budget shared across authorization, redirects, and body consumption. */
+  archiveTimeoutMs?: number;
+  /** Maximum time to receive response headers for one archive request. */
+  headersTimeoutMs?: number;
+  /** Maximum idle period while waiting for the next archive body chunk. */
+  bodyTimeoutMs?: number;
 }
 
 export class GitHubArchiveClient {
   readonly #transport: ArchiveHttpTransport;
   readonly #maxCompressedBytes: number;
+  readonly #archiveTimeoutMs: number;
+  readonly #headersTimeoutMs: number;
+  readonly #bodyTimeoutMs: number;
 
   constructor(readonly dependencies: GitHubArchiveClientDependencies) {
     this.#transport = dependencies.transport ?? transportArchiveRequest;
     this.#maxCompressedBytes = positiveLimit(
       dependencies.maxCompressedBytes ?? DEFAULT_MAX_COMPRESSED_BYTES,
+    );
+    this.#archiveTimeoutMs = positiveLimit(
+      dependencies.archiveTimeoutMs ?? DEFAULT_ARCHIVE_TIMEOUT_MS,
+    );
+    this.#headersTimeoutMs = positiveLimit(
+      dependencies.headersTimeoutMs ?? DEFAULT_HEADERS_TIMEOUT_MS,
+    );
+    this.#bodyTimeoutMs = positiveLimit(
+      dependencies.bodyTimeoutMs ?? DEFAULT_BODY_TIMEOUT_MS,
     );
   }
 
@@ -69,7 +93,15 @@ export class GitHubArchiveClient {
     signal?: AbortSignal,
   ): Promise<Readable> {
     const sha = fullSha(commitSha);
-    const authorization = await this.dependencies.authorize(repository);
+    const deadline = AbortSignal.timeout(this.#archiveTimeoutMs);
+    const requestSignal = signal === undefined ? deadline : AbortSignal.any([signal, deadline]);
+    const abortCode = () => deadline.aborted ? "archive_timeout" : "archive_download_failed";
+    if (requestSignal.aborted) throw new GitHubArchiveClientError(abortCode());
+    const authorization = await awaitResponse(
+      this.dependencies.authorize(repository),
+      requestSignal,
+      abortCode,
+    );
     const owner = pathSegment(authorization.owner);
     const name = pathSegment(authorization.name);
     const token = secret(authorization.token);
@@ -79,7 +111,8 @@ export class GitHubArchiveClient {
     for (let redirect = 0; redirect <= MAX_REDIRECTS; redirect += 1) {
       let response: ArchiveHttpResponse;
       try {
-        response = await this.#transport({
+        if (requestSignal.aborted) throw new GitHubArchiveClientError(abortCode());
+        response = await awaitResponse(this.#transport({
           url,
           headers: {
             Accept: "application/vnd.github+json",
@@ -87,9 +120,12 @@ export class GitHubArchiveClient {
             "X-GitHub-Api-Version": "2026-03-10",
             ...(includeAuthorization ? { Authorization: `Bearer ${token}` } : {}),
           },
-          ...(signal === undefined ? {} : { signal }),
-        });
-      } catch {
+          signal: requestSignal,
+          headersTimeoutMs: this.#headersTimeoutMs,
+          bodyTimeoutMs: this.#bodyTimeoutMs,
+        }), requestSignal, abortCode);
+      } catch (error) {
+        if (error instanceof GitHubArchiveClientError) throw error;
         throw new GitHubArchiveClientError("archive_download_failed");
       }
 
@@ -116,7 +152,13 @@ export class GitHubArchiveClient {
         closeBody(response.body);
         throw new GitHubArchiveClientError("archive_too_large");
       }
-      return boundedReadable(response.body, this.#maxCompressedBytes);
+      return boundedReadable(
+        response.body,
+        this.#maxCompressedBytes,
+        requestSignal,
+        this.#bodyTimeoutMs,
+        abortCode,
+      );
     }
     throw new GitHubArchiveClientError("archive_redirect_rejected");
   }
@@ -125,11 +167,32 @@ export class GitHubArchiveClient {
 function boundedReadable(
   body: AsyncIterable<Uint8Array>,
   maxBytes: number,
+  signal: AbortSignal,
+  bodyTimeoutMs: number,
+  abortCode: () => GitHubArchiveClientErrorCode,
 ): Readable {
-  return Readable.from((async function* () {
+  let stream: Readable;
+  let inactivityTimer: NodeJS.Timeout | null = null;
+  const clearInactivityTimer = () => {
+    if (inactivityTimer !== null) clearTimeout(inactivityTimer);
+    inactivityTimer = null;
+  };
+  const stop = (code: GitHubArchiveClientErrorCode) => {
+    closeBody(body);
+    stream.destroy(new GitHubArchiveClientError(code));
+  };
+  const resetInactivityTimer = () => {
+    clearInactivityTimer();
+    inactivityTimer = setTimeout(() => stop("archive_timeout"), bodyTimeoutMs);
+    inactivityTimer.unref();
+  };
+  const abort = () => stop(abortCode());
+  stream = Readable.from((async function* () {
     let bytes = 0;
     try {
+      resetInactivityTimer();
       for await (const value of body) {
+        resetInactivityTimer();
         const chunk = Buffer.from(value);
         bytes += chunk.byteLength;
         if (bytes > maxBytes) {
@@ -139,9 +202,46 @@ function boundedReadable(
       }
     } catch (error) {
       if (error instanceof GitHubArchiveClientError) throw error;
+      if (signal.aborted) throw new GitHubArchiveClientError(abortCode());
       throw new GitHubArchiveClientError("archive_download_failed");
+    } finally {
+      clearInactivityTimer();
+      signal.removeEventListener("abort", abort);
     }
   })());
+  stream.once("close", () => {
+    clearInactivityTimer();
+    signal.removeEventListener("abort", abort);
+    closeBody(body);
+  });
+  if (signal.aborted) abort();
+  else signal.addEventListener("abort", abort, { once: true });
+  return stream;
+}
+
+function awaitResponse<T>(
+  operation: Promise<T>,
+  signal: AbortSignal,
+  abortCode: () => GitHubArchiveClientErrorCode,
+): Promise<T> {
+  if (signal.aborted) return Promise.reject(new GitHubArchiveClientError(abortCode()));
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => {
+      signal.removeEventListener("abort", abort);
+      reject(new GitHubArchiveClientError(abortCode()));
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    void operation.then(
+      (value) => {
+        signal.removeEventListener("abort", abort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+  });
 }
 
 async function transportArchiveRequest(
@@ -150,8 +250,8 @@ async function transportArchiveRequest(
   const response = await undiciRequest(request.url, {
     method: "GET",
     headers: request.headers,
-    headersTimeout: 0,
-    bodyTimeout: 0,
+    headersTimeout: request.headersTimeoutMs,
+    bodyTimeout: request.bodyTimeoutMs,
     ...(request.signal === undefined ? {} : { signal: request.signal }),
   });
   return {

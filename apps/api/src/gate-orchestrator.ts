@@ -378,17 +378,10 @@ export function cancelGate(
   const gate = deps.getGateRun(gateId);
   if (!gate || ["completed", "cancelled", "error"].includes(gate.status)) return false;
   if (gate.executor === "github-actions") {
-    const completedAt = deps.now();
-    deps.updateGateRun(gateId, { status: "cancelled", completedAt });
-    const dispatch = getGitHubActionsDispatch(gateId);
-    if (dispatch !== null) {
-      updateGitHubActionsDispatch(gateId, {
-        state: "cancelled",
-        completedAt,
-      });
-    }
-    emit(gateId, "done", { gateId, status: "cancelled", completedAt }, deps);
-    return true;
+    const executor = systemActionsExecutor();
+    const accepted = executor.cancel(gateId);
+    if (accepted) void executor.reconcileGate(gateId).catch(() => undefined);
+    return accepted;
   }
   const managed = activeManagedGates.get(gateId);
   managed?.controller.abort();
@@ -1119,12 +1112,16 @@ function systemActionsExecutor(): GitHubActionsExecutor {
     releaseSha: GITHUB_ACTIONS_WORKFLOW_SHA,
     createGateId: () => nanoid(20),
     onGateChanged: (gate) => {
-      if (gate.status === "scanning") {
+      if (gate.status === "scanning" || gate.status === "cancelling") {
         emit(gate.id, "status", {
           gateId: gate.id,
-          status: "scanning",
-          phase: "scanning",
+          status: gate.status,
+          phase: gate.status,
+          ...(gate.error ? { code: gate.error } : {}),
         }, productionDeps);
+      } else if (gate.status === "cancelled") {
+        emit(gate.id, "done", { gateId: gate.id, status: gate.status,
+          ...(gate.error ? { code: gate.error } : {}), completedAt: gate.completedAt }, productionDeps);
       } else if (gate.status === "completed") {
         const artifact = getGateArtifact(gate.id);
         emit(gate.id, "decision", {

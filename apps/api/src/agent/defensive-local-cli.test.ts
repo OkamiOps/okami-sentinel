@@ -263,7 +263,7 @@ test("an external abort settles despite an uncooperative local CLI and consumes 
   assert.deepEqual(unhandled, []);
 });
 
-test("the local timeout settles despite an uncooperative local CLI and consumes its late rejection", async () => {
+test("the local timeout settles despite an uncooperative local CLI and consumes its late rejection", async (t) => {
   let rejectLate: ((reason?: unknown) => void) | undefined;
   let markStarted: (() => void) | undefined;
   const started = new Promise<void>((resolve) => { markStarted = resolve; });
@@ -288,13 +288,22 @@ test("the local timeout settles despite an uncooperative local CLI and consumes 
       };
     },
   });
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  t.after(() => t.mock.timers.reset());
   const running = runner.run({ ...claudeInput(), timeoutMs: 10 });
   await started;
 
-  const outcome = await settleAsCode(running, 50);
-  await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  // Advance the production deadline and both bounded termination windows only
+  // after the injected child has started. Wall-clock scheduling under the full
+  // suite must not turn this into the helper's test timeout.
+  t.mock.timers.tick(10);
+  t.mock.timers.tick(1);
+  t.mock.timers.tick(1);
+  const outcome = await running.then(
+    () => "unexpected_success",
+    (error: unknown) => error instanceof DefensiveLocalCliError ? error.code : "unexpected_error",
+  );
   rejectLate?.(new Error("late CLI failure must not escape"));
-  await assert.rejects(running, { code: "agent_termination_unconfirmed" });
   await new Promise<void>((resolve) => setImmediate(resolve));
   process.off("unhandledRejection", onUnhandled);
 

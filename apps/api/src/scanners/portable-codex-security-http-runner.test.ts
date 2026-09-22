@@ -34,8 +34,15 @@ import {
   type SafePortableCodexSecurityProviderPlan,
 } from "./portable-codex-security-profile.js";
 import {
+  applyPortableCodexSecurityStageArtifact,
+  createPortableCodexSecurityDossier,
+  normalizePortableCodexSecurityStageArtifact,
   readPortableCodexSecurityDossier,
+  validatePortableCodexSecurityDiscoveryCandidateContext,
+  validatePortableCodexSecurityReportCoverage,
 } from "./portable-codex-security-dossier.js";
+// @ts-expect-error Docker QA fixture is a JavaScript runner without a declaration file.
+import { portableFixtureArtifact } from "../../../../scripts/docker/test-provider.mjs";
 import {
   portableCodexSecurityWorkerErrorCode,
   readPortableCodexSecurityWorkerConfiguration,
@@ -68,6 +75,34 @@ test("Portable reports do not impose cumulative action ceilings", () => {
   assert.equal(limits.maxModelTurns, 0);
   assert.equal(limits.maxToolCalls, 0);
   assert.equal(limits.timeoutMs, 1_500_000);
+});
+
+test("Docker provider fixture satisfies the live Portable discovery, assessment, and report contracts", () => {
+  const paths = [
+    "01-inventory.json",
+    "02-threat-model.json",
+    "03-discovery.json",
+    "04-dataflow.json",
+    "05-validation.json",
+  ] as const;
+  const artifacts = new Map(paths.map((artifactPath) => [artifactPath, portableFixtureArtifact(artifactPath, false)]));
+
+  for (const artifactPath of paths) {
+    assert.ok(normalizePortableCodexSecurityStageArtifact(artifactPath, artifacts.get(artifactPath)), artifactPath);
+  }
+  const discovery = artifacts.get("03-discovery.json")!;
+  assert.equal(validatePortableCodexSecurityDiscoveryCandidateContext(discovery.candidates), null);
+
+  let dossier = createPortableCodexSecurityDossier();
+  for (const artifactPath of paths) {
+    dossier = applyPortableCodexSecurityStageArtifact(dossier, artifacts.get(artifactPath)!);
+  }
+  assert.equal(dossier.candidates[0]?.id, "fixture-authz-missing");
+  assert.equal(dossier.assessments.filter((assessment) => assessment.status === "confirmed").length, 2);
+
+  const report = portableFixtureArtifact("sentinel-findings.json", false);
+  assert.ok(normalizePortableCodexSecurityStageArtifact("sentinel-findings.json", report));
+  assert.doesNotThrow(() => validatePortableCodexSecurityReportCoverage(report, dossier));
 });
 
 test("dense Deep assessment does not exhaust its turn budget merely by adding pages", () => {
@@ -628,6 +663,10 @@ test("Portable Codex Security reads only the exact xAI OAuth namespace and fails
     capabilityCheckId: "capability-xai",
   });
   const config = configuration(root, xaiPlan);
+  // This test proves credential namespace isolation. Deadline behavior has a
+  // dedicated deterministic test below, so machine load cannot turn setup
+  // time into a false OAuth failure.
+  config.limits.totalTimeoutMs = 0;
   let vaultReads = 0;
   let oauthReads = 0;
   const exact = {
@@ -1076,26 +1115,34 @@ test("Portable Codex Security cancels a hung stage at the total deadline, never 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-deadline-"));
   const config = configuration(root);
   config.limits.totalTimeoutMs = 20;
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  t.after(() => t.mock.timers.reset());
   let creates = 0;
   let cancelCalls = 0;
   let rejectLate: ((error: Error) => void) | undefined;
+  let stageStarted: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => { stageStarted = resolve; });
   const unhandled: unknown[] = [];
   const onUnhandled = (error: unknown) => unhandled.push(error);
   process.on("unhandledRejection", onUnhandled);
   t.after(() => process.off("unhandledRejection", onUnhandled));
   try {
-    await assert.rejects(
-      runPortableCodexSecurity(config, dependencies({
+    const running = runPortableCodexSecurity(config, dependencies({
         createSession: async () => {
           creates += 1;
           return {
             async *run() {
+              stageStarted?.();
               await new Promise<void>((_resolve, reject) => { rejectLate = reject; });
             },
             async cancel() { cancelCalls += 1; return { remote: false }; },
           };
         },
-      })),
+      }));
+    await started;
+    t.mock.timers.tick(config.limits.totalTimeoutMs);
+    await assert.rejects(
+      running,
       (error: unknown) => error instanceof PortableCodexSecurityRunnerError &&
         error.code === "agent_time_limit",
     );

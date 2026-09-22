@@ -102,6 +102,26 @@ test("rejects a swapped workflow identity before writing any gate artifact", () 
   assert.equal(fixture.gate.status, "scanning");
 });
 
+test("rejects a valid legacy PR bootstrap artifact before it can complete or publish the gate", () => {
+  const fixture = importerFixture();
+  const artifact = artifactFixture({ bootstrap: true });
+  const archive = archiveFixture(artifact);
+  fixture.metadata.artifactDigest = digest(archive);
+
+  assert.throws(() => fixture.importer.import({
+    artifactId: fixture.metadata.id,
+    gateId: fixture.gate.id,
+    githubDigest: digest(archive),
+    archive,
+  }), /actions_artifact_baseline_invalid/);
+
+  assert.equal(fixture.writes.length, 0);
+  assert.equal(fixture.metadata.status, "rejected");
+  assert.equal(fixture.gate.status, "scanning");
+  assert.equal(fixture.dispatch.state, "failed");
+  assert.equal(fixture.dispatch.error, "actions_artifact_baseline_invalid");
+});
+
 test("keeps a cancelled gate terminal when a valid artifact arrives late", () => {
   const fixture = importerFixture({ status: "cancelled", completedAt: "2026-08-12T12:04:00.000Z" });
   const archive = archiveFixture(fixture.artifact);
@@ -217,7 +237,7 @@ function importerFixture(gateOverrides: Partial<GateRun> = {}) {
   return { artifact, gate, dispatch, metadata, writes, importer };
 }
 
-function artifactFixture(): GateArtifactV2 {
+function artifactFixture(options: { bootstrap?: boolean } = {}): GateArtifactV2 {
   const policy = defaultGuardrailPolicy();
   const lineage = buildScanLineage({
     engine: "codex-security",
@@ -277,17 +297,26 @@ function artifactFixture(): GateArtifactV2 {
     },
     policy,
     scan: { id: "scan-actions-1", cost: null, status: "completed" },
-    baselineCommit: BASE,
+    baselineCommit: options.bootstrap ? null : BASE,
     evaluation: {
       deltas: [],
-      decision: {
-        outcome: "pass",
-        summary: "No policy violations.",
-        violations: [],
-        warnings: [],
-        exceptionsApplied: [],
-        githubConclusion: "success",
-      },
+      decision: options.bootstrap
+        ? {
+            outcome: "bootstrap",
+            summary: "Legacy caller initialized a baseline.",
+            violations: [],
+            warnings: [],
+            exceptionsApplied: [],
+            githubConclusion: "neutral",
+          }
+        : {
+            outcome: "pass",
+            summary: "No policy violations.",
+            violations: [],
+            warnings: [],
+            exceptionsApplied: [],
+            githubConclusion: "success",
+          },
     },
     lineage,
     coverage: {

@@ -46,9 +46,50 @@ test("compares two exact clean checkout indexes and declares incomplete Git meta
   ]);
   assert.deepEqual(result.changeSet.scanPaths, ["model.bin", "src/app.ts"]);
   assert.equal(result.coverage.status, "partial");
+  assert.equal(result.coverage.repositoryFileCount, 3);
+  assert.equal(result.coverage.materializedFileCount, 1);
+  assert.equal(result.coverage.unmaterializedFileCount, 2);
+  assert.equal(result.coverage.inspectedFileCount, 2);
+  assert.equal(result.coverage.unexaminedFileCount, 1);
+  assert.equal(result.coverage.scanScope, "changed");
   assert.deepEqual(result.coverage.submodules, ["vendor/sdk"]);
   assert.deepEqual(result.coverage.lfsPointers, ["model.bin"]);
   assert.match(result.identity, /^sha256:[0-9a-f]{64}$/);
+});
+
+test("records changed scan coverage separately from a complete materialized checkout", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "csb-actions-coverage-base-"));
+  const head = fs.mkdtempSync(path.join(os.tmpdir(), "csb-actions-coverage-head-"));
+  fs.mkdirSync(path.join(head, "src"));
+  fs.writeFileSync(path.join(head, "src", "changed.ts"), "export const changed = true;\n");
+  fs.writeFileSync(path.join(head, "stable.ts"), "export const stable = true;\n");
+  const result = inspectActionsSnapshots({
+    baseRoot: base,
+    headRoot: head,
+    baseRef: "main",
+    headRef: "feature/security",
+    baseSha: BASE_SHA,
+    headSha: HEAD_SHA,
+    policy: defaultGuardrailPolicy(),
+  }, fixtureCommand(base, head, {
+    base: [
+      entry("100644", "1", "src/changed.ts"),
+      entry("100644", "2", "stable.ts"),
+    ],
+    head: [
+      entry("100644", "3", "src/changed.ts"),
+      entry("100644", "2", "stable.ts"),
+    ],
+  }));
+
+  assert.equal(result.coverage.status, "complete");
+  assert.equal(result.coverage.repositoryFileCount, 2);
+  assert.equal(result.coverage.materializedFileCount, 2);
+  assert.equal(result.coverage.unmaterializedFileCount, 0);
+  assert.equal(result.coverage.inspectedFileCount, 1);
+  assert.equal(result.coverage.unexaminedFileCount, 1);
+  assert.equal(result.coverage.scanScope, "changed");
+  assert.deepEqual(result.changeSet.scanPaths, ["src/changed.ts"]);
 });
 
 test("rejects a moved checkout revision and never accepts one root for policy and head", () => {

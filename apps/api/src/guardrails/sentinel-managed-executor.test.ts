@@ -79,9 +79,10 @@ test("scans only the immutable head path and finalizes v2 before cleanup without
   assert.equal(result.artifact.schemaVersion, 2);
   assert.equal(result.artifact.executor, "sentinel-managed");
   assert.equal(result.artifact.resolvedTarget.headSha, HEAD_SHA);
-  assert.equal(result.artifact.decision.outcome, "bootstrap");
-  assert.equal(result.artifact.decision.githubConclusion, "neutral");
-  assert.equal(result.artifact.findings.length, 1);
+  assert.equal(result.artifact.decision.outcome, "error");
+  assert.equal(result.artifact.decision.githubConclusion, "action_required");
+  assert.match(result.artifact.decision.summary, /^baseline_absent:/);
+  assert.equal(result.artifact.findings.length, 0);
   assert.equal(finalized.includes(PRIVATE_HEAD), false);
   assert.equal(finalized.includes("/private/managed"), false);
   assert.equal(finalized.includes("/scan/output"), false);
@@ -97,6 +98,35 @@ test("known unavailable baseline closes as action_required and never produces li
   assert.equal(result.artifact.decision.githubConclusion, "action_required");
   assert.equal(result.artifact.findings.length, 0);
   assert.match(result.artifact.decision.summary, /^baseline_unavailable:/);
+});
+
+test("records a changed scan as partial scan coverage without downgrading a complete snapshot", async () => {
+  const handle = materialization();
+  const stable: MaterializedSnapshot["entries"][number] = {
+    path: "src/stable.ts",
+    type: "file",
+    mode: 0o400,
+    size: 21,
+    digest: `sha256:${"d".repeat(64)}`,
+  };
+  handle.base = {
+    ...handle.base,
+    entries: [...handle.base.entries, stable],
+    fileCount: 2,
+  };
+  handle.head = {
+    ...handle.head,
+    entries: [...handle.head.entries, stable],
+    fileCount: 2,
+  };
+  const result = await new SentinelManagedExecutor(dependencies({ handle })).execute(executionInput());
+
+  assert.equal(result.artifact.coverage.status, "complete");
+  assert.equal(result.artifact.coverage.materializedFileCount, 2);
+  assert.equal(result.artifact.coverage.unmaterializedFileCount, 0);
+  assert.equal(result.artifact.coverage.scanScope, "changed");
+  assert.equal(result.artifact.coverage.inspectedFileCount, 1);
+  assert.equal(result.artifact.coverage.unexaminedFileCount, 1);
 });
 
 test("launches the exact engine, connection, model, effort and mode frozen by the preview", async () => {
@@ -145,6 +175,7 @@ test("uses the frozen manual ceiling and omits maxCostUsd when the preview has n
 });
 
 test("finalizes a completed provider-managed Mantis scan with priced findings", async () => {
+  const requests: StartScanRequest[] = [];
   const completed = {
     ...scan("completed"),
     engine: "mantis" as const,
@@ -179,6 +210,10 @@ test("finalizes a completed provider-managed Mantis scan with priced findings", 
     },
   };
   const executor = new SentinelManagedExecutor(dependencies({
+    startScan: async (request) => {
+      requests.push(structuredClone(request));
+      return scan("running");
+    },
     waitForScan: async () => completed,
     readFindings: () => [{
       ...finding(),
@@ -195,12 +230,19 @@ test("finalizes a completed provider-managed Mantis scan with priced findings", 
     }],
   }));
 
-  const result = await executor.execute(executionInput());
+  const input = executionInput();
+  input.preview.target = { kind: "protected_branch", ref: "main" };
+  input.preview.resolvedTarget = { baseRef: "main", headRef: "main", baseSha: HEAD_SHA, headSha: HEAD_SHA, policySha: HEAD_SHA, pullRequestNumber: null };
+  input.preview.policySource = "protected_branch";
+  const result = await executor.execute(input);
 
   assert.equal(result.scan?.status, "completed");
   assert.equal(result.artifact.findings.length, 1);
   assert.equal(result.artifact.scan.cost?.estimatedUsd, 1.5599748);
   assert.equal(result.artifact.decision.outcome, "bootstrap");
+  assert.equal(result.changeSet.scopeMode, "repository");
+  assert.deepEqual(requests[0]?.paths, []);
+  assert.equal(result.artifact.coverage.scanScope, "repository");
 });
 
 test("partial submodule or LFS coverage cannot publish success", async () => {

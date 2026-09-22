@@ -89,6 +89,68 @@ test("enforces the compressed byte limit from headers and streamed bytes", async
   );
 });
 
+test("bounds a response that never delivers headers with one total archive deadline", async () => {
+  const received = { request: null as ArchiveHttpRequest | null };
+  const client = new GitHubArchiveClient({
+    authorize: async () => ({ owner: "OkamiOps", name: "private-sentinel", token: "ghs_private_archive" }),
+    archiveTimeoutMs: 25,
+    headersTimeoutMs: 10,
+    bodyTimeoutMs: 10,
+    transport: (next) => {
+      received.request = next;
+      return new Promise<ArchiveHttpResponse>((_resolve, reject) => {
+        next.signal?.addEventListener("abort", () => reject(new Error("request aborted")), { once: true });
+      });
+    },
+  });
+
+  await assert.rejects(
+    client.download(repository(), SHA),
+    (error: unknown) => error instanceof GitHubArchiveClientError && error.code === "archive_timeout",
+  );
+  assert.ok(received.request);
+  assert.equal(received.request.signal?.aborted, true);
+  assert.equal(received.request.headersTimeoutMs, 10);
+  assert.equal(received.request.bodyTimeoutMs, 10);
+});
+
+test("closes a stalled archive body when its inactivity budget expires", async () => {
+  const body = new PassThrough();
+  const client = new GitHubArchiveClient({
+    authorize: async () => ({ owner: "OkamiOps", name: "private-sentinel", token: "ghs_private_archive" }),
+    archiveTimeoutMs: 500,
+    bodyTimeoutMs: 25,
+    transport: async () => ({ status: 200, headers: {}, body }),
+  });
+
+  await assert.rejects(
+    read(await client.download(repository(), SHA)),
+    (error: unknown) => error instanceof GitHubArchiveClientError && error.code === "archive_timeout",
+  );
+  assert.equal(body.destroyed, true);
+});
+
+test("cancellation destroys an active archive stream without waiting for its deadline", async () => {
+  const body = new PassThrough();
+  const cancellation = new AbortController();
+  const client = new GitHubArchiveClient({
+    authorize: async () => ({ owner: "OkamiOps", name: "private-sentinel", token: "ghs_private_archive" }),
+    archiveTimeoutMs: 500,
+    bodyTimeoutMs: 500,
+    transport: async () => ({ status: 200, headers: {}, body }),
+  });
+  const stream = await client.download(repository(), SHA, cancellation.signal);
+  const consumed = read(stream);
+
+  cancellation.abort();
+
+  await assert.rejects(
+    consumed,
+    (error: unknown) => error instanceof GitHubArchiveClientError && error.code === "archive_download_failed",
+  );
+  assert.equal(body.destroyed, true);
+});
+
 test("rejects non-canonical SHAs before authorization or transport", async () => {
   let authorized = 0;
   const client = new GitHubArchiveClient({

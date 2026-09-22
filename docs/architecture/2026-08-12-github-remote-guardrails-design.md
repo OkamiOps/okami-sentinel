@@ -742,6 +742,7 @@ Uma baseline elegível precisa:
 - ter execução terminal sem erro;
 - ter lineage comparável;
 - possuir source revision canônica;
+- provar materialização integral e `scanScope=repository` no coverage envelope;
 - não estar cancelada nem parcial.
 
 Sem baseline elegível:
@@ -753,6 +754,17 @@ Sem baseline elegível:
 
 Artifact expirado, inacessível ou incompatível não vira “sem vulnerabilidades”.
 Ele produz estado fechado e explicável.
+
+### Coverage do snapshot e do scan
+
+O coverage envelope separa a disponibilidade da árvore imutável do recorte
+enviado ao scanner. `status`, `materializedFileCount` e
+`unmaterializedFileCount` descrevem a materialização; `scanScope`,
+`inspectedFileCount` e `unexaminedFileCount` descrevem o scan efetivo. Um gate
+de PR com `scanScope=changed` pode concluir normalmente quando a árvore está
+íntegra. Somente uma baseline protegida exige `scanScope=repository` e a prova
+explícita dessas contagens. Artifacts v2 anteriores a esse contrato continuam
+renderizáveis, mas não são elegíveis como baseline.
 
 ## Testes
 
@@ -839,7 +851,8 @@ Ele produz estado fechado e explicável.
 - Check é publicado no head SHA correto.
 - Baseline ausente retorna bootstrap/neutral.
 - Lineage incompatível não produz fixed.
-- Diff parcial ou coverage incompleta não produz pass.
+- Materialização incompleta não produz pass; um scan `changed` íntegro pode
+  produzir a decisão do gate, mas não estabelece baseline.
 - Repositório local existente continua funcionando.
 - A tela funciona nos cinco idiomas e nos três breakpoints de QA.
 

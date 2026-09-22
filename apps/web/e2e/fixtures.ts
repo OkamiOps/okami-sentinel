@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
-import type { FindingDetail, LifecycleFinding, MetricsSummary, ProviderConnection, ScanRun } from "@csb/shared";
+import type { FindingDetail, LifecycleFinding, MetricsSummary, ProviderConnection, ScanAnalysisMetrics, ScanRun } from "@csb/shared";
+import type { ScanFilesGraph } from "../src/api";
 
 export const baseRun: ScanRun = {
   id: "scan-one", displayName: "Repository alpha", repositoryPath: "/fixture/alpha", scanDir: "/fixture/scans/one",
@@ -16,6 +17,30 @@ export const connection: ProviderConnection = {
   modelSelectionMode: "runtime-default", defaultModelId: null, lastTestedAt: null, lastModelSyncAt: null,
   modelCatalogStale: false, display: { providerLabel: "Fixture", routeLabel: "Local fixture", secretConfigured: false, endpointConfigured: false, endpointKind: null },
 };
+
+// Keep the mock DTOs checked against the same public contracts consumed by the
+// panels. New detail endpoints must remain explicit here: unknown requests
+// still fail below instead of becoming accidental generic successes.
+const analysisMetrics = {
+  measuredAt: "2026-09-07T10:02:00Z",
+  files: 1,
+  bytes: 34,
+  lines: 1,
+  batchesCompleted: 1,
+  batchesTotal: 1,
+  candidates: 0,
+  rejections: 0,
+  reasoningTokens: 0,
+  outputTokensPerSecond: 1,
+} satisfies ScanAnalysisMetrics;
+
+const filesGraph = {
+  status: "unavailable",
+  reason: "unsupported_scan",
+  snapshot: null,
+  files: [],
+  edges: [],
+} satisfies ScanFilesGraph;
 
 export async function mockApi(page: Page, locale = "en") {
   const state = {
@@ -80,6 +105,8 @@ export async function mockApi(page: Page, locale = "en") {
       if (match[2] === "cancel") { state.cancelCount++; run.status = "cancelled"; return json({ ok: true }); }
       if (match[2] === "regression") return json(regression);
       if (match[2] === "telemetry") return json({ lines: [], cursor: 0 });
+      if (match[2] === "analysis-metrics") return json(analysisMetrics);
+      if (match[2] === "files-graph") return json(filesGraph);
       if (match[2] === "report") return json({ scan: run, findings: state.reportFindings, regression, generatedAt: "2026-09-07T10:02:00Z" });
       if (match[2] === "events") return route.fulfill({ contentType: "text/event-stream", body: ": fixture\n\n" });
     }

@@ -64,6 +64,7 @@ const activeStatuses = new Set<GateStatus>([
   "scanning",
   "evaluating",
   "publishing",
+  "cancelling",
 ]);
 
 export function selectGate(

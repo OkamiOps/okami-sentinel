@@ -109,6 +109,8 @@ function comparableBaseline(findings: FindingSummary[]): GateArtifactV2 {
     headRef: "main",
     baseSha: BASE_SHA,
     headSha: BASE_SHA,
+    scanPaths: [],
+    scopeMode: "repository",
   };
   const evaluationInput = {
     policy,
@@ -162,7 +164,7 @@ function comparableBaseline(findings: FindingSummary[]): GateArtifactV2 {
       },
     },
     lineage: actionsLineage(),
-    coverage: completeCoverage(),
+    coverage: completeCoverage("repository"),
     snapshot: { identity: hash("baseline"), materializerVersion: "actions-git-index-v1" },
     workflowRun: { id: "111", attempt: 1 },
     versions: { gateCore: "0.2.0", scanner: "test" },
@@ -231,9 +233,9 @@ test("returns exit code 3 and writes action_required v2 evidence when the scanne
   assert.equal(result.artifact.decision.githubConclusion, "action_required");
 });
 
-test("returns zero for pass, warning, bootstrap and no_changes using the shared baseline selector", async () => {
-  for (const outcome of ["pass", "warning", "bootstrap", "no_changes"] as const) {
-    const baselineState = outcome === "bootstrap" ? "absent" as const : "available" as const;
+test("returns zero for pass, warning and no_changes using the shared baseline selector", async () => {
+  for (const outcome of ["pass", "warning", "no_changes"] as const) {
+    const baselineState = "available" as const;
     const result = await runGateCli(options({
       output: tempOutput(),
       baselineState,
@@ -241,6 +243,17 @@ test("returns zero for pass, warning, bootstrap and no_changes using the shared 
     }), fakeDeps({ outcome }));
     assert.equal(result.exitCode, 0, outcome);
     assert.equal(result.artifact.decision.outcome, outcome, outcome);
+  }
+});
+
+test("PR and compare without a baseline fail closed instead of publishing a neutral bootstrap", async () => {
+  for (const targetKind of ["pull_request", "compare"] as const) {
+    const result = await runGateCli(options({ targetKind, pullRequest: targetKind === "compare" ? null : 42,
+      baselineState: "absent", baseline: null }), fakeDeps({ outcome: "bootstrap" }));
+    assert.equal(result.exitCode, 3);
+    assert.equal(result.artifact.decision.outcome, "error");
+    assert.equal(result.artifact.decision.githubConclusion, "action_required");
+    assert.match(result.artifact.decision.summary, /^baseline_absent:/);
   }
 });
 
@@ -273,6 +286,61 @@ test("reads policy and exceptions only from the frozen base checkout", async () 
   assert.equal(result.artifact.policy.scan.maxCostUsd, 7);
   assert.notEqual(result.artifact.policy.scan.maxCostUsd, 999);
   assert.equal(result.artifact.policySource, "base");
+});
+
+test("forces a protected-branch Actions baseline to use the repository scan plan", async () => {
+  let inspectedScope: string | null = null;
+  const scanPaths: Array<readonly string[]> = [];
+  const result = await runGateCli(options({
+    targetKind: "protected_branch",
+    baseRef: "main",
+    headRef: "main",
+    baseSha: HEAD_SHA,
+    headSha: HEAD_SHA,
+    policySha: HEAD_SHA,
+    pullRequest: null,
+    baseline: null,
+    baselineState: "absent",
+  }), {
+    readPolicy: () => ({ policy: defaultGuardrailPolicy(), exceptions: [], source: "protected_branch" }),
+    inspectSnapshots: (_options, policy) => {
+      inspectedScope = policy.scope.mode;
+      return {
+        changeSet: {
+          ...changeSet([]),
+          baseRef: "main",
+          headRef: "main",
+          baseSha: HEAD_SHA,
+          headSha: HEAD_SHA,
+          scanPaths: [],
+          scopeMode: "repository",
+        },
+        coverage: completeCoverage("repository"),
+        identity: hash("protected-head"),
+      };
+    },
+    readBaseline: () => ({ kind: "absent" }),
+    scanner: {
+      run: async (request) => {
+        scanPaths.push([...request.paths]);
+        return {
+          scanId: "scan-protected",
+          scanDir: "/tmp/scan-protected",
+          status: "completed",
+          findings: [],
+          cost: null,
+          scannerVersion: "test",
+        };
+      },
+    },
+    now: () => "2026-08-12T12:00:00.000Z",
+  });
+
+  assert.equal(inspectedScope, "repository");
+  assert.deepEqual(scanPaths, [[]]);
+  assert.equal(result.artifact.changeSet.scopeMode, "repository");
+  assert.equal(result.artifact.coverage.scanScope, "repository");
+  assert.equal(result.artifact.decision.outcome, "bootstrap");
 });
 
 test("parses the frozen v2 CLI identity and rejects ambiguous baseline or target input", () => {
@@ -311,13 +379,43 @@ test("parses the frozen v2 CLI identity and rejects ambiguous baseline or target
   assert.throws(() => parseArgs(argv.map((value) => value === "feature/security" ? "HEAD" : value)), /head-ref/);
 });
 
-test("spawns the scanner with argument arrays and shell disabled", async () => {
-  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "csb-scanner-"));
-  fs.writeFileSync(path.join(outputDir, "scan-manifest.json"), JSON.stringify({ scan: { id: "scan-42" } }));
-  fs.writeFileSync(path.join(outputDir, "findings.json"), JSON.stringify({ findings: [] }));
-  const calls: Array<{ command: string; args: readonly string[]; shell: boolean | string | undefined }> = [];
+test("spawns the locked scanner binary outside the target checkout with a minimal environment", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "csb-scanner-"));
+  const repositoryPath = path.join(root, "head");
+  const outputDir = path.join(root, "results");
+  fs.mkdirSync(repositoryPath);
+  fs.mkdirSync(outputDir);
+  fs.writeFileSync(path.join(outputDir, "scan-manifest.json"), JSON.stringify({
+    documentType: "codex-security.scan-manifest",
+    schemaVersion: "1.0",
+    scan: {
+      id: "scan-42",
+      status: "completed",
+      findingsRef: "findings.json",
+      producer: { name: "codex-security-plugin", version: "0.1.29" },
+    },
+  }));
+  fs.writeFileSync(path.join(outputDir, "findings.json"), JSON.stringify({
+    documentType: "codex-security.findings",
+    schemaVersion: "1.0",
+    scanId: "scan-42",
+    findings: [],
+  }));
+  const calls: Array<{
+    command: string;
+    args: readonly string[];
+    cwd: string | undefined;
+    env: NodeJS.ProcessEnv | undefined;
+    shell: boolean | string | undefined;
+  }> = [];
   const spawnCommand: SpawnCommand = (command, args, spawnOptions) => {
-    calls.push({ command, args: [...args], shell: spawnOptions.shell });
+    calls.push({
+      command,
+      args: [...args],
+      cwd: typeof spawnOptions.cwd === "string" ? spawnOptions.cwd : undefined,
+      env: spawnOptions.env,
+      shell: spawnOptions.shell,
+    });
     const emitter = new EventEmitter();
     const child = Object.assign(emitter, {
       stdout: new PassThrough(),
@@ -328,18 +426,26 @@ test("spawns the scanner with argument arrays and shell disabled", async () => {
   };
 
   const result = await createScannerAdapter(spawnCommand).run({
-    repositoryPath: "/checkout/head",
+    repositoryPath,
     paths: ["src/report.ts"],
     policy: defaultGuardrailPolicy(),
     outputDir,
   });
 
   const captured = calls[0];
-  assert.equal(captured?.command, "npx");
+  assert.equal(captured?.command, process.execPath);
   assert.equal(captured?.shell, false);
-  assert.deepEqual(captured?.args.slice(0, 4), ["--yes", "@openai/codex-security", "scan", "/checkout/head"]);
-  assert.deepEqual(captured?.args.slice(4, 10), ["--model", "gpt-5.6-sol", "--effort", "low", "--mode", "standard"]);
+  assert.match(captured?.args[0] ?? "", /node_modules[\\/]@openai[\\/]codex-security[\\/]bin[\\/]codex-security\.mjs$/);
+  assert.deepEqual(captured?.args.slice(1, 7), ["scan", repositoryPath, "--model", "gpt-5.6-sol", "--effort", "low"]);
+  assert.deepEqual(captured?.args.slice(7, 9), ["--mode", "standard"]);
   assert.deepEqual(captured?.args.slice(-2), ["--path", "src/report.ts"]);
+  assert.equal(captured?.cwd, fs.realpathSync(path.join(path.dirname(outputDir), ".csb-scanner-runtime")));
+  assert.equal(captured?.env?.CI, "1");
+  assert.equal(captured?.env?.NO_COLOR, "1");
+  assert.equal(captured?.env?.OPENAI_API_KEY, process.env.OPENAI_API_KEY);
+  assert.ok(Object.keys(captured?.env ?? {}).every((key) => [
+    "CI", "NO_COLOR", "PATH", "HOME", "TMPDIR", "OPENAI_API_KEY",
+  ].includes(key)));
   assert.equal(result.scanId, "scan-42");
 });
 
@@ -366,7 +472,7 @@ function actionsLineage() {
   });
 }
 
-function completeCoverage() {
+function completeCoverage(scope: "changed" | "repository" = "changed") {
   return {
     status: "complete" as const,
     repositoryFileCount: 1,
@@ -374,6 +480,9 @@ function completeCoverage() {
     unexaminedFileCount: 0,
     submodules: [],
     lfsPointers: [],
+    materializedFileCount: 1,
+    unmaterializedFileCount: 0,
+    scanScope: scope,
   };
 }
 

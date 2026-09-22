@@ -11,7 +11,7 @@ import {
 
 import { Badge } from "@/components/ui/badge";
 import { cx } from "../ui";
-import { gateOutcomeTone, gateStageLabel } from "../../lib/guardrails";
+import { gateOutcomeTone, gateStageLabel, isGateActive } from "../../lib/guardrails";
 
 const toneClass = {
   neutral: "border-border bg-transparent text-muted-foreground",
@@ -38,7 +38,7 @@ export function GateOutcomeBadge({
   protectedBaseline?: boolean;
 }) {
   const { t } = useI18n();
-  const active = ["queued", "resolving", "scanning", "evaluating", "publishing"].includes(status);
+  const active = isGateActive(status);
   const tone = active ? "active" : gateOutcomeTone(outcome);
   const outcomeLabel = outcome === "bootstrap" && protectedBaseline
     ? t("guardrails.outcome.bootstrapProtected")

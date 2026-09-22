@@ -1,0 +1,122 @@
+diff --git a/index.js b/index.js
+index 23384ea16bb848616886f356d8d69f94325535bf..cc50c33769157b1c7be3ced5a1e593847d7531d0 100644
+--- a/index.js
++++ b/index.js
+@@ -1,7 +1,6 @@
+ const debug = require('debug')('extract-zip')
+ // eslint-disable-next-line node/no-unsupported-features/node-builtins
+-const { createWriteStream, promises: fs } = require('fs')
+-const getStream = require('get-stream')
++const { constants, createWriteStream, promises: fs } = require('fs')
+ const path = require('path')
+ const { promisify } = require('util')
+ const stream = require('stream')
+@@ -50,18 +49,10 @@ class Extractor {
+           return
+         }
+ 
+-        const destDir = path.dirname(path.join(this.opts.dir, entry.fileName))
++        const dest = path.resolve(this.opts.dir, entry.fileName)
+ 
+         try {
+-          await fs.mkdir(destDir, { recursive: true })
+-
+-          const canonicalDestDir = await fs.realpath(destDir)
+-          const relativeDestDir = path.relative(this.opts.dir, canonicalDestDir)
+-
+-          if (relativeDestDir.split(path.sep).includes('..')) {
+-            throw new Error(`Out of bound path "${canonicalDestDir}" found while processing file ${entry.fileName}`)
+-          }
+-
++          assertPathWithin(this.opts.dir, dest, entry.fileName)
+           await this.extractEntry(entry)
+           debug('finished processing', entry.fileName)
+           this.zipfile.readEntry()
+@@ -85,7 +76,7 @@ class Extractor {
+       this.opts.onEntry(entry, this.zipfile)
+     }
+ 
+-    const dest = path.join(this.opts.dir, entry.fileName)
++    const dest = path.resolve(this.opts.dir, entry.fileName)
+ 
+     // convert external file attr int into a fs stat mode int
+     const mode = (entry.externalFileAttributes >> 16) & 0xFFFF
+@@ -108,28 +99,27 @@ class Extractor {
+ 
+     debug('extracting entry', { filename: entry.fileName, isDir: isDir, isSymlink: symlink })
+ 
++    if (symlink) {
++      throw new Error(`Refusing symbolic link "${entry.fileName}" while extracting archive`)
++    }
++
+     const procMode = this.getExtractedMode(mode, isDir) & 0o777
+ 
+     // always ensure folders are created
+     const destDir = isDir ? dest : path.dirname(dest)
+ 
+-    const mkdirOptions = { recursive: true }
+-    if (isDir) {
+-      mkdirOptions.mode = procMode
+-    }
+-    debug('mkdir', { dir: destDir, ...mkdirOptions })
+-    await fs.mkdir(destDir, mkdirOptions)
++    debug('mkdir', { dir: destDir, mode: isDir ? procMode : undefined })
++    await ensureSafeDirectory(this.opts.dir, destDir, entry.fileName, isDir ? procMode : undefined)
+     if (isDir) return
+ 
+     debug('opening read stream', dest)
+     const readStream = await promisify(this.zipfile.openReadStream.bind(this.zipfile))(entry)
+ 
+-    if (symlink) {
+-      const link = await getStream(readStream)
+-      debug('creating symlink', link, dest)
+-      await fs.symlink(link, dest)
+-    } else {
+-      await pipeline(readStream, createWriteStream(dest, { mode: procMode }))
++    const output = await fs.open(dest, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, procMode)
++    try {
++      await pipeline(readStream, createWriteStream(dest, { fd: output.fd, autoClose: false }))
++    } finally {
++      await output.close()
+     }
+   }
+ 
+@@ -160,6 +150,38 @@ class Extractor {
+   }
+ }
+ 
++function assertPathWithin (root, candidate, entryName) {
++  const relative = path.relative(root, candidate)
++  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
++    throw new Error(`Out of bound path "${candidate}" found while processing file ${entryName}`)
++  }
++}
++
++async function ensureSafeDirectory (root, destination, entryName, mode) {
++  assertPathWithin(root, destination, entryName)
++  let current = root
++  const relative = path.relative(root, destination)
++
++  for (const segment of relative.split(path.sep)) {
++    if (segment.length === 0) continue
++    current = path.join(current, segment)
++    let stat
++    try {
++      stat = await fs.lstat(current)
++    } catch (err) {
++      if (err.code !== 'ENOENT') throw err
++      await fs.mkdir(current, current === destination && mode !== undefined ? { mode } : undefined)
++      stat = await fs.lstat(current)
++    }
++    if (stat.isSymbolicLink() || !stat.isDirectory()) {
++      throw new Error(`Unsafe directory "${current}" found while processing file ${entryName}`)
++    }
++  }
++
++  const canonicalDestination = await fs.realpath(destination)
++  assertPathWithin(root, canonicalDestination, entryName)
++}
++
+ module.exports = async function (zipPath, opts) {
+   debug('creating target directory', opts.dir)
+ 

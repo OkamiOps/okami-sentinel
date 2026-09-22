@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import type { GateRun, GuardrailRepository, ScanRun } from "@csb/shared";
 import { localeMeta, translate, type Locale } from "../src/i18n";
 import { baseRun, mockApi } from "./fixtures";
 
@@ -169,6 +170,85 @@ test("overview defers code for comparison, launch, detail, and reports", async (
   await expect(page.getByRole("alert")).toBeVisible();
   expect(scripts.some((script) => script.includes("DashboardPage-"))).toBe(true);
   expect(scripts.filter((script) => /\/(ComparePage|CompareReportPage|NewScanPage|ScanDetailPage|ScanReportPage)-/.test(script))).toEqual([]);
+});
+
+test("guardrail monitor ends a failed scan without progress and preserves its last stage", async ({ page }) => {
+  const state = await mockApi(page);
+  const failedScan = {
+    ...baseRun,
+    id: "guardrail-failed-no-progress",
+    displayName: "Guardrail Mantis failure",
+    status: "failed",
+    engine: "mantis",
+    provider: "mantis",
+    model: "mantis-fixture",
+    completedAt: "2026-09-07T10:01:00Z",
+    progress: null,
+  } satisfies ScanRun;
+  const repository = {
+    repositoryKey: "local:guardrail-fixture",
+    repositoryPath: "/fixture/alpha",
+    displayName: "Guardrail fixture project",
+    source: "local",
+    defaultBranch: "main",
+    defaultExecutor: "sentinel-managed",
+    remoteOwner: null,
+    remoteName: null,
+    githubConnectionId: null,
+    githubInstallationId: null,
+    githubRepositoryId: null,
+    enabled: true,
+    policyPath: ".sentinel/policy.json",
+    lastGateId: "gate-failed-no-progress",
+    githubStatus: "not_configured",
+  } satisfies GuardrailRepository;
+  const gate = {
+    id: "gate-failed-no-progress",
+    repositoryKey: repository.repositoryKey,
+    repositoryPath: repository.repositoryPath,
+    source: "local",
+    executor: "sentinel-managed",
+    baseRef: "main",
+    headRef: "feature/failure",
+    resolvedBaseSha: "a".repeat(40),
+    resolvedHeadSha: "b".repeat(40),
+    policySha: "c".repeat(40),
+    pullRequestNumber: null,
+    workflowRunId: null,
+    materializationState: "ready",
+    scanLineageHash: null,
+    artifactSchemaVersion: 2,
+    scanId: failedScan.id,
+    status: "error",
+    outcome: "error",
+    policyVersion: 1,
+    baselineCommit: null,
+    artifactPath: null,
+    publishStatus: "waiting",
+    publishError: null,
+    publishedAt: null,
+    error: "linked_scan_failed",
+    startedAt: "2026-09-07T10:00:00Z",
+    completedAt: "2026-09-07T10:01:00Z",
+    costCeilingUsd: 2,
+    estimatedUsd: 0,
+  } satisfies GateRun;
+  state.runs.push(failedScan);
+
+  await page.route("**/api/guardrails/repositories", (route) => route.fulfill({ json: { repositories: [repository] } }));
+  await page.route("**/api/guardrails/gates", (route) => route.fulfill({ json: { gates: [gate] } }));
+  await page.route(`**/api/guardrails/gates/${gate.id}`, (route) => route.fulfill({ json: { gate, artifact: null } }));
+  await page.route(new RegExp(`/api/scans/${failedScan.id}/telemetry(?:\\?.*)?$`), (route) => route.fulfill({
+    json: { lines: ["running mantis-report", "[mantis-http] agent_turn_limit"], cursor: 2 },
+  }));
+
+  await page.goto(`/guardrails/${gate.id}`);
+  await expect(page.getByRole("heading", { name: "Track execution", exact: true })).toBeVisible();
+  await expect(page.getByRole("progressbar", { name: "Failed · mantis-report", exact: true })).toBeVisible();
+  await expect(page.getByText("agent_turn_limit", { exact: true })).toBeVisible();
+  await expect(page.getByText("Result unavailable: the scan did not complete.", { exact: true })).toBeVisible();
+  await expect(page.getByText("stream closed", { exact: true })).toBeVisible();
+  await expect(page.getByText("Waiting for scanner progress", { exact: true })).toHaveCount(0);
 });
 
 test("local preflight exposes its scan route and explains how to add a missing connection", async ({ page }) => {

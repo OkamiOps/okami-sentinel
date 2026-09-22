@@ -113,7 +113,7 @@ export async function runGateCli(
     policy = bundle.policy;
     exceptions = bundle.exceptions;
     policySource = bundle.source;
-    const inspection = deps.inspectSnapshots(options, policy);
+    const inspection = deps.inspectSnapshots(options, policyForTarget(policy, options.targetKind));
     changeSet = inspection.changeSet;
     coverage = inspection.coverage;
     snapshotIdentity = inspection.identity;
@@ -155,7 +155,9 @@ export async function runGateCli(
       snapshotIdentity,
       createdAt: deps.now(),
     });
-    const operational = operationalReason(scan, coverage, baseline);
+    const operational = operationalReason(scan, coverage, baseline)
+      ?? (baseline.kind === "absent" && !establishesProtectedBaseline && changeSet.files.length > 0
+        ? "baseline_absent:initialize_protected_branch" : null);
     const artifact = operational === null
       ? deps.buildGateArtifact({
           ...envelope,
@@ -492,6 +494,23 @@ function incompleteCoverage(): GateCoverageEnvelope {
     unexaminedFileCount: 0,
     submodules: [],
     lfsPointers: [],
+    materializedFileCount: 0,
+    unmaterializedFileCount: 0,
+    scanScope: "changed",
+  };
+}
+
+function policyForTarget(
+  policy: GuardrailPolicy,
+  targetKind: RunGateCliOptions["targetKind"],
+): GuardrailPolicy {
+  if (targetKind !== "protected_branch") return policy;
+  return {
+    ...policy,
+    scope: {
+      ...policy.scope,
+      mode: "repository",
+    },
   };
 }
 

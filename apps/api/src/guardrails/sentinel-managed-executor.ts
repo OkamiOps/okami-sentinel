@@ -111,9 +111,9 @@ export class SentinelManagedExecutor {
         base: materialization.base,
         head: materialization.head,
         target: input.preview.resolvedTarget,
-        policy: input.preview.policy,
+        policy: policyForScanPlan(input.preview),
       });
-      const coverage = snapshotCoverage(materialization.head);
+      const coverage = snapshotCoverage(materialization.head, changeSet);
       let scan: ScanRun | null = null;
       const establishesProtectedBaseline = input.preview.target.kind === "protected_branch";
       if (changeSet.files.length > 0 || establishesProtectedBaseline) {
@@ -203,6 +203,14 @@ export class SentinelManagedExecutor {
       return buildOperationalErrorArtifactV2({
         ...envelope,
         operationalSummary: `baseline_incompatible:${context.baseline.reason}`,
+      });
+    }
+    if (context.baseline.kind === "absent"
+        && context.input.preview.target.kind !== "protected_branch"
+        && context.changeSet.files.length > 0) {
+      return buildOperationalErrorArtifactV2({
+        ...envelope,
+        operationalSummary: "baseline_absent:initialize_protected_branch",
       });
     }
 
@@ -372,15 +380,40 @@ function scanLineage(
   });
 }
 
-function snapshotCoverage(snapshot: MaterializationHandle["head"]): GateCoverageEnvelope {
-  const partial = snapshot.submodules.length > 0 || snapshot.lfsPointers.length > 0;
+function policyForScanPlan(preview: AcceptedGateTargetPreview): AcceptedGateTargetPreview["policy"] {
+  const scopeMode = preview.target.kind === "protected_branch"
+    ? "repository"
+    : preview.scanPlan.scopeMode;
+  return {
+    ...preview.policy,
+    scope: {
+      mode: scopeMode,
+      maxChangedPaths: preview.scanPlan.maxChangedPaths,
+      fallback: preview.scanPlan.fallback,
+    },
+  };
+}
+
+function snapshotCoverage(
+  snapshot: MaterializationHandle["head"],
+  changeSet: ChangeSet,
+): GateCoverageEnvelope {
+  const unavailableFileCount = snapshot.submodules.length + snapshot.lfsPointers.length;
+  const repositoryFileCount = snapshot.fileCount + snapshot.submodules.length;
+  const inspectedFileCount = changeSet.scopeMode === "repository"
+    ? snapshot.fileCount
+    : changeSet.scanPaths.length;
+  const partial = unavailableFileCount > 0;
   return {
     status: partial ? "partial" : "complete",
-    repositoryFileCount: snapshot.fileCount,
-    inspectedFileCount: snapshot.fileCount,
-    unexaminedFileCount: 0,
+    repositoryFileCount,
+    inspectedFileCount,
+    unexaminedFileCount: repositoryFileCount - inspectedFileCount,
     submodules: [...snapshot.submodules],
     lfsPointers: [...snapshot.lfsPointers],
+    materializedFileCount: snapshot.fileCount - snapshot.lfsPointers.length,
+    unmaterializedFileCount: unavailableFileCount,
+    scanScope: changeSet.scopeMode,
   };
 }
 

@@ -291,6 +291,7 @@ const GATE_STATUSES = new Set<GateStatus>([
   "scanning",
   "evaluating",
   "publishing",
+  "cancelling",
   "completed",
   "cancelled",
   "error",

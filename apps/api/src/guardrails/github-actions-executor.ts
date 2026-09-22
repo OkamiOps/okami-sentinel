@@ -54,6 +54,11 @@ export interface GitHubActionsRemoteArtifact {
 }
 
 export interface GitHubActionsRemote {
+  cancelWorkflowRun(input: {
+    dispatch: GitHubActionsDispatchMetadata;
+    repository: GuardrailRepository;
+    workflowRunId: string;
+  }): Promise<void>;
   dispatchWorkflow(input: {
     dispatch: GitHubActionsDispatchMetadata;
     repository: GuardrailRepository;
@@ -117,6 +122,7 @@ export interface StartGitHubActionsGateInput {
 }
 
 export class GitHubActionsExecutor {
+  readonly #reconciling = new Map<string, Promise<GateRun | null>>();
   readonly #store: GitHubActionsExecutorStore;
   readonly #remote: GitHubActionsRemote;
   readonly #importer: ActionsArtifactImporter;
@@ -171,7 +177,8 @@ export class GitHubActionsExecutor {
       this.#store.updateDispatch(run.id, {
         state: "dispatch_accepted",
         dispatchedAt: this.#now(),
-        error: null,
+        error: this.#store.getGateRun(run.id)?.status === "cancelling"
+          ? "actions_cancellation_pending" : null,
       });
     } catch (error) {
       const definite = dispatchFailureIsDefinite(error);
@@ -179,12 +186,22 @@ export class GitHubActionsExecutor {
         this.#fail(run.id, "actions_dispatch_rejected");
         throw new GitHubActionsExecutionError("actions_dispatch_rejected");
       }
-      this.#store.updateDispatch(run.id, { error: "actions_dispatch_unknown" });
+      if (this.#store.getGateRun(run.id)?.status !== "cancelling") {
+        this.#store.updateDispatch(run.id, { error: "actions_dispatch_unknown" });
+      }
     }
     return requiredGate(run.id, this.#store);
   }
 
-  async reconcileGate(gateId: string): Promise<GateRun | null> {
+  reconcileGate(gateId: string): Promise<GateRun | null> {
+    const existing = this.#reconciling.get(gateId);
+    if (existing) return existing;
+    const pending = this.#reconcileGate(gateId).finally(() => this.#reconciling.delete(gateId));
+    this.#reconciling.set(gateId, pending);
+    return pending;
+  }
+
+  async #reconcileGate(gateId: string): Promise<GateRun | null> {
     let dispatch = this.#store.getDispatch(gateId);
     let gate = this.#store.getGateRun(gateId);
     if (dispatch === null || gate === null) return null;
@@ -217,7 +234,7 @@ export class GitHubActionsExecutor {
         });
         this.#store.updateGateRun(gateId, {
           workflowRunId: match.id,
-          status: "scanning",
+          status: requiredGate(gateId, this.#store).status === "cancelling" ? "cancelling" : "scanning",
         });
         dispatch = requiredDispatch(gateId, this.#store);
         gate = requiredGate(gateId, this.#store);
@@ -230,6 +247,9 @@ export class GitHubActionsExecutor {
         workflowRunId: dispatch.workflowRunId!,
       });
       assertRunIdentity(dispatch, remoteRun);
+      if (requiredGate(gateId, this.#store).status === "cancelling") {
+        return await this.#reconcileCancellation(gateId, dispatch, repository, remoteRun);
+      }
       this.#store.updateDispatch(gateId, {
         state: remoteRun.status === "completed" ? "artifact_pending" : "running",
         workflowRunAttempt: remoteRun.attempt,
@@ -291,6 +311,13 @@ export class GitHubActionsExecutor {
       return gate;
     } catch (error) {
       if (requiredGate(gateId, this.#store).status === "cancelled") return requiredGate(gateId, this.#store);
+      if (requiredGate(gateId, this.#store).status === "cancelling") {
+        this.#store.updateGateRun(gateId, { error: "actions_cancellation_failed" });
+        this.#store.updateDispatch(gateId, { error: "actions_cancellation_failed", lastPolledAt: this.#now() });
+        const pending = requiredGate(gateId, this.#store);
+        this.#onGateChanged(pending);
+        return pending;
+      }
       return this.#fail(gateId, executionCode(error));
     }
   }
@@ -308,16 +335,47 @@ export class GitHubActionsExecutor {
     const gate = this.#store.getGateRun(gateId);
     const dispatch = this.#store.getDispatch(gateId);
     if (gate === null || dispatch === null || terminalGate(gate.status)) return false;
-    const completedAt = this.#now();
-    this.#store.updateGateRun(gateId, { status: "cancelled", completedAt });
-    this.#store.updateDispatch(gateId, { state: "cancelled", completedAt });
+    if (gate.status === "cancelling") return true;
+    this.#store.updateGateRun(gateId, { status: "cancelling", error: null, completedAt: null });
+    this.#store.updateDispatch(gateId, { error: "actions_cancellation_pending", completedAt: null });
     this.#onGateChanged(requiredGate(gateId, this.#store));
     return true;
+  }
+
+  async #reconcileCancellation(
+    gateId: string,
+    dispatch: GitHubActionsDispatchMetadata,
+    repository: GuardrailRepository,
+    remoteRun: GitHubActionsRemoteRun,
+  ): Promise<GateRun> {
+    if (remoteRun.status === "completed") {
+      const completedAt = this.#now();
+      const error = remoteRun.conclusion === "cancelled" ? null : "actions_cancellation_too_late";
+      this.#store.updateGateRun(gateId, { status: "cancelled", completedAt, error });
+      this.#store.updateDispatch(gateId, { state: "cancelled", completedAt, error,
+        lastPolledAt: completedAt });
+    } else {
+      if (dispatch.error !== "actions_cancellation_requested") {
+        await this.#remote.cancelWorkflowRun({ dispatch, repository, workflowRunId: remoteRun.id });
+      }
+      this.#store.updateDispatch(gateId, { error: "actions_cancellation_requested", lastPolledAt: this.#now() });
+      this.#store.updateGateRun(gateId, { error: null });
+    }
+    const gate = requiredGate(gateId, this.#store);
+    this.#onGateChanged(gate);
+    return gate;
   }
 
   #fail(gateId: string, code: GitHubActionsExecutionErrorCode | string): GateRun {
     const gate = requiredGate(gateId, this.#store);
     if (gate.status === "cancelled") return gate;
+    if (gate.status === "cancelling") {
+      this.#store.updateGateRun(gateId, { error: "actions_cancellation_failed" });
+      this.#store.updateDispatch(gateId, { error: safeFailureCode(code), lastPolledAt: this.#now() });
+      const pending = requiredGate(gateId, this.#store);
+      this.#onGateChanged(pending);
+      return pending;
+    }
     const completedAt = this.#now();
     const safeCode = safeFailureCode(code);
     this.#store.updateGateRun(gateId, {
@@ -365,6 +423,15 @@ export interface GitHubActionsRepositoryAuthority {
 
 export class GitHubActionsGitHubApi implements GitHubActionsRemote {
   constructor(readonly authority: GitHubActionsRepositoryAuthority) {}
+
+  async cancelWorkflowRun(input: Parameters<GitHubActionsRemote["cancelWorkflowRun"]>[0]): Promise<void> {
+    const identity = remoteIdentity(input.repository, input.dispatch);
+    await this.authority.writeAuthorizedRepositoryJson(
+      identity.connectionId, identity.installationId, identity.repositoryId,
+      `/repos/${identity.owner}/${identity.name}/actions/runs/${numericId(input.workflowRunId)}/cancel`,
+      "POST", {}, { actions: "write" },
+    );
+  }
 
   async dispatchWorkflow(input: Parameters<GitHubActionsRemote["dispatchWorkflow"]>[0]): Promise<void> {
     const identity = remoteIdentity(input.repository, input.dispatch);

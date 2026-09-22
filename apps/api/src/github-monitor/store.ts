@@ -42,6 +42,7 @@ interface EventRow {
   base_ref: string | null;
   head_ref: string;
   pull_request_number: number | null;
+  target_identity: string;
   title: string | null;
   gate_id: string | null;
   cost_ceiling_usd: number | null;
@@ -141,6 +142,7 @@ export function ensureGitHubMonitorSchema(database: Database.Database = getDb())
       base_ref TEXT,
       head_ref TEXT NOT NULL,
       pull_request_number INTEGER,
+      target_identity TEXT NOT NULL,
       title TEXT,
       gate_id TEXT,
       cost_ceiling_usd REAL,
@@ -154,7 +156,7 @@ export function ensureGitHubMonitorSchema(database: Database.Database = getDb())
       CHECK (status IN ('observed', 'queued', 'dispatching', 'launched', 'skipped', 'failed')),
       CHECK (length(head_sha) = 40),
       CHECK (pull_request_number IS NULL OR pull_request_number > 0),
-      UNIQUE (repository_key, head_sha, rule_revision)
+      UNIQUE (repository_key, rule_revision, target_identity)
     );
     CREATE INDEX IF NOT EXISTS github_monitor_events_by_rule_status
       ON github_monitor_events(rule_id, status, detected_at ASC);
@@ -191,6 +193,10 @@ export function ensureGitHubMonitorSchema(database: Database.Database = getDb())
   const columns = new Set((database.prepare("PRAGMA table_info(github_monitor_rules)").all() as Array<{ name: string }>).map((row) => row.name));
   if (!columns.has("executor")) {
     database.exec("ALTER TABLE github_monitor_rules ADD COLUMN executor TEXT NOT NULL DEFAULT 'sentinel-managed'");
+  }
+  const eventColumns = new Set((database.prepare("PRAGMA table_info(github_monitor_events)").all() as Array<{ name: string }>).map((row) => row.name));
+  if (!eventColumns.has("target_identity")) {
+    migrateGitHubMonitorEventsTargetIdentity(database);
   }
 }
 
@@ -315,21 +321,21 @@ export function recordGitHubMonitorPoll(
   `).run({ id, now, error: options.error, initialize: options.initializeBaseline ? 1 : 0 });
 }
 
-/** Returns null if this repository/SHA/rule revision was already observed. */
+/** Returns null when this complete evaluation target was already observed. */
 export function createGitHubMonitorEvent(
   input: GitHubMonitorEventCreate,
   database: Database.Database = getDb(),
-  id = randomUUID(),
+  id: string = randomUUID(),
 ): GitHubMonitorEvent | null {
   ensureGitHubMonitorSchema(database);
   const result = database.prepare(`
     INSERT OR IGNORE INTO github_monitor_events (
       id, rule_id, repository_key, rule_revision, kind, status, head_sha,
-      base_ref, head_ref, pull_request_number, title, gate_id, cost_ceiling_usd,
+      base_ref, head_ref, pull_request_number, target_identity, title, gate_id, cost_ceiling_usd,
       reason, error, detected_at, dispatched_at, completed_at
     ) VALUES (
       @id, @rule_id, @repository_key, @rule_revision, @kind, @status, @head_sha,
-      @base_ref, @head_ref, @pull_request_number, @title, @gate_id, @cost_ceiling_usd,
+      @base_ref, @head_ref, @pull_request_number, @target_identity, @title, @gate_id, @cost_ceiling_usd,
       @reason, @error, @detected_at, @dispatched_at, @completed_at
     )
   `).run(eventCreateParams(input, id));
@@ -575,6 +581,13 @@ function eventCreateParams(input: GitHubMonitorEventCreate, id: string) {
     base_ref: input.baseRef,
     head_ref: input.headRef,
     pull_request_number: input.pullRequestNumber,
+    target_identity: eventTargetIdentity(
+      input.kind,
+      input.headSha,
+      input.baseRef,
+      input.headRef,
+      input.pullRequestNumber,
+    ),
     title: input.title,
     gate_id: input.gateId ?? null,
     cost_ceiling_usd: input.costCeilingUsd,
@@ -584,6 +597,89 @@ function eventCreateParams(input: GitHubMonitorEventCreate, id: string) {
     dispatched_at: input.dispatchedAt ?? null,
     completed_at: input.completedAt ?? null,
   };
+}
+
+/**
+ * SQLite UNIQUE constraints consider NULL values distinct. A canonical identity
+ * keeps both PR and branch targets idempotent while retaining their different
+ * policy contexts when they share a commit SHA.
+ */
+function eventTargetIdentity(
+  kind: string,
+  headSha: string,
+  baseRef: string | null,
+  headRef: string,
+  pullRequestNumber: number | null,
+): string {
+  return JSON.stringify([kind, headSha, baseRef, headRef, pullRequestNumber]);
+}
+
+function migrateGitHubMonitorEventsTargetIdentity(database: Database.Database): void {
+  database.transaction(() => {
+    database.exec(`
+      DROP INDEX IF EXISTS github_monitor_events_by_rule_status;
+      DROP INDEX IF EXISTS github_monitor_events_by_repository_day;
+      ALTER TABLE github_monitor_events RENAME TO github_monitor_events_legacy;
+      CREATE TABLE github_monitor_events (
+        id TEXT PRIMARY KEY,
+        rule_id TEXT NOT NULL,
+        repository_key TEXT NOT NULL,
+        rule_revision INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        head_sha TEXT NOT NULL,
+        base_ref TEXT,
+        head_ref TEXT NOT NULL,
+        pull_request_number INTEGER,
+        target_identity TEXT NOT NULL,
+        title TEXT,
+        gate_id TEXT,
+        cost_ceiling_usd REAL,
+        reason TEXT,
+        error TEXT,
+        detected_at TEXT NOT NULL,
+        dispatched_at TEXT,
+        completed_at TEXT,
+        FOREIGN KEY (rule_id) REFERENCES github_monitor_rules(id) ON DELETE CASCADE,
+        CHECK (kind IN ('pull_request', 'push')),
+        CHECK (status IN ('observed', 'queued', 'dispatching', 'launched', 'skipped', 'failed')),
+        CHECK (length(head_sha) = 40),
+        CHECK (pull_request_number IS NULL OR pull_request_number > 0),
+        UNIQUE (repository_key, rule_revision, target_identity)
+      );
+    `);
+    const rows = database.prepare("SELECT * FROM github_monitor_events_legacy").all() as Array<Omit<EventRow, "target_identity">>;
+    const insert = database.prepare(`
+      INSERT INTO github_monitor_events (
+        id, rule_id, repository_key, rule_revision, kind, status, head_sha,
+        base_ref, head_ref, pull_request_number, target_identity, title, gate_id,
+        cost_ceiling_usd, reason, error, detected_at, dispatched_at, completed_at
+      ) VALUES (
+        @id, @rule_id, @repository_key, @rule_revision, @kind, @status, @head_sha,
+        @base_ref, @head_ref, @pull_request_number, @target_identity, @title, @gate_id,
+        @cost_ceiling_usd, @reason, @error, @detected_at, @dispatched_at, @completed_at
+      )
+    `);
+    for (const row of rows) {
+      insert.run({
+        ...row,
+        target_identity: eventTargetIdentity(
+          row.kind,
+          row.head_sha,
+          row.base_ref,
+          row.head_ref,
+          row.pull_request_number,
+        ),
+      });
+    }
+    database.exec("DROP TABLE github_monitor_events_legacy");
+  })();
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS github_monitor_events_by_rule_status
+      ON github_monitor_events(rule_id, status, detected_at ASC);
+    CREATE INDEX IF NOT EXISTS github_monitor_events_by_repository_day
+      ON github_monitor_events(repository_key, detected_at DESC);
+  `);
 }
 
 function actionsRunParams(value: GitHubMonitorActionsRun) {

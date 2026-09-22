@@ -59,7 +59,7 @@ export function createGitHubMonitorClient(fetcher?: Fetcher) {
     actionsRuns: (ruleId?: string, repositoryKey?: string) => read<{ actionsRuns: GitHubMonitorActionsRun[] }>(`/github-monitor/actions-runs${query({ ruleId, repositoryKey })}`).then(({ actionsRuns }) => actionsRuns),
     createRule: (body: GitHubMonitorRuleInput) => write<{ rule: GitHubMonitorRule }>("/github-monitor/rules", "POST", body).then(({ rule }) => rule),
     updateRule: (id: string, body: Partial<GitHubMonitorRuleInput>) => write<{ rule: GitHubMonitorRule }>(`/github-monitor/rules/${encodeURIComponent(id)}`, "PATCH", body).then(({ rule }) => rule),
-    poll: () => write<{ overview: GitHubMonitorOverview }>("/github-monitor/poll", "POST").then(({ overview }) => overview),
+    poll: (repositoryKey: string) => write<{ overview: GitHubMonitorOverview }>("/github-monitor/poll", "POST", { repositoryKey }).then(({ overview }) => overview),
     checkout: (repositoryKey: string) => read<{ checkout: GitHubCheckoutStatus }>(`/github-checkouts${query({ repositoryKey })}`).then(({ checkout }) => checkout),
     checkoutSync: (repositoryKey: string, action: "fetch" | "pull") => write<{ checkout: GitHubCheckoutStatus }>(`/github-checkouts/${encodeURIComponent(repositoryKey)}/${action}`, "POST", { remote: "origin" }).then(({ checkout }) => checkout),
   };

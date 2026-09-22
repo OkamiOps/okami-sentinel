@@ -82,7 +82,12 @@ export function inspectActionsSnapshots(
     .map((entry) => entry.path)
     .sort();
   const lfsPointers = regularHeadPaths.filter((entry) => isLfsPointer(headRoot, entry));
-  const partial = submodules.length > 0 || lfsPointers.length > 0;
+  const unavailableFileCount = submodules.length + lfsPointers.length;
+  const repositoryFileCount = regularHeadPaths.length + submodules.length;
+  const inspectedFileCount = scopeMode === "repository"
+    ? regularHeadPaths.length
+    : scanPaths.length;
+  const partial = unavailableFileCount > 0;
   const canonicalHead = [...head.values()]
     .sort((left, right) => left.path.localeCompare(right.path))
     .map((entry) => `${entry.mode}\0${entry.oid}\0${entry.path}\0`)
@@ -101,11 +106,14 @@ export function inspectActionsSnapshots(
     },
     coverage: {
       status: partial ? "partial" : "complete",
-      repositoryFileCount: regularHeadPaths.length,
-      inspectedFileCount: regularHeadPaths.length,
-      unexaminedFileCount: 0,
+      repositoryFileCount,
+      inspectedFileCount,
+      unexaminedFileCount: repositoryFileCount - inspectedFileCount,
       submodules,
       lfsPointers,
+      materializedFileCount: regularHeadPaths.length - lfsPointers.length,
+      unmaterializedFileCount: unavailableFileCount,
+      scanScope: scopeMode,
     },
     identity: `sha256:${createHash("sha256").update(canonicalHead).digest("hex")}`,
   };

@@ -66,8 +66,26 @@ test("Portable Codex six stages receive valid object artifacts and the fixture f
     assert.equal(arguments_.path, path);
     assert.equal(typeof arguments_.content, "object");
     assert.equal(arguments_.content.schemaVersion, 1);
+    if (path === "03-discovery.json") {
+      const candidate = arguments_.content.candidates[0];
+      assert.deepEqual(Object.keys(candidate).sort(), [
+        "anchors", "attacker", "category", "controlHypothesis", "expectedImpact", "hypothesis", "id", "prerequisites",
+      ]);
+      assert.equal(candidate.attacker, "authenticated");
+      assert.deepEqual(candidate.anchors.map((anchor) => anchor.role), ["entrypoint", "sink"]);
+    }
+    if (path === "04-dataflow.json" || path === "05-validation.json") {
+      const assessment = arguments_.content.assessments[0];
+      assert.equal(assessment.candidateId, "fixture-authz-missing");
+      assert.equal(assessment.status, "confirmed");
+      assert.equal(assessment.reason, "untrusted-flow-reaches-sink");
+      assert.deepEqual(assessment.evidence.map((anchor) => anchor.role), ["entrypoint", "sink"]);
+    }
     if (path === "sentinel-findings.json") {
-      assert.equal(arguments_.content.findings[0].anchors[0].path, "src/auth.ts");
+      assert.deepEqual(arguments_.content.findings[0].anchors.map((anchor) => anchor.role), ["entrypoint", "sink"]);
+      if (arguments_.content.coverage !== undefined) {
+        assert.deepEqual(arguments_.content.coverage.candidates[0].evidence.map((anchor) => anchor.role), ["entrypoint", "sink"]);
+      }
     }
   }
 });

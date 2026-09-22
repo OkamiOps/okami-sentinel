@@ -215,6 +215,12 @@ test("resolves a remote repository exclusively through GitHub App authority", as
       calls.push(`authorize:${connectionId}:${installationId}:${repositoryId}`);
       return { owner: "OkamiOps", name: "private-sentinel" };
     },
+    readAuthorizedRepositoryJson: async (connectionId, installationId, repositoryId, resource, permissions) => {
+      assert.deepEqual([connectionId, installationId, repositoryId], ["connection-1", "77", "991122"]);
+      assert.equal(resource, "/repos/OkamiOps/private-sentinel/git/ref/heads/main");
+      assert.deepEqual(permissions, { contents: "read", checks: "write", pull_requests: "read" });
+      return {};
+    },
   });
 
   assert.deepEqual(calls, ["refresh:77", "authorize:connection-1:77:991122"]);
@@ -224,7 +230,20 @@ test("resolves a remote repository exclusively through GitHub App authority", as
   assert.equal(status.remote.ready, true);
   assert.equal(status.secret.ready, true);
   assert.equal(status.workflow.ready, true);
-  assert.equal(status.ready, true);
+  assert.equal(status.permissions.ready, true);
+  assert.equal(status.baseline.ready, false);
+  assert.equal(status.ready, false);
+
+  const metadataOnly = await getRemoteGitHubStatus(repository, {
+    refreshRepositories: async () => undefined,
+    requireAuthorizedRepository: () => ({ owner: "OkamiOps", name: "private-sentinel" }),
+    readAuthorizedRepositoryJson: async () => { throw Object.assign(new Error("denied"), { code: "github_request_rejected" }); },
+  });
+  assert.equal(metadataOnly.auth.ready, true);
+  assert.equal(metadataOnly.remote.ready, true);
+  assert.equal(metadataOnly.permissions.ready, false);
+  assert.equal(metadataOnly.baseline.ready, false);
+  assert.equal(metadataOnly.ready, false);
 });
 
 test("keeps GitHub Actions remote status blocked until its executor preflight exists", async () => {
@@ -248,6 +267,10 @@ test("keeps GitHub Actions remote status blocked until its executor preflight ex
   const status = await getRemoteGitHubStatus(repository, {
     refreshRepositories: async () => undefined,
     requireAuthorizedRepository: () => ({ owner: "OkamiOps", name: "private-sentinel" }),
+    readAuthorizedRepositoryJson: async (_connection, _installation, _repository, _path, permissions) => {
+      assert.equal(permissions.actions, "write");
+      return {};
+    },
   });
   assert.equal(status.auth.ready, true);
   assert.equal(status.secret.ready, false);

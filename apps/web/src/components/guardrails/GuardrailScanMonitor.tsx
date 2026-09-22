@@ -140,12 +140,16 @@ export function GuardrailScanMonitor({ gate, onScanTerminal }: { gate: GateRun; 
           ? "risk" as const
           : undefined;
   const logs = telemetry.lines.slice(-120);
+  const diagnostics = guardrailScanDiagnostics(scan, telemetry.lines);
   const route = [scan.engine, scan.provider, scan.model].filter(Boolean).join(" · ");
   const reasoning = scan.effort ?? t("guardrails.providerManaged");
   const displayedProgress = formatScanProgress(scan);
-  const progressLabel = scan.progress
-    ? `${scan.status === "failed" || scan.status === "cancelled" ? `${t("guardrails.failed")} · ` : ""}${formatProgressLabel(scan.progress)}${scan.progress.detail ? ` / ${scan.progress.detail}` : ""}`
-    : t("guardrails.progressPending");
+  const progressLabel = diagnostics.terminal
+    ? `${t(scan.status === "completed" ? "guardrails.status.completed"
+      : scan.status === "cancelled" ? "guardrails.status.cancelled" : "guardrails.failed")}${diagnostics.phase ? ` · ${diagnostics.phase}` : ""}`
+    : scan.progress ? `${formatProgressLabel(scan.progress)}${scan.progress.detail ? ` / ${scan.progress.detail}` : ""}`
+      : t("guardrails.progressPending");
+  const resultUnavailable = scan.status !== "completed" && scan.severity.total === 0;
 
   return (
     <section className="bench-panel mt-4 min-w-0 overflow-hidden" aria-labelledby="guardrail-scan-monitor-title" aria-live="polite">
@@ -167,15 +171,16 @@ export function GuardrailScanMonitor({ gate, onScanTerminal }: { gate: GateRun; 
           <span className={cx("shrink-0", scan.status === "failed" || scan.status === "cancelled" ? "text-destructive" : "text-primary")}>{displayedProgress.metric}</span>
         </div>
         <ProgressTrack value={displayedProgress.value} indeterminate={displayedProgress.indeterminate} label={progressLabel} />
+        {diagnostics.failed && <p className="mt-3 break-words text-xs text-destructive" role="status">{diagnostics.code ?? t("guardrails.scanFailureUnreported")}</p>}
       </div>
 
       <div className="grid min-w-0 xl:grid-cols-[minmax(25rem,.82fr)_minmax(0,1.18fr)]">
         <div className="min-w-0 border-b xl:border-b-0 xl:border-r">
           <div className="grid border-b sm:grid-cols-2">
-            <MonitorMetric label={t("guardrails.stage")} value={displayedProgress.metric} detail={formatProgressLabel(scan.progress)} tone={scan.status === "failed" || scan.status === "cancelled" ? "risk" : "signal"} />
+            <MonitorMetric label={t("guardrails.stage")} value={displayedProgress.metric} detail={diagnostics.phase ?? "—"} tone={diagnostics.failed ? "risk" : "signal"} />
             <MonitorMetric label={t("guardrails.activity")} value={activityLabel} detail={scan.progress?.lastActivityAt ? `${t("guardrails.lastEvent")} ${formatDate(scan.progress.lastActivityAt)}` : undefined} tone={activityTone} />
             <MonitorMetric label={t("guardrails.duration")} value={<LiveDuration startedAt={scan.startedAt} completedAt={scan.completedAt} status={scan.status} durationMs={scan.durationMs} showDot={false} />} />
-            <MonitorMetric label={t("guardrails.findings")} value={scan.severity.total} detail={`${highPlus} HIGH+`} tone={highPlus > 0 ? "risk" : undefined} />
+            <MonitorMetric label={t("guardrails.findings")} value={resultUnavailable ? "—" : scan.severity.total} detail={resultUnavailable ? t("guardrails.scanResultUnavailable") : `${highPlus} HIGH+`} tone={highPlus > 0 ? "risk" : undefined} />
             <MonitorMetric label={t(costCopy.labelKey)} value={formatScanUsd(scan)} detail={scan.cost?.pricingBasis ?? t("guardrails.costWaitingUsage")} tone="signal" />
             <MonitorMetric label={t("guardrails.costCeiling")} value={formatCeiling(gate.costCeilingUsd)} detail={t("guardrails.costCeilingDetail")} />
           </div>
@@ -195,7 +200,7 @@ export function GuardrailScanMonitor({ gate, onScanTerminal }: { gate: GateRun; 
               <Readout label={t("guardrails.cachedTokens")} value={formatTokens(tokenUsage.cachedInputTokens)} />
               <Readout label={t("guardrails.outputTokens")} value={formatTokens(tokenUsage.outputTokens)} />
             </div>
-            <div className="mt-5"><SeverityStrip counts={scan.severity} total={scan.severity.total} /></div>
+            {!resultUnavailable && <div className="mt-5"><SeverityStrip counts={scan.severity} total={scan.severity.total} /></div>}
           </div>
         </div>
 
@@ -213,9 +218,19 @@ export function GuardrailScanMonitor({ gate, onScanTerminal }: { gate: GateRun; 
 }
 
 export function guardrailDisplayedActivity(scan: Pick<ScanRun, "status">): "live" | "failed" | "closed" {
-  if (scan.status === "running") return "live";
-  if (scan.status === "failed" || scan.status === "cancelled") return "failed";
+  if (scan.status === "running" || scan.status === "queued") return "live";
+  if (scan.status === "failed" || scan.status === "cancelled" || scan.status === "incomplete") return "failed";
   return "closed";
+}
+
+export function guardrailScanDiagnostics(scan: Pick<ScanRun, "status" | "progress">, lines: readonly string[]) {
+  const terminal = !["running", "queued"].includes(scan.status);
+  const failed = terminal && scan.status !== "completed";
+  const recent = [...lines].reverse();
+  const code = failed ? recent.flatMap((line) =>
+    [...line.matchAll(/\b(?:agent|stage|provider|scanner|snapshot)_[a-z0-9_]{2,100}\b/g)].map((match) => match[0]))[0] ?? null : null;
+  const preservedStage = recent.map((line) => /\brunning ((?:mantis|vulnhunter|portable)-[a-z0-9-]+)/i.exec(line)?.[1]).find(Boolean);
+  return { terminal, failed, code, phase: scan.progress ? formatProgressLabel(scan.progress) : preservedStage ?? null };
 }
 
 export { formatScanProgress as guardrailDisplayedProgress } from "../../format";

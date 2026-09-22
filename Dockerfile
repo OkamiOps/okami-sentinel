@@ -24,6 +24,7 @@ RUN apt-get update \
 RUN corepack enable && corepack prepare pnpm@11.5.2 --activate
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY patches ./patches
 COPY apps/api/package.json apps/api/package.json
 COPY apps/gate-cli/package.json apps/gate-cli/package.json
 COPY apps/web/package.json apps/web/package.json
@@ -40,21 +41,18 @@ COPY . .
 # the only artifact compiled for the final image.
 RUN pnpm --filter @csb/web build \
   && pnpm --filter @csb/api build \
-  && CSB_SKIP_GRAPHIFY_SETUP=1 pnpm --filter @csb/api deploy --prod --legacy /opt/api-runtime
+  && CSB_SKIP_GRAPHIFY_SETUP=1 pnpm --filter @csb/api deploy --prod --legacy /opt/api-runtime \
+  && CSB_SKIP_GRAPHIFY_SETUP=1 pnpm --filter @csb/gate-cli deploy --prod --legacy /opt/gate-cli-runtime
 
 FROM base AS sentinel-engines
 
 ARG CODEX_VERSION=0.153.4
-ARG CODEX_SECURITY_VERSION=0.1.25
 
 # These packages are installed during the image build only. No scan, model
 # request, package update, or CLI execution is performed here.
 RUN npm install --prefix /opt/sentinel-engines/codex-cli \
       --omit=dev --no-audit --no-fund "@openai/codex@${CODEX_VERSION}" \
-  && npm install --prefix /opt/sentinel-engines/codex-security \
-      --omit=dev --no-audit --no-fund "@openai/codex-security@${CODEX_SECURITY_VERSION}" \
-  && test -x /opt/sentinel-engines/codex-cli/node_modules/.bin/codex \
-  && test -x /opt/sentinel-engines/codex-security/node_modules/.bin/codex-security
+  && test -x /opt/sentinel-engines/codex-cli/node_modules/.bin/codex
 
 FROM base AS sentinel-graphify
 
@@ -67,6 +65,7 @@ RUN CSB_GRAPHIFY_INSTALL_DIR=/opt/sentinel-engines/graphify node /app/scripts/se
 FROM base AS runtime
 
 ARG CSB_GITHUB_ACTIONS_WORKFLOW_SHA
+LABEL org.opencontainers.image.revision=${CSB_GITHUB_ACTIONS_WORKFLOW_SHA}
 
 ENV NODE_ENV=production \
     CSB_BUNDLED_RUNTIME_DIR=/opt/sentinel-engines \
@@ -97,6 +96,7 @@ COPY --from=build /app/apps/web/dist ./apps/web/dist
 COPY --from=build /app/scripts/docker/init-volume.mjs ./scripts/docker/init-volume.mjs
 COPY --from=build /app/scripts/docker/healthcheck.mjs ./scripts/docker/healthcheck.mjs
 COPY --from=sentinel-engines /opt/sentinel-engines /opt/sentinel-engines
+COPY --from=build /opt/gate-cli-runtime/node_modules /opt/sentinel-engines/codex-security/node_modules
 COPY --from=sentinel-graphify /opt/sentinel-engines/graphify /opt/sentinel-engines/graphify
 
 # The container is started explicitly as the Node image's non-root account by

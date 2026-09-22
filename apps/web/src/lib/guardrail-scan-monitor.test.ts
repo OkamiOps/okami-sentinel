@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import type { GateRun, ScanRun } from "@csb/shared";
 
-import { GuardrailScanMonitor, ScanResultActions, guardrailDisplayedActivity, guardrailDisplayedProgress } from "../components/guardrails/GuardrailScanMonitor.js";
+import { GuardrailScanMonitor, ScanResultActions, guardrailDisplayedActivity, guardrailDisplayedProgress, guardrailScanDiagnostics } from "../components/guardrails/GuardrailScanMonitor.js";
 import { PortfolioPipeline } from "../components/guardrails/PortfolioPipeline.js";
 import { I18nProvider } from "../i18n.js";
 
@@ -66,6 +66,19 @@ test("terminal guardrail scans never keep a stale ACTIVE activity label", () => 
   assert.equal(guardrailDisplayedActivity({ status: "failed" }), "failed");
   assert.equal(guardrailDisplayedActivity({ status: "cancelled" }), "failed");
   assert.equal(guardrailDisplayedActivity({ status: "completed" }), "closed");
+  assert.equal(guardrailDisplayedActivity({ status: "incomplete" }), "failed");
+});
+
+test("terminal scans without structured progress expose preserved stage and failure instead of waiting", () => {
+  const lines = ["running mantis-report", "[mantis-http] agent_turn_limit"];
+  const failed = guardrailScanDiagnostics({ status: "failed", progress: null }, lines);
+  assert.deepEqual(failed, { terminal: true, failed: true, code: "agent_turn_limit", phase: "mantis-report" });
+  assert.equal(guardrailDisplayedProgress({ status: "failed", progress: null }).indeterminate, false);
+  assert.equal(guardrailScanDiagnostics({ status: "running", progress: null }, lines).code, null);
+  assert.equal(guardrailScanDiagnostics({ status: "running", progress: null }, lines).terminal, false);
+  assert.deepEqual(guardrailScanDiagnostics({ status: "cancelled" }, []), {
+    terminal: true, failed: true, code: null, phase: null,
+  });
 });
 
 test("a terminal failed scan freezes the progress bar at completed stages instead of looking live", () => {

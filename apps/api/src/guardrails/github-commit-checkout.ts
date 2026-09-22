@@ -150,8 +150,13 @@ function gitArguments(
 
 function gitEnvironment(): NodeJS.ProcessEnv {
   return {
-    ...process.env,
+    // Do not inherit Git's configuration environment. In particular, an
+    // ambient insteadOf rule would otherwise rewrite the already-validated
+    // GitHub URL after the bearer header has been attached to the fetch.
     GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: os.devNull,
+    GIT_CONFIG_COUNT: "0",
+    GIT_ATTR_NOSYSTEM: "1",
     GIT_TERMINAL_PROMPT: "0",
     GCM_INTERACTIVE: "Never",
     GIT_LFS_SKIP_SMUDGE: "1",

@@ -14,6 +14,7 @@ import {
   type GhRunner,
 } from "./github-cli.js";
 import { githubAppServiceErrorCode } from "./github-app/github-app-service.js";
+import type { GitHubInstallationPermissions } from "./github-app/github-app-client.js";
 import { CODEX_BIN } from "./config.js";
 
 const SECRET_NAME = "OPENAI_API_KEY";
@@ -44,6 +45,8 @@ function capability(
 }
 
 export interface RemoteGitHubStatusAuthority {
+  readAuthorizedRepositoryJson(connectionId: string, installationId: string, repositoryId: string,
+    path: string, permissions: GitHubInstallationPermissions): Promise<unknown>;
   refreshRepositories(installationId: string): Promise<unknown>;
   requireAuthorizedRepository(
     connectionId: string,
@@ -77,6 +80,20 @@ export async function getRemoteGitHubStatus(
       available: false,
     };
     const managed = repository.defaultExecutor === "sentinel-managed";
+    let permissions = capability(false, "Permissões operacionais ainda não verificadas.", "Valide o acesso ao código e aos Checks.");
+    try {
+      // A metadata token only proves catalogue access. Request the exact
+      // executor permissions, then exercise a contents read with that token.
+      await authority.readAuthorizedRepositoryJson(
+        repository.githubConnectionId, repository.githubInstallationId, repository.githubRepositoryId,
+        `/repos/${authorized.owner}/${authorized.name}/git/ref/heads/${encodeURIComponent(repository.defaultBranch)}`,
+        { contents: "read", checks: "write", pull_requests: "read", ...(managed ? {} : { actions: "write" as const }) },
+      );
+      permissions = capability(true, "Leitura de código e permissões do executor verificadas.", null);
+    } catch (error) {
+      permissions = capability(false, `Permissões operacionais indisponíveis (${remoteStatusCode(error)}).`,
+        "Revise as permissões aprovadas da instalação para o executor selecionado.");
+    }
     const status: GuardrailGitHubStatus = {
       subscription: capability(
         true,
@@ -90,7 +107,7 @@ export async function getRemoteGitHubStatus(
         null,
       ),
       auth: capability(true, "GitHub App autenticada e instalação ativa.", null),
-      permissions: capability(true, "Permissões da instalação aceitam o catálogo autorizado.", null),
+      permissions,
       secret: capability(
         managed,
         managed
@@ -105,8 +122,9 @@ export async function getRemoteGitHubStatus(
           : "Caller workflow ainda precisa de preflight.",
         managed ? null : "Valide o caller workflow v2.",
       ),
-      baseline: capability(true, "A instalação pode resolver a baseline por identidade GitHub.", null),
-      ready: managed,
+      baseline: capability(false, "A existência e a compatibilidade da baseline serão verificadas no preflight.",
+        "Execute o preflight do alvo ou inicialize a branch protegida."),
+      ready: false,
     };
     return status;
   } catch (error) {

@@ -50,22 +50,37 @@ function scanner() {
   };
 }
 
-function fixture(options: { heads?: string[]; starts?: "ok" | "fail" } = {}) {
+interface PullRequestFixture {
+  number: number;
+  title: string;
+  baseRef: string;
+  headRef: string;
+  headSha: string;
+}
+
+function fixture(options: { heads?: string[]; pullRequests?: PullRequestFixture[]; starts?: "ok" | "fail" } = {}) {
   ensureGitHubMonitorSchema(getDb());
   const sequence = ++fixtureSequence;
   const currentRepository = repository(`github:monitor-service-${sequence}`, `monitor-service-${sequence}`);
   const heads = options.heads ?? [SHA_A];
+  const pullRequests = options.pullRequests ?? heads.map((headSha, index) => ({
+    number: index + 1,
+    title: `PR ${index + 1}`,
+    baseRef: "main",
+    headRef: `feature/${index + 1}`,
+    headSha,
+  }));
   const launches: Array<{ headSha: string; target: unknown }> = [];
   let now = new Date("2026-09-08T10:00:00.000Z");
   const service = new GitHubMonitorService({
     listRepositories: () => [currentRepository],
     readRepositoryJson: async (_repository, path) => {
       if (path.startsWith("/pulls?")) {
-        return heads.map((headSha, index) => ({
-          number: index + 1,
-          title: `PR ${index + 1}`,
-          base: { ref: "main" },
-          head: { ref: `feature/${index + 1}`, sha: headSha },
+        return pullRequests.map((pullRequest) => ({
+          number: pullRequest.number,
+          title: pullRequest.title,
+          base: { ref: pullRequest.baseRef },
+          head: { ref: pullRequest.headRef, sha: pullRequest.headSha },
         }));
       }
       if (path.startsWith("/branches?")) {
@@ -99,7 +114,20 @@ function fixture(options: { heads?: string[]; starts?: "ok" | "fail" } = {}) {
     service,
     repository: currentRepository,
     launches,
-    setHeads(next: string[]) { heads.splice(0, heads.length, ...next); },
+    setHeads(next: string[]) {
+      heads.splice(0, heads.length, ...next);
+      pullRequests.splice(0, pullRequests.length, ...next.map((headSha, index) => ({
+        number: index + 1,
+        title: `PR ${index + 1}`,
+        baseRef: "main",
+        headRef: `feature/${index + 1}`,
+        headSha,
+      })));
+    },
+    setPullRequests(next: PullRequestFixture[]) {
+      pullRequests.splice(0, pullRequests.length, ...next);
+      heads.splice(0, heads.length, ...next.map((pullRequest) => pullRequest.headSha));
+    },
     advance(ms: number) { now = new Date(now.getTime() + ms); },
   };
 }
@@ -158,7 +186,39 @@ test("first activation resets the baseline, then dispatches only a new immutable
 
   advance(1_000);
   await service.poll();
-  assert.equal(launches.length, 1, "repository/SHA/rule revision dedupe prevents a second paid launch");
+  assert.equal(launches.length, 1, "the same complete PR target is idempotent");
+});
+
+test("same SHA on distinct PR bases receives separate target-specific gates", async () => {
+  const { service, launches, setPullRequests, advance, repository } = fixture();
+  const rule = service.createRule({
+    repositoryKey: repository.repositoryKey,
+    executor: "sentinel-managed",
+    scanner: scanner(),
+    costCeilingUsd: 1,
+    dailyCostCeilingUsd: 2,
+    followBranches: ["main", "release/*"],
+    checkoutMode: "none",
+    enabled: true,
+  });
+  await service.poll();
+  setPullRequests([
+    { number: 10, title: "Main promotion", baseRef: "main", headRef: "release-candidate", headSha: SHA_B },
+    { number: 11, title: "Release promotion", baseRef: "release/1.x", headRef: "release-candidate", headSha: SHA_B },
+  ]);
+
+  advance(1_000);
+  await service.poll();
+
+  assert.deepEqual([...launches].sort((left, right) => Number((left.target as { number: number }).number) - Number((right.target as { number: number }).number)), [
+    { headSha: SHA_B, target: { kind: "pull_request", number: 10 } },
+    { headSha: SHA_B, target: { kind: "pull_request", number: 11 } },
+  ]);
+  assert.equal(service.listEvents({ ruleId: rule.id }).filter((event) => event.headSha === SHA_B).length, 2);
+
+  advance(1_000);
+  await service.poll();
+  assert.equal(launches.length, 2, "each complete PR identity remains idempotent after dispatch");
 });
 
 test("the UTC daily reservation admits one ceiling and leaves later heads queued", async () => {
@@ -248,7 +308,7 @@ test("branch picker paginates enrolled remote branches and rejects unknown repos
   assert.equal(paths.length, 2);
 });
 
-test("following all branches catches newly created branches without scanning the initial inventory or duplicate heads", async () => {
+test("following all branches gives distinct refs with one SHA their own target evaluations", async () => {
   const remote = repository("github:all-branches-test", "all-branches-test");
   const branches = [{ name: "main", commit: { sha: SHA_A } }];
   const launches: string[] = [];
@@ -267,5 +327,5 @@ test("following all branches catches newly created branches without scanning the
   assert.deepEqual(launches, [SHA_B]);
   branches.push({ name: "another-name-same-head", commit: { sha: SHA_B } });
   await service.poll(remote.repositoryKey);
-  assert.deepEqual(launches, [SHA_B]);
+  assert.deepEqual(launches, [SHA_B, SHA_B]);
 });

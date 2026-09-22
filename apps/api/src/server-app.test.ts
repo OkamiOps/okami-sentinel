@@ -128,3 +128,25 @@ test("server configuration rejects remote HTTP, missing credentials and broad or
   assert.throws(() => loadServerSettings({ CSB_RUNTIME_MODE: "server", CSB_PUBLIC_ORIGIN: origin }));
   assert.equal(publicOrigin({ CSB_PUBLIC_ORIGIN: "http://127.0.0.1:8787" }), "http://127.0.0.1:8787");
 });
+
+test("local wrapper rejects foreign Host on reads before exposing API, session or HTML", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "csb-local-host-"));
+  const api = new Hono();
+  api.get("/scans", (c) => c.json({ scans: [] }));
+  api.get("/security-session", (c) => c.json({ csrfToken: securitySessionToken }));
+  try {
+    fs.writeFileSync(path.join(root, "index.html"), "<!doctype html><h1>Local Sentinel</h1>");
+    const app = createServerApp(api, { webRoot: root, settings: loadServerSettings({ CSB_RUNTIME_MODE: "local" }) });
+    for (const resource of ["/", "/api/scans", "/api/security-session"]) {
+      for (const method of ["GET", "HEAD", "OPTIONS"]) {
+        assert.equal((await app.request(`http://untrusted.example${resource}`, { method })).status, 403);
+        assert.equal((await app.request(`http://localhost${resource}`, {
+          method, headers: { Host: "untrusted.example" },
+        })).status, 403);
+      }
+    }
+    for (const host of ["localhost:8787", "127.0.0.1:8787", "[::1]:8787"]) {
+      assert.equal((await app.request(`http://${host}/api/security-session`, { headers: { Host: host } })).status, 200);
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

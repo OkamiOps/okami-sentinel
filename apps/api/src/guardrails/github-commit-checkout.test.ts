@@ -35,14 +35,37 @@ test("checks out the exact SHA from a file remote and strips Git metadata", asyn
   assert.equal(fs.readFileSync(path.join(dest, "src", "app.ts"), "utf8"), "export const app = true;\n");
 });
 
-test("never puts the token in the remote URL or closed errors", async () => {
+test("isolates Git configuration overrides so insteadOf cannot redirect the bearer fetch", async (t) => {
   const commands: string[][] = [];
+  const environments: NodeJS.ProcessEnv[] = [];
   const dest = emptyDest();
+  const inherited = new Map<string, string | undefined>();
+  const hostileEnvironment: NodeJS.ProcessEnv = {
+    GIT_CONFIG_GLOBAL: "/tmp/attacker.gitconfig",
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "url.https://evil.invalid/.insteadOf",
+    GIT_CONFIG_VALUE_0: "https://github.com/",
+    GIT_DIR: "/tmp/attacker-git-dir",
+    GIT_WORK_TREE: "/tmp/attacker-work-tree",
+    GIT_ALLOW_PROTOCOL: "https:file",
+    GIT_SSH_COMMAND: "ssh -F /tmp/attacker-ssh-config",
+  };
+  for (const [key, value] of Object.entries(hostileEnvironment)) {
+    inherited.set(key, process.env[key]);
+    process.env[key] = value;
+  }
+  t.after(() => {
+    for (const [key, value] of inherited) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
   try {
     const checkout = new GitHubCommitCheckout({
       authorize: async () => ({ owner: "OkamiOps", name: "private-sentinel", token: TOKEN }),
-      runner: async (args) => {
+      runner: async (args, options) => {
         commands.push([...args]);
+        environments.push({ ...options.env });
         if (args.includes("fetch")) {
           return result(1, `fatal: Authentication failed for token ${TOKEN}\n`);
         }
@@ -67,6 +90,22 @@ test("never puts the token in the remote URL or closed errors", async () => {
     assert.equal(JSON.stringify(remoteAdd).includes(TOKEN), false);
     assert.equal(fetch?.includes("http.extraHeader=AUTHORIZATION: bearer ghs_private_checkout"), true);
     assert.equal(fetch?.includes(`https://x-access-token:${TOKEN}@github.com`), false);
+    const fetchEnvironment = environments[commands.findIndex((args) => args.includes("fetch"))];
+    assert.equal(fetchEnvironment?.GIT_CONFIG_GLOBAL, os.devNull);
+    assert.equal(fetchEnvironment?.GIT_CONFIG_NOSYSTEM, "1");
+    assert.equal(fetchEnvironment?.GIT_CONFIG_COUNT, "0");
+    assert.equal(fetchEnvironment?.GIT_ATTR_NOSYSTEM, "1");
+    for (const key of [
+      "GIT_CONFIG_KEY_0",
+      "GIT_CONFIG_VALUE_0",
+      "GIT_DIR",
+      "GIT_WORK_TREE",
+      "GIT_ALLOW_PROTOCOL",
+      "GIT_SSH_COMMAND",
+    ]) {
+      assert.equal(fetchEnvironment?.[key], undefined);
+    }
+    assert.equal(JSON.stringify(fetchEnvironment).includes(TOKEN), false);
   } finally {
     fs.rmSync(path.dirname(dest), { recursive: true, force: true });
   }

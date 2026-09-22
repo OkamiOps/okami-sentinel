@@ -14,7 +14,7 @@ export function serverSecurity(settings: ServerSettings): MiddlewareHandler {
   let failedAttempts = 0;
   let windowStart = Date.now();
   return async (c, next) => {
-    if (settings.mode === "local") return localMutationSecurity(c, next);
+    if (settings.mode === "local") return localRequestSecurity(c, next);
     c.header("X-Content-Type-Options", "nosniff");
     c.header("Referrer-Policy", "same-origin");
     c.header("Cache-Control", "no-store");
@@ -50,13 +50,20 @@ export function serverSecurity(settings: ServerSettings): MiddlewareHandler {
  * session token; browser callers must also be the compiled app or Vite dev
  * server. A CLI can omit Origin, provided it obtained the same local token.
  */
-async function localMutationSecurity(
+async function localRequestSecurity(
   c: Parameters<MiddlewareHandler>[0],
   next: Parameters<MiddlewareHandler>[1],
 ): Promise<Response | void> {
+  const url = new URL(c.req.url);
+  // Validate reads as well: a loopback listener alone does not prevent a
+  // browser from addressing it through an attacker-controlled DNS name.
+  const host = c.req.header("Host");
+  if (!LOCAL_HOSTS.has(url.hostname)
+      || (host !== undefined && !/^(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]{1,5})?$/i.test(host))) {
+    return c.json({ error: "origin_denied" }, 403);
+  }
   if (["GET", "HEAD", "OPTIONS"].includes(c.req.method)) return next();
 
-  const url = new URL(c.req.url);
   const origin = c.req.header("Origin");
   const fetchSite = c.req.header("Sec-Fetch-Site");
   const trustedBrowserOrigin = origin === url.origin || LOCAL_FRONTEND_ORIGINS.has(origin ?? "");

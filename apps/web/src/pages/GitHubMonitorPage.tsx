@@ -93,6 +93,11 @@ export function GitHubMonitorPage() {
     [repositories],
   );
   const selectedRepository = remoteRepositories.find((repository) => repository.repositoryKey === selectedRepositoryKey) ?? null;
+  const selectedRepositoryLabel = selectedRepository === null
+    ? null
+    : selectedRepository.remoteOwner !== null && selectedRepository.remoteName !== null
+      ? `${selectedRepository.remoteOwner}/${selectedRepository.remoteName}`
+      : selectedRepository.displayName;
   const selectedRule = overview?.rules.find((rule) => rule.repositoryKey === selectedRepositoryKey) ?? null;
   const readyConnections = connections.filter((connection) => connection.status === "ready");
   const selectedConnection = readyConnections.find((connection) => connection.id === draft.providerConnectionId) ?? null;
@@ -242,9 +247,10 @@ export function GitHubMonitorPage() {
   }
 
   async function poll() {
+    if (!selectedRepository) return;
     setPolling(true);
     try {
-      setOverview(await githubMonitorApi.poll());
+      setOverview(await githubMonitorApi.poll(selectedRepository.repositoryKey));
       setError(null);
     } catch {
       setError(t("githubMonitor.pollError"));
@@ -278,9 +284,10 @@ export function GitHubMonitorPage() {
       code="06 / GITHUB MONITOR"
       title={t("githubMonitor.title")}
       description={t("githubMonitor.description")}
-      actions={<Button variant="outline" size="sm" disabled={polling || loading} onClick={() => void poll()}>
+      actions={<Button variant="outline" size="sm" disabled={polling || loading || !selectedRepository} onClick={() => void poll()}>
         <RefreshCw aria-hidden className={cx("size-3", polling && "animate-spin motion-reduce:animate-none")} />
         {polling ? t("githubMonitor.refreshing") : t("githubMonitor.refresh")}
+        {selectedRepositoryLabel && <span className="font-mono text-[10px]">{selectedRepositoryLabel}</span>}
       </Button>}
     />
 

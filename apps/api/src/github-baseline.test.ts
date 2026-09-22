@@ -252,6 +252,9 @@ function artifactFixture(
       unexaminedFileCount: 0,
       submodules: [],
       lfsPointers: [],
+      materializedFileCount: 1,
+      unmaterializedFileCount: 0,
+      scanScope: "repository",
     },
     snapshot: {
       identity: `sha256:${"3".repeat(64)}`,

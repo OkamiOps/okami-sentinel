@@ -135,6 +135,77 @@ test("a restarted executor resumes every persisted non-terminal dispatch", async
   assert.equal(fixture.store.dispatches.get(gate.id)?.state, "correlating");
 });
 
+test("cancellation survives missing run identity and waits for remote confirmation", async () => {
+  const fixture = executorFixture();
+  const gate = await fixture.executor.start({ repository: fixture.repository, preview: fixture.preview,
+    idempotencyKey: "cancel-before-correlation-0001" });
+  assert.equal(fixture.executor.cancel(gate.id), true);
+  assert.equal((await fixture.executor.reconcileGate(gate.id))?.status, "cancelling");
+  assert.equal(fixture.store.gates.get(gate.id)?.completedAt, null);
+  const run: GitHubActionsRemoteRun = { id: "7001", attempt: 1, event: "workflow_dispatch",
+    status: "in_progress", conclusion: null, displayTitle: `CSB gate ${gate.id} · ${HEAD}`,
+    createdAt: "2026-08-12T12:00:05.000Z" };
+  fixture.remote.listWorkflowRuns = async () => [run];
+  fixture.remote.getWorkflowRun = async () => ({ ...run });
+  let cancellations = 0;
+  fixture.remote.cancelWorkflowRun = async (input) => {
+    assert.equal(input.workflowRunId, run.id);
+    cancellations++;
+  };
+  await fixture.executor.reconcilePending();
+  await fixture.executor.reconcilePending();
+  assert.equal(cancellations, 1);
+  assert.equal(fixture.store.gates.get(gate.id)?.status, "cancelling");
+  run.status = "completed";
+  run.conclusion = "cancelled";
+  await fixture.executor.reconcilePending();
+  assert.equal(fixture.store.gates.get(gate.id)?.status, "cancelled");
+  assert.equal(fixture.store.gates.get(gate.id)?.error, null);
+  assert.equal(fixture.store.dispatches.get(gate.id)?.state, "cancelled");
+  assert.equal(fixture.calls.download, 0);
+});
+
+test("failed remote cancellation stays visible and retries without losing the intent", async () => {
+  const fixture = executorFixture();
+  const gate = await fixture.executor.start({ repository: fixture.repository, preview: fixture.preview,
+    idempotencyKey: "cancel-retry-0000000001" });
+  const run: GitHubActionsRemoteRun = { id: "7001", attempt: 1, event: "workflow_dispatch",
+    status: "in_progress", conclusion: null, displayTitle: `CSB gate ${gate.id} · ${HEAD}`,
+    createdAt: "2026-08-12T12:00:05.000Z" };
+  fixture.remote.listWorkflowRuns = async () => [run];
+  fixture.remote.getWorkflowRun = async () => run;
+  fixture.remote.cancelWorkflowRun = async () => { throw new Error("network unavailable"); };
+  fixture.executor.cancel(gate.id);
+  const failed = await fixture.executor.reconcileGate(gate.id);
+  assert.equal(failed?.status, "cancelling");
+  assert.equal(failed?.error, "actions_cancellation_failed");
+  fixture.remote.cancelWorkflowRun = async () => undefined;
+  await fixture.executor.reconcilePending();
+  assert.equal(fixture.store.gates.get(gate.id)?.error, null);
+  assert.equal(fixture.store.dispatches.get(gate.id)?.error, "actions_cancellation_requested");
+  run.status = "completed";
+  run.conclusion = "success";
+  await fixture.executor.reconcilePending();
+  assert.equal(fixture.store.gates.get(gate.id)?.status, "cancelled");
+  assert.equal(fixture.store.gates.get(gate.id)?.error, "actions_cancellation_too_late");
+});
+
+test("cancelling during run lookup cannot be overwritten by the scanning transition", async () => {
+  const fixture = executorFixture();
+  const gate = await fixture.executor.start({ repository: fixture.repository, preview: fixture.preview,
+    idempotencyKey: "cancel-lookup-race-0001" });
+  const run: GitHubActionsRemoteRun = { id: "7001", attempt: 1, event: "workflow_dispatch",
+    status: "in_progress", conclusion: null, displayTitle: `CSB gate ${gate.id} · ${HEAD}`,
+    createdAt: "2026-08-12T12:00:05.000Z" };
+  fixture.remote.listWorkflowRuns = async () => { fixture.executor.cancel(gate.id); return [run]; };
+  fixture.remote.getWorkflowRun = async () => run;
+  let cancellations = 0;
+  fixture.remote.cancelWorkflowRun = async () => { cancellations++; };
+  await fixture.executor.reconcileGate(gate.id);
+  assert.equal(fixture.store.gates.get(gate.id)?.status, "cancelling");
+  assert.equal(cancellations, 1);
+});
+
 function executorFixture() {
   const repository = repositoryFixture();
   const preview = previewFixture();
@@ -181,6 +252,7 @@ function executorFixture() {
   };
   const calls = { dispatch: 0, download: 0 };
   const remote: GitHubActionsRemote = {
+    cancelWorkflowRun: async () => undefined,
     dispatchWorkflow: async () => { calls.dispatch += 1; },
     listWorkflowRuns: async () => [],
     getWorkflowRun: async () => { throw new Error("unexpected"); },

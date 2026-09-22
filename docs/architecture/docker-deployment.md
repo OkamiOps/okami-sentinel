@@ -60,6 +60,24 @@ The image pins its runtime fallbacks. The updater can activate verified versions
 under the persistent volume and blocks installation while scans are active.
 Image updates and runtime updates have separate rollback lifecycles.
 
+The Codex Security fallback is the same locked production dependency closure as
+the gate CLI (`@openai/codex-security@0.1.29`), including pnpm patches. It must not
+be installed separately with npm in the Dockerfile: that would omit the ZIP
+extraction hardening. `patches/extract-zip@2.0.1.patch` rejects traversal,
+symbolic links (including pre-existing directory ancestors), and duplicate file
+overwrites. Regression tests exercise malicious ZIPs and the real CLI's mock
+scan. The upstream package version still matches advisories
+[GHSA-jmr9-qjv8-65gv](https://github.com/advisories/GHSA-jmr9-qjv8-65gv) and
+[GHSA-7pqw-9j4j-h8q3](https://github.com/advisories/GHSA-7pqw-9j4j-h8q3); do not
+silence them or drop the patch until an upstream replacement passes those tests.
+
+`CSB_GITHUB_ACTIONS_WORKFLOW_SHA` is an operational release pin, not a dynamic
+alias for `main`. Updating the checkout alone does not update a value saved in
+Dokploy's Environment settings. Each release must align this pin with its
+validated, published Sentinel commit, then verify both the image revision label
+and the running source. Otherwise the hosted API can dispatch an older gate
+workflow even when its own code is current.
+
 ## Verification boundaries
 
 Docker CI builds the image, checks non-root authenticated startup and runs the

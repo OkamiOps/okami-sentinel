@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "bin": { "csb-gate": "./src/index.ts" },
+  "bin": {
+    "csb-gate": "./src/index.ts"
+  },
   "scripts": {
     "start": "tsx src/index.ts",
     "publish-check": "tsx src/actions-check-entry.ts",
@@ -14,7 +16,12 @@
   "dependencies": {
     "@csb/gate-core": "workspace:*",
     "@csb/gate-runtime": "workspace:*",
-    "@csb/shared": "workspace:*"
+    "@csb/shared": "workspace:*",
+    "@openai/codex-security": "0.1.29"
   },
-  "devDependencies": { "@types/node": "^22.15.32", "tsx": "^4.23.1", "typescript": "^5.8.3" }
+  "devDependencies": {
+    "@types/node": "^22.15.32",
+    "tsx": "^4.23.1",
+    "typescript": "^5.8.3"
+  }
 }
