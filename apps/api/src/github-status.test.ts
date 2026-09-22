@@ -108,7 +108,8 @@ test("reports each github capability independently", async () => {
     assert.equal(status.permissions.ready, true);
     assert.equal(status.secret.ready, true);
     assert.equal(status.workflow.ready, false);
-    assert.equal(status.baseline.ready, true);
+    assert.equal(status.baseline.ready, false);
+    assert.match(status.baseline.message, /preflight/i);
     assert.equal(status.ready, false);
     assert.equal(
       gh.calls.some((args) => args[0] === "auth" && args[1] === "token"),
@@ -147,7 +148,7 @@ test("reports read-only repository access without hiding healthy capabilities", 
   }
 });
 
-test("reports a caller workflow ready only with the v2 contract marker", async () => {
+test("requires target preflight even when the local Actions capabilities are ready", async () => {
   const repositoryPath = fs.mkdtempSync(
     path.join(os.tmpdir(), "csb-github-v2-workflow-"),
   );
@@ -164,7 +165,10 @@ test("reports a caller workflow ready only with the v2 contract marker", async (
 
     assert.equal(status.workflow.ready, true);
     assert.equal(status.workflow.action, null);
-    assert.equal(status.ready, true);
+    assert.equal(status.permissions.ready, true);
+    assert.equal(status.baseline.ready, false);
+    assert.match(status.baseline.action ?? "", /preflight|inicialize/i);
+    assert.equal(status.ready, false);
   } finally {
     fs.rmSync(repositoryPath, { recursive: true, force: true });
   }

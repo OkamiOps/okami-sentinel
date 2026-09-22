@@ -165,6 +165,44 @@ test("cancellation survives missing run identity and waits for remote confirmati
   assert.equal(fixture.calls.download, 0);
 });
 
+test("cancellation keeps retrying after the correlation timeout and cancels its late unique run", async () => {
+  const fixture = executorFixture();
+  const gate = await fixture.executor.start({ repository: fixture.repository, preview: fixture.preview,
+    idempotencyKey: "cancel-late-correlation-0001" });
+  assert.equal(fixture.executor.cancel(gate.id), true);
+  fixture.setNow("2026-08-12T12:31:00.000Z");
+
+  const unresolved = await fixture.executor.reconcileGate(gate.id);
+  assert.equal(unresolved?.status, "cancelling");
+  assert.equal(unresolved?.error, "actions_cancellation_failed");
+  assert.equal(unresolved?.completedAt, null);
+  assert.equal(fixture.store.dispatches.get(gate.id)?.state, "correlating");
+
+  const lateRun: GitHubActionsRemoteRun = { id: "late-7001", attempt: 1, event: "workflow_dispatch",
+    status: "in_progress", conclusion: null, displayTitle: `CSB gate ${gate.id} · ${HEAD}`,
+    createdAt: "2026-08-12T12:30:01.000Z" };
+  fixture.remote.listWorkflowRuns = async () => [lateRun];
+  fixture.remote.getWorkflowRun = async () => lateRun;
+  let cancellations = 0;
+  fixture.remote.cancelWorkflowRun = async (input) => {
+    assert.equal(input.workflowRunId, lateRun.id);
+    cancellations++;
+  };
+
+  const requested = await fixture.executor.reconcilePending();
+  assert.equal(requested[0]?.status, "cancelling");
+  assert.equal(requested[0]?.error, null);
+  assert.equal(cancellations, 1);
+  assert.equal(fixture.store.dispatches.get(gate.id)?.error, "actions_cancellation_requested");
+
+  lateRun.status = "completed";
+  lateRun.conclusion = "cancelled";
+  await fixture.executor.reconcilePending();
+  assert.equal(fixture.store.gates.get(gate.id)?.status, "cancelled");
+  assert.equal(fixture.store.gates.get(gate.id)?.error, null);
+  assert.equal(fixture.store.dispatches.get(gate.id)?.state, "cancelled");
+});
+
 test("failed remote cancellation stays visible and retries without losing the intent", async () => {
   const fixture = executorFixture();
   const gate = await fixture.executor.start({ repository: fixture.repository, preview: fixture.preview,
@@ -213,6 +251,7 @@ function executorFixture() {
   const dispatches = new Map<string, GitHubActionsDispatchMetadata>();
   const idempotency = new Map<string, string>();
   const artifacts = new Map<string, GitHubActionsArtifactMetadata>();
+  let now = "2026-08-12T12:00:00.000Z";
   const store: GitHubActionsExecutorStore & {
     gates: typeof gates;
     dispatches: typeof dispatches;
@@ -287,9 +326,9 @@ function executorFixture() {
     importer,
     releaseSha: RELEASE,
     createGateId: () => "gate-actions-1",
-    now: () => "2026-08-12T12:00:00.000Z",
+    now: () => now,
   });
-  return { repository, preview, store, remote, calls, executor };
+  return { repository, preview, store, remote, calls, executor, setNow: (value: string) => { now = value; } };
 }
 
 function repositoryFixture(): GuardrailRepository {

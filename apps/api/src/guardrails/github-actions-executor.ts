@@ -216,7 +216,8 @@ export class GitHubActionsExecutor {
           lastPolledAt: this.#now(),
         });
         const runs = await this.#remote.listWorkflowRuns({ dispatch, repository });
-        const matches = correlatedRuns(dispatch, runs);
+        const cancelling = requiredGate(gateId, this.#store).status === "cancelling";
+        const matches = correlatedRuns(dispatch, runs, { allowLate: cancelling });
         if (matches.length > 1) return this.#fail(gateId, "actions_run_ambiguous");
         if (matches.length === 0) {
           if (Date.parse(this.#now()) > Date.parse(dispatch.requestedAt) + RUN_CORRELATION_AFTER_MS) {
@@ -611,6 +612,7 @@ function dispatchInputs(
 function correlatedRuns(
   dispatch: GitHubActionsDispatchMetadata,
   runs: readonly GitHubActionsRemoteRun[],
+  options: { allowLate: boolean },
 ): GitHubActionsRemoteRun[] {
   const before = Date.parse(dispatch.requestedAt) - RUN_CORRELATION_BEFORE_MS;
   const after = Date.parse(dispatch.requestedAt) + RUN_CORRELATION_AFTER_MS;
@@ -620,7 +622,11 @@ function correlatedRuns(
       && run.displayTitle === dispatch.expectedRunName
       && Number.isFinite(created)
       && created >= before
-      && created <= after;
+      // A pending cancellation must keep looking for its own unique gate run,
+      // even if GitHub starts it after the normal correlation window. The
+      // persisted title contains the generated gate id and immutable head SHA;
+      // ambiguity remains fail-closed below.
+      && (options.allowLate || created <= after);
   });
 }
 

@@ -285,13 +285,10 @@ export async function getGitHubStatus(
   );
 
   const workflow = workflowCapability(workflowSource);
-  const baselineReady = repositorySlug !== null && permissions.ready;
   const baseline = capability(
-    baselineReady,
-    baselineReady
-      ? "O gate pode resolver baselines da branch principal."
-      : "A baseline remota exige acesso de leitura ao GitHub Actions.",
-    baselineReady ? null : "Resolva o remote GitHub e as permissões do Actions.",
+    false,
+    "A existência e a compatibilidade da baseline serão verificadas no preflight.",
+    "Execute o preflight do alvo ou inicialize a branch protegida.",
   );
   const ready = [
     cli,
