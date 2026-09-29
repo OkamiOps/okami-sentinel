@@ -86,12 +86,21 @@ const SUMMARY: Readonly<Record<EmailErrorCode, string>> = Object.freeze({
  * through the global redactor, because an SMTP greeting or a JSON error can
  * quote back the username and, on some relays, the credential itself.
  */
-export function emailFailure(code: EmailErrorCode, detail?: string | null): EmailFailure {
+export function emailFailure(
+  code: EmailErrorCode,
+  detail?: string | null,
+  /**
+   * Overrides the verdict the code implies. A provider can name a permanent-
+   * sounding cause and still be saying "not now" — an SMTP 4xx reply does exactly
+   * that — and the transport, which saw the reply, knows better than this table.
+   */
+  permanent?: boolean,
+): EmailFailure {
   const cleaned = cleanDetail(detail);
   return {
     code,
     message: cleaned ? `${SUMMARY[code]} (${cleaned})` : SUMMARY[code],
-    permanent: PERMANENT[code],
+    permanent: permanent ?? PERMANENT[code],
   };
 }
 

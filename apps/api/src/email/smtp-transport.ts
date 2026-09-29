@@ -81,42 +81,40 @@ function senderDomain(address: string): string {
 }
 
 /**
- * Nodemailer's own code is the primary signal; the numeric SMTP reply refines
- * it, because `EENVELOPE` covers both a sender the relay will not accept — the
- * single most common misconfiguration, an unverified domain — and a recipient it
- * rejects, and only the failing command tells them apart.
+ * Nodemailer's own code names the cause; the reply code decides whether it is
+ * final. Those are two different questions and conflating them loses mail: a
+ * greylisting relay answers `451` to `RCPT TO`, a busy one `450` to `MAIL FROM`
+ * and a throttled one `454` to `AUTH`, and all three arrive as the same
+ * `EENVELOPE`/`EAUTH` codes a genuine 5xx rejection uses. So the cause is
+ * classified first, and then a 4xx reply — SMTP's own word for "not now" —
+ * overrides the verdict to transient, whatever the cause turned out to be.
  */
 export function mapSmtpError(error: unknown): EmailFailure {
   const failure = error as NodemailerError | undefined;
   const detail = failure?.response ?? failure?.message ?? null;
+  const reply = failure?.responseCode;
+  // Only a 4xx reply is an override. A 5xx one, or no reply at all, leaves the
+  // cause's own verdict standing, so an unreachable host stays retryable and a
+  // refused credential stays permanent.
+  const transient = typeof reply === "number" && reply >= 400 && reply < 500 ? false : undefined;
+  return emailFailure(smtpErrorCode(failure, detail), detail, transient);
+}
+
+function smtpErrorCode(failure: NodemailerError | undefined, detail: string | null): EmailErrorCode {
   const code = failure?.code ?? "";
   const reply = failure?.responseCode;
 
-  if (code === "EAUTH" || code === "ENOAUTH" || reply === 535 || reply === 530) {
-    return emailFailure("auth_rejected", detail);
+  if (code === "EAUTH" || code === "ENOAUTH" || reply === 535 || reply === 530) return "auth_rejected";
+  if (code === "ETLS" || code === "EREQUIRETLS" || isTlsFailure(failure)) return "tls_failed";
+  if (failure?.errno === -61 || code === "ECONNREFUSED" || /ECONNREFUSED/.test(detail ?? "")) {
+    return "connection_refused";
   }
-  if (code === "ETLS" || code === "EREQUIRETLS" || isTlsFailure(failure)) {
-    return emailFailure("tls_failed", detail);
-  }
-  if (failure?.errno === -61 || failure?.code === "ECONNREFUSED" || /ECONNREFUSED/.test(detail ?? "")) {
-    return emailFailure("connection_refused", detail);
-  }
-  if (code === "ETIMEDOUT" || /timed? ?out/i.test(detail ?? "")) {
-    return emailFailure("connection_timeout", detail);
-  }
-  if (code === "EDNS" || /ENOTFOUND|EAI_AGAIN/.test(detail ?? "")) {
-    return emailFailure("connection_refused", detail);
-  }
-  if (code === "EENVELOPE") return emailFailure(envelopeCode(failure), detail);
-  if (code === "EMESSAGE" || code === "EMAXRECIPIENTS") return emailFailure("message_rejected", detail);
-  if (reply === 421 || reply === 450 || reply === 451 || reply === 452 || reply === 454) {
-    return emailFailure("provider_unavailable", detail);
-  }
-  if (reply === 550 || reply === 553 || reply === 554) return emailFailure("message_rejected", detail);
-  if (code === "ECONNECTION" || code === "ESOCKET" || code === "ESTREAM" || code === "EPROTOCOL") {
-    return emailFailure("provider_unavailable", detail);
-  }
-  return emailFailure("provider_unavailable", detail);
+  if (code === "ETIMEDOUT" || /timed? ?out/i.test(detail ?? "")) return "connection_timeout";
+  if (code === "EDNS" || /ENOTFOUND|EAI_AGAIN/.test(detail ?? "")) return "connection_refused";
+  if (code === "EENVELOPE") return envelopeCode(failure);
+  if (code === "EMESSAGE" || code === "EMAXRECIPIENTS") return "message_rejected";
+  if (reply === 550 || reply === 553 || reply === 554) return "message_rejected";
+  return "provider_unavailable";
 }
 
 function envelopeCode(failure: NodemailerError | undefined): EmailErrorCode {

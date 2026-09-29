@@ -50,9 +50,9 @@ export interface EmailProviderPreset {
 
 /**
  * Ports and security modes come from each provider's published SMTP endpoint.
- * `resend` is the SMTP front door of the same account whose API key the
- * `resend-api` preset uses directly, which is why its username is the literal
- * `resend` and its password is the API key.
+ * The `resend` preset is that provider's SMTP front door, reached with the
+ * literal username `resend` and the account's API key as the password — the same
+ * key the `resend` *provider* would send to the HTTP API instead.
  */
 export const EMAIL_PROVIDER_PRESETS: readonly EmailProviderPreset[] = Object.freeze([
   Object.freeze({

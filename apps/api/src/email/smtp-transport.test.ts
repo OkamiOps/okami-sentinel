@@ -152,8 +152,56 @@ test("a rejected recipient is permanent and a temporary refusal is not", async (
     assert.equal(error.permanent, true);
     return true;
   });
+  // Greylisting answers 451 here. Retrying is the only way the mail ever
+  // arrives, so a 4xx reply must never be recorded as permanent.
   await assert.rejects(createSmtpTransport(config(server.port)).send(message), (error: EmailTransportError) => {
     assert.equal(error.code, "recipient_rejected");
+    assert.equal(error.permanent, false);
+    return true;
+  });
+});
+
+test("a 4xx reply is transient wherever it appears in the conversation", async (t) => {
+  const busy = await startServer({
+    onMailFrom(_address, _session, callback) {
+      callback(Object.assign(new Error("Mailbox busy, try again"), { responseCode: 450 }));
+    },
+  });
+  t.after(busy.close);
+  await assert.rejects(createSmtpTransport(config(busy.port)).send(message), (error: EmailTransportError) => {
+    assert.equal(error.code, "sender_not_verified");
+    assert.equal(error.permanent, false);
+    return true;
+  });
+
+  const throttled = await startServer({
+    authOptional: false,
+    authMethods: ["PLAIN", "LOGIN"],
+    onAuth(_auth, _session, callback) {
+      callback(Object.assign(new Error("Temporary authentication failure"), { responseCode: 454 }));
+    },
+  });
+  t.after(throttled.close);
+  await assert.rejects(
+    createSmtpTransport(config(throttled.port, {
+      smtp: { host: "127.0.0.1", port: throttled.port, security: "none", username: "resend" },
+      secret: "any",
+    })).send(message),
+    (error: EmailTransportError) => {
+      assert.equal(error.code, "auth_rejected");
+      assert.equal(error.permanent, false);
+      return true;
+    },
+  );
+
+  const closing = await startServer({
+    onConnect(_session, callback) {
+      callback(Object.assign(new Error("Service not available, closing"), { responseCode: 421 }));
+    },
+  });
+  t.after(closing.close);
+  await assert.rejects(createSmtpTransport(config(closing.port)).send(message), (error: EmailTransportError) => {
+    assert.equal(error.permanent, false);
     return true;
   });
 });
@@ -257,11 +305,21 @@ test("the error map covers the codes nodemailer actually raises", () => {
     [{ code: "ECONNECTION", message: "connect ECONNREFUSED 127.0.0.1:2525" }, "connection_refused", false],
     [{ code: "EDNS", message: "getaddrinfo ENOTFOUND smtp.nope" }, "connection_refused", false],
     [{ code: "ETIMEDOUT", message: "Greeting never received" }, "connection_timeout", false],
-    [{ code: "EENVELOPE", command: "MAIL FROM", response: "550 sender rejected" }, "sender_not_verified", true],
-    [{ code: "EENVELOPE", command: "RCPT TO", response: "550 no such user" }, "recipient_rejected", true],
-    [{ code: "EMESSAGE", response: "554 message content rejected" }, "message_rejected", true],
+    [{ code: "EENVELOPE", command: "MAIL FROM", response: "550 sender rejected", responseCode: 550 }, "sender_not_verified", true],
+    [{ code: "EENVELOPE", command: "RCPT TO", response: "550 no such user", responseCode: 550 }, "recipient_rejected", true],
+    [{ code: "EMESSAGE", response: "554 message content rejected", responseCode: 554 }, "message_rejected", true],
     [{ code: "EPROTOCOL", responseCode: 421, response: "421 service closing" }, "provider_unavailable", false],
     [{}, "provider_unavailable", false],
+    // A 4xx reply is SMTP saying "not now". The named cause stays in the
+    // message, but nothing that answers 4xx may be classified permanent.
+    [{ code: "EENVELOPE", command: "RCPT TO", response: "451 4.7.1 Greylisted", responseCode: 451 }, "recipient_rejected", false],
+    [{ code: "EENVELOPE", command: "MAIL FROM", response: "450 4.2.1 Mailbox busy", responseCode: 450 }, "sender_not_verified", false],
+    [{ code: "EENVELOPE", command: "DATA", response: "452 4.3.1 Out of storage", responseCode: 452 }, "message_rejected", false],
+    [{ code: "EAUTH", response: "454 4.7.0 Temporary authentication failure", responseCode: 454 }, "auth_rejected", false],
+    [{ code: "EMESSAGE", response: "421 4.4.5 Too busy", responseCode: 421 }, "message_rejected", false],
+    // 5xx keeps the permanent verdict the code implies.
+    [{ code: "EAUTH", response: "535 5.7.8 Authentication credentials invalid", responseCode: 535 }, "auth_rejected", true],
+    [{ code: "EMESSAGE", response: "552 5.3.4 Message too big", responseCode: 552 }, "message_rejected", true],
   ];
   for (const [shape, code, permanent] of expectations) {
     const failure = mapSmtpError(Object.assign(new Error(String(shape.message ?? "failed")), shape));
