@@ -481,7 +481,16 @@ export function upsertRun(run: ScanRun): void {
   const connection = run.connection ?? null;
   const launchSelection = sanitizeLaunchSelection(run.launchSelection);
   const database = getDb();
-  const repository_key = run.repositoryKey ?? resolveRunRepositoryKey(run.repositoryPath, database);
+  let repository_key = run.repositoryKey ?? null;
+  if (repository_key === null) {
+    const existing = database.prepare("SELECT repository_key FROM runs WHERE id = ?").get(run.id) as
+      | { repository_key: string | null }
+      | undefined;
+    // Skip the guardrail_repositories scan once a row already carries a key:
+    // COALESCE keeps it either way, but resolving is otherwise redundant work
+    // on every upsert of a hot-path run (e.g. per cost-line updates mid-scan).
+    repository_key = existing?.repository_key ?? resolveRunRepositoryKey(run.repositoryPath, database);
+  }
   database
     .prepare(
       `INSERT INTO runs (
