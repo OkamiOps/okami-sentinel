@@ -171,6 +171,8 @@ export interface GuardrailsApiDependencies {
   enrollRepository(request: EnrollGuardrailRepositoryRequest): Promise<GuardrailRepository>;
   upsertRepository(repository: GuardrailRepository): void;
   getRepository(repositoryKey: string): GuardrailRepository | null;
+  /** Attributes existing runs to a freshly registered repository. */
+  backfillRepositoryKeys?(): void;
   readPolicy(repositoryPath: string): GuardrailPolicy;
   readRemotePolicy(repository: GuardrailRepository): Promise<ProtectedPolicyBundle>;
   parsePolicy(value: unknown): GuardrailPolicy;
@@ -298,6 +300,7 @@ const guardrailsDependencies: GuardrailsApiDependencies = {
   enrollRepository: (request) => repositoryEnrollmentService.enroll(request),
   upsertRepository: upsertGuardrailRepository,
   getRepository: findRepository,
+  backfillRepositoryKeys: backfillRunRepositoryKeys,
   readPolicy: readGuardrailPolicy,
   readRemotePolicy: async (repository) => {
     const target = { kind: "protected_branch" as const, ref: repository.defaultBranch };
@@ -405,18 +408,26 @@ export function createGuardrailsApp(
   });
 
   guardrails.post("/guardrails/repositories", async (c) => {
+    let repository: GuardrailRepository;
     try {
       const request = parseEnrollGuardrailRepositoryRequest(await c.req.json<unknown>());
-      const repository = await deps.enrollRepository(request);
+      repository = await deps.enrollRepository(request);
       if (deps.getRepository(repository.repositoryKey)) {
         return c.json({ error: "repository_already_registered", repositoryKey: repository.repositoryKey }, 409);
       }
       deps.upsertRepository(repository);
-      backfillRunRepositoryKeys();
-      return c.json({ repository }, 201);
     } catch (error) {
       return c.json({ error: errorMessage(error) }, 400);
     }
+    // The registration is persisted by now. Attributing historical runs to it is
+    // a follow-up the next registration or restart retries, so a failure here
+    // must not answer 400 and send the operator to fix a request that was fine.
+    try {
+      (deps.backfillRepositoryKeys ?? backfillRunRepositoryKeys)();
+    } catch (error) {
+      console.warn(`[csb-api] Could not attribute existing runs to ${repository.repositoryKey}: ${errorMessage(error)}`);
+    }
+    return c.json({ repository }, 201);
   });
 
   guardrails.post("/guardrails/repositories/:repositoryKey/target-preview", async (c) => {

@@ -582,6 +582,26 @@ test("enrollment persists only the server-resolved repository identity", async (
   assert.equal((await response.json()).repository.policyPath, ".csb/guardrails.json");
 });
 
+test("a failed run attribution does not report the persisted registration as invalid", async () => {
+  const deps = dependencies();
+  deps.getRepository = () => null;
+  const upserted: string[] = [];
+  deps.upsertRepository = (value) => { upserted.push(value.repositoryKey); };
+  deps.backfillRepositoryKeys = () => { throw new Error("database is locked"); };
+  const response = await createGuardrailsApp(deps).request("/guardrails/repositories", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source: "local", repositoryPath: "/workspace/csb/nested" }),
+  });
+
+  // The repository is registered; attributing historical runs to it is a
+  // follow-up, and a 400 would tell the operator to fix a request that was fine
+  // while leaving the row behind.
+  assert.equal(response.status, 201);
+  assert.deepEqual(upserted, [repository.repositoryKey]);
+  assert.equal((await response.json()).repository.repositoryKey, repository.repositoryKey);
+});
+
 test("policy PUT delegates the validated policy to the atomic adapter", async () => {
   const deps = dependencies();
   const policy = defaultGuardrailPolicy();
