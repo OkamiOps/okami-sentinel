@@ -16,7 +16,7 @@ import type { ScanFilesGraph } from "../src/api";
 
 export interface MockApiOptions {
   signedOut?: boolean;
-  session?: { isAdmin: boolean; grants: RepositoryGrant[] };
+  session?: { isAdmin: boolean; grants: RepositoryGrant[]; username?: string };
   loginResponse?: { status: number; body: unknown };
   invitePreviewResponse?: { status: number; body: unknown };
   acceptInviteResponse?: { status: number; body: unknown };
@@ -132,6 +132,7 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
       signedIn: !options.signedOut,
       isAdmin: options.session?.isAdmin ?? true,
       grants: options.session?.grants ?? ([] as RepositoryGrant[]),
+      username: options.session?.username ?? "root",
       runtimeMode: (options.session ? "server" : "local") as "local" | "server",
       // A 5xx from /auth/session is not a sign-out: it leaves the shell with an
       // unverified session, which is a different state from signed out.
@@ -223,7 +224,7 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
       if (state.auth.sessionUnreachable) return json({ error: "internal_error" }, 500);
       if (!state.auth.signedIn) return json({ error: "authentication_required" }, 401);
       return json({
-        user: { id: "u-root", username: "root", displayName: "Root", isAdmin: state.auth.isAdmin },
+        user: { id: "u-root", username: state.auth.username, displayName: "Root", isAdmin: state.auth.isAdmin },
         grants: state.auth.grants,
         csrfToken: "fixture-token",
         runtimeMode: state.auth.runtimeMode,

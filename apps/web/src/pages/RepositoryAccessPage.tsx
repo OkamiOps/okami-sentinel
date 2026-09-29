@@ -8,6 +8,7 @@ import { SettingsSectionNav } from "../components/settings/SettingsSectionNav";
 import { AlertBanner, EmptyState, Loading, PageHeader, Panel, cx } from "../components/ui";
 import { userState } from "../components/access/UserBadges";
 import { usersApi } from "../lib/auth-api";
+import { formatHandle } from "../lib/username";
 import { accessMessages } from "../i18n/access";
 import { useScopedI18n } from "../i18n/scoped";
 
@@ -129,7 +130,7 @@ function RepositoryPanel({ entry, users, onSetRole }: {
           return <li key={grant.userId} className="grid gap-2 px-4 py-2.5 sm:grid-cols-[minmax(0,1fr)_14rem] sm:items-center">
             <div className="min-w-0">
               <div className="truncate text-xs font-medium">{grant.displayName}</div>
-              <div className="truncate font-mono text-[10px] text-muted-foreground">@{grant.username}</div>
+              <div className="truncate font-mono text-[10px] text-muted-foreground">{formatHandle(grant.username)}</div>
             </div>
             <RoleSelect
               allowNone value={grant.role}
@@ -153,7 +154,7 @@ function RepositoryPanel({ entry, users, onSetRole }: {
             <SelectContent position="popper">
               {candidates.map((user) => <SelectItem key={user.id} value={user.id}>
                 <span className="truncate text-xs">{user.displayName}</span>
-                <span className="font-mono text-[10px] text-muted-foreground">@{user.username}</span>
+                <span className="font-mono text-[10px] text-muted-foreground">{formatHandle(user.username)}</span>
               </SelectItem>)}
             </SelectContent>
           </Select>

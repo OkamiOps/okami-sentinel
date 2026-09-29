@@ -11,6 +11,7 @@ import { UserRoleBadge, UserStateBadge, userState, type UserState } from "../com
 import { SettingsSectionNav } from "../components/settings/SettingsSectionNav";
 import { AlertBanner, EmptyState, Loading, PageHeader, Panel } from "../components/ui";
 import { usersApi } from "../lib/auth-api";
+import { formatHandle } from "../lib/username";
 import { formatRelativeTime } from "../format";
 import { accessMessages, type AccessMessageKey } from "../i18n/access";
 import { useScopedI18n } from "../i18n/scoped";
@@ -123,7 +124,7 @@ export function UsersPage() {
                     onClick={(event) => { event.stopPropagation(); setOpenUserId(user.id); }}
                   >
                     <span className="block truncate text-xs font-medium">{user.displayName}</span>
-                    <span className="block truncate font-mono text-[10px] text-muted-foreground">@{user.username}</span>
+                    <span className="block truncate font-mono text-[10px] text-muted-foreground">{formatHandle(user.username)}</span>
                   </button>
                 </TableCell>
                 <TableCell><UserStateBadge user={user} /></TableCell>

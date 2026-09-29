@@ -392,6 +392,16 @@ test("an analyst can triage findings but cannot delete the scan", async ({ page 
   await expect(page.getByRole("button", { name: /delete|remove scan/i })).toHaveCount(0);
 });
 
+test("a session signed in with an email address is shown the address, not a doubled handle", async ({ page }) => {
+  await mockApi(page, "en", {
+    session: { isAdmin: false, grants: [{ repositoryKey: "github:1", role: "viewer" }], username: "marcos@okamiops.com" },
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open account menu" }).click();
+  await expect(page.getByText("marcos@okamiops.com", { exact: true })).toBeVisible();
+  await expect(page.getByText("@marcos@okamiops.com")).toHaveCount(0);
+});
+
 test("a maintainer sees the delete control on their own repository", async ({ page }) => {
   await mockApi(page, "en", { session: { isAdmin: false, grants: [{ repositoryKey: "github:1", role: "maintainer" }] } });
   await page.goto("/scans/scan-one");
