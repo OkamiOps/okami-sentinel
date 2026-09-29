@@ -456,3 +456,77 @@ test("a member does not see Repeat on a portable scan", async ({ page }) => {
   await expect(page.getByRole("heading").first()).toBeVisible();
   await expect(page.getByRole("link", { name: /retry portable/i })).toHaveCount(0);
 });
+
+// The five Settings sections used to disagree with each other: two of them put
+// the section tabs above the heading and three below it. The order is now one
+// order, and these tests fail the moment a section drifts back.
+const settingsSections = ["/settings", "/settings/connections", "/settings/users", "/settings/access", "/settings/account"] as const;
+
+for (const route of settingsSections) {
+  test(`the section tabs precede the page heading on ${route}`, async ({ page }) => {
+    await mockApi(page, "en", { session: { isAdmin: true, grants: [] } });
+    await page.route("**/api/engine-updates**", (route_) => route_.fulfill({ json: { items: [], busy: null, blockedReason: null, lastOperation: null } }));
+    await page.goto(route);
+    const nav = page.getByRole("navigation", { name: "Settings" });
+    const heading = page.getByRole("heading", { level: 1 });
+    await expect(nav).toBeVisible();
+    await expect(heading).toBeVisible();
+    // DOCUMENT_POSITION_FOLLOWING (4) is set when the heading comes after the
+    // tabs in document order, which is the order the reading eye follows too.
+    const navFirst = await nav.evaluate((element, selector) => {
+      const target = document.querySelector(selector);
+      return target !== null && (element.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    }, "h1");
+    expect(navFirst).toBe(true);
+  });
+}
+
+test("the module code of each settings section belongs to module 08", async ({ page }) => {
+  await mockApi(page, "en", { session: { isAdmin: true, grants: [] } });
+  await page.route("**/api/engine-updates**", (route) => route.fulfill({ json: { items: [], busy: null, blockedReason: null, lastOperation: null } }));
+  const expected = [["/settings", "08.01"], ["/settings/connections", "08.02"], ["/settings/users", "08.03"], ["/settings/access", "08.04"], ["/settings/account", "08.05"]] as const;
+  for (const [route, code] of expected) {
+    await page.goto(route);
+    await expect(page.locator("header").getByText(new RegExp(`^${code} / `)).first()).toBeVisible();
+  }
+});
+
+test("the invite dialog keeps the name and username inputs on one top edge", async ({ page, viewport }) => {
+  // The row is two columns only from the sm breakpoint up; stacked fields have
+  // nothing to misalign.
+  test.skip((viewport?.width ?? 0) < 640, "the two-column row only exists from the sm breakpoint up");
+  await mockApi(page, "en", { session: { isAdmin: true, grants: [] } });
+  await page.goto("/settings/users");
+  await page.getByRole("button", { name: "Invite user" }).click();
+  const name = page.getByLabel("Name", { exact: true });
+  const username = page.getByLabel("Username", { exact: true });
+  await expect(name).toBeVisible();
+  // The username help line sits under its own field; it must not push the
+  // neighbouring input down. Polled because the dialog opens with a zoom
+  // animation, during which every box is still moving.
+  const offsets = async () => {
+    const [nameBox, usernameBox] = await Promise.all([name.boundingBox(), username.boundingBox()]);
+    if (nameBox === null || usernameBox === null) return null;
+    return { top: Math.abs(nameBox.y - usernameBox.y), height: Math.abs(nameBox.height - usernameBox.height) };
+  };
+  await expect.poll(async () => (await offsets())?.top ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(1);
+  expect((await offsets())?.height ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(1);
+});
+
+test("with no member accounts the access screen sends the admin to invite one", async ({ page }) => {
+  await mockApi(page, "en", { session: { isAdmin: true, grants: [] }, noMembers: true });
+  await page.goto("/settings/access");
+  await expect(page.getByText("No members yet — invite someone in")).toBeVisible();
+  await expect(page.getByText("Every active member already has access.")).toHaveCount(0);
+  await page.getByRole("link", { name: "Users", exact: true }).click();
+  await expect(page).toHaveURL(/\/settings\/users$/);
+});
+
+test("with every member granted the access screen says so instead", async ({ page }) => {
+  const state = await mockApi(page, "en", { session: { isAdmin: true, grants: [] } });
+  // Bea is the only member left ungranted; granting her empties the candidate list.
+  state.repositoryAccess[0].grants.push({ userId: "u-bea", username: "bea", displayName: "Bea", role: "viewer" });
+  await page.goto("/settings/access");
+  await expect(page.getByText("Every active member already has access.")).toBeVisible();
+  await expect(page.getByText("No members yet — invite someone in")).toHaveCount(0);
+});
