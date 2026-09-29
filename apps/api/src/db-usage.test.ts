@@ -13,6 +13,7 @@ function subscriptionRow(tokens: Partial<Pick<
     id: "vulnhunter-run",
     display_name: "fixture",
     repository_path: "/repo",
+    repository_key: null,
     revision: "abc",
     scan_dir: "/scan",
     status: "failed",
