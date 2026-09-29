@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { InviteLinkResponse } from "@csb/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,6 +20,14 @@ export function InviteLinkPanel({ invite, labelKey = "invite.link" }: { invite: 
   const inputRef = useRef<HTMLInputElement>(null);
   const [copied, setCopied] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
+
+  // A second link invalidates the first token; the button must not keep
+  // reading "Copied" (or the failure banner from the previous attempt) once
+  // the clipboard no longer holds what it claims to.
+  useEffect(() => {
+    setCopied(false);
+    setCopyFailed(false);
+  }, [invite.inviteUrl]);
 
   async function copy() {
     setCopyFailed(false);
