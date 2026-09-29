@@ -103,13 +103,15 @@ O wrapper `setup.sh` é para macOS e Linux. No Windows com Docker Desktop, copie
 
 | Arquivo | Uso |
 | --- | --- |
-| `compose.yaml` | Base sem porta publicada, adequada para proxy reverso e Dokploy. |
+| `compose.yaml` | Base sem porta publicada, adequada para proxy reverso e Dokploy. Inclui `CSB_TRUST_PROXY`, que por padrão é `0`. |
 | `compose.local.yaml` | Override que limita a porta a `127.0.0.1:8787` e monta um repositório como leitura. |
 | `.env.local` | Caminhos e configuração do operador, ignorada pelo Git. Não contém o valor dos segredos. |
 | `sentinel_data` | Volume nomeado com SQLite, home privado, runtimes atualizados e arquivos temporários. |
 | `volume-init` | Job efêmero root que prepara apenas os cinco diretórios fixos do volume; não percorre nem altera proprietários de dados preexistentes. |
 
 O serviço `sentinel` inicia como UID/GID `1000:1000`, com filesystem raiz somente leitura. `data`, `home`, `tmp`, `codex-home` e `codex-security-state` vivem no volume. `TMPDIR` não é `tmpfs`, porque snapshots podem ser grandes.
+
+`CSB_TRUST_PROXY` fica em `0` na instalação local, porque a porta é publicada direto em `127.0.0.1` e o Sentinel fala com o navegador sem intermediário: o endereço do visitante vem do próprio socket, e `X-Forwarded-For` é apenas um cabeçalho que qualquer cliente pode inventar. Defina `1` somente quando um único proxy reverso confiável estiver à frente do container e acrescentar esse cabeçalho, como no [guia do Dokploy](./dokploy.md). Esse endereço decide o balde do limite de tentativas de login por IP.
 
 As credenciais são entregues como arquivos em `/run/secrets`. A convenção `_FILE` é interpretada pelo Sentinel; o Docker apenas monta os arquivos. Consulte a [documentação de secrets do Docker Compose](https://docs.docker.com/compose/how-tos/use-secrets/) para o modelo de acesso por serviço.
 

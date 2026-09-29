@@ -28,18 +28,35 @@ export function repositoryRoots(env: NodeJS.ProcessEnv = process.env): string[] 
   return [...new Set(roots.map((root) => path.resolve(root)))];
 }
 
+/**
+ * A forwarded address is believable only when exactly one trusted proxy sits in
+ * front of the server and appends it. Opt in explicitly (`CSB_TRUST_PROXY=1`
+ * behind Dokploy's Traefik); with the port published directly, the header is
+ * whatever the caller typed.
+ */
+export function trustsProxy(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env.CSB_TRUST_PROXY?.trim() ?? "";
+  if (value === "" || value === "0") return false;
+  if (value === "1") return true;
+  throw new Error("CSB_TRUST_PROXY must be 0 or 1.");
+}
+
 export interface ServerSettings {
   mode: "local" | "server";
   origin: string | null;
   username: string;
   password: string;
   repositoryRoots: string[];
+  trustProxy: boolean;
 }
 
 /** Only the HTTP entrypoint loads the admin credential; scanner workers do not. */
 export function loadServerSettings(env: NodeJS.ProcessEnv = process.env): ServerSettings {
-  if (runtimeMode(env) === "local") return { mode: "local", origin: null, username: "", password: "", repositoryRoots: [] };
+  if (runtimeMode(env) === "local") {
+    return { mode: "local", origin: null, username: "", password: "", repositoryRoots: [], trustProxy: false };
+  }
   const origin = publicOrigin(env);
+  const trustProxy = trustsProxy(env);
   const username = env.CSB_ADMIN_USER?.trim() || "admin";
   if (!/^[A-Za-z0-9._-]{1,64}$/.test(username)) throw new Error("CSB_ADMIN_USER is invalid.");
   let password: string;
@@ -53,5 +70,5 @@ export function loadServerSettings(env: NodeJS.ProcessEnv = process.env): Server
     const key = env.CSB_VAULT_KEY_FILE;
     if (!key || !path.isAbsolute(key) || !fs.statSync(key).isFile()) throw new Error();
   } catch { throw new Error("Server mode requires readable admin password (24+ characters) and vault key files."); }
-  return { mode: "server", origin, username, password, repositoryRoots: repositoryRoots(env) };
+  return { mode: "server", origin, username, password, repositoryRoots: repositoryRoots(env), trustProxy };
 }

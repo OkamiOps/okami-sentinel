@@ -1,3 +1,4 @@
+import { getConnInfo } from "@hono/node-server/conninfo";
 import { Hono, type Context } from "hono";
 import { deleteCookie, setCookie } from "hono/cookie";
 import type { AuthSessionResponse, AuthSessionUser, UserSessionSummary } from "@csb/shared";
@@ -17,9 +18,29 @@ import { getUser, updateUser } from "./user-store.js";
  */
 const COOKIE_OPTIONS = { httpOnly: true, secure: true, sameSite: "Lax", path: "/", maxAge: 7 * 24 * 3600 } as const;
 
-/** Traefik (Dokploy's ingress) prepends the caller; anything behind it is untrusted. */
-function clientIp(c: Context): string | null {
-  return c.req.header("X-Forwarded-For")?.split(",")[0]?.trim().slice(0, 64) || null;
+/**
+ * The per-IP login limiter is only worth anything if the caller cannot choose
+ * its own bucket. `X-Forwarded-For` is caller-supplied unless exactly one
+ * trusted proxy terminates the connection, and even then only the entry that
+ * proxy appended — the RIGHTMOST one — is its own observation.
+ */
+export function loginBucket(forwardedFor: string | undefined, peer: string | null, trustProxy: boolean): string | null {
+  if (!trustProxy) return peer?.trim().slice(0, 64) || null;
+  const appended = (forwardedFor ?? "").split(",").at(-1)?.trim() ?? "";
+  return appended.slice(0, 64) || null;
+}
+
+/** `getConnInfo` needs the Node listener; `app.request` has no socket at all. */
+function peerAddress(c: Context): string | null {
+  try {
+    return getConnInfo(c).remote.address ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function clientIp(c: Context, trustProxy: boolean): string | null {
+  return loginBucket(c.req.header("X-Forwarded-For"), peerAddress(c), trustProxy);
 }
 
 async function body(c: Context): Promise<Record<string, unknown>> {
@@ -46,7 +67,7 @@ export function createAuthApi(deps: { settings: ServerSettings; now?: () => Date
     const result = await login({
       username: text(input.username, 64),
       password: password(input.password),
-      ip: clientIp(c),
+      ip: clientIp(c, deps.settings.trustProxy),
       userAgent: c.req.header("User-Agent") ?? null,
       now: clock(),
     });
@@ -107,7 +128,7 @@ export function createAuthApi(deps: { settings: ServerSettings; now?: () => Date
     const result = await acceptInvite({
       token: c.req.param("token"),
       password: password(input.password),
-      ip: clientIp(c),
+      ip: clientIp(c, deps.settings.trustProxy),
       userAgent: c.req.header("User-Agent") ?? null,
       now: clock(),
     });

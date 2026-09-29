@@ -34,6 +34,7 @@ services:
       CSB_HOST: 0.0.0.0
       CSB_PORT: "8787"
       CSB_PUBLIC_ORIGIN: ${CSB_PUBLIC_ORIGIN:?Defina a origem pública}
+      CSB_TRUST_PROXY: ${CSB_TRUST_PROXY:-0}
       CSB_ADMIN_USER: ${CSB_ADMIN_USER:-admin}
       CSB_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
       CSB_VAULT_KEY_FILE: /run/secrets/vault_key
