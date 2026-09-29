@@ -122,6 +122,22 @@ function seedRepository(key: string): void {
     .run(key, `/repos/${key.replaceAll(/[^A-Za-z0-9]/g, "-")}`, key);
 }
 
+/**
+ * The monitor only accepts a GitHub-sourced repository with a full remote
+ * identity, and `seedMonitorRule` writes rules carrying exactly these ids, so a
+ * patch is not refused for an identity mismatch before authorization is tested.
+ */
+function seedRemoteRepository(key: string): void {
+  seeded.repositories.add(key);
+  getDb().prepare(`INSERT OR REPLACE INTO guardrail_repositories
+    (repository_key, repository_path, source, display_name, default_branch, default_executor,
+     remote_owner, remote_name, github_connection_id, github_installation_id, github_repository_id,
+     enabled, policy_path, created_at, updated_at)
+    VALUES (?, NULL, 'github', ?, 'main', 'sentinel-managed', 'acme', ?, 'conn', 'inst', 'repo', 1,
+            '.csb/guardrails.json', 'now', 'now')`)
+    .run(key, key, key);
+}
+
 function seedMonitorRule(id: string, repositoryKey: string): void {
   seeded.monitorRules.add(id);
   ensureGitHubMonitorSchema(getDb());
@@ -371,6 +387,93 @@ test("scoped routes never answer with another repository's data", (t) => withSer
   const pollUnnamed = await post(viewer, "/api/github-monitor/poll", {});
   assert.equal(pollUnnamed.status, 404);
   assert.deepEqual(await pollUnnamed.json(), { error: "not_found" });
+}));
+
+/**
+ * The role table gives a repository maintainer its own monitor rule. Phase 1
+ * reserved both writes for administrators because the rule id had no resolver
+ * behind it, so this covers the two paths that replace it: the create body
+ * names the repository, and a patch is authorized against the rule's own row.
+ */
+test("a monitor rule is created and edited by the repository's maintainer", (t) => withServerRuntime(async () => {
+  const stamp = Date.now();
+  t.after(removeSeededRows);
+  const owned = `scoped-monitor-owned-${stamp}`;
+  const fresh = `scoped-monitor-fresh-${stamp}`;
+  const foreign = `scoped-monitor-foreign-${stamp}`;
+  for (const key of [owned, fresh, foreign]) seedRemoteRepository(key);
+  const ownedRule = `scoped-monitor-rule-${stamp}`;
+  const foreignRule = `scoped-monitor-foreign-rule-${stamp}`;
+  seedMonitorRule(ownedRule, owned);
+  seedMonitorRule(foreignRule, foreign);
+
+  const webRoot = fs.mkdtempSync(path.join(os.tmpdir(), "csb-monitor-web-"));
+  const server = createServerApp(app, { webRoot, settings: serverSettings });
+  const maintainer = actor(`monitormaint${stamp}`, false, [
+    { repositoryKey: owned, role: "maintainer" }, { repositoryKey: fresh, role: "maintainer" },
+  ]);
+  const viewer = actor(`monitorviewer${stamp}`, false, [
+    { repositoryKey: owned, role: "viewer" }, { repositoryKey: fresh, role: "viewer" },
+  ]);
+  const send = (who: { cookie: string; csrf: string }, method: "POST" | "PATCH", target: string, body: unknown) =>
+    server.request(`${origin}${target}`, {
+      method,
+      headers: { Cookie: who.cookie, Origin: origin, "X-CSRF-Token": who.csrf, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  const ruleBody = (repositoryKey: string) => ({
+    repositoryKey, executor: "github-actions", scanner: null, costCeilingUsd: 2,
+    followBranches: ["main"], checkoutMode: "none", enabled: false,
+  });
+
+  // POST — the viewer of a repository it may see is still refused.
+  const viewerCreate = await send(viewer, "POST", "/api/github-monitor/rules", ruleBody(fresh));
+  assert.equal(viewerCreate.status, 403);
+  assert.deepEqual(await viewerCreate.json(), { error: "forbidden" });
+
+  // POST — a repository outside every grant is invisible, not merely refused.
+  const foreignCreate = await send(maintainer, "POST", "/api/github-monitor/rules", ruleBody(foreign));
+  assert.equal(foreignCreate.status, 404);
+  assert.deepEqual(await foreignCreate.json(), { error: "not_found" });
+
+  const created = await send(maintainer, "POST", "/api/github-monitor/rules", ruleBody(fresh));
+  assert.equal(created.status, 201);
+  const createdRule = (await created.json()).rule as { id: string; repositoryKey: string };
+  seeded.monitorRules.add(createdRule.id);
+  assert.equal(createdRule.repositoryKey, fresh);
+
+  // PATCH — the rule's own repository decides, with the same 404/403 split.
+  const viewerPatch = await send(viewer, "PATCH", `/api/github-monitor/rules/${ownedRule}`, { enabled: false });
+  assert.equal(viewerPatch.status, 403);
+  assert.deepEqual(await viewerPatch.json(), { error: "forbidden" });
+
+  const foreignPatch = await send(maintainer, "PATCH", `/api/github-monitor/rules/${foreignRule}`, { enabled: false });
+  assert.equal(foreignPatch.status, 404);
+  assert.deepEqual(await foreignPatch.json(), { error: "not_found" });
+
+  // An unknown rule resolves to no repository, so it is invisible too: a member
+  // must not learn which rule ids exist by probing them.
+  const unknownPatch = await send(maintainer, "PATCH", `/api/github-monitor/rules/no-such-rule-${stamp}`, { enabled: false });
+  assert.equal(unknownPatch.status, 404);
+  assert.deepEqual(await unknownPatch.json(), { error: "not_found" });
+
+  const patched = await send(maintainer, "PATCH", `/api/github-monitor/rules/${ownedRule}`, { enabled: false, checkoutMode: "fetch" });
+  assert.equal(patched.status, 200);
+  const patchedRule = (await patched.json()).rule as Record<string, unknown>;
+  assert.deepEqual(
+    { id: patchedRule.id, repositoryKey: patchedRule.repositoryKey, enabled: patchedRule.enabled, checkoutMode: patchedRule.checkoutMode },
+    { id: ownedRule, repositoryKey: owned, enabled: false, checkoutMode: "fetch" },
+  );
+
+  // A patch can never carry the rule to another repository, whatever the caller
+  // maintains: the field is refused outright and the rule stays where it was.
+  const moved = await send(maintainer, "PATCH", `/api/github-monitor/rules/${ownedRule}`, { repositoryKey: fresh, enabled: false });
+  assert.equal(moved.status, 400);
+  assert.deepEqual(await moved.json(), { error: "github_monitor_invalid" });
+  assert.equal(
+    (getDb().prepare("SELECT repository_key FROM github_monitor_rules WHERE id = ?").get(ownedRule) as { repository_key: string }).repository_key,
+    owned,
+  );
 }));
 
 test("health discloses server paths to an administrator only", () => withServerRuntime(async () => {

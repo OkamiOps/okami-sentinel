@@ -405,7 +405,7 @@ export function GitHubMonitorPage() {
             <Panel label={t("githubMonitor.automation")} title={selectedRule?.enabled ? t("githubMonitor.active") : t("githubMonitor.inactive")}>
               <div className="p-4">
                 {formError && <AlertBanner>{formError}</AlertBanner>}
-                {isAdmin ? <div className="grid gap-2">
+                {can("maintainer", selectedRepositoryKey) ? <div className="grid gap-2">
                   {selectedRule?.enabled ? <>
                     <Button className="min-h-11 w-full" disabled={saving || !canActivate} onClick={() => void save(true)}>{saving ? t("githubMonitor.saving") : t("githubMonitor.update")}</Button>
                     <Button variant="outline" className="min-h-11 w-full" disabled={saving} onClick={() => void deactivate()}>{t("githubMonitor.deactivate")}</Button>

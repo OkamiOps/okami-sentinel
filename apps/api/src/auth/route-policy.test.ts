@@ -41,6 +41,16 @@ test("literal segments win over parameters", () => {
   assert.equal(matchPolicy("GET", "/connections/abc")?.requirement.kind, "admin");
 });
 
+test("a monitor rule write is resolved from the rule, not reserved for administrators", () => {
+  // The repository travels in the create body, where only the handler can read
+  // it; a patch addresses the rule, whose own row names the repository.
+  assert.equal(matchPolicy("POST", "/github-monitor/rules")?.requirement.kind, "scoped");
+  assert.deepEqual(matchPolicy("PATCH", "/github-monitor/rules/rule-1")?.requirement, {
+    kind: "repository", role: "maintainer", from: "monitorRule",
+  });
+  assert.deepEqual(matchPolicy("PATCH", "/github-monitor/rules/rule-1")?.params, { id: "rule-1" });
+});
+
 test("path segments are decoded exactly once and bad encoding never matches", () => {
   assert.deepEqual(matchPolicy("GET", "/github-checkouts/local%2Fone")?.params, { repositoryKey: "local/one" });
   assert.deepEqual(matchPolicy("GET", "/github-checkouts/local%252Fone")?.params, { repositoryKey: "local%2Fone" });
