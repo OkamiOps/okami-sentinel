@@ -4,18 +4,13 @@ import { principalForSession } from "./auth/auth-service.js";
 import { resolveSession } from "./auth/session-store.js";
 import type { ServerSettings } from "./deployment-settings.js";
 import { validSecurityToken } from "./security-session.js";
+import { sessionCookieName } from "./session-cookie.js";
 
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const LOCAL_FRONTEND_ORIGINS = new Set([
   "http://127.0.0.1:5173",
   "http://localhost:5173",
 ]);
-
-/**
- * `__Host-` keeps the cookie pinned to this exact origin: no subdomain can set
- * or read it, and it is only ever sent over HTTPS from the registrable path.
- */
-export const SESSION_COOKIE = "__Host-sentinel_session";
 
 /**
  * Reachable before a session exists: the login form posts here, and an invited
@@ -48,7 +43,7 @@ export function serverSecurity(settings: ServerSettings): MiddlewareHandler {
       if (mutation && origin !== settings.origin) return c.json({ error: "origin_denied" }, 403);
       return next();
     }
-    const session = resolveSession(getCookie(c, SESSION_COOKIE) ?? "");
+    const session = resolveSession(getCookie(c, sessionCookieName(settings)) ?? "");
     const principal = session ? principalForSession(session) : null;
     if (!session || !principal) return c.json({ error: "authentication_required" }, 401);
     c.set("principal" as never, principal as never);

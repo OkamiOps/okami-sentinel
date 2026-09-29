@@ -13,7 +13,7 @@ import type { ServerSettings } from "../deployment-settings.js";
 import { createServerApp } from "../server-app.js";
 import { refreshManagedRuntimeCommands } from "../config.js";
 import { ensureGitHubMonitorSchema } from "../github-monitor/store.js";
-import { SESSION_COOKIE } from "../server-security.js";
+import { SECURE_SESSION_COOKIE } from "../session-cookie.js";
 import { listActiveRuns, listRunPage, scanCatalog } from "../scan-list.js";
 import { buildMetricsSummary } from "../metrics.js";
 import { replaceUserGrants } from "./grant-store.js";
@@ -127,7 +127,7 @@ function actor(name: string, isAdmin: boolean, grants: Array<{ repositoryKey: st
   const user = createUser({ username: name, displayName: name, isAdmin }, getDb());
   replaceUserGrants(user.id, grants, null, getDb());
   const { token, session } = createSession({ userId: user.id, ip: null, userAgent: null }, getDb());
-  return { cookie: `${SESSION_COOKIE}=${token}`, csrf: session.csrfToken };
+  return { cookie: `${SECURE_SESSION_COOKIE}=${token}`, csrf: session.csrfToken };
 }
 
 /**

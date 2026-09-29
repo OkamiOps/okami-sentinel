@@ -72,6 +72,49 @@ test("logs in, reads the session, and logs out", async () => {
   assert.equal((await app.request(`${origin}/api/auth/session`, { headers: { Cookie: pair } })).status, 401);
 });
 
+test("a loopback http origin drops Secure and the __Host- prefix with it", async () => {
+  const loopbackOrigin = "http://127.0.0.1:8787";
+  const loopback: ServerSettings = {
+    mode: "server", origin: loopbackOrigin, username: "admin", password: "x".repeat(24),
+    repositoryRoots: [], trustProxy: false,
+  };
+  const api = new Hono().route("/", createAuthApi({ settings: loopback }));
+  const webRoot = fs.mkdtempSync(path.join(os.tmpdir(), "csb-loopback-web-"));
+  const app = createServerApp(api, { webRoot, settings: loopback });
+  const username = await seedUser(`loop${Date.now()}`, "loopback password 1");
+
+  const login = await app.request(`${loopbackOrigin}/api/auth/login`, {
+    method: "POST", headers: { Origin: loopbackOrigin, "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password: "loopback password 1" }),
+  });
+  assert.equal(login.status, 200);
+  const cookie = login.headers.get("set-cookie")!;
+  // `__Host-` demands Secure, and a browser never sends a Secure cookie over
+  // http, so the loopback flow would authenticate exactly once and then forget.
+  assert.match(cookie, /^sentinel_session=[A-Za-z0-9_-]{43};/);
+  assert.doesNotMatch(cookie, /Secure/);
+  assert.match(cookie, /HttpOnly/);
+  assert.match(cookie, /SameSite=Lax/);
+  assert.match(cookie, /Path=\//);
+
+  const pair = cookie.split(";")[0]!;
+  const session = await app.request(`${loopbackOrigin}/api/auth/session`, { headers: { Cookie: pair } });
+  assert.equal(session.status, 200);
+  const csrfToken = (await session.json()).csrfToken as string;
+
+  // The https deployment must not read the unprefixed name: a cookie that could
+  // have been written over plain http can never authenticate a secure origin.
+  const acrossShapes = await serverWithAuthApi().app.request(`${origin}/api/auth/session`, { headers: { Cookie: pair } });
+  assert.equal(acrossShapes.status, 401);
+
+  const logout = await app.request(`${loopbackOrigin}/api/auth/logout`, {
+    method: "POST", headers: { Cookie: pair, Origin: loopbackOrigin, "X-CSRF-Token": csrfToken },
+  });
+  assert.equal(logout.status, 204);
+  assert.match(logout.headers.get("set-cookie")!, /^sentinel_session=;/);
+  assert.doesNotMatch(logout.headers.get("set-cookie")!, /Secure/);
+});
+
 test("returns the lockout contract after five failures", async () => {
   const { app, origin } = serverWithAuthApi();
   const username = await seedUser(`lock${Date.now()}`, "right password 1");

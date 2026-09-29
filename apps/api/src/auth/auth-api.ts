@@ -3,20 +3,13 @@ import { Hono, type Context } from "hono";
 import { deleteCookie, setCookie } from "hono/cookie";
 import type { AuthSessionResponse, AuthSessionUser, UserSessionSummary } from "@csb/shared";
 import type { ServerSettings } from "../deployment-settings.js";
-import { SESSION_COOKIE } from "../server-security.js";
+import { sessionCookieDeleteOptions, sessionCookieName, sessionCookieOptions } from "../session-cookie.js";
 import { acceptInvite, changePassword, login, logout } from "./auth-service.js";
 import { listUserGrants } from "./grant-store.js";
 import { peekInvite } from "./invite-store.js";
 import { csrfTokenOf, principalOf } from "./principal.js";
 import { getSessionById, listUserSessions, revokeSession, revokeUserSessions } from "./session-store.js";
 import { getUser, updateUser } from "./user-store.js";
-
-/**
- * `secure` and `path: "/"` are what the `__Host-` prefix demands, and no
- * `domain` may be set; `maxAge` matches the session's own absolute lifetime so
- * the browser drops a cookie the server would refuse anyway.
- */
-const COOKIE_OPTIONS = { httpOnly: true, secure: true, sameSite: "Lax", path: "/", maxAge: 7 * 24 * 3600 } as const;
 
 /**
  * The per-IP login limiter is only worth anything if the caller cannot choose
@@ -61,6 +54,10 @@ export function createAuthApi(deps: { settings: ServerSettings; now?: () => Date
   const api = new Hono();
   const server = deps.settings.mode === "server";
   const clock = (): Date => deps.now?.() ?? new Date();
+  // One shape per deployment: an https origin keeps the `__Host-` prefix and
+  // `Secure`, the documented http loopback origin cannot use either.
+  const cookieName = sessionCookieName(deps.settings);
+  const cookieOptions = sessionCookieOptions(deps.settings);
 
   api.post("/auth/login", async (c) => {
     const input = await body(c);
@@ -74,7 +71,7 @@ export function createAuthApi(deps: { settings: ServerSettings; now?: () => Date
     if (result.ok) {
       // A fresh token on every login, so a pre-seeded cookie can never be
       // promoted into an authenticated session.
-      setCookie(c, SESSION_COOKIE, result.token, COOKIE_OPTIONS);
+      setCookie(c, cookieName, result.token, cookieOptions);
       return c.json({ ok: true });
     }
     if (result.error === "account_locked") return c.json({ error: result.error, retryAfterSeconds: result.retryAfterSeconds }, 423);
@@ -88,7 +85,7 @@ export function createAuthApi(deps: { settings: ServerSettings; now?: () => Date
   api.post("/auth/logout", (c) => {
     const principal = principalOf(c);
     if (principal.sessionId) logout(principal.sessionId);
-    deleteCookie(c, SESSION_COOKIE, { path: "/", secure: true });
+    deleteCookie(c, cookieName, sessionCookieDeleteOptions(deps.settings));
     return c.body(null, 204);
   });
 
@@ -133,7 +130,7 @@ export function createAuthApi(deps: { settings: ServerSettings; now?: () => Date
       now: clock(),
     });
     if (!result.ok) return c.json({ error: result.error }, result.error === "invite_invalid" ? 404 : 400);
-    setCookie(c, SESSION_COOKIE, result.token, COOKIE_OPTIONS);
+    setCookie(c, cookieName, result.token, cookieOptions);
     return c.json({ ok: true });
   });
 

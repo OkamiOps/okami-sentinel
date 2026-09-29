@@ -191,7 +191,14 @@ Somente inserção: `actor_user_id` (ou ator `system`), `action`, `target`,
 
 - `POST /api/auth/login` valida usuário e senha e grava o cookie
   `__Host-sentinel_session` (`HttpOnly; Secure; SameSite=Lax; Path=/`). Cada
-  login gera um token novo.
+  login gera um token novo. Quando `CSB_PUBLIC_ORIGIN` usa `http:` — permitido
+  somente em loopback, o fluxo Docker local documentado — o cookie passa a se
+  chamar `sentinel_session` e perde `Secure`: o prefixo `__Host-` só vale com
+  `Secure`, e o navegador nunca devolve um cookie `Secure` por http, de modo que
+  a sessão seria esquecida na requisição seguinte. Origens `https:` mantêm o
+  prefixo e o `Secure`. As duas formas ficam definidas em
+  `apps/api/src/session-cookie.ts`, e um cookie escrito na forma de loopback
+  nunca autentica uma origem segura.
 - `GET /api/auth/session` devolve usuário, permissões efetivas e o token CSRF
   da sessão. Substitui `/security-session`, `/connections/security-session` e
   `/engine-updates/security-session` no modo servidor.

@@ -9,7 +9,7 @@ import { getDb } from "../db.js";
 import type { ServerSettings } from "../deployment-settings.js";
 import { securitySessionToken, validRequestCsrf } from "../security-session.js";
 import { createServerApp } from "../server-app.js";
-import { SESSION_COOKIE } from "../server-security.js";
+import { SECURE_SESSION_COOKIE } from "../session-cookie.js";
 import { csrfTokenOf, LOCAL_PRINCIPAL } from "./principal.js";
 import { createSession } from "./session-store.js";
 import { createUser } from "./user-store.js";
@@ -114,7 +114,7 @@ test("a seeded session's own CSRF token is the only one these mutations accept",
 
   const post = (target: string, csrf: string, body: unknown) => server.request(`${origin}/api${target}`, {
     method: "POST",
-    headers: { Cookie: `${SESSION_COOKIE}=${token}`, Origin: origin, "X-CSRF-Token": csrf, "Content-Type": "application/json" },
+    headers: { Cookie: `${SECURE_SESSION_COOKIE}=${token}`, Origin: origin, "X-CSRF-Token": csrf, "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
 
