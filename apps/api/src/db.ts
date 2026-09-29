@@ -18,6 +18,7 @@ import {
   type SeverityCounts,
 } from "@csb/shared";
 import { ensureAuthSchema } from "./auth/schema.js";
+import { ensureEmailSchema } from "./email/schema.js";
 import { resolveRunRepositoryKey } from "./auth/repository-key.js";
 import { BENCHMARK_DB_PATH, DATA_DIR } from "./config.js";
 import { migrateGuardrailsSchema } from "./guardrails-migrations.js";
@@ -187,6 +188,7 @@ export function getDb(): Database.Database {
   ensureFindingCategoryIndexColumns(db);
   migrateGuardrailsSchema(db);
   ensureAuthSchema(db);
+  ensureEmailSchema(db);
   return db;
 }
 
