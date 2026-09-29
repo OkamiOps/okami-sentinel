@@ -1,6 +1,6 @@
 import type { MiddlewareHandler } from "hono";
 import { publicOrigin, runtimeMode } from "./deployment-settings.js";
-import { validSecurityToken } from "./security-session.js";
+import { validRequestCsrf } from "./security-session.js";
 
 /** The local API also needs CSRF protection: these routes schedule paid scans and write Git state. */
 export function githubIntegrationSecurity(): MiddlewareHandler {
@@ -16,7 +16,7 @@ export function githubIntegrationSecurity(): MiddlewareHandler {
     if (!allowed || ["cross-site", "same-site"].includes(c.req.header("Sec-Fetch-Site") ?? "")) {
       return c.json({ error: "origin_denied" }, 403);
     }
-    if (!["GET", "HEAD", "OPTIONS"].includes(c.req.method) && !validSecurityToken(c.req.header("X-CSRF-Token"))) {
+    if (!["GET", "HEAD", "OPTIONS"].includes(c.req.method) && !validRequestCsrf(c)) {
       return c.json({ error: "csrf_invalid" }, 403);
     }
     await next();

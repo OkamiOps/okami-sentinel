@@ -1,5 +1,5 @@
-import { timingSafeEqual } from "node:crypto";
-import { securitySessionToken } from "./security-session.js";
+import { csrfTokenOf } from "./auth/principal.js";
+import { validRequestCsrf } from "./security-session.js";
 
 import { Hono, type Context } from "hono";
 import type {
@@ -36,7 +36,6 @@ export function createConnectionsApp(
     authFlows: supplied?.authFlows,
     compatibility: supplied?.compatibility,
   };
-  const csrfToken = securitySessionToken;
   const connections = new Hono();
 
   connections.use("*", async (c, next) => {
@@ -44,7 +43,7 @@ export function createConnectionsApp(
     c.header("Cache-Control", "no-store");
   });
 
-  connections.get("/connections/security-session", (c) => c.json({ csrfToken }));
+  connections.get("/connections/security-session", (c) => c.json({ csrfToken: csrfTokenOf(c) }));
   connections.get("/connections", (c) => {
     try {
       return c.json({ connections: deps.service.list() });
@@ -86,7 +85,7 @@ export function createConnectionsApp(
   });
 
   connections.post("/connections/:id/auth/start", async (c) => {
-    if (!hasValidCsrfToken(c.req.header("X-CSRF-Token"), csrfToken)) {
+    if (!validRequestCsrf(c)) {
       return c.json({ error: "csrf_invalid" }, 403);
     }
     try {
@@ -116,7 +115,7 @@ export function createConnectionsApp(
   });
 
   connections.post("/connections/:id/auth/:flowId/cancel", async (c) => {
-    if (!hasValidCsrfToken(c.req.header("X-CSRF-Token"), csrfToken)) {
+    if (!validRequestCsrf(c)) {
       return c.json({ error: "csrf_invalid" }, 403);
     }
     try {
@@ -132,7 +131,7 @@ export function createConnectionsApp(
   });
 
   connections.post("/connections/:id/auth/disconnect", async (c) => {
-    if (!hasValidCsrfToken(c.req.header("X-CSRF-Token"), csrfToken)) {
+    if (!validRequestCsrf(c)) {
       return c.json({ error: "csrf_invalid" }, 403);
     }
     try {
@@ -147,7 +146,7 @@ export function createConnectionsApp(
   });
 
   connections.post("/connections/:id/inspect", async (c) => {
-    if (!hasValidCsrfToken(c.req.header("X-CSRF-Token"), csrfToken)) {
+    if (!validRequestCsrf(c)) {
       return c.json({ error: "csrf_invalid" }, 403);
     }
     try {
@@ -160,7 +159,7 @@ export function createConnectionsApp(
   });
 
   connections.post("/connections/:id/models/refresh", async (c) => {
-    if (!hasValidCsrfToken(c.req.header("X-CSRF-Token"), csrfToken)) {
+    if (!validRequestCsrf(c)) {
       return c.json({ error: "csrf_invalid" }, 403);
     }
     try {
@@ -173,7 +172,7 @@ export function createConnectionsApp(
   });
 
   connections.post("/connections/:id/probe", async (c) => {
-    if (!hasValidCsrfToken(c.req.header("X-CSRF-Token"), csrfToken)) {
+    if (!validRequestCsrf(c)) {
       return c.json({ error: "csrf_invalid" }, 403);
     }
     try {
@@ -193,7 +192,7 @@ export function createConnectionsApp(
   });
 
   connections.post("/connections", async (c) => {
-    if (!hasValidCsrfToken(c.req.header("X-CSRF-Token"), csrfToken)) {
+    if (!validRequestCsrf(c)) {
       return c.json({ error: "csrf_invalid" }, 403);
     }
     try {
@@ -207,7 +206,7 @@ export function createConnectionsApp(
   });
 
   connections.patch("/connections/:id", async (c) => {
-    if (!hasValidCsrfToken(c.req.header("X-CSRF-Token"), csrfToken)) {
+    if (!validRequestCsrf(c)) {
       return c.json({ error: "csrf_invalid" }, 403);
     }
     try {
@@ -223,7 +222,7 @@ export function createConnectionsApp(
   });
 
   connections.delete("/connections/:id", async (c) => {
-    if (!hasValidCsrfToken(c.req.header("X-CSRF-Token"), csrfToken)) {
+    if (!validRequestCsrf(c)) {
       return c.json({ error: "csrf_invalid" }, 403);
     }
     try {
@@ -247,14 +246,6 @@ function connectionId(value: string): string {
   } catch {
     return "";
   }
-}
-
-function hasValidCsrfToken(value: string | undefined, token: string): boolean {
-  if (value === undefined) return false;
-  const supplied = Buffer.from(value);
-  const expected = Buffer.from(token);
-  if (supplied.byteLength !== expected.byteLength) return false;
-  return timingSafeEqual(supplied, expected);
 }
 
 function compatibilityRequest(value: ResolveScanCompatibilityRequest): ResolveScanCompatibilityRequest {

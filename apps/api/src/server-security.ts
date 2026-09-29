@@ -1,5 +1,7 @@
-import { createHash, timingSafeEqual } from "node:crypto";
 import type { MiddlewareHandler } from "hono";
+import { getCookie } from "hono/cookie";
+import { principalForSession } from "./auth/auth-service.js";
+import { resolveSession } from "./auth/session-store.js";
 import type { ServerSettings } from "./deployment-settings.js";
 import { validSecurityToken } from "./security-session.js";
 
@@ -9,10 +11,20 @@ const LOCAL_FRONTEND_ORIGINS = new Set([
   "http://localhost:5173",
 ]);
 
+/**
+ * `__Host-` keeps the cookie pinned to this exact origin: no subdomain can set
+ * or read it, and it is only ever sent over HTTPS from the registrable path.
+ */
+export const SESSION_COOKIE = "__Host-sentinel_session";
+
+/**
+ * Reachable before a session exists: the login form posts here, and an invited
+ * user follows a mailed link to set their first password. Everything else under
+ * `/api/` needs a session, including `/api/auth/session` itself.
+ */
+const PUBLIC_API = [/^\/api\/auth\/login$/, /^\/api\/auth\/invites\/[A-Za-z0-9_-]{43}$/];
+
 export function serverSecurity(settings: ServerSettings): MiddlewareHandler {
-  const expected = createHash("sha256").update(`${settings.username}:${settings.password}`).digest();
-  let failedAttempts = 0;
-  let windowStart = Date.now();
   return async (c, next) => {
     if (settings.mode === "local") return localRequestSecurity(c, next);
     c.header("X-Content-Type-Options", "nosniff");
@@ -20,24 +32,28 @@ export function serverSecurity(settings: ServerSettings): MiddlewareHandler {
     c.header("Cache-Control", "no-store");
     if ((c.req.path === "/healthz" || c.req.path === "/readyz") && ["GET", "HEAD"].includes(c.req.method)) return next();
     if (new URL(c.req.url).host !== new URL(settings.origin!).host) return c.json({ error: "origin_denied" }, 403);
-    const header = c.req.header("Authorization") ?? "";
-    const encoded = /^Basic ([A-Za-z0-9+/]+={0,2})$/i.exec(header)?.[1];
-    const supplied = encoded && encoded.length <= 8192 ? Buffer.from(encoded, "base64") : Buffer.alloc(0);
-    const actual = createHash("sha256").update(supplied).digest();
-    if (!timingSafeEqual(actual, expected)) {
-      if (Date.now() - windowStart > 60_000) { windowStart = Date.now(); failedAttempts = 0; }
-      if (++failedAttempts > 30) { c.header("Retry-After", "60"); return c.json({ error: "authentication_rate_limited" }, 429); }
-      c.header("WWW-Authenticate", 'Basic realm="Sentinel", charset="UTF-8"');
-      return c.json({ error: "authentication_required" }, 401);
-    }
+    // The SPA shell and its assets carry no data of their own; /login has to
+    // render for a visitor who does not hold a session yet.
+    if (!c.req.path.startsWith("/api/")) return next();
     const mutation = !["GET", "HEAD", "OPTIONS"].includes(c.req.method);
     const origin = c.req.header("Origin");
     const callback = c.req.method === "GET" && c.req.path === "/api/guardrails/github-app/manifest/callback";
     if (!callback && ((origin && origin !== settings.origin) ||
-        (c.req.path.startsWith("/api/") && ["cross-site", "same-site"].includes(c.req.header("Sec-Fetch-Site") ?? "")))) {
+        ["cross-site", "same-site"].includes(c.req.header("Sec-Fetch-Site") ?? ""))) {
       return c.json({ error: "origin_denied" }, 403);
     }
-    if (mutation && (origin !== settings.origin || !validSecurityToken(c.req.header("X-CSRF-Token")))) {
+    if (PUBLIC_API.some((pattern) => pattern.test(c.req.path))) {
+      // No session means no CSRF token to compare, so an exact Origin match is
+      // the only defence these mutations have against a cross-site form post.
+      if (mutation && origin !== settings.origin) return c.json({ error: "origin_denied" }, 403);
+      return next();
+    }
+    const session = resolveSession(getCookie(c, SESSION_COOKIE) ?? "");
+    const principal = session ? principalForSession(session) : null;
+    if (!session || !principal) return c.json({ error: "authentication_required" }, 401);
+    c.set("principal" as never, principal as never);
+    c.set("csrfToken" as never, session.csrfToken as never);
+    if (mutation && (origin !== settings.origin || !validSecurityToken(c.req.header("X-CSRF-Token"), session.csrfToken))) {
       return c.json({ error: "csrf_invalid" }, 403);
     }
     await next();
