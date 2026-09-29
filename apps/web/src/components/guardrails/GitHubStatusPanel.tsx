@@ -9,6 +9,7 @@ import { githubBranchesMessages } from "../../i18n/github-branches";
 import { useScopedI18n } from "../../i18n/scoped";
 import { Checkbox } from "@/components/ui/checkbox";
 import { cx } from "../ui";
+import { useAuth } from "../../auth/AuthProvider";
 import { useI18n } from "../../i18n";
 import type { GitHubPermissionRecovery } from "../../lib/github-app-permission-recovery";
 
@@ -38,6 +39,9 @@ export function GitHubStatusPanel({
   onSyncBaseline: () => Promise<void>;
 }) {
   const { t } = useI18n();
+  const { can } = useAuth();
+  const canSyncBaseline = can("operator", repository.repositoryKey);
+  const canConfigureWorkflow = can("maintainer", repository.repositoryKey);
   const { t: tb } = useScopedI18n(githubBranchesMessages);
   const [branchInput, setBranchInput] = useState(actionsStatus?.triggers?.branches?.join(", ") ?? "");
   const branches = branchInput.split(",").map((value) => value.trim()).filter(Boolean);
@@ -140,7 +144,7 @@ export function GitHubStatusPanel({
                 <p id="actions-branches-hint" className="text-xs text-muted-foreground">{tb("hint")}</p>
                 {!branchesValid && <p role="alert" className="text-xs text-destructive">{tb("invalid")}</p>}
               </div>
-              <Button className="mt-4 min-h-11 w-full" disabled={busy || !remoteReady || !branchesValid} onClick={() => void onConfigureWorkflow({ ...triggers, branches })}><Sparkles aria-hidden size={14} />{workflowPermissionBlocked ? t("guardrails.verifyAndConfigure") : actionsReady ? t("guardrails.updateAutomation") : t("guardrails.configureAutomatically")}</Button>
+              {canConfigureWorkflow && <Button className="mt-4 min-h-11 w-full" disabled={busy || !remoteReady || !branchesValid} onClick={() => void onConfigureWorkflow({ ...triggers, branches })}><Sparkles aria-hidden size={14} />{workflowPermissionBlocked ? t("guardrails.verifyAndConfigure") : actionsReady ? t("guardrails.updateAutomation") : t("guardrails.configureAutomatically")}</Button>}
               <p className="mt-2 text-[10px] leading-4 text-muted-foreground">{t("guardrails.configureAutomaticallyDetail")}</p>
               <div className="mt-4 grid gap-2 sm:grid-cols-2">
                 <Button variant="outline" className="min-h-11" disabled={!callerWorkflow} onClick={() => void copyCaller()}><Clipboard aria-hidden size={14} />{copied ? t("guardrails.copied") : t("guardrails.copyYaml")}</Button>
@@ -152,7 +156,7 @@ export function GitHubStatusPanel({
               <div className="bench-label">BASELINE ARTIFACT</div>
               <p className="mt-2 text-xs leading-5 text-muted-foreground">{status.baseline.ready ? t("guardrails.baselineAuthorityReady") : status.baseline.message}</p>
               {baselineError && <p className="mt-4 break-words border border-destructive/40 bg-destructive/[.04] p-3 text-xs leading-5 text-destructive">{baselineError}</p>}
-              <Button className="mt-4 min-h-11 w-full" disabled={busy || !remoteReady || (repository.defaultExecutor === "github-actions" && !actionsReady)} onClick={() => void onSyncBaseline()}><RotateCw aria-hidden size={14} />{t("guardrails.syncBaseline")}</Button>
+              {canSyncBaseline && <Button className="mt-4 min-h-11 w-full" disabled={busy || !remoteReady || (repository.defaultExecutor === "github-actions" && !actionsReady)} onClick={() => void onSyncBaseline()}><RotateCw aria-hidden size={14} />{t("guardrails.syncBaseline")}</Button>}
               <p className="mt-3 text-[10px] leading-4 text-muted-foreground">{t("guardrails.baselineArtifactHint")}</p>
             </div>
           </div>

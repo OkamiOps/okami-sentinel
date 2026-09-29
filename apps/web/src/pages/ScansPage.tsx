@@ -9,6 +9,7 @@ import { ScanIdentityBadges } from "../components/scans/ScanIdentityBadges";
 import { AlertBanner, EmptyState, Loading, PageHeader, Panel, SeverityStrip, StatusBadge } from "../components/ui";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useAuth } from "../auth/AuthProvider";
 import { formatApiError } from "../lib/http";
 import { formatDate, formatScanUsd, formatUsd, shortId } from "../format";
 import { useI18n } from "../i18n";
@@ -21,6 +22,7 @@ type ScanStatusFilter = "active" | "running" | "completed" | "failed" | "cancell
 
 export function ScansPage() {
   const { t } = useI18n();
+  const { isAdmin } = useAuth();
   const [result, setResult] = useState<ScanListResponse>({ scans: [], total: 0, limit: PAGE_SIZE, offset: 0, summary: emptySummary });
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<ScanStatusFilter>("active");
@@ -84,7 +86,7 @@ export function ScansPage() {
   }
 
   return <div>
-    <PageHeader code="02 / RUN LEDGER" title={t("scans.title")} description={t("scans.description")} actions={<Button asChild size="sm"><Link to="/scans/new"><HugeiconsIcon icon={PlusSignIcon} size={13} />{t("scans.new")}</Link></Button>} />
+    <PageHeader code="02 / RUN LEDGER" title={t("scans.title")} description={t("scans.description")} actions={isAdmin && <Button asChild size="sm"><Link to="/scans/new"><HugeiconsIcon icon={PlusSignIcon} size={13} />{t("scans.new")}</Link></Button>} />
     {error && <AlertBanner tone={scans.length ? "warning" : "error"}><div className="flex flex-wrap items-center justify-between gap-3"><span>{scans.length && lastUpdated ? `${error} · ${t("scans.stale", { date: formatDate(lastUpdated) })}` : error}</span><Button type="button" variant="outline" size="sm" onClick={() => void load()}>{t("common.retry")}</Button></div></AlertBanner>}
     <div className="bench-panel mb-4 grid sm:grid-cols-[minmax(0,1fr)_auto]">
       <label className="group flex h-11 items-center gap-3 border-b bg-background px-3 shadow-[inset_2px_0_0_transparent] transition-[border-color,background-color,box-shadow] focus-within:bg-primary/[.035] focus-within:shadow-[inset_2px_0_0_var(--primary)]"><HugeiconsIcon icon={Search01Icon} size={14} className="text-muted-foreground transition-colors group-focus-within:text-primary" /><Input aria-label={t("scans.filter")} value={query} onChange={(event) => search(event.target.value)} placeholder={t("scans.filter")} className="h-full border-0 bg-transparent px-0 text-xs shadow-none hover:bg-transparent focus-visible:bg-transparent focus-visible:shadow-none" /></label>

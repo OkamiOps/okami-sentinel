@@ -12,7 +12,7 @@ import { ArrowRight, GitBranch, HardDrive, Plus, Search, ShieldAlert, ShieldChec
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { api, type EnrollGuardrailRepositoryRequest, type GuardrailActionsStatus } from "../api";
-import { revalidateSession } from "../auth/AuthProvider";
+import { revalidateSession, useAuth } from "../auth/AuthProvider";
 import {
   DecisionGraph,
   DeleteGateButton,
@@ -63,6 +63,7 @@ type RepositoryReadiness = {
 
 export function GuardrailsPage() {
   const { t, locale } = useI18n();
+  const { isAdmin, can } = useAuth();
   const { t: tr } = useScopedI18n(repositoryPickerMessages);
   const { gateId = null } = useParams();
   const [params, setParams] = useSearchParams();
@@ -290,8 +291,8 @@ export function GuardrailsPage() {
             <Button asChild variant="configuration" className="min-h-11">
               <Link to={setupRepositoryKey ? `/guardrails/setup?repository=${encodeURIComponent(setupRepositoryKey)}` : "/guardrails/setup"}><GitBranch aria-hidden size={14} />{t("guardrails.setup")}</Link>
             </Button>
-            {gateId && <Button className="min-h-11" disabled={!setupRepositoryKey || selectedGateActive} onClick={() => { setRunRepositoryKey(setupRepositoryKey); setRunOpen(true); }}><ArrowRight aria-hidden size={14} />{t("guardrails.scanNow")}</Button>}
-            {selectedGateActive && (
+            {gateId && isAdmin && <Button className="min-h-11" disabled={!setupRepositoryKey || selectedGateActive} onClick={() => { setRunRepositoryKey(setupRepositoryKey); setRunOpen(true); }}><ArrowRight aria-hidden size={14} />{t("guardrails.scanNow")}</Button>}
+            {selectedGateActive && can("operator", setupRepositoryKey) && (
               <Button variant="destructive" className="min-h-11" onClick={() => void cancelSelected()} disabled={busy}>
                 <Square aria-hidden size={13} />{t("guardrails.cancel")}
               </Button>
@@ -299,15 +300,17 @@ export function GuardrailsPage() {
             {readyState.selectedGate && !selectedGateActive && (
               <DeleteGateButton gate={readyState.selectedGate} onDeleted={() => handleGateDeleted(readyState.selectedGate!.id)} />
             )}
-            <EnrollmentSheet open={enrollOpen} onOpenChange={setEnrollOpen} busy={busy} onEnroll={enroll} />
-            <GuardrailPreflightSheet
-              repositories={readyState.repositories}
-              initialRepositoryKey={runRepositoryKey ?? undefined}
-              open={runOpen}
-              onOpenChange={setRunOpen}
-              onError={setActionError}
-              onStarted={(gate) => navigate(guardrailHref(gate.id))}
-            />
+            {isAdmin && <EnrollmentSheet open={enrollOpen} onOpenChange={setEnrollOpen} busy={busy} onEnroll={enroll} />}
+            {isAdmin && (
+              <GuardrailPreflightSheet
+                repositories={readyState.repositories}
+                initialRepositoryKey={runRepositoryKey ?? undefined}
+                open={runOpen}
+                onOpenChange={setRunOpen}
+                onError={setActionError}
+                onStarted={(gate) => navigate(guardrailHref(gate.id))}
+              />
+            )}
           </>
         )}
       />
@@ -414,6 +417,7 @@ function gateFailureMessage(code: string, t: ReturnType<typeof useI18n>["t"]): s
 
 function GuardrailLaunchpad({ repositories, readiness, gates, onRun, onOpenGate }: { repositories: readonly GuardrailRepository[]; readiness: Readonly<Record<string, RepositoryReadiness>>; gates: readonly GateRun[]; onRun: (repositoryKey: string) => void; onOpenGate: (gate: GateRun) => void }) {
   const { t, locale } = useI18n();
+  const { isAdmin } = useAuth();
   const [selectedKey, setSelectedKey] = useState(repositories[0]?.repositoryKey ?? "");
   const [selectedGateId, setSelectedGateId] = useState<string | null>(null);
   const [projectQuery, setProjectQuery] = useState("");
@@ -472,7 +476,7 @@ function GuardrailLaunchpad({ repositories, readiness, gates, onRun, onOpenGate 
 
       <main className="min-w-0">
         {repository ? <>
-          <header className="grid gap-5 border-b p-5 md:grid-cols-[minmax(0,1fr)_auto] md:p-7"><div className="min-w-0"><div className={cx("flex items-center gap-2 bench-label", scanReady ? "text-chart-2" : "text-destructive")}>{scanReady ? <ShieldCheck aria-hidden size={14} /> : <ShieldAlert aria-hidden size={14} />}{scanReady ? t("guardrails.readyToProtect") : t("guardrails.actionRequired")}</div><h2 className="mt-3 break-words font-heading text-2xl font-semibold">{repository.displayName}</h2><p className="mt-2 font-mono text-[8px] uppercase text-muted-foreground">{repository.source} · {repository.defaultBranch} · {repository.defaultExecutor}</p></div><div className="flex gap-2 md:flex-col"><Button asChild variant="configuration" size="sm"><Link to={setupHref}><Workflow aria-hidden size={13} />{t("guardrails.setup")}</Link></Button><Button size="sm" disabled={!scanReady} onClick={() => onRun(repository.repositoryKey)}><ArrowRight aria-hidden size={13} />{t("guardrails.scanNow")}</Button></div></header>
+          <header className="grid gap-5 border-b p-5 md:grid-cols-[minmax(0,1fr)_auto] md:p-7"><div className="min-w-0"><div className={cx("flex items-center gap-2 bench-label", scanReady ? "text-chart-2" : "text-destructive")}>{scanReady ? <ShieldCheck aria-hidden size={14} /> : <ShieldAlert aria-hidden size={14} />}{scanReady ? t("guardrails.readyToProtect") : t("guardrails.actionRequired")}</div><h2 className="mt-3 break-words font-heading text-2xl font-semibold">{repository.displayName}</h2><p className="mt-2 font-mono text-[8px] uppercase text-muted-foreground">{repository.source} · {repository.defaultBranch} · {repository.defaultExecutor}</p></div><div className="flex gap-2 md:flex-col"><Button asChild variant="configuration" size="sm"><Link to={setupHref}><Workflow aria-hidden size={13} />{t("guardrails.setup")}</Link></Button>{isAdmin && <Button size="sm" disabled={!scanReady} onClick={() => onRun(repository.repositoryKey)}><ArrowRight aria-hidden size={13} />{t("guardrails.scanNow")}</Button>}</div></header>
           <div className="grid gap-px border-b bg-border sm:grid-cols-3"><SignalFact label={t("guardrails.projectAuthority")} value={repository.source === "github" ? "GitHub App" : "Local root"} primary={repoReadiness?.authorityReady} danger={!repoReadiness?.authorityReady} /><SignalFact label={t("guardrails.projectBaseline")} value={repoReadiness?.baselineReady ? t("guardrails.baselineCandidate") : t("guardrails.baselineUnchecked")} primary={repoReadiness?.baselineReady} danger={!repoReadiness?.baselineReady} /><SignalFact label={t("guardrails.projectExecution")} value={repository.defaultExecutor} primary={scanReady} danger={!scanReady} /></div>
           {selectedGate ? <div className="p-5 md:p-7"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-3"><GateOutcomeBadge outcome={selectedGate.outcome} status={selectedGate.status} protectedBaseline={isProtectedBranchBaselineRun(selectedGate)} /><span className="font-mono text-[8px] uppercase text-muted-foreground">{formatProjectDate(selectedGate.startedAt, locale)} · {formatProjectTime(selectedGate.startedAt, locale)}</span></div><span className="font-mono text-[8px] uppercase text-muted-foreground">{selectedGate.id}</span></div><div className="mt-7"><div className="bench-label">{t("guardrails.projectTarget")}</div><h3 className="mt-3 break-words font-heading text-3xl font-semibold">{selectedGate.pullRequestNumber ? `PR #${selectedGate.pullRequestNumber}` : selectedGate.headRef}</h3><p className="mt-2 break-all font-mono text-[9px] text-muted-foreground">{selectedGate.baseRef} → {selectedGate.headRef}</p></div><RunInsightPanel gate={selectedGate} scan={linkedScan} scanState={linkedScanState} scanError={linkedScanError} onRetry={() => selectedGate.scanId && void loadLinkedScan(selectedGate.scanId)} t={t} /><div className="mt-7 grid gap-px bg-border sm:grid-cols-2"><RunFact label={t("guardrails.factTargetSha")} value={selectedGate.resolvedHeadSha ?? "—"} /><RunFact label={t("guardrails.factPolicy")} value={selectedGate.policySha ?? "—"} /><RunFact label={t("guardrails.factBaseline")} value={selectedGate.baselineCommit ?? t("guardrails.noBaseline")} /><RunFact label={t("guardrails.factPublication")} value={selectedGate.publishStatus} /></div><Button className="mt-7 w-full" onClick={() => onOpenGate(selectedGate)}>{t("guardrails.openGate")}<ArrowRight aria-hidden size={14} /></Button></div> : <div className="p-8"><ProjectChartEmpty title={t("guardrails.projectNoGates")} detail={t("guardrails.projectNoGatesDescription")} /></div>}
         </> : <div className="p-8"><EmptyState title={t("guardrails.noRepository")} description={t("guardrails.noRepositoryDescription")} /></div>}

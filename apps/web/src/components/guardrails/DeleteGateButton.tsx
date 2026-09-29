@@ -3,6 +3,7 @@ import type { GateRun } from "@csb/shared";
 import { Trash2 } from "lucide-react";
 
 import { api } from "../../api";
+import { useAuth } from "../../auth/AuthProvider";
 import { useI18n } from "../../i18n";
 import { Button } from "@/components/ui/button";
 import {
@@ -16,12 +17,13 @@ import {
 
 export function DeleteGateButton({ gate, onDeleted }: { gate: GateRun; onDeleted: () => void | Promise<void> }) {
   const { t } = useI18n();
+  const { can } = useAuth();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const terminal = gate.status === "completed" || gate.status === "cancelled" || gate.status === "error";
 
-  if (!terminal) return null;
+  if (!terminal || !can("maintainer", gate.repositoryKey)) return null;
 
   async function remove() {
     setBusy(true);

@@ -44,7 +44,11 @@ function NavStrip({ onNavigate }: { onNavigate?: () => void }) {
   const { pathname } = useLocation();
   const { t } = useI18n();
   const { isAdmin, status } = useAuth();
-  return <nav className="flex flex-col md:flex-row md:items-stretch">{nav.map(([to, label], index) => {
+  // Starting a scan is an administration action in this phase (Task 16/18);
+  // a member's nav never offers a tab that only redirects them away.
+  const member = status === "signed-in" && !isAdmin;
+  const visibleNav = member ? nav.filter(([to]) => to !== "/scans/new") : nav;
+  return <nav className="flex flex-col md:flex-row md:items-stretch">{visibleNav.map(([to, label], index) => {
     const isActive = to === "/scans" ? pathname === "/scans" || (pathname.startsWith("/scans/") && pathname !== "/scans/new") : to === "/guardrails" ? pathname === "/guardrails" || pathname.startsWith("/guardrails/") : to === "/settings" ? pathname === "/settings" || pathname.startsWith("/settings/") : pathname === to;
     // System readiness is an administration page; a member's only settings
     // destination is their own account, so the tab points straight at it. The
@@ -170,7 +174,7 @@ export function App() {
         <Route path="/" element={<DashboardPage />} />
         <Route path="/activity" element={<ActivityPage />} />
         <Route path="/scans" element={<ScansPage />} />
-        <Route path="/scans/new" element={<NewScanPage />} />
+        <Route path="/scans/new" element={<AdminOnly to="/scans"><NewScanPage /></AdminOnly>} />
         <Route path="/guardrails" element={<GuardrailsPage />} />
         <Route path="/guardrails/setup" element={<GuardrailSetupPage />} />
         <Route path="/guardrails/repositories/:repositoryKey/policy" element={<GuardrailPolicyPage />} />
@@ -199,9 +203,9 @@ export function App() {
  * leaves `isAdmin` false without proving anything, and bouncing an admin during
  * an outage would strand them on a page that cannot read a session either.
  */
-function AdminOnly({ children }: { children: ReactNode }) {
+function AdminOnly({ children, to = "/settings/account" }: { children: ReactNode; to?: string }) {
   const { isAdmin, status } = useAuth();
-  return status === "signed-in" && !isAdmin ? <Navigate to="/settings/account" replace /> : <>{children}</>;
+  return status === "signed-in" && !isAdmin ? <Navigate to={to} replace /> : <>{children}</>;
 }
 
 /**

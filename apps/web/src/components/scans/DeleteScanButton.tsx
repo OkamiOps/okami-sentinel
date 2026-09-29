@@ -12,6 +12,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { useAuth } from "../../auth/AuthProvider";
 import { useI18n } from "../../i18n";
 import { formatApiError } from "../../lib/http";
 
@@ -25,12 +26,15 @@ export function DeleteScanButton({
   onDeleted: () => void | Promise<void>;
 }) {
   const { t } = useI18n();
+  const { can } = useAuth();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const removable = isTerminalScanStatus(scan.status);
 
-  if (!removable) return null;
+  // Deleting a scan is destructive and irreversible; only a maintainer of the
+  // owning repository (or an administrator) is offered the control at all.
+  if (!removable || !can("maintainer", scan.repositoryKey)) return null;
 
   async function remove() {
     setBusy(true);

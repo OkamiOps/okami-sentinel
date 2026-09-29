@@ -17,6 +17,7 @@ import type {
 } from "@csb/shared";
 
 import { api, type EnrollGuardrailRepositoryRequest } from "../api";
+import { useAuth } from "../auth/AuthProvider";
 import { GitHubBranchPicker } from "../components/guardrails/GitHubBranchPicker";
 import { RepositoryEnrollmentForm } from "../components/guardrails";
 import { AlertBanner, EmptyState, Loading, PageHeader, Panel, Readout, cx } from "../components/ui";
@@ -66,6 +67,7 @@ function safeExternalUrl(value: string | null): string | null {
 export function GitHubMonitorPage() {
   const { t } = useScopedI18n(githubMonitorMessages);
   const { t: globalT } = useI18n();
+  const { isAdmin, can } = useAuth();
   const [repositories, setRepositories] = useState<GuardrailRepository[]>([]);
   const [connections, setConnections] = useState<ProviderConnection[]>([]);
   const [models, setModels] = useState<ProviderModel[]>([]);
@@ -284,7 +286,7 @@ export function GitHubMonitorPage() {
       code="06 / GITHUB MONITOR"
       title={t("githubMonitor.title")}
       description={t("githubMonitor.description")}
-      actions={<Button variant="outline" size="sm" disabled={polling || loading || !selectedRepository} onClick={() => void poll()}>
+      actions={can("operator", selectedRepository?.repositoryKey) && <Button variant="outline" size="sm" disabled={polling || loading || !selectedRepository} onClick={() => void poll()}>
         <RefreshCw aria-hidden className={cx("size-3", polling && "animate-spin motion-reduce:animate-none")} />
         {polling ? t("githubMonitor.refreshing") : t("githubMonitor.refresh")}
         {selectedRepositoryLabel && <span className="font-mono text-[10px]">{selectedRepositoryLabel}</span>}
@@ -304,9 +306,9 @@ export function GitHubMonitorPage() {
         </div>
       </section>
 
-      <Panel className="mt-4" label={t("githubMonitor.connection")} title={t("githubMonitor.connectionTitle")} aside={<Button type="button" size="sm" variant="configuration" onClick={() => setEnrollmentOpen((current) => !current)}><GitBranch aria-hidden className="size-3" />{t("githubMonitor.configureGithub")}</Button>}>
+      <Panel className="mt-4" label={t("githubMonitor.connection")} title={t("githubMonitor.connectionTitle")} aside={isAdmin && <Button type="button" size="sm" variant="configuration" onClick={() => setEnrollmentOpen((current) => !current)}><GitBranch aria-hidden className="size-3" />{t("githubMonitor.configureGithub")}</Button>}>
         <p className="border-b px-4 py-3 text-xs leading-relaxed text-muted-foreground">{t("githubMonitor.connectionDescription")}</p>
-        {enrollmentOpen && <div className="border-b"><RepositoryEnrollmentForm active={enrollmentOpen} busy={saving} onEnroll={enroll} /></div>}
+        {isAdmin && enrollmentOpen && <div className="border-b"><RepositoryEnrollmentForm active={enrollmentOpen} busy={saving} onEnroll={enroll} /></div>}
         {remoteRepositories.length ? <div className="grid gap-3 p-4 lg:grid-cols-[minmax(14rem,.65fr)_minmax(0,1fr)] lg:items-end">
           <Field label={t("githubMonitor.repository")} htmlFor="github-monitor-repository">
             <Select value={selectedRepositoryKey} onValueChange={chooseRepository}>
@@ -403,7 +405,7 @@ export function GitHubMonitorPage() {
             <Panel label={t("githubMonitor.automation")} title={selectedRule?.enabled ? t("githubMonitor.active") : t("githubMonitor.inactive")}>
               <div className="p-4">
                 {formError && <AlertBanner>{formError}</AlertBanner>}
-                <div className="grid gap-2">
+                {isAdmin ? <div className="grid gap-2">
                   {selectedRule?.enabled ? <>
                     <Button className="min-h-11 w-full" disabled={saving || !canActivate} onClick={() => void save(true)}>{saving ? t("githubMonitor.saving") : t("githubMonitor.update")}</Button>
                     <Button variant="outline" className="min-h-11 w-full" disabled={saving} onClick={() => void deactivate()}>{t("githubMonitor.deactivate")}</Button>
@@ -411,7 +413,7 @@ export function GitHubMonitorPage() {
                     <Button variant="outline" className="min-h-11 w-full" disabled={saving || !branchesValid} onClick={() => void save(false)}>{saving ? t("githubMonitor.saving") : t("githubMonitor.follow")}</Button>
                     <Button className="min-h-11 w-full" disabled={saving || !canActivate} onClick={() => void save(true)}>{saving ? t("githubMonitor.saving") : t("githubMonitor.activate")}</Button>
                   </>}
-                </div>
+                </div> : null}
                 <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">{t("githubMonitor.activationHint")}</p>
               </div>
             </Panel>
@@ -461,6 +463,8 @@ function CheckoutPanel({ checkout, checkoutReason, runtimeMode, busy, localRepos
   onSelectCheckout: (repositoryKey: string) => void;
   onRun: (action: CheckoutAction) => void;
 }) {
+  const { can } = useAuth();
+  const canCheckout = can("operator", selectedCheckoutKey || null);
   const serverReadOnly = runtimeMode === "server" || checkout?.writable === false;
   const unavailable = checkout === null && checkoutReason !== null;
   return <Panel label={t("githubMonitor.checkout")} title={t("githubMonitor.checkoutTitle")}>
@@ -470,10 +474,10 @@ function CheckoutPanel({ checkout, checkoutReason, runtimeMode, busy, localRepos
     {unavailable && <div className="mx-4 mb-4"><AlertBanner tone="info">{t("githubMonitor.checkout.unavailable")}</AlertBanner></div>}
     {checkout && <div className="border-t">
       <div className="grid grid-cols-2 gap-px bg-border sm:grid-cols-4"><CheckoutReadout label={t("githubMonitor.checkout.branch")} value={checkout.branch ?? "—"} /><CheckoutReadout label={t("githubMonitor.checkout.head")} value={checkout.head ? shortId(checkout.head) : "—"} /><CheckoutReadout label="WORKTREE" value={checkout.dirty ? t("githubMonitor.checkout.dirty") : t("githubMonitor.checkout.clean")} tone={checkout.dirty ? "risk" : "good"} /><CheckoutReadout label="SYNC" value={checkout.behind === null ? "—" : `${t("githubMonitor.checkout.behind", { count: checkout.behind })} · ${t("githubMonitor.checkout.ahead", { count: checkout.ahead ?? 0 })}`} /></div>
-      <div className="flex flex-wrap gap-2 border-t p-4">
+      {canCheckout && <div className="flex flex-wrap gap-2 border-t p-4">
         <Button variant="outline" size="sm" disabled={!checkout.canFetch || busy !== null} onClick={() => onRun("fetch")}><RotateCw aria-hidden className={cx("size-3", busy === "fetch" && "animate-spin")} />{busy === "fetch" ? t("githubMonitor.checkoutBusy") : t("githubMonitor.fetch")}</Button>
         <Button variant="outline" size="sm" disabled={!checkout.canPull || busy !== null} onClick={() => onRun("pull")}><HardDrive aria-hidden className="size-3" />{busy === "pull" ? t("githubMonitor.checkoutBusy") : t("githubMonitor.pull")}</Button>
-      </div>
+      </div>}
     </div>}
   </Panel>;
 }
