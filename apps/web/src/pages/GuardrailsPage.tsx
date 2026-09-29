@@ -12,6 +12,7 @@ import { ArrowRight, GitBranch, HardDrive, Plus, Search, ShieldAlert, ShieldChec
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { api, type EnrollGuardrailRepositoryRequest, type GuardrailActionsStatus } from "../api";
+import { revalidateSession } from "../auth/AuthProvider";
 import {
   DecisionGraph,
   DeleteGateButton,
@@ -159,6 +160,7 @@ export function GuardrailsPage() {
     if (state.status !== "ready" || !state.selectedGate || !isGateActive(state.selectedGate.status)) return;
     const selectedId = state.selectedGate.id;
     const source = new EventSource(api.gateEventsUrl(selectedId));
+    source.onerror = () => revalidateSession();
     const refreshSelected = () => refreshGate(selectedId);
     for (const name of ["status", "scan", "decision", "done", "error"] as const) {
       source.addEventListener(name, refreshSelected);

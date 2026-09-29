@@ -22,6 +22,7 @@ import { scanCostPresentation, scanTokenUsage } from "../lib/scan-cost";
 import { formatRecoveryProgressText, appendTelemetryEvent, mergeTelemetrySnapshot, telemetrySnapshot } from "../lib/telemetry";
 import { reasoningDeliveryCopy, scanReasoningDelivery } from "../lib/reasoning-delivery";
 import { formatApiError } from "../lib/http";
+import { revalidateSession } from "../auth/AuthProvider";
 import { useI18n, type TranslationKey } from "../i18n";
 
 type View = "evidence" | "telemetry" | "files" | "profile";
@@ -73,7 +74,7 @@ export function ScanDetailPage() {
     void load().then((r) => { if (r) { const requested = new URLSearchParams(window.location.search).get("view"); setView(requested === "files" ? "files" : r.scan.status === "running" ? "telemetry" : "evidence"); } });
     return () => { requestRef.current += 1; };
   }, [load]);
-  useEffect(() => { if (!scan || scan.status !== "running") return; const es = new EventSource(`/api/scans/${id}/events?after=${telemetry.cursor}`); const handler = (event: MessageEvent) => { try { const data = JSON.parse(String(event.data)) as ScanEvent; if (data.message) setTelemetry((old) => appendTelemetryEvent(old, data)); if (data.scan) setScan(data.scan); else if (data.progress) setScan((old) => old ? { ...old, progress: data.progress! } : old); if (data.type === "done") { void load(); es.close(); } } catch { /* malformed event */ } }; ["log", "status", "cost", "progress", "done", "error"].forEach((name) => es.addEventListener(name, handler)); const poll = window.setInterval(() => void load().catch(() => undefined), 4500); return () => { es.close(); window.clearInterval(poll); }; }, [id, scan?.status, load]);
+  useEffect(() => { if (!scan || scan.status !== "running") return; const es = new EventSource(`/api/scans/${id}/events?after=${telemetry.cursor}`); es.onerror = () => revalidateSession(); const handler = (event: MessageEvent) => { try { const data = JSON.parse(String(event.data)) as ScanEvent; if (data.message) setTelemetry((old) => appendTelemetryEvent(old, data)); if (data.scan) setScan(data.scan); else if (data.progress) setScan((old) => old ? { ...old, progress: data.progress! } : old); if (data.type === "done") { void load(); es.close(); } } catch { /* malformed event */ } }; ["log", "status", "cost", "progress", "done", "error"].forEach((name) => es.addEventListener(name, handler)); const poll = window.setInterval(() => void load().catch(() => undefined), 4500); return () => { es.close(); window.clearInterval(poll); }; }, [id, scan?.status, load]);
   useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, [telemetry.lines]);
   const filtered = useMemo(() => findings.filter((f) => (!severity || f.severity === severity) && (!lifecycle || f.lifecycle === lifecycle) && `${f.title} ${f.summary} ${f.primaryPath} ${f.category} ${f.cwe.join(" ")} ${f.lifecycle} ${f.triage.status}`.toLowerCase().includes(query.toLowerCase())), [findings, severity, lifecycle, query]);
   async function openFinding(f: LifecycleFinding, update = true) { try { const r = await api.getFinding(f.sourceScanId, f.findingId); setSelected(r.finding); setSelectedSignal(f); setView("evidence"); if (update) setParams({ f: f.findingId }, { replace: true }); } catch (err) { setError(err); } }
