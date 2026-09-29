@@ -25,10 +25,14 @@ function fillerCount(items: number, columns: number): number {
 export function SettingsSectionNav() {
   const { pathname } = useLocation();
   const { t } = useI18n();
-  const { isAdmin } = useAuth();
+  const { isAdmin, status } = useAuth();
   // A member has no reachable administration section, so the tabs that would
-  // only bounce them back to their own account are not rendered at all.
-  const visible = sections.filter((section) => isAdmin || !section.adminOnly);
+  // only bounce them back to their own account are not rendered at all. An
+  // unverified session proves nothing about the role, and the route gate does
+  // not redirect then either: the tabs must not disappear under an admin
+  // standing on one of them during an outage.
+  const member = status === "signed-in" && !isAdmin;
+  const visible = sections.filter((section) => !member || !section.adminOnly);
   const narrowFillers = fillerCount(visible.length, 2);
   const wideFillers = fillerCount(visible.length, 3);
 
