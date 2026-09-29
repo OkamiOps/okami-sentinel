@@ -22,6 +22,27 @@ test("normalizes usernames so case and spaces cannot create a second account", (
   assert.equal(findUserByUsername("ANA.SILVA ", database)?.displayName, "Ana");
 });
 
+/**
+ * Teams identify people by their work email, so the login name is allowed to be
+ * one: `@` and `+` are accepted, and the address still normalizes to one
+ * account whatever case it was typed in.
+ */
+test("an email address is a usable username and still normalizes to one account", () => {
+  const database = db();
+  assert.equal(normalizeUsername(" Marcos@OkamiOps.com "), "marcos@okamiops.com");
+  assert.equal(normalizeUsername("marcos+alerts@okamiops.com"), "marcos+alerts@okamiops.com");
+  // Spaces and anything outside the character set stay refused.
+  assert.equal(normalizeUsername("marcos @okamiops.com"), null);
+  assert.equal(normalizeUsername("marcos!@okamiops.com"), null);
+  const created = createUser({ username: "Marcos@OkamiOps.com", displayName: "Marcos", isAdmin: false }, database);
+  assert.equal(created.username, "marcos@okamiops.com");
+  assert.throws(
+    () => createUser({ username: "marcos@okamiops.com", displayName: "Impostor", isAdmin: false }, database),
+    /username_taken/,
+  );
+  assert.equal(findUserByUsername(" MARCOS@OKAMIOPS.COM ", database)?.id, created.id);
+});
+
 test("counts only active administrators", () => {
   const database = db();
   const admin = createUser({ username: "root", displayName: "Root", isAdmin: true }, database);

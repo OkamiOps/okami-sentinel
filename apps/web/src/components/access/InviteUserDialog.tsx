@@ -107,7 +107,11 @@ export function InviteUserDialog({ open, onOpenChange, repositories, onCreated }
                 aria-describedby={`${fieldId}-username-hint`} onChange={(event) => setUsername(event.target.value)}
               />
               <p id={`${fieldId}-username-hint`} className="text-[11px] leading-relaxed text-muted-foreground">
-                {preview === null ? t("invite.usernameRule") : t("invite.usernamePreview", { username: `@${preview}` })}
+                {preview === null
+                  // The handle-style prefix reads as a handle, so an address
+                  // that already carries an `@` is previewed as it was typed.
+                  ? t("invite.usernameRule")
+                  : t("invite.usernamePreview", { username: preview.includes("@") ? preview : `@${preview}` })}
               </p>
             </div>
           </div>

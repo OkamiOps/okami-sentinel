@@ -213,6 +213,11 @@ test("admin invites a user with a repository role and copies the link", async ({
   // The server trims and lowercases before it stores; the preview says so
   // before the invite is created, not after it lands under another name.
   await expect(page.getByText("@bruno.lima")).toBeVisible();
+  // A work email is a usable login name, and it is previewed as the address it
+  // is rather than gaining a second `@`.
+  await page.getByLabel("Username").fill(" Marcos@OkamiOps.com ");
+  await expect(page.getByText("Will be created as marcos@okamiops.com", { exact: true })).toBeVisible();
+  await page.getByLabel("Username").fill(" Bruno.Lima ");
   await page.getByRole("combobox", { name: "luna-core" }).click();
   await page.getByRole("option", { name: /Viewer/ }).click();
   await page.getByRole("button", { name: "Create invite" }).click();
