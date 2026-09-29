@@ -84,7 +84,9 @@ test("localizes the system readiness bench in every supported locale", () => {
   ] as const;
   for (const locale of ["pt-BR", "en", "es", "de", "fr"] as const) {
     for (const key of keys) assert.notEqual(translate(locale, key), "");
-    assert.match(translate(locale, "settings.moduleCode"), /^07\.01 \/ /);
+    // Settings is nav module 08; its five sections are 08.01 to 08.05.
+    assert.match(translate(locale, "settings.moduleCode"), /^08\.01 \/ /);
+    assert.match(translate(locale, "connections.moduleCode"), /^08\.02 \/ /);
   }
   for (const locale of ["en", "es", "de", "fr"] as const) {
     assert.notEqual(translate(locale, "settings.refresh"), translate("pt-BR", "settings.refresh"));

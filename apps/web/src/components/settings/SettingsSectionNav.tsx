@@ -36,7 +36,10 @@ export function SettingsSectionNav() {
   const narrowFillers = fillerCount(visible.length, 2);
   const wideFillers = fillerCount(visible.length, 3);
 
-  return <nav aria-label={t("settings.title")} className="mb-4 grid w-full grid-cols-2 gap-px overflow-hidden border border-border bg-border sm:grid-cols-3 lg:flex">
+  // The tabs are the Settings area, not the System page: labelling them with
+  // `settings.title` named them "System readiness", which is the heading of
+  // one single section and duplicates that page's own <h1>.
+  return <nav aria-label={t("nav.system")} className="mb-4 grid w-full grid-cols-2 gap-px overflow-hidden border border-border bg-border sm:grid-cols-3 lg:flex">
     {visible.map((section) => {
       const active = pathname === section.to;
       return <Link key={section.to} to={section.to} aria-current={active ? "page" : undefined} className={cx("group relative flex h-10 min-w-0 items-center justify-center gap-2 bg-background px-3 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:z-10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring lg:shrink-0 lg:justify-start lg:px-4", active && "bg-accent text-chart-1")}><span className="text-[8px] opacity-55">{section.code}</span><span className="truncate">{t(section.label)}</span><span className={cx("absolute inset-x-0 bottom-0 h-px bg-chart-1 transition-transform", active ? "scale-x-100" : "scale-x-0 group-hover:scale-x-100")} /></Link>;
