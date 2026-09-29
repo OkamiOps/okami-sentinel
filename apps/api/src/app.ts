@@ -12,7 +12,8 @@ import { randomUUID } from "node:crypto";
 import { loadServerSettings, runtimeMode, repositoryRoots } from "./deployment-settings.js";
 import { createAuthApi } from "./auth/auth-api.js";
 import { createUsersApi } from "./auth/users-api.js";
-import { csrfTokenOf } from "./auth/principal.js";
+import { csrfTokenOf, inScope, principalOf, scopeOf } from "./auth/principal.js";
+import { createStreamGuard } from "./auth/stream-guard.js";
 import { authorize } from "./auth/route-policy.js";
 import { assertRepositoryAccess } from "./repository-access.js";
 import path from "node:path";
@@ -53,7 +54,7 @@ import { compareScans } from "./compare.js";
 import { getCodexInfo } from "./codex-info.js";
 import { CODEX_SECURITY_STATE_DIR } from "./config.js";
 import { deleteRun, getRun, hideRun, listRuns } from "./db.js";
-import { backfillRunRepositoryKeys } from "./auth/repository-key.js";
+import { backfillRunRepositoryKeys, getRunRepositoryKey } from "./auth/repository-key.js";
 import { listDirectory } from "./fs.js";
 import {
   cancelGate,
@@ -397,8 +398,10 @@ export function createGuardrailsApp(
 ): Hono {
   const guardrails = new Hono();
 
-  guardrails.get("/guardrails/repositories", (c) =>
-    c.json({ repositories: deps.listRepositories() }));
+  guardrails.get("/guardrails/repositories", (c) => {
+    const scope = scopeOf(principalOf(c));
+    return c.json({ repositories: deps.listRepositories().filter((repository) => inScope(scope, repository.repositoryKey)) });
+  });
 
   guardrails.post("/guardrails/repositories", async (c) => {
     try {
@@ -593,8 +596,14 @@ export function createGuardrailsApp(
     }
   });
 
-  guardrails.get("/guardrails/gates", (c) =>
-    c.json({ gates: deps.listGates(c.req.query("repositoryKey") ?? null) }));
+  guardrails.get("/guardrails/gates", (c) => {
+    const scope = scopeOf(principalOf(c));
+    const requested = c.req.query("repositoryKey") ?? null;
+    // The requested key arrives in the query string, where the route policy
+    // cannot resolve it, so an out-of-scope repository simply has no gates.
+    if (requested !== null && !inScope(scope, requested)) return c.json({ gates: [] });
+    return c.json({ gates: deps.listGates(requested).filter((gate) => inScope(scope, gate.repositoryKey)) });
+  });
 
   guardrails.post("/guardrails/gates", async (c) => {
     try {
@@ -625,7 +634,11 @@ export function createGuardrailsApp(
 
   guardrails.get("/guardrails/gates/:gateId/events", (c) => {
     const gateId = c.req.param("gateId");
-    if (!deps.getGate(gateId)) return c.json({ error: "Gate não encontrado" }, 404);
+    const gate = deps.getGate(gateId);
+    if (!gate) return c.json({ error: "Gate não encontrado" }, 404);
+    // An open stream outlives its single authorization, so it is re-checked
+    // while it runs and closes once the caller may no longer see the gate.
+    const allowed = createStreamGuard(c, () => gate.repositoryKey);
     return streamSSE(c, async (stream) => {
       let closed = false;
       let unsubscribe: () => void = () => undefined;
@@ -644,7 +657,10 @@ export function createGuardrailsApp(
         closed = true;
         unsubscribe();
       });
-      while (!closed) await stream.sleep(100);
+      while (!closed) {
+        await stream.sleep(100);
+        if (!allowed()) closed = true;
+      }
       await pending;
       unsubscribe();
     });
@@ -783,12 +799,16 @@ app.route("/", createConnectionsApp({
 }));
 
 app.get("/health", async (c) => {
+  const principal = principalOf(c);
+  const scope = scopeOf(principal);
   const codexInfo = await getCodexInfo();
-  const activeScanIds = getActiveScanIds();
+  // A member learns that its own repositories are busy, never that somebody
+  // else's scan is running, and never where the server keeps its state.
+  const activeScanIds = getActiveScanIds().filter((id) => inScope(scope, getRunRepositoryKey(id)));
   const body: HealthResponse = {
     ok: true,
     api: "codex-security-benchmark",
-    codexStateDir: CODEX_SECURITY_STATE_DIR,
+    ...(principal.isAdmin ? { codexStateDir: CODEX_SECURITY_STATE_DIR } : {}),
     codexInfo,
     activeScanId: activeScanIds[0] ?? null,
     activeScanIds,
@@ -805,9 +825,10 @@ app.post("/ingest", (c) => {
 });
 
 app.get("/metrics/summary", async (c) => {
+  const scope = scopeOf(principalOf(c));
   await refreshOpenRouterPricing();
   // Terminal history is indexed by ingestion; polling only reconciles live work.
-  for (const run of listActiveRuns()) readRunWithEngineRefresh(run.id);
+  for (const run of listActiveRuns(scope)) readRunWithEngineRefresh(run.id);
   const daysValue = c.req.query("days");
   const days = daysValue === "7" || daysValue === "14" || daysValue === "21" || daysValue === "30"
     ? Number(daysValue) as 7 | 14 | 21 | 30
@@ -826,10 +847,12 @@ app.get("/metrics/summary", async (c) => {
     engine,
     repository: c.req.query("repository") ?? null,
     query: c.req.query("query") ?? null,
+    scope,
   }));
 });
 
 app.get("/scans", async (c) => {
+  const scope = scopeOf(principalOf(c));
   let options;
   try { options = parseScanListOptions(c.req.query()); }
   catch { return c.json({ error: "Invalid scan pagination" }, 400); }
@@ -837,21 +860,22 @@ app.get("/scans", async (c) => {
   if (options) {
     // Reconcile running work and the requested page. Ingestion remains the
     // authority for off-page artifacts; no per-directory history sweep here.
-    for (const run of listActiveRuns()) readRunWithEngineRefresh(run.id);
-    for (const run of listRunPage(options, false).scans) readRunWithEngineRefresh(run.id);
-    const page = listRunPage(options);
+    for (const run of listActiveRuns(scope)) readRunWithEngineRefresh(run.id);
+    for (const run of listRunPage(options, false, scope).scans) readRunWithEngineRefresh(run.id);
+    const page = listRunPage(options, true, scope);
     return c.json({ ...page, scans: withProgressMany(page.scans) });
   }
-  return c.json({ scans: withProgressMany(readRunsWithEngineRefresh()) });
+  const scans = readRunsWithEngineRefresh().filter((run) => inScope(scope, run.repositoryKey));
+  return c.json({ scans: withProgressMany(scans) });
 });
 
 app.get("/scans/active", (c) => {
-  const scans = listActiveRuns().map((run) => readRunWithEngineRefresh(run.id) ?? run)
+  const scans = listActiveRuns(scopeOf(principalOf(c))).map((run) => readRunWithEngineRefresh(run.id) ?? run)
     .filter((run) => run.status === "queued" || run.status === "running");
   return c.json({ scans: withProgressMany(scans) });
 });
 
-app.get("/scans/catalog", (c) => c.json(scanCatalog()));
+app.get("/scans/catalog", (c) => c.json(scanCatalog(scopeOf(principalOf(c)))));
 
 app.delete("/scans/:id", (c) => {
   const id = c.req.param("id");
@@ -1025,6 +1049,9 @@ app.get("/scans/:id/events", (c) => {
   const afterCursor = Number.isFinite(requestedCursor) && requestedCursor >= 0
     ? Math.trunc(requestedCursor)
     : undefined;
+  // An open stream outlives its single authorization, so it is re-checked while
+  // it runs and closes once the caller may no longer see the scan.
+  const allowed = createStreamGuard(c, () => getRunRepositoryKey(id));
   return streamSSE(c, async (stream) => {
     let closed = false;
     const unsubscribe = subscribe(id, async (event) => {
@@ -1047,6 +1074,11 @@ app.get("/scans/:id/events", (c) => {
     // Keep connection open while scan is active
     while (!closed) {
       await stream.sleep(1000);
+      if (!allowed()) {
+        closed = true;
+        unsubscribe();
+        break;
+      }
       if (!isScanActive(id) && getRun(id)?.status !== "running") {
         // If not active anymore, end after a short grace
         await stream.sleep(500);
@@ -1058,8 +1090,15 @@ app.get("/scans/:id/events", (c) => {
 });
 
 app.post("/compare", async (c) => {
+  const scope = scopeOf(principalOf(c));
   const body = (await c.req.json()) as CompareRequest;
   try {
+    // A comparison reads every requested scan, so one invisible id hides the
+    // whole answer: the caller must not learn that the scan exists at all. A
+    // malformed request keeps failing as one, hence the shared try.
+    for (const id of body.scanIds ?? []) {
+      if (!inScope(scope, getRunRepositoryKey(id))) return c.json({ error: "not_found" }, 404);
+    }
     for (const id of body.scanIds ?? []) readRunWithEngineRefresh(id);
     return c.json(compareScans(body.scanIds ?? []));
   } catch (err) {

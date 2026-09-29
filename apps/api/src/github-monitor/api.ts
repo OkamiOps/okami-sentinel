@@ -1,7 +1,15 @@
 import { Hono, type Context } from "hono";
 
-import type { GitHubMonitorRule } from "@csb/shared";
+import type { GitHubMonitorOverview, GitHubMonitorRule } from "@csb/shared";
 
+import {
+  canSeeRepository,
+  hasRepositoryRole,
+  inScope,
+  principalOf,
+  scopeOf,
+  type AccessScope,
+} from "../auth/principal.js";
 import {
   GitHubMonitorError,
   GitHubMonitorService,
@@ -21,18 +29,23 @@ export function createGitHubMonitorApi(dependencies: GitHubMonitorApiDependencie
 
   api.get("/github-monitor/branches", async (c) => {
     try {
-      return c.json({ branches: await service.availableBranches(string(c.req.query("repositoryKey"), 512)) });
+      const repositoryKey = string(c.req.query("repositoryKey"), 512);
+      // The repository travels in the query string, out of the route policy's
+      // reach, so the single repository this route touches is validated here.
+      if (!canSeeRepository(principalOf(c), repositoryKey)) return c.json({ error: "not_found" }, 404);
+      return c.json({ branches: await service.availableBranches(repositoryKey) });
     } catch (error) { return monitorError(c, error); }
   });
 
   api.get("/github-monitor/overview", (c) => {
     const repositoryKey = optionalQuery(c.req.query("repositoryKey"));
-    return c.json({ overview: service.overview(repositoryKey) });
+    return c.json({ overview: scopedOverview(service.overview(repositoryKey), scopeOf(principalOf(c))) });
   });
 
   api.get("/github-monitor/rules", (c) => {
+    const scope = scopeOf(principalOf(c));
     const repositoryKey = optionalQuery(c.req.query("repositoryKey"));
-    return c.json({ rules: service.listRules(repositoryKey) });
+    return c.json({ rules: service.listRules(repositoryKey).filter((rule) => inScope(scope, rule.repositoryKey)) });
   });
 
   api.post("/github-monitor/rules", async (c) => {
@@ -52,19 +65,22 @@ export function createGitHubMonitorApi(dependencies: GitHubMonitorApiDependencie
   });
 
   api.get("/github-monitor/events", (c) => {
+    const scope = scopeOf(principalOf(c));
     const ruleIdValue = optionalQuery(c.req.query("ruleId"));
     const repositoryKey = optionalQuery(c.req.query("repositoryKey"));
-    return c.json({ events: service.listEvents({ ...(ruleIdValue ? { ruleId: ruleIdValue } : {}), ...(repositoryKey ? { repositoryKey } : {}) }) });
+    const events = service.listEvents({ ...(ruleIdValue ? { ruleId: ruleIdValue } : {}), ...(repositoryKey ? { repositoryKey } : {}) });
+    return c.json({ events: events.filter((event) => inScope(scope, event.repositoryKey)) });
   });
 
   api.get("/github-monitor/actions-runs", (c) => {
+    const scope = scopeOf(principalOf(c));
     const ruleIdValue = optionalQuery(c.req.query("ruleId"));
     const repositoryKey = optionalQuery(c.req.query("repositoryKey"));
     const overview = service.overview(repositoryKey);
     return c.json({
-      actionsRuns: ruleIdValue === null
-        ? overview.actionsRuns
-        : overview.actionsRuns.filter((run) => run.ruleId === ruleIdValue),
+      actionsRuns: overview.actionsRuns
+        .filter((run) => ruleIdValue === null || run.ruleId === ruleIdValue)
+        .filter((run) => inScope(scope, run.repositoryKey)),
     });
   });
 
@@ -73,13 +89,43 @@ export function createGitHubMonitorApi(dependencies: GitHubMonitorApiDependencie
       const body = await optionalBody(c.req.text());
       exactKeys(body, new Set(["repositoryKey"]));
       const repositoryKey = body.repositoryKey === undefined ? null : string(body.repositoryKey, 512);
-      return c.json({ overview: await service.poll(repositoryKey) });
+      // Polling spends the GitHub App's rate budget and can launch paid scans,
+      // so a member must name one repository it operates. The key lives in the
+      // body, which the route policy cannot resolve.
+      const principal = principalOf(c);
+      if (!canSeeRepository(principal, repositoryKey)) return c.json({ error: "not_found" }, 404);
+      if (!hasRepositoryRole(principal, repositoryKey, "operator")) return c.json({ error: "forbidden" }, 403);
+      return c.json({ overview: scopedOverview(await service.poll(repositoryKey), scopeOf(principal)) });
     } catch (error) {
       return monitorError(c, error);
     }
   });
 
   return api;
+}
+
+/**
+ * The counters are part of the answer, so they are recomputed from the lists the
+ * caller may actually see: a member must not infer another repository's activity
+ * from a summary that still counts it.
+ */
+function scopedOverview(overview: GitHubMonitorOverview, scope: AccessScope): GitHubMonitorOverview {
+  if (scope.kind === "all") return overview;
+  const rules = overview.rules.filter((rule) => inScope(scope, rule.repositoryKey));
+  const events = overview.events.filter((event) => inScope(scope, event.repositoryKey));
+  return {
+    rules,
+    events,
+    actionsRuns: overview.actionsRuns.filter((run) => inScope(scope, run.repositoryKey)),
+    summary: {
+      ...overview.summary,
+      enabledRules: rules.filter((rule) => rule.enabled).length,
+      queuedEvents: events.filter((event) => event.status === "queued").length,
+      dispatchingEvents: events.filter((event) => event.status === "dispatching").length,
+      lastPolledAt: rules.map((rule) => rule.lastPolledAt).filter((value): value is string => value !== null).sort().at(-1) ?? null,
+      lastError: rules.map((rule) => rule.lastError).filter((value): value is string => value !== null).at(0) ?? null,
+    },
+  };
 }
 
 export function parseRuleInput(value: unknown): GitHubMonitorRuleInput {

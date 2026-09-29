@@ -1,5 +1,10 @@
 import { scanEstimatedUsd, type ScanRun } from "@csb/shared";
 import { getDb, rowToScanRun, type BenchmarkRow } from "./db.js";
+import type { AccessScope } from "./auth/principal.js";
+import { scopeSql } from "./auth/scope-sql.js";
+
+/** Local mode and administrators read the whole ledger; a member reads its grants. */
+const ALL_REPOSITORIES: AccessScope = { kind: "all" };
 
 export interface ScanListOptions {
   limit: number;
@@ -28,15 +33,17 @@ export function parseScanListOptions(query: Record<string, string>): ScanListOpt
 }
 
 /** The global status bar reads only active rows; it never walks terminal artifacts. */
-export function listActiveRuns(): ScanRun[] {
-  return (getDb().prepare(`SELECT runs.* ${visibleRuns} AND runs.status IN ('queued', 'running') ${order}`)
-    .all() as BenchmarkRow[]).map(rowToScanRun);
+export function listActiveRuns(scope: AccessScope = ALL_REPOSITORIES): ScanRun[] {
+  const clause = scopeSql(scope, "runs.repository_key");
+  return (getDb().prepare(`SELECT runs.* ${visibleRuns}${clause.sql} AND runs.status IN ('queued', 'running') ${order}`)
+    .all(...clause.params) as BenchmarkRow[]).map(rowToScanRun);
 }
 
 /** Filter choices need names and a count, not scan artifacts or full run records. */
-export function scanCatalog(): { total: number; repositories: string[] } {
-  const rows = getDb().prepare(`SELECT runs.display_name AS name, COUNT(*) AS count ${visibleRuns} GROUP BY runs.display_name ORDER BY runs.display_name`)
-    .all() as Array<{ name: string; count: number }>;
+export function scanCatalog(scope: AccessScope = ALL_REPOSITORIES): { total: number; repositories: string[] } {
+  const clause = scopeSql(scope, "runs.repository_key");
+  const rows = getDb().prepare(`SELECT runs.display_name AS name, COUNT(*) AS count ${visibleRuns}${clause.sql} GROUP BY runs.display_name ORDER BY runs.display_name`)
+    .all(...clause.params) as Array<{ name: string; count: number }>;
   return {
     total: rows.reduce((total, row) => total + row.count, 0),
     repositories: rows.map((row) => row.name).filter(Boolean),
@@ -44,11 +51,12 @@ export function scanCatalog(): { total: number; repositories: string[] } {
 }
 
 /** Pagination happens in SQLite. Summary costs use the same pricing rules as detail views. */
-export function listRunPage(options: ScanListOptions, summarize = true) {
+export function listRunPage(options: ScanListOptions, summarize = true, scope: AccessScope = ALL_REPOSITORIES) {
   const db = getDb();
   db.function("sentinel_search_lower", { deterministic: true }, (value: unknown) => String(value ?? "").toLowerCase());
-  const params: string[] = [];
-  let where = visibleRuns;
+  const clause = scopeSql(scope, "runs.repository_key");
+  const params: string[] = [...clause.params];
+  let where = `${visibleRuns}${clause.sql}`;
   if (options.status === "active") where += " AND runs.status NOT IN ('failed', 'cancelled')";
   else if (options.status !== "all") { where += " AND runs.status = ?"; params.push(options.status); }
   if (options.query) {
@@ -73,8 +81,8 @@ export function listRunPage(options: ScanListOptions, summarize = true) {
         costIsUpperBound ||= scan.cost?.estimateKind === "upper-bound";
       }
     }
-    const archivedCount = (db.prepare(`SELECT COUNT(*) AS count ${visibleRuns} AND runs.status IN ('failed', 'cancelled')`)
-      .get() as { count: number }).count;
+    const archivedCount = (db.prepare(`SELECT COUNT(*) AS count ${visibleRuns}${clause.sql} AND runs.status IN ('failed', 'cancelled')`)
+      .get(...clause.params) as { count: number }).count;
     return { scans, total, limit: options.limit, offset, summary: { evidence, costUsd, costIsUpperBound, archivedCount } };
   })();
 }

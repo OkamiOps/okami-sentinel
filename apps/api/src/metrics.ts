@@ -5,6 +5,8 @@ import {
   type SeverityCounts,
 } from "@csb/shared";
 import { getDb, rowToScanRun, type BenchmarkRow } from "./db.js";
+import type { AccessScope } from "./auth/principal.js";
+import { scopeSql } from "./auth/scope-sql.js";
 
 export type MetricsPeriodDays = 7 | 14 | 21 | 30;
 export type MetricsStatusFilter = "active" | "completed" | "attention";
@@ -15,6 +17,8 @@ export interface MetricsFilters {
   engine?: ScannerEngine | null;
   repository?: string | null;
   query?: string | null;
+  /** Absent means the whole ledger: local mode and administrators. */
+  scope?: AccessScope;
   now?: Date;
 }
 
@@ -231,8 +235,9 @@ function metricSelection(database: ReturnType<typeof getDb>, filters: MetricsFil
       return Number.isFinite(parsed) ? parsed : null;
     },
   );
-  const params: Array<string | number> = [];
-  let where = "hidden_runs.id IS NULL";
+  const scope = scopeSql(filters.scope ?? { kind: "all" }, "runs.repository_key");
+  const params: Array<string | number> = [...scope.params];
+  let where = `hidden_runs.id IS NULL${scope.sql}`;
   if (filters.days != null) {
     const cutoff = (filters.now ?? new Date()).getTime() - filters.days * 24 * 60 * 60 * 1_000;
     // Date.parse preserves the historical milliseconds/offset/invalid-date rule.

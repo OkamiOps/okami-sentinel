@@ -930,7 +930,8 @@ export interface CodexInfo {
 export interface HealthResponse {
   ok: boolean;
   api: string;
-  codexStateDir: string;
+  /** Server-side path, disclosed to administrators only. */
+  codexStateDir?: string;
   codexInfo: CodexInfo | null;
   /** First active scan id (compat). Prefer activeScanIds. */
   activeScanId: string | null;
