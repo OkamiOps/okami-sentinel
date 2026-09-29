@@ -16,7 +16,7 @@ import {
   reserveScanCapacity,
   upsertRun,
 } from "./db.js";
-import { SQLITE_BUSY_TIMEOUT_MS, openSqliteFile } from "./sqlite.js";
+import { openSqliteFile } from "./sqlite.js";
 import type { ScanRun } from "@csb/shared";
 
 test("scan capacity reservation is atomic across preflight failure and a restarted worker", () => {
@@ -292,29 +292,21 @@ test("adds complete execution columns to legacy run schemas idempotently", () =>
   }
 });
 
-/**
- * The API is not the only process holding this file open: the test runner alone
- * opens it from every parallel test process, and a local runtime shares it with
- * the workers it spawns. Without a busy timeout the loser of a write-lock race
- * fails the whole request with SQLITE_BUSY instead of waiting the few
- * milliseconds the winner needs.
- */
-test("the shared database connection waits for a busy writer instead of failing", () => {
+test("the shared database connection takes the write lock up front and keeps WAL", () => {
   const database = dbModule.getDb();
-  assert.equal(database.pragma("busy_timeout", { simple: true }), SQLITE_BUSY_TIMEOUT_MS);
-  // Waiting must not cost the concurrent readers WAL already buys.
+  // A deferred transaction is the one case a busy timeout cannot rescue, so it
+  // must not be what a caller gets by default.
+  const transaction = database.transaction(() => undefined);
+  assert.equal(transaction, transaction.immediate);
+  // Waiting for a writer must not cost the concurrent readers WAL already buys.
   assert.equal(database.pragma("journal_mode", { simple: true }), "wal");
 });
 
-test("every SQLite file this API opens waits the same way", () => {
+test("a caller's own busy timeout survives the shared default", () => {
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "csb-busy-")), "probe.db");
-  const database = openSqliteFile(file);
+  const database = openSqliteFile(file, { timeout: 250 });
   try {
-    assert.equal(database.pragma("busy_timeout", { simple: true }), SQLITE_BUSY_TIMEOUT_MS);
-    // A deferred transaction is the one case the timeout cannot rescue, so it
-    // must not be what a caller gets by default.
-    const transaction = database.transaction(() => undefined);
-    assert.equal(transaction, transaction.immediate);
+    assert.equal(database.pragma("busy_timeout", { simple: true }), 250);
   } finally {
     database.close();
   }

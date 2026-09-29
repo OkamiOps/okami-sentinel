@@ -63,6 +63,9 @@ export function listRunPage(options: ScanListOptions, summarize = true, scope: A
     where += " AND instr(sentinel_search_lower(runs.display_name || ' ' || COALESCE(runs.engine, '') || ' ' || COALESCE(runs.model, '') || ' ' || COALESCE(runs.effort, '') || ' ' || COALESCE(runs.repository_path, '')), ?) > 0";
     params.push(options.query.toLowerCase());
   }
+  // Deferred on purpose: this page only reads, and it is polled. An immediate
+  // transaction (this connection's default, see `sqlite.ts`) would take the
+  // write lock and stall the dashboard behind any scanner write.
   return db.transaction(() => {
     const total = (db.prepare(`SELECT COUNT(*) AS count ${where}`).get(...params) as { count: number }).count;
     // Clamp an out-of-date last page after deletion so the ledger remains useful.
@@ -84,5 +87,5 @@ export function listRunPage(options: ScanListOptions, summarize = true, scope: A
     const archivedCount = (db.prepare(`SELECT COUNT(*) AS count ${visibleRuns}${clause.sql} AND runs.status IN ('failed', 'cancelled')`)
       .get(...clause.params) as { count: number }).count;
     return { scans, total, limit: options.limit, offset, summary: { evidence, costUsd, costIsUpperBound, archivedCount } };
-  })();
+  }).deferred();
 }
