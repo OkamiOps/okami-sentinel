@@ -71,21 +71,28 @@ try {
       + "test ! -e /app/apps/api/node_modules/@csb/gate-core/src/decision-graph.test.ts",
   ]);
 
-  const unauthenticated = await fetch(`${baseUrl}/`);
-  if (unauthenticated.status !== 401) {
-    throw new Error(`root route must require authentication (received HTTP ${unauthenticated.status})`);
+  const unauthenticatedHtml = await fetch(`${baseUrl}/`);
+  if (unauthenticatedHtml.status !== 200) {
+    throw new Error(`root route must be served without a session (received HTTP ${unauthenticatedHtml.status})`);
   }
-  const authorization = `Basic ${Buffer.from(`admin:${password}`).toString("base64")}`;
+  const unauthenticatedApi = await fetch(`${baseUrl}/api/scans`);
+  if (unauthenticatedApi.status !== 401) {
+    throw new Error(`API must require an authenticated session (received HTTP ${unauthenticatedApi.status})`);
+  }
+
   for (const route of ["/", "/scans/does-not-exist"]) {
-    const response = await fetch(`${baseUrl}${route}`, {
-      headers: { authorization, Accept: "text/html" },
-    });
+    const response = await fetch(`${baseUrl}${route}`, { headers: { Accept: "text/html" } });
     if (!response.ok) throw new Error(`${route} failed with HTTP ${response.status}`);
     const body = await response.text();
     if (!body.includes("<div id=\"root\">") && !body.includes("<div id='root'>")) {
       throw new Error(`${route} did not return the compiled web application`);
     }
   }
+
+  const { cookie } = await signIn(baseUrl, baseUrl, password);
+  const authenticatedApi = await fetch(`${baseUrl}/api/scans`, { headers: { Cookie: cookie, Origin: baseUrl } });
+  if (!authenticatedApi.ok) throw new Error(`authenticated API request failed with HTTP ${authenticatedApi.status}`);
+
   console.log(`Docker smoke passed for ${image} on ${baseUrl}`);
 } catch (error) {
   if (containerStarted) {
@@ -98,6 +105,18 @@ try {
   if (containerStarted) runDocker(["rm", "--force", name]);
   runDocker(["volume", "rm", "--force", volume]);
   fs.rmSync(workDir, { recursive: true, force: true });
+}
+
+async function signIn(baseUrl, origin, password) {
+  const response = await fetch(`${baseUrl}/api/auth/login`, {
+    method: "POST",
+    headers: { Origin: origin, "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "admin", password }),
+  });
+  if (response.status !== 200) throw new Error(`login failed: ${response.status}`);
+  const cookie = response.headers.get("set-cookie")?.split(";")[0];
+  const session = await (await fetch(`${baseUrl}/api/auth/session`, { headers: { Cookie: cookie, Origin: origin } })).json();
+  return { cookie, csrfToken: session.csrfToken };
 }
 
 function docker(arguments_) {

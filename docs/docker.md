@@ -85,6 +85,8 @@ Abra <http://127.0.0.1:8787>. Para obter a senha quando o operador for entrar, l
 cat ~/.local/share/okami-sentinel/admin_password
 ```
 
+Na primeira inicialização, o Sentinel cria a conta administrativa a partir de `CSB_ADMIN_USER` e `CSB_ADMIN_PASSWORD_FILE`. Nas inicializações seguintes, esses valores só voltam a ser usados para restaurar um administrador quando nenhum estiver ativo; eles não funcionam como uma credencial de autenticação direta a cada requisição. Convide as demais pessoas em **Configurações → Usuários**, já autenticado como administrador na interface.
+
 Pare a aplicação sem apagar dados:
 
 ```bash

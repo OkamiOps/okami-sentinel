@@ -33,9 +33,7 @@ const vaultKeyPath = path.join(workDir, "vault_key");
 const password = randomBytes(32).toString("base64url");
 const vaultKey = randomBytes(32).toString("hex");
 const fixtureApiKey = "docker-qa-fixture-key";
-const basicToken = Buffer.from(`admin:${password}`).toString("base64");
-const authorization = `Basic ${basicToken}`;
-const sensitiveValues = [password, vaultKey, fixtureApiKey, basicToken, authorization];
+const sensitiveValues = [password, vaultKey, fixtureApiKey];
 const providerPort = 8788;
 const scanRepositoryPath = "/repos/fixture";
 // This is an existing runtime file, so Docker can bind-mount the QA provider
@@ -47,6 +45,7 @@ const hostUid = typeof process.getuid === "function" ? process.getuid() : null;
 
 let hostPort;
 let baseUrl;
+let cookie;
 let csrfToken;
 let volumeCreated = false;
 let containerCreated = false;
@@ -187,21 +186,38 @@ function assertContainerSecurity() {
   assert.equal(inspected[0]?.HostConfig?.ReadonlyRootfs, true, "application root filesystem must be read-only");
 }
 
+async function signIn(baseUrl, origin, password) {
+  const response = await fetch(`${baseUrl}/api/auth/login`, {
+    method: "POST",
+    headers: { Origin: origin, "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "admin", password }),
+  });
+  if (response.status !== 200) throw new Error(`login failed: ${response.status}`);
+  const cookie = response.headers.get("set-cookie")?.split(";")[0];
+  const session = await (await fetch(`${baseUrl}/api/auth/session`, { headers: { Cookie: cookie, Origin: origin } })).json();
+  return { cookie, csrfToken: session.csrfToken };
+}
+
 async function assertApiAuthenticationAndCsrf() {
   const unauthenticated = await fetch(`${baseUrl}/api/scans`);
-  assert.equal(unauthenticated.status, 401, "API must require Basic authentication");
+  assert.equal(unauthenticated.status, 401, "API must require an authenticated session");
+
+  ({ cookie, csrfToken } = await signIn(baseUrl, baseUrl, password));
+  sensitiveValues.push(cookie, csrfToken);
+  assert.equal(typeof csrfToken, "string");
+  assert.ok(csrfToken.length >= 32);
 
   const sessionResponse = await fetch(`${baseUrl}/api/security-session`, {
-    headers: { Authorization: authorization, Origin: baseUrl },
+    headers: { Cookie: cookie, Origin: baseUrl },
   });
   assert.equal(sessionResponse.status, 200, "authenticated security session must be available");
-  const session = await sessionResponse.json();
-  assert.equal(typeof session.csrfToken, "string");
-  assert.ok(session.csrfToken.length >= 32);
+  const legacySession = await sessionResponse.json();
+  assert.equal(typeof legacySession.csrfToken, "string");
+  assert.ok(legacySession.csrfToken.length >= 32);
 
   const csrfDenied = await fetch(`${baseUrl}/api/connections`, {
     method: "POST",
-    headers: { Authorization: authorization, Origin: baseUrl, "Content-Type": "application/json" },
+    headers: { Cookie: cookie, Origin: baseUrl, "Content-Type": "application/json" },
     body: "{}",
   });
   assert.equal(csrfDenied.status, 403, "mutating API request without CSRF token must fail");
@@ -209,7 +225,7 @@ async function assertApiAuthenticationAndCsrf() {
 }
 
 async function loadSecuritySession() {
-  const session = await api("/security-session");
+  const session = await api("/auth/session");
   assert.equal(session.runtimeMode, "server");
   assert.ok(Array.isArray(session.repositoryRoots) && session.repositoryRoots.includes("/repos"));
   assert.equal(typeof session.csrfToken, "string");
@@ -342,8 +358,11 @@ async function verifyHardStopRecovery(connectionId) {
   docker(["kill", name]);
   docker(["start", name]);
   await waitForReady();
-  csrfToken = undefined;
-  await loadSecuritySession();
+  // Sessions persist in the volume, but the script must sign in again to hold
+  // a fresh cookie and re-read the CSRF token rather than assume the old ones
+  // still reflect what the restarted server will accept.
+  ({ cookie, csrfToken } = await signIn(baseUrl, baseUrl, password));
+  sensitiveValues.push(cookie, csrfToken);
   await startProvider();
 
   const recovered = await waitForTerminalScan(scan.id, 15_000);
@@ -384,7 +403,7 @@ async function startScan(engine, connection) {
 
 async function assertSseDeliversEvent(scanId) {
   const response = await fetch(`${baseUrl}/api/scans/${encodeURIComponent(scanId)}/events`, {
-    headers: { Authorization: authorization, Origin: baseUrl },
+    headers: { Cookie: cookie, Origin: baseUrl },
     signal: AbortSignal.timeout(10_000),
   });
   assert.equal(response.status, 200, "scan event stream must be available");
@@ -435,7 +454,7 @@ async function throwScanFailure(scanId, message) {
 
 async function api(endpoint, { method = "GET", body, expected = 200 } = {}) {
   const mutation = !["GET", "HEAD"].includes(method);
-  const headers = { Authorization: authorization, Origin: baseUrl };
+  const headers = { Cookie: cookie, Origin: baseUrl };
   if (mutation) {
     headers["X-CSRF-Token"] = csrfToken;
     headers["Content-Type"] = "application/json";
