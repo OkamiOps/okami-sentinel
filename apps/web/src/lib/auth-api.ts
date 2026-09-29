@@ -13,6 +13,56 @@ export interface InvitePreview {
 const jsonHeaders = { "Content-Type": "application/json", Accept: "application/json" };
 
 /**
+ * `parseApiResponse` collapses an error body into a translated message, which
+ * loses the two fields the sign-in screen needs to render a lockout: the
+ * machine-readable code and how long the caller must wait. The public auth
+ * mutations therefore parse their own failures and keep both.
+ */
+export class AuthRequestError extends Error {
+  readonly code: string;
+  readonly status: number;
+  readonly retryAfterSeconds: number | null;
+
+  constructor(code: string, status: number, retryAfterSeconds: number | null) {
+    super(code);
+    this.name = "AuthRequestError";
+    this.code = code;
+    this.status = status;
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
+function positiveSeconds(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.ceil(value) : null;
+}
+
+/** A `Retry-After` header in delta-seconds form is the HTTP-native fallback. */
+function retryAfterHeader(response: Response): number | null {
+  const header = response.headers.get("Retry-After");
+  return header === null ? null : positiveSeconds(Number(header));
+}
+
+async function publicMutation(path: string, body: unknown): Promise<void> {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(body),
+  });
+  if (response.ok) return;
+  let parsed: { error?: unknown; retryAfterSeconds?: unknown } | null = null;
+  try {
+    parsed = await response.json() as { error?: unknown; retryAfterSeconds?: unknown };
+  } catch {
+    parsed = null;
+  }
+  throw new AuthRequestError(
+    typeof parsed?.error === "string" ? parsed.error : `api_http_${response.status}`,
+    response.status,
+    positiveSeconds(parsed?.retryAfterSeconds) ?? retryAfterHeader(response),
+  );
+}
+
+/**
  * `/auth/login` and `/auth/invites/:token` are reachable before a session (and
  * therefore a CSRF token) exists, so they bypass the CSRF-attaching mutation
  * path entirely and rely on the server's same-origin check instead.
@@ -48,10 +98,7 @@ export const authApi = {
   },
 
   async login(username: string, password: string): Promise<void> {
-    await publicRequest<{ ok: true }>("/auth/login", {
-      method: "POST",
-      body: JSON.stringify({ username, password }),
-    });
+    await publicMutation("/auth/login", { username, password });
   },
 
   async logout(): Promise<void> {
@@ -63,10 +110,7 @@ export const authApi = {
   },
 
   async acceptInvite(token: string, password: string): Promise<void> {
-    await publicRequest<{ ok: true }>(`/auth/invites/${encodeURIComponent(token)}`, {
-      method: "POST",
-      body: JSON.stringify({ password }),
-    });
+    await publicMutation(`/auth/invites/${encodeURIComponent(token)}`, { password });
   },
 
   updateProfile(displayName: string): Promise<AuthSessionUser> {

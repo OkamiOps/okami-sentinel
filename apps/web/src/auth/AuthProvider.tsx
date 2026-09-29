@@ -6,7 +6,7 @@ import { ApiError } from "../lib/http";
 
 const RANK: Record<RepositoryRole, number> = { viewer: 1, analyst: 2, operator: 3, maintainer: 4 };
 const PUBLIC_PATHS = [/^\/login$/, /^\/invite\/[^/]+$/];
-type Status = "loading" | "signed-in" | "signed-out";
+type Status = "loading" | "signed-in" | "signed-out" | "unreachable";
 type AuthValue = ReturnType<typeof buildValue>;
 const AuthContext = createContext<AuthValue | null>(null);
 
@@ -45,7 +45,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (error instanceof ApiError && error.status === 401) {
         setSession(null);
         setStatus("signed-out");
+        return;
       }
+      // An unreachable session endpoint must not leave the shell spinning
+      // forever: surface a retryable state instead. A session already in hand
+      // survives the hiccup — only the very first read degrades the shell.
+      setStatus((current) => (current === "signed-in" ? current : "unreachable"));
     }
   }, []);
 

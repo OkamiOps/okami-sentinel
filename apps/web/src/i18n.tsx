@@ -113,6 +113,8 @@ const ptBR = {
   "shell.reindexing": "Reindexando…",
   "shell.refreshBench": "Atualizar a leitura da bancada",
   "shell.noActiveScan": "Nenhum scan consumindo recursos",
+  "session.unverified": "Não foi possível verificar sua sessão. Os dados podem estar desatualizados.",
+  "session.recheck": "Verificar sessão",
   "common.retry": "Tentar novamente",
   "common.cancel": "Cancelar",
   "common.close": "Fechar",
@@ -2305,6 +2307,7 @@ const frUi: Partial<Record<TranslationKey, string>> = {
 
 const en: Record<TranslationKey, string> = {
   ...ptBR, ...enUi,
+  "session.unverified": "Your session could not be verified. Data may be out of date.", "session.recheck": "Check session",
   "guardrails.outcome.no_changes": "No changes",
   "guardrails.outcome.bootstrap": "Missing baseline",
   "guardrails.outcome.bootstrapProtected": "Baseline established",
@@ -2526,6 +2529,7 @@ const en: Record<TranslationKey, string> = {
 
 const es: Record<TranslationKey, string> = {
   ...en, ...esUi,
+  "session.unverified": "No se pudo verificar tu sesión. Los datos pueden estar desactualizados.", "session.recheck": "Verificar sesión",
   "guardrails.outcome.no_changes": "Sin cambios",
   "guardrails.outcome.bootstrap": "Falta baseline",
   "guardrails.outcome.bootstrapProtected": "Baseline establecida",
@@ -2747,6 +2751,7 @@ const es: Record<TranslationKey, string> = {
 
 const de: Record<TranslationKey, string> = {
   ...en, ...deUi,
+  "session.unverified": "Deine Sitzung konnte nicht geprüft werden. Die Daten sind möglicherweise veraltet.", "session.recheck": "Sitzung prüfen",
   "guardrails.outcome.no_changes": "Keine Änderungen",
   "guardrails.outcome.bootstrap": "Baseline fehlt",
   "guardrails.outcome.bootstrapProtected": "Baseline festgelegt",
@@ -2968,6 +2973,7 @@ const de: Record<TranslationKey, string> = {
 
 const fr: Record<TranslationKey, string> = {
   ...en, ...frUi,
+  "session.unverified": "Votre session n’a pas pu être vérifiée. Les données peuvent être obsolètes.", "session.recheck": "Vérifier la session",
   "guardrails.outcome.no_changes": "Aucun changement",
   "guardrails.outcome.bootstrap": "Baseline absente",
   "guardrails.outcome.bootstrapProtected": "Baseline établie",
