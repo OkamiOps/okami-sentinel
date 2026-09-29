@@ -20,6 +20,8 @@ export interface MockApiOptions {
   acceptInviteResponse?: { status: number; body: unknown };
   patchUserResponse?: { status: number; body: unknown };
   changePasswordResponse?: { status: number; body: unknown };
+  accountSessionsFail?: boolean;
+  sessionUnreachable?: boolean;
 }
 
 const rootUser: UserSummary = {
@@ -113,9 +115,13 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
       isAdmin: options.session?.isAdmin ?? true,
       grants: options.session?.grants ?? ([] as RepositoryGrant[]),
       runtimeMode: (options.session ? "server" : "local") as "local" | "server",
+      // A 5xx from /auth/session is not a sign-out: it leaves the shell with an
+      // unverified session, which is a different state from signed out.
+      sessionUnreachable: options.sessionUnreachable === true,
     },
     users: [structuredClone(rootUser), structuredClone(anaUser)] as UserSummary[],
     accountSessions: structuredClone(accountSessions),
+    accountSessionsFail: options.accountSessionsFail === true,
   };
   await page.addInitScript(({ locale }) => {
     localStorage.setItem("okami-sentinel.locale", locale);
@@ -182,6 +188,7 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
       return json({ csrfToken: "fixture-token", runtimeMode: "local", repositoryRoots: [] });
     }
     if (path === "/auth/session") {
+      if (state.auth.sessionUnreachable) return json({ error: "internal_error" }, 500);
       if (!state.auth.signedIn) return json({ error: "authentication_required" }, 401);
       return json({
         user: { id: "u-root", username: "root", displayName: "Root", isAdmin: state.auth.isAdmin },
@@ -215,7 +222,10 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
         return json({ ok: true });
       }
     }
-    if (path === "/account/sessions" && req.method() === "GET") return json({ sessions: state.accountSessions });
+    if (path === "/account/sessions" && req.method() === "GET") {
+      if (state.accountSessionsFail) return json({ error: "fixture unavailable" }, 503);
+      return json({ sessions: state.accountSessions });
+    }
     if (path === "/account/sessions/others" && req.method() === "DELETE") {
       state.accountSessions = state.accountSessions.filter((session) => session.current);
       return route.fulfill({ status: 204 });
@@ -227,6 +237,9 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
     }
     if (path === "/account/password" && req.method() === "POST") {
       if (options.changePasswordResponse) return json(options.changePasswordResponse.body, options.changePasswordResponse.status);
+      // The API ends every other session on a successful change, exactly as
+      // the success message promises.
+      state.accountSessions = state.accountSessions.filter((session) => session.current);
       return route.fulfill({ status: 204 });
     }
     if (path === "/account/profile" && req.method() === "PATCH") {

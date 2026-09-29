@@ -41,12 +41,14 @@ const nav: ReadonlyArray<readonly [string, TranslationKey]> = [["/", "nav.overvi
 function NavStrip({ onNavigate }: { onNavigate?: () => void }) {
   const { pathname } = useLocation();
   const { t } = useI18n();
-  const { isAdmin } = useAuth();
+  const { isAdmin, status } = useAuth();
   return <nav className="flex flex-col md:flex-row md:items-stretch">{nav.map(([to, label], index) => {
     const isActive = to === "/scans" ? pathname === "/scans" || (pathname.startsWith("/scans/") && pathname !== "/scans/new") : to === "/guardrails" ? pathname === "/guardrails" || pathname.startsWith("/guardrails/") : to === "/settings" ? pathname === "/settings" || pathname.startsWith("/settings/") : pathname === to;
     // System readiness is an administration page; a member's only settings
-    // destination is their own account, so the tab points straight at it.
-    const target = to === "/settings" && !isAdmin ? "/settings/account" : to;
+    // destination is their own account, so the tab points straight at it. The
+    // tab has to agree with the route gate, which only redirects a confirmed
+    // member.
+    const target = to === "/settings" && status === "signed-in" && !isAdmin ? "/settings/account" : to;
     return <Link key={to} to={target} aria-current={isActive ? "page" : undefined} onClick={onNavigate} className={cx("group relative flex h-11 items-center gap-3 border-b border-border px-4 font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:border-b-0 md:border-r", isActive && "bg-accent text-chart-1")}><span className="text-[8px] opacity-45">0{index + 1}</span>{t(label)}<span className={cx("absolute inset-x-0 bottom-0 h-px bg-chart-1 transition-transform", isActive ? "scale-x-100" : "scale-x-0 group-hover:scale-x-100")} /></Link>;
   })}</nav>;
 }
@@ -187,12 +189,15 @@ export function App() {
 }
 
 /**
- * Administration pages have no member-facing fallback content: sending them to
- * their own account is the honest answer, and `replace` keeps Back working.
+ * Administration pages have no member-facing fallback content: sending a member
+ * to their own account is the honest answer, and `replace` keeps Back working.
+ * Only a *confirmed* member is redirected — an unreachable session endpoint
+ * leaves `isAdmin` false without proving anything, and bouncing an admin during
+ * an outage would strand them on a page that cannot read a session either.
  */
 function AdminOnly({ children }: { children: ReactNode }) {
-  const { isAdmin } = useAuth();
-  return isAdmin ? <>{children}</> : <Navigate to="/settings/account" replace />;
+  const { isAdmin, status } = useAuth();
+  return status === "signed-in" && !isAdmin ? <Navigate to="/settings/account" replace /> : <>{children}</>;
 }
 
 /**

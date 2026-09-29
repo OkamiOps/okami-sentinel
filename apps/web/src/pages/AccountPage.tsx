@@ -31,9 +31,15 @@ function changeFailureKey(failure: unknown): AccessMessageKey {
 
 export function AccountPage() {
   const { t } = useScopedI18n(accessMessages);
-  const { session, isAdmin, refresh } = useAuth();
+  const { session, status, isAdmin, refresh } = useAuth();
+  // Changing the password ends every other session server-side, so the table
+  // below it has to be re-read or it keeps listing sessions that are gone.
+  const [sessionsReload, setSessionsReload] = useState(0);
 
-  if (!session) return <Loading />;
+  // The shell only gates `loading` and `signed-out`; an unreachable session
+  // endpoint still reaches this page with nothing to render. Say so and offer
+  // the read again, instead of spinning forever on a request already decided.
+  if (!session) return status === "loading" ? <Loading /> : <AccountUnverified onRetry={refresh} />;
 
   // A local deployment has no account store behind it: every `/account`
   // endpoint answers 404 there. Showing a password form and a session list
@@ -47,9 +53,29 @@ export function AccountPage() {
     {local && <AlertBanner tone="info">{t("account.localNote")}</AlertBanner>}
     <div className="grid gap-4 xl:grid-cols-2">
       <ProfilePanel displayName={session.user.displayName} username={session.user.username} isAdmin={isAdmin} editable={!local} onSaved={refresh} />
-      {!local && <PasswordPanel username={session.user.username} />}
-      {!local && <div className="min-w-0 xl:col-span-2"><SessionsPanel /></div>}
+      {!local && <PasswordPanel username={session.user.username} onChanged={() => setSessionsReload((value) => value + 1)} />}
+      {!local && <div className="min-w-0 xl:col-span-2"><SessionsPanel reloadKey={sessionsReload} /></div>}
     </div>
+  </>;
+}
+
+function AccountUnverified({ onRetry }: { onRetry: () => Promise<void> }) {
+  const { t } = useScopedI18n(accessMessages);
+  const [retrying, setRetrying] = useState(false);
+  return <>
+    <PageHeader code={t("account.code")} title={t("account.title")} description={t("account.description")} />
+    <SettingsSectionNav />
+    <Panel label={t("account.profile")}>
+      <div className="grid gap-4 px-4 py-5">
+        <AlertBanner tone="warning">{t("account.unverified")}</AlertBanner>
+        <div>
+          <Button type="button" variant="outline" size="sm" disabled={retrying} onClick={() => {
+            setRetrying(true);
+            void onRetry().finally(() => setRetrying(false));
+          }}>{t("common.retry")}</Button>
+        </div>
+      </div>
+    </Panel>
   </>;
 }
 
@@ -109,7 +135,7 @@ function ProfilePanel({ displayName, username, isAdmin, editable, onSaved }: { d
   </Panel>;
 }
 
-function PasswordPanel({ username }: { username: string }) {
+function PasswordPanel({ username, onChanged }: { username: string; onChanged: () => void }) {
   const { t } = useScopedI18n(accessMessages);
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
@@ -132,6 +158,7 @@ function PasswordPanel({ username }: { username: string }) {
       setNext("");
       setConfirmation("");
       setNotice(t("account.changed"));
+      onChanged();
     } catch (failure) {
       setError(t(changeFailureKey(failure)));
     } finally {
@@ -162,22 +189,27 @@ function PasswordPanel({ username }: { username: string }) {
   </Panel>;
 }
 
-function SessionsPanel() {
+function SessionsPanel({ reloadKey }: { reloadKey: number }) {
   const { t } = useScopedI18n(accessMessages);
   const [sessions, setSessions] = useState<UserSessionSummary[] | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // A failed read clears the list and raises its own state: an error banner
+  // stacked on a spinner that will never resolve tells the reader to wait for
+  // a request that already failed, and gives them nothing to do about it.
   const load = useCallback(async () => {
+    setLoadFailed(false);
     try {
       setSessions(await authApi.sessions());
-      setError(null);
     } catch {
-      setError(t("account.sessionsError"));
+      setSessions(null);
+      setLoadFailed(true);
     }
-  }, [t]);
+  }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); }, [load, reloadKey]);
 
   async function revoke(action: () => Promise<void>) {
     if (pending) return;
@@ -200,7 +232,12 @@ function SessionsPanel() {
     aside={<Button type="button" variant="outline" size="sm" disabled={pending || others.length === 0} onClick={() => void revoke(() => authApi.revokeOtherSessions())}>{t("account.revokeOthers")}</Button>}
   >
     {error && <div className="px-4 pt-4"><AlertBanner>{error}</AlertBanner></div>}
-    {sessions === null
+    {loadFailed
+      ? <div className="grid gap-4 px-4 py-5">
+        <AlertBanner>{t("account.sessionsError")}</AlertBanner>
+        <div><Button type="button" variant="outline" size="sm" onClick={() => void load()}>{t("common.retry")}</Button></div>
+      </div>
+      : sessions === null
       ? <Loading />
       : sessions.length === 0
         ? <EmptyState title={t("account.noSessions")} />

@@ -125,6 +125,48 @@ test("marks the current session and refuses to revoke it", async ({ page }) => {
   await expect(current).toBeVisible();
 });
 
+test("a failed sessions read offers a retry instead of an endless spinner", async ({ page }) => {
+  const state = await mockApi(page, "en", { session: { isAdmin: false, grants: [] }, accountSessionsFail: true });
+  await page.goto("/settings/account");
+  await expect(page.getByText("Could not load your sessions.")).toBeVisible();
+  await expect(page.locator(".loading-bars")).toHaveCount(0);
+  state.accountSessionsFail = false;
+  await page.getByRole("button", { name: "Try again" }).click();
+  await expect(page.getByRole("row").filter({ hasText: "10.0.0.8" })).toBeVisible();
+  await expect(page.getByText("Could not load your sessions.")).toHaveCount(0);
+});
+
+test("a password change empties the table it says it emptied", async ({ page }) => {
+  await mockApi(page, "en", { session: { isAdmin: false, grants: [] } });
+  await page.goto("/settings/account");
+  await expect(page.getByRole("row").filter({ hasText: "10.0.0.8" })).toBeVisible();
+  await page.getByLabel("Current password").fill("old password 123");
+  await page.getByLabel("New password").fill("new password 1234");
+  await page.getByLabel("Confirm password").fill("new password 1234");
+  await page.getByRole("button", { name: "Change password" }).click();
+  await expect(page.getByText("Password changed. Your other sessions were signed out.")).toBeVisible();
+  await expect(page.getByRole("row").filter({ hasText: "10.0.0.8" })).toHaveCount(0);
+  await expect(page.getByRole("row").filter({ hasText: "127.0.0.1" })).toBeVisible();
+});
+
+test("an unverified session does not exile an admin from Settings", async ({ page }) => {
+  const state = await mockApi(page, "en", { sessionUnreachable: true });
+  // Engine updates own their own panel and their own route in the suite; this
+  // test only needs the settings page to render at all.
+  await page.route("**/api/engine-updates**", (route) => route.fulfill({ json: { items: [], busy: null, blockedReason: null, lastOperation: null } }));
+  await page.goto("/settings");
+  await expect(page).toHaveURL(/\/settings$/);
+  await expect(page.getByRole("heading", { name: "System readiness" })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Connections/ })).toBeVisible();
+  await page.goto("/settings/account");
+  await expect(page).toHaveURL(/\/settings\/account$/);
+  await expect(page.locator(".loading-bars")).toHaveCount(0);
+  await expect(page.getByText("Your session could not be verified, so your details cannot be read right now.")).toBeVisible();
+  state.auth.sessionUnreachable = false;
+  await page.getByRole("button", { name: "Try again" }).click();
+  await expect(page.getByLabel("Display name")).toBeVisible();
+});
+
 test("the user menu carries the role and reaches My account", async ({ page }) => {
   await mockApi(page, "en", { session: { isAdmin: false, grants: [] } });
   await page.goto("/");
