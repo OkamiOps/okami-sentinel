@@ -48,14 +48,18 @@ function NavStrip({ onNavigate }: { onNavigate?: () => void }) {
   // a member's nav never offers a tab that only redirects them away.
   const member = status === "signed-in" && !isAdmin;
   const visibleNav = member ? nav.filter(([to]) => to !== "/scans/new") : nav;
-  return <nav className="flex flex-col md:flex-row md:items-stretch">{visibleNav.map(([to, label], index) => {
+  return <nav className="flex flex-col md:flex-row md:items-stretch">{visibleNav.map(([to, label]) => {
+    // The number is the module's identity, not its position in this strip: a
+    // member sees one tab fewer, and renumbering the rest would disagree with
+    // the module codes the pages themselves print.
+    const code = nav.findIndex(([candidate]) => candidate === to) + 1;
     const isActive = to === "/scans" ? pathname === "/scans" || (pathname.startsWith("/scans/") && pathname !== "/scans/new") : to === "/guardrails" ? pathname === "/guardrails" || pathname.startsWith("/guardrails/") : to === "/settings" ? pathname === "/settings" || pathname.startsWith("/settings/") : pathname === to;
     // System readiness is an administration page; a member's only settings
     // destination is their own account, so the tab points straight at it. The
     // tab has to agree with the route gate, which only redirects a confirmed
     // member.
     const target = to === "/settings" && status === "signed-in" && !isAdmin ? "/settings/account" : to;
-    return <Link key={to} to={target} aria-current={isActive ? "page" : undefined} onClick={onNavigate} className={cx("group relative flex h-11 items-center gap-3 border-b border-border px-4 font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:border-b-0 md:border-r", isActive && "bg-accent text-chart-1")}><span className="text-[8px] opacity-45">0{index + 1}</span>{t(label)}<span className={cx("absolute inset-x-0 bottom-0 h-px bg-chart-1 transition-transform", isActive ? "scale-x-100" : "scale-x-0 group-hover:scale-x-100")} /></Link>;
+    return <Link key={to} to={target} aria-current={isActive ? "page" : undefined} onClick={onNavigate} className={cx("group relative flex h-11 items-center gap-3 border-b border-border px-4 font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:border-b-0 md:border-r", isActive && "bg-accent text-chart-1")}><span className="text-[8px] opacity-45">{String(code).padStart(2, "0")}</span>{t(label)}<span className={cx("absolute inset-x-0 bottom-0 h-px bg-chart-1 transition-transform", isActive ? "scale-x-100" : "scale-x-0 group-hover:scale-x-100")} /></Link>;
   })}</nav>;
 }
 

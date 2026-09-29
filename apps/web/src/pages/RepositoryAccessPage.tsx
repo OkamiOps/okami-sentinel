@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import type { RepositoryAccessEntry, RepositoryRole, UserSummary } from "@csb/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -69,8 +70,8 @@ export function RepositoryAccessPage() {
   }
 
   return <>
-    <PageHeader code={t("access.code")} title={t("access.title")} description={t("access.description")} />
     <SettingsSectionNav />
+    <PageHeader code={t("access.code")} title={t("access.title")} description={t("access.description")} />
     {loadFailed && <AlertBanner>
       <span className="mr-3">{t("access.loadError")}</span>
       <Button type="button" variant="outline" size="sm" onClick={() => void load()}>{t("common.retry")}</Button>
@@ -100,8 +101,8 @@ function RepositoryPanel({ entry, users, onSetRole }: {
 
   // Administrators already reach every repository, and a disabled account
   // reaches none: granting either a role here would say nothing true.
-  const candidates = users.filter((user) => !user.isAdmin && userState(user) !== "disabled"
-    && !entry.grants.some((grant) => grant.userId === user.id));
+  const members = users.filter((user) => !user.isAdmin && userState(user) !== "disabled");
+  const candidates = members.filter((user) => !entry.grants.some((grant) => grant.userId === user.id));
   const candidate = candidates.find((user) => user.id === candidateId) ?? null;
 
   function grant() {
@@ -123,7 +124,7 @@ function RepositoryPanel({ entry, users, onSetRole }: {
     wrapTitle
   >
     {entry.grants.length === 0
-      ? <EmptyState title={t("access.noGrants")} />
+      ? <EmptyState compact title={t("access.noGrants")} />
       : <ul className="divide-y divide-border">
         {entry.grants.map((grant) => {
           const user = users.find((item) => item.id === grant.userId);
@@ -145,7 +146,17 @@ function RepositoryPanel({ entry, users, onSetRole }: {
     <div className="grid gap-2 border-t bg-muted/20 px-4 py-3">
       <span className="bench-label">{t("access.grantTitle")}</span>
       {candidates.length === 0
-        ? <p className="text-xs text-muted-foreground">{t("access.allGranted")}</p>
+        // "Every active member already has access" is only true when there is
+        // a member to have it. With none, nobody reaches this repository and
+        // the fix is an invitation, not a grant: say so and point at it.
+        ? members.length === 0
+          ? <p className="text-xs text-muted-foreground">
+            {t("access.noMembers")}{" "}
+            <Link to="/settings/users" className="text-primary underline underline-offset-2 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+              {t("access.noMembersLink")}
+            </Link>
+          </p>
+          : <p className="text-xs text-muted-foreground">{t("access.allGranted")}</p>
         : <div className="grid gap-2 sm:grid-cols-[minmax(0,20rem)_14rem_auto] sm:items-center sm:justify-start">
           <Select value={candidateId ?? ""} onValueChange={setCandidateId}>
             <SelectTrigger aria-label={t("access.userFor", { repository: entry.displayName })} size="sm" className="w-full min-w-0">
