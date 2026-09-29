@@ -17,7 +17,7 @@ const origin = "https://sentinel.example";
 const password = "test-admin-secret-never-production-1234";
 const auth = { Authorization: `Basic ${Buffer.from(`admin:${password}`).toString("base64")}` };
 const serverSettings = (): ServerSettings => ({
-  mode: "server", origin, username: "admin", password, repositoryRoots: ["/repos"],
+  mode: "server", origin, username: "admin", password, repositoryRoots: ["/repos"], trustProxy: false,
 });
 
 async function sessionCookie(isAdmin = true): Promise<{ cookie: string; csrf: string; userId: string }> {

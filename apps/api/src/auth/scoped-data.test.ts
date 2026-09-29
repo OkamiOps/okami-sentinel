@@ -68,7 +68,7 @@ test("an unscoped default still sees every run", () => {
 
 const origin = "https://sentinel.example";
 const serverSettings: ServerSettings = {
-  mode: "server", origin, username: "admin", password: "x".repeat(24), repositoryRoots: [],
+  mode: "server", origin, username: "admin", password: "x".repeat(24), repositoryRoots: [], trustProxy: false,
 };
 
 function seedRepository(key: string): void {

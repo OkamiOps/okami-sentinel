@@ -16,7 +16,9 @@ import { createUser, findUserByUsername, updateUser } from "./user-store.js";
 
 const origin = "https://sentinel.example";
 const settings: ServerSettings = {
-  mode: "server", origin, username: "admin", password: "x".repeat(24), repositoryRoots: [],
+  // The tests below address the limiter by `X-Forwarded-For`, which only a
+  // deployment behind one trusted proxy may believe.
+  mode: "server", origin, username: "admin", password: "x".repeat(24), repositoryRoots: [], trustProxy: true,
 };
 
 function serverWithAuthApi() {
@@ -149,7 +151,7 @@ test("session deletion reaches only the caller's own sessions", async () => {
 });
 
 test("local mode reports the local principal and hides the account routes", async () => {
-  const local: ServerSettings = { mode: "local", origin: null, username: "", password: "", repositoryRoots: [] };
+  const local: ServerSettings = { mode: "local", origin: null, username: "", password: "", repositoryRoots: [], trustProxy: false };
   const app = new Hono().route("/api", new Hono().route("/", createAuthApi({ settings: local })));
   const session = await (await app.request("http://localhost/api/auth/session")).json();
   assert.deepEqual(session, {

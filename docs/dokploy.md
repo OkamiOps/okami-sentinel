@@ -30,6 +30,7 @@ O Dokploy recomenda File Mounts para arquivos que não podem depender do checkou
 | `CSB_COMPOSE_PROJECT_NAME` | identificador único da instalação, por exemplo `sentinel-equipe-a` |
 | `CSB_GITHUB_ACTIONS_WORKFLOW_SHA` | SHA de 40 caracteres do commit Sentinel que está sendo construído |
 | `CSB_PUBLIC_ORIGIN` | domínio HTTPS final, por exemplo `https://sentinel.exemplo.com` |
+| `CSB_TRUST_PROXY` | `1` nesta implantação: o Traefik do Dokploy é o único proxy à frente do serviço |
 | `CSB_ADMIN_USER` | usuário administrativo, por exemplo `admin` |
 | `CSB_ADMIN_PASSWORD_PATH` | `../files/sentinel-secrets/admin_password` |
 | `CSB_VAULT_KEY_PATH` | `../files/sentinel-secrets/vault_key` |
@@ -38,6 +39,8 @@ O Dokploy recomenda File Mounts para arquivos que não podem depender do checkou
 4. Em **Domains**, adicione o domínio para o serviço `sentinel`, porta `8787`, e habilite HTTPS. O gerenciamento de domínio do Dokploy acrescenta as labels Traefik necessárias; confirme o resultado em **Preview Compose** antes do primeiro deploy. A [documentação de Domains](https://docs.dokploy.com/docs/core/docker-compose/domains) descreve esse fluxo.
 5. Revise o Preview Compose. Confirme: `sentinel_data` é volume nomeado, os arquivos de secret estão fora do checkout, `sentinel` não possui `ports`, e o serviço selecionado pelo domínio é `sentinel:8787`.
 6. Faça o deploy e acompanhe `volume-init` até ele concluir. Em seguida, espere `sentinel` ficar saudável e consulte `https://seu-dominio/readyz`.
+
+`CSB_TRUST_PROXY=1` autoriza o Sentinel a ler o endereço do visitante do último item de `X-Forwarded-For`, que é justamente o item acrescentado pelo Traefik. Esse endereço identifica o balde do limite de tentativas de login por IP. Só defina `1` quando o serviço estiver exclusivamente atrás do proxy do Dokploy, como neste guia; com a porta publicada direto no host, mantenha `0` — caso contrário qualquer visitante escolhe o próprio balde enviando o cabeçalho. Com `0` atrás do proxy não há brecha: todos os logins compartilham um balde único de 30 tentativas por minuto.
 
 As variáveis criadas na interface do Dokploy são gravadas em `.env` para interpolação, mas não são automaticamente injetadas em todos os containers. O Compose deste projeto usa referências explícitas para evitar esse erro de configuração. Veja [Environment no Dokploy](https://docs.dokploy.com/docs/core/docker-compose#environment).
 
