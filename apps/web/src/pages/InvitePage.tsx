@@ -7,10 +7,11 @@ import { AuthCard, AuthFrame } from "../components/auth/AuthFrame";
 import { Loading, cx } from "../components/ui";
 import { useAuth } from "../auth/AuthProvider";
 import { AuthRequestError, authApi, type InvitePreview } from "../lib/auth-api";
-import { authMessages } from "../i18n/auth";
+import { authMessages, type AuthMessageKey } from "../i18n/auth";
 import { useScopedI18n } from "../i18n/scoped";
 
 const MIN_LENGTH = 12;
+const MAX_LENGTH = 256;
 type StrengthKey = "strength.weak" | "strength.fair" | "strength.good" | "strength.strong";
 
 /** Length is the only signal the server policy actually rewards, so it is the
@@ -20,6 +21,22 @@ function strengthOf(password: string): { filled: number; key: StrengthKey } {
   if (password.length >= 16) return { filled: 3, key: "strength.good" };
   if (password.length >= MIN_LENGTH) return { filled: 2, key: "strength.fair" };
   return { filled: 1, key: "strength.weak" };
+}
+
+/**
+ * "Ask your administrator for a new link" is destructive advice: it sends the
+ * colleague away and burns the token they are holding. Say it only when the
+ * server actually rejected the token, repeat a named policy rule when the
+ * server named one, and treat everything else (429, 5xx, a dropped network) as
+ * a retry on a form that is still usable.
+ */
+function acceptFailureKey(failure: unknown): AuthMessageKey {
+  if (!(failure instanceof AuthRequestError)) return "invite.retry";
+  if (failure.code === "password_too_short") return "invite.tooShort";
+  if (failure.code === "password_too_long") return "invite.tooLong";
+  if (failure.code === "password_matches_username") return "invite.matchesUsername";
+  if (failure.code === "invite_invalid" || failure.status === 404) return "invite.invalid";
+  return "invite.retry";
 }
 
 export function InvitePage() {
@@ -49,6 +66,7 @@ export function InvitePage() {
     event.preventDefault();
     if (pending || preview === null) return;
     if (password.length < MIN_LENGTH) return setError(t("invite.tooShort"));
+    if (password.length > MAX_LENGTH) return setError(t("invite.tooLong"));
     if (password.toLowerCase() === preview.username.toLowerCase()) return setError(t("invite.matchesUsername"));
     if (password !== confirmation) return setError(t("invite.mismatch"));
     setPending(true);
@@ -58,12 +76,7 @@ export function InvitePage() {
       await refresh();
       navigate("/", { replace: true });
     } catch (failure) {
-      // The server owns the password policy; when it names the rule it broke,
-      // repeat that rule instead of blaming the link.
-      const code = failure instanceof AuthRequestError ? failure.code : null;
-      setError(t(code === "password_too_short" ? "invite.tooShort"
-        : code === "password_matches_username" ? "invite.matchesUsername"
-          : "invite.invalid"));
+      setError(t(acceptFailureKey(failure)));
     } finally {
       setPending(false);
     }

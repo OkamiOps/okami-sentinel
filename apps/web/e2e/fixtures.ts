@@ -17,6 +17,7 @@ export interface MockApiOptions {
   signedOut?: boolean;
   session?: { isAdmin: boolean; grants: RepositoryGrant[] };
   loginResponse?: { status: number; body: unknown };
+  acceptInviteResponse?: { status: number; body: unknown };
   patchUserResponse?: { status: number; body: unknown };
 }
 
@@ -112,6 +113,10 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
     state.requestUrls.push(`${req.method()} ${path}${url.search}`);
     const json = (body: unknown, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
     if (state.offline) return route.fulfill({ status: 503, contentType: "text/plain", body: "Service unavailable" });
+    // A signed-out browser gets a 401 from everything except the public auth
+    // endpoints, exactly as the real API does. Flipping `auth.signedIn` after
+    // load therefore reproduces a session expiring mid-visit.
+    if (!state.auth.signedIn && !path.startsWith("/auth/")) return json({ error: "authentication_required" }, 401);
     if (path === "/scans/active") return json({ scans: state.runs.filter((run) => ["running", "queued"].includes(run.status)) });
     if (path === "/scans/catalog") return json({ total: state.runs.length, repositories: [...new Set(state.runs.map((run) => run.displayName))].sort() });
     if (path === "/metrics/summary") {
@@ -188,6 +193,7 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
         return json({ username: "ana", displayName: "Ana", purpose: "invite", invitedBy: "Root", expiresAt: "2026-10-02T10:00:00.000Z" });
       }
       if (req.method() === "POST") {
+        if (options.acceptInviteResponse) return json(options.acceptInviteResponse.body, options.acceptInviteResponse.status);
         state.auth.signedIn = true;
         return json({ ok: true });
       }
