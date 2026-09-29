@@ -21,14 +21,19 @@ export function isUnderRepositoryRoot(candidate: string, roots: readonly string[
   });
 }
 
+// Deliberately opt-in: only a same-origin, relative Sentinel API path (a
+// plain string starting with API_BASE) counts. Provider endpoints and any
+// other absolute or non-string request are never treated as ours, so they
+// keep their original headers/credentials and can never trigger our own
+// CSRF attachment or session-loss handling below.
+function isSentinelApiRequest(input: RequestInfo | URL): boolean {
+  return typeof input === "string" && (input === API_BASE || input.startsWith(`${API_BASE}/`));
+}
+
 function isApiMutation(input: RequestInfo | URL, init?: RequestInit): boolean {
   const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
   if (!new Set(["POST", "PUT", "PATCH", "DELETE"]).has(method)) return false;
-
-  // The helper is deliberately opt-in and accepts only same-origin, relative
-  // API paths. Provider endpoints and any other absolute request retain their
-  // original headers and credentials.
-  return typeof input === "string" && (input === API_BASE || input.startsWith(`${API_BASE}/`));
+  return isSentinelApiRequest(input);
 }
 
 async function isInvalidCsrfResponse(response: Response): Promise<boolean> {
@@ -44,15 +49,16 @@ async function isInvalidCsrfResponse(response: Response): Promise<boolean> {
 const AUTH_PATH_PREFIX = `${API_BASE}/auth/`;
 
 function isUnderAuthPath(input: RequestInfo | URL): boolean {
-  const url = typeof input === "string" ? input : input instanceof Request ? input.url : String(input);
-  return url.startsWith(AUTH_PATH_PREFIX) || url.includes(AUTH_PATH_PREFIX);
+  return typeof input === "string" && input.startsWith(AUTH_PATH_PREFIX);
 }
 
 /**
  * Signals every consumer (the auth provider, in particular) that the browser
  * no longer holds a valid session, without importing React state here. A 401
  * from `/api/auth/*` itself is an expected sign-in/sign-out response, not a
- * session loss, so it is excluded.
+ * session loss, so it is excluded. A 401 from anywhere that isn't our own API
+ * (an external provider endpoint, in particular) must never sign Sentinel's
+ * user out either.
  */
 function notifyUnauthorized(): void {
   if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
@@ -80,7 +86,7 @@ export function createSecuritySessionClient(fetcher: Fetcher = fetch) {
 
   const request = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const respond = async (response: Response): Promise<Response> => {
-      if (response.status === 401 && !isUnderAuthPath(input)) {
+      if (response.status === 401 && isSentinelApiRequest(input) && !isUnderAuthPath(input)) {
         clear();
         notifyUnauthorized();
       }
