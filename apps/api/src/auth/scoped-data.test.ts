@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test, { after } from "node:test";
 import { Hono } from "hono";
-import type { GitHubMonitorOverview } from "@csb/shared";
+import type { GitHubMonitorOverview, GitHubMonitorRule } from "@csb/shared";
 import { app } from "../app.js";
 import { createGitHubMonitorApi } from "../github-monitor/api.js";
 import type { GitHubMonitorService } from "../github-monitor/service.js";
@@ -138,7 +138,7 @@ function seedRemoteRepository(key: string): void {
     .run(key, key, key);
 }
 
-function seedMonitorRule(id: string, repositoryKey: string): void {
+function seedMonitorRule(id: string, repositoryKey: string, executor = "sentinel-managed"): void {
   seeded.monitorRules.add(id);
   ensureGitHubMonitorSchema(getDb());
   const now = new Date().toISOString();
@@ -146,8 +146,8 @@ function seedMonitorRule(id: string, repositoryKey: string): void {
     (id, repository_key, connection_id, installation_id, repository_id, executor, scanner_json,
      cost_ceiling_usd, daily_cost_ceiling_usd, follow_branches_json, checkout_mode, enabled, revision,
      baseline_initialized_at, last_polled_at, last_error, created_at, updated_at)
-    VALUES (?, ?, 'conn', 'inst', 'repo', 'sentinel-managed', NULL, NULL, NULL, '["main"]', 'none', 1, 1, ?, ?, NULL, ?, ?)`)
-    .run(id, repositoryKey, now, now, now, now);
+    VALUES (?, ?, 'conn', 'inst', 'repo', ?, NULL, 2, 2, '["main"]', 'none', 1, 1, ?, ?, NULL, ?, ?)`)
+    .run(id, repositoryKey, executor, now, now, now, now);
 }
 
 function seedMonitorEvent(id: string, ruleId: string, repositoryKey: string): void {
@@ -457,24 +457,111 @@ test("a monitor rule is created and edited by the repository's maintainer", (t) 
   assert.equal(unknownPatch.status, 404);
   assert.deepEqual(await unknownPatch.json(), { error: "not_found" });
 
-  const patched = await send(maintainer, "PATCH", `/api/github-monitor/rules/${ownedRule}`, { enabled: false, checkoutMode: "fetch" });
+  // The rule it just created runs on GitHub Actions, so the maintainer owns it.
+  const patched = await send(maintainer, "PATCH", `/api/github-monitor/rules/${createdRule.id}`, { enabled: false, checkoutMode: "fetch" });
   assert.equal(patched.status, 200);
   const patchedRule = (await patched.json()).rule as Record<string, unknown>;
   assert.deepEqual(
     { id: patchedRule.id, repositoryKey: patchedRule.repositoryKey, enabled: patchedRule.enabled, checkoutMode: patchedRule.checkoutMode },
-    { id: ownedRule, repositoryKey: owned, enabled: false, checkoutMode: "fetch" },
+    { id: createdRule.id, repositoryKey: fresh, enabled: false, checkoutMode: "fetch" },
   );
 
   // A patch can never carry the rule to another repository, whatever the caller
   // maintains: the field is refused outright and the rule stays where it was.
-  const moved = await send(maintainer, "PATCH", `/api/github-monitor/rules/${ownedRule}`, { repositoryKey: fresh, enabled: false });
+  const moved = await send(maintainer, "PATCH", `/api/github-monitor/rules/${createdRule.id}`, { repositoryKey: owned, enabled: false });
   assert.equal(moved.status, 400);
   assert.deepEqual(await moved.json(), { error: "github_monitor_invalid" });
   assert.equal(
-    (getDb().prepare("SELECT repository_key FROM github_monitor_rules WHERE id = ?").get(ownedRule) as { repository_key: string }).repository_key,
-    owned,
+    (getDb().prepare("SELECT repository_key FROM github_monitor_rules WHERE id = ?").get(createdRule.id) as { repository_key: string }).repository_key,
+    fresh,
   );
+
+  // Phase 1 cost rule: a member never spends on a provider connection, so a
+  // Sentinel-managed rule is refused however it is addressed — created from
+  // scratch, or merely enabled where an administrator left one.
+  const sentinelBody = {
+    ...ruleBody(fresh), executor: "sentinel-managed",
+    scanner: {
+      engine: "codex-security", mode: "standard",
+      connection: { connectionId: "provider-connection", modelSelectionMode: "runtime-default", modelId: null },
+    },
+  };
+  const spendingCreate = await send(maintainer, "POST", "/api/github-monitor/rules", sentinelBody);
+  assert.equal(spendingCreate.status, 403);
+  assert.deepEqual(await spendingCreate.json(), { error: "forbidden" });
+
+  const enablingSpend = await send(maintainer, "PATCH", `/api/github-monitor/rules/${ownedRule}`, { enabled: true });
+  assert.equal(enablingSpend.status, 403);
+  assert.deepEqual(await enablingSpend.json(), { error: "forbidden" });
+  assert.equal(
+    (getDb().prepare("SELECT enabled FROM github_monitor_rules WHERE id = ?").get(ownedRule) as { enabled: number }).enabled,
+    1,
+  );
+  // Not even a cosmetic patch, because the rule it would leave behind still
+  // launches Sentinel-managed paid scans.
+  const disablingSpend = await send(maintainer, "PATCH", `/api/github-monitor/rules/${ownedRule}`, { checkoutMode: "fetch" });
+  assert.equal(disablingSpend.status, 403);
+  assert.deepEqual(await disablingSpend.json(), { error: "forbidden" });
 }));
+
+/**
+ * The same cost rule from the administrator's side, and for the two paths the
+ * server-mode test above cannot reach without a stored administrator: a fixed
+ * principal in front of the monitor API, with the service faked so the decision
+ * is the only thing observed.
+ */
+test("only an administrator may point a monitor rule at a provider connection", async () => {
+  const key = `scoped-spend-${Date.now()}`;
+  const createdExecutors: string[] = [];
+  const patchedIds: string[] = [];
+  const rule = { id: "spend-rule", repositoryKey: key } as unknown as GitHubMonitorRule;
+  const service = {
+    createRule: (input: { executor: string }) => { createdExecutors.push(input.executor); return rule; },
+    patchRule: (id: string) => { patchedIds.push(id); return rule; },
+  } as unknown as GitHubMonitorService;
+  const monitor = (isAdmin: boolean) => {
+    const probe = new Hono();
+    probe.use("*", async (c, next) => {
+      c.set("principal" as never, {
+        ...LOCAL_PRINCIPAL, kind: "user", isAdmin, grants: new Map([[key, "maintainer"]]),
+      } as never);
+      await next();
+    });
+    probe.route("/", createGitHubMonitorApi({ service } as never));
+    return probe;
+  };
+  const body = (executor: "sentinel-managed" | "github-actions") => JSON.stringify({
+    repositoryKey: key, executor, costCeilingUsd: 2, followBranches: ["main"], checkoutMode: "none", enabled: false,
+    scanner: executor === "github-actions" ? null : {
+      engine: "codex-security", mode: "standard",
+      connection: { connectionId: "provider-connection", modelSelectionMode: "runtime-default", modelId: null },
+    },
+  });
+  const create = (isAdmin: boolean, executor: "sentinel-managed" | "github-actions") =>
+    monitor(isAdmin).request("/github-monitor/rules", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: body(executor),
+    });
+
+  const refused = await create(false, "sentinel-managed");
+  assert.equal(refused.status, 403);
+  assert.deepEqual(await refused.json(), { error: "forbidden" });
+  assert.deepEqual(createdExecutors, []);
+
+  // The Actions executor spends the repository's own budget under its own
+  // credentials, so a maintainer may still use it.
+  assert.equal((await create(false, "github-actions")).status, 201);
+  assert.deepEqual(createdExecutors, ["github-actions"]);
+
+  assert.equal((await create(true, "sentinel-managed")).status, 201);
+  assert.deepEqual(createdExecutors, ["github-actions", "sentinel-managed"]);
+
+  // An administrator's patch is not measured against the resulting rule at all.
+  const adminPatch = await monitor(true).request("/github-monitor/rules/spend-rule", {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: true }),
+  });
+  assert.equal(adminPatch.status, 200);
+  assert.deepEqual(patchedIds, ["spend-rule"]);
+});
 
 test("health discloses server paths to an administrator only", () => withServerRuntime(async () => {
   const forAdmin = await (await asPrincipal({ isAdmin: true }).request("/health")).json();

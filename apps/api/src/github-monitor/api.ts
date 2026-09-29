@@ -10,6 +10,7 @@ import {
   scopeOf,
   type AccessScope,
 } from "../auth/principal.js";
+import { getGitHubMonitorRule } from "./store.js";
 import {
   GitHubMonitorError,
   GitHubMonitorService,
@@ -58,7 +59,9 @@ export function createGitHubMonitorApi(dependencies: GitHubMonitorApiDependencie
       const principal = principalOf(c);
       if (!canSeeRepository(principal, repositoryKey)) return c.json({ error: "not_found" }, 404);
       if (!hasRepositoryRole(principal, repositoryKey, "maintainer")) return c.json({ error: "forbidden" }, 403);
-      return c.json({ rule: service.createRule(parseRuleInput(body)) }, 201);
+      const input = parseRuleInput(body);
+      if (!principal.isAdmin && spendsOnProviderConnection(input)) return c.json({ error: "forbidden" }, 403);
+      return c.json({ rule: service.createRule(input) }, 201);
     } catch (error) {
       return monitorError(c, error);
     }
@@ -66,7 +69,20 @@ export function createGitHubMonitorApi(dependencies: GitHubMonitorApiDependencie
 
   api.patch("/github-monitor/rules/:id", async (c) => {
     try {
-      return c.json({ rule: service.patchRule(ruleId(c.req.param("id")), parseRulePatch(await c.req.json<unknown>())) });
+      const id = ruleId(c.req.param("id"));
+      const patch = parseRulePatch(await c.req.json<unknown>());
+      // The route policy decides the repository role from the rule's own row.
+      // What it cannot decide is the cost rule, which depends on the rule this
+      // patch would leave behind, not on the one addressed.
+      const principal = principalOf(c);
+      const current = principal.isAdmin ? null : getGitHubMonitorRule(id);
+      if (current !== null && spendsOnProviderConnection({
+        executor: patch.executor ?? current.executor,
+        scanner: patch.scanner === undefined ? current.scanner : patch.scanner,
+      })) {
+        return c.json({ error: "forbidden" }, 403);
+      }
+      return c.json({ rule: service.patchRule(id, patch) });
     } catch (error) {
       return monitorError(c, error);
     }
@@ -110,6 +126,17 @@ export function createGitHubMonitorApi(dependencies: GitHubMonitorApiDependencie
   });
 
   return api;
+}
+
+/**
+ * Phase 1 cost rule: only an administrator spends on a provider connection. A
+ * Sentinel-managed rule launches paid scans through one, so a member's rule has
+ * to stay on the GitHub Actions executor, which spends the repository's own
+ * Actions budget under its own credentials. A scanner selection is refused on
+ * its own too: it names the connection such a scan would bill.
+ */
+function spendsOnProviderConnection(rule: Pick<GitHubMonitorRule, "executor" | "scanner">): boolean {
+  return rule.executor === "sentinel-managed" || rule.scanner !== null;
 }
 
 /**
