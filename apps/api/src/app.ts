@@ -416,7 +416,7 @@ export function createGuardrailsApp(
   });
 
   guardrails.post("/guardrails/repositories/:repositoryKey/target-preview", async (c) => {
-    const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
+    const repository = deps.getRepository(c.req.param("repositoryKey"));
     if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
     try {
       const request = parseTargetPreviewRequest(await c.req.json<unknown>());
@@ -427,7 +427,7 @@ export function createGuardrailsApp(
   });
 
   guardrails.get("/guardrails/repositories/:repositoryKey/pull-requests", async (c) => {
-    const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
+    const repository = deps.getRepository(c.req.param("repositoryKey"));
     if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
     if (!hasGitHubRemote(repository)) return c.json({ error: "Repositório não possui remoto GitHub" }, 400);
     try {
@@ -438,7 +438,7 @@ export function createGuardrailsApp(
   });
 
   guardrails.get("/guardrails/repositories/:repositoryKey/policy", async (c) => {
-    const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
+    const repository = deps.getRepository(c.req.param("repositoryKey"));
     if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
     try {
       if (repository.source === "github") {
@@ -462,7 +462,7 @@ export function createGuardrailsApp(
   });
 
   guardrails.put("/guardrails/repositories/:repositoryKey/policy", async (c) => {
-    const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
+    const repository = deps.getRepository(c.req.param("repositoryKey"));
     if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
     if (repository.source === "github") {
       return c.json({ error: "remote_policy_read_only" }, 409);
@@ -482,7 +482,7 @@ export function createGuardrailsApp(
   });
 
   guardrails.post("/guardrails/repositories/:repositoryKey/policy/simulate", async (c) => {
-    const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
+    const repository = deps.getRepository(c.req.param("repositoryKey"));
     if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
     try {
       const body = await c.req.json<{ gateId?: string; policy?: unknown; now?: string }>();
@@ -514,20 +514,20 @@ export function createGuardrailsApp(
   });
 
   guardrails.get("/guardrails/repositories/:repositoryKey/github-status", async (c) => {
-    const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
+    const repository = deps.getRepository(c.req.param("repositoryKey"));
     if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
     const status = await deps.getGitHubStatus(repository);
     return c.json({ status });
   });
 
   guardrails.get("/guardrails/repositories/:repositoryKey/actions-status", async (c) => {
-    const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
+    const repository = deps.getRepository(c.req.param("repositoryKey"));
     if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
     return c.json({ status: await deps.getActionsStatus(repository) });
   });
 
   guardrails.get("/guardrails/repositories/:repositoryKey/caller-workflow", async (c) => {
-    const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
+    const repository = deps.getRepository(c.req.param("repositoryKey"));
     if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
     if (!hasGitHubRemote(repository)) {
       return c.json({ error: "Repositório não possui remoto GitHub" }, 400);
@@ -540,7 +540,7 @@ export function createGuardrailsApp(
   });
 
   guardrails.put("/guardrails/repositories/:repositoryKey/caller-workflow", async (c) => {
-    const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
+    const repository = deps.getRepository(c.req.param("repositoryKey"));
     if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
     if (!hasGitHubRemote(repository)) return c.json({ error: "Repositório não possui remoto GitHub" }, 400);
     if (!deps.installCallerWorkflow) return c.json({ error: "github_workflow_install_unavailable" }, 501);
@@ -558,7 +558,7 @@ export function createGuardrailsApp(
   });
 
   guardrails.post("/guardrails/repositories/:repositoryKey/actions-dispatch", async (c) => {
-    const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
+    const repository = deps.getRepository(c.req.param("repositoryKey"));
     if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
     try {
       const request = parseStartGateRequest(await c.req.json<unknown>());
@@ -581,7 +581,7 @@ export function createGuardrailsApp(
   });
 
   guardrails.post("/guardrails/repositories/:repositoryKey/baseline/sync", async (c) => {
-    const repository = deps.getRepository(repositoryKey(c.req.param("repositoryKey")));
+    const repository = deps.getRepository(c.req.param("repositoryKey"));
     if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
     if (!hasGitHubRemote(repository)) {
       return c.json({ error: "Repositório não possui remoto GitHub" }, 400);
@@ -1179,14 +1179,6 @@ function parseGitHubRemote(
   if (!remoteUrl) return null;
   const match = /github\.com[/:]([^/]+)\/([^/]+?)(?:\.git)?$/.exec(remoteUrl);
   return match ? { owner: match[1]!, name: match[2]! } : null;
-}
-
-function repositoryKey(value: string): string {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
 }
 
 function requiredPreviewIdentity(value: string | undefined): string {

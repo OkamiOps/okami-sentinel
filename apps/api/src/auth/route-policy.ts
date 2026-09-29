@@ -175,7 +175,10 @@ export function authorize(): MiddlewareHandler {
     let principal: Principal;
     try {
       principal = principalOf(c);
-    } catch {
+    } catch (error) {
+      // Only a missing session is an authentication problem. Anything else is a
+      // genuine fault and must surface as a 500 instead of a misleading 401.
+      if (!(error instanceof Error) || error.message !== "principal_missing") throw error;
       return c.json({ error: "authentication_required" }, 401);
     }
     if (requirement.kind === "authenticated" || requirement.kind === "scoped") return next();
