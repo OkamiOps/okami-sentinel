@@ -23,7 +23,9 @@ test("every registered API route declares a requirement", () => {
     .filter((entry, index, all) => all.indexOf(entry) === index)
     .filter((entry) => {
       const [method, routePath] = entry.split(" ") as [string, string];
-      return matchPolicy(method, routePath.replaceAll(/:([A-Za-z]+)/g, "x"))?.requirement === undefined;
+      // Any parameter name Hono accepts, so a future `:userId2` or `:user_id`
+      // route is still normalized instead of silently escaping the check.
+      return matchPolicy(method, routePath.replaceAll(/:([A-Za-z0-9_]+)/g, "x"))?.requirement === undefined;
     });
   assert.deepEqual(missing, []);
 });
