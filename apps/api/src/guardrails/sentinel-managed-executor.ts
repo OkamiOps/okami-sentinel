@@ -8,6 +8,7 @@ import {
   evaluateGate,
   parseGateArtifact,
   selectGateBaseline,
+  type BaselineFindingSummary,
   type GateBaselineCandidate,
   type GateBaselineSelection,
 } from "@csb/gate-core";
@@ -121,6 +122,19 @@ export class SentinelManagedExecutor {
       // prove absence or unavailability, but cannot prove compatibility: the
       // scanner's effective identity is only known after it completes.
       const preflightLineage = scanLineage(null, input.preview, materialization.head.identity);
+      // Coverage is decided by the snapshot alone, so an incomplete one can
+      // never publish success. Refuse it before the scan instead of discarding
+      // a finished scan for a reason that was already known.
+      if (coverage.status !== "complete") {
+        return await this.#finalizeWithoutScan({
+          input,
+          materialization,
+          changeSet,
+          coverage,
+          lineage: preflightLineage,
+          baseline: { kind: "absent" },
+        });
+      }
       const preflightCandidate = requiresBaseline
         ? await this.dependencies.baselineCandidate({
             repository: input.repository,
@@ -140,27 +154,14 @@ export class SentinelManagedExecutor {
         requiresBaseline
         && (preflightBaseline.kind === "absent" || preflightBaseline.kind === "unavailable")
       ) {
-        const artifact = this.#artifact({
+        return await this.#finalizeWithoutScan({
           input,
           materialization,
           changeSet,
           coverage,
           lineage: preflightLineage,
           baseline: preflightBaseline,
-          scan: null,
         });
-        const parsed = parseGateArtifact(artifact);
-        if (parsed.schemaVersion !== 2) {
-          throw new SentinelManagedExecutorError("managed_executor_invalid");
-        }
-        const result: SentinelManagedExecutionResult = {
-          artifact: parsed,
-          changeSet,
-          scan: null,
-          baseline: preflightBaseline,
-        };
-        await input.hooks.finalize(result);
-        return result;
       }
       if (changeSet.files.length > 0 || establishesProtectedBaseline) {
         const request = scanRequest(input, changeSet);
@@ -214,8 +215,43 @@ export class SentinelManagedExecutor {
       await input.hooks.finalize(result);
       return result;
     } finally {
-      if (materialization !== null) await materialization.release();
+      if (materialization !== null) {
+        try {
+          await materialization.release();
+        } catch (error) {
+          // Releasing a lease is bookkeeping: it must neither mask the failure
+          // that is already propagating nor discard a finalized decision. An
+          // orphan lease is reconciled by reconcileManagedMaterializations.
+          const detail = error instanceof Error ? error.stack ?? error.message : String(error);
+          console.error(
+            `[csb-api] Gate ${input.gateId} snapshot release failed: ${detail}`,
+          );
+        }
+      }
     }
+  }
+
+  async #finalizeWithoutScan(context: {
+    input: SentinelManagedExecutionInput;
+    materialization: MaterializationHandle;
+    changeSet: ChangeSet;
+    coverage: GateCoverageEnvelope;
+    lineage: EffectiveScanLineage;
+    baseline: GateBaselineSelection;
+  }): Promise<SentinelManagedExecutionResult> {
+    const artifact = this.#artifact({ ...context, scan: null });
+    const parsed = parseGateArtifact(artifact);
+    if (parsed.schemaVersion !== 2) {
+      throw new SentinelManagedExecutorError("managed_executor_invalid");
+    }
+    const result: SentinelManagedExecutionResult = {
+      artifact: parsed,
+      changeSet: context.changeSet,
+      scan: null,
+      baseline: context.baseline,
+    };
+    await context.input.hooks.finalize(result);
+    return result;
   }
 
   #artifact(context: {
@@ -405,17 +441,17 @@ function scanLineage(
     });
   }
   const unknown = `unreported-${safeIdentifier(scan.id)}`;
-  const engineVersion = scan.scannerVersion ?? unknown;
+  const engineVersion = lineageText(scan.scannerVersion, unknown);
   return buildScanLineage({
     engine: scan.engine,
     engineVersion,
-    route: scan.connection?.routeKind ?? scan.execution?.executionProfile ?? unknown,
-    protocol: scan.connection?.protocol ?? unknown,
-    provider: scan.provider ?? unknown,
-    model: scan.model ?? unknown,
-    reasoningEffort: scan.effort ?? "provider-managed",
-    methodology: scan.execution?.methodologyRef ?? unknown,
-    profile: scan.execution?.profileVersion ?? scan.mode ?? unknown,
+    route: lineageText(scan.connection?.routeKind ?? scan.execution?.executionProfile, unknown),
+    protocol: lineageText(scan.connection?.protocol, unknown),
+    provider: lineageText(scan.provider, unknown),
+    model: lineageText(scan.model, unknown),
+    reasoningEffort: lineageText(scan.effort, "provider-managed"),
+    methodology: lineageText(scan.execution?.methodologyRef, unknown),
+    profile: lineageText(scan.execution?.profileVersion ?? scan.mode, unknown),
     recipeHash: canonicalHash(scan.recipeHash) ?? hash({
       scanId: scan.id,
       engine: scan.engine,
@@ -464,8 +500,15 @@ function snapshotCoverage(
   };
 }
 
-function findingSummary(finding: GateFindingDelta): FindingSummary {
+/**
+ * The baseline artifact already recorded the identity gate-core assigned to each
+ * finding. Carry it forward instead of letting gate-core re-derive it from a
+ * summary whose public text was already redacted, which would silently split one
+ * persistent finding into a new plus a fixed one.
+ */
+function findingSummary(finding: GateFindingDelta): BaselineFindingSummary {
   return {
+    identity: finding.identity,
     findingId: finding.findingId,
     occurrenceId: finding.occurrenceId,
     title: finding.title,
@@ -515,6 +558,24 @@ function canonicalHash(value: string | null): string | null {
 
 function hash(value: unknown): string {
   return `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
+}
+
+/**
+ * Lineage fields are reported by the scanner and by connection metadata, so they
+ * can arrive padded, rooted, control-charactered or overlong. gate-core rejects
+ * all of those, and it would do so only after the scan was already paid for:
+ * normalize here and fall back to the unreported marker when nothing is left.
+ */
+function lineageText(value: string | null | undefined, fallback: string): string {
+  if (value === undefined || value === null) return fallback;
+  const normalized = value
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .trim()
+    .replace(/^(?:\/|\\|~\/|[A-Za-z]:[\\/])+/, "")
+    .slice(0, 256)
+    .trim();
+  if (normalized.length === 0 || /file:\/\//i.test(normalized)) return fallback;
+  return normalized;
 }
 
 function safeIdentifier(value: string): string {

@@ -1360,7 +1360,10 @@ export function refreshAfterClose(
             recipeHash: fallback.recipeHash,
             model: official.model ?? fallback.model,
             effort: official.effort ?? fallback.effort,
+            mode: official.mode ?? fallback.mode,
             scanDir: official.scanDir || fallback.scanDir,
+            execution: official.execution ?? fallback.execution,
+            connection: official.connection ?? fallback.connection,
           };
         }
       }
@@ -1383,6 +1386,8 @@ export function refreshAfterClose(
       model: byDir.model ?? fallback.model,
       effort: byDir.effort ?? fallback.effort,
       mode: byDir.mode ?? fallback.mode,
+      execution: byDir.execution ?? fallback.execution,
+      connection: byDir.connection ?? fallback.connection,
     };
   }
   const existing = getRun(fallback.id) ?? fallback;

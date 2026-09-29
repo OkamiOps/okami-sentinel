@@ -9,6 +9,7 @@ import {
   selectGateBaseline,
   evaluateGate,
   parseGateArtifact,
+  type BaselineFindingSummary,
   type GateBaselineCandidate,
   type BuildGateArtifactInput,
   type BuildOperationalErrorArtifactInput,
@@ -564,13 +565,15 @@ function launchRemoteManagedGate(
   if (activeGates.has(gateId)) return;
   const controller = new AbortController();
   activeManagedGates.set(gateId, { controller, scanId: null });
-  const task = runRemoteManagedGate(
+  const task: Promise<void> = runRemoteManagedGate(
     gateId,
     repository,
     preview,
     controller,
     deps,
-  ).finally(() => {
+  ).catch((error: unknown) => {
+    logGateFailure(gateId, error);
+  }).finally(() => {
     if (activeGates.get(gateId) === task) activeGates.delete(gateId);
     activeManagedGates.delete(gateId);
   });
@@ -674,19 +677,42 @@ async function runRemoteManagedGate(
     }, deps);
   } catch (error) {
     if (deps.getGateRun(gateId)?.status === "cancelled") return;
+    logGateFailure(gateId, error);
     const completedAt = deps.now();
-    const code = managedFailureCode(error, artifactPersisted);
+    // The decision is already durable, so it is the truth about the change.
+    // Releasing the snapshot, emitting or persisting afterwards is bookkeeping
+    // and must never discard a paid scan; the lease is reconciled at startup.
+    // A persisted artifact whose outcome never reached the gate row is the one
+    // case left without a decision to serve, so it still fails closed.
+    const persistedOutcome = artifactPersisted ? deps.getGateRun(gateId)?.outcome ?? null : null;
+    if (persistedOutcome !== null) {
+      deps.updateGateRun(gateId, {
+        materializationState: "failed",
+        status: "completed",
+        error: null,
+        completedAt,
+      });
+      emit(gateId, "done", {
+        gateId,
+        status: "completed",
+        outcome: persistedOutcome,
+        completedAt,
+        artifactAvailable: true,
+      }, deps);
+      return;
+    }
+    const code = managedFailureCode(error);
     deps.updateGateRun(gateId, {
       materializationState: "failed",
       status: "error",
-      ...(artifactPersisted ? {} : { outcome: "error" as const }),
+      outcome: "error",
       error: code,
       completedAt,
     });
     emit(gateId, "error", {
       gateId,
       status: "error",
-      outcome: artifactPersisted ? deps.getGateRun(gateId)?.outcome ?? "error" : "error",
+      outcome: "error",
       code,
       completedAt,
       artifactAvailable: artifactPersisted,
@@ -702,9 +728,15 @@ function launchGate(
   selection?: GuardrailScanSelection,
 ): void {
   if (activeGates.has(gateId)) return;
-  const task = runGate(gateId, deps, recoverScan, baselineSource, selection).finally(() => {
-    if (activeGates.get(gateId) === task) activeGates.delete(gateId);
-  });
+  // The launch is fire and forget, so this is the last place a rejection can be
+  // observed. Leaving it unhandled would take the process down with it.
+  const task: Promise<void> = runGate(gateId, deps, recoverScan, baselineSource, selection)
+    .catch((error: unknown) => {
+      logGateFailure(gateId, error);
+    })
+    .finally(() => {
+      if (activeGates.get(gateId) === task) activeGates.delete(gateId);
+    });
   activeGates.set(gateId, task);
 }
 
@@ -791,17 +823,48 @@ async function runGate(
     );
   } catch (error) {
     if (deps.getGateRun(gateId)?.status === "cancelled") return;
-    await failGate(
-      gateId,
-      repository,
-      policy,
-      changeSet,
-      scan,
-      baselineSource,
-      error,
-      deps,
-    );
+    logGateFailure(gateId, error);
+    try {
+      await failGate(
+        gateId,
+        repository,
+        policy,
+        changeSet,
+        scan,
+        baselineSource,
+        error,
+        deps,
+      );
+    } catch (failure) {
+      // Recording the failure must not become a second failure: without this the
+      // gate would stay in a running status forever, with no terminal event.
+      logGateFailure(gateId, failure);
+      recordUnrecordedGateFailure(gateId, scan, deps);
+    }
   }
+}
+
+function recordUnrecordedGateFailure(
+  gateId: string,
+  scan: ScanRun | null,
+  deps: LocalGateDependencies,
+): void {
+  const completedAt = deps.now();
+  deps.updateGateRun(gateId, {
+    status: "error",
+    outcome: "error",
+    error: "gate_failure_unrecorded",
+    estimatedUsd: scan?.cost?.estimatedUsd ?? 0,
+    completedAt,
+  });
+  emit(gateId, "error", {
+    gateId,
+    status: "error",
+    outcome: "error",
+    code: "gate_failure_unrecorded",
+    completedAt,
+    artifactAvailable: false,
+  }, deps);
 }
 
 async function evaluateAndComplete(
@@ -826,7 +889,7 @@ async function evaluateAndComplete(
       candidate.id !== baselineScanId &&
       isScanForLocalRepository(candidate, repositoryIdentity),
     )
-    .flatMap((candidate) => deps.readFindings(candidate.scanDir));
+    .flatMap((candidate) => readHistoricalFindings(candidate, deps));
   const evaluation = deps.evaluateGate({
     policy,
     branch: changeSet.headRef,
@@ -916,6 +979,27 @@ async function failGate(
 }
 
 /**
+ * Historical evidence is best effort: it can only upgrade a finding to reopened.
+ * One removed or unreadable old scan directory must not fail every later gate,
+ * so skip it loudly. The current scan's findings are load bearing and are read
+ * without this shield, so an unreadable one still fails the gate.
+ */
+function readHistoricalFindings(
+  scan: ScanRun,
+  deps: LocalGateDependencies,
+): FindingSummary[] {
+  try {
+    return deps.readFindings(scan.scanDir);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(
+      `[csb-api] Scan ${scan.id} ignored as gate history: ${detail}`,
+    );
+    return [];
+  }
+}
+
+/**
  * ScanRun intentionally stores the resolved local checkout path instead of a
  * guardrail repository key. Historical lifecycle evidence must therefore be
  * scoped by that checkout before it can classify a finding as reopened.
@@ -939,13 +1023,18 @@ function localRepositoryIdentity(repositoryPath: string): string {
   }
 }
 
+/**
+ * A stored baseline artifact already carries the identity gate-core assigned to
+ * each finding, so keep that field typed all the way into the evaluation instead
+ * of letting it be re-derived from an already redacted summary.
+ */
 async function resolveBaseline(
   repository: GuardrailRepository,
   source: "local" | "github",
   deps: LocalGateDependencies,
 ): Promise<{
   scanId: string | null;
-  findings: FindingSummary[] | null;
+  findings: BaselineFindingSummary[] | null;
   commit: string | null;
 }> {
   if (source === "local") return localBaseline(repository.repositoryKey, deps);
@@ -978,7 +1067,7 @@ function localBaseline(
   deps: LocalGateDependencies,
 ): {
   scanId: string | null;
-  findings: FindingSummary[] | null;
+  findings: BaselineFindingSummary[] | null;
   commit: string | null;
 } {
   const scanId = deps.getBaselineScanId(repositoryKey);
@@ -1202,8 +1291,14 @@ export function reconcileManagedMaterializations() {
   );
 }
 
-function managedFailureCode(error: unknown, artifactPersisted: boolean): string {
-  if (artifactPersisted) return "snapshot_cleanup_failed";
+// The stored gate error is a sanitized code; keep the full cause in the
+// server log so a failure after a long scan is diagnosable.
+function logGateFailure(gateId: string, error: unknown): void {
+  const detail = error instanceof Error ? error.stack ?? error.message : String(error);
+  console.error(`[csb-api] Gate ${gateId} failed: ${detail}`);
+}
+
+function managedFailureCode(error: unknown): string {
   if (error instanceof SentinelManagedExecutorError) return error.code;
   const code = error instanceof Error ? error.message : "managed_executor_failed";
   return /^[a-z][a-z0-9_-]{0,127}$/.test(code) ? code : "managed_executor_failed";

@@ -8,6 +8,7 @@ import {
 } from "@csb/gate-core";
 import type {
   FindingSummary,
+  GateFindingDelta,
   GuardrailRepository,
   ScanRun,
   StartScanRequest,
@@ -312,6 +313,149 @@ test("partial submodule or LFS coverage cannot publish success", async () => {
   assert.equal(result.artifact.decision.githubConclusion, "action_required");
 });
 
+test("matches a baseline finding by its recorded identity, not by its redacted summary", async () => {
+  const executor = new SentinelManagedExecutor(dependencies({
+    baselineCandidate: async (input) => {
+      // A published baseline keeps the identity gate-core assigned even when its
+      // redacted summary can no longer reproduce it.
+      const retained = retainedBaselineCandidate([{
+        ...finding(),
+        identity: `fp:sha256:${"9".repeat(64)}`,
+        findingId: "redacted",
+        occurrenceId: null,
+        ruleId: "redacted-rule",
+        primaryPath: "redacted/path.ts",
+        fingerprints: ["redacted"],
+        lifecycle: "new",
+        triage: { status: "unreviewed", note: null, updatedAt: null },
+        exception: null,
+        sourceScanId: "scan-baseline",
+      }]);
+      const artifact = structuredClone(retained.artifact);
+      artifact.lineage = structuredClone(input.lineage);
+      return { kind: "artifact", artifact };
+    },
+  }));
+
+  const result = await executor.execute(executionInput());
+
+  assert.equal(result.baseline.kind, "comparable");
+  assert.equal(result.artifact.findings.length, 1);
+  assert.equal(result.artifact.findings[0]?.lifecycle, "persistent");
+});
+
+test("does not start a scan when the snapshot coverage is already incomplete", async () => {
+  let starts = 0;
+  let lookups = 0;
+  const executor = new SentinelManagedExecutor(dependencies({
+    handle: materialization({
+      submodules: ["vendor/private-sdk"],
+      lfsPointers: ["assets/model.bin"],
+    }),
+    baselineCandidate: async () => {
+      lookups += 1;
+      return retainedBaselineCandidate();
+    },
+    startScan: async () => {
+      starts += 1;
+      return scan("running");
+    },
+  }));
+  const result = await executor.execute(executionInput());
+
+  assert.equal(starts, 0);
+  assert.equal(lookups, 0);
+  assert.equal(result.scan, null);
+  assert.equal(result.artifact.scan.id, null);
+  assert.equal(result.artifact.scan.status, "not_run");
+  assert.equal(result.artifact.coverage.status, "partial");
+  assert.equal(result.artifact.decision.summary, "coverage_incomplete");
+  assert.equal(result.artifact.decision.outcome, "error");
+});
+
+test("a failed snapshot release cannot discard a finalized decision", async () => {
+  const handle = materialization();
+  handle.release = async () => {
+    throw new Error("snapshot_cleanup_failed");
+  };
+  let finalized = 0;
+  const executor = new SentinelManagedExecutor(dependencies({ handle }));
+  const logged = captureServerErrors();
+  try {
+    const result = await executor.execute({
+      ...executionInput(),
+      hooks: {
+        materialized: () => undefined,
+        scanStarted: () => undefined,
+        finalize: async () => {
+          finalized += 1;
+        },
+      },
+    });
+    assert.equal(result.artifact.schemaVersion, 2);
+  } finally {
+    logged.restore();
+  }
+
+  assert.equal(finalized, 1);
+  assert.equal(logged.messages.length, 1);
+  assert.match(logged.messages[0] ?? "", /snapshot_cleanup_failed/);
+});
+
+test("a failed snapshot release does not mask the original failure", async () => {
+  const handle = materialization({ fileCount: 0, entries: [] });
+  handle.release = async () => {
+    throw new Error("snapshot_cleanup_failed");
+  };
+  const executor = new SentinelManagedExecutor(dependencies({ handle }));
+  const logged = captureServerErrors();
+  try {
+    await assert.rejects(
+      executor.execute(executionInput()),
+      (error: unknown) => error instanceof SentinelManagedExecutorError
+        && error.code === "managed_snapshot_empty",
+    );
+  } finally {
+    logged.restore();
+  }
+  assert.equal(logged.messages.length, 1);
+});
+
+test("normalizes scanner lineage strings instead of failing after the scan", async () => {
+  const base = scan("completed");
+  const completed: ScanRun = {
+    ...base,
+    model: ` ${"m".repeat(300)} `,
+    provider: "",
+    scannerVersion: "   ",
+    execution: {
+      ...base.execution!,
+      methodologyRef: "/sentinel/codex-security-methodology@v1",
+      profileVersion: " portable-v1\n",
+    },
+    // Scanner and connection metadata is reported text, not a validated union:
+    // a padded or rooted value must be normalized, never trusted.
+    connection: {
+      ...base.connection!,
+      routeKind: "//minimax-token-plan",
+      protocol: " anthropic-messages ",
+    } as unknown as NonNullable<ScanRun["connection"]>,
+  };
+  const executor = new SentinelManagedExecutor(dependencies({
+    waitForScan: async () => completed,
+  }));
+
+  const lineage = (await executor.execute(executionInput())).artifact.lineage;
+
+  assert.equal(lineage.model, "m".repeat(256));
+  assert.equal(lineage.provider, "unreported-scan-1");
+  assert.equal(lineage.engineVersion, "unreported-scan-1");
+  assert.equal(lineage.route, "minimax-token-plan");
+  assert.equal(lineage.protocol, "anthropic-messages");
+  assert.equal(lineage.methodology, "sentinel/codex-security-methodology@v1");
+  assert.equal(lineage.profile, "portable-v1");
+});
+
 test("cancellation after materialization releases the private lease and does not finalize", async () => {
   const order: string[] = [];
   const controller = new AbortController();
@@ -342,6 +486,20 @@ test("cancellation after materialization releases the private lease and does not
   assert.equal(finalized, false);
   assert.equal(order.at(-1), "released");
 });
+
+function captureServerErrors(): { messages: string[]; restore(): void } {
+  const messages: string[] = [];
+  const original = console.error;
+  console.error = (message: unknown) => {
+    messages.push(String(message));
+  };
+  return {
+    messages,
+    restore: () => {
+      console.error = original;
+    },
+  };
+}
 
 function executionInput() {
   return {
@@ -383,7 +541,7 @@ function dependencies(overrides: {
   };
 }
 
-function retainedBaselineCandidate() {
+function retainedBaselineCandidate(deltas: GateFindingDelta[] = []) {
   const policy = defaultGuardrailPolicy();
   return {
     kind: "artifact" as const,
@@ -423,10 +581,10 @@ function retainedBaselineCandidate() {
       scan: { id: "scan-baseline", cost: null, status: "completed" },
       baselineCommit: null,
       evaluation: {
-        deltas: [],
+        deltas,
         decision: {
           outcome: "bootstrap",
-          summary: "Protected baseline initialized.",
+          summary: `Protected baseline initialized with ${deltas.length} finding(s).`,
           violations: [],
           warnings: [],
           exceptionsApplied: [],

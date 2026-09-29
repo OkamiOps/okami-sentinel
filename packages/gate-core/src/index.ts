@@ -1,9 +1,10 @@
 export { defaultGuardrailPolicy } from "./default-policy.js";
-export { findingIdentity } from "./identity.js";
+export { findingIdentity, publicFindingIdentity, publicIdentity } from "./identity.js";
 export {
   classifyGateFindings,
   evaluateGate,
   githubConclusion,
+  type BaselineFindingSummary,
   type EvaluateGateInput,
   type EvaluateGateBaseline,
   type EvaluateGateResult,

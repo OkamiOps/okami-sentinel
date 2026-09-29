@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import type {
   ChangeSet,
@@ -12,6 +13,7 @@ import {
   defaultGuardrailPolicy,
   evaluateGate,
   findingIdentity,
+  publicFindingIdentity,
   type EvaluateGateInput,
 } from "./index.js";
 
@@ -317,4 +319,112 @@ test("retains baseline scan provenance for fixed findings", () => {
   }));
   assert.equal(result.deltas[0]?.lifecycle, "fixed");
   assert.equal(result.deltas[0]?.sourceScanId, "scan-baseline");
+});
+
+test("redacts secrets and local paths in scanner text without changing finding identity", () => {
+  const leaked: FindingSummary = {
+    ...finding("leak", "high"),
+    title: "Token leak via Bearer s3crt",
+    summary: "Read GITHUB_TOKEN=ordinary-value from /Users/alice/private/.env",
+    primaryPath: "/Users/alice/private/src/app.ts:4",
+    category: "sk-proj-" + "b".repeat(32),
+  };
+  const deltas = classifyGateFindings(input({ currentFindings: [leaked] }));
+
+  assert.equal(deltas[0]?.identity, findingIdentity(leaked));
+  const serialized = JSON.stringify(deltas);
+  for (const secret of ["s3crt", "ordinary-value", "/Users/alice", "sk-proj-"]) {
+    assert.equal(serialized.includes(secret), false, secret);
+  }
+  assert.equal(deltas[0]?.title, "Token leak via [REDACTED]");
+  assert.equal(deltas[0]?.primaryPath, null);
+});
+
+test("keeps a non-empty title when the scanner emits a blank one", () => {
+  const deltas = classifyGateFindings(input({ currentFindings: [{ ...finding("blank", "low"), title: "  " }] }));
+  assert.equal(deltas[0]?.title, "Untitled finding");
+});
+
+function unpublishableIdentityFinding(): FindingSummary {
+  return {
+    ...finding("ignored", "high"),
+    occurrenceId: null,
+    ruleId: null,
+    primaryPath: null,
+    fingerprints: [],
+    title: "hardcoded secret: admin123",
+  };
+}
+
+test("replaces an unpublishable identity with a deterministic hash", () => {
+  const leaked = unpublishableIdentityFinding();
+  const raw = findingIdentity(leaked);
+  const hashed = `hash:sha256:${createHash("sha256").update(raw).digest("hex")}`;
+  const located: FindingSummary = {
+    ...finding("ignored", "high"),
+    fingerprints: [],
+    ruleId: "rule-x",
+    primaryPath: "/home/runner/app/src/a.ts",
+  };
+
+  assert.equal(publicFindingIdentity(leaked), hashed);
+  assert.equal(classifyGateFindings(input({ currentFindings: [leaked] }))[0]?.identity, hashed);
+  assert.match(publicFindingIdentity(located), /^hash:sha256:[0-9a-f]{64}$/);
+  assert.equal(publicFindingIdentity(finding("stable-xss", "high")), "fp:sha256:stable-xss");
+});
+
+test("resolves triage by raw identity and by public identity", () => {
+  const leaked = unpublishableIdentityFinding();
+  const triage: FindingTriage = { status: "confirmed", note: "Reviewed", updatedAt: "2026-08-07T00:00:00Z" };
+  for (const key of [findingIdentity(leaked), publicFindingIdentity(leaked)]) {
+    const deltas = classifyGateFindings(input({
+      currentFindings: [leaked],
+      triageByIdentity: new Map([[key, triage]]),
+    }));
+    assert.equal(deltas[0]?.triage.status, "confirmed", key);
+  }
+});
+
+test("trusts the stored identity of a baseline rebuilt from a published artifact", () => {
+  const current: FindingSummary = {
+    ...finding("ignored", "high"),
+    occurrenceId: null,
+    fingerprints: [],
+    ruleId: "rule-x",
+    primaryPath: "/home/runner/app/src/a.ts",
+  };
+  // Publication dropped the local path, so recomputing the identity here would
+  // differ from the one the baseline artifact stored.
+  const stored = { ...current, primaryPath: null, identity: publicFindingIdentity(current) };
+  const deltas = classifyGateFindings(input({
+    currentFindings: [current],
+    baseline: { kind: "comparable", findings: [stored], scanId: "scan-baseline" },
+  }));
+
+  assert.equal(deltas.length, 1);
+  assert.equal(deltas[0]?.lifecycle, "persistent");
+});
+
+test("drops blank scanner strings instead of publishing them", () => {
+  const blank: FindingSummary = {
+    ...finding("blank", "low"),
+    occurrenceId: "  ",
+    confidence: "",
+    ruleId: " ",
+    summary: "",
+    category: "",
+    primaryPath: "",
+    fingerprints: ["sha256:blank", "  "],
+    cwe: ["", "CWE-79"],
+  };
+  const delta = classifyGateFindings(input({ currentFindings: [blank] }))[0]!;
+
+  assert.equal(delta.occurrenceId, null);
+  assert.equal(delta.confidence, null);
+  assert.equal(delta.ruleId, null);
+  assert.equal(delta.summary, null);
+  assert.equal(delta.category, null);
+  assert.equal(delta.primaryPath, null);
+  assert.deepEqual(delta.fingerprints, ["sha256:blank"]);
+  assert.deepEqual(delta.cwe, ["CWE-79"]);
 });

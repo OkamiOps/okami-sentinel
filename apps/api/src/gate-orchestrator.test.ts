@@ -363,6 +363,109 @@ test("keeps same-checkout historical findings eligible for reopened lifecycle", 
   assert.equal(captured.artifact?.findings[0]?.lifecycle, "reopened");
 });
 
+test("skips unreadable historical scans instead of failing a fresh gate", async () => {
+  const deps = fakeDeps();
+  const removed = {
+    ...scan("completed"),
+    id: "removed-history",
+    repositoryPath: "/workspace/csb",
+    scanDir: "/workspace/csb/removed",
+  };
+  deps.listScans = () => [removed];
+  deps.readFindings = (scanDir) => {
+    if (scanDir === removed.scanDir) throw new Error("ENOENT: findings ausentes");
+    return [];
+  };
+
+  const logged = captureServerErrors();
+  try {
+    const gate = await startLocalGate(request(), deps);
+    await waitForGate(gate.id);
+    assert.equal(deps.runs.get(gate.id)?.status, "completed");
+    assert.equal(deps.runs.get(gate.id)?.outcome, "bootstrap");
+  } finally {
+    logged.restore();
+  }
+  assert.equal(logged.messages.length, 1);
+  assert.match(logged.messages[0] ?? "", /removed-history/);
+});
+
+test("fails the gate when the current scan findings cannot be read", async () => {
+  const deps = fakeDeps();
+  deps.readFindings = (scanDir) => {
+    if (scanDir === "/workspace/scan-1") throw new Error("ENOENT: findings ausentes");
+    return [];
+  };
+
+  const logged = captureServerErrors();
+  try {
+    const gate = await startLocalGate(request(), deps);
+    await waitForGate(gate.id);
+  } finally {
+    logged.restore();
+  }
+  assert.equal(deps.runs.get("gate-1")?.status, "error");
+  assert.equal(deps.runs.get("gate-1")?.outcome, "error");
+});
+
+test("records a terminal gate error when failure recording collapses", async () => {
+  const deps = fakeDeps({ scanStatus: "failed" });
+  deps.buildOperationalErrorArtifact = () => {
+    throw new Error("artifact_build_failed");
+  };
+
+  const logged = captureServerErrors();
+  try {
+    const gate = await startLocalGate(request(), deps);
+    await waitForGate(gate.id);
+  } finally {
+    logged.restore();
+  }
+  const gate = deps.runs.get("gate-1");
+  assert.equal(gate?.status, "error");
+  assert.equal(gate?.outcome, "error");
+  assert.equal(gate?.error, "gate_failure_unrecorded");
+  assert.equal(gate?.completedAt, "2026-08-07T10:00:00.000Z");
+});
+
+test("a collapsed gate failure never rejects the launched task", async () => {
+  const deps = fakeDeps({ scanStatus: "failed" });
+  deps.buildOperationalErrorArtifact = () => {
+    throw new Error("artifact_build_failed");
+  };
+  const persist = deps.updateGateRun;
+  deps.updateGateRun = (id, updates) => {
+    if (updates.status === "error") throw new Error("gate_store_unavailable");
+    persist(id, updates);
+  };
+
+  const logged = captureServerErrors();
+  let settled = false;
+  try {
+    const gate = await startLocalGate(request(), deps);
+    await waitForGate(gate.id);
+    settled = true;
+  } finally {
+    logged.restore();
+  }
+  assert.equal(settled, true);
+  assert.equal(deps.runs.get("gate-1")?.status, "scanning");
+});
+
+function captureServerErrors(): { messages: string[]; restore(): void } {
+  const messages: string[] = [];
+  const original = console.error;
+  console.error = (message: unknown) => {
+    messages.push(String(message));
+  };
+  return {
+    messages,
+    restore: () => {
+      console.error = original;
+    },
+  };
+}
+
 test("rejects github baseline selection when the repository has no ready remote", async () => {
   const deps = fakeDeps({ remoteReady: false });
 
@@ -414,6 +517,33 @@ test("remote managed gate persists frozen identity before execution and publishe
   assert.equal(JSON.stringify(completed).includes("/private/managed"), false);
 });
 
+test("keeps a persisted managed decision completed when cleanup fails afterwards", async () => {
+  const execution = remoteExecutionResult();
+  const { deps, runs, events } = remoteDeps({ execute: async (input) => {
+    await input.hooks.materialized(`sha256:${"c".repeat(64)}`);
+    await input.hooks.scanStarted(scan("running"));
+    await input.hooks.finalize(execution);
+    throw new Error("snapshot_cleanup_failed");
+  } });
+
+  const logged = captureServerErrors();
+  try {
+    const gate = await startRemoteManagedGate(remotePreview(), deps);
+    await waitForGate(gate.id);
+  } finally {
+    logged.restore();
+  }
+
+  const completed = runs.get("managed-gate-1");
+  assert.equal(completed?.status, "completed");
+  assert.equal(completed?.outcome, "bootstrap");
+  assert.equal(completed?.error, null);
+  assert.equal(completed?.artifactPath, "/gates/managed-gate-1/csb-gate-result.json");
+  assert.equal(events.get("managed-gate-1")?.some((event) => event.type === "error"), false);
+  assert.equal(events.get("managed-gate-1")?.at(-1)?.type, "done");
+  assert.equal(logged.messages.length, 1);
+});
+
 test("remote managed gate cancellation aborts the executor and linked scan", async () => {
   let rejectExecution: ((error: Error) => void) | null = null;
   const held = new Promise<SentinelManagedExecutionResult>((_resolve, reject) => {
@@ -440,6 +570,7 @@ function remoteDeps(overrides: {
 } = {}): {
   deps: RemoteManagedGateDependencies;
   runs: Map<string, GateRun>;
+  events: Map<string, Parameters<RemoteManagedGateDependencies["appendGateEvent"]>[1][]>;
   calls: string[];
 } {
   const runs = new Map<string, GateRun>();
@@ -477,7 +608,7 @@ function remoteDeps(overrides: {
       return "created";
     },
   };
-  return { deps, runs, calls };
+  return { deps, runs, events, calls };
 }
 
 function remoteRepository(): GuardrailRepository {

@@ -987,10 +987,22 @@ export function readFindingsFile(
     }
   }
   if (!fs.existsSync(findingsPath)) return [];
-  const raw = JSON.parse(fs.readFileSync(findingsPath, "utf8")) as {
-    findings?: Array<Record<string, unknown>>;
-  };
-  return (raw.findings ?? []).map((f) => {
+  let raw: { findings?: unknown };
+  try {
+    raw = JSON.parse(fs.readFileSync(findingsPath, "utf8")) as { findings?: unknown };
+  } catch {
+    // A present-but-corrupt findings artifact must never read back as "no
+    // findings" — a security gate must not pass on unreadable evidence.
+    throw new Error("scan_findings_unreadable");
+  }
+  if (raw === null || typeof raw !== "object" || !Array.isArray(raw.findings)) {
+    throw new Error("scan_findings_unreadable");
+  }
+  const entries = raw.findings.filter(
+    (f): f is Record<string, unknown> =>
+      f !== null && typeof f === "object" && !Array.isArray(f),
+  );
+  return entries.map((f) => {
     const locations = Array.isArray(f.locations) ? f.locations : [];
     const primary =
       locations.find(
@@ -1170,34 +1182,59 @@ function pickLevel(value: unknown): {
   return { level: null, rationale: null };
 }
 
+function normalizeOptionalText(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed === "" ? null : trimmed;
+}
+
+function normalizeTextList(values: unknown): string[] {
+  if (!Array.isArray(values)) return [];
+  const normalized: string[] = [];
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (trimmed !== "") normalized.push(trimmed);
+  }
+  return normalized;
+}
+
 export function toFindingSummaries(details: FindingDetail[]): FindingSummary[] {
-  return details.map(
-    ({
-      findingId,
-      occurrenceId,
-      title,
-      severity,
-      confidence,
-      ruleId,
-      summary,
-      primaryPath,
-      fingerprints,
-      category,
-      cwe,
-    }) => ({
-      findingId,
-      occurrenceId,
-      title,
-      severity,
-      confidence,
-      ruleId,
-      summary,
-      primaryPath,
-      fingerprints,
-      category,
-      cwe,
-    }),
-  );
+  return details
+    .filter(
+      (detail): detail is FindingDetail =>
+        detail !== null && typeof detail === "object" && !Array.isArray(detail),
+    )
+    .map(
+      ({
+        findingId,
+        occurrenceId,
+        title,
+        severity,
+        confidence,
+        ruleId,
+        summary,
+        primaryPath,
+        fingerprints,
+        category,
+        cwe,
+      }) => {
+        const trimmedTitle = typeof title === "string" ? title.trim() : "";
+        return {
+          findingId,
+          occurrenceId: normalizeOptionalText(occurrenceId),
+          title: trimmedTitle === "" ? findingId : trimmedTitle,
+          severity,
+          confidence: normalizeOptionalText(confidence),
+          ruleId: normalizeOptionalText(ruleId),
+          summary: normalizeOptionalText(summary),
+          primaryPath: normalizeOptionalText(primaryPath),
+          fingerprints: normalizeTextList(fingerprints),
+          category: normalizeOptionalText(category),
+          cwe: normalizeTextList(cwe),
+        };
+      },
+    );
 }
 
 function cryptoRandom(): string {
