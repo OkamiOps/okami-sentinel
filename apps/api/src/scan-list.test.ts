@@ -8,6 +8,8 @@ import type { ScanRun } from "@csb/shared";
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-scan-list-"));
 process.env.CSB_DATA_DIR = path.join(root, "data");
 process.env.CODEX_SECURITY_STATE_DIR = path.join(root, "state");
+const { BENCHMARK_DB_PATH } = await import("./config.js");
+const { openSqliteFile } = await import("./sqlite.js");
 const { getDb, upsertRun, hideRun } = await import("./db.js");
 const { listActiveRuns, listRunPage, parseScanListOptions } = await import("./scan-list.js");
 const { app } = await import("./app.js");
@@ -99,4 +101,25 @@ test("scan catalog returns distinct visible filter names without loading full hi
   assert.deepEqual(body, { total: 1002, repositories: ["Ação 100%_'", ...Array.from({ length: 10 }, (_, index) => `Repository ${index}`)] });
   assert.ok(JSON.stringify(body).length < 500, "The filter payload must not grow with repeated scans");
   assert.equal((getDb().prepare("SELECT COUNT(*) AS count FROM runs WHERE status = 'completed'").get() as { count: number }).count, 1003);
+});
+
+/**
+ * The dashboard polls this page, and it only reads. A transaction that took the
+ * write lock up front would queue behind every scanner write instead, and with a
+ * five second busy timeout it could hold the event loop for seconds at a time.
+ */
+test("the ledger page reads while another connection holds the write lock", () => {
+  upsertRun(fixture("page-under-writer"));
+  const writer = openSqliteFile(BENCHMARK_DB_PATH);
+  try {
+    // Stands in for a scanner worker mid-write on the shared file.
+    writer.exec("BEGIN IMMEDIATE");
+    const startedAt = Date.now();
+    const page = listRunPage({ limit: 5, offset: 0, status: "all", query: "" }, true);
+    assert.deepEqual(page.scans.map((scan) => scan.id), ["page-under-writer"]);
+    assert.ok(Date.now() - startedAt < 1_000, "the read waited for a write lock it does not need");
+  } finally {
+    writer.exec("ROLLBACK");
+    writer.close();
+  }
 });
