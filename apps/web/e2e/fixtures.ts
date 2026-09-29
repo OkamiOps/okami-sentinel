@@ -26,6 +26,9 @@ export interface MockApiOptions {
   changePasswordResponse?: { status: number; body: unknown };
   accountSessionsFail?: boolean;
   sessionUnreachable?: boolean;
+  /** No member account exists at all: every repository has zero grants
+   *  and zero candidates, which is a different sentence from "all granted". */
+  noMembers?: boolean;
 }
 
 const rootUser: UserSummary = {
@@ -138,8 +141,10 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
       // unverified session, which is a different state from signed out.
       sessionUnreachable: options.sessionUnreachable === true,
     },
-    users: [structuredClone(rootUser), structuredClone(anaUser), structuredClone(beaUser)] as UserSummary[],
-    repositoryAccess: structuredClone(repositoryAccess) as RepositoryAccessEntry[],
+    users: (options.noMembers
+      ? [structuredClone(rootUser)]
+      : [structuredClone(rootUser), structuredClone(anaUser), structuredClone(beaUser)]) as UserSummary[],
+    repositoryAccess: structuredClone(repositoryAccess).map((entry) => options.noMembers ? { ...entry, grants: [] } : entry) as RepositoryAccessEntry[],
     accountSessions: structuredClone(accountSessions),
     accountSessionsFail: options.accountSessionsFail === true,
     invitePreviewFails: options.invitePreviewResponse !== undefined,
