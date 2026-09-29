@@ -1,6 +1,7 @@
 import type { MiddlewareHandler } from "hono";
 import type { RepositoryRole } from "@csb/shared";
 import { getGateRun } from "../gate-store.js";
+import { getGitHubMonitorRule } from "../github-monitor/store.js";
 import { canSeeRepository, hasRepositoryRole, principalOf, type Principal } from "./principal.js";
 import { getRunRepositoryKey } from "./repository-key.js";
 
@@ -14,20 +15,23 @@ import { getRunRepositoryKey } from "./repository-key.js";
  * - `admin`: administrators only.
  * - `repository`: the named role on the repository the request addresses,
  *   resolved from the path parameter (`param`), from the scan's run row
- *   (`scan`) or from the gate run (`gate`).
+ *   (`scan`), from the gate run (`gate`) or from the monitor rule's row
+ *   (`monitorRule`).
  */
 export type Requirement =
   | { kind: "public" }
   | { kind: "authenticated" }
   | { kind: "admin" }
   | { kind: "scoped" }
-  | { kind: "repository"; role: RepositoryRole; from: "param" | "scan" | "gate" };
+  | { kind: "repository"; role: RepositoryRole; from: RepositorySource };
+
+type RepositorySource = "param" | "scan" | "gate" | "monitorRule";
 
 const PUBLIC = { kind: "public" } as const;
 const AUTH = { kind: "authenticated" } as const;
 const ADMIN = { kind: "admin" } as const;
 const SCOPED = { kind: "scoped" } as const;
-const R = (role: RepositoryRole, from: "param" | "scan" | "gate") => ({ kind: "repository", role, from }) as const;
+const R = (role: RepositoryRole, from: RepositorySource) => ({ kind: "repository", role, from }) as const;
 const viewerScan = R("viewer", "scan");
 
 /**
@@ -36,10 +40,9 @@ const viewerScan = R("viewer", "scan");
  * answers the legacy unprefixed paths. A request that matches nothing here is
  * refused: adding a route without a requirement fails the coverage test.
  *
- * GitHub monitor rule writes are `ADMIN` in Phase 1 because a rule is addressed
- * by its own id with no repository resolver behind it. `POST /github-monitor/poll`
- * is `SCOPED` because the repository travels in the body, where the handler
- * checks the `operator` role itself.
+ * `POST /github-monitor/rules` and `POST /github-monitor/poll` are `SCOPED`
+ * because the repository travels in the body, where the handler checks the role
+ * itself; a rule patch addresses the rule, whose own row names the repository.
  */
 export const ROUTE_POLICY: ReadonlyArray<readonly [method: string, pattern: string, requirement: Requirement]> = [
   ["GET", "/healthz", PUBLIC], ["GET", "/readyz", PUBLIC],
@@ -83,7 +86,8 @@ export const ROUTE_POLICY: ReadonlyArray<readonly [method: string, pattern: stri
   ["GET", "/guardrails/github-app/manifest/flows/:flowId", ADMIN], ["POST", "/guardrails/github-app/manifest/start", ADMIN],
   ["GET", "/github-monitor/overview", SCOPED], ["GET", "/github-monitor/rules", SCOPED], ["GET", "/github-monitor/events", SCOPED],
   ["GET", "/github-monitor/actions-runs", SCOPED], ["GET", "/github-monitor/branches", SCOPED],
-  ["POST", "/github-monitor/rules", ADMIN], ["PATCH", "/github-monitor/rules/:id", ADMIN], ["POST", "/github-monitor/poll", SCOPED],
+  ["POST", "/github-monitor/rules", SCOPED], ["PATCH", "/github-monitor/rules/:id", R("maintainer", "monitorRule")],
+  ["POST", "/github-monitor/poll", SCOPED],
   ["GET", "/github-checkouts", SCOPED], ["GET", "/github-checkouts/:repositoryKey", R("viewer", "param")],
   ["POST", "/github-checkouts/:repositoryKey/fetch", R("operator", "param")], ["POST", "/github-checkouts/:repositoryKey/pull", R("operator", "param")],
   ["GET", "/connections", ADMIN], ["POST", "/connections", ADMIN], ["POST", "/connections/compatibility", ADMIN],
@@ -184,13 +188,25 @@ export function authorize(): MiddlewareHandler {
     if (requirement.kind === "authenticated" || requirement.kind === "scoped") return next();
     if (requirement.kind === "admin") return principal.isAdmin ? next() : c.json({ error: "forbidden" }, 403);
     if (principal.isAdmin) return next();
-    const key = requirement.from === "param"
-      ? params.repositoryKey
-      : requirement.from === "scan"
-        ? getRunRepositoryKey(params.id!)
-        : getGateRun(params.gateId!)?.repositoryKey;
+    const key = repositoryKeyFor(requirement.from, params);
     if (!canSeeRepository(principal, key)) return c.json({ error: "not_found" }, 404);
     if (!hasRepositoryRole(principal, key, requirement.role)) return c.json({ error: "forbidden" }, 403);
     return next();
   };
+}
+
+/**
+ * An unresolvable owner is treated as an invisible one: `canSeeRepository`
+ * refuses a missing key, so an unknown scan, gate or rule id answers 404.
+ */
+function repositoryKeyFor(
+  from: RepositorySource,
+  params: Record<string, string>,
+): string | null | undefined {
+  switch (from) {
+    case "param": return params.repositoryKey;
+    case "scan": return getRunRepositoryKey(params.id!);
+    case "gate": return getGateRun(params.gateId!)?.repositoryKey;
+    case "monitorRule": return getGitHubMonitorRule(params.id!)?.repositoryKey;
+  }
 }

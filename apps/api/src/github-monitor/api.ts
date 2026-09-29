@@ -50,7 +50,15 @@ export function createGitHubMonitorApi(dependencies: GitHubMonitorApiDependencie
 
   api.post("/github-monitor/rules", async (c) => {
     try {
-      return c.json({ rule: service.createRule(parseRuleInput(await c.req.json<unknown>())) }, 201);
+      // The repository travels in the body, out of the route policy's reach, so
+      // the maintainer role on that one repository is checked here — before the
+      // rest of the body is validated, so a refusal reveals nothing else.
+      const body = object(await c.req.json<unknown>());
+      const repositoryKey = string(body.repositoryKey, 512);
+      const principal = principalOf(c);
+      if (!canSeeRepository(principal, repositoryKey)) return c.json({ error: "not_found" }, 404);
+      if (!hasRepositoryRole(principal, repositoryKey, "maintainer")) return c.json({ error: "forbidden" }, 403);
+      return c.json({ rule: service.createRule(parseRuleInput(body)) }, 201);
     } catch (error) {
       return monitorError(c, error);
     }
