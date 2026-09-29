@@ -64,17 +64,17 @@ export function UsersPage() {
   const openUser = users?.find((user) => user.id === openUserId) ?? null;
 
   return <>
+    <SettingsSectionNav />
     <PageHeader
       code={t("users.code")} title={t("users.title")} description={t("users.description")}
       actions={<Button type="button" onClick={() => setInviting(true)}>{t("users.invite")}</Button>}
     />
-    <SettingsSectionNav />
     {loadFailed && <AlertBanner>
       <span className="mr-3">{t("users.loadError")}</span>
       <Button type="button" variant="outline" size="sm" onClick={() => void load()}>{t("common.retry")}</Button>
     </AlertBanner>}
     <Panel label={t("users.title")} aside={<span className="font-mono text-[10px] text-muted-foreground tabular-nums">{visible.length}</span>}>
-      <div className="grid gap-3 border-b px-4 py-3 sm:grid-cols-[minmax(0,24rem)_12rem] sm:justify-start">
+      <div className="grid items-start gap-3 border-b px-4 py-3 sm:grid-cols-[minmax(0,24rem)_12rem] sm:justify-start">
         <div className="grid gap-1.5">
           <label htmlFor="users-search" className="bench-label">{t("users.search")}</label>
           <Input

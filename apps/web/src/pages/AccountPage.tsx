@@ -48,8 +48,8 @@ export function AccountPage() {
   const local = session.runtimeMode === "local";
 
   return <>
-    <PageHeader code={t("account.code")} title={t("account.title")} description={t("account.description")} />
     <SettingsSectionNav />
+    <PageHeader code={t("account.code")} title={t("account.title")} description={t("account.description")} />
     {local && <AlertBanner tone="info">{t("account.localNote")}</AlertBanner>}
     <div className="grid gap-4 xl:grid-cols-2">
       <ProfilePanel displayName={session.user.displayName} username={session.user.username} isAdmin={isAdmin} editable={!local} onSaved={refresh} />
@@ -63,8 +63,8 @@ function AccountUnverified({ onRetry }: { onRetry: () => Promise<void> }) {
   const { t } = useScopedI18n(accessMessages);
   const [retrying, setRetrying] = useState(false);
   return <>
-    <PageHeader code={t("account.code")} title={t("account.title")} description={t("account.description")} />
     <SettingsSectionNav />
+    <PageHeader code={t("account.code")} title={t("account.title")} description={t("account.description")} />
     <Panel label={t("account.profile")}>
       <div className="grid gap-4 px-4 py-5">
         <AlertBanner tone="warning">{t("account.unverified")}</AlertBanner>
@@ -115,14 +115,16 @@ function ProfilePanel({ displayName, username, isAdmin, editable, onSaved }: { d
         <label htmlFor="account-display-name" className="bench-label">{t("account.displayName")}</label>
         <Input id="account-display-name" name="display-name" value={name} disabled={pending} readOnly={!editable} autoComplete="name" className={cx(!editable && "bg-muted/40 text-muted-foreground")} onChange={(event) => setName(event.target.value)} />
       </div>
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid items-start gap-4 sm:grid-cols-2">
         <div className="grid gap-1.5">
           <label htmlFor="account-username" className="bench-label">{t("account.username")}</label>
           <Input id="account-username" value={username} autoComplete="username" readOnly tabIndex={-1} className="bg-muted/40 text-muted-foreground" />
         </div>
         <div className="grid gap-1.5">
           <span className="bench-label">{t("account.role")}</span>
-          <span className="flex h-9 items-center border border-border bg-muted/40 px-3 font-mono text-[11px] text-muted-foreground">
+          {/* Read-only, but it stands beside the username field: it has to be
+              the same box, not a shorter one in a different typeface. */}
+          <span className="flex h-10 items-center border border-border bg-muted/40 px-3 text-base text-muted-foreground md:text-sm">
             {isAdmin ? t("userMenu.admin") : t("userMenu.member")}
           </span>
         </div>
