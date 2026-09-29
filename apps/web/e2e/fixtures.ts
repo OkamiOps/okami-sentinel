@@ -19,6 +19,8 @@ export interface MockApiOptions {
   loginResponse?: { status: number; body: unknown };
   acceptInviteResponse?: { status: number; body: unknown };
   patchUserResponse?: { status: number; body: unknown };
+  createUserResponse?: { status: number; body: unknown };
+  setRepositoryRoleResponse?: { status: number; body: unknown };
   changePasswordResponse?: { status: number; body: unknown };
   accountSessionsFail?: boolean;
   sessionUnreachable?: boolean;
@@ -36,7 +38,20 @@ const anaUser: UserSummary = {
   repositoryCount: 1, lastLoginAt: null, createdAt: "2026-09-01T10:00:00.000Z",
 };
 
+// Invited but never signed in: the only row the "pending invite" filter keeps,
+// and the only account the access screen can still grant a repository to.
+const beaUser: UserSummary = {
+  id: "u-bea", username: "bea", displayName: "Bea", email: "bea@example.test",
+  isAdmin: false, status: "active", hasPassword: false, pendingInvite: true,
+  repositoryCount: 0, lastLoginAt: null, createdAt: "2026-09-06T10:00:00.000Z",
+};
+
 const anaGrants: RepositoryGrant[] = [{ repositoryKey: "github:1", role: "viewer" }];
+
+const repositoryAccess: RepositoryAccessEntry[] = [{
+  repositoryKey: "github:1", displayName: "luna-core", source: "github",
+  grants: [{ userId: "u-ana", username: "ana", displayName: "Ana", role: "viewer" }],
+}];
 
 function currentSessionSummary(current: boolean): UserSessionSummary {
   return {
@@ -119,7 +134,8 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
       // unverified session, which is a different state from signed out.
       sessionUnreachable: options.sessionUnreachable === true,
     },
-    users: [structuredClone(rootUser), structuredClone(anaUser)] as UserSummary[],
+    users: [structuredClone(rootUser), structuredClone(anaUser), structuredClone(beaUser)] as UserSummary[],
+    repositoryAccess: structuredClone(repositoryAccess) as RepositoryAccessEntry[],
     accountSessions: structuredClone(accountSessions),
     accountSessionsFail: options.accountSessionsFail === true,
   };
@@ -248,6 +264,7 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
     }
     if (path === "/users" && req.method() === "GET") return json({ users: state.users });
     if (path === "/users" && req.method() === "POST") {
+      if (options.createUserResponse) return json(options.createUserResponse.body, options.createUserResponse.status);
       const body = req.postDataJSON() as { username?: string; displayName?: string; email?: string | null; isAdmin?: boolean; grants?: RepositoryGrant[] };
       const created: UserSummary = {
         id: `u-${body.username ?? "new"}`, username: String(body.username ?? ""), displayName: String(body.displayName ?? ""),
@@ -274,13 +291,24 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
         return json({ grants: body.grants ?? [] });
       }
       if (sub === "sessions" && req.method() === "GET") return json({ sessions: [currentSessionSummary(false)] });
+      if (sub === "sessions" && req.method() === "DELETE") return route.fulfill({ status: 204 });
+      if (sub === "reset" && req.method() === "POST") {
+        return json({ inviteUrl: `http://127.0.0.1:4175/invite/${"c".repeat(43)}`, expiresAt: "2026-10-06T10:00:00.000Z" });
+      }
     }
-    if (path === "/repository-access" && req.method() === "GET") {
-      const repositories: RepositoryAccessEntry[] = [{
-        repositoryKey: "github:1", displayName: "luna-core", source: "github",
-        grants: [{ userId: "u-ana", username: "ana", displayName: "Ana", role: "viewer" }],
-      }];
-      return json({ repositories });
+    if (path === "/repository-access" && req.method() === "GET") return json({ repositories: state.repositoryAccess });
+    const repositoryAccessMatch = path.match(/^\/repository-access\/([^/]+)\/users\/([^/]+)$/);
+    if (repositoryAccessMatch && req.method() === "PUT") {
+      if (options.setRepositoryRoleResponse) return json(options.setRepositoryRoleResponse.body, options.setRepositoryRoleResponse.status);
+      const [, repositoryKey, userId] = repositoryAccessMatch;
+      const { role } = req.postDataJSON() as { role: RepositoryGrant["role"] | null };
+      const entry = state.repositoryAccess.find((item) => item.repositoryKey === decodeURIComponent(repositoryKey));
+      const user = state.users.find((item) => item.id === userId);
+      if (entry && user) {
+        entry.grants = entry.grants.filter((grant) => grant.userId !== userId);
+        if (role) entry.grants.push({ userId, username: user.username, displayName: user.displayName, role });
+      }
+      return route.fulfill({ status: 204 });
     }
     if (path === "/connections") return state.connectionsFail ? json({ error: "fixture unavailable" }, 503) : json({ connections: [state.connection] });
     if (path === "/connections/fixture-connection/models" || path === "/connections/fixture-connection/models/refresh") {
