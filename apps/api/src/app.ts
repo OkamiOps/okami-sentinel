@@ -33,6 +33,7 @@ import {
   writeGuardrailPolicy,
 } from "@csb/gate-runtime";
 import type {
+  CodexInfo,
   CompareRequest,
   GateArtifact,
   GateDecision,
@@ -803,19 +804,28 @@ app.get("/health", async (c) => {
   const scope = scopeOf(principal);
   const codexInfo = await getCodexInfo();
   // A member learns that its own repositories are busy, never that somebody
-  // else's scan is running, and never where the server keeps its state.
+  // else's scan is running, and never where the server keeps its state. The
+  // scanner's raw `info --json` document is dropped for the same reason: it
+  // carries host paths such as the npm cache directory, and the frontend reads
+  // only the typed version and model fields.
   const activeScanIds = getActiveScanIds().filter((id) => inScope(scope, getRunRepositoryKey(id)));
   const body: HealthResponse = {
     ok: true,
     api: "codex-security-benchmark",
     ...(principal.isAdmin ? { codexStateDir: CODEX_SECURITY_STATE_DIR } : {}),
-    codexInfo,
+    codexInfo: codexInfo === null || principal.isAdmin ? codexInfo : withoutRawCodexInfo(codexInfo),
     activeScanId: activeScanIds[0] ?? null,
     activeScanIds,
     maxConcurrentScans: MAX_CONCURRENT_SCANS,
   };
   return c.json(body);
 });
+
+/** Only the typed fields the frontend renders survive; `raw` is host-shaped. */
+function withoutRawCodexInfo(info: CodexInfo): CodexInfo {
+  const { raw: _raw, ...typed } = info;
+  return typed;
+}
 
 app.get("/scanners", async (c) => c.json(await getScannerCatalog()));
 

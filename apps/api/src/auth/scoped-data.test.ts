@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { Hono } from "hono";
 import type { GitHubMonitorOverview } from "@csb/shared";
 import { app } from "../app.js";
@@ -131,9 +131,30 @@ function actor(name: string, isAdmin: boolean, grants: Array<{ repositoryKey: st
 }
 
 /**
+ * A stand-in scanner keeps `GET /health` off the real CLI (seconds per spawn)
+ * while still returning an `info --json` document shaped like the real one: the
+ * typed fields the frontend renders plus host paths that must not leave.
+ */
+const scannerRawInfo = {
+  cliVersion: "9.9.9",
+  sdkVersion: "8.8.8",
+  model: "probe-model",
+  reasoningEffort: "high",
+  npmCache: "/var/tmp/csb-scoped-npm-cache",
+  codexHome: "/var/tmp/csb-scoped-codex-home",
+};
+const scannerDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "csb-scoped-scanner-"));
+const fakeScanner = path.join(scannerDirectory, "fake-codex-security");
+fs.writeFileSync(
+  fakeScanner,
+  `#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify(${JSON.stringify(scannerRawInfo)}));\n`,
+  { mode: 0o700 },
+);
+after(() => fs.rmSync(scannerDirectory, { recursive: true, force: true }));
+
+/**
  * The GitHub monitor and checkout routes carry their own origin guard, which
- * only accepts the public origin once the runtime is in server mode. The scanner
- * binary is pointed at nothing so `GET /health` answers without spawning a CLI.
+ * only accepts the public origin once the runtime is in server mode.
  */
 function withServerRuntime<T>(body: () => Promise<T>): Promise<T> {
   const previous = {
@@ -143,7 +164,7 @@ function withServerRuntime<T>(body: () => Promise<T>): Promise<T> {
   };
   process.env.CSB_RUNTIME_MODE = "server";
   process.env.CSB_PUBLIC_ORIGIN = origin;
-  process.env.CODEX_SECURITY_BIN = path.join(os.tmpdir(), "csb-scoped-absent-scanner");
+  process.env.CODEX_SECURITY_BIN = fakeScanner;
   refreshManagedRuntimeCommands();
   const restore = () => {
     for (const [key, value] of [["CSB_RUNTIME_MODE", previous.mode], ["CSB_PUBLIC_ORIGIN", previous.origin], ["CODEX_SECURITY_BIN", previous.bin]] as const) {
@@ -251,11 +272,21 @@ test("scoped routes never answer with another repository's data", (t) => withSer
   const compareA = await post(viewer, "/api/compare", { scanIds: [runA] });
   assert.notDeepEqual(await compareA.json(), { error: "not_found" });
 
-  // GET /health — only in-scope active scans, and no server paths for a member.
+  // GET /health — only in-scope active scans, and no server paths for a member:
+  // neither the state directory nor the scanner's raw info document.
   const health = await (await read(viewer, "/api/health")).json();
   assert.deepEqual(health.activeScanIds, []);
   assert.equal(health.activeScanId, null);
   assert.equal(health.codexStateDir, undefined);
+  assert.equal(health.codexInfo.raw, undefined);
+  assert.deepEqual(health.codexInfo, {
+    cliVersion: "9.9.9", sdkVersion: "8.8.8", model: "probe-model", reasoningEffort: "high",
+  });
+  assert.deepEqual(
+    Object.values(health.codexInfo).filter((value) => typeof value === "string" && value.startsWith("/")),
+    [],
+  );
+  assert.equal(JSON.stringify(health).includes("/var/tmp/csb-scoped-"), false);
 
   // GitHub monitor lists and their recomputed summary.
   const overview = (await (await read(viewer, "/api/github-monitor/overview")).json()).overview as {
@@ -295,12 +326,22 @@ test("scoped routes never answer with another repository's data", (t) => withSer
   assert.deepEqual(await pollUnnamed.json(), { error: "not_found" });
 }));
 
-test("health discloses the state directory to an administrator only", () => withServerRuntime(async () => {
+test("health discloses server paths to an administrator only", () => withServerRuntime(async () => {
   const forAdmin = await (await asPrincipal({ isAdmin: true }).request("/health")).json();
   assert.equal(typeof forAdmin.codexStateDir, "string");
+  // The administrator and the local runtime keep the whole scanner document.
+  assert.deepEqual(forAdmin.codexInfo.raw, scannerRawInfo);
+  assert.equal(forAdmin.codexInfo.cliVersion, "9.9.9");
+
   const forMember = await (await asPrincipal({ kind: "user", isAdmin: false }).request("/health")).json();
-  assert.equal(forMember.codexStateDir, undefined);
   assert.equal(forMember.ok, true);
+  assert.equal(forMember.codexStateDir, undefined);
+  assert.equal(forMember.codexInfo.raw, undefined);
+  assert.equal(forMember.codexInfo.model, "probe-model");
+  assert.deepEqual(
+    Object.values(forMember.codexInfo).filter((value) => typeof value === "string" && value.startsWith("/")),
+    [],
+  );
 }));
 
 test("poll reaches the monitor only for a repository the caller operates", async () => {
