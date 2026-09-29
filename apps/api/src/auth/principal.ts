@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type { Context } from "hono";
 import type { RepositoryRole } from "@csb/shared";
 import { runtimeMode } from "../deployment-settings.js";
@@ -51,6 +52,17 @@ export function principalOf(c: Context): Principal {
   return LOCAL_PRINCIPAL;
 }
 
+/**
+ * Fails closed. In server mode the expected CSRF token is the one minted with
+ * the request's session; falling back to the process-wide token would hand every
+ * caller that can read `/api/security-session` in a local runtime — or simply
+ * reach a guard before a session exists — a token that validates. A fresh random
+ * value can never match a header, so the guard denies instead of waving through.
+ * `principalOf` throws in the same situation; a throw here would turn a denial
+ * into a 500, which is why this returns an unusable token instead.
+ */
 export function csrfTokenOf(c: Context): string {
-  return (c.get("csrfToken" as never) as string | undefined) ?? securitySessionToken;
+  const token = c.get("csrfToken" as never) as string | undefined;
+  if (token) return token;
+  return isServerMode() ? randomBytes(32).toString("base64url") : securitySessionToken;
 }
