@@ -1450,3 +1450,25 @@ export interface ScanCandidatePreview {
   provisional: true;
   candidates: ScanCandidatePreviewItem[];
 }
+
+export type RepositoryRole = "viewer" | "analyst" | "operator" | "maintainer";
+export interface RepositoryGrant { repositoryKey: string; role: RepositoryRole; }
+export interface AuthSessionUser { id: string; username: string; displayName: string; isAdmin: boolean; }
+export interface AuthSessionResponse {
+  user: AuthSessionUser;
+  grants: RepositoryGrant[];
+  csrfToken: string;
+  runtimeMode: "local" | "server";
+  repositoryRoots: string[];
+}
+export interface UserSummary {
+  id: string; username: string; displayName: string; email: string | null;
+  isAdmin: boolean; status: "active" | "disabled"; hasPassword: boolean; pendingInvite: boolean;
+  repositoryCount: number; lastLoginAt: string | null; createdAt: string;
+}
+export interface UserSessionSummary { id: string; createdAt: string; lastSeenAt: string; ip: string | null; userAgent: string | null; current: boolean; }
+export interface RepositoryAccessEntry {
+  repositoryKey: string; displayName: string; source: "local" | "github";
+  grants: Array<{ userId: string; username: string; displayName: string; role: RepositoryRole }>;
+}
+export interface InviteLinkResponse { inviteUrl: string; expiresAt: string; }
