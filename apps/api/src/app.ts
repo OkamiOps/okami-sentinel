@@ -13,6 +13,7 @@ import { loadServerSettings, runtimeMode, repositoryRoots } from "./deployment-s
 import { createAuthApi } from "./auth/auth-api.js";
 import { createUsersApi } from "./auth/users-api.js";
 import { csrfTokenOf } from "./auth/principal.js";
+import { authorize } from "./auth/route-policy.js";
 import { assertRepositoryAccess } from "./repository-access.js";
 import path from "node:path";
 
@@ -153,6 +154,10 @@ app.use(
     allowHeaders: ["Content-Type", "X-CSRF-Token", "Idempotency-Key"],
   }),
 );
+
+// Deny by default: every route below must appear in ROUTE_POLICY, and the
+// caller's role is settled before any handler sees the request.
+app.use("*", authorize());
 
 app.get("/security-session", (c) => {
   c.header("Cache-Control", "no-store");
