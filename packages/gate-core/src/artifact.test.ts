@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type {
   ChangeSet,
+  FindingSummary,
   GateArtifact,
   GateArtifactV2,
   GateFindingDelta,
@@ -13,6 +14,7 @@ import {
   buildOperationalErrorArtifact,
   buildOperationalErrorArtifactV2,
   buildScanLineage,
+  classifyGateFindings,
   defaultGuardrailPolicy,
   gatePublicationEligibility,
   parseGateArtifact,
@@ -698,6 +700,20 @@ test("distinguishes short Bearer secrets from conceptual Bearer evidence", () =>
   assert.equal(operational.decision.summary.includes("Bearer authentication-header bypass"), true);
 });
 
+test("does not treat ordinary prose after Bearer as a credential", () => {
+  for (const prose of [
+    "MCP route trusts client userId when the bearer is absent",
+    "Falls back to the body userId if the bearer is missing",
+    "Accepts either a bearer or a session cookie",
+    "Bearer and cookie authentication disagree on tenant scope",
+    "Bearer misconfiguration exposes admin routes",
+  ]) {
+    const input = artifactInput();
+    input.evaluation.deltas[0]!.title = prose;
+    assert.equal(buildGateArtifact(input).findings[0]?.title, prose, prose);
+  }
+});
+
 test("rejects and fully redacts quoted multiword secret assignments", () => {
   const leaked = artifactInput();
   leaked.evaluation.deltas[0]!.summary = 'DATABASE_PASSWORD="correct horse battery staple"';
@@ -1122,4 +1138,90 @@ test("rejects unknown publishable fields and invalid timestamps", () => {
 test("returns a GateArtifact type after runtime validation", () => {
   const parsed: GateArtifact = parseGateArtifact(buildGateArtifact(artifactInput()));
   assert.equal(parsed.gateId, "gate-1");
+});
+
+test("publishes scanner findings the strict validator would reject verbatim", () => {
+  const scannerFindings: FindingSummary[] = [
+    {
+      findingId: "run-1",
+      occurrenceId: "",
+      title: "hardcoded secret: admin123",
+      severity: "low",
+      confidence: "",
+      ruleId: null,
+      summary: "Read GITHUB_TOKEN=zzsecretvaluezz from /home/runner/app/.env",
+      primaryPath: "",
+      fingerprints: [],
+      category: "",
+      cwe: [""],
+    },
+    {
+      findingId: "run-2",
+      occurrenceId: null,
+      title: "Credencial exposta no token:",
+      severity: "low",
+      confidence: "high",
+      ruleId: "rule-x",
+      summary: null,
+      primaryPath: "/home/runner/app/src/a.ts:12",
+      fingerprints: [],
+      category: "Injeção",
+      cwe: ["CWE-79"],
+    },
+  ];
+  const input = artifactV2Input();
+  input.evaluation = {
+    deltas: classifyGateFindings({
+      policy: input.policy,
+      branch: input.changeSet.headRef,
+      changeSet: input.changeSet,
+      currentFindings: scannerFindings,
+      baselineFindings: [],
+      historicalFindings: [],
+      triageByIdentity: new Map(),
+      exceptions: [],
+      sourceScanId: "scan-current",
+      baselineScanId: "scan-baseline",
+      now: "2026-08-07T12:00:00.000Z",
+    }),
+    decision: passDecision(),
+  };
+
+  const artifact = buildGateArtifactV2(input);
+  const serialized = JSON.stringify(artifact);
+
+  assert.equal(artifact.findings.length, 2);
+  for (const finding of artifact.findings) {
+    assert.match(finding.identity, /^hash:sha256:[0-9a-f]{64}$/);
+    assert.equal(finding.primaryPath, null);
+  }
+  for (const leak of ["admin123", "zzsecretvaluezz", "/home/runner", "GITHUB_TOKEN"]) {
+    assert.equal(serialized.includes(leak), false, leak);
+  }
+});
+
+test("rounds fractional scan token counts instead of failing publication", () => {
+  const input = artifactV2Input();
+  input.scan.cost = {
+    estimatedUsd: 1.25,
+    inputTokens: 100.4,
+    cachedInputTokens: 20.6,
+    cacheWriteInputTokens: -0.2,
+    outputTokens: 50.5,
+    model: "gpt-5.6-sol",
+  };
+
+  const artifact = buildGateArtifactV2(input);
+  assert.deepEqual(artifact.scan.cost, {
+    estimatedUsd: 1.25,
+    inputTokens: 100,
+    cachedInputTokens: 21,
+    cacheWriteInputTokens: 0,
+    outputTokens: 51,
+    model: "gpt-5.6-sol",
+  });
+
+  const fractional = structuredClone(artifact);
+  fractional.scan.cost!.inputTokens = 100.4;
+  assert.throws(() => parseGateArtifact(fractional), /inputTokens.*inteiro/);
 });

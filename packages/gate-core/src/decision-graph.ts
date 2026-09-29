@@ -7,6 +7,7 @@ import type {
   GateOutcome,
   GateViolation,
 } from "@csb/shared";
+import { redactPublicText } from "./public-text.js";
 
 type EvaluatedDecision = Omit<GateDecision, "decisionGraph">;
 
@@ -17,6 +18,8 @@ const lifecycleLabels: Record<GateFindingDelta["lifecycle"], string> = {
   fixed: "corrigido",
 };
 
+const undetermined = "Não determinado";
+
 export function buildDecisionGraph(
   changeSet: ChangeSet,
   deltas: GateFindingDelta[],
@@ -26,10 +29,14 @@ export function buildDecisionGraph(
   const primaryFinding = primaryRule
     ? deltas.find((finding) => finding.identity === primaryRule.findingIdentity) ?? null
     : deltas.find((finding) => finding.lifecycle !== "fixed") ?? null;
-  const surface = primaryFinding?.category
-    ?? primaryFinding?.primaryPath
-    ?? "Não determinado";
+  // Every value below can carry scanner text, so it is redacted and backed by a
+  // non-empty fallback for the fields the artifact validator requires.
+  const category = publicText(primaryFinding?.category ?? "");
+  const path = publicText(primaryFinding?.primaryPath ?? "");
+  const surface = category || path || undetermined;
   const findingIdentity = primaryFinding?.identity ?? null;
+  const outcomeLabel = decision.outcome.toUpperCase();
+  const verdict = publicText(outcomeLabel) || outcomeLabel;
 
   const nodes: DecisionGraphNode[] = [
     {
@@ -37,7 +44,7 @@ export function buildDecisionGraph(
       kind: "changeset",
       label: "Changeset",
       value: `${changeSet.files.length} arquivo(s) alterado(s)`,
-      detail: `${changeSet.baseSha} → ${changeSet.headSha}`,
+      detail: publicDetail(`${changeSet.baseSha} → ${changeSet.headSha}`),
       tone: "neutral",
       findingIdentity: null,
     },
@@ -46,8 +53,8 @@ export function buildDecisionGraph(
       kind: "surface",
       label: "Superfície",
       value: surface,
-      detail: primaryFinding?.category ? primaryFinding.primaryPath : null,
-      tone: surface === "Não determinado" ? "neutral" : signalTone(primaryRule),
+      detail: category ? path || null : null,
+      tone: surface === undetermined ? "neutral" : signalTone(primaryRule),
       findingIdentity,
     },
     {
@@ -55,10 +62,10 @@ export function buildDecisionGraph(
       kind: "signal",
       label: "Sinal",
       value: primaryFinding
-        ? `${primaryFinding.title} ${lifecycleLabels[primaryFinding.lifecycle]}`
-        : "Não determinado",
+        ? publicText(`${primaryFinding.title} ${lifecycleLabels[primaryFinding.lifecycle]}`) || undetermined
+        : undetermined,
       detail: primaryFinding
-        ? `${primaryFinding.severity}${primaryFinding.confidence ? ` · ${primaryFinding.confidence}` : ""}`
+        ? publicDetail(`${primaryFinding.severity}${primaryFinding.confidence ? ` · ${primaryFinding.confidence}` : ""}`)
         : null,
       tone: signalTone(primaryRule),
       findingIdentity,
@@ -76,8 +83,8 @@ export function buildDecisionGraph(
       id: "verdict",
       kind: "verdict",
       label: "Veredito",
-      value: decision.outcome.toUpperCase(),
-      detail: decision.summary,
+      value: verdict,
+      detail: publicDetail(decision.summary),
       tone: verdictTone(decision.outcome),
       findingIdentity,
     },
@@ -88,7 +95,16 @@ export function buildDecisionGraph(
 
 function ruleValue(rule: GateViolation | null): string {
   if (!rule) return "Nenhuma regra acionada";
-  return `${rule.decision === "block" ? "Bloquear" : "Revisar"} ${rule.reason}`;
+  const label = rule.decision === "block" ? "Bloquear" : "Revisar";
+  return publicText(`${label} ${rule.reason}`) || label;
+}
+
+function publicText(value: string): string {
+  return redactPublicText(value).trim();
+}
+
+function publicDetail(value: string): string | null {
+  return publicText(value) || null;
 }
 
 function signalTone(rule: GateViolation | null): DecisionGraphNode["tone"] {

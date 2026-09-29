@@ -10,7 +10,15 @@ import type {
   GuardrailException,
   GuardrailPolicy,
 } from "@csb/shared";
-import { findingIdentity } from "./identity.js";
+import { findingIdentity, publicFindingIdentity, publicIdentity } from "./identity.js";
+import { isRepositoryRelativePath, redactPublicText } from "./public-text.js";
+
+/**
+ * Comparison set rebuilt from an already published artifact. `identity` is the
+ * identity that artifact stored; recomputing it from redacted fields would turn
+ * a persistent finding into a new one plus a fixed one.
+ */
+export type BaselineFindingSummary = FindingSummary & { identity?: string };
 
 export interface EvaluateGateInput {
   policy: GuardrailPolicy;
@@ -18,9 +26,9 @@ export interface EvaluateGateInput {
   changeSet: ChangeSet;
   currentFindings: FindingSummary[];
   /** Legacy GateArtifact v1 bridge. GateArtifact v2 callers must provide baseline. */
-  baselineFindings: FindingSummary[] | null;
+  baselineFindings: BaselineFindingSummary[] | null;
   baseline?: EvaluateGateBaseline;
-  historicalFindings: FindingSummary[];
+  historicalFindings: BaselineFindingSummary[];
   triageByIdentity: ReadonlyMap<string, FindingTriage>;
   exceptions: GuardrailException[];
   sourceScanId: string;
@@ -31,7 +39,7 @@ export interface EvaluateGateInput {
 
 export type EvaluateGateBaseline =
   | { kind: "absent" }
-  | { kind: "comparable"; findings: FindingSummary[]; scanId: string }
+  | { kind: "comparable"; findings: BaselineFindingSummary[]; scanId: string }
   | { kind: "unavailable"; reason: string }
   | { kind: "incompatible"; reason: string };
 
@@ -52,19 +60,17 @@ export function classifyGateFindings(input: EvaluateGateInput): GateFindingDelta
     throw new Error(`Cannot classify findings with ${selectedBaseline.kind} baseline`);
   }
   if (selectedBaseline.kind === "absent") {
-    return input.currentFindings.map((finding): GateFindingDelta => {
-      const identity = findingIdentity(finding);
-      return delta(finding, identity, "new", input);
-    });
+    return input.currentFindings.map((finding): GateFindingDelta =>
+      delta(finding, publicFindingIdentity(finding), "new", input));
   }
 
   const baseline = selectedBaseline.findings;
-  const baselineIdentities = new Set(baseline.map(findingIdentity));
-  const historicalIdentities = new Set(input.historicalFindings.map(findingIdentity));
-  const currentIdentities = new Set(input.currentFindings.map(findingIdentity));
+  const baselineIdentities = new Set(baseline.map(storedIdentity));
+  const historicalIdentities = new Set(input.historicalFindings.map(storedIdentity));
+  const currentIdentities = new Set(input.currentFindings.map(publicFindingIdentity));
 
   const current = input.currentFindings.map((finding): GateFindingDelta => {
-    const identity = findingIdentity(finding);
+    const identity = publicFindingIdentity(finding);
     const lifecycle = baselineIdentities.has(identity)
       ? "persistent"
       : historicalIdentities.has(identity)
@@ -74,11 +80,8 @@ export function classifyGateFindings(input: EvaluateGateInput): GateFindingDelta
   });
 
   const fixed = baseline
-    .filter((finding) => !currentIdentities.has(findingIdentity(finding)))
-    .map((finding): GateFindingDelta => {
-      const identity = findingIdentity(finding);
-      return delta(finding, identity, "fixed", input);
-    });
+    .filter((finding) => !currentIdentities.has(storedIdentity(finding)))
+    .map((finding): GateFindingDelta => delta(finding, storedIdentity(finding), "fixed", input));
 
   return [...current, ...fixed];
 }
@@ -149,16 +152,56 @@ function delta(
   lifecycle: GateFindingDelta["lifecycle"],
   input: EvaluateGateInput,
 ): GateFindingDelta {
+  const triage = triageFor(finding, identity, input);
+  // Scanner and triage text is untrusted model output bound for a public
+  // artifact. Redact it here, after identity is fixed, so one credential-like
+  // phrase cannot invalidate an otherwise completed gate.
   return {
-    ...finding,
-    fingerprints: [...finding.fingerprints],
-    cwe: [...finding.cwe],
+    findingId: redactPublicText(finding.findingId).trim() || identity,
+    occurrenceId: nullableRedacted(finding.occurrenceId),
+    title: redactPublicText(finding.title).trim() || "Untitled finding",
+    severity: finding.severity,
+    confidence: nullableRedacted(finding.confidence),
+    ruleId: nullableRedacted(finding.ruleId),
+    summary: nullableRedacted(finding.summary),
+    primaryPath: finding.primaryPath !== null && isRepositoryRelativePath(finding.primaryPath)
+      ? repositoryRelative(nullableRedacted(finding.primaryPath))
+      : null,
+    fingerprints: redactedList(finding.fingerprints),
+    category: nullableRedacted(finding.category),
+    cwe: redactedList(finding.cwe),
     identity,
     lifecycle,
-    triage: { ...(input.triageByIdentity.get(identity) ?? unreviewedTriage) },
+    triage: { ...triage, note: nullableRedacted(triage.note) },
     exception: null,
     sourceScanId: sourceScanId(lifecycle, input),
   };
+}
+
+function storedIdentity(finding: BaselineFindingSummary): string {
+  return finding.identity?.trim()
+    ? publicIdentity(finding.identity)
+    : publicFindingIdentity(finding);
+}
+
+// Triage was recorded against the raw identity before identities became public.
+function triageFor(finding: FindingSummary, identity: string, input: EvaluateGateInput): FindingTriage {
+  return input.triageByIdentity.get(findingIdentity(finding))
+    ?? input.triageByIdentity.get(identity)
+    ?? unreviewedTriage;
+}
+
+// The validator rejects blank optional text, so blank becomes absent.
+function nullableRedacted(value: string | null): string | null {
+  return value === null ? null : redactPublicText(value).trim() || null;
+}
+
+function redactedList(values: string[]): string[] {
+  return values.map((value) => redactPublicText(value).trim()).filter((value) => value.length > 0);
+}
+
+function repositoryRelative(value: string | null): string | null {
+  return value !== null && isRepositoryRelativePath(value) ? value : null;
 }
 
 function noChangesResult(): EvaluateGateResult {

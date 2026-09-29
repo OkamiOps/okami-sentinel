@@ -121,6 +121,43 @@ test("prefers a blocking violation over warnings and other deltas", () => {
   assert.equal(graph.nodes[2]?.value, "Stored XSS reaberto");
 });
 
+test("redacts every node string the scanner can reach", () => {
+  const leaking = delta({
+    title: "Credencial exposta no token:",
+    lifecycle: "new",
+    category: "/home/runner/app",
+    confidence: "/Users/marcos/private",
+  });
+  const graph = buildDecisionGraph(
+    changeSet(),
+    [leaking],
+    decision({
+      violations: [{
+        findingIdentity: leaking.identity,
+        ruleIndex: 1,
+        decision: "block",
+        reason: "high/new",
+      }],
+    }),
+  );
+
+  assert.equal(graph.nodes[1]?.value, "[LOCAL_PATH]");
+  assert.equal(graph.nodes[2]?.value, "Credencial exposta no [REDACTED]");
+  assert.equal(graph.nodes[2]?.detail, "high · [LOCAL_PATH]");
+  for (const node of graph.nodes) {
+    assert.equal(node.value.trim().length > 0, true, node.id);
+    assert.equal(node.label.trim().length > 0, true, node.id);
+  }
+});
+
+test("falls back to a determinate surface when the evidence is blank", () => {
+  const graph = buildDecisionGraph(changeSet(), [delta({ category: "", primaryPath: "" })], decision());
+
+  assert.equal(graph.nodes[1]?.value, "Não determinado");
+  assert.equal(graph.nodes[1]?.tone, "neutral");
+  assert.equal(graph.nodes[1]?.detail, null);
+});
+
 test("falls back to the first non-fixed delta without inventing a rule", () => {
   const fixed = delta({ identity: "fp:fixed", lifecycle: "fixed", title: "Fixed issue" });
   const current = delta({ identity: "fp:current", lifecycle: "new", title: "Current issue" });
