@@ -10,7 +10,7 @@ import { githubIntegrationSecurity } from "./github-integration-security.js";
 import { isDraining } from "./shutdown.js";
 import { randomUUID } from "node:crypto";
 import { runtimeMode, repositoryRoots } from "./deployment-settings.js";
-import { securitySessionToken } from "./security-session.js";
+import { csrfTokenOf } from "./auth/principal.js";
 import { assertRepositoryAccess } from "./repository-access.js";
 import path from "node:path";
 
@@ -154,7 +154,7 @@ app.use(
 
 app.get("/security-session", (c) => {
   c.header("Cache-Control", "no-store");
-  return c.json({ csrfToken: securitySessionToken, runtimeMode: runtimeMode(), repositoryRoots: repositoryRoots() });
+  return c.json({ csrfToken: csrfTokenOf(c), runtimeMode: runtimeMode(), repositoryRoots: repositoryRoots() });
 });
 
 export interface GuardrailsApiDependencies {

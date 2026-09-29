@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
-import { randomUUID, timingSafeEqual } from "node:crypto";
-import { securitySessionToken } from "./security-session.js";
+import { randomUUID } from "node:crypto";
+import { csrfTokenOf } from "./auth/principal.js";
+import { validRequestCsrf } from "./security-session.js";
 import { publicOrigin, runtimeMode } from "./deployment-settings.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -35,7 +36,6 @@ export function createEngineUpdatesApp(supplied?: UpdatesService): Hono {
       invalidateScannerCatalog();
     },
   });
-  const token = securitySessionToken;
   const app = new Hono();
   app.use("/engine-updates/*", async (c, next) => {
     c.header("Cache-Control", "no-store");
@@ -50,12 +50,12 @@ export function createEngineUpdatesApp(supplied?: UpdatesService): Hono {
       return c.json({ error: "origin_denied" }, 403);
     }
     if (!origin && c.req.header("Sec-Fetch-Site") === "cross-site") return c.json({ error: "origin_denied" }, 403);
-    if (c.req.method !== "GET" && c.req.method !== "HEAD" && !validToken(c.req.header("X-CSRF-Token"), token)) {
+    if (c.req.method !== "GET" && c.req.method !== "HEAD" && !validRequestCsrf(c)) {
       return c.json({ error: "csrf_invalid" }, 403);
     }
     await next();
   });
-  app.get("/engine-updates/security-session", (c) => c.json({ csrfToken: token }));
+  app.get("/engine-updates/security-session", (c) => c.json({ csrfToken: csrfTokenOf(c) }));
   app.get("/engine-updates", async (c) => {
     try { return c.json(await service.status()); }
     catch { return c.json({ error: "state_invalid" }, 500); }
@@ -95,13 +95,6 @@ function updateError(c: import("hono").Context, error: unknown) {
 function runtimeId(value: string): ManagedRuntimeId {
   if (value !== "codex-security" && value !== "codex-cli") throw new Error("invalid_request");
   return value;
-}
-
-function validToken(value: string | undefined, expected: string): boolean {
-  if (!value || value.length !== expected.length) return false;
-  const supplied = Buffer.from(value);
-  const target = Buffer.from(expected);
-  return supplied.length === target.length && timingSafeEqual(supplied, target);
 }
 
 async function body(request: Request, allowedKeys: readonly string[]): Promise<Record<string, unknown>> {
