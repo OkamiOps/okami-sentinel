@@ -9,7 +9,7 @@ import { app, createGuardrailsApp, type GuardrailsApiDependencies } from "../app
 import { getDb } from "../db.js";
 import type { ServerSettings } from "../deployment-settings.js";
 import { createServerApp } from "../server-app.js";
-import { SESSION_COOKIE } from "../server-security.js";
+import { SECURE_SESSION_COOKIE } from "../session-cookie.js";
 import { replaceUserGrants } from "./grant-store.js";
 import { LOCAL_PRINCIPAL } from "./principal.js";
 import { authorize, matchPolicy } from "./route-policy.js";
@@ -177,7 +177,7 @@ function member(name: string, grants: Array<{ repositoryKey: string; role: "view
   const user = createUser({ username: name, displayName: name, isAdmin: false }, getDb());
   replaceUserGrants(user.id, grants, null, getDb());
   const { token, session } = createSession({ userId: user.id, ip: null, userAgent: null }, getDb());
-  return { cookie: `${SESSION_COOKIE}=${token}`, csrf: session.csrfToken };
+  return { cookie: `${SECURE_SESSION_COOKIE}=${token}`, csrf: session.csrfToken };
 }
 
 test("the HTTP role matrix decides in server mode", async () => {
