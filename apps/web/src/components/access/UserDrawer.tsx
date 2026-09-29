@@ -54,7 +54,10 @@ function DrawerBody({ user, repositories, onChanged }: {
       <div className="mt-2 flex flex-wrap gap-2"><UserStateBadge user={user} /><UserRoleBadge user={user} /></div>
     </SheetHeader>
     <Tabs defaultValue="access" className="min-h-0 flex-1 gap-0">
-      <TabsList variant="line" className="h-10 w-full justify-start gap-2 border-b px-4">
+      {/* The triggers are flex-1 by default, which would spread three tabs
+          across the whole sheet and stretch each underline with them. This
+          strip reads like the settings tabs: left-aligned, content-width. */}
+      <TabsList variant="line" className="h-10 w-full justify-start gap-2 border-b px-4 [&>button]:flex-none [&>button]:px-2">
         <TabsTrigger value="access">{t("drawer.tab.access")}</TabsTrigger>
         <TabsTrigger value="sessions">{t("drawer.tab.sessions")}</TabsTrigger>
         <TabsTrigger value="actions">{t("drawer.tab.actions")}</TabsTrigger>

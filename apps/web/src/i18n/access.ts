@@ -160,6 +160,8 @@ const ptBR = {
   "access.roleFor": "Papel de {name} em {repository}",
   "access.selectUser": "Escolher usuário",
   "access.allGranted": "Todos os membros ativos já têm acesso.",
+  "access.noMembers": "Nenhum membro cadastrado ainda — convide alguém em",
+  "access.noMembersLink": "Usuários",
   "access.saveError": "Não foi possível salvar o papel. Tente novamente.",
 };
 
@@ -323,6 +325,8 @@ const en: typeof ptBR = {
   "access.roleFor": "Role for {name} in {repository}",
   "access.selectUser": "Select a user",
   "access.allGranted": "Every active member already has access.",
+  "access.noMembers": "No members yet — invite someone in",
+  "access.noMembersLink": "Users",
   "access.saveError": "Could not save the role. Try again.",
 };
 
@@ -486,6 +490,8 @@ const es: typeof ptBR = {
   "access.roleFor": "Rol de {name} en {repository}",
   "access.selectUser": "Elegir un usuario",
   "access.allGranted": "Todos los miembros activos ya tienen acceso.",
+  "access.noMembers": "Aún no hay miembros: invita a alguien en",
+  "access.noMembersLink": "Usuarios",
   "access.saveError": "No se pudo guardar el rol. Inténtalo de nuevo.",
 };
 
@@ -649,6 +655,8 @@ const de: typeof ptBR = {
   "access.roleFor": "Rolle von {name} in {repository}",
   "access.selectUser": "Benutzer wählen",
   "access.allGranted": "Alle aktiven Mitglieder haben bereits Zugriff.",
+  "access.noMembers": "Noch keine Mitglieder — lade jemanden ein unter",
+  "access.noMembersLink": "Benutzer",
   "access.saveError": "Die Rolle konnte nicht gespeichert werden. Versuche es erneut.",
 };
 
@@ -812,6 +820,8 @@ const fr: typeof ptBR = {
   "access.roleFor": "Rôle de {name} dans {repository}",
   "access.selectUser": "Choisir un utilisateur",
   "access.allGranted": "Tous les membres actifs ont déjà accès.",
+  "access.noMembers": "Aucun membre pour l’instant — invitez quelqu’un dans",
+  "access.noMembersLink": "Utilisateurs",
   "access.saveError": "Impossible d’enregistrer le rôle. Réessayez.",
 };
 

@@ -55,8 +55,13 @@ export function AlertBanner({ children, tone = "error" }: { children: ReactNode;
   return <div role={tone === "error" ? "alert" : "status"} aria-live={tone === "error" ? "assertive" : "polite"} className={cx("mb-4 border px-3 py-2.5 text-xs", map[tone])}>{children}</div>;
 }
 
-export function EmptyState({ title, description, icon }: { title: string; description?: string; icon?: IconSvgElement }) {
-  return <div className="flex min-h-44 flex-col items-center justify-center px-5 py-12 text-center">{icon && <HugeiconsIcon icon={icon} size={22} className="mb-3 text-muted-foreground" />}<div className="text-sm font-semibold">{title}</div>{description && <p className="mt-1 max-w-sm text-xs leading-relaxed text-muted-foreground">{description}</p>}</div>;
+/**
+ * `compact` is for an empty row inside a panel that already carries its own
+ * header and footer: the full-height variant turns a one-line statement into a
+ * blank box taller than the content around it.
+ */
+export function EmptyState({ title, description, icon, compact = false, children }: { title: string; description?: ReactNode; icon?: IconSvgElement; compact?: boolean; children?: ReactNode }) {
+  return <div className={cx("flex flex-col items-center justify-center text-center", compact ? "px-4 py-6" : "min-h-44 px-5 py-12")}>{icon && <HugeiconsIcon icon={icon} size={compact ? 18 : 22} className="mb-2 text-muted-foreground" />}<div className={cx("font-semibold", compact ? "text-xs" : "text-sm")}>{title}</div>{description && <p className={cx("mt-1 max-w-sm leading-relaxed text-muted-foreground", compact ? "text-[11px]" : "text-xs")}>{description}</p>}{children && <div className="mt-2">{children}</div>}</div>;
 }
 
 /**
