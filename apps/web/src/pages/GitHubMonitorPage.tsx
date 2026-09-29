@@ -117,8 +117,14 @@ export function GitHubMonitorPage() {
   // so a member's rule stays on the GitHub Actions executor and it may not
   // touch a Sentinel-managed rule an administrator left behind.
   const canSpendOnConnections = isAdmin;
-  const canEditRule = can("maintainer", selectedRepositoryKey) &&
-    (canSpendOnConnections || selectedRule === null || selectedRule.executor === "github-actions");
+  const ruleSpendsOnConnections = selectedRule !== null &&
+    (selectedRule.executor === "sentinel-managed" || selectedRule.scanner !== null);
+  const isMaintainer = can("maintainer", selectedRepositoryKey);
+  const canEditRule = isMaintainer && (canSpendOnConnections || !ruleSpendsOnConnections);
+  // Stopping the spending is never blocked: a maintainer switches off a
+  // Sentinel-managed rule an administrator enabled, even though only an
+  // administrator may switch it back on or point it at another connection.
+  const canDisableRule = isMaintainer && selectedRule?.enabled === true;
   const showBudgetValidation = selectedRule?.enabled === true;
   const currentEvents = overview?.events.filter((event) => event.repositoryKey === selectedRepositoryKey) ?? [];
   const currentActionRuns = overview?.actionsRuns.filter((run) => run.repositoryKey === selectedRepositoryKey) ?? [];
@@ -413,11 +419,11 @@ export function GitHubMonitorPage() {
             <Panel label={t("githubMonitor.automation")} title={selectedRule?.enabled ? t("githubMonitor.active") : t("githubMonitor.inactive")}>
               <div className="p-4">
                 {formError && <AlertBanner>{formError}</AlertBanner>}
-                {canEditRule ? <div className="grid gap-2">
+                {canEditRule || canDisableRule ? <div className="grid gap-2">
                   {selectedRule?.enabled ? <>
-                    <Button className="min-h-11 w-full" disabled={saving || !canActivate} onClick={() => void save(true)}>{saving ? t("githubMonitor.saving") : t("githubMonitor.update")}</Button>
-                    <Button variant="outline" className="min-h-11 w-full" disabled={saving} onClick={() => void deactivate()}>{t("githubMonitor.deactivate")}</Button>
-                  </> : <>
+                    {canEditRule && <Button className="min-h-11 w-full" disabled={saving || !canActivate} onClick={() => void save(true)}>{saving ? t("githubMonitor.saving") : t("githubMonitor.update")}</Button>}
+                    {canDisableRule && <Button variant="outline" className="min-h-11 w-full" disabled={saving} onClick={() => void deactivate()}>{t("githubMonitor.deactivate")}</Button>}
+                  </> : canEditRule && <>
                     <Button variant="outline" className="min-h-11 w-full" disabled={saving || !branchesValid} onClick={() => void save(false)}>{saving ? t("githubMonitor.saving") : t("githubMonitor.follow")}</Button>
                     <Button className="min-h-11 w-full" disabled={saving || !canActivate} onClick={() => void save(true)}>{saving ? t("githubMonitor.saving") : t("githubMonitor.activate")}</Button>
                   </>}

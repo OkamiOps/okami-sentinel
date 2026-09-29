@@ -76,11 +76,15 @@ export function createGitHubMonitorApi(dependencies: GitHubMonitorApiDependencie
       // patch would leave behind, not on the one addressed.
       const principal = principalOf(c);
       const current = principal.isAdmin ? null : getGitHubMonitorRule(id);
-      if (current !== null && spendsOnProviderConnection({
-        executor: patch.executor ?? current.executor,
-        scanner: patch.scanner === undefined ? current.scanner : patch.scanner,
-      })) {
-        return c.json({ error: "forbidden" }, 403);
+      if (current !== null) {
+        const resulting = {
+          executor: patch.executor ?? current.executor,
+          scanner: patch.scanner === undefined ? current.scanner : patch.scanner,
+          enabled: patch.enabled ?? current.enabled,
+        };
+        if (spendsOnProviderConnection(resulting) && !stopsProviderSpending(current, resulting)) {
+          return c.json({ error: "forbidden" }, 403);
+        }
       }
       return c.json({ rule: service.patchRule(id, patch) });
     } catch (error) {
@@ -137,6 +141,35 @@ export function createGitHubMonitorApi(dependencies: GitHubMonitorApiDependencie
  */
 function spendsOnProviderConnection(rule: Pick<GitHubMonitorRule, "executor" | "scanner">): boolean {
   return rule.executor === "sentinel-managed" || rule.scanner !== null;
+}
+
+/**
+ * Stopping the spending is never blocked. A member may switch off a
+ * Sentinel-managed rule an administrator enabled — and leave an already
+ * switched-off one alone — as long as the patch adds nothing that would be
+ * spent on once someone enables it again: no new Sentinel-managed executor,
+ * and no scanner the rule did not already carry.
+ */
+function stopsProviderSpending(
+  current: Pick<GitHubMonitorRule, "executor" | "scanner" | "enabled">,
+  next: Pick<GitHubMonitorRule, "executor" | "scanner" | "enabled">,
+): boolean {
+  if (next.enabled) return false;
+  if (next.executor === "sentinel-managed" && current.executor !== "sentinel-managed") return false;
+  return next.scanner === null || sameScannerSelection(current.scanner, next.scanner);
+}
+
+function sameScannerSelection(
+  current: GitHubMonitorRule["scanner"],
+  next: NonNullable<GitHubMonitorRule["scanner"]>,
+): boolean {
+  return current !== null &&
+    current.engine === next.engine &&
+    current.mode === next.mode &&
+    (current.effort ?? null) === (next.effort ?? null) &&
+    current.connection.connectionId === next.connection.connectionId &&
+    current.connection.modelSelectionMode === next.connection.modelSelectionMode &&
+    current.connection.modelId === next.connection.modelId;
 }
 
 /**
