@@ -1,3 +1,7 @@
+import type { UserLocale } from "./email.js";
+
+export * from "./email.js";
+
 export type Severity = "critical" | "high" | "medium" | "low" | "info" | "unknown";
 
 export type ScanStatus =
@@ -1458,7 +1462,11 @@ export interface ScanCandidatePreview {
 
 export type RepositoryRole = "viewer" | "analyst" | "operator" | "maintainer";
 export interface RepositoryGrant { repositoryKey: string; role: RepositoryRole; }
-export interface AuthSessionUser { id: string; username: string; displayName: string; isAdmin: boolean; }
+export interface AuthSessionUser {
+  id: string; username: string; displayName: string; isAdmin: boolean;
+  /** The interface language the user picked; `null` until they pick one. */
+  locale: UserLocale | null;
+}
 export interface AuthSessionResponse {
   user: AuthSessionUser;
   grants: RepositoryGrant[];
