@@ -39,7 +39,7 @@ test("acquires one in-memory csrf token before connection writes", async () => {
       headers: request.headers,
       body: await request.text(),
     });
-    if (request.url.endsWith("/security-session")) return Response.json({ csrfToken: "memory-only-token" });
+    if (request.url.endsWith("/auth/session")) return Response.json({ csrfToken: "memory-only-token" });
     return Response.json({ connection });
   });
   const body: CreateProviderConnectionRequest = {
@@ -57,7 +57,7 @@ test("acquires one in-memory csrf token before connection writes", async () => {
   await client.update("conn-1", { name: "Renamed" });
 
   assert.deepEqual(calls.map((call) => `${call.method} ${call.path}`), [
-    "GET /api/security-session",
+    "GET /api/auth/session",
     "POST /api/connections",
     "PATCH /api/connections/conn-1",
   ]);
@@ -74,7 +74,7 @@ test("refreshes a stale csrf session once and retries the same mutation", async 
     const request = new Request(`http://sentinel.local${String(input)}`, init);
     const path = new URL(request.url).pathname;
     calls.push({ method: request.method, path, csrf: request.headers.get("x-csrf-token") });
-    if (path.endsWith("/security-session")) {
+    if (path.endsWith("/auth/session")) {
       sessions += 1;
       return Response.json({ csrfToken: sessions === 1 ? "stale-token" : "fresh-token" });
     }
@@ -87,9 +87,9 @@ test("refreshes a stale csrf session once and retries the same mutation", async 
 
   assert.deepEqual(result, connection);
   assert.deepEqual(calls, [
-    { method: "GET", path: "/api/security-session", csrf: null },
+    { method: "GET", path: "/api/auth/session", csrf: null },
     { method: "PATCH", path: "/api/connections/conn-1", csrf: "stale-token" },
-    { method: "GET", path: "/api/security-session", csrf: null },
+    { method: "GET", path: "/api/auth/session", csrf: null },
     { method: "PATCH", path: "/api/connections/conn-1", csrf: "fresh-token" },
   ]);
 });
@@ -100,13 +100,13 @@ test("does not retry a mutation for an unrelated server error", async () => {
     const request = new Request(`http://sentinel.local${String(input)}`, init);
     const path = new URL(request.url).pathname;
     calls.push(`${request.method} ${path}`);
-    if (path.endsWith("/security-session")) return Response.json({ csrfToken: "valid-token" });
+    if (path.endsWith("/auth/session")) return Response.json({ csrfToken: "valid-token" });
     return Response.json({ error: "invalid_connection" }, { status: 400 });
   });
 
   await assert.rejects(client.update("conn-1", { name: "Renamed" }), /invalid_connection/);
   assert.deepEqual(calls, [
-    "GET /api/security-session",
+    "GET /api/auth/session",
     "PATCH /api/connections/conn-1",
   ]);
 });
@@ -118,7 +118,7 @@ test("does not cache a failed csrf acquisition across later user actions", async
     const request = new Request(`http://sentinel.local${String(input)}`, init);
     const path = new URL(request.url).pathname;
     calls.push(`${request.method} ${path}`);
-    if (path.endsWith("/security-session")) {
+    if (path.endsWith("/auth/session")) {
       sessions += 1;
       if (sessions === 1) return Response.json({ error: "provider_unreachable" }, { status: 503 });
       return Response.json({ csrfToken: "recovered-token" });
@@ -129,8 +129,8 @@ test("does not cache a failed csrf acquisition across later user actions", async
   await assert.rejects(client.update("conn-1", { name: "First attempt" }), /provider_unreachable/);
   assert.deepEqual(await client.update("conn-1", { name: "Second attempt" }), connection);
   assert.deepEqual(calls, [
-    "GET /api/security-session",
-    "GET /api/security-session",
+    "GET /api/auth/session",
+    "GET /api/auth/session",
     "PATCH /api/connections/conn-1",
   ]);
 });
@@ -140,13 +140,13 @@ test("accepts an empty 204 response after deleting a connection", async () => {
   const client = createConnectionsClient(async (input, init) => {
     const path = new URL(String(input), "http://sentinel.local").pathname;
     calls.push(`${init?.method ?? "GET"} ${path}`);
-    if (path.endsWith("/security-session")) return Response.json({ csrfToken: "memory-only-token" });
+    if (path.endsWith("/auth/session")) return Response.json({ csrfToken: "memory-only-token" });
     return new Response(null, { status: 204 });
   });
 
   await client.remove("conn-1");
   assert.deepEqual(calls, [
-    "GET /api/security-session",
+    "GET /api/auth/session",
     "DELETE /api/connections/conn-1",
   ]);
 });
@@ -168,7 +168,7 @@ test("uses the same csrf session for auth mutations while polling flow state wit
     const request = new Request(`http://sentinel.local${String(input)}`, init);
     const path = new URL(request.url).pathname;
     calls.push({ method: request.method, path, csrf: request.headers.get("x-csrf-token") });
-    if (path.endsWith("/security-session")) return Response.json({ csrfToken: "auth-csrf" });
+    if (path.endsWith("/auth/session")) return Response.json({ csrfToken: "auth-csrf" });
     if (path.endsWith("/auth/start") || path.endsWith("/auth/flow-1")) {
       return Response.json({
         flow: {
@@ -193,7 +193,7 @@ test("uses the same csrf session for auth mutations while polling flow state wit
   assert.equal(current.status, "completed");
   assert.equal(disconnected.status, "revoked");
   assert.deepEqual(calls, [
-    { method: "GET", path: "/api/security-session", csrf: null },
+    { method: "GET", path: "/api/auth/session", csrf: null },
     { method: "POST", path: "/api/connections/conn-1/auth/start", csrf: "auth-csrf" },
     { method: "GET", path: "/api/connections/conn-1/auth/flow-1", csrf: null },
     { method: "POST", path: "/api/connections/conn-1/auth/flow-1/cancel", csrf: "auth-csrf" },
@@ -207,7 +207,7 @@ test("asks the server to resolve engine compatibility from a connection selectio
     const request = new Request(`http://sentinel.local${String(input)}`, init);
     const path = new URL(request.url).pathname;
     calls.push({ method: request.method, path, body: await request.text(), csrf: request.headers.get("x-csrf-token") });
-    if (path === "/api/security-session") return Response.json({ csrfToken: "routing-token", runtimeMode: "local", repositoryRoots: [] });
+    if (path === "/api/auth/session") return Response.json({ csrfToken: "routing-token", runtimeMode: "local", repositoryRoots: [] });
     return Response.json({
       connectionId: "conn-1",
       modelSelectionMode: "catalog",
@@ -226,7 +226,7 @@ test("asks the server to resolve engine compatibility from a connection selectio
   assert.equal(result.eligible, true);
   assert.deepEqual(calls, [{
     method: "GET",
-    path: "/api/security-session",
+    path: "/api/auth/session",
     body: "",
     csrf: null,
   }, {

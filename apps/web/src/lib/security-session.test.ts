@@ -18,7 +18,7 @@ test("keeps one in-memory session for API mutations and exposes server roots", a
     const inputUrl = String(input);
     const request = new Request(inputUrl.startsWith("/") ? `http://sentinel.local${inputUrl}` : inputUrl, init);
     calls.push({ url: request.url, method: request.method, csrf: request.headers.get("x-csrf-token") });
-    if (request.url === "http://sentinel.local/api/security-session") {
+    if (request.url === "http://sentinel.local/api/auth/session") {
       return Response.json({
         csrfToken: "session-token",
         runtimeMode: "server",
@@ -38,7 +38,7 @@ test("keeps one in-memory session for API mutations and exposes server roots", a
     repositoryRoots: ["/repos/team-a", "/repos/team-b"],
   });
   assert.deepEqual(calls, [
-    { url: "http://sentinel.local/api/security-session", method: "GET", csrf: null },
+    { url: "http://sentinel.local/api/auth/session", method: "GET", csrf: null },
     { url: "http://sentinel.local/api/scans", method: "POST", csrf: "session-token" },
     { url: "http://sentinel.local/api/guardrails/gates", method: "POST", csrf: "session-token" },
   ]);
@@ -67,4 +67,34 @@ test("does not alter an external provider request", async () => {
     csrf: null,
     authorization: "Bearer provider-token",
   }]);
+});
+
+test("dispatches sentinel:unauthorized on a 401 from a non-auth API path", async () => {
+  const dispatched: string[] = [];
+  const stubWindow = { dispatchEvent: (event: { type: string }) => { dispatched.push(event.type); return true; } };
+  const previousWindow = (globalThis as { window?: unknown }).window;
+  (globalThis as { window?: unknown }).window = stubWindow;
+  try {
+    const client = createSecuritySessionClient(async () => new Response(JSON.stringify({ error: "authentication_required" }), { status: 401 }));
+    const response = await client.request("/api/scans");
+    assert.equal(response.status, 401);
+    assert.deepEqual(dispatched, ["sentinel:unauthorized"]);
+  } finally {
+    (globalThis as { window?: unknown }).window = previousWindow;
+  }
+});
+
+test("does not dispatch sentinel:unauthorized for a 401 from /api/auth/session itself", async () => {
+  const dispatched: string[] = [];
+  const stubWindow = { dispatchEvent: (event: { type: string }) => { dispatched.push(event.type); return true; } };
+  const previousWindow = (globalThis as { window?: unknown }).window;
+  (globalThis as { window?: unknown }).window = stubWindow;
+  try {
+    const client = createSecuritySessionClient(async () => new Response(JSON.stringify({ error: "authentication_required" }), { status: 401 }));
+    const response = await client.request("/api/auth/session");
+    assert.equal(response.status, 401);
+    assert.deepEqual(dispatched, []);
+  } finally {
+    (globalThis as { window?: unknown }).window = previousWindow;
+  }
 });

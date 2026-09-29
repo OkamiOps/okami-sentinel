@@ -41,12 +41,31 @@ async function isInvalidCsrfResponse(response: Response): Promise<boolean> {
   }
 }
 
+const AUTH_PATH_PREFIX = `${API_BASE}/auth/`;
+
+function isUnderAuthPath(input: RequestInfo | URL): boolean {
+  const url = typeof input === "string" ? input : input instanceof Request ? input.url : String(input);
+  return url.startsWith(AUTH_PATH_PREFIX) || url.includes(AUTH_PATH_PREFIX);
+}
+
+/**
+ * Signals every consumer (the auth provider, in particular) that the browser
+ * no longer holds a valid session, without importing React state here. A 401
+ * from `/api/auth/*` itself is an expected sign-in/sign-out response, not a
+ * session loss, so it is excluded.
+ */
+function notifyUnauthorized(): void {
+  if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+    window.dispatchEvent(new Event("sentinel:unauthorized"));
+  }
+}
+
 export function createSecuritySessionClient(fetcher: Fetcher = fetch) {
   let current: Promise<SecuritySession> | null = null;
 
   const get = () => {
     if (current === null) {
-      const pending = fetcher(`${API_BASE}/security-session`, {
+      const pending = fetcher(`${API_BASE}/auth/session`, {
         headers: { Accept: "application/json" },
       }).then((response) => parseApiResponse<SecuritySession>(response));
       current = pending;
@@ -60,7 +79,15 @@ export function createSecuritySessionClient(fetcher: Fetcher = fetch) {
   const clear = () => { current = null; };
 
   const request = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    if (!isApiMutation(input, init)) return fetcher(input, init);
+    const respond = async (response: Response): Promise<Response> => {
+      if (response.status === 401 && !isUnderAuthPath(input)) {
+        clear();
+        notifyUnauthorized();
+      }
+      return response;
+    };
+
+    if (!isApiMutation(input, init)) return respond(await fetcher(input, init));
 
     const attempt = async () => {
       const session = await get();
@@ -70,10 +97,10 @@ export function createSecuritySessionClient(fetcher: Fetcher = fetch) {
     };
 
     const response = await attempt();
-    if (!await isInvalidCsrfResponse(response)) return response;
+    if (!await isInvalidCsrfResponse(response)) return respond(response);
 
     clear();
-    return attempt();
+    return respond(await attempt());
   };
 
   return { get, clear, request };

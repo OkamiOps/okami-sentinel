@@ -25,6 +25,7 @@ export function ScanCandidatePreview({ scan, expanded }: { scan: ScanRun; expand
       pending = true;
       try {
         const response = await fetch(`/api/scans/${encodeURIComponent(scan.id)}/candidate-preview`, { signal: controller.signal });
+        if (response.status === 401) window.dispatchEvent(new Event("sentinel:unauthorized"));
         if (!response.ok) throw new Error("preview_unavailable");
         const value = await response.json() as Preview;
         if (!disposed) { setPreview(value); setError(false); }

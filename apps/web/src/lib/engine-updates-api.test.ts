@@ -44,7 +44,7 @@ test("sends exact update actions with one in-memory CSRF token", async () => {
     const request = new Request(`http://sentinel.local${String(input)}`, init);
     const path = new URL(request.url).pathname;
     calls.push({ method: request.method, path, csrf: request.headers.get("x-csrf-token"), body: await request.text() });
-    if (path.endsWith("/security-session")) return Response.json({ csrfToken: "browser-only-token" });
+    if (path.endsWith("/auth/session")) return Response.json({ csrfToken: "browser-only-token" });
     return Response.json(response);
   });
 
@@ -53,7 +53,7 @@ test("sends exact update actions with one in-memory CSRF token", async () => {
   await client.rollback("codex-security");
 
   assert.deepEqual(calls, [
-    { method: "GET", path: "/api/security-session", csrf: null, body: "" },
+    { method: "GET", path: "/api/auth/session", csrf: null, body: "" },
     { method: "POST", path: "/api/engine-updates/check", csrf: "browser-only-token", body: "{}" },
     { method: "POST", path: "/api/engine-updates/codex-security/update", csrf: "browser-only-token", body: "{\"version\":\"1.1.0\"}" },
     { method: "POST", path: "/api/engine-updates/codex-security/rollback", csrf: "browser-only-token", body: "{}" },
@@ -68,7 +68,7 @@ test("refreshes an invalid CSRF session exactly once for an updater mutation", a
     const request = new Request(`http://sentinel.local${String(input)}`, init);
     const path = new URL(request.url).pathname;
     calls.push({ method: request.method, path, csrf: request.headers.get("x-csrf-token") });
-    if (path.endsWith("/security-session")) {
+    if (path.endsWith("/auth/session")) {
       sessions += 1;
       return Response.json({ csrfToken: sessions === 1 ? "expired" : "fresh" });
     }
@@ -79,9 +79,9 @@ test("refreshes an invalid CSRF session exactly once for an updater mutation", a
 
   assert.deepEqual(await client.update("codex-security", "1.1.0"), response);
   assert.deepEqual(calls, [
-    { method: "GET", path: "/api/security-session", csrf: null },
+    { method: "GET", path: "/api/auth/session", csrf: null },
     { method: "POST", path: "/api/engine-updates/codex-security/update", csrf: "expired" },
-    { method: "GET", path: "/api/security-session", csrf: null },
+    { method: "GET", path: "/api/auth/session", csrf: null },
     { method: "POST", path: "/api/engine-updates/codex-security/update", csrf: "fresh" },
   ]);
 });
@@ -92,13 +92,13 @@ test("does not retry an updater mutation for a non-CSRF failure", async () => {
     const request = new Request(`http://sentinel.local${String(input)}`, init);
     const path = new URL(request.url).pathname;
     calls.push(`${request.method} ${path}`);
-    if (path.endsWith("/security-session")) return Response.json({ csrfToken: "valid" });
+    if (path.endsWith("/auth/session")) return Response.json({ csrfToken: "valid" });
     return Response.json({ error: "check_required" }, { status: 409 });
   });
 
   await assert.rejects(client.update("codex-security", "1.1.0"), /check_required/);
   assert.deepEqual(calls, [
-    "GET /api/security-session",
+    "GET /api/auth/session",
     "POST /api/engine-updates/codex-security/update",
   ]);
 });

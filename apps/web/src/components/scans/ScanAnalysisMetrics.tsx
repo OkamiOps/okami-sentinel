@@ -22,6 +22,7 @@ export function ScanAnalysisMetrics({ scan }: { scan: ScanRun }) {
       pending = true;
       try {
         const response = await fetch(`/api/scans/${encodeURIComponent(scan.id)}/analysis-metrics`, { signal: controller.signal });
+        if (response.status === 401) window.dispatchEvent(new Event("sentinel:unauthorized"));
         if (!response.ok) throw new Error("metrics_unavailable");
         const value = await response.json() as Metrics;
         if (!disposed) { setMetrics(value); setError(false); }

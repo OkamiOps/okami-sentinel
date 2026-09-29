@@ -4,6 +4,7 @@ import { ArrowUpRight, Cpu, ListChecks, Radio, RefreshCw } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../api";
+import { revalidateSession } from "../../auth/AuthProvider";
 import {
   formatActivityState,
   formatDate,
@@ -65,6 +66,7 @@ export function GuardrailScanMonitor({ gate, onScanTerminal }: { gate: GateRun; 
     const source = scan?.status === "running"
       ? new EventSource(api.scanEventsUrl(scanId, telemetry.cursor))
       : null;
+    if (source) source.onerror = () => revalidateSession();
     const handler = (event: MessageEvent) => {
       try {
         const data = JSON.parse(String(event.data)) as ScanEvent;
