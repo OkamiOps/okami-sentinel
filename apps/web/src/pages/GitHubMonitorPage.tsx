@@ -113,6 +113,12 @@ export function GitHubMonitorPage() {
     : selectedConnection !== null &&
       (draft.modelSelectionMode === "runtime-default" || draft.modelId !== null);
   const canActivate = selectedRepository !== null && branchesValid && budgetValid && routeReady;
+  // Phase 1 cost rule: only an administrator spends on a provider connection,
+  // so a member's rule stays on the GitHub Actions executor and it may not
+  // touch a Sentinel-managed rule an administrator left behind.
+  const canSpendOnConnections = isAdmin;
+  const canEditRule = can("maintainer", selectedRepositoryKey) &&
+    (canSpendOnConnections || selectedRule === null || selectedRule.executor === "github-actions");
   const showBudgetValidation = selectedRule?.enabled === true;
   const currentEvents = overview?.events.filter((event) => event.repositoryKey === selectedRepositoryKey) ?? [];
   const currentActionRuns = overview?.actionsRuns.filter((run) => run.repositoryKey === selectedRepositoryKey) ?? [];
@@ -152,9 +158,10 @@ export function GitHubMonitorPage() {
   useEffect(() => {
     if (!selectedRepository) return;
     const nextRule = overview?.rules.find((rule) => rule.repositoryKey === selectedRepository.repositoryKey) ?? null;
-    setDraft(nextRule ? draftFromGitHubMonitorRule(nextRule) : initialGitHubMonitorDraft(selectedRepository.defaultBranch));
+    const nextDraft = nextRule ? draftFromGitHubMonitorRule(nextRule) : initialGitHubMonitorDraft(selectedRepository.defaultBranch);
+    setDraft(canSpendOnConnections ? nextDraft : { ...nextDraft, executor: "github-actions" });
     setFormError(null);
-  }, [overview?.rules, selectedRepository?.repositoryKey, selectedRepository?.defaultBranch]);
+  }, [overview?.rules, selectedRepository?.repositoryKey, selectedRepository?.defaultBranch, canSpendOnConnections]);
 
   useEffect(() => {
     let active = true;
@@ -344,10 +351,11 @@ export function GitHubMonitorPage() {
               <section className="border-t pt-5">
                 <div className="bench-label text-primary">{t("githubMonitor.execution")}</div>
                 <h3 className="mt-1 text-sm font-semibold">{t("githubMonitor.executionTitle")}</h3>
-                <div className={cx("mt-3 grid gap-2", selectedRule?.executor === "github-actions" && "sm:grid-cols-2")} role="radiogroup" aria-label={t("githubMonitor.executionTitle")}>
-                  <ExecutionChoice checked={draft.executor === "sentinel-managed"} icon={<ShieldCheck aria-hidden className="size-4" />} title="SENTINEL MANAGED" description={globalT("guardrails.managedDescription")} onSelect={() => updateDraft({ executor: "sentinel-managed" })} />
-                  {selectedRule?.executor === "github-actions" && <ExecutionChoice checked={draft.executor === "github-actions"} icon={<Workflow aria-hidden className="size-4" />} title="GITHUB ACTIONS" description={globalT("guardrails.actionsDescription")} onSelect={() => updateDraft({ executor: "github-actions" })} />}
+                <div className={cx("mt-3 grid gap-2", canSpendOnConnections && selectedRule?.executor === "github-actions" && "sm:grid-cols-2")} role="radiogroup" aria-label={t("githubMonitor.executionTitle")}>
+                  {canSpendOnConnections && <ExecutionChoice checked={draft.executor === "sentinel-managed"} icon={<ShieldCheck aria-hidden className="size-4" />} title="SENTINEL MANAGED" description={globalT("guardrails.managedDescription")} onSelect={() => updateDraft({ executor: "sentinel-managed" })} />}
+                  {(!canSpendOnConnections || selectedRule?.executor === "github-actions") && <ExecutionChoice checked={draft.executor === "github-actions"} icon={<Workflow aria-hidden className="size-4" />} title="GITHUB ACTIONS" description={globalT("guardrails.actionsDescription")} onSelect={() => updateDraft({ executor: "github-actions" })} />}
                 </div>
+                {!canSpendOnConnections && <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">{t("githubMonitor.sentinelAdminOnly")}</p>}
                 {draft.executor === "github-actions" ? <div className="mt-3 border border-chart-3/40 bg-chart-3/[.06] p-3 text-xs leading-relaxed text-chart-3"><p>{globalT("guardrails.actionsDescription")}</p><p className="mt-2">{t("githubMonitor.actionsScheduling")}</p></div> : <div className="mt-4 grid gap-4 md:grid-cols-2">
                   <Field label={t("githubMonitor.engine")} htmlFor="github-monitor-engine" hint={t("githubMonitor.engineHint")}>
                     <Input id="github-monitor-engine" value="OpenAI Codex Security" readOnly aria-readonly="true" />
@@ -405,7 +413,7 @@ export function GitHubMonitorPage() {
             <Panel label={t("githubMonitor.automation")} title={selectedRule?.enabled ? t("githubMonitor.active") : t("githubMonitor.inactive")}>
               <div className="p-4">
                 {formError && <AlertBanner>{formError}</AlertBanner>}
-                {can("maintainer", selectedRepositoryKey) ? <div className="grid gap-2">
+                {canEditRule ? <div className="grid gap-2">
                   {selectedRule?.enabled ? <>
                     <Button className="min-h-11 w-full" disabled={saving || !canActivate} onClick={() => void save(true)}>{saving ? t("githubMonitor.saving") : t("githubMonitor.update")}</Button>
                     <Button variant="outline" className="min-h-11 w-full" disabled={saving} onClick={() => void deactivate()}>{t("githubMonitor.deactivate")}</Button>

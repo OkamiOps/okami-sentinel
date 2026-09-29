@@ -95,3 +95,25 @@ test("a repository viewer gets none of the monitor rule controls", async ({ page
   await expect(page.getByRole("button", { name: "FOLLOW REPOSITORY", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "ENABLE AUTOMATION", exact: true })).toHaveCount(0);
 });
+
+test("a maintainer is not offered the Sentinel-managed executor", async ({ page }) => {
+  await openMonitorAs(page, "maintainer");
+  await expect(page.getByRole("radio", { name: /SENTINEL MANAGED/ })).toHaveCount(0);
+  await expect(page.getByRole("radio", { name: /GITHUB ACTIONS/ })).toBeVisible();
+  await expect(page.getByText("Only administrators can use Sentinel-managed execution", { exact: false })).toBeVisible();
+  // The connection and model pickers belong to a Sentinel-run scan.
+  await expect(page.getByRole("combobox", { name: "Model connection" })).toHaveCount(0);
+});
+
+test("an administrator keeps the Sentinel-managed executor", async ({ page }) => {
+  await mockApi(page, "en", { session: { isAdmin: true, grants: [] } });
+  await page.route("**/api/guardrails/repositories", (route) => route.fulfill({ json: { repositories: [enrolled] } }));
+  await page.route("**/api/github-monitor/**", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/branches")) return route.fulfill({ json: { branches: ["main"] } });
+    return route.fulfill({ json: { overview: overview() } });
+  });
+  await page.goto("/github");
+  await expect(page.getByRole("radio", { name: /SENTINEL MANAGED/ })).toBeVisible();
+  await expect(page.getByText("Only administrators can use Sentinel-managed execution", { exact: false })).toHaveCount(0);
+});
