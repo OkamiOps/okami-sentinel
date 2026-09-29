@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
 import type { ScanPhase, ScanProgress, ScanRun, ScanStatus } from "@csb/shared";
 import { WORKBENCH_DB_PATH } from "./config.js";
+import { openSqliteFile } from "./sqlite.js";
 import {
   latestMantisActivityAt,
   mantisRuntimeProgress,
@@ -242,7 +243,7 @@ export function dirsMatch(a: string, b: string): boolean {
 export function readProgressForScanDir(scanDir: string): ScanProgress | null {
   if (!fs.existsSync(WORKBENCH_DB_PATH)) return null;
   try {
-    const wb = new Database(WORKBENCH_DB_PATH, {
+    const wb = openSqliteFile(WORKBENCH_DB_PATH, {
       readonly: true,
       fileMustExist: true,
     });

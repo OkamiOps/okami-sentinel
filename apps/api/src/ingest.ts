@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import Database from "better-sqlite3";
 import {
   emptySeverityCounts,
   normalizeSeverity,
@@ -41,6 +40,7 @@ import {
   readProcessIdentity,
 } from "./process-identity.js";
 import { listActiveRuns } from "./scan-list.js";
+import { openSqliteFile } from "./sqlite.js";
 import { refreshMantisRunFromDisk } from "./scanners/mantis-reconcile.js";
 import { readMantisRuntime } from "./scanners/mantis-runtime.js";
 import { refreshPortableCodexSecurityRunFromDisk } from "./scanners/portable-codex-security-reconcile.js";
@@ -1282,7 +1282,7 @@ function workbenchRowToScanRun(row: WorkbenchScanRow): ScanRun {
 export function readWorkbenchScans(): ScanRun[] {
   if (!fs.existsSync(WORKBENCH_DB_PATH)) return [];
   try {
-    const wb = new Database(WORKBENCH_DB_PATH, { readonly: true, fileMustExist: true });
+    const wb = openSqliteFile(WORKBENCH_DB_PATH, { readonly: true, fileMustExist: true });
     try {
       const rows = wb
         .prepare(
@@ -1304,7 +1304,7 @@ export function readWorkbenchScans(): ScanRun[] {
 export function readWorkbenchScan(id: string): ScanRun | null {
   if (!fs.existsSync(WORKBENCH_DB_PATH)) return null;
   try {
-    const wb = new Database(WORKBENCH_DB_PATH, { readonly: true, fileMustExist: true });
+    const wb = openSqliteFile(WORKBENCH_DB_PATH, { readonly: true, fileMustExist: true });
     try {
       const row = wb
         .prepare(
