@@ -365,3 +365,52 @@ test("a maintainer sees the delete control on their own repository", async ({ pa
   await page.goto("/scans/scan-one");
   await expect(page.getByRole("button", { name: /delete|remove scan/i })).toBeVisible();
 });
+
+// The shell's top nav strip only unhides at the xl breakpoint; a wide
+// viewport keeps this assertion meaningful under both the desktop and
+// mobile Playwright projects instead of silently testing an unmounted menu.
+test("an admin sees the Operate tab and a member does not", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await mockApi(page, "en", { session: { isAdmin: true, grants: [] } });
+  await page.goto("/");
+  await expect(page.getByRole("link", { name: /Operate/i })).toBeVisible();
+});
+
+test("a member does not see the Operate tab and /scans/new redirects to /scans", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await mockApi(page, "en", { session: { isAdmin: false, grants: [{ repositoryKey: "github:1", role: "maintainer" }] } });
+  await page.goto("/");
+  await expect(page.getByRole("link", { name: /Operate/i })).toHaveCount(0);
+  await page.goto("/scans/new");
+  await expect(page).toHaveURL(/\/scans$/);
+  await expect(page.getByRole("link", { name: "Repository alpha", exact: true })).toBeVisible();
+});
+
+test("an admin sees Repeat on a portable scan and a member never does", async ({ page }) => {
+  const adminState = await mockApi(page, "en", { session: { isAdmin: true, grants: [] } });
+  adminState.runs[0] = {
+    ...adminState.runs[0],
+    execution: {
+      executionProfile: "portable", profileVersion: "sentinel-portable-v1", methodologyRef: "sentinel/portable-agent-session/v1",
+      capabilityCheckId: null, connectionId: "fixture-connection", routeKind: null, protocol: null, authKind: null,
+    },
+    launchSelection: { modelSelectionMode: "runtime-default", modelId: null, paths: ["src"] },
+  };
+  await page.goto("/scans/scan-one");
+  await expect(page.getByRole("link", { name: /retry portable/i })).toBeVisible();
+});
+
+test("a member does not see Repeat on a portable scan", async ({ page }) => {
+  const state = await mockApi(page, "en", { session: { isAdmin: false, grants: [{ repositoryKey: "github:1", role: "maintainer" }] } });
+  state.runs[0] = {
+    ...state.runs[0],
+    execution: {
+      executionProfile: "portable", profileVersion: "sentinel-portable-v1", methodologyRef: "sentinel/portable-agent-session/v1",
+      capabilityCheckId: null, connectionId: "fixture-connection", routeKind: null, protocol: null, authKind: null,
+    },
+    launchSelection: { modelSelectionMode: "runtime-default", modelId: null, paths: ["src"] },
+  };
+  await page.goto("/scans/scan-one");
+  await expect(page.getByRole("heading").first()).toBeVisible();
+  await expect(page.getByRole("link", { name: /retry portable/i })).toHaveCount(0);
+});
