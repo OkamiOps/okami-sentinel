@@ -48,6 +48,8 @@ As variáveis criadas na interface do Dokploy são gravadas em `.env` para inter
 
 Entre no domínio HTTPS com o usuário administrativo. Leia a senha apenas do arquivo de operador em uma sessão controlada. A primeira inicialização cria essa conta a partir de `CSB_ADMIN_USER` e `CSB_ADMIN_PASSWORD_PATH`; nas inicializações seguintes, esses valores só voltam a ser usados para restaurar um administrador quando nenhum estiver ativo — eles não funcionam como credencial de autenticação a cada requisição. Convide as demais pessoas em **Configurações → Usuários**, já autenticado como administrador. Configure depois as conexões e credenciais no vault do servidor; não copie o keychain ou a pasta pessoal de uma estação de trabalho para o volume.
 
+Se o administrador configurado ficar bloqueado por tentativas erradas de senha e não houver outra pessoa administradora disponível para desbloqueá-lo na interface, use **Redeploy** ou reinicie o serviço `sentinel`. A inicialização limpa o bloqueio e o contador de falhas apenas da conta indicada em `CSB_ADMIN_USER` e registra isso nos logs; a senha em uso continua a mesma, e o limite de tentativas por IP continua valendo.
+
 Verifique no painel e pela rota mínima:
 
 ```bash

@@ -87,6 +87,12 @@ cat ~/.local/share/okami-sentinel/admin_password
 
 Na primeira inicialização, o Sentinel cria a conta administrativa a partir de `CSB_ADMIN_USER` e `CSB_ADMIN_PASSWORD_FILE`. Nas inicializações seguintes, esses valores só voltam a ser usados para restaurar um administrador quando nenhum estiver ativo; eles não funcionam como uma credencial de autenticação direta a cada requisição. Convide as demais pessoas em **Configurações → Usuários**, já autenticado como administrador na interface.
 
+Se o administrador configurado ficar bloqueado por tentativas erradas e não houver outra pessoa administradora para desbloqueá-lo na interface, reinicie o serviço: a inicialização limpa o bloqueio e o contador de falhas dessa conta e registra isso no log, sem tocar na senha em uso.
+
+```bash
+docker compose --env-file .env.local -f compose.yaml -f compose.local.yaml restart sentinel
+```
+
 Pare a aplicação sem apagar dados:
 
 ```bash

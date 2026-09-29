@@ -136,3 +136,51 @@ test("bootstraps the first admin and recovers when no active admin remains", asy
   const login1 = await login({ username: "admin", password: settings.password, ip: "4.4.4.4", userAgent: null }, db);
   assert.equal(login1.ok, true);
 });
+
+test("a restart clears the lockout on the configured administrator without resetting its password", async () => {
+  const db = setup();
+  const settings = { username: "admin", password: "docker-secret-password-24chars" };
+  assert.equal(await bootstrapAdmin(settings, db), "created");
+  // The administrator changed the password after the first boot; a lockout
+  // recovery must not silently restore the one in the password file.
+  const admin = findUserByUsername("admin", db)!;
+  const chosen = "the password the admin chose";
+  updateUser(admin.id, { passwordHash: await hashPassword(chosen) }, db);
+  assert.equal(await bootstrapAdmin(settings, db), "unchanged");
+
+  const chosenHash = findUserByUsername("admin", db)!.passwordHash;
+  // Only administrator on the instance, now locked out by failed attempts.
+  const now = new Date();
+  updateUser(admin.id, { failedAttempts: 5, lockedUntil: new Date(now.getTime() + 15 * 60_000).toISOString() }, db);
+  assert.equal(await bootstrapAdmin(settings, db), "unlocked");
+  const unlocked = findUserByUsername("admin", db)!;
+  assert.equal(unlocked.failedAttempts, 0);
+  assert.equal(unlocked.lockedUntil, null);
+  assert.equal(unlocked.passwordHash, chosenHash, "the stored password hash must survive the unlock");
+  const chosenStillWorks = await login({ username: "admin", password: chosen, ip: "4.4.4.5", userAgent: null }, db);
+  assert.equal(chosenStillWorks.ok, true, "the password the administrator chose must still sign in");
+  // A second boot has nothing left to clear.
+  assert.equal(await bootstrapAdmin(settings, db), "unchanged");
+
+  // A lingering failure counter below the lock threshold is cleared too, so the
+  // next attempt starts from a full budget.
+  updateUser(admin.id, { failedAttempts: 3 }, db);
+  assert.equal(await bootstrapAdmin(settings, db), "unlocked");
+  assert.equal(findUserByUsername("admin", db)?.failedAttempts, 0);
+});
+
+test("changing the password clears the failure counters", async () => {
+  const db = setup();
+  const user = createUser({ username: "ana", displayName: "Ana", isAdmin: false, passwordHash: await hashPassword("ana password 123") }, db);
+  const signedIn = await login({ username: "ana", password: "ana password 123", ip: "5.5.5.1", userAgent: null }, db);
+  assert.ok(signedIn.ok);
+  if (!signedIn.ok) return;
+  updateUser(user.id, { failedAttempts: 4, lockedUntil: new Date(Date.now() + 60_000).toISOString() }, db);
+  assert.deepEqual(
+    await changePassword({ userId: user.id, sessionId: signedIn.session.id, currentPassword: "ana password 123", newPassword: "another password" }, db),
+    { ok: true },
+  );
+  const after = findUserByUsername("ana", db)!;
+  assert.equal(after.failedAttempts, 0);
+  assert.equal(after.lockedUntil, null);
+});
