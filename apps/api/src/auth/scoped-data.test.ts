@@ -43,18 +43,22 @@ function removeSeededRows(): void {
     const values = [...ids];
     getDb().prepare(`DELETE FROM ${table} WHERE ${column} IN (${values.map(() => "?").join(", ")})`).run(...values);
   };
-  // Children first: the cascades depend on a pragma this suite does not set.
-  deleteIn("github_monitor_actions_runs", "id", seeded.actionsRuns);
-  deleteIn("github_monitor_events", "id", seeded.monitorEvents);
-  deleteIn("github_monitor_rules", "id", seeded.monitorRules);
-  deleteIn("gate_runs", "id", seeded.gates);
-  deleteIn("runs", "id", seeded.runs);
-  deleteIn("sessions", "user_id", seeded.users);
-  deleteIn("user_invites", "user_id", seeded.users);
-  deleteIn("repository_grants", "user_id", seeded.users);
-  deleteIn("users", "id", seeded.users);
-  deleteIn("repository_grants", "repository_key", seeded.repositories);
-  deleteIn("guardrail_repositories", "repository_key", seeded.repositories);
+  // One transaction, so the write lock every other test file competes for is
+  // taken once instead of eleven times. Children first: the cascades depend on a
+  // pragma this suite does not set.
+  getDb().transaction(() => {
+    deleteIn("github_monitor_actions_runs", "id", seeded.actionsRuns);
+    deleteIn("github_monitor_events", "id", seeded.monitorEvents);
+    deleteIn("github_monitor_rules", "id", seeded.monitorRules);
+    deleteIn("gate_runs", "id", seeded.gates);
+    deleteIn("runs", "id", seeded.runs);
+    deleteIn("sessions", "user_id", seeded.users);
+    deleteIn("user_invites", "user_id", seeded.users);
+    deleteIn("repository_grants", "user_id", seeded.users);
+    deleteIn("users", "id", seeded.users);
+    deleteIn("repository_grants", "repository_key", seeded.repositories);
+    deleteIn("guardrail_repositories", "repository_key", seeded.repositories);
+  })();
 }
 
 after(removeSeededRows);
