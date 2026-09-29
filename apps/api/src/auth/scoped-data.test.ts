@@ -497,11 +497,46 @@ test("a monitor rule is created and edited by the repository's maintainer", (t) 
     (getDb().prepare("SELECT enabled FROM github_monitor_rules WHERE id = ?").get(ownedRule) as { enabled: number }).enabled,
     1,
   );
-  // Not even a cosmetic patch, because the rule it would leave behind still
-  // launches Sentinel-managed paid scans.
-  const disablingSpend = await send(maintainer, "PATCH", `/api/github-monitor/rules/${ownedRule}`, { checkoutMode: "fetch" });
-  assert.equal(disablingSpend.status, 403);
-  assert.deepEqual(await disablingSpend.json(), { error: "forbidden" });
+  // Not even a cosmetic patch, because the rule it would leave behind is still
+  // enabled and still launches Sentinel-managed paid scans.
+  const cosmeticSpend = await send(maintainer, "PATCH", `/api/github-monitor/rules/${ownedRule}`, { checkoutMode: "fetch" });
+  assert.equal(cosmeticSpend.status, 403);
+  assert.deepEqual(await cosmeticSpend.json(), { error: "forbidden" });
+
+  // Stopping the spending is never blocked: switching off a rule an
+  // administrator enabled is the one Sentinel-managed edit a maintainer owns.
+  const stopped = await send(maintainer, "PATCH", `/api/github-monitor/rules/${ownedRule}`, { enabled: false });
+  assert.equal(stopped.status, 200);
+  assert.equal(((await stopped.json()).rule as { enabled: boolean }).enabled, false);
+  assert.equal(
+    (getDb().prepare("SELECT enabled FROM github_monitor_rules WHERE id = ?").get(ownedRule) as { enabled: number }).enabled,
+    0,
+  );
+
+  // Switching it back on is the administrator's decision again.
+  const restarted = await send(maintainer, "PATCH", `/api/github-monitor/rules/${ownedRule}`, { enabled: true });
+  assert.equal(restarted.status, 403);
+  assert.deepEqual(await restarted.json(), { error: "forbidden" });
+  assert.equal(
+    (getDb().prepare("SELECT enabled FROM github_monitor_rules WHERE id = ?").get(ownedRule) as { enabled: number }).enabled,
+    0,
+  );
+
+  // And a rule left switched off still may not be pointed at a connection,
+  // which is what the next administrator to enable it would then spend on.
+  const rewired = await send(maintainer, "PATCH", `/api/github-monitor/rules/${ownedRule}`, {
+    enabled: false,
+    scanner: {
+      engine: "codex-security", mode: "standard",
+      connection: { connectionId: "another-connection", modelSelectionMode: "runtime-default", modelId: null },
+    },
+  });
+  assert.equal(rewired.status, 403);
+  assert.deepEqual(await rewired.json(), { error: "forbidden" });
+  assert.equal(
+    (getDb().prepare("SELECT scanner_json FROM github_monitor_rules WHERE id = ?").get(ownedRule) as { scanner_json: string | null }).scanner_json,
+    null,
+  );
 }));
 
 /**

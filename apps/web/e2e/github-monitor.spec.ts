@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import type { GitHubMonitorOverview, GuardrailRepository } from "@csb/shared";
+import type { GitHubMonitorOverview, GitHubMonitorRule, GuardrailRepository } from "@csb/shared";
 
 import { mockApi } from "./fixtures";
 
@@ -70,13 +70,27 @@ test("manual GitHub monitor sync names and sends only the selected repository", 
  */
 const enrolled = { ...repository, repositoryKey: "github:1" } satisfies GuardrailRepository;
 
-async function openMonitorAs(page: Page, role: "viewer" | "maintainer"): Promise<void> {
+const sentinelRule: GitHubMonitorRule = {
+  id: "rule-sentinel", repositoryKey: enrolled.repositoryKey,
+  connectionId: "github-connection", installationId: "123", repositoryId: "456",
+  executor: "sentinel-managed",
+  scanner: {
+    engine: "codex-security", mode: "standard",
+    connection: { connectionId: "provider-connection", modelSelectionMode: "runtime-default", modelId: null },
+  },
+  costCeilingUsd: 2, dailyCostCeilingUsd: 2, followBranches: ["main"], checkoutMode: "none",
+  enabled: true, revision: 1, baselineInitializedAt: null, lastPolledAt: null, lastError: null,
+  createdAt: "2026-09-29T10:00:00.000Z", updatedAt: "2026-09-29T10:00:00.000Z",
+};
+
+async function openMonitorAs(page: Page, role: "viewer" | "maintainer", rules: GitHubMonitorRule[] = []): Promise<void> {
   await mockApi(page, "en", { session: { isAdmin: false, grants: [{ repositoryKey: enrolled.repositoryKey, role }] } });
   await page.route("**/api/guardrails/repositories", (route) => route.fulfill({ json: { repositories: [enrolled] } }));
   await page.route("**/api/github-monitor/**", (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith("/branches")) return route.fulfill({ json: { branches: ["main"] } });
-    return route.fulfill({ json: { overview: overview() } });
+    const current = overview();
+    return route.fulfill({ json: { overview: { ...current, rules, summary: { ...current.summary, enabledRules: rules.filter((rule) => rule.enabled).length } } } });
   });
   await page.goto("/github");
   // The automation panel is rendered for every role; only its controls are gated.
@@ -116,4 +130,19 @@ test("an administrator keeps the Sentinel-managed executor", async ({ page }) =>
   await page.goto("/github");
   await expect(page.getByRole("radio", { name: /SENTINEL MANAGED/ })).toBeVisible();
   await expect(page.getByText("Only administrators can use Sentinel-managed execution", { exact: false })).toHaveCount(0);
+});
+
+test("a maintainer can switch off a Sentinel-managed rule but never back on", async ({ page }) => {
+  await openMonitorAs(page, "maintainer", [sentinelRule]);
+  // Stopping the spending is the one edit a member owns on such a rule.
+  await expect(page.getByRole("button", { name: "DISABLE AUTOMATION", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "SAVE CHANGES", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "ENABLE AUTOMATION", exact: true })).toHaveCount(0);
+});
+
+test("a maintainer cannot switch a Sentinel-managed rule back on once it is off", async ({ page }) => {
+  await openMonitorAs(page, "maintainer", [{ ...sentinelRule, enabled: false }]);
+  for (const name of ["ENABLE AUTOMATION", "FOLLOW REPOSITORY", "DISABLE AUTOMATION"]) {
+    await expect(page.getByRole("button", { name, exact: true })).toHaveCount(0);
+  }
 });
