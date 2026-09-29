@@ -924,7 +924,11 @@ export interface CodexInfo {
   sdkVersion?: string;
   model?: string;
   reasoningEffort?: string;
-  raw: unknown;
+  /**
+   * The scanner's whole `info --json` document, which carries server-side paths
+   * such as the npm cache directory. Disclosed to administrators only.
+   */
+  raw?: unknown;
 }
 
 export interface HealthResponse {
