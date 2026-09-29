@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 
 import { api, type GuardrailTargetPreview } from "../../api";
+import { githubMonitorApi } from "../../lib/github-monitor-api";
 import {
   initialGuardrailTargetDraft,
   preflightFingerprint,
@@ -91,6 +92,8 @@ export function GuardrailPreflightSheet({
   const [error, setError] = useState<string | null>(null);
   const [pullRequests, setPullRequests] = useState<GuardrailPullRequestSummary[] | null>(null);
   const [pullRequestsError, setPullRequestsError] = useState<string | null>(null);
+  const [branches, setBranches] = useState<string[] | null>(null);
+  const [branchesError, setBranchesError] = useState(false);
   const [executorChosenByUser, setExecutorChosenByUser] = useState(false);
   const [managedFallback, setManagedFallback] = useState(false);
   const [previewRefresh, setPreviewRefresh] = useState(0);
@@ -340,6 +343,25 @@ export function GuardrailPreflightSheet({
   }, [open, selected?.repositoryKey, selected?.source, t]);
 
   useEffect(() => {
+    if (!open || selected?.source !== "github") {
+      setBranches(null);
+      setBranchesError(false);
+      return;
+    }
+    let cancelled = false;
+    setBranches(null);
+    setBranchesError(false);
+    void githubMonitorApi.branches(selected.repositoryKey).then((names) => {
+      if (!cancelled) setBranches(names);
+    }).catch(() => {
+      if (cancelled) return;
+      setBranches([]);
+      setBranchesError(true);
+    });
+    return () => { cancelled = true; };
+  }, [open, selected?.repositoryKey, selected?.source]);
+
+  useEffect(() => {
     if (!open || selected?.source !== "github" || !target || !fingerprint || !routeReady) return;
     let cancelled = false;
     setPreviewBusy(true);
@@ -519,8 +541,21 @@ export function GuardrailPreflightSheet({
                     )}
                   </Field>
                 ) : draft.kind === "protected_branch" ? (
-                  <Field label={t("guardrails.branchRef")} htmlFor="guardrail-branch-ref" hint={pullRequestsError ?? (pullRequests?.length === 0 ? t("guardrails.branchFallbackHelp") : t("guardrails.branchSnapshotHelp"))}>
-                    <Input id="guardrail-branch-ref" className="min-h-11 font-mono" value={draft.baseRef} onChange={(event) => invalidatePreview({ ...draft, baseRef: event.target.value })} />
+                  <Field label={t("guardrails.branchRef")} htmlFor="guardrail-branch-ref" hint={(selected.source === "github" && branchesError ? t("guardrails.branchLoadError") : null) ?? pullRequestsError ?? (pullRequests?.length === 0 ? t("guardrails.branchFallbackHelp") : t("guardrails.branchSnapshotHelp"))}>
+                    {selected.source === "github" && branches === null ? (
+                      <div id="guardrail-branch-ref" className="grid min-h-11 place-items-center border bg-secondary/20 px-4 text-xs text-muted-foreground">{t("guardrails.branchLoading")}</div>
+                    ) : selected.source === "github" && branches && branches.length > 0 ? (
+                      <Select value={draft.baseRef} onValueChange={(value) => invalidatePreview({ ...draft, baseRef: value })}>
+                        <SelectTrigger id="guardrail-branch-ref" className="min-h-11 w-full rounded-none font-mono"><SelectValue /></SelectTrigger>
+                        <SelectContent position="popper" className="max-h-72 max-w-[calc(100vw-2rem)] rounded-none border-border bg-popover sm:max-w-2xl">
+                          {(branches.includes(draft.baseRef) || !draft.baseRef ? branches : [draft.baseRef, ...branches]).map((name) => (
+                            <SelectItem key={name} value={name} className="min-h-10 rounded-none font-mono">{name}{name === selected.defaultBranch ? ` · ${t("guardrails.defaultBranch")}` : ""}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <Input id="guardrail-branch-ref" className="min-h-11 font-mono" value={draft.baseRef} onChange={(event) => invalidatePreview({ ...draft, baseRef: event.target.value })} />
+                    )}
                   </Field>
                 ) : (
                   <div className="grid gap-4 sm:grid-cols-2">
