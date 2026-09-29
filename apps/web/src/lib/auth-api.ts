@@ -1,5 +1,5 @@
 import type { AuthSessionResponse, AuthSessionUser, UserSessionSummary } from "@csb/shared";
-import { parseApiResponse } from "./http.js";
+import { ApiError, parseApiResponse } from "./http.js";
 import { API_BASE, apiFetch } from "./security-session.js";
 
 export interface InvitePreview {
@@ -30,6 +30,19 @@ export class AuthRequestError extends Error {
     this.status = status;
     this.retryAfterSeconds = retryAfterSeconds;
   }
+}
+
+/**
+ * The public auth mutations raise `AuthRequestError`; the authenticated ones
+ * go through `parseApiResponse` and raise `ApiError`, which keeps the server's
+ * code as its message unless it had to invent a generic HTTP one. Callers that
+ * want to answer a named rejection ("wrong current password") should not have
+ * to know which of the two they caught.
+ */
+export function authErrorCode(error: unknown): string | null {
+  if (error instanceof AuthRequestError) return error.code;
+  if (error instanceof ApiError && error.kind === "http" && !error.hasGenericHttpMessage) return error.message;
+  return null;
 }
 
 function positiveSeconds(value: unknown): number | null {

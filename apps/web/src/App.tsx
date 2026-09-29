@@ -1,5 +1,5 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { Link, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Activity01Icon, Analytics01Icon, ArrowRight01Icon, Menu01Icon, PlusSignIcon, RefreshIcon } from "@hugeicons/core-free-icons";
 import type { ScanRun } from "@csb/shared";
@@ -10,6 +10,7 @@ import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/s
 import { AlertBanner, LiveDuration, Loading, cx } from "./components/ui";
 import { formatDate, formatScanUsd } from "./format";
 import { LanguageSwitcher } from "./components/LanguageSwitcher";
+import { UserMenu } from "./components/auth/UserMenu";
 import { ThemeSwitcher } from "./components/ThemeSwitcher";
 import { useI18n, type TranslationKey } from "./i18n";
 import { useAuth } from "./auth/AuthProvider";
@@ -31,6 +32,7 @@ const ConnectionsPage = lazy(() => import("./pages/ConnectionsPage").then(({ Con
 const GitHubMonitorPage = lazy(() => import("./pages/GitHubMonitorPage").then(({ GitHubMonitorPage: page }) => ({ default: page })));
 const LoginPage = lazy(() => import("./pages/LoginPage").then(({ LoginPage: page }) => ({ default: page })));
 const InvitePage = lazy(() => import("./pages/InvitePage").then(({ InvitePage: page }) => ({ default: page })));
+const AccountPage = lazy(() => import("./pages/AccountPage").then(({ AccountPage: page }) => ({ default: page })));
 
 const AUTH_ROUTE = /^\/(?:login$|invite\/[^/]+$)/;
 
@@ -39,9 +41,13 @@ const nav: ReadonlyArray<readonly [string, TranslationKey]> = [["/", "nav.overvi
 function NavStrip({ onNavigate }: { onNavigate?: () => void }) {
   const { pathname } = useLocation();
   const { t } = useI18n();
+  const { isAdmin } = useAuth();
   return <nav className="flex flex-col md:flex-row md:items-stretch">{nav.map(([to, label], index) => {
     const isActive = to === "/scans" ? pathname === "/scans" || (pathname.startsWith("/scans/") && pathname !== "/scans/new") : to === "/guardrails" ? pathname === "/guardrails" || pathname.startsWith("/guardrails/") : to === "/settings" ? pathname === "/settings" || pathname.startsWith("/settings/") : pathname === to;
-    return <Link key={to} to={to} aria-current={isActive ? "page" : undefined} onClick={onNavigate} className={cx("group relative flex h-11 items-center gap-3 border-b border-border px-4 font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:border-b-0 md:border-r", isActive && "bg-accent text-chart-1")}><span className="text-[8px] opacity-45">0{index + 1}</span>{t(label)}<span className={cx("absolute inset-x-0 bottom-0 h-px bg-chart-1 transition-transform", isActive ? "scale-x-100" : "scale-x-0 group-hover:scale-x-100")} /></Link>;
+    // System readiness is an administration page; a member's only settings
+    // destination is their own account, so the tab points straight at it.
+    const target = to === "/settings" && !isAdmin ? "/settings/account" : to;
+    return <Link key={to} to={target} aria-current={isActive ? "page" : undefined} onClick={onNavigate} className={cx("group relative flex h-11 items-center gap-3 border-b border-border px-4 font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:border-b-0 md:border-r", isActive && "bg-accent text-chart-1")}><span className="text-[8px] opacity-45">0{index + 1}</span>{t(label)}<span className={cx("absolute inset-x-0 bottom-0 h-px bg-chart-1 transition-transform", isActive ? "scale-x-100" : "scale-x-0 group-hover:scale-x-100")} /></Link>;
   })}</nav>;
 }
 
@@ -49,7 +55,7 @@ export function App() {
   const location = useLocation();
   const navigate = useNavigate();
   const { t } = useI18n();
-  const { status, refresh } = useAuth();
+  const { status, refresh, isAdmin } = useAuth();
   const [active, setActive] = useState<ScanRun[]>([]);
   const [shellState, setShellState] = useState<"checking" | "ready" | "offline">("checking");
   const [lastActiveUpdate, setLastActiveUpdate] = useState<string | null>(null);
@@ -79,7 +85,7 @@ export function App() {
     const id = window.setInterval(() => void loadActive(), 4000);
     return () => window.clearInterval(id);
   }, [loadActive, status, location.pathname]);
-  useEffect(() => { const onKeyDown = (event: KeyboardEvent) => { if (!(event.metaKey || event.ctrlKey)) return; if (event.key.toLowerCase() === "k") { event.preventDefault(); setLauncherOpen((open) => !open); } if (event.key === "Enter") { event.preventDefault(); navigate("/scans/new"); } }; window.addEventListener("keydown", onKeyDown); return () => window.removeEventListener("keydown", onKeyDown); }, [navigate]);
+  useEffect(() => { const onKeyDown = (event: KeyboardEvent) => { if (!(event.metaKey || event.ctrlKey)) return; if (event.key.toLowerCase() === "k") { event.preventDefault(); setLauncherOpen((open) => !open); } if (event.key === "Enter" && isAdmin) { event.preventDefault(); navigate("/scans/new"); } }; window.addEventListener("keydown", onKeyDown); return () => window.removeEventListener("keydown", onKeyDown); }, [navigate, isAdmin]);
   async function reindex() {
     setSyncing(true);
     setReindexFailed(false);
@@ -133,7 +139,10 @@ export function App() {
           <div className="hidden items-center gap-2 border-l px-4 font-mono text-[9px] text-muted-foreground 2xl:flex" role="status" aria-live="polite" title={shellStatusDetail}><span className={cx("size-1.5 rounded-full", shellState === "offline" ? "bg-chart-3" : current ? "bg-primary" : "bg-chart-2")} />{shellStatus}</div>
           <ThemeSwitcher />
           <LanguageSwitcher />
-          <Button asChild className="h-full border-y-0 border-r-0 px-3 sm:px-4"><Link to="/scans/new"><HugeiconsIcon icon={PlusSignIcon} size={13} />{t("shell.launch")}</Link></Button>
+          <UserMenu />
+          {/* Launching a scan is an administration action in this phase; a
+              member is never shown a button that would only be refused. */}
+          {isAdmin && <Button asChild className="h-full border-y-0 border-r-0 px-3 sm:px-4"><Link to="/scans/new"><HugeiconsIcon icon={PlusSignIcon} size={13} />{t("shell.launch")}</Link></Button>}
           <Sheet open={modulesOpen} onOpenChange={setModulesOpen}>
             <SheetTrigger asChild><Button variant="ghost" size="icon" className="h-full border-y-0 border-r-0 xl:hidden" aria-label={t("shell.openModules")}><HugeiconsIcon icon={Menu01Icon} size={16} /></Button></SheetTrigger>
             <SheetContent side="right" className="w-72 border-border bg-background p-0"><SheetTitle className="border-b px-4 py-4 font-mono text-xs">{t("shell.moduleIndex")}</SheetTitle><NavStrip onNavigate={() => setModulesOpen(false)} /></SheetContent>
@@ -166,14 +175,24 @@ export function App() {
         <Route path="/scans/:id/findings/:findingId/path" element={<AttackPathPage />} />
         <Route path="/scans/:id" element={<ScanDetailPage />} />
         <Route path="/compare" element={<ComparePage />} />
-        <Route path="/settings" element={<SettingsPage />} />
-        <Route path="/settings/connections" element={<ConnectionsPage />} />
+        <Route path="/settings" element={<AdminOnly><SettingsPage /></AdminOnly>} />
+        <Route path="/settings/connections" element={<AdminOnly><ConnectionsPage /></AdminOnly>} />
+        <Route path="/settings/account" element={<AccountPage />} />
       </Routes>
       </Suspense>
     </main>
 
-    <CommandDock current={current} shellState={shellState} shellStatus={shellStatus} shellStatusDetail={shellStatusDetail} open={launcherOpen} onOpenChange={setLauncherOpen} syncing={syncing} onReindex={() => void reindex()} onNavigate={navigate} />
+    <CommandDock current={current} shellState={shellState} shellStatus={shellStatus} shellStatusDetail={shellStatusDetail} open={launcherOpen} onOpenChange={setLauncherOpen} syncing={syncing} canLaunch={isAdmin} onReindex={() => void reindex()} onNavigate={navigate} />
   </div>;
+}
+
+/**
+ * Administration pages have no member-facing fallback content: sending them to
+ * their own account is the honest answer, and `replace` keeps Back working.
+ */
+function AdminOnly({ children }: { children: ReactNode }) {
+  const { isAdmin } = useAuth();
+  return isAdmin ? <>{children}</> : <Navigate to="/settings/account" replace />;
 }
 
 /**
@@ -196,7 +215,7 @@ function SessionUnreachable({ onRetry }: { onRetry: () => Promise<void> }) {
   </AlertBanner>;
 }
 
-function CommandDock({ current, shellState, shellStatus, shellStatusDetail, open, onOpenChange, syncing, onReindex, onNavigate }: { current?: ScanRun; shellState: "checking" | "ready" | "offline"; shellStatus: string; shellStatusDetail: string; open: boolean; onOpenChange: (open: boolean) => void; syncing: boolean; onReindex: () => void; onNavigate: (to: string) => void }) {
+function CommandDock({ current, shellState, shellStatus, shellStatusDetail, open, onOpenChange, syncing, canLaunch, onReindex, onNavigate }: { current?: ScanRun; shellState: "checking" | "ready" | "offline"; shellStatus: string; shellStatusDetail: string; open: boolean; onOpenChange: (open: boolean) => void; syncing: boolean; canLaunch: boolean; onReindex: () => void; onNavigate: (to: string) => void }) {
   const { t } = useI18n();
   return <div className="fixed inset-x-0 bottom-3 z-40 mx-auto w-[calc(100%-1.5rem)] max-w-5xl border border-border bg-[var(--surface-overlay)] shadow-[0_18px_60px_rgba(0,0,0,.25)] dark:shadow-[0_18px_60px_rgba(0,0,0,.55)] backdrop-blur-md">
       <div className="flex h-12 items-stretch">
@@ -205,7 +224,7 @@ function CommandDock({ current, shellState, shellStatus, shellStatusDetail, open
         <DropdownMenuContent side="top" align="start" sideOffset={8} className="w-72 rounded-none border border-chart-4/35 bg-popover p-1.5 shadow-[0_18px_60px_rgba(0,0,0,.35)] dark:shadow-[0_18px_60px_rgba(0,0,0,.65)] ring-0">
           <DropdownMenuLabel className="px-2 py-2 font-mono text-[8px] uppercase tracking-[.14em] text-chart-4">{t("shell.quickActions")}</DropdownMenuLabel>
           <DropdownMenuSeparator />
-          <DockMenuItem icon={PlusSignIcon} label={t("shell.newScan")} detail={t("shell.openSequencer")} shortcut="⌘↵" onSelect={() => onNavigate("/scans/new")} />
+          {canLaunch && <DockMenuItem icon={PlusSignIcon} label={t("shell.newScan")} detail={t("shell.openSequencer")} shortcut="⌘↵" onSelect={() => onNavigate("/scans/new")} />}
           <DockMenuItem icon={Activity01Icon} label={t("nav.runs")} detail={t("shell.openLedger")} onSelect={() => onNavigate("/scans")} />
           <DockMenuItem icon={Analytics01Icon} label={t("nav.compare")} detail={t("shell.compareChannels")} onSelect={() => onNavigate("/compare")} />
           <DropdownMenuSeparator />
@@ -217,7 +236,7 @@ function CommandDock({ current, shellState, shellStatus, shellStatusDetail, open
 
       <DockLink to="/scans" label={t("nav.runs")} icon={Activity01Icon} className="hidden sm:flex" />
       <DockLink to="/compare" label={t("nav.compare")} icon={Analytics01Icon} className="hidden md:flex" />
-      <Link to="/scans/new" className="flex shrink-0 items-center gap-2 border-l border-chart-1/30 bg-chart-1 px-3 font-mono text-[9px] font-semibold uppercase tracking-wider text-primary-foreground transition hover:bg-chart-1/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-background"><HugeiconsIcon icon={PlusSignIcon} size={12} /><span className="hidden lg:inline">{t("shell.newScan")}</span><span className="hidden border border-primary-foreground/25 px-1 py-0.5 text-[7px] xl:inline">⌘↵</span></Link>
+      {canLaunch && <Link to="/scans/new" className="flex shrink-0 items-center gap-2 border-l border-chart-1/30 bg-chart-1 px-3 font-mono text-[9px] font-semibold uppercase tracking-wider text-primary-foreground transition hover:bg-chart-1/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-background"><HugeiconsIcon icon={PlusSignIcon} size={12} /><span className="hidden lg:inline">{t("shell.newScan")}</span><span className="hidden border border-primary-foreground/25 px-1 py-0.5 text-[7px] xl:inline">⌘↵</span></Link>}
     </div>
   </div>;
 }

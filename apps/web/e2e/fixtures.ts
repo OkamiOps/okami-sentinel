@@ -19,6 +19,7 @@ export interface MockApiOptions {
   loginResponse?: { status: number; body: unknown };
   acceptInviteResponse?: { status: number; body: unknown };
   patchUserResponse?: { status: number; body: unknown };
+  changePasswordResponse?: { status: number; body: unknown };
 }
 
 const rootUser: UserSummary = {
@@ -41,6 +42,21 @@ function currentSessionSummary(current: boolean): UserSessionSummary {
     ip: "127.0.0.1", userAgent: "fixture-agent", current,
   };
 }
+
+// The account panel renders a device label out of the user agent, so these
+// carry real-looking strings instead of the opaque `fixture-agent`.
+const accountSessions: UserSessionSummary[] = [
+  {
+    id: "session-one", createdAt: "2026-09-07T09:00:00.000Z", lastSeenAt: "2026-09-07T10:00:00.000Z",
+    ip: "127.0.0.1", current: true,
+    userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+  },
+  {
+    id: "session-two", createdAt: "2026-09-05T08:00:00.000Z", lastSeenAt: "2026-09-06T08:30:00.000Z",
+    ip: "10.0.0.8", current: false,
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0",
+  },
+];
 
 export const baseRun: ScanRun = {
   id: "scan-one", displayName: "Repository alpha", repositoryPath: "/fixture/alpha", scanDir: "/fixture/scans/one",
@@ -99,6 +115,7 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
       runtimeMode: (options.session ? "server" : "local") as "local" | "server",
     },
     users: [structuredClone(rootUser), structuredClone(anaUser)] as UserSummary[],
+    accountSessions: structuredClone(accountSessions),
   };
   await page.addInitScript(({ locale }) => {
     localStorage.setItem("okami-sentinel.locale", locale);
@@ -198,8 +215,20 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
         return json({ ok: true });
       }
     }
-    if (path === "/account/sessions" && req.method() === "GET") return json({ sessions: [currentSessionSummary(true)] });
-    if (path === "/account/password" && req.method() === "POST") return route.fulfill({ status: 204 });
+    if (path === "/account/sessions" && req.method() === "GET") return json({ sessions: state.accountSessions });
+    if (path === "/account/sessions/others" && req.method() === "DELETE") {
+      state.accountSessions = state.accountSessions.filter((session) => session.current);
+      return route.fulfill({ status: 204 });
+    }
+    const accountSessionMatch = path.match(/^\/account\/sessions\/([^/]+)$/);
+    if (accountSessionMatch && req.method() === "DELETE") {
+      state.accountSessions = state.accountSessions.filter((session) => session.id !== accountSessionMatch[1]);
+      return route.fulfill({ status: 204 });
+    }
+    if (path === "/account/password" && req.method() === "POST") {
+      if (options.changePasswordResponse) return json(options.changePasswordResponse.body, options.changePasswordResponse.status);
+      return route.fulfill({ status: 204 });
+    }
     if (path === "/account/profile" && req.method() === "PATCH") {
       const body = req.postDataJSON() as { displayName?: string };
       return json({ id: "u-root", username: "root", displayName: body.displayName ?? "Root", isAdmin: state.auth.isAdmin });

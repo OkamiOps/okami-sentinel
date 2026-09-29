@@ -77,3 +77,68 @@ test("keeps the invite form usable when the server fails", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Save and sign in" })).toBeEnabled();
   await expect(page.getByLabel("New password")).toBeEditable();
 });
+
+test("members see only My account under Settings", async ({ page }) => {
+  await mockApi(page, "en", { session: { isAdmin: false, grants: [{ repositoryKey: "github:1", role: "viewer" }] } });
+  await page.goto("/settings");
+  await expect(page).toHaveURL(/\/settings\/account$/);
+  await expect(page.getByRole("link", { name: /Users/ })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: /LAUNCH/i })).toHaveCount(0);
+});
+
+test("changes the password from My account", async ({ page }) => {
+  await mockApi(page, "en", { session: { isAdmin: false, grants: [] } });
+  await page.goto("/settings/account");
+  await page.getByLabel("Current password").fill("old password 123");
+  await page.getByLabel("New password").fill("new password 1234");
+  await page.getByLabel("Confirm password").fill("new password 1234");
+  await page.getByRole("button", { name: "Change password" }).click();
+  await expect(page.getByText("Password changed. Your other sessions were signed out.")).toBeVisible();
+});
+
+test("names the wrong current password instead of a generic failure", async ({ page }) => {
+  await mockApi(page, "en", {
+    session: { isAdmin: false, grants: [] },
+    // The API answers a wrong current password with 400, not 401: a 401 is
+    // reserved for a lost session and would sign the reader out.
+    changePasswordResponse: { status: 400, body: { error: "invalid_credentials" } },
+  });
+  await page.goto("/settings/account");
+  await page.getByLabel("Current password").fill("not my password");
+  await page.getByLabel("New password").fill("new password 1234");
+  await page.getByLabel("Confirm password").fill("new password 1234");
+  await page.getByRole("button", { name: "Change password" }).click();
+  await expect(page.getByText("Current password is incorrect.")).toBeVisible();
+  await expect(page.getByLabel("Current password")).toBeEditable();
+});
+
+test("marks the current session and refuses to revoke it", async ({ page }) => {
+  await mockApi(page, "en", { session: { isAdmin: false, grants: [] } });
+  await page.goto("/settings/account");
+  const current = page.getByRole("row").filter({ hasText: "127.0.0.1" });
+  await expect(current.getByText("This session")).toBeVisible();
+  await expect(current.getByRole("button", { name: "Revoke" })).toBeDisabled();
+  const other = page.getByRole("row").filter({ hasText: "10.0.0.8" });
+  await expect(other).toContainText("Firefox");
+  await page.getByRole("button", { name: "Sign out of other sessions" }).click();
+  await expect(other).toHaveCount(0);
+  await expect(current).toBeVisible();
+});
+
+test("the user menu carries the role and reaches My account", async ({ page }) => {
+  await mockApi(page, "en", { session: { isAdmin: false, grants: [] } });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open account menu" }).click();
+  await expect(page.getByText("Member", { exact: true })).toBeVisible();
+  await page.getByRole("menuitem", { name: "My account" }).click();
+  await expect(page).toHaveURL(/\/settings\/account$/);
+});
+
+test("local mode offers no sign out and says accounts are server-only", async ({ page }) => {
+  await mockApi(page, "en");
+  await page.goto("/settings/account");
+  await expect(page.getByText("Accounts and passwords only apply to a server deployment.")).toBeVisible();
+  await page.getByRole("button", { name: "Open account menu" }).click();
+  await expect(page.getByRole("menuitem", { name: "Sign out" })).toHaveCount(0);
+  await expect(page.getByRole("menuitem", { name: "My account" })).toBeVisible();
+});

@@ -9,9 +9,8 @@ import { useAuth } from "../auth/AuthProvider";
 import { AuthRequestError, authApi, type InvitePreview } from "../lib/auth-api";
 import { authMessages, type AuthMessageKey } from "../i18n/auth";
 import { useScopedI18n } from "../i18n/scoped";
+import { PASSWORD_MIN_LENGTH, passwordIssue, type PasswordIssue } from "../lib/password-policy";
 
-const MIN_LENGTH = 12;
-const MAX_LENGTH = 256;
 type StrengthKey = "strength.weak" | "strength.fair" | "strength.good" | "strength.strong";
 
 /** Length is the only signal the server policy actually rewards, so it is the
@@ -19,9 +18,14 @@ type StrengthKey = "strength.weak" | "strength.fair" | "strength.good" | "streng
 function strengthOf(password: string): { filled: number; key: StrengthKey } {
   if (password.length >= 24) return { filled: 4, key: "strength.strong" };
   if (password.length >= 16) return { filled: 3, key: "strength.good" };
-  if (password.length >= MIN_LENGTH) return { filled: 2, key: "strength.fair" };
+  if (password.length >= PASSWORD_MIN_LENGTH) return { filled: 2, key: "strength.fair" };
   return { filled: 1, key: "strength.weak" };
 }
+
+const issueKey: Record<PasswordIssue, AuthMessageKey> = {
+  tooShort: "invite.tooShort", tooLong: "invite.tooLong",
+  matchesUsername: "invite.matchesUsername", mismatch: "invite.mismatch",
+};
 
 /**
  * "Ask your administrator for a new link" is destructive advice: it sends the
@@ -65,10 +69,8 @@ export function InvitePage() {
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (pending || preview === null) return;
-    if (password.length < MIN_LENGTH) return setError(t("invite.tooShort"));
-    if (password.length > MAX_LENGTH) return setError(t("invite.tooLong"));
-    if (password.toLowerCase() === preview.username.toLowerCase()) return setError(t("invite.matchesUsername"));
-    if (password !== confirmation) return setError(t("invite.mismatch"));
+    const issue = passwordIssue(password, confirmation, preview.username);
+    if (issue) return setError(t(issueKey[issue]));
     setPending(true);
     setError(null);
     try {

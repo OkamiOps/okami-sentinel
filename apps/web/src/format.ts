@@ -41,6 +41,24 @@ export function formatDate(iso: string | null | undefined): string {
   }).format(new Date(iso));
 }
 
+const RELATIVE_UNITS: ReadonlyArray<readonly [Intl.RelativeTimeFormatUnit, number]> = [
+  ["year", 31_536_000_000], ["month", 2_592_000_000], ["week", 604_800_000],
+  ["day", 86_400_000], ["hour", 3_600_000], ["minute", 60_000],
+];
+
+/** "2 hours ago" answers "is this session still mine?" faster than a timestamp. */
+export function formatRelativeTime(iso: string | null | undefined, nowMs = Date.now()): string {
+  if (!iso) return "—";
+  const at = Date.parse(iso);
+  if (Number.isNaN(at)) return "—";
+  const delta = at - nowMs;
+  const formatter = new Intl.RelativeTimeFormat(getIntlLocale(), { numeric: "auto" });
+  for (const [unit, ms] of RELATIVE_UNITS) {
+    if (Math.abs(delta) >= ms) return formatter.format(Math.round(delta / ms), unit);
+  }
+  return formatter.format(Math.round(delta / 1000), "second");
+}
+
 export function shortId(id: string): string {
   return id.length > 12 ? `${id.slice(0, 8)}…` : id;
 }
