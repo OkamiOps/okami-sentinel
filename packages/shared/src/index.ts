@@ -625,6 +625,8 @@ export interface ScanRun {
   id: string;
   displayName: string;
   repositoryPath: string | null;
+  /** Guardrails repository the run belongs to; null means administrators only. */
+  repositoryKey?: string | null;
   revision: string | null;
   scanDir: string;
   status: ScanStatus;

@@ -17,6 +17,7 @@ import {
   type ScannerEngine,
   type SeverityCounts,
 } from "@csb/shared";
+import { ensureAuthSchema } from "./auth/schema.js";
 import { BENCHMARK_DB_PATH, DATA_DIR } from "./config.js";
 import { migrateGuardrailsSchema } from "./guardrails-migrations.js";
 import { withOpenRouterPricingEstimate } from "./openrouter-pricing.js";
@@ -25,6 +26,7 @@ export interface BenchmarkRow {
   id: string;
   display_name: string;
   repository_path: string | null;
+  repository_key: string | null;
   revision: string | null;
   scan_dir: string;
   status: string;
@@ -182,6 +184,7 @@ export function getDb(): Database.Database {
   ensureMetricProjectionColumns(db);
   ensureFindingCategoryIndexColumns(db);
   migrateGuardrailsSchema(db);
+  ensureAuthSchema(db);
   return db;
 }
 
@@ -423,6 +426,7 @@ export function rowToScanRun(row: BenchmarkRow): ScanRun {
     id: row.id,
     displayName: row.display_name,
     repositoryPath: row.repository_path,
+    repositoryKey: row.repository_key ?? null,
     revision: row.revision,
     scanDir: row.scan_dir,
     status: row.status as ScanStatus,
