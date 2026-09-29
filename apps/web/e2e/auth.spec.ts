@@ -176,6 +176,105 @@ test("the user menu carries the role and reaches My account", async ({ page }) =
   await expect(page).toHaveURL(/\/settings\/account$/);
 });
 
+test("admin invites a user with a repository role and copies the link", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await mockApi(page, "en", { session: { isAdmin: true, grants: [] } });
+  await page.goto("/settings/users");
+  await page.getByRole("button", { name: "Invite user" }).click();
+  await page.getByLabel(/^name$/i).fill("Bruno Lima");
+  await page.getByLabel("Username").fill(" Bruno.Lima ");
+  // The server trims and lowercases before it stores; the preview says so
+  // before the invite is created, not after it lands under another name.
+  await expect(page.getByText("@bruno.lima")).toBeVisible();
+  await page.getByRole("combobox", { name: "luna-core" }).click();
+  await page.getByRole("option", { name: /Viewer/ }).click();
+  await page.getByRole("button", { name: "Create invite" }).click();
+  await expect(page.getByRole("textbox", { name: "Invite link" })).toHaveValue(/\/invite\/[A-Za-z0-9_-]{43}$/);
+  await expect(page.getByText("This link is shown only now.")).toBeVisible();
+  await page.getByRole("button", { name: "Copy link" }).click();
+  await expect(page.getByRole("button", { name: "Copied" })).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toMatch(/\/invite\/b{43}$/);
+});
+
+test("names a taken username instead of a generic failure", async ({ page }) => {
+  await mockApi(page, "en", {
+    session: { isAdmin: true, grants: [] },
+    createUserResponse: { status: 409, body: { error: "username_taken" } },
+  });
+  await page.goto("/settings/users");
+  await page.getByRole("button", { name: "Invite user" }).click();
+  await page.getByLabel(/^name$/i).fill("Ana Again");
+  await page.getByLabel("Username").fill("ana");
+  await page.getByRole("button", { name: "Create invite" }).click();
+  await expect(page.getByText("That username already exists.")).toBeVisible();
+  await expect(page.getByLabel("Username")).toBeEditable();
+  await expect(page.getByRole("textbox", { name: "Invite link" })).toHaveCount(0);
+});
+
+test("filters the user list by search and status", async ({ page }) => {
+  await mockApi(page, "en", { session: { isAdmin: true, grants: [] } });
+  await page.goto("/settings/users");
+  await expect(page.getByRole("row", { name: /@root/ })).toBeVisible();
+  await page.getByLabel("Search").fill("ana");
+  await expect(page.getByRole("row", { name: /@ana/ })).toBeVisible();
+  await expect(page.getByRole("row", { name: /@root/ })).toHaveCount(0);
+  await page.getByLabel("Search").fill("");
+  await page.getByRole("combobox", { name: "Status" }).click();
+  await page.getByRole("option", { name: "Pending invite" }).click();
+  await expect(page.getByRole("row", { name: /@bea/ })).toBeVisible();
+  await expect(page.getByRole("row", { name: /@ana/ })).toHaveCount(0);
+});
+
+test("saves a repository role from the user drawer", async ({ page }) => {
+  await mockApi(page, "en", { session: { isAdmin: true, grants: [] } });
+  await page.goto("/settings/users");
+  await page.getByRole("row", { name: /@ana/ }).click();
+  const role = page.getByRole("combobox", { name: "luna-core" });
+  await expect(role).toContainText("Viewer");
+  await role.click();
+  await page.getByRole("option", { name: /Maintainer/ }).click();
+  await page.getByRole("button", { name: "Save access" }).click();
+  await expect(page.getByText("Repository access updated.")).toBeVisible();
+});
+
+test("shows the last-admin refusal", async ({ page }) => {
+  await mockApi(page, "en", {
+    session: { isAdmin: true, grants: [] },
+    patchUserResponse: { status: 409, body: { error: "last_admin" } },
+  });
+  await page.goto("/settings/users");
+  await page.getByRole("row", { name: /@root/ }).click();
+  await page.getByRole("tab", { name: "Actions" }).click();
+  await page.getByRole("button", { name: "Remove administrator" }).click();
+  await page.getByRole("button", { name: "Confirm" }).click();
+  await expect(page.getByText("You cannot remove the last active administrator.")).toBeVisible();
+});
+
+test("grants repository access from the access screen", async ({ page }) => {
+  await mockApi(page, "en", { session: { isAdmin: true, grants: [] } });
+  await page.goto("/settings/access");
+  await page.getByRole("combobox", { name: "User for luna-core" }).click();
+  await page.getByRole("option", { name: /Bea/ }).click();
+  await page.getByRole("combobox", { name: "Role for luna-core" }).click();
+  await page.getByRole("option", { name: /Operator/ }).click();
+  await page.getByRole("button", { name: "Grant" }).click();
+  await expect(page.getByRole("combobox", { name: "Role for Bea in luna-core" })).toContainText("Operator");
+});
+
+test("rolls a refused role change back to the stored role", async ({ page }) => {
+  await mockApi(page, "en", {
+    session: { isAdmin: true, grants: [] },
+    setRepositoryRoleResponse: { status: 400, body: { error: "role_invalid" } },
+  });
+  await page.goto("/settings/access");
+  const role = page.getByRole("combobox", { name: "Role for Ana in luna-core" });
+  await expect(role).toContainText("Viewer");
+  await role.click();
+  await page.getByRole("option", { name: /Maintainer/ }).click();
+  await expect(page.getByText("Could not save the role. Try again.")).toBeVisible();
+  await expect(role).toContainText("Viewer");
+});
+
 test("local mode offers no sign out and says accounts are server-only", async ({ page }) => {
   await mockApi(page, "en");
   await page.goto("/settings/account");

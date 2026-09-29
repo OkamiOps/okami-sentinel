@@ -33,6 +33,8 @@ const GitHubMonitorPage = lazy(() => import("./pages/GitHubMonitorPage").then(({
 const LoginPage = lazy(() => import("./pages/LoginPage").then(({ LoginPage: page }) => ({ default: page })));
 const InvitePage = lazy(() => import("./pages/InvitePage").then(({ InvitePage: page }) => ({ default: page })));
 const AccountPage = lazy(() => import("./pages/AccountPage").then(({ AccountPage: page }) => ({ default: page })));
+const UsersPage = lazy(() => import("./pages/UsersPage").then(({ UsersPage: page }) => ({ default: page })));
+const RepositoryAccessPage = lazy(() => import("./pages/RepositoryAccessPage").then(({ RepositoryAccessPage: page }) => ({ default: page })));
 
 const AUTH_ROUTE = /^\/(?:login$|invite\/[^/]+$)/;
 
@@ -179,6 +181,8 @@ export function App() {
         <Route path="/compare" element={<ComparePage />} />
         <Route path="/settings" element={<AdminOnly><SettingsPage /></AdminOnly>} />
         <Route path="/settings/connections" element={<AdminOnly><ConnectionsPage /></AdminOnly>} />
+        <Route path="/settings/users" element={<AdminOnly><UsersPage /></AdminOnly>} />
+        <Route path="/settings/access" element={<AdminOnly><RepositoryAccessPage /></AdminOnly>} />
         <Route path="/settings/account" element={<AccountPage />} />
       </Routes>
       </Suspense>

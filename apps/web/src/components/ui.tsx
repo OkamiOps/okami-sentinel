@@ -59,6 +59,17 @@ export function EmptyState({ title, description, icon }: { title: string; descri
   return <div className="flex min-h-44 flex-col items-center justify-center px-5 py-12 text-center">{icon && <HugeiconsIcon icon={icon} size={22} className="mb-3 text-muted-foreground" />}<div className="text-sm font-semibold">{title}</div>{description && <p className="mt-1 max-w-sm text-xs leading-relaxed text-muted-foreground">{description}</p>}</div>;
 }
 
+/**
+ * One-line outcome of a form or an action: the failure is announced as an
+ * alert, the success politely, and an empty pair takes no vertical space.
+ */
+export function FormFeedback({ notice, error }: { notice?: string | null; error?: string | null }) {
+  return <div aria-live="polite" className="empty:hidden">
+    {error && <p role="alert" className="border border-destructive/45 bg-destructive/8 px-3 py-2.5 text-xs text-destructive">{error}</p>}
+    {!error && notice && <p className="border border-chart-2/40 bg-chart-2/8 px-3 py-2.5 text-xs text-chart-2">{notice}</p>}
+  </div>;
+}
+
 export function Readout({ label, value, detail, tone, wrap = false }: { label: string; value: ReactNode; detail?: ReactNode; tone?: "signal" | "risk" | "good"; wrap?: boolean }) {
   return <div className="min-w-0 border-l border-border pl-3"><div className="bench-label">{label}</div><div className={cx("mt-1 font-mono font-semibold tabular-nums", wrap ? "break-words text-sm leading-snug" : "truncate text-lg", tone === "signal" && "text-primary", tone === "risk" && "text-destructive", tone === "good" && "text-chart-2")}>{value}</div>{detail && <div className={cx("mt-0.5 text-[10px] text-muted-foreground", wrap ? "break-words leading-snug" : "truncate")}>{detail}</div>}</div>;
 }

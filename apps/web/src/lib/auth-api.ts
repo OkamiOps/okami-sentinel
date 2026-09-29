@@ -1,4 +1,13 @@
-import type { AuthSessionResponse, AuthSessionUser, UserSessionSummary } from "@csb/shared";
+import type {
+  AuthSessionResponse,
+  AuthSessionUser,
+  InviteLinkResponse,
+  RepositoryAccessEntry,
+  RepositoryGrant,
+  RepositoryRole,
+  UserSessionSummary,
+  UserSummary,
+} from "@csb/shared";
 import { ApiError, parseApiResponse } from "./http.js";
 import { API_BASE, apiFetch } from "./security-session.js";
 
@@ -150,5 +159,73 @@ export const authApi = {
 
   async revokeOtherSessions(): Promise<void> {
     await authedVoidRequest("/account/sessions/others", { method: "DELETE" });
+  },
+};
+
+export interface CreateUserInput {
+  username: string;
+  displayName: string;
+  email: string | null;
+  isAdmin: boolean;
+  grants: RepositoryGrant[];
+}
+
+/**
+ * Administration of other people's accounts. Every path segment is encoded
+ * once — the API decodes once — so a repository key such as `github:1` or a
+ * local path survives the round trip intact.
+ */
+export const usersApi = {
+  async list(): Promise<UserSummary[]> {
+    return (await authedRequest<{ users: UserSummary[] }>("/users")).users;
+  },
+
+  create(input: CreateUserInput): Promise<{ user: UserSummary; invite: InviteLinkResponse }> {
+    return authedRequest<{ user: UserSummary; invite: InviteLinkResponse }>("/users", {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  },
+
+  update(id: string, patch: Partial<Pick<UserSummary, "displayName" | "email" | "isAdmin" | "status">>): Promise<UserSummary> {
+    return authedRequest<UserSummary>(`/users/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+  },
+
+  reset(id: string): Promise<InviteLinkResponse> {
+    return authedRequest<InviteLinkResponse>(`/users/${encodeURIComponent(id)}/reset`, { method: "POST" });
+  },
+
+  async revokeSessions(id: string): Promise<void> {
+    await authedVoidRequest(`/users/${encodeURIComponent(id)}/sessions`, { method: "DELETE" });
+  },
+
+  async sessions(id: string): Promise<UserSessionSummary[]> {
+    return (await authedRequest<{ sessions: UserSessionSummary[] }>(`/users/${encodeURIComponent(id)}/sessions`)).sessions;
+  },
+
+  async grants(id: string): Promise<RepositoryGrant[]> {
+    return (await authedRequest<{ grants: RepositoryGrant[] }>(`/users/${encodeURIComponent(id)}/grants`)).grants;
+  },
+
+  async replaceGrants(id: string, grants: RepositoryGrant[]): Promise<RepositoryGrant[]> {
+    const body = await authedRequest<{ grants: RepositoryGrant[] }>(`/users/${encodeURIComponent(id)}/grants`, {
+      method: "PUT",
+      body: JSON.stringify({ grants }),
+    });
+    return body.grants;
+  },
+
+  async repositoryAccess(): Promise<RepositoryAccessEntry[]> {
+    return (await authedRequest<{ repositories: RepositoryAccessEntry[] }>("/repository-access")).repositories;
+  },
+
+  async setRepositoryRole(repositoryKey: string, userId: string, role: RepositoryRole | null): Promise<void> {
+    await authedVoidRequest(
+      `/repository-access/${encodeURIComponent(repositoryKey)}/users/${encodeURIComponent(userId)}`,
+      { method: "PUT", body: JSON.stringify({ role }) },
+    );
   },
 };

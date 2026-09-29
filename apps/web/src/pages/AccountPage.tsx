@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { SettingsSectionNav } from "../components/settings/SettingsSectionNav";
-import { AlertBanner, EmptyState, Loading, PageHeader, Panel, cx } from "../components/ui";
+import { AlertBanner, EmptyState, FormFeedback, Loading, PageHeader, Panel, cx } from "../components/ui";
 import { useAuth } from "../auth/AuthProvider";
 import { authApi, authErrorCode } from "../lib/auth-api";
 import { passwordIssue, type PasswordIssue } from "../lib/password-policy";
@@ -127,7 +127,7 @@ function ProfilePanel({ displayName, username, isAdmin, editable, onSaved }: { d
           </span>
         </div>
       </div>
-      <PanelFeedback notice={notice} error={error} />
+      <FormFeedback notice={notice} error={error} />
       {editable && <div className="flex justify-end">
         <Button type="submit" disabled={pending}>{pending ? t("account.saving") : t("account.save")}</Button>
       </div>}
@@ -181,7 +181,7 @@ function PasswordPanel({ username, onChanged }: { username: string; onChanged: (
         <label htmlFor="account-confirm-password" className="bench-label">{t("account.confirm")}</label>
         <Input id="account-confirm-password" name="confirm-password" type="password" value={confirmation} autoComplete="new-password" disabled={pending} onChange={(event) => setConfirmation(event.target.value)} />
       </div>
-      <PanelFeedback notice={notice} error={error} />
+      <FormFeedback notice={notice} error={error} />
       <div className="flex justify-end">
         <Button type="submit" disabled={pending}>{pending ? t("account.changing") : t("account.change")}</Button>
       </div>
@@ -267,11 +267,4 @@ function SessionsPanel({ reloadKey }: { reloadKey: number }) {
           </TableBody>
         </Table>}
   </Panel>;
-}
-
-function PanelFeedback({ notice, error }: { notice: string | null; error: string | null }) {
-  return <div aria-live="polite" className="empty:hidden">
-    {error && <p role="alert" className="border border-destructive/45 bg-destructive/8 px-3 py-2.5 text-xs text-destructive">{error}</p>}
-    {!error && notice && <p className="border border-chart-2/40 bg-chart-2/8 px-3 py-2.5 text-xs text-chart-2">{notice}</p>}
-  </div>;
 }
