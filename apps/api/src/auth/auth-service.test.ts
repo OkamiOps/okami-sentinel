@@ -34,6 +34,18 @@ test("logs in with a normalized username and returns a principal", async () => {
   assert.ok(findUserByUsername("ana", db)?.lastLoginAt);
 });
 
+test("logs in with an email address as the username", async () => {
+  const db = setup();
+  createUser({
+    username: "Marcos@OkamiOps.com", displayName: "Marcos", isAdmin: false,
+    passwordHash: await hashPassword("marcos password 123"),
+  }, db);
+  const result = await login({ username: " MARCOS@okamiops.com ", password: "marcos password 123", ip: "1.1.1.2", userAgent: null }, db);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(principalForSession(result.session, db)?.username, "marcos@okamiops.com");
+});
+
 test("locks the account after five failures and doubles the lock", async () => {
   assert.equal(lockoutMs(4), 0);
   assert.equal(lockoutMs(5), 15 * 60_000);

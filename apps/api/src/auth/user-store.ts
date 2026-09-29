@@ -41,9 +41,15 @@ function toRecord(row: UserRow): UserRecord {
   };
 }
 
+/**
+ * Trimmed and lowercased, so case and stray spaces can never open a second
+ * account for the same person. `@` and `+` are part of the set because a team
+ * identifies people by their work email, which is then usable as the login name
+ * itself; everything else — spaces, accents, control characters — stays out.
+ */
 export function normalizeUsername(value: string): string | null {
   const normalized = value.trim().toLowerCase();
-  return /^[a-z0-9._-]{2,64}$/.test(normalized) ? normalized : null;
+  return /^[a-z0-9._@+-]{2,64}$/.test(normalized) ? normalized : null;
 }
 
 export function createUser(
