@@ -78,6 +78,33 @@ test("keeps the invite form usable when the server fails", async ({ page }) => {
   await expect(page.getByLabel("New password")).toBeEditable();
 });
 
+test("a preview the server could not answer offers a retry, not a dead end", async ({ page }) => {
+  const state = await mockApi(page, "en", {
+    signedOut: true,
+    invitePreviewResponse: { status: 503, body: { error: "service_unavailable" } },
+  });
+  await page.goto(`/invite/${"a".repeat(43)}`);
+  // "Ask your administrator for a new link" would burn a token that is still
+  // good; a 503 says nothing about the token.
+  await expect(page.getByText("Could not read this invite right now.")).toBeVisible();
+  await expect(page.getByText(/This link is invalid/)).toHaveCount(0);
+  await expect(page.locator(".loading-bars")).toHaveCount(0);
+  state.invitePreviewFails = false;
+  await page.getByRole("button", { name: "Try again" }).click();
+  await expect(page.getByText("Root invited you to Sentinel.")).toBeVisible();
+  await expect(page.getByLabel("New password")).toBeEditable();
+});
+
+test("a rejected invite token still says the link is spent", async ({ page }) => {
+  await mockApi(page, "en", {
+    signedOut: true,
+    invitePreviewResponse: { status: 404, body: { error: "invite_invalid" } },
+  });
+  await page.goto(`/invite/${"a".repeat(43)}`);
+  await expect(page.getByText(/This link is invalid/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Try again" })).toHaveCount(0);
+});
+
 test("members see only My account under Settings", async ({ page }) => {
   await mockApi(page, "en", { session: { isAdmin: false, grants: [{ repositoryKey: "github:1", role: "viewer" }] } });
   await page.goto("/settings");
