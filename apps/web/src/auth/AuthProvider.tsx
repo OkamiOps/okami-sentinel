@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import type { AuthSessionResponse, RepositoryRole } from "@csb/shared";
 import { authApi } from "../lib/auth-api";
@@ -33,9 +33,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const location = useLocation();
 
+  // "Your session expired" is only true if one was ever held. A first visit
+  // with no cookie is a plain sign-in, not an expiry, so the banner is opt-in
+  // on an observed signed-in -> signed-out transition rather than on any 401.
+  const heldSession = useRef(false);
+
   const refresh = useCallback(async () => {
     try {
       setSession(await authApi.session());
+      heldSession.current = true;
       setStatus("signed-in");
     } catch (error) {
       // Only a genuine 401 means the session is gone. A network hiccup or a
@@ -57,6 +63,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(async () => {
     await authApi.logout().catch(() => undefined);
     setSession(null);
+    // Signing out deliberately is not an expiry either: a later visit to a
+    // protected path must not be greeted with the expired banner.
+    heldSession.current = false;
     setStatus("signed-out");
     navigate("/login", { replace: true });
   }, [navigate]);
@@ -78,7 +87,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (status !== "signed-out") return;
     if (PUBLIC_PATHS.some((pattern) => pattern.test(location.pathname))) return;
     const next = `${location.pathname}${location.search}${location.hash}`;
-    navigate(`/login?next=${encodeURIComponent(next)}&expired=1`, { replace: true });
+    const expired = heldSession.current ? "&expired=1" : "";
+    navigate(`/login?next=${encodeURIComponent(next)}${expired}`, { replace: true });
   }, [status, location.pathname, location.search, location.hash, navigate]);
 
   const value = useMemo(() => buildValue(session, status, refresh, logout), [session, status, refresh, logout]);
