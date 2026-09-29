@@ -58,7 +58,12 @@ export function loadServerSettings(env: NodeJS.ProcessEnv = process.env): Server
   const origin = publicOrigin(env);
   const trustProxy = trustsProxy(env);
   const username = env.CSB_ADMIN_USER?.trim() || "admin";
-  if (!/^[A-Za-z0-9._-]{1,64}$/.test(username)) throw new Error("CSB_ADMIN_USER is invalid.");
+  // The account store's `normalizeUsername` refuses a single character, so a
+  // one-character setting used to load here and crash the process later, during
+  // admin bootstrap, with no hint about which setting was at fault.
+  if (!/^[A-Za-z0-9._-]{2,64}$/.test(username)) {
+    throw new Error("CSB_ADMIN_USER is invalid: use 2 to 64 characters from letters, digits, dot, underscore or hyphen.");
+  }
   let password: string;
   try {
     const file = env.CSB_ADMIN_PASSWORD_FILE;

@@ -42,7 +42,17 @@ ensureConnectionSchema(getDb());
 backfillRunRepositoryKeys();
 
 if (settings.mode === "server") {
-  const outcome = await bootstrapAdmin({ username: settings.username, password: settings.password });
+  // `loadServerSettings` validates both settings, so a rejection here is a rule
+  // the account store applies and the loader does not. Name the settings before
+  // exiting; the values themselves never reach the log.
+  const outcome = await bootstrapAdmin({ username: settings.username, password: settings.password })
+    .catch((error: unknown) => {
+      console.error(
+        "[csb-api] Rejected the administrator from CSB_ADMIN_USER and CSB_ADMIN_PASSWORD_FILE: "
+          + `${error instanceof Error ? error.message : "unknown_error"}`,
+      );
+      throw error;
+    });
   if (outcome === "created") console.log(`[csb-api] Created administrator ${settings.username} from CSB_ADMIN_USER`);
   if (outcome === "recovered") console.warn(`[csb-api] No active administrator found; restored ${settings.username} from CSB_ADMIN_PASSWORD_FILE`);
   if (outcome === "unlocked") console.warn(`[csb-api] Cleared the sign-in lockout on administrator ${settings.username}`);
