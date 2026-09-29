@@ -133,6 +133,33 @@ test("a refused connection and a timeout are transient, not permanent", async ()
   });
 });
 
+test("the timeout also covers a response whose body never finishes", async () => {
+  // Resend has answered with headers, so the request is past the point the
+  // connection timeout watches. A body that then hangs must not hold the outbox
+  // worker for ever, and must not be mistaken for an empty success either.
+  const hung = createResendTransport({ ...config, timeoutMs: 120 }, async (_url, init) => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        init.signal?.addEventListener("abort", () => controller.error(new Error("aborted")));
+      },
+    });
+    return new Response(body, { status: 200, headers: { "Content-Type": "application/json" } });
+  });
+
+  const started = Date.now();
+  await assert.rejects(hung.send(message), (error: EmailTransportError) => {
+    assert.equal(error.code, "connection_timeout");
+    assert.equal(error.permanent, false);
+    return true;
+  });
+  assert.ok(Date.now() - started < 5_000, `waited ${Date.now() - started}ms`);
+});
+
+test("a body that is not JSON is still read, and does not become a failure", async () => {
+  const transport = createResendTransport(config, async () => new Response("not json at all", { status: 200 }));
+  assert.deepEqual(await transport.send(message), { providerMessageId: null });
+});
+
 test("a sender without a display name is sent as a bare address", async () => {
   const { fetch, captured } = stub(200, { id: "x" });
   await createResendTransport({ ...config, fromName: "  ", replyTo: null }, fetch).send(message);

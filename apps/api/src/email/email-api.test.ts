@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import test from "node:test";
 import { Hono } from "hono";
+import { SMTPServer } from "smtp-server";
 import type { EmailDeliveriesResponse, EmailSettingsResponse, EmailTestResult } from "@csb/shared";
 import { authorize } from "../auth/route-policy.js";
 import { LOCAL_PRINCIPAL, type Principal } from "../auth/principal.js";
@@ -8,6 +10,7 @@ import { createUser } from "../auth/user-store.js";
 import type { EmailCredentialStore, EmailProviderSecret } from "../credentials/system-email-credential-store.js";
 import { getDb } from "../db.js";
 import { createEmailApi, parseEmailSettings, transportConfigFor } from "./email-api.js";
+import { createSmtpTransport } from "./smtp-transport.js";
 import { DEFAULT_EMAIL_SETTINGS, getEmailSettings } from "./settings-store.js";
 import { emailTransportError, type EmailMessage, type EmailTransport, type EmailTransportConfig } from "./transport.js";
 
@@ -191,11 +194,16 @@ test("every field is validated, and enabling requires a complete configuration",
     [{ smtpUsername: "user\u0000name" }, "smtp_username_invalid"],
     [{ secret: 42 }, "secret_invalid"],
     [{ secret: "line\nbreak" }, "secret_invalid"],
-    // Turning the switch on is only possible with an address and a secret.
+    [{ fromName: "Okami\u0000Sentinel" }, "from_name_invalid"],
+    [{ fromName: "Okami\r\nBcc: eve@example.com" }, "from_name_invalid"],
+    // Turning the switch on needs a sender and a reachable endpoint.
     [{ enabled: true }, "from_address_required"],
-    [{ enabled: true, fromAddress: "sentinel@okami.example" }, "secret_required"],
-    [{ enabled: true, fromAddress: "sentinel@okami.example", secret: "k" }, "smtp_host_required"],
-    [{ enabled: true, fromAddress: "sentinel@okami.example", secret: "k", smtpHost: "smtp.example.com" }, "smtp_port_required"],
+    [{ enabled: true, fromAddress: "sentinel@okami.example" }, "smtp_host_required"],
+    [{ enabled: true, fromAddress: "sentinel@okami.example", smtpHost: "smtp.example.com" }, "smtp_port_required"],
+    // A secret is required exactly where the provider authenticates: an SMTP
+    // username was given, or the provider is Resend.
+    [{ enabled: true, fromAddress: "sentinel@okami.example", smtpHost: "smtp.example.com", smtpPort: 587, smtpUsername: "resend" }, "secret_required"],
+    [{ enabled: true, fromAddress: "sentinel@okami.example", provider: "resend" }, "secret_required"],
   ];
   for (const [payload, error] of cases) {
     const result = await put(payload);
@@ -210,6 +218,87 @@ test("every field is validated, and enabling requires a complete configuration",
     const ok = await put({ ...completeSmtp, smtpPort: port });
     assert.equal(ok.status, 200, String(port));
   }
+});
+
+test("an authless internal relay can be enabled and used with no secret at all", async (t) => {
+  resetSettings();
+  // A real relay on loopback that asks for no credentials, which is the whole
+  // point of the `none` security mode: an internal smarthost.
+  const received: Array<{ from: string; to: string[] }> = [];
+  const relay = new SMTPServer({
+    disabledCommands: ["STARTTLS", "AUTH"],
+    authOptional: true,
+    onData(stream, session, callback) {
+      stream.on("data", () => undefined);
+      stream.on("end", () => {
+        received.push({
+          from: session.envelope.mailFrom === false ? "" : session.envelope.mailFrom.address,
+          to: session.envelope.rcptTo.map((entry) => entry.address),
+        });
+        callback();
+      });
+    },
+  });
+  relay.listen(0, "127.0.0.1");
+  await once(relay.server, "listening");
+  const address = relay.server.address();
+  if (address === null || typeof address === "string") throw new Error("no port");
+  t.after(() => new Promise<void>((resolve) => relay.close(() => resolve())));
+
+  const stamp = Date.now();
+  const user = createUser(
+    { username: `emailrelay${stamp}`, displayName: "Gil", email: "gil@example.com", isAdmin: true },
+    getDb(),
+  );
+  const secrets = new MemorySecrets();
+  const app = new Hono();
+  app.use("*", async (c, next) => {
+    c.set("principal" as never, { ...LOCAL_PRINCIPAL, kind: "user", isAdmin: true, userId: user.id, username: user.username } as never);
+    await next();
+  });
+  app.route("/", createEmailApi({
+    secrets, publicOrigin: null, transport: (config) => createSmtpTransport(config),
+  }));
+
+  const saved = await app.request("/email/settings", {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      provider: "smtp", enabled: true, fromName: "Okami Sentinel",
+      fromAddress: "sentinel@okami.example", smtpHost: "127.0.0.1",
+      smtpPort: address.port, smtpSecurity: "none", smtpUsername: null,
+    }),
+  });
+  assert.equal(saved.status, 200);
+  const settings = (await saved.json() as EmailSettingsResponse).settings;
+  assert.equal(settings.enabled, true);
+  assert.equal(settings.secretConfigured, false);
+  assert.equal(secrets.values.size, 0);
+
+  const result = await (await app.request("/email/test", { method: "POST" })).json() as EmailTestResult;
+  assert.deepEqual(
+    { ok: result.ok, to: result.to, code: result.code },
+    { ok: true, to: "gil@example.com", code: null },
+  );
+  assert.deepEqual(received, [{ from: "sentinel@okami.example", to: ["gil@example.com"] }]);
+});
+
+test("a settings row that cannot be written leaves no orphaned secret in the vault", async () => {
+  resetSettings();
+  const { app, secrets } = harness();
+  getDb().exec(`CREATE TRIGGER email_settings_refuse BEFORE INSERT ON email_settings
+    BEGIN SELECT RAISE(ABORT, 'refused by the test'); END`);
+  try {
+    const response = await app.request("/email/settings", {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(completeSmtp),
+    });
+    assert.equal(response.status, 500);
+  } finally {
+    getDb().exec("DROP TRIGGER email_settings_refuse");
+  }
+  // Nothing points at the secret that was written moments earlier, so it must
+  // not be left behind in the vault.
+  assert.deepEqual([...secrets.values.entries()], []);
+  assert.deepEqual(getEmailSettings(), { ...DEFAULT_EMAIL_SETTINGS });
 });
 
 test("Resend needs no host, and a saved Resend configuration keeps its own fields", async () => {
@@ -411,10 +500,13 @@ test("a member reaches none of the e-mail routes", async () => {
     });
     assert.equal(response.status, 403, `${method} ${path}`);
     assert.deepEqual(await response.json(), { error: "forbidden" }, `${method} ${path}`);
+    // The policy middleware answers before any `/email` middleware is reached,
+    // so this refusal carries whatever the server-wide headers are — see the
+    // next test for the one this sub-app is responsible for.
   }
 });
 
-test("the sub-app refuses a member even with the policy middleware absent", async () => {
+test("the sub-app refuses a member even with the policy middleware absent, and says no-store", async () => {
   const member: Principal = { ...LOCAL_PRINCIPAL, kind: "user", userId: "member-2", isAdmin: false };
   const probe = new Hono();
   probe.use("*", async (c, next) => {
@@ -424,6 +516,7 @@ test("the sub-app refuses a member even with the policy middleware absent", asyn
   probe.route("/", createEmailApi({ secrets: new MemorySecrets(), publicOrigin: null }));
   const response = await probe.request("/email/settings");
   assert.equal(response.status, 403);
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
   assert.deepEqual(await response.json(), { error: "forbidden" });
 });
 
@@ -433,10 +526,24 @@ test("the parser and the transport builder agree on what counts as complete", ()
   assert.equal(parsed.ok, true);
   assert.ok(parsed.ok && parsed.parsed.secret.kind === "replace");
 
-  // A record without a secret, a sender or an SMTP endpoint cannot be sent with.
-  assert.equal(transportConfigFor({ ...current, fromAddress: "a@b.io" }, null), null);
+  // A record without a sender or without a complete SMTP endpoint cannot be sent with.
   assert.equal(transportConfigFor({ ...current, fromAddress: null }, "k"), null);
   assert.equal(transportConfigFor({ ...current, fromAddress: "a@b.io", smtpHost: "smtp.b.io" }, "k"), null);
+  assert.equal(transportConfigFor({ ...current, fromAddress: "a@b.io" }, null), null);
+  // A relay with no username needs no secret; one with a username does, and
+  // Resend always does.
+  assert.deepEqual(
+    transportConfigFor({ ...current, fromAddress: "a@b.io", smtpHost: "smtp.b.io", smtpPort: 25, smtpSecurity: "none" }, null),
+    {
+      provider: "smtp", fromName: current.fromName, fromAddress: "a@b.io", replyTo: null, secret: null,
+      smtp: { host: "smtp.b.io", port: 25, security: "none", username: null },
+    },
+  );
+  assert.equal(
+    transportConfigFor({ ...current, fromAddress: "a@b.io", smtpHost: "smtp.b.io", smtpPort: 25, smtpUsername: "ana" }, null),
+    null,
+  );
+  assert.equal(transportConfigFor({ ...current, provider: "resend", fromAddress: "a@b.io" }, null), null);
   assert.deepEqual(
     transportConfigFor({ ...current, provider: "resend", fromAddress: "a@b.io" }, "k"),
     { provider: "resend", fromName: current.fromName, fromAddress: "a@b.io", replyTo: null, smtp: null, secret: "k" },

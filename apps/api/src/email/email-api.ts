@@ -100,7 +100,12 @@ export function parseEmailSettings(
   const enabled = (input.enabled as boolean | undefined) ?? current.enabled;
 
   const fromNameRaw = input.fromName === undefined ? current.fromName : input.fromName;
-  if (typeof fromNameRaw !== "string") return fail("from_name_invalid");
+  // A control character in the display name is refused here rather than stripped
+  // later: the administrator should learn the name was wrong, and `formatSender`
+  // must never be the only thing standing between a CR and a forged header.
+  if (typeof fromNameRaw !== "string" || /[\u0000-\u001F\u007F]/.test(fromNameRaw)) {
+    return fail("from_name_invalid");
+  }
   const fromName = fromNameRaw.trim().slice(0, 120);
 
   const fromAddress = optionalText(input.fromAddress, current.fromAddress);
@@ -152,10 +157,15 @@ export function parseEmailSettings(
   const willHaveSecret = secret.kind === "replace" || (secret.kind === "keep" && current.secretRef !== null);
   if (enabled) {
     if (fromAddress === null) return fail("from_address_required");
-    if (!willHaveSecret) return fail("secret_required");
     if (provider === "smtp") {
       if (smtpHost === null) return fail("smtp_host_required");
       if (smtpPort === null) return fail("smtp_port_required");
+    }
+    // An internal relay that asks for no username asks for no password either,
+    // which is exactly what the `none` security mode exists for. A secret is
+    // required only where the provider actually authenticates.
+    if ((provider === "resend" || smtpUsername !== null) && !willHaveSecret) {
+      return fail("secret_required");
     }
   }
 
@@ -187,14 +197,17 @@ export function transportConfigFor(
   record: EmailSettingsRecord,
   secret: string | null,
 ): EmailTransportConfig | null {
-  if (record.fromAddress === null || secret === null) return null;
+  if (record.fromAddress === null) return null;
   if (record.provider === "resend") {
+    if (secret === null) return null;
     return {
       provider: "resend", fromName: record.fromName, fromAddress: record.fromAddress,
       replyTo: record.replyTo, smtp: null, secret,
     };
   }
   if (record.smtpHost === null || record.smtpPort === null) return null;
+  // Authless relay: a username is what makes a password necessary.
+  if (record.smtpUsername !== null && secret === null) return null;
   return {
     provider: "smtp", fromName: record.fromName, fromAddress: record.fromAddress,
     replyTo: record.replyTo, secret,
@@ -218,13 +231,15 @@ export function createEmailApi(supplied?: Partial<EmailApiDependencies>): Hono {
   const secrets = (): EmailCredentialStore =>
     (store ??= createSystemEmailCredentialStore({ redactor: globalSecretRedactor }));
   const api = new Hono();
-  for (const path of ["/email/settings", "/email/test", "/email/deliveries"]) api.use(path, adminOnly);
-  // A provider configuration, a delivery history and a send result are never
-  // safe to keep in a shared cache.
+  // Registered before the guard, so the header also reaches a 403: a refusal
+  // must be no more cacheable than the answer would have been. A provider
+  // configuration, a delivery history and a send result are never safe to keep
+  // in a shared cache.
   api.use("/email/*", async (c, next) => {
     await next();
     c.header("Cache-Control", "no-store");
   });
+  for (const path of ["/email/settings", "/email/test", "/email/deliveries"]) api.use(path, adminOnly);
 
   const settingsResponse = (record: EmailSettingsRecord): EmailSettingsResponse => ({
     settings: publicEmailSettings(record),
@@ -254,7 +269,18 @@ export function createEmailApi(supplied?: Partial<EmailApiDependencies>): Hono {
       secretRef = null;
     }
 
-    const saved = saveEmailSettings({ ...record, secretRef }, principalOf(c).userId, deps.now());
+    let saved: EmailSettingsRecord;
+    try {
+      saved = saveEmailSettings({ ...record, secretRef }, principalOf(c).userId, deps.now());
+    } catch (error) {
+      // The row still names the previous secret, so the slot written moments ago
+      // is unreachable. Remove it rather than leave material in the vault that
+      // nothing will ever read or rotate.
+      if (secret.kind === "replace" && secretRef !== null) {
+        await secrets().delete(secretRef).catch(() => undefined);
+      }
+      throw error;
+    }
 
     // Only once the row no longer points at it may the old secret go.
     if (current.secretRef !== null && current.secretRef !== secretRef) {

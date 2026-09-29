@@ -32,45 +32,64 @@ export function createResendTransport(
       if (!apiKey) throw emailTransportError("not_configured");
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), config.timeoutMs ?? EMAIL_TIMEOUT_MS);
-      let response: Response;
+      // The timer stays armed until the body has been read. Headers arriving is
+      // not the end of the request: a response whose body never finishes would
+      // otherwise hold the outbox worker open with no deadline left watching it.
       try {
-        response = await fetchImpl(RESEND_ENDPOINT, {
-          method: "POST",
-          signal: controller.signal,
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-            "Idempotency-Key": message.idempotencyKey,
-          },
-          body: JSON.stringify({
-            from: formatSender(config.fromName, config.fromAddress),
-            to: [message.to],
-            subject: message.subject,
-            html: message.html,
-            text: message.text,
-            ...(config.replyTo ? { reply_to: config.replyTo } : {}),
-          }),
-        });
-      } catch (error) {
-        throw new EmailTransportError(mapResendNetworkError(error, controller.signal.aborted));
+        let response: Response;
+        try {
+          response = await fetchImpl(RESEND_ENDPOINT, {
+            method: "POST",
+            signal: controller.signal,
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              "Content-Type": "application/json",
+              "Idempotency-Key": message.idempotencyKey,
+            },
+            body: JSON.stringify({
+              from: formatSender(config.fromName, config.fromAddress),
+              to: [message.to],
+              subject: message.subject,
+              html: message.html,
+              text: message.text,
+              ...(config.replyTo ? { reply_to: config.replyTo } : {}),
+            }),
+          });
+        } catch (error) {
+          throw new EmailTransportError(mapResendNetworkError(error, controller.signal.aborted));
+        }
+
+        let body: unknown;
+        try {
+          body = await readBody(response);
+        } catch (error) {
+          // An interrupted body must not read as an empty success: the request
+          // did reach Resend, so the retry relies on the idempotency key.
+          throw new EmailTransportError(mapResendNetworkError(error, controller.signal.aborted));
+        }
+
+        if (!response.ok) throw new EmailTransportError(mapResendResponse(response.status, body));
+        const id = (body as { id?: unknown } | null)?.id;
+        return { providerMessageId: typeof id === "string" && id ? id : null };
       } finally {
         clearTimeout(timer);
       }
-
-      const body = await readJson(response);
-      if (!response.ok) throw new EmailTransportError(mapResendResponse(response.status, body));
-      const id = (body as { id?: unknown } | null)?.id;
-      return { providerMessageId: typeof id === "string" && id ? id : null };
     },
   };
 }
 
-async function readJson(response: Response): Promise<unknown> {
+/**
+ * Reads the body, letting a transport-level failure — an aborted or truncated
+ * stream — propagate. Only unparseable content is tolerated, and it is kept as
+ * text so the error mapper can still quote what the provider said.
+ */
+async function readBody(response: Response): Promise<unknown> {
+  const text = await response.text();
+  if (!text) return null;
   try {
-    const text = await response.text();
-    return text ? JSON.parse(text) : null;
+    return JSON.parse(text);
   } catch {
-    return null;
+    return text;
   }
 }
 
