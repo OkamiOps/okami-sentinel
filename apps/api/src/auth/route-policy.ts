@@ -96,6 +96,8 @@ export const ROUTE_POLICY: ReadonlyArray<readonly [method: string, pattern: stri
   ["POST", "/connections/:id/auth/:flowId/cancel", ADMIN], ["POST", "/connections/:id/auth/disconnect", ADMIN],
   ["POST", "/connections/:id/auth/start", ADMIN], ["POST", "/connections/:id/inspect", ADMIN],
   ["GET", "/connections/:id/models", ADMIN], ["POST", "/connections/:id/models/refresh", ADMIN], ["POST", "/connections/:id/probe", ADMIN],
+  ["GET", "/email/settings", ADMIN], ["PUT", "/email/settings", ADMIN],
+  ["POST", "/email/test", ADMIN], ["GET", "/email/deliveries", ADMIN],
   ["GET", "/engine-updates", ADMIN], ["POST", "/engine-updates/check", ADMIN], ["GET", "/engine-updates/security-session", AUTH],
   ["POST", "/engine-updates/:id/update", ADMIN], ["POST", "/engine-updates/:id/rollback", ADMIN],
 ];

@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { nanoid } from "nanoid";
+import { isUserLocale, type UserLocale } from "@csb/shared";
 import { getDb } from "../db.js";
 
 export interface UserRecord {
@@ -10,6 +11,8 @@ export interface UserRecord {
   passwordHash: string | null;
   isAdmin: boolean;
   status: "active" | "disabled";
+  /** The interface language the user picked; `null` until they pick one. */
+  locale: UserLocale | null;
   failedAttempts: number;
   lockedUntil: string | null;
   createdAt: string;
@@ -20,7 +23,7 @@ export interface UserRecord {
 interface UserRow {
   id: string; username: string; display_name: string; email: string | null;
   password_hash: string | null; is_admin: number; status: "active" | "disabled";
-  failed_attempts: number; locked_until: string | null;
+  locale: string | null; failed_attempts: number; locked_until: string | null;
   created_at: string; updated_at: string; last_login_at: string | null;
 }
 
@@ -33,6 +36,7 @@ function toRecord(row: UserRow): UserRecord {
     passwordHash: row.password_hash,
     isAdmin: row.is_admin === 1,
     status: row.status,
+    locale: isUserLocale(row.locale) ? row.locale : null,
     failedAttempts: row.failed_attempts,
     lockedUntil: row.locked_until,
     createdAt: row.created_at,
@@ -91,6 +95,7 @@ const columns = {
   passwordHash: "password_hash",
   isAdmin: "is_admin",
   status: "status",
+  locale: "locale",
   failedAttempts: "failed_attempts",
   lockedUntil: "locked_until",
   lastLoginAt: "last_login_at",

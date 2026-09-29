@@ -12,6 +12,7 @@ import { randomUUID } from "node:crypto";
 import { loadServerSettings, runtimeMode, repositoryRoots } from "./deployment-settings.js";
 import { createAuthApi } from "./auth/auth-api.js";
 import { createUsersApi } from "./auth/users-api.js";
+import { createEmailApi } from "./email/email-api.js";
 import { csrfTokenOf, inScope, principalOf, scopeOf } from "./auth/principal.js";
 import { createStreamGuard } from "./auth/stream-guard.js";
 import { authorize } from "./auth/route-policy.js";
@@ -760,6 +761,7 @@ export function createGuardrailsApp(
 
 app.route("/", createAuthApi({ settings: loadServerSettings() }));
 app.route("/", createUsersApi({ publicOrigin: loadServerSettings().origin }));
+app.route("/", createEmailApi({ publicOrigin: loadServerSettings().origin }));
 app.route("/", createGuardrailsApp());
 app.route("/", createGitHubAppApi());
 app.route("/", createEngineUpdatesApp());

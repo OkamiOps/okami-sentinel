@@ -1,7 +1,7 @@
 import { getConnInfo } from "@hono/node-server/conninfo";
 import { Hono, type Context } from "hono";
 import { deleteCookie, setCookie } from "hono/cookie";
-import type { AuthSessionResponse, AuthSessionUser, UserSessionSummary } from "@csb/shared";
+import { isUserLocale, type AuthSessionResponse, type AuthSessionUser, type UserLocale, type UserSessionSummary } from "@csb/shared";
 import type { ServerSettings } from "../deployment-settings.js";
 import { sessionCookieDeleteOptions, sessionCookieName, sessionCookieOptions } from "../session-cookie.js";
 import { acceptInvite, changePassword, login, logout } from "./auth-service.js";
@@ -97,6 +97,9 @@ export function createAuthApi(deps: { settings: ServerSettings; now?: () => Date
         username: principal.username,
         displayName: principal.displayName,
         isAdmin: principal.isAdmin,
+        // The local runtime has no account row, so it has no stored language
+        // either; the interface keeps using whatever the browser chose.
+        locale: principal.userId ? getUser(principal.userId)?.locale ?? null : null,
       },
       grants: principal.userId ? listUserGrants(principal.userId) : [],
       csrfToken: csrfTokenOf(c),
@@ -137,11 +140,23 @@ export function createAuthApi(deps: { settings: ServerSettings; now?: () => Date
   api.patch("/account/profile", async (c) => {
     const principal = principalOf(c);
     if (!server || !principal.userId) return c.json({ error: "not_found" }, 404);
-    const displayName = text((await body(c)).displayName, 120).trim();
-    if (!displayName) return c.json({ error: "display_name_invalid" }, 400);
-    const user = updateUser(principal.userId, { displayName });
+    const input = await body(c);
+    const patch: { displayName?: string; locale?: UserLocale } = {};
+    // `displayName` stays required when it is sent, so a locale-only request is
+    // not a way to blank the name; a request that sends neither is refused.
+    if ("displayName" in input || !("locale" in input)) {
+      const displayName = text(input.displayName, 120).trim();
+      if (!displayName) return c.json({ error: "display_name_invalid" }, 400);
+      patch.displayName = displayName;
+    }
+    if ("locale" in input) {
+      if (!isUserLocale(input.locale)) return c.json({ error: "locale_invalid" }, 400);
+      patch.locale = input.locale;
+    }
+    const user = updateUser(principal.userId, patch);
     const response: AuthSessionUser = {
-      id: user.id, username: user.username, displayName: user.displayName, isAdmin: user.isAdmin,
+      id: user.id, username: user.username, displayName: user.displayName,
+      isAdmin: user.isAdmin, locale: user.locale,
     };
     return c.json(response);
   });

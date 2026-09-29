@@ -161,6 +161,53 @@ test("renames the caller and refuses an empty display name", async () => {
   assert.deepEqual(await empty.json(), { error: "display_name_invalid" });
 });
 
+test("the caller picks an interface language, and only one of the five", async () => {
+  const { app, origin } = serverWithAuthApi();
+  const username = await seedUser(`locale${Date.now()}`, "locale password 1");
+  const { cookie, csrf } = await signIn(app, origin, username, "locale password 1", "10.9.0.1");
+  const patch = (payload: unknown) => app.request(`${origin}/api/account/profile`, {
+    method: "PATCH", headers: { Cookie: cookie, Origin: origin, "X-CSRF-Token": csrf, "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  // Never chosen, so the session reports no stored language at all.
+  const before = await (await app.request(`${origin}/api/auth/session`, { headers: { Cookie: cookie } })).json();
+  assert.equal(before.user.locale, null);
+
+  // A locale alone is a complete request: it must not need the display name.
+  const saved = await patch({ locale: "de" });
+  assert.equal(saved.status, 200);
+  assert.equal((await saved.json()).locale, "de");
+  const after = await (await app.request(`${origin}/api/auth/session`, { headers: { Cookie: cookie } })).json();
+  assert.equal(after.user.locale, "de");
+  assert.equal(after.user.displayName, username);
+
+  for (const locale of ["pt-BR", "en", "es", "de", "fr"]) {
+    const response = await patch({ locale });
+    assert.equal(response.status, 200, locale);
+    assert.equal((await response.json()).locale, locale);
+  }
+  for (const locale of ["pt", "PT-BR", "klingon", "", null, 5, ["fr"]]) {
+    const response = await patch({ locale });
+    assert.equal(response.status, 400, JSON.stringify(locale));
+    assert.deepEqual(await response.json(), { error: "locale_invalid" }, JSON.stringify(locale));
+  }
+  // The rejected requests changed nothing.
+  const unchanged = await (await app.request(`${origin}/api/auth/session`, { headers: { Cookie: cookie } })).json();
+  assert.equal(unchanged.user.locale, "fr");
+
+  // A rename still works, and still cannot blank the name.
+  const both = await patch({ displayName: "Named Person", locale: "es" });
+  assert.equal(both.status, 200);
+  assert.deepEqual(
+    { displayName: (await both.json()).displayName, locale: "es" },
+    { displayName: "Named Person", locale: "es" },
+  );
+  const blanked = await patch({ displayName: "  ", locale: "en" });
+  assert.equal(blanked.status, 400);
+  assert.deepEqual(await blanked.json(), { error: "display_name_invalid" });
+});
+
 test("session deletion reaches only the caller's own sessions", async () => {
   const { app, origin } = serverWithAuthApi();
   const username = await seedUser(`revoke${Date.now()}`, "revoke password 1");
@@ -198,7 +245,7 @@ test("local mode reports the local principal and hides the account routes", asyn
   const app = new Hono().route("/api", new Hono().route("/", createAuthApi({ settings: local })));
   const session = await (await app.request("http://localhost/api/auth/session")).json();
   assert.deepEqual(session, {
-    user: { id: "local", username: "local", displayName: "Local", isAdmin: true },
+    user: { id: "local", username: "local", displayName: "Local", isAdmin: true, locale: null },
     grants: [],
     csrfToken: securitySessionToken,
     runtimeMode: "local",
