@@ -8,3 +8,9 @@ test("keeps in-app paths and refuses off-site redirects", () => {
     assert.equal(safeNext(value), "/", String(value));
   }
 });
+
+test("refuses a login/invite loop target hidden behind a query or hash suffix", () => {
+  for (const value of ["/login#x", "/login?next=/x", "/invite/abc#y"]) {
+    assert.equal(safeNext(value), "/", value);
+  }
+});

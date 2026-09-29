@@ -98,3 +98,23 @@ test("does not dispatch sentinel:unauthorized for a 401 from /api/auth/session i
     (globalThis as { window?: unknown }).window = previousWindow;
   }
 });
+
+test("only signs Sentinel out for its own API: a provider 401 is ignored, a Sentinel API 401 is not", async () => {
+  const dispatched: string[] = [];
+  const stubWindow = { dispatchEvent: (event: { type: string }) => { dispatched.push(event.type); return true; } };
+  const previousWindow = (globalThis as { window?: unknown }).window;
+  (globalThis as { window?: unknown }).window = stubWindow;
+  try {
+    const client = createSecuritySessionClient(async () => new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 }));
+
+    const providerResponse = await client.request("https://provider.example/v1/models", { method: "GET" });
+    assert.equal(providerResponse.status, 401);
+    assert.deepEqual(dispatched, [], "an external provider 401 must never sign Sentinel's user out");
+
+    const apiResponse = await client.request("/api/scans");
+    assert.equal(apiResponse.status, 401);
+    assert.deepEqual(dispatched, ["sentinel:unauthorized"], "a 401 from Sentinel's own API still signs the user out");
+  } finally {
+    (globalThis as { window?: unknown }).window = previousWindow;
+  }
+});
