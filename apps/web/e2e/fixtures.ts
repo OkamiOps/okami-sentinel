@@ -1,6 +1,45 @@
 import type { Page } from "@playwright/test";
-import type { FindingDetail, LifecycleFinding, MetricsSummary, ProviderConnection, ScanAnalysisMetrics, ScanRun } from "@csb/shared";
+import type {
+  FindingDetail,
+  LifecycleFinding,
+  MetricsSummary,
+  ProviderConnection,
+  RepositoryAccessEntry,
+  RepositoryGrant,
+  ScanAnalysisMetrics,
+  ScanRun,
+  UserSessionSummary,
+  UserSummary,
+} from "@csb/shared";
 import type { ScanFilesGraph } from "../src/api";
+
+export interface MockApiOptions {
+  signedOut?: boolean;
+  session?: { isAdmin: boolean; grants: RepositoryGrant[] };
+  loginResponse?: { status: number; body: unknown };
+  patchUserResponse?: { status: number; body: unknown };
+}
+
+const rootUser: UserSummary = {
+  id: "u-root", username: "root", displayName: "Root", email: null,
+  isAdmin: true, status: "active", hasPassword: true, pendingInvite: false,
+  repositoryCount: 0, lastLoginAt: "2026-09-07T09:00:00.000Z", createdAt: "2026-09-01T10:00:00.000Z",
+};
+
+const anaUser: UserSummary = {
+  id: "u-ana", username: "ana", displayName: "Ana", email: null,
+  isAdmin: false, status: "active", hasPassword: true, pendingInvite: false,
+  repositoryCount: 1, lastLoginAt: null, createdAt: "2026-09-01T10:00:00.000Z",
+};
+
+const anaGrants: RepositoryGrant[] = [{ repositoryKey: "github:1", role: "viewer" }];
+
+function currentSessionSummary(current: boolean): UserSessionSummary {
+  return {
+    id: "session-one", createdAt: "2026-09-07T09:00:00.000Z", lastSeenAt: "2026-09-07T10:00:00.000Z",
+    ip: "127.0.0.1", userAgent: "fixture-agent", current,
+  };
+}
 
 export const baseRun: ScanRun = {
   id: "scan-one", displayName: "Repository alpha", repositoryPath: "/fixture/alpha", scanDir: "/fixture/scans/one",
@@ -42,7 +81,7 @@ const filesGraph = {
   edges: [],
 } satisfies ScanFilesGraph;
 
-export async function mockApi(page: Page, locale = "en") {
+export async function mockApi(page: Page, locale = "en", options: MockApiOptions = {}) {
   const state = {
     offline: false, connectionsFail: false, modelsFail: false, launchCount: 0, cancelCount: 0,
     runs: [structuredClone(baseRun), { ...structuredClone(baseRun), id: "scan-two", displayName: "Repository beta" }],
@@ -52,6 +91,13 @@ export async function mockApi(page: Page, locale = "en") {
     reportFindings: [] as FindingDetail[],
     lastLaunch: null as Record<string, unknown> | null,
     connection: structuredClone(connection),
+    auth: {
+      signedIn: !options.signedOut,
+      isAdmin: options.session?.isAdmin ?? true,
+      grants: options.session?.grants ?? ([] as RepositoryGrant[]),
+      runtimeMode: (options.session ? "server" : "local") as "local" | "server",
+    },
+    users: [structuredClone(rootUser), structuredClone(anaUser)] as UserSummary[],
   };
   await page.addInitScript(({ locale }) => {
     localStorage.setItem("okami-sentinel.locale", locale);
@@ -112,6 +158,81 @@ export async function mockApi(page: Page, locale = "en") {
     }
     if (path === "/security-session" || path === "/connections/security-session" || path === "/engine-updates/security-session") {
       return json({ csrfToken: "fixture-token", runtimeMode: "local", repositoryRoots: [] });
+    }
+    if (path === "/auth/session") {
+      if (!state.auth.signedIn) return json({ error: "authentication_required" }, 401);
+      return json({
+        user: { id: "u-root", username: "root", displayName: "Root", isAdmin: state.auth.isAdmin },
+        grants: state.auth.grants,
+        csrfToken: "fixture-token",
+        runtimeMode: state.auth.runtimeMode,
+        repositoryRoots: [],
+      });
+    }
+    if (path === "/auth/login" && req.method() === "POST") {
+      if (options.loginResponse) return json(options.loginResponse.body, options.loginResponse.status);
+      const body = req.postDataJSON() as { username?: string; password?: string };
+      if (body.password === "ana password 123") {
+        state.auth.signedIn = true;
+        return json({ ok: true });
+      }
+      return json({ error: "invalid_credentials" }, 401);
+    }
+    if (path === "/auth/logout" && req.method() === "POST") {
+      state.auth.signedIn = false;
+      return route.fulfill({ status: 204 });
+    }
+    const inviteMatch = path.match(/^\/auth\/invites\/([^/]+)$/);
+    if (inviteMatch) {
+      if (req.method() === "GET") {
+        return json({ username: "ana", displayName: "Ana", purpose: "invite", invitedBy: "Root", expiresAt: "2026-10-02T10:00:00.000Z" });
+      }
+      if (req.method() === "POST") {
+        state.auth.signedIn = true;
+        return json({ ok: true });
+      }
+    }
+    if (path === "/account/sessions" && req.method() === "GET") return json({ sessions: [currentSessionSummary(true)] });
+    if (path === "/account/password" && req.method() === "POST") return route.fulfill({ status: 204 });
+    if (path === "/account/profile" && req.method() === "PATCH") {
+      const body = req.postDataJSON() as { displayName?: string };
+      return json({ id: "u-root", username: "root", displayName: body.displayName ?? "Root", isAdmin: state.auth.isAdmin });
+    }
+    if (path === "/users" && req.method() === "GET") return json({ users: state.users });
+    if (path === "/users" && req.method() === "POST") {
+      const body = req.postDataJSON() as { username?: string; displayName?: string; email?: string | null; isAdmin?: boolean; grants?: RepositoryGrant[] };
+      const created: UserSummary = {
+        id: `u-${body.username ?? "new"}`, username: String(body.username ?? ""), displayName: String(body.displayName ?? ""),
+        email: body.email ?? null, isAdmin: body.isAdmin === true, status: "active", hasPassword: false, pendingInvite: true,
+        repositoryCount: body.grants?.length ?? 0, lastLoginAt: null, createdAt: "2026-09-07T10:00:00.000Z",
+      };
+      state.users.push(created);
+      return json({ user: created, invite: { inviteUrl: `http://127.0.0.1:4175/invite/${"b".repeat(43)}`, expiresAt: "2026-10-06T10:00:00.000Z" } }, 201);
+    }
+    const userMatch = path.match(/^\/users\/([^/]+)(?:\/(.*))?$/);
+    if (userMatch) {
+      const [, id, sub] = userMatch;
+      if (!sub && req.method() === "PATCH") {
+        if (options.patchUserResponse) return json(options.patchUserResponse.body, options.patchUserResponse.status);
+        const body = req.postDataJSON() as Partial<UserSummary>;
+        const existing = state.users.find((user) => user.id === id);
+        const patched: UserSummary = { ...(existing ?? rootUser), ...body };
+        state.users = state.users.map((user) => user.id === id ? patched : user);
+        return json(patched);
+      }
+      if (sub === "grants" && req.method() === "GET") return json({ grants: id === "u-ana" ? anaGrants : [] });
+      if (sub === "grants" && req.method() === "PUT") {
+        const body = req.postDataJSON() as { grants?: RepositoryGrant[] };
+        return json({ grants: body.grants ?? [] });
+      }
+      if (sub === "sessions" && req.method() === "GET") return json({ sessions: [currentSessionSummary(false)] });
+    }
+    if (path === "/repository-access" && req.method() === "GET") {
+      const repositories: RepositoryAccessEntry[] = [{
+        repositoryKey: "github:1", displayName: "luna-core", source: "github",
+        grants: [{ userId: "u-ana", username: "ana", displayName: "Ana", role: "viewer" }],
+      }];
+      return json({ repositories });
     }
     if (path === "/connections") return state.connectionsFail ? json({ error: "fixture unavailable" }, 503) : json({ connections: [state.connection] });
     if (path === "/connections/fixture-connection/models" || path === "/connections/fixture-connection/models/refresh") {
