@@ -2,6 +2,7 @@ import { useNavigate } from "react-router-dom";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useAuth } from "../../auth/AuthProvider";
 import { useI18n } from "../../i18n";
+import { formatHandle } from "../../lib/username";
 
 /** First letters of up to two words, so "Ana Paula Souza" reads as "AP". */
 export function initialsOf(displayName: string): string {
@@ -32,7 +33,7 @@ export function UserMenu() {
     <DropdownMenuContent align="end" className="report-no-print w-60 rounded-none border-border bg-popover p-1.5">
       <div className="px-2 py-2">
         <div className="truncate text-[12px] font-semibold text-foreground">{displayName}</div>
-        <div className="truncate font-mono text-[10px] text-muted-foreground">@{username}</div>
+        <div className="truncate font-mono text-[10px] text-muted-foreground">{formatHandle(username)}</div>
         <span className="mt-1.5 inline-flex h-5 items-center border border-border px-1.5 font-mono text-[9px] uppercase tracking-[0.12em] text-muted-foreground">
           {isAdmin ? t("userMenu.admin") : t("userMenu.member")}
         </span>

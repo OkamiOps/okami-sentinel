@@ -30,11 +30,14 @@ test("the administrator username must be long enough for the account store to ac
   for (const username of ["a", "1", "."]) {
     assert.throws(() => loadServerSettings(env({ CSB_ADMIN_USER: username })), /CSB_ADMIN_USER/, username);
   }
-  for (const username of ["ab", "admin", "a".repeat(64)]) {
+  // The account store accepts an email address as a username, so the bootstrap
+  // administrator can be named by one instead of crashing the boot.
+  for (const username of ["ab", "admin", "a".repeat(64), "marcos@okamiops.com", "ops+sentinel@okamiops.com"]) {
     assert.equal(loadServerSettings(env({ CSB_ADMIN_USER: username })).username, username);
   }
   assert.throws(() => loadServerSettings(env({ CSB_ADMIN_USER: "a".repeat(65) })), /CSB_ADMIN_USER/);
   assert.throws(() => loadServerSettings(env({ CSB_ADMIN_USER: "wrong user" })), /CSB_ADMIN_USER/);
+  assert.throws(() => loadServerSettings(env({ CSB_ADMIN_USER: "marcos!@okamiops.com" })), /CSB_ADMIN_USER/);
   // An empty setting is not a rejection; it selects the documented default.
   assert.equal(loadServerSettings(env({ CSB_ADMIN_USER: "   " })).username, "admin");
   assert.equal(loadServerSettings(env()).username, "admin");

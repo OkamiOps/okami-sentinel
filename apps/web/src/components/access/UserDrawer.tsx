@@ -11,6 +11,7 @@ import { UserRoleBadge, UserStateBadge } from "./UserBadges";
 import { AlertBanner, cx, EmptyState, FormFeedback, Loading } from "../ui";
 import { authErrorCode, usersApi } from "../../lib/auth-api";
 import { describeUserAgent } from "../../lib/user-agent";
+import { formatHandle } from "../../lib/username";
 import { formatRelativeTime } from "../../format";
 import { accessMessages, type AccessMessageKey } from "../../i18n/access";
 import { useScopedI18n } from "../../i18n/scoped";
@@ -49,7 +50,7 @@ function DrawerBody({ user, repositories, onChanged }: {
   return <>
     <SheetHeader className="border-b pr-12">
       <SheetTitle className="truncate">{user.displayName}</SheetTitle>
-      <SheetDescription className="font-mono text-[11px]">@{user.username}</SheetDescription>
+      <SheetDescription className="font-mono text-[11px]">{formatHandle(user.username)}</SheetDescription>
       <div className="mt-2 flex flex-wrap gap-2"><UserStateBadge user={user} /><UserRoleBadge user={user} /></div>
     </SheetHeader>
     <Tabs defaultValue="access" className="min-h-0 flex-1 gap-0">

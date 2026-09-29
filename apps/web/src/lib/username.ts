@@ -10,3 +10,12 @@ export function normalizeUsername(value: string): string | null {
   const normalized = value.trim().toLowerCase();
   return /^[a-z0-9._@+-]{2,64}$/.test(normalized) ? normalized : null;
 }
+
+/**
+ * Usernames are shown as handles, which is why they carry an `@` prefix. A
+ * username that is itself an email address already has one, so it is shown as
+ * the address it is instead of as `@marcos@okamiops.com`.
+ */
+export function formatHandle(username: string): string {
+  return username.includes("@") ? username : `@${username}`;
+}

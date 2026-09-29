@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { normalizeUsername } from "./username.js";
+import { formatHandle, normalizeUsername } from "./username.js";
 
 test("normalizes exactly as the server stores the username", () => {
   assert.equal(normalizeUsername(" Bruno.Lima "), "bruno.lima");
@@ -21,4 +21,12 @@ test("refuses what the server would refuse", () => {
   assert.equal(normalizeUsername("marcos @okamiops.com"), null);
   assert.equal(normalizeUsername("marcos!@okamiops.com"), null);
   assert.equal(normalizeUsername("x".repeat(65)), null);
+});
+
+test("shows a username as a handle unless it is already an address", () => {
+  assert.equal(formatHandle("bruno.lima"), "@bruno.lima");
+  assert.equal(formatHandle("marcos@okamiops.com"), "marcos@okamiops.com");
+  assert.equal(formatHandle("ops+sentinel@okamiops.com"), "ops+sentinel@okamiops.com");
+  // Whatever the caller holds is displayed, including an empty value.
+  assert.equal(formatHandle(""), "@");
 });
