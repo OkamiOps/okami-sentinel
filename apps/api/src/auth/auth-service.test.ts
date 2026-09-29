@@ -6,7 +6,15 @@ import { createUser, findUserByUsername, updateUser } from "./user-store.js";
 import { hashPassword } from "./passwords.js";
 import { createInvite } from "./invite-store.js";
 import { resolveSession } from "./session-store.js";
-import { acceptInvite, bootstrapAdmin, changePassword, lockoutMs, login, principalForSession } from "./auth-service.js";
+import {
+  acceptInvite,
+  bootstrapAdmin,
+  changePassword,
+  lockoutMs,
+  login,
+  principalForSession,
+  resetLoginRateLimit,
+} from "./auth-service.js";
 
 function setup() {
   const db = new Database(":memory:");
@@ -73,6 +81,48 @@ test("changing the password revokes the other sessions only", async () => {
   assert.deepEqual(await changePassword({ userId: a.user.id, sessionId: a.session.id, currentPassword: "ana password 123", newPassword: "another password" }, db), { ok: true });
   assert.ok(resolveSession(a.token, undefined, db));
   assert.equal(resolveSession(b.token, undefined, db), null);
+});
+
+test("rate-limits a single IP after enough failed attempts within the window", async () => {
+  resetLoginRateLimit();
+  const db = setup();
+  createUser({ username: "ana", displayName: "Ana", isAdmin: false, passwordHash: await hashPassword("ana password 123") }, db);
+  const now = new Date("2026-09-29T11:00:00.000Z");
+  const ip = "9.9.9.9";
+  for (let i = 0; i < 30; i += 1) {
+    const result = await login({ username: "ana", password: "wrong", ip, userAgent: null, now }, db);
+    assert.equal(result.ok, false);
+  }
+  const blocked = await login({ username: "ana", password: "ana password 123", ip, userAgent: null, now }, db);
+  assert.equal(blocked.ok, false);
+  if (blocked.ok) return;
+  assert.equal(blocked.error, "rate_limited");
+  assert.ok(blocked.error === "rate_limited" && blocked.retryAfterSeconds > 0);
+});
+
+test("counts probes of an already-locked account against the per-IP limiter", async () => {
+  resetLoginRateLimit();
+  const db = setup();
+  createUser({ username: "bob", displayName: "Bob", isAdmin: false, passwordHash: await hashPassword("bob password 123") }, db);
+  const now = new Date("2026-09-29T12:00:00.000Z");
+  // Lock the account using distinct IPs so this doesn't pre-charge the probing IP below.
+  for (let i = 0; i < 5; i += 1) {
+    await login({ username: "bob", password: "wrong", ip: `8.8.8.${i}`, userAgent: null, now }, db);
+  }
+  const ip = "8.8.8.8";
+  let lastResult;
+  for (let i = 0; i < 30; i += 1) {
+    lastResult = await login({ username: "bob", password: "bob password 123", ip, userAgent: null, now }, db);
+    assert.equal(lastResult.ok, false);
+  }
+  assert.ok(lastResult && !lastResult.ok && lastResult.error === "account_locked");
+  const rateLimited = await login({ username: "bob", password: "bob password 123", ip, userAgent: null, now }, db);
+  assert.equal(rateLimited.ok, false);
+  if (rateLimited.ok) return;
+  assert.equal(rateLimited.error, "rate_limited");
+  // The locked-account probes never touch verifyPassword, so they must not have
+  // advanced the user's own failure counter.
+  assert.equal(findUserByUsername("bob", db)?.failedAttempts, 5);
 });
 
 test("bootstraps the first admin and recovers when no active admin remains", async () => {

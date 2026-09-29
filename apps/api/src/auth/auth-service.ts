@@ -8,9 +8,18 @@ import { FailureWindow } from "./rate-limit.js";
 import { createSession, revokeSession, revokeUserSessions, type SessionRecord } from "./session-store.js";
 import { countActiveAdmins, createUser, findUserByUsername, getUser, updateUser, type UserRecord } from "./user-store.js";
 
-const ipFailures = new FailureWindow(30, 60_000);
+const LOGIN_RATE_LIMIT = 30;
+const LOGIN_RATE_WINDOW_MS = 60_000;
+let ipFailures = new FailureWindow(LOGIN_RATE_LIMIT, LOGIN_RATE_WINDOW_MS);
 const LOCK_BASE_MS = 15 * 60_000;
 const LOCK_MAX_MS = 24 * 3600_000;
+
+// Test-only escape hatch: the limiter is a module singleton (shared across every
+// call to login), so tests that need to exercise it deterministically must be
+// able to clear it between runs instead of reaching into module internals.
+export function resetLoginRateLimit(): void {
+  ipFailures = new FailureWindow(LOGIN_RATE_LIMIT, LOGIN_RATE_WINDOW_MS);
+}
 
 export type LoginResult =
   | { ok: true; token: string; session: SessionRecord; user: UserRecord }
@@ -33,6 +42,10 @@ export async function login(
   if (ipWait !== null) return { ok: false, error: "rate_limited", retryAfterSeconds: ipWait };
   const user = findUserByUsername(input.username, database);
   if (user?.lockedUntil && Date.parse(user.lockedUntil) > now.getTime()) {
+    // Polling a locked account still costs an IP-limiter strike, even though it
+    // never touches the user's own failedAttempts/lockedUntil, so it can't be
+    // used to confirm the account exists at zero cost.
+    ipFailures.fail(ipKey);
     return { ok: false, error: "account_locked", retryAfterSeconds: Math.ceil((Date.parse(user.lockedUntil) - now.getTime()) / 1000) };
   }
   const matches = await verifyPassword(input.password, user?.passwordHash ?? null);
