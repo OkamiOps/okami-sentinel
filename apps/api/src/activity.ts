@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import Database from "better-sqlite3";
 import {
   CODEX_SECURITY_SESSIONS_DIR,
   LEGACY_SCANS_ROOT,
@@ -15,6 +14,7 @@ import {
   removeProcessIdentity,
 } from "./process-identity.js";
 import { redactText } from "./redaction.js";
+import { openSqliteFile } from "./sqlite.js";
 
 export function cliLogPath(scanDir: string): string {
   return path.join(RUNS_DIR, `${path.basename(scanDir)}.log`);
@@ -184,7 +184,7 @@ function matchingWorkbenchArtifactRows(
 ): WorkbenchArtifactRow[] {
   if (!fs.existsSync(databasePath)) return [];
 
-  const database = new Database(databasePath, {
+  const database = openSqliteFile(databasePath, {
     readonly: true,
     fileMustExist: true,
   });
@@ -228,7 +228,7 @@ function deleteWorkbenchScanRecords(
     throw new Error("Ledger operacional mudou durante a exclusão; tente novamente.");
   }
 
-  const database = new Database(databasePath, { fileMustExist: true });
+  const database = openSqliteFile(databasePath, { fileMustExist: true });
   try {
     database.pragma("foreign_keys = ON");
     return database.transaction(() => {
@@ -470,7 +470,7 @@ function managedRootForScanDirectory(
 export function resolveWorkbenchScanDir(scanDir: string): string | null {
   if (!fs.existsSync(WORKBENCH_DB_PATH)) return null;
   try {
-    const wb = new Database(WORKBENCH_DB_PATH, {
+    const wb = openSqliteFile(WORKBENCH_DB_PATH, {
       readonly: true,
       fileMustExist: true,
     });
@@ -526,7 +526,7 @@ export function readDetachedActivity(scanDir: string): string[] {
 
   if (!fs.existsSync(WORKBENCH_DB_PATH)) return lines;
   try {
-    const wb = new Database(WORKBENCH_DB_PATH, {
+    const wb = openSqliteFile(WORKBENCH_DB_PATH, {
       readonly: true,
       fileMustExist: true,
     });

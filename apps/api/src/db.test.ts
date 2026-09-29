@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import Database from "better-sqlite3";
 
@@ -13,6 +16,7 @@ import {
   reserveScanCapacity,
   upsertRun,
 } from "./db.js";
+import { SQLITE_BUSY_TIMEOUT_MS, openSqliteFile } from "./sqlite.js";
 import type { ScanRun } from "@csb/shared";
 
 test("scan capacity reservation is atomic across preflight failure and a restarted worker", () => {
@@ -285,5 +289,68 @@ test("adds complete execution columns to legacy run schemas idempotently", () =>
     }
   } finally {
     database.close();
+  }
+});
+
+/**
+ * The API is not the only process holding this file open: the test runner alone
+ * opens it from every parallel test process, and a local runtime shares it with
+ * the workers it spawns. Without a busy timeout the loser of a write-lock race
+ * fails the whole request with SQLITE_BUSY instead of waiting the few
+ * milliseconds the winner needs.
+ */
+test("the shared database connection waits for a busy writer instead of failing", () => {
+  const database = dbModule.getDb();
+  assert.equal(database.pragma("busy_timeout", { simple: true }), SQLITE_BUSY_TIMEOUT_MS);
+  // Waiting must not cost the concurrent readers WAL already buys.
+  assert.equal(database.pragma("journal_mode", { simple: true }), "wal");
+});
+
+test("every SQLite file this API opens waits the same way", () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "csb-busy-")), "probe.db");
+  const database = openSqliteFile(file);
+  try {
+    assert.equal(database.pragma("busy_timeout", { simple: true }), SQLITE_BUSY_TIMEOUT_MS);
+    // A deferred transaction is the one case the timeout cannot rescue, so it
+    // must not be what a caller gets by default.
+    const transaction = database.transaction(() => undefined);
+    assert.equal(transaction, transaction.immediate);
+  } finally {
+    database.close();
+  }
+});
+
+/**
+ * The timeout alone is not enough. SQLite refuses to invoke the busy handler
+ * for a deferred transaction — waiting for a lock it did not take up front
+ * risks a deadlock — so such a transaction fails at once with SQLITE_BUSY, and
+ * with SQLITE_BUSY_SNAPSHOT when it read before it wrote and another connection
+ * committed in between. That is how a second test process used to fail
+ * `POST /users` with a 400 halfway through a suite run.
+ */
+test("a transaction cannot be starved by a writer that commits after its first read", () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "csb-busy-tx-")), "shared.db");
+  const mine = openSqliteFile(file);
+  const other = openSqliteFile(file);
+  try {
+    mine.pragma("journal_mode = WAL");
+    // Keep the losing side fast: this stands in for another process, and the
+    // point is which connection loses, not how long it waits.
+    other.pragma("busy_timeout = 0");
+    mine.exec("CREATE TABLE t (id INTEGER PRIMARY KEY)");
+    mine.transaction(() => {
+      // Nothing but a read so far, which is where a deferred transaction still
+      // holds no lock at all and can still lose its right to write.
+      mine.prepare("SELECT COUNT(*) AS count FROM t").get();
+      assert.throws(
+        () => other.prepare("INSERT INTO t (id) VALUES (1)").run(),
+        (error: unknown) => (error as { code?: string }).code?.startsWith("SQLITE_BUSY") === true,
+      );
+      mine.prepare("INSERT INTO t (id) VALUES (2)").run();
+    })();
+    assert.deepEqual(mine.prepare("SELECT id FROM t").all(), [{ id: 2 }]);
+  } finally {
+    mine.close();
+    other.close();
   }
 });

@@ -22,6 +22,7 @@ import { resolveRunRepositoryKey } from "./auth/repository-key.js";
 import { BENCHMARK_DB_PATH, DATA_DIR } from "./config.js";
 import { migrateGuardrailsSchema } from "./guardrails-migrations.js";
 import { withOpenRouterPricingEstimate } from "./openrouter-pricing.js";
+import { openSqliteFile } from "./sqlite.js";
 
 export interface BenchmarkRow {
   id: string;
@@ -80,7 +81,7 @@ let db: Database.Database | null = null;
 export function getDb(): Database.Database {
   if (db) return db;
   fs.mkdirSync(DATA_DIR, { recursive: true });
-  db = new Database(BENCHMARK_DB_PATH);
+  db = openSqliteFile(BENCHMARK_DB_PATH);
   db.pragma("journal_mode = WAL");
   db.exec(`
     CREATE TABLE IF NOT EXISTS runs (
