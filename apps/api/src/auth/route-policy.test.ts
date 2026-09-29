@@ -4,12 +4,14 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { Hono } from "hono";
-import { app } from "../app.js";
+import type { GuardrailRepository } from "@csb/shared";
+import { app, createGuardrailsApp, type GuardrailsApiDependencies } from "../app.js";
 import { getDb } from "../db.js";
 import type { ServerSettings } from "../deployment-settings.js";
 import { createServerApp } from "../server-app.js";
 import { SESSION_COOKIE } from "../server-security.js";
 import { replaceUserGrants } from "./grant-store.js";
+import { LOCAL_PRINCIPAL } from "./principal.js";
 import { authorize, matchPolicy } from "./route-policy.js";
 import { createSession } from "./session-store.js";
 import { createUser } from "./user-store.js";
@@ -61,6 +63,85 @@ test("the matcher captures the same repository key the handler will read", async
     const body = await (await probe.request(`/github-checkouts/${raw}`)).json();
     assert.equal(body.matched, body.handler, `mismatch for ${raw}`);
   }
+});
+
+/**
+ * The invariant that matters for `from: "param"` routes: the key `authorize`
+ * checked the grant against has to be the very key the handler resolves. A
+ * second decode inside the handler used to break it, so a grant on the literal
+ * key `…a%2Fb` authorized a request the handler then executed against `…a/b`.
+ */
+test("a guardrails param route resolves exactly the key authorization checked", async () => {
+  const stamp = Date.now();
+  const literalKey = `local:/repos/pct-${stamp}-a%2Fb`;
+  const decodedKey = `local:/repos/pct-${stamp}-a/b`;
+  // Precondition of the regression: one more decode turns one key into the other.
+  assert.equal(decodeURIComponent(literalKey), decodedKey);
+
+  const seen: string[] = [];
+  const repository = (key: string): GuardrailRepository => ({
+    repositoryKey: key, repositoryPath: `/repos/${key}`, source: "local", displayName: key,
+    defaultBranch: "main", defaultExecutor: "sentinel-managed", remoteOwner: null, remoteName: null,
+    githubConnectionId: null, githubInstallationId: null, githubRepositoryId: null, enabled: true,
+    policyPath: ".csb/guardrails.json", lastGateId: null, githubStatus: "not_configured",
+  });
+  // Only the two members `GET …/github-status` reaches; the rest of the
+  // dependency surface is irrelevant to which key the handler resolves.
+  const deps = {
+    getRepository(key: string) {
+      seen.push(key);
+      return [literalKey, decodedKey].includes(key) ? repository(key) : null;
+    },
+    getGitHubStatus: async (value: GuardrailRepository) => ({ resolvedKey: value.repositoryKey }),
+  } as unknown as GuardrailsApiDependencies;
+
+  const probe = new Hono();
+  probe.use("*", async (c, next) => {
+    c.set("principal" as never, {
+      ...LOCAL_PRINCIPAL, kind: "user", isAdmin: false, grants: new Map([[literalKey, "viewer"]]),
+    } as never);
+    await next();
+  });
+  probe.use("*", authorize());
+  probe.route("/", createGuardrailsApp(deps));
+
+  const granted = await probe.request(`/guardrails/repositories/${encodeURIComponent(literalKey)}/github-status`);
+  assert.equal(granted.status, 200);
+  assert.deepEqual(await granted.json(), { status: { resolvedKey: literalKey } });
+  assert.deepEqual(seen, [literalKey]);
+
+  // The repository the extra decode used to reach stays invisible: the grant
+  // does not cover it, so the handler is never invoked at all.
+  const other = await probe.request(`/guardrails/repositories/${encodeURIComponent(decodedKey)}/github-status`);
+  assert.equal(other.status, 404);
+  assert.deepEqual(await other.json(), { error: "not_found" });
+  assert.deepEqual(seen, [literalKey]);
+});
+
+test("a missing principal is the only authentication failure authorize invents", async () => {
+  const probe = new Hono();
+  probe.use("*", authorize());
+  probe.get("/scanners", (c) => c.json({ reached: true }));
+  const previous = process.env.CSB_RUNTIME_MODE;
+  process.env.CSB_RUNTIME_MODE = "server";
+  try {
+    const response = await probe.request("/scanners");
+    assert.equal(response.status, 401);
+    assert.deepEqual(await response.json(), { error: "authentication_required" });
+  } finally {
+    if (previous === undefined) delete process.env.CSB_RUNTIME_MODE;
+    else process.env.CSB_RUNTIME_MODE = previous;
+  }
+});
+
+test("a genuine fault while reading the principal is not disguised as a 401", async () => {
+  const middleware = authorize();
+  const context = {
+    req: { method: "GET", path: "/scanners" },
+    get() { throw new Error("db_unavailable"); },
+    json() { throw new Error("authorize answered instead of failing"); },
+  };
+  await assert.rejects(async () => { await middleware(context as never, async () => {}); }, /db_unavailable/);
 });
 
 test("a route absent from the policy table is denied", async () => {
