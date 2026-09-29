@@ -22,7 +22,7 @@ import { scanCostPresentation, scanTokenUsage } from "../lib/scan-cost";
 import { formatRecoveryProgressText, appendTelemetryEvent, mergeTelemetrySnapshot, telemetrySnapshot } from "../lib/telemetry";
 import { reasoningDeliveryCopy, scanReasoningDelivery } from "../lib/reasoning-delivery";
 import { formatApiError } from "../lib/http";
-import { revalidateSession } from "../auth/AuthProvider";
+import { revalidateSession, useAuth } from "../auth/AuthProvider";
 import { useI18n, type TranslationKey } from "../i18n";
 
 type View = "evidence" | "telemetry" | "files" | "profile";
@@ -33,6 +33,7 @@ const triageLabels: Record<FindingTriageStatus, TranslationKey> = {
 
 export function ScanDetailPage() {
   const { t } = useI18n();
+  const { can } = useAuth();
   const { id = "" } = useParams();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
@@ -119,7 +120,7 @@ export function ScanDetailPage() {
           <h1 className="mt-5 truncate font-heading text-3xl font-semibold tracking-[-.045em] sm:text-4xl">{scan.displayName}</h1>
           <button type="button" onClick={() => void navigator.clipboard.writeText(scan.repositoryPath ?? scan.scanDir)} className="mt-2 flex max-w-full items-center gap-2 truncate font-mono text-[10px] text-muted-foreground hover:text-primary"><HugeiconsIcon icon={Copy01Icon} size={11} />{scan.repositoryPath ?? scan.scanDir}</button>
           <div className="mt-5"><SeverityStrip counts={scan.severity} total={scan.severity.total} /></div>
-          <div className="mt-5 flex flex-wrap gap-2"><Button asChild variant="outline" size="sm"><Link to={`/compare?ids=${scan.id}`}><HugeiconsIcon icon={Analytics01Icon} size={12} />{t("scanDetail.compare")}</Link></Button>{retryHref && <Button asChild variant="outline" size="sm"><Link to={retryHref} className="focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background"><HugeiconsIcon icon={RefreshIcon} size={12} />{t("scanDetail.repeat")}</Link></Button>}{scan.status === "completed" && <Button variant="outline" size="sm" onClick={() => void setBaseline()} disabled={baselineBusy || regression?.isRepositoryBaseline}><HugeiconsIcon icon={SecurityCheckIcon} size={12} />{regression?.isRepositoryBaseline ? t("scanDetail.repoBaseline") : baselineBusy ? t("scanDetail.settingBaseline") : t("scanDetail.setBaseline")}</Button>}{scan.status === "running" && <Button variant="destructive" size="sm" onClick={() => void cancel()}><HugeiconsIcon icon={StopIcon} size={12} />{t("scanDetail.cancel")}</Button>}<DeleteScanButton scan={scan} onDeleted={() => navigate("/scans")} /></div>
+          <div className="mt-5 flex flex-wrap gap-2"><Button asChild variant="outline" size="sm"><Link to={`/compare?ids=${scan.id}`}><HugeiconsIcon icon={Analytics01Icon} size={12} />{t("scanDetail.compare")}</Link></Button>{retryHref && <Button asChild variant="outline" size="sm"><Link to={retryHref} className="focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background"><HugeiconsIcon icon={RefreshIcon} size={12} />{t("scanDetail.repeat")}</Link></Button>}{scan.status === "completed" && can("operator", scan.repositoryKey) && <Button variant="outline" size="sm" onClick={() => void setBaseline()} disabled={baselineBusy || regression?.isRepositoryBaseline}><HugeiconsIcon icon={SecurityCheckIcon} size={12} />{regression?.isRepositoryBaseline ? t("scanDetail.repoBaseline") : baselineBusy ? t("scanDetail.settingBaseline") : t("scanDetail.setBaseline")}</Button>}{scan.status === "running" && can("operator", scan.repositoryKey) && <Button variant="destructive" size="sm" onClick={() => void cancel()}><HugeiconsIcon icon={StopIcon} size={12} />{t("scanDetail.cancel")}</Button>}<DeleteScanButton scan={scan} onDeleted={() => navigate("/scans")} /></div>
         </div>
         <div className="grid grid-cols-2 gap-x-4 gap-y-5 p-5"><Readout label={t("scanDetail.highPlus")} value={highPlus} tone="risk" /><Readout label={t("scanDetail.total")} value={scan.severity.total} /><Readout label={t(costCopy.labelKey)} value={formatScanUsd(scan)} detail={costDetail} tone="signal" /><Readout label={t("scanDetail.duration")} value={<LiveDuration startedAt={scan.startedAt} completedAt={scan.completedAt} status={scan.status} durationMs={scan.durationMs} showDot={false} />} /><Readout label={t("scanDetail.input")} value={formatTokens(tokenUsage.inputTokens)} detail={tokenUsage.cachedInputTokens === null ? undefined : `${t("scanDetail.cache")} ${formatTokens(tokenUsage.cachedInputTokens)}`} /><Readout label={t("scanDetail.output")} value={formatTokens(tokenUsage.outputTokens)} detail={rateDetail ? <span title={rateDetail}>{rateDetail}</span> : undefined} wrap /><Button asChild className="col-span-2 h-auto justify-between border-chart-1 bg-chart-1 px-4 py-3 text-primary-foreground hover:bg-chart-1/90"><Link to={`/scans/${scan.id}/report`} target="_blank"><span className="flex items-center gap-3"><HugeiconsIcon icon={DocumentValidationIcon} size={18} /><span className="text-left"><strong className="block text-xs uppercase tracking-[.08em]">{t("scanDetail.report")}</strong><span className="mt-0.5 block font-mono text-[8px] font-normal uppercase opacity-75">{t("scanDetail.findingsCount", { count: scan.severity.total })} · {t("scanDetail.print")}</span></span></span><HugeiconsIcon icon={ArrowRight01Icon} size={15} /></Link></Button></div>
       </div>
@@ -197,6 +198,7 @@ type DataRecord = Record<string, unknown>;
 
 function FindingInspector({ scan, finding, signal, onSaveTriage }: { scan: ScanRun; finding: FindingDetail; signal: LifecycleFinding; onSaveTriage: (status: FindingTriageStatus, note: string) => Promise<void> }) {
   const { t } = useI18n();
+  const { can } = useAuth();
   const [view, setView] = useState<InspectorView>("brief");
   const tabs: Array<[InspectorView, string, string]> = [
     ["brief", "01", t("scanDetail.tabSummary")],
@@ -206,7 +208,7 @@ function FindingInspector({ scan, finding, signal, onSaveTriage }: { scan: ScanR
   ];
 
   return <div>
-    <TriageConsole signal={signal} onSave={onSaveTriage} />
+    <TriageConsole signal={signal} onSave={onSaveTriage} canEdit={can("analyst", scan.repositoryKey)} />
     <div className="sticky top-0 z-10 flex overflow-x-auto border-b bg-card/95 backdrop-blur-sm">
       {tabs.map(([id, code, label]) => <button key={id} type="button" onClick={() => setView(id)} className={cx("h-10 shrink-0 border-r px-3 font-mono text-[8px] uppercase tracking-wider", view === id ? "bg-accent text-primary" : "text-muted-foreground hover:text-foreground")}><span className="mr-2 opacity-55">{code}</span>{label}</button>)}
     </div>
@@ -217,13 +219,22 @@ function FindingInspector({ scan, finding, signal, onSaveTriage }: { scan: ScanR
   </div>;
 }
 
-function TriageConsole({ signal, onSave }: { signal: LifecycleFinding; onSave: (status: FindingTriageStatus, note: string) => Promise<void> }) {
+function TriageConsole({ signal, onSave, canEdit }: { signal: LifecycleFinding; onSave: (status: FindingTriageStatus, note: string) => Promise<void>; canEdit: boolean }) {
   const { t } = useI18n();
   const [status, setStatus] = useState<FindingTriageStatus>(signal.triage.status);
   const [note, setNote] = useState(signal.triage.note ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   async function save() { setBusy(true); setError(null); try { await onSave(status, note); } catch (err) { setError(formatApiError(err, t)); } finally { setBusy(false); } }
+  // A viewer can still read the current decision; only analyst+ gets the
+  // editable form, matching the triage permission the server enforces.
+  if (!canEdit) {
+    return <div className="border-b bg-primary/[.035] p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2"><div className="flex items-center gap-2"><LifecycleBadge state={signal.lifecycle} /><span className="font-mono text-[8px] uppercase text-muted-foreground">{t("scanDetail.currentChannelEvidence")}</span></div><span className="font-mono text-[7px] uppercase text-muted-foreground">{t("scanDetail.decisionRecord")}</span></div>
+      <div className="mt-3 text-xs">{t(triageLabels[signal.triage.status])}{signal.triage.note ? ` — ${signal.triage.note}` : ""}</div>
+      <div className="mt-2 font-mono text-[8px] text-muted-foreground">{signal.triage.updatedAt ? t("scanDetail.lastDecision", { date: formatDate(signal.triage.updatedAt) }) : t("scanDetail.noDecision")}</div>
+    </div>;
+  }
   return <div className="border-b bg-primary/[.035] p-3">
     <div className="flex flex-wrap items-center justify-between gap-2"><div className="flex items-center gap-2"><LifecycleBadge state={signal.lifecycle} /><span className="font-mono text-[8px] uppercase text-muted-foreground">{t("scanDetail.currentChannelEvidence")}</span></div><span className="font-mono text-[7px] uppercase text-muted-foreground">{t("scanDetail.decisionRecord")}</span></div>
     <div className="mt-3 grid gap-2 sm:grid-cols-[10rem_minmax(0,1fr)_auto]">

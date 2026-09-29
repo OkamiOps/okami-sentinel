@@ -1,6 +1,7 @@
 import type { Page } from "@playwright/test";
 import type {
   FindingDetail,
+  FindingTriage,
   LifecycleFinding,
   MetricsSummary,
   ProviderConnection,
@@ -77,6 +78,7 @@ const accountSessions: UserSessionSummary[] = [
 
 export const baseRun: ScanRun = {
   id: "scan-one", displayName: "Repository alpha", repositoryPath: "/fixture/alpha", scanDir: "/fixture/scans/one",
+  repositoryKey: "github:1",
   revision: "main", status: "completed", engine: "codex-security", model: "fixture-model", effort: "high",
   mode: "standard", provider: "fixture", authMode: "api-key", scannerVersion: null, recipeHash: null,
   startedAt: "2026-09-07T10:00:00Z", completedAt: "2026-09-07T10:01:00Z", durationMs: 60000,
@@ -199,6 +201,18 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
       if (match[2] === "files-graph") return json(filesGraph);
       if (match[2] === "report") return json({ scan: run, findings: state.reportFindings, regression, generatedAt: "2026-09-07T10:02:00Z" });
       if (match[2] === "events") return route.fulfill({ contentType: "text/event-stream", body: ": fixture\n\n" });
+      const findingDetailMatch = match[2].match(/^findings\/([^/]+)$/);
+      if (findingDetailMatch && req.method() === "GET") {
+        return json({ finding: { ...reportFinding, findingId: findingDetailMatch[1] } });
+      }
+      const triageMatch = match[2].match(/^findings\/([^/]+)\/triage$/);
+      if (triageMatch && req.method() === "POST") {
+        const body = req.postDataJSON() as { status: FindingTriage["status"]; note?: string | null };
+        const triage: FindingTriage = { status: body.status, note: body.note ?? null, updatedAt: "2026-09-07T10:05:00Z" };
+        const finding = state.findings.find((item) => item.findingId === triageMatch[1] && item.sourceScanId === run.id);
+        if (finding) finding.triage = triage;
+        return json({ triage });
+      }
     }
     if (path === "/security-session" || path === "/connections/security-session" || path === "/engine-updates/security-session") {
       return json({ csrfToken: "fixture-token", runtimeMode: "local", repositoryRoots: [] });

@@ -5,6 +5,7 @@ import { ArrowLeft01Icon, ArrowRight01Icon, PlusSignIcon, RefreshIcon, Search01I
 import { Bar, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { MetricsSummary, ScanRun } from "@csb/shared";
 import { api } from "../api";
+import { useAuth } from "../auth/AuthProvider";
 import { AlertBanner, EmptyState, LiveDuration, Loading, PageHeader, Panel, Readout, SeverityStrip, StatusBadge, cx } from "../components/ui";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -21,6 +22,7 @@ function scanResultUnavailable(scan: ScanRun): boolean {
 
 export function DashboardPage() {
   const { locale, t } = useI18n();
+  const { isAdmin } = useAuth();
   const [data, setData] = useState<MetricsSummary | null>(null);
   const [catalog, setCatalog] = useState<DashboardCatalog>({ total: 0, repositories: [] });
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -118,7 +120,7 @@ export function DashboardPage() {
   const ledgerRows = channels.slice(ledgerPage * pageSize, (ledgerPage + 1) * pageSize);
   const activeFilterCount = Number(period !== "all") + Number(status !== "all") + Number(engine !== "all") + Number(repository !== "all") + Number(Boolean(query.trim()));
   return <div>
-    <PageHeader code="01 / OVERVIEW" title={t("dashboard.title")} description={t("dashboard.description")} actions={<><Button variant="ghost" size="sm" onClick={() => void reindex()} disabled={busy}><HugeiconsIcon icon={RefreshIcon} size={13} className={busy ? "animate-spin" : ""} />{t("dashboard.reindex")}</Button><Button asChild size="sm"><Link to="/scans/new"><HugeiconsIcon icon={PlusSignIcon} size={13} />{t("dashboard.launch")}</Link></Button></>} />
+    <PageHeader code="01 / OVERVIEW" title={t("dashboard.title")} description={t("dashboard.description")} actions={<><Button variant="ghost" size="sm" onClick={() => void reindex()} disabled={busy}><HugeiconsIcon icon={RefreshIcon} size={13} className={busy ? "animate-spin" : ""} />{t("dashboard.reindex")}</Button>{isAdmin && <Button asChild size="sm"><Link to="/scans/new"><HugeiconsIcon icon={PlusSignIcon} size={13} />{t("dashboard.launch")}</Link></Button>}</>} />
     {error !== null && <AlertBanner tone="warning"><div className="flex flex-wrap items-center justify-between gap-3"><span>{formatApiError(error, t)}{lastUpdated ? ` · ${t("scans.stale", { date: formatDate(lastUpdated) })}` : ""}</span><Button type="button" variant="outline" size="sm" onClick={() => void load()}>{t("common.retry")}</Button></div></AlertBanner>}
 
     <section className="bench-panel bench-corners mb-4 overflow-hidden" aria-label={t("dashboard.scopeTitle")}>

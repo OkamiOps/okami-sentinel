@@ -5,6 +5,7 @@ import { ExternalLink, RotateCw, Send } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../api";
+import { useAuth } from "../../auth/AuthProvider";
 import { prCheckLabel, publicationTarget } from "../../lib/github-guardrails";
 import { isProtectedBranchBaselineRun } from "../../lib/guardrails";
 import { AlertBanner } from "../ui";
@@ -29,11 +30,13 @@ export function PublishGateControl({
   onGateChange: (gate: GateRun) => void;
 }) {
   const { t } = useI18n();
+  const { can } = useAuth();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const target = publicationTarget(artifact);
   const configured = gate.publishStatus !== "not_configured";
+  const canPublish = can("operator", gate.repositoryKey);
   const publishable = gate.status === "completed" && Boolean(artifact.repository.owner) && Boolean(target.headSha);
   const finished = gate.publishStatus === "published";
   const actionsOwned = gate.executor === "github-actions";
@@ -89,12 +92,12 @@ export function PublishGateControl({
             <Button asChild variant="configuration" className="min-h-11 w-full"><Link to={`/guardrails/setup?repository=${encodeURIComponent(gate.repositoryKey)}`}><ExternalLink aria-hidden size={14} />{t("guardrails.configureGithub")}</Link></Button>
           ) : finished ? (
             <Button variant="outline" className="min-h-11 w-full" disabled><Send aria-hidden size={14} />{t("guardrails.publication.published")}</Button>
-          ) : (
+          ) : canPublish ? (
             <Button className="min-h-11 w-full" disabled={busy || !publishable} onClick={() => setConfirmOpen(true)}>
               {gate.publishStatus === "failed" ? <RotateCw aria-hidden size={14} /> : <Send aria-hidden size={14} />}
               {busy || gate.publishStatus === "publishing" ? t("guardrails.publication.publishing") : gate.publishStatus === "failed" ? t("guardrails.publishRetry") : t("guardrails.publishCheck")}
             </Button>
-          )}
+          ) : null}
         </div>
       </div>
 

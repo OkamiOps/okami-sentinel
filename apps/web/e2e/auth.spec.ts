@@ -336,3 +336,32 @@ test("local mode offers no sign out and says accounts are server-only", async ({
   await expect(page.getByRole("menuitem", { name: "Sign out" })).toHaveCount(0);
   await expect(page.getByRole("menuitem", { name: "My account" })).toBeVisible();
 });
+
+test("a viewer sees scans but no destructive or paid actions", async ({ page }) => {
+  await mockApi(page, "en", { session: { isAdmin: false, grants: [{ repositoryKey: "github:1", role: "viewer" }] } });
+  await page.goto("/scans/scan-one");
+  await expect(page.getByRole("heading").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: /delete|remove scan/i })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /confirm|false positive|accept/i })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: /new scan/i })).toHaveCount(0);
+});
+
+test("an analyst can triage findings but cannot delete the scan", async ({ page }) => {
+  const state = await mockApi(page, "en", { session: { isAdmin: false, grants: [{ repositoryKey: "github:1", role: "analyst" }] } });
+  state.findings.push({
+    findingId: "fixture-finding", occurrenceId: null, identity: "fixture-identity", sourceScanId: "scan-one",
+    title: "Sample finding", severity: "high", confidence: null, ruleId: null, summary: "Sample evidence",
+    primaryPath: "src/example.ts", fingerprints: [], category: null, cwe: [], lifecycle: "new",
+    triage: { status: "unreviewed", note: null, updatedAt: null },
+  });
+  await page.goto("/scans/scan-one?f=fixture-finding");
+  await expect(page.getByRole("combobox").filter({ hasText: "Not reviewed" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /delete|remove scan/i })).toHaveCount(0);
+});
+
+test("a maintainer sees the delete control on their own repository", async ({ page }) => {
+  await mockApi(page, "en", { session: { isAdmin: false, grants: [{ repositoryKey: "github:1", role: "maintainer" }] } });
+  await page.goto("/scans/scan-one");
+  await expect(page.getByRole("button", { name: /delete|remove scan/i })).toBeVisible();
+});

@@ -4,6 +4,7 @@ import { ArrowLeft, Beaker, Clipboard, Download, FileCheck2, GitBranch, HardDriv
 import { Link, useParams } from "react-router-dom";
 
 import { api, type PolicySimulationResponse } from "../api";
+import { useAuth } from "../auth/AuthProvider";
 import { GateOutcomeBadge, PolicyDiffPreview, PolicyRuleEditor } from "../components/guardrails";
 import { AlertBanner, EmptyState, Loading, PageHeader } from "../components/ui";
 import {
@@ -33,6 +34,7 @@ type PolicyPageState =
 
 export function GuardrailPolicyPage() {
   const { t } = useI18n();
+  const { can } = useAuth();
   const { repositoryKey = "" } = useParams();
   const [state, setState] = useState<PolicyPageState>({ status: "loading" });
   const [editor, setEditor] = useState<PolicyEditorState | null>(null);
@@ -89,7 +91,11 @@ export function GuardrailPolicyPage() {
   const validation = validatePolicyEditor(editor);
   const changed = JSON.stringify(state.policy) !== JSON.stringify(proposedPolicy);
   const eligibleGates = state.gates.filter((gate) => Boolean(gate.artifactPath));
-  const readOnly = state.readOnly;
+  // A maintainer can write the policy directly; anyone with less (down to a
+  // viewer, who can still open this page to read it) only gets the
+  // copy/download proposal path, exactly like a remotely-owned read-only
+  // policy already does.
+  const readOnly = state.readOnly || !can("maintainer", repositoryKey);
 
   function update<K extends keyof PolicyEditorState>(key: K, value: PolicyEditorState[K]) {
     setEditor((current) => current ? { ...current, [key]: value } : current);
@@ -162,7 +168,7 @@ export function GuardrailPolicyPage() {
         actions={(
           <>
             <Button asChild variant="ghost" className="min-h-11"><Link to={state.repository.lastGateId ? `/guardrails/${encodeURIComponent(state.repository.lastGateId)}` : "/guardrails"}><ArrowLeft aria-hidden size={14} />{t("guardrails.backPipeline")}</Link></Button>
-            {state.readOnly ? (
+            {readOnly ? (
               <>
                 <Button variant="outline" className="min-h-11" disabled={Boolean(validation)} onClick={() => void copyProposal()}><Clipboard aria-hidden size={14} />{t("guardrails.copyProposal")}</Button>
                 <Button className="min-h-11" disabled={Boolean(validation)} onClick={downloadProposal}><Download aria-hidden size={14} />{t("guardrails.downloadProposal")}</Button>
@@ -247,7 +253,7 @@ export function GuardrailPolicyPage() {
                 {eligibleGates.map((gate) => <SelectItem key={gate.id} value={gate.id} className="min-h-11 rounded-none">{gate.baseRef} → {gate.headRef} · {gate.outcome ?? gate.status}</SelectItem>)}
               </SelectContent>
             </Select>
-            <Button variant="outline" className="min-h-11" disabled={busy || Boolean(validation) || !gateId} onClick={() => void simulate()}><Beaker aria-hidden size={14} />{busy ? t("guardrails.simulating") : t("guardrails.simulatePolicy")}</Button>
+            {can("analyst", repositoryKey) && <Button variant="outline" className="min-h-11" disabled={busy || Boolean(validation) || !gateId} onClick={() => void simulate()}><Beaker aria-hidden size={14} />{busy ? t("guardrails.simulating") : t("guardrails.simulatePolicy")}</Button>}
           </div>
         </div>
         {simulation ? <SimulationReadout simulation={simulation} /> : <EmptyState title={eligibleGates.length ? t("guardrails.simulationEmpty") : t("guardrails.noArtifact")} description={eligibleGates.length ? t("guardrails.simulationEmptyDescription") : t("guardrails.noArtifactDescription")} />}
@@ -255,7 +261,7 @@ export function GuardrailPolicyPage() {
 
       <div className="mt-4"><PolicyDiffPreview before={state.policy} after={proposedPolicy} /></div>
 
-      {!state.readOnly && <Sheet open={confirmOpen} onOpenChange={setConfirmOpen}>
+      {!readOnly && <Sheet open={confirmOpen} onOpenChange={setConfirmOpen}>
         <SheetContent side="bottom" className="mx-auto max-h-[85dvh] overflow-y-auto border-border bg-background sm:left-1/2 sm:max-w-2xl sm:-translate-x-1/2">
           <SheetHeader>
             <SheetTitle className="flex items-center gap-2 font-heading"><FileCheck2 aria-hidden size={17} className="text-primary" />{t("guardrails.confirmLocalWrite")}</SheetTitle>
