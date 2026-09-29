@@ -80,9 +80,8 @@ export function createGitHubMonitorApi(dependencies: GitHubMonitorApiDependencie
         const resulting = {
           executor: patch.executor ?? current.executor,
           scanner: patch.scanner === undefined ? current.scanner : patch.scanner,
-          enabled: patch.enabled ?? current.enabled,
         };
-        if (spendsOnProviderConnection(resulting) && !stopsProviderSpending(current, resulting)) {
+        if (spendsOnProviderConnection(resulting) && !onlySwitchesOff(patch)) {
           return c.json({ error: "forbidden" }, 403);
         }
       }
@@ -144,32 +143,15 @@ function spendsOnProviderConnection(rule: Pick<GitHubMonitorRule, "executor" | "
 }
 
 /**
- * Stopping the spending is never blocked. A member may switch off a
- * Sentinel-managed rule an administrator enabled — and leave an already
- * switched-off one alone — as long as the patch adds nothing that would be
- * spent on once someone enables it again: no new Sentinel-managed executor,
- * and no scanner the rule did not already carry.
+ * Stopping the spending is never blocked: a member may always switch off a
+ * Sentinel-managed rule an administrator enabled. That exemption covers the
+ * switch and nothing else, because every other field of such a rule — its cost
+ * ceilings, its followed branches, its scanner — is what the next administrator
+ * to enable it would then spend against. So the body has to be the switch
+ * itself: one key, `enabled`, set to false.
  */
-function stopsProviderSpending(
-  current: Pick<GitHubMonitorRule, "executor" | "scanner" | "enabled">,
-  next: Pick<GitHubMonitorRule, "executor" | "scanner" | "enabled">,
-): boolean {
-  if (next.enabled) return false;
-  if (next.executor === "sentinel-managed" && current.executor !== "sentinel-managed") return false;
-  return next.scanner === null || sameScannerSelection(current.scanner, next.scanner);
-}
-
-function sameScannerSelection(
-  current: GitHubMonitorRule["scanner"],
-  next: NonNullable<GitHubMonitorRule["scanner"]>,
-): boolean {
-  return current !== null &&
-    current.engine === next.engine &&
-    current.mode === next.mode &&
-    (current.effort ?? null) === (next.effort ?? null) &&
-    current.connection.connectionId === next.connection.connectionId &&
-    current.connection.modelSelectionMode === next.connection.modelSelectionMode &&
-    current.connection.modelId === next.connection.modelId;
+function onlySwitchesOff(patch: GitHubMonitorRulePatchInput): boolean {
+  return Object.keys(patch).length === 1 && patch.enabled === false;
 }
 
 /**
