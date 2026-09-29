@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { useLocation, useNavigate } from "react-router-dom";
 import type { AuthSessionResponse, RepositoryRole } from "@csb/shared";
 import { authApi } from "../lib/auth-api";
+import { ApiError } from "../lib/http";
 
 const RANK: Record<RepositoryRole, number> = { viewer: 1, analyst: 2, operator: 3, maintainer: 4 };
 const PUBLIC_PATHS = [/^\/login$/, /^\/invite\/[^/]+$/];
@@ -36,9 +37,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       setSession(await authApi.session());
       setStatus("signed-in");
-    } catch {
-      setSession(null);
-      setStatus("signed-out");
+    } catch (error) {
+      // Only a genuine 401 means the session is gone. A network hiccup or a
+      // 5xx from an overloaded/offline API is not proof of a signed-out
+      // user, and must not force a redirect away from whatever the page's
+      // own error handling is already showing.
+      if (error instanceof ApiError && error.status === 401) {
+        setSession(null);
+        setStatus("signed-out");
+      }
     }
   }, []);
 
