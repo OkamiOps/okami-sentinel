@@ -95,7 +95,10 @@ export function InviteUserDialog({ open, onOpenChange, repositories, onCreated }
           <div className="flex justify-end"><Button type="button" onClick={close}>{t("invite.done")}</Button></div>
         </div>
         : <form className="grid gap-4 overflow-y-auto p-4 sm:p-5" onSubmit={(event) => void submit(event)} noValidate>
-          <div className="grid gap-4 sm:grid-cols-2">
+          {/* items-start: the username cell carries a help line the name cell
+              does not, and a stretched row would push the shorter field down
+              instead of leaving both inputs on one top edge. */}
+          <div className="grid items-start gap-4 sm:grid-cols-2">
             <div className="grid gap-1.5">
               <label htmlFor={`${fieldId}-name`} className="bench-label">{t("invite.name")}</label>
               <Input id={`${fieldId}-name`} value={displayName} autoComplete="off" disabled={pending} onChange={(event) => setDisplayName(event.target.value)} />
