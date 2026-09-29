@@ -16,6 +16,7 @@ import { createShutdownHandler, isDraining } from "./shutdown.js";
 import { cancelScan } from "./runner.js";
 import { getProviderRuntime } from "./provider-runtime.js";
 import { ensureConnectionSchema } from "./connections-store.js";
+import { backfillRunRepositoryKeys } from "./auth/repository-key.js";
 import {
   backfillFindingCategoryMetrics,
   backfillTerminalMetricArtifacts,
@@ -37,6 +38,7 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(RUNS_DIR, { recursive: true });
 getDb();
 ensureConnectionSchema(getDb());
+backfillRunRepositoryKeys();
 
 const materializations = reconcileManagedMaterializations();
 if (materializations.released.length > 0 || materializations.retryable.length > 0) {

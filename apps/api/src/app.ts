@@ -50,6 +50,7 @@ import { compareScans } from "./compare.js";
 import { getCodexInfo } from "./codex-info.js";
 import { CODEX_SECURITY_STATE_DIR } from "./config.js";
 import { deleteRun, getRun, hideRun, listRuns } from "./db.js";
+import { backfillRunRepositoryKeys } from "./auth/repository-key.js";
 import { listDirectory } from "./fs.js";
 import {
   cancelGate,
@@ -400,6 +401,7 @@ export function createGuardrailsApp(
         return c.json({ error: "repository_already_registered", repositoryKey: repository.repositoryKey }, 409);
       }
       deps.upsertRepository(repository);
+      backfillRunRepositoryKeys();
       return c.json({ repository }, 201);
     } catch (error) {
       return c.json({ error: errorMessage(error) }, 400);

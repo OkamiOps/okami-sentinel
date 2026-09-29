@@ -18,6 +18,7 @@ import {
   type SeverityCounts,
 } from "@csb/shared";
 import { ensureAuthSchema } from "./auth/schema.js";
+import { resolveRunRepositoryKey } from "./auth/repository-key.js";
 import { BENCHMARK_DB_PATH, DATA_DIR } from "./config.js";
 import { migrateGuardrailsSchema } from "./guardrails-migrations.js";
 import { withOpenRouterPricingEstimate } from "./openrouter-pricing.js";
@@ -480,10 +481,11 @@ export function upsertRun(run: ScanRun): void {
   const connection = run.connection ?? null;
   const launchSelection = sanitizeLaunchSelection(run.launchSelection);
   const database = getDb();
+  const repository_key = run.repositoryKey ?? resolveRunRepositoryKey(run.repositoryPath, database);
   database
     .prepare(
       `INSERT INTO runs (
-        id, display_name, repository_path, revision, scan_dir, status,
+        id, display_name, repository_path, repository_key, revision, scan_dir, status,
         model, effort, mode, engine, provider, auth_mode, scanner_version, recipe_hash,
         execution_profile, profile_version, methodology_ref, capability_check_id,
         connection_id, route_kind, protocol, auth_kind, launch_selection_json, cost_json,
@@ -493,7 +495,7 @@ export function upsertRun(run: ScanRun): void {
         severity_critical, severity_high, severity_medium, severity_low, severity_info, severity_unknown, severity_total,
         source, pid, created_at, updated_at
       ) VALUES (
-        @id, @display_name, @repository_path, @revision, @scan_dir, @status,
+        @id, @display_name, @repository_path, @repository_key, @revision, @scan_dir, @status,
         @model, @effort, @mode, @engine, @provider, @auth_mode, @scanner_version, @recipe_hash,
         @execution_profile, @profile_version, @methodology_ref, @capability_check_id,
         @connection_id, @route_kind, @protocol, @auth_kind, @launch_selection_json, @cost_json,
@@ -506,6 +508,7 @@ export function upsertRun(run: ScanRun): void {
       ON CONFLICT(id) DO UPDATE SET
         display_name=excluded.display_name,
         repository_path=excluded.repository_path,
+        repository_key=COALESCE(runs.repository_key, excluded.repository_key),
         revision=excluded.revision,
         scan_dir=excluded.scan_dir,
         status=excluded.status,
@@ -555,6 +558,7 @@ export function upsertRun(run: ScanRun): void {
       id: run.id,
       display_name: run.displayName,
       repository_path: run.repositoryPath,
+      repository_key,
       revision: run.revision,
       scan_dir: run.scanDir,
       status: run.status,
