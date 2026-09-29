@@ -250,6 +250,59 @@ test("shows the last-admin refusal", async ({ page }) => {
   await expect(page.getByText("You cannot remove the last active administrator.")).toBeVisible();
 });
 
+test("keeps the generated reset link visible across a tab switch", async ({ page }) => {
+  await mockApi(page, "en", { session: { isAdmin: true, grants: [] } });
+  await page.goto("/settings/users");
+  await page.getByRole("row", { name: /@ana/ }).click();
+  await page.getByRole("tab", { name: "Actions" }).click();
+  await page.getByRole("button", { name: "Generate reset link" }).click();
+  await page.getByRole("button", { name: "Confirm" }).click();
+  const link = page.getByRole("textbox", { name: "Reset link" });
+  await expect(link).toHaveValue(/\/invite\/[A-Za-z0-9_-]{43}$/);
+  const value = await link.inputValue();
+  // The tab unmounting the panel is exactly the bug: the server stores only
+  // the link's hash, so once it scrolls off screen it cannot be regenerated.
+  await page.getByRole("tab", { name: "Sessions" }).click();
+  await expect(link).toHaveCount(0);
+  await page.getByRole("tab", { name: "Actions" }).click();
+  await expect(page.getByRole("textbox", { name: "Reset link" })).toHaveValue(value);
+});
+
+test("resets the copy button when a second reset link is generated", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await mockApi(page, "en", { session: { isAdmin: true, grants: [] } });
+  await page.goto("/settings/users");
+  await page.getByRole("row", { name: /@ana/ }).click();
+  await page.getByRole("tab", { name: "Actions" }).click();
+  await page.getByRole("button", { name: "Generate reset link" }).click();
+  await page.getByRole("button", { name: "Confirm" }).click();
+  const link = page.getByRole("textbox", { name: "Reset link" });
+  await expect(link).toHaveValue(/\/invite\/c{43}$/);
+  await page.getByRole("button", { name: "Copy link" }).click();
+  await expect(page.getByRole("button", { name: "Copied" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Generate reset link" }).click();
+  await page.getByRole("button", { name: "Confirm" }).click();
+  // A second link invalidates the first; the button must not keep claiming
+  // the clipboard holds a copy of a token that no longer works.
+  await expect(link).toHaveValue(/\/invite\/d{43}$/);
+  await expect(page.getByRole("button", { name: "Copy link" })).toBeVisible();
+});
+
+test("re-reads the user after generating a reset link", async ({ page }) => {
+  const state = await mockApi(page, "en", { session: { isAdmin: true, grants: [] } });
+  await page.goto("/settings/users");
+  await page.getByRole("row", { name: /@ana/ }).click();
+  await page.getByRole("tab", { name: "Actions" }).click();
+  const before = state.requests.filter((request) => request === "GET /users").length;
+  await page.getByRole("button", { name: "Generate reset link" }).click();
+  await page.getByRole("button", { name: "Confirm" }).click();
+  await expect(page.getByRole("textbox", { name: "Reset link" })).toBeVisible();
+  // The reset endpoint does not return the account, and it just changed
+  // pendingInvite server-side, so the drawer must re-read the row.
+  await expect.poll(() => state.requests.filter((request) => request === "GET /users").length).toBeGreaterThan(before);
+});
+
 test("grants repository access from the access screen", async ({ page }) => {
   await mockApi(page, "en", { session: { isAdmin: true, grants: [] } });
   await page.goto("/settings/access");

@@ -117,7 +117,7 @@ const filesGraph = {
 
 export async function mockApi(page: Page, locale = "en", options: MockApiOptions = {}) {
   const state = {
-    offline: false, connectionsFail: false, modelsFail: false, launchCount: 0, cancelCount: 0,
+    offline: false, connectionsFail: false, modelsFail: false, launchCount: 0, cancelCount: 0, resetCount: 0,
     runs: [structuredClone(baseRun), { ...structuredClone(baseRun), id: "scan-two", displayName: "Repository beta" }],
     requests: [] as string[],
     requestUrls: [] as string[],
@@ -293,7 +293,12 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
       if (sub === "sessions" && req.method() === "GET") return json({ sessions: [currentSessionSummary(false)] });
       if (sub === "sessions" && req.method() === "DELETE") return route.fulfill({ status: 204 });
       if (sub === "reset" && req.method() === "POST") {
-        return json({ inviteUrl: `http://127.0.0.1:4175/invite/${"c".repeat(43)}`, expiresAt: "2026-10-06T10:00:00.000Z" });
+        // A second reset must invalidate the first token, so this must not
+        // repeat it: tests rely on the link (and its copy-button state)
+        // actually changing between two resets of the same user.
+        state.resetCount += 1;
+        const char = state.resetCount === 1 ? "c" : "d";
+        return json({ inviteUrl: `http://127.0.0.1:4175/invite/${char.repeat(43)}`, expiresAt: "2026-10-06T10:00:00.000Z" });
       }
     }
     if (path === "/repository-access" && req.method() === "GET") return json({ repositories: state.repositoryAccess });

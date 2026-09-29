@@ -79,7 +79,9 @@ function TabsContent({
   return (
     <TabsPrimitive.Content
       data-slot="tabs-content"
-      className={cn("flex-1 text-sm outline-none", className)}
+      // `forceMount` keeps a panel's React tree (and its state) alive while
+      // another tab is shown; this only hides it instead of unmounting it.
+      className={cn("flex-1 text-sm outline-none data-[state=inactive]:hidden", className)}
       {...props}
     />
   )

@@ -64,7 +64,12 @@ function DrawerBody({ user, repositories, onChanged }: {
           : <AccessTab user={user} repositories={repositories} onChanged={onChanged} />}
       </TabsContent>
       <TabsContent value="sessions" className="min-h-0 overflow-y-auto p-4"><SessionsTab user={user} /></TabsContent>
-      <TabsContent value="actions" className="min-h-0 overflow-y-auto p-4"><ActionsTab user={user} onChanged={onChanged} /></TabsContent>
+      {/* forceMount: the server stores only the reset link's hash, so once a
+          link is generated it is unrecoverable. Leaving the tab must not
+          unmount this panel and discard it. */}
+      <TabsContent value="actions" className="min-h-0 overflow-y-auto p-4" forceMount>
+        <ActionsTab user={user} onChanged={onChanged} />
+      </TabsContent>
     </Tabs>
   </>;
 }
@@ -240,6 +245,15 @@ function ActionsTab({ user, onChanged }: { user: UserSummary; onChanged: (user: 
     try {
       if (kind === "reset") {
         setReset(await usersApi.reset(user.id));
+        // Reset does not report the account back, and it just changed
+        // pendingInvite server-side; re-read the row instead of leaving the
+        // table and this header on the snapshot the drawer opened with.
+        try {
+          const fresh = (await usersApi.list()).find((candidate) => candidate.id === user.id);
+          if (fresh) onChanged(fresh);
+        } catch {
+          // Best-effort: the link just generated stays visible either way.
+        }
       } else {
         onChanged(await usersApi.update(user.id, kind === "admin"
           ? { isAdmin: !user.isAdmin }
