@@ -12,6 +12,7 @@ import { formatDate, formatScanUsd } from "./format";
 import { LanguageSwitcher } from "./components/LanguageSwitcher";
 import { ThemeSwitcher } from "./components/ThemeSwitcher";
 import { useI18n, type TranslationKey } from "./i18n";
+import { useAuth } from "./auth/AuthProvider";
 
 const ActivityPage = lazy(() => import("./pages/ActivityPage").then(({ ActivityPage: page }) => ({ default: page })));
 const AttackPathPage = lazy(() => import("./pages/AttackPathPage").then(({ AttackPathPage: page }) => ({ default: page })));
@@ -28,6 +29,10 @@ const ScansPage = lazy(() => import("./pages/ScansPage").then(({ ScansPage: page
 const SettingsPage = lazy(() => import("./pages/SettingsPage").then(({ SettingsPage: page }) => ({ default: page })));
 const ConnectionsPage = lazy(() => import("./pages/ConnectionsPage").then(({ ConnectionsPage: page }) => ({ default: page })));
 const GitHubMonitorPage = lazy(() => import("./pages/GitHubMonitorPage").then(({ GitHubMonitorPage: page }) => ({ default: page })));
+const LoginPage = lazy(() => import("./pages/LoginPage").then(({ LoginPage: page }) => ({ default: page })));
+const InvitePage = lazy(() => import("./pages/InvitePage").then(({ InvitePage: page }) => ({ default: page })));
+
+const AUTH_ROUTE = /^\/(?:login$|invite\/[^/]+$)/;
 
 const nav: ReadonlyArray<readonly [string, TranslationKey]> = [["/", "nav.overview"], ["/scans", "nav.runs"], ["/guardrails", "nav.guardrails"], ["/github", "nav.github"], ["/scans/new", "nav.operate"], ["/compare", "nav.compare"], ["/activity", "nav.activity"], ["/settings", "nav.system"]];
 
@@ -44,6 +49,7 @@ export function App() {
   const location = useLocation();
   const navigate = useNavigate();
   const { t } = useI18n();
+  const { status, refresh } = useAuth();
   const [active, setActive] = useState<ScanRun[]>([]);
   const [shellState, setShellState] = useState<"checking" | "ready" | "offline">("checking");
   const [lastActiveUpdate, setLastActiveUpdate] = useState<string | null>(null);
@@ -65,11 +71,14 @@ export function App() {
       setShellState("offline");
     }
   }, []);
+  // Polling from the sign-in page would only produce 401s, and a late one
+  // could race a fresh sign-in back into a signed-out redirect.
   useEffect(() => {
+    if (status === "signed-out" || AUTH_ROUTE.test(location.pathname)) return;
     void loadActive();
     const id = window.setInterval(() => void loadActive(), 4000);
     return () => window.clearInterval(id);
-  }, [loadActive]);
+  }, [loadActive, status, location.pathname]);
   useEffect(() => { const onKeyDown = (event: KeyboardEvent) => { if (!(event.metaKey || event.ctrlKey)) return; if (event.key.toLowerCase() === "k") { event.preventDefault(); setLauncherOpen((open) => !open); } if (event.key === "Enter") { event.preventDefault(); navigate("/scans/new"); } }; window.addEventListener("keydown", onKeyDown); return () => window.removeEventListener("keydown", onKeyDown); }, [navigate]);
   async function reindex() {
     setSyncing(true);
@@ -96,6 +105,17 @@ export function App() {
     : lastActiveUpdate
       ? t("shell.lastUpdated", { date: formatDate(lastActiveUpdate) })
       : t("shell.noActiveScan");
+
+  // Sign-in and invite acceptance are the only routes reachable without a
+  // session, so they render outside the shell and before any status gate.
+  if (AUTH_ROUTE.test(location.pathname)) {
+    return <Suspense fallback={<Loading />}><Routes><Route path="/login" element={<LoginPage />} /><Route path="/invite/:token" element={<InvitePage />} /></Routes></Suspense>;
+  }
+
+  if (status === "loading") return <Loading />;
+  // The provider is already redirecting to /login; rendering the shell here
+  // would only flash protected chrome at a signed-out visitor.
+  if (status === "signed-out") return null;
 
   if (/^\/scans\/[^/]+\/report$/.test(location.pathname) || location.pathname === "/compare/report") {
     return <Suspense fallback={<Loading />}><Routes><Route path="/scans/:id/report" element={<ScanReportPage />} /><Route path="/compare/report" element={<CompareReportPage />} /></Routes></Suspense>;
@@ -127,6 +147,7 @@ export function App() {
     </header>
 
     <main className="mx-auto w-full max-w-[112rem] px-3 py-5 sm:px-5 lg:px-7">
+      {status === "unreachable" && <SessionUnreachable onRetry={refresh} />}
       {reindexFailed && <AlertBanner>
         {t("settings.reindexError")}
         <Button type="button" variant="outline" size="sm" disabled={syncing} onClick={() => void reindex()}>{t("common.retry")}</Button>
@@ -153,6 +174,26 @@ export function App() {
 
     <CommandDock current={current} shellState={shellState} shellStatus={shellStatus} shellStatusDetail={shellStatusDetail} open={launcherOpen} onOpenChange={setLauncherOpen} syncing={syncing} onReindex={() => void reindex()} onNavigate={navigate} />
   </div>;
+}
+
+/**
+ * The session endpoint is unreachable (a network error or 5xx, never a 401).
+ * The shell still renders — each page owns its own offline handling — but the
+ * unverified session is stated plainly and can be re-checked from here instead
+ * of leaving the app stuck on a spinner.
+ */
+function SessionUnreachable({ onRetry }: { onRetry: () => Promise<void> }) {
+  const { t } = useI18n();
+  const [retrying, setRetrying] = useState(false);
+  return <AlertBanner tone="warning">
+    <span className="mr-3">{t("session.unverified")}</span>
+    <Button type="button" variant="outline" size="sm" disabled={retrying} onClick={() => {
+      setRetrying(true);
+      void onRetry().finally(() => setRetrying(false));
+    }}>
+      <HugeiconsIcon icon={RefreshIcon} size={12} />{t("session.recheck")}
+    </Button>
+  </AlertBanner>;
 }
 
 function CommandDock({ current, shellState, shellStatus, shellStatusDetail, open, onOpenChange, syncing, onReindex, onNavigate }: { current?: ScanRun; shellState: "checking" | "ready" | "offline"; shellStatus: string; shellStatusDetail: string; open: boolean; onOpenChange: (open: boolean) => void; syncing: boolean; onReindex: () => void; onNavigate: (to: string) => void }) {
