@@ -6,7 +6,8 @@ import { Input } from "@/components/ui/input";
 import { AuthCard, AuthFrame } from "../components/auth/AuthFrame";
 import { Loading, cx } from "../components/ui";
 import { useAuth } from "../auth/AuthProvider";
-import { AuthRequestError, authApi, type InvitePreview } from "../lib/auth-api";
+import { ApiError } from "../lib/http";
+import { AuthRequestError, authApi, authErrorCode, type InvitePreview } from "../lib/auth-api";
 import { authMessages, type AuthMessageKey } from "../i18n/auth";
 import { useScopedI18n } from "../i18n/scoped";
 import { PASSWORD_MIN_LENGTH, passwordIssue, type PasswordIssue } from "../lib/password-policy";
@@ -43,6 +44,19 @@ function acceptFailureKey(failure: unknown): AuthMessageKey {
   return "invite.retry";
 }
 
+/**
+ * Reading the invite can fail without saying anything about the token. Only the
+ * server's own verdict on the link burns it: `invite_invalid` (404), and the 401
+ * the request security answers when the token is not even the right length to be
+ * an invite. A 503, a 500 or a dropped network leaves the link intact, so the
+ * page offers a retry instead of sending the colleague to their administrator.
+ */
+function previewOutcome(failure: unknown): "invalid" | "unreachable" {
+  if (authErrorCode(failure) === "invite_invalid") return "invalid";
+  const status = failure instanceof ApiError && failure.kind === "http" ? failure.status : null;
+  return status === 404 || status === 401 ? "invalid" : "unreachable";
+}
+
 export function InvitePage() {
   const { t } = useScopedI18n(authMessages);
   const { token = "" } = useParams<{ token: string }>();
@@ -50,7 +64,8 @@ export function InvitePage() {
   const { refresh } = useAuth();
 
   const [preview, setPreview] = useState<InvitePreview | null>(null);
-  const [state, setState] = useState<"loading" | "ready" | "invalid">("loading");
+  const [state, setState] = useState<"loading" | "ready" | "invalid" | "unreachable">("loading");
+  const [attempt, setAttempt] = useState(0);
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [revealed, setRevealed] = useState(false);
@@ -59,12 +74,13 @@ export function InvitePage() {
 
   useEffect(() => {
     let active = true;
+    setState("loading");
     authApi.invite(token).then(
       (result) => { if (active) { setPreview(result); setState("ready"); } },
-      () => { if (active) setState("invalid"); },
+      (failure: unknown) => { if (active) setState(previewOutcome(failure)); },
     );
     return () => { active = false; };
-  }, [token]);
+  }, [token, attempt]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -85,6 +101,22 @@ export function InvitePage() {
   }
 
   if (state === "loading") return <AuthFrame><div className="bench-panel"><Loading /></div></AuthFrame>;
+
+  if (state === "unreachable") {
+    return (
+      <AuthFrame>
+        <AuthCard code={t("invite.code")} title={t("invite.title")}>
+          <div className="grid gap-4 px-5 py-5">
+            <p role="alert" className="border border-border bg-muted/40 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
+              {t("invite.unreachable")}
+            </p>
+            <Button size="lg" className="w-full" onClick={() => setAttempt((value) => value + 1)}>{t("invite.tryAgain")}</Button>
+            <Button asChild variant="outline" size="lg" className="w-full"><Link to="/login">{t("invite.backToLogin")}</Link></Button>
+          </div>
+        </AuthCard>
+      </AuthFrame>
+    );
+  }
 
   if (state === "invalid" || preview === null) {
     return (

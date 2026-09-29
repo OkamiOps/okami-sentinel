@@ -18,6 +18,7 @@ export interface MockApiOptions {
   signedOut?: boolean;
   session?: { isAdmin: boolean; grants: RepositoryGrant[] };
   loginResponse?: { status: number; body: unknown };
+  invitePreviewResponse?: { status: number; body: unknown };
   acceptInviteResponse?: { status: number; body: unknown };
   patchUserResponse?: { status: number; body: unknown };
   createUserResponse?: { status: number; body: unknown };
@@ -140,6 +141,7 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
     repositoryAccess: structuredClone(repositoryAccess) as RepositoryAccessEntry[],
     accountSessions: structuredClone(accountSessions),
     accountSessionsFail: options.accountSessionsFail === true,
+    invitePreviewFails: options.invitePreviewResponse !== undefined,
   };
   await page.addInitScript(({ locale }) => {
     localStorage.setItem("okami-sentinel.locale", locale);
@@ -244,6 +246,11 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
     const inviteMatch = path.match(/^\/auth\/invites\/([^/]+)$/);
     if (inviteMatch) {
       if (req.method() === "GET") {
+        // A preview that fails is not the same as a rejected token: flipping
+        // this off mid-test reproduces a retry that then succeeds.
+        if (state.invitePreviewFails && options.invitePreviewResponse) {
+          return json(options.invitePreviewResponse.body, options.invitePreviewResponse.status);
+        }
         return json({ username: "ana", displayName: "Ana", purpose: "invite", invitedBy: "Root", expiresAt: "2026-10-02T10:00:00.000Z" });
       }
       if (req.method() === "POST") {
