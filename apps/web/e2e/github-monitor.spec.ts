@@ -134,10 +134,21 @@ test("an administrator keeps the Sentinel-managed executor", async ({ page }) =>
 
 test("a maintainer can switch off a Sentinel-managed rule but never back on", async ({ page }) => {
   await openMonitorAs(page, "maintainer", [sentinelRule]);
+  const patches: unknown[] = [];
+  // Registered after the catch-all above, so it wins for this one path.
+  await page.route("**/api/github-monitor/rules/*", (route) => {
+    patches.push(route.request().postDataJSON());
+    return route.fulfill({ json: { rule: { ...sentinelRule, enabled: false } } });
+  });
+
   // Stopping the spending is the one edit a member owns on such a rule.
-  await expect(page.getByRole("button", { name: "DISABLE AUTOMATION", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "SAVE CHANGES", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "ENABLE AUTOMATION", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "DISABLE AUTOMATION", exact: true }).click();
+
+  // The server only exempts the switch itself, so the body must carry nothing
+  // else: no ceilings, no branches, no scanner.
+  await expect.poll(() => patches).toEqual([{ enabled: false }]);
 });
 
 test("a maintainer cannot switch a Sentinel-managed rule back on once it is off", async ({ page }) => {

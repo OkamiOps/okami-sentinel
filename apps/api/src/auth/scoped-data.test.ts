@@ -138,6 +138,16 @@ function seedRemoteRepository(key: string): void {
     .run(key, key, key);
 }
 
+/**
+ * A Sentinel-managed rule carries the scanner selection a real one has, so a
+ * refusal to enable it is authorization talking and not the service rejecting a
+ * rule that could never be enabled in the first place.
+ */
+const seededScanner = {
+  engine: "codex-security", mode: "standard",
+  connection: { connectionId: "seeded-connection", modelSelectionMode: "runtime-default", modelId: null },
+};
+
 function seedMonitorRule(id: string, repositoryKey: string, executor = "sentinel-managed"): void {
   seeded.monitorRules.add(id);
   ensureGitHubMonitorSchema(getDb());
@@ -146,8 +156,9 @@ function seedMonitorRule(id: string, repositoryKey: string, executor = "sentinel
     (id, repository_key, connection_id, installation_id, repository_id, executor, scanner_json,
      cost_ceiling_usd, daily_cost_ceiling_usd, follow_branches_json, checkout_mode, enabled, revision,
      baseline_initialized_at, last_polled_at, last_error, created_at, updated_at)
-    VALUES (?, ?, 'conn', 'inst', 'repo', ?, NULL, 2, 2, '["main"]', 'none', 1, 1, ?, ?, NULL, ?, ?)`)
-    .run(id, repositoryKey, executor, now, now, now, now);
+    VALUES (?, ?, 'conn', 'inst', 'repo', ?, ?, 2, 2, '["main"]', 'none', 1, 1, ?, ?, NULL, ?, ?)`)
+    .run(id, repositoryKey, executor, executor === "sentinel-managed" ? JSON.stringify(seededScanner) : null,
+      now, now, now, now);
 }
 
 function seedMonitorEvent(id: string, ruleId: string, repositoryKey: string): void {
@@ -533,9 +544,22 @@ test("a monitor rule is created and edited by the repository's maintainer", (t) 
   });
   assert.equal(rewired.status, 403);
   assert.deepEqual(await rewired.json(), { error: "forbidden" });
-  assert.equal(
-    (getDb().prepare("SELECT scanner_json FROM github_monitor_rules WHERE id = ?").get(ownedRule) as { scanner_json: string | null }).scanner_json,
-    null,
+
+  // Nor may `enabled: false` carry anything else along: ceilings and followed
+  // branches are what the next administrator's enable would spend against, so
+  // the exemption covers the switch and nothing but the switch.
+  const smuggled = await send(maintainer, "PATCH", `/api/github-monitor/rules/${ownedRule}`, {
+    enabled: false, costCeilingUsd: 100_000, dailyCostCeilingUsd: 100_000, followBranches: ["**"],
+  });
+  assert.equal(smuggled.status, 403);
+  assert.deepEqual(await smuggled.json(), { error: "forbidden" });
+  assert.deepEqual(
+    getDb().prepare(`SELECT cost_ceiling_usd, daily_cost_ceiling_usd, follow_branches_json, checkout_mode, scanner_json
+      FROM github_monitor_rules WHERE id = ?`).get(ownedRule),
+    {
+      cost_ceiling_usd: 2, daily_cost_ceiling_usd: 2, follow_branches_json: '["main"]',
+      checkout_mode: "none", scanner_json: JSON.stringify(seededScanner),
+    },
   );
 }));
 
