@@ -113,22 +113,39 @@ export async function changePassword(
   if (!user || !(await verifyPassword(input.currentPassword, user.passwordHash))) return { ok: false, error: "invalid_credentials" };
   const policy = passwordPolicyError(input.newPassword, user.username);
   if (policy) return { ok: false, error: policy };
-  updateUser(user.id, { passwordHash: await hashPassword(input.newPassword) }, database);
+  // Whoever proved the current password owns the account; leaving a lockout or a
+  // failure streak behind would punish them for an attacker's attempts.
+  updateUser(user.id, { passwordHash: await hashPassword(input.newPassword), failedAttempts: 0, lockedUntil: null }, database);
   revokeUserSessions(user.id, input.sessionId, database);
   return { ok: true };
 }
 
+/**
+ * A single-administrator instance can lock itself out: five wrong attempts and
+ * nobody is left who could clear the lock from the interface. A restart of the
+ * container the operator controls therefore clears the counters on the account
+ * named by `CSB_ADMIN_USER` — never its password, which stays whatever the
+ * administrator last chose.
+ */
 export async function bootstrapAdmin(
   settings: { username: string; password: string },
   database: Database.Database = getDb(),
-): Promise<"created" | "recovered" | "unchanged"> {
+  now: Date = new Date(),
+): Promise<"created" | "recovered" | "unlocked" | "unchanged"> {
   const existing = findUserByUsername(settings.username, database);
   const anyUser = database.prepare("SELECT 1 FROM users LIMIT 1").get() !== undefined;
   if (!anyUser) {
     createUser({ username: settings.username, displayName: settings.username, isAdmin: true, passwordHash: await hashPassword(settings.password) }, database);
     return "created";
   }
-  if (countActiveAdmins(database) > 0) return "unchanged";
+  if (countActiveAdmins(database) > 0) {
+    const locked = existing !== null
+      && (existing.failedAttempts > 0
+        || (existing.lockedUntil !== null && Date.parse(existing.lockedUntil) > now.getTime()));
+    if (!locked) return "unchanged";
+    updateUser(existing!.id, { failedAttempts: 0, lockedUntil: null }, database);
+    return "unlocked";
+  }
   const passwordHash = await hashPassword(settings.password);
   if (existing) {
     updateUser(existing.id, { isAdmin: true, status: "active", passwordHash, failedAttempts: 0, lockedUntil: null }, database);

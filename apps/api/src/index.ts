@@ -45,6 +45,7 @@ if (settings.mode === "server") {
   const outcome = await bootstrapAdmin({ username: settings.username, password: settings.password });
   if (outcome === "created") console.log(`[csb-api] Created administrator ${settings.username} from CSB_ADMIN_USER`);
   if (outcome === "recovered") console.warn(`[csb-api] No active administrator found; restored ${settings.username} from CSB_ADMIN_PASSWORD_FILE`);
+  if (outcome === "unlocked") console.warn(`[csb-api] Cleared the sign-in lockout on administrator ${settings.username}`);
 }
 
 const materializations = reconcileManagedMaterializations();
