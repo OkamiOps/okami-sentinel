@@ -21,7 +21,46 @@ import { LOCAL_PRINCIPAL, type AccessScope } from "./principal.js";
 import { createSession } from "./session-store.js";
 import { createUser } from "./user-store.js";
 
+/**
+ * Every test file in this suite shares one SQLite file, and the run, monitor,
+ * gate and user lists are read unfiltered elsewhere, so every row this file
+ * inserts is recorded here and removed again instead of being left behind as
+ * another file's phantom row or an extra administrator it may demote.
+ */
+const seeded = {
+  runs: new Set<string>(),
+  repositories: new Set<string>(),
+  gates: new Set<string>(),
+  monitorRules: new Set<string>(),
+  monitorEvents: new Set<string>(),
+  actionsRuns: new Set<string>(),
+  users: new Set<string>(),
+};
+
+function removeSeededRows(): void {
+  const deleteIn = (table: string, column: string, ids: Set<string>) => {
+    if (ids.size === 0) return;
+    const values = [...ids];
+    getDb().prepare(`DELETE FROM ${table} WHERE ${column} IN (${values.map(() => "?").join(", ")})`).run(...values);
+  };
+  // Children first: the cascades depend on a pragma this suite does not set.
+  deleteIn("github_monitor_actions_runs", "id", seeded.actionsRuns);
+  deleteIn("github_monitor_events", "id", seeded.monitorEvents);
+  deleteIn("github_monitor_rules", "id", seeded.monitorRules);
+  deleteIn("gate_runs", "id", seeded.gates);
+  deleteIn("runs", "id", seeded.runs);
+  deleteIn("sessions", "user_id", seeded.users);
+  deleteIn("user_invites", "user_id", seeded.users);
+  deleteIn("repository_grants", "user_id", seeded.users);
+  deleteIn("users", "id", seeded.users);
+  deleteIn("repository_grants", "repository_key", seeded.repositories);
+  deleteIn("guardrail_repositories", "repository_key", seeded.repositories);
+}
+
+after(removeSeededRows);
+
 function insertRun(id: string, key: string | null, status: string, name: string): void {
+  seeded.runs.add(id);
   getDb().prepare(`
     INSERT INTO runs (id, display_name, repository_path, scan_dir, status, source, created_at, updated_at, started_at, repository_key)
     VALUES (?, ?, ?, ?, ?, 'benchmark', ?, ?, ?, ?)
@@ -72,6 +111,7 @@ const serverSettings: ServerSettings = {
 };
 
 function seedRepository(key: string): void {
+  seeded.repositories.add(key);
   getDb().prepare(`INSERT OR IGNORE INTO guardrail_repositories
     (repository_key, repository_path, source, display_name, default_branch, default_executor, enabled, policy_path, created_at, updated_at)
     VALUES (?, ?, 'local', ?, 'main', 'sentinel-managed', 1, '.csb/guardrails.json', 'now', 'now')`)
@@ -79,6 +119,7 @@ function seedRepository(key: string): void {
 }
 
 function seedMonitorRule(id: string, repositoryKey: string): void {
+  seeded.monitorRules.add(id);
   ensureGitHubMonitorSchema(getDb());
   const now = new Date().toISOString();
   getDb().prepare(`INSERT OR REPLACE INTO github_monitor_rules
@@ -90,6 +131,7 @@ function seedMonitorRule(id: string, repositoryKey: string): void {
 }
 
 function seedMonitorEvent(id: string, ruleId: string, repositoryKey: string): void {
+  seeded.monitorEvents.add(id);
   getDb().prepare(`INSERT OR REPLACE INTO github_monitor_events
     (id, rule_id, repository_key, rule_revision, kind, status, head_sha, base_ref, head_ref,
      pull_request_number, target_identity, title, gate_id, cost_ceiling_usd, reason, error,
@@ -99,6 +141,7 @@ function seedMonitorEvent(id: string, ruleId: string, repositoryKey: string): vo
 }
 
 function seedActionsRun(id: string, ruleId: string, repositoryKey: string): void {
+  seeded.actionsRuns.add(id);
   const now = new Date().toISOString();
   getDb().prepare(`INSERT OR REPLACE INTO github_monitor_actions_runs
     (id, rule_id, repository_key, workflow_run_id, name, event, head_branch, head_sha, status,
@@ -108,6 +151,7 @@ function seedActionsRun(id: string, ruleId: string, repositoryKey: string): void
 }
 
 function seedGate(id: string, repositoryKey: string): void {
+  seeded.gates.add(id);
   getDb().prepare(`INSERT OR REPLACE INTO gate_runs
     (id, repository_key, repository_path, source, executor, base_ref, head_ref, materialization_state,
      artifact_schema_version, status, policy_version, publish_status, cost_ceiling_usd, estimated_usd, started_at)
@@ -116,6 +160,7 @@ function seedGate(id: string, repositoryKey: string): void {
 }
 
 function seedScopedRun(id: string, repositoryKey: string | null): void {
+  seeded.runs.add(id);
   const now = new Date().toISOString();
   getDb().prepare(`INSERT OR REPLACE INTO runs
     (id, display_name, scan_dir, status, source, repository_key, created_at, updated_at)
@@ -125,6 +170,7 @@ function seedScopedRun(id: string, repositoryKey: string | null): void {
 
 function actor(name: string, isAdmin: boolean, grants: Array<{ repositoryKey: string; role: "viewer" | "analyst" | "operator" | "maintainer" }>) {
   const user = createUser({ username: name, displayName: name, isAdmin }, getDb());
+  seeded.users.add(user.id);
   replaceUserGrants(user.id, grants, null, getDb());
   const { token, session } = createSession({ userId: user.id, ip: null, userAgent: null }, getDb());
   return { cookie: `${SECURE_SESSION_COOKIE}=${token}`, csrf: session.csrfToken };
@@ -188,21 +234,9 @@ function asPrincipal(overrides: Record<string, unknown>) {
   return probe;
 }
 
-/**
- * Every test file in this suite shares one SQLite file, and the monitor and gate
- * lists are read unfiltered elsewhere, so the fixtures this test needs are
- * removed again instead of being left behind as another file's phantom rows.
- */
-function dropSeededRows(repositoryKeys: string[]): void {
-  const placeholders = repositoryKeys.map(() => "?").join(", ");
-  for (const table of ["github_monitor_actions_runs", "github_monitor_events", "github_monitor_rules", "gate_runs"]) {
-    getDb().prepare(`DELETE FROM ${table} WHERE repository_key IN (${placeholders})`).run(...repositoryKeys);
-  }
-}
-
 test("scoped routes never answer with another repository's data", (t) => withServerRuntime(async () => {
   const stamp = Date.now();
-  t.after(() => dropSeededRows([`scoped-a-${stamp}`, `scoped-b-${stamp}`]));
+  t.after(removeSeededRows);
   const repoA = `scoped-a-${stamp}`;
   const repoB = `scoped-b-${stamp}`;
   seedRepository(repoA);
@@ -237,8 +271,11 @@ test("scoped routes never answer with another repository's data", (t) => withSer
   const checkoutB = await read(viewer, `/api/github-checkouts?repositoryKey=${encodeURIComponent(repoB)}`);
   assert.equal(checkoutB.status, 404);
   assert.deepEqual(await checkoutB.json(), { error: "not_found" });
+  // The granted key is visible: the refusal that follows is the checkout's own
+  // state (this fixture has no working tree), never the 404 scope produces.
   const checkoutA = await read(viewer, `/api/github-checkouts?repositoryKey=${encodeURIComponent(repoA)}`);
-  assert.notDeepEqual(await checkoutA.json(), { error: "not_found" });
+  assert.equal(checkoutA.status, 409);
+  assert.deepEqual(await checkoutA.json(), { error: "checkout_unavailable" });
 
   // GET /guardrails/gates — an out-of-scope query key yields nothing; the
   // unfiltered list is narrowed to the grants.
@@ -246,6 +283,7 @@ test("scoped routes never answer with another repository's data", (t) => withSer
   assert.equal(gatesB.status, 200);
   assert.deepEqual(await gatesB.json(), { gates: [] });
   const gatesAll = await read(viewer, "/api/guardrails/gates");
+  assert.equal(gatesAll.status, 200);
   const gateKeys = new Set(((await gatesAll.json()).gates as Array<{ repositoryKey: string }>).map((gate) => gate.repositoryKey));
   assert.equal(gateKeys.has(repoA), true);
   assert.equal(gateKeys.has(repoB), false);
@@ -270,7 +308,12 @@ test("scoped routes never answer with another repository's data", (t) => withSer
   assert.equal(compareB.status, 404);
   assert.deepEqual(await compareB.json(), { error: "not_found" });
   const compareA = await post(viewer, "/api/compare", { scanIds: [runA] });
-  assert.notDeepEqual(await compareA.json(), { error: "not_found" });
+  // 400, not 404: the in-scope scan reached the handler, which then refused the
+  // request on its own arity rule.
+  assert.equal(compareA.status, 400);
+  const refusedCompare = await compareA.json() as { error?: unknown };
+  assert.equal(typeof refusedCompare.error, "string");
+  assert.notEqual(refusedCompare.error, "not_found");
 
   // GET /health — only in-scope active scans, and no server paths for a member:
   // neither the state directory nor the scanner's raw info document.
