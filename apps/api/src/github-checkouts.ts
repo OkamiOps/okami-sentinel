@@ -10,6 +10,7 @@ import { runtimeMode, repositoryRoots } from "./deployment-settings.js";
 import { acquireEngineMaintenance } from "./engine-updates-api.js";
 import { EngineUpdateError } from "./scanners/engine-updates.js";
 import { assertRepositoryAccess } from "./repository-access.js";
+import { canSeeRepository, principalOf } from "./auth/principal.js";
 
 const GIT_TIMEOUT_MS = 30_000;
 const GIT_OUTPUT_LIMIT = 64 * 1024;
@@ -108,7 +109,15 @@ export function createGitHubCheckoutsApp(supplied: GitHubCheckoutsDependencies):
   const app = new Hono();
 
   // The query form keeps keys such as "github.com/org/repository" unambiguous.
-  app.get("/github-checkouts", async (c) => response(c, () => service.status(requiredRepositoryKey(c.req.query("repositoryKey")))));
+  // The route policy cannot resolve a key that travels in the query string, so
+  // this handler validates the single repository it is about to read.
+  app.get("/github-checkouts", async (c) => {
+    const repositoryKey = c.req.query("repositoryKey");
+    if (repositoryKey !== undefined && !canSeeRepository(principalOf(c), repositoryKey)) {
+      return c.json({ error: "not_found" }, 404);
+    }
+    return response(c, () => service.status(requiredRepositoryKey(repositoryKey)));
+  });
   // Kept for clients that encode the key as one URL segment.
   app.get("/github-checkouts/:repositoryKey", async (c) => response(c, () => service.status(requiredRepositoryKey(c.req.param("repositoryKey")))));
 
