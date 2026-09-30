@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AccountNotificationsResponse } from "@csb/shared";
-import { cellKey, cellState, withCell } from "./notification-matrix";
+import { cellKey, cellState, withCell, withCellState } from "./notification-matrix";
 
 function matrix(): AccountNotificationsResponse {
   return {
@@ -70,4 +70,35 @@ test("a cell key cannot be confused with another scope's", () => {
     cellKey({ scope: "a\u0000gate", event: "gate.blocked" }),
   );
   assert.equal(cellKey({ scope: "ops", event: "ops.daily_cost" }), cellKey({ scope: "ops", event: "ops.daily_cost" }));
+});
+
+test("a confirmed cell is taken from the reply without adopting the rest of it", () => {
+  // Two toggles in flight: the reply to the first still describes the matrix
+  // as it was before the second was written. Adopting it wholesale would flip
+  // the second cell back with no error and no way to notice.
+  const local = withCell(withCell(matrix(), { scope: "github.com/okami/one", event: "gate.passed" }, true),
+    { scope: "local/two", event: "gate.blocked" }, false);
+  const staleReply = withCell(matrix(), { scope: "github.com/okami/one", event: "gate.passed" }, true);
+
+  const merged = withCellState(local, { scope: "github.com/okami/one", event: "gate.passed" },
+    cellState(staleReply, { scope: "github.com/okami/one", event: "gate.passed" }));
+
+  assert.equal(cellState(merged, { scope: "github.com/okami/one", event: "gate.passed" })?.enabled, true);
+  assert.equal(cellState(merged, { scope: "local/two", event: "gate.blocked" })?.enabled, false);
+});
+
+test("a rollback restores the one cell's exact previous state, defaults included", () => {
+  const before = matrix();
+  const cell = { scope: "github.com/okami/one", event: "gate.blocked" } as const;
+  const previous = cellState(before, cell);
+  const optimistic = withCell(before, cell, false);
+  assert.equal(cellState(optimistic, cell)?.isDefault, false);
+
+  const rolled = withCellState(optimistic, cell, previous);
+  assert.deepEqual(cellState(rolled, cell), { event: "gate.blocked", enabled: true, isDefault: true });
+});
+
+test("a cell the reply no longer carries leaves the matrix alone", () => {
+  const before = matrix();
+  assert.deepEqual(withCellState(before, { scope: "github.com/okami/one", event: "gate.blocked" }, null), before);
 });

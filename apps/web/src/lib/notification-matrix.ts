@@ -17,38 +17,52 @@ export interface NotificationCell {
   event: NotificationEvent;
 }
 
-function withEvent(events: NotificationEventState[], event: NotificationEvent, enabled: boolean): NotificationEventState[] {
-  return events.map((state) => state.event === event
-    // A cell set back to its default is still a choice the user made, and the
-    // API records it as a row; `isDefault` has to stop claiming otherwise.
-    ? { ...state, enabled, isDefault: false }
-    : state);
+function withEvent(events: NotificationEventState[], event: NotificationEvent, state: NotificationEventState): NotificationEventState[] {
+  return events.map((current) => current.event === event ? { ...state, event } : current);
 }
 
 /**
- * The optimistic edit and the rollback both go through this one rewrite, so a
- * refusal restores the stored matrix by replaying the previous value instead of
- * re-reading the whole response.
+ * Write one cell's whole state. Every edit — optimistic, confirmed and rolled
+ * back — goes through this single rewrite, and it touches exactly one cell:
+ * two toggles in flight at once must not be able to undo each other, which is
+ * what replacing the whole matrix from a reply used to do.
+ */
+export function withCellState(
+  matrix: AccountNotificationsResponse,
+  cell: NotificationCell,
+  state: NotificationEventState | null,
+): AccountNotificationsResponse {
+  // A cell the reply does not carry (a repository that stopped being shared
+  // between the click and the answer) leaves the matrix as it is; the next
+  // read is what corrects the shape.
+  if (state === null) return matrix;
+  if (cell.scope === OPS_NOTIFICATION_SCOPE) {
+    return matrix.ops === null ? matrix : { ...matrix, ops: { events: withEvent(matrix.ops.events, cell.event, state) } };
+  }
+  if (cell.scope === UNASSIGNED_NOTIFICATION_SCOPE) {
+    return matrix.unassigned === null
+      ? matrix
+      : { ...matrix, unassigned: { events: withEvent(matrix.unassigned.events, cell.event, state) } };
+  }
+  return {
+    ...matrix,
+    repositories: matrix.repositories.map((repository) => repository.repositoryKey === cell.scope
+      ? { ...repository, events: withEvent(repository.events, cell.event, state) }
+      : repository),
+  };
+}
+
+/**
+ * The optimistic edit: a cell set back to its default is still a choice the
+ * user made, and the API records it as a row, so `isDefault` has to stop
+ * claiming otherwise.
  */
 export function withCell(
   matrix: AccountNotificationsResponse,
   cell: NotificationCell,
   enabled: boolean,
 ): AccountNotificationsResponse {
-  if (cell.scope === OPS_NOTIFICATION_SCOPE) {
-    return matrix.ops === null ? matrix : { ...matrix, ops: { events: withEvent(matrix.ops.events, cell.event, enabled) } };
-  }
-  if (cell.scope === UNASSIGNED_NOTIFICATION_SCOPE) {
-    return matrix.unassigned === null
-      ? matrix
-      : { ...matrix, unassigned: { events: withEvent(matrix.unassigned.events, cell.event, enabled) } };
-  }
-  return {
-    ...matrix,
-    repositories: matrix.repositories.map((repository) => repository.repositoryKey === cell.scope
-      ? { ...repository, events: withEvent(repository.events, cell.event, enabled) }
-      : repository),
-  };
+  return withCellState(matrix, cell, { event: cell.event, enabled, isDefault: false });
 }
 
 /** What a cell currently holds, or `null` when the matrix has no such cell. */
