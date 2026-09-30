@@ -8,6 +8,7 @@ import { InviteLinkPanel } from "./InviteLinkPanel";
 import { draftToGrants, RepositoryRoleList, type RepositoryOption, type RoleDraft } from "./RepositoryRoleList";
 import { AlertBanner } from "../ui";
 import { authErrorCode, usersApi } from "../../lib/auth-api";
+import { inviteEmailTarget } from "../../lib/email-address";
 import { formatHandle, normalizeUsername } from "../../lib/username";
 import { accessMessages, type AccessMessageKey } from "../../i18n/access";
 import { useScopedI18n } from "../../i18n/scoped";
@@ -40,6 +41,13 @@ export function InviteUserDialog({ open, onOpenChange, repositories, onCreated }
   const [invite, setInvite] = useState<InviteLinkResponse | null>(null);
 
   const preview = normalizeUsername(username);
+  /**
+   * Where the invitation would be sent. The screen cannot know whether a
+   * provider is configured — that is an administration setting this dialog does
+   * not read — so it names the address and says the delivery depends on it,
+   * instead of promising a message that may never leave.
+   */
+  const emailTarget = inviteEmailTarget(email, preview ?? username);
 
   function close() {
     onOpenChange(false);
@@ -118,7 +126,15 @@ export function InviteUserDialog({ open, onOpenChange, repositories, onCreated }
           </div>
           <div className="grid gap-1.5">
             <label htmlFor={`${fieldId}-email`} className="bench-label">{t("invite.email")}</label>
-            <Input id={`${fieldId}-email`} type="email" value={email} autoComplete="off" disabled={pending} onChange={(event) => setEmail(event.target.value)} />
+            <Input
+              id={`${fieldId}-email`} type="email" value={email} autoComplete="off" disabled={pending}
+              aria-describedby={`${fieldId}-email-hint`} onChange={(event) => setEmail(event.target.value)}
+            />
+            <p id={`${fieldId}-email-hint`} className="text-[11px] leading-relaxed text-muted-foreground">
+              {emailTarget === null
+                ? t("invite.noEmailTarget")
+                : t("invite.willEmail", { address: emailTarget })}
+            </p>
           </div>
           <label className="flex items-center gap-3 border border-border px-3 py-2.5 text-xs">
             <Checkbox checked={isAdmin} disabled={pending} onCheckedChange={(checked) => setIsAdmin(checked === true)} />

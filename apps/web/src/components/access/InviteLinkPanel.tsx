@@ -1,11 +1,19 @@
 import { useEffect, useId, useRef, useState } from "react";
-import type { InviteLinkResponse } from "@csb/shared";
+import type { EmailQueueSkip, InviteLinkResponse } from "@csb/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { AlertBanner } from "../ui";
 import { formatDate } from "../../format";
 import { accessMessages, type AccessMessageKey } from "../../i18n/access";
 import { useScopedI18n } from "../../i18n/scoped";
+
+/** Why no message was queued, in a sentence the administrator can act on. */
+function skipKey(reason: EmailQueueSkip): AccessMessageKey {
+  if (reason === "disabled") return "invite.emailDisabled";
+  if (reason === "no_address") return "invite.emailNoAddress";
+  if (reason === "duplicate") return "invite.emailDuplicate";
+  return "invite.emailError";
+}
 
 /**
  * The API returns the invite token once and stores only its hash, so this is
@@ -59,6 +67,12 @@ export function InviteLinkPanel({ invite, labelKey = "invite.link" }: { invite: 
         {t("invite.expires", { date: formatDate(invite.expiresAt) })}
       </p>
     </div>
+    {/* Whether the message actually left is the server's answer, not a guess
+        from the form: `emailQueued` and `emailSkipped` come back with the link
+        precisely so the link can stop being the only story. */}
+    {invite.emailQueued
+      ? <AlertBanner tone="success">{t("invite.emailSent", { address: invite.emailTo ?? "—" })}</AlertBanner>
+      : invite.emailSkipped !== null && <AlertBanner tone="info">{t(skipKey(invite.emailSkipped))}</AlertBanner>}
     {copyFailed && <AlertBanner tone="warning">{t("invite.copyFailed")}</AlertBanner>}
     <AlertBanner tone="warning">{t("invite.warning")}</AlertBanner>
   </div>;
