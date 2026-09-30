@@ -77,6 +77,17 @@ Nova seção **Configurações → E-mail** (`08.06`, somente administradores):
 - Histórico das últimas 200 entregas: destinatário, tipo, status, tentativas,
   último erro, horário.
 
+O host SMTP é aceito como nome ou como IP literal, inclusive privado e
+link-local, e nenhum intervalo é bloqueado. Isso é deliberado: `security: none`
+"apenas para relays internos" exige justamente esse caminho, e um relay interno
+costuma ser alcançável só por endereço. A consequência é que quem configura o
+e-mail pode abrir uma conexão TCP de dentro da rede do container e ler até 200
+caracteres redigidos do banner em `last_error` ou na resposta do teste — uma
+capacidade de administrador, estritamente menor que as conexões de modelo, as
+credenciais do GitHub App e as rotas de scanner que o mesmo papel já configura.
+Tratar o campo como capacidade administrativa é a mitigação; bloquear faixas
+privadas quebraria o caso de uso documentado.
+
 ## Eventos
 
 | Grupo | Evento | Destinatário | Padrão |
@@ -187,7 +198,12 @@ um endereço. O diálogo mostra se o convite será enviado por e-mail.
 - Retentativas: 1 min, 5 min, 30 min e 2 h; após 5 tentativas, `failed`.
   Erros permanentes (endereço inválido, autenticação recusada) contam como
   tentativas; o último erro fica visível no histórico.
-- Na inicialização, mensagens presas em `sending` voltam a `queued`.
+- Mensagens presas em `sending` por um processo anterior voltam a `queued` no
+  primeiro *tick* do worker, não na inicialização — um banco travado no boot não
+  pode impedir a API de subir — e cada retorno custa uma tentativa, para que uma
+  mensagem venenosa não reinicie a API indefinidamente. Linhas criadas depois que
+  o worker nasceu não são tocadas: o teste de envio é gravado já como `sending` e
+  resolvido dentro da própria requisição.
 - Antes de enviar um evento de repositório, o worker confirma que o
   destinatário ainda está ativo e ainda vê o repositório; se não, `cancelled`.
 - Retenção: mensagens enviadas ou canceladas com mais de 90 dias são apagadas.
@@ -202,6 +218,7 @@ um endereço. O diálogo mostra se o convite será enviado por e-mail.
 | `GET /email/deliveries` | admin | histórico |
 | `GET /account/notifications` | autenticado | assinaturas efetivas do usuário |
 | `PUT /account/notifications` | autenticado | alterar assinaturas permitidas |
+| `PATCH /account/profile` | autenticado | passa a aceitar `locale` |
 
 `GET /account/notifications` devolve a matriz efetiva: uma linha por repositório
 visível, a linha `ops` e a linha `unassigned` apenas para administradores, os
@@ -211,7 +228,6 @@ eventos de conta marcados como sempre ativos e o endereço resolvido (ou `null`)
 Uma célula recusada recusa o lote inteiro. Repositório inexistente e repositório
 não compartilhado respondem com o mesmo código, para o erro não servir de
 enumeração.
-| `PATCH /account/profile` | autenticado | passa a aceitar `locale` |
 
 Todas as rotas entram no registro de permissões com teste de cobertura.
 

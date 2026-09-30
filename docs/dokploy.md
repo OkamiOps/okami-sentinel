@@ -58,6 +58,25 @@ curl --fail https://sentinel.exemplo.com/readyz
 
 O healthcheck do container consulta somente `/readyz`. Ele não executa uma engine, não testa provedor e não inicia scan.
 
+## E-mail e notificações
+
+O e-mail vem **desligado**. Nada é enfileirado enquanto ele estiver desligado, então ligá-lo meses depois não libera fila acumulada — e também não há como alguém receber nada antes desta configuração. Convites e redefinições de senha continuam funcionando sem e-mail: o link copiável está sempre na resposta da tela de usuários.
+
+Ligar exige duas coisas, nesta ordem:
+
+1. **Verificar o domínio do remetente no provedor.** O endereço em "remetente" precisa pertencer a um domínio que o provedor já autorizou a enviar em seu nome — SPF, DKIM e, de preferência, DMARC publicados no DNS desse domínio. No Resend isso é *Domains → Add domain*, que devolve os registros a publicar e só marca o domínio como verificado depois de enxergá-los. Na Hostinger o domínio já hospedado lá costuma vir com SPF e DKIM prontos; confirme na área de e-mail antes de usá-lo. Verificação de DNS não é instantânea: espere a propagação antes de testar.
+2. **Preencher Configurações → E-mail**, já autenticado como administrador: provedor (`smtp` ou API do Resend), preset, remetente, e o interruptor global. A senha SMTP ou a chave de API vai para o vault do servidor e a API nunca a devolve — apenas "configurado".
+
+Depois use **"Enviar e-mail de teste"**: ele envia na hora, para o seu próprio endereço, e mostra o erro real do provedor em vez de esconder a falha.
+
+O erro que esse botão mais produz em um deploy novo é `sender_not_verified`: o provedor aceitou a credencial e recusou o remetente. É sempre o passo 1 faltando ou incompleto — domínio não verificado, verificado mas com DNS ainda propagando, ou um endereço de remetente em outro domínio. Nenhuma outra pista aparece: sem o teste, o sintoma seria apenas mensagens paradas em `failed` no histórico de entregas. **Configurações → E-mail** mostra as últimas 200 entregas com destinatário, tipo, status, tentativas e último erro; é onde diagnosticar qualquer envio depois disso.
+
+Os links dos e-mails usam `CSB_PUBLIC_ORIGIN`. Sem ele a mensagem sai sem link algum em vez de sair com um link quebrado, então confirme que a variável aponta para o domínio HTTPS final antes de ligar o e-mail.
+
+A chave do vault é pré-requisito: `CSB_VAULT_KEY_PATH` (na tabela acima) é o arquivo externo que o Compose monta como segredo e a API lê em `CSB_VAULT_KEY_FILE`, já obrigatório na inicialização em modo servidor. Ele agora protege também a senha SMTP e a chave do Resend — trate a rotação desse arquivo como rotação dessas credenciais.
+
+O host SMTP aceita IP literal, inclusive privado, porque `segurança: none` existe para relays internos. Quem configura o e-mail pode, portanto, abrir uma conexão de dentro da rede do container e ver parte do banner da resposta no histórico. É uma capacidade de administrador, menor que as conexões de modelo e as credenciais do GitHub App que o mesmo papel já configura, mas é motivo para não dar o papel de administrador a quem não precisa dele.
+
 ## Backups, restauração e atualização
 
 O volume nomeado `sentinel_data` contém SQLite, relatórios, estado de engines e o home privado. Programe backup em **Volume Backups** e escolha uma janela sem scans: um backup que para o container interrompe o processo em andamento. Bind mounts de repositórios não entram nesse backup; mantenha-os em sua origem Git ou em backup próprio.
