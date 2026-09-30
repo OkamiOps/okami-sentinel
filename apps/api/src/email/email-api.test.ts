@@ -68,9 +68,22 @@ function harness(overrides: { principal?: Partial<Principal>; publicOrigin?: str
   return { app, secrets, sent, failNextSend: (code) => { failure = code; }, admin };
 }
 
+/**
+ * `email_settings` is a single global row and this file owns it, so clearing it is
+ * right. The outbox is not ours: `node --test` runs every file in its own child
+ * process against one `CSB_DATA_DIR`, so a blanket `DELETE FROM email_outbox`
+ * would destroy another file's fixture mid-assertion. Only the rows these cases
+ * create are removed, and the assertions below read back by recipient rather than
+ * by "the whole table".
+ */
 function resetSettings(): void {
   getDb().prepare("DELETE FROM email_settings").run();
-  getDb().prepare("DELETE FROM email_outbox").run();
+  getDb().prepare("DELETE FROM email_outbox WHERE event = 'account.test' OR id LIKE 'hist-%'").run();
+}
+
+/** This file's rows for one recipient, newest first, out of whatever else is there. */
+function deliveriesTo(history: EmailDeliveriesResponse, toAddress: string) {
+  return history.deliveries.filter((delivery) => delivery.toAddress === toAddress);
 }
 
 const completeSmtp = {
@@ -349,12 +362,13 @@ test("the test send goes to the administrator's resolved address and lands in th
   assert.match(sent[0]!.message.idempotencyKey, /^out_/);
 
   const history = await (await app.request("/email/deliveries")).json() as EmailDeliveriesResponse;
-  assert.equal(history.deliveries.length, 1);
+  const mine = deliveriesTo(history, "ana@example.com");
+  assert.equal(mine.length, 1);
   assert.deepEqual(
-    { ...history.deliveries[0], id: "…", createdAt: "…", sentAt: "…" },
+    { ...mine[0], id: "…", createdAt: "…", sentAt: "…" },
     {
       id: "…", event: "account.test", toAddress: "ana@example.com", locale: "pt-BR",
-      subject: history.deliveries[0]!.subject, status: "sent", attempts: 0,
+      subject: mine[0]!.subject, status: "sent", attempts: 0,
       nextAttemptAt: null, lastError: null, providerMessageId: "provider-id-1",
       createdAt: "…", sentAt: "…",
     },
@@ -387,9 +401,11 @@ test("a provider failure is reported verbatim and recorded against the message",
   assert.equal(result.providerMessageId, null);
 
   const history = await (await app.request("/email/deliveries")).json() as EmailDeliveriesResponse;
-  assert.equal(history.deliveries[0]!.status, "failed");
-  assert.equal(history.deliveries[0]!.attempts, 1);
-  assert.match(history.deliveries[0]!.lastError ?? "", /rejected the credentials/);
+  const mine = deliveriesTo(history, "bob@example.com");
+  assert.equal(mine.length, 1);
+  assert.equal(mine[0]!.status, "failed");
+  assert.equal(mine[0]!.attempts, 1);
+  assert.match(mine[0]!.lastError ?? "", /rejected the credentials/);
 });
 
 test("an administrator with no usable address is told so before anything is sent", async () => {

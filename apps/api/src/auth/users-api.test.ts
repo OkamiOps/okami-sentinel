@@ -5,7 +5,6 @@ import { getDb } from "../db.js";
 import { LOCAL_PRINCIPAL, type Principal } from "./principal.js";
 import { createSession, getSessionById, resolveSession } from "./session-store.js";
 import { enqueueEmail, type EmailEnqueueResult, type EnqueueEmailInput } from "../email/enqueue.js";
-import { DEFAULT_EMAIL_SETTINGS, saveEmailSettings } from "../email/settings-store.js";
 import type { EmailMessageKind } from "../email/templates.js";
 import { createUsersApi, type InviteEmailPort } from "./users-api.js";
 import { createUser, findUserByUsername, listUsers, updateUser } from "./user-store.js";
@@ -421,34 +420,26 @@ test("the real outbox row is written inside the route's transaction and rolls ba
   const claimedTransaction: boolean[] = [];
   const api = new Hono().route("/", createUsersApi({
     publicOrigin: null,
+    // The switch arrives through the port, not through the global `email_settings`
+    // row: that row lives in the one database every file in this suite opens, and
+    // the e-mail API's own tests own it. What this test is about is the outbox
+    // write and its transaction, so it has no business touching the switch.
     enqueue: (database, input) => {
       claimedTransaction.push(database.inTransaction);
-      return enqueueEmail(database, input);
+      return enqueueEmail(database, input, { enabled: true });
     },
   }));
-  const enable = () => saveEmailSettings({
-    ...DEFAULT_EMAIL_SETTINGS, enabled: true, fromAddress: "sentinel@okami.example",
-    smtpHost: "smtp.okami.example", smtpPort: 465,
-  }, null, new Date(), getDb());
 
-  // The switch lives in the one database every file in this suite opens, and the
-  // e-mail API's own tests clear it between their cases. Enabling it and asking
-  // again is honest about that; pretending the two files cannot interleave is not.
-  let created: CreatedUser | null = null;
-  for (let attempt = 0; attempt < 5 && created === null; attempt += 1) {
-    enable();
-    const response = await api.request("/users", {
-      method: "POST", headers: JSON_HEADERS,
-      body: JSON.stringify({
-        username: `gustavo${Date.now()}${attempt}@example.com`, displayName: "Gustavo",
-        isAdmin: false, grants: [],
-      }),
-    });
-    assert.equal(response.status, 201);
-    const body = await response.json() as CreatedUser;
-    if (body.invite.emailQueued) created = body;
-  }
-  assert.ok(created, "the outbox never accepted a row in five attempts");
+  const response = await api.request("/users", {
+    method: "POST", headers: JSON_HEADERS,
+    body: JSON.stringify({
+      username: `gustavo${Date.now()}@example.com`, displayName: "Gustavo",
+      isAdmin: false, grants: [],
+    }),
+  });
+  assert.equal(response.status, 201);
+  const created = await response.json() as CreatedUser;
+  assert.equal(created.invite.emailQueued, true);
 
   // The route enqueued while its own transaction was open, which is what makes
   // the message and the account one write.
@@ -470,11 +461,8 @@ test("the real outbox row is written inside the route's transaction and rolls ba
       event: "account.invite", dedupeKey: rolledBack, userId: null, toAddress: "zoe@example.com",
       locale: "pt-BR", origin: null,
       data: { inviterName: null, inviteToken: "Tk0000000000000000000000000000000000000000x", expiresAt: new Date() },
-    });
+    }, { enabled: true });
     throw new Error("the account creation failed after the message was rendered");
   })());
   assert.equal(getDb().prepare("SELECT 1 FROM email_outbox WHERE dedupe_key = ?").get(rolledBack), undefined);
-
-  // Left as it was found: an installation that never opened the screen has no row.
-  getDb().prepare("DELETE FROM email_settings").run();
 });
