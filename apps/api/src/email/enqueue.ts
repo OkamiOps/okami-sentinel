@@ -1,21 +1,19 @@
 import type Database from "better-sqlite3";
-import type { UserLocale } from "@csb/shared";
+import type { EmailQueueSkip, UserLocale } from "@csb/shared";
 import { emailPublicOrigin } from "./origin.js";
 import { insertOutboxRow } from "./outbox-store.js";
 import { getEmailSettings } from "./settings-store.js";
 import { renderEmail, type EmailMessageDataMap, type EmailMessageKind } from "./templates.js";
 
 /**
- * Why no message was queued. `disabled` is the global switch, `duplicate` is the
- * unique `dedupe_key` doing its job, and `no_address` is decided by the caller —
- * it is the one reason that is known before this function is reached, and the
- * invite dialog reports it.
+ * The two reasons this function can decline: the global switch, and the unique
+ * `dedupe_key` doing its job. The other members of `EmailQueueSkip` belong to the
+ * caller — `no_address` is known before this function is reached, and `error` is
+ * what a caller reports when it chose to swallow a failure.
  */
-export type EmailEnqueueSkip = "disabled" | "duplicate" | "no_address";
-
 export type EmailEnqueueResult =
   | { status: "queued"; id: string }
-  | { status: "skipped"; reason: Exclude<EmailEnqueueSkip, "no_address"> };
+  | { status: "skipped"; reason: Extract<EmailQueueSkip, "disabled" | "duplicate"> };
 
 export interface EnqueueEmailInput<K extends EmailMessageKind> {
   /** The message kind, which is also the outbox row's `event`. */
