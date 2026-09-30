@@ -17,7 +17,7 @@ import {
   type EmailCredentialStore,
 } from "../credentials/system-email-credential-store.js";
 import { localeOf, isEmailAddress, resolveUserEmailAddress } from "./address.js";
-import { enqueueEmail, listEmailDeliveries, markEmailFailed, markEmailSent } from "./outbox-store.js";
+import { insertOutboxRow, listEmailDeliveries, markEmailFailed, markEmailSent } from "./outbox-store.js";
 import { renderEmail } from "./templates.js";
 import {
   getEmailSettings,
@@ -315,7 +315,7 @@ export function createEmailApi(supplied?: Partial<EmailApiDependencies>): Hono {
     });
     // The test is a real delivery, so it belongs in the history like any other,
     // already claimed as `sending` because this request sends it itself.
-    const id = enqueueEmail({
+    const id = insertOutboxRow({
       event: "account.test",
       dedupeKey: `account.${principal.userId ?? "local"}.test.${deps.now().toISOString()}`,
       userId: principal.userId, toAddress: to, locale,
