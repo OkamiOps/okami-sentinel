@@ -28,7 +28,7 @@ import {
 } from "lucide-react";
 
 import { api, type GuardrailTargetPreview } from "../../api";
-import { githubMonitorApi } from "../../lib/github-monitor-api";
+import { githubActionsApi } from "../../lib/github-actions-api";
 import {
   initialGuardrailTargetDraft,
   preflightFingerprint,
@@ -351,7 +351,7 @@ export function GuardrailPreflightSheet({
     let cancelled = false;
     setBranches(null);
     setBranchesError(false);
-    void githubMonitorApi.branches(selected.repositoryKey).then((names) => {
+    void githubActionsApi.fetchBranches(selected.repositoryKey).then((names) => {
       if (!cancelled) setBranches(names);
     }).catch(() => {
       if (cancelled) return;

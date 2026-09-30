@@ -2,6 +2,10 @@ import type { Page } from "@playwright/test";
 import { EMAIL_PROVIDER_PRESETS } from "@csb/shared";
 import type {
   AccountNotificationsResponse,
+  GitHubAction,
+  GitHubActionEvent,
+  GuardrailRepository,
+  WebhookDeliveryRecord,
   AccountNotificationsUpdateEntry,
   EmailDelivery,
   EmailQueueSkip,
@@ -583,3 +587,320 @@ export const reportFinding: FindingDetail = {
   remediation: "Keep validation at the input boundary.", locations: [], taxonomy: null, rootCause: null,
   validation: null, preventiveControls: null, remediationTests: null, severityRationale: null, confidenceRationale: null,
 };
+
+// ---------------------------------------------------------------------------
+// GitHub tab
+// ---------------------------------------------------------------------------
+
+/**
+ * The five integration states the screen has to tell apart. They are named rather
+ * than assembled per test because the difference between them is exactly what the
+ * copy has to get right, and a test that hand-builds one usually gets one field
+ * wrong and proves nothing.
+ */
+export type GitHubIntegrationScenario =
+  | "all_green"
+  | "missing_permissions"
+  | "pending_approval"
+  | "suspended"
+  | "not_configured"
+  | "not_ready"
+  | "installed_nowhere"
+  | "stale_delivery"
+  | "unreachable"
+  | "no_connection";
+
+const REQUIRED_PERMISSIONS: ReadonlyArray<readonly [string, string]> = [
+  ["actions", "write"], ["checks", "write"], ["contents", "write"],
+  ["metadata", "read"], ["pull_requests", "write"], ["workflows", "write"],
+];
+
+const REQUIRED_EVENTS = [
+  "pull_request", "push", "installation", "installation_repositories", "check_run", "workflow_run",
+];
+
+export const githubRepository: GuardrailRepository = {
+  repositoryKey: "github:1", repositoryPath: null, source: "github", displayName: "luna-core",
+  defaultBranch: "main", defaultExecutor: "sentinel-managed", remoteOwner: "okamiops", remoteName: "luna-core",
+  githubConnectionId: "github-connection", githubInstallationId: "77", githubRepositoryId: "9001",
+  enabled: true, policyPath: ".csb/guardrails.json", lastGateId: null, githubStatus: "ready",
+};
+
+export const githubSecondRepository: GuardrailRepository = {
+  ...githubRepository, repositoryKey: "github:2", displayName: "solar-api",
+  remoteName: "solar-api", githubRepositoryId: "9002",
+};
+
+export const localRepository: GuardrailRepository = {
+  ...githubRepository, repositoryKey: "local:1", source: "local", displayName: "bench-local",
+  repositoryPath: "/srv/bench", remoteOwner: null, remoteName: null,
+  githubConnectionId: null, githubInstallationId: null, githubRepositoryId: null,
+};
+
+export function githubAction(overrides: Partial<GitHubAction> = {}): GitHubAction {
+  return {
+    id: "action-pr", repositoryKey: githubRepository.repositoryKey, name: "PR deep",
+    triggerKind: "pull_request", branchPatterns: ["main", "release/**"], executor: "sentinel-managed",
+    connectionId: "github-connection", installationId: "77", repositoryId: "9001",
+    scanner: {
+      engine: "codex-security",
+      connection: { connectionId: "fixture-connection", modelSelectionMode: "catalog", modelId: "fixture-model" },
+      mode: "deep",
+    },
+    costCeilingUsd: 2.5, dailyCostCeilingUsd: 6, enabled: true, includeForks: false, revision: 1,
+    baselineInitializedAt: "2026-09-29T00:00:00.000Z", createdBy: "u-root",
+    lastEventAt: "2026-09-30T11:00:00.000Z", lastReconciledAt: "2026-09-30T11:45:00.000Z",
+    lastError: null, migrationNote: null,
+    createdAt: "2026-09-29T00:00:00.000Z", updatedAt: "2026-09-30T10:00:00.000Z",
+    ...overrides,
+  };
+}
+
+export function githubEvent(overrides: Partial<GitHubActionEvent> = {}): GitHubActionEvent {
+  return {
+    id: "event-1", actionId: "action-pr", repositoryKey: githubRepository.repositoryKey,
+    actionRevision: 1, origin: "webhook", deliveryId: "delivery-1", kind: "pull_request",
+    status: "launched", headSha: "a".repeat(40), baseRef: "main", headRef: "feature/login",
+    pullRequestNumber: 7, targetIdentity: "pr:7@" + "a".repeat(40) as GitHubActionEvent["targetIdentity"],
+    title: "Add the login boundary", gateId: "gate-1", costCeilingUsd: 2.5,
+    reason: null, error: null, detectedAt: "2026-09-30T11:50:00.000Z",
+    observedAt: "2026-09-30T11:49:00.000Z", dispatchedAt: "2026-09-30T11:50:05.000Z", completedAt: null,
+    ...overrides,
+  };
+}
+
+export function githubDelivery(overrides: Partial<WebhookDeliveryRecord> = {}): WebhookDeliveryRecord {
+  return {
+    deliveryId: "delivery-1", connectionId: "github-connection", event: "pull_request",
+    action: "synchronize", repositoryKey: githubRepository.repositoryKey, installationId: "77",
+    headSha: "a".repeat(40), outcome: "processed", reason: null,
+    matchedActionIds: ["action-pr"], eventIds: ["event-1"],
+    receivedAt: "2026-09-30T11:50:00.000Z", durationMs: 42,
+    ...overrides,
+  };
+}
+
+function githubIntegration(scenario: GitHubIntegrationScenario) {
+  const missing = scenario === "missing_permissions" ? new Set(["workflows"]) : new Set<string>();
+  const pending = scenario === "pending_approval" ? new Set(["checks", "workflows"]) : new Set<string>();
+  const notConfigured = scenario === "not_configured";
+  const suspended = scenario === "suspended";
+  const notReady = scenario === "not_ready";
+  const nowhere = scenario === "installed_nowhere";
+  const stale = scenario === "stale_delivery";
+  const live = !suspended && !notReady && !nowhere;
+  const permissions = REQUIRED_PERMISSIONS.map(([name, required]) => {
+    const granted = !live || missing.has(name) || pending.has(name)
+      ? (missing.has(name) && live ? "read" : null)
+      : required;
+    return {
+      name,
+      required,
+      granted,
+      ok: live && !missing.has(name) && !pending.has(name),
+      pendingInstallationIds: live && pending.has(name) ? ["77"] : [],
+    };
+  });
+  const installations = notReady || nowhere ? [] : [{
+    installationId: "77", account: "OkamiOps", repositorySelection: suspended ? "all" as const : "selected" as const,
+    suspended, authorizedRepositoryCount: suspended ? 0 : 4,
+    enrolledRepositoryCount: suspended ? 0 : 2,
+    manageUrl: "https://github.com/organizations/OkamiOps/settings/installations/77",
+  }];
+  const secretConfigured = !notConfigured;
+  const lastVerified = notConfigured || !live
+    ? null
+    : stale ? "2026-09-20T09:00:00.000Z" : "2026-09-30T11:50:00.000Z";
+  const steps = {
+    app_installed: live,
+    permissions: permissions.every((permission) => permission.ok),
+    events: true,
+    webhook_secret: secretConfigured,
+    delivery_verified: lastVerified !== null,
+    repository_enrolled: live && !suspended,
+    action_enabled: scenario === "all_green" || stale,
+    baseline: false,
+  };
+  let blocked = false;
+  const checklist = (Object.keys(steps) as Array<keyof typeof steps>).map((id) => {
+    blocked ||= !steps[id];
+    return { id, ok: !blocked };
+  });
+  const ready = checklist.slice(0, 6).every((item) => item.ok);
+  return {
+    connections: [{
+      connectionId: "github-connection", appSlug: "okami-sentinel", appName: "OKAMI Sentinel Guardrails",
+      appId: "4242", recordedAppId: notConfigured ? "okami-sentinel" : "4242",
+      webhookSecretConfigured: secretConfigured,
+      lastVerifiedDeliveryAt: lastVerified,
+      deliveryVerifiedStale: stale,
+      deliveryVerifiedAgeDays: stale ? 10 : lastVerified === null ? null : 0,
+      webhookUrl: "http://127.0.0.1:4175/api/github/webhook",
+      ready,
+      installationsState: notReady ? "not_ready" as const
+        : nowhere ? "none" as const
+          : suspended ? "suspended" as const : "active" as const,
+      missing: checklist.slice(0, 6).filter((item) => !item.ok).map((item) => item.id),
+      permissions,
+      events: REQUIRED_EVENTS.map((name) => ({ name, subscribed: true })),
+      installations,
+    }],
+    deliveries: {
+      last: notConfigured ? null : githubDelivery(),
+      last24h: notConfigured ? { processed: 0, ignored: 0, failed: 0 } : { processed: 12, ignored: 3, failed: 1 },
+    },
+    reconciliation: { lastAt: "2026-09-30T11:45:00.000Z", recoveredLast24h: 2 },
+    checklist,
+    readyConnectionId: ready ? "github-connection" : null,
+  };
+}
+
+export interface GitHubTabOptions {
+  locale?: string;
+  session?: MockApiOptions["session"];
+  repositories?: GuardrailRepository[];
+  actions?: GitHubAction[];
+  events?: GitHubActionEvent[];
+  deliveries?: WebhookDeliveryRecord[];
+  integration?: GitHubIntegrationScenario;
+  /** `POST /github/reconcile` answers `joined: true`: the cycle was already running. */
+  reconcileJoined?: boolean;
+  /** `GET /github/integration` answers 502, as it does while GitHub is down. */
+  integrationFails?: boolean;
+}
+
+/**
+ * Every `/github/*` route the tab reads, on top of `mockApi`. Registered **after**
+ * it so these patterns win, and deliberately exhaustive: an unmocked `/github/`
+ * request throws, which is how a call to a deleted route shows up as a failure
+ * instead of a blank panel.
+ */
+export async function mockGitHubTab(page: Page, options: GitHubTabOptions = {}) {
+  const scenario = options.integration ?? "all_green";
+  const state = {
+    /** Every `/github/*` request, as `METHOD /path?query`: the query is the scope. */
+    requests: [] as string[],
+    repositories: structuredClone(options.repositories ?? [githubRepository, githubSecondRepository]),
+    actions: structuredClone(options.actions ?? [githubAction()]),
+    events: structuredClone(options.events ?? [githubEvent()]),
+    deliveries: structuredClone(options.deliveries ?? [githubDelivery()]),
+    integration: githubIntegration(scenario),
+    /** Every body `PUT /github/integration/webhook-secret` received. */
+    secretWrites: [] as Array<{ connectionId: string; secret: string }>,
+    /** Every action write, in order, so a spec can assert the exact patch. */
+    writes: [] as Array<{ method: string; id: string | null; body: unknown }>,
+    reconciles: 0,
+  };
+
+  const base = await mockApi(page, options.locale ?? "pt-BR", { session: options.session });
+
+  await page.route("**/api/guardrails/repositories", (route) =>
+    route.fulfill({ json: { repositories: state.repositories } }));
+
+  await page.route("**/api/github/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = url.pathname.replace(/^\/api/, "");
+    state.requests.push(`${request.method()} ${path}${url.search}`);
+    const json = (body: unknown, status = 200) =>
+      route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+
+    if (path === "/github/integration" && request.method() === "GET") {
+      if (options.integrationFails) return json({ error: "github_integration_unavailable" }, 502);
+      return json(state.integration);
+    }
+    if (path === "/github/integration/webhook-secret" && request.method() === "PUT") {
+      const body = request.postDataJSON() as { connectionId: string; secret: string };
+      state.secretWrites.push(body);
+      if (body.secret.length < 16) return json({ error: "webhook_secret_invalid" }, 400);
+      // The real route answers 204 and never echoes the value; the next read has to
+      // report it as configured, with the previous proof retired.
+      state.integration.connections[0]!.webhookSecretConfigured = true;
+      state.integration.connections[0]!.lastVerifiedDeliveryAt = null;
+      state.integration.connections[0]!.deliveryVerifiedStale = false;
+      state.integration.connections[0]!.deliveryVerifiedAgeDays = null;
+      return route.fulfill({ status: 204 });
+    }
+    if (path === "/github/deliveries" && request.method() === "GET") {
+      return json({ deliveries: state.deliveries, limit: 50, offset: 0, hasMore: false });
+    }
+    if (path === "/github/reconcile" && request.method() === "POST") {
+      state.reconciles += 1;
+      return json({
+        repositories: 2, created: 1, observed: 0, errors: 0, joined: options.reconcileJoined === true,
+      });
+    }
+    if (path === "/github/branches" && request.method() === "GET") {
+      return json({ branches: ["main", "release/1"] });
+    }
+    if (path === "/github/events" && request.method() === "GET") {
+      const repositoryKey = url.searchParams.get("repositoryKey");
+      const outcome = url.searchParams.get("outcome");
+      const events = state.events
+        .filter((event) => !repositoryKey || event.repositoryKey === repositoryKey)
+        .filter((event) => !outcome || event.status === outcome);
+      return json({ events, limit: 50, offset: 0, hasMore: false });
+    }
+    if (path === "/github/actions" && request.method() === "GET") {
+      const repositoryKey = url.searchParams.get("repositoryKey");
+      const actions = state.actions.filter((action) => !repositoryKey || action.repositoryKey === repositoryKey);
+      return json({ actions, limit: 200, offset: 0, hasMore: false });
+    }
+    if (path === "/github/actions" && request.method() === "POST") {
+      const body = request.postDataJSON() as Record<string, unknown>;
+      state.writes.push({ method: "POST", id: null, body });
+      const repository = state.repositories.find((item) => item.repositoryKey === body.repositoryKey);
+      if (repository?.source === "local") return json({ error: "repository_source_unsupported" }, 409);
+      if (state.actions.some((action) => action.name === body.name && action.triggerKind === body.triggerKind
+        && action.repositoryKey === body.repositoryKey)) {
+        return json({ error: "github_action_name_taken" }, 409);
+      }
+      const created = githubAction({
+        ...(body as Partial<GitHubAction>),
+        id: `action-${state.actions.length + 1}`,
+      });
+      state.actions.push(created);
+      return json({ action: created }, 201);
+    }
+    const actionMatch = path.match(/^\/github\/actions\/([^/]+)(?:\/(events))?$/);
+    if (actionMatch) {
+      const [, id, sub] = actionMatch;
+      const index = state.actions.findIndex((action) => action.id === id);
+      if (index === -1) return json({ error: "not_found" }, 404);
+      if (sub === "events") {
+        return json({
+          events: state.events.filter((event) => event.actionId === id), limit: 50, offset: 0, hasMore: false,
+        });
+      }
+      if (request.method() === "PATCH") {
+        const body = request.postDataJSON() as Record<string, unknown>;
+        state.writes.push({ method: "PATCH", id: id!, body });
+        const current = state.actions[index]!;
+        // The server is the authority, and it refuses a maintainer who enables or
+        // reshapes a live action. The mock refuses the same way so a screen that
+        // offered the button would fail here instead of looking like it worked.
+        const isAdmin = options.session?.isAdmin !== false;
+        const spends = body.enabled === true || body.includeForks === true
+          || ["executor", "scanner", "costCeilingUsd", "dailyCostCeilingUsd"].some((key) => key in body);
+        const reshapes = current.enabled
+          && ["name", "branchPatterns", "triggerKind"].some((key) => key in body);
+        if (!isAdmin && (spends || reshapes)) return json({ error: "forbidden" }, 403);
+        const next = { ...current, ...(body as Partial<GitHubAction>) };
+        state.actions[index] = next;
+        return json({ action: next });
+      }
+      if (request.method() === "DELETE") {
+        state.writes.push({ method: "DELETE", id: id!, body: null });
+        if (options.session?.isAdmin === false && !(options.session.grants ?? []).some((grant) =>
+          grant.repositoryKey === state.actions[index]!.repositoryKey && grant.role === "maintainer")) {
+          return json({ error: "forbidden" }, 403);
+        }
+        state.actions.splice(index, 1);
+        return route.fulfill({ status: 204 });
+      }
+    }
+    throw new Error(`Unmocked GitHub request: ${request.method()} ${path}`);
+  });
+
+  return { ...base, github: state };
+}

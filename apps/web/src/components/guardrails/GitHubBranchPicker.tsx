@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { githubMonitorApi } from "../../lib/github-monitor-api";
+import { githubActionsApi } from "../../lib/github-actions-api";
 import { useScopedI18n } from "../../i18n/scoped";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -24,7 +24,7 @@ export function GitHubBranchPicker({ id, repositoryKey, value, onChange, allowAl
     let active = true;
     setQuery("");
     setState({ key: repositoryKey, branches: [], loading: true, error: false });
-    void githubMonitorApi.branches(repositoryKey).then((branches) => {
+    void githubActionsApi.fetchBranches(repositoryKey).then((branches) => {
       if (active) setState({ key: repositoryKey, branches, loading: false, error: false });
     }).catch(() => { if (active) setState({ key: repositoryKey, branches: [], loading: false, error: true }); });
     return () => { active = false; };

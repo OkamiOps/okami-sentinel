@@ -383,3 +383,46 @@ test("protected-branch bootstrap copy names the branch and does not send the ope
   assert.match(translate("pt-BR", "guardrails.bootstrapProtected", { branch: "main" }), /referência/);
   assert.match(translate("en", "guardrails.bootstrapMissing", { branch: "main" }), /Run the gate on main/);
 });
+
+/**
+ * The GitHub tab's catalogue is scoped, so the global audit above never sees it.
+ * Every key has to exist in all five locales with the same placeholders: a missing
+ * one would fall back to Portuguese in a German screenshot, which is exactly the
+ * inconsistency the operator called grotesque.
+ */
+test("the GitHub tab is translated key-for-key in five locales", async () => {
+  const { githubActionsMessages } = await import("../i18n/github-actions");
+  const locales = ["pt-BR", "en", "es", "de", "fr"] as const;
+  const reference = Object.keys(githubActionsMessages["pt-BR"]).sort();
+  assert.ok(reference.length > 150, "the GitHub catalogue looks truncated");
+  const placeholders = (value: string) => [...new Set(value.match(/\{\w+\}/g) ?? [])].sort();
+  for (const locale of locales) {
+    assert.deepEqual(Object.keys(githubActionsMessages[locale]).sort(), reference, `${locale}: key set differs`);
+    for (const key of reference as Array<keyof typeof githubActionsMessages["pt-BR"]>) {
+      const message = githubActionsMessages[locale][key];
+      assert.ok(message.trim().length > 0, `${locale}.${key} is empty`);
+      assert.deepEqual(
+        placeholders(message),
+        placeholders(githubActionsMessages["pt-BR"][key]),
+        `${locale}.${key}: interpolation mismatch`,
+      );
+    }
+  }
+  // The copy the carries pin, in the language the operator reads.
+  assert.match(githubActionsMessages["pt-BR"]["github.checklist.phase2"], /fase 2/);
+  assert.match(githubActionsMessages["pt-BR"]["github.delivery.stale"], /sem evento recente/i);
+  assert.match(githubActionsMessages["pt-BR"]["github.delivery.pingHint"], /ping/i);
+  assert.match(githubActionsMessages.de["github.executor.soon"], /Kürze/);
+  // Every state has its own sentence; two of them must not read the same.
+  const states = ["not_ready", "unknown", "none", "suspended"] as const;
+  for (const locale of locales) {
+    const details = states.map((state) => githubActionsMessages[locale][`github.installationsState.${state}Detail`]);
+    assert.equal(new Set(details).size, states.length, `${locale}: two installation states share a sentence`);
+  }
+  // A locale that merely copied Portuguese is not a translation of these.
+  for (const locale of ["en", "es", "de", "fr"] as const) {
+    for (const key of ["github.description", "github.checklistTitle", "github.reason.fork_pull_request", "github.actions.dayBudgetHint"] as const) {
+      assert.notEqual(githubActionsMessages[locale][key], githubActionsMessages["pt-BR"][key], `${locale}.${key}`);
+    }
+  }
+});
