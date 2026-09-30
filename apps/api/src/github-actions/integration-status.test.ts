@@ -84,6 +84,8 @@ interface InstallationSpec {
 
 interface ConnectionSpec {
   connectionId?: string;
+  /** When this connection last proved its secret; `null` means never. */
+  lastVerifiedDeliveryAt?: string | null;
   /** What the App asks for, from `GET /app`. */
   requested?: Record<string, string> | null;
   subscribed?: string[] | null;
@@ -92,6 +94,7 @@ interface ConnectionSpec {
 }
 
 interface Overrides {
+  lastVerifiedDeliveryAt?: string | null;
   granted?: Record<string, string> | null;
   subscribed?: string[] | null;
   webhookSecret?: string | null;
@@ -114,6 +117,7 @@ function deps(overrides: Overrides = {}): GitHubIntegrationStatusDependencies & 
     requested: overrides.granted,
     subscribed: overrides.subscribed,
     webhookSecret: overrides.webhookSecret,
+    lastVerifiedDeliveryAt: overrides.lastVerifiedDeliveryAt,
     installations: [{
       installationId: overrides.installationId,
       accountType: overrides.accountType,
@@ -124,14 +128,18 @@ function deps(overrides: Overrides = {}): GitHubIntegrationStatusDependencies & 
   }];
   const windows: string[] = [];
   const secrets = new Map<string, boolean>();
+  const verified = new Map<string, string | null>();
   const installations = new Map<string, GitHubIntegrationInstallationState[]>();
   const repositories = new Map<string, Array<{ repositoryId: string; repositoryKey: string | null }>>();
   const connections = specs.map((spec, index) => {
     const connectionId = spec.connectionId ?? `connection-${index + 1}`;
-    secrets.set(
-      connectionId,
-      (spec.webhookSecret === undefined ? "s".repeat(32) : spec.webhookSecret) !== null,
-    );
+    const secretConfigured = (spec.webhookSecret === undefined ? "s".repeat(32) : spec.webhookSecret) !== null;
+    secrets.set(connectionId, secretConfigured);
+    // A configured secret is assumed proven unless a case says otherwise: the new
+    // step exists for the case where it is present and has never worked.
+    verified.set(connectionId, spec.lastVerifiedDeliveryAt === undefined
+      ? (secretConfigured ? "2026-09-30T11:55:00.000Z" : null)
+      : spec.lastVerifiedDeliveryAt);
     installations.set(connectionId, (spec.installations ?? [{}]).map((installation, position) => {
       const installationId = installation.installationId ?? `${77 + index * 10 + position}`;
       repositories.set(installationId, installation.repositories ?? [
@@ -166,6 +174,7 @@ function deps(overrides: Overrides = {}): GitHubIntegrationStatusDependencies & 
     readBaselineState: (repositoryKey) =>
       overrides.baseline?.[repositoryKey] ?? "ready",
     readWebhookSecretConfigured: (connectionId) => secrets.get(connectionId) ?? false,
+    readLastVerifiedDeliveryAt: (connectionId) => verified.get(connectionId) ?? null,
     countDeliveries: (since) => {
       windows.push(since);
       return { processed: 4, ignored: 2, failed: 1 };
@@ -186,6 +195,7 @@ test("reports a ready integration with every checklist step met", async () => {
     { id: "permissions", ok: true },
     { id: "events", ok: true },
     { id: "webhook_secret", ok: true },
+    { id: "delivery_verified", ok: true },
     { id: "repository_enrolled", ok: true },
     { id: "action_enabled", ok: true },
     { id: "baseline", ok: true },
@@ -293,6 +303,7 @@ test("marks the webhook secret absent and stops the checklist there", async () =
   assert.equal(status.connections[0]!.webhookSecretConfigured, false);
   assert.deepEqual(status.checklist.slice(3), [
     { id: "webhook_secret", ok: false },
+    { id: "delivery_verified", ok: false },
     { id: "repository_enrolled", ok: false },
     { id: "action_enabled", ok: false },
     { id: "baseline", ok: false },
@@ -379,6 +390,7 @@ test("reports an integration with no connection at all", async () => {
     false,
     false,
     false,
+    false,
   ]);
   assert.equal(status.deliveries.last, null);
   assert.equal(status.reconciliation.lastAt, null);
@@ -414,12 +426,13 @@ test("never reads as ready when two connections are each half configured", async
     { id: "permissions", ok: true },
     { id: "events", ok: true },
     { id: "webhook_secret", ok: false },
+    { id: "delivery_verified", ok: false },
     { id: "repository_enrolled", ok: false },
     { id: "action_enabled", ok: false },
     { id: "baseline", ok: false },
   ]);
   assert.deepEqual(status.connections.map((item) => [item.connectionId, item.ready, item.missing]), [
-    ["connection-a", false, ["webhook_secret"]],
+    ["connection-a", false, ["webhook_secret", "delivery_verified"]],
     ["connection-b", false, ["permissions"]],
   ]);
 });
@@ -435,7 +448,7 @@ test("a broken second connection does not spoil the healthy one", async () => {
 
   assert.equal(status.readyConnectionId, "connection-a");
   assert.equal(status.checklist.every((item) => item.ok), true);
-  assert.deepEqual(status.connections[1]!.missing, ["events", "webhook_secret"]);
+  assert.deepEqual(status.connections[1]!.missing, ["events", "webhook_secret", "delivery_verified"]);
 });
 
 test("credits only the actions that belong to the healthy connection", async () => {
@@ -497,4 +510,42 @@ test("fails a permission level GitHub does not define", async () => {
   const checks = status.connections[0]!.permissions.find((p) => p.name === "checks")!;
   assert.equal(checks.ok, false);
   assert.deepEqual(checks.pendingInstallationIds, ["77"]);
+});
+
+/**
+ * A secret can be present and still wrong — pasted with a space, rotated on GitHub
+ * only, or recorded against the wrong App id, which filters the connection out of
+ * the candidate set and answers `401` for every delivery. "Configured" cannot mean
+ * "working": only a delivery whose signature verified proves that, and a delivery
+ * row exists **only** after a signature verifies.
+ */
+test("holds the checklist until a delivery has actually verified", async () => {
+  const status = await buildGitHubIntegrationStatus(deps({ lastVerifiedDeliveryAt: null }));
+  assert.equal(status.connections[0]!.webhookSecretConfigured, true);
+  assert.equal(status.connections[0]!.lastVerifiedDeliveryAt, null);
+  assert.deepEqual(status.checklist.slice(3), [
+    { id: "webhook_secret", ok: true },
+    { id: "delivery_verified", ok: false },
+    { id: "repository_enrolled", ok: false },
+    { id: "action_enabled", ok: false },
+    { id: "baseline", ok: false },
+  ]);
+  assert.equal(status.readyConnectionId, null);
+  assert.deepEqual(status.connections[0]!.missing, ["delivery_verified"]);
+});
+
+test("reports the moment each connection last proved its secret", async () => {
+  const status = await buildGitHubIntegrationStatus(deps({
+    connections: [
+      { connectionId: "connection-a", lastVerifiedDeliveryAt: "2026-09-30T11:00:00.000Z" },
+      { connectionId: "connection-b", lastVerifiedDeliveryAt: null },
+    ],
+    actions: [action({ connectionId: "connection-a" })],
+  }));
+  assert.deepEqual(
+    status.connections.map((item) => [item.connectionId, item.lastVerifiedDeliveryAt]),
+    [["connection-a", "2026-09-30T11:00:00.000Z"], ["connection-b", null]],
+  );
+  // The connection that has proved its secret is the one the checklist describes.
+  assert.equal(status.readyConnectionId, "connection-a");
 });

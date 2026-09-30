@@ -11,7 +11,11 @@ import type {
 import { matchesAnyBranchPattern } from "./branch-patterns.js";
 import { gitHubActionEventTargetIdentity, shortBranchName } from "./schema.js";
 import type { newestObservedEventAt, supersedeQueuedEvents } from "./store.js";
-import { verifyGitHubSignature, type GitHubWebhookSecret } from "./webhook-signature.js";
+import {
+  verifyGitHubSignature,
+  type GitHubWebhookSecret,
+  type VerifyGitHubSignatureInput,
+} from "./webhook-signature.js";
 
 /** The delivery outcomes the store records, plus the answer a redelivery gets. */
 export interface GitHubWebhookIngestResult {
@@ -66,6 +70,13 @@ export interface GitHubWebhookIngestDependencies {
    * cancel a queued gate and then answer "nothing happened".
    */
   runInTransaction<T>(work: () => T): T;
+  /**
+   * Overridable so the HTTP layer can hold its HMAC budget around the hash alone
+   * and never across I/O. Defaults to `verifyGitHubSignature`.
+   */
+  verifySignature?(
+    input: VerifyGitHubSignatureInput,
+  ): Promise<{ connectionId: string } | null> | { connectionId: string } | null;
 }
 
 export interface GitHubWebhookIngestInput {
@@ -137,7 +148,7 @@ export async function ingestGitHubWebhook(
     return { outcome: "failed", reason: "malformed_delivery", eventIds: [], matchedActionIds: [] };
   }
 
-  const verified = verifyGitHubSignature({
+  const verified = await (deps.verifySignature ?? verifyGitHubSignature)({
     body: input.body,
     header: signature,
     secrets: await deps.listSecrets(),

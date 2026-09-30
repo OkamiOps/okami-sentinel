@@ -6,7 +6,9 @@ import {
   MAX_WEBHOOK_SECRETS_TRIED,
   candidateWebhookSecrets,
   isWellFormedSignatureHeader,
+  namesKnownWebhookApp,
   verifyGitHubSignature,
+  webhookSecretSelection,
 } from "./webhook-signature.js";
 
 const sign = (secret: string, body: Uint8Array): string =>
@@ -123,17 +125,33 @@ test("hashes once when the delivery names the App it came from", () => {
   );
 });
 
-test("refuses a delivery naming an App id no connection owns, without hashing", () => {
+/**
+ * N-8. A recorded App id that is wrong — the installation id, the client id, the
+ * slug — would otherwise answer `401` for every delivery of that connection, which
+ * is the same code as a wrong secret and the very ambiguity the readiness checklist
+ * exists to remove. An App id nobody claims therefore falls back to the capped
+ * loop, and says so, instead of refusing in silence.
+ */
+test("falls back to the capped loop when no connection claims the named App id, and says so", () => {
   const body = new TextEncoder().encode('{"zen":"ok"}');
   const configured = [
     { connectionId: "c1", secret: "s1", appId: "1001" },
     { connectionId: "c2", secret: "s2", appId: "1002" },
   ];
-  assert.deepEqual(candidateWebhookSecrets(configured, "9999"), []);
-  assert.equal(
+  const selection = webhookSecretSelection(configured, "9999");
+  assert.equal(selection.matchedAppId, false);
+  assert.equal(selection.unmatchedAppId, true, "the caller logs webhook_app_id_unmatched");
+  assert.deepEqual(selection.candidates.map((one) => one.connectionId), ["c1", "c2"]);
+  assert.deepEqual(
     verifyGitHubSignature({ body, header: sign("s1", body), secrets: configured, appId: "9999" }),
-    null,
+    { connectionId: "c1" },
   );
+  // A delivery that names an App we do know is not an unmatched one.
+  assert.equal(webhookSecretSelection(configured, "1002").unmatchedAppId, false);
+  assert.equal(webhookSecretSelection(configured, undefined).unmatchedAppId, false);
+  assert.ok(namesKnownWebhookApp(configured, "1001"));
+  assert.ok(!namesKnownWebhookApp(configured, "9999"));
+  assert.ok(!namesKnownWebhookApp(configured, undefined));
 });
 
 test("falls back to the capped loop when the App id is absent or unknown to us", () => {
@@ -154,7 +172,11 @@ test("falls back to the capped loop when the App id is absent or unknown to us",
     { connectionId: "c1", secret: "s1", appId: null },
     { connectionId: "c2", secret: "s2", appId: "1002" },
   ];
-  assert.deepEqual(candidateWebhookSecrets(partial, "1001").map((one) => one.connectionId), ["c1"]);
+  assert.deepEqual(
+    candidateWebhookSecrets(partial, "1002").map((one) => one.connectionId),
+    ["c2", "c1"],
+    "the named connection first, then the ones whose App id we have not recorded",
+  );
   assert.deepEqual(
     verifyGitHubSignature({ body, header: sign("s1", body), secrets: partial, appId: "1001" }),
     { connectionId: "c1" },

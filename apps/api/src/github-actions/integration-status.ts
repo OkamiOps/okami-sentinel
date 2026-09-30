@@ -39,6 +39,7 @@ export type GitHubChecklistItemId =
   | "permissions"
   | "events"
   | "webhook_secret"
+  | "delivery_verified"
   | "repository_enrolled"
   | "action_enabled"
   | "baseline";
@@ -48,6 +49,7 @@ const CHECKLIST_ORDER: readonly GitHubChecklistItemId[] = Object.freeze([
   "permissions",
   "events",
   "webhook_secret",
+  "delivery_verified",
   "repository_enrolled",
   "action_enabled",
   "baseline",
@@ -56,7 +58,7 @@ const CHECKLIST_ORDER: readonly GitHubChecklistItemId[] = Object.freeze([
 /** The steps a single connection answers on its own. */
 type GitHubConnectionChecklistItemId = Extract<
   GitHubChecklistItemId,
-  "app_installed" | "permissions" | "events" | "webhook_secret" | "repository_enrolled"
+  "app_installed" | "permissions" | "events" | "webhook_secret" | "delivery_verified" | "repository_enrolled"
 >;
 
 const CONNECTION_CHECKLIST_ORDER: readonly GitHubConnectionChecklistItemId[] = Object.freeze([
@@ -64,6 +66,7 @@ const CONNECTION_CHECKLIST_ORDER: readonly GitHubConnectionChecklistItemId[] = O
   "permissions",
   "events",
   "webhook_secret",
+  "delivery_verified",
   "repository_enrolled",
 ]);
 
@@ -73,6 +76,8 @@ export interface GitHubIntegrationStatus {
     appSlug: string;
     appName: string;
     webhookSecretConfigured: boolean;
+    /** The last delivery of this connection whose signature verified; `null` if none. */
+    lastVerifiedDeliveryAt: string | null;
     webhookUrl: string | null;
     /** Every connection-level step this connection satisfies. */
     ready: boolean;
@@ -160,6 +165,15 @@ export interface GitHubIntegrationStatusDependencies {
   listActions: () => Awaitable<readonly GitHubAction[]>;
   readBaselineState: (repositoryKey: string) => Awaitable<GitHubBaselineReadiness>;
   readWebhookSecretConfigured: (connectionId: string) => Awaitable<boolean>;
+  /**
+   * When this connection last received a delivery whose signature verified, or
+   * `null`. A delivery row exists **only** after a signature verifies, so this is
+   * the proof that "configured" means "working": a secret pasted with a space, a
+   * secret rotated on GitHub alone, or an `appId` recorded wrongly (which filters
+   * the connection out of the candidate set and answers 401 for every delivery)
+   * all leave it `null`. Wire it to `lastVerifiedWebhookDeliveryAt`.
+   */
+  readLastVerifiedDeliveryAt: (connectionId: string) => Awaitable<string | null>;
   countDeliveries: (
     sinceIsoTimestamp: string,
   ) => Awaitable<{ processed: number; ignored: number; failed: number }>;
@@ -185,6 +199,8 @@ export async function buildGitHubIntegrationStatus(
     const events = requiredEvents(connection.subscribedEvents);
     const secretConfigured = await dependencies
       .readWebhookSecretConfigured(connection.connectionId);
+    const lastVerifiedDeliveryAt = await dependencies
+      .readLastVerifiedDeliveryAt(connection.connectionId);
     const installationStates = await dependencies.listInstallations(connection.connectionId);
     const permissions = requiredPermissions(connection.requestedPermissions, installationStates);
     const installations: GitHubIntegrationStatus["connections"][number]["installations"] = [];
@@ -209,6 +225,7 @@ export async function buildGitHubIntegrationStatus(
       permissions: permissions.every((permission) => permission.ok),
       events: events.every((event) => event.subscribed),
       webhook_secret: secretConfigured,
+      delivery_verified: lastVerifiedDeliveryAt !== null,
       repository_enrolled: installations.some((item) => item.enrolledRepositoryCount > 0),
     };
     connectionChecks.set(connection.connectionId, checks);
@@ -218,6 +235,7 @@ export async function buildGitHubIntegrationStatus(
       appSlug: connection.appSlug,
       appName: connection.appName,
       webhookSecretConfigured: secretConfigured,
+      lastVerifiedDeliveryAt,
       webhookUrl,
       ready: missing.length === 0,
       missing,
@@ -282,6 +300,7 @@ function furthestConnection(
       permissions: false,
       events: false,
       webhook_secret: false,
+      delivery_verified: false,
       repository_enrolled: false,
     },
   };

@@ -375,13 +375,14 @@ Rota: `POST /github/webhook` (em produção
 |---|---|
 | Autenticação | HMAC-SHA256 sobre os **bytes crus** do corpo, cabeçalho `X-Hub-Signature-256: sha256=<hex>` |
 | Comparação | `crypto.timingSafeEqual` sobre buffers de mesmo tamanho; tamanho diferente é rejeição imediata sem comparar |
-| Segredo | Por conexão de App, no vault (`SystemGitHubAppCredentialStore`, campo `webhookSecret`). O cabeçalho `X-GitHub-Hook-Installation-Target-ID` é o *App id* da entrega e escolhe a conexão **antes** de qualquer hash: o caso normal é **um** HMAC. Sem o cabeçalho, ou com um App id que nenhuma conexão reivindica, cai no laço estável de no máximo 20 (e um App id desconhecido de todas as conexões é recusado sem hash nenhum). O conjunto de segredos é lido por *snapshot* em cache curto (`createWebhookSecretCache`, 30 s, invalidado ao gravar um segredo), para que uma enxurrada não assinada não vire uma enxurrada de decifragens do vault |
+| Segredo | Por conexão de App, no vault (`SystemGitHubAppCredentialStore`, campo `webhookSecret`). O cabeçalho `X-GitHub-Hook-Installation-Target-ID` é o *App id* da entrega e escolhe a conexão **antes** de qualquer hash: o caso normal é **um** HMAC. Sem o cabeçalho cai no laço estável de no máximo 20; com um App id que **nenhuma** conexão reivindica também, e a recusa fica registrada como `webhook_app_id_unmatched` — um `appId` gravado errado (o id da instalação, o client id, o slug) não pode responder `401` a cada entrega em silêncio, com a mesma cara de segredo errado. O conjunto de segredos é lido por *snapshot* em cache curto (`createWebhookSecretCache`, 30 s, invalidado ao gravar um segredo), para que uma enxurrada não assinada não vire uma enxurrada de decifragens do vault |
 | Limite de tamanho | 1 MiB. Acima disso: `413 payload_too_large`, **sem** registrar entrega |
 | Replay | `X-GitHub-Delivery` é a PK de `github_webhook_deliveries`. Conflito → `200 {"status":"duplicate"}`, nenhum trabalho |
 | Sessão | Nenhuma. `["POST", "/github/webhook", PUBLIC]` na `ROUTE_POLICY` |
 | CSRF / Origin | Isento, como o callback do manifest: `serverSecurity` ganha a exceção explícita para este par método+caminho |
-| Limite de taxa | A assinatura é verificada **primeiro**, e `FailureWindow` por IP conta só verificações falhas: 30 em 5 min. Passado o limite o endereço é **estrangulado, não bloqueado** — uma verificação por segundo, e o resto recusado com `429 rate_limited` + `Retry-After` **antes de ler o corpo**. Assim a entrega correta do GitHub continua passando (mais devagar) e a enxurrada custa uma checagem de cabeçalho, não 1 MiB e um hash. Uma entrega que verificou nunca é bloqueada por falhas alheias, e também não zera a janela. Teto separado e generoso para as que verificaram: 600 por minuto. Teto de verificações **simultâneas** (8): acima dele, `429` sem ler o corpo |
-| Ordem das checagens | `resolve` → `Content-Length` → cabeçalhos presentes → **forma** de `X-Hub-Signature-256` (`sha256=` + 64 hex, por regex) → tetos e estrangulamento → leitura do corpo com teto → verificação. Nada caro acontece antes de tudo o que é barato |
+| Limite de taxa | A assinatura é verificada **primeiro**, e `FailureWindow` por IP conta só verificações falhas: 30 em 5 min. Passado o limite, o que aquele endereço ainda pode custar depende de ele saber nomear uma App nossa: entrega que traz um `X-GitHub-Hook-Installation-Target-ID` conhecido **é lida e verificada** (um hash), então uma entrega correta nunca é recusada por causa do segredo errado de outra conexão, em nenhum segundo; qualquer outra coisa daquele endereço é recusada com `429 rate_limited` + `Retry-After` **antes de ler o corpo**. Teto separado e generoso para as que verificaram: 600 por minuto |
+| Tetos de trabalho | Dois orçamentos, porque limitam coisas diferentes. **Leituras de corpo simultâneas** (16): o ritmo é do chamador, então o excesso é recusado (`429`), e cada leitura tem **prazo** (10 s) — corpo que não termina vira `408 request_timeout` e devolve o slot, para que oito conexões que gotejam bytes não possam negar o endpoint ao GitHub. **Hashes simultâneos** (4): é CPU nossa sobre bytes já em memória, então o excesso **espera** em fila em vez de jogar a leitura fora, e o slot é tomado só em volta do hash, nunca em volta de I/O |
+| Ordem das checagens | `resolve` → `Content-Length` → cabeçalhos presentes → **forma** de `X-Hub-Signature-256` (`sha256=` + 64 hex, por regex) → teto global → recusa por endereço sem App conhecida → orçamento de leitura → leitura com teto e prazo → orçamento de hash → verificação. Nada caro acontece antes de tudo o que é barato |
 | Resposta | Sempre JSON ≤ 200 bytes, nunca ecoa o payload nem o motivo interno de falha de assinatura (`401 signature_invalid` e nada mais) |
 | Trabalho | A requisição grava entrega + eventos em uma transação `IMMEDIATE` e devolve. O despacho corre fora do ciclo da requisição |
 | Cabeçalhos ausentes | `X-GitHub-Event`, `X-GitHub-Delivery` ou assinatura ausentes → `400 malformed_delivery`, sem registro |
@@ -730,7 +731,12 @@ explicitamente que ela é isenta de CSRF e que nenhuma outra rota nova é públi
   botão de substituir, última entrega, contagem de `processado`/`ignorado`/
   `falhou` nas últimas 24 h, e as 50 entregas mais recentes com motivo.
 - Checklist de prontidão: App instalada → permissões → eventos → segredo →
-  repositório cadastrado → ação habilitada → baseline.
+  **entrega verificada** → repositório cadastrado → ação habilitada → baseline.
+  "Segredo configurado" não quer dizer "segredo certo": só uma entrega cuja
+  assinatura validou prova isso, e uma linha de entrega só existe depois de a
+  assinatura validar. Um segredo colado com espaço, um segredo trocado só no
+  GitHub, ou um `appId` gravado errado deixam o passo vermelho em vez de a tela
+  ficar verde sobre nada.
 
 **02 Ações por repositório**
 
@@ -830,9 +836,11 @@ cadastro continua curto.
 - Escolha de conexão entre várias com segredos diferentes; nenhuma com segredo;
   escolha por `X-GitHub-Hook-Installation-Target-ID` (um hash), App id
   desconhecido (nenhum hash), cabeçalho ausente (laço capado).
-- Estrangulamento: endereço acima do limite recusado **sem ler o corpo**, e a
-  entrega assinada do intervalo seguinte atendida; teto de verificações
-  simultâneas; cabeçalho de assinatura malformado recusado antes do corpo.
+- Admissão: endereço acima do limite recusado **sem ler o corpo** quando não nomeia
+  uma App conhecida, e atendido quando nomeia; oito corpos que nunca terminam não
+  impedem uma entrega assinada, e cada um deles termina em `408`; teto de leituras
+  simultâneas recusando, teto de hashes enfileirando; cabeçalho de assinatura
+  malformado recusado antes do corpo.
 - Idempotência por `delivery_id`, inclusive duas entregas concorrentes.
 - Limite de 1 MiB e ausência de registro quando a assinatura não valida.
 - Casamento de padrões de branch (`main`, `release/**`, `feature/*`) para PR
