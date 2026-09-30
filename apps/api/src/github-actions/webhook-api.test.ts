@@ -40,8 +40,17 @@ const action: GitHubAction = {
 const payload = (sha = SHA_A): Record<string, unknown> => ({
   action: "opened",
   number: 7,
-  pull_request: { number: 7, base: { ref: "main" }, head: { ref: "topic", sha }, title: TITLE },
-  repository: { id: 1 },
+  pull_request: {
+    number: 7,
+    // The head repository is the base repository: a branch of the enrolled
+    // repository, not a fork. Omitting either id now fails closed.
+    base: { ref: "main", repo: { id: 1 } },
+    head: { ref: "topic", sha, repo: { id: 1 } },
+    title: TITLE,
+    draft: false,
+    updated_at: "2026-09-30T11:59:00.000Z",
+  },
+  repository: { id: 1, pushed_at: "2026-09-30T11:59:00.000Z" },
   installation: { id: 77 },
 });
 
@@ -212,7 +221,8 @@ test("answers 413 above one mebibyte and records nothing", async () => {
 
 test("answers 429 after thirty bad signatures from one address", async () => {
   const record = recorder();
-  const app = appFor(record);
+  let clock = 0;
+  const app = appFor(record, { throttleIntervalMs: 1_000, now: () => clock });
   const from = (ip: string, request: RequestInit): RequestInit => ({
     ...request,
     headers: { ...(request.headers as Record<string, string>), "X-Forwarded-For": ip },
@@ -227,15 +237,18 @@ test("answers 429 after thirty bad signatures from one address", async () => {
   assert.equal(blocked.headers.get("Retry-After"), "300");
   // The window counts failed verifications only. GitHub delivers from a small set
   // of addresses, so one misconfigured secret must never make the product deaf to
-  // the connection that is configured correctly.
+  // the connection that is configured correctly — it is throttled, not blocked, so
+  // the next interval serves a correctly signed delivery.
+  clock += 1_000;
   const valid = await app.request(URL, from("203.0.113.7", signedRequest({ delivery: "good-1" })));
   assert.equal(valid.status, 200);
   assert.deepEqual(await valid.json(), { status: "processed" });
   // A verified delivery does not clear the window either: an attacker who can have
   // one delivery accepted must not be able to reset its own budget.
+  clock += 1_000;
   const stillBlocked = await app.request(URL, from("203.0.113.7", signedRequest({ secret: "wrong", delivery: "bad-31" })));
   assert.equal(stillBlocked.status, 429);
-  // Another address keeps its own budget.
+  // Another address keeps its own budget, and never entered the throttle.
   const elsewhere = await app.request(URL, from("198.51.100.4", signedRequest({ delivery: "good-2" })));
   assert.equal(elsewhere.status, 200);
 });
@@ -558,4 +571,148 @@ test("refuses before reading the body while the schema is not wired yet", async 
   // The stream is offered to the Request eagerly; what matters is that the handler
   // never drained it, which would have pulled a mebibyte in 1 KiB chunks.
   assert.ok(pulls <= 2, `the body was read in ${pulls} chunks`);
+});
+
+/**
+ * N-1. The endpoint is unauthenticated, so what one address can make the process
+ * *do* is the defence that matters. Past the failure threshold a delivery is shed
+ * before the body is read — no 1 MiB buffer, no hash — while GitHub's own valid
+ * deliveries still get through, one per interval.
+ */
+test("sheds a flooding address before reading the body, and still lets a valid delivery through", async () => {
+  const record = recorder();
+  let clock = 0;
+  const app = appFor(record, { throttleIntervalMs: 1_000, now: () => clock });
+  const streamed = (): { request: RequestInit; pulls: () => number } => {
+    let pulls = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        controller.enqueue(new Uint8Array(1024));
+      },
+    });
+    return {
+      request: {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-GitHub-Event": "pull_request",
+          "X-GitHub-Delivery": `flood-${pulls}`,
+          "X-Hub-Signature-256": `sha256=${"0".repeat(64)}`,
+          "X-Forwarded-For": "203.0.113.9",
+        },
+        body,
+        duplex: "half",
+      } as RequestInit,
+      pulls: () => pulls,
+    };
+  };
+  const from = (request: RequestInit): RequestInit => ({
+    ...request,
+    headers: { ...(request.headers as Record<string, string>), "X-Forwarded-For": "203.0.113.9" },
+  });
+
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const response = await app.request(URL, from(signedRequest({ secret: "wrong", delivery: `bad-${attempt}` })));
+    assert.equal(response.status, 401, `attempt ${attempt}`);
+  }
+  // The first delivery past the threshold spends the interval's single slot.
+  const spent = await app.request(URL, from(signedRequest({ secret: "wrong", delivery: "bad-30" })));
+  assert.equal(spent.status, 429);
+  // Over the threshold and inside the interval: refused without touching the body.
+  const shed = streamed();
+  const refused = await app.request(URL, shed.request);
+  assert.equal(refused.status, 429);
+  assert.deepEqual(await refused.json(), { error: "rate_limited" });
+  assert.ok(shed.pulls() <= 2, `read ${shed.pulls()} chunks`);
+
+  // The next interval buys exactly one verification, and a valid delivery uses it.
+  clock += 1_000;
+  const valid = await app.request(URL, from(signedRequest({ delivery: "good-after-flood" })));
+  assert.equal(valid.status, 200);
+  assert.deepEqual(await valid.json(), { status: "processed" });
+  // And the one after it, in the same interval, is shed again.
+  const again = await app.request(URL, from(signedRequest({ delivery: "good-too-soon" })));
+  assert.equal(again.status, 429);
+  // A different address never entered the throttle at all.
+  const elsewhere = await app.request(URL, {
+    ...signedRequest({ delivery: "elsewhere" }),
+    headers: { ...(signedRequest().headers as Record<string, string>), "X-Forwarded-For": "198.51.100.8" },
+  });
+  assert.equal(elsewhere.status, 200);
+});
+
+test("refuses a malformed signature header before reading the body", async () => {
+  const record = recorder();
+  const app = appFor(record);
+  let pulls = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      pulls += 1;
+      controller.enqueue(new Uint8Array(1024));
+    },
+  });
+  const response = await app.request(URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-GitHub-Event": "pull_request",
+      "X-GitHub-Delivery": "shapeless",
+      // Right length, not hex: it cannot be a signature, so it costs nothing.
+      "X-Hub-Signature-256": `sha256=${"z".repeat(64)}`,
+    },
+    body,
+    duplex: "half",
+  } as RequestInit);
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: "malformed_delivery" });
+  assert.ok(pulls <= 2, `read ${pulls} chunks`);
+  assert.equal(record.deliveries.length, 0);
+});
+
+test("caps the number of verifications running at once", async () => {
+  const record = recorder();
+  const gates: Array<() => void> = [];
+  let open = false;
+  const gated: GitHubWebhookIngestDependencies = {
+    ...record.dependencies,
+    listSecrets: async () => {
+      if (!open) await new Promise<void>((resolve) => { gates.push(resolve); });
+      return [{ connectionId: "c1", secret: SECRET, appId: "4242" }];
+    },
+  };
+  const app = createGitHubWebhookApp({
+    resolve: () => gated, trustProxy: true, maxConcurrentVerifications: 1,
+  });
+  const first = app.request(URL, signedRequest({ delivery: "concurrent-1" }));
+  // Let the first request reach the gate before the second arrives.
+  await new Promise((resolve) => { setTimeout(resolve, 5); });
+  // Raced against a deadline: with no cap the second request blocks on the gate
+  // too, and the failure has to be an assertion rather than a hung test.
+  const second = await Promise.race([
+    app.request(URL, signedRequest({ delivery: "concurrent-2" })),
+    new Promise<"blocked">((resolve) => { setTimeout(() => resolve("blocked"), 1_000); }),
+  ]);
+  assert.notEqual(second, "blocked", "the second verification was admitted and blocked on the gate");
+  assert.equal((second as Response).status, 429);
+  assert.deepEqual(await (second as Response).json(), { error: "rate_limited" });
+  open = true;
+  for (const release of gates) release();
+  assert.equal((await first).status, 200);
+  // The slot is given back, so the endpoint is not wedged.
+  const third = await app.request(URL, signedRequest({ delivery: "concurrent-3" }));
+  assert.equal(third.status, 200);
+});
+
+test("caps the header values it writes to the log", async () => {
+  const record = recorder();
+  const app = appFor(record);
+  await app.request(URL, signedRequest({
+    secret: "wrong",
+    delivery: "d".repeat(4096),
+    event: "e".repeat(4096),
+  }));
+  assert.equal(logged.length, 1);
+  assert.equal(logged[0]!.deliveryId!.length, 64);
+  assert.equal(logged[0]!.event!.length, 64);
 });

@@ -6,6 +6,7 @@ import { trustsProxy } from "../deployment-settings.js";
 import { GITHUB_WEBHOOK_PATH } from "../github-app/manifest-flow.js";
 import { redactText } from "../redaction.js";
 import { ingestGitHubWebhook, type GitHubWebhookIngestDependencies } from "./webhook-ingest.js";
+import { isWellFormedSignatureHeader } from "./webhook-signature.js";
 
 /** The spec's 1 MiB ceiling. Above it the delivery is refused before any work. */
 export const GITHUB_WEBHOOK_MAX_BODY_BYTES = 1_048_576;
@@ -21,7 +22,28 @@ const FAILED_VERIFICATION_WINDOW_MS = 5 * 60_000;
 const VERIFIED_DELIVERIES_PER_MINUTE = 600;
 const VERIFIED_WINDOW_MS = 60_000;
 
+/**
+ * Past the failure threshold an address is throttled rather than blocked: one
+ * verification per interval, shed before the body is read. GitHub's valid
+ * deliveries still arrive — slowly — which is the ruling, while a flood costs a
+ * header check instead of a mebibyte and a hash.
+ */
+const THROTTLE_INTERVAL_MS = 1_000;
+
+/**
+ * How many bodies may be hashed at once. Verification is single-threaded CPU on
+ * caller-supplied bytes, so without a ceiling a handful of parallel 1 MiB
+ * deliveries is enough to stall the event loop for everything else.
+ */
+const MAX_CONCURRENT_VERIFICATIONS = 8;
+
+/** Header values are caller-supplied and can be kilobytes; the log takes 64. */
+const MAX_LOGGED_HEADER = 64;
+
 const GLOBAL_KEY = "verified";
+
+/** Bounded, like `FailureWindow`'s own map: a flood must not grow memory either. */
+const MAX_THROTTLED_ADDRESSES = 10_000;
 
 /**
  * What a refused delivery leaves behind. GitHub does not retry a webhook, so every
@@ -49,6 +71,9 @@ export interface GitHubWebhookAppOptions {
   acceptedWindow?: FailureWindow;
   trustProxy?: boolean;
   log?: (entry: GitHubWebhookLogEntry) => void;
+  throttleIntervalMs?: number;
+  maxConcurrentVerifications?: number;
+  now?: () => number;
 }
 
 /**
@@ -62,6 +87,12 @@ export function createGitHubWebhookApp(options: GitHubWebhookAppOptions): Hono {
     ?? new FailureWindow(FAILED_VERIFICATIONS_PER_ADDRESS, FAILED_VERIFICATION_WINDOW_MS);
   const verified = options.acceptedWindow
     ?? new FailureWindow(VERIFIED_DELIVERIES_PER_MINUTE, VERIFIED_WINDOW_MS);
+  const throttleIntervalMs = options.throttleIntervalMs ?? THROTTLE_INTERVAL_MS;
+  const maxConcurrent = options.maxConcurrentVerifications ?? MAX_CONCURRENT_VERIFICATIONS;
+  const now = options.now ?? Date.now;
+  /** Per address, the moment its next verification may start. */
+  const nextVerification = new Map<string, number>();
+  let verifying = 0;
   const app = new Hono();
 
   app.post(GITHUB_WEBHOOK_PATH, async (c) => {
@@ -79,8 +110,8 @@ export function createGitHubWebhookApp(options: GitHubWebhookAppOptions): Hono {
       report(options.log, {
         status,
         reason,
-        deliveryId: delivery === "" ? null : delivery,
-        event: event === "" ? null : event,
+        deliveryId: delivery === "" ? null : delivery.slice(0, MAX_LOGGED_HEADER),
+        event: event === "" ? null : event.slice(0, MAX_LOGGED_HEADER),
         ...(detail === undefined ? {} : { detail: redactText(detail) }),
       });
       // An operator reading the delivery log can then tell throttling from breakage.
@@ -100,24 +131,49 @@ export function createGitHubWebhookApp(options: GitHubWebhookAppOptions): Hono {
     if (Number.isFinite(declared) && declared > GITHUB_WEBHOOK_MAX_BODY_BYTES) {
       return refuse(413, "payload_too_large");
     }
-    if (event === "" || delivery === "" || signature === "") {
+    // The shape of the signature header is decided here, by regex, because a
+    // header that cannot possibly be a signature must not cost a body read.
+    if (event === "" || delivery === "" || !isWellFormedSignatureHeader(signature)) {
       return refuse(400, "malformed_delivery");
     }
     // The ceiling bites on the request that follows the six-hundredth, so nothing
     // is recorded for the one that is refused and its body is never read. It is a
     // fixed window, deliberately: a flood ceiling, not an invariant.
     if (verified.blocked(GLOBAL_KEY) !== null) return refuse(429, "rate_limited", { retryAfterMs: VERIFIED_WINDOW_MS });
+    // An address that has already failed the threshold buys one verification per
+    // interval. Everything else from it is shed here — before the body, before any
+    // hash — while a correctly signed delivery still gets through on the next tick.
+    if (address !== null && failedVerifications.blocked(address) !== null) {
+      const allowedAt = nextVerification.get(address) ?? 0;
+      if (now() < allowedAt) return refuse(429, "rate_limited", { retryAfterMs: throttleIntervalMs });
+      if (nextVerification.size > MAX_THROTTLED_ADDRESSES) {
+        nextVerification.delete(nextVerification.keys().next().value!);
+      }
+      nextVerification.set(address, now() + throttleIntervalMs);
+    }
+    if (verifying >= maxConcurrent) return refuse(429, "rate_limited", { retryAfterMs: throttleIntervalMs });
 
-    const body = await readCappedBody(c);
-    if (!body) return refuse(413, "payload_too_large");
-
+    verifying += 1;
     let result;
     try {
-      result = await ingestGitHubWebhook({ body, headers: { event, delivery, signature } }, dependencies);
+      const body = await readCappedBody(c);
+      if (!body) return refuse(413, "payload_too_large");
+      result = await ingestGitHubWebhook({
+        body,
+        headers: {
+          event,
+          delivery,
+          signature,
+          // Names the App, so the normal delivery costs exactly one hash.
+          installationTargetId: c.req.header("X-GitHub-Hook-Installation-Target-ID")?.trim() || undefined,
+        },
+      }, dependencies);
     } catch (error) {
       // The cause never reaches GitHub, but it must reach the operator: a 500 is
       // the only trace a lost delivery leaves on our side.
       return refuse(500, "webhook_failed", { detail: error instanceof Error ? error.message : String(error) });
+    } finally {
+      verifying -= 1;
     }
 
     if (result.outcome === "failed" && result.reason === "signature_invalid") {

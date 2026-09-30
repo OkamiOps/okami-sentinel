@@ -432,6 +432,14 @@ export function supersedeQueuedEvents(
      * its order.
      */
     beforeObservedAt?: string;
+    /**
+     * The event this supersession is on behalf of. GitHub's clocks have one-second
+     * resolution, so two heads can share one; insertion order then breaks the tie,
+     * in one direction only, and exactly one of the two survives. An id that is
+     * not there degrades to the strict clock comparison rather than matching
+     * everything.
+     */
+    beforeEventId?: string;
   },
   database: Database.Database = getDb(),
   now: string = new Date().toISOString(),
@@ -456,8 +464,19 @@ export function supersedeQueuedEvents(
     throw new Error("github_action_supersede_scope_required");
   }
   if (input.beforeObservedAt !== undefined) {
-    clauses.push("COALESCE(observed_at, detected_at) < @before_observed_at");
     parameters.before_observed_at = input.beforeObservedAt;
+    if (input.beforeEventId === undefined) {
+      clauses.push("COALESCE(observed_at, detected_at) < @before_observed_at");
+    } else {
+      parameters.before_event_id = input.beforeEventId;
+      clauses.push(`(
+        COALESCE(observed_at, detected_at) < @before_observed_at
+        OR (
+          COALESCE(observed_at, detected_at) = @before_observed_at
+          AND rowid < (SELECT rowid FROM github_action_events WHERE id = @before_event_id)
+        )
+      )`);
+    }
   }
   return database.prepare(`
     UPDATE github_action_events SET

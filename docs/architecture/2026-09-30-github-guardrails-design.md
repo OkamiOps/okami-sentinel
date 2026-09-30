@@ -133,9 +133,10 @@ parte da especificação.
 | Comentário quando não há PR | Não há comentário. Gate de branch protegida ou de comparação de refs publica só o Check |
 | Falha ao publicar o comentário | Reutiliza o alerta `ops.github_publish_failed`, com o gate como alvo. Nenhum evento de e-mail novo |
 | Latência do webhook | O handler responde em uma transação curta (entrega + eventos) e despacha fora do ciclo da requisição. GitHub nunca espera um scan |
+| `head.repo` ausente ou `null` | Conta como fork: `ignored` / `pull_request_repository_unknown`. O GitHub manda `head.repo: null` quando o repositório do head sumiu ou está inacessível — o caso clássico é apagar o fork depois de abrir o PR — e um controle cujo motivo é "código não confiável com o nosso token" não pode ler dado ausente como confiança. Com `include_forks`, a ação escaneia por `pull/<n>/head`, que existe no repositório base mesmo sem o fork |
 | PR de *fork* | **Não é escaneado por padrão**: `ignored` / `fork_pull_request`. O head de um fork é código que ninguém da organização escreveu, rodando com o token da instalação e o orçamento do cliente, e o `.csb/guardrails.json` do próprio autor seria a política que o julga. Opt-in por ação (`github_actions.include_forks`, default `0`, só administrador habilita). Habilitado, o evento nasce com `head_ref = pull/<n>/head` — o ref que existe no repositório base — e política e baseline continuam vindo **da branch base**, nunca do head do fork |
 | PR em *draft* | Não escaneado enquanto é rascunho: `ignored` / `draft_pull_request`. `ready_for_review` é exatamente o momento em que o autor pede o veredicto, e já está na lista de ações tratadas |
-| Ordem das entregas | O GitHub não garante ordem entre entregas, e o botão *Redeliver* reenvia uma antiga. A supersedência é **ordenada**: só cancela evento cuja mudança é estritamente mais antiga, pelo relógio do próprio payload (`pull_request.updated_at`, `repository.pushed_at`) guardado em `github_action_events.observed_at`, e só depois de o evento do head novo estar gravado. Entrega mais antiga que o que já está na tabela → `ignored` / `stale_delivery`, sem criar e sem cancelar nada. Mudança com mais de 24 h → mesmo `stale_delivery` |
+| Ordem das entregas | O GitHub não garante ordem entre entregas, e o botão *Redeliver* reenvia uma antiga. A supersedência é **ordenada**: só cancela evento cuja mudança é estritamente mais antiga, pelo relógio do próprio payload (`pull_request.updated_at`, `repository.pushed_at`) guardado em `github_action_events.observed_at`, e só depois de o evento do head novo estar gravado. Os relógios do GitHub têm resolução de um segundo, então o empate é desfeito pela ordem de inserção (`rowid`), numa direção só: dois heads no mesmo segundo deixam **um** evento na fila, nunca dois gates. Entrega mais antiga que o que já está na tabela → `ignored` / `stale_delivery`, sem criar e sem cancelar nada. Mudança com mais de 24 h → mesmo `stale_delivery` |
 | Entrega recusada | O GitHub **não reentrega** um webhook automaticamente: 4xx/5xx marca a entrega como falha e espera um humano clicar *Redeliver*. Toda recusa registra em log o `delivery_id`, o evento e o código do motivo (nunca o payload nem o segredo). `pull_request` e `push` perdidos voltam pela reconciliação; `installation`, `installation_repositories` e `check_run` não, e por isso a reconciliação também **re-lista as instalações** (ver *Reconciliação*). Um `rerequested` perdido é reexecutável pela pessoa que clicou |
 | Check run de outra App | `check_run.rerequested` só vale se `check_run.app.id` é o App da conexão que assinou; qualquer outra coisa é `ignored` / `check_run_not_ours`. A busca do gate é escopada por conexão **e** repositório resolvido, nunca pelo `external_id` sozinho |
 
@@ -374,12 +375,13 @@ Rota: `POST /github/webhook` (em produção
 |---|---|
 | Autenticação | HMAC-SHA256 sobre os **bytes crus** do corpo, cabeçalho `X-Hub-Signature-256: sha256=<hex>` |
 | Comparação | `crypto.timingSafeEqual` sobre buffers de mesmo tamanho; tamanho diferente é rejeição imediata sem comparar |
-| Segredo | Por conexão de App, no vault (`SystemGitHubAppCredentialStore`, campo `webhookSecret`). Tentadas todas as conexões com segredo, ordem estável, no máximo 20 |
+| Segredo | Por conexão de App, no vault (`SystemGitHubAppCredentialStore`, campo `webhookSecret`). O cabeçalho `X-GitHub-Hook-Installation-Target-ID` é o *App id* da entrega e escolhe a conexão **antes** de qualquer hash: o caso normal é **um** HMAC. Sem o cabeçalho, ou com um App id que nenhuma conexão reivindica, cai no laço estável de no máximo 20 (e um App id desconhecido de todas as conexões é recusado sem hash nenhum). O conjunto de segredos é lido por *snapshot* em cache curto (`createWebhookSecretCache`, 30 s, invalidado ao gravar um segredo), para que uma enxurrada não assinada não vire uma enxurrada de decifragens do vault |
 | Limite de tamanho | 1 MiB. Acima disso: `413 payload_too_large`, **sem** registrar entrega |
 | Replay | `X-GitHub-Delivery` é a PK de `github_webhook_deliveries`. Conflito → `200 {"status":"duplicate"}`, nenhum trabalho |
 | Sessão | Nenhuma. `["POST", "/github/webhook", PUBLIC]` na `ROUTE_POLICY` |
 | CSRF / Origin | Isento, como o callback do manifest: `serverSecurity` ganha a exceção explícita para este par método+caminho |
-| Limite de taxa | A assinatura é verificada **primeiro**. `FailureWindow` por IP conta só verificações falhas: 30 em 5 min → `429 rate_limited` com `Retry-After`. Uma entrega que verificou nunca é bloqueada por elas, e também não zera a janela. Teto separado e generoso para as que verificaram: 600 por minuto → `429 rate_limited`, sem registro |
+| Limite de taxa | A assinatura é verificada **primeiro**, e `FailureWindow` por IP conta só verificações falhas: 30 em 5 min. Passado o limite o endereço é **estrangulado, não bloqueado** — uma verificação por segundo, e o resto recusado com `429 rate_limited` + `Retry-After` **antes de ler o corpo**. Assim a entrega correta do GitHub continua passando (mais devagar) e a enxurrada custa uma checagem de cabeçalho, não 1 MiB e um hash. Uma entrega que verificou nunca é bloqueada por falhas alheias, e também não zera a janela. Teto separado e generoso para as que verificaram: 600 por minuto. Teto de verificações **simultâneas** (8): acima dele, `429` sem ler o corpo |
+| Ordem das checagens | `resolve` → `Content-Length` → cabeçalhos presentes → **forma** de `X-Hub-Signature-256` (`sha256=` + 64 hex, por regex) → tetos e estrangulamento → leitura do corpo com teto → verificação. Nada caro acontece antes de tudo o que é barato |
 | Resposta | Sempre JSON ≤ 200 bytes, nunca ecoa o payload nem o motivo interno de falha de assinatura (`401 signature_invalid` e nada mais) |
 | Trabalho | A requisição grava entrega + eventos em uma transação `IMMEDIATE` e devolve. O despacho corre fora do ciclo da requisição |
 | Cabeçalhos ausentes | `X-GitHub-Event`, `X-GitHub-Delivery` ou assinatura ausentes → `400 malformed_delivery`, sem registro |
@@ -825,7 +827,12 @@ cadastro continua curto.
 
 - HMAC: assinatura válida, inválida, ausente, tamanho diferente, prefixo
   `sha256=` ausente, corpo alterado em um byte.
-- Escolha de conexão entre várias com segredos diferentes; nenhuma com segredo.
+- Escolha de conexão entre várias com segredos diferentes; nenhuma com segredo;
+  escolha por `X-GitHub-Hook-Installation-Target-ID` (um hash), App id
+  desconhecido (nenhum hash), cabeçalho ausente (laço capado).
+- Estrangulamento: endereço acima do limite recusado **sem ler o corpo**, e a
+  entrega assinada do intervalo seguinte atendida; teto de verificações
+  simultâneas; cabeçalho de assinatura malformado recusado antes do corpo.
 - Idempotência por `delivery_id`, inclusive duas entregas concorrentes.
 - Limite de 1 MiB e ausência de registro quando a assinatura não valida.
 - Casamento de padrões de branch (`main`, `release/**`, `feature/*`) para PR

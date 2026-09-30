@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import test from "node:test";
 
-import { MAX_WEBHOOK_SECRETS_TRIED, verifyGitHubSignature } from "./webhook-signature.js";
+import {
+  MAX_WEBHOOK_SECRETS_TRIED,
+  candidateWebhookSecrets,
+  isWellFormedSignatureHeader,
+  verifyGitHubSignature,
+} from "./webhook-signature.js";
 
 const sign = (secret: string, body: Uint8Array): string =>
   `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
@@ -90,4 +95,80 @@ test("an empty or unusable secret never matches", () => {
     verifyGitHubSignature({ body, header: sign("s1", body), secrets: secrets(["c1", ""], ["c2", "s1"]) }),
     { connectionId: "c2" },
   );
+});
+
+/**
+ * N-1. Verification is what an unauthenticated caller can make us pay for, so it
+ * has to be one HMAC in the normal case. App webhooks carry the App id in
+ * `X-GitHub-Hook-Installation-Target-ID`, which names the connection before a
+ * single hash is computed.
+ */
+test("hashes once when the delivery names the App it came from", () => {
+  const body = new TextEncoder().encode('{"zen":"ok"}');
+  const configured = [
+    { connectionId: "c1", secret: "s1", appId: "1001" },
+    { connectionId: "c2", secret: "s2", appId: "1002" },
+    { connectionId: "c3", secret: "s3", appId: "1003" },
+  ];
+  assert.deepEqual(
+    verifyGitHubSignature({ body, header: sign("s2", body), secrets: configured, appId: "1002" }),
+    { connectionId: "c2" },
+  );
+  assert.deepEqual(candidateWebhookSecrets(configured, "1002").map((one) => one.connectionId), ["c2"]);
+  // The named App's secret is the only one tried: another connection's valid
+  // signature is not accepted under the wrong App id.
+  assert.equal(
+    verifyGitHubSignature({ body, header: sign("s3", body), secrets: configured, appId: "1002" }),
+    null,
+  );
+});
+
+test("refuses a delivery naming an App id no connection owns, without hashing", () => {
+  const body = new TextEncoder().encode('{"zen":"ok"}');
+  const configured = [
+    { connectionId: "c1", secret: "s1", appId: "1001" },
+    { connectionId: "c2", secret: "s2", appId: "1002" },
+  ];
+  assert.deepEqual(candidateWebhookSecrets(configured, "9999"), []);
+  assert.equal(
+    verifyGitHubSignature({ body, header: sign("s1", body), secrets: configured, appId: "9999" }),
+    null,
+  );
+});
+
+test("falls back to the capped loop when the App id is absent or unknown to us", () => {
+  const body = new TextEncoder().encode('{"zen":"ok"}');
+  // No header: every configured secret is a candidate, still capped at twenty.
+  const configured = [
+    { connectionId: "c1", secret: "s1", appId: "1001" },
+    { connectionId: "c2", secret: "s2", appId: "1002" },
+  ];
+  assert.equal(candidateWebhookSecrets(configured, undefined).length, 2);
+  assert.deepEqual(
+    verifyGitHubSignature({ body, header: sign("s2", body), secrets: configured, appId: undefined }),
+    { connectionId: "c2" },
+  );
+  // A connection whose App id we do not know yet is always a candidate, so a
+  // half-migrated store keeps working.
+  const partial = [
+    { connectionId: "c1", secret: "s1", appId: null },
+    { connectionId: "c2", secret: "s2", appId: "1002" },
+  ];
+  assert.deepEqual(candidateWebhookSecrets(partial, "1001").map((one) => one.connectionId), ["c1"]);
+  assert.deepEqual(
+    verifyGitHubSignature({ body, header: sign("s1", body), secrets: partial, appId: "1001" }),
+    { connectionId: "c1" },
+  );
+  const many = Array.from({ length: 25 }, (_, index) => ({ connectionId: `c${index}`, secret: `s${index}` }));
+  assert.equal(candidateWebhookSecrets(many, undefined).length, MAX_WEBHOOK_SECRETS_TRIED);
+});
+
+test("recognises a well-formed signature header before any body is read", () => {
+  const valid = `sha256=${"a".repeat(64)}`;
+  assert.ok(isWellFormedSignatureHeader(valid));
+  assert.ok(isWellFormedSignatureHeader(` ${valid} `));
+  for (const header of [undefined, "", "   ", "a".repeat(64), `sha1=${"a".repeat(64)}`,
+    `sha256=${"z".repeat(64)}`, `sha256=${"a".repeat(63)}`, `sha256=${"a".repeat(65)}`, "sha256="]) {
+    assert.ok(!isWellFormedSignatureHeader(header), `header ${String(header)}`);
+  }
 });

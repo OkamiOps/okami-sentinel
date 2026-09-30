@@ -502,3 +502,48 @@ test("an action carries its fork opt-in, and changing it bumps the revision", ()
   assert.equal(opened.revision, action.revision + 1, "what the action observes changed");
   assert.equal(patchGitHubAction(action.id, { includeForks: true }, db)!.revision, opened.revision);
 });
+
+/**
+ * N-3. GitHub's clocks have one-second resolution, so two heads of one pull request
+ * can share one. The pair `(clock, insertion order)` orders them anyway, in one
+ * direction only, so exactly one survives whichever arrived first.
+ */
+test("breaks a supersession tie on insertion order, never on the row itself", () => {
+  const db = memoryDb();
+  const action = pullRequestAction(db);
+  const sameSecond = "2026-09-30T10:00:00.000Z";
+  const first = createGitHubActionEvent({
+    ...pullRequestEvent(action, SHA_OLD, "2026-09-30T10:00:01.000Z"), observedAt: sameSecond,
+  }, db)!;
+  const second = createGitHubActionEvent({
+    ...pullRequestEvent(action, SHA_NEW, "2026-09-30T10:00:02.000Z"), observedAt: sameSecond,
+  }, db)!;
+
+  // Without the tie-break the strict clock comparison cancels nothing.
+  assert.equal(supersedeQueuedEvents({
+    actionId: action.id, pullRequestNumber: 7, exceptHeadSha: SHA_NEW,
+    reason: "head_superseded", beforeObservedAt: sameSecond,
+  }, db), 0);
+
+  assert.equal(supersedeQueuedEvents({
+    actionId: action.id, pullRequestNumber: 7, exceptHeadSha: SHA_NEW,
+    reason: "head_superseded", beforeObservedAt: sameSecond, beforeEventId: second.id,
+  }, db), 1);
+  assert.equal(getGitHubActionEvent(first.id, db)!.status, "superseded");
+  assert.equal(getGitHubActionEvent(second.id, db)!.status, "queued");
+
+  // The older row cannot cancel the newer one by naming itself: the pair is
+  // ordered one way.
+  assert.equal(supersedeQueuedEvents({
+    actionId: action.id, pullRequestNumber: 7, exceptHeadSha: SHA_OLD,
+    reason: "head_superseded", beforeObservedAt: sameSecond, beforeEventId: first.id,
+  }, db), 0);
+  assert.equal(getGitHubActionEvent(second.id, db)!.status, "queued");
+
+  // An unknown id degrades to the strict clock comparison instead of matching
+  // every row.
+  assert.equal(supersedeQueuedEvents({
+    actionId: action.id, pullRequestNumber: 7, exceptHeadSha: SHA_OLD,
+    reason: "head_superseded", beforeObservedAt: sameSecond, beforeEventId: "absent",
+  }, db), 0);
+});
