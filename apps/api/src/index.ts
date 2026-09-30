@@ -16,6 +16,7 @@ import { createShutdownHandler, isDraining } from "./shutdown.js";
 import { cancelScan } from "./runner.js";
 import { getProviderRuntime } from "./provider-runtime.js";
 import { ensureConnectionSchema } from "./connections-store.js";
+import { startEmailWorker } from "./email/worker.js";
 import { backfillRunRepositoryKeys } from "./auth/repository-key.js";
 import { bootstrapAdmin } from "./auth/auth-service.js";
 import {
@@ -153,6 +154,12 @@ const gateReconciler = setInterval(() => {
   });
 }, 15_000).unref();
 
+// Notifications are written to the outbox by whatever event produced them and
+// sent from here, in both modes: a local workbench with a provider configured
+// still has invites and security alerts to deliver. Starting the worker also
+// returns rows a previous process left claimed to the queue.
+const emailWorker = startEmailWorker();
+
 const stopGitHubMonitoring = githubMonitor.startPolling();
 
 const serverApp = createServerApp(app, {
@@ -186,6 +193,10 @@ if (settings.mode === "server") {
       for (const id of ids) cancelScan(id);
       return ids.length > 0;
     },
+    // The outbox worker owns the store while a send is in flight; the tick has
+    // to finish before `closeDb`, or a delivered message would lose its mark and
+    // be sent again after the restart.
+    drain: () => emailWorker.stop(),
     closeStore: closeDb,
   });
   for (const signal of ["SIGTERM", "SIGINT"] as const) process.on(signal, () => {

@@ -19,6 +19,7 @@ import {
 import { localeOf, isEmailAddress, resolveUserEmailAddress } from "./address.js";
 import { insertOutboxRow, listEmailDeliveries, markEmailFailed, markEmailSent } from "./outbox-store.js";
 import { renderEmail } from "./templates.js";
+import { transportConfigFor } from "./transport-config.js";
 import {
   getEmailSettings,
   publicEmailSettings,
@@ -192,31 +193,9 @@ function optionalText(value: unknown, fallback: string | null): string | null | 
   return trimmed === "" ? null : trimmed.slice(0, 320);
 }
 
-/** The transport configuration a complete record implies, or `null` when it is not complete. */
-export function transportConfigFor(
-  record: EmailSettingsRecord,
-  secret: string | null,
-): EmailTransportConfig | null {
-  if (record.fromAddress === null) return null;
-  if (record.provider === "resend") {
-    if (secret === null) return null;
-    return {
-      provider: "resend", fromName: record.fromName, fromAddress: record.fromAddress,
-      replyTo: record.replyTo, smtp: null, secret,
-    };
-  }
-  if (record.smtpHost === null || record.smtpPort === null) return null;
-  // Authless relay: a username is what makes a password necessary.
-  if (record.smtpUsername !== null && secret === null) return null;
-  return {
-    provider: "smtp", fromName: record.fromName, fromAddress: record.fromAddress,
-    replyTo: record.replyTo, secret,
-    smtp: {
-      host: record.smtpHost, port: record.smtpPort,
-      security: record.smtpSecurity, username: record.smtpUsername,
-    },
-  };
-}
+// Re-exported where it used to live, because the settings screen's own tests
+// and Task 2's worker both ask the same question of a stored record.
+export { transportConfigFor };
 
 export function createEmailApi(supplied?: Partial<EmailApiDependencies>): Hono {
   const deps = {
