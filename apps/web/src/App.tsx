@@ -29,7 +29,7 @@ const ScanReportPage = lazy(() => import("./pages/ScanReportPage").then(({ ScanR
 const ScansPage = lazy(() => import("./pages/ScansPage").then(({ ScansPage: page }) => ({ default: page })));
 const SettingsPage = lazy(() => import("./pages/SettingsPage").then(({ SettingsPage: page }) => ({ default: page })));
 const ConnectionsPage = lazy(() => import("./pages/ConnectionsPage").then(({ ConnectionsPage: page }) => ({ default: page })));
-const GitHubMonitorPage = lazy(() => import("./pages/GitHubMonitorPage").then(({ GitHubMonitorPage: page }) => ({ default: page })));
+const GitHubPage = lazy(() => import("./pages/GitHubPage").then(({ GitHubPage: page }) => ({ default: page })));
 const LoginPage = lazy(() => import("./pages/LoginPage").then(({ LoginPage: page }) => ({ default: page })));
 const InvitePage = lazy(() => import("./pages/InvitePage").then(({ InvitePage: page }) => ({ default: page })));
 const AccountPage = lazy(() => import("./pages/AccountPage").then(({ AccountPage: page }) => ({ default: page })));
@@ -184,7 +184,7 @@ export function App() {
         <Route path="/guardrails/setup" element={<GuardrailSetupPage />} />
         <Route path="/guardrails/repositories/:repositoryKey/policy" element={<GuardrailPolicyPage />} />
         <Route path="/guardrails/:gateId" element={<GuardrailsPage />} />
-        <Route path="/github" element={<GitHubMonitorPage />} />
+        <Route path="/github" element={<GitHubPage />} />
         <Route path="/scans/:id/findings/:findingId/path" element={<AttackPathPage />} />
         <Route path="/scans/:id" element={<ScanDetailPage />} />
         <Route path="/compare" element={<ComparePage />} />
