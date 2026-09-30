@@ -50,6 +50,7 @@ test("stores GitHub App PEM material in an isolated SCM native namespace", async
   const store = new SystemGitHubAppCredentialStore({
     redactor,
     loadBackend: async () => backend,
+    runtimeMode: "local",
     platform: "darwin",
   });
   const pem = privateKeyPem();
@@ -69,6 +70,7 @@ test("deletes GitHub App PEM material and its active redaction scope", async () 
   const store = new SystemGitHubAppCredentialStore({
     redactor,
     loadBackend: async () => backend,
+    runtimeMode: "local",
     platform: "linux",
   });
 
@@ -85,6 +87,7 @@ test("rejects malformed PEM payloads and unsupported native platforms", async ()
   const store = new SystemGitHubAppCredentialStore({
     redactor,
     loadBackend: async () => backend,
+    runtimeMode: "local",
     platform: "darwin",
   });
   await assert.rejects(() => store.put("connection-3", {
@@ -94,6 +97,7 @@ test("rejects malformed PEM payloads and unsupported native platforms", async ()
   const unsupported = new SystemGitHubAppCredentialStore({
     redactor,
     loadBackend: async () => backend,
+    runtimeMode: "local",
     platform: "win32",
   });
   await assert.rejects(() => unsupported.get("connection-3"), {
@@ -107,6 +111,7 @@ test("stores a webhook secret without losing the private key", async () => {
   const store = new SystemGitHubAppCredentialStore({
     redactor,
     loadBackend: async () => backend,
+    runtimeMode: "local",
     platform: "darwin",
   });
   const pem = privateKeyPem();
@@ -125,6 +130,7 @@ test("replaces a webhook secret and drops the previous value from redaction", as
   const store = new SystemGitHubAppCredentialStore({
     redactor,
     loadBackend: async () => backend,
+    runtimeMode: "local",
     platform: "darwin",
   });
   const pem = privateKeyPem();
@@ -141,6 +147,7 @@ test("refuses a secret shorter than 16 characters", async () => {
   const store = new SystemGitHubAppCredentialStore({
     redactor: new RecordingRedactor(),
     loadBackend: async () => backend,
+    runtimeMode: "local",
     platform: "darwin",
   });
   const pem = privateKeyPem();
@@ -163,6 +170,7 @@ test("refuses a webhook secret for a connection that has no private key", async 
   const store = new SystemGitHubAppCredentialStore({
     redactor: new RecordingRedactor(),
     loadBackend: async () => new MemoryBackend(),
+    runtimeMode: "local",
     platform: "darwin",
   });
   await assert.rejects(() => store.putWebhookSecret("absent", "s".repeat(32)), {
@@ -170,11 +178,27 @@ test("refuses a webhook secret for a connection that has no private key", async 
   });
 });
 
+test("treats an explicitly undefined webhook secret as no secret at all", async () => {
+  const backend = new MemoryBackend();
+  const store = new SystemGitHubAppCredentialStore({
+    redactor: new RecordingRedactor(),
+    loadBackend: async () => backend,
+    runtimeMode: "local",
+    platform: "darwin",
+  });
+  const pem = privateKeyPem();
+
+  await store.put("c1", { privateKeyPem: pem, webhookSecret: undefined });
+
+  assert.deepEqual(await store.get("c1"), { privateKeyPem: pem });
+});
+
 test("refuses an unknown field in the stored bundle", async () => {
   const backend = new MemoryBackend();
   const store = new SystemGitHubAppCredentialStore({
     redactor: new RecordingRedactor(),
     loadBackend: async () => backend,
+    runtimeMode: "local",
     platform: "darwin",
   });
   const pem = privateKeyPem();
@@ -198,6 +222,7 @@ test("keeps pending PEM redaction when the native write outcome is unknown", asy
   const store = new SystemGitHubAppCredentialStore({
     redactor,
     loadBackend: async () => backend,
+    runtimeMode: "local",
     platform: "darwin",
   });
   const pem = privateKeyPem();

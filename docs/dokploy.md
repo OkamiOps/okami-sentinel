@@ -93,9 +93,14 @@ como `configurado`.
 **App existente.** Três ajustes em `https://github.com/settings/apps/<slug>`:
 
 1. **Permissions** — `checks: write`, `contents: write`, `pull_requests: write`,
-   `actions: write`, `workflows: write`, `metadata: read`. Ampliar permissões
-   exige aprovar a revisão **em cada instalação**; até a aprovação, a tela de
-   Integração continua apontando a permissão que falta.
+   `actions: write`, `workflows: write`, `metadata: read`. Salvar no GitHub só
+   muda o que a App **pede**: ampliar permissões enfileira uma revisão **em cada
+   instalação**, e até a aprovação a instalação continua com os níveis antigos. A
+   tela de Integração compara as duas coisas — ela aponta a permissão que falta e
+   **em qual instalação a revisão está pendente**. Aprove em
+   `https://github.com/settings/installations/<id>` (ou na página equivalente da
+   organização) antes de habilitar uma ação; sem isso o gate roda e a publicação
+   do Check falha com `github_permission_missing`.
 2. **Subscribe to events** — `pull_request`, `push`, `installation`,
    `installation_repositories`, `check_run`, `workflow_run`.
 3. **Webhook** — URL `https://sentinel.okamilab.com/api/github/webhook`, marcado
@@ -107,10 +112,21 @@ como `configurado`.
 **Nenhuma variável de ambiente nova guarda segredo.**
 `CSB_GITHUB_WEBHOOK_SECRET` é deliberadamente não introduzida: o segredo do
 webhook segue a mesma custódia da chave privada da App, cifrado pela chave de
-`CSB_VAULT_KEY_FILE`. Rotacionar esse arquivo é rotacionar também o segredo do
-webhook. A única variável opcional desta área é
-`CSB_GITHUB_RECONCILE_INTERVAL_MS`, que ajusta o intervalo da reconciliação
-(padrão de 15 minutos) — a rede de segurança para a entrega que não chegou.
+`CSB_VAULT_KEY_FILE`. Trocar esse arquivo **não** rotaciona nada no GitHub — ele
+torna o pacote gravado indecifrável, e perde de uma vez a chave privada da App e
+o segredo do webhook. Depois de trocá-lo, refaça o fluxo do manifest (ou
+recarregue a chave privada) e cole um segredo novo; até então a própria tela de
+Integração responde erro em vez de dizer `ausente`. A única variável opcional
+desta área é `CSB_GITHUB_RECONCILE_INTERVAL_MS`, que ajusta o intervalo da
+reconciliação (padrão de 15 minutos) — a rede de segurança para a entrega que não
+chegou.
+
+**Trocar o segredo do webhook.** Nesta ordem: gere e salve o segredo no GitHub,
+cole imediatamente em **Integração → Webhook**, e reenvie uma entrega pela página
+*Advanced* da App para confirmar `processado`. O GitHub passa a assinar com o
+segredo novo no instante do Save, então toda entrega entre o Save e a colagem
+falha a assinatura — a reconciliação de 15 minutos recupera os commits desse
+intervalo, de modo que a janela custa latência, não cobertura.
 
 **Proxy reverso.** A assinatura é um HMAC sobre os **bytes crus** do corpo, então
 o proxy não pode alterar nada no caminho:
@@ -122,8 +138,12 @@ o proxy não pode alterar nada no caminho:
   quebra de linha).
 
 Dokploy e Traefik atendem a isso por padrão. Uma entrega cujo corpo chegue
-alterado responde `401 signature_invalid` e não é registrada — se toda entrega
-falhar a assinatura, suspeite do proxy antes do segredo.
+alterado responde `401 signature_invalid` e, **por desenho, não é registrada** —
+a lista de entregas do Sentinel fica vazia, o que é indistinguível de "nada
+aconteceu". O sinal está do outro lado: *Settings → Apps → <slug> → Advanced →
+Recent Deliveries*, no GitHub, mostra os 401 com corpo e cabeçalhos. Lista vazia
+no Sentinel e 401 nessa página significa assinatura — ou seja, o segredo, o
+proxy, ou uma App apontando para outro destino.
 
 **Escopo da instalação.** Se a App foi instalada em *only selected
 repositories*, o multi-select de cadastro só mostra os repositórios escolhidos.

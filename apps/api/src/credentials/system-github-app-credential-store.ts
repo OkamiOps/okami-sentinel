@@ -187,7 +187,8 @@ function validCredentials(value: unknown): GitHubAppCredentials {
   } catch {
     throw new VaultError("secure_storage_unavailable");
   }
-  if (!("webhookSecret" in value)) return { privateKeyPem };
+  // An explicitly undefined field is no secret, not an invalid one.
+  if (value.webhookSecret === undefined) return { privateKeyPem };
   return { privateKeyPem, webhookSecret: validWebhookSecret(value.webhookSecret) };
 }
 
