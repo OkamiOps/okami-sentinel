@@ -16,6 +16,7 @@ import { createShutdownHandler, isDraining } from "./shutdown.js";
 import { cancelScan } from "./runner.js";
 import { getProviderRuntime } from "./provider-runtime.js";
 import { ensureConnectionSchema } from "./connections-store.js";
+import { startOpsEvaluator } from "./email/ops-notifications.js";
 import { startEmailWorker } from "./email/worker.js";
 import { backfillRunRepositoryKeys } from "./auth/repository-key.js";
 import { bootstrapAdmin } from "./auth/auth-service.js";
@@ -160,6 +161,10 @@ const gateReconciler = setInterval(() => {
 // returns rows a previous process left claimed to the queue.
 const emailWorker = startEmailWorker();
 
+// The operational conditions have no moment to hook, so they are sampled. Same
+// process, same non-wedging guard, same shutdown drain as the outbox worker.
+const opsEvaluator = startOpsEvaluator();
+
 const stopGitHubMonitoring = githubMonitor.startPolling();
 
 const serverApp = createServerApp(app, {
@@ -196,7 +201,10 @@ if (settings.mode === "server") {
     // The outbox worker owns the store while a send is in flight; the tick has
     // to finish before `closeDb`, or a delivered message would lose its mark and
     // be sent again after the restart.
-    drain: () => emailWorker.stop(),
+    drain: async () => {
+      await opsEvaluator.stop();
+      await emailWorker.stop();
+    },
     closeStore: closeDb,
   });
   for (const signal of ["SIGTERM", "SIGINT"] as const) process.on(signal, () => {

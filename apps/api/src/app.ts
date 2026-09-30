@@ -14,6 +14,7 @@ import { createAuthApi } from "./auth/auth-api.js";
 import { createUsersApi } from "./auth/users-api.js";
 import { createEmailApi } from "./email/email-api.js";
 import { createNotificationsApi } from "./email/notifications-api.js";
+import { notifyGitHubPublishFailed } from "./email/ops-notifications.js";
 import { csrfTokenOf, inScope, principalOf, scopeOf } from "./auth/principal.js";
 import { createStreamGuard } from "./auth/stream-guard.js";
 import { authorize } from "./auth/route-policy.js";
@@ -753,6 +754,7 @@ export function createGuardrailsApp(
         publishError: message,
         publishedAt: null,
       });
+      notifyGitHubPublishFailed(gateId);
       return c.json({ error: message }, 502);
     }
   });
