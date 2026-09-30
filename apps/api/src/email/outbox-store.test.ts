@@ -5,7 +5,7 @@ import { ensureAuthSchema } from "../auth/schema.js";
 import { ensureEmailSchema } from "./schema.js";
 import {
   EMAIL_DELIVERY_HISTORY_LIMIT,
-  enqueueEmail,
+  insertOutboxRow,
   listEmailDeliveries,
   markEmailFailed,
   markEmailSent,
@@ -39,16 +39,16 @@ const message = {
 test("a repeated dedupe key enqueues nothing and says so", () => {
   const db = fresh();
   const now = new Date("2026-09-30T10:00:00.000Z");
-  const first = enqueueEmail(message, now, db);
+  const first = insertOutboxRow(message, now, db);
   assert.match(first ?? "", /^out_/);
-  assert.equal(enqueueEmail(message, now, db), null);
-  assert.notEqual(enqueueEmail({ ...message, dedupeKey: "gate.g2.gate.blocked" }, now, db), null);
+  assert.equal(insertOutboxRow(message, now, db), null);
+  assert.notEqual(insertOutboxRow({ ...message, dedupeKey: "gate.g2.gate.blocked" }, now, db), null);
   assert.equal(listEmailDeliveries(200, db).length, 2);
 });
 
 test("a queued message records its schedule, its failures and its delivery", () => {
   const db = fresh();
-  const id = enqueueEmail(message, new Date("2026-09-30T10:00:00.000Z"), db)!;
+  const id = insertOutboxRow(message, new Date("2026-09-30T10:00:00.000Z"), db)!;
   const queued = listEmailDeliveries(200, db)[0]!;
   assert.deepEqual(
     { status: queued.status, attempts: queued.attempts, nextAttemptAt: queued.nextAttemptAt, lastError: queued.lastError },
@@ -81,7 +81,7 @@ test("a queued message records its schedule, its failures and its delivery", () 
 
 test("the history never returns a body, and its limit cannot be raised by a caller", () => {
   const db = fresh();
-  enqueueEmail(message, new Date(), db);
+  insertOutboxRow(message, new Date(), db);
   const entry = listEmailDeliveries(10_000, db)[0]!;
   assert.equal("html" in entry, false);
   assert.equal("text" in entry, false);
