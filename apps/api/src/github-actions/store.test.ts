@@ -11,6 +11,7 @@ import type {
 } from "@csb/shared";
 
 import {
+  countReconciledEventsSince,
   countWebhookDeliveriesSince,
   createGitHubAction,
   createGitHubActionEvent,
@@ -18,6 +19,7 @@ import {
   getGitHubActionEvent,
   gitHubActionEventTargetIdentity,
   hasAnalysedCommit,
+  lastVerifiedWebhookDeliveryAt,
   listGitHubActions,
   listWebhookDeliveries,
   patchGitHubAction,
@@ -360,4 +362,45 @@ test("refuses to enable an action whose branch patterns are emptied in the same 
     () => patchGitHubAction(action.id, { branchPatterns: [], enabled: true }, db),
     /github_action_branch_patterns_invalid/,
   );
+});
+
+/**
+ * The number the Integration screen reads to answer "are the webhooks arriving?":
+ * events the 15-minute reconciliation had to recover because no delivery brought
+ * them. A high count with a configured secret means deliveries are being lost.
+ */
+test("counts the events the reconciliation recovered in a window", () => {
+  const db = memoryDb();
+  const action = pullRequestAction(db);
+  const recovered = (headSha: string, detectedAt: string, origin: "webhook" | "reconciliation" | "manual") =>
+    createGitHubActionEvent({ ...pullRequestEvent(action, headSha, detectedAt), origin }, db);
+  assert.ok(recovered("1".repeat(40), "2026-09-30T08:00:00.000Z", "reconciliation"));
+  assert.ok(recovered("2".repeat(40), "2026-09-30T11:00:00.000Z", "reconciliation"));
+  assert.ok(recovered("3".repeat(40), "2026-09-30T11:30:00.000Z", "webhook"));
+  assert.ok(recovered("4".repeat(40), "2026-09-30T11:40:00.000Z", "manual"));
+  assert.equal(countReconciledEventsSince("2026-09-30T10:00:00.000Z", db), 1);
+  assert.equal(countReconciledEventsSince("2026-09-30T07:00:00.000Z", db), 2);
+  assert.equal(countReconciledEventsSince("2026-10-01T00:00:00.000Z", db), 0);
+});
+
+/**
+ * A delivery only reaches the table once its signature verified, so the newest
+ * row of a connection *is* the last time that connection's secret was proven
+ * right — the signal the readiness checklist needs so a wrong-but-present secret
+ * cannot read green.
+ */
+test("reports when a connection last proved its webhook secret", () => {
+  const db = memoryDb();
+  assert.equal(lastVerifiedWebhookDeliveryAt("c1", db), null);
+  recordWebhookDelivery({ ...delivery(1, "2026-09-30T10:00:00.000Z"), connectionId: "c1" }, db);
+  recordWebhookDelivery({
+    ...delivery(2, "2026-09-30T12:00:00.000Z"), connectionId: "c1",
+    // A payload this connection signed but the product could not parse still
+    // proves the secret.
+    outcome: "failed", reason: "malformed_payload",
+  }, db);
+  recordWebhookDelivery({ ...delivery(3, "2026-09-30T09:00:00.000Z"), connectionId: "c2" }, db);
+  assert.equal(lastVerifiedWebhookDeliveryAt("c1", db), "2026-09-30T12:00:00.000Z");
+  assert.equal(lastVerifiedWebhookDeliveryAt("c2", db), "2026-09-30T09:00:00.000Z");
+  assert.equal(lastVerifiedWebhookDeliveryAt("c3", db), null);
 });

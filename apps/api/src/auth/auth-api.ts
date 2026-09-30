@@ -1,4 +1,3 @@
-import { getConnInfo } from "@hono/node-server/conninfo";
 import { Hono, type Context } from "hono";
 import { deleteCookie, setCookie } from "hono/cookie";
 import { isUserLocale, type AuthSessionResponse, type AuthSessionUser, type UserLocale, type UserSessionSummary } from "@csb/shared";
@@ -7,34 +6,13 @@ import { sessionCookieDeleteOptions, sessionCookieName, sessionCookieOptions } f
 import { acceptInvite, changePassword, login, logout } from "./auth-service.js";
 import { listUserGrants } from "./grant-store.js";
 import { peekInvite } from "./invite-store.js";
+import { clientIp, loginBucket } from "./login-client-ip.js";
 import { csrfTokenOf, principalOf } from "./principal.js";
 import { getSessionById, listUserSessions, revokeSession, revokeUserSessions } from "./session-store.js";
 import { getUser, updateUser } from "./user-store.js";
 
-/**
- * The per-IP login limiter is only worth anything if the caller cannot choose
- * its own bucket. `X-Forwarded-For` is caller-supplied unless exactly one
- * trusted proxy terminates the connection, and even then only the entry that
- * proxy appended — the RIGHTMOST one — is its own observation.
- */
-export function loginBucket(forwardedFor: string | undefined, peer: string | null, trustProxy: boolean): string | null {
-  if (!trustProxy) return peer?.trim().slice(0, 64) || null;
-  const appended = (forwardedFor ?? "").split(",").at(-1)?.trim() ?? "";
-  return appended.slice(0, 64) || null;
-}
-
-/** `getConnInfo` needs the Node listener; `app.request` has no socket at all. */
-function peerAddress(c: Context): string | null {
-  try {
-    return getConnInfo(c).remote.address ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function clientIp(c: Context, trustProxy: boolean): string | null {
-  return loginBucket(c.req.header("X-Forwarded-For"), peerAddress(c), trustProxy);
-}
+/** Re-exported: the limiter bucket now lives with the webhook's copy of the rule. */
+export { loginBucket };
 
 async function body(c: Context): Promise<Record<string, unknown>> {
   try {

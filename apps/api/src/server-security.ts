@@ -33,10 +33,17 @@ export function serverSecurity(settings: ServerSettings): MiddlewareHandler {
     const mutation = !["GET", "HEAD", "OPTIONS"].includes(c.req.method);
     const origin = c.req.header("Origin");
     const callback = c.req.method === "GET" && c.req.path === "/api/guardrails/github-app/manifest/callback";
+    // GitHub's webhook carries no cookie, no CSRF token and no Origin: the HMAC
+    // over the raw body is its authentication. A request that *does* carry a
+    // foreign Origin or a cross-site fetch marker is a browser, not GitHub, and
+    // is still refused below.
+    const webhook = c.req.method === "POST" && c.req.path === "/api/github/webhook";
     if (!callback && ((origin && origin !== settings.origin) ||
         ["cross-site", "same-site"].includes(c.req.header("Sec-Fetch-Site") ?? ""))) {
       return c.json({ error: "origin_denied" }, 403);
     }
+    // No session is looked up: the handler authenticates the delivery itself.
+    if (webhook) return next();
     if (PUBLIC_API.some((pattern) => pattern.test(c.req.path))) {
       // No session means no CSRF token to compare, so an exact Origin match is
       // the only defence these mutations have against a cross-site form post.

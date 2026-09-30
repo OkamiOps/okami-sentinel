@@ -5,6 +5,7 @@ import { getGitHubMonitorRule } from "./github-monitor/store.js";
 import { GitHubMonitorService } from "./github-monitor/service.js";
 import { createGitHubMonitorApi } from "./github-monitor/api.js";
 import { automaticGitHubScanDispatcher } from "./github-monitor-dispatch.js";
+import { createGitHubWebhookApp } from "./github-actions/webhook-api.js";
 import { createGitHubCheckoutsApp } from "./github-checkouts.js";
 import { githubIntegrationSecurity } from "./github-integration-security.js";
 import { isDraining } from "./shutdown.js";
@@ -769,6 +770,19 @@ app.route("/", createNotificationsApi({ settings: loadServerSettings() }));
 app.route("/", createGuardrailsApp());
 app.route("/", createGitHubAppApi());
 app.route("/", createEngineUpdatesApp());
+
+/**
+ * `POST /github/webhook` is mounted here — before the `githubIntegrationSecurity`
+ * loop below, whose patterns must never match it — but it is deliberately
+ * **inert**: `resolve` returns `null`, so the route answers
+ * `503 github_webhook_not_ready` and nothing on this boot path reaches the
+ * actions store. The store's first call runs the migration that renames the
+ * legacy `github_monitor_*` tables, and the 60 s poller that reads them is still
+ * running (`index.ts`). Task 1.4 removes the poller, calls
+ * `ensureGitHubActionsSchema` once at boot, and replaces this `resolve` with the
+ * real dependencies in the same commit.
+ */
+app.route("/", createGitHubWebhookApp({ resolve: () => null }));
 
 const startAutomaticGitHubScan = automaticGitHubScanDispatcher({
   getRepository: findRepository,

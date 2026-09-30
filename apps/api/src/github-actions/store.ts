@@ -579,6 +579,41 @@ export function countWebhookDeliveriesSince(
   return counts;
 }
 
+/**
+ * How many events the reconciliation had to recover in a window, which is the
+ * complement of the delivery counts above: events it created are events no
+ * webhook brought. The Integration screen shows both numbers side by side.
+ */
+export function countReconciledEventsSince(
+  isoTimestamp: string,
+  database: Database.Database = getDb(),
+): number {
+  ensureGitHubActionsSchema(database);
+  const row = database.prepare(`
+    SELECT COUNT(*) AS total FROM github_action_events
+    WHERE origin = 'reconciliation' AND detected_at >= ?
+  `).get(isoTimestamp) as { total: number };
+  return Number(row.total) || 0;
+}
+
+/**
+ * The last moment a connection proved its webhook secret. A delivery is recorded
+ * only after its signature verified, so the newest row for the connection is
+ * exactly that moment — the evidence the readiness checklist needs, since a
+ * secret that is present but wrong is indistinguishable from a right one until a
+ * delivery arrives.
+ */
+export function lastVerifiedWebhookDeliveryAt(
+  connectionId: string,
+  database: Database.Database = getDb(),
+): string | null {
+  ensureGitHubActionsSchema(database);
+  const row = database.prepare(`
+    SELECT MAX(received_at) AS last FROM github_webhook_deliveries WHERE connection_id = ?
+  `).get(connectionId) as { last: string | null } | undefined;
+  return row?.last ?? null;
+}
+
 function rowToAction(row: ActionRow): GitHubAction {
   return {
     id: row.id,
