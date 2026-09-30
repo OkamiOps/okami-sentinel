@@ -9,9 +9,15 @@ import {
   escapeHtml,
   formatMoment,
   renderEmail,
+  toAsciiEntities,
   type EmailMessageDataMap,
   type EmailMessageKind,
 } from "./templates.js";
+
+/** The inverse of `toAsciiEntities`, for tests that check the round trip. */
+function decodeAsciiEntities(value: string): string {
+  return value.replace(/&#(\d+);/g, (_match, codePoint: string) => String.fromCodePoint(Number(codePoint)));
+}
 
 const AT = new Date("2026-09-30T14:05:09.000Z");
 const LATER = new Date("2026-09-30T18:45:09.000Z");
@@ -130,14 +136,16 @@ test("every kind, in every locale, carries a tone rule, a status pill and a preh
       assert.ok(/<td class="rule" bgcolor="#[0-9a-f]{6}"/.test(html), `${kind}/${locale} tone rule`);
       const pill = /<td class="pill"[^>]*>([^<]+)<\/td>/.exec(html);
       assert.ok(pill, `${kind}/${locale} status pill`);
-      const label = pill[1]!;
+      // The pill's HTML is pure ASCII; decode it back to compare against the
+      // plain-text twin and to check its case, which entities would obscure.
+      const label = decodeAsciiEntities(pill[1]!);
       assert.equal(label, label.toLocaleUpperCase(locale), `${kind}/${locale} pill is not upper-case`);
       // The pill and the plain-text twin never disagree about the status.
       assert.equal(text.split("\n")[1], `[${label}]`, `${kind}/${locale} text status line`);
       // The hidden preview line a client shows next to the subject.
       const preheader = /<div style="display:none;max-height:0;overflow:hidden;mso-hide:all">([^<]+)<\/div>/.exec(html);
       assert.ok(preheader, `${kind}/${locale} preheader`);
-      assert.ok(text.includes(preheader[1]!.replace(/&#39;/g, "'")), `${kind}/${locale} preheader copy`);
+      assert.ok(text.includes(decodeAsciiEntities(preheader[1]!)), `${kind}/${locale} preheader copy`);
     }
   }
 });
@@ -162,10 +170,13 @@ test("the tone of a message is decided by its kind, or by its data when the data
 test("severity becomes four chips in the HTML and stays four rows in the plain text", () => {
   const { html, text } = render("gate.blocked", "pt-BR");
   for (const [label, count] of [["Críticos", "1"], ["Altos", "2"], ["Médios", "3"], ["Baixos", "4"]]) {
-    assert.ok(html.includes(`>${label}</div>`), `${label} chip`);
+    // The HTML is pure ASCII, so an accented label arrives as a numeric
+    // character reference rather than as the character itself.
+    const htmlLabel = toAsciiEntities(label);
+    assert.ok(html.includes(`>${htmlLabel}</div>`), `${label} chip`);
     assert.ok(text.includes(`${label}: ${count}`), `${label} text row`);
     // The chips already say them; repeating them in the panel would be noise.
-    assert.equal(html.includes(`>${label}</td>`), false, `${label} repeated in the panel`);
+    assert.equal(html.includes(`>${htmlLabel}</td>`), false, `${label} repeated in the panel`);
   }
   assert.ok(html.includes(">Findings</td>"));
   assert.ok(html.includes("class=\"bar-critical\""));
@@ -219,6 +230,29 @@ test("no message comes near the size at which Gmail clips a body", () => {
       assert.ok(bytes < 60 * 1024, `${kind}/${locale} html is ${bytes} bytes`);
     }
   }
+});
+
+test("the HTML is pure ASCII, so no mail client can mis-decode it under a single-byte charset", () => {
+  for (const kind of EMAIL_MESSAGE_KINDS) {
+    for (const locale of USER_LOCALES) {
+      const { html } = render(kind, locale);
+      assert.equal(/[^\x00-\x7F]/.test(html), false, `${kind}/${locale} html has a non-ASCII byte`);
+    }
+  }
+});
+
+test("decoding the HTML's numeric character references restores the original accented copy", () => {
+  // pt-BR: á.
+  const accountTestPtBr = decodeAsciiEntities(render("account.test", "pt-BR").html);
+  assert.ok(accountTestPtBr.includes("O e-mail está funcionando"));
+
+  // German: ß survives the round trip.
+  const gateErrorDe = decodeAsciiEntities(render("gate.error", "de").html);
+  assert.ok(gateErrorDe.includes("abschließen"));
+
+  // French: ç and é survive the round trip.
+  const accountTestFr = decodeAsciiEntities(render("account.test", "fr").html);
+  assert.ok(accountTestFr.includes("Si vous avez reçu ce message, le fournisseur est correctement configuré."));
 });
 
 test("every interpolated value is escaped, in the body and in the link", () => {
@@ -371,7 +405,7 @@ test("without a public origin nothing links, the footer says so, and no token le
     const message = render(kind, "pt-BR", null);
     assert.equal(message.html.includes("href="), false, kind);
     assert.equal(message.text.includes("http"), false, kind);
-    assert.ok(message.html.includes("não tem endereço público configurado"), kind);
+    assert.ok(message.html.includes(toAsciiEntities("não tem endereço público configurado")), kind);
     assert.ok(message.text.includes("não tem endereço público configurado"), kind);
   }
   const invite = render("account.invite", "pt-BR", null);

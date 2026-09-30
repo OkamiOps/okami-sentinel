@@ -260,6 +260,23 @@ export function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => HTML_ENTITIES[character] ?? character);
 }
 
+/**
+ * The last pass over the finished HTML document, turning every non-ASCII code
+ * point into a numeric character reference. Resend stores the message as
+ * UTF-8 and the document declares `<meta charset="utf-8">`, but at least one
+ * mail client decodes the HTML part as Latin-1 regardless of that
+ * declaration, which turns "está" into "estÃ¡". A document that is pure
+ * 7-bit ASCII cannot be mis-decoded by any single-byte charset, so this runs
+ * last, over the whole string — text nodes, attributes, the VML block MSO
+ * reads, the preheader — everything except `subject` and `text`, which no
+ * mail client renders as HTML and therefore cannot mis-decode this way.
+ * `codePointAt` keeps an astral character (outside the BMP) as one reference
+ * rather than splitting its surrogate pair into two.
+ */
+export function toAsciiEntities(value: string): string {
+  return value.replace(/[^\x00-\x7F]/gu, (character) => `&#${character.codePointAt(0)};`);
+}
+
 // --------------------------------------------------------------------------
 // The shell's own copy: brand line, footer and the local-mode notice.
 // --------------------------------------------------------------------------
@@ -2046,5 +2063,7 @@ export function renderEmail<K extends EmailMessageKind>(input: RenderEmailInput<
     `</body></html>`,
   ].join("");
 
-  return { subject: body.subject, html, text };
+  // Pure 7-bit ASCII: no client can mis-decode it under a single-byte charset
+  // regardless of what it does with the `<meta charset="utf-8">` above.
+  return { subject: body.subject, html: toAsciiEntities(html), text };
 }
