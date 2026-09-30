@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { Hono } from "hono";
+import { createGitHubWebhookApp } from "./github-actions/webhook-api.js";
 import { createServerApp } from "./server-app.js";
 import { loadServerSettings, publicOrigin, type ServerSettings } from "./deployment-settings.js";
 import { securitySessionToken } from "./security-session.js";
@@ -230,5 +232,76 @@ test("local wrapper rejects foreign Host on reads before exposing API, session o
     for (const host of ["localhost:8787", "127.0.0.1:8787", "[::1]:8787"]) {
       assert.equal((await app.request(`http://${host}/api/security-session`, { headers: { Host: host } })).status, 200);
     }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+/**
+ * The webhook is the one public mutation: GitHub carries no session, no CSRF
+ * token and no `Origin`, and the HMAC over the raw body is the authentication.
+ * The wrapper must let exactly that shape through — and nothing that looks like
+ * a browser form post from another site.
+ */
+test("lets a signed webhook through with no session, no Origin and no CSRF token", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "csb-webhook-security-"));
+  const secret = "webhook-secret-of-connection-one";
+  const recorded: string[] = [];
+  const api = new Hono().route("/", createGitHubWebhookApp({
+    trustProxy: false,
+    resolve: () => ({
+      now: () => new Date().toISOString(),
+      listSecrets: async () => [{ connectionId: "c1", secret }],
+      findRepository: () => null,
+      listActions: () => [],
+      createEvent: () => null,
+      supersede: () => 0,
+      hasAnalysedCommit: () => false,
+      recordDelivery: (input) => { recorded.push(input.deliveryId); return "recorded"; },
+      disableActionsForRepository: () => {},
+      disableActionsForInstallation: () => {},
+      refreshInstallationRepositories: async () => {},
+      dispatch: () => {},
+      rerunGate: () => null,
+    }),
+  }));
+  try {
+    fs.writeFileSync(path.join(root, "index.html"), "<!doctype html><h1>Sentinel</h1>");
+    const server = createServerApp(api, { webRoot: root, settings: serverSettings() });
+    const body = JSON.stringify({ zen: "Keep it logically awesome." });
+    const signature = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+    const headers = {
+      "Content-Type": "application/json",
+      "X-GitHub-Event": "ping",
+      "X-GitHub-Delivery": "delivery-1",
+      "X-Hub-Signature-256": signature,
+    };
+
+    const accepted = await server.request(`${origin}/api/github/webhook`, { method: "POST", headers, body });
+    assert.equal(accepted.status, 200);
+    assert.deepEqual(await accepted.json(), { status: "processed" });
+    assert.deepEqual(recorded, ["delivery-1"]);
+
+    // A browser form post from another site is refused before the handler runs.
+    const foreign = await server.request(`${origin}/api/github/webhook`, {
+      method: "POST",
+      headers: { ...headers, "X-GitHub-Delivery": "delivery-2", Origin: "https://attacker.example" },
+      body,
+    });
+    assert.equal(foreign.status, 403);
+    assert.deepEqual(await foreign.json(), { error: "origin_denied" });
+
+    const crossSite = await server.request(`${origin}/api/github/webhook`, {
+      method: "POST",
+      headers: { ...headers, "X-GitHub-Delivery": "delivery-3", "Sec-Fetch-Site": "cross-site" },
+      body,
+    });
+    assert.equal(crossSite.status, 403);
+    assert.deepEqual(await crossSite.json(), { error: "origin_denied" });
+    assert.deepEqual(recorded, ["delivery-1"]);
+
+    // Every other API route still needs a session, webhook exemption or not.
+    assert.equal((await server.request(`${origin}/api/scans`)).status, 401);
+    // And the exemption is for this path only, not for the prefix.
+    const neighbour = await server.request(`${origin}/api/github/webhook/extra`, { method: "POST", headers, body });
+    assert.equal(neighbour.status, 401);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

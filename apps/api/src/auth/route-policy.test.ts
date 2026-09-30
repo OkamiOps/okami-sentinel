@@ -12,7 +12,7 @@ import { createServerApp } from "../server-app.js";
 import { SECURE_SESSION_COOKIE } from "../session-cookie.js";
 import { replaceUserGrants } from "./grant-store.js";
 import { LOCAL_PRINCIPAL } from "./principal.js";
-import { authorize, matchPolicy } from "./route-policy.js";
+import { ROUTE_POLICY, authorize, matchPolicy } from "./route-policy.js";
 import { createSession } from "./session-store.js";
 import { createUser } from "./user-store.js";
 
@@ -49,6 +49,19 @@ test("a monitor rule write is resolved from the rule, not reserved for administr
     kind: "repository", role: "maintainer", from: "monitorRule",
   });
   assert.deepEqual(matchPolicy("PATCH", "/github-monitor/rules/rule-1")?.params, { id: "rule-1" });
+});
+
+test("the webhook is the only public route that mutates state", () => {
+  const publicMutations = ROUTE_POLICY.filter(([method, , requirement]) =>
+    requirement.kind === "public" && !["GET", "HEAD", "OPTIONS"].includes(method));
+  assert.deepEqual(publicMutations.map(([method, pattern]) => `${method} ${pattern}`).sort(), [
+    "POST /auth/invites/:token", "POST /auth/login", "POST /github/webhook",
+  ]);
+  assert.equal(matchPolicy("POST", "/github/webhook")?.requirement.kind, "public");
+  // The HMAC is the authentication, so no session-bearing method may share the path.
+  for (const method of ["GET", "PUT", "PATCH", "DELETE"]) {
+    assert.equal(matchPolicy(method, "/github/webhook"), null, method);
+  }
 });
 
 test("path segments are decoded exactly once and bad encoding never matches", () => {

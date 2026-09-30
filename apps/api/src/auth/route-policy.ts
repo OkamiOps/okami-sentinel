@@ -85,6 +85,10 @@ export const ROUTE_POLICY: ReadonlyArray<readonly [method: string, pattern: stri
   ["GET", "/guardrails/github-app/installations/:installationId/repositories", ADMIN],
   ["GET", "/guardrails/github-app/manifest/authorize/:flowId", ADMIN], ["GET", "/guardrails/github-app/manifest/callback", ADMIN],
   ["GET", "/guardrails/github-app/manifest/flows/:flowId", ADMIN], ["POST", "/guardrails/github-app/manifest/start", ADMIN],
+  // The one public route that mutates state. It carries no session because
+  // GitHub has none; the HMAC over the raw body is checked by the handler, which
+  // is also why `serverSecurity` exempts it from CSRF.
+  ["POST", "/github/webhook", PUBLIC],
   ["GET", "/github-monitor/overview", SCOPED], ["GET", "/github-monitor/rules", SCOPED], ["GET", "/github-monitor/events", SCOPED],
   ["GET", "/github-monitor/actions-runs", SCOPED], ["GET", "/github-monitor/branches", SCOPED],
   ["POST", "/github-monitor/rules", SCOPED], ["PATCH", "/github-monitor/rules/:id", R("maintainer", "monitorRule")],
