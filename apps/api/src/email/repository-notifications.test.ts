@@ -309,7 +309,8 @@ test("a scan message reads the row it was queued for", () => {
   const stored = db.prepare("SELECT event, text, html FROM email_outbox").get() as
     { event: string; text: string; html: string };
   assert.equal(stored.event, "scan.completed");
-  assert.ok(stored.text.includes("Resultado: concluído"));
+  // The status pill carries the word; the fact panel does not repeat it.
+  assert.ok(stored.text.includes("[CONCLUÍDO]"));
   assert.ok(stored.text.includes("Findings: 3"));
   assert.ok(stored.text.includes("Custo: USD 1.50"));
   assert.ok(stored.text.includes("Duração: 1m 01s"));

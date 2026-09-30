@@ -704,7 +704,7 @@ test("an engine outage waits five minutes, then alerts, then reports its recover
   const alerted = queued(db);
   assert.equal(alerted.length, 1);
   assert.equal(alerted[0]!.event, "ops.engine_unavailable");
-  assert.ok(alerted[0]!.text.includes("Engines: codex-security, mantis"));
+  assert.ok(alerted[0]!.text.includes("Motores: codex-security, mantis"));
   assert.ok(alerted[0]!.text.includes(`Desde: 2026-09-30 10:00:00 UTC`));
 
   const up = { database: db, origin: ORIGIN, catalog: catalog({ "codex-security": true }) };

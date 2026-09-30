@@ -266,9 +266,9 @@ export function escapeHtml(value: string): string {
 
 interface ShellCopy {
   brand: string;
-  why: string;
-  accountLink: string;
-  notificationsLink: string;
+  /** The footer's link, as an action rather than as the name of a page. */
+  accountAction: string;
+  notificationsAction: string;
   /** Said instead of a link when the installation has no public address. */
   noLinks: string;
   /** The eyebrow in the dark header band: which family the message belongs to. */
@@ -282,9 +282,8 @@ interface ShellCopy {
 const SHELL: Readonly<Record<UserLocale, ShellCopy>> = Object.freeze({
   "pt-BR": {
     brand: "Okami Sentinel",
-    why: "Por que você recebeu isto",
-    accountLink: "Minha conta",
-    notificationsLink: "Minha conta → Notificações",
+    accountAction: "Abrir minha conta",
+    notificationsAction: "Gerenciar notificações",
     noLinks: "Esta instalação não tem endereço público configurado, por isso esta mensagem não traz links.",
     groups: { account: "Conta", repository: "Repositório", ops: "Operação" },
     statuses: {
@@ -299,9 +298,8 @@ const SHELL: Readonly<Record<UserLocale, ShellCopy>> = Object.freeze({
   },
   en: {
     brand: "Okami Sentinel",
-    why: "Why you received this",
-    accountLink: "My account",
-    notificationsLink: "My account → Notifications",
+    accountAction: "Open my account",
+    notificationsAction: "Manage notifications",
     noLinks: "This installation has no public address configured, so this message carries no links.",
     groups: { account: "Account", repository: "Repository", ops: "Operations" },
     statuses: {
@@ -316,9 +314,8 @@ const SHELL: Readonly<Record<UserLocale, ShellCopy>> = Object.freeze({
   },
   es: {
     brand: "Okami Sentinel",
-    why: "Por qué recibiste esto",
-    accountLink: "Mi cuenta",
-    notificationsLink: "Mi cuenta → Notificaciones",
+    accountAction: "Abrir mi cuenta",
+    notificationsAction: "Gestionar notificaciones",
     noLinks: "Esta instalación no tiene una dirección pública configurada, por eso este mensaje no incluye enlaces.",
     groups: { account: "Cuenta", repository: "Repositorio", ops: "Operación" },
     statuses: {
@@ -333,9 +330,8 @@ const SHELL: Readonly<Record<UserLocale, ShellCopy>> = Object.freeze({
   },
   de: {
     brand: "Okami Sentinel",
-    why: "Warum Sie diese Nachricht erhalten",
-    accountLink: "Mein Konto",
-    notificationsLink: "Mein Konto → Benachrichtigungen",
+    accountAction: "Mein Konto öffnen",
+    notificationsAction: "Benachrichtigungen verwalten",
     noLinks: "Für diese Installation ist keine öffentliche Adresse konfiguriert, daher enthält diese Nachricht keine Links.",
     groups: { account: "Konto", repository: "Repository", ops: "Betrieb" },
     statuses: {
@@ -350,9 +346,8 @@ const SHELL: Readonly<Record<UserLocale, ShellCopy>> = Object.freeze({
   },
   fr: {
     brand: "Okami Sentinel",
-    why: "Pourquoi vous recevez ce message",
-    accountLink: "Mon compte",
-    notificationsLink: "Mon compte → Notifications",
+    accountAction: "Ouvrir mon compte",
+    notificationsAction: "Gérer les notifications",
     noLinks: "Cette installation n'a pas d'adresse publique configurée, ce message ne contient donc aucun lien.",
     groups: { account: "Compte", repository: "Dépôt", ops: "Exploitation" },
     statuses: {
@@ -386,9 +381,9 @@ const accountTest = defineTemplate<"account.test", {
       subject: "Okami Sentinel: e-mail de teste",
       heading: "O e-mail está funcionando",
       body: "Este é um envio de teste feito nas configurações do Okami Sentinel. Se você recebeu esta mensagem, o provedor está configurado corretamente.",
-      sentTo: "Enviado para", at: "Horário do envio",
+      sentTo: "Enviado para", at: "Horário",
       action: "Abrir as configurações de e-mail",
-      reason: "Você recebeu esta mensagem porque um administrador pediu um envio de teste.",
+      reason: "Você recebe este e-mail porque um administrador pediu um envio de teste.",
     },
     en: {
       subject: "Okami Sentinel: test e-mail",
@@ -396,15 +391,15 @@ const accountTest = defineTemplate<"account.test", {
       body: "This is a test send from the Okami Sentinel settings. If this message reached you, the provider is configured correctly.",
       sentTo: "Sent to", at: "Sent at",
       action: "Open the e-mail settings",
-      reason: "You received this message because an administrator asked for a test send.",
+      reason: "You receive this e-mail because an administrator asked for a test send.",
     },
     es: {
       subject: "Okami Sentinel: correo de prueba",
       heading: "El correo funciona",
       body: "Este es un envío de prueba desde la configuración de Okami Sentinel. Si recibiste este mensaje, el proveedor está configurado correctamente.",
-      sentTo: "Enviado a", at: "Hora del envío",
+      sentTo: "Enviado a", at: "Hora",
       action: "Abrir la configuración de correo",
-      reason: "Recibiste este mensaje porque un administrador solicitó un envío de prueba.",
+      reason: "Recibes este correo porque un administrador solicitó un envío de prueba.",
     },
     de: {
       subject: "Okami Sentinel: Test-E-Mail",
@@ -412,7 +407,7 @@ const accountTest = defineTemplate<"account.test", {
       body: "Dies ist ein Testversand aus den Einstellungen von Okami Sentinel. Wenn diese Nachricht angekommen ist, ist der Anbieter korrekt konfiguriert.",
       sentTo: "Gesendet an", at: "Gesendet am",
       action: "E-Mail-Einstellungen öffnen",
-      reason: "Sie haben diese Nachricht erhalten, weil eine Administratorin oder ein Administrator einen Testversand angefordert hat.",
+      reason: "Sie erhalten diese E-Mail, weil ein Testversand angefordert wurde.",
     },
     fr: {
       subject: "Okami Sentinel : e-mail de test",
@@ -420,7 +415,7 @@ const accountTest = defineTemplate<"account.test", {
       body: "Ceci est un envoi de test effectué depuis les paramètres d'Okami Sentinel. Si vous avez reçu ce message, le fournisseur est correctement configuré.",
       sentTo: "Envoyé à", at: "Envoyé le",
       action: "Ouvrir les paramètres d'e-mail",
-      reason: "Vous recevez ce message parce qu'un administrateur a demandé un envoi de test.",
+      reason: "Vous recevez cet e-mail parce qu'un administrateur a demandé un envoi de test.",
     },
   },
   build: (data, copy) => ({
@@ -454,8 +449,8 @@ const accountInvite = defineTemplate<"account.invite", {
       byName: (name) => `${name} criou uma conta para você no Okami Sentinel.`,
       byAdmin: "Um administrador criou uma conta para você no Okami Sentinel.",
       next: "Para entrar, defina uma senha usando o link do convite. Ele vale uma única vez.",
-      expires: "O convite expira em", action: "Definir minha senha",
-      reason: "Você recebeu esta mensagem porque uma conta foi criada para você no Okami Sentinel.",
+      expires: "Expira em", action: "Definir minha senha",
+      reason: "Você recebe este e-mail porque uma conta foi criada para você no Okami Sentinel.",
     },
     en: {
       subject: "Okami Sentinel: your access invitation",
@@ -463,8 +458,8 @@ const accountInvite = defineTemplate<"account.invite", {
       byName: (name) => `${name} created an account for you on Okami Sentinel.`,
       byAdmin: "An administrator created an account for you on Okami Sentinel.",
       next: "To sign in, set a password using the invitation link. It works once.",
-      expires: "The invitation expires at", action: "Set my password",
-      reason: "You received this message because an account was created for you on Okami Sentinel.",
+      expires: "Expires at", action: "Set my password",
+      reason: "You receive this e-mail because an account was created for you on Okami Sentinel.",
     },
     es: {
       subject: "Okami Sentinel: tu invitación de acceso",
@@ -472,8 +467,8 @@ const accountInvite = defineTemplate<"account.invite", {
       byName: (name) => `${name} creó una cuenta para ti en Okami Sentinel.`,
       byAdmin: "Un administrador creó una cuenta para ti en Okami Sentinel.",
       next: "Para entrar, define una contraseña con el enlace de la invitación. Sirve una sola vez.",
-      expires: "La invitación expira el", action: "Definir mi contraseña",
-      reason: "Recibiste este mensaje porque se creó una cuenta para ti en Okami Sentinel.",
+      expires: "Expira el", action: "Definir mi contraseña",
+      reason: "Recibes este correo porque se creó una cuenta para ti en Okami Sentinel.",
     },
     de: {
       subject: "Okami Sentinel: Ihre Zugangseinladung",
@@ -481,8 +476,8 @@ const accountInvite = defineTemplate<"account.invite", {
       byName: (name) => `${name} hat ein Konto für Sie in Okami Sentinel angelegt.`,
       byAdmin: "Eine Administratorin oder ein Administrator hat ein Konto für Sie in Okami Sentinel angelegt.",
       next: "Legen Sie zum Anmelden über den Einladungslink ein Passwort fest. Der Link gilt einmalig.",
-      expires: "Die Einladung läuft ab am", action: "Passwort festlegen",
-      reason: "Sie haben diese Nachricht erhalten, weil in Okami Sentinel ein Konto für Sie angelegt wurde.",
+      expires: "Läuft ab am", action: "Passwort festlegen",
+      reason: "Sie erhalten diese E-Mail, weil in Okami Sentinel ein Konto für Sie angelegt wurde.",
     },
     fr: {
       subject: "Okami Sentinel : votre invitation d'accès",
@@ -490,8 +485,8 @@ const accountInvite = defineTemplate<"account.invite", {
       byName: (name) => `${name} a créé un compte pour vous dans Okami Sentinel.`,
       byAdmin: "Un administrateur a créé un compte pour vous dans Okami Sentinel.",
       next: "Pour vous connecter, définissez un mot de passe avec le lien d'invitation. Il ne fonctionne qu'une fois.",
-      expires: "L'invitation expire le", action: "Définir mon mot de passe",
-      reason: "Vous recevez ce message parce qu'un compte a été créé pour vous dans Okami Sentinel.",
+      expires: "Expire le", action: "Définir mon mot de passe",
+      reason: "Vous recevez cet e-mail parce qu'un compte a été créé pour vous dans Okami Sentinel.",
     },
   },
   build: (data, copy) => ({
@@ -521,40 +516,40 @@ const accountReset = defineTemplate<"account.reset", {
       heading: "Defina uma nova senha",
       body: "Um administrador criou um link para você escolher uma nova senha no Okami Sentinel.",
       sessions: "Suas sessões abertas foram encerradas. Se não foi você que pediu isto, procure um administrador.",
-      expires: "O link expira em", action: "Definir uma nova senha",
-      reason: "Você recebeu esta mensagem porque um administrador pediu a redefinição da sua senha.",
+      expires: "Expira em", action: "Definir uma nova senha",
+      reason: "Você recebe este e-mail porque um administrador pediu a redefinição da sua senha.",
     },
     en: {
       subject: "Okami Sentinel: password reset",
       heading: "Set a new password",
       body: "An administrator created a link for you to choose a new password on Okami Sentinel.",
       sessions: "Your open sessions were signed out. If you did not ask for this, talk to an administrator.",
-      expires: "The link expires at", action: "Set a new password",
-      reason: "You received this message because an administrator asked for your password to be reset.",
+      expires: "Expires at", action: "Set a new password",
+      reason: "You receive this e-mail because an administrator asked for your password to be reset.",
     },
     es: {
       subject: "Okami Sentinel: restablecer la contraseña",
       heading: "Define una nueva contraseña",
       body: "Un administrador creó un enlace para que elijas una nueva contraseña en Okami Sentinel.",
       sessions: "Tus sesiones abiertas se cerraron. Si no pediste esto, habla con un administrador.",
-      expires: "El enlace expira el", action: "Definir una nueva contraseña",
-      reason: "Recibiste este mensaje porque un administrador solicitó restablecer tu contraseña.",
+      expires: "Expira el", action: "Definir una nueva contraseña",
+      reason: "Recibes este correo porque un administrador solicitó restablecer tu contraseña.",
     },
     de: {
       subject: "Okami Sentinel: Passwort zurücksetzen",
       heading: "Neues Passwort festlegen",
       body: "Eine Administratorin oder ein Administrator hat einen Link erstellt, mit dem Sie in Okami Sentinel ein neues Passwort wählen.",
       sessions: "Ihre offenen Sitzungen wurden beendet. Wenn Sie das nicht angefordert haben, wenden Sie sich an eine Administratorin oder einen Administrator.",
-      expires: "Der Link läuft ab am", action: "Neues Passwort festlegen",
-      reason: "Sie haben diese Nachricht erhalten, weil das Zurücksetzen Ihres Passworts angefordert wurde.",
+      expires: "Läuft ab am", action: "Neues Passwort festlegen",
+      reason: "Sie erhalten diese E-Mail, weil das Zurücksetzen Ihres Passworts angefordert wurde.",
     },
     fr: {
       subject: "Okami Sentinel : réinitialisation du mot de passe",
       heading: "Définissez un nouveau mot de passe",
       body: "Un administrateur a créé un lien pour que vous choisissiez un nouveau mot de passe dans Okami Sentinel.",
       sessions: "Vos sessions ouvertes ont été fermées. Si vous n'avez rien demandé, contactez un administrateur.",
-      expires: "Le lien expire le", action: "Définir un nouveau mot de passe",
-      reason: "Vous recevez ce message parce qu'un administrateur a demandé la réinitialisation de votre mot de passe.",
+      expires: "Expire le", action: "Définir un nouveau mot de passe",
+      reason: "Vous recevez cet e-mail parce qu'un administrateur a demandé la réinitialisation de votre mot de passe.",
     },
   },
   build: (data, copy) => ({
@@ -587,7 +582,7 @@ const accountNewLogin = defineTemplate<"account.new_login", {
       advice: "Se foi você, não há nada a fazer. Se não foi, troque sua senha e encerre as outras sessões em Minha conta.",
       at: "Horário", ip: "Endereço IP", browser: "Navegador", unknown: "não registrado",
       action: "Abrir Minha conta",
-      reason: "Você recebeu esta mensagem porque ela é um alerta de segurança da conta; estes alertas não podem ser desligados.",
+      reason: "Você recebe este e-mail porque ele é um alerta de segurança da conta, e esses alertas não podem ser desligados.",
     },
     en: {
       subject: "Okami Sentinel: new sign-in to your account",
@@ -596,7 +591,7 @@ const accountNewLogin = defineTemplate<"account.new_login", {
       advice: "If this was you, there is nothing to do. If it was not, change your password and sign out the other sessions in My account.",
       at: "Time", ip: "IP address", browser: "Browser", unknown: "not recorded",
       action: "Open My account",
-      reason: "You received this message because it is an account security alert; these alerts cannot be turned off.",
+      reason: "You receive this e-mail because it is an account security alert, and those cannot be turned off.",
     },
     es: {
       subject: "Okami Sentinel: nuevo acceso a tu cuenta",
@@ -605,7 +600,7 @@ const accountNewLogin = defineTemplate<"account.new_login", {
       advice: "Si fuiste tú, no hay nada que hacer. Si no, cambia tu contraseña y cierra las otras sesiones en Mi cuenta.",
       at: "Hora", ip: "Dirección IP", browser: "Navegador", unknown: "no registrado",
       action: "Abrir Mi cuenta",
-      reason: "Recibiste este mensaje porque es una alerta de seguridad de la cuenta; estas alertas no se pueden desactivar.",
+      reason: "Recibes este correo porque es una alerta de seguridad de la cuenta, y esas no se pueden desactivar.",
     },
     de: {
       subject: "Okami Sentinel: neue Anmeldung an Ihrem Konto",
@@ -614,7 +609,7 @@ const accountNewLogin = defineTemplate<"account.new_login", {
       advice: "Waren Sie das, ist nichts zu tun. Andernfalls ändern Sie Ihr Passwort und beenden Sie die übrigen Sitzungen unter Mein Konto.",
       at: "Zeitpunkt", ip: "IP-Adresse", browser: "Browser", unknown: "nicht erfasst",
       action: "Mein Konto öffnen",
-      reason: "Sie haben diese Nachricht erhalten, weil sie eine Sicherheitswarnung zu Ihrem Konto ist; solche Warnungen lassen sich nicht abschalten.",
+      reason: "Sie erhalten diese E-Mail, weil sie eine Sicherheitswarnung zu Ihrem Konto ist; solche Warnungen lassen sich nicht abschalten.",
     },
     fr: {
       subject: "Okami Sentinel : nouvelle connexion à votre compte",
@@ -623,7 +618,7 @@ const accountNewLogin = defineTemplate<"account.new_login", {
       advice: "Si c'était vous, il n'y a rien à faire. Sinon, changez votre mot de passe et fermez les autres sessions dans Mon compte.",
       at: "Heure", ip: "Adresse IP", browser: "Navigateur", unknown: "non enregistré",
       action: "Ouvrir Mon compte",
-      reason: "Vous recevez ce message parce qu'il s'agit d'une alerte de sécurité du compte ; ces alertes ne peuvent pas être désactivées.",
+      reason: "Vous recevez cet e-mail parce qu'il s'agit d'une alerte de sécurité du compte, et ces alertes ne peuvent pas être désactivées.",
     },
   },
   build: (data, copy) => ({
@@ -658,10 +653,10 @@ const accountLocked = defineTemplate<"account.locked", {
       heading: "Conta bloqueada temporariamente",
       body: "Houve tentativas de login suficientes com a senha errada para bloquear sua conta por um período.",
       advice: "Se não foi você tentando entrar, troque sua senha assim que o bloqueio terminar e avise um administrador.",
-      at: "Horário do bloqueio", retry: "Nova tentativa em",
+      at: "Horário", retry: "Nova tentativa",
       wait: (minutes) => (minutes === 1 ? "1 minuto" : `${minutes} minutos`),
       action: "Abrir Minha conta",
-      reason: "Você recebeu esta mensagem porque ela é um alerta de segurança da conta; estes alertas não podem ser desligados.",
+      reason: "Você recebe este e-mail porque ele é um alerta de segurança da conta, e esses alertas não podem ser desligados.",
     },
     en: {
       subject: "Okami Sentinel: your account was locked temporarily",
@@ -671,37 +666,37 @@ const accountLocked = defineTemplate<"account.locked", {
       at: "Locked at", retry: "Try again in",
       wait: (minutes) => (minutes === 1 ? "1 minute" : `${minutes} minutes`),
       action: "Open My account",
-      reason: "You received this message because it is an account security alert; these alerts cannot be turned off.",
+      reason: "You receive this e-mail because it is an account security alert, and those cannot be turned off.",
     },
     es: {
       subject: "Okami Sentinel: tu cuenta se bloqueó temporalmente",
       heading: "Cuenta bloqueada temporalmente",
       body: "Hubo suficientes intentos de inicio de sesión con la contraseña incorrecta para bloquear tu cuenta por un tiempo.",
       advice: "Si no fuiste tú, cambia tu contraseña en cuanto termine el bloqueo y avisa a un administrador.",
-      at: "Hora del bloqueo", retry: "Reintentar en",
+      at: "Hora", retry: "Reintentar en",
       wait: (minutes) => (minutes === 1 ? "1 minuto" : `${minutes} minutos`),
       action: "Abrir Mi cuenta",
-      reason: "Recibiste este mensaje porque es una alerta de seguridad de la cuenta; estas alertas no se pueden desactivar.",
+      reason: "Recibes este correo porque es una alerta de seguridad de la cuenta, y esas no se pueden desactivar.",
     },
     de: {
       subject: "Okami Sentinel: Ihr Konto wurde vorübergehend gesperrt",
       heading: "Konto vorübergehend gesperrt",
       body: "Es gab genügend Anmeldeversuche mit falschem Passwort, um Ihr Konto zeitweise zu sperren.",
       advice: "Waren Sie das nicht, ändern Sie Ihr Passwort nach Ablauf der Sperre und informieren Sie eine Administratorin oder einen Administrator.",
-      at: "Gesperrt am", retry: "Nächster Versuch in",
+      at: "Gesperrt am", retry: "Erneut in",
       wait: (minutes) => (minutes === 1 ? "1 Minute" : `${minutes} Minuten`),
       action: "Mein Konto öffnen",
-      reason: "Sie haben diese Nachricht erhalten, weil sie eine Sicherheitswarnung zu Ihrem Konto ist; solche Warnungen lassen sich nicht abschalten.",
+      reason: "Sie erhalten diese E-Mail, weil sie eine Sicherheitswarnung zu Ihrem Konto ist; solche Warnungen lassen sich nicht abschalten.",
     },
     fr: {
       subject: "Okami Sentinel : votre compte a été bloqué temporairement",
       heading: "Compte bloqué temporairement",
       body: "Il y a eu assez de tentatives de connexion avec un mauvais mot de passe pour bloquer votre compte pendant un moment.",
       advice: "Si ce n'était pas vous, changez votre mot de passe dès la fin du blocage et prévenez un administrateur.",
-      at: "Heure du blocage", retry: "Nouvelle tentative dans",
+      at: "Heure", retry: "Réessayer dans",
       wait: (minutes) => (minutes === 1 ? "1 minute" : `${minutes} minutes`),
       action: "Ouvrir Mon compte",
-      reason: "Vous recevez ce message parce qu'il s'agit d'une alerte de sécurité du compte ; ces alertes ne peuvent pas être désactivées.",
+      reason: "Vous recevez cet e-mail parce qu'il s'agit d'une alerte de sécurité du compte, et ces alertes ne peuvent pas être désactivées.",
     },
   },
   build: (data, copy) => ({
@@ -735,7 +730,7 @@ const accountPasswordChanged = defineTemplate<"account.password_changed", {
       body: "A senha da sua conta no Okami Sentinel acabou de ser alterada.",
       advice: "Se não foi você, procure um administrador imediatamente e peça uma nova redefinição.",
       at: "Horário", action: "Abrir Minha conta",
-      reason: "Você recebeu esta mensagem porque ela é um alerta de segurança da conta; estes alertas não podem ser desligados.",
+      reason: "Você recebe este e-mail porque ele é um alerta de segurança da conta, e esses alertas não podem ser desligados.",
     },
     en: {
       subject: "Okami Sentinel: your password was changed",
@@ -743,7 +738,7 @@ const accountPasswordChanged = defineTemplate<"account.password_changed", {
       body: "The password of your Okami Sentinel account has just been changed.",
       advice: "If this was not you, talk to an administrator right away and ask for another reset.",
       at: "Time", action: "Open My account",
-      reason: "You received this message because it is an account security alert; these alerts cannot be turned off.",
+      reason: "You receive this e-mail because it is an account security alert, and those cannot be turned off.",
     },
     es: {
       subject: "Okami Sentinel: tu contraseña cambió",
@@ -751,7 +746,7 @@ const accountPasswordChanged = defineTemplate<"account.password_changed", {
       body: "La contraseña de tu cuenta de Okami Sentinel acaba de cambiar.",
       advice: "Si no fuiste tú, habla con un administrador de inmediato y pide otro restablecimiento.",
       at: "Hora", action: "Abrir Mi cuenta",
-      reason: "Recibiste este mensaje porque es una alerta de seguridad de la cuenta; estas alertas no se pueden desactivar.",
+      reason: "Recibes este correo porque es una alerta de seguridad de la cuenta, y esas no se pueden desactivar.",
     },
     de: {
       subject: "Okami Sentinel: Ihr Passwort wurde geändert",
@@ -759,7 +754,7 @@ const accountPasswordChanged = defineTemplate<"account.password_changed", {
       body: "Das Passwort Ihres Okami-Sentinel-Kontos wurde gerade geändert.",
       advice: "Waren Sie das nicht, wenden Sie sich sofort an eine Administratorin oder einen Administrator und bitten Sie um ein neues Zurücksetzen.",
       at: "Zeitpunkt", action: "Mein Konto öffnen",
-      reason: "Sie haben diese Nachricht erhalten, weil sie eine Sicherheitswarnung zu Ihrem Konto ist; solche Warnungen lassen sich nicht abschalten.",
+      reason: "Sie erhalten diese E-Mail, weil sie eine Sicherheitswarnung zu Ihrem Konto ist; solche Warnungen lassen sich nicht abschalten.",
     },
     fr: {
       subject: "Okami Sentinel : votre mot de passe a été modifié",
@@ -767,7 +762,7 @@ const accountPasswordChanged = defineTemplate<"account.password_changed", {
       body: "Le mot de passe de votre compte Okami Sentinel vient d'être modifié.",
       advice: "Si ce n'était pas vous, contactez immédiatement un administrateur et demandez une nouvelle réinitialisation.",
       at: "Heure", action: "Ouvrir Mon compte",
-      reason: "Vous recevez ce message parce qu'il s'agit d'une alerte de sécurité du compte ; ces alertes ne peuvent pas être désactivées.",
+      reason: "Vous recevez cet e-mail parce qu'il s'agit d'une alerte de sécurité du compte, et ces alertes ne peuvent pas être désactivées.",
     },
   },
   build: (data, copy) => ({
@@ -854,7 +849,7 @@ const REPOSITORY_COPY: Readonly<Record<UserLocale, RepositoryCopy>> = Object.fre
     },
     statuses: { completed: "concluído", failed: "falhou", incomplete: "incompleto" },
     openGate: "Abrir o gate", openScan: "Abrir o scan",
-    reason: "Você recebeu esta mensagem porque assina os eventos deste repositório. Ajuste em Minha conta → Notificações.",
+    reason: "Você recebe este e-mail porque assina os eventos deste repositório.",
     gateBlocked: {
       subject: (repository) => `Okami Sentinel: gate bloqueado em ${repository}`,
       heading: "O gate bloqueou a mudança",
@@ -896,7 +891,7 @@ const REPOSITORY_COPY: Readonly<Record<UserLocale, RepositoryCopy>> = Object.fre
     },
     statuses: { completed: "completed", failed: "failed", incomplete: "incomplete" },
     openGate: "Open the gate", openScan: "Open the scan",
-    reason: "You received this message because you subscribe to this repository's events. Change that in My account → Notifications.",
+    reason: "You receive this e-mail because you subscribe to this repository's events.",
     gateBlocked: {
       subject: (repository) => `Okami Sentinel: gate blocked on ${repository}`,
       heading: "The gate blocked the change",
@@ -938,7 +933,7 @@ const REPOSITORY_COPY: Readonly<Record<UserLocale, RepositoryCopy>> = Object.fre
     },
     statuses: { completed: "completado", failed: "falló", incomplete: "incompleto" },
     openGate: "Abrir el gate", openScan: "Abrir el scan",
-    reason: "Recibiste este mensaje porque estás suscrito a los eventos de este repositorio. Cámbialo en Mi cuenta → Notificaciones.",
+    reason: "Recibes este correo porque estás suscrito a los eventos de este repositorio.",
     gateBlocked: {
       subject: (repository) => `Okami Sentinel: gate bloqueado en ${repository}`,
       heading: "El gate bloqueó el cambio",
@@ -980,7 +975,7 @@ const REPOSITORY_COPY: Readonly<Record<UserLocale, RepositoryCopy>> = Object.fre
     },
     statuses: { completed: "abgeschlossen", failed: "fehlgeschlagen", incomplete: "unvollständig" },
     openGate: "Gate öffnen", openScan: "Scan öffnen",
-    reason: "Sie haben diese Nachricht erhalten, weil Sie die Ereignisse dieses Repositorys abonniert haben. Änderbar unter Mein Konto → Benachrichtigungen.",
+    reason: "Sie erhalten diese E-Mail, weil Sie die Ereignisse dieses Repositorys abonniert haben.",
     gateBlocked: {
       subject: (repository) => `Okami Sentinel: Gate hat ${repository} blockiert`,
       heading: "Das Gate hat die Änderung blockiert",
@@ -1022,7 +1017,7 @@ const REPOSITORY_COPY: Readonly<Record<UserLocale, RepositoryCopy>> = Object.fre
     },
     statuses: { completed: "terminé", failed: "échoué", incomplete: "incomplet" },
     openGate: "Ouvrir le gate", openScan: "Ouvrir le scan",
-    reason: "Vous recevez ce message parce que vous êtes abonné aux événements de ce dépôt. Modifiable dans Mon compte → Notifications.",
+    reason: "Vous recevez cet e-mail parce que vous êtes abonné aux événements de ce dépôt.",
     gateBlocked: {
       subject: (repository) => `Okami Sentinel : gate bloqué sur ${repository}`,
       heading: "Le gate a bloqué le changement",
@@ -1081,6 +1076,15 @@ function severityFacts(
  * used, which is how the shell knows which four rows of the key/value panel the
  * chips already say — and therefore which four to leave out of it.
  */
+/**
+ * The outcomes the status pill already spells out. The fact row is kept for the
+ * rest — passed *with warnings*, a baseline, an empty change set, a scan that
+ * stopped half-way — because there the word says something the pill does not.
+ */
+const PILLED_GATE_OUTCOMES: ReadonlySet<GateOutcome> = new Set<GateOutcome>(["blocked", "error", "pass"]);
+const PILLED_SCAN_STATUSES: ReadonlySet<ScanEmailData["status"]> =
+  new Set<ScanEmailData["status"]>(["completed", "failed"]);
+
 function severityChips(severity: SeverityCounts | null, copy: RepositoryCopy): EmailSeverityBlock | null {
   if (severity === null) return null;
   return {
@@ -1114,7 +1118,9 @@ function gateFacts(data: GateEmailData, copy: RepositoryCopy): Array<{ label: st
     ...(data.pullRequest === null
       ? []
       : [{ label: copy.pullRequest, value: `#${data.pullRequest}` }]),
-    { label: copy.outcome, value: copy.outcomes[data.outcome] },
+    ...(PILLED_GATE_OUTCOMES.has(data.outcome)
+      ? []
+      : [{ label: copy.outcome, value: copy.outcomes[data.outcome] }]),
     ...severityFacts(data.severity, copy),
     ...costAndDurationFacts(data, copy),
   ];
@@ -1142,7 +1148,9 @@ function scanBody(data: ScanEmailData, copy: RepositoryCopy, kind: RepositoryKin
         ? { label: copy.scan, value: data.scanId }
         : { label: copy.repository, value: data.repository },
       ...(data.branch === null ? [] : [{ label: copy.branch, value: data.branch }]),
-      { label: copy.outcome, value: copy.statuses[data.status] },
+      ...(PILLED_SCAN_STATUSES.has(data.status)
+        ? []
+        : [{ label: copy.outcome, value: copy.statuses[data.status] }]),
       ...severityFacts(data.severity, copy),
       ...costAndDurationFacts(data, copy),
     ],
@@ -1243,24 +1251,24 @@ interface OpsCopy {
 const OPS_COPY: Readonly<Record<UserLocale, OpsCopy>> = Object.freeze({
   "pt-BR": {
     since: "Desde", at: "Verificado em", endedAt: "Normalizado em", outageDuration: "Duração",
-    engines: "Engines", connection: "Conexão", status: "Status",
+    engines: "Motores", connection: "Conexão", status: "Status",
     statuses: {
       draft: "rascunho", "authentication-required": "autenticação necessária", testing: "em teste",
       ready: "pronta", degraded: "degradada", expired: "expirada", unavailable: "indisponível",
     },
     repository: "Repositório", branch: "Branch", gate: "Gate", reasonLabel: "Motivo",
     day: "Dia (UTC)", reserved: "Reservado", ceiling: "Teto diário", share: "Percentual",
-    reason: "Você recebeu esta mensagem porque é administrador e assina os alertas operacionais. Ajuste em Minha conta → Notificações.",
+    reason: "Você recebe este e-mail porque é administrador e assina os alertas operacionais.",
     engineUnavailable: {
-      subject: "Okami Sentinel: engine indisponível",
-      heading: "A engine está indisponível",
-      body: "Nenhuma engine de scan está disponível há mais de cinco minutos. Novos scans e gates não vão iniciar até que isso se resolva.",
+      subject: "Okami Sentinel: motor indisponível",
+      heading: "O motor está indisponível",
+      body: "Nenhum motor de scan está disponível há mais de cinco minutos. Novos scans e gates não vão iniciar até que isso se resolva.",
       action: "Abrir as conexões",
     },
     engineRecovered: {
-      subject: "Okami Sentinel: engine disponível novamente",
-      heading: "A engine voltou",
-      body: "Ao menos uma engine de scan está disponível outra vez. Novos scans e gates podem iniciar.",
+      subject: "Okami Sentinel: motor disponível novamente",
+      heading: "O motor voltou",
+      body: "Ao menos um motor de scan está disponível outra vez. Novos scans e gates podem iniciar.",
       action: "Abrir as conexões",
     },
     connectionAttention: {
@@ -1309,7 +1317,7 @@ const OPS_COPY: Readonly<Record<UserLocale, OpsCopy>> = Object.freeze({
     },
     repository: "Repository", branch: "Branch", gate: "Gate", reasonLabel: "Reason",
     day: "Day (UTC)", reserved: "Reserved", ceiling: "Daily ceiling", share: "Share",
-    reason: "You received this message because you are an administrator and subscribe to the operational alerts. Change that in My account → Notifications.",
+    reason: "You receive this e-mail because you are an administrator and subscribe to the operational alerts.",
     engineUnavailable: {
       subject: "Okami Sentinel: engine unavailable",
       heading: "The engine is unavailable",
@@ -1361,24 +1369,24 @@ const OPS_COPY: Readonly<Record<UserLocale, OpsCopy>> = Object.freeze({
   },
   es: {
     since: "Desde", at: "Verificado el", endedAt: "Normalizado el", outageDuration: "Duración",
-    engines: "Engines", connection: "Conexión", status: "Estado",
+    engines: "Motores", connection: "Conexión", status: "Estado",
     statuses: {
       draft: "borrador", "authentication-required": "requiere autenticación", testing: "en prueba",
       ready: "lista", degraded: "degradada", expired: "expirada", unavailable: "no disponible",
     },
     repository: "Repositorio", branch: "Rama", gate: "Gate", reasonLabel: "Motivo",
     day: "Día (UTC)", reserved: "Reservado", ceiling: "Techo diario", share: "Porcentaje",
-    reason: "Recibiste este mensaje porque eres administrador y estás suscrito a las alertas operativas. Cámbialo en Mi cuenta → Notificaciones.",
+    reason: "Recibes este correo porque eres administrador y estás suscrito a las alertas operativas.",
     engineUnavailable: {
-      subject: "Okami Sentinel: engine no disponible",
-      heading: "La engine no está disponible",
-      body: "Ninguna engine de scan está disponible desde hace más de cinco minutos. Los nuevos scans y gates no van a iniciar hasta que se resuelva.",
+      subject: "Okami Sentinel: motor no disponible",
+      heading: "El motor no está disponible",
+      body: "Ningún motor de scan está disponible desde hace más de cinco minutos. Los nuevos scans y gates no van a iniciar hasta que se resuelva.",
       action: "Abrir las conexiones",
     },
     engineRecovered: {
-      subject: "Okami Sentinel: engine disponible otra vez",
-      heading: "La engine volvió",
-      body: "Al menos una engine de scan está disponible otra vez. Los nuevos scans y gates pueden iniciar.",
+      subject: "Okami Sentinel: motor disponible otra vez",
+      heading: "El motor volvió",
+      body: "Al menos un motor de scan está disponible otra vez. Los nuevos scans y gates pueden iniciar.",
       action: "Abrir las conexiones",
     },
     connectionAttention: {
@@ -1427,7 +1435,7 @@ const OPS_COPY: Readonly<Record<UserLocale, OpsCopy>> = Object.freeze({
     },
     repository: "Repository", branch: "Branch", gate: "Gate", reasonLabel: "Grund",
     day: "Tag (UTC)", reserved: "Reserviert", ceiling: "Tagesobergrenze", share: "Anteil",
-    reason: "Sie haben diese Nachricht erhalten, weil Sie Administrator sind und die betrieblichen Warnungen abonniert haben. Änderbar unter Mein Konto → Benachrichtigungen.",
+    reason: "Sie erhalten diese E-Mail, weil Sie Administrator sind und die betrieblichen Warnungen abonniert haben.",
     engineUnavailable: {
       subject: "Okami Sentinel: Engine nicht verfügbar",
       heading: "Die Engine ist nicht verfügbar",
@@ -1479,24 +1487,24 @@ const OPS_COPY: Readonly<Record<UserLocale, OpsCopy>> = Object.freeze({
   },
   fr: {
     since: "Depuis", at: "Vérifié le", endedAt: "Rétabli le", outageDuration: "Durée",
-    engines: "Engines", connection: "Connexion", status: "État",
+    engines: "Moteurs", connection: "Connexion", status: "État",
     statuses: {
       draft: "brouillon", "authentication-required": "authentification requise", testing: "en test",
       ready: "prête", degraded: "dégradée", expired: "expirée", unavailable: "indisponible",
     },
     repository: "Dépôt", branch: "Branche", gate: "Gate", reasonLabel: "Raison",
-    day: "Jour (UTC)", reserved: "Réservé", ceiling: "Plafond journalier", share: "Part",
-    reason: "Vous recevez ce message parce que vous êtes administrateur et abonné aux alertes opérationnelles. Modifiable dans Mon compte → Notifications.",
+    day: "Jour (UTC)", reserved: "Réservé", ceiling: "Plafond", share: "Part",
+    reason: "Vous recevez cet e-mail parce que vous êtes administrateur et abonné aux alertes opérationnelles.",
     engineUnavailable: {
-      subject: "Okami Sentinel : engine indisponible",
-      heading: "L'engine est indisponible",
-      body: "Aucune engine de scan n'est disponible depuis plus de cinq minutes. Les nouveaux scans et gates ne démarreront pas tant que ce n'est pas résolu.",
+      subject: "Okami Sentinel : moteur indisponible",
+      heading: "Le moteur est indisponible",
+      body: "Aucun moteur de scan n'est disponible depuis plus de cinq minutes. Les nouveaux scans et gates ne démarreront pas tant que ce n'est pas résolu.",
       action: "Ouvrir les connexions",
     },
     engineRecovered: {
-      subject: "Okami Sentinel : engine de nouveau disponible",
-      heading: "L'engine est revenue",
-      body: "Au moins une engine de scan est de nouveau disponible. Les nouveaux scans et gates peuvent démarrer.",
+      subject: "Okami Sentinel : moteur de nouveau disponible",
+      heading: "Le moteur est revenu",
+      body: "Au moins un moteur de scan est de nouveau disponible. Les nouveaux scans et gates peuvent démarrer.",
       action: "Ouvrir les connexions",
     },
     connectionAttention: {
@@ -1816,6 +1824,7 @@ function headStyle(tone: EmailTone): string {
     `.chip-v{font-size:16px!important}`,
     `.chip-l{font-size:8px!important;letter-spacing:.08em!important}`,
     `.fact-k,.fact-v{padding:8px 10px!important}`,
+    `.fact-k{font-size:9px!important;letter-spacing:.06em!important}`,
     `.eyebrow{font-size:8px!important;letter-spacing:.14em!important}`,
     `}`,
     `@media (prefers-color-scheme:dark){`,
@@ -1839,7 +1848,6 @@ function headStyle(tone: EmailTone): string {
     `.url{color:#8a8aa4!important}`,
     `.foot{background:#0a0a11!important;border-top-color:#23232e!important}`,
     `.foot-t{color:#a6a6b8!important}`,
-    `.foot-s{color:#e2e2e8!important}`,
     `.foot-a{color:#ff8a4c!important}`,
     `.sig{color:#6a6a82!important}`,
     `}`,
@@ -1862,7 +1870,7 @@ export function renderEmail<K extends EmailMessageKind>(input: RenderEmailInput<
   const statusLabel = shell.statuses[status];
   const groupLabel = shell.groups[group];
   const footerPath = group === "account" ? ACCOUNT_PATH : NOTIFICATIONS_PATH;
-  const footerLabel = footerPath === ACCOUNT_PATH ? shell.accountLink : shell.notificationsLink;
+  const footerLabel = group === "account" ? shell.accountAction : shell.notificationsAction;
   // A relative link is dead in a mail client, so without a public origin the
   // message carries no link and the footer says why instead of pretending.
   const url = (path: string): string | null => (input.origin === null ? null : `${input.origin}${path}`);
@@ -1881,7 +1889,7 @@ export function renderEmail<K extends EmailMessageKind>(input: RenderEmailInput<
     ...(body.action !== null && actionUrl !== null ? ["", `${body.action.label}: ${actionUrl}`] : []),
     "",
     "--",
-    `${shell.why}: ${body.reason}`,
+    body.reason,
     footerUrl === null ? shell.noLinks : `${footerLabel}: ${footerUrl}`,
     shell.signature,
   ].join("\n");
@@ -2029,7 +2037,7 @@ export function renderEmail<K extends EmailMessageKind>(input: RenderEmailInput<
     `</td></tr>`,
     `<tr><td style="height:26px;line-height:26px;font-size:1px">&nbsp;</td></tr>`,
     `<tr><td class="foot" bgcolor="${FOOT_BG}" style="background:${FOOT_BG};border-top:1px solid ${LINE};padding:18px 24px 20px">`,
-    `<p class="foot-t" style="margin:0;font-family:${SANS};font-size:12px;line-height:1.6;color:${MUTED}"><strong class="foot-s" style="color:${INK_SOFT}">${escapeHtml(shell.why)}</strong> ${escapeHtml(body.reason)}</p>`,
+    `<p class="foot-t" style="margin:0;font-family:${SANS};font-size:12px;line-height:1.6;color:${MUTED}">${escapeHtml(body.reason)}</p>`,
     footerLinkHtml,
     `<p class="sig" style="margin:14px 0 0;font-family:${MONO};font-size:10px;line-height:1.4;letter-spacing:.08em;color:${FAINT}">${escapeHtml(shell.signature)}</p>`,
     `</td></tr>`,

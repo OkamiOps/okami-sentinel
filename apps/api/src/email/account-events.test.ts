@@ -64,8 +64,8 @@ test("a lock applied by failed sign-ins tells the account's owner when it lifts"
   assert.deepEqual(events(db), ["account.locked"]);
   const message = bodyOf(db, "account.locked");
   assert.match(message.subject, /bloqueada/);
-  assert.ok(message.text.includes("Nova tentativa em: 15 minutos"));
-  assert.ok(message.text.includes("Horário do bloqueio: 2026-09-30 10:00:00 UTC"));
+  assert.ok(message.text.includes("Nova tentativa: 15 minutos"));
+  assert.ok(message.text.includes("Horário: 2026-09-30 10:00:00 UTC"));
 
   // Polling the locked account is not a new lock, so it is not a new message.
   await login({ username: user.username, password: PASSWORD, ip: "10.0.0.9", userAgent: AGENT, now }, db);
