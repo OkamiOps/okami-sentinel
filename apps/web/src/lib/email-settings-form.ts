@@ -27,6 +27,8 @@ export interface EmailSettingsDraft {
   smtpSecurity: EmailSmtpSecurity;
   smtpUsername: string;
   secret: string;
+  /** The administrator asked for the stored value to be deleted on save. */
+  clearSecret: boolean;
 }
 
 /** Which field an error code from the API belongs to; `null` is form-level. */
@@ -113,6 +115,7 @@ export function draftFromSettings(
     // A stored secret never comes back from the API, so the field starts empty
     // and staying empty is what keeps it.
     secret: "",
+    clearSecret: false,
   };
 }
 
@@ -142,17 +145,44 @@ export function parsePort(value: string): number | null {
   return port >= 1 && port <= 65535 ? port : null;
 }
 
+/** What the stored secret belongs to, which the API records as one slot. */
+export interface StoredSecret {
+  provider: EmailProviderKind;
+  secretConfigured: boolean;
+}
+
+/**
+ * Whether the secret on file is this draft's secret. The vault has exactly one
+ * slot shared by both providers, so a stored SMTP password is not a Resend API
+ * key: switching the provider has to stop claiming the field is configured, or
+ * the administrator saves an installation that authenticates with the wrong
+ * credential and finds out from the delivery history.
+ */
+export function secretConfiguredFor(draft: EmailSettingsDraft, stored: StoredSecret): boolean {
+  return stored.secretConfigured && stored.provider === draft.provider && !draft.clearSecret;
+}
+
+/** The stored value exists but belongs to the other provider. */
+export function secretBelongsToOtherProvider(draft: EmailSettingsDraft, stored: StoredSecret): boolean {
+  return stored.secretConfigured && stored.provider !== draft.provider;
+}
+
 /**
  * The body for `PUT /email/settings`. The SMTP transport fields are sent only
  * for the SMTP provider — sending a host while the Resend API is selected would
  * store a transport nothing reads — and `secret` is omitted unless a
  * replacement was typed, which is how the stored one survives a save.
  *
+ * `secret: null` is sent in the two cases where keeping the stored value would
+ * be wrong: the administrator asked for it to be removed, or they changed the
+ * provider without typing a new one — a credential for the provider that is no
+ * longer selected must not be silently reused by the one that is.
+ *
  * An unparseable port is still sent as a string so the API names the field
  * instead of the screen inventing its own rule; `NaN` would be silently
  * dropped by `JSON.stringify`, which is the one outcome that hides the mistake.
  */
-export function settingsPayload(draft: EmailSettingsDraft): EmailSettingsInput {
+export function settingsPayload(draft: EmailSettingsDraft, stored: StoredSecret): EmailSettingsInput {
   const payload: EmailSettingsInput = {
     provider: draft.provider,
     enabled: draft.enabled,
@@ -167,6 +197,7 @@ export function settingsPayload(draft: EmailSettingsDraft): EmailSettingsInput {
     payload.smtpUsername = draft.smtpUsername.trim() || null;
   }
   if (draft.secret) payload.secret = draft.secret;
+  else if (draft.clearSecret || secretBelongsToOtherProvider(draft, stored)) payload.secret = null;
   return payload;
 }
 

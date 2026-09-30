@@ -9,9 +9,14 @@ import {
   emailSettingsField,
   isEmailErrorCode,
   parsePort,
+  secretBelongsToOtherProvider,
+  secretConfiguredFor,
   settingsPayload,
   smtpPresets,
 } from "./email-settings-form";
+
+const keptSecret = { provider: "smtp", secretConfigured: true } as const;
+const noSecret = { provider: "smtp", secretConfigured: false } as const;
 
 const stored: EmailSettings = {
   provider: "smtp", enabled: true, fromName: "Okami Sentinel", fromAddress: "alerts@okami.test",
@@ -41,9 +46,9 @@ test("a stored secret starts the form empty, which is what keeps it", () => {
   assert.equal(draft.presetId, "resend");
   assert.equal(draft.smtpPort, "465");
   assert.equal(draft.replyTo, "");
-  assert.equal(settingsPayload(draft).secret, undefined);
-  assert.equal("secret" in settingsPayload(draft), false);
-  assert.equal(settingsPayload({ ...draft, secret: "re_new_key" }).secret, "re_new_key");
+  assert.equal(settingsPayload(draft, keptSecret).secret, undefined);
+  assert.equal("secret" in settingsPayload(draft, keptSecret), false);
+  assert.equal(settingsPayload({ ...draft, secret: "re_new_key" }, keptSecret).secret, "re_new_key");
 });
 
 test("a preset fills the transport, and a fixed username, without erasing a mailbox one", () => {
@@ -69,7 +74,7 @@ test("a preset fills the transport, and a fixed username, without erasing a mail
 });
 
 test("the Resend provider sends no SMTP transport at all", () => {
-  const payload = settingsPayload({ ...draftFromSettings(stored), provider: "resend", secret: "re_key" });
+  const payload = settingsPayload({ ...draftFromSettings(stored), provider: "resend", secret: "re_key" }, keptSecret);
   assert.equal(payload.provider, "resend");
   assert.equal("smtpHost" in payload, false);
   assert.equal("smtpPort" in payload, false);
@@ -79,7 +84,7 @@ test("the Resend provider sends no SMTP transport at all", () => {
 });
 
 test("empty optional fields are cleared, not sent as empty strings", () => {
-  const payload = settingsPayload({ ...draftFromSettings(stored), replyTo: "  ", smtpUsername: "", fromAddress: " alerts@okami.test " });
+  const payload = settingsPayload({ ...draftFromSettings(stored), replyTo: "  ", smtpUsername: "", fromAddress: " alerts@okami.test " }, keptSecret);
   assert.equal(payload.replyTo, null);
   assert.equal(payload.smtpUsername, null);
   assert.equal(payload.fromAddress, "alerts@okami.test");
@@ -92,8 +97,8 @@ test("a port that is not a port still reaches the API, so the API names the fiel
   assert.equal(parsePort("70000"), null);
   assert.equal(parsePort("46a"), null);
   assert.equal(parsePort(""), null);
-  assert.equal(settingsPayload({ ...draftFromSettings(stored), smtpPort: "not a port" }).smtpPort, "not a port");
-  assert.equal(settingsPayload({ ...draftFromSettings(stored), smtpPort: "" }).smtpPort, null);
+  assert.equal(settingsPayload({ ...draftFromSettings(stored), smtpPort: "not a port" }, keptSecret).smtpPort, "not a port");
+  assert.equal(settingsPayload({ ...draftFromSettings(stored), smtpPort: "" }, keptSecret).smtpPort, null);
 });
 
 test("each validation code lands on the field it is about", () => {
@@ -120,4 +125,36 @@ test("the test button waits for a configuration a test could actually use", () =
   assert.equal(canSendTest({ ...stored, smtpUsername: null, secretConfigured: false }), true);
   assert.equal(canSendTest({ ...stored, provider: "resend", secretConfigured: true }), true);
   assert.equal(canSendTest({ ...stored, provider: "resend", secretConfigured: false }), false);
+});
+
+test("the stored secret belongs to the provider it was saved for", () => {
+  const draft = draftFromSettings(stored);
+  assert.equal(secretConfiguredFor(draft, keptSecret), true);
+  assert.equal(secretBelongsToOtherProvider(draft, keptSecret), false);
+
+  // The vault has one slot. A stored SMTP password is not a Resend API key.
+  const switched = { ...draft, provider: "resend" as const };
+  assert.equal(secretConfiguredFor(switched, keptSecret), false);
+  assert.equal(secretBelongsToOtherProvider(switched, keptSecret), true);
+  assert.equal(secretBelongsToOtherProvider(switched, noSecret), false);
+
+  // Asking for removal already means "not configured any more".
+  assert.equal(secretConfiguredFor({ ...draft, clearSecret: true }, keptSecret), false);
+});
+
+test("changing provider without a new secret clears the old one instead of reusing it", () => {
+  const switched = { ...draftFromSettings(stored), provider: "resend" as const };
+  // Saving this used to keep the SMTP password in the Resend slot, leaving the
+  // installation enabled with a credential that can never authenticate.
+  assert.equal(settingsPayload(switched, keptSecret).secret, null);
+  assert.equal(settingsPayload({ ...switched, secret: "re_key" }, keptSecret).secret, "re_key");
+  // With nothing stored there is nothing to clear, so the field stays absent.
+  assert.equal("secret" in settingsPayload(switched, noSecret), false);
+});
+
+test("a requested removal is sent as an explicit null", () => {
+  const draft = draftFromSettings(stored);
+  assert.equal(settingsPayload({ ...draft, clearSecret: true }, keptSecret).secret, null);
+  // A typed replacement outranks a stale removal flag.
+  assert.equal(settingsPayload({ ...draft, clearSecret: true, secret: "typed" }, keptSecret).secret, "typed");
 });
