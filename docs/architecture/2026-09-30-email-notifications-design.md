@@ -107,11 +107,16 @@ Nova seção **Configurações → E-mail** (`08.06`, somente administradores):
 ## Assinaturas
 
 - Tabela `notification_subscriptions (user_id, scope, event, enabled)`, com
-  `scope` igual à `repository_key` ou `ops`. A ausência de linha significa o
-  padrão da tabela de eventos.
+  `scope` igual à `repository_key`, `ops` ou `unassigned`. A ausência de linha
+  significa o padrão da tabela de eventos.
+- `unassigned` é o escopo reservado dos scans sem repositório. Eles vão só para
+  administradores, mas continuam filtrados por assinatura: sem um escopo próprio
+  seriam os únicos e-mails que ninguém poderia desligar. Nenhuma
+  `repository_key` pode ser igual a um escopo reservado — toda chave gerada
+  contém separador — e o registro de repositórios recusa uma que fosse.
 - **Minha conta → Notificações**: matriz de repositórios acessíveis por eventos
-  de repositório, linha de operacionais para administradores e eventos de conta
-  exibidos como sempre ativos.
+  de repositório, linha de operacionais e linha de scans sem repositório para
+  administradores, e eventos de conta exibidos como sempre ativos.
 - Remover o acesso a um repositório impede envios daquele escopo; as linhas de
   assinatura permanecem para o caso de o acesso voltar.
 
@@ -130,14 +135,38 @@ um endereço. O diálogo mostra se o convite será enviado por e-mail.
   `scan.<scanId>.<evento>`, `account.<userId>.<evento>.<referência>`.
 - Alertas operacionais: no máximo um por `(evento, alvo)` a cada 6 horas
   enquanto a condição persistir, e um e-mail de resolução quando ela terminar.
+  A janela só avança quando alguma mensagem foi realmente enfileirada: com o
+  e-mail desligado, sem endereço ou sem assinante, a condição continua sendo
+  reavaliada em vez de ficar seis horas em silêncio. A resolução também só
+  fecha o episódio se saiu de fato.
 - Custo diário: um e-mail ao cruzar 80% e outro ao cruzar 100%, por dia e teto.
+  Quando os dois limites são cruzados de uma vez, vale só o de 100%.
+- `ops.github_publish_failed` tem o gate como alvo e repete a cada 6 horas
+  enquanto o check não chegar ao GitHub. Decisão consciente: a condição é real e
+  fica sem resolução até alguém republicar. Se incomodar, o ajuste certo é
+  trocar o alvo (repositório ou conexão), não criar um teto de repetições. Um
+  gate apagado é esquecido, não anunciado como publicado.
+- `ops.connection_attention` e `ops.engine_unavailable` têm 5 minutos de
+  carência, para que uma renovação de token e o primeiro ciclo depois de uma
+  atualização não disparem uma rajada sobre conexões quebradas há semanas.
+- Disponibilidade da engine: há engine quando um scanner local está disponível
+  **ou** quando existe conexão de provedor `ready` — uma instalação que só
+  escaneia por HTTP não tem CLI e não pode ser reportada como quebrada para
+  sempre. `authentication-required` não conta como atenção: é etapa de
+  configuração, não falha.
+- Estado dos alertas em `ops_alert_state (event, target, active_since,
+  last_sent_at, resolved_at)`, para que um reinício no meio de uma indisponi-
+  bilidade não realerte nem reinicie a janela. Episódios já resolvidos são
+  apagados junto da retenção da caixa de saída.
 
 ## Conteúdo
 
 - Nunca incluir título de finding, trecho de código, caminho de arquivo,
   evidência, prompt ou segredo.
 - Repositório: nome do repositório, branch ou PR, resultado, contagens por
-  severidade, custo, duração e link para a página no Sentinel.
+  severidade, custo, duração e link para a página no Sentinel. Um scan sem
+  repositório se identifica pelo próprio id: o `displayName` dele é o nome do
+  diretório escaneado, que é informação do host.
 - Conta: horário, IP, navegador resumido e link para Minha conta.
 - HTML simples com a marca Okami e versão em texto puro, nos cinco idiomas da
   interface. Rodapé: motivo do envio e link para Minha conta → Notificações.
@@ -173,6 +202,15 @@ um endereço. O diálogo mostra se o convite será enviado por e-mail.
 | `GET /email/deliveries` | admin | histórico |
 | `GET /account/notifications` | autenticado | assinaturas efetivas do usuário |
 | `PUT /account/notifications` | autenticado | alterar assinaturas permitidas |
+
+`GET /account/notifications` devolve a matriz efetiva: uma linha por repositório
+visível, a linha `ops` e a linha `unassigned` apenas para administradores, os
+eventos de conta marcados como sempre ativos e o endereço resolvido (ou `null`).
+`PUT` é um *patch* esparso, não uma substituição: manda só as células alteradas,
+`{"subscriptions": []}` não muda nada e não existe verbo de "voltar ao padrão".
+Uma célula recusada recusa o lote inteiro. Repositório inexistente e repositório
+não compartilhado respondem com o mesmo código, para o erro não servir de
+enumeração.
 | `PATCH /account/profile` | autenticado | passa a aceitar `locale` |
 
 Todas as rotas entram no registro de permissões com teste de cobertura.

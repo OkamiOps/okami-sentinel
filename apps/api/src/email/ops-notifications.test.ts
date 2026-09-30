@@ -14,6 +14,7 @@ import { ensureGateSchema, insertGateRun, updateGateRun, upsertGuardrailReposito
 import { createGitHubMonitorRule, ensureGitHubMonitorSchema } from "../github-monitor/store.js";
 import { getOpsAlertState, listUnresolvedOpsAlerts } from "./ops-alert-store.js";
 import {
+  clearOpsEngineProbeCache,
   engineAvailability,
   evaluateConnectionAttention,
   evaluateEngineAvailability,
@@ -23,6 +24,9 @@ import {
   notifyGitHubPublishFailed,
   OPS_ALERT_REPEAT_MS,
   OPS_ENGINE_GRACE_MS,
+  OPS_ENGINE_PROBE_TTL_MS,
+  OPS_EVALUATOR_INTERVAL_MS,
+  OPS_EVALUATOR_STOP_DEADLINE_MS,
   opsRecipients,
   stepOpsCondition,
   utcDayBounds,
@@ -30,6 +34,8 @@ import {
 import { ensureEmailSchema } from "./schema.js";
 import { DEFAULT_EMAIL_SETTINGS, saveEmailSettings } from "./settings-store.js";
 import { setSubscription } from "./subscription-store.js";
+import { sweepEmailRetention } from "./worker.js";
+import { defaultToImmediateTransactions } from "../sqlite.js";
 
 const T0 = new Date("2026-09-30T10:00:00.000Z");
 /** A fixed id so the dedupe keys this file asserts on are predictable. */
@@ -40,6 +46,10 @@ const at = (offsetMs: number): Date => new Date(T0.getTime() + offsetMs);
 /** Its own database: the shared file is written by parallel test processes. */
 function fresh(): Database.Database {
   const db = new Database(":memory:");
+  // The same override `openSqliteFile` installs, so the notification hot path is
+  // exercised with the `BEGIN IMMEDIATE` it uses in production and not with the
+  // driver's deferred default.
+  defaultToImmediateTransactions(db);
   db.exec("CREATE TABLE runs (id TEXT PRIMARY KEY, repository_path TEXT)");
   ensureGateSchema(db);
   ensureAuthSchema(db);
@@ -84,8 +94,8 @@ function recorder(db: Database.Database, target = "engine"): Recorder {
       active,
       now,
       graceMs,
-      alert: (activeSince) => alerts.push(activeSince.toISOString()),
-      resolve: (activeSince) => resolutions.push(activeSince.toISOString()),
+      alert: (activeSince) => alerts.push(activeSince.toISOString()) && 1,
+      resolve: (activeSince) => resolutions.push(activeSince.toISOString()) && 1,
     }),
   };
 }
@@ -175,16 +185,98 @@ test("a failed enqueue leaves the window open so the next sample tries again", (
   let fail = true;
   const step = (now: Date) => stepOpsCondition(db, {
     event: "ops.engine_unavailable", target: "engine", active: true, now,
-    alert: () => { if (fail) throw new Error("the outbox is unwritable"); },
-    resolve: () => {},
+    alert: () => { if (fail) throw new Error("the outbox is unwritable"); return 1; },
+    resolve: () => 0,
   });
   assert.throws(() => step(T0), /unwritable/);
-  // `last_sent_at` was not advanced, because the write and the send share one
-  // transaction; the opposite order would swallow the alert silently.
-  assert.equal(getOpsAlertState("ops.engine_unavailable", "engine", db)?.lastSentAt, null);
+  // The write and the send share one transaction, so the throw took the state row
+  // with it; the opposite order would have swallowed the alert silently.
+  assert.equal(getOpsAlertState("ops.engine_unavailable", "engine", db), null);
   fail = false;
   assert.equal(step(at(60_000)), "alerted");
   assert.equal(getOpsAlertState("ops.engine_unavailable", "engine", db)?.lastSentAt, at(60_000).toISOString());
+
+  // A graced condition records its start before the first send is even attempted,
+  // so a failure there loses the attempt and not the episode.
+  let broken = true;
+  const graced = (now: Date) => stepOpsCondition(db, {
+    event: "ops.engine_unavailable", target: "graced", active: true, now,
+    graceMs: OPS_ENGINE_GRACE_MS,
+    alert: () => { if (broken) throw new Error("the outbox is unwritable"); return 1; },
+    resolve: () => 0,
+  });
+  assert.equal(graced(T0), null);
+  assert.equal(getOpsAlertState("ops.engine_unavailable", "graced", db)?.activeSince, T0.toISOString());
+  assert.throws(() => graced(at(OPS_ENGINE_GRACE_MS)), /unwritable/);
+  const survived = getOpsAlertState("ops.engine_unavailable", "graced", db);
+  assert.equal(survived?.activeSince, T0.toISOString());
+  assert.equal(survived?.lastSentAt, null);
+  broken = false;
+  assert.equal(graced(at(OPS_ENGINE_GRACE_MS + 60_000)), "alerted");
+  db.close();
+});
+
+test("a send that queued nothing does not spend the six-hour window", () => {
+  const db = fresh();
+  // The default state of a fresh installation: e-mail not configured yet.
+  saveEmailSettings({ ...DEFAULT_EMAIL_SETTINGS, enabled: false }, null, T0, db);
+  const root = admin(db);
+  gateRow(db, "gate-1");
+
+  // The condition is recorded — it happened — but nothing was queued, so the
+  // window must not be treated as spent.
+  assert.equal(notifyGitHubPublishFailed("gate-1", { database: db, now: T0, origin: ORIGIN }), null);
+  assert.equal(queued(db).length, 0);
+  assert.equal(getOpsAlertState("ops.github_publish_failed", "gate-1", db)?.lastSentAt, null);
+
+  // Half an hour later the administrator finishes configuring e-mail, which is
+  // exactly the moment they want to know. The next sample must deliver.
+  saveEmailSettings({
+    ...DEFAULT_EMAIL_SETTINGS, enabled: true, fromAddress: "sentinel@okami.example",
+    smtpHost: "smtp.okami.example", smtpPort: 465,
+  }, null, at(1_800_000), db);
+  assert.equal(
+    notifyGitHubPublishFailed("gate-1", { database: db, now: at(1_860_000), origin: ORIGIN }),
+    "alerted",
+  );
+  assert.equal(queued(db).length, 1);
+  assert.equal(getOpsAlertState("ops.github_publish_failed", "gate-1", db)?.lastSentAt,
+    at(1_860_000).toISOString());
+  // And the episode still names when the condition started, not when e-mail did.
+  assert.equal(getOpsAlertState("ops.github_publish_failed", "gate-1", db)?.activeSince, T0.toISOString());
+
+  // The same for an administrator who only subscribes mid-episode.
+  setSubscription(root, "ops", "ops.github_publish_failed", false, db);
+  gateRow(db, "gate-2");
+  assert.equal(notifyGitHubPublishFailed("gate-2", { database: db, now: at(1_920_000), origin: ORIGIN }), null);
+  assert.equal(getOpsAlertState("ops.github_publish_failed", "gate-2", db)?.lastSentAt, null);
+  setSubscription(root, "ops", "ops.github_publish_failed", true, db);
+  assert.equal(
+    notifyGitHubPublishFailed("gate-2", { database: db, now: at(1_980_000), origin: ORIGIN }),
+    "alerted",
+  );
+  db.close();
+});
+
+test("a resolution nobody could receive does not close the episode silently", () => {
+  const db = fresh();
+  admin(db);
+  gateRow(db, "gate-1");
+  assert.equal(notifyGitHubPublishFailed("gate-1", { database: db, now: T0, origin: ORIGIN }), "alerted");
+
+  // E-mail goes off, then the condition ends. Closing the episode here would mean
+  // the outage was announced and its end never was.
+  saveEmailSettings({ ...DEFAULT_EMAIL_SETTINGS, enabled: false }, null, at(60_000), db);
+  updateGateRun("gate-1", { publishStatus: "published", publishError: null }, db);
+  assert.deepEqual(evaluatePublishRecovery({ database: db, now: at(120_000), origin: ORIGIN }), [null]);
+  assert.equal(getOpsAlertState("ops.github_publish_failed", "gate-1", db)?.resolvedAt, null);
+
+  saveEmailSettings({
+    ...DEFAULT_EMAIL_SETTINGS, enabled: true, fromAddress: "sentinel@okami.example",
+    smtpHost: "smtp.okami.example", smtpPort: 465,
+  }, null, at(180_000), db);
+  assert.deepEqual(evaluatePublishRecovery({ database: db, now: at(240_000), origin: ORIGIN }), ["resolved"]);
+  assert.ok(queued(db).some((row) => row.event === "ops.github_publish_failed.resolved"));
   db.close();
 });
 
@@ -243,8 +335,13 @@ test("a connection that degrades alerts, and one that recovers resolves", () => 
   assert.deepEqual(listUnresolvedOpsAlerts("ops.connection_attention", db), []);
 
   updateConnectionRecord("conn-1", { status: "degraded" }, db);
+  // Sampled once inside the grace period, then once past it.
   assert.deepEqual(
     evaluateConnectionAttention({ database: db, now: at(60_000), origin: ORIGIN }),
+    [null, null],
+  );
+  assert.deepEqual(
+    evaluateConnectionAttention({ database: db, now: at(60_000 + OPS_ENGINE_GRACE_MS), origin: ORIGIN }),
     ["alerted", null],
   );
   let rows = queued(db);
@@ -256,14 +353,14 @@ test("a connection that degrades alerts, and one that recovers resolves", () => 
 
   // Still degraded a minute later: the six-hour window keeps the inbox quiet.
   assert.deepEqual(
-    evaluateConnectionAttention({ database: db, now: at(120_000), origin: ORIGIN }),
+    evaluateConnectionAttention({ database: db, now: at(120_000 + OPS_ENGINE_GRACE_MS), origin: ORIGIN }),
     [null, null],
   );
   assert.equal(queued(db).length, 1);
 
   updateConnectionRecord("conn-1", { status: "ready" }, db);
   assert.deepEqual(
-    evaluateConnectionAttention({ database: db, now: at(180_000), origin: ORIGIN }),
+    evaluateConnectionAttention({ database: db, now: at(180_000 + OPS_ENGINE_GRACE_MS), origin: ORIGIN }),
     ["resolved", null],
   );
   rows = queued(db);
@@ -277,12 +374,19 @@ test("a deleted connection is a resolution, not a condition that persists for ev
   admin(db);
   insertConnection(connection("conn-1", "OpenRouter principal"), db);
   updateConnectionRecord("conn-1", { status: "expired" }, db);
-  assert.deepEqual(evaluateConnectionAttention({ database: db, now: T0, origin: ORIGIN }), ["alerted"]);
+  assert.deepEqual(evaluateConnectionAttention({ database: db, now: T0, origin: ORIGIN }), [null]);
+  assert.deepEqual(
+    evaluateConnectionAttention({ database: db, now: at(OPS_ENGINE_GRACE_MS), origin: ORIGIN }),
+    ["alerted"],
+  );
 
   db.prepare("DELETE FROM provider_connections WHERE id = 'conn-1'").run();
   // The connection is gone from every list of broken ones; the alert state is the
   // only record that it was ever broken, which is why the evaluator reads it.
-  assert.deepEqual(evaluateConnectionAttention({ database: db, now: at(60_000), origin: ORIGIN }), ["resolved"]);
+  assert.deepEqual(
+    evaluateConnectionAttention({ database: db, now: at(OPS_ENGINE_GRACE_MS + 60_000), origin: ORIGIN }),
+    ["resolved"],
+  );
   assert.deepEqual(listUnresolvedOpsAlerts("ops.connection_attention", db), []);
   db.close();
 });
@@ -294,7 +398,8 @@ test("a connection being set up is not an operational failure", () => {
   for (const status of ["draft", "authentication-required", "testing", "ready"] as const) {
     updateConnectionRecord("conn-1", { status }, db);
     assert.deepEqual(
-      evaluateConnectionAttention({ database: db, now: T0, origin: ORIGIN }), [null], status,
+      evaluateConnectionAttention({ database: db, now: at(OPS_ENGINE_GRACE_MS), origin: ORIGIN }),
+      [null], status,
     );
   }
   assert.equal(queued(db).length, 0);
@@ -459,6 +564,56 @@ test("a publish failure alerts at once, and publishing later resolves it", () =>
   db.close();
 });
 
+test("a deleted gate is forgotten, not announced as published", () => {
+  const db = fresh();
+  admin(db);
+  gateRow(db, "gate-1");
+  assert.equal(notifyGitHubPublishFailed("gate-1", { database: db, now: T0, origin: ORIGIN }), "alerted");
+  db.prepare("DELETE FROM email_outbox").run();
+
+  // An administrator deleting a terminal gate that never published must not be
+  // told "the publication of gate-1 succeeded" — it did not, the gate is gone.
+  db.prepare("DELETE FROM gate_runs WHERE id = 'gate-1'").run();
+  assert.deepEqual(evaluatePublishRecovery({ database: db, now: at(60_000), origin: ORIGIN }), [null]);
+  assert.equal(queued(db).length, 0);
+  // And the state goes with it, so the gate id is not carried for ever.
+  assert.equal(getOpsAlertState("ops.github_publish_failed", "gate-1", db), null);
+  db.close();
+});
+
+test("a connection has five minutes to settle, so a deploy and a token refresh are quiet", () => {
+  const db = fresh();
+  admin(db);
+  insertConnection(connection("conn-1", "OpenRouter principal"), db);
+  insertConnection(connection("conn-2", "Anthropic"), db);
+  updateConnectionRecord("conn-1", { status: "degraded" }, db);
+  updateConnectionRecord("conn-2", { status: "expired" }, db);
+
+  // The first tick after an upgrade finds conditions that may be weeks old. Without
+  // a grace period it would queue one message per connection per administrator in
+  // the first minute; with one it waits to see whether they are real.
+  assert.deepEqual(
+    evaluateConnectionAttention({ database: db, now: T0, origin: ORIGIN }), [null, null],
+  );
+  assert.equal(queued(db).length, 0);
+
+  // A refresh that flaps inside the window says nothing at all and leaves nothing
+  // behind, so the next flap is not read as a continuation of this one.
+  updateConnectionRecord("conn-2", { status: "ready" }, db);
+  assert.deepEqual(
+    evaluateConnectionAttention({ database: db, now: at(60_000), origin: ORIGIN }), [null, null],
+  );
+  assert.deepEqual(listUnresolvedOpsAlerts("ops.connection_attention", db).map((row) => row.target), ["conn-1"]);
+
+  // The one that is genuinely broken alerts once the window is out.
+  assert.deepEqual(
+    evaluateConnectionAttention({ database: db, now: at(OPS_ENGINE_GRACE_MS), origin: ORIGIN }),
+    ["alerted", null],
+  );
+  assert.equal(queued(db).length, 1);
+  db.close();
+});
+
 test("the publish hook swallows a broken outbox and logs the kind only", () => {
   const db = fresh();
   admin(db);
@@ -480,10 +635,13 @@ test("nothing operational is queued while e-mail is switched off installation-wi
   saveEmailSettings({ ...DEFAULT_EMAIL_SETTINGS, enabled: false }, null, T0, db);
   admin(db);
   gateRow(db, "gate-1");
-  // The alert state is still recorded — the condition happened — but no message
-  // is written, so switching e-mail on later cannot release a backlog.
-  assert.equal(notifyGitHubPublishFailed("gate-1", { database: db, now: T0, origin: ORIGIN }), "alerted");
+  // No message, and therefore no alert either: the window is spent on messages
+  // that were written, not on attempts. Turning e-mail on later cannot release a
+  // backlog, because nothing was queued — and cannot be silenced for six hours,
+  // because nothing was recorded as sent.
+  assert.equal(notifyGitHubPublishFailed("gate-1", { database: db, now: T0, origin: ORIGIN }), null);
   assert.equal(queued(db).length, 0);
+  assert.equal(getOpsAlertState("ops.github_publish_failed", "gate-1", db)?.lastSentAt, null);
   db.close();
 });
 
@@ -551,6 +709,82 @@ test("an engine outage waits five minutes, then alerts, then reports its recover
   const up = { database: db, origin: ORIGIN, catalog: catalog({ "codex-security": true }) };
   assert.equal(await evaluateEngineAvailability({ ...up, now: at(OPS_ENGINE_GRACE_MS + 60_000) }), "resolved");
   assert.ok(queued(db).some((row) => row.event === "ops.engine_unavailable.resolved"));
+  db.close();
+});
+
+test("closed episodes are swept with the outbox, and live ones are not", () => {
+  const db = fresh();
+  admin(db);
+  gateRow(db, "gate-1");
+  gateRow(db, "gate-2");
+  notifyGitHubPublishFailed("gate-1", { database: db, now: T0, origin: ORIGIN });
+  notifyGitHubPublishFailed("gate-2", { database: db, now: T0, origin: ORIGIN });
+  updateGateRun("gate-1", { publishStatus: "published", publishError: null }, db);
+  assert.deepEqual(
+    evaluatePublishRecovery({ database: db, now: at(60_000), origin: ORIGIN }).sort(),
+    [null, "resolved"],
+  );
+
+  // Inside the repeat window a resolved row still distinguishes "this is over" from
+  // "this never started", so it stays.
+  sweepEmailRetention(at(60_000 + OPS_ALERT_REPEAT_MS - 1_000), db);
+  assert.equal(getOpsAlertState("ops.github_publish_failed", "gate-1", db)?.resolvedAt, at(60_000).toISOString());
+
+  sweepEmailRetention(at(60_000 + OPS_ALERT_REPEAT_MS + 1_000), db);
+  assert.equal(getOpsAlertState("ops.github_publish_failed", "gate-1", db), null);
+  // The one still broken is untouched, whatever its age.
+  assert.equal(getOpsAlertState("ops.github_publish_failed", "gate-2", db)?.resolvedAt, null);
+  db.close();
+});
+
+test("the scanner is probed at most once every two and a half minutes, not once a tick", async () => {
+  const db = fresh();
+  admin(db);
+  clearOpsEngineProbeCache();
+  // Half the grace period, and comfortably above the evaluator's own interval: the
+  // catalogue shells out to four CLI binaries with a 20 s timeout each, and a
+  // per-tick miss would spawn four processes a minute for ever.
+  assert.ok(OPS_ENGINE_PROBE_TTL_MS > OPS_EVALUATOR_INTERVAL_MS);
+  assert.equal(OPS_ENGINE_PROBE_TTL_MS, OPS_ENGINE_GRACE_MS / 2);
+
+  // The memo caches the promise, so two overlapping asks share one probe.
+  let probes = 0;
+  const counted = async () => {
+    probes += 1;
+    return (await catalog({ "codex-security": true })());
+  };
+  await Promise.all([
+    engineAvailability(db, counted),
+    engineAvailability(db, counted),
+  ]);
+  assert.equal(probes, 2, "engineAvailability itself does not cache; the evaluator's memo does");
+  db.close();
+});
+
+test("a stop that lands on a hung probe does not wait it out", async () => {
+  const db = fresh();
+  admin(db);
+  // Two seconds, not the probe's twenty: the evaluator writes only outbox rows and
+  // alert state, and an abandoned pass repeats on the next boot.
+  assert.ok(OPS_EVALUATOR_STOP_DEADLINE_MS <= 2_000);
+  let release!: () => void;
+  const hung = new Promise<void>((resolve) => { release = resolve; });
+  const evaluator = startOpsEvaluator({
+    database: db,
+    origin: ORIGIN,
+    log: () => {},
+    intervalMs: 24 * 3_600_000,
+    catalog: async () => {
+      await hung;
+      return (await catalog({ "codex-security": true })());
+    },
+  });
+  const inFlight = evaluator.tick();
+  const startedAt = Date.now();
+  await evaluator.stop();
+  assert.ok(Date.now() - startedAt < OPS_EVALUATOR_STOP_DEADLINE_MS + 1_000);
+  release();
+  await inFlight;
   db.close();
 });
 

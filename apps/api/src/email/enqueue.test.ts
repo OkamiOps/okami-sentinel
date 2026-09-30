@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import Database from "better-sqlite3";
 import { ensureAuthSchema } from "../auth/schema.js";
-import { enqueueEmail } from "./enqueue.js";
+import { emailQueueEnabled, enqueueEmail } from "./enqueue.js";
 import { listEmailDeliveries } from "./outbox-store.js";
 import { ensureEmailSchema } from "./schema.js";
 import { DEFAULT_EMAIL_SETTINGS, saveEmailSettings } from "./settings-store.js";
@@ -98,4 +98,62 @@ test("without a public origin the queued body carries no link and no token", () 
   assert.equal(row.html.includes(invite.data.inviteToken), false);
   assert.equal(row.text.includes(invite.data.inviteToken), false);
   assert.ok(row.text.includes("não tem endereço público configurado"));
+});
+
+test("a taken dedupe key is refused before anything is rendered", () => {
+  const db = fresh(true);
+  assert.equal(enqueueEmail(db, invite).status, "queued");
+
+  // The periodic callers — an operational condition re-sampled every minute, a
+  // daily ceiling that stays crossed all day — re-enqueue the same key constantly.
+  // The unique index is still what makes it correct; asking it first is what makes
+  // it cheap, and is observable because a render this row can never use never runs.
+  let rendered = 0;
+  const counting = new Proxy(db, {
+    get(target, property, receiver) {
+      if (property === "prepare") {
+        return (sql: string) => {
+          if (sql.includes("INSERT INTO email_outbox")) rendered += 1;
+          return Reflect.get(target, property, receiver).call(target, sql);
+        };
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  }) as typeof db;
+  assert.deepEqual(enqueueEmail(counting, invite), { status: "skipped", reason: "duplicate" });
+  assert.equal(rendered, 0);
+  db.close();
+});
+
+test("a caller that already read the global switch does not make the store read it again", () => {
+  const db = fresh(true);
+  let settingsReads = 0;
+  const counting = new Proxy(db, {
+    get(target, property, receiver) {
+      if (property === "prepare") {
+        return (sql: string) => {
+          if (sql.includes("FROM email_settings")) settingsReads += 1;
+          return Reflect.get(target, property, receiver).call(target, sql);
+        };
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  }) as typeof db;
+
+  assert.equal(enqueueEmail(counting, invite).status, "queued");
+  assert.equal(settingsReads, 1);
+  // A batch for many recipients reads it once and passes it down; the answer is
+  // identical either way.
+  settingsReads = 0;
+  assert.equal(
+    enqueueEmail(counting, { ...invite, dedupeKey: "account.u1.invite.second" }, { enabled: true }).status,
+    "queued",
+  );
+  assert.equal(settingsReads, 0);
+  assert.deepEqual(
+    enqueueEmail(counting, { ...invite, dedupeKey: "account.u1.invite.third" }, { enabled: false }),
+    { status: "skipped", reason: "disabled" },
+  );
+  assert.equal(emailQueueEnabled(db), true);
+  db.close();
 });

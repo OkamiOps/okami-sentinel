@@ -55,8 +55,39 @@ export type AccountNotificationEvent = (typeof ACCOUNT_NOTIFICATION_EVENTS)[numb
 /** Everything a row in `notification_subscriptions` may be about. */
 export type NotificationEvent = RepositoryNotificationEvent | OpsNotificationEvent;
 
-/** The `scope` value the operational row uses; every other scope is a repository key. */
+/** The `scope` value the operational row uses. */
 export const OPS_NOTIFICATION_SCOPE = "ops";
+
+/**
+ * The `scope` value for scans that belong to no repository — a filesystem scan,
+ * or one started before the repository was enrolled. The design sends those to
+ * administrators only; they still have to be filtered by a subscription, and a
+ * subscription needs a scope, so they get this one.
+ */
+export const UNASSIGNED_NOTIFICATION_SCOPE = "unassigned";
+
+/**
+ * Scopes that are not repository keys. A repository key can never be one of
+ * these — every key the product mints is `github.com/<owner>/<name>` or
+ * `local/<name>`, so it always contains a separator — and
+ * `isReservedNotificationScope` is what states that rather than assuming it.
+ */
+export const RESERVED_NOTIFICATION_SCOPES: readonly string[] = Object.freeze([
+  OPS_NOTIFICATION_SCOPE,
+  UNASSIGNED_NOTIFICATION_SCOPE,
+]);
+
+export function isReservedNotificationScope(scope: string): boolean {
+  return RESERVED_NOTIFICATION_SCOPES.includes(scope);
+}
+
+/**
+ * The events a repository-less scan can produce. A gate always names a
+ * repository, so only the two scan events reach the reserved scope.
+ */
+export const UNASSIGNED_NOTIFICATION_EVENTS = ["scan.failed", "scan.completed"] as const;
+
+export type UnassignedNotificationEvent = (typeof UNASSIGNED_NOTIFICATION_EVENTS)[number];
 
 /**
  * What the absence of a row means, straight from the design's event table: the
@@ -114,6 +145,11 @@ export interface NotificationOpsScope {
   events: NotificationEventState[];
 }
 
+/** The row for scans with no repository; administrators only, like `ops`. */
+export interface NotificationUnassignedScope {
+  events: NotificationEventState[];
+}
+
 /**
  * The effective matrix for one caller. `address` is `null` when nothing can be
  * sent to this account, which is the warning Minha conta shows.
@@ -124,12 +160,17 @@ export interface AccountNotificationsResponse {
   repositories: NotificationRepositoryScope[];
   /** Present only for administrators. */
   ops: NotificationOpsScope | null;
+  /**
+   * Scans that belong to no repository. Present only for administrators, because
+   * they are the only recipients those scans have.
+   */
+  unassigned: NotificationUnassignedScope | null;
   /** Shown as always on; never editable. */
   accountEvents: readonly AccountNotificationEvent[];
 }
 
 export interface AccountNotificationsUpdateEntry {
-  /** A repository key, or `ops`. */
+  /** A repository key, `ops`, or `unassigned`. */
   scope: string;
   event: NotificationEvent;
   enabled: boolean;
@@ -148,6 +189,7 @@ export type AccountNotificationsError =
   | "subscriptions_invalid"
   | "scope_unknown"
   | "ops_forbidden"
+  | "unassigned_forbidden"
   | "event_invalid"
   | "event_not_editable"
   | "enabled_invalid";

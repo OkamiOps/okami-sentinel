@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import {
-  NOTIFICATION_DEFAULTS,
   scanEstimatedUsd,
+  UNASSIGNED_NOTIFICATION_SCOPE,
   type GateOutcome,
   type GateRun,
   type RepositoryNotificationEvent,
@@ -9,7 +9,7 @@ import {
   type SeverityCounts,
 } from "@csb/shared";
 import { getDb } from "../db.js";
-import { enqueueEmail } from "./enqueue.js";
+import { emailQueueEnabled, enqueueEmail } from "./enqueue.js";
 import { repositoryRecipients, type EmailRecipient } from "./recipients.js";
 import { subscribedUserIds } from "./subscription-store.js";
 import type { GateEmailData, ScanEmailData } from "./templates.js";
@@ -49,6 +49,13 @@ export function scanNotificationEvent(status: string): RepositoryNotificationEve
   return null;
 }
 
+/**
+ * The name a message may print. A registered repository has a display name chosen
+ * by whoever enrolled it; a scan that has none would otherwise fall back to
+ * `run.displayName`, which defaults to the basename of the scanned directory —
+ * host information travelling to every administrator's inbox, which is the spirit
+ * of the design's "nunca incluir … caminho de arquivo". Such a scan names itself.
+ */
 function repositoryDisplayName(
   repositoryKey: string | null,
   fallback: string,
@@ -87,12 +94,20 @@ interface NotifyOptions {
 }
 
 /**
+ * The scope a repository event is subscribed under: the repository key, or the
+ * reserved `unassigned` scope for a scan that belongs to no repository. Such a
+ * scan reaches administrators only, and the design still says "filtrados pela
+ * assinatura" — an event no preference can reach is an event nobody can stop.
+ */
+export function repositoryEventScope(repositoryKey: string | null): string {
+  return repositoryKey ?? UNASSIGNED_NOTIFICATION_SCOPE;
+}
+
+/**
  * Who receives one repository event: everybody who can see the repository right
- * now, minus whoever switched this event off, minus whoever has no address.
- *
- * A scan with no repository goes to administrators only, as the design says.
- * Those have no cell in anybody's matrix — the matrix is keyed by repository —
- * so the event's default is all there is to apply.
+ * now, minus whoever switched this event off, minus whoever has no address. A
+ * scan with no repository narrows the first set to administrators; the filter
+ * applies either way.
  */
 export function repositoryEventRecipients(
   repositoryKey: string | null,
@@ -100,12 +115,12 @@ export function repositoryEventRecipients(
   database: Database.Database,
 ): EmailRecipient[] {
   const candidates = repositoryRecipients(repositoryKey, database);
-  if (repositoryKey === null) {
-    return NOTIFICATION_DEFAULTS[event] ? candidates : [];
-  }
-  const wanted = new Set(
-    subscribedUserIds(candidates.map((recipient) => recipient.userId), repositoryKey, event, database),
-  );
+  const wanted = new Set(subscribedUserIds(
+    candidates.map((recipient) => recipient.userId),
+    repositoryEventScope(repositoryKey),
+    event,
+    database,
+  ));
   return candidates.filter((recipient) => wanted.has(recipient.userId));
 }
 
@@ -131,6 +146,10 @@ function queueForRecipients<K extends "gate.blocked" | "gate.error" | "gate.pass
   },
 ): number {
   let queued = 0;
+  // The switch is one `SELECT *`; read once for the batch rather than once per
+  // recipient, and a repository shared with two hundred people is one read.
+  const enabled = emailQueueEnabled(database);
+  if (!enabled) return 0;
   const write = (): void => {
     for (const recipient of input.recipients) {
       const result = enqueueEmail(database, {
@@ -143,7 +162,7 @@ function queueForRecipients<K extends "gate.blocked" | "gate.error" | "gate.pass
         data: input.data,
         now: input.now,
         ...(input.origin === undefined ? {} : { origin: input.origin }),
-      } as never);
+      } as never, { enabled });
       if (result.status === "queued") queued += 1;
     }
   };
@@ -206,7 +225,7 @@ export function notifyScanOutcome(run: ScanRun, options: NotifyOptions = {}): nu
     if (recipients.length === 0) return 0;
     const data: ScanEmailData = {
       scanId: run.id,
-      repository: repositoryDisplayName(repositoryKey, run.displayName, database),
+      repository: repositoryDisplayName(repositoryKey, run.id, database),
       branch: run.revision,
       status: run.status === "completed" ? "completed" : run.status === "incomplete" ? "incomplete" : "failed",
       severity: run.severity,
@@ -215,7 +234,7 @@ export function notifyScanOutcome(run: ScanRun, options: NotifyOptions = {}): nu
     };
     return queueForRecipients(database, {
       event,
-      scope: repositoryKey,
+      scope: repositoryEventScope(repositoryKey),
       dedupePrefix: `scan.${run.id}.${event}`,
       recipients,
       data,

@@ -16,6 +16,7 @@ import {
   ENGINE_UPDATE_RESERVATION_PREFIX, engineUpdateBlockingReason, releaseScanCapacity,
   renewScanCapacity, reserveScanCapacity,
 } from "./db.js";
+import { clearOpsEngineProbeCache } from "./email/ops-notifications.js";
 import { invalidateScannerCatalog } from "./scanners/catalog.js";
 import { createEngineUpdatesService, EngineUpdateError } from "./scanners/engine-updates.js";
 
@@ -34,6 +35,10 @@ export function createEngineUpdatesApp(supplied?: UpdatesService): Hono {
     onActivated: () => {
       refreshManagedRuntimeCommands();
       invalidateScannerCatalog();
+      // The operational evaluator keeps its own, longer memo of the same probe, so
+      // an engine that was just installed is not reported unavailable for another
+      // two and a half minutes.
+      clearOpsEngineProbeCache();
     },
   });
   const app = new Hono();

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import Database from "better-sqlite3";
-import type { GateRun, GuardrailRepository, ScanRun } from "@csb/shared";
+import { UNASSIGNED_NOTIFICATION_SCOPE, type GateRun, type GuardrailRepository, type ScanRun } from "@csb/shared";
 import { setRepositoryGrant } from "../auth/grant-store.js";
 import { ensureAuthSchema } from "../auth/schema.js";
 import { createUser, updateUser } from "../auth/user-store.js";
@@ -18,6 +18,7 @@ import { ensureEmailSchema } from "./schema.js";
 import { DEFAULT_EMAIL_SETTINGS, saveEmailSettings } from "./settings-store.js";
 import { setSubscription } from "./subscription-store.js";
 import { emailCancellationReason, EMAIL_ACCESS_LOST_ERROR } from "./worker.js";
+import { defaultToImmediateTransactions } from "../sqlite.js";
 
 const NOW = new Date("2026-09-30T12:00:00.000Z");
 const ORIGIN = "https://sentinel.okami.example";
@@ -25,6 +26,10 @@ const ORIGIN = "https://sentinel.okami.example";
 /** Its own database: the shared file is written by parallel test processes. */
 function fresh(): Database.Database {
   const db = new Database(":memory:");
+  // The same override `openSqliteFile` installs, so the notification hot path is
+  // exercised with the `BEGIN IMMEDIATE` it uses in production and not with the
+  // driver's deferred default.
+  defaultToImmediateTransactions(db);
   // Only the columns this module reads: the counts of a linked scan, by column,
   // so a finding never has to be loaded to render a notification.
   db.exec(`CREATE TABLE runs (
@@ -170,15 +175,77 @@ test("a scan with no repository is an administrators-only event", () => {
   );
   const rows = queued(db);
   assert.deepEqual(rows.map((row) => row.user_id), [admin.id]);
-  assert.deepEqual(rows.map((row) => row.scope), [null]);
+  // The reserved scope, not `null`: the worker re-checks the administrator flag,
+  // and the matrix has a row an administrator can switch off.
+  assert.deepEqual(rows.map((row) => row.scope), [UNASSIGNED_NOTIFICATION_SCOPE]);
   assert.equal(rows[0]!.dedupe_key, `scan.s-loose.scan.failed.${admin.id}`);
-  // `scan.completed` is off by default and has no cell for a repository-less
-  // scan, so the default is the whole answer.
+  // `scan.completed` is off by default, and nobody has chosen otherwise.
   assert.equal(
     notifyScanOutcome(scan({ id: "s-loose-2", repositoryKey: null, status: "completed" }),
       { database: db, now: NOW, origin: ORIGIN }),
     0,
   );
+  db.close();
+});
+
+test("a repository-less scan is filtered by the reserved unassigned subscription", () => {
+  const db = fresh();
+  const root = createUser({ username: "root@example.com", displayName: "Root", isAdmin: true }, db);
+  const loose = scan({ id: "s-loose", repositoryKey: null, status: "failed", displayName: "juice-shop" });
+
+  // The default applies while nobody has chosen.
+  assert.equal(notifyScanOutcome(loose, { database: db, now: NOW, origin: ORIGIN }), 1);
+  db.prepare("DELETE FROM email_outbox").run();
+
+  // And a stored choice under the reserved scope is honoured, which is the whole
+  // point: without it these messages could not be switched off at all.
+  setSubscription(root.id, UNASSIGNED_NOTIFICATION_SCOPE, "scan.failed", false, db);
+  assert.equal(notifyScanOutcome(loose, { database: db, now: NOW, origin: ORIGIN }), 0);
+
+  // Symmetrically, an administrator who wants the quiet event can have it.
+  setSubscription(root.id, UNASSIGNED_NOTIFICATION_SCOPE, "scan.completed", true, db);
+  assert.equal(
+    notifyScanOutcome(scan({ id: "s-loose-2", repositoryKey: null, status: "completed" }),
+      { database: db, now: NOW, origin: ORIGIN }),
+    1,
+  );
+  // The row carries the reserved scope, so the worker re-checks the admin flag.
+  const rows = queued(db);
+  assert.deepEqual(rows.map((row) => row.scope), [UNASSIGNED_NOTIFICATION_SCOPE]);
+  assert.equal(
+    emailCancellationReason({
+      id: "x", event: "scan.completed", scope: UNASSIGNED_NOTIFICATION_SCOPE, userId: root.id,
+      toAddress: "root@example.com", locale: "pt-BR", subject: "s", html: "s", text: "s", attempts: 0,
+    }, db),
+    null,
+  );
+  updateUser(root.id, { isAdmin: false }, db);
+  assert.match(
+    String(emailCancellationReason({
+      id: "x", event: "scan.completed", scope: UNASSIGNED_NOTIFICATION_SCOPE, userId: root.id,
+      toAddress: "root@example.com", locale: "pt-BR", subject: "s", html: "s", text: "s", attempts: 0,
+    }, db)),
+    /no longer an administrator/,
+  );
+  db.close();
+});
+
+test("a repository-less scan names itself, not a directory on the host", () => {
+  const db = fresh();
+  createUser({ username: "root@example.com", displayName: "Root", isAdmin: true }, db);
+  // `displayName` defaults to the basename of the scanned directory, which is host
+  // information the design's content rule keeps out of an inbox.
+  notifyScanOutcome(
+    scan({ id: "s-loose", repositoryKey: null, status: "failed", displayName: "juice-shop-master" }),
+    { database: db, now: NOW, origin: ORIGIN },
+  );
+  const row = db.prepare("SELECT subject, html, text FROM email_outbox").get() as
+    { subject: string; html: string; text: string };
+  for (const body of [row.subject, row.html, row.text]) {
+    assert.equal(body.includes("juice-shop-master"), false);
+  }
+  assert.ok(row.text.includes("s-loose"));
+  assert.ok(row.html.includes(`href="${ORIGIN}/scans/s-loose"`));
   db.close();
 });
 

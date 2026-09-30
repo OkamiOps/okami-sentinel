@@ -15,6 +15,14 @@ export type EmailEnqueueResult =
   | { status: "queued"; id: string }
   | { status: "skipped"; reason: Extract<EmailQueueSkip, "disabled" | "duplicate"> };
 
+export interface EnqueueEmailOptions {
+  /**
+   * The global switch, already read by the caller. Only an optimisation: the
+   * result is identical either way.
+   */
+  enabled?: boolean;
+}
+
 export interface EnqueueEmailInput<K extends EmailMessageKind> {
   /** The message kind, which is also the outbox row's `event`. */
   event: K;
@@ -51,11 +59,34 @@ export interface EnqueueEmailInput<K extends EmailMessageKind> {
  * installation accumulates nothing: turning e-mail on should not release a month
  * of backlog into someone's inbox.
  */
+export function emailQueueEnabled(database: Database.Database): boolean {
+  return getEmailSettings(database).enabled;
+}
+
+/**
+ * Whether this dedupe key already has a row.
+ *
+ * `insertOutboxRow` would discard the duplicate anyway, but only after the body was
+ * rendered — and the repeated-enqueue callers are the periodic ones: an operational
+ * condition re-sampled every sixty seconds, a daily ceiling that stays crossed for
+ * the rest of the day. Asking the unique index first turns that into one indexed
+ * lookup. The insert's own `ON CONFLICT` is still what makes it correct; this only
+ * makes it cheap.
+ */
+function dedupeKeyTaken(database: Database.Database, dedupeKey: string): boolean {
+  return database.prepare("SELECT 1 FROM email_outbox WHERE dedupe_key = ?").get(dedupeKey) !== undefined;
+}
+
 export function enqueueEmail<K extends EmailMessageKind>(
   database: Database.Database,
   input: EnqueueEmailInput<K>,
+  options: EnqueueEmailOptions = {},
 ): EmailEnqueueResult {
-  if (!getEmailSettings(database).enabled) return { status: "skipped", reason: "disabled" };
+  // `enabled` lets a caller queuing for many recipients read the switch once
+  // instead of once per recipient; omitted, it is read here.
+  const enabled = options.enabled ?? emailQueueEnabled(database);
+  if (!enabled) return { status: "skipped", reason: "disabled" };
+  if (dedupeKeyTaken(database, input.dedupeKey)) return { status: "skipped", reason: "duplicate" };
   const now = input.now ?? new Date();
   const rendered = renderEmail({
     kind: input.event,
