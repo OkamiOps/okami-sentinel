@@ -1,15 +1,16 @@
 /**
- * The same address resolution the API performs, repeated on the screen only to
+ * The same address rule the API applies, repeated on the screen only to
  * *predict* it: the invite dialog has to say whether a message will be sent
  * before the request exists, and Minha conta explains a missing address.
  *
- * Deliberately strict and deliberately not a full RFC 5322 parser: one
- * `local@domain` pair, a dot in the domain, no list separators and no control
- * characters. The API's `isEmailAddress` is the authority; a disagreement here
- * can only ever make the screen predict "no e-mail" for an address the server
- * would accept, which is a wrong prediction and never a wrong delivery.
+ * The pattern is deliberately identical to `isEmailAddress` in
+ * `apps/api/src/email/address.ts`, including the 254-character cap. A looser
+ * rule here is not harmless: the dialog would promise "the invitation will be
+ * e-mailed to a@b.c" and the reply would then say it was skipped for
+ * `no_address` — two contradictory sentences about the same invitation. Any
+ * change to the server's rule belongs here in the same commit.
  */
-const ADDRESS = /^[^\s@,;<>"\\]+@[^\s@,;<>"\\.]+(?:\.[^\s@,;<>"\\.]+)+$/;
+const ADDRESS = /^[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$/;
 
 export function looksLikeEmailAddress(value: string): boolean {
   const trimmed = value.trim();
