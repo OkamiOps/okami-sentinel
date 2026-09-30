@@ -55,6 +55,7 @@ import {
   progressForStatus,
   withProgress,
 } from "./progress.js";
+import { notifyScanOutcome } from "./email/repository-notifications.js";
 import { validateScannerRequest } from "./scanners/catalog.js";
 import {
   prepareCodexSecurityApiLaunch,
@@ -489,6 +490,31 @@ interface StartScanDependencies {
   spawn: ScannerSpawn;
   /** Existing-session environment only; API-key variables are removed in launch.ts. */
   environment: NodeJS.ProcessEnv;
+  /**
+   * The repository notification for a terminal status. Injected so a test can
+   * watch it fire — and watch it throw without costing the scan its result.
+   */
+  notifyScanOutcome: (run: ScanRun) => void;
+}
+
+/**
+ * A notification is the least important thing a finishing scan does. Its own
+ * module already swallows what it can, and this catches what it cannot — a
+ * rejected module import, a closed database during shutdown — so the terminal
+ * event, the capacity release and the identity cleanup all still happen.
+ */
+function notifyTerminalScan(
+  notify: ((run: ScanRun) => void) | undefined,
+  run: ScanRun,
+): void {
+  try {
+    (notify ?? notifyScanOutcome)(run);
+  } catch (error) {
+    console.warn(
+      `[csb-api] Could not queue the ${run.status} notification for scan ${run.id}: `
+        + `${error instanceof Error ? error.name : "unknown_error"}`,
+    );
+  }
 }
 
 type ScannerSpawn = (
@@ -637,7 +663,9 @@ export async function startScan(
     const failed = getRun(id);
     if (failed && !active.has(id) && failed.pid === null && (failed.status === "running" || failed.status === "queued")) {
       const completedAt = new Date().toISOString();
-      upsertRun({ ...failed, status: "failed", completedAt, durationMs: failed.startedAt ? Date.parse(completedAt) - Date.parse(failed.startedAt) : null, progress: null });
+      const abandoned: ScanRun = { ...failed, status: "failed", completedAt, durationMs: failed.startedAt ? Date.parse(completedAt) - Date.parse(failed.startedAt) : null, progress: null };
+      upsertRun(abandoned);
+      notifyTerminalScan(options.dependencies?.notifyScanOutcome, abandoned);
       removeProcessIdentity(failed.scanDir);
     }
     releaseScanCapacity(id);
@@ -984,6 +1012,9 @@ async function startReservedScan(
     run.pid = null;
     run.progress = null;
     upsertRun(run);
+    // After the persisted status, never before it: the e-mail points at a scan
+    // the reader has to be able to open, and it must not be able to fail the run.
+    notifyTerminalScan(dependencies.notifyScanOutcome, run);
     emit(activeScan, {
       type: "error",
       message: err.message,
@@ -1032,6 +1063,9 @@ async function startReservedScan(
     // The terminal event is the last chance to index a completed scanner
     // artifact before it leaves the active-only reconciliation set.
     indexFindingCategoryMetrics(refreshed, { force: true });
+    // Counts and cost are read from this row, so the notification comes after the
+    // refresh and the index, and never for a cancellation.
+    notifyTerminalScan(dependencies.notifyScanOutcome, refreshed);
     emit(activeScan, {
       type: "done",
       status: refreshed.status,

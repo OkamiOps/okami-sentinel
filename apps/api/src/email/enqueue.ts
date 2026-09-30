@@ -20,6 +20,12 @@ export interface EnqueueEmailInput<K extends EmailMessageKind> {
   event: K;
   /** `account.<userId>.<event>.<reference>`, `gate.<gateId>.<event>`, `scan.<scanId>.<event>`. */
   dedupeKey: string;
+  /**
+   * The subscription scope the message belongs to — a repository key, or `ops` —
+   * stored so the worker can re-check the recipient's access right before it
+   * sends. Omitted by account messages, which have no scope to lose.
+   */
+  scope?: string | null;
   /** The account the message belongs to, or `null` for an address with no account yet. */
   userId: string | null;
   toAddress: string;
@@ -60,6 +66,7 @@ export function enqueueEmail<K extends EmailMessageKind>(
   const id = insertOutboxRow({
     event: input.event,
     dedupeKey: input.dedupeKey,
+    scope: input.scope ?? null,
     userId: input.userId,
     toAddress: input.toAddress,
     locale: input.locale,

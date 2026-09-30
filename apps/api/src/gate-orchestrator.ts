@@ -45,6 +45,7 @@ import {
   GUARDRAIL_MATERIALIZATIONS_DIR,
 } from "./config.js";
 import { purgeScanRunArtifacts } from "./activity.js";
+import { notifyGateOutcome } from "./email/repository-notifications.js";
 import {
   getFindingTriage,
   getRepositoryBaseline,
@@ -149,6 +150,11 @@ export interface LocalGateDependencies {
   buildGateArtifact(input: BuildGateArtifactInput): GateArtifact;
   buildOperationalErrorArtifact(input: BuildOperationalErrorArtifactInput): GateArtifact;
   writeArtifact(gateId: string, artifact: GateArtifact): string;
+  /**
+   * The repository notification for a terminal gate. Injected so a test can watch
+   * it fire — and watch it throw without costing the gate its decision.
+   */
+  notifyOutcome(gate: GateRun): void;
 }
 
 export interface RemoteManagedGateDependencies {
@@ -168,6 +174,7 @@ export interface RemoteManagedGateDependencies {
     authority: AcceptedGateTargetPreview["repositoryAuthority"];
     detailsUrl: string | null;
   }): Promise<"created" | "updated">;
+  notifyOutcome(gate: GateRun): void;
 }
 
 const activeGates = new Map<string, Promise<void>>();
@@ -222,6 +229,7 @@ const productionDeps: LocalGateDependencies = {
   buildGateArtifact,
   buildOperationalErrorArtifact,
   writeArtifact: writeGateArtifact,
+  notifyOutcome: notifyGateOutcome,
 };
 
 const productionManagedDeps: RemoteManagedGateDependencies = {
@@ -243,6 +251,7 @@ const productionManagedDeps: RemoteManagedGateDependencies = {
     input,
     getSystemGitHubAppService() as ManagedGitHubCheckClient,
   ),
+  notifyOutcome: notifyGateOutcome,
 };
 
 export async function startLocalGate(
@@ -1113,8 +1122,8 @@ function artifactEnvelope(
 function transition(
   gateId: string,
   status: GateRun["status"],
-  deps: Pick<LocalGateDependencies, "now" | "updateGateRun" | "listGateEvents" | "appendGateEvent">
-    | Pick<RemoteManagedGateDependencies, "now" | "updateGateRun" | "listGateEvents" | "appendGateEvent">,
+  deps: Pick<LocalGateDependencies, "now" | "updateGateRun" | "listGateEvents" | "appendGateEvent" | "getGateRun" | "notifyOutcome">
+    | Pick<RemoteManagedGateDependencies, "now" | "updateGateRun" | "listGateEvents" | "appendGateEvent" | "getGateRun" | "notifyOutcome">,
 ): void {
   deps.updateGateRun(gateId, { status });
   emit(gateId, "status", { gateId, status, phase: status }, deps);
@@ -1124,10 +1133,40 @@ function emit(
   gateId: string,
   type: Parameters<typeof publishGateEvent>[1],
   payload: Parameters<typeof publishGateEvent>[2],
-  deps: Pick<LocalGateDependencies, "now" | "listGateEvents" | "appendGateEvent">
-    | Pick<RemoteManagedGateDependencies, "now" | "listGateEvents" | "appendGateEvent">,
+  deps: Pick<LocalGateDependencies, "now" | "listGateEvents" | "appendGateEvent" | "getGateRun" | "notifyOutcome">
+    | Pick<RemoteManagedGateDependencies, "now" | "listGateEvents" | "appendGateEvent" | "getGateRun" | "notifyOutcome">,
 ): void {
   publishGateEvent(gateId, type, payload, deps.now(), deps);
+  // `done` and `error` are the only terminal events a gate emits, on every path:
+  // the local evaluation, the managed success, the managed failure that still had
+  // a persisted decision, the two failure recorders. Hooking the one choke point
+  // rather than six call sites is why a new terminal path cannot forget the
+  // notification.
+  if (type === "done" || type === "error") notifyGateTerminal(gateId, deps);
+}
+
+/**
+ * Queues the repository e-mail for a gate that just became terminal.
+ *
+ * Reads the row back instead of trusting the payload: the persisted outcome is
+ * the truth about the change, and it is the only thing the reader of the message
+ * will be able to open. Everything is swallowed — a gate decision must not be
+ * lost, delayed or rolled back because an e-mail could not be rendered.
+ */
+function notifyGateTerminal(
+  gateId: string,
+  deps: Pick<LocalGateDependencies, "getGateRun" | "notifyOutcome">
+    | Pick<RemoteManagedGateDependencies, "getGateRun" | "notifyOutcome">,
+): void {
+  try {
+    const gate = deps.getGateRun(gateId);
+    if (gate !== null) deps.notifyOutcome(gate);
+  } catch (error) {
+    console.warn(
+      `[csb-api] Could not queue the gate notification for ${gateId}: `
+        + `${error instanceof Error ? error.name : "unknown_error"}`,
+    );
+  }
 }
 
 function systemManagedExecutor(): SentinelManagedExecutor {

@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { OPS_NOTIFICATION_SCOPE } from "@csb/shared";
 import { INVITE_TTL_MS } from "../auth/invite-store.js";
 import { getUser } from "../auth/user-store.js";
 import {
@@ -17,6 +18,7 @@ import {
   markEmailSent,
   type EmailOutboxClaim,
 } from "./outbox-store.js";
+import { userSeesRepository } from "./recipients.js";
 import { activeEmailTransportConfig } from "./transport-config.js";
 import {
   createEmailTransport,
@@ -55,14 +57,24 @@ export function nextEmailAttemptAt(attempts: number, now: Date): string | null {
   return new Date(now.getTime() + delay).toISOString();
 }
 
+/** What a row says when its recipient lost the access the message was about. */
+export const EMAIL_ACCESS_LOST_ERROR = "The recipient no longer sees this repository.";
+/** What an operational row says when its recipient is no longer an administrator. */
+export const EMAIL_NOT_ADMIN_ERROR = "The recipient is no longer an administrator.";
+
 /**
  * Why a claimed row must not be sent after all, or `null` when it still should.
  *
- * Re-checked at send time and not only at enqueue time, because a message can
- * sit in the queue for hours: the account may have been disabled or deleted in
- * between. Task 3 extends this with the repository check the design asks for —
- * "the recipient still sees the repository" — by looking at the row's `event` and
- * its scope; account events have no scope to lose.
+ * Re-checked at send time and not only at enqueue time, because a message can sit
+ * in the queue for hours: the account may have been disabled, or may have lost the
+ * repository the message is about. The design asks for exactly that — "o acesso é
+ * verificado de novo no momento do envio" — and for the subscription row itself to
+ * survive, in case the access comes back.
+ *
+ * The scope comes from the row's own `scope` column rather than from the event id
+ * or the body. By the time a queued `gate.blocked` is sent, the gate may have been
+ * deleted, so the event cannot be resolved back to a repository; and a rendered
+ * body is not a place to look anything up.
  */
 export function emailCancellationReason(
   row: EmailOutboxClaim,
@@ -72,7 +84,11 @@ export function emailCancellationReason(
   const user = getUser(row.userId, database);
   if (user === null) return "The account no longer exists.";
   if (user.status !== "active") return "The account is disabled.";
-  return null;
+  if (row.scope === null) return null;
+  if (row.scope === OPS_NOTIFICATION_SCOPE) {
+    return user.isAdmin ? null : EMAIL_NOT_ADMIN_ERROR;
+  }
+  return userSeesRepository(row.userId, row.scope, database) ? null : EMAIL_ACCESS_LOST_ERROR;
 }
 
 export interface EmailWorkerDependencies {
