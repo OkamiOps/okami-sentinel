@@ -13,6 +13,7 @@ import {
 import {
   listGitHubBranchNames,
   reconcileGitHubActions,
+  singleFlightReconcile,
   type GitHubReconcileResult,
   type GitHubReconcilerDependencies,
 } from "./github-actions/reconciler.js";
@@ -1015,9 +1016,13 @@ const githubReconcilerDependencies: GitHubReconcilerDependencies = {
   runInTransaction: (work) => getDb().transaction(work)(),
 };
 
-export function reconcileGitHubActionsNow(): Promise<GitHubReconcileResult> {
-  return reconcileGitHubActions(githubReconcilerDependencies);
-}
+/**
+ * Both callers — the 15-minute loop in `index.ts` and `POST /github/reconcile` —
+ * go through the same guard, so a button press joins the cycle in flight instead of
+ * running a second set of GitHub reads beside it.
+ */
+export const reconcileGitHubActionsNow: () => Promise<GitHubReconcileResult> =
+  singleFlightReconcile(() => reconcileGitHubActions(githubReconcilerDependencies));
 
 /**
  * The whole GitHub tab hangs off one tree, and the Origin/CSRF guard covers all of
@@ -1086,6 +1091,10 @@ async function githubIntegrationInstallations(
         // What this installation **approved**, which is what decides whether a
         // gate can publish — not what the App requests.
         grantedPermissions: installation.grantedPermissions,
+        // Carried, not dropped: a suspended installation refuses every token, so a
+        // status that loses this flag reports a healthy integration while GitHub
+        // refuses everything.
+        suspended: installation.suspended,
       }));
   } catch {
     // `null`, never `[]`: an unread list is not an App installed nowhere.

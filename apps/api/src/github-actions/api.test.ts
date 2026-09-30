@@ -138,6 +138,7 @@ interface Harness {
   secrets: Map<string, string>;
   invalidations: number;
   reconciles: number;
+  vaultCalls: number;
 }
 
 function harness(options: {
@@ -152,7 +153,7 @@ function harness(options: {
   const events = options.events ?? [];
   const deliveries = options.deliveries ?? [];
   const secrets = new Map<string, string>();
-  const state = { invalidations: 0, reconciles: 0 };
+  const state = { invalidations: 0, reconciles: 0, vaultCalls: 0 };
 
   const dependencies: GitHubActionsApiDependencies = {
     getAction: (id) => actions.find((candidate) => candidate.id === id) ?? null,
@@ -202,7 +203,7 @@ function harness(options: {
       }],
       listInstallations: () => [{
         installationId: "i1", account: "okami", accountType: "Organization",
-        repositorySelection: "all", grantedPermissions: { metadata: "read" },
+        repositorySelection: "all", grantedPermissions: { metadata: "read" }, suspended: false,
       }],
       listRepositories: () => [{ repositoryId: "1", repositoryKey: REPO_A }],
       listActions: () => actions,
@@ -216,6 +217,13 @@ function harness(options: {
       publicOrigin: "https://sentinel.example",
     }),
     storeWebhookSecret: async (connectionId, secret) => {
+      state.vaultCalls += 1;
+      // The vault's own bounds, so a route that let something through shows up here
+      // as the 502 it used to answer instead of a 400.
+      if (!/^[A-Za-z0-9-]{1,100}$/.test(connectionId)
+        || secret.length < 16 || secret.length > 256 || secret.includes("\0")) {
+        throw new Error("secure_storage_unavailable");
+      }
       if (connectionId !== "c1") throw new Error("credential_not_found");
       secrets.set(connectionId, secret);
     },
@@ -231,6 +239,7 @@ function harness(options: {
     secrets,
     get invalidations() { return state.invalidations; },
     get reconciles() { return state.reconciles; },
+    get vaultCalls() { return state.vaultCalls; },
     server: (principal) => {
       const app = new Hono();
       app.use("*", async (c, next) => {
@@ -294,7 +303,7 @@ test("refuses an action created by a maintainer", async () => {
   assert.deepEqual(bench.actions, []);
 });
 
-test("refuses include_forks from anyone but an administrator", async () => {
+test("refuses turning include_forks on from anyone but an administrator", async () => {
   const bench = harness({ actions: [action("a1")] });
   const created = await post(bench.server(member("maintainer")), "/github/actions",
     { ...CREATE_BODY, includeForks: true });
@@ -306,6 +315,20 @@ test("refuses include_forks from anyone but an administrator", async () => {
   const byAdmin = await patch(bench.server(admin), "/github/actions/a1", { includeForks: true });
   assert.equal(byAdmin.status, 200);
   assert.equal(bench.actions[0]!.includeForks, true);
+});
+
+/**
+ * Scanning a fork runs code nobody in the organisation wrote on our token. Making a
+ * maintainer wait for an administrator to *stop* that — or disable the action
+ * wholesale, losing every other pull request with it — is the wrong way round
+ * (M-6). Off is a safety action, like `enabled: false` above it.
+ */
+test("lets a maintainer turn include_forks off", async () => {
+  const bench = harness({ actions: [action("a1", { enabled: true, includeForks: true })] });
+  const response = await patch(bench.server(member("maintainer")), "/github/actions/a1",
+    { includeForks: false });
+  assert.equal(response.status, 200);
+  assert.equal(bench.actions[0]!.includeForks, false);
 });
 
 test("lets a maintainer disable an action", async () => {
@@ -505,11 +528,17 @@ test("refuses a wildcard storm in a patch too", async () => {
   assert.deepEqual(await response.json(), { error: "invalid_branch_patterns" });
 });
 
+/**
+ * The request is well formed; the **state** of the repository is what refuses it,
+ * which is what 409 means — and what `GET /github/branches` already answers for the
+ * same condition. The brief pinned 400; one screen must not need two statuses for
+ * one fact (M-2).
+ */
 test("refuses an action for a local repository", async () => {
   const bench = harness();
   const response = await post(bench.server(admin), "/github/actions",
     { ...CREATE_BODY, repositoryKey: LOCAL });
-  assert.equal(response.status, 400);
+  assert.equal(response.status, 409);
   assert.deepEqual(await response.json(), { error: "repository_source_unsupported" });
 });
 
@@ -653,8 +682,83 @@ test("the cost rule is one pure function", () => {
     { costCeilingUsd: 1 },
     { dailyCostCeilingUsd: 1 },
     { includeForks: true },
-    { includeForks: false },
   ]) {
     assert.equal(patchRequiresAdmin(disabled, spending), true, JSON.stringify(spending));
   }
+  // Narrowing what an action scans is never an administrator's alone.
+  assert.equal(patchRequiresAdmin(disabled, { includeForks: false }), false);
+  assert.equal(patchRequiresAdmin(enabled, { includeForks: false }), false);
+});
+
+/**
+ * The route's own bound used to be sixteen times the vault's, so a long random
+ * secret — `openssl rand -hex 256` is 512 characters — passed validation, was
+ * refused by the vault, and came back as a 502 blaming the server for the
+ * operator's paste (I-3).
+ */
+test("refuses a secret the vault would refuse, as a 400 and before the vault", async () => {
+  const bench = harness();
+  const server = bench.server(admin);
+  const put = (body: unknown) => server.request("/github/integration/webhook-secret", {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+
+  const atTheCeiling = await put({ connectionId: "c1", secret: "s".repeat(256) });
+  assert.equal(atTheCeiling.status, 204);
+
+  const overIt = await put({ connectionId: "c1", secret: "s".repeat(257) });
+  assert.equal(overIt.status, 400);
+  assert.deepEqual(await overIt.json(), { error: "webhook_secret_invalid" });
+
+  const withNul = await put({ connectionId: "c1", secret: `${"s".repeat(20)}\u0000` });
+  assert.equal(withNul.status, 400);
+  assert.deepEqual(await withNul.json(), { error: "webhook_secret_invalid" });
+
+  // One vault call, for the one secret the vault could have stored.
+  assert.equal(bench.vaultCalls, 1);
+  assert.equal(bench.invalidations, 1);
+});
+
+/**
+ * A well-formed unknown id answered 404 and a malformed one 502, which is a format
+ * oracle and a lie about whose fault it was. Both are the same answer now (I-3).
+ */
+test("answers the same code for a malformed and an unknown connection id", async () => {
+  const bench = harness();
+  const server = bench.server(admin);
+  for (const connectionId of ["c9", "not a connection id", "../../etc/passwd", "c".repeat(200)]) {
+    const response = await server.request("/github/integration/webhook-secret", {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ connectionId, secret: SECRET }),
+    });
+    assert.equal(response.status, 404, connectionId);
+    assert.deepEqual(await response.json(), { error: "connection_not_found" }, connectionId);
+  }
+  // A shape the vault would have rejected never reaches it.
+  assert.equal(bench.vaultCalls, 1);
+  assert.equal(bench.invalidations, 0);
+});
+
+/**
+ * `?repositoryKey=${selected ?? ""}` is what a front end writes when nothing is
+ * selected, and it means "all repositories", not a malformed request (M-3).
+ */
+test("an empty repositoryKey means every visible repository", async () => {
+  const bench = harness({
+    actions: [action("a1"), action("a2", { repositoryKey: REPO_B, name: "PR B" })],
+    events: [event("e1", REPO_A, "a1"), event("e2", REPO_B, "a2")],
+  });
+  const server = bench.server(admin);
+  const actions = await server.request("/github/actions?repositoryKey=");
+  assert.equal(actions.status, 200);
+  assert.deepEqual(
+    ((await actions.json()) as { actions: GitHubAction[] }).actions.map((item) => item.id),
+    ["a1", "a2"],
+  );
+  const events = await server.request("/github/events?repositoryKey=&outcome=");
+  assert.equal(events.status, 200);
+  assert.deepEqual(
+    ((await events.json()) as { events: GitHubActionEvent[] }).events.map((item) => item.id),
+    ["e1", "e2"],
+  );
 });

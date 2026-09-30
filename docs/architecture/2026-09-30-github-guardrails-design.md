@@ -761,6 +761,23 @@ explicitamente que ela é isenta de CSRF e que nenhuma outra rota nova é públi
   assinatura validar. Um segredo colado com espaço, um segredo trocado só no
   GitHub, ou um `appId` gravado errado deixam o passo vermelho em vez de a tela
   ficar verde sobre nada.
+- **A entrega verificada expira em 7 dias.** A última entrega válida é uma marca
+  d'água: sem janela, o passo fica verde para sempre e sobrevive justamente às
+  falhas que ele existe para pegar — App suspensa, segredo trocado só no GitHub,
+  hook desligado. Passados 7 dias sem uma entrega cuja assinatura validou, o passo
+  volta a vermelho e a tela diz **"sem evento recente"**, que é diferente de "nunca
+  verificado". Sete dias passa de qualquer fim de semana quieto num repositório que
+  recebe PRs e fica bem longe de "ninguém notou por um mês".
+- **Instalação suspensa não é instalação.** `suspended_at` numa instalação faz o
+  GitHub recusar todo token dela, então ela não conta para "App instalada", não
+  concede permissão nenhuma e não cadastra repositório — mas continua listada, com
+  o link que a retoma. A tela mostra o estado da lista de instalações em uma
+  palavra: `desconhecido` (a leitura de `GET /app/installations` falhou — nada se
+  sabe, e todo passo que dependa dela fica vermelho), `nenhuma` (a App existe e
+  não está instalada em lugar nenhum), `suspensa` (todas as instalações estão
+  suspensas) ou `ativa`. Nos três primeiros nenhuma permissão é reportada como
+  concedida: `concedida` só pode vir de uma instalação viva, nunca do que a App
+  *pede*.
 
 **02 Ações por repositório**
 

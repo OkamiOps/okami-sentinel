@@ -12,6 +12,7 @@ import type {
   WebhookDeliveryRecord,
 } from "@csb/shared";
 
+import { isStorableWebhookSecret } from "../credentials/system-github-app-credential-store.js";
 import {
   canSeeRepository,
   hasRepositoryRole,
@@ -41,8 +42,13 @@ const DEFAULT_EVENT_LIMIT = 100;
 const MAX_EVENT_LIMIT = 200;
 const DEFAULT_DELIVERY_LIMIT = 200;
 const MAX_DELIVERY_LIMIT = 200;
-const WEBHOOK_SECRET_MIN = 16;
-const WEBHOOK_SECRET_MAX = 4096;
+/**
+ * The shape the vault requires of a connection id. Validating it here is what keeps
+ * a malformed id a 404 like an unknown one, instead of the 502 the vault's
+ * `secure_storage_unavailable` used to become — which was both a lie about whose
+ * fault it was and a format oracle.
+ */
+const CONNECTION_ID = /^[A-Za-z0-9-]{1,100}$/;
 
 /**
  * Everything the routes touch, injected, so the whole authorization surface is
@@ -90,7 +96,7 @@ export interface GitHubActionsApiDependencies {
 }
 
 class ApiError extends Error {
-  constructor(readonly code: string, readonly status: 400 | 403 | 404 | 409 | 502) {
+  constructor(readonly code: string, readonly status: 400 | 403 | 404 | 409 | 500 | 502) {
     super(code);
     this.name = "GitHubActionsApiError";
   }
@@ -124,9 +130,15 @@ function notFound(): never { throw new ApiError("not_found", 404); }
 export function patchRequiresAdmin(action: GitHubAction, patch: GitHubActionPatch): boolean {
   const spending: Array<keyof GitHubActionPatch> = [
     "executor", "connectionId", "installationId", "repositoryId",
-    "scanner", "costCeilingUsd", "dailyCostCeilingUsd", "includeForks",
+    "scanner", "costCeilingUsd", "dailyCostCeilingUsd",
   ];
   if (patch.enabled === true) return true;
+  // Turning forks **on** admits code nobody in the organisation wrote; turning them
+  // off narrows what an action scans, and is a maintainer's to do for the same
+  // reason `enabled: false` is. Making them wait for an administrator to stop it —
+  // or disable the action and lose every other pull request with it — is the wrong
+  // way round.
+  if (patch.includeForks === true) return true;
   if (spending.some((key) => patch[key] !== undefined)) return true;
   const shape: Array<keyof GitHubActionPatch> = ["name", "branchPatterns", "triggerKind"];
   return action.enabled && shape.some((key) => patch[key] !== undefined);
@@ -156,14 +168,20 @@ export function createGitHubActionsApi(deps: GitHubActionsApiDependencies): Hono
     requireAdmin(principalOf(c));
     const body = object(await json(c));
     exactKeys(body, new Set(["connectionId", "secret"]));
-    const connectionId = text(body.connectionId, 200);
+    // Deliberately generous here: the regex below is what decides, so a too-long
+    // id answers 404 like any other unusable one rather than 400.
+    const connectionId = text(body.connectionId, MAX_KEY);
     const secret = webhookSecret(body.secret);
+    // A shape the vault would refuse answers exactly like an id it does not hold, so
+    // the pair cannot be used to learn which ids are well formed.
+    if (!CONNECTION_ID.test(connectionId)) throw new ApiError("connection_not_found", 404);
     try {
       await deps.storeWebhookSecret(connectionId, secret);
     } catch (error) {
       if (error instanceof Error && error.message === "credential_not_found") {
         throw new ApiError("connection_not_found", 404);
       }
+      // Every refusal of the *input* is settled above, so anything left is ours.
       throw new ApiError("webhook_secret_not_stored", 502);
     }
     deps.invalidateWebhookSecrets();
@@ -323,7 +341,9 @@ function remoteAuthority(repository: GuardrailRepository): {
     || repository.githubConnectionId === null
     || repository.githubInstallationId === null
     || repository.githubRepositoryId === null) {
-    throw new ApiError("repository_source_unsupported", 400);
+    // The request is well formed; the repository's own state is what refuses it,
+    // and `GET /github/branches` already answers 409 for exactly this.
+    throw new ApiError("repository_source_unsupported", 409);
   }
   return {
     connectionId: repository.githubConnectionId,
@@ -467,12 +487,14 @@ function boundedInteger(raw: string | undefined, fallback: number, low: number, 
   return parsed;
 }
 
+/**
+ * The vault's own predicate, not a copy of its bounds: the route used to accept
+ * sixteen times what the store would keep, so a long random secret passed here and
+ * came back as a 502 that blamed the server for the operator's paste.
+ */
 function webhookSecret(value: unknown): string {
-  if (typeof value !== "string" || value.length < WEBHOOK_SECRET_MIN
-    || value.length > WEBHOOK_SECRET_MAX || value.includes("\0")) {
-    invalid("webhook_secret_invalid");
-  }
-  return value as string;
+  if (!isStorableWebhookSecret(value)) invalid("webhook_secret_invalid");
+  return value;
 }
 
 async function json(c: Context): Promise<unknown> {
@@ -504,8 +526,13 @@ function boolean(value: unknown): boolean {
   return value as boolean;
 }
 
+/**
+ * Absent and present-but-empty mean the same thing: no filter. A front end that
+ * writes `?repositoryKey=${selected ?? ""}` is asking for every repository, not
+ * sending a malformed request.
+ */
 function optionalQuery(value: string | undefined): string | null {
-  if (value === undefined) return null;
+  if (value === undefined || value.trim() === "") return null;
   return text(value, MAX_KEY);
 }
 

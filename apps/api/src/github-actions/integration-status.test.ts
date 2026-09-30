@@ -79,6 +79,8 @@ interface InstallationSpec {
   repositorySelection?: "all" | "selected";
   /** What this installation has actually approved; `null` when unknown. */
   granted?: Record<string, string> | null;
+  /** GitHub's own switch: a suspended installation refuses every token. */
+  suspended?: boolean;
   repositories?: Array<{ repositoryId: string; repositoryKey: string | null }>;
 }
 
@@ -157,6 +159,7 @@ function deps(overrides: Overrides = {}): GitHubIntegrationStatusDependencies & 
         grantedPermissions: installation.granted === undefined
           ? { ...REQUIRED_GRANTS }
           : installation.granted,
+        suspended: installation.suspended ?? false,
       };
     }));
     return {
@@ -218,6 +221,7 @@ test("reports a ready integration with every checklist step met", async () => {
     installationId: "77",
     account: "OkamiOps",
     repositorySelection: "all",
+    suspended: false,
     authorizedRepositoryCount: 1,
     enrolledRepositoryCount: 1,
     manageUrl: "https://github.com/settings/installations/77",
@@ -568,7 +572,7 @@ test("fails closed when the installation list cannot be read", async () => {
     listInstallations: () => null,
   });
   const connection = status.connections[0]!;
-  assert.equal(connection.installationsUnknown, true);
+  assert.equal(connection.installationsState, "unknown");
   assert.deepEqual(connection.installations, []);
   assert.equal(connection.ready, false);
   assert.ok(connection.missing.includes("app_installed"));
@@ -593,7 +597,7 @@ test("an App installed nowhere is not the same as an unreadable list", async () 
     listInstallations: () => [],
   });
   const connection = status.connections[0]!;
-  assert.equal(connection.installationsUnknown, false);
+  assert.equal(connection.installationsState, "none");
   assert.equal(connection.ready, false);
   assert.ok(connection.missing.includes("app_installed"));
 });
@@ -617,4 +621,106 @@ test("reports GitHub's own App id next to the one the connection recorded", asyn
   }));
   assert.equal(unreadable.connections[0]!.appId, null);
   assert.equal(unreadable.connections[0]!.recordedAppId, "4242");
+});
+
+/**
+ * The App exists and is installed nowhere — registered through the manifest and
+ * never installed, or uninstalled by an org owner. `granted` may only ever come
+ * from an installation, so with no installation nothing is granted. Reporting what
+ * the App *requests* here told the operator the permission review was done while
+ * the checklist said the App was not installed (I-1).
+ */
+test("an App installed nowhere grants nothing", async () => {
+  const status = await buildGitHubIntegrationStatus({
+    ...deps(),
+    listInstallations: () => [],
+  });
+  const connection = status.connections[0]!;
+  assert.equal(connection.installationsState, "none");
+  assert.deepEqual(connection.permissions.filter((permission) => permission.ok), []);
+  assert.deepEqual(
+    connection.permissions.map((permission) => permission.granted).filter((value) => value !== null),
+    [],
+  );
+  assert.deepEqual(connection.permissions[0]!.pendingInstallationIds, []);
+  assert.equal(connection.ready, false);
+  assert.deepEqual(status.checklist.filter((item) => item.ok), []);
+});
+
+/**
+ * Suspension is one click in GitHub's UI and it refuses every installation token.
+ * An integration that reads healthy through it is the screen lying at the exact
+ * moment it is consulted (I-2).
+ */
+test("a suspended installation is neither installed nor granted", async () => {
+  const status = await buildGitHubIntegrationStatus(deps({
+    connections: [{ installations: [{ installationId: "77", suspended: true }] }],
+  }));
+  const connection = status.connections[0]!;
+  assert.equal(connection.installationsState, "suspended");
+  assert.equal(connection.ready, false);
+  assert.ok(connection.missing.includes("app_installed"));
+  assert.deepEqual(connection.permissions.filter((permission) => permission.ok), []);
+  // The row survives so the screen can offer the un-suspend link.
+  assert.equal(connection.installations.length, 1);
+  assert.equal(connection.installations[0]!.suspended, true);
+  assert.deepEqual(status.checklist.filter((item) => item.ok), []);
+});
+
+test("a suspended installation neither lends nor withholds another one's grants", async () => {
+  const status = await buildGitHubIntegrationStatus(deps({
+    connections: [{
+      installations: [
+        { installationId: "77" },
+        // Suspended and approving nothing: it must not drag the live one down.
+        { installationId: "78", suspended: true, granted: {} },
+      ],
+    }],
+  }));
+  const connection = status.connections[0]!;
+  assert.equal(connection.installationsState, "active");
+  assert.deepEqual(connection.permissions.filter((permission) => !permission.ok), []);
+  assert.deepEqual(connection.permissions[0]!.pendingInstallationIds, []);
+  assert.equal(connection.installations.length, 2);
+  assert.equal(connection.installations[1]!.suspended, true);
+});
+
+test("a suspended installation does not enrol a repository", async () => {
+  const status = await buildGitHubIntegrationStatus(deps({
+    connections: [{
+      installations: [{
+        installationId: "77",
+        suspended: true,
+        repositories: [{ repositoryId: "9001", repositoryKey: "okamiops/sentinel" }],
+      }],
+    }],
+  }));
+  assert.ok(status.connections[0]!.missing.includes("repository_enrolled"));
+});
+
+/**
+ * `lastVerifiedWebhookDeliveryAt` is a high-water mark: without a window it stays
+ * green forever, so an App suspended, a secret rotated on GitHub alone, or a hook
+ * switched off all keep the step that exists to catch them (I-2).
+ */
+test("a verified delivery goes stale after the window", async () => {
+  const fresh = await buildGitHubIntegrationStatus(deps({
+    lastVerifiedDeliveryAt: "2026-09-24T12:00:00.000Z",
+  }));
+  assert.equal(fresh.connections[0]!.deliveryVerifiedStale, false);
+  assert.equal(fresh.checklist.find((item) => item.id === "delivery_verified")?.ok, true);
+
+  // Eight days before the frozen clock of 2026-09-30T12:00:00Z.
+  const stale = await buildGitHubIntegrationStatus(deps({
+    lastVerifiedDeliveryAt: "2026-09-22T11:59:59.000Z",
+  }));
+  assert.equal(stale.connections[0]!.lastVerifiedDeliveryAt, "2026-09-22T11:59:59.000Z");
+  assert.equal(stale.connections[0]!.deliveryVerifiedStale, true);
+  assert.equal(stale.checklist.find((item) => item.id === "delivery_verified")?.ok, false);
+  assert.ok(stale.connections[0]!.missing.includes("delivery_verified"));
+
+  // Never verified is not "stale": the screen says something different for it.
+  const never = await buildGitHubIntegrationStatus(deps({ lastVerifiedDeliveryAt: null }));
+  assert.equal(never.connections[0]!.deliveryVerifiedStale, false);
+  assert.equal(never.connections[0]!.lastVerifiedDeliveryAt, null);
 });

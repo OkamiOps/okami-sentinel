@@ -483,6 +483,35 @@ export interface GitHubReconcilerHandle {
 export const GITHUB_RECONCILE_STOP_DEADLINE_MS = 5_000;
 
 /**
+ * One cycle at a time, whatever asks for it. The loop's own guard covers only the
+ * loop, and `POST /github/reconcile` is a second caller: without a shared guard an
+ * administrator pressing "Reconciliar agora" runs a full second set of GitHub reads
+ * per repository beside the tick, and the loser of the race reports `errors > 0`
+ * that the operator reads as a fault. A concurrent caller joins the cycle in flight
+ * and gets its result, because the answer to "reconcile now" is the same answer
+ * either way — and because refusing it would make the button fail for being pressed
+ * at the wrong second.
+ *
+ * A failed cycle releases the guard: holding it would leave reconciliation dead for
+ * the life of the process.
+ */
+export function singleFlightReconcile(
+  reconcile: () => Promise<GitHubReconcileResult>,
+): () => Promise<GitHubReconcileResult> {
+  let inFlight: Promise<GitHubReconcileResult> | null = null;
+  return () => {
+    inFlight ??= (async () => {
+      try {
+        return await reconcile();
+      } finally {
+        inFlight = null;
+      }
+    })();
+    return inFlight;
+  };
+}
+
+/**
  * The loop that replaces `startPolling(60_000)`. It is clamped to the spec's five
  * minutes to one hour, it never overlaps itself — including the boot cycle — and
  * it is unref'd so it cannot hold the process open.
