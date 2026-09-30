@@ -162,6 +162,14 @@ export interface EmailTestResult {
   providerMessageId: string | null;
 }
 
+/**
+ * Why an event produced no e-mail. `no_address` is the recipient's: nothing on
+ * file to send to. `disabled` is the installation's global switch. `duplicate`
+ * means the unique dedupe key already has a message for this event, and `error`
+ * that rendering or storing it failed — which never fails the event itself.
+ */
+export type EmailQueueSkip = "disabled" | "duplicate" | "no_address" | "error";
+
 export const USER_LOCALES = ["pt-BR", "en", "es", "de", "fr"] as const;
 export type UserLocale = (typeof USER_LOCALES)[number];
 export const DEFAULT_USER_LOCALE: UserLocale = "pt-BR";
