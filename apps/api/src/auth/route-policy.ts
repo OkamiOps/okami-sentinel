@@ -1,7 +1,7 @@
 import type { MiddlewareHandler } from "hono";
 import type { RepositoryRole } from "@csb/shared";
 import { getGateRun } from "../gate-store.js";
-import { getGitHubMonitorRule } from "../github-monitor/store.js";
+import { getGitHubAction } from "../github-actions/store.js";
 import { canSeeRepository, hasRepositoryRole, principalOf, type Principal } from "./principal.js";
 import { getRunRepositoryKey } from "./repository-key.js";
 
@@ -15,8 +15,8 @@ import { getRunRepositoryKey } from "./repository-key.js";
  * - `admin`: administrators only.
  * - `repository`: the named role on the repository the request addresses,
  *   resolved from the path parameter (`param`), from the scan's run row
- *   (`scan`), from the gate run (`gate`) or from the monitor rule's row
- *   (`monitorRule`).
+ *   (`scan`), from the gate run (`gate`) or from the action's own row
+ *   (`action`).
  */
 export type Requirement =
   | { kind: "public" }
@@ -25,7 +25,7 @@ export type Requirement =
   | { kind: "scoped" }
   | { kind: "repository"; role: RepositoryRole; from: RepositorySource };
 
-type RepositorySource = "param" | "scan" | "gate" | "monitorRule";
+type RepositorySource = "param" | "scan" | "gate" | "action";
 
 const PUBLIC = { kind: "public" } as const;
 const AUTH = { kind: "authenticated" } as const;
@@ -40,9 +40,9 @@ const viewerScan = R("viewer", "scan");
  * answers the legacy unprefixed paths. A request that matches nothing here is
  * refused: adding a route without a requirement fails the coverage test.
  *
- * `POST /github-monitor/rules` and `POST /github-monitor/poll` are `SCOPED`
- * because the repository travels in the body, where the handler checks the role
- * itself; a rule patch addresses the rule, whose own row names the repository.
+ * A route whose repository travels in the body is `SCOPED`, because only the
+ * handler can read it; a route that addresses one action resolves the repository
+ * from the action's own row (`action`).
  */
 export const ROUTE_POLICY: ReadonlyArray<readonly [method: string, pattern: string, requirement: Requirement]> = [
   ["GET", "/healthz", PUBLIC], ["GET", "/readyz", PUBLIC],
@@ -89,10 +89,6 @@ export const ROUTE_POLICY: ReadonlyArray<readonly [method: string, pattern: stri
   // GitHub has none; the HMAC over the raw body is checked by the handler, which
   // is also why `serverSecurity` exempts it from CSRF.
   ["POST", "/github/webhook", PUBLIC],
-  ["GET", "/github-monitor/overview", SCOPED], ["GET", "/github-monitor/rules", SCOPED], ["GET", "/github-monitor/events", SCOPED],
-  ["GET", "/github-monitor/actions-runs", SCOPED], ["GET", "/github-monitor/branches", SCOPED],
-  ["POST", "/github-monitor/rules", SCOPED], ["PATCH", "/github-monitor/rules/:id", R("maintainer", "monitorRule")],
-  ["POST", "/github-monitor/poll", SCOPED],
   ["GET", "/github-checkouts", SCOPED], ["GET", "/github-checkouts/:repositoryKey", R("viewer", "param")],
   ["POST", "/github-checkouts/:repositoryKey/fetch", R("operator", "param")], ["POST", "/github-checkouts/:repositoryKey/pull", R("operator", "param")],
   ["GET", "/connections", ADMIN], ["POST", "/connections", ADMIN], ["POST", "/connections/compatibility", ADMIN],
@@ -204,7 +200,7 @@ export function authorize(): MiddlewareHandler {
 
 /**
  * An unresolvable owner is treated as an invisible one: `canSeeRepository`
- * refuses a missing key, so an unknown scan, gate or rule id answers 404.
+ * refuses a missing key, so an unknown scan, gate or action id answers 404.
  */
 function repositoryKeyFor(
   from: RepositorySource,
@@ -214,6 +210,6 @@ function repositoryKeyFor(
     case "param": return params.repositoryKey;
     case "scan": return getRunRepositoryKey(params.id!);
     case "gate": return getGateRun(params.gateId!)?.repositoryKey;
-    case "monitorRule": return getGitHubMonitorRule(params.id!)?.repositoryKey;
+    case "action": return getGitHubAction(params.actionId!)?.repositoryKey;
   }
 }

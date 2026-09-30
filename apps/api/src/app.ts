@@ -1,11 +1,38 @@
 import { scanFilesGraph } from "./scan-files-graph.js";
 import { scanCandidatePreview } from "./scan-candidate-preview.js";
 import { scanAnalysisMetrics } from "./scan-analysis-metrics.js";
-import { getGitHubMonitorRule } from "./github-monitor/store.js";
-import { GitHubMonitorService } from "./github-monitor/service.js";
-import { createGitHubMonitorApi } from "./github-monitor/api.js";
 import { automaticGitHubScanDispatcher } from "./github-monitor-dispatch.js";
 import { createGitHubWebhookApp } from "./github-actions/webhook-api.js";
+import type { GitHubWebhookIngestDependencies } from "./github-actions/webhook-ingest.js";
+import { createWebhookSecretCache } from "./github-actions/webhook-secret-cache.js";
+import type { GitHubWebhookSecret } from "./github-actions/webhook-signature.js";
+import {
+  dispatchGitHubActionEvent,
+  reconcileOrphanedGitHubActionDispatches,
+} from "./github-actions/dispatch.js";
+import {
+  reconcileGitHubActions,
+  type GitHubReconcileResult,
+  type GitHubReconcilerDependencies,
+} from "./github-actions/reconciler.js";
+import { rerunGitHubActionGate } from "./github-actions/rerun.js";
+import {
+  completeWebhookDelivery,
+  createGitHubActionEvent,
+  disableGitHubActionsForInstallation,
+  disableGitHubActionsForRepository,
+  findGitHubActionEventByGateId,
+  getGitHubAction,
+  hasAnalysedCommit,
+  hasGitHubActionEventForHeadSha,
+  listGitHubActionEvents,
+  listGitHubActions,
+  newestObservedEventAt,
+  patchGitHubActionEvent,
+  recordGitHubActionReconciliation,
+  recordWebhookDelivery,
+  supersedeQueuedEvents,
+} from "./github-actions/store.js";
 import { createGitHubCheckoutsApp } from "./github-checkouts.js";
 import { githubIntegrationSecurity } from "./github-integration-security.js";
 import { isDraining } from "./shutdown.js";
@@ -58,7 +85,7 @@ import {
 import { compareScans } from "./compare.js";
 import { getCodexInfo } from "./codex-info.js";
 import { CODEX_SECURITY_STATE_DIR } from "./config.js";
-import { deleteRun, getRun, hideRun, listRuns } from "./db.js";
+import { deleteRun, getDb, getRun, hideRun, listRuns } from "./db.js";
 import { backfillRunRepositoryKeys, getRunRepositoryKey } from "./auth/repository-key.js";
 import { listDirectory } from "./fs.js";
 import {
@@ -89,7 +116,11 @@ import {
   type PublishGateCheckInput,
 } from "./github-check.js";
 import { getGitHubStatus, getRemoteGitHubStatus } from "./github-status.js";
-import { createGitHubAppApi, getSystemGitHubAppService } from "./github-app-api.js";
+import {
+  createGitHubAppApi,
+  getSystemGitHubAppCredentialStore,
+  getSystemGitHubAppService,
+} from "./github-app-api.js";
 import { GitHubRepositoryService } from "./guardrails/github-repository-service.js";
 import {
   GitHubRepositorySourceAdapter,
@@ -771,22 +802,9 @@ app.route("/", createGuardrailsApp());
 app.route("/", createGitHubAppApi());
 app.route("/", createEngineUpdatesApp());
 
-/**
- * `POST /github/webhook` is mounted here — before the `githubIntegrationSecurity`
- * loop below, whose patterns must never match it — but it is deliberately
- * **inert**: `resolve` returns `null`, so the route answers
- * `503 github_webhook_not_ready` and nothing on this boot path reaches the
- * actions store. The store's first call runs the migration that renames the
- * legacy `github_monitor_*` tables, and the 60 s poller that reads them is still
- * running (`index.ts`). Task 1.4 removes the poller, calls
- * `ensureGitHubActionsSchema` once at boot, and replaces this `resolve` with the
- * real dependencies in the same commit.
- */
-app.route("/", createGitHubWebhookApp({ resolve: () => null }));
-
 const startAutomaticGitHubScan = automaticGitHubScanDispatcher({
   getRepository: findRepository,
-  getRule: getGitHubMonitorRule,
+  getAction: getGitHubAction,
   validateActions: async (repository) => {
     const status = await getGitHubActionsStatus(repository, getSystemGitHubAppService(), GITHUB_ACTIONS_WORKFLOW_SHA);
     if (!status.ready || !status.triggers) throw new Error("target_preview_executor_unavailable");
@@ -799,28 +817,205 @@ const startAutomaticGitHubScan = automaticGitHubScanDispatcher({
   startManaged: startRemoteManagedGate,
   startActions: startRemoteActionsGate,
 });
-const githubMonitorDependencies = {
-  listRepositories: listGuardrailRepositories,
-  readRepositoryJson: (repository: GuardrailRepository, resourcePath: string, permissions: import("./github-app/github-app-client.js").GitHubInstallationPermissions) =>
-    getSystemGitHubAppService().readAuthorizedRepositoryJson(
-      requiredRemoteAuthority(repository.githubConnectionId),
-      requiredRemoteAuthority(repository.githubInstallationId),
-      requiredRemoteAuthority(repository.githubRepositoryId),
-      `/repos/${encodeURIComponent(requiredRemoteAuthority(repository.remoteOwner))}/${encodeURIComponent(requiredRemoteAuthority(repository.remoteName))}${resourcePath}`, permissions,
-    ),
-  startAutomatic: async (input: import("./github-monitor/service.js").GitHubMonitorStartInput) => {
-    if (isDraining()) throw new Error("server_draining");
-    return startAutomaticGitHubScan(input);
+
+/**
+ * One event, dispatched. The webhook calls it outside the request cycle and the
+ * reconciliation awaits it one at a time; both reach the same guarantees, because
+ * the authority triple, the ceilings and the revision are re-read here.
+ */
+export function dispatchGitHubActionEventNow(eventId: string): Promise<void> {
+  return dispatchGitHubActionEvent(eventId, {
+    getRepository: findRepository,
+    start: async (input) => {
+      // A draining server must not start a paid scan it cannot finish. The code
+      // is a pre-dispatch refusal, so the event is skipped and nothing is spent.
+      if (isDraining()) throw new Error("server_draining");
+      return startAutomaticGitHubScan(input);
+    },
+  });
+}
+
+/**
+ * The App connections that have a webhook secret, snapshotted. `listSecrets` runs
+ * on **every** delivery, before any rate limit can shed load, so an unsigned
+ * flood must not become a flood of vault decryptions.
+ *
+ * Exported because the route that stores a secret has to call `invalidate()`:
+ * without it a freshly pasted secret would be ignored for up to the window, and
+ * the operator would read a signature failure as their own mistake (task 1.5).
+ */
+export const githubWebhookSecretCache = createWebhookSecretCache({
+  load: async (): Promise<GitHubWebhookSecret[]> => {
+    const credentials = getSystemGitHubAppCredentialStore();
+    const secrets: GitHubWebhookSecret[] = [];
+    for (const connection of getSystemGitHubAppService().listConnections()) {
+      if (connection.status !== "ready") continue;
+      let stored;
+      try {
+        stored = await credentials.get(connection.id);
+      } catch {
+        // A connection whose secret cannot be read is not a candidate; the
+        // Integration screen is where that shows up, not a 500 to GitHub.
+        continue;
+      }
+      const secret = stored?.webhookSecret;
+      if (secret === undefined || secret === "") continue;
+      secrets.push({ connectionId: connection.id, secret, appId: numericGitHubAppId(connection.appId) });
+    }
+    return secrets;
   },
-  // Remote snapshots have no mutable host checkout. Local checkouts use the
-  // separate explicit fetch/pull API below, protected by the maintenance lease.
-  checkoutAvailable: () => false,
+});
+
+/**
+ * The App id GitHub echoes in `X-GitHub-Hook-Installation-Target-ID`, which is
+ * what keeps a delivery at a single HMAC. Only a numeric id can be that header;
+ * anything else recorded in the column (a client id, a slug) is `null`, which
+ * leaves the connection a candidate for every delivery instead of silently
+ * answering `401` to all of them.
+ */
+function numericGitHubAppId(value: string | null): string | null {
+  return value !== null && /^[0-9]+$/.test(value) ? value : null;
+}
+
+function connectionAppId(connectionId: string): string | null {
+  const connection = getSystemGitHubAppService().listConnections()
+    .find((candidate) => candidate.id === connectionId);
+  return connection ? numericGitHubAppId(connection.appId) : null;
+}
+
+function enrolledGitHubRepository(
+  connectionId: string,
+  githubRepositoryId: string,
+): GuardrailRepository | null {
+  return listGuardrailRepositories().find((repository) =>
+    repository.source === "github"
+    && repository.githubConnectionId === connectionId
+    && repository.githubRepositoryId === githubRepositoryId) ?? null;
+}
+
+function repositoryResourcePath(repository: GuardrailRepository, resourcePath: string): string {
+  const owner = encodeURIComponent(requiredRemoteAuthority(repository.remoteOwner));
+  const name = encodeURIComponent(requiredRemoteAuthority(repository.remoteName));
+  return `/repos/${owner}/${name}${resourcePath}`;
+}
+
+function readAuthorizedRepositoryJson(
+  repository: GuardrailRepository,
+  resourcePath: string,
+  permissions: import("./github-app/github-app-client.js").GitHubInstallationPermissions,
+): Promise<unknown> {
+  return getSystemGitHubAppService().readAuthorizedRepositoryJson(
+    requiredRemoteAuthority(repository.githubConnectionId),
+    requiredRemoteAuthority(repository.githubInstallationId),
+    requiredRemoteAuthority(repository.githubRepositoryId),
+    repositoryResourcePath(repository, resourcePath),
+    permissions,
+  );
+}
+
+/**
+ * Everything `POST /github/webhook` needs, resolved per request. The delivery row
+ * and the events it produces are written in one `IMMEDIATE` transaction; the
+ * dispatch and the installation refresh happen after it commits, so GitHub never
+ * waits for a scan.
+ */
+const githubWebhookDependencies: GitHubWebhookIngestDependencies = {
+  now: () => new Date().toISOString(),
+  listSecrets: () => githubWebhookSecretCache.read(),
+  findRepository: enrolledGitHubRepository,
+  listActions: (repositoryKey) => listGitHubActions({ repositoryKey }),
+  newestObservedAt: (input) => newestObservedEventAt(input),
+  createEvent: (input) => createGitHubActionEvent(input),
+  supersede: (input) => supersedeQueuedEvents(input),
+  hasAnalysedCommit: (actionId, headSha) => hasAnalysedCommit(actionId, headSha),
+  claimDelivery: (input) => recordWebhookDelivery(input),
+  completeDelivery: (deliveryId, patch) => { completeWebhookDelivery(deliveryId, patch); },
+  disableActionsForRepository: (repositoryKey, reason) => {
+    disableGitHubActionsForRepository(repositoryKey, reason);
+  },
+  disableActionsForInstallation: (installationId, reason) => {
+    disableGitHubActionsForInstallation(installationId, reason);
+  },
+  refreshInstallationRepositories: async (installationId) => {
+    await getSystemGitHubAppService().refreshRepositories(installationId);
+  },
+  dispatch: (eventId) => {
+    // Deliberately not awaited: the response is already on its way to GitHub.
+    void dispatchGitHubActionEventNow(eventId).catch((error: unknown) => {
+      console.warn(`[csb-api] github action dispatch failed event=${eventId}`
+        + ` reason=${error instanceof Error ? error.message : "unknown_error"}`);
+    });
+  },
+  connectionAppId,
+  rerunGate: (input) => rerunGitHubActionGate(input, {
+    now: () => new Date().toISOString(),
+    findEventByGateId: (gateId) => findGitHubActionEventByGateId(gateId),
+    getAction: (actionId) => getGitHubAction(actionId),
+    createEvent: (event) => createGitHubActionEvent(event),
+  }),
+  runInTransaction: (work) => getDb().transaction(work)(),
 };
-export const githubMonitor = new GitHubMonitorService(githubMonitorDependencies);
-for (const route of ["/github-monitor/*", "/github-checkouts", "/github-checkouts/*"]) {
+
+/**
+ * `POST /github/webhook` is mounted before the `githubIntegrationSecurity` loop
+ * below, whose patterns must never match it. The dependencies are resolved per
+ * request rather than at import: the store's first call runs the actions
+ * migration, and boot decides when that happens (`index.ts`).
+ */
+app.route("/", createGitHubWebhookApp({ resolve: () => githubWebhookDependencies }));
+
+/**
+ * The 15-minute safety net. Read-only against GitHub: it creates events for
+ * commits whose deliveries never arrived, and re-lists the installations, which
+ * GitHub never redelivers either.
+ */
+const githubReconcilerDependencies: GitHubReconcilerDependencies = {
+  now: () => new Date(),
+  listActions: () => listGitHubActions({}),
+  getRepository: findRepository,
+  readRepositoryJson: readAuthorizedRepositoryJson,
+  createEvent: (input) => createGitHubActionEvent(input),
+  hasEventForHeadSha: (actionId, headSha) => hasGitHubActionEventForHeadSha(actionId, headSha),
+  supersede: (input) => supersedeQueuedEvents(input),
+  listQueuedEvents: (actionId) => listGitHubActionEvents({ actionId, statuses: ["queued"], limit: 200 }),
+  patchEvent: (id, patch) => { patchGitHubActionEvent(id, patch); },
+  recordReconciliation: (actionId, outcome) => { recordGitHubActionReconciliation(actionId, outcome); },
+  dispatch: (eventId) => dispatchGitHubActionEventNow(eventId),
+  reconcileOrphans: () => reconcileOrphanedGitHubActionDispatches(),
+  disableActionsForRepository: (repositoryKey, reason) => {
+    disableGitHubActionsForRepository(repositoryKey, reason);
+  },
+  listInstallationScopes: async () => {
+    const service = getSystemGitHubAppService();
+    const scopes: Array<{ installationId: string; repositoryIds: string[] }> = [];
+    try {
+      for (const connection of service.listConnections()) {
+        if (connection.status !== "ready") continue;
+        for (const installation of await service.refreshInstallations(connection.id)) {
+          const repositories = await service.refreshRepositories(installation.id);
+          scopes.push({
+            installationId: installation.id,
+            repositoryIds: repositories.map((repository) => repository.repositoryId),
+          });
+        }
+      }
+    } catch {
+      // `null` disables nothing: a blinking App API must not stop an operator's
+      // automation, and the next cycle asks again.
+      return null;
+    }
+    return scopes;
+  },
+  runInTransaction: (work) => getDb().transaction(work)(),
+};
+
+export function reconcileGitHubActionsNow(): Promise<GitHubReconcileResult> {
+  return reconcileGitHubActions(githubReconcilerDependencies);
+}
+
+for (const route of ["/github-checkouts", "/github-checkouts/*"]) {
   app.use(route, githubIntegrationSecurity());
 }
-app.route("/", createGitHubMonitorApi({ ...githubMonitorDependencies, service: githubMonitor }));
 app.route("/", createGitHubCheckoutsApp({ getRepository: findRepository }));
 
 const providerRuntime = getProviderRuntime();

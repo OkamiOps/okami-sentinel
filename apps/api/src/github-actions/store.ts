@@ -17,7 +17,10 @@ import type {
 } from "@csb/shared";
 
 import { getDb } from "../db.js";
-import { migrateMonitorRulesToActions } from "./migrate-monitor-rules.js";
+import {
+  migrateMonitorRulesToActions,
+  type MonitorRuleMigrationResult,
+} from "./migrate-monitor-rules.js";
 import {
   MAX_BRANCH_PATTERNS,
   WEBHOOK_DELIVERY_PRUNE_EVERY,
@@ -122,8 +125,10 @@ interface DeliveryRow {
  * the production database needs nothing else: the rules that existed become
  * actions in the same transaction that mints the schema.
  */
-export function ensureGitHubActionsSchema(database: Database.Database = getDb()): void {
-  migrateMonitorRulesToActions(database);
+export function ensureGitHubActionsSchema(
+  database: Database.Database = getDb(),
+): MonitorRuleMigrationResult {
+  return migrateMonitorRulesToActions(database);
 }
 
 export function createGitHubAction(
@@ -540,6 +545,156 @@ export function hasAnalysedCommit(
     LIMIT 1
   `).get({ action_id: actionId, head_sha: headSha });
   return row !== undefined;
+}
+
+/**
+ * Whether any event of this action already carries this commit, in any status and
+ * at any revision. The reconciliation asks before creating: a commit the action has
+ * already seen — even one it skipped — is not a commit a webhook missed, and
+ * creating an event for it is how a safety net turns into a second scanner.
+ */
+export function hasGitHubActionEventForHeadSha(
+  actionId: string,
+  headSha: string,
+  database: Database.Database = getDb(),
+): boolean {
+  ensureGitHubActionsSchema(database);
+  const row = database.prepare(`
+    SELECT 1 FROM github_action_events WHERE action_id = ? AND head_sha = ? LIMIT 1
+  `).get(actionId, headSha);
+  return row !== undefined;
+}
+
+/**
+ * The event a gate belongs to. `check_run.rerequested` carries the gate id as the
+ * check's `external_id`, and this is how that id becomes an action again — scoped
+ * by the caller to the connection and the repository, never by the id alone.
+ */
+export function findGitHubActionEventByGateId(
+  gateId: string,
+  database: Database.Database = getDb(),
+): GitHubActionEvent | null {
+  ensureGitHubActionsSchema(database);
+  const row = database.prepare(`
+    SELECT * FROM github_action_events WHERE gate_id = ?
+    ORDER BY detected_at DESC, rowid DESC LIMIT 1
+  `).get(gateId) as EventRow | undefined;
+  return row ? rowToEvent(row) : null;
+}
+
+/**
+ * Nothing is deleted when GitHub takes a repository out of an installation: the
+ * operator's actions stay, disabled, with the reason on the row. Disabling is not
+ * observational, so the revision is left alone — re-enabling must not forget the
+ * baseline and rescan the open queue.
+ */
+export function disableGitHubActionsForRepository(
+  repositoryKey: string,
+  reason: string,
+  database: Database.Database = getDb(),
+  now: string = new Date().toISOString(),
+): number {
+  ensureGitHubActionsSchema(database);
+  return database.prepare(`
+    UPDATE github_actions SET enabled = 0, last_error = @reason, updated_at = @now
+    WHERE repository_key = @repository_key AND enabled = 1
+  `).run({ repository_key: repositoryKey, reason, now }).changes;
+}
+
+/** The same, for every repository of an installation that was deleted or suspended. */
+export function disableGitHubActionsForInstallation(
+  installationId: string,
+  reason: string,
+  database: Database.Database = getDb(),
+  now: string = new Date().toISOString(),
+): number {
+  ensureGitHubActionsSchema(database);
+  return database.prepare(`
+    UPDATE github_actions SET enabled = 0, last_error = @reason, updated_at = @now
+    WHERE installation_id = @installation_id AND enabled = 1
+  `).run({ installation_id: installationId, reason, now }).changes;
+}
+
+/**
+ * Turns a queued event into a reservation against the action's UTC-day budget, in
+ * one statement: the ceiling is reserved before the scan starts, so two dispatches
+ * racing cannot both fit under a cap that only one of them has room for. `null`
+ * means the day is spent, the revision moved or the action was disabled — the row
+ * stays `queued` and the next window may dispatch it.
+ */
+export function reserveGitHubActionEventDispatch(
+  input: {
+    eventId: string;
+    actionId: string;
+    actionRevision: number;
+    dayStart: string;
+    dayEnd: string;
+    costCeilingUsd: number;
+    dailyCostCeilingUsd: number;
+    at: string;
+  },
+  database: Database.Database = getDb(),
+): GitHubActionEvent | null {
+  ensureGitHubActionsSchema(database);
+  const updated = database.transaction(() => database.prepare(`
+    UPDATE github_action_events SET
+      status = 'dispatching',
+      reason = NULL,
+      error = NULL,
+      dispatched_at = @at
+    WHERE id = @event_id
+      AND action_id = @action_id
+      AND status = 'queued'
+      AND action_revision = @action_revision
+      AND EXISTS (
+        SELECT 1 FROM github_actions
+        WHERE id = @action_id AND enabled = 1 AND revision = @action_revision
+      )
+      AND (
+        SELECT COALESCE(SUM(cost_ceiling_usd), 0)
+        FROM github_action_events
+        WHERE action_id = @action_id
+          AND status IN ('dispatching', 'launched', 'failed')
+          AND dispatched_at >= @day_start AND dispatched_at < @day_end
+      ) + @cost_ceiling_usd <= @daily_cost_ceiling_usd
+  `).run({
+    event_id: input.eventId,
+    action_id: input.actionId,
+    action_revision: input.actionRevision,
+    day_start: input.dayStart,
+    day_end: input.dayEnd,
+    cost_ceiling_usd: input.costCeilingUsd,
+    daily_cost_ceiling_usd: input.dailyCostCeilingUsd,
+    at: input.at,
+  }))();
+  if (updated.changes !== 1) return null;
+  return getGitHubActionEvent(input.eventId, database);
+}
+
+/**
+ * A process died after reserving a paid dispatch. The reservation stays spent for
+ * the day — the scan may well have started — and the event becomes terminal
+ * instead of being retried blindly. `exceptEventIds` are the dispatches this
+ * process is running right now, which are not orphans.
+ */
+export function failOrphanedGitHubActionDispatches(
+  now: string,
+  options: { exceptEventIds?: readonly string[] } = {},
+  database: Database.Database = getDb(),
+): number {
+  ensureGitHubActionsSchema(database);
+  const live = options.exceptEventIds ?? [];
+  const placeholders = live.map((_, index) => `@live_${index}`);
+  const parameters: Record<string, unknown> = { now };
+  live.forEach((id, index) => { parameters[`live_${index}`] = id; });
+  return database.prepare(`
+    UPDATE github_action_events SET
+      status = 'failed',
+      error = 'automatic_dispatch_uncertain',
+      completed_at = COALESCE(completed_at, @now)
+    WHERE status = 'dispatching'
+      ${live.length === 0 ? "" : `AND id NOT IN (${placeholders.join(",")})`}
+  `).run(parameters).changes;
 }
 
 /** Cost ceilings are reservations, so a new automatic launch cannot overspend the daily cap. */

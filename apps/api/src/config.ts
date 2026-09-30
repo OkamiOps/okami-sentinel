@@ -213,6 +213,38 @@ export const VULNHUNTER_WORKER_ENTRY = path.join(
 export const API_HOST = runtimeMode() === "server" ? serverHost(process.env.CSB_HOST) : localApiHost(process.env.CSB_HOST);
 export const API_PORT = Number(process.env.CSB_PORT || 8787);
 
+/**
+ * How long the whole request headers may take to arrive. Every route shares this
+ * phase, no handler can observe it, and it ends before routing — so bounding it
+ * is safe for SSE and for a long-running `POST`, and it closes a header-slowloris
+ * on all of them at once.
+ */
+export const API_HEADERS_TIMEOUT_MS = 20_000;
+
+/**
+ * Node's own default, kept deliberately. `requestTimeout` stays armed until the
+ * **response** finishes for a request whose body nothing read, which is exactly
+ * `POST /ingest`: a body-less POST whose response can take minutes on a large
+ * state directory. Lowering it globally would destroy that socket mid-work, and
+ * the route that genuinely needs a tight bound — the unauthenticated webhook —
+ * enforces its own read deadlines, where a stalled read can be told from a slow
+ * one.
+ */
+export const API_REQUEST_TIMEOUT_MS = 300_000;
+
+const configuredGitHubReconcileInterval = Number(process.env.CSB_GITHUB_RECONCILE_INTERVAL_MS);
+
+/**
+ * How often the read-only reconciliation runs. The webhook is the trigger; this
+ * is the net under the deliveries GitHub does not retry. `startGitHubReconciler`
+ * clamps it to five minutes … one hour, so an unreadable value degrades to the
+ * spec's quarter of an hour instead of hammering the App API.
+ */
+export const GITHUB_RECONCILE_INTERVAL_MS =
+  Number.isSafeInteger(configuredGitHubReconcileInterval) && configuredGitHubReconcileInterval > 0
+    ? configuredGitHubReconcileInterval
+    : 900_000;
+
 function serverHost(value: string | undefined): string {
   const host = value?.trim() || "0.0.0.0";
   if (["0.0.0.0", "::"].includes(host)) return host;

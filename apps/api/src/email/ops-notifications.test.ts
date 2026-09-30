@@ -11,7 +11,7 @@ import {
 import { ensureAuthSchema } from "../auth/schema.js";
 import { createUser, updateUser } from "../auth/user-store.js";
 import { ensureGateSchema, insertGateRun, updateGateRun, upsertGuardrailRepository } from "../gate-store.js";
-import { createGitHubMonitorRule, ensureGitHubMonitorSchema } from "../github-monitor/store.js";
+import { createGitHubAction, ensureGitHubActionsSchema } from "../github-actions/store.js";
 import { getOpsAlertState, listUnresolvedOpsAlerts } from "./ops-alert-store.js";
 import {
   clearOpsEngineProbeCache,
@@ -40,7 +40,7 @@ import { defaultToImmediateTransactions } from "../sqlite.js";
 
 const T0 = new Date("2026-09-30T10:00:00.000Z");
 /** A fixed id so the dedupe keys this file asserts on are predictable. */
-const RULE_ID = "00000000-0000-4000-8000-000000000001" as const;
+const ACTION_ID = "00000000-0000-4000-8000-000000000001" as const;
 const ORIGIN = "https://sentinel.okami.example";
 const at = (offsetMs: number): Date => new Date(T0.getTime() + offsetMs);
 
@@ -56,7 +56,7 @@ function fresh(): Database.Database {
   ensureAuthSchema(db);
   ensureEmailSchema(db);
   ensureConnectionSchema(db);
-  ensureGitHubMonitorSchema(db);
+  ensureGitHubActionsSchema(db);
   saveEmailSettings({
     ...DEFAULT_EMAIL_SETTINGS, enabled: true,
     fromAddress: "sentinel@okami.example", smtpHost: "smtp.okami.example", smtpPort: 465,
@@ -421,20 +421,20 @@ function repository(db: Database.Database, key: string): void {
 }
 
 function rule(db: Database.Database, repositoryKey: string, dailyCeiling: number): string {
-  return createGitHubMonitorRule({
-    repositoryKey, connectionId: "conn-1", installationId: "inst-1", repositoryId: "repo-1",
+  return createGitHubAction({
+    repositoryKey, name: "Push", triggerKind: "push", branchPatterns: ["main"],
+    connectionId: "conn-1", installationId: "inst-1", repositoryId: "repo-1",
     executor: "sentinel-managed", scanner: null, costCeilingUsd: 1,
-    dailyCostCeilingUsd: dailyCeiling, followBranches: ["main"], checkoutMode: "none",
-    enabled: true,
-  }, db, T0.toISOString(), RULE_ID).id;
+    dailyCostCeilingUsd: dailyCeiling, enabled: true, includeForks: false, createdBy: null,
+  }, db, T0.toISOString(), ACTION_ID).id;
 }
 
-function reserve(db: Database.Database, ruleId: string, repositoryKey: string, usd: number, index: number, when: Date): void {
-  db.prepare(`INSERT INTO github_monitor_events
-    (id, rule_id, repository_key, rule_revision, kind, status, head_sha, head_ref,
+function reserve(db: Database.Database, actionId: string, repositoryKey: string, usd: number, index: number, when: Date): void {
+  db.prepare(`INSERT INTO github_action_events
+    (id, action_id, repository_key, action_revision, origin, kind, status, head_sha, head_ref,
      target_identity, cost_ceiling_usd, detected_at, dispatched_at)
-    VALUES (?, ?, ?, 1, 'push', 'launched', ?, 'main', ?, ?, ?, ?)`)
-    .run(`event-${index}`, ruleId, repositoryKey, "a".repeat(40), `target-${index}`, usd,
+    VALUES (?, ?, ?, 1, 'webhook', 'push', 'launched', ?, 'main', ?, ?, ?, ?)`)
+    .run(`event-${index}`, actionId, repositoryKey, "a".repeat(40), `target-${index}`, usd,
       when.toISOString(), when.toISOString());
 }
 
@@ -453,7 +453,7 @@ test("a daily ceiling crossing sends one message per threshold per day", () => {
   assert.equal(evaluateDailyCost({ database: db, now: T0, origin: ORIGIN }), 1);
   let rows = queued(db);
   assert.equal(rows.length, 1);
-  assert.equal(rows[0]!.dedupe_key.startsWith(`ops.daily_cost.${RULE_ID}.2026-09-30.80.`), true);
+  assert.equal(rows[0]!.dedupe_key.startsWith(`ops.daily_cost.${ACTION_ID}.2026-09-30.80.`), true);
   assert.ok(rows[0]!.text.includes("Percentual: 80%"));
 
   // Still at 80%, re-evaluated a hundred times: the unique key is the guarantee,
@@ -468,7 +468,7 @@ test("a daily ceiling crossing sends one message per threshold per day", () => {
   assert.equal(evaluateDailyCost({ database: db, now: at(600_000), origin: ORIGIN }), 1);
   rows = queued(db);
   assert.equal(rows.length, 2);
-  assert.ok(rows.some((row) => row.dedupe_key.startsWith(`ops.daily_cost.${RULE_ID}.2026-09-30.100.`)));
+  assert.ok(rows.some((row) => row.dedupe_key.startsWith(`ops.daily_cost.${ACTION_ID}.2026-09-30.100.`)));
   assert.equal(evaluateDailyCost({ database: db, now: at(660_000), origin: ORIGIN }), 0);
 
   // The next UTC day is a fresh ceiling with fresh keys, and no reservations yet.
@@ -494,19 +494,25 @@ test("a jump straight past both thresholds says the useful one only", () => {
   db.close();
 });
 
-test("a disabled rule and a rule without a ceiling are never evaluated", () => {
+test("a disabled action is never evaluated, and no action can lose its ceiling", () => {
   const db = fresh();
   admin(db);
   repository(db, "okami/one");
-  const ruleId = rule(db, "okami/one", 10);
-  reserve(db, ruleId, "okami/one", 10, 1, T0);
-  db.prepare("UPDATE github_monitor_rules SET enabled = 0 WHERE id = ?").run(ruleId);
+  const actionId = rule(db, "okami/one", 10);
+  reserve(db, actionId, "okami/one", 10, 1, T0);
+  db.prepare("UPDATE github_actions SET enabled = 0 WHERE id = ?").run(actionId);
   assert.equal(evaluateDailyCost({ database: db, now: T0, origin: ORIGIN }), 0);
 
-  db.prepare("UPDATE github_monitor_rules SET enabled = 1, daily_cost_ceiling_usd = NULL, cost_ceiling_usd = NULL WHERE id = ?")
-    .run(ruleId);
-  assert.equal(evaluateDailyCost({ database: db, now: T0, origin: ORIGIN }), 0);
-  assert.equal(queued(db).length, 0);
+  // An action without a ceiling cannot exist, not even disabled: the column is
+  // NOT NULL and the CHECK refuses a non-positive value, so there is no row the
+  // evaluator has to defend itself against.
+  db.prepare("UPDATE github_actions SET enabled = 1 WHERE id = ?").run(actionId);
+  assert.throws(() => {
+    db.prepare("UPDATE github_actions SET cost_ceiling_usd = NULL WHERE id = ?").run(actionId);
+  });
+  assert.throws(() => {
+    db.prepare("UPDATE github_actions SET daily_cost_ceiling_usd = 0 WHERE id = ?").run(actionId);
+  });
   db.close();
 });
 

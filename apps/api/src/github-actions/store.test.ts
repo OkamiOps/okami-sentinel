@@ -12,6 +12,14 @@ import type {
 
 import {
   completeWebhookDelivery,
+  disableGitHubActionsForInstallation,
+  disableGitHubActionsForRepository,
+  failOrphanedGitHubActionDispatches,
+  findGitHubActionEventByGateId,
+  hasGitHubActionEventForHeadSha,
+  recordGitHubActionReconciliation,
+  reserveGitHubActionEventDispatch,
+  reservedGitHubActionCostForUtcDay,
   countReconciledEventsSince,
   countWebhookDeliveriesSince,
   createGitHubAction,
@@ -546,4 +554,123 @@ test("breaks a supersession tie on insertion order, never on the row itself", ()
     actionId: action.id, pullRequestNumber: 7, exceptHeadSha: SHA_OLD,
     reason: "head_superseded", beforeObservedAt: sameSecond, beforeEventId: "absent",
   }, db), 0);
+});
+
+test("knows every commit the action has already seen, whatever became of it", () => {
+  const db = memoryDb();
+  const action = pullRequestAction(db);
+  createGitHubActionEvent({
+    ...pullRequestEvent(action, SHA_OLD, "2026-09-30T10:00:00.000Z"),
+    status: "skipped", reason: "commit_already_analysed",
+  }, db);
+  // Any status counts: a commit the action skipped is still not one a webhook
+  // missed, and the reconciliation must not create a second event for it.
+  assert.equal(hasGitHubActionEventForHeadSha(action.id, SHA_OLD, db), true);
+  assert.equal(hasGitHubActionEventForHeadSha(action.id, SHA_NEW, db), false);
+});
+
+test("finds the event a gate belongs to, for a rerequested check run", () => {
+  const db = memoryDb();
+  const action = pullRequestAction(db);
+  const event = createGitHubActionEvent(pullRequestEvent(action, SHA_OLD, "2026-09-30T10:00:00.000Z"), db)!;
+  patchGitHubActionEvent(event.id, { status: "launched", gateId: "gate-1" }, db);
+  assert.equal(findGitHubActionEventByGateId("gate-1", db)?.id, event.id);
+  assert.equal(findGitHubActionEventByGateId("gate-absent", db), null);
+});
+
+test("disables the actions of a repository, and of an installation, without forgetting the baseline", () => {
+  const db = memoryDb();
+  const action = pullRequestAction(db);
+  recordGitHubActionReconciliation(action.id, { error: null, initializeBaseline: true }, db, "2026-09-30T09:00:00.000Z");
+  assert.equal(disableGitHubActionsForRepository("github:1", "repository_unauthorized", db), 1);
+  const disabled = listGitHubActions({ repositoryKey: "github:1" }, db)[0]!;
+  assert.equal(disabled.enabled, false);
+  assert.equal(disabled.lastError, "repository_unauthorized");
+  assert.equal(disabled.revision, action.revision, "disabling changes nothing the action observes");
+  assert.equal(disabled.baselineInitializedAt, "2026-09-30T09:00:00.000Z");
+  // Already disabled: nothing left to disable.
+  assert.equal(disableGitHubActionsForRepository("github:1", "repository_unauthorized", db), 0);
+
+  patchGitHubAction(action.id, { enabled: true }, db);
+  assert.equal(disableGitHubActionsForInstallation("i1", "installation_unauthorized", db), 1);
+  assert.equal(listGitHubActions({ repositoryKey: "github:1" }, db)[0]!.lastError, "installation_unauthorized");
+});
+
+test("reserves the day's budget once, and refuses the dispatch that would exceed it", () => {
+  const db = memoryDb();
+  const action = createGitHubAction({
+    repositoryKey: "github:1", name: "PR", triggerKind: "pull_request", branchPatterns: ["main"],
+    connectionId: "c1", installationId: "i1", repositoryId: "1", executor: "sentinel-managed",
+    scanner: null, costCeilingUsd: 2, dailyCostCeilingUsd: 3, enabled: true,
+    includeForks: false, createdBy: "u1",
+  }, db);
+  const first = createGitHubActionEvent(pullRequestEvent(action, SHA_OLD, "2026-09-30T10:00:00.000Z"), db)!;
+  const second = createGitHubActionEvent({
+    ...pullRequestEvent(action, SHA_NEW, "2026-09-30T11:00:00.000Z"), pullRequestNumber: 8,
+    targetIdentity: gitHubActionEventTargetIdentity({
+      kind: "pull_request", headSha: SHA_NEW, headRef: "feature/login", pullRequestNumber: 8,
+    }),
+  }, db)!;
+  const reservation = {
+    actionId: action.id, actionRevision: action.revision,
+    dayStart: "2026-09-30T00:00:00.000Z", dayEnd: "2026-10-01T00:00:00.000Z",
+    costCeilingUsd: 2, dailyCostCeilingUsd: 3,
+  };
+  const reserved = reserveGitHubActionEventDispatch({
+    ...reservation, eventId: first.id, at: "2026-09-30T10:00:01.000Z",
+  }, db);
+  assert.equal(reserved?.status, "dispatching");
+  assert.equal(reserved?.dispatchedAt, "2026-09-30T10:00:01.000Z");
+  // 2 + 2 > 3: the second stays queued for the next UTC window.
+  assert.equal(reserveGitHubActionEventDispatch({
+    ...reservation, eventId: second.id, at: "2026-09-30T11:00:01.000Z",
+  }, db), null);
+  assert.equal(getGitHubActionEvent(second.id, db)!.status, "queued");
+  // The next day starts clean.
+  assert.equal(reserveGitHubActionEventDispatch({
+    ...reservation, eventId: second.id, at: "2026-10-01T00:00:01.000Z",
+    dayStart: "2026-10-01T00:00:00.000Z", dayEnd: "2026-10-02T00:00:00.000Z",
+  }, db)?.status, "dispatching");
+  // Reserving twice is impossible: only a queued row is claimable.
+  assert.equal(reserveGitHubActionEventDispatch({
+    ...reservation, eventId: first.id, at: "2026-09-30T10:00:02.000Z",
+  }, db), null);
+});
+
+test("a reservation of a revision that moved, or of a disabled action, is refused", () => {
+  const db = memoryDb();
+  const action = pullRequestAction(db);
+  const event = createGitHubActionEvent(pullRequestEvent(action, SHA_OLD, "2026-09-30T10:00:00.000Z"), db)!;
+  patchGitHubAction(action.id, { enabled: false }, db);
+  const reservation = {
+    eventId: event.id, actionId: action.id, actionRevision: action.revision,
+    dayStart: "2026-09-30T00:00:00.000Z", dayEnd: "2026-10-01T00:00:00.000Z",
+    costCeilingUsd: 2, dailyCostCeilingUsd: 10, at: "2026-09-30T10:00:01.000Z",
+  };
+  assert.equal(reserveGitHubActionEventDispatch(reservation, db), null);
+  patchGitHubAction(action.id, { enabled: true, branchPatterns: ["release/**"] }, db);
+  assert.equal(reserveGitHubActionEventDispatch(reservation, db), null, "the revision moved");
+});
+
+test("an abandoned reservation becomes terminal, and a live one is left running", () => {
+  const db = memoryDb();
+  const action = pullRequestAction(db);
+  const event = createGitHubActionEvent(pullRequestEvent(action, SHA_OLD, "2026-09-30T10:00:00.000Z"), db)!;
+  reserveGitHubActionEventDispatch({
+    eventId: event.id, actionId: action.id, actionRevision: action.revision,
+    dayStart: "2026-09-30T00:00:00.000Z", dayEnd: "2026-10-01T00:00:00.000Z",
+    costCeilingUsd: 2, dailyCostCeilingUsd: 10, at: "2026-09-30T10:00:01.000Z",
+  }, db);
+  assert.equal(failOrphanedGitHubActionDispatches("2026-09-30T10:01:00.000Z", {
+    exceptEventIds: [event.id],
+  }, db), 0);
+  assert.equal(getGitHubActionEvent(event.id, db)!.status, "dispatching");
+  assert.equal(failOrphanedGitHubActionDispatches("2026-09-30T10:01:00.000Z", {}, db), 1);
+  const orphan = getGitHubActionEvent(event.id, db)!;
+  assert.equal(orphan.status, "failed");
+  assert.equal(orphan.error, "automatic_dispatch_uncertain");
+  // The reservation stays spent for the day: the scan may have started.
+  assert.equal(reservedGitHubActionCostForUtcDay(
+    action.id, "2026-09-30T00:00:00.000Z", "2026-10-01T00:00:00.000Z", db,
+  ), 2);
 });

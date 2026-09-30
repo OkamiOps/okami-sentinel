@@ -118,8 +118,10 @@ o segredo do webhook. Depois de trocá-lo, refaça o fluxo do manifest (ou
 recarregue a chave privada) e cole um segredo novo; até então a própria tela de
 Integração responde erro em vez de dizer `ausente`. A única variável opcional
 desta área é `CSB_GITHUB_RECONCILE_INTERVAL_MS`, que ajusta o intervalo da
-reconciliação (padrão de 15 minutos) — a rede de segurança para a entrega que não
-chegou.
+reconciliação (padrão de 15 minutos, limitado a 5–60 minutos; um valor fora disso
+é aparado, e um valor ilegível volta ao padrão) — a rede de segurança para a
+entrega que não chegou. O *polling* de 60 s não existe mais: sem webhook
+funcionando, é esta reconciliação que enxerga um commit novo.
 
 **Trocar o segredo do webhook.** Nesta ordem: gere e salve o segredo no GitHub,
 cole imediatamente em **Integração → Webhook**, e reenvie uma entrega pela página
