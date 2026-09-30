@@ -139,7 +139,7 @@ const checkRunPayload = (options: {
 });
 
 interface Harness {
-  deliver(event: string, payload: unknown, options?: { delivery?: string }): Promise<GitHubWebhookIngestResult>;
+  deliver(event: string, payload: unknown, options?: { delivery?: string; installationTargetId?: string }): Promise<GitHubWebhookIngestResult>;
   deliverUnsigned(event: string, payload: unknown, options?: { delivery?: string; signature?: string | undefined }): Promise<GitHubWebhookIngestResult>;
   events(): GitHubActionEvent[];
   deliveries(): WebhookDeliveryRecord[];
@@ -157,7 +157,7 @@ function ingestHarness(options: {
   actions?: GitHubAction[];
   repository?: GuardrailRepository | null;
   analysed?: Array<{ actionId: string; headSha: string }>;
-  secrets?: Array<{ connectionId: string; secret: string }>;
+  secrets?: Array<{ connectionId: string; secret: string; appId?: string | null }>;
   rerun?: (input: RerunRequest) => GitHubActionEvent | null;
   appId?: string | null;
   importWorkflowRun?: (id: string) => void;
@@ -209,9 +209,14 @@ function ingestHarness(options: {
         if (event.headSha === input.exceptHeadSha) continue;
         if (input.pullRequestNumber !== undefined && event.pullRequestNumber !== input.pullRequestNumber) continue;
         if (input.headRef !== undefined && event.headRef !== shortBranchName(input.headRef)) continue;
-        // The store's ordering guard, mirrored: only strictly older changes.
-        if (input.beforeObservedAt !== undefined
-          && !((event.observedAt ?? event.detectedAt) < input.beforeObservedAt)) continue;
+        // The store's ordering guard, mirrored: strictly older changes, with
+        // insertion order breaking a tie on the payload clock.
+        if (input.beforeObservedAt !== undefined) {
+          const stamp = event.observedAt ?? event.detectedAt;
+          const newer = events.findIndex((candidate) => candidate.id === input.beforeEventId);
+          const tie = stamp === input.beforeObservedAt && newer !== -1 && index < newer;
+          if (!(stamp < input.beforeObservedAt || tie)) continue;
+        }
         events[index] = { ...event, status: "superseded", reason: input.reason, completedAt: deps.now() };
         changed += 1;
       }
@@ -260,15 +265,24 @@ function ingestHarness(options: {
     ...(options.importWorkflowRun ? { importWorkflowRun: (id: string) => { imported.push(id); options.importWorkflowRun!(id); } } : {}),
   };
 
-  const send = async (event: string, payload: unknown, delivery: string, signature: (body: Uint8Array) => string | undefined) => {
+  const send = async (
+    event: string,
+    payload: unknown,
+    delivery: string,
+    signature: (body: Uint8Array) => string | undefined,
+    installationTargetId?: string,
+  ) => {
     const body = new TextEncoder().encode(typeof payload === "string" ? payload : JSON.stringify(payload));
-    return await ingestGitHubWebhook({ body, headers: { event, delivery, signature: signature(body) } }, deps);
+    return await ingestGitHubWebhook({
+      body,
+      headers: { event, delivery, signature: signature(body), installationTargetId },
+    }, deps);
   };
 
   return {
     deliver: (event, payload, opts = {}) =>
       send(event, payload, opts.delivery ?? `d-${randomUUID()}`, (body) =>
-        `sha256=${createHmac("sha256", SECRET).update(body).digest("hex")}`),
+        `sha256=${createHmac("sha256", SECRET).update(body).digest("hex")}`, opts.installationTargetId),
     deliverUnsigned: (event, payload, opts = {}) =>
       send(event, payload, opts.delivery ?? `d-${randomUUID()}`, () =>
         "signature" in opts ? opts.signature : `sha256=${"0".repeat(64)}`),
@@ -954,4 +968,100 @@ test("a fault after the events are written leaves nothing behind", async () => {
   assert.equal(store.listWebhookDeliveries(10, db).length, 1);
   assert.deepEqual(dispatched.length, 1);
   db.close();
+});
+
+/**
+ * N-2. `pull_request.head.repo` is `null` whenever the head repository is gone or
+ * inaccessible — the classic case being a contributor who deletes the fork after
+ * opening the pull request. A control whose whole point is "untrusted code on our
+ * token" must not default to trust when it cannot tell.
+ */
+test("treats a pull request whose head repository is unknown as untrusted", async () => {
+  const harness = ingestHarness({ actions: [prAction()] });
+  const payload = prPayload({ number: 7, sha: SHA_A });
+  (payload.pull_request as Record<string, unknown>).head = { ref: "gone", sha: SHA_A, repo: null };
+  const result = await harness.deliver("pull_request", payload);
+  assert.equal(result.outcome, "ignored");
+  assert.equal(result.reason, "pull_request_repository_unknown");
+  assert.equal(harness.events().length, 0);
+
+  const withoutBase = prPayload({ number: 8, sha: SHA_B });
+  const pullRequest = withoutBase.pull_request as Record<string, unknown>;
+  pullRequest.base = { ref: "main" };
+  withoutBase.repository = { full_name: "okami/sentinel" };
+  const unresolvable = await harness.deliver("pull_request", withoutBase);
+  // No repository id at all is a malformed payload long before the fork question.
+  assert.equal(unresolvable.reason, "malformed_payload");
+});
+
+test("an opted-in action still scans a pull request whose fork is gone, through the base repository", async () => {
+  const harness = ingestHarness({
+    actions: [anAction({ triggerKind: "pull_request", id: "a-forks", includeForks: true })],
+  });
+  const payload = prPayload({ number: 7, sha: SHA_A });
+  (payload.pull_request as Record<string, unknown>).head = { ref: "gone", sha: SHA_A, repo: null };
+  const result = await harness.deliver("pull_request", payload);
+  assert.equal(result.outcome, "processed");
+  // `refs/pull/<n>/head` exists in the base repository even when the fork does not.
+  assert.equal(harness.events()[0]!.headRef, "pull/7/head");
+});
+
+/**
+ * N-3. `pull_request.updated_at` has one-second resolution, so two heads can share
+ * a clock. Neither is "strictly older", and without a tie-break both events stay
+ * queued and the action pays twice for one pull request.
+ */
+test("breaks a clock tie by arrival, so one head survives and one is superseded", async () => {
+  const harness = ingestHarness({ actions: [prAction()] });
+  const sameSecond = "2026-09-30T11:59:00.000Z";
+  await harness.deliver("pull_request", prPayload({
+    number: 7, sha: SHA_A, action: "synchronize", updatedAt: sameSecond,
+  }));
+  const second = await harness.deliver("pull_request", prPayload({
+    number: 7, sha: SHA_B, action: "synchronize", updatedAt: sameSecond,
+  }));
+  assert.equal(second.outcome, "processed");
+  const [first, latest] = harness.events() as [GitHubActionEvent, GitHubActionEvent];
+  assert.equal(first.status, "superseded", "the head that arrived first loses the tie");
+  assert.equal(first.reason, "head_superseded");
+  assert.equal(latest.status, "queued");
+  // Only the survivor is worth a gate; the first was dispatched before the tie
+  // existed, which is what the dispatcher's own head check is for.
+  assert.equal(harness.events().filter((event) => event.status === "queued").length, 1);
+});
+
+test("breaks the tie the same way with no payload clock at all", async () => {
+  // N-4: GitHub always sends a clock, but a payload without one must not leave two
+  // queued events behind either.
+  const harness = ingestHarness({ actions: [pushAction()] });
+  const withoutClock = (after: string): Record<string, unknown> => ({
+    ref: "refs/heads/main", before: SHA_B, after, repository: { id: 1 }, installation: { id: 77 },
+  });
+  await harness.deliver("push", withoutClock(SHA_A));
+  await harness.deliver("push", withoutClock(SHA_B));
+  assert.equal(harness.events().length, 2);
+  assert.equal(harness.events()[0]!.status, "superseded");
+  assert.equal(harness.events()[1]!.status, "queued");
+});
+
+test("hashes against the App the delivery names, and refuses one that names another", async () => {
+  // N-1: the App id turns the twenty-secret loop into one hash on the normal path.
+  const harness = ingestHarness({
+    secrets: [
+      { connectionId: "c0", secret: "another-secret-entirely", appId: "1000" },
+      { connectionId: "c1", secret: SECRET, appId: "4242" },
+    ],
+    actions: [prAction()],
+  });
+  const named = await harness.deliver("pull_request", prPayload({ number: 7, sha: SHA_A }), {
+    installationTargetId: "4242",
+  });
+  assert.equal(named.outcome, "processed");
+  assert.equal(harness.deliveries()[0]!.connectionId, "c1");
+  const wrongApp = await harness.deliver("pull_request", prPayload({ number: 8, sha: SHA_B }), {
+    installationTargetId: "1000",
+  });
+  assert.equal(wrongApp.outcome, "failed");
+  assert.equal(wrongApp.reason, "signature_invalid");
+  assert.equal(harness.deliveries().length, 1);
 });

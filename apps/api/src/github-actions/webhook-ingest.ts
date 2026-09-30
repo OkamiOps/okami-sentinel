@@ -25,11 +25,13 @@ export interface GitHubWebhookIngestResult {
 export interface GitHubWebhookIngestDependencies {
   now(): string;
   /**
-   * Every App connection that has a webhook secret, in a stable order. This runs
-   * on **every** delivery, including an unsigned flood, so the production wiring
-   * must cache it rather than decrypt the vault once per connection per request.
+   * Every App connection that has a webhook secret, in a stable order, each with
+   * its App id so one delivery costs one hash. This runs on **every** delivery,
+   * including an unsigned flood, so the production wiring must go through
+   * `createWebhookSecretCache` rather than decrypt the vault per connection per
+   * request.
    */
-  listSecrets(): Promise<GitHubWebhookSecret[]>;
+  listSecrets(): Promise<ReadonlyArray<GitHubWebhookSecret>>;
   /** Resolved by `repository.id`, and only within the connection that signed. */
   findRepository(connectionId: string, githubRepositoryId: string): GuardrailRepository | null;
   listActions(repositoryKey: string): GitHubAction[];
@@ -68,7 +70,17 @@ export interface GitHubWebhookIngestDependencies {
 
 export interface GitHubWebhookIngestInput {
   body: Uint8Array;
-  headers: { event: string; delivery: string; signature: string | undefined };
+  headers: {
+    event: string;
+    delivery: string;
+    signature: string | undefined;
+    /**
+     * `X-GitHub-Hook-Installation-Target-ID`: the App id for an App webhook. It
+     * names the connection before a single hash is computed, which is what keeps
+     * an unauthenticated delivery at one HMAC instead of twenty.
+     */
+    installationTargetId?: string | undefined;
+  };
 }
 
 const HANDLED_PULL_REQUEST_ACTIONS = new Set(["opened", "reopened", "synchronize", "ready_for_review"]);
@@ -129,6 +141,7 @@ export async function ingestGitHubWebhook(
     body: input.body,
     header: signature,
     secrets: await deps.listSecrets(),
+    appId: input.headers.installationTargetId?.trim() || undefined,
   });
   // Recording before the signature verifies would let anybody fill the table.
   if (!verified) {
@@ -322,13 +335,20 @@ function routePullRequest(
 
   // A head repository that is not the base repository is a fork: untrusted code,
   // our installation token, and a `.csb/guardrails.json` the author controls.
+  // `head.repo` is `null` whenever the head repository is gone or out of reach —
+  // a contributor who deletes the fork after opening the pull request — and a
+  // control against untrusted code must not read missing data as trust.
   const headRepositoryId = numericId(pick(pick(pullRequest, "head"), "repo"), "id");
   const baseRepositoryId = numericId(pick(pick(pullRequest, "base"), "repo"), "id")
     ?? numericId(pick(payload, "repository"), "id");
-  const fromFork = headRepositoryId !== null && baseRepositoryId !== null && headRepositoryId !== baseRepositoryId;
+  const unknownOrigin = headRepositoryId === null || baseRepositoryId === null;
+  const fromFork = unknownOrigin || headRepositoryId !== baseRepositoryId;
   const eligible = fromFork ? matched.filter((candidate) => candidate.includeForks) : matched;
   if (eligible.length === 0) {
-    return nothing("ignored", "fork_pull_request", { ...base, matchedActionIds: matched.map((one) => one.id) });
+    return nothing("ignored", unknownOrigin ? "pull_request_repository_unknown" : "fork_pull_request", {
+      ...base,
+      matchedActionIds: matched.map((one) => one.id),
+    });
   }
 
   return createEvents(eligible, {
@@ -540,13 +560,16 @@ function createEvents(
       collided += 1;
       continue;
     }
-    // Only now, with the new head recorded, is the older queue obsolete.
+    // Only now, with the new head recorded, is the older queue obsolete — and the
+    // new row itself breaks a clock tie, so two heads sharing one second of
+    // GitHub's clock leave exactly one queued event rather than two gates.
     deps.supersede({
       actionId: action.id,
       ...plan.supersedeScope,
       exceptHeadSha: created.headSha,
       reason: "head_superseded",
       beforeObservedAt: boundary,
+      beforeEventId: created.id,
     });
     eventIds.push(created.id);
     if (alreadyAnalysed) skipped += 1;
