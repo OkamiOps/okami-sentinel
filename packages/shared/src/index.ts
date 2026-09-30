@@ -1,6 +1,7 @@
 import type { UserLocale } from "./email.js";
 
 export * from "./email.js";
+export * from "./user-agent.js";
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info" | "unknown";
 
