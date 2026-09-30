@@ -17,20 +17,32 @@ import {
   type GitHubReconcilerDependencies,
 } from "./github-actions/reconciler.js";
 import { createGitHubBranchesApp } from "./github-actions/branches-api.js";
+import { createGitHubActionsApi } from "./github-actions/api.js";
+import {
+  buildGitHubIntegrationStatus,
+  type GitHubIntegrationInstallationState,
+} from "./github-actions/integration-status.js";
 import { rerunGitHubActionGate } from "./github-actions/rerun.js";
 import { readGitHubInstallationScopes } from "./github-actions/installation-scope.js";
 import {
   completeWebhookDelivery,
+  countReconciledEventsSince,
+  countWebhookDeliveriesSince,
+  createGitHubAction,
   createGitHubActionEvent,
+  deleteGitHubAction,
   disableGitHubActionsForInstallation,
   disableGitHubActionsForRepository,
   findGitHubActionEventByGateId,
   getGitHubAction,
   hasAnalysedCommit,
   hasGitHubActionEventForHeadSha,
+  lastVerifiedWebhookDeliveryAt,
   listGitHubActionEvents,
   listGitHubActions,
+  listWebhookDeliveries,
   newestObservedEventAt,
+  patchGitHubAction,
   patchGitHubActionEvent,
   recordGitHubActionReconciliation,
   recordWebhookDelivery,
@@ -107,6 +119,7 @@ import {
   getGateRun,
   listGatePublicationAttempts,
   listGateRuns,
+  listGitHubInstallationRepositories,
   listGuardrailRepositories,
   recordGatePublicationAttempt,
   updateGateRun,
@@ -121,6 +134,7 @@ import {
 import { getGitHubStatus, getRemoteGitHubStatus } from "./github-status.js";
 import {
   createGitHubAppApi,
+  getSystemGitHubAppClient,
   getSystemGitHubAppCredentialStore,
   getSystemGitHubAppService,
 } from "./github-app-api.js";
@@ -1005,15 +1019,119 @@ export function reconcileGitHubActionsNow(): Promise<GitHubReconcileResult> {
   return reconcileGitHubActions(githubReconcilerDependencies);
 }
 
-// The branch pickers of the Guardrails tab read this, so it moves with the model
-// instead of disappearing with the poller's routes (task 1.5 hangs the rest of
-// `/github/*` off the same tree).
-for (const route of ["/github/branches", "/github-checkouts", "/github-checkouts/*"]) {
+/**
+ * The whole GitHub tab hangs off one tree, and the Origin/CSRF guard covers all of
+ * it. `POST /github/webhook` is the one exception, named inside the guard itself
+ * (GitHub carries no session, no `Origin` and no token; the HMAC is the
+ * authentication), so the exemption does not depend on the order the routes above
+ * happen to be registered in.
+ */
+for (const route of ["/github/*", "/github-checkouts", "/github-checkouts/*"]) {
   app.use(route, githubIntegrationSecurity());
 }
 app.route("/", createGitHubBranchesApp({
   getRepository: findRepository,
   listBranchNames: (repository) => listGitHubBranchNames(repository, readAuthorizedRepositoryJson),
+}));
+
+/**
+ * What `GET /github/integration` reads. Every failure degrades to "unknown", which
+ * the status renders as the operator step it is: an unreadable App reports every
+ * permission and event missing, and an unreadable installation list is passed as
+ * `null` so the checklist fails **closed** instead of reading as "installed
+ * nowhere".
+ */
+async function githubIntegrationConnections() {
+  const client = getSystemGitHubAppClient();
+  const connections = [];
+  for (const connection of getSystemGitHubAppService().listConnections()) {
+    let metadata: Awaited<ReturnType<typeof client.readApp>> | null = null;
+    if (connection.status === "ready") {
+      try {
+        metadata = await client.readApp(connection);
+      } catch {
+        // Whatever GitHub said stays here: the screen shows "unknown", not a 502.
+        metadata = null;
+      }
+    }
+    connections.push({
+      connectionId: connection.id,
+      appSlug: connection.appSlug,
+      appName: metadata?.name ?? connection.appSlug,
+      // GitHub's own numeric id next to the one we recorded: the header
+      // `X-GitHub-Hook-Installation-Target-ID` carries the former, and a stored
+      // value that is not it costs every delivery the capped loop.
+      appId: metadata?.appId ?? null,
+      recordedAppId: connection.appId,
+      requestedPermissions: metadata?.requestedPermissions ?? null,
+      subscribedEvents: metadata?.subscribedEvents ?? null,
+    });
+  }
+  return connections;
+}
+
+async function githubIntegrationInstallations(
+  connectionId: string,
+): Promise<GitHubIntegrationInstallationState[] | null> {
+  const connection = getSystemGitHubAppService().listConnections()
+    .find((candidate) => candidate.id === connectionId);
+  if (connection === undefined || connection.status !== "ready") return null;
+  try {
+    return (await getSystemGitHubAppClient().readAppInstallations(connection))
+      .map((installation) => ({
+        installationId: installation.installationId,
+        account: installation.account,
+        accountType: installation.accountType,
+        repositorySelection: installation.repositorySelection,
+        // What this installation **approved**, which is what decides whether a
+        // gate can publish — not what the App requests.
+        grantedPermissions: installation.grantedPermissions,
+      }));
+  } catch {
+    // `null`, never `[]`: an unread list is not an App installed nowhere.
+    return null;
+  }
+}
+
+app.route("/", createGitHubActionsApi({
+  getAction: (actionId) => getGitHubAction(actionId),
+  listActions: (filter) => listGitHubActions(filter),
+  createAction: (input) => createGitHubAction(input),
+  patchAction: (actionId, patch) => patchGitHubAction(actionId, patch),
+  deleteAction: (actionId) => deleteGitHubAction(actionId),
+  getRepository: findRepository,
+  listEvents: (filter) => listGitHubActionEvents(filter),
+  listDeliveries: ({ limit, offset }) => listWebhookDeliveries(limit, getDb(), offset),
+  readIntegrationStatus: () => buildGitHubIntegrationStatus({
+    listConnections: githubIntegrationConnections,
+    listInstallations: githubIntegrationInstallations,
+    listRepositories: (installationId) =>
+      listGitHubInstallationRepositories(installationId).map((repository) => ({
+        repositoryId: repository.repositoryId,
+        repositoryKey: listGuardrailRepositories().find((candidate) =>
+          candidate.source === "github"
+          && candidate.githubRepositoryId === repository.repositoryId)?.repositoryKey ?? null,
+      })),
+    listActions: () => listGitHubActions({}),
+    // Phase 2 owns `guardrail_repository_baselines`; until it exists no
+    // repository can claim a ready baseline, which keeps the last checklist step
+    // honest rather than optimistic.
+    readBaselineState: () => "absent",
+    readWebhookSecretConfigured: async (connectionId) =>
+      (await getSystemGitHubAppCredentialStore().get(connectionId).catch(() => null))
+        ?.webhookSecret !== undefined,
+    readLastVerifiedDeliveryAt: (connectionId) => lastVerifiedWebhookDeliveryAt(connectionId),
+    countDeliveries: (since) => countWebhookDeliveriesSince(since),
+    countRecoveredEvents: (since) => countReconciledEventsSince(since),
+    lastDelivery: () => listWebhookDeliveries(1)[0] ?? null,
+    publicOrigin: runtimeMode() === "server" ? loadServerSettings().origin : null,
+  }),
+  storeWebhookSecret: (connectionId, secret) =>
+    getSystemGitHubAppCredentialStore().putWebhookSecret(connectionId, secret),
+  // A pasted secret must take effect on the very next delivery, or the operator
+  // reads the signature failure of a stale snapshot as their own mistake.
+  invalidateWebhookSecrets: () => { githubWebhookSecretCache.invalidate(); },
+  reconcile: () => reconcileGitHubActionsNow(),
 }));
 app.route("/", createGitHubCheckoutsApp({ getRepository: findRepository }));
 

@@ -32,7 +32,19 @@ export function matchesAnyBranchPattern(patterns: readonly string[], branch: str
  * beyond this bound the pattern matches nothing at all rather than burning the
  * event loop. The write path (task 1.5) should refuse such a pattern outright.
  */
-const MAX_WILDCARDS = 4;
+export const MAX_BRANCH_PATTERN_WILDCARDS = 4;
+const MAX_WILDCARDS = MAX_BRANCH_PATTERN_WILDCARDS;
+
+/**
+ * How many wildcards a pattern compiles to, counted exactly as `compile` counts
+ * them: a run of three or more stars collapses to `**`, so `***` is one. The
+ * write path uses this to refuse a pattern that would match nothing, instead of
+ * storing one that silently never fires.
+ */
+export function branchPatternWildcards(pattern: string): number {
+  return pattern.trim().replaceAll(/\*{3,}/g, "**").split(/(\*\*|\*)/)
+    .filter((part) => part === "**" || part === "*").length;
+}
 
 const compiled = new Map<string, RegExp | null>();
 

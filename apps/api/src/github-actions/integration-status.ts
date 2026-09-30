@@ -75,12 +75,32 @@ export interface GitHubIntegrationStatus {
     connectionId: string;
     appSlug: string;
     appName: string;
+    /**
+     * The numeric App id GitHub itself reports, from `GET /app`; `null` when the
+     * App metadata is unreachable.
+     */
+    appId: string | null;
+    /**
+     * The id this connection has stored. When it differs from `appId` — the
+     * installation id, the client id, a slug — every delivery falls back to the
+     * capped loop over all connections instead of a single HMAC, and a wrong
+     * secret on any other connection becomes indistinguishable from a wrong
+     * secret here. The screen names both so the operator can see which is which.
+     */
+    recordedAppId: string | null;
     webhookSecretConfigured: boolean;
     /** The last delivery of this connection whose signature verified; `null` if none. */
     lastVerifiedDeliveryAt: string | null;
     webhookUrl: string | null;
     /** Every connection-level step this connection satisfies. */
     ready: boolean;
+    /**
+     * `GET /app/installations` could not be read. Every step that depends on it
+     * reads as unmet — the check fails closed — and the screen must say "we could
+     * not ask GitHub" rather than "the App is installed nowhere", which is the one
+     * thing an empty `installations` would otherwise mean.
+     */
+    installationsUnknown: boolean;
     /** The connection-level steps it does not, in checklist order. */
     missing: GitHubConnectionChecklistItemId[];
     permissions: Array<{
@@ -117,6 +137,10 @@ export interface GitHubIntegrationConnectionState {
   connectionId: string;
   appSlug: string;
   appName: string;
+  /** The numeric id from `GET /app.id`; `null` when the metadata is unreachable. */
+  appId: string | null;
+  /** The id the connection row holds, which may be a slug or a client id. */
+  recordedAppId: string | null;
   /**
    * What the App **requests**, from `GET /app.permissions` — not what any
    * installation has approved. An installation only ever holds a subset.
@@ -156,9 +180,14 @@ type Awaitable<T> = Promise<T> | T;
  */
 export interface GitHubIntegrationStatusDependencies {
   listConnections: () => Awaitable<readonly GitHubIntegrationConnectionState[]>;
+  /**
+   * `null` when `GET /app/installations` failed, so every step that depends on it
+   * fails closed. `[]` means something different and must not be used for a failed
+   * read: the App is genuinely installed nowhere.
+   */
   listInstallations: (
     connectionId: string,
-  ) => Awaitable<readonly GitHubIntegrationInstallationState[]>;
+  ) => Awaitable<readonly GitHubIntegrationInstallationState[] | null>;
   listRepositories: (
     installationId: string,
   ) => Awaitable<readonly GitHubIntegrationRepositoryState[]>;
@@ -205,7 +234,7 @@ export async function buildGitHubIntegrationStatus(
     const permissions = requiredPermissions(connection.requestedPermissions, installationStates);
     const installations: GitHubIntegrationStatus["connections"][number]["installations"] = [];
 
-    for (const installation of installationStates) {
+    for (const installation of installationStates ?? []) {
       const repositories = await dependencies.listRepositories(installation.installationId);
       installations.push({
         installationId: installation.installationId,
@@ -221,7 +250,8 @@ export async function buildGitHubIntegrationStatus(
     // Every step is answered by this connection alone. Two half-configured
     // connections must never add up to one ready integration.
     const checks: Record<GitHubConnectionChecklistItemId, boolean> = {
-      app_installed: installations.length > 0,
+      // An unreadable installation list is not an installed App.
+      app_installed: installationStates !== null && installations.length > 0,
       permissions: permissions.every((permission) => permission.ok),
       events: events.every((event) => event.subscribed),
       webhook_secret: secretConfigured,
@@ -234,10 +264,13 @@ export async function buildGitHubIntegrationStatus(
       connectionId: connection.connectionId,
       appSlug: connection.appSlug,
       appName: connection.appName,
+      appId: connection.appId,
+      recordedAppId: connection.recordedAppId,
       webhookSecretConfigured: secretConfigured,
       lastVerifiedDeliveryAt,
       webhookUrl,
       ready: missing.length === 0,
+      installationsUnknown: installationStates === null,
       missing,
       permissions,
       events,
@@ -331,11 +364,20 @@ function safeWebhookUrl(publicOrigin: string | null): string | null {
  * what it has *approved*. Widening an App queues a review per installation, so
  * a permission counts as granted only when every installation satisfies it, and
  * the ones that do not are named.
+ *
+ * `installations === null` means the list could not be read at all, and then
+ * nothing is known to be approved: every permission reads as missing rather than
+ * inheriting the App-level set, which would report green on a read that failed.
  */
 function requiredPermissions(
   requested: Readonly<Record<string, string>> | null,
-  installations: readonly GitHubIntegrationInstallationState[],
+  installations: readonly GitHubIntegrationInstallationState[] | null,
 ): GitHubIntegrationStatus["connections"][number]["permissions"] {
+  if (installations === null) {
+    return Object.entries(GITHUB_APP_MANIFEST_PERMISSIONS).map(([name, required]) => ({
+      name, required, granted: null, ok: false, pendingInstallationIds: [],
+    }));
+  }
   return Object.entries(GITHUB_APP_MANIFEST_PERMISSIONS).map(([name, required]) => {
     const requestedLevel = requested?.[name] ?? null;
     const pendingInstallationIds: string[] = [];

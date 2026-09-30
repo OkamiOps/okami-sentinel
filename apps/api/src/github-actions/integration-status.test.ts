@@ -91,6 +91,10 @@ interface ConnectionSpec {
   subscribed?: string[] | null;
   webhookSecret?: string | null;
   installations?: InstallationSpec[];
+  /** GitHub's own numeric App id; `null` when `GET /app` could not be read. */
+  appId?: string | null;
+  /** The id the connection row holds, which may be a slug or a client id. */
+  recordedAppId?: string | null;
 }
 
 interface Overrides {
@@ -159,6 +163,8 @@ function deps(overrides: Overrides = {}): GitHubIntegrationStatusDependencies & 
       connectionId,
       appSlug: "okami-sentinel",
       appName: "OKAMI Sentinel Guardrails",
+      appId: spec.appId === undefined ? "4242" : spec.appId,
+      recordedAppId: spec.recordedAppId === undefined ? "4242" : spec.recordedAppId,
       requestedPermissions: spec.requested === undefined ? { ...REQUIRED_GRANTS } : spec.requested,
       subscribedEvents: spec.subscribed === undefined ? [...ALL_EVENTS] : spec.subscribed,
     };
@@ -548,4 +554,67 @@ test("reports the moment each connection last proved its secret", async () => {
   );
   // The connection that has proved its secret is the one the checklist describes.
   assert.equal(status.readyConnectionId, "connection-a");
+});
+
+/**
+ * An unreadable `GET /app/installations` is the one case where "no installations"
+ * must not be believed: with `[]` the permission rows would fall back to what the
+ * App *requests* and read green over a read that never happened.
+ */
+test("fails closed when the installation list cannot be read", async () => {
+  const base = deps();
+  const status = await buildGitHubIntegrationStatus({
+    ...base,
+    listInstallations: () => null,
+  });
+  const connection = status.connections[0]!;
+  assert.equal(connection.installationsUnknown, true);
+  assert.deepEqual(connection.installations, []);
+  assert.equal(connection.ready, false);
+  assert.ok(connection.missing.includes("app_installed"));
+  assert.ok(connection.missing.includes("permissions"));
+  assert.ok(connection.missing.includes("repository_enrolled"));
+  assert.deepEqual(
+    connection.permissions.filter((permission) => permission.ok).map((permission) => permission.name),
+    [],
+  );
+  assert.deepEqual(
+    connection.permissions.map((permission) => permission.granted).filter((value) => value !== null),
+    [],
+  );
+  assert.deepEqual(status.checklist.filter((item) => item.ok), []);
+  assert.equal(status.readyConnectionId, null);
+});
+
+test("an App installed nowhere is not the same as an unreadable list", async () => {
+  const base = deps();
+  const status = await buildGitHubIntegrationStatus({
+    ...base,
+    listInstallations: () => [],
+  });
+  const connection = status.connections[0]!;
+  assert.equal(connection.installationsUnknown, false);
+  assert.equal(connection.ready, false);
+  assert.ok(connection.missing.includes("app_installed"));
+});
+
+/**
+ * `X-GitHub-Hook-Installation-Target-ID` carries GitHub's numeric App id, and it
+ * is what keeps a delivery at one HMAC. A column holding a slug or a client id
+ * instead costs every delivery the capped loop over every connection, and a wrong
+ * secret anywhere then looks like a wrong secret here — so the screen gets both
+ * numbers rather than a verdict.
+ */
+test("reports GitHub's own App id next to the one the connection recorded", async () => {
+  const status = await buildGitHubIntegrationStatus(deps({
+    connections: [{ appId: "4242", recordedAppId: "okami-sentinel" }],
+  }));
+  assert.equal(status.connections[0]!.appId, "4242");
+  assert.equal(status.connections[0]!.recordedAppId, "okami-sentinel");
+  // Unreachable App metadata reports no id at all rather than echoing the column.
+  const unreadable = await buildGitHubIntegrationStatus(deps({
+    connections: [{ appId: null, recordedAppId: "4242", requested: null, subscribed: null }],
+  }));
+  assert.equal(unreadable.connections[0]!.appId, null);
+  assert.equal(unreadable.connections[0]!.recordedAppId, "4242");
 });

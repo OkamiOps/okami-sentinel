@@ -32,6 +32,7 @@ export interface GitHubAppApiService {
 
 let systemService: GitHubAppService | undefined;
 let systemCredentials: SystemGitHubAppCredentialStore | undefined;
+let systemClient: GitHubAppClient | undefined;
 
 /**
  * The vault the App connections keep their private key **and** their webhook
@@ -161,13 +162,24 @@ export function createGitHubAppApi(injectedService?: GitHubAppApiService): Hono 
   return api;
 }
 
+/**
+ * The same client the service uses. The Integration screen needs two reads the
+ * service does not model — `GET /app` and `GET /app/installations` with their
+ * approved permissions — and they must travel over the one client that holds the
+ * connection's private key and its redaction scope.
+ */
+export function getSystemGitHubAppClient(): GitHubAppClient {
+  systemClient ??= new GitHubAppClient({
+    credentials: getSystemGitHubAppCredentialStore(),
+    redactor: globalSecretRedactor,
+  });
+  return systemClient;
+}
+
 export function getSystemGitHubAppService(): GitHubAppService {
   if (systemService) return systemService;
   const credentials = getSystemGitHubAppCredentialStore();
-  const client = new GitHubAppClient({
-    credentials,
-    redactor: globalSecretRedactor,
-  });
+  const client = getSystemGitHubAppClient();
   systemService = new GitHubAppService({
     flow: new GitHubAppManifestFlow({
       callbackUrl: GITHUB_APP_CALLBACK_URL,

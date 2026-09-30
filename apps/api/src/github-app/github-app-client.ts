@@ -75,6 +75,27 @@ export interface GitHubInstallationToken {
   expiresAt: string;
 }
 
+/** `GET /app`: the App's own identity and what it asks for. */
+export interface GitHubAppMetadata {
+  /** The numeric id GitHub echoes in `X-GitHub-Hook-Installation-Target-ID`. */
+  appId: string;
+  name: string;
+  slug: string;
+  /** What the App **requests**, never what an installation approved. */
+  requestedPermissions: Readonly<Record<string, string>>;
+  subscribedEvents: readonly string[];
+}
+
+/** One row of `GET /app/installations`, with the permissions it has approved. */
+export interface GitHubAppInstallationDetail {
+  installationId: string;
+  account: string;
+  accountType: "User" | "Organization";
+  repositorySelection: "all" | "selected";
+  grantedPermissions: Readonly<Record<string, string>>;
+  suspended: boolean;
+}
+
 export interface GitHubAppClientDependencies {
   credentials: GitHubAppCredentialStore;
   redactor: SecretRedactorRegistry;
@@ -137,6 +158,68 @@ export class GitHubAppClient {
     } finally {
       safeUnregister(this.#redactor, scope);
     }
+  }
+
+  /**
+   * `GET /app` — the App as GitHub holds it: the numeric id the webhook echoes in
+   * `X-GitHub-Hook-Installation-Target-ID`, the display name, and what the App
+   * **requests**. Neither the permissions nor the events here say anything about
+   * what an installation has approved; that is `readAppInstallations`.
+   */
+  async readApp(connection: GitHubAppConnectionMetadata): Promise<GitHubAppMetadata> {
+    assertReadyConnection(connection);
+    const privateKeyPem = await this.#privateKey(connection.id);
+    const jwt = createGitHubAppJwt(connection.clientId, privateKeyPem, this.#now());
+    const body = record(await this.#request({
+      method: "GET",
+      path: "/app",
+      authorization: `Bearer ${jwt}`,
+    }));
+    return {
+      appId: positiveIdentifier(body.id),
+      name: identifier(body.name, 255),
+      slug: identifier(body.slug, 100),
+      requestedPermissions: permissionMap(body.permissions),
+      subscribedEvents: eventList(body.events),
+    };
+  }
+
+  /**
+   * `GET /app/installations`, kept separate from `listInstallations` because it
+   * answers a different question: not "which installations exist" (which the store
+   * caches) but "what has each one **approved**". Widening an App queues a review
+   * per installation, and until it is approved the installation still holds the old
+   * levels — so `permissions` here, not `GET /app.permissions`, is what decides
+   * whether a gate can publish.
+   */
+  async readAppInstallations(
+    connection: GitHubAppConnectionMetadata,
+  ): Promise<GitHubAppInstallationDetail[]> {
+    assertReadyConnection(connection);
+    const privateKeyPem = await this.#privateKey(connection.id);
+    const jwt = createGitHubAppJwt(connection.clientId, privateKeyPem, this.#now());
+    const details: GitHubAppInstallationDetail[] = [];
+    for (let page = 1; page <= 100; page += 1) {
+      const response = array(await this.#request({
+        method: "GET",
+        path: `/app/installations?per_page=100${page === 1 ? "" : `&page=${page}`}`,
+        authorization: `Bearer ${jwt}`,
+      }));
+      details.push(...response.map((value) => {
+        const item = record(value);
+        const account = record(item.account);
+        return {
+          installationId: positiveIdentifier(item.id),
+          account: identifier(account.login, 255),
+          accountType: accountType(account.type),
+          repositorySelection: item.repository_selection === "all" ? "all" as const : "selected" as const,
+          grantedPermissions: permissionMap(item.permissions),
+          suspended: item.suspended_at !== null && item.suspended_at !== undefined,
+        };
+      }));
+      if (response.length < 100) return details;
+    }
+    throw new GitHubAppClientError("github_protocol_error");
   }
 
   async listInstallations(
@@ -582,6 +665,31 @@ function isoTimestamp(value: unknown, fallback?: string): string {
     throw new GitHubAppClientError("github_protocol_error");
   }
   return new Date(value).toISOString();
+}
+
+/**
+ * A permission map as GitHub returns it, read leniently: a scope the product does
+ * not know about is dropped rather than failing the whole read, and a missing map
+ * reads as "nothing granted", which the Integration screen renders as the operator
+ * step it is. A value that is not a string is dropped for the same reason — one
+ * odd scope must not blank the row for `checks: write`.
+ */
+function permissionMap(value: unknown): Readonly<Record<string, string>> {
+  if (!isPlainRecord(value)) return Object.freeze({});
+  const entries: Array<[string, string]> = [];
+  for (const [name, level] of Object.entries(value)) {
+    if (typeof name !== "string" || name.length === 0 || name.length > 100) continue;
+    if (typeof level !== "string" || level.length === 0 || level.length > 20) continue;
+    entries.push([name, level]);
+  }
+  return Object.freeze(Object.fromEntries(entries));
+}
+
+/** The events the App subscribes to; anything that is not a plain name is dropped. */
+function eventList(value: unknown): readonly string[] {
+  if (!Array.isArray(value)) return Object.freeze([]);
+  return Object.freeze(value.filter((entry): entry is string =>
+    typeof entry === "string" && entry.length > 0 && entry.length <= 100));
 }
 
 function accountType(value: unknown): "User" | "Organization" {
