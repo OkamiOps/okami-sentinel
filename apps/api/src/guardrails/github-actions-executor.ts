@@ -2,6 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 
 import type { GateArtifactV2, GateRun, GuardrailRepository } from "@csb/shared";
 
+import { notifyGitHubPublishFailed } from "../email/ops-notifications.js";
+
 import type {
   CreateGitHubActionsDispatchResult,
   GitHubActionsArtifactMetadata,
@@ -306,6 +308,7 @@ export class GitHubActionsExecutor {
         this.#store.updateGateRun(gateId, checks === 1
           ? { publishStatus: "published", publishedAt: this.#now(), publishError: null }
           : { publishStatus: "failed", publishError: "actions_check_missing" });
+        if (checks !== 1) notifyGitHubPublishFailed(gateId);
       }
       gate = requiredGate(gateId, this.#store);
       this.#onGateChanged(gate);

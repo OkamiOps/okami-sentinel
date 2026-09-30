@@ -45,6 +45,7 @@ import {
   GUARDRAIL_MATERIALIZATIONS_DIR,
 } from "./config.js";
 import { purgeScanRunArtifacts } from "./activity.js";
+import { notifyGitHubPublishFailed } from "./email/ops-notifications.js";
 import { notifyGateOutcome } from "./email/repository-notifications.js";
 import {
   getFindingTriage,
@@ -653,6 +654,8 @@ async function runRemoteManagedGate(
                 publishStatus: "failed",
                 publishError: "github_check_publish_failed",
               });
+              // After the row, so the alert names a state an administrator can see.
+              notifyGitHubPublishFailed(gateId);
             }
           }
         },
