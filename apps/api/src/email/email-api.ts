@@ -18,7 +18,7 @@ import {
 } from "../credentials/system-email-credential-store.js";
 import { localeOf, isEmailAddress, resolveUserEmailAddress } from "./address.js";
 import { enqueueEmail, listEmailDeliveries, markEmailFailed, markEmailSent } from "./outbox-store.js";
-import { renderTestEmail } from "./test-message.js";
+import { renderEmail } from "./templates.js";
 import {
   getEmailSettings,
   publicEmailSettings,
@@ -310,7 +310,9 @@ export function createEmailApi(supplied?: Partial<EmailApiDependencies>): Hono {
     if (config === null) return c.json({ error: "email_not_configured" }, 400);
 
     const locale = user ? localeOf(user) : DEFAULT_USER_LOCALE;
-    const rendered = renderTestEmail({ locale, to, origin: deps.publicOrigin, now: deps.now() });
+    const rendered = renderEmail({
+      kind: "account.test", data: { to, at: deps.now() }, locale, origin: deps.publicOrigin,
+    });
     // The test is a real delivery, so it belongs in the history like any other,
     // already claimed as `sending` because this request sends it itself.
     const id = enqueueEmail({
