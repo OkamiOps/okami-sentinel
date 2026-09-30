@@ -243,30 +243,37 @@ test("every interpolated value is escaped, in the body and in the link", () => {
   assert.equal(escapeHtml("<a>&'\""), "&lt;a&gt;&amp;&#39;&quot;");
 });
 
-test("account messages footer points at Minha conta and explains why they arrived", () => {
+test("the footer says why once, then offers one thing to do about it", () => {
   const accountKinds = EMAIL_MESSAGE_KINDS.filter((kind) => emailMessageGroup(kind) === "account");
   assert.equal(accountKinds.length, 6);
   for (const kind of accountKinds) {
     const message = render(kind, "pt-BR");
     assert.ok(message.html.includes(`href="${ORIGIN}/settings/account"`), kind);
-    assert.ok(message.text.includes(`Minha conta: ${ORIGIN}/settings/account`), kind);
-    assert.ok(message.html.includes("Por que você recebeu isto"), kind);
-    assert.ok(/Você recebeu esta mensagem porque/.test(message.text), kind);
+    assert.ok(message.text.includes(`Abrir minha conta: ${ORIGIN}/settings/account`), kind);
+    assert.ok(/Você recebe este e-mail porque/.test(message.text), kind);
     // Account messages are never subscription-driven, so the footer must not
     // send the reader to a matrix that cannot switch them off.
     assert.equal(message.html.includes("#notifications"), false, kind);
   }
-});
 
-test("every repository and ops message sends the reader to the subscription matrix", () => {
   const switchable = EMAIL_MESSAGE_KINDS.filter((kind) => emailMessageGroup(kind) !== "account");
   // Five repository events, four operational ones and the three resolutions.
   assert.equal(switchable.length, 12);
   for (const kind of switchable) {
     const message = render(kind, "pt-BR");
     assert.ok(message.html.includes(`href="${ORIGIN}/settings/account#notifications"`), kind);
-    assert.ok(message.text.includes(`Minha conta → Notificações: ${ORIGIN}/settings/account#notifications`), kind);
-    assert.ok(/Minha conta → Notificações/.test(message.text), kind);
+    assert.ok(message.text.includes(`Gerenciar notificações: ${ORIGIN}/settings/account#notifications`), kind);
+  }
+
+  // The reason is one sentence: no bold prefix, no name of a page repeated as
+  // prose, and no second copy of the link's own words.
+  for (const kind of EMAIL_MESSAGE_KINDS) {
+    for (const locale of USER_LOCALES) {
+      const message = render(kind, locale);
+      assert.equal(message.html.includes("<strong"), false, `${kind}/${locale}`);
+      assert.equal(/Ajuste em|Change that in|Cámbialo en|Änderbar unter|Modifiable dans/.test(message.text), false, `${kind}/${locale}`);
+      assert.equal(message.text.split("\n").filter((line) => line.startsWith("--")).length, 1, kind);
+    }
   }
 });
 
@@ -294,7 +301,9 @@ test("a repository message carries counts, cost, duration and a link — and no 
   assert.ok(blocked.text.includes("Repositório: okami/sentinel"));
   assert.ok(blocked.text.includes("Branch: feature/login"));
   assert.ok(blocked.text.includes("Pull request: #42"));
-  assert.ok(blocked.text.includes("Resultado: bloqueado"));
+  // The pill already says "BLOQUEADO"; the panel does not repeat it.
+  assert.equal(blocked.text.includes("Resultado:"), false);
+  assert.ok(blocked.text.includes("[BLOQUEADO]"));
   assert.ok(blocked.text.includes("Findings: 15"));
   assert.ok(blocked.text.includes("Críticos: 1"));
   assert.ok(blocked.text.includes("Altos: 2"));
@@ -307,7 +316,8 @@ test("a repository message carries counts, cost, duration and a link — and no 
   const errored = render("gate.error", "pt-BR");
   assert.equal(errored.text.includes("Findings:"), false);
   assert.equal(errored.text.includes("Custo:"), false);
-  assert.ok(errored.text.includes("Resultado: erro"));
+  assert.equal(errored.text.includes("Resultado:"), false);
+  assert.ok(errored.text.includes("[ERRO]"));
 
   // A sub-cent cost keeps four decimals rather than rounding to nothing.
   assert.ok(render("gate.passed", "pt-BR").text.includes("Custo: USD 0.0040"));
@@ -316,14 +326,24 @@ test("a repository message carries counts, cost, duration and a link — and no 
   assert.ok(render("gate.passed", "pt-BR").text.includes("Duração: 1h 05m"));
 
   const scan = render("scan.completed", "en");
-  assert.ok(scan.text.includes("Result: completed"));
+  assert.equal(scan.text.includes("Result:"), false);
+  assert.ok(scan.text.includes("[COMPLETED]"));
+  // A result that is not the pill's own word still earns its row.
+  assert.ok(renderEmail({
+    kind: "scan.failed",
+    data: { ...SAMPLES["scan.failed"], status: "incomplete" },
+    locale: "en", origin: ORIGIN,
+  }).text.includes("Result: incomplete"));
   assert.ok(scan.html.includes(`href="${ORIGIN}/scans/s-2"`));
 });
 
 test("the operational alerts name the target, the window and the settings page", () => {
   const engine = render("ops.engine_unavailable", "pt-BR");
   assert.ok(engine.text.includes("Desde: 2026-09-30 14:05:09 UTC"));
-  assert.ok(engine.text.includes("Engines: codex-security, mantis"));
+  assert.ok(engine.text.includes("Motores: codex-security, mantis"));
+  // The interface calls it a motor in pt-BR; so does the inbox.
+  assert.ok(engine.text.includes("O motor está indisponível"));
+  assert.equal(/\bengine/i.test(engine.text), false);
   assert.ok(engine.html.includes(`href="${ORIGIN}/settings/connections"`));
 
   const recovered = render("ops.engine_unavailable.resolved", "pt-BR");
@@ -365,7 +385,7 @@ test("the invite and the reset carry their single-use link and their expiry", ()
   const invite = render("account.invite", "pt-BR");
   assert.ok(invite.html.includes(`href="${ORIGIN}/invite/${SAMPLES["account.invite"].inviteToken}"`));
   assert.ok(invite.text.includes(`${ORIGIN}/invite/${SAMPLES["account.invite"].inviteToken}`));
-  assert.ok(invite.text.includes("O convite expira em: 2026-10-03 14:05:09 UTC"));
+  assert.ok(invite.text.includes("Expira em: 2026-10-03 14:05:09 UTC"));
   assert.ok(invite.text.includes("Marcos criou uma conta para você"));
 
   const anonymous = renderEmail({
@@ -393,7 +413,7 @@ test("the security alerts name the time, the address and the browser, and say wh
   assert.ok(unknown.text.includes("IP address: not recorded"));
   assert.ok(unknown.text.includes("Browser: not recorded"));
 
-  assert.ok(render("account.locked", "pt-BR").text.includes("Nova tentativa em: 15 minutos"));
+  assert.ok(render("account.locked", "pt-BR").text.includes("Nova tentativa: 15 minutos"));
   assert.ok(renderEmail({
     kind: "account.locked", data: { at: AT, retryAfterSeconds: 30 }, locale: "en", origin: null,
   }).text.includes("Try again in: 1 minute"));
