@@ -299,7 +299,7 @@ test("a message whose account is no longer active is cancelled instead of sent",
   // An id that resolves to nothing is cancelled too — the case a restored
   // backup or a future account deletion produces.
   assert.equal(emailCancellationReason({
-    id: "x", event: "account.locked", userId: "gone", toAddress: "a@b.example",
+    id: "x", event: "account.locked", scope: null, userId: "gone", toAddress: "a@b.example",
     locale: "pt-BR", subject: "s", html: "s", text: "s", attempts: 0,
   }, db), "The account no longer exists.");
   // `email_outbox.user_id` is `ON DELETE SET NULL`, so a deleted account leaves
@@ -307,7 +307,7 @@ test("a message whose account is no longer active is cancelled instead of sent",
   // check: the address it was rendered for is all there is.
   db.prepare("DELETE FROM users WHERE id = ?").run(active.id);
   assert.equal(emailCancellationReason({
-    id: "x", event: "account.locked", userId: null, toAddress: "a@b.example",
+    id: "x", event: "account.locked", scope: null, userId: null, toAddress: "a@b.example",
     locale: "pt-BR", subject: "s", html: "s", text: "s", attempts: 0,
   }, db), null);
 });

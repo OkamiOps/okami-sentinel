@@ -1,4 +1,4 @@
-import type { ProviderConnection } from "@csb/shared";
+import { connectionNeedsAttention, type ProviderConnection } from "@csb/shared";
 import { Cable, CircleCheckBig, CircleDashed, TriangleAlert } from "lucide-react";
 
 import { cx } from "../ui";
@@ -31,7 +31,7 @@ const statusLabels: Record<ProviderConnection["status"], TranslationKey> = {
 
 function StatusGlyph({ status }: { status: ProviderConnection["status"] }) {
   if (status === "ready") return <CircleCheckBig aria-hidden="true" className="size-3 text-chart-2" />;
-  if (status === "expired" || status === "unavailable" || status === "degraded") return <TriangleAlert aria-hidden="true" className="size-3 text-destructive" />;
+  if (connectionNeedsAttention(status)) return <TriangleAlert aria-hidden="true" className="size-3 text-destructive" />;
   return <CircleDashed aria-hidden="true" className="size-3 text-muted-foreground" />;
 }
 
