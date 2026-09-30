@@ -10,11 +10,27 @@ export const GITHUB_APP_MANIFEST_PERMISSIONS = Object.freeze({
   checks: "write",
   contents: "write",
   metadata: "read",
-  pull_requests: "read",
+  pull_requests: "write",
   workflows: "write",
 } as const);
 
-export const GITHUB_APP_MANIFEST_EVENTS = Object.freeze([] as string[]);
+/** Every event the guardrails ingestion needs; the App subscribes to exactly these. */
+export const GITHUB_APP_MANIFEST_EVENTS = Object.freeze([
+  "pull_request",
+  "push",
+  "installation",
+  "installation_repositories",
+  "check_run",
+  "workflow_run",
+] as const);
+
+/** Path of the webhook endpoint, relative to the API base path. */
+export const GITHUB_WEBHOOK_PATH = "/github/webhook";
+
+/** The single definition of the webhook URL an operator must configure. */
+export function githubWebhookUrl(publicOrigin: string): string {
+  return `${new URL(publicOrigin).origin}/api${GITHUB_WEBHOOK_PATH}`;
+}
 
 export interface GitHubAppManifest {
   name: string;
@@ -24,6 +40,8 @@ export interface GitHubAppManifest {
   public: true;
   default_permissions: typeof GITHUB_APP_MANIFEST_PERMISSIONS;
   default_events: readonly string[];
+  /** Absent in the loopback flow: GitHub cannot reach a webhook on 127.0.0.1. */
+  hook_attributes?: { url: string; active: true };
   request_oauth_on_install: false;
 }
 
@@ -80,6 +98,7 @@ export class GitHubAppManifestFlow {
   readonly #flows = new Map<string, ManifestFlowRecord>();
   readonly #stateFile: string | undefined;
   readonly #apiBasePath: string;
+  readonly #webhookUrl: string | undefined;
 
   constructor(dependencies: GitHubAppManifestFlowDependencies) {
     if (dependencies.serverOrigin) {
@@ -95,10 +114,12 @@ export class GitHubAppManifestFlow {
       this.#callbackUrl = callback.toString();
       this.#localOrigin = origin.origin;
       this.#apiBasePath = "/api";
+      this.#webhookUrl = githubWebhookUrl(origin.origin);
     } else {
       this.#callbackUrl = loopbackUrl(dependencies.callbackUrl).toString();
       this.#localOrigin = loopbackOrigin(dependencies.localOrigin);
       this.#apiBasePath = "";
+      this.#webhookUrl = undefined;
     }
     this.#now = dependencies.now ?? (() => new Date());
     this.#createFlowId = dependencies.createFlowId ?? randomUUID;
@@ -146,6 +167,9 @@ export class GitHubAppManifestFlow {
         public: true,
         default_permissions: GITHUB_APP_MANIFEST_PERMISSIONS,
         default_events: GITHUB_APP_MANIFEST_EVENTS,
+        ...(this.#webhookUrl === undefined
+          ? {}
+          : { hook_attributes: { url: this.#webhookUrl, active: true as const } }),
         request_oauth_on_install: false,
       }),
     };

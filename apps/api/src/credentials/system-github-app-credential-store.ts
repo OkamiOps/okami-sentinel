@@ -12,13 +12,20 @@ const IDENTIFIER = /^[A-Za-z0-9-]{1,100}$/;
 
 type RuntimeMode = "local" | "server";
 
+const WEBHOOK_SECRET_MIN_LENGTH = 16;
+const WEBHOOK_SECRET_MAX_LENGTH = 256;
+
 export interface GitHubAppCredentials {
   privateKeyPem: string;
+  /** Webhook signing secret of this App connection. Same custody as the key. */
+  webhookSecret?: string;
 }
 
 export interface GitHubAppCredentialStore {
   put(connectionId: string, value: GitHubAppCredentials): Promise<void>;
   get(connectionId: string): Promise<GitHubAppCredentials | null>;
+  /** Merges a webhook secret into the stored bundle without losing the key. */
+  putWebhookSecret(connectionId: string, secret: string): Promise<void>;
   delete(connectionId: string): Promise<void>;
 }
 
@@ -60,7 +67,7 @@ export class SystemGitHubAppCredentialStore implements GitHubAppCredentialStore 
     const finalScope = scopeFor(id);
     const pendingScope = `${finalScope}:pending:${randomUUID()}`;
     try {
-      this.#redactor.register(pendingScope, [credentials.privateKeyPem]);
+      this.#redactor.register(pendingScope, redactionValues(credentials));
     } catch {
       safeUnregister(this.#redactor, pendingScope);
       throw new VaultError("credential_write_failed");
@@ -81,7 +88,7 @@ export class SystemGitHubAppCredentialStore implements GitHubAppCredentialStore 
       throw new VaultError("credential_write_failed");
     }
     try {
-      this.#redactor.register(finalScope, [credentials.privateKeyPem]);
+      this.#redactor.register(finalScope, redactionValues(credentials));
     } catch {
       // Keep the pending scope active because the native secret now exists.
       throw new VaultError("credential_write_failed");
@@ -99,11 +106,23 @@ export class SystemGitHubAppCredentialStore implements GitHubAppCredentialStore 
       const credentials = validCredentials(
         typeof value === "string" ? JSON.parse(value) : value,
       );
-      this.#redactor.register(scopeFor(id), [credentials.privateKeyPem]);
+      this.#redactor.register(scopeFor(id), redactionValues(credentials));
       return { ...credentials };
     } catch (error) {
       throw asVaultError(error, "secure_storage_unavailable");
     }
+  }
+
+  /**
+   * Reads, merges and writes, so replacing the webhook secret never drops the
+   * private key the connection needs to mint installation tokens.
+   */
+  async putWebhookSecret(connectionId: string, secret: string): Promise<void> {
+    const id = validConnectionId(connectionId);
+    const webhookSecret = validWebhookSecret(secret);
+    const current = await this.get(id);
+    if (current === null) throw new VaultError("credential_not_found");
+    await this.put(id, { privateKeyPem: current.privateKeyPem, webhookSecret });
   }
 
   async delete(connectionId: string): Promise<void> {
@@ -148,10 +167,14 @@ function validConnectionId(value: string): string {
   return value;
 }
 
+/** Accepts `{ privateKeyPem }` or `{ privateKeyPem, webhookSecret }`, nothing else. */
 function validCredentials(value: unknown): GitHubAppCredentials {
-  if (!isPlainRecord(value) || Object.keys(value).length !== 1 || !("privateKeyPem" in value)) {
-    throw new VaultError("secure_storage_unavailable");
-  }
+  if (!isPlainRecord(value)) throw new VaultError("secure_storage_unavailable");
+  const keys = Object.keys(value).sort();
+  const shape = keys.length === 1
+    ? keys[0] === "privateKeyPem"
+    : keys.length === 2 && keys[0] === "privateKeyPem" && keys[1] === "webhookSecret";
+  if (!shape) throw new VaultError("secure_storage_unavailable");
   const privateKeyPem = value.privateKeyPem;
   if (typeof privateKeyPem !== "string" || privateKeyPem.length < 128 || privateKeyPem.length > 131_072 || privateKeyPem.includes("\0")) {
     throw new VaultError("secure_storage_unavailable");
@@ -164,7 +187,32 @@ function validCredentials(value: unknown): GitHubAppCredentials {
   } catch {
     throw new VaultError("secure_storage_unavailable");
   }
-  return { privateKeyPem };
+  if (!("webhookSecret" in value)) return { privateKeyPem };
+  return { privateKeyPem, webhookSecret: validWebhookSecret(value.webhookSecret) };
+}
+
+/**
+ * Callers that hold a secret of unknown provenance — the manifest conversion
+ * response — ask this before writing, so an unusable value degrades to "no
+ * secret configured" instead of failing the whole connection.
+ */
+export function isStorableWebhookSecret(value: unknown): value is string {
+  return typeof value === "string" &&
+    value.length >= WEBHOOK_SECRET_MIN_LENGTH &&
+    value.length <= WEBHOOK_SECRET_MAX_LENGTH &&
+    !value.includes("\0");
+}
+
+function validWebhookSecret(value: unknown): string {
+  if (!isStorableWebhookSecret(value)) throw new VaultError("secure_storage_unavailable");
+  return value;
+}
+
+/** The webhook secret is redacted exactly like the PEM it travels with. */
+function redactionValues(credentials: GitHubAppCredentials): string[] {
+  return credentials.webhookSecret === undefined
+    ? [credentials.privateKeyPem]
+    : [credentials.privateKeyPem, credentials.webhookSecret];
 }
 
 function scopeFor(connectionId: string): string {

@@ -66,6 +66,8 @@ export interface ManifestAppExchange {
   appSlug: string;
   clientId: string;
   privateKeyPem: string;
+  /** Secret GitHub generated for the manifest's `hook_attributes`, if any. */
+  webhookSecret: string | null;
 }
 
 export interface GitHubInstallationToken {
@@ -117,11 +119,13 @@ export class GitHubAppClient {
       appSlug: identifier(body.slug, 100),
       clientId: identifier(body.client_id, 200),
       privateKeyPem: nonEmptyString(body.pem, 131_072),
+      // Handed to the consumer so it reaches the vault; still redacted below.
+      webhookSecret: optionalSecret(body.webhook_secret),
     };
     const transientSecrets = [
       app.privateKeyPem,
       optionalSecret(body.client_secret),
-      optionalSecret(body.webhook_secret),
+      app.webhookSecret,
     ].filter((value): value is string => value !== null);
     const scope = `scm/github-app/manifest-exchange/${randomUUID()}`;
     try {

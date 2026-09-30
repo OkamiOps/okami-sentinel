@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  GITHUB_APP_MANIFEST_EVENTS,
   GITHUB_APP_MANIFEST_PERMISSIONS,
   GitHubAppManifestFlow,
   ManifestFlowError,
@@ -26,7 +27,7 @@ test("uses the exact least-privilege GitHub App manifest contract", () => {
     checks: "write",
     contents: "write",
     metadata: "read",
-    pull_requests: "read",
+    pull_requests: "write",
     workflows: "write",
   });
   assert.equal(Object.isFrozen(GITHUB_APP_MANIFEST_PERMISSIONS), true);
@@ -36,10 +37,47 @@ test("uses the exact least-privilege GitHub App manifest contract", () => {
   const started = flow.start();
   const authorization = flow.authorization(started.flowId);
   assert.deepEqual(authorization.manifest.default_permissions, GITHUB_APP_MANIFEST_PERMISSIONS);
-  assert.deepEqual(authorization.manifest.default_events, []);
+  assert.deepEqual(authorization.manifest.default_events, GITHUB_APP_MANIFEST_EVENTS);
   assert.equal(authorization.manifest.public, true);
   assert.equal(authorization.manifest.name, "OKAMI Sentinel Guardrails");
   assert.equal(authorization.manifest.description, "Evidence-backed repository security guardrails");
+});
+
+test("asks for pull_requests write", () => {
+  assert.equal(GITHUB_APP_MANIFEST_PERMISSIONS.pull_requests, "write");
+});
+
+test("subscribes to the six events the product needs", () => {
+  assert.deepEqual([...GITHUB_APP_MANIFEST_EVENTS].sort(), [
+    "check_run",
+    "installation",
+    "installation_repositories",
+    "pull_request",
+    "push",
+    "workflow_run",
+  ]);
+  assert.equal(Object.isFrozen(GITHUB_APP_MANIFEST_EVENTS), true);
+});
+
+test("declares the webhook endpoint in the manifest", () => {
+  const flow = new GitHubAppManifestFlow({
+    callbackUrl: "https://sentinel.example/api/guardrails/github-app/manifest/callback",
+    localOrigin: "https://sentinel.example",
+    serverOrigin: "https://sentinel.example",
+  });
+  const { manifest } = flow.authorization(flow.start().flowId);
+  assert.deepEqual(manifest.hook_attributes, {
+    url: "https://sentinel.example/api/github/webhook",
+    active: true,
+  });
+});
+
+test("omits hook_attributes with no deployment origin", () => {
+  const { flow } = fixture();
+  const { manifest } = flow.authorization(flow.start().flowId);
+  assert.equal(manifest.hook_attributes, undefined);
+  assert.equal(Object.hasOwn(manifest, "hook_attributes"), false);
+  assert.equal(JSON.stringify(manifest).includes("hook_attributes"), false);
 });
 
 test("creates high-entropy state without returning it in the public start response", () => {
