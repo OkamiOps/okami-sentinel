@@ -151,9 +151,9 @@ const appFor = (record: Recorder, overrides: Partial<GitHubWebhookAppOptions> = 
 };
 
 /** A body that is offered and never finished, the cheapest denial there is. */
-function stalledRequest(delivery: string, extra: Record<string, string> = {}): RequestInit {
+function stalledRequest(delivery: string, extra: Record<string, string> = {}, options: { silent?: boolean } = {}): RequestInit {
   const body = new ReadableStream<Uint8Array>({
-    start(controller) { controller.enqueue(new Uint8Array(16)); },
+    start(controller) { if (!options.silent) controller.enqueue(new Uint8Array(16)); },
     pull() { /* never enqueue again, never close */ },
   });
   return {
@@ -728,10 +728,208 @@ test("logs an App id no connection claims, instead of refusing in silence", asyn
     [[200, "webhook_app_id_unmatched"]],
   );
   assert.equal(logged[0]!.deliveryId, "unmatched");
+  // N-10: the line is a notice about an accepted delivery, not a refusal. An
+  // operator grepping for `refused` must not find it.
+  assert.equal(logged[0]!.kind, "notice");
   // A delivery naming the App we do know logs nothing.
   logged.length = 0;
   assert.equal((await app.request(URL, signedRequest({ delivery: "matched" }))).status, 200);
   assert.deepEqual(logged, []);
+});
+
+/**
+ * N-10. The condition is a static misconfiguration of one connection, so it is
+ * worth one line per connection per window — not one line per delivery, which on a
+ * busy repository is a log the operator learns to ignore.
+ */
+test("notices an unmatched App id once per connection per window", async () => {
+  const record = recorder();
+  const app = appFor(record);
+  for (const delivery of ["u1", "u2", "u3"]) {
+    assert.equal((await app.request(URL, signedRequest({ delivery, appId: "1234567" }))).status, 200);
+  }
+  assert.equal(logged.filter((entry) => entry.reason === "webhook_app_id_unmatched").length, 1);
+
+  // A refusal is still logged every time: it is a lost delivery, not a standing
+  // condition.
+  logged.length = 0;
+  const fresh = appFor(record, { noticeWindow: new FailureWindow(1, 0) });
+  for (const delivery of ["v1", "v2"]) {
+    assert.equal((await fresh.request(URL, signedRequest({ delivery, appId: "1234567" }))).status, 200);
+  }
+  assert.equal(logged.filter((entry) => entry.reason === "webhook_app_id_unmatched").length, 2,
+    "a zero-length window notices every delivery");
+});
+
+test("writes a notice through the informational sink and a refusal through the warning one", async () => {
+  const record = recorder();
+  const app = createGitHubWebhookApp({ resolve: () => record.dependencies, trustProxy: true });
+  const lines: Array<[string, string]> = [];
+  const info = console.info;
+  const warn = console.warn;
+  console.info = (message: unknown) => { lines.push(["info", String(message)]); };
+  console.warn = (message: unknown) => { lines.push(["warn", String(message)]); };
+  try {
+    await app.request(URL, signedRequest({ delivery: "sink-notice", appId: "1234567" }));
+    await app.request(URL, signedRequest({ delivery: "sink-refusal", secret: "wrong" }));
+  } finally {
+    console.info = info;
+    console.warn = warn;
+  }
+  assert.equal(lines.length, 2);
+  assert.equal(lines[0]![0], "info");
+  assert.ok(lines[0]![1].includes("notice 200 webhook_app_id_unmatched"), lines[0]![1]);
+  assert.ok(!lines[0]![1].includes("refused"), lines[0]![1]);
+  assert.equal(lines[1]![0], "warn");
+  assert.ok(lines[1]![1].includes("refused 401 signature_invalid"), lines[1]![1]);
+});
+
+/**
+ * N-11. Each queued request holds a body already in memory. The depth used to be
+ * bounded only by an argument about upload bandwidth; now it is bounded in code,
+ * and beyond it the answer is `503` with `Retry-After` — a state that will pass,
+ * not a malformed request.
+ */
+test("answers 503 rather than queueing an unbounded number of bodies for the hash", async () => {
+  const record = recorder();
+  const gates: Array<() => void> = [];
+  const app = appFor(record, {
+    maxConcurrentVerifications: 1,
+    maxHashQueueDepth: 1,
+    verify: async (input) => {
+      await new Promise<void>((resolve) => { gates.push(resolve); });
+      return verifyGitHubSignature(input);
+    },
+  });
+  const holding = app.request(URL, signedRequest({ delivery: "q1" }));
+  // Wait until the first delivery is actually inside the hash.
+  for (let round = 0; round < 50 && gates.length === 0; round += 1) {
+    await new Promise((resolve) => { setTimeout(resolve, 2); });
+  }
+  const queued = app.request(URL, signedRequest({ delivery: "q2" }));
+  await new Promise((resolve) => { setTimeout(resolve, 10); });
+  const shed = await app.request(URL, signedRequest({ delivery: "q3" }));
+  assert.equal(shed.status, 503);
+  assert.deepEqual(await shed.json(), { error: "hash_queue_busy" });
+  assert.ok(Number(shed.headers.get("Retry-After")) >= 1);
+  while (gates.length > 0) gates.shift()!();
+  assert.equal((await holding).status, 200);
+  for (let round = 0; round < 50 && gates.length === 0; round += 1) {
+    await new Promise((resolve) => { setTimeout(resolve, 2); });
+  }
+  while (gates.length > 0) gates.shift()!();
+  assert.equal((await queued).status, 200, "the queued delivery was served, not lost");
+  // The shed one recorded nothing: it never reached a hash.
+  assert.deepEqual(record.deliveries.map((delivery) => delivery.deliveryId), ["q1", "q2"]);
+  assert.deepEqual(logged.map((entry) => [entry.status, entry.reason]), [[503, "hash_queue_busy"]]);
+});
+
+/**
+ * N-6b. The global read ceiling is not a security boundary: the `App id` header is
+ * not a secret, so anyone can hold read slots. The boundary is the *per-address*
+ * budget, which charges the flood to whoever caused it and leaves every other
+ * address untouched.
+ */
+test("sixteen stalled bodies from one address do not shed a signed delivery from another", async () => {
+  const record = recorder();
+  // The global ceiling is deliberately set *below* the flood here: if it were the
+  // boundary the flood would take all of it and the genuine delivery would be shed.
+  // What protects the other address is the per-address budget, nothing else.
+  const app = appFor(record, {
+    readIdleTimeoutMs: 120,
+    readTimeoutMs: 2_000,
+    maxConcurrentBodyReads: 8,
+    maxBodyReadsPerAddress: 4,
+  });
+  const from = (ip: string, request: RequestInit): RequestInit => ({
+    ...request,
+    headers: { ...(request.headers as Record<string, string>), "X-Forwarded-For": ip },
+  });
+  // Sixteen well-formed header sets, each naming a *correct* App id — an attacker
+  // reads that off the App — and each offering a body it never finishes.
+  const flood = Array.from({ length: 16 }, (_, index) =>
+    app.request(URL, from("203.0.113.9", stalledRequest(`flood-${index}`))));
+  await new Promise((resolve) => { setTimeout(resolve, 15); });
+  const valid = await app.request(URL, from("198.51.100.4", signedRequest({ delivery: "genuine" })));
+  assert.equal(valid.status, 200);
+  assert.deepEqual(await valid.json(), { status: "processed" });
+
+  const answers = await Promise.all(flood);
+  // None of the sixteen hangs, and none of them is served.
+  for (const answer of answers) {
+    assert.ok([408, 429].includes(answer.status), `answered ${answer.status}`);
+  }
+  // At most four of that address's reads ran at once, so it never took the global
+  // ceiling: the rest were shed or queued.
+  assert.ok(answers.filter((answer) => answer.status === 429).length > 0,
+    "the flood's own address was charged for it");
+  assert.equal(record.deliveries.length, 1, "a body that never arrived is not a delivery");
+});
+
+/**
+ * The harder half of N-6b: the flood shares GitHub's egress address, so the
+ * per-address budget is charged to GitHub too. A *shed* would lose the delivery,
+ * because GitHub does not retry — so the per-address budget waits instead, and the
+ * freed slot is handed to the waiter rather than to the next flood connection.
+ * That makes a stalled flood a delay of at most the idle deadline.
+ *
+ * What it cannot make impossible: a flood from GitHub's own address that keeps
+ * *trickling* bytes holds its slots for the full read deadline, and a delivery that
+ * arrives then is refused after its bounded wait. Reconciliation is the backstop.
+ */
+test("four stalled bodies from GitHub's own address only delay its signed delivery", async () => {
+  const record = recorder();
+  const app = appFor(record, {
+    readIdleTimeoutMs: 120,
+    readTimeoutMs: 2_000,
+    readAdmissionWaitMs: 1_500,
+    maxBodyReadsPerAddress: 4,
+    // Every read slot there is, so the delivery has to be *handed* one rather than
+    // find a spare: the freed slot must go to the waiter, not to a fresh arrival.
+    maxConcurrentBodyReads: 4,
+  });
+  const egress = (request: RequestInit): RequestInit => ({
+    ...request,
+    headers: { ...(request.headers as Record<string, string>), "X-Forwarded-For": "140.82.115.1" },
+  });
+  const stalled = Array.from({ length: 4 }, (_, index) =>
+    app.request(URL, egress(stalledRequest(`same-address-${index}`))));
+  await new Promise((resolve) => { setTimeout(resolve, 15); });
+  const started = Date.now();
+  const valid = await app.request(URL, egress(signedRequest({ delivery: "from-github" })));
+  assert.equal(valid.status, 200, "GitHub's own delivery was refused for a flood sharing its address");
+  assert.deepEqual(await valid.json(), { status: "processed" });
+  // It waited for a slot rather than being shed, and the wait was bounded by the
+  // idle deadline, not by the overall read deadline.
+  assert.ok(Date.now() - started < 1_000, `waited ${Date.now() - started} ms`);
+  for (const answer of await Promise.all(stalled)) assert.equal(answer.status, 408);
+});
+
+/**
+ * The first-byte / progress half of N-6b: ten seconds is the ceiling for a read
+ * that is *making progress*. A socket that sends nothing has no claim on a slot
+ * for that long.
+ */
+test("cuts off a body that sends no bytes long before the overall deadline", async () => {
+  const record = recorder();
+  const app = appFor(record, { readIdleTimeoutMs: 80, readTimeoutMs: 10_000 });
+  const started = Date.now();
+  const response = await app.request(URL, stalledRequest("silent", {}, { silent: true }));
+  const elapsed = Date.now() - started;
+  assert.equal(response.status, 408);
+  assert.deepEqual(await response.json(), { error: "request_timeout" });
+  assert.ok(elapsed < 2_000, `the first-byte deadline did not fire: ${elapsed} ms`);
+  assert.equal(record.deliveries.length, 0);
+  assert.deepEqual(logged.map((entry) => [entry.status, entry.reason]), [[408, "request_timeout"]]);
+});
+
+test("the read ceiling is high enough that honest concurrency never meets it", async () => {
+  // A property, not the number of some past exploit: the per-address budget is the
+  // boundary, and the global ceiling only has to sit above any real delivery rate.
+  const module = await import("./webhook-api.js");
+  assert.ok(module.GITHUB_WEBHOOK_MAX_CONCURRENT_READS >= 64,
+    `global read ceiling is ${module.GITHUB_WEBHOOK_MAX_CONCURRENT_READS}`);
+  assert.ok(module.GITHUB_WEBHOOK_MAX_READS_PER_ADDRESS <= 8);
 });
 
 test("caps the header values it writes to the log", async () => {

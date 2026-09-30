@@ -13,7 +13,7 @@ import {
   webhookSecretSelection,
   type VerifyGitHubSignatureInput,
 } from "./webhook-signature.js";
-import { WorkSlots } from "./work-slots.js";
+import { KeyedWorkSlots, WorkSlots } from "./work-slots.js";
 
 /** The spec's 1 MiB ceiling. Above it the delivery is refused before any work. */
 export const GITHUB_WEBHOOK_MAX_BODY_BYTES = 1_048_576;
@@ -30,17 +30,52 @@ const VERIFIED_DELIVERIES_PER_MINUTE = 600;
 const VERIFIED_WINDOW_MS = 60_000;
 
 /**
- * Two budgets, because they bound two different things. A body read is paced by
- * the caller's socket, so its excess is **shed** — refusing costs nothing we have
- * already spent. Hashing is our own CPU on bytes already in memory, so its excess
- * **waits**: throwing a completed read away would be the more expensive answer.
+ * Three budgets, because they bound three different things.
  *
- * Metering both with one counter was the whole of N-6: eight connections that
- * trickled a body held every verification slot, and GitHub's own signed delivery
- * was refused while the process sat idle.
+ * **Body reads, globally** — a read is paced by the caller's socket, and holding
+ * one costs at most 1 MiB of memory, so the ceiling is set well above any honest
+ * concurrency instead of being a boundary. It is *not* a security control: the
+ * `X-GitHub-Hook-Installation-Target-ID` header an admission check could key off
+ * is not a secret — GitHub sends it in every delivery and it is readable on the
+ * App itself — so anyone can present a delivery that looks admissible. A small
+ * global ceiling was therefore the whole of N-6b: sixteen sockets that offered a
+ * body and never finished it made GitHub's own signed delivery answer `429`.
+ *
+ * **Body reads, per calling address** — this is the boundary. A flood is charged
+ * to whoever caused it, so no single address (and no handful of them) can consume
+ * the global pool, whatever it names. Excess here **waits** rather than being
+ * shed, because the address that a flood shares might be GitHub's own egress and a
+ * shed delivery is a lost event: GitHub does not retry. The wait is bounded, the
+ * queue is depth-capped, and a freed slot passes to the waiter ahead of any fresh
+ * arrival — so a stalled flood delays a legitimate delivery by the idle deadline
+ * instead of denying it.
+ *
+ * **Hashes** — our own CPU over bytes already in memory, so its excess waits in a
+ * depth-capped queue rather than throwing a completed read away, and the slot is
+ * taken around the hash alone, never around I/O.
+ *
+ * **Residual, accepted:** a *distributed* slowloris — hundreds of addresses, each
+ * within its own per-address budget, each trickling a byte just often enough to
+ * beat the idle deadline — can still fill the global read ceiling. No per-address
+ * accounting can distinguish that from honest traffic, and this endpoint cannot
+ * ask the caller to prove anything before the body arrives. It is mitigated, not
+ * prevented: deliveries refused in the meantime are recovered by the
+ * reconciliation loop, which re-lists installations and open pull requests and
+ * creates the events the lost deliveries would have created. That, and not the
+ * read ceiling, is what makes a lost webhook survivable.
  */
-const MAX_CONCURRENT_BODY_READS = 16;
+export const GITHUB_WEBHOOK_MAX_CONCURRENT_READS = 64;
+export const GITHUB_WEBHOOK_MAX_READS_PER_ADDRESS = 4;
+/** Waiters for one address's read budget. Each holds its headers and nothing else. */
+const MAX_READ_WAITERS_PER_ADDRESS = 4;
 const MAX_CONCURRENT_VERIFICATIONS = 4;
+/**
+ * Queued bodies waiting for a hash. Outpacing four concurrent HMAC passes over
+ * 1 MiB needs gigabytes per second of upload, so this is not expected to bite —
+ * it is here so the bound is in the code instead of in that arithmetic (N-11).
+ */
+const MAX_HASH_QUEUE_DEPTH = 64;
+const HASH_WAIT_MS = 5_000;
 
 /**
  * A body that does not finish inside this is not a delivery. GitHub sends 1 MiB in
@@ -48,6 +83,22 @@ const MAX_CONCURRENT_VERIFICATIONS = 4;
  * slot for Node's default request timeout of five minutes.
  */
 const READ_TIMEOUT_MS = 10_000;
+/**
+ * Ten seconds is the ceiling for a read that is *making progress*. A socket that
+ * has sent nothing — not its first byte, or nothing since its last one — has no
+ * claim on a slot for that long: GitHub starts sending immediately. This is what
+ * makes the per-address wait below short enough to be a delay.
+ */
+const READ_IDLE_TIMEOUT_MS = 2_000;
+
+/** How long a delivery waits for its address's read budget before it is shed. */
+const READ_ADMISSION_WAIT_FACTOR = 2;
+
+/**
+ * A wrong recorded App id is a standing misconfiguration, not an event: one line
+ * per connection per window, not one per delivery (N-10).
+ */
+const APP_ID_NOTICE_WINDOW_MS = 10 * 60_000;
 
 /** Header values are caller-supplied and can be kilobytes; the log takes 64. */
 const MAX_LOGGED_HEADER = 64;
@@ -61,6 +112,13 @@ const GLOBAL_KEY = "verified";
  * secret never appear here — only the delivery id, the event name and a code.
  */
 export interface GitHubWebhookLogEntry {
+  /**
+   * A refusal is a lost delivery and belongs in the warning stream; a notice is
+   * about a delivery that was **accepted** and belongs in the informational one.
+   * Formatting both as `refused` made `refused 200 …` a line an operator grepping
+   * for refusals had to learn to discard (N-10).
+   */
+  kind: "refused" | "notice";
   status: number;
   reason: string;
   deliveryId: string | null;
@@ -78,11 +136,19 @@ export interface GitHubWebhookAppOptions {
   resolve: () => GitHubWebhookIngestDependencies | null;
   failureWindow?: FailureWindow;
   acceptedWindow?: FailureWindow;
+  /** One `webhook_app_id_unmatched` notice per connection per window. */
+  noticeWindow?: FailureWindow;
   trustProxy?: boolean;
   log?: (entry: GitHubWebhookLogEntry) => void;
   maxConcurrentBodyReads?: number;
+  maxBodyReadsPerAddress?: number;
   maxConcurrentVerifications?: number;
+  maxHashQueueDepth?: number;
   readTimeoutMs?: number;
+  /** No bytes at all within this, first or subsequent, ends the read with `408`. */
+  readIdleTimeoutMs?: number;
+  /** How long a delivery may wait for its address's read budget. */
+  readAdmissionWaitMs?: number;
   /** Stands in for the hash in tests; the budget is held around this call alone. */
   verify?: (input: VerifyGitHubSignatureInput) => Promise<{ connectionId: string } | null> | { connectionId: string } | null;
 }
@@ -98,9 +164,19 @@ export function createGitHubWebhookApp(options: GitHubWebhookAppOptions): Hono {
     ?? new FailureWindow(FAILED_VERIFICATIONS_PER_ADDRESS, FAILED_VERIFICATION_WINDOW_MS);
   const verified = options.acceptedWindow
     ?? new FailureWindow(VERIFIED_DELIVERIES_PER_MINUTE, VERIFIED_WINDOW_MS);
+  const notices = options.noticeWindow ?? new FailureWindow(1, APP_ID_NOTICE_WINDOW_MS);
   const readTimeoutMs = options.readTimeoutMs ?? READ_TIMEOUT_MS;
-  const reads = new WorkSlots(options.maxConcurrentBodyReads ?? MAX_CONCURRENT_BODY_READS);
-  const hashes = new WorkSlots(options.maxConcurrentVerifications ?? MAX_CONCURRENT_VERIFICATIONS);
+  const readIdleTimeoutMs = options.readIdleTimeoutMs ?? READ_IDLE_TIMEOUT_MS;
+  const readAdmissionWaitMs = options.readAdmissionWaitMs ?? readIdleTimeoutMs * READ_ADMISSION_WAIT_FACTOR;
+  const reads = new WorkSlots(options.maxConcurrentBodyReads ?? GITHUB_WEBHOOK_MAX_CONCURRENT_READS);
+  const addressReads = new KeyedWorkSlots(
+    options.maxBodyReadsPerAddress ?? GITHUB_WEBHOOK_MAX_READS_PER_ADDRESS,
+    MAX_READ_WAITERS_PER_ADDRESS,
+  );
+  const hashes = new WorkSlots(
+    options.maxConcurrentVerifications ?? MAX_CONCURRENT_VERIFICATIONS,
+    options.maxHashQueueDepth ?? MAX_HASH_QUEUE_DEPTH,
+  );
   const verify = options.verify ?? verifyGitHubSignature;
   const app = new Hono();
 
@@ -117,6 +193,7 @@ export function createGitHubWebhookApp(options: GitHubWebhookAppOptions): Hono {
     const refuse = (status: number, reason: string, extra: { detail?: string; retryAfterMs?: number } = {}): Response => {
       const detail = extra.detail;
       report(options.log, {
+        kind: "refused",
         status,
         reason,
         deliveryId: delivery === "" ? null : delivery.slice(0, MAX_LOGGED_HEADER),
@@ -162,15 +239,29 @@ export function createGitHubWebhookApp(options: GitHubWebhookAppOptions): Hono {
       }
     }
 
-    // The read budget is shed, not queued: a caller-paced socket must not be able
-    // to occupy anything by waiting.
-    if (!reads.tryAcquire()) return refuse(429, "rate_limited", { retryAfterMs: readTimeoutMs });
-    let body: Uint8Array | "too_large" | "timeout";
+    // The read budget is charged to the calling address first and to the process
+    // second. Per address the excess *waits*, briefly: the address a flood comes
+    // from may be GitHub's own egress, and shedding there would lose the delivery
+    // outright. A stalled read is cut off at the idle deadline and its slot passes
+    // straight to the waiter, so the flood costs the genuine delivery a delay
+    // rather than the event. The global ceiling behind it is shed, not queued: a
+    // caller-paced socket must not be able to occupy anything by waiting, and by
+    // then the per-address budgets have already made a single flood harmless.
+    const admitted = address === null ? "acquired" : await addressReads.acquire(address, readAdmissionWaitMs);
+    if (admitted !== "acquired") return refuse(429, "rate_limited", { retryAfterMs: readIdleTimeoutMs });
+    let body: Uint8Array | "too_large" | "timeout" | "no_read_slot" = "no_read_slot";
     try {
-      body = await readCappedBody(c, readTimeoutMs);
+      if (reads.tryAcquire()) {
+        try {
+          body = await readCappedBody(c, { idleMs: readIdleTimeoutMs, totalMs: readTimeoutMs });
+        } finally {
+          reads.release();
+        }
+      }
     } finally {
-      reads.release();
+      if (address !== null) addressReads.release(address);
     }
+    if (body === "no_read_slot") return refuse(429, "rate_limited", { retryAfterMs: readIdleTimeoutMs });
     if (body === "too_large") return refuse(413, "payload_too_large");
     if (body === "timeout") return refuse(408, "request_timeout");
 
@@ -184,25 +275,42 @@ export function createGitHubWebhookApp(options: GitHubWebhookAppOptions): Hono {
         ...dependencies,
         verifySignature: async (input) => {
           const selection = webhookSecretSelection(input.secrets, input.appId);
-          // A recorded App id can be wrong (the installation id, the client id, the
-          // slug). Falling back to the capped loop keeps such a connection working,
-          // and the line is what tells the operator to fix the record.
-          if (selection.unmatchedAppId) report(options.log, {
-            status: 200,
-            reason: "webhook_app_id_unmatched",
-            deliveryId: delivery.slice(0, MAX_LOGGED_HEADER),
-            event: event.slice(0, MAX_LOGGED_HEADER),
-          });
           // The budget is held around the hash and the compare, never across I/O.
-          await hashes.acquire();
+          // A queue this deep means the process is saturated, which is a state that
+          // will pass: `503` with `Retry-After`, not a verdict on the request.
+          const slot = await hashes.acquire(HASH_WAIT_MS);
+          if (slot !== "acquired") throw new HashQueueBusy();
+          let verified: { connectionId: string } | null;
           try {
-            return await verify(input);
+            verified = await verify(input);
           } finally {
             hashes.release();
           }
+          // A recorded App id can be wrong (the installation id, the client id, the
+          // slug). Falling back to the capped loop keeps such a connection working,
+          // and the notice is what tells the operator to fix the record. It is
+          // written only when the delivery *did* verify: that is the actionable
+          // case, it names the connection to fix, and it cannot be provoked by an
+          // anonymous caller inventing App ids. Once per connection per window,
+          // because the condition is a static misconfiguration — the screen's
+          // `delivery_verified` step is the standing signal.
+          if (selection.unmatchedAppId && verified && notices.blocked(verified.connectionId) === null) {
+            notices.fail(verified.connectionId);
+            report(options.log, {
+              kind: "notice",
+              status: 200,
+              reason: "webhook_app_id_unmatched",
+              deliveryId: delivery.slice(0, MAX_LOGGED_HEADER),
+              event: event.slice(0, MAX_LOGGED_HEADER),
+            });
+          }
+          return verified;
         },
       });
     } catch (error) {
+      if (error instanceof HashQueueBusy) {
+        return refuse(503, "hash_queue_busy", { retryAfterMs: HASH_WAIT_MS });
+      }
       // The cause never reaches GitHub, but it must reach the operator: a 500 is
       // the only trace a lost delivery leaves on our side.
       return refuse(500, "webhook_failed", { detail: error instanceof Error ? error.message : String(error) });
@@ -235,6 +343,18 @@ export function createGitHubWebhookApp(options: GitHubWebhookAppOptions): Hono {
   return app;
 }
 
+/**
+ * Raised inside the verification callback, which can only answer "verified" or
+ * "not verified", to carry a *third* answer out to the HTTP layer: the process is
+ * saturated. It is thrown before the delivery is claimed, so nothing is recorded.
+ */
+class HashQueueBusy extends Error {
+  constructor() {
+    super("hash_queue_busy");
+    this.name = "HashQueueBusy";
+  }
+}
+
 function report(
   log: ((entry: GitHubWebhookLogEntry) => void) | undefined,
   entry: GitHubWebhookLogEntry,
@@ -244,22 +364,28 @@ function report(
     return;
   }
   const suffix = entry.detail === undefined ? "" : `: ${entry.detail}`;
-  console.warn(
-    `[csb-api] github webhook refused ${entry.status} ${entry.reason}`
-    + ` delivery=${entry.deliveryId ?? "-"} event=${entry.event ?? "-"}${suffix}`,
-  );
+  const line = `[csb-api] github webhook ${entry.kind === "notice" ? "notice" : "refused"} ${entry.status}`
+    + ` ${entry.reason} delivery=${entry.deliveryId ?? "-"} event=${entry.event ?? "-"}${suffix}`;
+  // A notice is about a delivery that was accepted: it must not land in the stream
+  // an operator reads to find lost events.
+  if (entry.kind === "notice") console.info(line);
+  else console.warn(line);
 }
 
 /**
  * The cap is enforced while reading, not after: a caller that omits
  * `Content-Length` must not be able to make the process buffer an arbitrary body
- * before the ceiling is applied. The deadline is the other half: a body that
- * stalls is abandoned, the socket's reader cancelled, and the read slot returned,
- * so trickling bytes cannot occupy anything.
+ * before the ceiling is applied. The two deadlines are the other half.
+ *
+ * `totalMs` bounds a read that is making progress; `idleMs` bounds one that is
+ * not — no first byte, or no byte since the last one. Without the idle deadline a
+ * socket that sends *nothing* still held its slot for the full ten seconds, which
+ * is what let a flood sustain itself by reconnecting (N-6b). Either way the reader
+ * is cancelled, the socket released, and the slots returned.
  */
 async function readCappedBody(
   c: Context,
-  timeoutMs: number,
+  deadlines: { idleMs: number; totalMs: number },
 ): Promise<Uint8Array | "too_large" | "timeout"> {
   const stream = c.req.raw.body;
   if (!stream) {
@@ -267,10 +393,17 @@ async function readCappedBody(
     return buffered.byteLength > GITHUB_WEBHOOK_MAX_BODY_BYTES ? "too_large" : buffered;
   }
   const reader = stream.getReader();
-  let timer: NodeJS.Timeout | undefined;
-  const expired = new Promise<"timeout">((resolve) => {
-    timer = setTimeout(() => resolve("timeout"), timeoutMs);
-  });
+  let idleTimer: NodeJS.Timeout | undefined;
+  let totalTimer: NodeJS.Timeout | undefined;
+  let expire: (outcome: "timeout") => void = () => {};
+  const expired = new Promise<"timeout">((resolve) => { expire = resolve; });
+  // Rearmed on every chunk, so the deadline measures silence rather than duration.
+  const armIdle = (): void => {
+    if (idleTimer !== undefined) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => { expire("timeout"); }, deadlines.idleMs);
+  };
+  armIdle();
+  totalTimer = setTimeout(() => { expire("timeout"); }, deadlines.totalMs);
   const read = (async (): Promise<Uint8Array | "too_large"> => {
     const chunks: Uint8Array[] = [];
     let total = 0;
@@ -278,6 +411,7 @@ async function readCappedBody(
       const { done, value } = await reader.read();
       if (done) break;
       if (!value) continue;
+      armIdle();
       total += value.byteLength;
       if (total > GITHUB_WEBHOOK_MAX_BODY_BYTES) return "too_large";
       chunks.push(value);
@@ -297,7 +431,8 @@ async function readCappedBody(
     if (outcome === "timeout" || outcome === "too_large") await reader.cancel().catch(() => {});
     return outcome;
   } finally {
-    clearTimeout(timer);
+    if (idleTimer !== undefined) clearTimeout(idleTimer);
+    if (totalTimer !== undefined) clearTimeout(totalTimer);
     read.catch(() => {});
     try {
       reader.releaseLock();
