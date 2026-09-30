@@ -1,5 +1,12 @@
 import type { Page } from "@playwright/test";
+import { EMAIL_PROVIDER_PRESETS } from "@csb/shared";
 import type {
+  AccountNotificationsResponse,
+  AccountNotificationsUpdateEntry,
+  EmailDelivery,
+  EmailQueueSkip,
+  EmailSettings,
+  EmailTestResult,
   FindingDetail,
   FindingTriage,
   LifecycleFinding,
@@ -29,6 +36,90 @@ export interface MockApiOptions {
   /** No member account exists at all: every repository has zero grants
    *  and zero candidates, which is a different sentence from "all granted". */
   noMembers?: boolean;
+  /** Whatever `GET /email/settings` should already have on file. */
+  emailSettings?: Partial<EmailSettings>;
+  /** `null` reproduces local mode, where e-mails carry no links. */
+  publicOrigin?: string | null;
+  /** A refusal from `PUT /email/settings`, field code included. */
+  saveEmailSettingsResponse?: { status: number; body: unknown };
+  /** `POST /email/test` answers 200 on a provider rejection too. */
+  emailTestResult?: EmailTestResult;
+  emailTestResponse?: { status: number; body: unknown };
+  emailDeliveries?: EmailDelivery[];
+  emailDeliveriesFail?: boolean;
+  /** The resolved destination for this account, or `null` for the warning. */
+  notificationsAddress?: string | null;
+  notificationsFail?: boolean;
+  /** A refusal from `PUT /account/notifications`, which must roll the cell back. */
+  notificationsUpdateResponse?: { status: number; body: unknown };
+  /** Nobody has shared a repository with this account yet. */
+  noNotificationRepositories?: boolean;
+  /** What the invite and reset routes report about the e-mail they queued. */
+  inviteEmail?: { emailQueued: boolean; emailSkipped: EmailQueueSkip | null; emailTo: string | null };
+}
+
+const emailSettings: EmailSettings = {
+  provider: "smtp", enabled: false, fromName: "Okami Sentinel", fromAddress: null, replyTo: null,
+  smtpHost: null, smtpPort: null, smtpSecurity: "tls", smtpUsername: null,
+  secretConfigured: false, updatedAt: null, updatedBy: null,
+};
+
+const emailDeliveries: EmailDelivery[] = [
+  {
+    id: "delivery-one", event: "account.invite", toAddress: "bea@example.test", locale: "en",
+    subject: "You were invited to Sentinel", status: "sent", attempts: 1, nextAttemptAt: null,
+    lastError: null, providerMessageId: "msg-1", createdAt: "2026-09-29T10:00:00.000Z", sentAt: "2026-09-29T10:00:04.000Z",
+  },
+  {
+    id: "delivery-two", event: "gate.blocked", toAddress: "ana@example.test", locale: "pt-BR",
+    subject: "Gate bloqueado em luna-core", status: "failed", attempts: 5, nextAttemptAt: null,
+    lastError: "550 5.7.1 Sender address not verified", providerMessageId: null,
+    createdAt: "2026-09-29T11:00:00.000Z", sentAt: null,
+  },
+  {
+    id: "delivery-three", event: "ops.engine_unavailable.resolved", toAddress: "root@example.test", locale: "en",
+    subject: "Engine available again", status: "queued", attempts: 1, nextAttemptAt: "2026-09-29T12:05:00.000Z",
+    lastError: "Connection timed out", providerMessageId: null,
+    createdAt: "2026-09-29T12:00:00.000Z", sentAt: null,
+  },
+];
+
+function notificationMatrix(isAdmin: boolean, address: string | null, repositories: boolean): AccountNotificationsResponse {
+  return {
+    address,
+    locale: "pt-BR",
+    repositories: repositories
+      ? [{
+        repositoryKey: "github:1", displayName: "luna-core", source: "github", role: isAdmin ? null : "viewer",
+        events: [
+          { event: "gate.blocked", enabled: true, isDefault: true },
+          { event: "gate.error", enabled: true, isDefault: true },
+          { event: "gate.passed", enabled: false, isDefault: true },
+          { event: "scan.failed", enabled: true, isDefault: true },
+          { event: "scan.completed", enabled: false, isDefault: true },
+        ],
+      }]
+      : [],
+    ops: isAdmin
+      ? {
+        events: [
+          { event: "ops.engine_unavailable", enabled: true, isDefault: true },
+          { event: "ops.connection_attention", enabled: true, isDefault: true },
+          { event: "ops.daily_cost", enabled: true, isDefault: true },
+          { event: "ops.github_publish_failed", enabled: true, isDefault: true },
+        ],
+      }
+      : null,
+    unassigned: isAdmin
+      ? {
+        events: [
+          { event: "scan.failed", enabled: true, isDefault: true },
+          { event: "scan.completed", enabled: false, isDefault: true },
+        ],
+      }
+      : null,
+    accountEvents: ["account.invite", "account.reset", "account.new_login", "account.locked", "account.password_changed"],
+  };
 }
 
 const rootUser: UserSummary = {
@@ -121,6 +212,16 @@ const filesGraph = {
   edges: [],
 } satisfies ScanFilesGraph;
 
+/**
+ * The three fields the invite and reset routes gained: whether a message was
+ * queued, where it went, and why not. The default reproduces a configured
+ * provider that accepted the message.
+ */
+function inviteEmailFields(options: MockApiOptions, fallbackAddress: string | null) {
+  if (options.inviteEmail) return options.inviteEmail;
+  return { emailQueued: true, emailSkipped: null, emailTo: fallbackAddress };
+}
+
 export async function mockApi(page: Page, locale = "en", options: MockApiOptions = {}) {
   const state = {
     offline: false, connectionsFail: false, modelsFail: false, launchCount: 0, cancelCount: 0, resetCount: 0,
@@ -148,6 +249,23 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
     accountSessions: structuredClone(accountSessions),
     accountSessionsFail: options.accountSessionsFail === true,
     invitePreviewFails: options.invitePreviewResponse !== undefined,
+    emailSettings: { ...structuredClone(emailSettings), ...(options.emailSettings ?? {}) } as EmailSettings,
+    publicOrigin: options.publicOrigin === undefined ? "http://127.0.0.1:4175" : options.publicOrigin,
+    emailDeliveries: structuredClone(options.emailDeliveries ?? emailDeliveries),
+    emailDeliveriesFail: options.emailDeliveriesFail === true,
+    /** Every body `PUT /email/settings` received, in order. */
+    emailSettingsWrites: [] as Array<Record<string, unknown>>,
+    emailTestCount: 0,
+    notifications: notificationMatrix(
+      options.session?.isAdmin ?? true,
+      options.notificationsAddress === undefined ? "root@example.test" : options.notificationsAddress,
+      options.noNotificationRepositories !== true,
+    ),
+    notificationsFail: options.notificationsFail === true,
+    /** Every sparse patch `PUT /account/notifications` received, in order. */
+    notificationWrites: [] as AccountNotificationsUpdateEntry[][],
+    /** Every locale `PATCH /account/profile` was asked to remember. */
+    localeWrites: [] as string[],
   };
   await page.addInitScript(({ locale }) => {
     localStorage.setItem("okami-sentinel.locale", locale);
@@ -229,7 +347,7 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
       if (state.auth.sessionUnreachable) return json({ error: "internal_error" }, 500);
       if (!state.auth.signedIn) return json({ error: "authentication_required" }, 401);
       return json({
-        user: { id: "u-root", username: state.auth.username, displayName: "Root", isAdmin: state.auth.isAdmin },
+        user: { id: "u-root", username: state.auth.username, displayName: "Root", isAdmin: state.auth.isAdmin, locale: state.localeWrites.at(-1) ?? null },
         grants: state.auth.grants,
         csrfToken: "fixture-token",
         runtimeMode: state.auth.runtimeMode,
@@ -286,8 +404,67 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
       return route.fulfill({ status: 204 });
     }
     if (path === "/account/profile" && req.method() === "PATCH") {
-      const body = req.postDataJSON() as { displayName?: string };
-      return json({ id: "u-root", username: "root", displayName: body.displayName ?? "Root", isAdmin: state.auth.isAdmin });
+      const body = req.postDataJSON() as { displayName?: string; locale?: string };
+      if (typeof body.locale === "string") state.localeWrites.push(body.locale);
+      return json({
+        id: "u-root", username: "root", displayName: body.displayName ?? "Root",
+        isAdmin: state.auth.isAdmin, locale: state.localeWrites.at(-1) ?? null,
+      });
+    }
+    if (path === "/account/notifications") {
+      if (state.notificationsFail) return json({ error: "internal_error" }, 500);
+      if (req.method() === "GET") return json(state.notifications);
+      if (req.method() === "PUT") {
+        const body = req.postDataJSON() as { subscriptions?: AccountNotificationsUpdateEntry[] };
+        const subscriptions = body.subscriptions ?? [];
+        state.notificationWrites.push(subscriptions);
+        if (options.notificationsUpdateResponse) {
+          // A refused batch writes nothing, so the stored matrix is returned
+          // untouched on the next read and the screen has to roll back.
+          return json(options.notificationsUpdateResponse.body, options.notificationsUpdateResponse.status);
+        }
+        for (const entry of subscriptions) {
+          const events = entry.scope === "ops"
+            ? state.notifications.ops?.events
+            : entry.scope === "unassigned"
+              ? state.notifications.unassigned?.events
+              : state.notifications.repositories.find((item) => item.repositoryKey === entry.scope)?.events;
+          const cell = events?.find((item) => item.event === entry.event);
+          if (cell) {
+            cell.enabled = entry.enabled;
+            cell.isDefault = false;
+          }
+        }
+        return json(state.notifications);
+      }
+    }
+    if (path === "/email/settings") {
+      if (req.method() === "GET") return json({ settings: state.emailSettings, presets: EMAIL_PROVIDER_PRESETS, publicOrigin: state.publicOrigin });
+      if (req.method() === "PUT") {
+        const body = req.postDataJSON() as Record<string, unknown>;
+        state.emailSettingsWrites.push(body);
+        if (options.saveEmailSettingsResponse) return json(options.saveEmailSettingsResponse.body, options.saveEmailSettingsResponse.status);
+        const { secret, ...rest } = body;
+        // The real route never returns the secret, only that one exists, and an
+        // absent `secret` keeps whatever was already stored.
+        state.emailSettings = {
+          ...state.emailSettings,
+          ...(rest as Partial<EmailSettings>),
+          secretConfigured: typeof secret === "string" && secret.length > 0 ? true : secret === null || secret === "" ? false : state.emailSettings.secretConfigured,
+          updatedAt: "2026-09-30T12:00:00.000Z",
+          updatedBy: "root",
+        };
+        return json({ settings: state.emailSettings, presets: EMAIL_PROVIDER_PRESETS, publicOrigin: state.publicOrigin });
+      }
+    }
+    if (path === "/email/test" && req.method() === "POST") {
+      state.emailTestCount += 1;
+      if (options.emailTestResponse) return json(options.emailTestResponse.body, options.emailTestResponse.status);
+      return json(options.emailTestResult ?? { ok: true, to: "root@example.test", code: null, message: null, providerMessageId: "msg-test" });
+    }
+    if (path === "/email/deliveries" && req.method() === "GET") {
+      if (state.emailDeliveriesFail) return json({ error: "fixture unavailable" }, 503);
+      return json({ deliveries: state.emailDeliveries });
     }
     if (path === "/users" && req.method() === "GET") return json({ users: state.users });
     if (path === "/users" && req.method() === "POST") {
@@ -299,7 +476,7 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
         repositoryCount: body.grants?.length ?? 0, lastLoginAt: null, createdAt: "2026-09-07T10:00:00.000Z",
       };
       state.users.push(created);
-      return json({ user: created, invite: { inviteUrl: `http://127.0.0.1:4175/invite/${"b".repeat(43)}`, expiresAt: "2026-10-06T10:00:00.000Z" } }, 201);
+      return json({ user: created, invite: { inviteUrl: `http://127.0.0.1:4175/invite/${"b".repeat(43)}`, expiresAt: "2026-10-06T10:00:00.000Z", ...inviteEmailFields(options, created.email ?? created.username) } }, 201);
     }
     const userMatch = path.match(/^\/users\/([^/]+)(?:\/(.*))?$/);
     if (userMatch) {
@@ -325,7 +502,11 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
         // actually changing between two resets of the same user.
         state.resetCount += 1;
         const char = state.resetCount === 1 ? "c" : "d";
-        return json({ inviteUrl: `http://127.0.0.1:4175/invite/${char.repeat(43)}`, expiresAt: "2026-10-06T10:00:00.000Z" });
+        const target = state.users.find((user) => user.id === id);
+        return json({
+          inviteUrl: `http://127.0.0.1:4175/invite/${char.repeat(43)}`, expiresAt: "2026-10-06T10:00:00.000Z",
+          ...inviteEmailFields(options, target?.email ?? target?.username ?? null),
+        });
       }
     }
     if (path === "/repository-access" && req.method() === "GET") return json({ repositories: state.repositoryAccess });
