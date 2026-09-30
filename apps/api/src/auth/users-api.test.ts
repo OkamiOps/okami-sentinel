@@ -4,7 +4,9 @@ import { Hono } from "hono";
 import { getDb } from "../db.js";
 import { LOCAL_PRINCIPAL, type Principal } from "./principal.js";
 import { createSession, getSessionById, resolveSession } from "./session-store.js";
-import { createUsersApi } from "./users-api.js";
+import type { EmailEnqueueResult, EnqueueEmailInput } from "../email/enqueue.js";
+import type { EmailMessageKind } from "../email/templates.js";
+import { createUsersApi, type InviteEmailPort } from "./users-api.js";
 import { createUser, findUserByUsername, listUsers, updateUser } from "./user-store.js";
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
@@ -268,4 +270,142 @@ test("forbids every administration route for a non-administrator principal", asy
     assert.deepEqual(await response.json(), { error: "forbidden" });
   }
   assert.equal(findUserByUsername("zed", getDb()), null);
+});
+
+
+/**
+ * A stand-in for the outbox. The real one is exercised in `enqueue.test.ts`
+ * against its own database; here the question is what the routes ask it for and
+ * what they tell the administrator about the answer.
+ */
+function spyPort(result: EmailEnqueueResult = { status: "queued", id: "out_spy" }): {
+  port: InviteEmailPort;
+  calls: Array<EnqueueEmailInput<EmailMessageKind>>;
+  answer: (next: EmailEnqueueResult) => void;
+  throwNext: () => void;
+} {
+  const calls: Array<EnqueueEmailInput<EmailMessageKind>> = [];
+  let answer = result;
+  let throwing = false;
+  return {
+    calls,
+    answer: (next) => { answer = next; },
+    throwNext: () => { throwing = true; },
+    port: (_database, input) => {
+      calls.push(input as EnqueueEmailInput<EmailMessageKind>);
+      if (throwing) throw new Error("the outbox is unavailable");
+      return answer;
+    },
+  };
+}
+
+function usersApiWith(enqueue: InviteEmailPort, publicOrigin: string | null = "https://sentinel.example"): Hono {
+  return new Hono().route("/", createUsersApi({
+    publicOrigin, enqueue, now: () => new Date("2026-09-30T10:00:00.000Z"),
+  }));
+}
+
+async function createUserVia(api: Hono, body: Record<string, unknown>): Promise<Record<string, never>> {
+  const response = await api.request("/users", { method: "POST", headers: JSON_HEADERS, body: JSON.stringify(body) });
+  assert.equal(response.status, 201);
+  return await response.json() as Record<string, never>;
+}
+
+test("an invite is queued to the invited address, in the inviter's language, and the link stays", async () => {
+  const spy = spyPort();
+  const inviter = createUser({ username: `marcos${Date.now()}`, displayName: "Marcos", isAdmin: true }, getDb());
+  updateUser(inviter.id, { locale: "de" }, getDb());
+  const api = new Hono();
+  api.use("*", async (c, next) => {
+    c.set("principal" as never, { ...LOCAL_PRINCIPAL, kind: "user", userId: inviter.id, isAdmin: true } as never);
+    await next();
+  });
+  api.route("/", createUsersApi({ publicOrigin: "https://sentinel.example", enqueue: spy.port }));
+
+  const name = `bruno${Date.now()}`;
+  const body = await createUserVia(api, {
+    username: name, displayName: "Bruno", email: "bruno@example.com", isAdmin: false, grants: [],
+  }) as unknown as { user: { id: string }; invite: Record<string, unknown> };
+
+  assert.equal(body.invite.emailQueued, true);
+  assert.equal(body.invite.emailSkipped, null);
+  assert.equal(body.invite.emailTo, "bruno@example.com");
+  assert.match(String(body.invite.inviteUrl), /^https:\/\/sentinel\.example\/invite\/[A-Za-z0-9_-]{43}$/);
+
+  assert.equal(spy.calls.length, 1);
+  const queued = spy.calls[0]!;
+  assert.equal(queued.event, "account.invite");
+  assert.equal(queued.userId, body.user.id);
+  assert.equal(queued.toAddress, "bruno@example.com");
+  // The invited person has never chosen a language, so the invite uses the
+  // inviter's, as the design says.
+  assert.equal(queued.locale, "de");
+  assert.equal(queued.dedupeKey, `account.${body.user.id}.invite.${body.invite.expiresAt}`);
+  assert.deepEqual(
+    { inviterName: (queued.data as { inviterName: string }).inviterName },
+    { inviterName: "Marcos" },
+  );
+  // The token in the message is the token in the copyable link, and nothing else
+  // in the response names it.
+  assert.ok(String(body.invite.inviteUrl).endsWith((queued.data as { inviteToken: string }).inviteToken));
+});
+
+test("with no address, e-mail off, or a broken outbox, the user is still created and the link still works", async () => {
+  const spy = spyPort();
+  const api = usersApiWith(spy.port);
+
+  const nameless = `nomail${Date.now()}`;
+  const withoutAddress = await createUserVia(api, { username: nameless, displayName: "No Mail", isAdmin: false, grants: [] }) as
+    unknown as { invite: Record<string, unknown> };
+  assert.deepEqual(
+    { queued: withoutAddress.invite.emailQueued, skipped: withoutAddress.invite.emailSkipped, to: withoutAddress.invite.emailTo },
+    { queued: false, skipped: "no_address", to: null },
+  );
+  assert.equal(spy.calls.length, 0);
+  assert.ok(String(withoutAddress.invite.inviteUrl).includes("/invite/"));
+
+  // A username that is an address is an address.
+  const asUsername = await createUserVia(api, { username: `carla${Date.now()}@example.com`, displayName: "Carla", isAdmin: false, grants: [] }) as
+    unknown as { invite: Record<string, unknown> };
+  assert.equal(asUsername.invite.emailQueued, true);
+  assert.match(String(asUsername.invite.emailTo), /@example\.com$/);
+
+  spy.answer({ status: "skipped", reason: "disabled" });
+  const disabled = await createUserVia(api, { username: `dora${Date.now()}@example.com`, displayName: "Dora", isAdmin: false, grants: [] }) as
+    unknown as { invite: Record<string, unknown> };
+  assert.equal(disabled.invite.emailQueued, false);
+  assert.equal(disabled.invite.emailSkipped, "disabled");
+  assert.match(String(disabled.invite.emailTo), /@example\.com$/);
+
+  spy.throwNext();
+  const broken = await createUserVia(api, { username: `elias${Date.now()}@example.com`, displayName: "Elias", isAdmin: false, grants: [] }) as
+    unknown as { user: { id: string }; invite: Record<string, unknown> };
+  assert.equal(broken.invite.emailQueued, false);
+  assert.equal(broken.invite.emailSkipped, "error");
+  assert.ok(String(broken.invite.inviteUrl).includes("/invite/"));
+  assert.ok(listUsers(getDb()).some((user) => user.id === broken.user.id));
+});
+
+test("a reset queues its own message, to the user, in the user's language", async () => {
+  const spy = spyPort();
+  const api = usersApiWith(spy.port);
+  const user = createUser({
+    username: `frida${Date.now()}`, displayName: "Frida", email: "frida@example.com", isAdmin: false,
+  }, getDb());
+  updateUser(user.id, { locale: "fr" }, getDb());
+
+  const response = await api.request(`/users/${user.id}/reset`, { method: "POST" });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.emailQueued, true);
+  assert.equal(body.emailTo, "frida@example.com");
+  assert.equal(body.emailSkipped, null);
+
+  assert.equal(spy.calls.length, 1);
+  const queued = spy.calls[0]!;
+  assert.equal(queued.event, "account.reset");
+  assert.equal(queued.userId, user.id);
+  assert.equal(queued.locale, "fr");
+  assert.equal(queued.dedupeKey, `account.${user.id}.reset.${body.expiresAt}`);
+  assert.ok(String(body.inviteUrl).endsWith((queued.data as { resetToken: string }).resetToken));
 });

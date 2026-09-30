@@ -1,4 +1,4 @@
-import type { UserLocale } from "./email.js";
+import type { EmailQueueSkip, UserLocale } from "./email.js";
 
 export * from "./email.js";
 export * from "./user-agent.js";
@@ -1485,4 +1485,18 @@ export interface RepositoryAccessEntry {
   repositoryKey: string; displayName: string; source: "local" | "github";
   grants: Array<{ userId: string; username: string; displayName: string; role: RepositoryRole }>;
 }
-export interface InviteLinkResponse { inviteUrl: string; expiresAt: string; }
+/**
+ * An invite or reset link, plus what happened to the e-mail that carries it. The
+ * link stays copyable whatever the answer is: e-mail may be off, the invited
+ * person may have no address on file, and an administrator still has to be able
+ * to hand the link over.
+ */
+export interface InviteLinkResponse {
+  inviteUrl: string;
+  expiresAt: string;
+  emailQueued: boolean;
+  /** Why no message was queued, when none was. */
+  emailSkipped: EmailQueueSkip | null;
+  /** Where the message went, or would have gone. */
+  emailTo: string | null;
+}

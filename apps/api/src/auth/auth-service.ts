@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { getDb } from "../db.js";
+import { isUnfamiliarLogin, loginBrowser, notifyAccountEvent } from "../email/account-notifications.js";
 import { listUserGrants } from "./grant-store.js";
 import { consumeInvite, peekInvite } from "./invite-store.js";
 import { hashPassword, passwordPolicyError, verifyPassword } from "./passwords.js";
@@ -54,15 +55,31 @@ export async function login(
     if (user && !matches) {
       const failedAttempts = user.failedAttempts + 1;
       const lock = failedAttempts % 5 === 0 ? lockoutMs(failedAttempts) : 0;
-      updateUser(user.id, {
-        failedAttempts,
-        lockedUntil: lock > 0 ? new Date(now.getTime() + lock).toISOString() : user.lockedUntil,
-      }, database);
+      const lockedUntil = lock > 0 ? new Date(now.getTime() + lock).toISOString() : user.lockedUntil;
+      updateUser(user.id, { failedAttempts, lockedUntil }, database);
+      // Only a lock applied now is news; the attempts before it are not, and a
+      // poll against an already-locked account is not either.
+      if (lock > 0) {
+        notifyAccountEvent(database, user, {
+          kind: "account.locked",
+          data: { at: now, retryAfterSeconds: Math.ceil(lock / 1000) },
+          reference: lockedUntil!,
+        });
+      }
     }
     return { ok: false, error: "invalid_credentials" };
   }
+  // Asked before the new session exists, or it would recognise itself.
+  const unfamiliar = isUnfamiliarLogin(database, user.id, { ip: input.ip, userAgent: input.userAgent, now });
   updateUser(user.id, { failedAttempts: 0, lockedUntil: null, lastLoginAt: now.toISOString() }, database);
   const { token, session } = createSession({ userId: user.id, ip: input.ip, userAgent: input.userAgent, now }, database);
+  if (unfamiliar) {
+    notifyAccountEvent(database, user, {
+      kind: "account.new_login",
+      data: { at: now, ip: input.ip, browser: loginBrowser(input.userAgent) },
+      reference: now.toISOString(),
+    });
+  }
   return { ok: true, token, session, user: getUser(user.id, database)! };
 }
 
@@ -102,11 +119,16 @@ export async function acceptInvite(
   updateUser(user.id, { passwordHash, failedAttempts: 0, lockedUntil: null, lastLoginAt: now.toISOString() }, database);
   revokeUserSessions(user.id, null, database);
   const { token, session } = createSession({ userId: user.id, ip: input.ip, userAgent: input.userAgent, now }, database);
+  // Accepting an invite or a reset *is* a password change, and it is the one the
+  // account's owner most needs to hear about if it was not them who did it.
+  notifyAccountEvent(database, user, {
+    kind: "account.password_changed", data: { at: now }, reference: now.toISOString(),
+  });
   return { ok: true, token, session };
 }
 
 export async function changePassword(
-  input: { userId: string; sessionId: string; currentPassword: string; newPassword: string },
+  input: { userId: string; sessionId: string; currentPassword: string; newPassword: string; now?: Date },
   database: Database.Database = getDb(),
 ): Promise<{ ok: true } | { ok: false; error: "invalid_credentials" | "password_too_short" | "password_too_long" | "password_matches_username" }> {
   const user = getUser(input.userId, database);
@@ -115,8 +137,12 @@ export async function changePassword(
   if (policy) return { ok: false, error: policy };
   // Whoever proved the current password owns the account; leaving a lockout or a
   // failure streak behind would punish them for an attacker's attempts.
+  const now = input.now ?? new Date();
   updateUser(user.id, { passwordHash: await hashPassword(input.newPassword), failedAttempts: 0, lockedUntil: null }, database);
   revokeUserSessions(user.id, input.sessionId, database);
+  notifyAccountEvent(database, user, {
+    kind: "account.password_changed", data: { at: now }, reference: now.toISOString(),
+  });
   return { ok: true };
 }
 

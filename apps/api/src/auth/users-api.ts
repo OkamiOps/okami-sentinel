@@ -1,6 +1,18 @@
+import type Database from "better-sqlite3";
 import { Hono, type Context, type Next } from "hono";
-import type { InviteLinkResponse, RepositoryGrant, RepositoryRole, UserSessionSummary, UserSummary } from "@csb/shared";
+import {
+  DEFAULT_USER_LOCALE,
+  type EmailQueueSkip,
+  type InviteLinkResponse,
+  type RepositoryGrant,
+  type RepositoryRole,
+  type UserLocale,
+  type UserSessionSummary,
+  type UserSummary,
+} from "@csb/shared";
 import { getDb } from "../db.js";
+import { localeOf, resolveUserEmailAddress } from "../email/address.js";
+import { enqueueEmail, type EmailEnqueueResult, type EnqueueEmailInput } from "../email/enqueue.js";
 import { countUserGrants, listRepositoryAccess, listUserGrants, replaceUserGrants, setRepositoryGrant } from "./grant-store.js";
 import { createInvite, hasOpenInvite } from "./invite-store.js";
 import { principalOf, ROLE_RANK } from "./principal.js";
@@ -55,11 +67,81 @@ async function adminOnly(c: Context, next: Next): Promise<Response | void> {
   return c.json({ error: "forbidden" }, 403);
 }
 
-export function createUsersApi(deps: { publicOrigin: string | null }): Hono {
+/**
+ * The one thing these routes need from the outbox. Narrow on purpose: an invite
+ * and a reset are the only messages an administrator's action here produces, and
+ * a port this small is trivial to stand in for.
+ */
+export type InviteEmailPort = (
+  database: Database.Database,
+  input: EnqueueEmailInput<"account.invite"> | EnqueueEmailInput<"account.reset">,
+) => EmailEnqueueResult;
+
+export interface UsersApiDependencies {
+  publicOrigin: string | null;
+  enqueue: InviteEmailPort;
+  now: () => Date;
+}
+
+export function createUsersApi(supplied: { publicOrigin: string | null } & Partial<UsersApiDependencies>): Hono {
+  const deps: UsersApiDependencies = {
+    publicOrigin: supplied.publicOrigin,
+    enqueue: supplied.enqueue ?? ((database, input) => enqueueEmail(database, input)),
+    now: supplied.now ?? (() => new Date()),
+  };
   const api = new Hono();
+
+  /**
+   * Queues the invite or the reset, and reports what happened without ever
+   * getting in the way: the link in the response is what an administrator can
+   * always fall back on, so no outcome here is an error. The address is the
+   * user's own — the e-mail on file, or the username when the team signs in with
+   * work addresses.
+   */
+  const queueLink = (
+    purpose: "invite" | "reset",
+    user: UserRecord,
+    link: { token: string; expiresAt: string },
+    locale: UserLocale,
+    inviterName: string | null,
+  ): Pick<InviteLinkResponse, "emailQueued" | "emailSkipped" | "emailTo"> => {
+    const answer = (emailQueued: boolean, emailSkipped: EmailQueueSkip | null, emailTo: string | null) =>
+      ({ emailQueued, emailSkipped, emailTo });
+    const to = resolveUserEmailAddress(user);
+    if (to === null) return answer(false, "no_address", null);
+    try {
+      const result = deps.enqueue(getDb(), purpose === "invite"
+        ? {
+          event: "account.invite", userId: user.id, toAddress: to, locale,
+          dedupeKey: `account.${user.id}.invite.${link.expiresAt}`,
+          data: { inviterName, inviteToken: link.token, expiresAt: new Date(link.expiresAt) },
+          now: deps.now(),
+        }
+        : {
+          event: "account.reset", userId: user.id, toAddress: to, locale,
+          dedupeKey: `account.${user.id}.reset.${link.expiresAt}`,
+          data: { resetToken: link.token, expiresAt: new Date(link.expiresAt) },
+          now: deps.now(),
+        });
+      return result.status === "queued" ? answer(true, null, to) : answer(false, result.reason, to);
+    } catch (error) {
+      // The account exists, the link works, and the only thing lost is the
+      // message. Say so instead of failing the request.
+      console.warn(
+        `[csb-api] Could not queue the ${purpose} e-mail for ${user.id}: `
+          + `${error instanceof Error ? error.message : "unknown_error"}`,
+      );
+      return answer(false, "error", to);
+    }
+  };
+
   // Local mode has no public origin, so the link stays relative to the UI.
-  const inviteLink = (token: string, expiresAt: string): InviteLinkResponse => ({
-    inviteUrl: `${deps.publicOrigin ?? ""}/invite/${token}`, expiresAt,
+  const inviteLink = (
+    token: string,
+    expiresAt: string,
+    email: Pick<InviteLinkResponse, "emailQueued" | "emailSkipped" | "emailTo">,
+  ): InviteLinkResponse => ({
+    inviteUrl: `${deps.publicOrigin ?? ""}/invite/${token}`, expiresAt, ...email,
   });
   for (const path of ["/users", "/users/*", "/repository-access", "/repository-access/*"]) api.use(path, adminOnly);
 
@@ -70,18 +152,27 @@ export function createUsersApi(deps: { publicOrigin: string | null }): Hono {
     const parsed = grantsFrom(input.grants ?? []);
     if (!parsed.ok) return c.json({ error: parsed.error }, 400);
     const actor = principalOf(c).userId;
+    // The invite speaks the inviter's language, as the design says: it is the
+    // only message whose recipient has never chosen one.
+    const inviter = actor ? getUser(actor) : null;
+    const locale = inviter ? localeOf(inviter) : DEFAULT_USER_LOCALE;
     try {
-      // One transaction, so a rejected grant or invite leaves no half-built user.
-      const { user, token, expiresAt } = getDb().transaction(() => {
+      // One transaction, so a rejected grant or invite leaves no half-built user,
+      // and so the queued invite commits with the account it belongs to.
+      const { user, token, expiresAt, email } = getDb().transaction(() => {
         const created = createUser({
           username: String(input.username ?? ""), displayName: String(input.displayName ?? ""),
           email: typeof input.email === "string" ? input.email : null, isAdmin: input.isAdmin === true,
         });
         replaceUserGrants(created.id, parsed.grants, actor);
         const link = createInvite({ userId: created.id, purpose: "invite", createdBy: actor });
-        return { user: created, token: link.token, expiresAt: link.invite.expiresAt };
+        return {
+          user: created, token: link.token, expiresAt: link.invite.expiresAt,
+          email: queueLink("invite", created, { token: link.token, expiresAt: link.invite.expiresAt },
+            locale, inviter?.displayName ?? null),
+        };
       })();
-      return c.json({ user: summary(user), invite: inviteLink(token, expiresAt) }, 201);
+      return c.json({ user: summary(user), invite: inviteLink(token, expiresAt, email) }, 201);
     } catch (error) {
       const code = error instanceof Error ? error.message : "user_create_failed";
       return c.json({ error: code }, code === "username_taken" ? 409 : 400);
@@ -109,9 +200,21 @@ export function createUsersApi(deps: { publicOrigin: string | null }): Hono {
   api.post("/users/:id/reset", (c) => {
     const user = getUser(c.req.param("id"));
     if (!user) return c.json({ error: "not_found" }, 404);
-    const link = createInvite({ userId: user.id, purpose: "reset", createdBy: principalOf(c).userId });
-    revokeUserSessions(user.id);
-    return c.json(inviteLink(link.token, link.invite.expiresAt));
+    const actor = principalOf(c).userId;
+    // One transaction for the three writes: a reset that revoked the sessions but
+    // queued no message, or queued one for a link that was rolled back, would be
+    // worse than either failure on its own.
+    const { link, email } = getDb().transaction(() => {
+      const created = createInvite({ userId: user.id, purpose: "reset", createdBy: actor });
+      revokeUserSessions(user.id);
+      return {
+        link: created,
+        // The reset speaks the recipient's own language; they have an account.
+        email: queueLink("reset", user, { token: created.token, expiresAt: created.invite.expiresAt },
+          localeOf(user), null),
+      };
+    })();
+    return c.json(inviteLink(link.token, link.invite.expiresAt, email));
   });
 
   api.delete("/users/:id/sessions", (c) => {
