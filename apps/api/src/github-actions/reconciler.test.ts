@@ -24,6 +24,7 @@ import {
   GITHUB_RECONCILE_MAX_BRANCH_PAGES,
   GITHUB_RECONCILE_MAX_PULL_REQUEST_PAGES,
   reconcileGitHubActions,
+  singleFlightReconcile,
   startGitHubReconciler,
   type GitHubReconcilerDependencies,
 } from "./reconciler.js";
@@ -516,4 +517,43 @@ test("a cycle that throws synchronously does not wedge the loop", async () => {
   await reconciler.runNow();
   assert.equal(calls, 2, "the guard was released");
   await reconciler.stop();
+});
+
+
+/**
+ * "Reconciliar agora" and the 15-minute tick are two callers of one cycle. The
+ * loop's own guard only covers the loop, so a button press could run a second full
+ * set of GitHub reads per repository concurrently and hand the loser of the race an
+ * `errors > 0` the operator reads as a fault (M-1). One guard for both callers.
+ */
+test("a second reconciliation joins the one in flight instead of starting another", async () => {
+  let started = 0;
+  let release = (): void => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const reconcile = singleFlightReconcile(async () => {
+    started += 1;
+    await gate;
+    return { repositories: 1, created: 2, observed: 3, errors: 0 };
+  });
+
+  const first = reconcile();
+  const second = reconcile();
+  assert.equal(started, 1, "the second call started a second cycle");
+  release();
+  assert.deepEqual(await first, { repositories: 1, created: 2, observed: 3, errors: 0 });
+  assert.deepEqual(await second, await first);
+
+  // The guard is released when the cycle ends, including a failing one.
+  const after = reconcile();
+  assert.equal(started, 2);
+  await after;
+
+  let failures = 0;
+  const failing = singleFlightReconcile(async () => {
+    failures += 1;
+    throw new Error("github_unavailable");
+  });
+  await assert.rejects(failing(), /github_unavailable/);
+  await assert.rejects(failing(), /github_unavailable/);
+  assert.equal(failures, 2, "a failed cycle left the guard held");
 });

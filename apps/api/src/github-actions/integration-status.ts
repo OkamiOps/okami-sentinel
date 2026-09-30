@@ -17,6 +17,16 @@ import {
 
 const DELIVERY_WINDOW_MS = 24 * 60 * 60_000;
 
+/**
+ * How long a verified delivery vouches for a connection. `lastVerifiedWebhookDeliveryAt`
+ * is a high-water mark, so without a window the `delivery_verified` step goes green
+ * once and stays green forever — through a suspended App, a secret rotated on GitHub
+ * alone, or a hook switched off, which are exactly the failures it exists to catch.
+ * Seven days is well past any quiet weekend on a repository that sees pull requests
+ * and well short of "nobody noticed for a month".
+ */
+export const DELIVERY_VERIFIED_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
+
 /** Ordered so a granted level can be compared against the required one. */
 const PERMISSION_RANK: Readonly<Record<string, number>> = Object.freeze(
   Object.assign(Object.create(null) as Record<string, number>, {
@@ -91,16 +101,33 @@ export interface GitHubIntegrationStatus {
     webhookSecretConfigured: boolean;
     /** The last delivery of this connection whose signature verified; `null` if none. */
     lastVerifiedDeliveryAt: string | null;
+    /**
+     * A signature did verify once, but longer than `DELIVERY_VERIFIED_MAX_AGE_MS`
+     * ago. The step is unmet, and the screen says "sem evento recente" rather than
+     * the "nunca verificado" a `null` above would mean.
+     */
+    deliveryVerifiedStale: boolean;
     webhookUrl: string | null;
     /** Every connection-level step this connection satisfies. */
     ready: boolean;
     /**
-     * `GET /app/installations` could not be read. Every step that depends on it
-     * reads as unmet — the check fails closed — and the screen must say "we could
-     * not ask GitHub" rather than "the App is installed nowhere", which is the one
-     * thing an empty `installations` would otherwise mean.
+     * What the installation list turned out to be, as one word the screen switches
+     * on. The three unhappy values are different facts and read differently:
+     *
+     * - `unknown` — `GET /app/installations` failed. Nothing is known, so every
+     *   step that depends on it fails **closed**; the screen says "we could not ask
+     *   GitHub", never "installed nowhere".
+     * - `none` — the read succeeded and the App is installed nowhere: registered
+     *   through the manifest and never installed, or uninstalled by an org owner.
+     * - `suspended` — every installation exists and every one is suspended, so
+     *   every token request fails. The rows are still carried, with the
+     *   `manageUrl` that un-suspends them.
+     * - `active` — at least one live installation.
+     *
+     * In the first three, no permission is reported granted: `granted` may only
+     * ever come from a live installation.
      */
-    installationsUnknown: boolean;
+    installationsState: "unknown" | "none" | "suspended" | "active";
     /** The connection-level steps it does not, in checklist order. */
     missing: GitHubConnectionChecklistItemId[];
     permissions: Array<{
@@ -117,6 +144,12 @@ export interface GitHubIntegrationStatus {
       installationId: string;
       account: string;
       repositorySelection: "all" | "selected";
+      /**
+       * GitHub is refusing every token for this installation until it is resumed.
+       * The row is still here so the screen can offer `manageUrl`; it contributes
+       * neither to `app_installed` nor to any `granted` level.
+       */
+      suspended: boolean;
       authorizedRepositoryCount: number;
       enrolledRepositoryCount: number;
       manageUrl: string;
@@ -163,6 +196,12 @@ export interface GitHubIntegrationInstallationState {
    * holds the old levels. `null` when unknown, which reads as pending.
    */
   grantedPermissions: Readonly<Record<string, string>> | null;
+  /**
+   * `suspended_at` is set on the installation. Every installation token request
+   * fails while it is, so such an installation counts as neither installed nor
+   * granting anything — wire it from `GET /app/installations[].suspended_at`.
+   */
+  suspended: boolean;
 }
 
 export interface GitHubIntegrationRepositoryState {
@@ -231,7 +270,12 @@ export async function buildGitHubIntegrationStatus(
     const lastVerifiedDeliveryAt = await dependencies
       .readLastVerifiedDeliveryAt(connection.connectionId);
     const installationStates = await dependencies.listInstallations(connection.connectionId);
-    const permissions = requiredPermissions(connection.requestedPermissions, installationStates);
+    // A suspended installation refuses every token request, so it grants nothing
+    // and installs nothing. It still appears on the row, with the URL that resumes
+    // it — hiding it would leave the operator with a screen that reports no
+    // installation and no way to find the one that exists.
+    const live = installationStates?.filter((installation) => !installation.suspended) ?? null;
+    const permissions = requiredPermissions(connection.requestedPermissions, live);
     const installations: GitHubIntegrationStatus["connections"][number]["installations"] = [];
 
     for (const installation of installationStates ?? []) {
@@ -240,6 +284,7 @@ export async function buildGitHubIntegrationStatus(
         installationId: installation.installationId,
         account: installation.account,
         repositorySelection: installation.repositorySelection,
+        suspended: installation.suspended,
         authorizedRepositoryCount: repositories.length,
         enrolledRepositoryCount: repositories
           .filter((repository) => repository.repositoryKey !== null).length,
@@ -250,13 +295,17 @@ export async function buildGitHubIntegrationStatus(
     // Every step is answered by this connection alone. Two half-configured
     // connections must never add up to one ready integration.
     const checks: Record<GitHubConnectionChecklistItemId, boolean> = {
-      // An unreadable installation list is not an installed App.
-      app_installed: installationStates !== null && installations.length > 0,
+      // Neither an unreadable list nor a suspended-only one is an installed App.
+      app_installed: live !== null && live.length > 0,
       permissions: permissions.every((permission) => permission.ok),
       events: events.every((event) => event.subscribed),
       webhook_secret: secretConfigured,
-      delivery_verified: lastVerifiedDeliveryAt !== null,
-      repository_enrolled: installations.some((item) => item.enrolledRepositoryCount > 0),
+      // A high-water mark that never expires would keep this green through every
+      // failure it exists to catch.
+      delivery_verified: lastVerifiedDeliveryAt !== null
+        && now.getTime() - Date.parse(lastVerifiedDeliveryAt) <= DELIVERY_VERIFIED_MAX_AGE_MS,
+      repository_enrolled: installations.some((item) =>
+        !item.suspended && item.enrolledRepositoryCount > 0),
     };
     connectionChecks.set(connection.connectionId, checks);
     const missing = CONNECTION_CHECKLIST_ORDER.filter((id) => !checks[id]);
@@ -268,9 +317,10 @@ export async function buildGitHubIntegrationStatus(
       recordedAppId: connection.recordedAppId,
       webhookSecretConfigured: secretConfigured,
       lastVerifiedDeliveryAt,
+      deliveryVerifiedStale: lastVerifiedDeliveryAt !== null && !checks.delivery_verified,
       webhookUrl,
       ready: missing.length === 0,
-      installationsUnknown: installationStates === null,
+      installationsState: installationsState(installationStates),
       missing,
       permissions,
       events,
@@ -349,6 +399,19 @@ function furthestConnection(
   return best;
 }
 
+/**
+ * One word for the three ways an installation list can be useless and the one way
+ * it can be useful. `unknown` and `none` must never be collapsed: the first is a
+ * read that failed, the second is a fact GitHub reported.
+ */
+function installationsState(
+  installations: readonly GitHubIntegrationInstallationState[] | null,
+): GitHubIntegrationStatus["connections"][number]["installationsState"] {
+  if (installations === null) return "unknown";
+  if (installations.length === 0) return "none";
+  return installations.some((installation) => !installation.suspended) ? "active" : "suspended";
+}
+
 /** A misconfigured origin renders as "no URL", never as a 500 on this screen. */
 function safeWebhookUrl(publicOrigin: string | null): string | null {
   if (publicOrigin === null) return null;
@@ -365,15 +428,17 @@ function safeWebhookUrl(publicOrigin: string | null): string | null {
  * a permission counts as granted only when every installation satisfies it, and
  * the ones that do not are named.
  *
- * `installations === null` means the list could not be read at all, and then
- * nothing is known to be approved: every permission reads as missing rather than
- * inheriting the App-level set, which would report green on a read that failed.
+ * `granted` may therefore only ever come from a live installation. `null` means the
+ * list could not be read; an **empty** list means the App is installed nowhere, or
+ * only on suspended installations. All three report every permission as missing
+ * rather than inheriting the App-level set — the seed used to survive an empty loop
+ * and report what the App *requests* as what an installation had approved (I-1).
  */
 function requiredPermissions(
   requested: Readonly<Record<string, string>> | null,
   installations: readonly GitHubIntegrationInstallationState[] | null,
 ): GitHubIntegrationStatus["connections"][number]["permissions"] {
-  if (installations === null) {
+  if (installations === null || installations.length === 0) {
     return Object.entries(GITHUB_APP_MANIFEST_PERMISSIONS).map(([name, required]) => ({
       name, required, granted: null, ok: false, pendingInstallationIds: [],
     }));
