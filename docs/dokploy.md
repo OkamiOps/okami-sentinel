@@ -98,3 +98,51 @@ Dokploy dá suporte a backup automatizado apenas para volumes nomeados, não bin
 - O container reinicia: verifique `sentinel` e `volume-init` nos logs; não altere para root como correção provisória.
 - O domínio abre mas scans não veem arquivos: confirme o mount de `/repos/projeto` no host Docker e `CSB_REPOSITORY_ROOTS=/repos`; não monte `/` ou a home do servidor.
 - A senha ou o vault falha após restore: verifique se os arquivos externos corretos foram preservados. Restaurar somente o volume sem a chave do vault não restaura acesso às credenciais.
+
+## Reverter a migração das regras de monitor para ações
+
+A fase 1 de GitHub + Guardrails renomeia `github_monitor_rules`,
+`github_monitor_events`, `github_monitor_actions_runs` e
+`github_monitor_poll_leases` com o sufixo `_migrated`, e cria `github_actions`,
+`github_action_events` e `github_webhook_deliveries`. Reverter a imagem para uma
+versão anterior **não** desfaz isso: a versão antiga recria as quatro tabelas
+**vazias** na primeira chamada, o poller não encontra nenhuma regra e a
+automação da operadora para em silêncio, enquanto as linhas reais seguem nas
+tabelas `_migrated`.
+
+Antes de reverter a imagem, execute o passo inverso com o container ainda na
+versão nova e sem scans ativos:
+
+```sh
+docker exec -i <container> node --import tsx -e "
+  import { getDb } from '/app/apps/api/src/db.js';
+  import { rollbackGitHubActionsMigration } from '/app/apps/api/src/github-actions/migrate-monitor-rules.js';
+  console.log(rollbackGitHubActionsMigration(getDb()));
+"
+```
+
+Ele devolve `{ restored, discardedActions, discardedEvents, discardedDeliveries }`.
+As ações criadas depois da migração, seus eventos e o log de entregas são
+descartados — é o significado de voltar a um esquema que não tinha ações. As
+regras de monitor voltam intactas.
+
+Se o container já não subir, o mesmo efeito em SQL, dentro de uma transação:
+
+```sql
+BEGIN IMMEDIATE;
+DROP TABLE IF EXISTS github_monitor_rules;
+DROP TABLE IF EXISTS github_monitor_events;
+DROP TABLE IF EXISTS github_monitor_actions_runs;
+DROP TABLE IF EXISTS github_monitor_poll_leases;
+ALTER TABLE github_monitor_rules_migrated        RENAME TO github_monitor_rules;
+ALTER TABLE github_monitor_events_migrated       RENAME TO github_monitor_events;
+ALTER TABLE github_monitor_actions_runs_migrated RENAME TO github_monitor_actions_runs;
+ALTER TABLE github_monitor_poll_leases_migrated  RENAME TO github_monitor_poll_leases;
+DROP TABLE IF EXISTS github_action_events;
+DROP TABLE IF EXISTS github_actions;
+DROP TABLE IF EXISTS github_webhook_deliveries;
+DROP TABLE IF EXISTS github_actions_schema_migrations;
+COMMIT;
+```
+
+Faça backup do volume `sentinel_data` antes, em qualquer um dos dois caminhos.

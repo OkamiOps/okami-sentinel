@@ -3,7 +3,12 @@ import test from "node:test";
 
 import Database from "better-sqlite3";
 
-import type { GitHubAction, GitHubActionEventCreate, WebhookDeliveryRecord } from "@csb/shared";
+import type {
+  GitHubAction,
+  GitHubActionEventCreate,
+  GitHubActionTargetIdentity,
+  WebhookDeliveryRecord,
+} from "@csb/shared";
 
 import {
   countWebhookDeliveriesSince,
@@ -18,8 +23,32 @@ import {
   patchGitHubAction,
   patchGitHubActionEvent,
   recordWebhookDelivery,
+  rerunTargetIdentity,
   supersedeQueuedEvents,
 } from "./store.js";
+
+test("only the minting helpers produce a target identity", () => {
+  // @ts-expect-error a hand-built key would buy the same commit twice.
+  const handBuilt: GitHubActionTargetIdentity = "pr:7@deadbeef";
+  assert.equal(typeof handBuilt, "string");
+
+  const minted = gitHubActionEventTargetIdentity({
+    kind: "pull_request", headSha: "c".repeat(40), headRef: "feature/login", pullRequestNumber: 7,
+  });
+  assert.equal(minted, `pr:7@${"c".repeat(40)}`);
+  // `check_run.rerequested` is the one event exempt from the repeated-commit rule.
+  assert.equal(rerunTargetIdentity(minted, "9001"), `pr:7@${"c".repeat(40)}#rerun:9001`);
+  assert.throws(
+    () => gitHubActionEventTargetIdentity({
+      kind: "pull_request", headSha: "c".repeat(40), headRef: "feature/login", pullRequestNumber: null,
+    }),
+    /github_action_event_pull_request_number_required/,
+  );
+  assert.equal(
+    gitHubActionEventTargetIdentity({ kind: "push", headSha: "d".repeat(40), headRef: "refs/heads/main" }),
+    `push:main@${"d".repeat(40)}`,
+  );
+});
 
 function memoryDb(): Database.Database {
   const db = new Database(":memory:");
@@ -205,21 +234,130 @@ test("records a delivery once and reports the redelivery as duplicate", () => {
   );
 });
 
+function deliveryCount(db: Database.Database): number {
+  return (db.prepare("SELECT COUNT(*) AS total FROM github_webhook_deliveries")
+    .get() as { total: number }).total;
+}
+
 test("prunes deliveries beyond the retention ceiling", () => {
   const db = memoryDb();
   const base = Date.parse("2026-09-01T00:00:00.000Z");
-  // A multiple of the prune interval, so the ceiling is exact rather than the
-  // ceiling plus whatever arrived since the last prune.
-  const total = 2100;
+  // A fresh handle prunes on its first delivery and every hundredth after, so
+  // 2001 lands the last prune on the last insert and the ceiling is exact.
+  const total = 2001;
   for (let index = 0; index < total; index += 1) {
     recordWebhookDelivery(delivery(index, new Date(base + index * 1000).toISOString()), db);
   }
-  const count = db.prepare("SELECT COUNT(*) AS total FROM github_webhook_deliveries").get() as { total: number };
-  assert.equal(count.total, 2000);
-  const newest = listWebhookDeliveries(1, db);
-  assert.equal(newest[0]!.deliveryId, `delivery-${total - 1}`);
+  assert.equal(deliveryCount(db), 2000);
+  assert.equal(listWebhookDeliveries(1, db)[0]!.deliveryId, `delivery-${total - 1}`);
   const oldest = db
     .prepare("SELECT delivery_id FROM github_webhook_deliveries ORDER BY received_at ASC LIMIT 1")
     .get() as { delivery_id: string };
   assert.equal(oldest.delivery_id, `delivery-${total - 2000}`);
+});
+
+test("prunes once on the first delivery a process records", () => {
+  const db = memoryDb();
+  const base = Date.parse("2026-09-01T00:00:00.000Z");
+  const insert = db.prepare(`
+    INSERT INTO github_webhook_deliveries (delivery_id, connection_id, event, outcome, received_at)
+    VALUES (?, 'c1', 'push', 'processed', ?)
+  `);
+  // A process that restarts more often than every hundred deliveries would
+  // otherwise never prune, and the table would grow without bound.
+  for (let index = 0; index < 2100; index += 1) {
+    insert.run(`legacy-${index}`, new Date(base + index * 1000).toISOString());
+  }
+  assert.equal(recordWebhookDelivery(delivery(9999, "2026-09-30T10:00:00.000Z"), db), "recorded");
+  assert.equal(deliveryCount(db), 2000);
+});
+
+test("normalises a fully qualified head ref on insert and on supersede", () => {
+  const db = memoryDb();
+  const action = createGitHubAction({
+    repositoryKey: "github:1", name: "Push", triggerKind: "push", branchPatterns: ["main"],
+    connectionId: "c1", installationId: "i1", repositoryId: "1", executor: "sentinel-managed",
+    scanner: null, costCeilingUsd: 2, dailyCostCeilingUsd: 10, enabled: true, createdBy: "u1",
+  }, db);
+  const pushEvent = (headSha: string, headRef: string): GitHubActionEventCreate => ({
+    actionId: action.id,
+    repositoryKey: action.repositoryKey,
+    actionRevision: action.revision,
+    origin: "webhook",
+    deliveryId: null,
+    kind: "push",
+    status: "queued",
+    headSha,
+    baseRef: null,
+    headRef,
+    pullRequestNumber: null,
+    targetIdentity: gitHubActionEventTargetIdentity({ kind: "push", headSha, headRef }),
+    title: null,
+    gateId: null,
+    costCeilingUsd: 2,
+    reason: null,
+    error: null,
+    detectedAt: "2026-09-30T10:00:00.000Z",
+  });
+
+  const stored = createGitHubActionEvent(pushEvent(SHA_OLD, "refs/heads/main"), db)!;
+  assert.equal(stored.headRef, "main");
+
+  assert.ok(createGitHubActionEvent(pushEvent(SHA_NEW, "refs/heads/main"), db));
+  // Whatever form the caller holds, the queue it means is the same queue.
+  assert.equal(supersedeQueuedEvents({
+    actionId: action.id, headRef: "refs/heads/main", exceptHeadSha: SHA_NEW, reason: "head_superseded",
+  }, db), 1);
+  assert.equal(getGitHubActionEvent(stored.id, db)!.status, "superseded");
+  assert.equal(supersedeQueuedEvents({
+    actionId: action.id, headRef: "main", exceptHeadSha: SHA_OLD, reason: "head_superseded",
+  }, db), 1);
+});
+
+test("refuses a second action with the same name and trigger kind", () => {
+  const db = memoryDb();
+  const base = {
+    repositoryKey: "github:1", connectionId: "c1", installationId: "i1", repositoryId: "1",
+    executor: "sentinel-managed" as const, scanner: null, costCeilingUsd: 2,
+    dailyCostCeilingUsd: 10, enabled: false, createdBy: "u1",
+  };
+  createGitHubAction({ ...base, name: "PR", triggerKind: "pull_request", branchPatterns: ["main"] }, db);
+  const other = createGitHubAction(
+    { ...base, name: "Release", triggerKind: "pull_request", branchPatterns: ["main"] }, db,
+  );
+  assert.throws(
+    () => createGitHubAction({ ...base, name: "PR", triggerKind: "pull_request", branchPatterns: ["main"] }, db),
+    /github_action_name_taken/,
+  );
+  assert.throws(
+    () => patchGitHubAction(other.id, { name: "PR" }, db),
+    /github_action_name_taken/,
+  );
+});
+
+test("the database refuses an action outside one to twenty branch patterns", () => {
+  const db = memoryDb();
+  const insert = (patterns: string[]) => db.prepare(`
+    INSERT INTO github_actions (
+      id, repository_key, name, trigger_kind, branch_patterns_json, executor,
+      connection_id, installation_id, repository_id, cost_ceiling_usd,
+      created_at, updated_at
+    ) VALUES (?, 'github:1', ?, 'push', ?, 'sentinel-managed', 'c1', 'i1', '1', 2,
+      '2026-09-30T10:00:00.000Z', '2026-09-30T10:00:00.000Z')
+  `).run(`action-${patterns.length}`, `name-${patterns.length}`, JSON.stringify(patterns));
+  assert.throws(() => insert([]), /CHECK constraint failed/);
+  assert.throws(
+    () => insert(Array.from({ length: 21 }, (_, index) => `branch-${index}`)),
+    /CHECK constraint failed/,
+  );
+  insert(Array.from({ length: 20 }, (_, index) => `branch-${index}`));
+});
+
+test("refuses to enable an action whose branch patterns are emptied in the same patch", () => {
+  const db = memoryDb();
+  const action = pullRequestAction(db);
+  assert.throws(
+    () => patchGitHubAction(action.id, { branchPatterns: [], enabled: true }, db),
+    /github_action_branch_patterns_invalid/,
+  );
 });

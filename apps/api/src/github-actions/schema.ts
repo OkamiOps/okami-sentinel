@@ -1,8 +1,14 @@
+import type { GitHubActionTargetIdentity, GitHubActionTriggerKind } from "@csb/shared";
+
+/** 1..20 patterns, the bound the DDL enforces and `assertBranchPatterns` repeats. */
+export const MAX_BRANCH_PATTERNS = 20;
+
 /**
- * The DDL of the actions model, in one place because two modules need it and
- * neither may import the other: `store.ts` exposes `ensureGitHubActionsSchema`,
- * which runs the monitor-rule migration, and the migration must be able to
- * create the tables it writes into when it is invoked on its own.
+ * The shape of the actions model and the key it is deduplicated by, in one place
+ * because two modules need both and neither may import the other: `store.ts`
+ * exposes `ensureGitHubActionsSchema`, which runs the monitor-rule migration, and
+ * the migration must be able to create and key the rows it writes when it is
+ * invoked on its own.
  */
 export const GITHUB_ACTIONS_SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS github_actions (
@@ -25,6 +31,7 @@ export const GITHUB_ACTIONS_SCHEMA_SQL = `
     last_event_at TEXT,
     last_reconciled_at TEXT,
     last_error TEXT,
+    migration_note TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE (repository_key, trigger_kind, name),
@@ -34,7 +41,11 @@ export const GITHUB_ACTIONS_SCHEMA_SQL = `
     CHECK (revision >= 1),
     CHECK (cost_ceiling_usd > 0),
     CHECK (daily_cost_ceiling_usd IS NULL OR daily_cost_ceiling_usd > 0),
-    CHECK (length(name) BETWEEN 1 AND 80)
+    CHECK (length(name) BETWEEN 1 AND 80),
+    CHECK (migration_note IS NULL OR length(migration_note) <= 500),
+    -- The bound lives in the database, not in one code path: an action that
+    -- cannot pass its own validation could never be edited or disabled again.
+    CHECK (json_array_length(branch_patterns_json) BETWEEN 1 AND ${MAX_BRANCH_PATTERNS})
   );
   CREATE INDEX IF NOT EXISTS github_actions_by_repository
     ON github_actions(repository_key, trigger_kind, name);
@@ -108,3 +119,40 @@ export const WEBHOOK_DELIVERY_RETENTION = 2000;
  * inserts keeps the overshoot bounded and the hot path a single INSERT.
  */
 export const WEBHOOK_DELIVERY_PRUNE_EVERY = 100;
+
+/**
+ * The canonical deduplication key of an event, and the only way to obtain the
+ * branded type the store accepts. `check_run.rerequested` is the one caller that
+ * appends a suffix, through `rerunTargetIdentity`: a person asked for the same
+ * commit again, so it must not collide with the automatic event that already ran.
+ */
+export function gitHubActionEventTargetIdentity(input: {
+  kind: GitHubActionTriggerKind;
+  headSha: string;
+  headRef: string;
+  pullRequestNumber?: number | null;
+}): GitHubActionTargetIdentity {
+  if (input.kind === "pull_request") {
+    if (input.pullRequestNumber === null || input.pullRequestNumber === undefined) {
+      throw new Error("github_action_event_pull_request_number_required");
+    }
+    return `pr:${input.pullRequestNumber}@${input.headSha}` as GitHubActionTargetIdentity;
+  }
+  return `push:${shortBranchName(input.headRef)}@${input.headSha}` as GitHubActionTargetIdentity;
+}
+
+export function rerunTargetIdentity(
+  base: GitHubActionTargetIdentity,
+  checkRunId: string,
+): GitHubActionTargetIdentity {
+  return `${base}#rerun:${checkRunId}` as GitHubActionTargetIdentity;
+}
+
+/**
+ * A push payload carries `refs/heads/main` while the branch listing carries
+ * `main`. One meaning per column, or a scoped supersede silently matches nothing
+ * and the same branch is paid for twice.
+ */
+export function shortBranchName(ref: string): string {
+  return ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : ref;
+}

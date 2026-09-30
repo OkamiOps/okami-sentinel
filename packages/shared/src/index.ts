@@ -1504,9 +1504,26 @@ export interface GitHubAction {
   lastEventAt: string | null;
   lastReconciledAt: string | null;
   lastError: string | null;
+  /**
+   * What the migration from monitor rules had to change about this action, in
+   * words the screen can show. Never written by an operator; cleared as soon as
+   * one takes the branch patterns over.
+   */
+  migrationNote: string | null;
   createdAt: string;
   updatedAt: string;
 }
+
+/**
+ * The deduplication key of an event, branded so a hand-built literal cannot
+ * reach the store: minting it wrong buys the same commit twice. Produced only by
+ * `gitHubActionEventTargetIdentity`, or by `rerunTargetIdentity` for the one
+ * exception, `check_run.rerequested`.
+ */
+declare const gitHubActionTargetIdentityBrand: unique symbol;
+export type GitHubActionTargetIdentity = string & {
+  readonly [gitHubActionTargetIdentityBrand]: never;
+};
 
 export interface GitHubActionEvent {
   id: string;
@@ -1523,7 +1540,7 @@ export interface GitHubActionEvent {
   headRef: string;
   pullRequestNumber: number | null;
   /** `pr:<number>@<headSha>` or `push:<shortRef>@<headSha>`, the deduplication key. */
-  targetIdentity: string;
+  targetIdentity: GitHubActionTargetIdentity;
   title: string | null;
   gateId: string | null;
   costCeilingUsd: number | null;
@@ -1561,6 +1578,7 @@ export type GitHubActionCreate = Omit<GitHubAction,
   | "lastEventAt"
   | "lastReconciledAt"
   | "lastError"
+  | "migrationNote"
   | "createdAt"
   | "updatedAt">;
 
