@@ -151,6 +151,48 @@ export type EmailMessageKind = keyof EmailMessageDataMap;
  */
 export type EmailMessageGroup = "account" | "repository" | "ops";
 
+/**
+ * The colour a message is read in. One of five, never free-form, because the
+ * shell turns it into a rule, a pill and a set of dark-mode overrides, and a
+ * sixth tone would mean a sixth branch in each of them.
+ */
+export type EmailTone = "danger" | "success" | "warning" | "info" | "neutral";
+
+/**
+ * The word in the status pill. The key is what the code names; the tone and the
+ * five translations live in `STATUS_TONES` and `SHELL[locale].statuses`, so a
+ * message's colour and its label can never be decided in two different places.
+ */
+export type EmailStatusKey =
+  | "test" | "invite" | "reset" | "new_login" | "locked" | "password_changed"
+  | "blocked" | "error" | "passed" | "warned" | "scan_failed" | "completed"
+  | "unavailable" | "attention" | "ceiling" | "ceiling_reached" | "publish_failed"
+  | "resolved";
+
+const STATUS_TONES: Readonly<Record<EmailStatusKey, EmailTone>> = Object.freeze({
+  test: "info", invite: "info", reset: "info",
+  new_login: "warning", locked: "warning", password_changed: "neutral",
+  blocked: "danger", error: "danger", passed: "success", warned: "warning",
+  scan_failed: "danger", completed: "success",
+  unavailable: "danger", attention: "warning", ceiling: "warning",
+  ceiling_reached: "danger", publish_failed: "danger", resolved: "success",
+});
+
+export function emailStatusTone(status: EmailStatusKey): EmailTone {
+  return STATUS_TONES[status];
+}
+
+/**
+ * The four severity counts a repository message shows as chips. It carries the
+ * labels it was built with so the shell can render them as chips *and* drop the
+ * four plain rows that would otherwise repeat them in the key/value panel; the
+ * plain-text twin keeps those rows, because it has no chips.
+ */
+export interface EmailSeverityBlock {
+  counts: { critical: number; high: number; medium: number; low: number };
+  labels: { critical: string; high: string; medium: string; low: string };
+}
+
 /** What a template produces; the shell turns this into HTML and text. */
 export interface EmailTemplateBody {
   subject: string;
@@ -158,14 +200,22 @@ export interface EmailTemplateBody {
   paragraphs: string[];
   /** Label/value pairs: the time, the address, the counts. Never evidence. */
   facts: Array<{ label: string; value: string }>;
+  /** Counts worth a chip row, or `null` when the message has no scan behind it. */
+  severity: EmailSeverityBlock | null;
   /** A path, never a URL: the shell owns the origin and the local-mode rule. */
   action: { label: string; path: string } | null;
   /** Why this message reached this person, in their language. */
   reason: string;
+  /**
+   * Overrides the kind's default status when the data, not the kind, decides:
+   * a gate that passed with warnings, a ceiling crossed rather than approached.
+   */
+  status?: EmailStatusKey;
 }
 
 interface TemplateDefinition<K extends EmailMessageKind> {
   group: EmailMessageGroup;
+  status: EmailStatusKey;
   build(data: EmailMessageDataMap[K], locale: UserLocale): EmailTemplateBody;
 }
 
@@ -176,11 +226,13 @@ interface TemplateDefinition<K extends EmailMessageKind> {
  */
 function defineTemplate<K extends EmailMessageKind, C>(definition: {
   group: EmailMessageGroup;
+  status: EmailStatusKey;
   copy: Readonly<Record<UserLocale, C>>;
   build(data: EmailMessageDataMap[K], copy: C): EmailTemplateBody;
 }): TemplateDefinition<K> {
   return {
     group: definition.group,
+    status: definition.status,
     build: (data, locale) => definition.build(data, definition.copy[locale]),
   };
 }
@@ -219,6 +271,12 @@ interface ShellCopy {
   notificationsLink: string;
   /** Said instead of a link when the installation has no public address. */
   noLinks: string;
+  /** The eyebrow in the dark header band: which family the message belongs to. */
+  groups: Readonly<Record<EmailMessageGroup, string>>;
+  /** The word in the status pill, already upper-cased: the pill never wraps copy. */
+  statuses: Readonly<Record<EmailStatusKey, string>>;
+  /** The last line of the footer. */
+  signature: string;
 }
 
 const SHELL: Readonly<Record<UserLocale, ShellCopy>> = Object.freeze({
@@ -228,6 +286,16 @@ const SHELL: Readonly<Record<UserLocale, ShellCopy>> = Object.freeze({
     accountLink: "Minha conta",
     notificationsLink: "Minha conta → Notificações",
     noLinks: "Esta instalação não tem endereço público configurado, por isso esta mensagem não traz links.",
+    groups: { account: "Conta", repository: "Repositório", ops: "Operação" },
+    statuses: {
+      test: "TESTE", invite: "CONVITE", reset: "REDEFINIÇÃO",
+      new_login: "NOVO ACESSO", locked: "CONTA BLOQUEADA", password_changed: "SENHA ALTERADA",
+      blocked: "BLOQUEADO", error: "ERRO", passed: "APROVADO", warned: "COM AVISO",
+      scan_failed: "FALHOU", completed: "CONCLUÍDO",
+      unavailable: "INDISPONÍVEL", attention: "ATENÇÃO", ceiling: "80% DO TETO",
+      ceiling_reached: "TETO ATINGIDO", publish_failed: "NÃO PUBLICADO", resolved: "RESOLVIDO",
+    },
+    signature: "Okami Sentinel · OkamiLab",
   },
   en: {
     brand: "Okami Sentinel",
@@ -235,6 +303,16 @@ const SHELL: Readonly<Record<UserLocale, ShellCopy>> = Object.freeze({
     accountLink: "My account",
     notificationsLink: "My account → Notifications",
     noLinks: "This installation has no public address configured, so this message carries no links.",
+    groups: { account: "Account", repository: "Repository", ops: "Operations" },
+    statuses: {
+      test: "TEST", invite: "INVITATION", reset: "PASSWORD RESET",
+      new_login: "NEW SIGN-IN", locked: "ACCOUNT LOCKED", password_changed: "PASSWORD CHANGED",
+      blocked: "BLOCKED", error: "ERROR", passed: "PASSED", warned: "WARNINGS",
+      scan_failed: "FAILED", completed: "COMPLETED",
+      unavailable: "UNAVAILABLE", attention: "NEEDS ATTENTION", ceiling: "80% OF CEILING",
+      ceiling_reached: "CEILING REACHED", publish_failed: "NOT PUBLISHED", resolved: "RESOLVED",
+    },
+    signature: "Okami Sentinel · OkamiLab",
   },
   es: {
     brand: "Okami Sentinel",
@@ -242,6 +320,16 @@ const SHELL: Readonly<Record<UserLocale, ShellCopy>> = Object.freeze({
     accountLink: "Mi cuenta",
     notificationsLink: "Mi cuenta → Notificaciones",
     noLinks: "Esta instalación no tiene una dirección pública configurada, por eso este mensaje no incluye enlaces.",
+    groups: { account: "Cuenta", repository: "Repositorio", ops: "Operación" },
+    statuses: {
+      test: "PRUEBA", invite: "INVITACIÓN", reset: "RESTABLECER",
+      new_login: "NUEVO ACCESO", locked: "CUENTA BLOQUEADA", password_changed: "CONTRASEÑA CAMBIADA",
+      blocked: "BLOQUEADO", error: "ERROR", passed: "APROBADO", warned: "CON AVISOS",
+      scan_failed: "FALLÓ", completed: "COMPLETADO",
+      unavailable: "NO DISPONIBLE", attention: "ATENCIÓN", ceiling: "80% DEL TECHO",
+      ceiling_reached: "TECHO ALCANZADO", publish_failed: "NO PUBLICADO", resolved: "RESUELTO",
+    },
+    signature: "Okami Sentinel · OkamiLab",
   },
   de: {
     brand: "Okami Sentinel",
@@ -249,6 +337,16 @@ const SHELL: Readonly<Record<UserLocale, ShellCopy>> = Object.freeze({
     accountLink: "Mein Konto",
     notificationsLink: "Mein Konto → Benachrichtigungen",
     noLinks: "Für diese Installation ist keine öffentliche Adresse konfiguriert, daher enthält diese Nachricht keine Links.",
+    groups: { account: "Konto", repository: "Repository", ops: "Betrieb" },
+    statuses: {
+      test: "TEST", invite: "EINLADUNG", reset: "PASSWORT ZURÜCKSETZEN",
+      new_login: "NEUE ANMELDUNG", locked: "KONTO GESPERRT", password_changed: "PASSWORT GEÄNDERT",
+      blocked: "BLOCKIERT", error: "FEHLER", passed: "BESTANDEN", warned: "MIT WARNUNGEN",
+      scan_failed: "FEHLGESCHLAGEN", completed: "ABGESCHLOSSEN",
+      unavailable: "NICHT VERFÜGBAR", attention: "ACHTUNG", ceiling: "80 % DER GRENZE",
+      ceiling_reached: "GRENZE ERREICHT", publish_failed: "NICHT VERÖFFENTLICHT", resolved: "BEHOBEN",
+    },
+    signature: "Okami Sentinel · OkamiLab",
   },
   fr: {
     brand: "Okami Sentinel",
@@ -256,6 +354,16 @@ const SHELL: Readonly<Record<UserLocale, ShellCopy>> = Object.freeze({
     accountLink: "Mon compte",
     notificationsLink: "Mon compte → Notifications",
     noLinks: "Cette installation n'a pas d'adresse publique configurée, ce message ne contient donc aucun lien.",
+    groups: { account: "Compte", repository: "Dépôt", ops: "Exploitation" },
+    statuses: {
+      test: "TEST", invite: "INVITATION", reset: "RÉINITIALISATION",
+      new_login: "NOUVELLE CONNEXION", locked: "COMPTE BLOQUÉ", password_changed: "MOT DE PASSE MODIFIÉ",
+      blocked: "BLOQUÉ", error: "ERREUR", passed: "VALIDÉ", warned: "AVEC AVERTISSEMENTS",
+      scan_failed: "ÉCHEC", completed: "TERMINÉ",
+      unavailable: "INDISPONIBLE", attention: "ATTENTION", ceiling: "80 % DU PLAFOND",
+      ceiling_reached: "PLAFOND ATTEINT", publish_failed: "NON PUBLIÉ", resolved: "RÉSOLU",
+    },
+    signature: "Okami Sentinel · OkamiLab",
   },
 });
 
@@ -272,6 +380,7 @@ const accountTest = defineTemplate<"account.test", {
   action: string; reason: string;
 }>({
   group: "account",
+  status: "test",
   copy: {
     "pt-BR": {
       subject: "Okami Sentinel: e-mail de teste",
@@ -322,6 +431,7 @@ const accountTest = defineTemplate<"account.test", {
       { label: copy.sentTo, value: data.to },
       { label: copy.at, value: formatMoment(data.at) },
     ],
+    severity: null,
     action: { label: copy.action, path: "/settings/email" },
     reason: copy.reason,
   }),
@@ -336,6 +446,7 @@ const accountInvite = defineTemplate<"account.invite", {
   next: string; expires: string; action: string; reason: string;
 }>({
   group: "account",
+  status: "invite",
   copy: {
     "pt-BR": {
       subject: "Okami Sentinel: seu convite de acesso",
@@ -388,6 +499,7 @@ const accountInvite = defineTemplate<"account.invite", {
     heading: copy.heading,
     paragraphs: [data.inviterName ? copy.byName(data.inviterName) : copy.byAdmin, copy.next],
     facts: [{ label: copy.expires, value: formatMoment(data.expiresAt) }],
+    severity: null,
     action: { label: copy.action, path: `/invite/${data.inviteToken}` },
     reason: copy.reason,
   }),
@@ -402,6 +514,7 @@ const accountReset = defineTemplate<"account.reset", {
   expires: string; action: string; reason: string;
 }>({
   group: "account",
+  status: "reset",
   copy: {
     "pt-BR": {
       subject: "Okami Sentinel: redefinição de senha",
@@ -449,6 +562,7 @@ const accountReset = defineTemplate<"account.reset", {
     heading: copy.heading,
     paragraphs: [copy.body, copy.sessions],
     facts: [{ label: copy.expires, value: formatMoment(data.expiresAt) }],
+    severity: null,
     action: { label: copy.action, path: `/invite/${data.resetToken}` },
     reason: copy.reason,
   }),
@@ -464,6 +578,7 @@ const accountNewLogin = defineTemplate<"account.new_login", {
   action: string; reason: string;
 }>({
   group: "account",
+  status: "new_login",
   copy: {
     "pt-BR": {
       subject: "Okami Sentinel: novo acesso à sua conta",
@@ -520,6 +635,7 @@ const accountNewLogin = defineTemplate<"account.new_login", {
       { label: copy.ip, value: data.ip ?? copy.unknown },
       { label: copy.browser, value: data.browser ?? copy.unknown },
     ],
+    severity: null,
     action: { label: copy.action, path: ACCOUNT_PATH },
     reason: copy.reason,
   }),
@@ -535,6 +651,7 @@ const accountLocked = defineTemplate<"account.locked", {
   action: string; reason: string;
 }>({
   group: "account",
+  status: "locked",
   copy: {
     "pt-BR": {
       subject: "Okami Sentinel: sua conta foi bloqueada temporariamente",
@@ -595,6 +712,7 @@ const accountLocked = defineTemplate<"account.locked", {
       { label: copy.at, value: formatMoment(data.at) },
       { label: copy.retry, value: copy.wait(minutesUntil(data.retryAfterSeconds)) },
     ],
+    severity: null,
     action: { label: copy.action, path: ACCOUNT_PATH },
     reason: copy.reason,
   }),
@@ -609,6 +727,7 @@ const accountPasswordChanged = defineTemplate<"account.password_changed", {
   at: string; action: string; reason: string;
 }>({
   group: "account",
+  status: "password_changed",
   copy: {
     "pt-BR": {
       subject: "Okami Sentinel: sua senha foi alterada",
@@ -656,6 +775,7 @@ const accountPasswordChanged = defineTemplate<"account.password_changed", {
     heading: copy.heading,
     paragraphs: [copy.body, copy.advice],
     facts: [{ label: copy.at, value: formatMoment(data.at) }],
+    severity: null,
     action: { label: copy.action, path: ACCOUNT_PATH },
     reason: copy.reason,
   }),
@@ -956,6 +1076,25 @@ function severityFacts(
   ];
 }
 
+/**
+ * The same four counts as chips. The block repeats the labels `severityFacts`
+ * used, which is how the shell knows which four rows of the key/value panel the
+ * chips already say — and therefore which four to leave out of it.
+ */
+function severityChips(severity: SeverityCounts | null, copy: RepositoryCopy): EmailSeverityBlock | null {
+  if (severity === null) return null;
+  return {
+    counts: {
+      critical: severity.critical, high: severity.high,
+      medium: severity.medium, low: severity.low,
+    },
+    labels: {
+      critical: copy.critical, high: copy.high,
+      medium: copy.medium, low: copy.low,
+    },
+  };
+}
+
 function costAndDurationFacts(
   data: { costUsd: number | null; durationMs: number | null },
   copy: RepositoryCopy,
@@ -987,6 +1126,7 @@ function gateBody(data: GateEmailData, copy: RepositoryCopy, kind: RepositoryKin
     heading: kind.heading,
     paragraphs: [kind.body],
     facts: gateFacts(data, copy),
+    severity: severityChips(data.severity, copy),
     action: { label: copy.openGate, path: `/guardrails/${data.gateId}` },
     reason: copy.reason,
   };
@@ -1006,6 +1146,7 @@ function scanBody(data: ScanEmailData, copy: RepositoryCopy, kind: RepositoryKin
       ...severityFacts(data.severity, copy),
       ...costAndDurationFacts(data, copy),
     ],
+    severity: severityChips(data.severity, copy),
     action: { label: copy.openScan, path: `/scans/${data.scanId}` },
     reason: copy.reason,
   };
@@ -1013,12 +1154,14 @@ function scanBody(data: ScanEmailData, copy: RepositoryCopy, kind: RepositoryKin
 
 const gateBlocked = defineTemplate<"gate.blocked", RepositoryCopy>({
   group: "repository",
+  status: "blocked",
   copy: REPOSITORY_COPY,
   build: (data, copy) => gateBody(data, copy, copy.gateBlocked),
 });
 
 const gateError = defineTemplate<"gate.error", RepositoryCopy>({
   group: "repository",
+  status: "error",
   copy: REPOSITORY_COPY,
   build: (data, copy) => gateBody(data, copy, copy.gateError),
 });
@@ -1030,19 +1173,23 @@ const gateError = defineTemplate<"gate.error", RepositoryCopy>({
  */
 const gatePassed = defineTemplate<"gate.passed", RepositoryCopy>({
   group: "repository",
+  status: "passed",
   copy: REPOSITORY_COPY,
-  build: (data, copy) =>
-    gateBody(data, copy, data.outcome === "warning" ? copy.gateWarning : copy.gatePassed),
+  build: (data, copy) => data.outcome === "warning"
+    ? { ...gateBody(data, copy, copy.gateWarning), status: "warned" }
+    : gateBody(data, copy, copy.gatePassed),
 });
 
 const scanFailed = defineTemplate<"scan.failed", RepositoryCopy>({
   group: "repository",
+  status: "scan_failed",
   copy: REPOSITORY_COPY,
   build: (data, copy) => scanBody(data, copy, copy.scanFailed),
 });
 
 const scanCompleted = defineTemplate<"scan.completed", RepositoryCopy>({
   group: "repository",
+  status: "completed",
   copy: REPOSITORY_COPY,
   build: (data, copy) => scanBody(data, copy, copy.scanCompleted),
 });
@@ -1405,6 +1552,7 @@ function outageFacts(data: OpsResolvedData, copy: OpsCopy): Array<{ label: strin
 
 const opsEngineUnavailable = defineTemplate<"ops.engine_unavailable", OpsCopy>({
   group: "ops",
+  status: "unavailable",
   copy: OPS_COPY,
   build: (data, copy) => ({
     subject: copy.engineUnavailable.subject,
@@ -1415,6 +1563,7 @@ const opsEngineUnavailable = defineTemplate<"ops.engine_unavailable", OpsCopy>({
       { label: copy.at, value: formatMoment(data.at) },
       ...(data.engines.length === 0 ? [] : [{ label: copy.engines, value: data.engines.join(", ") }]),
     ],
+    severity: null,
     action: { label: copy.engineUnavailable.action, path: ENGINE_SETTINGS_PATH },
     reason: copy.reason,
   }),
@@ -1422,12 +1571,14 @@ const opsEngineUnavailable = defineTemplate<"ops.engine_unavailable", OpsCopy>({
 
 const opsEngineRecovered = defineTemplate<"ops.engine_unavailable.resolved", OpsCopy>({
   group: "ops",
+  status: "resolved",
   copy: OPS_COPY,
   build: (data, copy) => ({
     subject: copy.engineRecovered.subject,
     heading: copy.engineRecovered.heading,
     paragraphs: [copy.engineRecovered.body],
     facts: outageFacts(data, copy),
+    severity: null,
     action: { label: copy.engineRecovered.action, path: ENGINE_SETTINGS_PATH },
     reason: copy.reason,
   }),
@@ -1435,6 +1586,7 @@ const opsEngineRecovered = defineTemplate<"ops.engine_unavailable.resolved", Ops
 
 const opsConnectionAttention = defineTemplate<"ops.connection_attention", OpsCopy>({
   group: "ops",
+  status: "attention",
   copy: OPS_COPY,
   build: (data, copy) => ({
     subject: copy.connectionAttention.subject,
@@ -1446,6 +1598,7 @@ const opsConnectionAttention = defineTemplate<"ops.connection_attention", OpsCop
       { label: copy.since, value: formatMoment(data.since) },
       { label: copy.at, value: formatMoment(data.at) },
     ],
+    severity: null,
     action: { label: copy.connectionAttention.action, path: CONNECTIONS_PATH },
     reason: copy.reason,
   }),
@@ -1453,6 +1606,7 @@ const opsConnectionAttention = defineTemplate<"ops.connection_attention", OpsCop
 
 const opsConnectionRecovered = defineTemplate<"ops.connection_attention.resolved", OpsCopy>({
   group: "ops",
+  status: "resolved",
   copy: OPS_COPY,
   build: (data, copy) => ({
     subject: copy.connectionRecovered.subject,
@@ -1462,6 +1616,7 @@ const opsConnectionRecovered = defineTemplate<"ops.connection_attention.resolved
       { label: copy.connection, value: data.connectionName },
       ...outageFacts(data, copy),
     ],
+    severity: null,
     action: { label: copy.connectionRecovered.action, path: CONNECTIONS_PATH },
     reason: copy.reason,
   }),
@@ -1469,6 +1624,7 @@ const opsConnectionRecovered = defineTemplate<"ops.connection_attention.resolved
 
 const opsDailyCost = defineTemplate<"ops.daily_cost", OpsCopy>({
   group: "ops",
+  status: "ceiling",
   copy: OPS_COPY,
   build: (data, copy) => {
     const kind = data.percent >= 100 ? copy.dailyCostReached : copy.dailyCostWarning;
@@ -1483,14 +1639,17 @@ const opsDailyCost = defineTemplate<"ops.daily_cost", OpsCopy>({
         { label: copy.ceiling, value: formatUsd(data.ceilingUsd) },
         { label: copy.share, value: `${data.percent}%` },
       ],
+      severity: null,
       action: { label: kind.action, path: MONITOR_PATH },
       reason: copy.reason,
+      status: data.percent >= 100 ? "ceiling_reached" : "ceiling",
     };
   },
 });
 
 const opsPublishFailed = defineTemplate<"ops.github_publish_failed", OpsCopy>({
   group: "ops",
+  status: "publish_failed",
   copy: OPS_COPY,
   build: (data, copy) => ({
     subject: copy.publishFailed.subject,
@@ -1503,6 +1662,7 @@ const opsPublishFailed = defineTemplate<"ops.github_publish_failed", OpsCopy>({
       { label: copy.reasonLabel, value: data.reason },
       { label: copy.at, value: formatMoment(data.at) },
     ],
+    severity: null,
     action: { label: copy.publishFailed.action, path: `/guardrails/${data.gateId}` },
     reason: copy.reason,
   }),
@@ -1510,6 +1670,7 @@ const opsPublishFailed = defineTemplate<"ops.github_publish_failed", OpsCopy>({
 
 const opsPublishRecovered = defineTemplate<"ops.github_publish_failed.resolved", OpsCopy>({
   group: "ops",
+  status: "resolved",
   copy: OPS_COPY,
   build: (data, copy) => ({
     subject: copy.publishRecovered.subject,
@@ -1520,6 +1681,7 @@ const opsPublishRecovered = defineTemplate<"ops.github_publish_failed.resolved",
       { label: copy.gate, value: data.gateId },
       ...outageFacts(data, copy),
     ],
+    severity: null,
     action: { label: copy.publishRecovered.action, path: `/guardrails/${data.gateId}` },
     reason: copy.reason,
   }),
@@ -1557,12 +1719,131 @@ export function emailMessageGroup(kind: EmailMessageKind): EmailMessageGroup {
   return TEMPLATES[kind].group;
 }
 
+/** The status a kind shows by default; a body may override it from its data. */
+export function emailMessageStatus(kind: EmailMessageKind): EmailStatusKey {
+  return TEMPLATES[kind].status;
+}
+
+// --------------------------------------------------------------------------
+// The shell's palette. The interface's tokens are `oklch`, which no mail client
+// understands, so every colour below is the same token resolved to sRGB hex,
+// once, here. Nothing downstream computes a colour.
+// --------------------------------------------------------------------------
+
+const INK = "#0b0b12";            // --color-base-content, light
+const INK_SOFT = "#3a3a48";
+const MUTED = "#5a5a6c";
+const FAINT = "#8a8a9c";
+const PAGE = "#eeeef2";           // --color-base-200, light
+const CARD = "#ffffff";
+const LINE = "#e2e2e8";           // --color-base-300, light
+const EDGE = "#d4d4dc";
+const FOOT_BG = "#f8f8fa";        // --color-base-100, light
+const BAND = "#0b0b12";
+const BAND_INK = "#f4f4f8";
+const BAND_FAINT = "#9a9ab0";
+/** oklch(52% 0.17 45) — the accent, darkened until white text clears AA (5.2:1). */
+const ACCENT = "#c2410c";
+
+const SANS = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+const MONO = "ui-monospace,SFMono-Regular,Menlo,Consolas,monospace";
+
+interface TonePalette {
+  /** The slim rule across the top of the card. */
+  rule: string;
+  pillBg: string;
+  pillBorder: string;
+  pillInk: string;
+}
+
+const TONES: Readonly<Record<EmailTone, TonePalette>> = Object.freeze({
+  danger: { rule: "#c21725", pillBg: "#fbeaeb", pillBorder: "#eebcc0", pillInk: "#9b0f1b" },
+  success: { rule: "#0a7e3a", pillBg: "#e7f4ec", pillBorder: "#b2ddc4", pillInk: "#06612c" },
+  warning: { rule: "#b27b00", pillBg: "#fdf3df", pillBorder: "#ead29a", pillInk: "#7a5400" },
+  info: { rule: "#00707a", pillBg: "#e3f2f3", pillBorder: "#a6d4d8", pillInk: "#005a63" },
+  neutral: { rule: "#4a4a5a", pillBg: "#eeeef2", pillBorder: "#d4d4dc", pillInk: "#3a3a48" },
+});
+
+/** The dark-scheme twin of `TONES`, used only from the `prefers-color-scheme` block. */
+const TONES_DARK: Readonly<Record<EmailTone, TonePalette>> = Object.freeze({
+  danger: { rule: "#f94144", pillBg: "#2a1013", pillBorder: "#5c1f26", pillInk: "#ff8f92" },
+  success: { rule: "#5fd37f", pillBg: "#0c2418", pillBorder: "#1d4a31", pillInk: "#5fd37f" },
+  warning: { rule: "#f3ba25", pillBg: "#2a2008", pillBorder: "#59461a", pillInk: "#f3ba25" },
+  info: { rule: "#00dfe8", pillBg: "#07262a", pillBorder: "#17505a", pillInk: "#4fe3ea" },
+  neutral: { rule: "#6a6a80", pillBg: "#17171f", pillBorder: "#2a2a36", pillInk: "#b9bac8" },
+});
+
+type SeverityLevel = "critical" | "high" | "medium" | "low";
+const SEVERITY_LEVELS: readonly SeverityLevel[] = ["critical", "high", "medium", "low"];
+const SEVERITY_BARS: Readonly<Record<SeverityLevel, string>> = Object.freeze({
+  critical: "#c21725", high: "#c2410c", medium: "#b27b00", low: "#64647a",
+});
+const SEVERITY_BARS_DARK: Readonly<Record<SeverityLevel, string>> = Object.freeze({
+  critical: "#f94144", high: "#ff7527", medium: "#f3ba25", low: "#9a9ab0",
+});
+
 export interface RenderEmailInput<K extends EmailMessageKind> {
   kind: K;
   data: EmailMessageDataMap[K];
   locale: UserLocale;
   /** `null` in local mode: the message then names no link at all. */
   origin: string | null;
+}
+
+/** The mark, small enough for an inbox; served from the same origin as the app. */
+const LOGO_PATH = "/brand/email-mark.png";
+const LOGO_WIDTH = 39;
+const LOGO_HEIGHT = 48;
+
+/**
+ * The head stylesheet. It is the only stylesheet, it is never required for the
+ * message to read correctly — every element also carries its inline light-mode
+ * style — and it does two things a mail client cannot do inline: the
+ * phone-width tweaks and the dark scheme. Gmail drops the dark block, which is
+ * exactly why the inline design has to stand on its own.
+ */
+function headStyle(tone: EmailTone): string {
+  const dark = TONES_DARK[tone];
+  return [
+    `body{margin:0;padding:0;width:100%!important;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%}`,
+    `table{border-collapse:collapse}`,
+    `img{border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic}`,
+    `@media only screen and (max-width:620px){`,
+    `.pad{padding:22px 16px 6px!important}`,
+    `.band{padding:15px 16px!important}`,
+    `.foot{padding:18px 16px 20px!important}`,
+    `.h1{font-size:19px!important}`,
+    `.chip-v{font-size:16px!important}`,
+    `.chip-l{font-size:8px!important;letter-spacing:.08em!important}`,
+    `.fact-k,.fact-v{padding:8px 10px!important}`,
+    `.eyebrow{font-size:8px!important;letter-spacing:.14em!important}`,
+    `}`,
+    `@media (prefers-color-scheme:dark){`,
+    `body,.page{background:#050508!important}`,
+    `.card{background:#0f0f17!important;border-color:#23232e!important}`,
+    `.rule{background:${dark.rule}!important}`,
+    `.pill{background:${dark.pillBg}!important;border-color:${dark.pillBorder}!important;color:${dark.pillInk}!important}`,
+    `.h1{color:#f4f4f8!important}`,
+    `.para{color:#c3c3d2!important}`,
+    `.panel{border-color:#23232e!important}`,
+    `.rowline{border-bottom-color:#1b1b26!important}`,
+    `.fact-k{color:#9a9ab0!important}`,
+    `.fact-v{color:#f4f4f8!important}`,
+    `.chip-v{color:#f4f4f8!important}`,
+    `.chip-l{color:#9a9ab0!important}`,
+    `.chip-off{color:#5b5b72!important}`,
+    `.bar-off{background:#23232e!important}`,
+    ...SEVERITY_LEVELS.map((level) => `.bar-${level}{background:${SEVERITY_BARS_DARK[level]}!important}`),
+    `.btnbg{background:#e2600f!important}`,
+    `.btn{background:#e2600f!important;color:#ffffff!important}`,
+    `.url{color:#8a8aa4!important}`,
+    `.foot{background:#0a0a11!important;border-top-color:#23232e!important}`,
+    `.foot-t{color:#a6a6b8!important}`,
+    `.foot-s{color:#e2e2e8!important}`,
+    `.foot-a{color:#ff8a4c!important}`,
+    `.sig{color:#6a6a82!important}`,
+    `}`,
+  ].join("");
 }
 
 /**
@@ -1572,17 +1853,26 @@ export interface RenderEmailInput<K extends EmailMessageKind> {
  */
 export function renderEmail<K extends EmailMessageKind>(input: RenderEmailInput<K>): RenderedEmail {
   const shell = SHELL[input.locale];
-  const body = TEMPLATES[input.kind].build(input.data, input.locale);
-  const footerPath = emailMessageGroup(input.kind) === "account" ? ACCOUNT_PATH : NOTIFICATIONS_PATH;
+  const definition = TEMPLATES[input.kind];
+  const body = definition.build(input.data, input.locale);
+  const group = definition.group;
+  const status = body.status ?? definition.status;
+  const tone = STATUS_TONES[status];
+  const palette = TONES[tone];
+  const statusLabel = shell.statuses[status];
+  const groupLabel = shell.groups[group];
+  const footerPath = group === "account" ? ACCOUNT_PATH : NOTIFICATIONS_PATH;
   const footerLabel = footerPath === ACCOUNT_PATH ? shell.accountLink : shell.notificationsLink;
   // A relative link is dead in a mail client, so without a public origin the
   // message carries no link and the footer says why instead of pretending.
   const url = (path: string): string | null => (input.origin === null ? null : `${input.origin}${path}`);
   const actionUrl = body.action === null ? null : url(body.action.path);
   const footerUrl = url(footerPath);
+  const logoUrl = url(LOGO_PATH);
 
   const text = [
-    shell.brand,
+    `${shell.brand} · ${groupLabel}`,
+    `[${statusLabel}]`,
     "",
     body.heading,
     "",
@@ -1593,39 +1883,157 @@ export function renderEmail<K extends EmailMessageKind>(input: RenderEmailInput<
     "--",
     `${shell.why}: ${body.reason}`,
     footerUrl === null ? shell.noLinks : `${footerLabel}: ${footerUrl}`,
+    shell.signature,
   ].join("\n");
 
-  const factsHtml = body.facts.length === 0 ? "" : [
-    `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:20px 0 0;border-collapse:collapse">`,
-    ...body.facts.map((fact) => [
-      `<tr>`,
-      `<td style="padding:2px 12px 2px 0;font-size:13px;line-height:1.6;color:#a8a29e;white-space:nowrap">${escapeHtml(fact.label)}</td>`,
-      `<td style="padding:2px 0;font-size:13px;line-height:1.6;color:#1c1917">${escapeHtml(fact.value)}</td>`,
-      `</tr>`,
-    ].join("")),
+  // The header band. Without an origin there is no image to fetch, so the
+  // wordmark carries the brand alone rather than showing a broken frame.
+  const logoCell = logoUrl === null ? "" : [
+    `<td style="padding:0 12px 0 0;vertical-align:middle">`,
+    `<img src="${escapeHtml(logoUrl)}" width="${LOGO_WIDTH}" height="${LOGO_HEIGHT}"`,
+    ` alt="${escapeHtml(shell.brand)}"`,
+    ` style="display:block;width:${LOGO_WIDTH}px;height:${LOGO_HEIGHT}px;border:0;color:${BAND_INK};font-family:${SANS};font-size:10px">`,
+    `</td>`,
+  ].join("");
+
+  const header = [
+    `<tr><td class="band" bgcolor="${BAND}" style="background:${BAND};padding:18px 24px">`,
+    `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>`,
+    `<td align="left" style="vertical-align:middle">`,
+    `<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>`,
+    logoCell,
+    `<td style="vertical-align:middle">`,
+    `<div style="font-family:${SANS};font-size:15px;line-height:16px;font-weight:700;letter-spacing:.16em;color:${BAND_INK}">OKAMI</div>`,
+    `<div style="padding-top:4px;font-family:${MONO};font-size:9px;line-height:10px;letter-spacing:.32em;color:${BAND_FAINT}">SENTINEL</div>`,
+    `</td></tr></table>`,
+    `</td>`,
+    `<td align="right" class="eyebrow" style="vertical-align:middle;font-family:${MONO};font-size:9px;line-height:12px;letter-spacing:.2em;text-transform:uppercase;color:${BAND_FAINT}">${escapeHtml(groupLabel)}</td>`,
+    `</tr></table>`,
+    `</td></tr>`,
+    // The tone, as a rule the eye reads before the words.
+    `<tr><td class="rule" bgcolor="${palette.rule}" style="background:${palette.rule};height:4px;line-height:4px;font-size:1px">&nbsp;</td></tr>`,
+  ].join("");
+
+  const pill = [
+    `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 14px"><tr>`,
+    `<td class="pill" bgcolor="${palette.pillBg}"`,
+    ` style="background:${palette.pillBg};border:1px solid ${palette.pillBorder};border-radius:2px;`,
+    `padding:5px 9px 4px;font-family:${MONO};font-size:10px;line-height:12px;font-weight:700;`,
+    `letter-spacing:.14em;color:${palette.pillInk}">${escapeHtml(statusLabel)}</td>`,
+    `</tr></table>`,
+  ].join("");
+
+  const paragraphs = body.paragraphs.map((paragraph, index) =>
+    `<p class="para" style="margin:0 0 ${index === body.paragraphs.length - 1 ? 0 : 12}px;`
+    + `font-family:${SANS};font-size:14px;line-height:1.65;color:${INK_SOFT}">${escapeHtml(paragraph)}</p>`).join("");
+
+  // Four counts as four cells. A zero is dimmed rather than dropped: the reader
+  // is being told there is nothing at that level, which is itself the news.
+  const severityHtml = body.severity === null ? "" : [
+    `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:20px 0 0"><tr>`,
+    ...SEVERITY_LEVELS.map((level, index) => {
+      const count = body.severity!.counts[level];
+      const label = body.severity!.labels[level];
+      const zero = count === 0;
+      const bar = zero ? LINE : SEVERITY_BARS[level];
+      return [
+        `<td width="25%" style="width:25%;padding:0 ${index === SEVERITY_LEVELS.length - 1 ? 0 : 6}px 0 0;vertical-align:top">`,
+        `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="panel" style="border:1px solid ${LINE};border-radius:2px">`,
+        `<tr><td class="${zero ? "bar-off" : `bar-${level}`}" bgcolor="${bar}" style="background:${bar};height:3px;line-height:3px;font-size:1px">&nbsp;</td></tr>`,
+        `<tr><td style="padding:8px 9px 9px">`,
+        `<div class="${zero ? "chip-off" : "chip-l"}" style="font-family:${MONO};font-size:9px;line-height:11px;letter-spacing:.1em;text-transform:uppercase;color:${zero ? "#9a9aa8" : MUTED}">${escapeHtml(label)}</div>`,
+        `<div class="${zero ? "chip-off" : "chip-v"}" style="padding-top:3px;font-family:${SANS};font-size:18px;line-height:20px;font-weight:700;color:${zero ? "#9a9aa8" : INK}">${escapeHtml(String(count))}</div>`,
+        `</td></tr></table></td>`,
+      ].join("");
+    }),
+    `</tr></table>`,
+  ].join("");
+
+  // The chips already say these four, so the panel would only repeat them.
+  const chipLabels = body.severity === null
+    ? new Set<string>()
+    : new Set(SEVERITY_LEVELS.map((level) => body.severity!.labels[level]));
+  const panelFacts = body.facts.filter((fact) => !chipLabels.has(fact.label));
+
+  const factsHtml = panelFacts.length === 0 ? "" : [
+    `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="panel" style="margin:20px 0 0;border:1px solid ${LINE};border-radius:2px;border-collapse:separate">`,
+    ...panelFacts.map((fact, index) => {
+      const line = index === panelFacts.length - 1 ? "" : `border-bottom:1px solid ${LINE};`;
+      const rowClass = index === panelFacts.length - 1 ? "" : " rowline";
+      return [
+        `<tr>`,
+        `<td class="fact-k${rowClass}" width="34%" style="width:34%;padding:9px 12px;${line}font-family:${MONO};font-size:10px;line-height:16px;letter-spacing:.1em;text-transform:uppercase;color:${MUTED};vertical-align:top">${escapeHtml(fact.label)}</td>`,
+        `<td class="fact-v${rowClass}" style="padding:9px 12px;${line}font-family:${SANS};font-size:13px;line-height:16px;color:${INK};vertical-align:top;word-break:break-word">${escapeHtml(fact.value)}</td>`,
+        `</tr>`,
+      ].join("");
+    }),
     `</table>`,
   ].join("");
 
-  const actionHtml = body.action === null || actionUrl === null
-    ? ""
-    : `<p style="margin:24px 0 0"><a href="${escapeHtml(actionUrl)}" style="color:#b45309;font-weight:600;text-decoration:none">${escapeHtml(body.action.label)}</a></p>`;
+  // A bulletproof button: a table cell that carries the colour for clients that
+  // drop the anchor's background, a VML rectangle for Outlook's Word engine, and
+  // the URL spelled out underneath for the client that strips all three.
+  const actionHtml = body.action === null || actionUrl === null ? "" : [
+    `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:24px 0 0"><tr>`,
+    `<td class="btnbg" align="center" bgcolor="${ACCENT}" style="background:${ACCENT};border-radius:2px">`,
+    `<!--[if mso]>`,
+    `<v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word"`,
+    ` href="${escapeHtml(actionUrl)}" style="height:44px;v-text-anchor:middle;width:300px" arcsize="4%"`,
+    ` stroke="f" fillcolor="${ACCENT}"><w:anchorlock/>`,
+    `<center style="color:#ffffff;font-family:${SANS};font-size:14px;font-weight:bold;letter-spacing:.02em">${escapeHtml(body.action.label)}</center>`,
+    `</v:roundrect>`,
+    `<![endif]-->`,
+    `<!--[if !mso]><!-- -->`,
+    `<a class="btn" href="${escapeHtml(actionUrl)}"`,
+    ` style="display:inline-block;background:${ACCENT};border-radius:2px;padding:13px 26px;`,
+    `font-family:${SANS};font-size:14px;line-height:18px;font-weight:700;letter-spacing:.02em;`,
+    `color:#ffffff;text-decoration:none">${escapeHtml(body.action.label)}</a>`,
+    `<!--<![endif]-->`,
+    `</td></tr></table>`,
+    `<p class="url" style="margin:10px 0 0;font-family:${MONO};font-size:11px;line-height:1.5;color:${FAINT};word-break:break-all">${escapeHtml(actionUrl)}</p>`,
+  ].join("");
 
-  const footerHtml = footerUrl === null
-    ? `<p style="margin:8px 0 0">${escapeHtml(shell.noLinks)}</p>`
-    : `<p style="margin:8px 0 0"><a href="${escapeHtml(footerUrl)}" style="color:#a8a29e;text-decoration:underline">${escapeHtml(footerLabel)}</a></p>`;
+  const footerLinkHtml = footerUrl === null
+    ? `<p class="foot-t" style="margin:8px 0 0;font-family:${SANS};font-size:12px;line-height:1.6;color:${MUTED}">${escapeHtml(shell.noLinks)}</p>`
+    : `<p style="margin:8px 0 0;font-family:${SANS};font-size:12px;line-height:1.6"><a class="foot-a" href="${escapeHtml(footerUrl)}" style="color:${ACCENT};text-decoration:underline">${escapeHtml(footerLabel)}</a></p>`;
+
+  // The preview line most clients show next to the subject. Hidden in the body,
+  // then padded, so the header band's words do not become the preview instead.
+  const preheader = (body.paragraphs[0] ?? body.heading).slice(0, 140);
 
   const html = [
-    `<!doctype html><html lang="${escapeHtml(input.locale)}"><body style="margin:0;padding:24px;background:#f5f5f4;font-family:ui-sans-serif,system-ui,'Segoe UI',Roboto,sans-serif;color:#1c1917">`,
-    `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e7e5e4;border-radius:12px"><tr><td style="padding:28px">`,
-    `<p style="margin:0 0 16px;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:#a8a29e">${escapeHtml(shell.brand)}</p>`,
-    `<h1 style="margin:0 0 12px;font-size:20px;line-height:1.3">${escapeHtml(body.heading)}</h1>`,
-    ...body.paragraphs.map((paragraph) =>
-      `<p style="margin:0 0 12px;font-size:14px;line-height:1.6">${escapeHtml(paragraph)}</p>`),
+    `<!doctype html><html lang="${escapeHtml(input.locale)}" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office"><head>`,
+    `<meta charset="utf-8">`,
+    `<meta name="viewport" content="width=device-width,initial-scale=1">`,
+    `<meta http-equiv="x-ua-compatible" content="ie=edge">`,
+    `<meta name="color-scheme" content="light dark">`,
+    `<meta name="supported-color-schemes" content="light dark">`,
+    `<title>${escapeHtml(body.subject)}</title>`,
+    `<!--[if mso]><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml><![endif]-->`,
+    `<style>${headStyle(tone)}</style>`,
+    `</head>`,
+    `<body style="margin:0;padding:0;background:${PAGE};color:${INK}">`,
+    `<div style="display:none;max-height:0;overflow:hidden;mso-hide:all">${escapeHtml(preheader)}</div>`,
+    `<div style="display:none;max-height:0;overflow:hidden;mso-hide:all">${"&#8203;&#847;".repeat(40)}</div>`,
+    `<table role="presentation" class="page" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="${PAGE}" style="background:${PAGE};width:100%">`,
+    `<tr><td align="center" style="padding:24px 12px">`,
+    `<table role="presentation" class="card" width="600" cellpadding="0" cellspacing="0" border="0" bgcolor="${CARD}" style="width:100%;max-width:600px;background:${CARD};border:1px solid ${EDGE};border-radius:2px">`,
+    header,
+    `<tr><td class="pad" style="padding:26px 24px 6px">`,
+    pill,
+    `<h1 class="h1" style="margin:0 0 10px;font-family:${SANS};font-size:21px;line-height:1.3;font-weight:700;letter-spacing:-.01em;color:${INK}">${escapeHtml(body.heading)}</h1>`,
+    paragraphs,
+    severityHtml,
     factsHtml,
     actionHtml,
-    `</td></tr><tr><td style="padding:0 28px 24px;font-size:12px;line-height:1.5;color:#a8a29e">`,
-    `<p style="margin:0"><strong style="color:#78716c">${escapeHtml(shell.why)}</strong> ${escapeHtml(body.reason)}</p>`,
-    footerHtml,
+    `</td></tr>`,
+    `<tr><td style="height:26px;line-height:26px;font-size:1px">&nbsp;</td></tr>`,
+    `<tr><td class="foot" bgcolor="${FOOT_BG}" style="background:${FOOT_BG};border-top:1px solid ${LINE};padding:18px 24px 20px">`,
+    `<p class="foot-t" style="margin:0;font-family:${SANS};font-size:12px;line-height:1.6;color:${MUTED}"><strong class="foot-s" style="color:${INK_SOFT}">${escapeHtml(shell.why)}</strong> ${escapeHtml(body.reason)}</p>`,
+    footerLinkHtml,
+    `<p class="sig" style="margin:14px 0 0;font-family:${MONO};font-size:10px;line-height:1.4;letter-spacing:.08em;color:${FAINT}">${escapeHtml(shell.signature)}</p>`,
+    `</td></tr>`,
+    `</table>`,
     `</td></tr></table>`,
     `</body></html>`,
   ].join("");

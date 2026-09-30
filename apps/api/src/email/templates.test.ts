@@ -4,6 +4,8 @@ import { USER_LOCALES, type UserLocale } from "@csb/shared";
 import {
   EMAIL_MESSAGE_KINDS,
   emailMessageGroup,
+  emailMessageStatus,
+  emailStatusTone,
   escapeHtml,
   formatMoment,
   renderEmail,
@@ -99,12 +101,122 @@ test("the HTML is what a mail client can render: tables, inline styles, no exter
     const { html } = render(kind, "en");
     assert.ok(html.includes("<table role=\"presentation\""));
     assert.ok(html.includes("style=\""));
-    for (const forbidden of ["<script", "<style", "<link", "@import", "javascript:", " src=", "<img"]) {
+    for (const forbidden of ["<script", "<link", "@import", "javascript:", "url("]) {
       assert.equal(html.includes(forbidden), false, `${kind} html contains ${forbidden}`);
     }
+    // One stylesheet, in the head, carrying only the two things no inline style
+    // can express: the dark scheme and the phone widths. A client that drops it
+    // still gets the whole message, because every element is styled inline too.
+    assert.equal(html.split("<style>").length - 1, 1, `${kind} stylesheet count`);
+    assert.ok(html.includes("@media (prefers-color-scheme:dark)"), kind);
+    assert.ok(html.includes("name=\"color-scheme\" content=\"light dark\""), kind);
+    assert.ok(html.includes("name=\"supported-color-schemes\""), kind);
+    // The brand mark is the only thing fetched over the network.
+    const sources = [...html.matchAll(/ src="([^"]*)"/g)].map((match) => match[1]);
+    assert.deepEqual(sources, [`${ORIGIN}/brand/email-mark.png`], kind);
     // Every link is absolute; a relative href is dead in an inbox.
     for (const href of html.matchAll(/href="([^"]*)"/g)) {
       assert.ok(href[1]!.startsWith("https://"), `${kind} href ${href[1]}`);
+    }
+  }
+});
+
+test("every kind, in every locale, carries a tone rule, a status pill and a preheader", () => {
+  const tones = new Set(["danger", "success", "warning", "info", "neutral"]);
+  for (const kind of EMAIL_MESSAGE_KINDS) {
+    assert.ok(tones.has(emailStatusTone(emailMessageStatus(kind))), kind);
+    for (const locale of USER_LOCALES) {
+      const { html, text } = render(kind, locale);
+      assert.ok(/<td class="rule" bgcolor="#[0-9a-f]{6}"/.test(html), `${kind}/${locale} tone rule`);
+      const pill = /<td class="pill"[^>]*>([^<]+)<\/td>/.exec(html);
+      assert.ok(pill, `${kind}/${locale} status pill`);
+      const label = pill[1]!;
+      assert.equal(label, label.toLocaleUpperCase(locale), `${kind}/${locale} pill is not upper-case`);
+      // The pill and the plain-text twin never disagree about the status.
+      assert.equal(text.split("\n")[1], `[${label}]`, `${kind}/${locale} text status line`);
+      // The hidden preview line a client shows next to the subject.
+      const preheader = /<div style="display:none;max-height:0;overflow:hidden;mso-hide:all">([^<]+)<\/div>/.exec(html);
+      assert.ok(preheader, `${kind}/${locale} preheader`);
+      assert.ok(text.includes(preheader[1]!.replace(/&#39;/g, "'")), `${kind}/${locale} preheader copy`);
+    }
+  }
+});
+
+test("the tone of a message is decided by its kind, or by its data when the data knows better", () => {
+  assert.equal(emailStatusTone(emailMessageStatus("gate.blocked")), "danger");
+  assert.equal(emailStatusTone(emailMessageStatus("scan.completed")), "success");
+  assert.equal(emailStatusTone(emailMessageStatus("account.invite")), "info");
+  assert.equal(emailStatusTone(emailMessageStatus("account.password_changed")), "neutral");
+  assert.equal(emailStatusTone(emailMessageStatus("ops.engine_unavailable.resolved")), "success");
+  // Two kinds arrive in two tones, because the data, not the kind, decides:
+  // a gate that passed with warnings, and a ceiling crossed rather than neared.
+  assert.ok(render("gate.passed", "en").text.includes("[WARNINGS]"));
+  assert.ok(render("ops.daily_cost", "en").text.includes("[80% OF CEILING]"));
+  assert.ok(renderEmail({
+    kind: "ops.daily_cost",
+    data: { ...SAMPLES["ops.daily_cost"], percent: 100 },
+    locale: "en", origin: ORIGIN,
+  }).text.includes("[CEILING REACHED]"));
+});
+
+test("severity becomes four chips in the HTML and stays four rows in the plain text", () => {
+  const { html, text } = render("gate.blocked", "pt-BR");
+  for (const [label, count] of [["Críticos", "1"], ["Altos", "2"], ["Médios", "3"], ["Baixos", "4"]]) {
+    assert.ok(html.includes(`>${label}</div>`), `${label} chip`);
+    assert.ok(text.includes(`${label}: ${count}`), `${label} text row`);
+    // The chips already say them; repeating them in the panel would be noise.
+    assert.equal(html.includes(`>${label}</td>`), false, `${label} repeated in the panel`);
+  }
+  assert.ok(html.includes(">Findings</td>"));
+  assert.ok(html.includes("class=\"bar-critical\""));
+  // A zero is dimmed rather than dropped: "nothing at this level" is the news.
+  const clean = renderEmail({
+    kind: "scan.completed",
+    data: { ...SAMPLES["scan.completed"], severity: { ...SEVERITY, critical: 0 } },
+    locale: "en", origin: ORIGIN,
+  });
+  assert.equal(clean.html.includes("class=\"bar-critical\""), false);
+  assert.ok(clean.html.includes("class=\"bar-off\""));
+  // A message with no scan behind it has no chip row at all.
+  assert.equal(render("gate.error", "pt-BR").html.includes("class=\"chip-l\""), false);
+});
+
+test("the call to action is a button whose href is escaped, with the URL spelled out under it", () => {
+  const message = renderEmail({
+    kind: "account.invite",
+    data: { inviterName: null, inviteToken: "a\"b<c&d", expiresAt: AT },
+    locale: "en", origin: ORIGIN,
+  });
+  const escaped = `${ORIGIN}/invite/a&quot;b&lt;c&amp;d`;
+  // Twice: the VML rectangle Outlook's Word engine draws, and the anchor every
+  // other client draws. Both carry the same escaped URL.
+  assert.equal(message.html.split(`href="${escaped}"`).length - 1, 2);
+  assert.ok(message.html.includes("<!--[if mso]>"));
+  assert.ok(message.html.includes("v:roundrect"));
+  assert.ok(message.html.includes("class=\"btn\""));
+  // Stripped of the button, the reader can still read the address.
+  assert.ok(message.html.includes(`word-break:break-all">${escaped}</p>`));
+  assert.equal(message.html.includes("a\"b<c&d"), false);
+});
+
+test("the brand mark is fetched only when there is an origin to fetch it from", () => {
+  const remote = render("gate.blocked", "en");
+  assert.ok(remote.html.includes(`src="${ORIGIN}/brand/email-mark.png" width="39" height="48"`));
+  assert.ok(remote.html.includes("alt=\"Okami Sentinel\""));
+
+  const local = render("gate.blocked", "en", null);
+  assert.equal(local.html.includes("<img"), false);
+  assert.equal(local.html.includes("email-mark"), false);
+  // The wordmark carries the brand on its own when the image cannot.
+  assert.ok(local.html.includes(">OKAMI</div>"));
+  assert.ok(local.html.includes("Okami Sentinel"));
+});
+
+test("no message comes near the size at which Gmail clips a body", () => {
+  for (const kind of EMAIL_MESSAGE_KINDS) {
+    for (const locale of USER_LOCALES) {
+      const bytes = Buffer.byteLength(render(kind, locale).html, "utf8");
+      assert.ok(bytes < 60 * 1024, `${kind}/${locale} html is ${bytes} bytes`);
     }
   }
 });
