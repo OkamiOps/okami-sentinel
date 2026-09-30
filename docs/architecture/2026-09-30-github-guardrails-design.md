@@ -681,7 +681,7 @@ de corrigidos desaparece.
 | Habilitar ação | administrador |
 | Trocar executor, conexão, modelo, esforço, modo ou teto | administrador |
 | Habilitar `include_forks` numa ação | administrador |
-| Renomear ação ou ajustar padrões de branch de ação **desabilitada** | mantenedor |
+| Renomear ação, ajustar padrões de branch ou trocar o tipo de gatilho de ação **desabilitada** | mantenedor |
 | Desabilitar ação | mantenedor |
 | Remover ação | mantenedor |
 | Criar baseline agora | administrador |
@@ -689,7 +689,8 @@ de corrigidos desaparece.
 | Salvar política | mantenedor |
 | Simular política | analista |
 | Publicar check / republicar comentário | operador |
-| Ver ações, eventos, entregas de um repositório | viewer (entregas globais: administrador) |
+| Ver ações e eventos (atividade) de um repositório | viewer |
+| Ver entregas do webhook (diagnóstico da integração) | administrador |
 
 Os dois executores gastam: `sentinel-managed` consome uma conexão de provedor do
 Sentinel, `github-actions` consome minutos e a chave do cliente. Por isso a
@@ -741,7 +742,7 @@ explicitamente que ela é isenta de CSRF e que nenhuma outra rota nova é públi
 
 ### Aba GitHub (`/github`)
 
-**01 Integração** (administrador; demais papéis veem o resumo somente leitura)
+**01 Integração** (somente administrador; os demais papéis veem apenas Ações, em leitura, e Atividade dos repositórios que enxergam)
 
 - Identidade da App: nome, slug, instalações, link para as configurações.
 - Tabela de permissões: exigida × concedida, com o que falta em destaque e o
