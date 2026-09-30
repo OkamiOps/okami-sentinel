@@ -516,3 +516,96 @@ test("paginates authenticated App installations without following provider URLs"
     "https://api.github.com/app/installations?per_page=100&page=2",
   ]);
 });
+
+test("reads the App's own identity, requested permissions and subscribed events", async () => {
+  const { privateKey } = keyPair();
+  const pem = privateKey.export({ format: "pem", type: "pkcs8" }).toString();
+  const requests: GitHubHttpRequest[] = [];
+  const client = new GitHubAppClient({
+    credentials: new MemoryCredentialStore({ privateKeyPem: pem }),
+    redactor: new RecordingRedactor(),
+    transport: async (request) => {
+      requests.push(request);
+      return {
+        status: 200,
+        body: {
+          id: 4242,
+          name: "Okami Sentinel",
+          slug: "okami-sentinel",
+          // A scope the product does not know about, and one with a value that is
+          // not a level: neither may blank the rest of the map.
+          permissions: { checks: "write", pull_requests: "write", secrets: "admin", odd: 7 },
+          events: ["pull_request", "push", 12],
+        },
+      };
+    },
+  });
+
+  const app = await client.readApp(connection());
+  // The numeric id is what the webhook echoes; the column may hold a slug.
+  assert.equal(app.appId, "4242");
+  assert.equal(app.name, "Okami Sentinel");
+  assert.equal(app.slug, "okami-sentinel");
+  assert.deepEqual(app.requestedPermissions, {
+    checks: "write", pull_requests: "write", secrets: "admin",
+  });
+  assert.deepEqual([...app.subscribedEvents], ["pull_request", "push"]);
+  assert.deepEqual(requests.map((request) => request.url), ["https://api.github.com/app"]);
+  assert.ok(requests[0]!.headers.Authorization?.startsWith("Bearer "));
+});
+
+test("reads what each installation approved, paginated", async () => {
+  const { privateKey } = keyPair();
+  const pem = privateKey.export({ format: "pem", type: "pkcs8" }).toString();
+  const requests: GitHubHttpRequest[] = [];
+  const installation = (id: number) => ({
+    id,
+    account: { login: `owner-${id}`, type: "User" },
+    repository_selection: id === 1 ? "selected" : "all",
+    permissions: { checks: "write" },
+    suspended_at: id === 2 ? "2026-09-30T10:00:00.000Z" : null,
+  });
+  const client = new GitHubAppClient({
+    credentials: new MemoryCredentialStore({ privateKeyPem: pem }),
+    redactor: new RecordingRedactor(),
+    transport: async (request) => {
+      requests.push(request);
+      return request.url.endsWith("page=2")
+        ? { status: 200, body: [installation(101)] }
+        : { status: 200, body: Array.from({ length: 100 }, (_, index) => installation(index + 1)) };
+    },
+  });
+
+  const details = await client.readAppInstallations(connection());
+  assert.equal(details.length, 101);
+  assert.deepEqual(details[0], {
+    installationId: "1",
+    account: "owner-1",
+    accountType: "User",
+    repositorySelection: "selected",
+    grantedPermissions: { checks: "write" },
+    suspended: false,
+  });
+  assert.equal(details[1]!.repositorySelection, "all");
+  assert.equal(details[1]!.suspended, true);
+  assert.deepEqual(requests.map((request) => request.url), [
+    "https://api.github.com/app/installations?per_page=100",
+    "https://api.github.com/app/installations?per_page=100&page=2",
+  ]);
+});
+
+test("reads a permissionless App metadata as nothing granted instead of failing", async () => {
+  const { privateKey } = keyPair();
+  const pem = privateKey.export({ format: "pem", type: "pkcs8" }).toString();
+  const client = new GitHubAppClient({
+    credentials: new MemoryCredentialStore({ privateKeyPem: pem }),
+    redactor: new RecordingRedactor(),
+    transport: async () => ({
+      status: 200,
+      body: { id: 7, name: "App", slug: "app" },
+    }),
+  });
+  const app = await client.readApp(connection());
+  assert.deepEqual(app.requestedPermissions, {});
+  assert.deepEqual([...app.subscribedEvents], []);
+});

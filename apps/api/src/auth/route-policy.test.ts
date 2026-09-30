@@ -12,6 +12,7 @@ import { createServerApp } from "../server-app.js";
 import { SECURE_SESSION_COOKIE } from "../session-cookie.js";
 import { replaceUserGrants } from "./grant-store.js";
 import { LOCAL_PRINCIPAL } from "./principal.js";
+import { createGitHubAction } from "../github-actions/store.js";
 import { ROUTE_POLICY, authorize, matchPolicy } from "./route-policy.js";
 import { createSession } from "./session-store.js";
 import { createUser } from "./user-store.js";
@@ -68,6 +69,54 @@ test("the webhook is the only public route that mutates state", () => {
   // The HMAC is the authentication, so no session-bearing method may share the path.
   for (const method of ["GET", "PUT", "PATCH", "DELETE"]) {
     assert.equal(matchPolicy(method, "/github/webhook"), null, method);
+  }
+});
+
+/**
+ * The nine routes of the GitHub tab, each with the requirement the spec's
+ * permission table names. The pair that addresses one action resolves the
+ * repository from the action's own row, which is what makes a maintainer of
+ * another repository answer 404 instead of 403.
+ */
+test("declares every route of the GitHub tab with the requirement the spec names", () => {
+  const declared = ROUTE_POLICY
+    .filter(([, pattern]) => pattern.startsWith("/github/"))
+    .map(([method, pattern, requirement]) => [
+      `${method} ${pattern}`,
+      requirement.kind === "repository" ? `${requirement.role}:${requirement.from}` : requirement.kind,
+    ]);
+  assert.deepEqual(Object.fromEntries(declared), {
+    "POST /github/webhook": "public",
+    "GET /github/integration": "admin",
+    "PUT /github/integration/webhook-secret": "admin",
+    "GET /github/deliveries": "admin",
+    "POST /github/reconcile": "admin",
+    "GET /github/actions": "scoped",
+    "POST /github/actions": "admin",
+    "PATCH /github/actions/:actionId": "maintainer:action",
+    "DELETE /github/actions/:actionId": "maintainer:action",
+    "GET /github/actions/:actionId/events": "viewer:action",
+    "GET /github/events": "scoped",
+    "GET /github/branches": "scoped",
+  });
+  // The parameter name is load-bearing: `repositoryKeyFor("action")` reads
+  // `actionId`, so renaming it in the pattern would silently resolve `undefined`.
+  assert.deepEqual(matchPolicy("PATCH", "/github/actions/a1")?.params, { actionId: "a1" });
+  assert.deepEqual(matchPolicy("GET", "/github/actions/a1/events")?.params, { actionId: "a1" });
+  // A literal path wins over the parameter, so neither write can be reached by
+  // dressing it up as an action id.
+  assert.equal(matchPolicy("GET", "/github/integration")?.requirement.kind, "admin");
+  assert.equal(matchPolicy("PATCH", "/github/actions/integration")?.requirement.kind, "repository");
+  assert.equal(matchPolicy("PUT", "/github/integration/webhook-secret")?.requirement.kind, "admin");
+  // Nothing new is public, and no other method shares the two writes.
+  assert.deepEqual(
+    ROUTE_POLICY.filter(([method, pattern, requirement]) =>
+      pattern.startsWith("/github/") && requirement.kind === "public"
+      && `${method} ${pattern}` !== "POST /github/webhook"),
+    [],
+  );
+  for (const method of ["POST", "PATCH", "DELETE"]) {
+    assert.equal(matchPolicy(method, "/github/integration"), null, method);
   }
 });
 
@@ -285,4 +334,95 @@ test("the HTTP role matrix decides in server mode", async () => {
 
   // Public routes need neither a session nor a policy exemption downstream.
   assert.equal((await server.request(`${origin}/healthz`)).status, 200);
+});
+
+function seedGitHubRepository(key: string, repositoryId: string): void {
+  getDb().prepare(`INSERT OR IGNORE INTO guardrail_repositories
+    (repository_key, repository_path, source, display_name, default_branch, default_executor,
+     remote_owner, remote_name, github_connection_id, github_installation_id, github_repository_id,
+     enabled, policy_path, created_at, updated_at)
+    VALUES (?, NULL, 'github', ?, 'main', 'sentinel-managed', 'okami', ?, 'c1', 'i1', ?, 1,
+            '.csb/guardrails.json', 'now', 'now')`)
+    .run(key, key, key.replaceAll(":", "-"), repositoryId);
+}
+
+/**
+ * The three decisions the policy makes for an action, through the real middleware:
+ * an action of a repository the caller cannot see is **missing**, not forbidden;
+ * the role is resolved from the action's own row; and every mutation on the tree
+ * still needs the CSRF token, while GitHub's own delivery does not.
+ */
+test("an action is authorized from its own row, and the tree keeps its CSRF guard", async () => {
+  const stamp = Date.now();
+  const repoA = `github:pa-${stamp}`;
+  const repoB = `github:pb-${stamp}`;
+  seedGitHubRepository(repoA, `${stamp}1`);
+  seedGitHubRepository(repoB, `${stamp}2`);
+  const action = createGitHubAction({
+    repositoryKey: repoA, name: `PR ${stamp}`, triggerKind: "pull_request", branchPatterns: ["main"],
+    executor: "sentinel-managed", connectionId: "c1", installationId: "i1", repositoryId: `${stamp}1`,
+    scanner: null, costCeilingUsd: 2, dailyCostCeilingUsd: null, enabled: true, includeForks: false,
+    createdBy: null,
+  }, getDb());
+
+  const webRoot = fs.mkdtempSync(path.join(os.tmpdir(), "csb-policy-action-"));
+  const server = createServerApp(app, { webRoot, settings: serverSettings });
+  // `githubIntegrationSecurity` reads the deployment origin from the environment,
+  // not from the settings handed to `createServerApp`.
+  const previousMode = process.env.CSB_RUNTIME_MODE;
+  const previousOrigin = process.env.CSB_PUBLIC_ORIGIN;
+  process.env.CSB_RUNTIME_MODE = "server";
+  process.env.CSB_PUBLIC_ORIGIN = origin;
+  try {
+  const insider = member(`pmaintA${stamp}`, [{ repositoryKey: repoA, role: "maintainer" }]);
+  const outsider = member(`pmaintB${stamp}`, [{ repositoryKey: repoB, role: "maintainer" }]);
+  const send = (actor: { cookie: string; csrf: string }, body: unknown, csrf = true) =>
+    server.request(`${origin}/api/github/actions/${action.id}`, {
+      method: "PATCH",
+      headers: {
+        Cookie: actor.cookie, Origin: origin, "Content-Type": "application/json",
+        ...(csrf ? { "X-CSRF-Token": actor.csrf } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+
+  const invisible = await send(outsider, { enabled: false });
+  assert.equal(invisible.status, 404);
+  assert.deepEqual(await invisible.json(), { error: "not_found" });
+
+  // Visible and high enough for the route, but enabling spends: the handler's
+  // cost rule refuses what the role alone would have allowed.
+  const enabling = await send(insider, { enabled: true });
+  assert.equal(enabling.status, 403);
+  assert.deepEqual(await enabling.json(), { error: "forbidden" });
+
+  // Switching it off is the maintainer's to make.
+  const disabling = await send(insider, { enabled: false });
+  assert.equal(disabling.status, 200);
+
+  // Every mutation on the tree needs the token, whatever the role.
+  const withoutToken = await send(insider, { enabled: false }, false);
+  assert.equal(withoutToken.status, 403);
+  assert.deepEqual(await withoutToken.json(), { error: "csrf_invalid" });
+  const createWithoutToken = await server.request(`${origin}/api/github/actions`, {
+    method: "POST",
+    headers: { Cookie: insider.cookie, Origin: origin, "Content-Type": "application/json" },
+    body: JSON.stringify({ repositoryKey: repoA }),
+  });
+  assert.equal(createWithoutToken.status, 403);
+  assert.deepEqual(await createWithoutToken.json(), { error: "csrf_invalid" });
+
+  // GitHub carries none of the three. The delivery reaches the handler, which
+  // refuses it for the reason it should: the headers, not the origin.
+  const delivery = await server.request(`${origin}/api/github/webhook`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+  });
+  assert.equal(delivery.status, 400);
+  assert.deepEqual(await delivery.json(), { error: "malformed_delivery" });
+  } finally {
+    if (previousMode === undefined) delete process.env.CSB_RUNTIME_MODE;
+    else process.env.CSB_RUNTIME_MODE = previousMode;
+    if (previousOrigin === undefined) delete process.env.CSB_PUBLIC_ORIGIN;
+    else process.env.CSB_PUBLIC_ORIGIN = previousOrigin;
+  }
 });

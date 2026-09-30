@@ -89,6 +89,19 @@ export const ROUTE_POLICY: ReadonlyArray<readonly [method: string, pattern: stri
   // GitHub has none; the HMAC over the raw body is checked by the handler, which
   // is also why `serverSecurity` exempts it from CSRF.
   ["POST", "/github/webhook", PUBLIC],
+  // The state of the App itself, and the two writes that touch nothing but it.
+  // Global deliveries are an administrator's view by definition: a row names a
+  // repository that may not be shared with anybody in particular.
+  ["GET", "/github/integration", ADMIN], ["PUT", "/github/integration/webhook-secret", ADMIN],
+  ["GET", "/github/deliveries", ADMIN], ["POST", "/github/reconcile", ADMIN],
+  // Creating or enabling an action spends money on either executor, so the write
+  // is an administrator's; the row-addressed ones resolve the repository from the
+  // action itself, and the handler adds the cost rule the role cannot express.
+  ["GET", "/github/actions", SCOPED], ["POST", "/github/actions", ADMIN],
+  ["PATCH", "/github/actions/:actionId", R("maintainer", "action")],
+  ["DELETE", "/github/actions/:actionId", R("maintainer", "action")],
+  ["GET", "/github/actions/:actionId/events", R("viewer", "action")],
+  ["GET", "/github/events", SCOPED],
   // The repository travels in the query string, where only the handler can read
   // it; it authorizes the one key it touches and answers 404 for an invisible one.
   ["GET", "/github/branches", SCOPED],

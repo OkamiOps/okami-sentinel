@@ -31,6 +31,7 @@ import {
   lastVerifiedWebhookDeliveryAt,
   listGitHubActions,
   newestObservedEventAt,
+  listGitHubActionEvents,
   listWebhookDeliveries,
   patchGitHubAction,
   patchGitHubActionEvent,
@@ -728,4 +729,47 @@ test("an abandoned reservation becomes terminal, and a live one is left running"
   assert.equal(reservedGitHubActionCostForUtcDay(
     action.repositoryKey, "2026-09-30T00:00:00.000Z", "2026-10-01T00:00:00.000Z", db,
   ), 2);
+});
+
+/**
+ * The activity screen pages without a cursor, and a page that ignored the offset
+ * would show the same rows forever. Both listings honour it, and both keep their
+ * newest-first order across pages.
+ */
+test("pages events and deliveries from an offset", () => {
+  const db = memoryDb();
+  const action = pullRequestAction(db);
+  const shas = ["a", "b", "c"].map((letter) => letter.repeat(40));
+  shas.forEach((headSha, index) => {
+    createGitHubActionEvent(
+      pullRequestEvent(action, headSha, `2026-09-30T10:0${index}:00.000Z`),
+      db,
+    );
+  });
+  const newestFirst = listGitHubActionEvents({ actionId: action.id }, db).map((event) => event.headSha);
+  assert.deepEqual(newestFirst, [shas[2], shas[1], shas[0]]);
+  assert.deepEqual(
+    listGitHubActionEvents({ actionId: action.id, limit: 1, offset: 1 }, db).map((event) => event.headSha),
+    [shas[1]],
+  );
+  assert.deepEqual(
+    listGitHubActionEvents({ actionId: action.id, limit: 2, offset: 2 }, db).map((event) => event.headSha),
+    [shas[0]],
+  );
+  assert.deepEqual(listGitHubActionEvents({ actionId: action.id, offset: 3 }, db), []);
+  // A negative or fractional offset is clamped, never interpolated into the SQL.
+  assert.equal(listGitHubActionEvents({ actionId: action.id, offset: -5 }, db).length, 3);
+
+  ["2026-09-30T11:00:00.000Z", "2026-09-30T11:01:00.000Z"].forEach((receivedAt, index) => {
+    recordWebhookDelivery(delivery(index, receivedAt), db);
+  });
+  assert.deepEqual(
+    listWebhookDeliveries(10, db).map((row) => row.deliveryId),
+    ["delivery-1", "delivery-0"],
+  );
+  assert.deepEqual(
+    listWebhookDeliveries(1, db, 1).map((row) => row.deliveryId),
+    ["delivery-0"],
+  );
+  assert.deepEqual(listWebhookDeliveries(10, db, 2), []);
 });

@@ -394,6 +394,8 @@ export function listGitHubActionEvents(
     repositoryKeys?: string[];
     statuses?: GitHubActionEventStatus[];
     limit?: number;
+    /** Rows to skip, so an activity screen can page without a cursor. */
+    offset?: number;
     /**
      * A screen reads the newest first; a queue is drained oldest first, and with
      * the default order a limit would hide exactly the rows the drain wants
@@ -419,9 +421,10 @@ export function listGitHubActionEvents(
     filter.statuses.forEach((status, index) => { parameters[`status_${index}`] = status; });
   }
   parameters.limit = Math.max(1, Math.min(filter.limit ?? 100, 500));
+  parameters.offset = Math.max(0, Math.min(Math.trunc(filter.offset ?? 0), 100_000));
   const direction = filter.order === "oldest" ? "ASC" : "DESC";
   const sql = `SELECT * FROM github_action_events${clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""}
-    ORDER BY detected_at ${direction}, id ${direction} LIMIT @limit`;
+    ORDER BY detected_at ${direction}, id ${direction} LIMIT @limit OFFSET @offset`;
   return (database.prepare(sql).all(parameters) as EventRow[]).map(rowToEvent);
 }
 
@@ -846,11 +849,16 @@ export function completeWebhookDelivery(
 export function listWebhookDeliveries(
   limit: number,
   database: Database.Database = getDb(),
+  offset = 0,
 ): WebhookDeliveryRecord[] {
   ensureGitHubActionsSchema(database);
   const rows = database.prepare(`
-    SELECT * FROM github_webhook_deliveries ORDER BY received_at DESC, delivery_id DESC LIMIT ?
-  `).all(Math.max(1, Math.min(limit, 500))) as DeliveryRow[];
+    SELECT * FROM github_webhook_deliveries ORDER BY received_at DESC, delivery_id DESC
+    LIMIT ? OFFSET ?
+  `).all(
+    Math.max(1, Math.min(limit, 500)),
+    Math.max(0, Math.min(Math.trunc(offset), 100_000)),
+  ) as DeliveryRow[];
   return rows.map(rowToDelivery);
 }
 
