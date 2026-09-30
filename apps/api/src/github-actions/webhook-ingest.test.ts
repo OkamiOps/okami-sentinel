@@ -55,6 +55,7 @@ function anAction(overrides: Partial<GitHubAction> & { triggerKind: GitHubAction
     costCeilingUsd: 2,
     dailyCostCeilingUsd: 10,
     enabled: true,
+    includeForks: false,
     revision: 3,
     baselineInitializedAt: now,
     createdBy: "u1",
@@ -84,23 +85,55 @@ const pushAction = (options: { patterns?: string[]; enabled?: boolean; id?: stri
     ...(options.id ? { id: options.id } : {}),
   });
 
-const prPayload = (options: { number: number; sha: string; base?: string; head?: string; action?: string }): Record<string, unknown> => ({
+const prPayload = (options: {
+  number: number;
+  sha: string;
+  base?: string;
+  head?: string;
+  action?: string;
+  /** GitHub's own clock for the change, which orders two deliveries of one target. */
+  updatedAt?: string;
+  draft?: boolean;
+  /** The head repository's id; anything but 1 is a fork of the enrolled repository. */
+  headRepositoryId?: number;
+  title?: string;
+}): Record<string, unknown> => ({
   action: options.action ?? "opened",
   number: options.number,
   pull_request: {
     number: options.number,
-    base: { ref: options.base ?? "main" },
-    head: { ref: options.head ?? "topic", sha: options.sha },
-    title: "Add gate",
+    base: { ref: options.base ?? "main", repo: { id: 1 } },
+    head: {
+      ref: options.head ?? "topic",
+      sha: options.sha,
+      repo: { id: options.headRepositoryId ?? 1, fork: (options.headRepositoryId ?? 1) !== 1 },
+    },
+    title: options.title ?? "Add gate",
+    draft: options.draft ?? false,
+    updated_at: options.updatedAt ?? "2026-09-30T11:59:00.000Z",
   },
   repository: { id: 1 },
   installation: { id: 77 },
 });
 
-const pushPayload = (options: { ref: string; after: string; before?: string }): Record<string, unknown> => ({
+const pushPayload = (options: { ref: string; after: string; before?: string; pushedAt?: string }): Record<string, unknown> => ({
   ref: options.ref,
   before: options.before ?? SHA_B,
   after: options.after,
+  repository: { id: 1, pushed_at: options.pushedAt ?? "2026-09-30T11:59:00.000Z" },
+  installation: { id: 77 },
+});
+
+const checkRunPayload = (options: {
+  action?: string; checkRunId?: number; externalId?: string; sha?: string; appId?: number;
+} = {}): Record<string, unknown> => ({
+  action: options.action ?? "rerequested",
+  check_run: {
+    id: options.checkRunId ?? 99,
+    external_id: options.externalId ?? "gate-1",
+    head_sha: options.sha ?? SHA_A,
+    app: { id: options.appId ?? 4242 },
+  },
   repository: { id: 1 },
   installation: { id: 77 },
 });
@@ -114,24 +147,29 @@ interface Harness {
   disabled(): Array<{ target: string; reason: string }>;
   refreshed(): string[];
   imported(): string[];
+  rerunRequests(): RerunRequest[];
   deps: GitHubWebhookIngestDependencies;
 }
+
+type RerunRequest = Parameters<GitHubWebhookIngestDependencies["rerunGate"]>[0];
 
 function ingestHarness(options: {
   actions?: GitHubAction[];
   repository?: GuardrailRepository | null;
   analysed?: Array<{ actionId: string; headSha: string }>;
   secrets?: Array<{ connectionId: string; secret: string }>;
-  rerun?: (input: { externalId: string; headSha: string; checkRunId: string }) => GitHubActionEvent | null;
+  rerun?: (input: RerunRequest) => GitHubActionEvent | null;
+  appId?: string | null;
   importWorkflowRun?: (id: string) => void;
 } = {}): Harness {
   const actions = options.actions ?? [];
-  const events: GitHubActionEvent[] = [];
-  const deliveries: WebhookDeliveryRecord[] = [];
+  let events: GitHubActionEvent[] = [];
+  let deliveries: WebhookDeliveryRecord[] = [];
   const dispatched: string[] = [];
-  const disabled: Array<{ target: string; reason: string }> = [];
+  let disabled: Array<{ target: string; reason: string }> = [];
   const refreshed: string[] = [];
   const imported: string[] = [];
+  const rerunRequests: RerunRequest[] = [];
   const analysed = new Set((options.analysed ?? []).map((entry) => `${entry.actionId}|${entry.headSha}`));
   let clock = Date.parse("2026-09-30T12:00:00.000Z");
 
@@ -171,22 +209,54 @@ function ingestHarness(options: {
         if (event.headSha === input.exceptHeadSha) continue;
         if (input.pullRequestNumber !== undefined && event.pullRequestNumber !== input.pullRequestNumber) continue;
         if (input.headRef !== undefined && event.headRef !== shortBranchName(input.headRef)) continue;
+        // The store's ordering guard, mirrored: only strictly older changes.
+        if (input.beforeObservedAt !== undefined
+          && !((event.observedAt ?? event.detectedAt) < input.beforeObservedAt)) continue;
         events[index] = { ...event, status: "superseded", reason: input.reason, completedAt: deps.now() };
         changed += 1;
       }
       return changed;
     },
+    newestObservedAt: (input) => {
+      const scoped = events.filter((event) => event.actionId === input.actionId
+        && (input.pullRequestNumber === undefined || event.pullRequestNumber === input.pullRequestNumber)
+        && (input.headRef === undefined || event.headRef === shortBranchName(input.headRef)));
+      const stamps = scoped.map((event) => event.observedAt ?? event.detectedAt).sort();
+      return stamps.at(-1) ?? null;
+    },
     hasAnalysedCommit: (actionId, headSha) => analysed.has(`${actionId}|${headSha}`),
-    recordDelivery: (input) => {
+    claimDelivery: (input) => {
       if (deliveries.some((delivery) => delivery.deliveryId === input.deliveryId)) return "duplicate";
       deliveries.push(input);
       return "recorded";
+    },
+    completeDelivery: (deliveryId, patch) => {
+      const index = deliveries.findIndex((delivery) => delivery.deliveryId === deliveryId);
+      if (index === -1) return;
+      deliveries[index] = { ...deliveries[index]!, ...patch };
     },
     disableActionsForRepository: (repositoryKey, reason) => { disabled.push({ target: repositoryKey, reason }); },
     disableActionsForInstallation: (installationId, reason) => { disabled.push({ target: `installation:${installationId}`, reason }); },
     refreshInstallationRepositories: async (installationId) => { refreshed.push(installationId); },
     dispatch: (eventId) => { dispatched.push(eventId); },
-    rerunGate: options.rerun ?? (() => null),
+    connectionAppId: () => (options.appId === undefined ? "4242" : options.appId),
+    rerunGate: (input) => {
+      rerunRequests.push(input);
+      return options.rerun ? options.rerun(input) : null;
+    },
+    // A real IMMEDIATE transaction discards every write when the work throws, and
+    // so does this: the arrays are restored from a snapshot.
+    runInTransaction: (work) => {
+      const snapshot = { events: [...events], deliveries: [...deliveries], disabled: [...disabled] };
+      try {
+        return work();
+      } catch (error) {
+        events = snapshot.events;
+        deliveries = snapshot.deliveries;
+        disabled = snapshot.disabled;
+        throw error;
+      }
+    },
     ...(options.importWorkflowRun ? { importWorkflowRun: (id: string) => { imported.push(id); options.importWorkflowRun!(id); } } : {}),
   };
 
@@ -208,6 +278,7 @@ function ingestHarness(options: {
     disabled: () => disabled,
     refreshed: () => refreshed,
     imported: () => imported,
+    rerunRequests: () => rerunRequests,
     deps,
   };
 }
@@ -254,8 +325,11 @@ test("creates an event for every enabled action whose pattern matches, and none 
     ],
   });
   const result = await harness.deliver("pull_request", prPayload({ number: 8, sha: SHA_A }));
-  assert.deepEqual(result.matchedActionIds, ["a-main"]);
+  // "Matched" means the pattern matched: the disabled action is named because its
+  // stale queue was cancelled, and only the enabled one produced an event.
+  assert.deepEqual(result.matchedActionIds, ["a-main", "a-disabled"]);
   assert.equal(harness.events().length, 1);
+  assert.equal(harness.events()[0]!.actionId, "a-main");
 });
 
 test("ignores a pull_request action the product does not handle", async () => {
@@ -271,8 +345,12 @@ test("ignores a pull_request action the product does not handle", async () => {
 
 test("supersedes the queued event when a synchronize brings a new commit", async () => {
   const harness = ingestHarness({ actions: [prAction()] });
-  await harness.deliver("pull_request", prPayload({ number: 7, sha: SHA_A }));
-  const second = await harness.deliver("pull_request", prPayload({ number: 7, sha: SHA_B, action: "synchronize" }));
+  await harness.deliver("pull_request", prPayload({
+    number: 7, sha: SHA_A, updatedAt: "2026-09-30T11:50:00.000Z",
+  }));
+  const second = await harness.deliver("pull_request", prPayload({
+    number: 7, sha: SHA_B, action: "synchronize", updatedAt: "2026-09-30T11:55:00.000Z",
+  }));
   assert.equal(second.outcome, "processed");
   assert.equal(harness.events().length, 2);
   const [first, latest] = harness.events() as [GitHubActionEvent, GitHubActionEvent];
@@ -430,38 +508,55 @@ test("reruns the gate on check_run.rerequested with a manual origin", async () =
         headSha: input.headSha, baseRef: "main", headRef: "topic", pullRequestNumber: 7,
         targetIdentity: identity, title: null, gateId: null, costCeilingUsd: 2,
         reason: null, error: null, detectedAt: "2026-09-30T12:00:00.000Z",
-        dispatchedAt: null, completedAt: null,
+        observedAt: null, dispatchedAt: null, completedAt: null,
       };
       events.push(event);
       return event;
     },
   });
-  const result = await harness.deliver("check_run", {
-    action: "rerequested",
-    check_run: { id: 99, external_id: "gate-1", head_sha: SHA_A },
-    repository: { id: 1 },
-    installation: { id: 77 },
-  });
+  const result = await harness.deliver("check_run", checkRunPayload());
   assert.equal(result.outcome, "processed");
   assert.deepEqual(result.eventIds, ["rerun-1"]);
   assert.equal(events[0]!.origin, "manual");
   assert.ok(events[0]!.targetIdentity.endsWith("#rerun:99"));
   assert.deepEqual(harness.dispatched(), ["rerun-1"]);
+  // The lookup is scoped: the connection whose secret signed, the repository the
+  // payload resolved to, and only then the check run's own identifiers.
+  assert.deepEqual(harness.rerunRequests(), [{
+    connectionId: "c1", repositoryKey: "github:1", externalId: "gate-1",
+    headSha: SHA_A, checkRunId: "99",
+  }]);
+});
+
+test("refuses a rerequest for a check run another App created", async () => {
+  const harness = ingestHarness({
+    actions: [prAction({ id: "a1" })],
+    rerun: () => { throw new Error("must not be asked"); },
+  });
+  const foreign = await harness.deliver("check_run", checkRunPayload({ appId: 9999 }));
+  assert.equal(foreign.outcome, "ignored");
+  assert.equal(foreign.reason, "check_run_not_ours");
+  assert.deepEqual(harness.rerunRequests(), []);
+
+  // No App id on the payload, or none known for the connection: fail closed.
+  const anonymous = await harness.deliver("check_run", {
+    action: "rerequested",
+    check_run: { id: 99, external_id: "gate-1", head_sha: SHA_A },
+    repository: { id: 1 },
+  });
+  assert.equal(anonymous.reason, "check_run_not_ours");
+  const unknownApp = ingestHarness({ actions: [prAction({ id: "a1" })], appId: null });
+  assert.equal((await unknownApp.deliver("check_run", checkRunPayload())).reason, "check_run_not_ours");
+  assert.deepEqual(unknownApp.rerunRequests(), []);
 });
 
 test("ignores a rerequest whose check run names no known gate", async () => {
   const harness = ingestHarness({ actions: [prAction()] });
-  const result = await harness.deliver("check_run", {
-    action: "rerequested",
-    check_run: { id: 99, external_id: "unknown", head_sha: SHA_A },
-    repository: { id: 1 },
-  });
+  const result = await harness.deliver("check_run", checkRunPayload({ externalId: "unknown" }));
   assert.equal(result.outcome, "ignored");
   assert.equal(result.reason, "rerun_target_unknown");
   assert.deepEqual(harness.dispatched(), []);
-  const other = await harness.deliver("check_run", {
-    action: "completed", check_run: { id: 99, external_id: "gate-1", head_sha: SHA_A }, repository: { id: 1 },
-  });
+  const other = await harness.deliver("check_run", checkRunPayload({ action: "completed" }));
   assert.equal(other.reason, "action_not_handled");
 });
 
@@ -568,57 +663,295 @@ test("survives two concurrent deliveries for the same commit", async () => {
   assert.equal(harness.deliveries().length, 2);
 });
 
-test("writes the delivery, the events and the supersession in one transaction", async () => {
+test("claims the delivery id before any work, in one transaction, and dispatches after it", async () => {
   const harness = ingestHarness({ actions: [prAction()] });
   let depth = 0;
   let maxDepth = 0;
   const calls: string[] = [];
+  const trace = <T>(name: string, run: () => T): T => {
+    calls.push(`${name}:${depth}`);
+    return run();
+  };
   const deps: GitHubWebhookIngestDependencies = {
     ...harness.deps,
     runInTransaction: (work) => {
       depth += 1;
       maxDepth = Math.max(maxDepth, depth);
       try {
-        return work();
+        return harness.deps.runInTransaction(work);
       } finally {
         depth -= 1;
       }
     },
-    createEvent: (input) => { calls.push(`create:${depth}`); return harness.deps.createEvent(input); },
-    supersede: (input) => { calls.push(`supersede:${depth}`); return harness.deps.supersede(input); },
-    recordDelivery: (input) => { calls.push(`delivery:${depth}`); return harness.deps.recordDelivery(input); },
-    dispatch: (id) => { calls.push(`dispatch:${depth}`); harness.deps.dispatch(id); },
+    claimDelivery: (input) => trace("claim", () => harness.deps.claimDelivery(input)),
+    createEvent: (input) => trace("create", () => harness.deps.createEvent(input)),
+    supersede: (input) => trace("supersede", () => harness.deps.supersede(input)),
+    completeDelivery: (id, patch) => trace("complete", () => harness.deps.completeDelivery(id, patch)),
+    dispatch: (id) => trace("dispatch", () => harness.deps.dispatch(id)),
   };
   const body = new TextEncoder().encode(JSON.stringify(prPayload({ number: 7, sha: SHA_A })));
   const signature = `sha256=${createHmac("sha256", SECRET).update(body).digest("hex")}`;
   const result = await ingestGitHubWebhook({ body, headers: { event: "pull_request", delivery: "d1", signature } }, deps);
   assert.equal(result.outcome, "processed");
   assert.equal(maxDepth, 1);
-  assert.deepEqual(calls, ["supersede:1", "create:1", "delivery:1", "dispatch:0"]);
+  // The claim comes first: a concurrent duplicate must lose before anything is
+  // written, and the supersession only follows a successful creation.
+  assert.deepEqual(calls, ["claim:1", "create:1", "supersede:1", "complete:1", "dispatch:0"]);
 });
 
-test("a redelivery rolls its writes back instead of superseding twice", async () => {
+/**
+ * C-1. A delivery that describes an older change than the one already on the books
+ * must create nothing and cancel nothing. Without this, a replay or an
+ * out-of-order arrival supersedes the *current* head's queued event and no
+ * reconciliation ever repairs it: the target identity already exists.
+ */
+test("a synchronize that arrives out of order leaves the current head queued", async () => {
   const harness = ingestHarness({ actions: [prAction()] });
-  const rolled: string[] = [];
-  const deps: GitHubWebhookIngestDependencies = {
-    ...harness.deps,
-    // A real IMMEDIATE transaction discards the writes; the fake records that it
-    // was asked to, which is the behaviour the store relies on.
-    runInTransaction: (work) => {
-      try {
-        return work();
-      } catch (error) {
-        rolled.push("rollback");
-        throw error;
-      }
-    },
-  };
-  const body = new TextEncoder().encode(JSON.stringify(prPayload({ number: 7, sha: SHA_A })));
-  const signature = `sha256=${createHmac("sha256", SECRET).update(body).digest("hex")}`;
-  const headers = { event: "pull_request", delivery: "same", signature };
-  assert.equal((await ingestGitHubWebhook({ body, headers }, deps)).outcome, "processed");
-  const again = await ingestGitHubWebhook({ body, headers }, deps);
+  // The newer commit arrives first, as GitHub gives no ordering guarantee.
+  const newer = await harness.deliver("pull_request", prPayload({
+    number: 7, sha: SHA_B, action: "synchronize", updatedAt: "2026-09-30T11:59:00.000Z",
+  }), { delivery: "d-newer" });
+  assert.equal(newer.outcome, "processed");
+  const queued = harness.events()[0]!;
+
+  const older = await harness.deliver("pull_request", prPayload({
+    number: 7, sha: SHA_A, action: "synchronize", updatedAt: "2026-09-30T11:50:00.000Z",
+  }), { delivery: "d-older" });
+  assert.equal(older.outcome, "ignored");
+  assert.equal(older.reason, "stale_delivery");
+  assert.deepEqual(older.eventIds, []);
+  assert.equal(harness.events().length, 1, "no event for the commit already overtaken");
+  assert.equal(harness.events()[0]!.id, queued.id);
+  assert.equal(harness.events()[0]!.status, "queued", "the current head still has a gate coming");
+  assert.deepEqual(harness.dispatched(), [queued.id]);
+  assert.equal(harness.deliveries().at(-1)!.reason, "stale_delivery");
+});
+
+test("a redelivery of an older commit under a new delivery id cancels nothing", async () => {
+  const harness = ingestHarness({ actions: [prAction()] });
+  await harness.deliver("pull_request", prPayload({
+    number: 7, sha: SHA_A, updatedAt: "2026-09-30T11:50:00.000Z",
+  }), { delivery: "d1" });
+  const second = await harness.deliver("pull_request", prPayload({
+    number: 7, sha: SHA_B, action: "synchronize", updatedAt: "2026-09-30T11:55:00.000Z",
+  }), { delivery: "d2" });
+  const current = harness.events().find((event) => event.headSha === SHA_B)!;
+  assert.deepEqual(second.eventIds, [current.id]);
+
+  // The operator presses "Redeliver" on the first delivery: same payload, new id.
+  const replay = await harness.deliver("pull_request", prPayload({
+    number: 7, sha: SHA_A, updatedAt: "2026-09-30T11:50:00.000Z",
+  }), { delivery: "d1-again" });
+  assert.equal(replay.outcome, "ignored");
+  assert.equal(replay.reason, "stale_delivery");
+  assert.equal(harness.events().find((event) => event.headSha === SHA_B)!.status, "queued");
+  assert.equal(harness.dispatched().length, 2);
+});
+
+test("a delivery whose target is already recorded supersedes nothing", async () => {
+  // The same change twice under two delivery ids: the second creates nothing
+  // because of the UNIQUE, and must therefore also cancel nothing.
+  const harness = ingestHarness({ actions: [prAction()] });
+  const payload = prPayload({ number: 7, sha: SHA_A, updatedAt: "2026-09-30T11:50:00.000Z" });
+  await harness.deliver("pull_request", payload, { delivery: "d1" });
+  const other = await harness.deliver("pull_request", prPayload({
+    number: 8, sha: SHA_B, updatedAt: "2026-09-30T11:51:00.000Z",
+  }), { delivery: "d2" });
+  const second = await harness.deliver("pull_request", payload, { delivery: "d3" });
+  assert.equal(second.outcome, "ignored");
+  assert.equal(second.reason, "target_already_recorded");
+  for (const event of harness.events()) assert.equal(event.status, "queued", event.targetIdentity);
+  assert.deepEqual(other.matchedActionIds.length, 1);
+});
+
+test("refuses a delivery whose change is older than the freshness bound", async () => {
+  const harness = ingestHarness({ actions: [prAction()] });
+  const result = await harness.deliver("pull_request", prPayload({
+    number: 7, sha: SHA_A, updatedAt: "2026-09-28T11:00:00.000Z",
+  }));
+  assert.equal(result.outcome, "ignored");
+  assert.equal(result.reason, "stale_delivery");
+  assert.equal(harness.events().length, 0);
+  // Inside the window it is business as usual.
+  const fresh = await harness.deliver("pull_request", prPayload({
+    number: 7, sha: SHA_A, updatedAt: "2026-09-30T11:00:00.000Z",
+  }));
+  assert.equal(fresh.outcome, "processed");
+});
+
+test("orders a push by the repository's push clock", async () => {
+  const harness = ingestHarness({ actions: [pushAction()] });
+  await harness.deliver("push", pushPayload({
+    ref: "refs/heads/main", after: SHA_B, pushedAt: "2026-09-30T11:59:00.000Z",
+  }));
+  const queued = harness.events()[0]!;
+  const older = await harness.deliver("push", pushPayload({
+    ref: "refs/heads/main", after: SHA_A, pushedAt: "2026-09-30T11:50:00.000Z",
+  }));
+  assert.equal(older.reason, "stale_delivery");
+  assert.equal(harness.events().length, 1);
+  assert.equal(harness.events()[0]!.id, queued.id);
+  assert.equal(harness.events()[0]!.status, "queued");
+});
+
+/**
+ * I-1, the controller's ruling: a pull request whose head repository is not the
+ * base repository runs code nobody in the organisation wrote, on our installation
+ * token and our budget, and its own `.csb/guardrails.json` would be the policy
+ * judging it. Off unless an administrator opted this action in.
+ */
+test("does not scan a pull request from a fork by default", async () => {
+  const harness = ingestHarness({ actions: [prAction({ patterns: ["main"] })] });
+  const result = await harness.deliver("pull_request", prPayload({
+    number: 7, sha: SHA_A, headRepositoryId: 999,
+  }));
+  assert.equal(result.outcome, "ignored");
+  assert.equal(result.reason, "fork_pull_request");
+  assert.equal(harness.events().length, 0);
+  assert.deepEqual(harness.dispatched(), []);
+  assert.equal(harness.deliveries()[0]!.reason, "fork_pull_request");
+});
+
+test("scans a fork pull request through the base repository when an action opted in", async () => {
+  const harness = ingestHarness({
+    actions: [
+      anAction({ triggerKind: "pull_request", id: "a-forks", includeForks: true }),
+      anAction({ triggerKind: "pull_request", id: "a-no-forks", name: "PR strict" }),
+    ],
+  });
+  const result = await harness.deliver("pull_request", prPayload({
+    number: 7, sha: SHA_A, headRepositoryId: 999, head: "attacker-branch",
+  }));
+  assert.equal(result.outcome, "processed");
+  assert.deepEqual(result.matchedActionIds, ["a-forks"], "the action that did not opt in sees nothing");
+  const event = harness.events()[0]!;
+  // The fork's head is reachable in the base repository as refs/pull/<n>/head, so
+  // nothing downstream ever has to fetch from the fork, and the base branch stays
+  // the authority for policy and baseline.
+  assert.equal(event.headRef, "pull/7/head");
+  assert.equal(event.baseRef, "main");
+  assert.equal(event.targetIdentity, `pr:7@${SHA_A}`);
+});
+
+test("skips a draft pull request until it is marked ready for review", async () => {
+  const harness = ingestHarness({ actions: [prAction()] });
+  const draft = await harness.deliver("pull_request", prPayload({ number: 7, sha: SHA_A, draft: true }));
+  assert.equal(draft.outcome, "ignored");
+  assert.equal(draft.reason, "draft_pull_request");
+  assert.equal(harness.events().length, 0);
+  const pushed = await harness.deliver("pull_request", prPayload({
+    number: 7, sha: SHA_A, draft: true, action: "synchronize", updatedAt: "2026-09-30T11:59:30.000Z",
+  }));
+  assert.equal(pushed.reason, "draft_pull_request");
+  // Marking it ready is exactly the moment the current head becomes worth paying for.
+  const ready = await harness.deliver("pull_request", prPayload({
+    number: 7, sha: SHA_A, draft: true, action: "ready_for_review", updatedAt: "2026-09-30T11:59:45.000Z",
+  }));
+  assert.equal(ready.outcome, "processed");
+  assert.equal(harness.events().length, 1);
+});
+
+test("cancels the stale queue of an action that was disabled between two commits", async () => {
+  const action = prAction({ id: "a1" });
+  const harness = ingestHarness({ actions: [action] });
+  await harness.deliver("pull_request", prPayload({
+    number: 7, sha: SHA_A, updatedAt: "2026-09-30T11:50:00.000Z",
+  }));
+  assert.equal(harness.events()[0]!.status, "queued");
+  // An operator disables the action; the queued event must not outlive the next
+  // commit, which will never be scanned either.
+  action.enabled = false;
+  const later = await harness.deliver("pull_request", prPayload({
+    number: 7, sha: SHA_B, action: "synchronize", updatedAt: "2026-09-30T11:55:00.000Z",
+  }));
+  assert.equal(later.outcome, "ignored");
+  assert.equal(later.reason, "branch_not_followed");
+  assert.equal(harness.events().length, 1);
+  assert.equal(harness.events()[0]!.status, "superseded");
+  assert.equal(harness.events()[0]!.reason, "head_superseded");
+});
+
+test("strips control characters from the title it stores", async () => {
+  const harness = ingestHarness({ actions: [prAction()] });
+  await harness.deliver("pull_request", prPayload({
+    number: 7, sha: SHA_A, title: "Fix\u0000 the\n deploy\r\thook\u001b[31m",
+  }));
+  assert.equal(harness.events()[0]!.title, "Fix the deploy hook [31m");
+});
+
+test("refreshes the installation cache after the transaction, and never twice for one delivery", async () => {
+  const harness = ingestHarness({ actions: [prAction()] });
+  const payload = { action: "removed", installation: { id: 77 }, repositories_removed: [{ id: 1 }] };
+  assert.equal((await harness.deliver("installation_repositories", payload, { delivery: "same" })).outcome, "processed");
+  assert.deepEqual(harness.refreshed(), ["77"]);
+  const again = await harness.deliver("installation_repositories", payload, { delivery: "same" });
   assert.equal(again.outcome, "duplicate");
-  assert.deepEqual(rolled, ["rollback"]);
-  assert.equal(harness.dispatched().length, 1);
+  // A redelivery must not spend another authenticated GitHub call.
+  assert.deepEqual(harness.refreshed(), ["77"]);
+  assert.deepEqual(harness.disabled(), [{ target: "github:1", reason: "repository_unauthorized" }]);
+});
+
+/**
+ * I-2. The rollback is asserted against a real `IMMEDIATE` transaction, not against
+ * a double that merely records having been asked: a fault after the events are
+ * written must leave neither the events nor the delivery row behind.
+ */
+test("a fault after the events are written leaves nothing behind", async () => {
+  const Database = (await import("better-sqlite3")).default;
+  const store = await import("./store.js");
+  const db = new Database(":memory:");
+  db.pragma("foreign_keys = ON");
+  db.exec("CREATE TABLE guardrail_repositories (repository_key TEXT PRIMARY KEY)");
+  db.prepare("INSERT INTO guardrail_repositories VALUES ('github:1')").run();
+  store.ensureGitHubActionsSchema(db);
+  const action = store.createGitHubAction({
+    repositoryKey: "github:1", name: "PR", triggerKind: "pull_request", branchPatterns: ["main"],
+    connectionId: "c1", installationId: "i1", repositoryId: "1", executor: "sentinel-managed",
+    scanner: null, costCeilingUsd: 2, dailyCostCeilingUsd: 10, enabled: true,
+    includeForks: false, createdBy: "u1",
+  }, db);
+
+  let breakCompletion = false;
+  const dispatched: string[] = [];
+  const deps: GitHubWebhookIngestDependencies = {
+    now: () => new Date().toISOString(),
+    listSecrets: async () => [{ connectionId: "c1", secret: SECRET }],
+    findRepository: (connectionId, repositoryId) =>
+      connectionId === "c1" && repositoryId === "1" ? repository : null,
+    listActions: (repositoryKey) => store.listGitHubActions({ repositoryKey }, db),
+    newestObservedAt: (input) => store.newestObservedEventAt(input, db),
+    createEvent: (input) => store.createGitHubActionEvent(input, db),
+    supersede: (input) => store.supersedeQueuedEvents(input, db),
+    hasAnalysedCommit: (actionId, headSha) => store.hasAnalysedCommit(actionId, headSha, db),
+    claimDelivery: (input) => store.recordWebhookDelivery(input, db),
+    completeDelivery: (deliveryId, patch) => {
+      if (breakCompletion) throw new Error("database is locked");
+      store.completeWebhookDelivery(deliveryId, patch, db);
+    },
+    disableActionsForRepository: () => {},
+    disableActionsForInstallation: () => {},
+    refreshInstallationRepositories: async () => {},
+    dispatch: (id) => { dispatched.push(id); },
+    connectionAppId: () => "4242",
+    rerunGate: () => null,
+    runInTransaction: (work) => db.transaction(work).immediate(),
+  };
+  const send = async (delivery: string, sha: string, updatedAt: string) => {
+    const body = new TextEncoder().encode(JSON.stringify(prPayload({ number: 7, sha, updatedAt })));
+    const signature = `sha256=${createHmac("sha256", SECRET).update(body).digest("hex")}`;
+    return await ingestGitHubWebhook({ body, headers: { event: "pull_request", delivery, signature } }, deps);
+  };
+
+  assert.equal((await send("ok-1", SHA_A, "2026-09-30T11:50:00.000Z")).outcome, "processed");
+  assert.equal(store.listGitHubActionEvents({ actionId: action.id }, db).length, 1);
+
+  breakCompletion = true;
+  await assert.rejects(async () => { await send("broken", SHA_B, "2026-09-30T11:55:00.000Z"); }, /database is locked/);
+  const events = store.listGitHubActionEvents({ actionId: action.id }, db);
+  assert.equal(events.length, 1, "the event of the faulted delivery was discarded");
+  assert.equal(events[0]!.headSha, SHA_A);
+  assert.equal(events[0]!.status, "queued", "and so was its supersession");
+  assert.equal(store.listWebhookDeliveries(10, db).length, 1);
+  assert.deepEqual(dispatched.length, 1);
+  db.close();
 });

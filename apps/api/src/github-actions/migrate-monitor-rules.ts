@@ -12,7 +12,9 @@ import {
 /**
  * Steps run strictly above the recorded version, so a column added later reaches
  * a database that already recorded an earlier one. Version 1 mints the tables and
- * carries the monitor rules over; version 2 adds `migration_note`.
+ * carries the monitor rules over; version 2 adds `migration_note`; version 3 adds
+ * `github_actions.include_forks` (the administrator-only fork opt-in) and
+ * `github_action_events.observed_at` (the payload clock the ordering guard reads).
  *
  * SQLite cannot add a `CHECK` through `ALTER TABLE`, so the two constraints
  * introduced with version 2 — `json_array_length(branch_patterns_json) BETWEEN 1
@@ -22,7 +24,7 @@ import {
  * them for real would mean rebuilding the table, which is not worth a lock on a
  * live database for an invariant two code paths already keep.
  */
-export const GITHUB_ACTIONS_SCHEMA_VERSION = 2;
+export const GITHUB_ACTIONS_SCHEMA_VERSION = 3;
 
 /** The ceiling a rule that was never activated inherits, disabled, so it cannot spend. */
 const MIGRATED_COST_CEILING_USD = 1;
@@ -127,10 +129,16 @@ export function migrateMonitorRulesToActions(
       // every insert failing on a column that never appeared.
       addColumnIfMissing(database, "github_actions", "migration_note", "TEXT");
     }
+    if (from < 3) {
+      // A pull request from a fork is not scanned unless an administrator opted
+      // this action in, so the column has to exist before any ingestion runs.
+      addColumnIfMissing(database, "github_actions", "include_forks", "INTEGER NOT NULL DEFAULT 0");
+      addColumnIfMissing(database, "github_action_events", "observed_at", "TEXT");
+    }
     database.prepare(`
       INSERT OR REPLACE INTO github_actions_schema_migrations (version, name, applied_at)
       VALUES (?, ?, ?)
-    `).run(GITHUB_ACTIONS_SCHEMA_VERSION, "actions model with migration notes", now);
+    `).run(GITHUB_ACTIONS_SCHEMA_VERSION, "actions model with fork opt-in and ordered supersession", now);
     return carried;
   }).immediate();
   migratedHandles.add(database);

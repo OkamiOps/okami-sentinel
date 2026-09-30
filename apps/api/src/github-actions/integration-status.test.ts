@@ -42,6 +42,7 @@ function action(overrides: Partial<GitHubAction> = {}): GitHubAction {
     costCeilingUsd: 2,
     dailyCostCeilingUsd: null,
     enabled: true,
+    includeForks: false,
     revision: 1,
     baselineInitializedAt: "2026-09-29T00:00:00.000Z",
     createdBy: null,

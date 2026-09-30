@@ -1496,6 +1496,13 @@ export interface GitHubAction {
   /** Maximum reserved ceiling for automatic scans started in one UTC day. */
   dailyCostCeilingUsd: number | null;
   enabled: boolean;
+  /**
+   * A pull request whose head repository is not the base repository runs code
+   * nobody in the organisation wrote, under our installation token and our
+   * budget, and could weaken the very policy that judges it. Off by default;
+   * only an administrator may turn it on.
+   */
+  includeForks: boolean;
   /** Incremented whenever a change to what the action observes invalidates event deduplication. */
   revision: number;
   /** The first reconciliation of a revision establishes a no-scan baseline. */
@@ -1547,9 +1554,31 @@ export interface GitHubActionEvent {
   reason: string | null;
   error: string | null;
   detectedAt: string;
+  /**
+   * GitHub's own clock for the change (`pull_request.updated_at`,
+   * `repository.pushed_at`), so two deliveries of the same target are ordered by
+   * when the change happened and not by when we received them. `null` when the
+   * payload carried none, and then `detectedAt` stands in.
+   */
+  observedAt: string | null;
   dispatchedAt: string | null;
   completedAt: string | null;
 }
+
+/**
+ * Everything a claimed delivery row learns once the work is done. The row is
+ * claimed first — the delivery id is the idempotency key, so a concurrent
+ * duplicate must lose before anything is written — and completed with this.
+ */
+export type WebhookDeliveryCompletion = Pick<WebhookDeliveryRecord,
+  | "repositoryKey"
+  | "installationId"
+  | "headSha"
+  | "outcome"
+  | "reason"
+  | "matchedActionIds"
+  | "eventIds"
+  | "durationMs">;
 
 /** One received GitHub webhook delivery. `deliveryId` is the idempotency key. */
 export type GitHubWebhookDeliveryOutcome = "processed" | "ignored" | "failed";
@@ -1593,6 +1622,7 @@ export type GitHubActionPatch = Partial<Pick<GitHubAction,
   | "scanner"
   | "costCeilingUsd"
   | "dailyCostCeilingUsd"
+  | "includeForks"
   | "enabled">>;
 
 export type GitHubActionEventCreate =

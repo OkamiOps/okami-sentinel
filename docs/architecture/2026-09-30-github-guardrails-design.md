@@ -133,6 +133,11 @@ parte da especificação.
 | Comentário quando não há PR | Não há comentário. Gate de branch protegida ou de comparação de refs publica só o Check |
 | Falha ao publicar o comentário | Reutiliza o alerta `ops.github_publish_failed`, com o gate como alvo. Nenhum evento de e-mail novo |
 | Latência do webhook | O handler responde em uma transação curta (entrega + eventos) e despacha fora do ciclo da requisição. GitHub nunca espera um scan |
+| PR de *fork* | **Não é escaneado por padrão**: `ignored` / `fork_pull_request`. O head de um fork é código que ninguém da organização escreveu, rodando com o token da instalação e o orçamento do cliente, e o `.csb/guardrails.json` do próprio autor seria a política que o julga. Opt-in por ação (`github_actions.include_forks`, default `0`, só administrador habilita). Habilitado, o evento nasce com `head_ref = pull/<n>/head` — o ref que existe no repositório base — e política e baseline continuam vindo **da branch base**, nunca do head do fork |
+| PR em *draft* | Não escaneado enquanto é rascunho: `ignored` / `draft_pull_request`. `ready_for_review` é exatamente o momento em que o autor pede o veredicto, e já está na lista de ações tratadas |
+| Ordem das entregas | O GitHub não garante ordem entre entregas, e o botão *Redeliver* reenvia uma antiga. A supersedência é **ordenada**: só cancela evento cuja mudança é estritamente mais antiga, pelo relógio do próprio payload (`pull_request.updated_at`, `repository.pushed_at`) guardado em `github_action_events.observed_at`, e só depois de o evento do head novo estar gravado. Entrega mais antiga que o que já está na tabela → `ignored` / `stale_delivery`, sem criar e sem cancelar nada. Mudança com mais de 24 h → mesmo `stale_delivery` |
+| Entrega recusada | O GitHub **não reentrega** um webhook automaticamente: 4xx/5xx marca a entrega como falha e espera um humano clicar *Redeliver*. Toda recusa registra em log o `delivery_id`, o evento e o código do motivo (nunca o payload nem o segredo). `pull_request` e `push` perdidos voltam pela reconciliação; `installation`, `installation_repositories` e `check_run` não, e por isso a reconciliação também **re-lista as instalações** (ver *Reconciliação*). Um `rerequested` perdido é reexecutável pela pessoa que clicou |
+| Check run de outra App | `check_run.rerequested` só vale se `check_run.app.id` é o App da conexão que assinou; qualquer outra coisa é `ignored` / `check_run_not_ours`. A busca do gate é escopada por conexão **e** repositório resolvido, nunca pelo `external_id` sozinho |
 
 ## Modelo de dados
 
@@ -173,6 +178,7 @@ CREATE TABLE IF NOT EXISTS github_actions (
   cost_ceiling_usd REAL NOT NULL,
   daily_cost_ceiling_usd REAL,
   enabled INTEGER NOT NULL DEFAULT 0,
+  include_forks INTEGER NOT NULL DEFAULT 0,
   revision INTEGER NOT NULL DEFAULT 1,
   baseline_initialized_at TEXT,
   created_by TEXT,
@@ -185,6 +191,7 @@ CREATE TABLE IF NOT EXISTS github_actions (
   CHECK (trigger_kind IN ('pull_request', 'push')),
   CHECK (executor IN ('sentinel-managed', 'github-actions')),
   CHECK (enabled IN (0, 1)),
+  CHECK (include_forks IN (0, 1)),
   CHECK (revision >= 1),
   CHECK (cost_ceiling_usd > 0),
   CHECK (daily_cost_ceiling_usd IS NULL OR daily_cost_ceiling_usd > 0),
@@ -245,6 +252,7 @@ CREATE TABLE IF NOT EXISTS github_action_events (
   reason TEXT,
   error TEXT,
   detected_at TEXT NOT NULL,
+  observed_at TEXT,
   dispatched_at TEXT,
   completed_at TEXT,
   CHECK (origin IN ('webhook', 'reconciliation', 'manual')),
@@ -371,7 +379,7 @@ Rota: `POST /github/webhook` (em produção
 | Replay | `X-GitHub-Delivery` é a PK de `github_webhook_deliveries`. Conflito → `200 {"status":"duplicate"}`, nenhum trabalho |
 | Sessão | Nenhuma. `["POST", "/github/webhook", PUBLIC]` na `ROUTE_POLICY` |
 | CSRF / Origin | Isento, como o callback do manifest: `serverSecurity` ganha a exceção explícita para este par método+caminho |
-| Limite de taxa | `FailureWindow` por IP: 30 assinaturas inválidas em 5 min → `429`. Teto global de 600 entregas aceitas por minuto → `429 rate_limited`, sem registro |
+| Limite de taxa | A assinatura é verificada **primeiro**. `FailureWindow` por IP conta só verificações falhas: 30 em 5 min → `429 rate_limited` com `Retry-After`. Uma entrega que verificou nunca é bloqueada por elas, e também não zera a janela. Teto separado e generoso para as que verificaram: 600 por minuto → `429 rate_limited`, sem registro |
 | Resposta | Sempre JSON ≤ 200 bytes, nunca ecoa o payload nem o motivo interno de falha de assinatura (`401 signature_invalid` e nada mais) |
 | Trabalho | A requisição grava entrega + eventos em uma transação `IMMEDIATE` e devolve. O despacho corre fora do ciclo da requisição |
 | Cabeçalhos ausentes | `X-GitHub-Event`, `X-GitHub-Delivery` ou assinatura ausentes → `400 malformed_delivery`, sem registro |
@@ -392,14 +400,14 @@ true }`. `GITHUB_APP_MANIFEST_PERMISSIONS` troca `pull_requests: "read"` por
 
 | Evento | `action` | Efeito |
 |---|---|---|
-| `pull_request` | `opened`, `reopened`, `synchronize`, `ready_for_review` | Um evento `pull_request` por ação habilitada cujo padrão casa `base.ref` |
+| `pull_request` | `opened`, `reopened`, `synchronize`, `ready_for_review` | Um evento `pull_request` por ação habilitada cujo padrão casa `base.ref`. Head de fork sem `include_forks` → `ignored` / `fork_pull_request`; rascunho (fora de `ready_for_review`) → `ignored` / `draft_pull_request`; mudança já superada → `ignored` / `stale_delivery` |
 | `pull_request` | `closed` | Eventos `queued` do PR viram `superseded` com `reason='pull_request_closed'`. Nada é escaneado |
 | `pull_request` | outros (`labeled`, `edited`, …) | `ignored` / `action_not_handled` |
 | `push` | — | Um evento `push` por ação cujo padrão casa o nome curto de `ref`. `after` só de zeros (branch apagada) → `ignored` / `branch_deleted`. `ref` fora de `refs/heads/` → `ignored` / `ref_not_branch` |
 | `installation_repositories` | `added` | Atualiza o cache `github_installation_repositories` |
 | `installation_repositories` | `removed` | Mesmo cache, e desabilita ações dos repositórios removidos com `last_error='repository_unauthorized'` |
 | `installation` | `deleted`, `suspend` | Desabilita as ações de todos os repositórios da instalação |
-| `check_run` | `rerequested` | Novo gate para o `external_id` do check, `origin='manual'`. Exceção explícita ao "mesmo commit nunca duas vezes" |
+| `check_run` | `rerequested` | Novo gate para o `external_id` do check, `origin='manual'`, escopado por conexão e repositório e só quando `check_run.app.id` é o App da conexão (senão `ignored` / `check_run_not_ours`). Exceção explícita ao "mesmo commit nunca duas vezes" |
 | `workflow_run` | `completed` | Fase 4: importa o artefato do caller pelo `workflow_run_id` registrado em `github_actions_dispatches` |
 | `ping` | — | `processed`, nada mais |
 | qualquer outro | — | `ignored` / `event_not_handled` |
@@ -433,6 +441,12 @@ pós-despacho como `failed` sem repetição cega.
   preenche a coluna. Nenhum scan retroativo, na criação nem depois de uma edição.
 - Reconcilia também os despachos órfãos (`reconcileOrphanedGitHubMonitorDispatches`,
   renomeado) e, na Fase 4, os `workflow_run` cujo webhook não chegou.
+- **Re-lista as instalações** (`GET /app/installations` e seus repositórios) a cada
+  ciclo, e desabilita as ações de repositório que a instalação não alcança mais.
+  Uma entrega `installation` ou `installation_repositories` recusada não volta
+  sozinha — o GitHub não reentrega — e sem isso as ações de um repositório fora da
+  instalação ficariam habilitadas indefinidamente. Um `check_run.rerequested`
+  perdido não é reconciliado: quem clicou clica de novo.
 - Grava `last_reconciled_at` e `last_error` na ação. A tela de Integração mostra
   a última reconciliação e quantos eventos de `origin='reconciliation'` ela
   recuperou nas últimas 24 h — o número que diz se os webhooks estão chegando.
@@ -443,7 +457,8 @@ pós-despacho como `failed` sem repetição cega.
 |---|---|
 | GitHub reentrega a mesma entrega | `200 duplicate`; nada acontece |
 | Dois eventos para o mesmo `target_identity` na mesma revisão | O segundo é descartado pela `UNIQUE` |
-| Novo commit no PR com evento `queued` não despachado | O antigo vira `superseded` / `head_superseded`; só o novo é despachado |
+| Novo commit no PR com evento `queued` não despachado | O antigo vira `superseded` / `head_superseded`; só o novo é despachado. A ordem é pelo relógio do payload, e o cancelamento acontece **depois** de o evento novo estar gravado: uma entrega atrasada nunca cancela o head atual |
+| Entrega fora de ordem, ou reenviada pelo *Redeliver* com mudança já superada | `ignored` / `stale_delivery`. Nada é criado e nada é cancelado |
 | Novo commit no PR com gate já `launched` | O gate anterior segue até o fim (o custo já foi gasto); o novo entra na fila; o comentário sticky passa a refletir o commit novo |
 | PR fechada com evento `queued` | `superseded` / `pull_request_closed` |
 | `head_sha` mudou entre fila e despacho | `skipped` / `head_superseded` |
@@ -638,6 +653,7 @@ de corrigidos desaparece.
 | Criar ação (qualquer executor) | administrador |
 | Habilitar ação | administrador |
 | Trocar executor, conexão, modelo, esforço, modo ou teto | administrador |
+| Habilitar `include_forks` numa ação | administrador |
 | Renomear ação ou ajustar padrões de branch de ação **desabilitada** | mantenedor |
 | Desabilitar ação | mantenedor |
 | Remover ação | mantenedor |
@@ -815,7 +831,10 @@ cadastro continua curto.
 - Casamento de padrões de branch (`main`, `release/**`, `feature/*`) para PR
   (`base.ref`) e push (`refs/heads/...`), com branch apagada e `ref` não-branch.
 - Supersedência: novo commit em PR com evento `queued`; PR fechada; commit
-  repetido; `check_run.rerequested`.
+  repetido; `check_run.rerequested`; entrega fora de ordem e *Redeliver* de uma
+  antiga, que não podem cancelar o head atual.
+- Fork: PR de fork ignorada por padrão; com `include_forks`, evento com
+  `head_ref = pull/<n>/head`. Draft ignorado até `ready_for_review`.
 - Reconciliação: sem commit novo não cria evento; primeira rodada marca
   `observed`; ação editada não dispara a fila de PRs abertos.
 - Baseline: transições `absent → building → ready → stale` e a reconstrução no

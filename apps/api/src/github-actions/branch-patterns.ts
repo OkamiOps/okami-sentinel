@@ -18,25 +18,38 @@ export function matchesBranchPattern(pattern: string, branch: string): boolean {
   const trimmedPattern = pattern.trim();
   const name = shortBranchName(branch.trim());
   if (trimmedPattern === "" || name === "") return false;
-  return compile(trimmedPattern).test(name);
+  return compile(trimmedPattern)?.test(name) ?? false;
 }
 
 export function matchesAnyBranchPattern(patterns: readonly string[], branch: string): boolean {
   return patterns.some((pattern) => matchesBranchPattern(pattern, branch));
 }
 
-const compiled = new Map<string, RegExp>();
+/**
+ * Two wildcards express everything the documented language needs
+ * (`release/**`, `feature/*`, `*-hotfix`). A chain of them separated by literals
+ * is polynomial backtracking against a branch name any contributor can choose, so
+ * beyond this bound the pattern matches nothing at all rather than burning the
+ * event loop. The write path (task 1.5) should refuse such a pattern outright.
+ */
+const MAX_WILDCARDS = 4;
 
-function compile(pattern: string): RegExp {
+const compiled = new Map<string, RegExp | null>();
+
+function compile(pattern: string): RegExp | null {
   const known = compiled.get(pattern);
-  if (known) return known;
+  if (known !== undefined) return known;
   // Split on the stars first so the literal parts can be escaped wholesale; the
-  // separators are then translated one by one.
-  const source = pattern
-    .split(/(\*\*|\*)/)
-    .map((part) => (part === "**" ? ".+" : part === "*" ? "[^/]+" : escapeRegExp(part)))
-    .join("");
-  const expression = new RegExp(`^${source}$`);
+  // separators are then translated one by one. A run of three or more stars means
+  // no more than `**` does, so it collapses instead of compiling two wildcards.
+  const parts = pattern.replaceAll(/\*{3,}/g, "**").split(/(\*\*|\*)/);
+  const wildcards = parts.filter((part) => part === "**" || part === "*").length;
+  const source = wildcards > MAX_WILDCARDS
+    ? null
+    : parts
+      .map((part) => (part === "**" ? ".+" : part === "*" ? "[^/]+" : escapeRegExp(part)))
+      .join("");
+  const expression = source === null ? null : new RegExp(`^${source}$`);
   // Patterns come from a bounded list on an action row (1..20), so the cache is
   // bounded in practice; the guard is there for a pathological caller.
   if (compiled.size > 1000) compiled.clear();
