@@ -56,7 +56,12 @@ export interface GateEmailData {
 /** The same rules, for a scan that reached a terminal status. */
 export interface ScanEmailData {
   scanId: string;
-  repository: string;
+  /**
+   * The repository's display name, or `null` for a scan that belongs to no
+   * repository — a local directory scan, whose only name is the directory's, which
+   * is host information and stays out of the inbox.
+   */
+  repository: string | null;
   /** The revision the scan ran against, when one was recorded. */
   branch: string | null;
   status: "completed" | "failed" | "incomplete";
@@ -687,6 +692,13 @@ interface RepositoryKindCopy {
 
 interface RepositoryCopy {
   repository: string;
+  /**
+   * The label a scan with no repository files itself under. Same word in all five
+   * languages, and deliberately not `repository`: a local directory scan has a
+   * scan id and nothing else, and printing that id as "Repository" is the one
+   * thing a reader would then get wrong about it.
+   */
+  scan: string;
   branch: string;
   pullRequest: string;
   outcome: string;
@@ -713,7 +725,7 @@ interface RepositoryCopy {
 
 const REPOSITORY_COPY: Readonly<Record<UserLocale, RepositoryCopy>> = Object.freeze({
   "pt-BR": {
-    repository: "Repositório", branch: "Branch", pullRequest: "Pull request", outcome: "Resultado",
+    repository: "Repositório", scan: "Scan", branch: "Branch", pullRequest: "Pull request", outcome: "Resultado",
     findings: "Findings", critical: "Críticos", high: "Altos", medium: "Médios", low: "Baixos",
     cost: "Custo", duration: "Duração",
     outcomes: {
@@ -755,7 +767,7 @@ const REPOSITORY_COPY: Readonly<Record<UserLocale, RepositoryCopy>> = Object.fre
     },
   },
   en: {
-    repository: "Repository", branch: "Branch", pullRequest: "Pull request", outcome: "Result",
+    repository: "Repository", scan: "Scan", branch: "Branch", pullRequest: "Pull request", outcome: "Result",
     findings: "Findings", critical: "Critical", high: "High", medium: "Medium", low: "Low",
     cost: "Cost", duration: "Duration",
     outcomes: {
@@ -797,7 +809,7 @@ const REPOSITORY_COPY: Readonly<Record<UserLocale, RepositoryCopy>> = Object.fre
     },
   },
   es: {
-    repository: "Repositorio", branch: "Rama", pullRequest: "Pull request", outcome: "Resultado",
+    repository: "Repositorio", scan: "Scan", branch: "Rama", pullRequest: "Pull request", outcome: "Resultado",
     findings: "Hallazgos", critical: "Críticos", high: "Altos", medium: "Medios", low: "Bajos",
     cost: "Costo", duration: "Duración",
     outcomes: {
@@ -839,7 +851,7 @@ const REPOSITORY_COPY: Readonly<Record<UserLocale, RepositoryCopy>> = Object.fre
     },
   },
   de: {
-    repository: "Repository", branch: "Branch", pullRequest: "Pull Request", outcome: "Ergebnis",
+    repository: "Repository", scan: "Scan", branch: "Branch", pullRequest: "Pull Request", outcome: "Ergebnis",
     findings: "Findings", critical: "Kritisch", high: "Hoch", medium: "Mittel", low: "Niedrig",
     cost: "Kosten", duration: "Dauer",
     outcomes: {
@@ -881,7 +893,7 @@ const REPOSITORY_COPY: Readonly<Record<UserLocale, RepositoryCopy>> = Object.fre
     },
   },
   fr: {
-    repository: "Dépôt", branch: "Branche", pullRequest: "Pull request", outcome: "Résultat",
+    repository: "Dépôt", scan: "Scan", branch: "Branche", pullRequest: "Pull request", outcome: "Résultat",
     findings: "Findings", critical: "Critiques", high: "Élevés", medium: "Moyens", low: "Faibles",
     cost: "Coût", duration: "Durée",
     outcomes: {
@@ -982,11 +994,13 @@ function gateBody(data: GateEmailData, copy: RepositoryCopy, kind: RepositoryKin
 
 function scanBody(data: ScanEmailData, copy: RepositoryCopy, kind: RepositoryKindCopy): EmailTemplateBody {
   return {
-    subject: kind.subject(data.repository),
+    subject: kind.subject(data.repository ?? data.scanId),
     heading: kind.heading,
     paragraphs: [kind.body],
     facts: [
-      { label: copy.repository, value: data.repository },
+      data.repository === null
+        ? { label: copy.scan, value: data.scanId }
+        : { label: copy.repository, value: data.repository },
       ...(data.branch === null ? [] : [{ label: copy.branch, value: data.branch }]),
       { label: copy.outcome, value: copy.statuses[data.status] },
       ...severityFacts(data.severity, copy),

@@ -246,6 +246,11 @@ test("a repository-less scan names itself, not a directory on the host", () => {
   }
   assert.ok(row.text.includes("s-loose"));
   assert.ok(row.html.includes(`href="${ORIGIN}/scans/s-loose"`));
+  // And it names itself under the right label. `Repositório: s-loose` would be a
+  // scan id filed as a repository, which is the one thing a reader would then get
+  // wrong about a scan that has no repository at all.
+  assert.ok(row.text.includes("Scan: s-loose"), row.text);
+  assert.equal(row.text.includes("Repositório:"), false);
   db.close();
 });
 
