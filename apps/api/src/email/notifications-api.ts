@@ -10,6 +10,8 @@ import {
   OPS_NOTIFICATION_EVENTS,
   OPS_NOTIFICATION_SCOPE,
   REPOSITORY_NOTIFICATION_EVENTS,
+  UNASSIGNED_NOTIFICATION_EVENTS,
+  UNASSIGNED_NOTIFICATION_SCOPE,
   type AccountNotificationsError,
   type AccountNotificationsResponse,
   type NotificationEvent,
@@ -94,6 +96,12 @@ export function accountNotificationsMatrix(
     ops: principal.isAdmin
       ? { events: cells(OPS_NOTIFICATION_SCOPE, OPS_NOTIFICATION_EVENTS, overrides) }
       : null,
+    // A scan that belongs to no repository has administrators as its only
+    // recipients, so only they get the row — and they need one, because the rest
+    // of the matrix is keyed by repository and such a scan has none.
+    unassigned: principal.isAdmin
+      ? { events: cells(UNASSIGNED_NOTIFICATION_SCOPE, UNASSIGNED_NOTIFICATION_EVENTS, overrides) }
+      : null,
     accountEvents: ACCOUNT_NOTIFICATION_EVENTS,
   };
 }
@@ -150,6 +158,13 @@ export function parseNotificationUpdate(
     if (scope === OPS_NOTIFICATION_SCOPE) {
       if (!isOpsNotificationEvent(event)) return { ok: false, error: "event_invalid", scope, event };
       if (!access.isAdmin) return { ok: false, error: "ops_forbidden", scope, event };
+    } else if (scope === UNASSIGNED_NOTIFICATION_SCOPE) {
+      // A gate always names a repository, so only the two scan events can reach
+      // this scope.
+      if (!(UNASSIGNED_NOTIFICATION_EVENTS as readonly string[]).includes(event)) {
+        return { ok: false, error: "event_invalid", scope, event };
+      }
+      if (!access.isAdmin) return { ok: false, error: "unassigned_forbidden", scope, event };
     } else {
       if (!isRepositoryNotificationEvent(event)) return { ok: false, error: "event_invalid", scope, event };
       // One code for "no such repository" and for "not shared with you": the

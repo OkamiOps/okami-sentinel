@@ -31,6 +31,9 @@ export function openSqliteFile(file: string, options: Database.Options = {}): Da
  * the timeout applies, so every transaction that writes gets it by default —
  * which is what nine call sites already asked for by hand.
  *
+ * Exported so a test that opens its own `:memory:` database exercises the mode
+ * that ships rather than the driver's default.
+ *
  * A transaction that only reads MUST opt out with `.deferred()`: taking the
  * write lock would make it queue behind every concurrent writer and, worse,
  * wait out the whole busy timeout when one is mid-write. `listRunPage` in
@@ -38,7 +41,7 @@ export function openSqliteFile(file: string, options: Database.Options = {}): Da
  * default is inert either way, because such a connection never takes the write
  * lock.
  */
-function defaultToImmediateTransactions(database: Database.Database): void {
+export function defaultToImmediateTransactions(database: Database.Database): void {
   const build = database.transaction.bind(database);
   database.transaction = ((handler) => build(handler).immediate) as typeof database.transaction;
 }

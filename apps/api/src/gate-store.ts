@@ -10,6 +10,7 @@ import type {
   GitHubConclusion,
   GuardrailRepository,
 } from "@csb/shared";
+import { isReservedNotificationScope } from "@csb/shared";
 import { getDb } from "./db.js";
 import { migrateGuardrailsSchema } from "./guardrails-migrations.js";
 
@@ -866,6 +867,15 @@ export function upsertGuardrailRepository(
   repository: GuardrailRepository,
   database: Database.Database = getDb(),
 ): void {
+  // `notification_subscriptions.scope` is a repository key or one of the reserved
+  // scopes. Every key the product mints carries a separator, so the two sets
+  // cannot meet — but a key that did would route that repository's preferences
+  // into the reserved branch, where `PUT /account/notifications` refuses every
+  // one of them while `GET` still lists them. Refused here, where the set of keys
+  // is decided, rather than relied upon.
+  if (isReservedNotificationScope(repository.repositoryKey)) {
+    throw new Error("repository_key_reserved");
+  }
   ensureGateSchema(database);
   const now = new Date().toISOString();
   database

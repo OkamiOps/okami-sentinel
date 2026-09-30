@@ -162,6 +162,12 @@ export function ensureGitHubMonitorSchema(database: Database.Database = getDb())
       ON github_monitor_events(rule_id, status, detected_at ASC);
     CREATE INDEX IF NOT EXISTS github_monitor_events_by_repository_day
       ON github_monitor_events(repository_key, detected_at DESC);
+    -- reservedGitHubMonitorCostForUtcDay filters on dispatched_at, which the index
+    -- above does not carry: without this one every historical event of the rule is
+    -- scanned, and the operational evaluator asks once a minute per enabled rule
+    -- rather than once per dispatch.
+    CREATE INDEX IF NOT EXISTS github_monitor_events_by_rule_dispatch
+      ON github_monitor_events(rule_id, dispatched_at);
 
     CREATE TABLE IF NOT EXISTS github_monitor_actions_runs (
       id TEXT PRIMARY KEY,
@@ -679,6 +685,12 @@ function migrateGitHubMonitorEventsTargetIdentity(database: Database.Database): 
       ON github_monitor_events(rule_id, status, detected_at ASC);
     CREATE INDEX IF NOT EXISTS github_monitor_events_by_repository_day
       ON github_monitor_events(repository_key, detected_at DESC);
+    -- reservedGitHubMonitorCostForUtcDay filters on dispatched_at, which the index
+    -- above does not carry: without this one every historical event of the rule is
+    -- scanned, and the operational evaluator asks once a minute per enabled rule
+    -- rather than once per dispatch.
+    CREATE INDEX IF NOT EXISTS github_monitor_events_by_rule_dispatch
+      ON github_monitor_events(rule_id, dispatched_at);
   `);
 }
 

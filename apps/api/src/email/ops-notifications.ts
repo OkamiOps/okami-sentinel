@@ -11,7 +11,7 @@ import { getDb } from "../db.js";
 import { getGateRun } from "../gate-store.js";
 import { listGitHubMonitorRules, reservedGitHubMonitorCostForUtcDay } from "../github-monitor/store.js";
 import { getScannerCatalog } from "../scanners/catalog.js";
-import { enqueueEmail } from "./enqueue.js";
+import { emailQueueEnabled, enqueueEmail } from "./enqueue.js";
 import {
   deleteOpsAlertState,
   getOpsAlertState,
@@ -42,10 +42,52 @@ export const OPS_EVALUATOR_INTERVAL_MS = 60_000;
 export const OPS_ALERT_REPEAT_MS = 6 * 3_600_000;
 /** "mais de 5 min": an engine that blinks is not an outage. */
 export const OPS_ENGINE_GRACE_MS = 5 * 60_000;
+/**
+ * The same five minutes for a connection, for two reasons. A token refresh moves a
+ * connection through `expired` and back, and the first evaluator tick after an
+ * upgrade finds every connection that has been broken for weeks — without a window
+ * that tick would queue one message per connection per administrator.
+ */
+export const OPS_CONNECTION_GRACE_MS = OPS_ENGINE_GRACE_MS;
 /** The only target an engine outage can have; there is one engine per installation. */
 export const OPS_ENGINE_TARGET = "engine";
 /** The two crossings of a daily ceiling the design asks for. */
 export const OPS_DAILY_COST_THRESHOLDS: readonly number[] = Object.freeze([80, 100]);
+/**
+ * How long the evaluator reuses one scanner probe.
+ *
+ * `getScannerCatalog` shells out to four CLI binaries, each with a 20 s timeout,
+ * and its own 30 s cache is shorter than the 60 s interval — so every tick would
+ * be a miss and spawn four processes, for ever, on a deployment that has no CLI
+ * installed at all. Half the grace period: the alert already needs five minutes of
+ * continuous unavailability, so sampling the engine every two and a half is more
+ * than the decision needs, and a recovery is still noticed well inside a tick.
+ */
+export const OPS_ENGINE_PROBE_TTL_MS = OPS_ENGINE_GRACE_MS / 2;
+/**
+ * How long `stop()` waits for the pass in flight. A scanner probe can sit on a
+ * 20 s timeout, and a SIGTERM must not wait it out: the evaluator writes only
+ * outbox rows and alert state, and an abandoned pass repeats on the next boot.
+ */
+export const OPS_EVALUATOR_STOP_DEADLINE_MS = 2_000;
+
+let cachedProbe: { at: number; value: Promise<ScannerCatalogResponse> } | null = null;
+
+/** Only for tests, and for the engine update route's own invalidation. */
+export function clearOpsEngineProbeCache(): void {
+  cachedProbe = null;
+}
+
+function memoizedCatalog(): Promise<ScannerCatalogResponse> {
+  const now = Date.now();
+  if (cachedProbe !== null && now - cachedProbe.at < OPS_ENGINE_PROBE_TTL_MS) return cachedProbe.value;
+  // The promise is cached, not its result, so two overlapping asks share one probe;
+  // a rejection is dropped from the cache so the next tick can try again.
+  const value = getScannerCatalog();
+  cachedProbe = { at: now, value };
+  void value.catch(() => { if (cachedProbe?.value === value) cachedProbe = null; });
+  return value;
+}
 
 /** Who hears about operational alerts: administrators who did not switch them off. */
 export function opsRecipients(
@@ -77,6 +119,8 @@ function queueOps<K extends OpsMessageKind>(
     origin?: string | null;
   },
 ): number {
+  const enabled = emailQueueEnabled(database);
+  if (!enabled) return 0;
   let queued = 0;
   for (const recipient of opsRecipients(input.event, database)) {
     const result = enqueueEmail(database, {
@@ -89,7 +133,7 @@ function queueOps<K extends OpsMessageKind>(
       data: input.data,
       now: input.now,
       ...(input.origin === undefined ? {} : { origin: input.origin }),
-    } as never);
+    } as never, { enabled });
     if (result.status === "queued") queued += 1;
   }
   return queued;
@@ -104,10 +148,16 @@ export interface OpsConditionInput {
   now: Date;
   /** How long the condition has to persist before the first alert. */
   graceMs?: number;
-  /** Queues the alert. Called inside the transaction that records it. */
-  alert: (activeSince: Date) => void;
-  /** Queues the "it is over" message. Only called if an alert ever went out. */
-  resolve: (activeSince: Date) => void;
+  /**
+   * Queues the alert and returns how many messages it wrote. The count is the
+   * whole point: e-mail switched off, no administrator with an address and every
+   * administrator unsubscribed all queue nothing without throwing, and a window
+   * spent on a message nobody received is six hours of silence about a live
+   * condition.
+   */
+  alert: (activeSince: Date) => number;
+  /** The same, for the "it is over" message. Only called if an alert went out. */
+  resolve: (activeSince: Date) => number;
 }
 
 /**
@@ -130,37 +180,44 @@ export function stepOpsCondition(
     // A new episode starts now; an ongoing one keeps the stamp it already had, so
     // a restart does not reset either the grace period or the six-hour window.
     const activeSince = ongoing ? new Date(state.activeSince) : now;
-    if (!ongoing) {
-      putOpsAlertState({
-        event, target, activeSince: activeSince.toISOString(), lastSentAt: null, resolvedAt: null,
-      }, database);
+    const started = { event, target, activeSince: activeSince.toISOString(), resolvedAt: null };
+    if (now.getTime() - activeSince.getTime() < graceMs) {
+      // Still inside the grace period: record that the condition started, so the
+      // window is measured from when it began and not from when it was reported.
+      if (!ongoing) putOpsAlertState({ ...started, lastSentAt: null }, database);
+      return null;
     }
-    if (now.getTime() - activeSince.getTime() < graceMs) return null;
     const lastSentAt = ongoing ? state.lastSentAt : null;
     if (lastSentAt !== null && now.getTime() - Date.parse(lastSentAt) < OPS_ALERT_REPEAT_MS) return null;
+    // One write, not two: past the grace period the row is stamped with whatever
+    // the send turns out to have produced.
+    let queued = 0;
     database.transaction(() => {
-      input.alert(activeSince);
+      queued = input.alert(activeSince);
       putOpsAlertState({
-        event, target, activeSince: activeSince.toISOString(),
-        lastSentAt: now.toISOString(), resolvedAt: null,
+        ...started,
+        lastSentAt: queued > 0 ? now.toISOString() : lastSentAt,
       }, database);
     })();
-    return "alerted";
+    return queued > 0 ? "alerted" : null;
   }
 
   if (!ongoing) return null;
   if (state.lastSentAt === null) {
-    // Started and ended inside the grace period: nobody was told, so there is
-    // nothing to tell them is over.
+    // Started and ended without anybody being told: nothing to tell them is over,
+    // and no row to make the next episode look like a continuation of this one.
     deleteOpsAlertState(event, target, database);
     return null;
   }
   const activeSince = new Date(state.activeSince);
+  let resolved = 0;
   database.transaction(() => {
-    input.resolve(activeSince);
-    putOpsAlertState({ ...state, resolvedAt: now.toISOString() }, database);
+    resolved = input.resolve(activeSince);
+    // Only a delivered resolution closes the episode. Closing it on a suppressed
+    // one would leave an outage announced and its end never mentioned.
+    if (resolved > 0) putOpsAlertState({ ...state, resolvedAt: now.toISOString() }, database);
   })();
-  return "resolved";
+  return resolved > 0 ? "resolved" : null;
 }
 
 export interface OpsEvaluatorOptions {
@@ -209,33 +266,29 @@ export async function evaluateEngineAvailability(
 ): Promise<OpsConditionOutcome> {
   const database = options.database ?? getDb();
   const now = options.now ?? new Date();
-  const { available, unavailable } = await engineAvailability(database, options.catalog ?? getScannerCatalog);
+  const { available, unavailable } = await engineAvailability(database, options.catalog ?? memoizedCatalog);
   return stepOpsCondition(database, {
     event: "ops.engine_unavailable",
     target: OPS_ENGINE_TARGET,
     active: !available,
     now,
     graceMs: OPS_ENGINE_GRACE_MS,
-    alert: (activeSince) => {
-      queueOps(database, {
+    alert: (activeSince) => queueOps(database, {
         event: "ops.engine_unavailable",
         kind: "ops.engine_unavailable",
         dedupeKey: `ops.engine_unavailable.${OPS_ENGINE_TARGET}.${now.toISOString()}`,
         data: { since: activeSince, at: now, engines: unavailable },
         now,
         ...(options.origin === undefined ? {} : { origin: options.origin }),
-      });
-    },
-    resolve: (activeSince) => {
-      queueOps(database, {
+      }),
+    resolve: (activeSince) => queueOps(database, {
         event: "ops.engine_unavailable",
         kind: "ops.engine_unavailable.resolved",
         dedupeKey: `ops.engine_unavailable.${OPS_ENGINE_TARGET}.resolved.${activeSince.toISOString()}`,
         data: { since: activeSince, at: now },
         now,
         ...(options.origin === undefined ? {} : { origin: options.origin }),
-      });
-    },
+      }),
   });
 }
 
@@ -267,26 +320,23 @@ export function evaluateConnectionAttention(options: OpsEvaluatorOptions = {}): 
       target,
       active,
       now,
-      alert: (activeSince) => {
-        queueOps(database, {
-          event: "ops.connection_attention",
-          kind: "ops.connection_attention",
-          dedupeKey: `ops.connection_attention.${target}.${now.toISOString()}`,
-          data: { connectionName: name, status, since: activeSince, at: now },
-          now,
-          ...(options.origin === undefined ? {} : { origin: options.origin }),
-        });
-      },
-      resolve: (activeSince) => {
-        queueOps(database, {
-          event: "ops.connection_attention",
-          kind: "ops.connection_attention.resolved",
-          dedupeKey: `ops.connection_attention.${target}.resolved.${activeSince.toISOString()}`,
-          data: { connectionName: name, since: activeSince, at: now },
-          now,
-          ...(options.origin === undefined ? {} : { origin: options.origin }),
-        });
-      },
+      graceMs: OPS_CONNECTION_GRACE_MS,
+      alert: (activeSince) => queueOps(database, {
+        event: "ops.connection_attention",
+        kind: "ops.connection_attention",
+        dedupeKey: `ops.connection_attention.${target}.${now.toISOString()}`,
+        data: { connectionName: name, status, since: activeSince, at: now },
+        now,
+        ...(options.origin === undefined ? {} : { origin: options.origin }),
+      }),
+      resolve: (activeSince) => queueOps(database, {
+        event: "ops.connection_attention",
+        kind: "ops.connection_attention.resolved",
+        dedupeKey: `ops.connection_attention.${target}.resolved.${activeSince.toISOString()}`,
+        data: { connectionName: name, since: activeSince, at: now },
+        now,
+        ...(options.origin === undefined ? {} : { origin: options.origin }),
+      }),
     }));
   }
   return outcomes;
@@ -355,43 +405,43 @@ function publishCondition(
   input: { gateId: string; active: boolean; now: Date; origin?: string | null },
 ): OpsConditionOutcome {
   const gate = getGateRun(input.gateId, database);
-  const repository = gate === null
-    ? input.gateId
-    : repositoryLabel(gate.repositoryKey, database);
+  if (gate === null) {
+    // A gate an administrator deleted did not publish, it stopped existing. Saying
+    // "the publication of <id> succeeded" would be a lie, and there is nothing left
+    // for the alert to point at, so the condition is simply forgotten.
+    deleteOpsAlertState("ops.github_publish_failed", input.gateId, database);
+    return null;
+  }
+  const repository = repositoryLabel(gate.repositoryKey, database);
   return stepOpsCondition(database, {
     event: "ops.github_publish_failed",
     target: input.gateId,
     active: input.active,
     now: input.now,
-    alert: (activeSince) => {
-      void activeSince;
-      queueOps(database, {
-        event: "ops.github_publish_failed",
-        kind: "ops.github_publish_failed",
-        dedupeKey: `ops.github_publish_failed.${input.gateId}.${input.now.toISOString()}`,
-        data: {
-          gateId: input.gateId,
-          repository,
-          branch: gate?.headRef ?? "-",
-          // A code or a provider message, capped: an operational alert names the
-          // failure, it does not carry a transcript.
-          reason: (gate?.publishError ?? "github_check_publish_failed").slice(0, 200),
-          at: input.now,
-        },
-        now: input.now,
-        ...(input.origin === undefined ? {} : { origin: input.origin }),
-      });
-    },
-    resolve: (activeSince) => {
-      queueOps(database, {
-        event: "ops.github_publish_failed",
-        kind: "ops.github_publish_failed.resolved",
-        dedupeKey: `ops.github_publish_failed.${input.gateId}.resolved.${activeSince.toISOString()}`,
-        data: { gateId: input.gateId, repository, since: activeSince, at: input.now },
-        now: input.now,
-        ...(input.origin === undefined ? {} : { origin: input.origin }),
-      });
-    },
+    alert: () => queueOps(database, {
+      event: "ops.github_publish_failed",
+      kind: "ops.github_publish_failed",
+      dedupeKey: `ops.github_publish_failed.${input.gateId}.${input.now.toISOString()}`,
+      data: {
+        gateId: input.gateId,
+        repository,
+        branch: gate.headRef,
+        // A code or a provider message, capped: an operational alert names the
+        // failure, it does not carry a transcript.
+        reason: (gate.publishError ?? "github_check_publish_failed").slice(0, 200),
+        at: input.now,
+      },
+      now: input.now,
+      ...(input.origin === undefined ? {} : { origin: input.origin }),
+    }),
+    resolve: (activeSince) => queueOps(database, {
+      event: "ops.github_publish_failed",
+      kind: "ops.github_publish_failed.resolved",
+      dedupeKey: `ops.github_publish_failed.${input.gateId}.resolved.${activeSince.toISOString()}`,
+      data: { gateId: input.gateId, repository, since: activeSince, at: input.now },
+      now: input.now,
+      ...(input.origin === undefined ? {} : { origin: input.origin }),
+    }),
   });
 }
 
@@ -438,7 +488,7 @@ export function evaluatePublishRecovery(options: OpsEvaluatorOptions = {}): OpsC
     const gate = getGateRun(state.target, database);
     return publishCondition(database, {
       gateId: state.target,
-      active: gate !== null && gate.publishStatus === "failed",
+      active: gate?.publishStatus === "failed",
       now,
       ...(options.origin === undefined ? {} : { origin: options.origin }),
     });
@@ -532,7 +582,18 @@ export function startOpsEvaluator(
     async stop() {
       stopped = true;
       clearInterval(timer);
-      await inFlight?.catch(() => undefined);
+      if (inFlight === null) return;
+      // Bounded: a pass that is waiting out a scanner probe's 20 s timeout must not
+      // hold up a shutdown. Nothing is lost — the next boot re-evaluates.
+      let deadline: NodeJS.Timeout | undefined;
+      await Promise.race([
+        inFlight.catch(() => undefined),
+        new Promise<void>((resolve) => {
+          deadline = setTimeout(resolve, OPS_EVALUATOR_STOP_DEADLINE_MS);
+          deadline.unref();
+        }),
+      ]);
+      if (deadline !== undefined) clearTimeout(deadline);
     },
     tick,
   };

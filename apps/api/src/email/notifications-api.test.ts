@@ -3,9 +3,12 @@ import test from "node:test";
 import Database from "better-sqlite3";
 import { Hono } from "hono";
 import {
+  isReservedNotificationScope,
   NOTIFICATION_DEFAULTS,
   OPS_NOTIFICATION_SCOPE,
   REPOSITORY_NOTIFICATION_EVENTS,
+  RESERVED_NOTIFICATION_SCOPES,
+  UNASSIGNED_NOTIFICATION_SCOPE,
   type AccountNotificationsResponse,
   type GuardrailRepository,
 } from "@csb/shared";
@@ -14,10 +17,11 @@ import { ensureAuthSchema } from "../auth/schema.js";
 import { setRepositoryGrant } from "../auth/grant-store.js";
 import { createUser, updateUser } from "../auth/user-store.js";
 import type { ServerSettings } from "../deployment-settings.js";
-import { ensureGateSchema, upsertGuardrailRepository } from "../gate-store.js";
+import { ensureGateSchema, listGuardrailRepositories, upsertGuardrailRepository } from "../gate-store.js";
 import { createNotificationsApi } from "./notifications-api.js";
 import { ensureEmailSchema } from "./schema.js";
 import { isSubscribed, listUserSubscriptions, setSubscription, subscribedUserIds } from "./subscription-store.js";
+import { defaultToImmediateTransactions } from "../sqlite.js";
 
 /**
  * Its own in-memory database. The shared `benchmark.db` is written by parallel
@@ -26,6 +30,10 @@ import { isSubscribed, listUserSubscriptions, setSubscription, subscribedUserIds
  */
 function fresh(): Database.Database {
   const db = new Database(":memory:");
+  // The same override `openSqliteFile` installs, so the notification hot path is
+  // exercised with the `BEGIN IMMEDIATE` it uses in production and not with the
+  // driver's deferred default.
+  defaultToImmediateTransactions(db);
   db.exec("CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, repository_path TEXT)");
   ensureGateSchema(db);
   ensureAuthSchema(db);
@@ -148,8 +156,10 @@ test("a member's matrix holds exactly the repositories shared with them", async 
       event, enabled: NOTIFICATION_DEFAULTS[event], isDefault: true,
     })),
   );
-  // Operational alerts are an administrator's row; a member has none to render.
+  // Operational alerts and repository-less scans are an administrator's rows; a
+  // member is not a recipient of either, so neither is rendered.
   assert.equal(matrix.ops, null);
+  assert.equal(matrix.unassigned, null);
   assert.equal(matrix.address, "ana@example.com");
   assert.equal(matrix.locale, "pt-BR");
   assert.deepEqual(matrix.accountEvents, [
@@ -175,6 +185,72 @@ test("an administrator's matrix holds every registered repository and the ops ro
     "ops.daily_cost", "ops.github_publish_failed",
   ]);
   assert.ok(matrix.ops?.events.every((cell) => cell.enabled && cell.isDefault));
+  // Scans with no repository have a row of their own, because the matrix is keyed
+  // by repository and they have none — without it those messages could not be
+  // switched off at all.
+  assert.deepEqual(matrix.unassigned?.events, [
+    { event: "scan.failed", enabled: true, isDefault: true },
+    { event: "scan.completed", enabled: false, isDefault: true },
+  ]);
+  db.close();
+});
+
+test("a repository key can never collide with a reserved scope", () => {
+  // `ops` and `unassigned` are scopes, not repositories. Every key the product
+  // mints carries a separator, so the two sets cannot meet — asserted rather than
+  // assumed, because a colliding key would route one repository's cells into the
+  // reserved branch and make them silently unwritable.
+  assert.deepEqual([...RESERVED_NOTIFICATION_SCOPES], ["ops", "unassigned"]);
+  for (const scope of RESERVED_NOTIFICATION_SCOPES) {
+    assert.equal(isReservedNotificationScope(scope), true);
+    assert.equal(scope.includes("/"), false);
+  }
+  assert.equal(isReservedNotificationScope("github.com/okami/csb"), false);
+  assert.equal(isReservedNotificationScope("local/ops"), false);
+
+  const db = fresh();
+  // The store refuses to register one, so the invariant holds in the database and
+  // not only in the reviewer's head.
+  for (const scope of RESERVED_NOTIFICATION_SCOPES) {
+    assert.throws(() => upsertGuardrailRepository(repository(scope, "sentinel"), db), /repository_key_reserved/);
+  }
+  assert.deepEqual(listGuardrailRepositories(db), []);
+  db.close();
+});
+
+test("the unassigned row is editable by administrators and refused to everybody else", async () => {
+  const db = fresh();
+  upsertGuardrailRepository(repository("okami/one", "sentinel"), db);
+  const root = createUser({ username: "root@example.com", displayName: "Root", isAdmin: true }, db);
+  const member = createUser({ username: "ana@example.com", displayName: "Ana", isAdmin: false }, db);
+  setRepositoryGrant(member.id, "okami/one", "viewer", null, db);
+  const api = harness(db);
+
+  const refused = await api.request("PUT", principalOf(member.id, false), {
+    subscriptions: [{ scope: UNASSIGNED_NOTIFICATION_SCOPE, event: "scan.failed", enabled: false }],
+  });
+  assert.equal(refused.status, 400);
+  assert.equal(refused.body.error, "unassigned_forbidden");
+
+  const saved = await api.request("PUT", principalOf(root.id, true), {
+    subscriptions: [
+      { scope: UNASSIGNED_NOTIFICATION_SCOPE, event: "scan.failed", enabled: false },
+      { scope: UNASSIGNED_NOTIFICATION_SCOPE, event: "scan.completed", enabled: true },
+    ],
+  });
+  assert.equal(saved.status, 200);
+  assert.deepEqual((saved.body as unknown as AccountNotificationsResponse).unassigned?.events, [
+    { event: "scan.failed", enabled: false, isDefault: false },
+    { event: "scan.completed", enabled: true, isDefault: false },
+  ]);
+
+  // A gate event has no meaning for a scan that belongs to no repository.
+  for (const event of ["gate.blocked", "ops.daily_cost"]) {
+    const rejected = await api.request("PUT", principalOf(root.id, true), {
+      subscriptions: [{ scope: UNASSIGNED_NOTIFICATION_SCOPE, event, enabled: false }],
+    });
+    assert.equal(rejected.body.error, "event_invalid", event);
+  }
   db.close();
 });
 

@@ -90,6 +90,22 @@ export function putOpsAlertState(
 }
 
 /**
+ * Drops the closed episodes nobody will read again. A resolved row only exists so
+ * the next sample can tell "this is over" from "this never started"; once it is
+ * older than the repeat window it can no longer affect either, and the one table
+ * next to the outbox without a retention rule would otherwise grow with every gate
+ * that ever failed to publish.
+ */
+export function deleteResolvedOpsAlertsBefore(
+  before: Date,
+  database: Database.Database = getDb(),
+): number {
+  return database.prepare(
+    "DELETE FROM ops_alert_state WHERE resolved_at IS NOT NULL AND resolved_at < ?",
+  ).run(before.toISOString()).changes;
+}
+
+/**
  * Forgets a condition nobody was ever told about. A blip that started and ended
  * inside one evaluation window leaves no alert and therefore needs no resolution
  * message and no row.

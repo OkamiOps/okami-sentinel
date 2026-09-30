@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { OPS_NOTIFICATION_SCOPE } from "@csb/shared";
+import { OPS_NOTIFICATION_SCOPE, UNASSIGNED_NOTIFICATION_SCOPE } from "@csb/shared";
 import { INVITE_TTL_MS } from "../auth/invite-store.js";
 import { getUser } from "../auth/user-store.js";
 import {
@@ -18,6 +18,8 @@ import {
   markEmailSent,
   type EmailOutboxClaim,
 } from "./outbox-store.js";
+import { deleteResolvedOpsAlertsBefore } from "./ops-alert-store.js";
+import { OPS_ALERT_REPEAT_MS } from "./ops-notifications.js";
 import { userSeesRepository } from "./recipients.js";
 import { activeEmailTransportConfig } from "./transport-config.js";
 import {
@@ -85,7 +87,9 @@ export function emailCancellationReason(
   if (user === null) return "The account no longer exists.";
   if (user.status !== "active") return "The account is disabled.";
   if (row.scope === null) return null;
-  if (row.scope === OPS_NOTIFICATION_SCOPE) {
+  // The two reserved scopes are an administrator's: operational alerts, and the
+  // scans that belong to no repository and therefore have no grant to check.
+  if (row.scope === OPS_NOTIFICATION_SCOPE || row.scope === UNASSIGNED_NOTIFICATION_SCOPE) {
     return user.isAdmin ? null : EMAIL_NOT_ADMIN_ERROR;
   }
   return userSeesRepository(row.userId, row.scope, database) ? null : EMAIL_ACCESS_LOST_ERROR;
@@ -222,15 +226,25 @@ export async function runEmailWorkerTick(
   return tick;
 }
 
-/** Deletes delivered and cancelled messages older than the retention window. */
+/**
+ * Deletes delivered and cancelled messages older than the retention window, and
+ * the operational episodes that closed long enough ago to be unreadable. The two
+ * live in one place because they are the same rule — history nobody reads — and
+ * because a new table with no retention story is how a database grows for a year
+ * unnoticed.
+ */
 export function sweepEmailRetention(
   now: Date,
   database: Database.Database = getDb(),
 ): number {
-  return deleteFinishedEmailsBefore(
+  const removed = deleteFinishedEmailsBefore(
     new Date(now.getTime() - EMAIL_RETENTION_DAYS * 24 * 3_600_000),
     database,
   );
+  // The repeat window, not ninety days: a resolved episode older than that can no
+  // longer change what the next sample decides.
+  deleteResolvedOpsAlertsBefore(new Date(now.getTime() - OPS_ALERT_REPEAT_MS), database);
+  return removed;
 }
 
 export interface EmailWorkerHandle {
