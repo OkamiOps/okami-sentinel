@@ -1,0 +1,263 @@
+import { randomUUID } from "node:crypto";
+
+import type Database from "better-sqlite3";
+
+import { getDb } from "../db.js";
+import { GITHUB_ACTIONS_SCHEMA_SQL } from "./schema.js";
+
+export const GITHUB_ACTIONS_SCHEMA_VERSION = 1;
+
+/** The ceiling a rule that was never activated inherits, disabled, so it cannot spend. */
+const MIGRATED_COST_CEILING_USD = 1;
+
+export interface MonitorRuleMigrationResult {
+  /** Actions created out of monitor rules: two per migrated rule. */
+  actions: number;
+  /** Monitor events carried over, with their gate and dates. */
+  events: number;
+  /** Legacy rows that produced nothing: a dangling repository, or a collapsed event identity. */
+  skipped: number;
+}
+
+interface LegacyRuleRow {
+  id: string;
+  repository_key: string;
+  connection_id: string;
+  installation_id: string;
+  repository_id: string;
+  executor: string;
+  scanner_json: string | null;
+  cost_ceiling_usd: number | null;
+  daily_cost_ceiling_usd: number | null;
+  follow_branches_json: string;
+  enabled: number;
+  baseline_initialized_at: string | null;
+  last_polled_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface LegacyEventRow {
+  id: string;
+  rule_id: string;
+  repository_key: string;
+  kind: string;
+  status: string;
+  head_sha: string;
+  base_ref: string | null;
+  head_ref: string;
+  pull_request_number: number | null;
+  title: string | null;
+  gate_id: string | null;
+  cost_ceiling_usd: number | null;
+  reason: string | null;
+  error: string | null;
+  detected_at: string;
+  dispatched_at: string | null;
+  completed_at: string | null;
+}
+
+const LEGACY_TABLES = [
+  "github_monitor_rules",
+  "github_monitor_events",
+  "github_monitor_actions_runs",
+  "github_monitor_poll_leases",
+];
+
+/**
+ * One monitor rule watched pull requests and pushes at once, with a single set of
+ * followed branches and an optional ceiling. Two actions say the same thing and
+ * can then diverge. The legacy tables are renamed rather than dropped, so a
+ * rollback keeps the rows; phase 5 removes them.
+ */
+export function migrateMonitorRulesToActions(
+  database: Database.Database = getDb(),
+  now: string = new Date().toISOString(),
+): MonitorRuleMigrationResult {
+  if (alreadyMigrated(database)) return { actions: 0, events: 0, skipped: 0 };
+  return database.transaction(() => {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS github_actions_schema_migrations (
+        version INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        applied_at TEXT NOT NULL
+      )
+    `);
+    database.exec(GITHUB_ACTIONS_SCHEMA_SQL);
+    if (recordedVersion(database) >= GITHUB_ACTIONS_SCHEMA_VERSION) {
+      return { actions: 0, events: 0, skipped: 0 };
+    }
+    const result = carryMonitorRulesOver(database, now);
+    renameLegacyTables(database);
+    database.prepare(`
+      INSERT OR REPLACE INTO github_actions_schema_migrations (version, name, applied_at)
+      VALUES (?, ?, ?)
+    `).run(GITHUB_ACTIONS_SCHEMA_VERSION, "monitor rules to actions", now);
+    return result;
+  }).immediate();
+}
+
+/**
+ * Read-only probe so the schema guard on every store call does not open a write
+ * transaction once the migration is behind us.
+ */
+function alreadyMigrated(database: Database.Database): boolean {
+  if (!tableExists(database, "github_actions_schema_migrations")) return false;
+  return recordedVersion(database) >= GITHUB_ACTIONS_SCHEMA_VERSION;
+}
+
+function recordedVersion(database: Database.Database): number {
+  const row = database
+    .prepare("SELECT max(version) AS version FROM github_actions_schema_migrations")
+    .get() as { version: number | null };
+  return row.version ?? 0;
+}
+
+function carryMonitorRulesOver(
+  database: Database.Database,
+  now: string,
+): MonitorRuleMigrationResult {
+  if (!tableExists(database, "github_monitor_rules")) {
+    return { actions: 0, events: 0, skipped: 0 };
+  }
+  const legacyEvents = tableExists(database, "github_monitor_events");
+  const rules = database.prepare("SELECT * FROM github_monitor_rules").all() as LegacyRuleRow[];
+  const insertAction = database.prepare(`
+    INSERT INTO github_actions (
+      id, repository_key, name, trigger_kind, branch_patterns_json, executor,
+      connection_id, installation_id, repository_id, scanner_json,
+      cost_ceiling_usd, daily_cost_ceiling_usd, enabled, revision,
+      baseline_initialized_at, created_by, last_event_at, last_reconciled_at,
+      last_error, created_at, updated_at
+    ) VALUES (
+      @id, @repository_key, @name, @trigger_kind, @branch_patterns_json, @executor,
+      @connection_id, @installation_id, @repository_id, @scanner_json,
+      @cost_ceiling_usd, @daily_cost_ceiling_usd, @enabled, 1,
+      @baseline_initialized_at, NULL, NULL, @last_reconciled_at,
+      @last_error, @created_at, @updated_at
+    )
+  `);
+  const insertEvent = database.prepare(`
+    INSERT OR IGNORE INTO github_action_events (
+      id, action_id, repository_key, action_revision, origin, delivery_id, kind,
+      status, head_sha, base_ref, head_ref, pull_request_number, target_identity,
+      title, gate_id, cost_ceiling_usd, reason, error, detected_at, dispatched_at,
+      completed_at
+    ) VALUES (
+      @id, @action_id, @repository_key, 1, 'reconciliation', NULL, @kind,
+      @status, @head_sha, @base_ref, @head_ref, @pull_request_number, @target_identity,
+      @title, @gate_id, @cost_ceiling_usd, @reason, @error, @detected_at, @dispatched_at,
+      @completed_at
+    )
+  `);
+  const repositoryExists = database.prepare(
+    "SELECT 1 FROM guardrail_repositories WHERE repository_key = ?",
+  );
+
+  let actions = 0;
+  let events = 0;
+  let skipped = 0;
+  for (const rule of rules) {
+    const rows = legacyEvents
+      ? database.prepare(
+        "SELECT * FROM github_monitor_events WHERE rule_id = ? ORDER BY detected_at ASC, id ASC",
+      ).all(rule.id) as LegacyEventRow[]
+      : [];
+    if (repositoryExists.get(rule.repository_key) === undefined) {
+      skipped += 1 + rows.length;
+      continue;
+    }
+    const withoutCeiling = rule.cost_ceiling_usd === null || rule.cost_ceiling_usd <= 0;
+    const actionIds = new Map<string, string>();
+    for (const [triggerKind, name] of [["pull_request", "PR"], ["push", "Push"]] as const) {
+      const id = randomUUID();
+      insertAction.run({
+        id,
+        repository_key: rule.repository_key,
+        name,
+        trigger_kind: triggerKind,
+        branch_patterns_json: rule.follow_branches_json,
+        executor: rule.executor,
+        connection_id: rule.connection_id,
+        installation_id: rule.installation_id,
+        repository_id: rule.repository_id,
+        scanner_json: rule.scanner_json,
+        cost_ceiling_usd: withoutCeiling ? MIGRATED_COST_CEILING_USD : rule.cost_ceiling_usd,
+        daily_cost_ceiling_usd: rule.daily_cost_ceiling_usd,
+        enabled: withoutCeiling ? 0 : rule.enabled,
+        baseline_initialized_at: rule.baseline_initialized_at,
+        last_reconciled_at: rule.last_polled_at,
+        last_error: withoutCeiling ? "migrated_without_ceiling" : rule.last_error,
+        created_at: rule.created_at,
+        updated_at: now,
+      });
+      actionIds.set(triggerKind, id);
+      actions += 1;
+    }
+    for (const row of rows) {
+      const actionId = actionIds.get(row.kind);
+      if (actionId === undefined) {
+        skipped += 1;
+        continue;
+      }
+      const inserted = insertEvent.run({
+        id: row.id,
+        action_id: actionId,
+        repository_key: row.repository_key,
+        kind: row.kind,
+        status: row.status,
+        head_sha: row.head_sha,
+        base_ref: row.base_ref,
+        head_ref: row.head_ref,
+        pull_request_number: row.pull_request_number,
+        target_identity: migratedTargetIdentity(row),
+        title: row.title,
+        gate_id: row.gate_id,
+        cost_ceiling_usd: row.cost_ceiling_usd,
+        reason: row.reason,
+        error: row.error,
+        detected_at: row.detected_at,
+        dispatched_at: row.dispatched_at,
+        completed_at: row.completed_at,
+      });
+      if (inserted.changes === 1) events += 1;
+      else skipped += 1;
+    }
+    for (const actionId of actionIds.values()) {
+      database.prepare(`
+        UPDATE github_actions SET last_event_at = (
+          SELECT max(detected_at) FROM github_action_events WHERE action_id = @action_id
+        ) WHERE id = @action_id
+      `).run({ action_id: actionId });
+    }
+  }
+  return { actions, events, skipped };
+}
+
+/**
+ * The legacy identity was a JSON tuple; the new one is the readable key the
+ * webhook handler and the reconciliation both mint. Recomputing it keeps one
+ * formula in the product instead of two eras of keys in the same column.
+ */
+function migratedTargetIdentity(row: LegacyEventRow): string {
+  if (row.kind === "pull_request" && row.pull_request_number !== null) {
+    return `pr:${row.pull_request_number}@${row.head_sha}`;
+  }
+  if (row.kind === "pull_request") return `pr:${row.head_ref}@${row.head_sha}`;
+  return `push:${row.head_ref}@${row.head_sha}`;
+}
+
+function renameLegacyTables(database: Database.Database): void {
+  for (const table of LEGACY_TABLES) {
+    const target = `${table}_migrated`;
+    if (!tableExists(database, table) || tableExists(database, target)) continue;
+    database.exec(`ALTER TABLE ${table} RENAME TO ${target}`);
+  }
+}
+
+function tableExists(database: Database.Database, name: string): boolean {
+  return database.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+  ).get(name) !== undefined;
+}
