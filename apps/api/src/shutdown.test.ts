@@ -8,8 +8,21 @@ test("shutdown closes admission, cancels work, waits for escalation and closes s
     stopHttp() { assert.equal(isDraining(), true); events.push("http"); },
     cancelWork() { events.push("cancel"); return true; },
     async wait(ms) { assert.equal(ms, 6000); events.push("wait"); },
+    async drain() { events.push("drain"); },
     closeStore() { events.push("store"); },
   });
   await Promise.all([shutdown(), shutdown()]);
-  assert.deepEqual(events, ["http", "cancel", "wait", "store"]);
+  assert.deepEqual(events, ["http", "cancel", "wait", "drain", "store"]);
+});
+
+test("a background loop that refuses to drain still does not keep the store open", async () => {
+  const events: string[] = [];
+  const shutdown = createShutdownHandler({
+    stopHttp() { events.push("http"); },
+    cancelWork() { return false; },
+    drain() { return Promise.reject(new Error("the loop threw on its way out")); },
+    closeStore() { events.push("store"); },
+  });
+  await shutdown();
+  assert.deepEqual(events, ["http", "store"]);
 });
