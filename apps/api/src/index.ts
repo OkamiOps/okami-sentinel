@@ -1,11 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { serve } from "@hono/node-server";
-import { app, githubMonitor } from "./app.js";
+import { app, reconcileGitHubActionsNow } from "./app.js";
 import {
+  API_HEADERS_TIMEOUT_MS,
   API_HOST,
   API_PORT,
+  API_REQUEST_TIMEOUT_MS,
   DATA_DIR,
+  GITHUB_RECONCILE_INTERVAL_MS,
   RUNS_DIR,
   ROOT_DIR,
 } from "./config.js";
@@ -16,6 +19,12 @@ import { createShutdownHandler, isDraining } from "./shutdown.js";
 import { cancelScan } from "./runner.js";
 import { getProviderRuntime } from "./provider-runtime.js";
 import { ensureConnectionSchema } from "./connections-store.js";
+import { ensureGitHubActionsSchema } from "./github-actions/store.js";
+import { reconcileOrphanedGitHubActionDispatches } from "./github-actions/dispatch.js";
+import {
+  clampReconcileInterval,
+  startGitHubReconciler,
+} from "./github-actions/reconciler.js";
 import { startOpsEvaluator } from "./email/ops-notifications.js";
 import { startEmailWorker } from "./email/worker.js";
 import { backfillRunRepositoryKeys } from "./auth/repository-key.js";
@@ -41,6 +50,16 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(RUNS_DIR, { recursive: true });
 getDb();
 ensureConnectionSchema(getDb());
+// Once, here, and before anything reads the actions model: this call renames the
+// legacy `github_monitor_*` tables and carries every rule over as two actions.
+// Nothing else on the boot path may reach the store before it — a module that
+// did would recreate the renamed tables empty.
+const actionsMigration = ensureGitHubActionsSchema(getDb());
+if (actionsMigration.actions > 0 || actionsMigration.events > 0) {
+  console.log(`[csb-api] Migrated ${actionsMigration.actions} GitHub action(s)`
+    + ` and ${actionsMigration.events} event(s) from the monitor rules`
+    + (actionsMigration.skipped > 0 ? ` (skipped ${actionsMigration.skipped} legacy row(s))` : ""));
+}
 backfillRunRepositoryKeys();
 
 if (settings.mode === "server") {
@@ -166,7 +185,32 @@ const emailWorker = startEmailWorker();
 // process, same non-wedging guard, same shutdown drain as the outbox worker.
 const opsEvaluator = startOpsEvaluator();
 
-const stopGitHubMonitoring = githubMonitor.startPolling();
+// A dispatch the previous process reserved and never finished is terminal: the
+// scan may have reached its provider, so it is never retried blindly.
+const orphanedDispatches = reconcileOrphanedGitHubActionDispatches();
+if (orphanedDispatches > 0) {
+  console.warn(`[csb-api] Marked ${orphanedDispatches} GitHub action dispatch(es) uncertain after restart`);
+}
+
+// The 60 s poller is gone: webhooks are the trigger, and this is the read-only
+// safety net for the deliveries GitHub never retries.
+const stopGitHubReconciler = startGitHubReconciler({
+  reconcile: reconcileGitHubActionsNow,
+  intervalMs: GITHUB_RECONCILE_INTERVAL_MS,
+  onError: () => {
+    // Every failure is already recorded on the action rows it concerns.
+    console.warn("[csb-api] GitHub reconciliation cycle failed");
+  },
+});
+// One cycle at boot recovers whatever arrived while the process was down.
+void reconcileGitHubActionsNow().then((outcome) => {
+  if (outcome.created > 0 || outcome.observed > 0 || outcome.errors > 0) {
+    console.log(`[csb-api] Reconciled ${outcome.repositories} GitHub repository(ies):`
+      + ` ${outcome.created} event(s) recovered, ${outcome.observed} observed, ${outcome.errors} error(s)`);
+  }
+}).catch(() => {
+  console.warn("[csb-api] GitHub reconciliation deferred");
+});
 
 const serverApp = createServerApp(app, {
   settings,
@@ -179,6 +223,18 @@ const server = serve(
     fetch: serverApp.fetch,
     hostname: API_HOST,
     port: API_PORT,
+    // `headersTimeout` bounds the one phase every route shares and no handler can
+    // observe, so tightening it costs nothing and ends a header-slowloris on all
+    // of them. `requestTimeout` stays at Node's default: it is armed until the
+    // response finishes for a request whose body nothing read, which is exactly
+    // `POST /ingest` — a body-less POST whose response can take minutes — and
+    // SSE streams live under the same rule. The route that actually needs a tight
+    // bound is the unauthenticated webhook, and it enforces its own (10 s of
+    // progress, 2 s of silence) where it can tell a stalled read from a slow one.
+    serverOptions: {
+      headersTimeout: API_HEADERS_TIMEOUT_MS,
+      requestTimeout: API_REQUEST_TIMEOUT_MS,
+    },
   },
   (info) => {
     console.log(`[csb-api] Listening on http://${info.address}:${info.port}`);
@@ -190,7 +246,7 @@ if (settings.mode === "server") {
     stopHttp() {
       clearInterval(scanReconciler);
       clearInterval(gateReconciler);
-      stopGitHubMonitoring();
+      stopGitHubReconciler();
       server.close();
       if ("closeAllConnections" in server) server.closeAllConnections();
     },

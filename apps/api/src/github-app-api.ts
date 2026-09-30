@@ -31,6 +31,18 @@ export interface GitHubAppApiService {
 }
 
 let systemService: GitHubAppService | undefined;
+let systemCredentials: SystemGitHubAppCredentialStore | undefined;
+
+/**
+ * The vault the App connections keep their private key **and** their webhook
+ * secret in. The webhook handler needs the secrets to verify a signature, and it
+ * must read them through the same store the service writes them with — one
+ * custody, one redaction registry.
+ */
+export function getSystemGitHubAppCredentialStore(): SystemGitHubAppCredentialStore {
+  systemCredentials ??= new SystemGitHubAppCredentialStore({ redactor: globalSecretRedactor });
+  return systemCredentials;
+}
 
 export function createGitHubAppApi(injectedService?: GitHubAppApiService): Hono {
   const api = new Hono();
@@ -151,9 +163,7 @@ export function createGitHubAppApi(injectedService?: GitHubAppApiService): Hono 
 
 export function getSystemGitHubAppService(): GitHubAppService {
   if (systemService) return systemService;
-  const credentials = new SystemGitHubAppCredentialStore({
-    redactor: globalSecretRedactor,
-  });
+  const credentials = getSystemGitHubAppCredentialStore();
   const client = new GitHubAppClient({
     credentials,
     redactor: globalSecretRedactor,

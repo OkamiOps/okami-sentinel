@@ -9,7 +9,7 @@ import {
 import { listConnections } from "../connections-store.js";
 import { getDb } from "../db.js";
 import { getGateRun } from "../gate-store.js";
-import { listGitHubMonitorRules, reservedGitHubMonitorCostForUtcDay } from "../github-monitor/store.js";
+import { listGitHubActions, reservedGitHubActionCostForUtcDay } from "../github-actions/store.js";
 import { getScannerCatalog } from "../scanners/catalog.js";
 import { emailQueueEnabled, enqueueEmail } from "./enqueue.js";
 import { failureKind } from "./failure-kind.js";
@@ -348,7 +348,7 @@ export function evaluateConnectionAttention(options: OpsEvaluatorOptions = {}): 
 // The daily cost ceiling
 // --------------------------------------------------------------------------
 
-/** The UTC day a reservation belongs to, the same boundary the monitor reserves on. */
+/** The UTC day a reservation belongs to, the same boundary the dispatcher reserves on. */
 export function utcDayBounds(now: Date): { day: string; start: string; end: string } {
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   return {
@@ -359,7 +359,7 @@ export function utcDayBounds(now: Date): { day: string; start: string; end: stri
 }
 
 /**
- * The crossings, not the level: one message per `(rule, threshold, UTC day)`,
+ * The crossings, not the level: one message per `(action, threshold, UTC day)`,
  * enforced by the outbox's unique key rather than by a timer, so a restart cannot
  * produce a second one and a new day starts clean.
  *
@@ -372,20 +372,20 @@ export function evaluateDailyCost(options: OpsEvaluatorOptions = {}): number {
   const now = options.now ?? new Date();
   const { day, start, end } = utcDayBounds(now);
   let queued = 0;
-  for (const rule of listGitHubMonitorRules(null, database)) {
-    if (!rule.enabled) continue;
-    const ceiling = rule.dailyCostCeilingUsd ?? rule.costCeilingUsd;
+  for (const action of listGitHubActions({}, database)) {
+    if (!action.enabled) continue;
+    const ceiling = action.dailyCostCeilingUsd ?? action.costCeilingUsd;
     if (ceiling === null || ceiling <= 0) continue;
-    const reserved = reservedGitHubMonitorCostForUtcDay(rule.id, start, end, database);
+    const reserved = reservedGitHubActionCostForUtcDay(action.id, start, end, database);
     const share = (reserved / ceiling) * 100;
     const crossed = [...OPS_DAILY_COST_THRESHOLDS].reverse().find((threshold) => share >= threshold);
     if (crossed === undefined) continue;
     queued += queueOps(database, {
       event: "ops.daily_cost",
       kind: "ops.daily_cost",
-      dedupeKey: `ops.daily_cost.${rule.id}.${day}.${crossed}`,
+      dedupeKey: `ops.daily_cost.${action.id}.${day}.${crossed}`,
       data: {
-        repository: rule.repositoryKey,
+        repository: action.repositoryKey,
         day,
         percent: crossed === 100 ? 100 : 80,
         reservedUsd: reserved,
