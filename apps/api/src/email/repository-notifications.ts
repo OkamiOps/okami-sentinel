@@ -58,11 +58,9 @@ export function scanNotificationEvent(status: string): RepositoryNotificationEve
  * of the design's "nunca incluir … caminho de arquivo". Such a scan names itself.
  */
 function repositoryDisplayName(
-  repositoryKey: string | null,
-  fallback: string,
+  repositoryKey: string,
   database: Database.Database,
 ): string {
-  if (repositoryKey === null) return fallback;
   const row = database.prepare("SELECT display_name FROM guardrail_repositories WHERE repository_key = ?")
     .get(repositoryKey) as { display_name: string } | undefined;
   return row?.display_name ?? repositoryKey;
@@ -188,7 +186,7 @@ export function notifyGateOutcome(gate: GateRun, options: NotifyOptions = {}): n
     if (recipients.length === 0) return 0;
     const data: GateEmailData = {
       gateId: gate.id,
-      repository: repositoryDisplayName(gate.repositoryKey, gate.repositoryKey, database),
+      repository: repositoryDisplayName(gate.repositoryKey, database),
       branch: gate.headRef,
       pullRequest: gate.pullRequestNumber,
       outcome: gate.outcome ?? "error",
@@ -226,7 +224,9 @@ export function notifyScanOutcome(run: ScanRun, options: NotifyOptions = {}): nu
     if (recipients.length === 0) return 0;
     const data: ScanEmailData = {
       scanId: run.id,
-      repository: repositoryDisplayName(repositoryKey, run.id, database),
+      // `null` rather than the scan id: the template then files the id under its
+      // own label instead of announcing a scan id as a repository.
+      repository: repositoryKey === null ? null : repositoryDisplayName(repositoryKey, database),
       branch: run.revision,
       status: run.status === "completed" ? "completed" : run.status === "incomplete" ? "incomplete" : "failed",
       severity: run.severity,
