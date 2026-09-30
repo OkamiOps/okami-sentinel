@@ -110,16 +110,23 @@ test("the HTML is what a mail client can render: tables, inline styles, no exter
     for (const forbidden of ["<script", "<link", "@import", "javascript:", "url("]) {
       assert.equal(html.includes(forbidden), false, `${kind} html contains ${forbidden}`);
     }
-    // One stylesheet, in the head, carrying only the two things no inline style
-    // can express: the dark scheme and the phone widths. A client that drops it
-    // still gets the whole message, because every element is styled inline too.
+    // One stylesheet, in the head, carrying only what no inline style can
+    // express: the phone widths. The design is dark-native — there is no light
+    // scheme to switch to — so nothing in the head switches schemes, and a
+    // client that drops the stylesheet still gets the whole dark message,
+    // because every element is styled inline and every surface has a bgcolor.
     assert.equal(html.split("<style>").length - 1, 1, `${kind} stylesheet count`);
-    assert.ok(html.includes("@media (prefers-color-scheme:dark)"), kind);
-    assert.ok(html.includes("name=\"color-scheme\" content=\"light dark\""), kind);
-    assert.ok(html.includes("name=\"supported-color-schemes\""), kind);
-    // The brand mark is the only thing fetched over the network.
+    assert.equal(html.includes("prefers-color-scheme"), false, kind);
+    assert.ok(html.includes("@media only screen and (max-width:480px)"), kind);
+    assert.ok(html.includes("name=\"color-scheme\" content=\"dark\""), kind);
+    assert.ok(html.includes("name=\"supported-color-schemes\" content=\"dark\""), kind);
+    assert.ok(/<body[^>]*bgcolor="#060609"/.test(html), kind);
+    // The brand mark and the pre-dimmed watermark are the only network fetches.
     const sources = [...html.matchAll(/ src="([^"]*)"/g)].map((match) => match[1]);
-    assert.deepEqual(sources, [`${ORIGIN}/brand/email-mark.png`], kind);
+    assert.deepEqual(sources, [
+      `${ORIGIN}/brand/email-mark.png`,
+      `${ORIGIN}/brand/email-wolf-watermark.png`,
+    ], kind);
     // Every link is absolute; a relative href is dead in an inbox.
     for (const href of html.matchAll(/href="([^"]*)"/g)) {
       assert.ok(href[1]!.startsWith("https://"), `${kind} href ${href[1]}`);
@@ -127,20 +134,25 @@ test("the HTML is what a mail client can render: tables, inline styles, no exter
   }
 });
 
-test("every kind, in every locale, carries a tone rule, a status pill and a preheader", () => {
+test("every kind, in every locale, carries a status word, a header indicator and a preheader", () => {
   const tones = new Set(["danger", "success", "warning", "info", "neutral"]);
   for (const kind of EMAIL_MESSAGE_KINDS) {
     assert.ok(tones.has(emailStatusTone(emailMessageStatus(kind))), kind);
     for (const locale of USER_LOCALES) {
       const { html, text } = render(kind, locale);
-      assert.ok(/<td class="rule" bgcolor="#[0-9a-f]{6}"/.test(html), `${kind}/${locale} tone rule`);
-      const pill = /<td class="pill"[^>]*>([^<]+)<\/td>/.exec(html);
-      assert.ok(pill, `${kind}/${locale} status pill`);
-      // The pill's HTML is pure ASCII; decode it back to compare against the
-      // plain-text twin and to check its case, which entities would obscure.
-      const label = decodeAsciiEntities(pill[1]!);
-      assert.equal(label, label.toLocaleUpperCase(locale), `${kind}/${locale} pill is not upper-case`);
-      // The pill and the plain-text twin never disagree about the status.
+      // The hero: the status word, mono, in the status colour, sized by its
+      // own length so the longest localized word still fits a phone.
+      const word = /<div class="sw (sw-[lmsx])" style="[^"]*color:(#[0-9a-f]{6})">([^<]+)<\/div>/.exec(html);
+      assert.ok(word, `${kind}/${locale} status word`);
+      const label = decodeAsciiEntities(word![3]!);
+      assert.equal(label, label.toLocaleUpperCase(locale), `${kind}/${locale} status word is not upper-case`);
+      // The header indicator claims exactly what the message itself is —
+      // its status — never the readiness of an engine it did not measure.
+      const indicator = /<td class="hs ind"[^>]*color:(#[0-9a-f]{6})">&#9679;&nbsp; ([^<]+)<\/td>/.exec(html);
+      assert.ok(indicator, `${kind}/${locale} header indicator`);
+      assert.equal(decodeAsciiEntities(indicator![2]!), label, `${kind}/${locale} indicator disagrees with the status word`);
+      assert.equal(indicator![1], word![2], `${kind}/${locale} indicator colour disagrees with the status word`);
+      // The status word and the plain-text twin never disagree.
       assert.equal(text.split("\n")[1], `[${label}]`, `${kind}/${locale} text status line`);
       // The hidden preview line a client shows next to the subject.
       const preheader = /<div style="display:none;max-height:0;overflow:hidden;mso-hide:all">([^<]+)<\/div>/.exec(html);
@@ -148,6 +160,99 @@ test("every kind, in every locale, carries a tone rule, a status pill and a preh
       assert.ok(text.includes(decodeAsciiEntities(preheader[1]!)), `${kind}/${locale} preheader copy`);
     }
   }
+});
+
+test("the status word's colour comes from one table, and long localized words get a smaller size", () => {
+  const accents: Array<[EmailMessageKind, string]> = [
+    ["gate.blocked", "#ff39d1"],
+    ["gate.error", "#f94144"],
+    ["scan.completed", "#5fd37f"],
+    ["ops.engine_unavailable", "#ff7527"],
+    ["ops.engine_unavailable.resolved", "#5fd37f"],
+    ["account.invite", "#00dfe8"],
+    ["account.new_login", "#f3ba25"],
+  ];
+  for (const [kind, accent] of accents) {
+    assert.ok(render(kind, "pt-BR").html.includes(`color:${accent}">`), `${kind} accent ${accent}`);
+  }
+  // German has the longest words; each lands in a smaller bucket instead of
+  // overflowing a 375-pixel screen.
+  assert.match(render("scan.failed", "de").html, /class="sw sw-m"/);          // FEHLGESCHLAGEN
+  assert.match(render("account.reset", "de").html, /class="sw sw-x"/);        // PASSWORT ZURUECKSETZEN
+  assert.match(render("gate.blocked", "pt-BR").html, /class="sw sw-l"/);      // BLOQUEADO
+});
+
+test("the header never claims an engine state the message did not measure", () => {
+  for (const kind of EMAIL_MESSAGE_KINDS) {
+    for (const locale of USER_LOCALES) {
+      const { html } = render(kind, locale);
+      for (const claim of ["MOTOR PRONTO", "ENGINE READY", "MOTOR LISTO", "ENGINE BEREIT", "MOTEUR PR"]) {
+        assert.equal(html.includes(claim), false, `${kind}/${locale} claims ${claim}`);
+      }
+    }
+  }
+});
+
+test("the eyebrow names a real module of the app, with the app's own number", () => {
+  const decoded = (kind: EmailMessageKind, locale: "pt-BR" | "en" = "pt-BR") =>
+    decodeAsciiEntities(render(kind, locale).html);
+  assert.ok(decoded("gate.blocked").includes("03 / GUARDRAILS"));
+  assert.ok(decoded("ops.github_publish_failed").includes("03 / GUARDRAILS"));
+  assert.ok(decoded("scan.completed").includes("02 / RUNS"));
+  assert.ok(decoded("ops.daily_cost").includes("04 / GITHUB"));
+  assert.ok(decoded("ops.engine_unavailable").includes("08.02 / CONEXÕES"));
+  assert.ok(decoded("ops.connection_attention", "en").includes("08.02 / CONNECTIONS"));
+  assert.ok(decoded("account.invite").includes("08.05 / CONTA"));
+  assert.ok(decoded("account.new_login", "en").includes("08.05 / ACCOUNT"));
+  assert.ok(decoded("account.test").includes("08.06 / E-MAIL"));
+});
+
+test("the signature strip prints the render moment it was actually given", () => {
+  const message = renderEmail({
+    kind: "gate.blocked", data: SAMPLES["gate.blocked"],
+    locale: "pt-BR", origin: ORIGIN, now: LATER,
+  });
+  assert.ok(decodeAsciiEntities(message.html).includes("SENTINEL · LEITURA 2026-09-30 18:45:09 UTC"));
+  // Each locale keeps its own word in front of the same UTC stamp.
+  const en = renderEmail({
+    kind: "gate.blocked", data: SAMPLES["gate.blocked"], locale: "en", origin: ORIGIN, now: LATER,
+  });
+  assert.ok(en.html.includes("READ 2026-09-30 18:45:09 UTC"));
+});
+
+test("the repository and the ref lead the message: a large name, a branch tag, a PR tag", () => {
+  const { html, text } = render("gate.blocked", "pt-BR");
+  // The name is the target block, not a fact row.
+  assert.match(html, /class="t-name"[^>]*>okami\/sentinel<\/div>/);
+  // The branch rides in the accent chip, the pull request in the neutral one.
+  assert.ok(html.includes(`color:#4fe3ea;word-break:break-all">feature/login</span>`));
+  assert.ok(html.includes(`color:#9293a4;word-break:break-all">#42</span>`));
+  // And neither is repeated below in the fact panel.
+  assert.equal(/class="fact-v"[^>]*>okami\/sentinel</.test(html), false);
+  assert.equal(/class="fact-v"[^>]*>feature\/login</.test(html), false);
+  // The plain-text twin keeps them as rows, because it has no typography.
+  assert.ok(text.includes("Repositório: okami/sentinel"));
+  assert.ok(text.includes("Branch: feature/login"));
+  assert.ok(text.includes("Pull request: #42"));
+
+  // A repository-less scan leads with its scan id under the honest label.
+  const loose = renderEmail({
+    kind: "scan.failed",
+    data: { ...SAMPLES["scan.failed"], repository: null, branch: null },
+    locale: "pt-BR", origin: ORIGIN,
+  });
+  assert.match(loose.html, /class="t-name"[^>]*>s-1<\/div>/);
+  assert.ok(loose.text.includes("Scan: s-1"));
+  assert.equal(loose.html.includes("class=\"chip\""), false);
+
+  // A very long ref is never truncated; it wraps inside its chip.
+  const longBranch = "feature/billing-webhooks-retry-backoff-and-idempotency-keys";
+  const wrapped = renderEmail({
+    kind: "gate.blocked",
+    data: { ...SAMPLES["gate.blocked"], branch: longBranch },
+    locale: "pt-BR", origin: ORIGIN,
+  });
+  assert.ok(wrapped.html.includes(`>${longBranch}</span>`));
 });
 
 test("the tone of a message is decided by its kind, or by its data when the data knows better", () => {
@@ -210,16 +315,21 @@ test("the call to action is a button whose href is escaped, with the URL spelled
   assert.equal(message.html.includes("a\"b<c&d"), false);
 });
 
-test("the brand mark is fetched only when there is an origin to fetch it from", () => {
+test("the mark and the watermark are fetched only when there is an origin to fetch them from", () => {
   const remote = render("gate.blocked", "en");
-  assert.ok(remote.html.includes(`src="${ORIGIN}/brand/email-mark.png" width="39" height="48"`));
+  assert.ok(remote.html.includes(`src="${ORIGIN}/brand/email-mark.png" width="30" height="37"`));
   assert.ok(remote.html.includes("alt=\"Okami Sentinel\""));
+  // The wolf needs no CSS opacity: the asset itself is pre-dimmed on the card
+  // colour, so Outlook renders it exactly as designed.
+  assert.ok(remote.html.includes(`src="${ORIGIN}/brand/email-wolf-watermark.png" width="92" height="114"`));
+  assert.equal(remote.html.includes("opacity"), false);
 
   const local = render("gate.blocked", "en", null);
   assert.equal(local.html.includes("<img"), false);
   assert.equal(local.html.includes("email-mark"), false);
+  assert.equal(local.html.includes("email-wolf-watermark"), false);
   // The wordmark carries the brand on its own when the image cannot.
-  assert.ok(local.html.includes(">OKAMI</div>"));
+  assert.ok(local.html.includes(">OKAMI"));
   assert.ok(local.html.includes("Okami Sentinel"));
 });
 
