@@ -116,6 +116,8 @@ interface FakeDeps extends LocalGateDependencies {
   githubBaselineCalls: number;
   lastScanRequest: StartScanRequest | null;
   cancelledScanId: string | null;
+  /** Every gate the orchestrator asked to notify about, in order. */
+  readonly notified: GateRun[];
 }
 
 function fakeDeps(options: {
@@ -126,6 +128,8 @@ function fakeDeps(options: {
   scanStatus?: ScanRun["status"];
   holdScan?: boolean;
   scanActive?: boolean;
+  /** Makes the notification throw, which must not cost the gate its decision. */
+  notifyThrows?: boolean;
 } = {}): FakeDeps {
   const runs = new Map<string, GateRun>();
   const events = new Map<string, Parameters<LocalGateDependencies["appendGateEvent"]>[1][]>();
@@ -152,12 +156,18 @@ function fakeDeps(options: {
     releaseHeld = resolve;
   });
 
+  const notified: GateRun[] = [];
   const deps: FakeDeps = {
     runs,
+    notified,
     startScanCalls: 0,
     githubBaselineCalls: 0,
     lastScanRequest: null,
     cancelledScanId: null,
+    notifyOutcome: (gate) => {
+      notified.push(gate);
+      if (options.notifyThrows) throw new Error("the outbox is unwritable");
+    },
     createGateId: () => "gate-1",
     now: () => "2026-08-07T10:00:00.000Z",
     getRepository: () => repository,
@@ -277,6 +287,62 @@ test("records engine failure as error instead of pass", async () => {
   await waitForGate(gate.id);
 
   assert.equal(deps.runs.get(gate.id)?.outcome, "error");
+});
+
+test("a terminal gate is notified once, with the persisted outcome", async () => {
+  const deps = fakeDeps();
+  const gate = await startLocalGate(request(), deps);
+  await waitForGate(gate.id);
+
+  // Once, not once per emitted event, and with the row as it was stored — that
+  // decision is the only thing the reader of the message will be able to open.
+  assert.equal(deps.notified.length, 1);
+  assert.equal(deps.notified[0]!.id, gate.id);
+  assert.equal(deps.notified[0]!.status, "completed");
+  assert.equal(deps.notified[0]!.outcome, deps.runs.get(gate.id)?.outcome);
+  assert.equal(deps.notified[0]!.completedAt, deps.runs.get(gate.id)?.completedAt);
+
+  // An operational failure is a terminal transition too.
+  const failing = fakeDeps({ scanStatus: "failed" });
+  const errored = await startLocalGate(request(), failing);
+  await waitForGate(errored.id);
+  assert.equal(failing.notified.length, 1);
+  assert.equal(failing.notified[0]!.status, "error");
+  assert.equal(failing.notified[0]!.outcome, "error");
+
+  // And a gate that decided without a scan.
+  const empty = fakeDeps({ changeSet: changeSet([]) });
+  const unchanged = await startLocalGate(request(), empty);
+  await waitForGate(unchanged.id);
+  assert.deepEqual(empty.notified.map((run) => run.outcome), ["no_changes"]);
+});
+
+test("a notification that throws still leaves the gate decided", async () => {
+  const deps = fakeDeps({ notifyThrows: true });
+  const gate = await startLocalGate(request(), deps);
+  await waitForGate(gate.id);
+
+  assert.equal(deps.notified.length, 1);
+  // The decision, the artifact and the terminal event all survived the throw.
+  assert.equal(deps.runs.get(gate.id)?.status, "completed");
+  assert.equal(deps.runs.get(gate.id)?.outcome, "bootstrap");
+  assert.equal(deps.runs.get(gate.id)?.artifactPath, "/gates/gate-1/csb-gate-result.json");
+  assert.ok((deps.listGateEvents(gate.id)).some((event) => event.type === "done"));
+});
+
+test("a cancelled gate reaches the notifier only as a cancellation", async () => {
+  const deps = fakeDeps({ holdScan: true });
+  const gate = await startLocalGate(request(), deps);
+  await until(() => deps.runs.get(gate.id)?.scanId === "scan-1");
+  assert.equal(cancelGate(gate.id, deps), true);
+  await waitForGate(gate.id);
+
+  assert.equal(deps.runs.get(gate.id)?.status, "cancelled");
+  // `cancelGate` emits a terminal event like every other path, so the hook does
+  // run; the notifier is what turns a cancellation into no message at all —
+  // `gateNotificationEvent` in `email/repository-notifications.test.ts` pins that.
+  assert.deepEqual(deps.notified.map((run) => run.status), ["cancelled"]);
+  assert.deepEqual(deps.notified.map((run) => run.outcome), [null]);
 });
 
 test("cancels the linked scan", async () => {
@@ -495,6 +561,29 @@ test("legacy github baseline requests cannot bypass missing App enrollment", asy
   assert.equal(deps.runs.get(gate.id)?.error, "github_repository_authority_invalid");
 });
 
+test("the managed path notifies once too, and a throwing notifier keeps the decision", async () => {
+  const succeeded = remoteDeps();
+  const gate = await startRemoteManagedGate(remotePreview(), succeeded.deps);
+  await waitForGate(gate.id);
+  assert.deepEqual(succeeded.notified.map((run) => [run.status, run.outcome]), [["completed", "bootstrap"]]);
+
+  // The same, with a notifier that throws: the managed decision is already
+  // durable when the hook runs, and must stay that way.
+  const throwing = remoteDeps({ notifyThrows: true });
+  const second = await startRemoteManagedGate(remotePreview(), throwing.deps);
+  await waitForGate(second.id);
+  assert.equal(throwing.runs.get(second.id)?.status, "completed");
+  assert.equal(throwing.runs.get(second.id)?.outcome, "bootstrap");
+  assert.equal(throwing.runs.get(second.id)?.publishStatus, "published");
+  assert.equal(throwing.notified.length, 1);
+
+  // And an executor that fails outright is an error the subscribers hear about.
+  const failing = remoteDeps({ execute: async () => { throw new Error("managed executor died"); } });
+  const third = await startRemoteManagedGate(remotePreview(), failing.deps);
+  await waitForGate(third.id);
+  assert.deepEqual(failing.notified.map((run) => [run.status, run.outcome]), [["error", "error"]]);
+});
+
 test("remote managed gate persists frozen identity before execution and publishes only after artifact v2", async () => {
   const { deps, runs, calls } = remoteDeps();
   const gate = await startRemoteManagedGate(remotePreview(), deps);
@@ -567,17 +656,24 @@ test("remote managed gate cancellation aborts the executor and linked scan", asy
 
 function remoteDeps(overrides: {
   execute?: RemoteManagedGateDependencies["execute"];
+  notifyThrows?: boolean;
 } = {}): {
   deps: RemoteManagedGateDependencies;
   runs: Map<string, GateRun>;
   events: Map<string, Parameters<RemoteManagedGateDependencies["appendGateEvent"]>[1][]>;
   calls: string[];
+  notified: GateRun[];
 } {
   const runs = new Map<string, GateRun>();
   const events = new Map<string, Parameters<RemoteManagedGateDependencies["appendGateEvent"]>[1][]>();
   const calls: string[] = [];
+  const notified: GateRun[] = [];
   const result = remoteExecutionResult();
   const deps: RemoteManagedGateDependencies = {
+    notifyOutcome: (gate) => {
+      notified.push(gate);
+      if (overrides.notifyThrows) throw new Error("the outbox is unwritable");
+    },
     createGateId: () => "managed-gate-1",
     now: () => "2026-08-12T12:00:00.000Z",
     getRepository: () => remoteRepository(),
@@ -608,7 +704,7 @@ function remoteDeps(overrides: {
       return "created";
     },
   };
-  return { deps, runs, events, calls };
+  return { deps, runs, events, calls, notified };
 }
 
 function remoteRepository(): GuardrailRepository {
