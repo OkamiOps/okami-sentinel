@@ -375,6 +375,30 @@ test("hands a null webhook secret when the conversion response carries none", as
   );
 });
 
+test("degrades an empty webhook secret instead of failing the whole exchange", async () => {
+  const { privateKey } = keyPair();
+  const pem = privateKey.export({ format: "pem", type: "pkcs8" }).toString();
+  const client = new GitHubAppClient({
+    credentials: new MemoryCredentialStore({ privateKeyPem: pem }),
+    redactor: new RecordingRedactor(),
+    transport: async () => ({
+      status: 201,
+      body: {
+        id: 123,
+        slug: "okami-sentinel-local",
+        client_id: "Iv1.client-id",
+        pem,
+        webhook_secret: "",
+      },
+    }),
+  });
+
+  assert.equal(
+    await client.exchangeManifestCode("temporary-code", (app) => app.webhookSecret),
+    null,
+  );
+});
+
 test("rejects unexpected API hosts before invoking the transport", () => {
   const { privateKey } = keyPair();
   const pem = privateKey.export({ format: "pem", type: "pkcs8" }).toString();

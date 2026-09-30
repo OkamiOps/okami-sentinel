@@ -5,6 +5,7 @@ import type { GitHubAction, WebhookDeliveryRecord } from "@csb/shared";
 
 import {
   buildGitHubIntegrationStatus,
+  type GitHubIntegrationInstallationState,
   type GitHubIntegrationStatusDependencies,
 } from "./integration-status.js";
 
@@ -70,6 +71,25 @@ const LAST_DELIVERY: WebhookDeliveryRecord = {
   durationMs: 12,
 };
 
+interface InstallationSpec {
+  installationId?: string;
+  account?: string;
+  accountType?: "User" | "Organization";
+  repositorySelection?: "all" | "selected";
+  /** What this installation has actually approved; `null` when unknown. */
+  granted?: Record<string, string> | null;
+  repositories?: Array<{ repositoryId: string; repositoryKey: string | null }>;
+}
+
+interface ConnectionSpec {
+  connectionId?: string;
+  /** What the App asks for, from `GET /app`. */
+  requested?: Record<string, string> | null;
+  subscribed?: string[] | null;
+  webhookSecret?: string | null;
+  installations?: InstallationSpec[];
+}
+
 interface Overrides {
   granted?: Record<string, string> | null;
   subscribed?: string[] | null;
@@ -77,43 +97,74 @@ interface Overrides {
   repositorySelection?: "all" | "selected";
   installationId?: string;
   accountType?: "User" | "Organization";
+  installationGrants?: Record<string, string> | null;
   actions?: GitHubAction[];
   repositories?: Array<{ repositoryId: string; repositoryKey: string | null }>;
   baseline?: Record<string, "absent" | "building" | "ready" | "stale">;
   publicOrigin?: string | null;
   lastDelivery?: WebhookDeliveryRecord | null;
+  connections?: ConnectionSpec[];
 }
 
 function deps(overrides: Overrides = {}): GitHubIntegrationStatusDependencies & {
   readonly windows: string[];
 } {
-  const installationId = overrides.installationId ?? "77";
+  const specs: ConnectionSpec[] = overrides.connections ?? [{
+    requested: overrides.granted,
+    subscribed: overrides.subscribed,
+    webhookSecret: overrides.webhookSecret,
+    installations: [{
+      installationId: overrides.installationId,
+      accountType: overrides.accountType,
+      repositorySelection: overrides.repositorySelection,
+      granted: overrides.installationGrants,
+      repositories: overrides.repositories,
+    }],
+  }];
   const windows: string[] = [];
+  const secrets = new Map<string, boolean>();
+  const installations = new Map<string, GitHubIntegrationInstallationState[]>();
+  const repositories = new Map<string, Array<{ repositoryId: string; repositoryKey: string | null }>>();
+  const connections = specs.map((spec, index) => {
+    const connectionId = spec.connectionId ?? `connection-${index + 1}`;
+    secrets.set(
+      connectionId,
+      (spec.webhookSecret === undefined ? "s".repeat(32) : spec.webhookSecret) !== null,
+    );
+    installations.set(connectionId, (spec.installations ?? [{}]).map((installation, position) => {
+      const installationId = installation.installationId ?? `${77 + index * 10 + position}`;
+      repositories.set(installationId, installation.repositories ?? [
+        { repositoryId: "9001", repositoryKey: "okamiops/sentinel" },
+      ]);
+      return {
+        installationId,
+        account: installation.account ?? "OkamiOps",
+        accountType: installation.accountType ?? "User",
+        repositorySelection: installation.repositorySelection ?? "all",
+        grantedPermissions: installation.granted === undefined
+          ? { ...REQUIRED_GRANTS }
+          : installation.granted,
+      };
+    }));
+    return {
+      connectionId,
+      appSlug: "okami-sentinel",
+      appName: "OKAMI Sentinel Guardrails",
+      requestedPermissions: spec.requested === undefined ? { ...REQUIRED_GRANTS } : spec.requested,
+      subscribedEvents: spec.subscribed === undefined ? [...ALL_EVENTS] : spec.subscribed,
+    };
+  });
   return {
     windows,
     publicOrigin: overrides.publicOrigin === undefined ? "https://sentinel.example" : overrides.publicOrigin,
     now: () => new Date("2026-09-30T12:00:00.000Z"),
-    listConnections: () => [{
-      connectionId: "connection-1",
-      appSlug: "okami-sentinel",
-      appName: "OKAMI Sentinel Guardrails",
-      grantedPermissions: overrides.granted === undefined ? { ...REQUIRED_GRANTS } : overrides.granted,
-      subscribedEvents: overrides.subscribed === undefined ? [...ALL_EVENTS] : overrides.subscribed,
-    }],
-    listInstallations: () => [{
-      installationId,
-      account: "OkamiOps",
-      accountType: overrides.accountType ?? "User",
-      repositorySelection: overrides.repositorySelection ?? "all",
-    }],
-    listRepositories: () => overrides.repositories ?? [
-      { repositoryId: "9001", repositoryKey: "okamiops/sentinel" },
-    ],
+    listConnections: () => connections,
+    listInstallations: (connectionId) => installations.get(connectionId) ?? [],
+    listRepositories: (installationId) => repositories.get(installationId) ?? [],
     listActions: () => overrides.actions ?? [action()],
     readBaselineState: (repositoryKey) =>
       overrides.baseline?.[repositoryKey] ?? "ready",
-    readWebhookSecretConfigured: () =>
-      (overrides.webhookSecret === undefined ? "s".repeat(32) : overrides.webhookSecret) !== null,
+    readWebhookSecretConfigured: (connectionId) => secrets.get(connectionId) ?? false,
     countDeliveries: (since) => {
       windows.push(since);
       return { processed: 4, ignored: 2, failed: 1 };
@@ -138,8 +189,11 @@ test("reports a ready integration with every checklist step met", async () => {
     { id: "action_enabled", ok: true },
     { id: "baseline", ok: true },
   ]);
+  assert.equal(status.readyConnectionId, "connection-1");
   const connection = status.connections[0]!;
   assert.equal(connection.appName, "OKAMI Sentinel Guardrails");
+  assert.equal(connection.ready, true);
+  assert.deepEqual(connection.missing, []);
   assert.equal(connection.webhookUrl, "https://sentinel.example/api/github/webhook");
   assert.equal(connection.permissions.every((permission) => permission.ok), true);
   assert.equal(connection.events.every((event) => event.subscribed), true);
@@ -171,6 +225,7 @@ test("names the permission the App is missing", async () => {
     required: "write",
     granted: "read",
     ok: false,
+    pendingInstallationIds: [],
   });
   const contents = status.connections[0]!.permissions.find((p) => p.name === "contents")!;
   assert.deepEqual(contents, {
@@ -178,6 +233,7 @@ test("names the permission the App is missing", async () => {
     required: "write",
     granted: null,
     ok: false,
+    pendingInstallationIds: [],
   });
   const checks = status.connections[0]!.permissions.find((p) => p.name === "checks")!;
   assert.equal(checks.ok, true);
@@ -189,7 +245,10 @@ test("names the permission the App is missing", async () => {
 
 test("accepts a permission granted above the required level", async () => {
   const status = await buildGitHubIntegrationStatus(
-    deps({ granted: { ...REQUIRED_GRANTS, metadata: "write" } }),
+    deps({
+      granted: { ...REQUIRED_GRANTS, metadata: "write" },
+      installationGrants: { ...REQUIRED_GRANTS, metadata: "write" },
+    }),
   );
   const metadata = status.connections[0]!.permissions.find((p) => p.name === "metadata")!;
   assert.deepEqual(metadata, {
@@ -197,6 +256,7 @@ test("accepts a permission granted above the required level", async () => {
     required: "read",
     granted: "write",
     ok: true,
+    pendingInstallationIds: [],
   });
 });
 
@@ -332,4 +392,108 @@ test("takes the most recent reconciliation across actions", async () => {
     ],
   }));
   assert.equal(status.reconciliation.lastAt, "2026-09-30T11:00:00.000Z");
+});
+
+test("never reads as ready when two connections are each half configured", async () => {
+  const status = await buildGitHubIntegrationStatus(deps({
+    connections: [
+      { connectionId: "connection-a", webhookSecret: null },
+      {
+        connectionId: "connection-b",
+        requested: { ...REQUIRED_GRANTS, pull_requests: "read" },
+        installations: [{ granted: { ...REQUIRED_GRANTS, pull_requests: "read" } }],
+      },
+    ],
+    actions: [action({ connectionId: "connection-a" }), action({ id: "action-2", connectionId: "connection-b" })],
+  }));
+
+  assert.equal(status.readyConnectionId, null);
+  assert.deepEqual(status.checklist, [
+    { id: "app_installed", ok: true },
+    { id: "permissions", ok: true },
+    { id: "events", ok: true },
+    { id: "webhook_secret", ok: false },
+    { id: "repository_enrolled", ok: false },
+    { id: "action_enabled", ok: false },
+    { id: "baseline", ok: false },
+  ]);
+  assert.deepEqual(status.connections.map((item) => [item.connectionId, item.ready, item.missing]), [
+    ["connection-a", false, ["webhook_secret"]],
+    ["connection-b", false, ["permissions"]],
+  ]);
+});
+
+test("a broken second connection does not spoil the healthy one", async () => {
+  const status = await buildGitHubIntegrationStatus(deps({
+    connections: [
+      { connectionId: "connection-a" },
+      { connectionId: "connection-b", subscribed: ["push"], webhookSecret: null },
+    ],
+    actions: [action({ connectionId: "connection-a" })],
+  }));
+
+  assert.equal(status.readyConnectionId, "connection-a");
+  assert.equal(status.checklist.every((item) => item.ok), true);
+  assert.deepEqual(status.connections[1]!.missing, ["events", "webhook_secret"]);
+});
+
+test("credits only the actions that belong to the healthy connection", async () => {
+  const status = await buildGitHubIntegrationStatus(deps({
+    connections: [
+      { connectionId: "connection-a" },
+      { connectionId: "connection-b", webhookSecret: null },
+    ],
+    actions: [action({ connectionId: "connection-b" })],
+  }));
+
+  assert.equal(status.readyConnectionId, "connection-a");
+  assert.equal(status.checklist.find((item) => item.id === "repository_enrolled")!.ok, true);
+  assert.equal(status.checklist.find((item) => item.id === "action_enabled")!.ok, false);
+  assert.equal(status.checklist.find((item) => item.id === "baseline")!.ok, false);
+});
+
+test("names the installation whose permission review is still pending", async () => {
+  const status = await buildGitHubIntegrationStatus(deps({
+    granted: { ...REQUIRED_GRANTS },
+    connections: [{
+      requested: { ...REQUIRED_GRANTS },
+      installations: [
+        { installationId: "77", granted: { ...REQUIRED_GRANTS } },
+        { installationId: "88", granted: { ...REQUIRED_GRANTS, pull_requests: "read" } },
+      ],
+    }],
+  }));
+
+  const pr = status.connections[0]!.permissions.find((p) => p.name === "pull_requests")!;
+  assert.deepEqual(pr, {
+    name: "pull_requests",
+    required: "write",
+    granted: "read",
+    ok: false,
+    pendingInstallationIds: ["88"],
+  });
+  assert.equal(status.connections[0]!.permissions.find((p) => p.name === "checks")!.ok, true);
+  assert.deepEqual(status.connections[0]!.missing, ["permissions"]);
+  assert.equal(status.checklist.find((item) => item.id === "permissions")!.ok, false);
+});
+
+test("treats an installation with unknown grants as pending", async () => {
+  const status = await buildGitHubIntegrationStatus(deps({ installationGrants: null }));
+  const permissions = status.connections[0]!.permissions;
+  assert.equal(permissions.every((p) => p.granted === null && !p.ok), true);
+  assert.deepEqual(permissions[0]!.pendingInstallationIds, ["77"]);
+});
+
+test("reports no webhook URL for a public origin that is not an absolute URL", async () => {
+  const status = await buildGitHubIntegrationStatus(deps({ publicOrigin: "sentinel.okamilab.com" }));
+  assert.equal(status.connections[0]!.webhookUrl, null);
+});
+
+test("fails a permission level GitHub does not define", async () => {
+  const status = await buildGitHubIntegrationStatus(deps({
+    installationGrants: { ...REQUIRED_GRANTS, checks: "toString" },
+  }));
+  const checks = status.connections[0]!.permissions.find((p) => p.name === "checks")!;
+  assert.equal(checks.ok, false);
+  assert.deepEqual(checks.pendingInstallationIds, ["77"]);
 });

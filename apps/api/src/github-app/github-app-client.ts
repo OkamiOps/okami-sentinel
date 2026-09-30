@@ -120,7 +120,10 @@ export class GitHubAppClient {
       clientId: identifier(body.client_id, 200),
       privateKeyPem: nonEmptyString(body.pem, 131_072),
       // Handed to the consumer so it reaches the vault; still redacted below.
-      webhookSecret: optionalSecret(body.webhook_secret),
+      // Read leniently on purpose: the App already exists on GitHub by now, so
+      // an unusable secret must degrade to "paste one" and never throw away a
+      // connection. The storability guard at the write decides.
+      webhookSecret: lenientSecret(body.webhook_secret),
     };
     const transientSecrets = [
       app.privateKeyPem,
@@ -566,6 +569,11 @@ function nonEmptyString(value: unknown, maxLength: number): string {
 
 function optionalSecret(value: unknown): string | null {
   return value === undefined || value === null ? null : nonEmptyString(value, 16_384);
+}
+
+/** Never throws: an unusable value is simply no secret. */
+function lenientSecret(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 && value.length <= 16_384 ? value : null;
 }
 
 function isoTimestamp(value: unknown, fallback?: string): string {

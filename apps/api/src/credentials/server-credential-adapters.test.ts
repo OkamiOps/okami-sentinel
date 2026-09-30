@@ -120,6 +120,46 @@ test("server adapters persist connection, xAI, and GitHub secrets in isolated en
   }
 });
 
+test("the encrypted GitHub App bundle carries the webhook secret next to the key", async () => {
+  const { root, dataDir, keyFile } = await fixture();
+  const privateKeyPem = pem();
+  const webhookSecret = "w".repeat(40);
+  try {
+    const redactor = new RecordingRedactor();
+    const github = new SystemGitHubAppCredentialStore({
+      redactor,
+      runtimeMode: "server",
+      dataDir,
+      vaultKeyFile: keyFile,
+    });
+
+    await github.put("github-connection", { privateKeyPem });
+    await github.putWebhookSecret("github-connection", webhookSecret);
+
+    assert.deepEqual(
+      await new SystemGitHubAppCredentialStore({
+        redactor: new RecordingRedactor(),
+        runtimeMode: "server",
+        dataDir,
+        vaultKeyFile: keyFile,
+      }).get("github-connection"),
+      { privateKeyPem, webhookSecret },
+    );
+    assert.deepEqual(redactor.values.get("scm/github-app/github-connection"), [
+      privateKeyPem,
+      webhookSecret,
+    ]);
+
+    const combined = Buffer.concat(
+      await Promise.all((await encryptedFiles(dataDir)).map((file) => readFile(file))),
+    ).toString("utf8");
+    assert.equal(combined.includes(webhookSecret), false);
+    assert.equal(combined.includes(privateKeyPem), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("server adapters fail closed when their external vault key is wrong", async () => {
   const { root, dataDir, keyFile } = await fixture();
   const correct = new RecordingRedactor();
