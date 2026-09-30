@@ -3,12 +3,26 @@ import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 
 import { getDb } from "../db.js";
-import { GITHUB_ACTIONS_SCHEMA_SQL } from "./schema.js";
+import {
+  GITHUB_ACTIONS_SCHEMA_SQL,
+  MAX_BRANCH_PATTERNS,
+  gitHubActionEventTargetIdentity,
+} from "./schema.js";
 
 export const GITHUB_ACTIONS_SCHEMA_VERSION = 1;
 
 /** The ceiling a rule that was never activated inherits, disabled, so it cannot spend. */
 const MIGRATED_COST_CEILING_USD = 1;
+
+/**
+ * Statuses the legacy dispatcher could still have acted on. An event of an
+ * abandoned revision in one of these was permanently dead
+ * (`github-monitor/service.ts:354`) and must not come back to life.
+ */
+const NON_TERMINAL_STATUSES = new Set(["observed", "queued", "dispatching"]);
+
+/** A handle whose schema is known current, so reads do not re-probe on every call. */
+const migratedHandles = new WeakSet<Database.Database>();
 
 export interface MonitorRuleMigrationResult {
   /** Actions created out of monitor rules: two per migrated rule. */
@@ -31,6 +45,7 @@ interface LegacyRuleRow {
   daily_cost_ceiling_usd: number | null;
   follow_branches_json: string;
   enabled: number;
+  revision: number;
   baseline_initialized_at: string | null;
   last_polled_at: string | null;
   last_error: string | null;
@@ -42,6 +57,7 @@ interface LegacyEventRow {
   id: string;
   rule_id: string;
   repository_key: string;
+  rule_revision: number;
   kind: string;
   status: string;
   head_sha: string;
@@ -76,7 +92,7 @@ export function migrateMonitorRulesToActions(
   now: string = new Date().toISOString(),
 ): MonitorRuleMigrationResult {
   if (alreadyMigrated(database)) return { actions: 0, events: 0, skipped: 0 };
-  return database.transaction(() => {
+  const result = database.transaction(() => {
     database.exec(`
       CREATE TABLE IF NOT EXISTS github_actions_schema_migrations (
         version INTEGER PRIMARY KEY,
@@ -88,23 +104,78 @@ export function migrateMonitorRulesToActions(
     if (recordedVersion(database) >= GITHUB_ACTIONS_SCHEMA_VERSION) {
       return { actions: 0, events: 0, skipped: 0 };
     }
-    const result = carryMonitorRulesOver(database, now);
+    const carried = carryMonitorRulesOver(database, now);
     renameLegacyTables(database);
     database.prepare(`
       INSERT OR REPLACE INTO github_actions_schema_migrations (version, name, applied_at)
       VALUES (?, ?, ?)
     `).run(GITHUB_ACTIONS_SCHEMA_VERSION, "monitor rules to actions", now);
-    return result;
+    return carried;
+  }).immediate();
+  migratedHandles.add(database);
+  return result;
+}
+
+/**
+ * Undoes the rename so a release rolled back to the poller finds its rules where
+ * it left them. Without it, `ensureGitHubMonitorSchema` recreates the four tables
+ * *empty* on its first call and the operator's automation stops firing in silence.
+ *
+ * It discards the actions model, which is the meaning of rolling back to a schema
+ * that had none: actions created after the migration, their events and the
+ * delivery log go, and the counts say how many.
+ */
+export function rollbackGitHubActionsMigration(
+  database: Database.Database = getDb(),
+): {
+  restored: string[];
+  discardedActions: number;
+  discardedEvents: number;
+  discardedDeliveries: number;
+} {
+  return database.transaction(() => {
+    if (!tableExists(database, "github_actions_schema_migrations")) {
+      return { restored: [], discardedActions: 0, discardedEvents: 0, discardedDeliveries: 0 };
+    }
+    const discardedActions = countRows(database, "github_actions");
+    const discardedEvents = countRows(database, "github_action_events");
+    const discardedDeliveries = countRows(database, "github_webhook_deliveries");
+    const restored: string[] = [];
+    for (const table of LEGACY_TABLES) {
+      const source = `${table}_migrated`;
+      if (!tableExists(database, source)) continue;
+      // Whatever the rolled-back release recreated is empty and in the way.
+      database.exec(`DROP TABLE IF EXISTS ${table}`);
+      database.exec(`ALTER TABLE ${source} RENAME TO ${table}`);
+      restored.push(table);
+    }
+    database.exec(`
+      DROP TABLE IF EXISTS github_action_events;
+      DROP TABLE IF EXISTS github_actions;
+      DROP TABLE IF EXISTS github_webhook_deliveries;
+      DROP TABLE IF EXISTS github_actions_schema_migrations;
+    `);
+    migratedHandles.delete(database);
+    return { restored, discardedActions, discardedEvents, discardedDeliveries };
   }).immediate();
 }
 
 /**
  * Read-only probe so the schema guard on every store call does not open a write
- * transaction once the migration is behind us.
+ * transaction once the migration is behind us, memoized per handle so the two
+ * probes are not re-prepared on every read either.
  */
 function alreadyMigrated(database: Database.Database): boolean {
+  if (migratedHandles.has(database)) return true;
   if (!tableExists(database, "github_actions_schema_migrations")) return false;
-  return recordedVersion(database) >= GITHUB_ACTIONS_SCHEMA_VERSION;
+  if (recordedVersion(database) < GITHUB_ACTIONS_SCHEMA_VERSION) return false;
+  migratedHandles.add(database);
+  return true;
+}
+
+function countRows(database: Database.Database, table: string): number {
+  if (!tableExists(database, table)) return 0;
+  return (database.prepare(`SELECT COUNT(*) AS total FROM ${table}`).get() as { total: number }).total;
 }
 
 function recordedVersion(database: Database.Database): number {
@@ -129,13 +200,13 @@ function carryMonitorRulesOver(
       connection_id, installation_id, repository_id, scanner_json,
       cost_ceiling_usd, daily_cost_ceiling_usd, enabled, revision,
       baseline_initialized_at, created_by, last_event_at, last_reconciled_at,
-      last_error, created_at, updated_at
+      last_error, migration_note, created_at, updated_at
     ) VALUES (
       @id, @repository_key, @name, @trigger_kind, @branch_patterns_json, @executor,
       @connection_id, @installation_id, @repository_id, @scanner_json,
       @cost_ceiling_usd, @daily_cost_ceiling_usd, @enabled, 1,
       @baseline_initialized_at, NULL, NULL, @last_reconciled_at,
-      @last_error, @created_at, @updated_at
+      @last_error, @migration_note, @created_at, @updated_at
     )
   `);
   const insertEvent = database.prepare(`
@@ -169,6 +240,7 @@ function carryMonitorRulesOver(
       continue;
     }
     const withoutCeiling = rule.cost_ceiling_usd === null || rule.cost_ceiling_usd <= 0;
+    const patterns = clampBranchPatterns(rule.follow_branches_json);
     const actionIds = new Map<string, string>();
     for (const [triggerKind, name] of [["pull_request", "PR"], ["push", "Push"]] as const) {
       const id = randomUUID();
@@ -177,7 +249,7 @@ function carryMonitorRulesOver(
         repository_key: rule.repository_key,
         name,
         trigger_kind: triggerKind,
-        branch_patterns_json: rule.follow_branches_json,
+        branch_patterns_json: JSON.stringify(patterns.patterns),
         executor: rule.executor,
         connection_id: rule.connection_id,
         installation_id: rule.installation_id,
@@ -185,10 +257,11 @@ function carryMonitorRulesOver(
         scanner_json: rule.scanner_json,
         cost_ceiling_usd: withoutCeiling ? MIGRATED_COST_CEILING_USD : rule.cost_ceiling_usd,
         daily_cost_ceiling_usd: rule.daily_cost_ceiling_usd,
-        enabled: withoutCeiling ? 0 : rule.enabled,
+        enabled: withoutCeiling || patterns.note !== null ? 0 : rule.enabled,
         baseline_initialized_at: rule.baseline_initialized_at,
         last_reconciled_at: rule.last_polled_at,
         last_error: withoutCeiling ? "migrated_without_ceiling" : rule.last_error,
+        migration_note: patterns.note,
         created_at: rule.created_at,
         updated_at: now,
       });
@@ -201,12 +274,17 @@ function carryMonitorRulesOver(
         skipped += 1;
         continue;
       }
+      // Every migrated event lands at action_revision 1, which is the new action's
+      // live revision. A non-terminal event of a revision the legacy dispatcher had
+      // already abandoned would therefore be picked up and paid for; it ends here
+      // instead, with its history intact and its place in the queue gone.
+      const abandoned = row.rule_revision !== rule.revision && NON_TERMINAL_STATUSES.has(row.status);
       const inserted = insertEvent.run({
         id: row.id,
         action_id: actionId,
         repository_key: row.repository_key,
         kind: row.kind,
-        status: row.status,
+        status: abandoned ? "superseded" : row.status,
         head_sha: row.head_sha,
         base_ref: row.base_ref,
         head_ref: row.head_ref,
@@ -215,11 +293,11 @@ function carryMonitorRulesOver(
         title: row.title,
         gate_id: row.gate_id,
         cost_ceiling_usd: row.cost_ceiling_usd,
-        reason: row.reason,
+        reason: abandoned ? "migrated_stale_revision" : row.reason,
         error: row.error,
         detected_at: row.detected_at,
         dispatched_at: row.dispatched_at,
-        completed_at: row.completed_at,
+        completed_at: abandoned ? row.completed_at ?? now : row.completed_at,
       });
       if (inserted.changes === 1) events += 1;
       else skipped += 1;
@@ -237,15 +315,47 @@ function carryMonitorRulesOver(
 
 /**
  * The legacy identity was a JSON tuple; the new one is the readable key the
- * webhook handler and the reconciliation both mint. Recomputing it keeps one
- * formula in the product instead of two eras of keys in the same column.
+ * webhook handler and the reconciliation both mint. Recomputing it with the same
+ * function keeps one formula in the product instead of two eras of keys in the
+ * same column. A legacy pull-request row without a number could not be keyed the
+ * new way at all, so it is keyed as the push it effectively was.
  */
 function migratedTargetIdentity(row: LegacyEventRow): string {
-  if (row.kind === "pull_request" && row.pull_request_number !== null) {
-    return `pr:${row.pull_request_number}@${row.head_sha}`;
+  const kind = row.kind === "pull_request" && row.pull_request_number !== null ? "pull_request" : "push";
+  return gitHubActionEventTargetIdentity({
+    kind,
+    headSha: row.head_sha,
+    headRef: row.head_ref,
+    pullRequestNumber: row.pull_request_number,
+  });
+}
+
+/**
+ * The legacy validator allowed fifty followed branches; an action holds twenty.
+ * Migrating twenty-five would create a row that fails its own validation, which an
+ * operator could then never rename, re-ceiling or even disable through the
+ * interface — frozen and firing. The extras are dropped into a note the screen can
+ * read, and the action arrives disabled so the operator decides what survives.
+ */
+function clampBranchPatterns(followBranchesJson: string): { patterns: string[]; note: string | null } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(followBranchesJson);
+  } catch {
+    parsed = [];
   }
-  if (row.kind === "pull_request") return `pr:${row.head_ref}@${row.head_sha}`;
-  return `push:${row.head_ref}@${row.head_sha}`;
+  const patterns = (Array.isArray(parsed) ? parsed : [])
+    .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+  if (patterns.length === 0) {
+    return { patterns: ["*"], note: "migrated_pattern_missing" };
+  }
+  if (patterns.length <= MAX_BRANCH_PATTERNS) return { patterns, note: null };
+  const dropped = patterns.slice(MAX_BRANCH_PATTERNS);
+  const note = `migrated_pattern_overflow: ${dropped.join(", ")}`;
+  return {
+    patterns: patterns.slice(0, MAX_BRANCH_PATTERNS),
+    note: note.length <= 500 ? note : `${note.slice(0, 497)}...`,
+  };
 }
 
 function renameLegacyTables(database: Database.Database): void {

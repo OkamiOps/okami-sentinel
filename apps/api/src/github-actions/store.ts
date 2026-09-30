@@ -10,6 +10,7 @@ import type {
   GitHubActionEventPatch,
   GitHubActionEventStatus,
   GitHubActionPatch,
+  GitHubActionTargetIdentity,
   GitHubActionTriggerKind,
   WebhookDeliveryRecord,
 } from "@csb/shared";
@@ -17,11 +18,18 @@ import type {
 import { getDb } from "../db.js";
 import { migrateMonitorRulesToActions } from "./migrate-monitor-rules.js";
 import {
+  MAX_BRANCH_PATTERNS,
   WEBHOOK_DELIVERY_PRUNE_EVERY,
   WEBHOOK_DELIVERY_RETENTION,
+  shortBranchName,
 } from "./schema.js";
 
-const MAX_BRANCH_PATTERNS = 20;
+export {
+  gitHubActionEventTargetIdentity,
+  rerunTargetIdentity,
+  shortBranchName,
+} from "./schema.js";
+
 const STATE_INVALID = "github_action_state_invalid";
 
 interface ActionRow {
@@ -44,6 +52,7 @@ interface ActionRow {
   last_event_at: string | null;
   last_reconciled_at: string | null;
   last_error: string | null;
+  migration_note: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -97,30 +106,6 @@ export function ensureGitHubActionsSchema(database: Database.Database = getDb())
   migrateMonitorRulesToActions(database);
 }
 
-/**
- * The canonical deduplication key of an event. `check_run.rerequested` is the one
- * caller that appends a suffix: a person asked for the same commit again, so it
- * must not collide with the automatic event that already ran.
- */
-export function gitHubActionEventTargetIdentity(input: {
-  kind: GitHubActionTriggerKind;
-  headSha: string;
-  headRef: string;
-  pullRequestNumber?: number | null;
-}): string {
-  if (input.kind === "pull_request") {
-    if (input.pullRequestNumber === null || input.pullRequestNumber === undefined) {
-      throw new Error("github_action_event_pull_request_number_required");
-    }
-    return `pr:${input.pullRequestNumber}@${input.headSha}`;
-  }
-  return `push:${shortBranchName(input.headRef)}@${input.headSha}`;
-}
-
-export function shortBranchName(ref: string): string {
-  return ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : ref;
-}
-
 export function createGitHubAction(
   input: GitHubActionCreate,
   database: Database.Database = getDb(),
@@ -129,19 +114,19 @@ export function createGitHubAction(
 ): GitHubAction {
   ensureGitHubActionsSchema(database);
   assertBranchPatterns(input.branchPatterns);
-  database.prepare(`
+  withNameConflictAsError(() => database.prepare(`
     INSERT INTO github_actions (
       id, repository_key, name, trigger_kind, branch_patterns_json, executor,
       connection_id, installation_id, repository_id, scanner_json,
       cost_ceiling_usd, daily_cost_ceiling_usd, enabled, revision,
       baseline_initialized_at, created_by, last_event_at, last_reconciled_at,
-      last_error, created_at, updated_at
+      last_error, migration_note, created_at, updated_at
     ) VALUES (
       @id, @repository_key, @name, @trigger_kind, @branch_patterns_json, @executor,
       @connection_id, @installation_id, @repository_id, @scanner_json,
       @cost_ceiling_usd, @daily_cost_ceiling_usd, @enabled, 1,
       NULL, @created_by, NULL, NULL,
-      NULL, @created_at, @updated_at
+      NULL, NULL, @created_at, @updated_at
     )
   `).run({
     id,
@@ -160,7 +145,7 @@ export function createGitHubAction(
     created_by: input.createdBy,
     created_at: now,
     updated_at: now,
-  });
+  }));
   return getGitHubAction(id, database)!;
 }
 
@@ -205,11 +190,13 @@ export function patchGitHubAction(
   ensureGitHubActionsSchema(database);
   const current = getGitHubAction(id, database);
   if (current === null) return null;
-  if (patch.branchPatterns !== undefined) assertBranchPatterns(patch.branchPatterns);
   const next: GitHubAction = { ...current, ...patch };
+  // An action stored before this bound existed, or enabled in the same patch that
+  // empties its patterns, would present as healthy while matching nothing.
+  if (patch.branchPatterns !== undefined || next.enabled) assertBranchPatterns(next.branchPatterns);
   if (JSON.stringify(comparable(current)) === JSON.stringify(comparable(next))) return current;
   const bumpsRevision = JSON.stringify(observational(current)) !== JSON.stringify(observational(next));
-  database.prepare(`
+  withNameConflictAsError(() => database.prepare(`
     UPDATE github_actions SET
       name = @name,
       trigger_kind = @trigger_kind,
@@ -225,6 +212,7 @@ export function patchGitHubAction(
       revision = @revision,
       baseline_initialized_at = @baseline_initialized_at,
       last_error = NULL,
+      migration_note = @migration_note,
       updated_at = @updated_at
     WHERE id = @id
   `).run({
@@ -242,8 +230,11 @@ export function patchGitHubAction(
     enabled: next.enabled ? 1 : 0,
     revision: bumpsRevision ? current.revision + 1 : current.revision,
     baseline_initialized_at: bumpsRevision ? null : current.baselineInitializedAt,
+    // The note explains what the migration had to change about the patterns; once
+    // an operator sets them, there is nothing left to explain.
+    migration_note: patch.branchPatterns === undefined ? current.migrationNote : null,
     updated_at: now,
-  });
+  }));
   return getGitHubAction(id, database);
 }
 
@@ -310,7 +301,7 @@ export function createGitHubActionEvent(
       status: input.status ?? "queued",
       head_sha: input.headSha,
       base_ref: input.baseRef,
-      head_ref: input.headRef,
+      head_ref: shortBranchName(input.headRef),
       pull_request_number: input.pullRequestNumber,
       target_identity: input.targetIdentity,
       title: input.title,
@@ -425,7 +416,7 @@ export function supersedeQueuedEvents(
   }
   if (input.headRef !== undefined) {
     clauses.push("head_ref = @head_ref");
-    parameters.head_ref = input.headRef;
+    parameters.head_ref = shortBranchName(input.headRef);
   }
   if (input.pullRequestNumber === undefined && input.headRef === undefined) {
     throw new Error("github_action_supersede_scope_required");
@@ -518,7 +509,9 @@ export function recordWebhookDelivery(
     duration_ms: input.durationMs,
   });
   if (inserted.changes !== 1) return "duplicate";
-  const since = (deliveryInsertsSincePrune.get(database) ?? 0) + 1;
+  // A fresh handle starts one short of the interval, so a process that restarts
+  // more often than every hundred deliveries still prunes once on its first.
+  const since = (deliveryInsertsSincePrune.get(database) ?? WEBHOOK_DELIVERY_PRUNE_EVERY - 1) + 1;
   if (since >= WEBHOOK_DELIVERY_PRUNE_EVERY) {
     deliveryInsertsSincePrune.set(database, 0);
     database.prepare(`
@@ -587,6 +580,7 @@ function rowToAction(row: ActionRow): GitHubAction {
     lastEventAt: row.last_event_at,
     lastReconciledAt: row.last_reconciled_at,
     lastError: row.last_error,
+    migrationNote: row.migration_note,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -606,7 +600,8 @@ function rowToEvent(row: EventRow): GitHubActionEvent {
     baseRef: row.base_ref,
     headRef: row.head_ref,
     pullRequestNumber: row.pull_request_number,
-    targetIdentity: row.target_identity,
+    // The only crossing the brand allows: a stored key was minted on the way in.
+    targetIdentity: row.target_identity as GitHubActionTargetIdentity,
     title: row.title,
     gateId: row.gate_id,
     costCeilingUsd: row.cost_ceiling_usd,
@@ -725,4 +720,19 @@ function isUniqueViolation(error: unknown): boolean {
   return typeof error === "object"
     && error !== null
     && (error as { code?: unknown }).code === "SQLITE_CONSTRAINT_UNIQUE";
+}
+
+/**
+ * After the migration every repository already owns a "PR" and a "Push". An
+ * operator retyping either name deserves a conflict, not a SQLite message.
+ */
+function withNameConflictAsError<T>(run: () => T): T {
+  try {
+    return run();
+  } catch (error) {
+    if (isUniqueViolation(error) && String((error as Error).message).includes("github_actions.name")) {
+      throw new Error("github_action_name_taken");
+    }
+    throw error;
+  }
 }
