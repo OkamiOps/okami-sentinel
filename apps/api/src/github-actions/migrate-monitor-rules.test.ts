@@ -4,10 +4,19 @@ import test from "node:test";
 import Database from "better-sqlite3";
 
 import {
+  GITHUB_ACTIONS_SCHEMA_VERSION,
   migrateMonitorRulesToActions,
   rollbackGitHubActionsMigration,
 } from "./migrate-monitor-rules.js";
-import { listGitHubActionEvents, listGitHubActions, patchGitHubAction } from "./store.js";
+import { GITHUB_ACTIONS_SCHEMA_SQL } from "./schema.js";
+import {
+  createGitHubAction,
+  ensureGitHubActionsSchema,
+  gitHubActionNeedsBranchPatternReview,
+  listGitHubActionEvents,
+  listGitHubActions,
+  patchGitHubAction,
+} from "./store.js";
 
 const SHA_PR = "a".repeat(40);
 const SHA_PUSH = "b".repeat(40);
@@ -309,15 +318,128 @@ test("rolls the rename back so a downgraded release finds its rules again", () =
   assert.deepEqual(migrateMonitorRulesToActions(db), { actions: 2, events: 2, skipped: 0 });
 });
 
-test("rolling back a database that was never migrated changes nothing", () => {
+test("refuses to roll back a database that was never migrated", () => {
   const db = legacyDb();
-  assert.deepEqual(rollbackGitHubActionsMigration(db), {
-    restored: [],
-    discardedActions: 0,
-    discardedEvents: 0,
-    discardedDeliveries: 0,
-  });
+  assert.throws(
+    () => rollbackGitHubActionsMigration(db),
+    /github_actions_rollback_unavailable/,
+  );
   assert.ok(tableExists(db, "github_monitor_rules"));
+});
+
+test("refuses to roll back once there is nothing left to restore", () => {
+  const db = legacyDb();
+  migrateMonitorRulesToActions(db);
+  // The state phase 5 deliberately creates. Without a precondition the runbook
+  // command drops the whole automation and prints a success-looking result.
+  for (const table of [
+    "github_monitor_rules_migrated",
+    "github_monitor_events_migrated",
+    "github_monitor_actions_runs_migrated",
+    "github_monitor_poll_leases_migrated",
+  ]) {
+    db.exec(`DROP TABLE ${table}`);
+  }
+  assert.throws(
+    () => rollbackGitHubActionsMigration(db),
+    /github_actions_rollback_unavailable/,
+  );
+  assert.ok(tableExists(db, "github_actions"));
+  assert.equal(listGitHubActions({ repositoryKey: "github:1" }, db).length, 2);
+});
+
+/** A database as the previous release left it: version 1, no `migration_note`. */
+function versionOneDb(): Database.Database {
+  const db = new Database(":memory:");
+  db.pragma("foreign_keys = ON");
+  db.exec("CREATE TABLE guardrail_repositories (repository_key TEXT PRIMARY KEY)");
+  db.prepare("INSERT INTO guardrail_repositories VALUES ('github:1')").run();
+  const versionOne = GITHUB_ACTIONS_SCHEMA_SQL
+    .replace("    migration_note TEXT,\n", "")
+    .replace(/,\n\s*CHECK \(migration_note[\s\S]*?json_array_length[^\n]*\n/, "\n");
+  // If the surgery stops removing anything, the test stops testing the upgrade.
+  assert.ok(!versionOne.includes("migration_note"));
+  assert.ok(!versionOne.includes("json_array_length"));
+  db.exec(versionOne);
+  db.exec(`
+    CREATE TABLE github_actions_schema_migrations (
+      version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL
+    );
+    INSERT INTO github_actions_schema_migrations VALUES (1, 'monitor rules to actions', '2026-09-30T10:00:00.000Z');
+  `);
+  return db;
+}
+
+test("upgrades a database left at version one instead of short-circuiting", () => {
+  const db = versionOneDb();
+  assert.equal(
+    (db.prepare("PRAGMA table_info(github_actions)").all() as Array<{ name: string }>)
+      .some((column) => column.name === "migration_note"),
+    false,
+  );
+
+  ensureGitHubActionsSchema(db);
+
+  assert.equal(
+    (db.prepare("SELECT max(version) AS version FROM github_actions_schema_migrations")
+      .get() as { version: number }).version,
+    GITHUB_ACTIONS_SCHEMA_VERSION,
+  );
+  const action = createGitHubAction({
+    repositoryKey: "github:1", name: "PR", triggerKind: "pull_request", branchPatterns: ["main"],
+    connectionId: "c1", installationId: "i1", repositoryId: "1", executor: "sentinel-managed",
+    scanner: null, costCeilingUsd: 2, dailyCostCeilingUsd: null, enabled: false, createdBy: "u1",
+  }, db);
+  assert.equal(action.migrationNote, null);
+  // SQLite cannot add a CHECK by ALTER, so on an upgraded database the 1..20 bound
+  // is the store's validation alone.
+  assert.throws(
+    () => createGitHubAction({
+      repositoryKey: "github:1", name: "Wide", triggerKind: "push",
+      branchPatterns: Array.from({ length: 21 }, (_, index) => `b-${index}`),
+      connectionId: "c1", installationId: "i1", repositoryId: "1", executor: "sentinel-managed",
+      scanner: null, costCeilingUsd: 2, dailyCostCeilingUsd: null, enabled: false, createdBy: "u1",
+    }, db),
+    /github_action_branch_patterns_invalid/,
+  );
+});
+
+test("an already current database is still a no-op", () => {
+  const db = legacyDb();
+  migrateMonitorRulesToActions(db);
+  assert.deepEqual(migrateMonitorRulesToActions(db), { actions: 0, events: 0, skipped: 0 });
+  assert.equal(
+    (db.prepare("SELECT COUNT(*) AS total FROM github_actions_schema_migrations")
+      .get() as { total: number }).total,
+    1,
+  );
+});
+
+test("refuses to enable an action whose branch patterns the migration invented", () => {
+  const db = legacyDb({ followBranches: [] });
+  migrateMonitorRulesToActions(db);
+  const action = listGitHubActions({ repositoryKey: "github:1" }, db)[0]!;
+  assert.equal(gitHubActionNeedsBranchPatternReview(action), true);
+
+  // `*` is the most permissive pattern in the language; nobody chose it.
+  assert.throws(
+    () => patchGitHubAction(action.id, { enabled: true }, db),
+    /github_action_branch_patterns_unreviewed/,
+  );
+  assert.equal(listGitHubActions({ repositoryKey: "github:1" }, db)[0]!.enabled, false);
+
+  const reviewed = patchGitHubAction(action.id, { branchPatterns: ["main"], enabled: true }, db)!;
+  assert.equal(reviewed.enabled, true);
+  assert.equal(reviewed.migrationNote, null);
+  assert.equal(gitHubActionNeedsBranchPatternReview(reviewed), false);
+});
+
+test("a clamped action may still be enabled, its patterns were the operator's own", () => {
+  const db = legacyDb({ followBranches: Array.from({ length: 25 }, (_, index) => `release/${index}`) });
+  migrateMonitorRulesToActions(db);
+  const action = listGitHubActions({ repositoryKey: "github:1" }, db)[0]!;
+  assert.equal(gitHubActionNeedsBranchPatternReview(action), false);
+  assert.equal(patchGitHubAction(action.id, { enabled: true }, db)!.enabled, true);
 });
 
 test("leaves a rule whose repository is gone out of the new model", () => {

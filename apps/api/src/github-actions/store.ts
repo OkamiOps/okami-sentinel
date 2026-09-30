@@ -32,6 +32,23 @@ export {
 
 const STATE_INVALID = "github_action_state_invalid";
 
+/** The note the migration leaves on an action whose patterns it had to invent. */
+const PATTERNS_INVENTED_NOTE = "migrated_pattern_missing";
+
+/**
+ * A rule that followed no branch could not be stored as `[]`, so the migration
+ * wrote `*` — the most permissive pattern in the language, chosen by nobody. Such
+ * an action must not be enabled until a person names the branches; setting
+ * `branchPatterns` is what clears the note. `migrated_pattern_overflow` does not
+ * count: those patterns were the operator's own, only fewer.
+ *
+ * Exported for the Actions screen (task 1.5), which should refuse with this before
+ * the store has to throw.
+ */
+export function gitHubActionNeedsBranchPatternReview(action: GitHubAction): boolean {
+  return action.migrationNote === PATTERNS_INVENTED_NOTE;
+}
+
 interface ActionRow {
   id: string;
   repository_key: string;
@@ -194,6 +211,9 @@ export function patchGitHubAction(
   // An action stored before this bound existed, or enabled in the same patch that
   // empties its patterns, would present as healthy while matching nothing.
   if (patch.branchPatterns !== undefined || next.enabled) assertBranchPatterns(next.branchPatterns);
+  if (next.enabled && patch.branchPatterns === undefined && gitHubActionNeedsBranchPatternReview(current)) {
+    throw new Error("github_action_branch_patterns_unreviewed");
+  }
   if (JSON.stringify(comparable(current)) === JSON.stringify(comparable(next))) return current;
   const bumpsRevision = JSON.stringify(observational(current)) !== JSON.stringify(observational(next));
   withNameConflictAsError(() => database.prepare(`
