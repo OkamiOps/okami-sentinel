@@ -126,7 +126,20 @@ As ações criadas depois da migração, seus eventos e o log de entregas são
 descartados — é o significado de voltar a um esquema que não tinha ações. As
 regras de monitor voltam intactas.
 
-Se o container já não subir, o mesmo efeito em SQL, dentro de uma transação:
+**Este procedimento expira na fase 5**, que remove as tabelas `_migrated`. Sem
+nenhuma delas não há para onde voltar, e o passo inverso falha de propósito com
+`github_actions_rollback_unavailable` em vez de apagar a automação. Confirme
+primeiro que ainda existe o que restaurar:
+
+```sql
+SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'github_monitor_%_migrated';
+```
+
+Se essa consulta não devolver linha nenhuma, **não continue**: reverter a
+migração já não é possível e o caminho é restaurar o backup do volume.
+
+Se o container já não subir, e só depois de a consulta acima devolver linhas, o
+mesmo efeito em SQL, dentro de uma transação:
 
 ```sql
 BEGIN IMMEDIATE;

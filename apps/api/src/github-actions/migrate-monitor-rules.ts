@@ -9,7 +9,20 @@ import {
   gitHubActionEventTargetIdentity,
 } from "./schema.js";
 
-export const GITHUB_ACTIONS_SCHEMA_VERSION = 1;
+/**
+ * Steps run strictly above the recorded version, so a column added later reaches
+ * a database that already recorded an earlier one. Version 1 mints the tables and
+ * carries the monitor rules over; version 2 adds `migration_note`.
+ *
+ * SQLite cannot add a `CHECK` through `ALTER TABLE`, so the two constraints
+ * introduced with version 2 — `json_array_length(branch_patterns_json) BETWEEN 1
+ * AND 20` and the `migration_note` length cap — guard freshly created databases
+ * only. On an upgraded database the same bounds are the store's validation
+ * (`assertBranchPatterns`) and the migration's own `clampBranchPatterns`. Adding
+ * them for real would mean rebuilding the table, which is not worth a lock on a
+ * live database for an invariant two code paths already keep.
+ */
+export const GITHUB_ACTIONS_SCHEMA_VERSION = 2;
 
 /** The ceiling a rule that was never activated inherits, disabled, so it cannot spend. */
 const MIGRATED_COST_CEILING_USD = 1;
@@ -100,16 +113,24 @@ export function migrateMonitorRulesToActions(
         applied_at TEXT NOT NULL
       )
     `);
+    const from = recordedVersion(database);
+    if (from >= GITHUB_ACTIONS_SCHEMA_VERSION) return { actions: 0, events: 0, skipped: 0 };
     database.exec(GITHUB_ACTIONS_SCHEMA_SQL);
-    if (recordedVersion(database) >= GITHUB_ACTIONS_SCHEMA_VERSION) {
-      return { actions: 0, events: 0, skipped: 0 };
+    let carried: MonitorRuleMigrationResult = { actions: 0, events: 0, skipped: 0 };
+    if (from < 1) {
+      carried = carryMonitorRulesOver(database, now);
+      renameLegacyTables(database);
     }
-    const carried = carryMonitorRulesOver(database, now);
-    renameLegacyTables(database);
+    if (from < 2) {
+      // A fresh database already has it from the DDL above; one created by the
+      // previous release does not, and short-circuiting on version 1 would leave
+      // every insert failing on a column that never appeared.
+      addColumnIfMissing(database, "github_actions", "migration_note", "TEXT");
+    }
     database.prepare(`
       INSERT OR REPLACE INTO github_actions_schema_migrations (version, name, applied_at)
       VALUES (?, ?, ?)
-    `).run(GITHUB_ACTIONS_SCHEMA_VERSION, "monitor rules to actions", now);
+    `).run(GITHUB_ACTIONS_SCHEMA_VERSION, "actions model with migration notes", now);
     return carried;
   }).immediate();
   migratedHandles.add(database);
@@ -123,7 +144,10 @@ export function migrateMonitorRulesToActions(
  *
  * It discards the actions model, which is the meaning of rolling back to a schema
  * that had none: actions created after the migration, their events and the
- * delivery log go, and the counts say how many.
+ * delivery log go, and the counts say how many. It therefore refuses outright
+ * unless at least one `_migrated` table is still there to restore — after phase 5
+ * removes them this procedure has expired, and running it would destroy the
+ * automation it exists to protect with nothing to fall back on.
  */
 export function rollbackGitHubActionsMigration(
   database: Database.Database = getDb(),
@@ -134,8 +158,9 @@ export function rollbackGitHubActionsMigration(
   discardedDeliveries: number;
 } {
   return database.transaction(() => {
-    if (!tableExists(database, "github_actions_schema_migrations")) {
-      return { restored: [], discardedActions: 0, discardedEvents: 0, discardedDeliveries: 0 };
+    // Before any DROP: nothing to restore means nothing to roll back to.
+    if (!LEGACY_TABLES.some((table) => tableExists(database, `${table}_migrated`))) {
+      throw new Error("github_actions_rollback_unavailable");
     }
     const discardedActions = countRows(database, "github_actions");
     const discardedEvents = countRows(database, "github_action_events");
@@ -171,6 +196,21 @@ function alreadyMigrated(database: Database.Database): boolean {
   if (recordedVersion(database) < GITHUB_ACTIONS_SCHEMA_VERSION) return false;
   migratedHandles.add(database);
   return true;
+}
+
+/** The forward path for a column: every later one follows this shape. */
+function addColumnIfMissing(
+  database: Database.Database,
+  table: string,
+  column: string,
+  definition: string,
+): void {
+  const columns = new Set(
+    (database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
+      .map((entry) => entry.name),
+  );
+  if (columns.has(column)) return;
+  database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
 
 function countRows(database: Database.Database, table: string): number {
