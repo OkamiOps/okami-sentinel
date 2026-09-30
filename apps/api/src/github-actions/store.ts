@@ -12,6 +12,7 @@ import type {
   GitHubActionPatch,
   GitHubActionTargetIdentity,
   GitHubActionTriggerKind,
+  WebhookDeliveryCompletion,
   WebhookDeliveryRecord,
 } from "@csb/shared";
 
@@ -70,6 +71,7 @@ interface ActionRow {
   last_reconciled_at: string | null;
   last_error: string | null;
   migration_note: string | null;
+  include_forks: number;
   created_at: string;
   updated_at: string;
 }
@@ -94,6 +96,7 @@ interface EventRow {
   reason: string | null;
   error: string | null;
   detected_at: string;
+  observed_at: string | null;
   dispatched_at: string | null;
   completed_at: string | null;
 }
@@ -137,13 +140,13 @@ export function createGitHubAction(
       connection_id, installation_id, repository_id, scanner_json,
       cost_ceiling_usd, daily_cost_ceiling_usd, enabled, revision,
       baseline_initialized_at, created_by, last_event_at, last_reconciled_at,
-      last_error, migration_note, created_at, updated_at
+      last_error, migration_note, include_forks, created_at, updated_at
     ) VALUES (
       @id, @repository_key, @name, @trigger_kind, @branch_patterns_json, @executor,
       @connection_id, @installation_id, @repository_id, @scanner_json,
       @cost_ceiling_usd, @daily_cost_ceiling_usd, @enabled, 1,
       NULL, @created_by, NULL, NULL,
-      NULL, NULL, @created_at, @updated_at
+      NULL, NULL, @include_forks, @created_at, @updated_at
     )
   `).run({
     id,
@@ -155,6 +158,7 @@ export function createGitHubAction(
     connection_id: input.connectionId,
     installation_id: input.installationId,
     repository_id: input.repositoryId,
+    include_forks: input.includeForks ? 1 : 0,
     scanner_json: input.scanner === null ? null : JSON.stringify(input.scanner),
     cost_ceiling_usd: input.costCeilingUsd,
     daily_cost_ceiling_usd: input.dailyCostCeilingUsd,
@@ -229,6 +233,7 @@ export function patchGitHubAction(
       cost_ceiling_usd = @cost_ceiling_usd,
       daily_cost_ceiling_usd = @daily_cost_ceiling_usd,
       enabled = @enabled,
+      include_forks = @include_forks,
       revision = @revision,
       baseline_initialized_at = @baseline_initialized_at,
       last_error = NULL,
@@ -248,6 +253,7 @@ export function patchGitHubAction(
     cost_ceiling_usd: next.costCeilingUsd,
     daily_cost_ceiling_usd: next.dailyCostCeilingUsd,
     enabled: next.enabled ? 1 : 0,
+    include_forks: next.includeForks ? 1 : 0,
     revision: bumpsRevision ? current.revision + 1 : current.revision,
     baseline_initialized_at: bumpsRevision ? null : current.baselineInitializedAt,
     // The note explains what the migration had to change about the patterns; once
@@ -302,13 +308,13 @@ export function createGitHubActionEvent(
       INSERT INTO github_action_events (
         id, action_id, repository_key, action_revision, origin, delivery_id, kind,
         status, head_sha, base_ref, head_ref, pull_request_number, target_identity,
-        title, gate_id, cost_ceiling_usd, reason, error, detected_at, dispatched_at,
-        completed_at
+        title, gate_id, cost_ceiling_usd, reason, error, detected_at, observed_at,
+        dispatched_at, completed_at
       ) VALUES (
         @id, @action_id, @repository_key, @action_revision, @origin, @delivery_id, @kind,
         @status, @head_sha, @base_ref, @head_ref, @pull_request_number, @target_identity,
-        @title, @gate_id, @cost_ceiling_usd, @reason, @error, @detected_at, NULL,
-        NULL
+        @title, @gate_id, @cost_ceiling_usd, @reason, @error, @detected_at, @observed_at,
+        NULL, NULL
       )
     `).run({
       id,
@@ -330,6 +336,7 @@ export function createGitHubActionEvent(
       reason: input.reason,
       error: input.error,
       detected_at: input.detectedAt,
+      observed_at: input.observedAt,
     });
   } catch (error) {
     if (isUniqueViolation(error)) return null;
@@ -418,6 +425,13 @@ export function supersedeQueuedEvents(
     headRef?: string;
     exceptHeadSha: string;
     reason: "head_superseded" | "pull_request_closed";
+    /**
+     * Only events whose own change is strictly older than this are cancelled, so a
+     * delivery that arrives late can never cancel the newer head it missed. Leave
+     * it out for `pull_request_closed`, where the whole queue is obsolete whatever
+     * its order.
+     */
+    beforeObservedAt?: string;
   },
   database: Database.Database = getDb(),
   now: string = new Date().toISOString(),
@@ -441,6 +455,10 @@ export function supersedeQueuedEvents(
   if (input.pullRequestNumber === undefined && input.headRef === undefined) {
     throw new Error("github_action_supersede_scope_required");
   }
+  if (input.beforeObservedAt !== undefined) {
+    clauses.push("COALESCE(observed_at, detected_at) < @before_observed_at");
+    parameters.before_observed_at = input.beforeObservedAt;
+  }
   return database.prepare(`
     UPDATE github_action_events SET
       status = 'superseded',
@@ -448,6 +466,37 @@ export function supersedeQueuedEvents(
       completed_at = COALESCE(completed_at, @now)
     WHERE ${clauses.join(" AND ")}
   `).run(parameters).changes;
+}
+
+/**
+ * The newest change already on the books for one target of one action, by the
+ * payload's own clock where there was one. A delivery older than this is a replay
+ * or an out-of-order arrival: it must create nothing and cancel nothing, because
+ * whatever it describes has already been overtaken.
+ */
+export function newestObservedEventAt(
+  input: { actionId: string; pullRequestNumber?: number; headRef?: string },
+  database: Database.Database = getDb(),
+): string | null {
+  ensureGitHubActionsSchema(database);
+  if (input.pullRequestNumber === undefined && input.headRef === undefined) {
+    throw new Error("github_action_supersede_scope_required");
+  }
+  const clauses = ["action_id = @action_id"];
+  const parameters: Record<string, unknown> = { action_id: input.actionId };
+  if (input.pullRequestNumber !== undefined) {
+    clauses.push("pull_request_number = @pull_request_number");
+    parameters.pull_request_number = input.pullRequestNumber;
+  }
+  if (input.headRef !== undefined) {
+    clauses.push("head_ref = @head_ref");
+    parameters.head_ref = shortBranchName(input.headRef);
+  }
+  const row = database.prepare(`
+    SELECT MAX(COALESCE(observed_at, detected_at)) AS newest
+    FROM github_action_events WHERE ${clauses.join(" AND ")}
+  `).get(parameters) as { newest: string | null } | undefined;
+  return row?.newest ?? null;
 }
 
 /**
@@ -546,6 +595,42 @@ export function recordWebhookDelivery(
   return "recorded";
 }
 
+/**
+ * The second half of the claim: the row was inserted before any work, so the
+ * delivery id was taken and a concurrent duplicate lost; this writes what the work
+ * turned out to be. A row that is not there is not recreated — it was rolled back
+ * with the work it describes.
+ */
+export function completeWebhookDelivery(
+  deliveryId: string,
+  patch: WebhookDeliveryCompletion,
+  database: Database.Database = getDb(),
+): void {
+  ensureGitHubActionsSchema(database);
+  database.prepare(`
+    UPDATE github_webhook_deliveries SET
+      repository_key = @repository_key,
+      installation_id = @installation_id,
+      head_sha = @head_sha,
+      outcome = @outcome,
+      reason = @reason,
+      matched_action_ids_json = @matched_action_ids_json,
+      event_ids_json = @event_ids_json,
+      duration_ms = @duration_ms
+    WHERE delivery_id = @delivery_id
+  `).run({
+    delivery_id: deliveryId,
+    repository_key: patch.repositoryKey,
+    installation_id: patch.installationId,
+    head_sha: patch.headSha,
+    outcome: patch.outcome,
+    reason: patch.reason,
+    matched_action_ids_json: JSON.stringify(patch.matchedActionIds),
+    event_ids_json: JSON.stringify(patch.eventIds),
+    duration_ms: patch.durationMs,
+  });
+}
+
 export function listWebhookDeliveries(
   limit: number,
   database: Database.Database = getDb(),
@@ -636,6 +721,7 @@ function rowToAction(row: ActionRow): GitHubAction {
     lastReconciledAt: row.last_reconciled_at,
     lastError: row.last_error,
     migrationNote: row.migration_note,
+    includeForks: row.include_forks === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -663,6 +749,7 @@ function rowToEvent(row: EventRow): GitHubActionEvent {
     reason: row.reason,
     error: row.error,
     detectedAt: row.detected_at,
+    observedAt: row.observed_at,
     dispatchedAt: row.dispatched_at,
     completedAt: row.completed_at,
   };
@@ -768,6 +855,9 @@ function observational(action: GitHubAction) {
     connectionId: action.connectionId,
     installationId: action.installationId,
     repositoryId: action.repositoryId,
+    // Opting a fork in changes which pull requests the action sees, so the open
+    // queue must not be charged retroactively for the ones it now covers.
+    includeForks: action.includeForks,
   };
 }
 

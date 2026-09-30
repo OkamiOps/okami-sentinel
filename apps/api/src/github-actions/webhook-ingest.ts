@@ -4,12 +4,13 @@ import type {
   GitHubActionEventCreate,
   GitHubActionTriggerKind,
   GuardrailRepository,
+  WebhookDeliveryCompletion,
   WebhookDeliveryRecord,
 } from "@csb/shared";
 
 import { matchesAnyBranchPattern } from "./branch-patterns.js";
 import { gitHubActionEventTargetIdentity, shortBranchName } from "./schema.js";
-import type { supersedeQueuedEvents } from "./store.js";
+import type { newestObservedEventAt, supersedeQueuedEvents } from "./store.js";
 import { verifyGitHubSignature, type GitHubWebhookSecret } from "./webhook-signature.js";
 
 /** The delivery outcomes the store records, plus the answer a redelivery gets. */
@@ -23,29 +24,46 @@ export interface GitHubWebhookIngestResult {
 
 export interface GitHubWebhookIngestDependencies {
   now(): string;
-  /** Every App connection that has a webhook secret, in a stable order. */
+  /**
+   * Every App connection that has a webhook secret, in a stable order. This runs
+   * on **every** delivery, including an unsigned flood, so the production wiring
+   * must cache it rather than decrypt the vault once per connection per request.
+   */
   listSecrets(): Promise<GitHubWebhookSecret[]>;
   /** Resolved by `repository.id`, and only within the connection that signed. */
   findRepository(connectionId: string, githubRepositoryId: string): GuardrailRepository | null;
   listActions(repositoryKey: string): GitHubAction[];
+  /** The newest change already recorded for this target, for the ordering guard. */
+  newestObservedAt(input: Parameters<typeof newestObservedEventAt>[0]): string | null;
   createEvent(input: GitHubActionEventCreate): GitHubActionEvent | null;
   supersede(input: Parameters<typeof supersedeQueuedEvents>[0]): number;
   hasAnalysedCommit(actionId: string, headSha: string): boolean;
-  recordDelivery(input: WebhookDeliveryRecord): "recorded" | "duplicate";
+  /** Takes the delivery id before any work; `duplicate` means another one has it. */
+  claimDelivery(input: WebhookDeliveryRecord): "recorded" | "duplicate";
+  completeDelivery(deliveryId: string, patch: WebhookDeliveryCompletion): void;
   disableActionsForRepository(repositoryKey: string, reason: string): void;
   disableActionsForInstallation(installationId: string, reason: string): void;
+  /** Runs after the transaction commits: it is asynchronous and it calls GitHub. */
   refreshInstallationRepositories(installationId: string): Promise<void>;
   /** Called after the transaction commits; GitHub never waits for a scan. */
   dispatch(eventId: string): void;
-  rerunGate(input: { externalId: string; headSha: string; checkRunId: string }): GitHubActionEvent | null;
+  /** The App id of a connection, to prove a check run is one of ours. */
+  connectionAppId(connectionId: string): string | null;
+  rerunGate(input: {
+    connectionId: string;
+    repositoryKey: string;
+    externalId: string;
+    headSha: string;
+    checkRunId: string;
+  }): GitHubActionEvent | null;
   /** Phase 4. Absent until the Actions executor returns by event. */
   importWorkflowRun?(workflowRunId: string): void;
   /**
-   * Wraps the delivery row, the events and the supersession in one
-   * `IMMEDIATE` transaction. The default runs the work directly, which is what
-   * an in-memory test double wants.
+   * The delivery row, the events and the supersession in one `IMMEDIATE`
+   * transaction. Required, and it must really roll back: a partial delivery would
+   * cancel a queued gate and then answer "nothing happened".
    */
-  runInTransaction?<T>(work: () => T): T;
+  runInTransaction<T>(work: () => T): T;
 }
 
 export interface GitHubWebhookIngestInput {
@@ -58,6 +76,13 @@ const BRANCH_PREFIX = "refs/heads/";
 const EMPTY_SHA = "0".repeat(40);
 const SHA = /^[0-9a-f]{40}$/i;
 const MAX_TITLE = 500;
+
+/**
+ * A change older than this is not worth acting on, and a captured signed body must
+ * not stay replayable forever once the delivery table has been pruned past it.
+ * Anything this old that still matters is the reconciliation's job.
+ */
+const MAX_CHANGE_AGE_MS = 24 * 60 * 60_000;
 
 /** Thrown inside the transaction so a redelivery's writes are discarded. */
 const DUPLICATE_DELIVERY = Symbol("duplicate_delivery");
@@ -81,8 +106,10 @@ const nothing = (outcome: Routed["outcome"], reason: string | null, extra: Parti
 /**
  * One delivery, start to finish: verify, parse, map the event onto the actions
  * that follow the branch, and write the delivery row together with whatever
- * events it produced. Dispatch happens after the transaction commits, so the
- * response does not wait for a scan.
+ * events it produced. The delivery id is claimed first, so a concurrent duplicate
+ * loses before anything is written; the dispatch and the installation-cache
+ * refresh happen after the transaction commits, so the response never waits for a
+ * scan or for GitHub.
  */
 export async function ingestGitHubWebhook(
   input: GitHubWebhookIngestInput,
@@ -109,28 +136,33 @@ export async function ingestGitHubWebhook(
   }
 
   const payload = parseJsonObject(input.body);
+  const connectionId = verified.connectionId;
 
-  // The only asynchronous side effect: it must not run inside the transaction.
-  if (payload && event === "installation_repositories") {
-    const installationId = numericId(pick(payload, "installation"), "id");
-    const action = text(payload.action);
-    if (installationId && (action === "added" || action === "removed")) {
-      await deps.refreshInstallationRepositories(installationId);
-    }
-  }
-
-  const transaction = deps.runInTransaction ?? (<T>(work: () => T): T => work());
   let routed: Routed;
   try {
-    routed = transaction(() => {
-      const result = payload === null
-        ? nothing("failed", "malformed_payload")
-        : route(event, payload, verified.connectionId, deliveryId, receivedAt, deps);
-      const recorded = deps.recordDelivery({
+    routed = deps.runInTransaction(() => {
+      const claimed = deps.claimDelivery({
         deliveryId,
-        connectionId: verified.connectionId,
+        connectionId,
         event,
         action: payload ? text(payload.action) || null : null,
+        // Provisional: a claimed delivery whose work never completed *is* a
+        // failure, and `completeDelivery` overwrites all of it a moment later.
+        repositoryKey: null,
+        installationId: null,
+        headSha: null,
+        outcome: "failed",
+        reason: null,
+        matchedActionIds: [],
+        eventIds: [],
+        receivedAt,
+        durationMs: null,
+      });
+      if (claimed === "duplicate") throw DUPLICATE_DELIVERY;
+      const result = payload === null
+        ? nothing("failed", "malformed_payload")
+        : route(event, payload, connectionId, deliveryId, receivedAt, deps);
+      deps.completeDelivery(deliveryId, {
         repositoryKey: result.repositoryKey,
         installationId: result.installationId,
         headSha: result.headSha,
@@ -138,10 +170,8 @@ export async function ingestGitHubWebhook(
         reason: result.reason,
         matchedActionIds: result.matchedActionIds,
         eventIds: result.eventIds,
-        receivedAt,
         durationMs: Math.max(0, Date.parse(deps.now()) - Date.parse(receivedAt)),
       });
-      if (recorded === "duplicate") throw DUPLICATE_DELIVERY;
       return result;
     });
   } catch (error) {
@@ -151,6 +181,11 @@ export async function ingestGitHubWebhook(
     throw error;
   }
 
+  // Outside the transaction: one is asynchronous, the other must not hold a write
+  // lock while a scan starts.
+  if (routed.installationId !== null && needsInstallationRefresh(event, payload)) {
+    await deps.refreshInstallationRepositories(routed.installationId);
+  }
   for (const eventId of routed.dispatchIds) deps.dispatch(eventId);
   return {
     outcome: routed.outcome,
@@ -158,6 +193,12 @@ export async function ingestGitHubWebhook(
     eventIds: routed.eventIds,
     matchedActionIds: routed.matchedActionIds,
   };
+}
+
+function needsInstallationRefresh(event: string, payload: Record<string, unknown> | null): boolean {
+  if (event !== "installation_repositories" || payload === null) return false;
+  const action = text(payload.action);
+  return action === "added" || action === "removed";
 }
 
 function route(
@@ -240,18 +281,31 @@ function routePullRequest(
   const headRef = text(pick(pullRequest, "head")?.ref);
   const headSha = sha(pick(pullRequest, "head")?.sha);
   if (!number || !baseRef || !headRef || !headSha) return nothing("failed", "malformed_payload", { installationId });
+  // GitHub's own clock for this change, which is what orders two deliveries of the
+  // same target; the author cannot choose it, unlike a commit timestamp.
+  const observedAt = timestamp(pullRequest?.updated_at);
+  if (tooOld(observedAt, detectedAt)) return nothing("ignored", "stale_delivery", { installationId, headSha });
 
   const resolved = resolveRepository(payload, connectionId, deps, installationId);
   if (!isResolved(resolved)) return { ...resolved, headSha };
   const repository = resolved.repository;
   const base: Partial<Routed> = { installationId, repositoryKey: repository.repositoryKey, headSha };
 
+  // A draft is a work in progress nobody has asked to be judged yet, and
+  // `ready_for_review` is the moment they do. Scanning every draft commit is the
+  // same money for an answer the author is not reading.
+  if (action !== "closed" && action !== "ready_for_review" && pullRequest?.draft === true) {
+    return nothing("ignored", "draft_pull_request", base);
+  }
+
   const matched = deps.listActions(repository.repositoryKey).filter((candidate) =>
     candidate.triggerKind === "pull_request" && matchesAnyBranchPattern(candidate.branchPatterns, baseRef));
   if (matched.length === 0) return nothing("ignored", "branch_not_followed", base);
 
   if (action === "closed") {
-    // Nothing is scanned: the queue of this pull request stops here.
+    // Nothing is scanned: the queue of this pull request stops here, whatever the
+    // order the deliveries arrived in, and including the queues of actions that
+    // were disabled in the meantime.
     for (const candidate of matched) {
       deps.supersede({
         actionId: candidate.id,
@@ -266,13 +320,28 @@ function routePullRequest(
     });
   }
 
-  return createEvents(matched.filter((candidate) => candidate.enabled), {
+  // A head repository that is not the base repository is a fork: untrusted code,
+  // our installation token, and a `.csb/guardrails.json` the author controls.
+  const headRepositoryId = numericId(pick(pick(pullRequest, "head"), "repo"), "id");
+  const baseRepositoryId = numericId(pick(pick(pullRequest, "base"), "repo"), "id")
+    ?? numericId(pick(payload, "repository"), "id");
+  const fromFork = headRepositoryId !== null && baseRepositoryId !== null && headRepositoryId !== baseRepositoryId;
+  const eligible = fromFork ? matched.filter((candidate) => candidate.includeForks) : matched;
+  if (eligible.length === 0) {
+    return nothing("ignored", "fork_pull_request", { ...base, matchedActionIds: matched.map((one) => one.id) });
+  }
+
+  return createEvents(eligible, {
     kind: "pull_request",
     repository,
     deliveryId,
     detectedAt,
+    observedAt,
     headSha,
-    headRef,
+    // The fork's head is reachable in the base repository as `refs/pull/<n>/head`,
+    // so no path downstream ever fetches from the fork, and the base branch stays
+    // the only authority for policy and baseline.
+    headRef: fromFork ? `pull/${number}/head` : headRef,
     baseRef,
     pullRequestNumber: number,
     title: title(pullRequest?.title),
@@ -297,6 +366,10 @@ function routePush(
   if (!headSha) return nothing("failed", "malformed_payload", { installationId });
   const branch = shortBranchName(ref);
   if (!branch) return nothing("ignored", "ref_not_branch", { installationId });
+  // `repository.pushed_at` is GitHub's observation. `head_commit.timestamp` is the
+  // committer's, so a contributor could backdate it and silence later pushes.
+  const observedAt = timestamp(pick(payload, "repository")?.pushed_at);
+  if (tooOld(observedAt, detectedAt)) return nothing("ignored", "stale_delivery", { installationId, headSha });
 
   const resolved = resolveRepository(payload, connectionId, deps, installationId);
   if (!isResolved(resolved)) return { ...resolved, headSha };
@@ -304,8 +377,7 @@ function routePush(
   const base: Partial<Routed> = { installationId, repositoryKey: repository.repositoryKey, headSha };
 
   const matched = deps.listActions(repository.repositoryKey).filter((candidate) =>
-    candidate.triggerKind === "push" && candidate.enabled
-    && matchesAnyBranchPattern(candidate.branchPatterns, branch));
+    candidate.triggerKind === "push" && matchesAnyBranchPattern(candidate.branchPatterns, branch));
   if (matched.length === 0) return nothing("ignored", "branch_not_followed", base);
 
   return createEvents(matched, {
@@ -313,6 +385,7 @@ function routePush(
     repository,
     deliveryId,
     detectedAt,
+    observedAt,
     headSha,
     headRef: branch,
     // A push to the protected branch has nothing to compare against; anything
@@ -340,13 +413,21 @@ function routeCheckRun(
 
   const resolved = resolveRepository(payload, connectionId, deps, installationId);
   if (!isResolved(resolved)) return { ...resolved, headSha };
-  const base: Partial<Routed> = {
-    installationId, repositoryKey: resolved.repository.repositoryKey, headSha,
-  };
-  // A person asked for this run, so it is the one exception to "the same commit
-  // is never analysed twice". The event is minted with `origin='manual'` and a
-  // target identity suffixed with the check run, which is why the id travels.
-  const event = deps.rerunGate({ externalId, headSha, checkRunId });
+  const repositoryKey = resolved.repository.repositoryKey;
+  const base: Partial<Routed> = { installationId, repositoryKey, headSha };
+
+  // A rerun is exempt from the repeated-commit rule and spends money, so the check
+  // run has to be one of ours. Fail closed when either side is unknown.
+  const appId = numericId(pick(checkRun, "app"), "id");
+  const ours = deps.connectionAppId(connectionId);
+  if (!appId || !ours || appId !== ours) return nothing("ignored", "check_run_not_ours", base);
+
+  // A person asked for this run, so it is the one exception to "the same commit is
+  // never analysed twice". The event is minted with `origin='manual'` and a target
+  // identity suffixed with the check run, which is why the id travels — and the
+  // lookup is scoped by connection and repository so an `external_id` alone can
+  // never mint a paid scan for somebody else's action.
+  const event = deps.rerunGate({ connectionId, repositoryKey, externalId, headSha, checkRunId });
   if (!event) return nothing("ignored", "rerun_target_unknown", base);
   return {
     ...nothing("processed", null, base),
@@ -382,6 +463,7 @@ interface EventPlan {
   repository: GuardrailRepository;
   deliveryId: string;
   detectedAt: string;
+  observedAt: string | null;
   headSha: string;
   headRef: string;
   baseRef: string | null;
@@ -396,19 +478,34 @@ function createEvents(
   deps: GitHubWebhookIngestDependencies,
   base: Partial<Routed>,
 ): Routed {
-  if (actions.length === 0) return nothing("ignored", "branch_not_followed", base);
+  const matchedActionIds = actions.map((action) => action.id);
   const eventIds: string[] = [];
   const dispatchIds: string[] = [];
   let skipped = 0;
+  let collided = 0;
+  let stale = 0;
+  // Whatever is cancelled has to be strictly older than this change, so a late
+  // delivery can never cancel the newer head it missed.
+  const boundary = plan.observedAt ?? plan.detectedAt;
   for (const action of actions) {
-    // Whatever was queued for an older commit of this target never runs: the
-    // money has not been spent and the head has moved.
-    deps.supersede({
-      actionId: action.id,
-      ...plan.supersedeScope,
-      exceptHeadSha: plan.headSha,
-      reason: "head_superseded",
-    });
+    const newest = deps.newestObservedAt({ actionId: action.id, ...plan.supersedeScope });
+    if (plan.observedAt !== null && newest !== null && plan.observedAt < newest) {
+      // Already overtaken: this delivery creates nothing and cancels nothing.
+      stale += 1;
+      continue;
+    }
+    if (!action.enabled) {
+      // The action was disabled between two commits. Its queue is dead — nothing
+      // will dispatch it — so the stale rows must not outlive the head they name.
+      deps.supersede({
+        actionId: action.id,
+        ...plan.supersedeScope,
+        exceptHeadSha: plan.headSha,
+        reason: "head_superseded",
+        beforeObservedAt: boundary,
+      });
+      continue;
+    }
     const alreadyAnalysed = deps.hasAnalysedCommit(action.id, plan.headSha);
     const created = deps.createEvent({
       actionId: action.id,
@@ -434,22 +531,37 @@ function createEvents(
       reason: alreadyAnalysed ? "commit_already_analysed" : null,
       error: null,
       detectedAt: plan.detectedAt,
+      observedAt: plan.observedAt,
     });
     // `null` means this target is already on the books at this revision: the
-    // reconciliation or a concurrent delivery got there first.
-    if (!created) continue;
+    // reconciliation or a concurrent delivery got there first, so there is nothing
+    // new here and nothing older to cancel either.
+    if (!created) {
+      collided += 1;
+      continue;
+    }
+    // Only now, with the new head recorded, is the older queue obsolete.
+    deps.supersede({
+      actionId: action.id,
+      ...plan.supersedeScope,
+      exceptHeadSha: created.headSha,
+      reason: "head_superseded",
+      beforeObservedAt: boundary,
+    });
     eventIds.push(created.id);
     if (alreadyAnalysed) skipped += 1;
     else dispatchIds.push(created.id);
   }
-  const matchedActionIds = actions.map((action) => action.id);
-  if (eventIds.length === 0) return nothing("ignored", "target_already_recorded", { ...base, matchedActionIds });
-  return {
-    ...nothing("processed", skipped === eventIds.length ? "commit_already_analysed" : null, base),
-    eventIds,
-    matchedActionIds,
-    dispatchIds,
-  };
+  if (eventIds.length > 0) {
+    return {
+      ...nothing("processed", skipped === eventIds.length ? "commit_already_analysed" : null, base),
+      eventIds,
+      matchedActionIds,
+      dispatchIds,
+    };
+  }
+  const reason = stale > 0 ? "stale_delivery" : collided > 0 ? "target_already_recorded" : "branch_not_followed";
+  return nothing("ignored", reason, { ...base, matchedActionIds });
 }
 
 function parseJsonObject(body: Uint8Array): Record<string, unknown> | null {
@@ -472,8 +584,17 @@ function pick(value: Record<string, unknown> | null | undefined, key: string): R
 
 const text = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
 
-const title = (value: unknown): string | null =>
-  typeof value === "string" && value.trim() !== "" ? value.trim().slice(0, MAX_TITLE) : null;
+/**
+ * The title is attacker-chosen text on a public repository, bound for a Markdown
+ * comment and a screen. Control characters and line breaks go now; escaping at
+ * render is phase 3's job.
+ */
+const title = (value: unknown): string | null => {
+  if (typeof value !== "string") return null;
+  // eslint-disable-next-line no-control-regex
+  const clean = value.replaceAll(/[\u0000-\u001f\u007f]+/g, " ").replaceAll(/\s+/g, " ").trim();
+  return clean === "" ? null : clean.slice(0, MAX_TITLE);
+};
 
 const sha = (value: unknown): string | null => {
   const candidate = text(value).toLowerCase();
@@ -482,6 +603,20 @@ const sha = (value: unknown): string | null => {
 
 const positiveInteger = (value: unknown): number | null =>
   typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
+
+/** GitHub sends a clock as an ISO string, and sometimes as epoch seconds. */
+function timestamp(value: unknown): string | null {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return new Date(value * 1000).toISOString();
+  }
+  const candidate = text(value);
+  if (candidate === "") return null;
+  const parsed = Date.parse(candidate);
+  return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
+}
+
+const tooOld = (observedAt: string | null, detectedAt: string): boolean =>
+  observedAt !== null && Date.parse(detectedAt) - Date.parse(observedAt) > MAX_CHANGE_AGE_MS;
 
 /** GitHub sends numeric ids as JSON numbers; the store keys them as strings. */
 function numericId(value: Record<string, unknown> | null, key: string): string | null {

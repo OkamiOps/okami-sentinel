@@ -254,13 +254,17 @@ test("lets a signed webhook through with no session, no Origin and no CSRF token
       listActions: () => [],
       createEvent: () => null,
       supersede: () => 0,
+      newestObservedAt: () => null,
       hasAnalysedCommit: () => false,
-      recordDelivery: (input) => { recorded.push(input.deliveryId); return "recorded"; },
+      claimDelivery: (input) => { recorded.push(input.deliveryId); return "recorded"; },
+      completeDelivery: () => {},
       disableActionsForRepository: () => {},
       disableActionsForInstallation: () => {},
       refreshInstallationRepositories: async () => {},
       dispatch: () => {},
+      connectionAppId: () => "4242",
       rerunGate: () => null,
+      runInTransaction: (work) => work(),
     }),
   }));
   try {

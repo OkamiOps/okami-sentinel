@@ -6,11 +6,13 @@ import test from "node:test";
 import type { GitHubAction, GitHubActionEvent, GitHubActionEventCreate, GuardrailRepository, WebhookDeliveryRecord } from "@csb/shared";
 
 import { FailureWindow } from "../auth/rate-limit.js";
+import { globalSecretRedactor } from "../redaction.js";
 import { shortBranchName } from "./schema.js";
 import {
   GITHUB_WEBHOOK_MAX_BODY_BYTES,
   createGitHubWebhookApp,
   type GitHubWebhookAppOptions,
+  type GitHubWebhookLogEntry,
 } from "./webhook-api.js";
 import type { GitHubWebhookIngestDependencies } from "./webhook-ingest.js";
 
@@ -29,7 +31,8 @@ const repository: GuardrailRepository = {
 const action: GitHubAction = {
   id: "a1", repositoryKey: "github:1", name: "PR", triggerKind: "pull_request", branchPatterns: ["main"],
   executor: "sentinel-managed", connectionId: "c1", installationId: "i1", repositoryId: "1", scanner: null,
-  costCeilingUsd: 2, dailyCostCeilingUsd: 10, enabled: true, revision: 1, baselineInitializedAt: null,
+  costCeilingUsd: 2, dailyCostCeilingUsd: 10, enabled: true, includeForks: false,
+  revision: 1, baselineInitializedAt: null,
   createdBy: "u1", lastEventAt: null, lastReconciledAt: null, lastError: null, migrationNote: null,
   createdAt: "2026-09-30T10:00:00.000Z", updatedAt: "2026-09-30T10:00:00.000Z",
 };
@@ -70,17 +73,24 @@ function recorder(options: { secrets?: Array<{ connectionId: string; secret: str
       return event;
     },
     supersede: () => 0,
+    newestObservedAt: () => null,
     hasAnalysedCommit: () => false,
-    recordDelivery: (input) => {
+    claimDelivery: (input) => {
       if (deliveries.some((delivery) => delivery.deliveryId === input.deliveryId)) return "duplicate";
       deliveries.push(input);
       return "recorded";
+    },
+    completeDelivery: (deliveryId, patch) => {
+      const index = deliveries.findIndex((delivery) => delivery.deliveryId === deliveryId);
+      if (index !== -1) deliveries[index] = { ...deliveries[index]!, ...patch };
     },
     disableActionsForRepository: () => {},
     disableActionsForInstallation: () => {},
     refreshInstallationRepositories: async () => {},
     dispatch: (id) => { dispatched.push(id); },
+    connectionAppId: () => "4242",
     rerunGate: () => null,
+    runInTransaction: (work) => work(),
   };
   return { deliveries, events, dispatched, dependencies };
 }
@@ -111,14 +121,19 @@ function signedRequest(options: {
   return { method: "POST", headers, body: bytes.slice().buffer as ArrayBuffer };
 }
 
-const appFor = (record: Recorder, overrides: Partial<GitHubWebhookAppOptions> = {}) =>
-  createGitHubWebhookApp({
+const logged: GitHubWebhookLogEntry[] = [];
+
+const appFor = (record: Recorder, overrides: Partial<GitHubWebhookAppOptions> = {}) => {
+  logged.length = 0;
+  return createGitHubWebhookApp({
     resolve: () => record.dependencies,
     failureWindow: new FailureWindow(30, 5 * 60_000),
     acceptedWindow: new FailureWindow(600, 60_000),
     trustProxy: true,
+    log: (entry) => { logged.push(entry); },
     ...overrides,
   });
+};
 
 test("answers 200 processed for a signed delivery", async () => {
   const record = recorder();
@@ -209,12 +224,19 @@ test("answers 429 after thirty bad signatures from one address", async () => {
   const blocked = await app.request(URL, from("203.0.113.7", signedRequest({ secret: "wrong", delivery: "bad-30" })));
   assert.equal(blocked.status, 429);
   assert.deepEqual(await blocked.json(), { error: "rate_limited" });
-  // A valid delivery from the same address is blocked too: the window is the
-  // address, not the signature.
-  const valid = await app.request(URL, from("203.0.113.7", signedRequest()));
-  assert.equal(valid.status, 429);
+  assert.equal(blocked.headers.get("Retry-After"), "300");
+  // The window counts failed verifications only. GitHub delivers from a small set
+  // of addresses, so one misconfigured secret must never make the product deaf to
+  // the connection that is configured correctly.
+  const valid = await app.request(URL, from("203.0.113.7", signedRequest({ delivery: "good-1" })));
+  assert.equal(valid.status, 200);
+  assert.deepEqual(await valid.json(), { status: "processed" });
+  // A verified delivery does not clear the window either: an attacker who can have
+  // one delivery accepted must not be able to reset its own budget.
+  const stillBlocked = await app.request(URL, from("203.0.113.7", signedRequest({ secret: "wrong", delivery: "bad-31" })));
+  assert.equal(stillBlocked.status, 429);
   // Another address keeps its own budget.
-  const elsewhere = await app.request(URL, from("198.51.100.4", signedRequest()));
+  const elsewhere = await app.request(URL, from("198.51.100.4", signedRequest({ delivery: "good-2" })));
   assert.equal(elsewhere.status, 200);
 });
 
@@ -228,6 +250,7 @@ test("answers 429 once the global accepted-delivery ceiling is reached", async (
   const blocked = await app.request(URL, signedRequest({ delivery: "g3" }));
   assert.equal(blocked.status, 429);
   assert.deepEqual(await blocked.json(), { error: "rate_limited" });
+  assert.equal(blocked.headers.get("Retry-After"), "60");
   assert.equal(record.deliveries.length, 2);
 });
 
@@ -268,7 +291,7 @@ test("answers 500 without a body when the ingestion itself faults", async () => 
   const record = recorder();
   const broken: GitHubWebhookIngestDependencies = {
     ...record.dependencies,
-    recordDelivery: () => { throw new Error("database is locked"); },
+    claimDelivery: () => { throw new Error("database is locked"); },
   };
   const app = createGitHubWebhookApp({ resolve: () => broken, trustProxy: true });
   const response = await app.request(URL, signedRequest());
@@ -305,13 +328,38 @@ test("the webhook module graph never imports the actions store at load time", as
   const fs = await import("node:fs");
   const url = await import("node:url");
   const here = path.dirname(url.fileURLToPath(import.meta.url));
-  for (const file of ["webhook-api.ts", "webhook-ingest.ts", "webhook-signature.ts", "branch-patterns.ts"]) {
-    const source = fs.readFileSync(path.join(here, file), "utf8");
-    for (const line of source.split("\n")) {
-      if (!/^import .*"\.\/(store|migrate-monitor-rules)\.js"/.test(line)) continue;
-      assert.match(line, /^import type /, `${file}: ${line}`);
+  const forbidden = ["store.js", "migrate-monitor-rules.js"];
+  // The whole local graph below `webhook-api.ts`, not one file: a value import of
+  // the store reached through a third module would be just as fatal.
+  const visited = new Set<string>();
+  const queue = ["webhook-api.ts"];
+  const valueImports: Array<{ file: string; specifier: string }> = [];
+  while (queue.length > 0) {
+    const file = queue.pop()!;
+    if (visited.has(file)) continue;
+    visited.add(file);
+    const absolute = path.join(here, file);
+    if (!fs.existsSync(absolute)) continue;
+    const source = fs.readFileSync(absolute, "utf8");
+    // A dynamic import is a load-time reach too, as soon as the handler runs.
+    for (const match of source.matchAll(/\bimport\s*\(\s*["']([^"']+)["']\s*\)/g)) {
+      valueImports.push({ file, specifier: match[1]! });
+    }
+    // Statements only, with their (possibly multi-line) clause, so `import type`
+    // is distinguished from a value import however the clause is wrapped.
+    for (const match of source.matchAll(/^import(\s+type)?\s+([\s\S]*?)from\s*["']([^"']+)["'];/gm)) {
+      const [, typeOnly, clause, specifier] = match as unknown as [string, string | undefined, string, string];
+      if (!specifier.startsWith("./")) continue;
+      // `import type …` is erased; a mixed clause (`{ a, type B }`) is not.
+      if (typeOnly !== undefined || /^\s*type\s/.test(clause)) continue;
+      valueImports.push({ file, specifier });
+      queue.push(specifier.replace(/^\.\//, "").replace(/\.js$/, ".ts"));
     }
   }
+  assert.ok(visited.has("webhook-ingest.ts"), "the graph walk found nothing");
+  assert.ok(visited.has("branch-patterns.ts"));
+  const reaching = valueImports.filter((entry) => forbidden.some((name) => entry.specifier.endsWith(name)));
+  assert.deepEqual(reaching, [], "the actions store must stay out of the boot path until task 1.4");
 });
 
 /**
@@ -332,7 +380,8 @@ test("a signed delivery reaches the real store, once", async () => {
   const created = store.createGitHubAction({
     repositoryKey: "github:1", name: "PR", triggerKind: "pull_request", branchPatterns: ["main"],
     connectionId: "c1", installationId: "i1", repositoryId: "1", executor: "sentinel-managed",
-    scanner: null, costCeilingUsd: 2, dailyCostCeilingUsd: 10, enabled: true, createdBy: "u1",
+    scanner: null, costCeilingUsd: 2, dailyCostCeilingUsd: 10, enabled: true,
+    includeForks: false, createdBy: "u1",
   }, db);
 
   const dispatched: string[] = [];
@@ -344,12 +393,15 @@ test("a signed delivery reaches the real store, once", async () => {
     listActions: (repositoryKey) => store.listGitHubActions({ repositoryKey }, db),
     createEvent: (input) => store.createGitHubActionEvent(input, db),
     supersede: (input) => store.supersedeQueuedEvents(input, db),
+    newestObservedAt: (input) => store.newestObservedEventAt(input, db),
     hasAnalysedCommit: (actionId, headSha) => store.hasAnalysedCommit(actionId, headSha, db),
-    recordDelivery: (input) => store.recordWebhookDelivery(input, db),
+    claimDelivery: (input) => store.recordWebhookDelivery(input, db),
+    completeDelivery: (deliveryId, patch) => store.completeWebhookDelivery(deliveryId, patch, db),
     disableActionsForRepository: () => {},
     disableActionsForInstallation: () => {},
     refreshInstallationRepositories: async () => {},
     dispatch: (id) => { dispatched.push(id); },
+    connectionAppId: () => "4242",
     rerunGate: () => null,
     runInTransaction: (work) => db.transaction(work).immediate(),
   };
@@ -420,4 +472,90 @@ test("refuses an oversized body that declares no length, without buffering it wh
   assert.deepEqual(await response.json(), { error: "payload_too_large" });
   assert.ok(sent <= GITHUB_WEBHOOK_MAX_BODY_BYTES + chunk.byteLength, `read ${sent} bytes`);
   assert.equal(record.deliveries.length, 0);
+});
+
+/**
+ * I-3. GitHub does not retry a webhook: a refused delivery is a lost event until a
+ * human presses *Redeliver*. Every refusal therefore has to leave a trace that
+ * names the delivery, and never the payload or the secret.
+ */
+test("logs every refusal with the delivery id and a reason code, and nothing else", async () => {
+  const record = recorder();
+  const app = appFor(record);
+  await app.request(URL, signedRequest({ delivery: "log-400", signature: null }));
+  await app.request(URL, signedRequest({ delivery: "log-401", secret: "wrong" }));
+  await app.request(URL, signedRequest({ delivery: "log-413", contentLength: String(GITHUB_WEBHOOK_MAX_BODY_BYTES + 1) }));
+  await app.request(URL, signedRequest({ delivery: "log-parse", body: `{"title":"${TITLE}"` }));
+  assert.deepEqual(logged.map((entry) => [entry.status, entry.reason]), [
+    [400, "malformed_delivery"],
+    [401, "signature_invalid"],
+    [413, "payload_too_large"],
+    [400, "malformed_payload"],
+  ]);
+  // The delivery id travels so the operator can correlate with GitHub's own list.
+  assert.deepEqual(logged.map((entry) => entry.deliveryId), ["log-400", "log-401", "log-413", "log-parse"]);
+  assert.deepEqual(new Set(logged.map((entry) => entry.event)), new Set(["pull_request"]));
+  const serialised = JSON.stringify(logged);
+  assert.ok(!serialised.includes(TITLE), serialised);
+  assert.ok(!serialised.includes(SECRET), serialised);
+});
+
+test("logs a fault and the not-ready refusal without leaking the cause", async () => {
+  // Exactly what `SystemGitHubAppCredentialStore` does on every read of a bundle.
+  globalSecretRedactor.register("scm/github-app/c1", [SECRET]);
+  const record = recorder();
+  const broken: GitHubWebhookIngestDependencies = {
+    ...record.dependencies,
+    claimDelivery: () => { throw new Error(`database is locked for ${SECRET}`); },
+  };
+  const entries: GitHubWebhookLogEntry[] = [];
+  const app = createGitHubWebhookApp({
+    resolve: () => broken, trustProxy: true, log: (entry) => { entries.push(entry); },
+  });
+  assert.equal((await app.request(URL, signedRequest({ delivery: "fault" }))).status, 500);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]!.status, 500);
+  assert.equal(entries[0]!.reason, "webhook_failed");
+  assert.equal(entries[0]!.deliveryId, "fault");
+  // The message is kept, because a 500 is the operator's only clue, and it goes
+  // through the same redactor the credential store registers the secret with.
+  assert.ok(entries[0]!.detail);
+  assert.ok(entries[0]!.detail!.includes("[REDACTED]"), entries[0]!.detail);
+  assert.ok(!entries[0]!.detail!.includes(SECRET), entries[0]!.detail);
+
+  const inert: GitHubWebhookLogEntry[] = [];
+  const notReady = createGitHubWebhookApp({
+    resolve: () => null, trustProxy: true, log: (entry) => { inert.push(entry); },
+  });
+  assert.equal((await notReady.request(URL, signedRequest({ delivery: "inert" }))).status, 503);
+  assert.deepEqual(inert.map((entry) => [entry.status, entry.reason]), [[503, "github_webhook_not_ready"]]);
+  globalSecretRedactor.unregister("scm/github-app/c1");
+});
+
+test("refuses before reading the body while the schema is not wired yet", async () => {
+  // M-1: an anonymous caller must not be able to make an inert deployment buffer a
+  // mebibyte per request.
+  let pulls = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      pulls += 1;
+      controller.enqueue(new Uint8Array(1024));
+    },
+  });
+  const app = createGitHubWebhookApp({ resolve: () => null, trustProxy: true });
+  const response = await app.request(URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-GitHub-Event": "pull_request",
+      "X-GitHub-Delivery": "unread",
+      "X-Hub-Signature-256": `sha256=${"0".repeat(64)}`,
+    },
+    body,
+    duplex: "half",
+  } as RequestInit);
+  assert.equal(response.status, 503);
+  // The stream is offered to the Request eagerly; what matters is that the handler
+  // never drained it, which would have pulled a mebibyte in 1 KiB chunks.
+  assert.ok(pulls <= 2, `the body was read in ${pulls} chunks`);
 });

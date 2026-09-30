@@ -11,7 +11,9 @@ import {
 import { GITHUB_ACTIONS_SCHEMA_SQL } from "./schema.js";
 import {
   createGitHubAction,
+  createGitHubActionEvent,
   ensureGitHubActionsSchema,
+  gitHubActionEventTargetIdentity,
   gitHubActionNeedsBranchPatternReview,
   listGitHubActionEvents,
   listGitHubActions,
@@ -388,7 +390,8 @@ test("upgrades a database left at version one instead of short-circuiting", () =
   const action = createGitHubAction({
     repositoryKey: "github:1", name: "PR", triggerKind: "pull_request", branchPatterns: ["main"],
     connectionId: "c1", installationId: "i1", repositoryId: "1", executor: "sentinel-managed",
-    scanner: null, costCeilingUsd: 2, dailyCostCeilingUsd: null, enabled: false, createdBy: "u1",
+    scanner: null, costCeilingUsd: 2, dailyCostCeilingUsd: null, enabled: false,
+    includeForks: false, createdBy: "u1",
   }, db);
   assert.equal(action.migrationNote, null);
   // SQLite cannot add a CHECK by ALTER, so on an upgraded database the 1..20 bound
@@ -398,7 +401,8 @@ test("upgrades a database left at version one instead of short-circuiting", () =
       repositoryKey: "github:1", name: "Wide", triggerKind: "push",
       branchPatterns: Array.from({ length: 21 }, (_, index) => `b-${index}`),
       connectionId: "c1", installationId: "i1", repositoryId: "1", executor: "sentinel-managed",
-      scanner: null, costCeilingUsd: 2, dailyCostCeilingUsd: null, enabled: false, createdBy: "u1",
+      scanner: null, costCeilingUsd: 2, dailyCostCeilingUsd: null, enabled: false,
+    includeForks: false, createdBy: "u1",
     }, db),
     /github_action_branch_patterns_invalid/,
   );
@@ -447,4 +451,55 @@ test("leaves a rule whose repository is gone out of the new model", () => {
   db.exec("DELETE FROM guardrail_repositories");
   assert.deepEqual(migrateMonitorRulesToActions(db), { actions: 0, events: 0, skipped: 3 });
   assert.equal(listGitHubActions({}, db).length, 0);
+});
+
+function versionTwoDb(): Database.Database {
+  const db = new Database(":memory:");
+  db.pragma("foreign_keys = ON");
+  db.exec("CREATE TABLE guardrail_repositories (repository_key TEXT PRIMARY KEY)");
+  db.prepare("INSERT INTO guardrail_repositories VALUES ('github:1')").run();
+  const versionTwo = GITHUB_ACTIONS_SCHEMA_SQL
+    .replace("    include_forks INTEGER NOT NULL DEFAULT 0,\n", "")
+    .replace("    CHECK (include_forks IN (0, 1)),\n", "")
+    .replace(/\n\s*-- GitHub's own clock[\s\S]*?\n    observed_at TEXT,/, "");
+  // If the surgery stops removing anything, the test stops testing the upgrade.
+  assert.ok(!versionTwo.includes("include_forks"));
+  assert.ok(!versionTwo.includes("observed_at"));
+  db.exec(versionTwo);
+  db.exec(`
+    CREATE TABLE github_actions_schema_migrations (
+      version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL
+    );
+    INSERT INTO github_actions_schema_migrations VALUES (2, 'actions model with migration notes', '2026-09-30T10:00:00.000Z');
+  `);
+  return db;
+}
+
+test("upgrades a database left at version two with the fork opt-in and the payload clock", () => {
+  const db = versionTwoDb();
+  ensureGitHubActionsSchema(db);
+  assert.equal(
+    (db.prepare("SELECT max(version) AS version FROM github_actions_schema_migrations")
+      .get() as { version: number }).version,
+    GITHUB_ACTIONS_SCHEMA_VERSION,
+  );
+  const action = createGitHubAction({
+    repositoryKey: "github:1", name: "PR", triggerKind: "pull_request", branchPatterns: ["main"],
+    connectionId: "c1", installationId: "i1", repositoryId: "1", executor: "sentinel-managed",
+    scanner: null, costCeilingUsd: 2, dailyCostCeilingUsd: null, enabled: false,
+    includeForks: false, createdBy: "u1",
+  }, db);
+  // Default off: an upgraded database must not start scanning forks.
+  assert.equal(action.includeForks, false);
+  const event = createGitHubActionEvent({
+    actionId: action.id, repositoryKey: "github:1", actionRevision: action.revision,
+    origin: "webhook", deliveryId: "d1", kind: "pull_request", headSha: "a".repeat(40),
+    baseRef: "main", headRef: "topic", pullRequestNumber: 7,
+    targetIdentity: gitHubActionEventTargetIdentity({
+      kind: "pull_request", headSha: "a".repeat(40), headRef: "topic", pullRequestNumber: 7,
+    }),
+    title: null, gateId: null, costCeilingUsd: 2, reason: null, error: null,
+    detectedAt: "2026-09-30T12:00:00.000Z", observedAt: "2026-09-30T11:59:00.000Z",
+  }, db)!;
+  assert.equal(event.observedAt, "2026-09-30T11:59:00.000Z");
 });

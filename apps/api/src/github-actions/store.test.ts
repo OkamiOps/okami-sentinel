@@ -11,6 +11,7 @@ import type {
 } from "@csb/shared";
 
 import {
+  completeWebhookDelivery,
   countReconciledEventsSince,
   countWebhookDeliveriesSince,
   createGitHubAction,
@@ -21,6 +22,7 @@ import {
   hasAnalysedCommit,
   lastVerifiedWebhookDeliveryAt,
   listGitHubActions,
+  newestObservedEventAt,
   listWebhookDeliveries,
   patchGitHubAction,
   patchGitHubActionEvent,
@@ -66,7 +68,7 @@ test("allows several actions on one repository", () => {
   const base = {
     repositoryKey: "github:1", connectionId: "c1", installationId: "i1", repositoryId: "1",
     executor: "sentinel-managed" as const, scanner: null, costCeilingUsd: 2,
-    dailyCostCeilingUsd: 10, enabled: false, createdBy: "u1",
+    dailyCostCeilingUsd: 10, enabled: false, includeForks: false, createdBy: "u1",
   };
   createGitHubAction({ ...base, name: "PR", triggerKind: "pull_request", branchPatterns: ["main"] }, db);
   createGitHubAction({ ...base, name: "Push", triggerKind: "push", branchPatterns: ["main"] }, db);
@@ -79,7 +81,8 @@ test("refuses an action without a cost ceiling", () => {
   assert.throws(() => createGitHubAction({
     repositoryKey: "github:1", name: "PR", triggerKind: "pull_request", branchPatterns: ["main"],
     connectionId: "c1", installationId: "i1", repositoryId: "1", executor: "sentinel-managed",
-    scanner: null, costCeilingUsd: 0, dailyCostCeilingUsd: null, enabled: false, createdBy: "u1",
+    scanner: null, costCeilingUsd: 0, dailyCostCeilingUsd: null, enabled: false,
+    includeForks: false, createdBy: "u1",
   }, db));
 });
 
@@ -90,7 +93,8 @@ function pullRequestAction(db: Database.Database): GitHubAction {
   return createGitHubAction({
     repositoryKey: "github:1", name: "PR", triggerKind: "pull_request", branchPatterns: ["main"],
     connectionId: "c1", installationId: "i1", repositoryId: "1", executor: "sentinel-managed",
-    scanner: null, costCeilingUsd: 2, dailyCostCeilingUsd: 10, enabled: true, createdBy: "u1",
+    scanner: null, costCeilingUsd: 2, dailyCostCeilingUsd: 10, enabled: true,
+    includeForks: false, createdBy: "u1",
   }, db);
 }
 
@@ -119,6 +123,7 @@ function pullRequestEvent(
     costCeilingUsd: 2,
     reason: null,
     error: null,
+    observedAt: null,
     detectedAt,
   };
 }
@@ -279,7 +284,8 @@ test("normalises a fully qualified head ref on insert and on supersede", () => {
   const action = createGitHubAction({
     repositoryKey: "github:1", name: "Push", triggerKind: "push", branchPatterns: ["main"],
     connectionId: "c1", installationId: "i1", repositoryId: "1", executor: "sentinel-managed",
-    scanner: null, costCeilingUsd: 2, dailyCostCeilingUsd: 10, enabled: true, createdBy: "u1",
+    scanner: null, costCeilingUsd: 2, dailyCostCeilingUsd: 10, enabled: true,
+    includeForks: false, createdBy: "u1",
   }, db);
   const pushEvent = (headSha: string, headRef: string): GitHubActionEventCreate => ({
     actionId: action.id,
@@ -299,6 +305,7 @@ test("normalises a fully qualified head ref on insert and on supersede", () => {
     costCeilingUsd: 2,
     reason: null,
     error: null,
+    observedAt: null,
     detectedAt: "2026-09-30T10:00:00.000Z",
   });
 
@@ -321,7 +328,7 @@ test("refuses a second action with the same name and trigger kind", () => {
   const base = {
     repositoryKey: "github:1", connectionId: "c1", installationId: "i1", repositoryId: "1",
     executor: "sentinel-managed" as const, scanner: null, costCeilingUsd: 2,
-    dailyCostCeilingUsd: 10, enabled: false, createdBy: "u1",
+    dailyCostCeilingUsd: 10, enabled: false, includeForks: false, createdBy: "u1",
   };
   createGitHubAction({ ...base, name: "PR", triggerKind: "pull_request", branchPatterns: ["main"] }, db);
   const other = createGitHubAction(
@@ -403,4 +410,95 @@ test("reports when a connection last proved its webhook secret", () => {
   assert.equal(lastVerifiedWebhookDeliveryAt("c1", db), "2026-09-30T12:00:00.000Z");
   assert.equal(lastVerifiedWebhookDeliveryAt("c2", db), "2026-09-30T09:00:00.000Z");
   assert.equal(lastVerifiedWebhookDeliveryAt("c3", db), null);
+});
+
+/**
+ * The ordering guard behind C-1: a supersession may only cancel what is strictly
+ * older than the change that replaces it. Without `beforeObservedAt` a delivery
+ * that arrives late cancels the newer head it should have left alone.
+ */
+test("supersedes only the events older than the change that replaces them", () => {
+  const db = memoryDb();
+  const action = pullRequestAction(db);
+  const older = createGitHubActionEvent({
+    ...pullRequestEvent(action, SHA_OLD, "2026-09-30T10:00:00.000Z"),
+    observedAt: "2026-09-30T09:59:00.000Z",
+  }, db)!;
+  const newer = createGitHubActionEvent({
+    ...pullRequestEvent(action, SHA_NEW, "2026-09-30T10:05:00.000Z"),
+    observedAt: "2026-09-30T10:04:00.000Z",
+  }, db)!;
+  assert.equal(older.observedAt, "2026-09-30T09:59:00.000Z");
+
+  // A late delivery of the older commit may cancel nothing at all.
+  assert.equal(supersedeQueuedEvents({
+    actionId: action.id, pullRequestNumber: 7, exceptHeadSha: SHA_OLD,
+    reason: "head_superseded", beforeObservedAt: "2026-09-30T09:59:00.000Z",
+  }, db), 0);
+  assert.equal(getGitHubActionEvent(newer.id, db)!.status, "queued");
+
+  // The genuine newer commit cancels the older one, and never itself.
+  assert.equal(supersedeQueuedEvents({
+    actionId: action.id, pullRequestNumber: 7, exceptHeadSha: SHA_NEW,
+    reason: "head_superseded", beforeObservedAt: "2026-09-30T10:04:00.000Z",
+  }, db), 1);
+  assert.equal(getGitHubActionEvent(older.id, db)!.status, "superseded");
+  assert.equal(getGitHubActionEvent(newer.id, db)!.status, "queued");
+});
+
+test("reports the newest change already recorded for a pull request or a branch", () => {
+  const db = memoryDb();
+  const action = pullRequestAction(db);
+  assert.equal(newestObservedEventAt({ actionId: action.id, pullRequestNumber: 7 }, db), null);
+  createGitHubActionEvent({
+    ...pullRequestEvent(action, SHA_OLD, "2026-09-30T10:00:00.000Z"),
+    observedAt: "2026-09-30T09:59:00.000Z",
+  }, db);
+  assert.equal(newestObservedEventAt({ actionId: action.id, pullRequestNumber: 7 }, db), "2026-09-30T09:59:00.000Z");
+  createGitHubActionEvent({
+    ...pullRequestEvent(action, SHA_NEW, "2026-09-30T10:05:00.000Z"),
+    observedAt: null,
+  }, db);
+  // With no payload clock the detection time stands in, so the answer never
+  // goes backwards.
+  assert.equal(newestObservedEventAt({ actionId: action.id, pullRequestNumber: 7 }, db), "2026-09-30T10:05:00.000Z");
+  assert.equal(newestObservedEventAt({ actionId: action.id, pullRequestNumber: 8 }, db), null);
+  assert.equal(newestObservedEventAt({ actionId: action.id, headRef: "refs/heads/feature/login" }, db), "2026-09-30T10:05:00.000Z");
+  assert.throws(
+    () => newestObservedEventAt({ actionId: action.id }, db),
+    /github_action_supersede_scope_required/,
+  );
+});
+
+test("claims a delivery before the work and completes it with the outcome", () => {
+  const db = memoryDb();
+  const claim = { ...delivery(9, "2026-09-30T10:00:00.000Z"), outcome: "failed" as const, reason: null };
+  assert.equal(recordWebhookDelivery(claim, db), "recorded");
+  assert.equal(recordWebhookDelivery(claim, db), "duplicate");
+  completeWebhookDelivery("delivery-9", {
+    repositoryKey: "github:1", installationId: "i1", headSha: SHA_NEW,
+    outcome: "processed", reason: null, matchedActionIds: ["a1"], eventIds: ["e1"], durationMs: 7,
+  }, db);
+  const stored = listWebhookDeliveries(10, db)[0]!;
+  assert.equal(stored.outcome, "processed");
+  assert.deepEqual(stored.eventIds, ["e1"]);
+  assert.deepEqual(stored.matchedActionIds, ["a1"]);
+  assert.equal(stored.headSha, SHA_NEW);
+  assert.equal(stored.durationMs, 7);
+  // Completing a row that is not there writes nothing and throws nothing.
+  completeWebhookDelivery("delivery-absent", {
+    repositoryKey: null, installationId: null, headSha: null,
+    outcome: "ignored", reason: "event_not_handled", matchedActionIds: [], eventIds: [], durationMs: 1,
+  }, db);
+  assert.equal(listWebhookDeliveries(10, db).length, 1);
+});
+
+test("an action carries its fork opt-in, and changing it bumps the revision", () => {
+  const db = memoryDb();
+  const action = pullRequestAction(db);
+  assert.equal(action.includeForks, false);
+  const opened = patchGitHubAction(action.id, { includeForks: true }, db)!;
+  assert.equal(opened.includeForks, true);
+  assert.equal(opened.revision, action.revision + 1, "what the action observes changed");
+  assert.equal(patchGitHubAction(action.id, { includeForks: true }, db)!.revision, opened.revision);
 });

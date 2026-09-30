@@ -32,12 +32,14 @@ export const GITHUB_ACTIONS_SCHEMA_SQL = `
     last_reconciled_at TEXT,
     last_error TEXT,
     migration_note TEXT,
+    include_forks INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE (repository_key, trigger_kind, name),
     CHECK (trigger_kind IN ('pull_request', 'push')),
     CHECK (executor IN ('sentinel-managed', 'github-actions')),
     CHECK (enabled IN (0, 1)),
+    CHECK (include_forks IN (0, 1)),
     CHECK (revision >= 1),
     CHECK (cost_ceiling_usd > 0),
     CHECK (daily_cost_ceiling_usd IS NULL OR daily_cost_ceiling_usd > 0),
@@ -72,6 +74,10 @@ export const GITHUB_ACTIONS_SCHEMA_SQL = `
     reason TEXT,
     error TEXT,
     detected_at TEXT NOT NULL,
+    -- GitHub's own clock for the change that produced this event, so two
+    -- deliveries of the same target can be ordered by when the change happened
+    -- rather than by when we happened to receive them.
+    observed_at TEXT,
     dispatched_at TEXT,
     completed_at TEXT,
     CHECK (origin IN ('webhook', 'reconciliation', 'manual')),
