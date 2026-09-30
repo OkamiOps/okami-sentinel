@@ -35,6 +35,7 @@ const InvitePage = lazy(() => import("./pages/InvitePage").then(({ InvitePage: p
 const AccountPage = lazy(() => import("./pages/AccountPage").then(({ AccountPage: page }) => ({ default: page })));
 const UsersPage = lazy(() => import("./pages/UsersPage").then(({ UsersPage: page }) => ({ default: page })));
 const RepositoryAccessPage = lazy(() => import("./pages/RepositoryAccessPage").then(({ RepositoryAccessPage: page }) => ({ default: page })));
+const EmailSettingsPage = lazy(() => import("./pages/EmailSettingsPage").then(({ EmailSettingsPage: page }) => ({ default: page })));
 
 const AUTH_ROUTE = /^\/(?:login$|invite\/[^/]+$)/;
 
@@ -192,6 +193,7 @@ export function App() {
         <Route path="/settings/users" element={<AdminOnly><UsersPage /></AdminOnly>} />
         <Route path="/settings/access" element={<AdminOnly><RepositoryAccessPage /></AdminOnly>} />
         <Route path="/settings/account" element={<AccountPage />} />
+        <Route path="/settings/email" element={<AdminOnly><EmailSettingsPage /></AdminOnly>} />
       </Routes>
       </Suspense>
     </main>

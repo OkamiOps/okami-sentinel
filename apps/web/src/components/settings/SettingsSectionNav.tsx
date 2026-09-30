@@ -10,6 +10,7 @@ const sections: ReadonlyArray<{ to: string; code: string; label: TranslationKey;
   { to: "/settings/users", code: "03", label: "settings.usersSection", adminOnly: true },
   { to: "/settings/access", code: "04", label: "settings.accessSection", adminOnly: true },
   { to: "/settings/account", code: "05", label: "settings.accountSection", adminOnly: false },
+  { to: "/settings/email", code: "06", label: "settings.emailSection", adminOnly: true },
 ];
 
 /**

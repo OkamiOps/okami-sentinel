@@ -24,9 +24,11 @@ export function PageHeader({ code, title, description, actions }: { code?: strin
   );
 }
 
-export function Panel({ children, className, label, title, aside, wrapTitle = false }: { children: ReactNode; className?: string; label?: ReactNode; title?: ReactNode; aside?: ReactNode; wrapTitle?: boolean }) {
+export function Panel({ children, className, id, label, title, aside, wrapTitle = false }: { children: ReactNode; className?: string; id?: string; label?: ReactNode; title?: ReactNode; aside?: ReactNode; wrapTitle?: boolean }) {
   return (
-    <section className={cx("bench-panel min-w-0", className)}>
+    // `id` exists so a panel can be the target of a link from outside the app
+    // (an e-mail footer pointing at one section of a page).
+    <section id={id} className={cx("bench-panel min-w-0", className)}>
       {(label || title || aside) && <div className={cx("flex min-h-11 justify-between gap-4 border-b px-4 py-2.5", wrapTitle ? "items-start" : "items-center")}>
         <div className="min-w-0 flex-1">{label && <div className="bench-label">{label}</div>}{title && <div className={cx("mt-0.5 text-sm font-semibold", wrapTitle ? "whitespace-normal pr-2 leading-snug" : "truncate")}>{title}</div>}</div>
         {aside && <div className="shrink-0">{aside}</div>}
