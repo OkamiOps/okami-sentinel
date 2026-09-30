@@ -12,6 +12,7 @@ import { getGateRun } from "../gate-store.js";
 import { listGitHubMonitorRules, reservedGitHubMonitorCostForUtcDay } from "../github-monitor/store.js";
 import { getScannerCatalog } from "../scanners/catalog.js";
 import { emailQueueEnabled, enqueueEmail } from "./enqueue.js";
+import { failureKind } from "./failure-kind.js";
 import {
   deleteOpsAlertState,
   getOpsAlertState,
@@ -597,13 +598,4 @@ export function startOpsEvaluator(
     },
     tick,
   };
-}
-
-/** A failure named by its kind; an exception's message belongs to whoever threw it. */
-function failureKind(error: unknown): string {
-  const code = typeof error === "object" && error !== null && "code" in error
-    ? (error as { code: unknown }).code
-    : undefined;
-  const name = error instanceof Error ? error.name : "unknown_error";
-  return typeof code === "string" && code !== "" ? `${name}/${code}` : name;
 }

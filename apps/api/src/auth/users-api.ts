@@ -13,6 +13,7 @@ import {
 import { getDb } from "../db.js";
 import { localeOf, resolveUserEmailAddress } from "../email/address.js";
 import { enqueueEmail, type EmailEnqueueResult, type EnqueueEmailInput } from "../email/enqueue.js";
+import { failureKind } from "../email/failure-kind.js";
 import { countUserGrants, listRepositoryAccess, listUserGrants, replaceUserGrants, setRepositoryGrant } from "./grant-store.js";
 import { createInvite, hasOpenInvite } from "./invite-store.js";
 import { principalOf, ROLE_RANK } from "./principal.js";
@@ -126,11 +127,10 @@ export function createUsersApi(supplied: { publicOrigin: string | null } & Parti
       return result.status === "queued" ? answer(true, null, to) : answer(false, result.reason, to);
     } catch (error) {
       // The account exists, the link works, and the only thing lost is the
-      // message. Say so instead of failing the request.
-      console.warn(
-        `[csb-api] Could not queue the ${purpose} e-mail for ${user.id}: `
-          + `${error instanceof Error ? error.message : "unknown_error"}`,
-      );
+      // message. Say so instead of failing the request — and say it by kind: the
+      // exception's own message is written by whoever threw it, and this one is
+      // thrown next to an address and an invitation token.
+      console.warn(`[csb-api] Could not queue the ${purpose} e-mail for ${user.id}: ${failureKind(error)}`);
       return answer(false, "error", to);
     }
   };
