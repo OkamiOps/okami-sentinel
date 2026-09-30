@@ -41,22 +41,62 @@ export function isWellFormedSignatureHeader(header: string | undefined): boolean
   return value.startsWith(PREFIX) && HEX_DIGEST.test(value.slice(PREFIX.length));
 }
 
+export interface WebhookSecretSelection {
+  /** The secrets worth hashing against, in a stable order, capped. */
+  candidates: ReadonlyArray<GitHubWebhookSecret>;
+  /** A connection claims the App id the delivery named: normally one hash. */
+  matchedAppId: boolean;
+  /**
+   * The delivery named an App id and **no** connection claims it. The candidates
+   * are then the whole capped loop rather than nothing: a recorded App id can be
+   * wrong (the installation id, the client id, the slug), and refusing in silence
+   * would answer `401` for every delivery of that connection — the same code as a
+   * wrong secret. The caller logs `webhook_app_id_unmatched`.
+   */
+  unmatchedAppId: boolean;
+}
+
 /**
- * The secrets worth hashing against for one delivery. With the App id present
- * that is normally exactly one, so an unauthenticated caller can cost us a single
- * HMAC rather than twenty. An App id that no connection claims yields **nothing**:
- * hashing would be pure waste, and refusing is the same answer we would reach.
+ * Which secrets one delivery is worth hashing against, and what that says about
+ * the App id it carried. With the App id recognised this is normally exactly one
+ * secret, so an unauthenticated caller costs a single HMAC rather than twenty.
  */
+export function webhookSecretSelection(
+  secrets: ReadonlyArray<GitHubWebhookSecret>,
+  appId: string | undefined,
+): WebhookSecretSelection {
+  const usable = secrets.filter((entry) => entry.secret !== "");
+  const capped = (entries: ReadonlyArray<GitHubWebhookSecret>) => entries.slice(0, MAX_WEBHOOK_SECRETS_TRIED);
+  if (appId === undefined || appId === "") {
+    return { candidates: capped(usable), matchedAppId: false, unmatchedAppId: false };
+  }
+  const named = usable.filter((entry) => entry.appId === appId);
+  if (named.length > 0) {
+    // A connection whose App id we have not recorded stays a candidate too, so a
+    // store that predates the column keeps working instead of refusing everything.
+    const unrecorded = usable.filter((entry) => entry.appId === null || entry.appId === undefined);
+    return { candidates: capped([...named, ...unrecorded]), matchedAppId: true, unmatchedAppId: false };
+  }
+  return { candidates: capped(usable), matchedAppId: false, unmatchedAppId: true };
+}
+
 export function candidateWebhookSecrets(
   secrets: ReadonlyArray<GitHubWebhookSecret>,
   appId: string | undefined,
 ): ReadonlyArray<GitHubWebhookSecret> {
-  const usable = secrets.filter((entry) => entry.secret !== "");
-  if (appId === undefined || appId === "") return usable.slice(0, MAX_WEBHOOK_SECRETS_TRIED);
-  // A connection whose App id we have not recorded stays a candidate, so a store
-  // that predates the column keeps working instead of refusing everything.
-  const named = usable.filter((entry) => entry.appId === appId || entry.appId === null || entry.appId === undefined);
-  return named.slice(0, MAX_WEBHOOK_SECRETS_TRIED);
+  return webhookSecretSelection(secrets, appId).candidates;
+}
+
+/**
+ * Whether the delivery names an App id a connection actually claims. The webhook's
+ * admission control reads this **before** the body: a flood that cannot even name
+ * one of our Apps is shed for the price of a header lookup.
+ */
+export function namesKnownWebhookApp(
+  secrets: ReadonlyArray<GitHubWebhookSecret>,
+  appId: string | undefined,
+): boolean {
+  return webhookSecretSelection(secrets, appId).matchedAppId;
 }
 
 /**

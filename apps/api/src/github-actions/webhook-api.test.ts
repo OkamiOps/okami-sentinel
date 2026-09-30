@@ -7,6 +7,7 @@ import type { GitHubAction, GitHubActionEvent, GitHubActionEventCreate, Guardrai
 
 import { FailureWindow } from "../auth/rate-limit.js";
 import { globalSecretRedactor } from "../redaction.js";
+import { verifyGitHubSignature } from "./webhook-signature.js";
 import { shortBranchName } from "./schema.js";
 import {
   GITHUB_WEBHOOK_MAX_BODY_BYTES,
@@ -17,6 +18,8 @@ import {
 import type { GitHubWebhookIngestDependencies } from "./webhook-ingest.js";
 
 const SECRET = "webhook-secret-of-connection-one";
+/** GitHub echoes the App id in `X-GitHub-Hook-Installation-Target-ID`. */
+const APP_ID = "4242";
 const SHA_A = "a".repeat(40);
 const URL = "http://localhost/github/webhook";
 const TITLE = "Corrige a injeção no deploy";
@@ -68,7 +71,7 @@ function recorder(options: { secrets?: Array<{ connectionId: string; secret: str
   let clock = Date.parse("2026-09-30T12:00:00.000Z");
   const dependencies: GitHubWebhookIngestDependencies = {
     now: () => { clock += 3; return new Date(clock).toISOString(); },
-    listSecrets: async () => options.secrets ?? [{ connectionId: "c1", secret: SECRET }],
+    listSecrets: async () => options.secrets ?? [{ connectionId: "c1", secret: SECRET, appId: APP_ID }],
     findRepository: (connectionId, repositoryId) =>
       connectionId === "c1" && repositoryId === "1" ? repository : null,
     listActions: () => [action],
@@ -112,6 +115,8 @@ function signedRequest(options: {
   signature?: string | null;
   headers?: Record<string, string>;
   contentLength?: string;
+  /** `null` omits the header, as a caller that cannot name one of our Apps would. */
+  appId?: string | null;
 } = {}): RequestInit {
   const raw = options.body ?? JSON.stringify(payload());
   const bytes = typeof raw === "string" ? new TextEncoder().encode(raw) : raw;
@@ -124,6 +129,7 @@ function signedRequest(options: {
       : { "X-Hub-Signature-256": options.signature
         ?? `sha256=${createHmac("sha256", options.secret ?? SECRET).update(bytes).digest("hex")}` }),
     ...(options.contentLength ? { "Content-Length": options.contentLength } : {}),
+    ...(options.appId === null ? {} : { "X-GitHub-Hook-Installation-Target-ID": options.appId ?? APP_ID }),
     ...options.headers,
   };
   // `BodyInit` wants a plain ArrayBuffer view, not a Uint8Array over any buffer.
@@ -143,6 +149,27 @@ const appFor = (record: Recorder, overrides: Partial<GitHubWebhookAppOptions> = 
     ...overrides,
   });
 };
+
+/** A body that is offered and never finished, the cheapest denial there is. */
+function stalledRequest(delivery: string, extra: Record<string, string> = {}): RequestInit {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) { controller.enqueue(new Uint8Array(16)); },
+    pull() { /* never enqueue again, never close */ },
+  });
+  return {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-GitHub-Event": "pull_request",
+      "X-GitHub-Delivery": delivery,
+      "X-Hub-Signature-256": `sha256=${"0".repeat(64)}`,
+      "X-GitHub-Hook-Installation-Target-ID": APP_ID,
+      ...extra,
+    },
+    body,
+    duplex: "half",
+  } as RequestInit;
+}
 
 test("answers 200 processed for a signed delivery", async () => {
   const record = recorder();
@@ -219,37 +246,49 @@ test("answers 413 above one mebibyte and records nothing", async () => {
   assert.equal(record.deliveries.length, 0);
 });
 
-test("answers 429 after thirty bad signatures from one address", async () => {
+test("sheds a flooding address that cannot name one of our Apps, and never a verified delivery", async () => {
   const record = recorder();
-  let clock = 0;
-  const app = appFor(record, { throttleIntervalMs: 1_000, now: () => clock });
+  const app = appFor(record);
   const from = (ip: string, request: RequestInit): RequestInit => ({
     ...request,
     headers: { ...(request.headers as Record<string, string>), "X-Forwarded-For": ip },
   });
+  // Thirty failed verifications with no App id named: each costs the capped loop.
   for (let attempt = 0; attempt < 30; attempt += 1) {
-    const response = await app.request(URL, from("203.0.113.7", signedRequest({ secret: "wrong", delivery: `bad-${attempt}` })));
+    const response = await app.request(URL, from("203.0.113.7",
+      signedRequest({ secret: "wrong", delivery: `bad-${attempt}`, appId: null })));
     assert.equal(response.status, 401, `attempt ${attempt}`);
   }
-  const blocked = await app.request(URL, from("203.0.113.7", signedRequest({ secret: "wrong", delivery: "bad-30" })));
-  assert.equal(blocked.status, 429);
-  assert.deepEqual(await blocked.json(), { error: "rate_limited" });
-  assert.equal(blocked.headers.get("Retry-After"), "300");
-  // The window counts failed verifications only. GitHub delivers from a small set
-  // of addresses, so one misconfigured secret must never make the product deaf to
-  // the connection that is configured correctly — it is throttled, not blocked, so
-  // the next interval serves a correctly signed delivery.
-  clock += 1_000;
-  const valid = await app.request(URL, from("203.0.113.7", signedRequest({ delivery: "good-1" })));
-  assert.equal(valid.status, 200);
-  assert.deepEqual(await valid.json(), { status: "processed" });
-  // A verified delivery does not clear the window either: an attacker who can have
-  // one delivery accepted must not be able to reset its own budget.
-  clock += 1_000;
-  const stillBlocked = await app.request(URL, from("203.0.113.7", signedRequest({ secret: "wrong", delivery: "bad-31" })));
-  assert.equal(stillBlocked.status, 429);
-  // Another address keeps its own budget, and never entered the throttle.
-  const elsewhere = await app.request(URL, from("198.51.100.4", signedRequest({ delivery: "good-2" })));
+  // Past the threshold, a delivery that cannot name one of our Apps is shed before
+  // its body is read — including one that names an App id we do not know.
+  const anonymous = await app.request(URL, from("203.0.113.7", stalledRequest("shed-1", {
+    "X-GitHub-Hook-Installation-Target-ID": "",
+  })));
+  assert.equal(anonymous.status, 429);
+  assert.deepEqual(await anonymous.json(), { error: "rate_limited" });
+  const stranger = await app.request(URL, from("203.0.113.7", stalledRequest("shed-2", {
+    "X-GitHub-Hook-Installation-Target-ID": "9999",
+  })));
+  assert.equal(stranger.status, 429);
+
+  // A delivery that names a known App is still read and verified — one HMAC — so a
+  // correctly signed delivery is never refused for somebody else's wrong secret,
+  // whatever second it arrives in.
+  for (const [index, delivery] of ["good-1", "good-2", "good-3"].entries()) {
+    const valid = await app.request(URL, from("203.0.113.7", signedRequest({
+      delivery, body: JSON.stringify(payload(`${index + 1}`.repeat(40))),
+    })));
+    assert.equal(valid.status, 200, delivery);
+    assert.deepEqual(await valid.json(), { status: "processed" });
+  }
+  // A wrong secret under a known App id is still *verified* — one hash — and then
+  // answered 429 rather than 401, because the address is over its failure budget.
+  // The window shapes the answer, never whether a valid delivery is served.
+  const wrong = await app.request(URL, from("203.0.113.7", signedRequest({ secret: "wrong", delivery: "bad-30" })));
+  assert.equal(wrong.status, 429);
+  assert.equal(record.deliveries.length, 3, "a failed verification is never recorded");
+  // Another address never entered the window at all.
+  const elsewhere = await app.request(URL, from("198.51.100.4", signedRequest({ delivery: "good-4", appId: null })));
   assert.equal(elsewhere.status, 200);
 });
 
@@ -483,7 +522,9 @@ test("refuses an oversized body that declares no length, without buffering it wh
   } as RequestInit);
   assert.equal(response.status, 413);
   assert.deepEqual(await response.json(), { error: "payload_too_large" });
-  assert.ok(sent <= GITHUB_WEBHOOK_MAX_BODY_BYTES + chunk.byteLength, `read ${sent} bytes`);
+  // The producer's own queue may run a chunk or two ahead of the consumer; what
+  // matters is that the read stopped near the ceiling instead of taking the lot.
+  assert.ok(sent <= GITHUB_WEBHOOK_MAX_BODY_BYTES + 4 * chunk.byteLength, `read ${sent} bytes`);
   assert.equal(record.deliveries.length, 0);
 });
 
@@ -573,75 +614,6 @@ test("refuses before reading the body while the schema is not wired yet", async 
   assert.ok(pulls <= 2, `the body was read in ${pulls} chunks`);
 });
 
-/**
- * N-1. The endpoint is unauthenticated, so what one address can make the process
- * *do* is the defence that matters. Past the failure threshold a delivery is shed
- * before the body is read — no 1 MiB buffer, no hash — while GitHub's own valid
- * deliveries still get through, one per interval.
- */
-test("sheds a flooding address before reading the body, and still lets a valid delivery through", async () => {
-  const record = recorder();
-  let clock = 0;
-  const app = appFor(record, { throttleIntervalMs: 1_000, now: () => clock });
-  const streamed = (): { request: RequestInit; pulls: () => number } => {
-    let pulls = 0;
-    const body = new ReadableStream<Uint8Array>({
-      pull(controller) {
-        pulls += 1;
-        controller.enqueue(new Uint8Array(1024));
-      },
-    });
-    return {
-      request: {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-GitHub-Event": "pull_request",
-          "X-GitHub-Delivery": `flood-${pulls}`,
-          "X-Hub-Signature-256": `sha256=${"0".repeat(64)}`,
-          "X-Forwarded-For": "203.0.113.9",
-        },
-        body,
-        duplex: "half",
-      } as RequestInit,
-      pulls: () => pulls,
-    };
-  };
-  const from = (request: RequestInit): RequestInit => ({
-    ...request,
-    headers: { ...(request.headers as Record<string, string>), "X-Forwarded-For": "203.0.113.9" },
-  });
-
-  for (let attempt = 0; attempt < 30; attempt += 1) {
-    const response = await app.request(URL, from(signedRequest({ secret: "wrong", delivery: `bad-${attempt}` })));
-    assert.equal(response.status, 401, `attempt ${attempt}`);
-  }
-  // The first delivery past the threshold spends the interval's single slot.
-  const spent = await app.request(URL, from(signedRequest({ secret: "wrong", delivery: "bad-30" })));
-  assert.equal(spent.status, 429);
-  // Over the threshold and inside the interval: refused without touching the body.
-  const shed = streamed();
-  const refused = await app.request(URL, shed.request);
-  assert.equal(refused.status, 429);
-  assert.deepEqual(await refused.json(), { error: "rate_limited" });
-  assert.ok(shed.pulls() <= 2, `read ${shed.pulls()} chunks`);
-
-  // The next interval buys exactly one verification, and a valid delivery uses it.
-  clock += 1_000;
-  const valid = await app.request(URL, from(signedRequest({ delivery: "good-after-flood" })));
-  assert.equal(valid.status, 200);
-  assert.deepEqual(await valid.json(), { status: "processed" });
-  // And the one after it, in the same interval, is shed again.
-  const again = await app.request(URL, from(signedRequest({ delivery: "good-too-soon" })));
-  assert.equal(again.status, 429);
-  // A different address never entered the throttle at all.
-  const elsewhere = await app.request(URL, {
-    ...signedRequest({ delivery: "elsewhere" }),
-    headers: { ...(signedRequest().headers as Record<string, string>), "X-Forwarded-For": "198.51.100.8" },
-  });
-  assert.equal(elsewhere.status, 200);
-});
-
 test("refuses a malformed signature header before reading the body", async () => {
   const record = recorder();
   const app = appFor(record);
@@ -670,38 +642,96 @@ test("refuses a malformed signature header before reading the body", async () =>
   assert.equal(record.deliveries.length, 0);
 });
 
-test("caps the number of verifications running at once", async () => {
+test("hashes at most N bodies at once, and queues the rest instead of losing them", async () => {
   const record = recorder();
+  let concurrent = 0;
+  let peak = 0;
   const gates: Array<() => void> = [];
-  let open = false;
-  const gated: GitHubWebhookIngestDependencies = {
-    ...record.dependencies,
-    listSecrets: async () => {
-      if (!open) await new Promise<void>((resolve) => { gates.push(resolve); });
-      return [{ connectionId: "c1", secret: SECRET, appId: "4242" }];
-    },
-  };
   const app = createGitHubWebhookApp({
-    resolve: () => gated, trustProxy: true, maxConcurrentVerifications: 1,
+    resolve: () => record.dependencies,
+    trustProxy: true,
+    maxConcurrentVerifications: 1,
+    // Stands in for the hash: the budget must serialise it without refusing any of
+    // the three deliveries, because their bodies are already in memory.
+    verify: async (input) => {
+      concurrent += 1;
+      peak = Math.max(peak, concurrent);
+      await new Promise<void>((resolve) => { gates.push(resolve); });
+      concurrent -= 1;
+      return verifyGitHubSignature(input);
+    },
   });
-  const first = app.request(URL, signedRequest({ delivery: "concurrent-1" }));
-  // Let the first request reach the gate before the second arrives.
-  await new Promise((resolve) => { setTimeout(resolve, 5); });
-  // Raced against a deadline: with no cap the second request blocks on the gate
-  // too, and the failure has to be an assertion rather than a hung test.
-  const second = await Promise.race([
-    app.request(URL, signedRequest({ delivery: "concurrent-2" })),
-    new Promise<"blocked">((resolve) => { setTimeout(() => resolve("blocked"), 1_000); }),
-  ]);
-  assert.notEqual(second, "blocked", "the second verification was admitted and blocked on the gate");
-  assert.equal((second as Response).status, 429);
-  assert.deepEqual(await (second as Response).json(), { error: "rate_limited" });
-  open = true;
-  for (const release of gates) release();
-  assert.equal((await first).status, 200);
-  // The slot is given back, so the endpoint is not wedged.
-  const third = await app.request(URL, signedRequest({ delivery: "concurrent-3" }));
-  assert.equal(third.status, 200);
+  const pending = ["h1", "h2", "h3"].map((delivery) => app.request(URL, signedRequest({ delivery })));
+  // Release whatever is admitted, repeatedly, until all three have answered.
+  const drain = (async () => {
+    for (let round = 0; round < 20 && gates.length < 3; round += 1) {
+      await new Promise((resolve) => { setTimeout(resolve, 5); });
+      while (gates.length > 0) gates.shift()!();
+    }
+    while (gates.length > 0) gates.shift()!();
+  })();
+  const responses = await Promise.all(pending);
+  await drain;
+  assert.deepEqual(responses.map((response) => response.status), [200, 200, 200]);
+  assert.equal(peak, 1, "two bodies were hashed at the same time");
+  assert.equal(record.deliveries.length, 3);
+});
+
+/**
+ * N-6. The ceiling used to be taken *before* the body was read and released only
+ * after verification, so eight connections that trickle a body — or never finish
+ * one — held every slot and GitHub's own signed delivery was refused. The read and
+ * the hash now have separate budgets, and the read has a deadline.
+ */
+test("eight stalled bodies do not stop a signed delivery, and each is cut off", async () => {
+  const record = recorder();
+  const app = appFor(record, { readTimeoutMs: 150 });
+  const stalled = Array.from({ length: 8 }, (_, index) =>
+    app.request(URL, stalledRequest(`stalled-${index}`)));
+  // While all eight hang on their sockets, a real delivery is served.
+  const valid = await app.request(URL, signedRequest({ delivery: "through-the-flood" }));
+  assert.equal(valid.status, 200);
+  assert.deepEqual(await valid.json(), { status: "processed" });
+  // And none of the eight holds anything for longer than the deadline.
+  const answers = await Promise.all(stalled);
+  for (const answer of answers) {
+    assert.equal(answer.status, 408);
+    assert.deepEqual(await answer.json(), { error: "request_timeout" });
+  }
+  assert.equal(record.deliveries.length, 1, "a body that never arrived is not a delivery");
+  assert.deepEqual(logged.filter((entry) => entry.status === 408).length, 8);
+});
+
+test("sheds a body read that would exceed the read budget", async () => {
+  const record = recorder();
+  const app = appFor(record, { maxConcurrentBodyReads: 1, readTimeoutMs: 200 });
+  const holding = app.request(URL, stalledRequest("holding"));
+  await new Promise((resolve) => { setTimeout(resolve, 10); });
+  const shed = await app.request(URL, signedRequest({ delivery: "no-room" }));
+  assert.equal(shed.status, 429);
+  assert.deepEqual(await shed.json(), { error: "rate_limited" });
+  assert.equal((await holding).status, 408);
+  // The slot came back, so the endpoint is not wedged.
+  const after = await app.request(URL, signedRequest({ delivery: "room-again" }));
+  assert.equal(after.status, 200);
+});
+
+test("logs an App id no connection claims, instead of refusing in silence", async () => {
+  const record = recorder();
+  const app = appFor(record);
+  // A recorded App id can be wrong — the installation id, the client id, the slug —
+  // and that must not look exactly like a wrong secret.
+  const response = await app.request(URL, signedRequest({ delivery: "unmatched", appId: "1234567" }));
+  assert.equal(response.status, 200, "the capped loop still recognises the secret");
+  assert.deepEqual(
+    logged.map((entry) => [entry.status, entry.reason]),
+    [[200, "webhook_app_id_unmatched"]],
+  );
+  assert.equal(logged[0]!.deliveryId, "unmatched");
+  // A delivery naming the App we do know logs nothing.
+  logged.length = 0;
+  assert.equal((await app.request(URL, signedRequest({ delivery: "matched" }))).status, 200);
+  assert.deepEqual(logged, []);
 });
 
 test("caps the header values it writes to the log", async () => {

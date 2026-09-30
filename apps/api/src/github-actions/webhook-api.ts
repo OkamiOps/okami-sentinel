@@ -6,7 +6,14 @@ import { trustsProxy } from "../deployment-settings.js";
 import { GITHUB_WEBHOOK_PATH } from "../github-app/manifest-flow.js";
 import { redactText } from "../redaction.js";
 import { ingestGitHubWebhook, type GitHubWebhookIngestDependencies } from "./webhook-ingest.js";
-import { isWellFormedSignatureHeader } from "./webhook-signature.js";
+import {
+  isWellFormedSignatureHeader,
+  namesKnownWebhookApp,
+  verifyGitHubSignature,
+  webhookSecretSelection,
+  type VerifyGitHubSignatureInput,
+} from "./webhook-signature.js";
+import { WorkSlots } from "./work-slots.js";
 
 /** The spec's 1 MiB ceiling. Above it the delivery is refused before any work. */
 export const GITHUB_WEBHOOK_MAX_BODY_BYTES = 1_048_576;
@@ -23,27 +30,29 @@ const VERIFIED_DELIVERIES_PER_MINUTE = 600;
 const VERIFIED_WINDOW_MS = 60_000;
 
 /**
- * Past the failure threshold an address is throttled rather than blocked: one
- * verification per interval, shed before the body is read. GitHub's valid
- * deliveries still arrive — slowly — which is the ruling, while a flood costs a
- * header check instead of a mebibyte and a hash.
+ * Two budgets, because they bound two different things. A body read is paced by
+ * the caller's socket, so its excess is **shed** — refusing costs nothing we have
+ * already spent. Hashing is our own CPU on bytes already in memory, so its excess
+ * **waits**: throwing a completed read away would be the more expensive answer.
+ *
+ * Metering both with one counter was the whole of N-6: eight connections that
+ * trickled a body held every verification slot, and GitHub's own signed delivery
+ * was refused while the process sat idle.
  */
-const THROTTLE_INTERVAL_MS = 1_000;
+const MAX_CONCURRENT_BODY_READS = 16;
+const MAX_CONCURRENT_VERIFICATIONS = 4;
 
 /**
- * How many bodies may be hashed at once. Verification is single-threaded CPU on
- * caller-supplied bytes, so without a ceiling a handful of parallel 1 MiB
- * deliveries is enough to stall the event loop for everything else.
+ * A body that does not finish inside this is not a delivery. GitHub sends 1 MiB in
+ * well under a second; the deadline exists so a stalled socket cannot hold a read
+ * slot for Node's default request timeout of five minutes.
  */
-const MAX_CONCURRENT_VERIFICATIONS = 8;
+const READ_TIMEOUT_MS = 10_000;
 
 /** Header values are caller-supplied and can be kilobytes; the log takes 64. */
 const MAX_LOGGED_HEADER = 64;
 
 const GLOBAL_KEY = "verified";
-
-/** Bounded, like `FailureWindow`'s own map: a flood must not grow memory either. */
-const MAX_THROTTLED_ADDRESSES = 10_000;
 
 /**
  * What a refused delivery leaves behind. GitHub does not retry a webhook, so every
@@ -71,9 +80,11 @@ export interface GitHubWebhookAppOptions {
   acceptedWindow?: FailureWindow;
   trustProxy?: boolean;
   log?: (entry: GitHubWebhookLogEntry) => void;
-  throttleIntervalMs?: number;
+  maxConcurrentBodyReads?: number;
   maxConcurrentVerifications?: number;
-  now?: () => number;
+  readTimeoutMs?: number;
+  /** Stands in for the hash in tests; the budget is held around this call alone. */
+  verify?: (input: VerifyGitHubSignatureInput) => Promise<{ connectionId: string } | null> | { connectionId: string } | null;
 }
 
 /**
@@ -87,12 +98,10 @@ export function createGitHubWebhookApp(options: GitHubWebhookAppOptions): Hono {
     ?? new FailureWindow(FAILED_VERIFICATIONS_PER_ADDRESS, FAILED_VERIFICATION_WINDOW_MS);
   const verified = options.acceptedWindow
     ?? new FailureWindow(VERIFIED_DELIVERIES_PER_MINUTE, VERIFIED_WINDOW_MS);
-  const throttleIntervalMs = options.throttleIntervalMs ?? THROTTLE_INTERVAL_MS;
-  const maxConcurrent = options.maxConcurrentVerifications ?? MAX_CONCURRENT_VERIFICATIONS;
-  const now = options.now ?? Date.now;
-  /** Per address, the moment its next verification may start. */
-  const nextVerification = new Map<string, number>();
-  let verifying = 0;
+  const readTimeoutMs = options.readTimeoutMs ?? READ_TIMEOUT_MS;
+  const reads = new WorkSlots(options.maxConcurrentBodyReads ?? MAX_CONCURRENT_BODY_READS);
+  const hashes = new WorkSlots(options.maxConcurrentVerifications ?? MAX_CONCURRENT_VERIFICATIONS);
+  const verify = options.verify ?? verifyGitHubSignature;
   const app = new Hono();
 
   app.post(GITHUB_WEBHOOK_PATH, async (c) => {
@@ -140,40 +149,63 @@ export function createGitHubWebhookApp(options: GitHubWebhookAppOptions): Hono {
     // is recorded for the one that is refused and its body is never read. It is a
     // fixed window, deliberately: a flood ceiling, not an invariant.
     if (verified.blocked(GLOBAL_KEY) !== null) return refuse(429, "rate_limited", { retryAfterMs: VERIFIED_WINDOW_MS });
-    // An address that has already failed the threshold buys one verification per
-    // interval. Everything else from it is shed here — before the body, before any
-    // hash — while a correctly signed delivery still gets through on the next tick.
-    if (address !== null && failedVerifications.blocked(address) !== null) {
-      const allowedAt = nextVerification.get(address) ?? 0;
-      if (now() < allowedAt) return refuse(429, "rate_limited", { retryAfterMs: throttleIntervalMs });
-      if (nextVerification.size > MAX_THROTTLED_ADDRESSES) {
-        nextVerification.delete(nextVerification.keys().next().value!);
+    // Past the failure threshold, what an address may still cost us depends on
+    // whether it can name one of our Apps. A delivery that names a known App id is
+    // read and verified with exactly one hash, so a correctly signed delivery is
+    // never refused for another connection's wrong secret — whatever second it
+    // arrives in. Anything else from that address is shed here, before the body.
+    const appId = c.req.header("X-GitHub-Hook-Installation-Target-ID")?.trim() || undefined;
+    if (address !== null) {
+      const blockedFor = failedVerifications.blocked(address);
+      if (blockedFor !== null && !namesKnownWebhookApp(await dependencies.listSecrets(), appId)) {
+        return refuse(429, "rate_limited", { retryAfterMs: blockedFor * 1_000 });
       }
-      nextVerification.set(address, now() + throttleIntervalMs);
     }
-    if (verifying >= maxConcurrent) return refuse(429, "rate_limited", { retryAfterMs: throttleIntervalMs });
 
-    verifying += 1;
+    // The read budget is shed, not queued: a caller-paced socket must not be able
+    // to occupy anything by waiting.
+    if (!reads.tryAcquire()) return refuse(429, "rate_limited", { retryAfterMs: readTimeoutMs });
+    let body: Uint8Array | "too_large" | "timeout";
+    try {
+      body = await readCappedBody(c, readTimeoutMs);
+    } finally {
+      reads.release();
+    }
+    if (body === "too_large") return refuse(413, "payload_too_large");
+    if (body === "timeout") return refuse(408, "request_timeout");
+
     let result;
     try {
-      const body = await readCappedBody(c);
-      if (!body) return refuse(413, "payload_too_large");
       result = await ingestGitHubWebhook({
         body,
-        headers: {
-          event,
-          delivery,
-          signature,
-          // Names the App, so the normal delivery costs exactly one hash.
-          installationTargetId: c.req.header("X-GitHub-Hook-Installation-Target-ID")?.trim() || undefined,
+        // Names the App, so the normal delivery costs exactly one hash.
+        headers: { event, delivery, signature, installationTargetId: appId },
+      }, {
+        ...dependencies,
+        verifySignature: async (input) => {
+          const selection = webhookSecretSelection(input.secrets, input.appId);
+          // A recorded App id can be wrong (the installation id, the client id, the
+          // slug). Falling back to the capped loop keeps such a connection working,
+          // and the line is what tells the operator to fix the record.
+          if (selection.unmatchedAppId) report(options.log, {
+            status: 200,
+            reason: "webhook_app_id_unmatched",
+            deliveryId: delivery.slice(0, MAX_LOGGED_HEADER),
+            event: event.slice(0, MAX_LOGGED_HEADER),
+          });
+          // The budget is held around the hash and the compare, never across I/O.
+          await hashes.acquire();
+          try {
+            return await verify(input);
+          } finally {
+            hashes.release();
+          }
         },
-      }, dependencies);
+      });
     } catch (error) {
       // The cause never reaches GitHub, but it must reach the operator: a 500 is
       // the only trace a lost delivery leaves on our side.
       return refuse(500, "webhook_failed", { detail: error instanceof Error ? error.message : String(error) });
-    } finally {
-      verifying -= 1;
     }
 
     if (result.outcome === "failed" && result.reason === "signature_invalid") {
@@ -221,37 +253,56 @@ function report(
 /**
  * The cap is enforced while reading, not after: a caller that omits
  * `Content-Length` must not be able to make the process buffer an arbitrary body
- * before the ceiling is applied. `null` means the ceiling was exceeded.
+ * before the ceiling is applied. The deadline is the other half: a body that
+ * stalls is abandoned, the socket's reader cancelled, and the read slot returned,
+ * so trickling bytes cannot occupy anything.
  */
-async function readCappedBody(c: Context): Promise<Uint8Array | null> {
+async function readCappedBody(
+  c: Context,
+  timeoutMs: number,
+): Promise<Uint8Array | "too_large" | "timeout"> {
   const stream = c.req.raw.body;
   if (!stream) {
     const buffered = new Uint8Array(await c.req.arrayBuffer());
-    return buffered.byteLength > GITHUB_WEBHOOK_MAX_BODY_BYTES ? null : buffered;
+    return buffered.byteLength > GITHUB_WEBHOOK_MAX_BODY_BYTES ? "too_large" : buffered;
   }
   const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), timeoutMs);
+  });
+  const read = (async (): Promise<Uint8Array | "too_large"> => {
+    const chunks: Uint8Array[] = [];
+    let total = 0;
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
       if (!value) continue;
       total += value.byteLength;
-      if (total > GITHUB_WEBHOOK_MAX_BODY_BYTES) {
-        await reader.cancel();
-        return null;
-      }
+      if (total > GITHUB_WEBHOOK_MAX_BODY_BYTES) return "too_large";
       chunks.push(value);
     }
+    const body = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      body.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return body;
+  })();
+  try {
+    const outcome = await Promise.race([read, expired]);
+    // Either way the reader is done with: cancelling releases the socket and lets
+    // the abandoned read settle instead of leaking.
+    if (outcome === "timeout" || outcome === "too_large") await reader.cancel().catch(() => {});
+    return outcome;
   } finally {
-    reader.releaseLock();
+    clearTimeout(timer);
+    read.catch(() => {});
+    try {
+      reader.releaseLock();
+    } catch {
+      // Already released by `cancel()`; nothing to undo.
+    }
   }
-  const body = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    body.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return body;
 }
