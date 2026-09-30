@@ -7,7 +7,13 @@ import { hashPassword } from "../auth/passwords.js";
 import { ensureAuthSchema } from "../auth/schema.js";
 import { createSession } from "../auth/session-store.js";
 import { createUser, type UserRecord } from "../auth/user-store.js";
-import { isUnfamiliarLogin, NEW_LOGIN_HISTORY_DAYS } from "./account-notifications.js";
+import {
+  isUnfamiliarLogin,
+  newLoginReference,
+  NEW_LOGIN_HISTORY_DAYS,
+  NEW_LOGIN_MIN_INTERVAL_MS,
+  notifyNewLogin,
+} from "./account-notifications.js";
 import { listEmailDeliveries } from "./outbox-store.js";
 import { ensureEmailSchema } from "./schema.js";
 import { DEFAULT_EMAIL_SETTINGS, saveEmailSettings } from "./settings-store.js";
@@ -129,10 +135,12 @@ test("a new address or a new browser alerts once, naming both", async () => {
   // No public origin in local mode, so no link and the footer says why.
   assert.equal(alert.text.includes("http"), false);
 
-  const otherBrowser = new Date("2026-09-30T12:00:00.000Z");
+  // Well past the hourly cap, so what is under test is the browser and not it.
+  const otherBrowser = new Date("2026-09-30T13:00:00.000Z");
   await login({ username: user.username, password: PASSWORD, ip: "203.0.113.7", userAgent: OTHER_AGENT, now: otherBrowser }, db);
   assert.equal(events(db).filter((event) => event === "account.new_login").length, 2);
   assert.ok(bodyOf(db, "account.new_login").text.includes("Navegador: Chrome · Windows"));
+  assert.ok(bodyOf(db, "account.new_login").text.includes("Horário: 2026-09-30 13:00:00 UTC"));
 });
 
 test("a device unused for longer than the window looks new again", async () => {
@@ -184,4 +192,62 @@ test("an outbox that cannot be written does not cost anyone their sign-in", asyn
     userId: user.id, sessionId: session.id, currentPassword: PASSWORD, newPassword: NEXT_PASSWORD, now: elsewhere,
   }, db);
   assert.equal(changed.ok, true);
+});
+
+
+test("the alert is keyed by day and device, so the same news is never sent twice", async () => {
+  const db = setup();
+  const user = await ana(db);
+  const morning = new Date("2026-09-30T08:00:00.000Z");
+  const afternoon = new Date("2026-09-30T15:00:00.000Z");
+
+  // A user agent is client-supplied text and an address repeats, so the key is a
+  // digest of the pair rather than either value, and it changes with the day.
+  const reference = newLoginReference({ ip: "203.0.113.7", userAgent: AGENT, now: morning });
+  assert.match(reference, /^2026-09-30\.[0-9a-f]{16}$/);
+  assert.equal(newLoginReference({ ip: "203.0.113.7", userAgent: AGENT, now: afternoon }), reference);
+  assert.notEqual(newLoginReference({ ip: "203.0.113.9", userAgent: AGENT, now: morning }), reference);
+  assert.notEqual(newLoginReference({ ip: "203.0.113.7", userAgent: OTHER_AGENT, now: morning }), reference);
+  assert.notEqual(
+    newLoginReference({ ip: "203.0.113.7", userAgent: AGENT, now: new Date("2026-10-01T08:00:00.000Z") }),
+    reference,
+  );
+  // The address itself is not in the key.
+  assert.equal(reference.includes("203.0.113.7"), false);
+
+  notifyNewLogin(db, user, { ip: "203.0.113.7", userAgent: AGENT, now: morning });
+  assert.deepEqual(events(db), ["account.new_login"]);
+  const key = db.prepare("SELECT dedupe_key FROM email_outbox").get() as { dedupe_key: string };
+  assert.equal(key.dedupe_key, `account.${user.id}.new_login.${reference}`);
+
+  // Hours later, past the rate cap, the same device on the same day is the same
+  // message: the unique key refuses it.
+  notifyNewLogin(db, user, { ip: "203.0.113.7", userAgent: AGENT, now: afternoon });
+  assert.deepEqual(events(db), ["account.new_login"]);
+});
+
+test("a burst of unfamiliar sign-ins is capped at one alert an hour", async () => {
+  const db = setup();
+  const user = await ana(db);
+  const first = new Date("2026-09-30T10:00:00.000Z");
+  notifyNewLogin(db, user, { ip: "203.0.113.1", userAgent: AGENT, now: first });
+  assert.deepEqual(events(db), ["account.new_login"]);
+
+  // Different devices, still inside the hour: a user agent is chosen by the
+  // caller, so an attacker could otherwise turn this alert into a mail flood.
+  for (const [minutes, ip] of [[5, "203.0.113.2"], [30, "203.0.113.3"], [59, "203.0.113.4"]] as const) {
+    notifyNewLogin(db, user, {
+      ip, userAgent: OTHER_AGENT, now: new Date(first.getTime() + minutes * 60_000),
+    });
+  }
+  assert.equal(events(db).length, 1);
+
+  const later = new Date(first.getTime() + NEW_LOGIN_MIN_INTERVAL_MS + 60_000);
+  notifyNewLogin(db, user, { ip: "203.0.113.5", userAgent: AGENT, now: later });
+  assert.equal(events(db).filter((event) => event === "account.new_login").length, 2);
+
+  // The cap is per account: someone else's alert does not silence this one.
+  const other = createUser({ username: "bruno@okami.example", displayName: "Bruno", isAdmin: false }, db);
+  notifyNewLogin(db, other, { ip: "203.0.113.6", userAgent: AGENT, now: later });
+  assert.equal(events(db).filter((event) => event === "account.new_login").length, 3);
 });

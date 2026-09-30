@@ -7,7 +7,7 @@ import { ensureAuthSchema } from "../auth/schema.js";
 import { createUser, updateUser } from "../auth/user-store.js";
 import type { EmailCredentialStore, EmailProviderSecret } from "../credentials/system-email-credential-store.js";
 import { enqueueEmail } from "./enqueue.js";
-import { claimDueEmails, insertOutboxRow, listEmailDeliveries, requeueSendingEmails } from "./outbox-store.js";
+import { claimDueEmails, insertOutboxRow, listEmailDeliveries } from "./outbox-store.js";
 import { ensureEmailSchema } from "./schema.js";
 import { DEFAULT_EMAIL_SETTINGS, saveEmailSettings } from "./settings-store.js";
 import { createSmtpTransport } from "./smtp-transport.js";
@@ -126,7 +126,6 @@ test("a transient failure walks the 1 min, 5 min, 30 min, 2 h schedule and gives
     assert.match(row.lastError ?? "", /provider is unavailable.*relay is down/);
     // Nothing is claimed before it is due.
     assert.equal(claimDueEmails(10, clock, db).length, 0);
-    assert.equal(requeueSendingEmails(clock, db), 0);
     clock = new Date(`2026-09-30T${at}.000Z`);
   }
 
@@ -178,7 +177,49 @@ test("an error the transport did not classify is transient, because it may be th
   assert.equal(logged[0]!.includes("ana@example.com"), false);
 });
 
-test("rows a crash left claimed go back to the queue when the worker starts", async () => {
+test("recovery charges an interrupted row an attempt, and abandons an interrupted test send", async () => {
+  const db = fresh();
+  const now = new Date("2026-09-30T10:00:00.000Z");
+  const claimed = (dedupeKey: string, event: string, attempts = 0): string => insertOutboxRow({
+    event, dedupeKey, userId: null, toAddress: "ana@example.com", locale: "pt-BR",
+    subject: "s", html: "<p>s</p>", text: "s", status: "sending", nextAttemptAt: null, attempts,
+  }, now, db)!;
+  const interrupted = claimed("account.u1.locked.x", "account.locked");
+  const exhausted = claimed("account.u1.locked.y", "account.locked", 4);
+  const testSend = claimed("account.u1.test.z", "account.test");
+  assert.equal(claimDueEmails(10, now, db).length, 0);
+
+  const { transport, sent } = fakeTransport();
+  const worker = startEmailWorker({
+    database: db, now: () => now, secrets: new NoSecrets(), transport, log: () => {}, intervalMs: 60_000,
+  });
+  const tick = await worker.tick();
+  await worker.stop();
+
+  const row = (id: string) => db.prepare("SELECT status, attempts, next_attempt_at, last_error FROM email_outbox WHERE id = ?")
+    .get(id) as { status: string; attempts: number; next_attempt_at: string | null; last_error: string | null };
+  // The process may have died *because* of this message, so the restart costs it
+  // an attempt and a minute rather than handing it straight back.
+  assert.deepEqual(
+    { status: row(interrupted).status, attempts: row(interrupted).attempts, next: row(interrupted).next_attempt_at },
+    { status: "queued", attempts: 1, next: "2026-09-30T10:01:00.000Z" },
+  );
+  assert.match(row(interrupted).last_error ?? "", /interrupted by a restart/i);
+  // A row already at four attempts has no fifth left to spend on a restart.
+  assert.equal(row(exhausted).status, "failed");
+  assert.equal(row(exhausted).attempts, 5);
+  // The test send is nobody's to retry: the settings screen sends it inside the
+  // request, and the worker never claims it, so requeueing it would leave it in
+  // the queue forever.
+  assert.equal(row(testSend).status, "failed");
+  assert.equal(row(testSend).attempts, 1);
+  assert.match(row(testSend).last_error ?? "", /interrupted by a restart/i);
+  // Nothing was due this tick: every recovered row is waiting out its backoff.
+  assert.equal(tick?.sent, 0);
+  assert.equal(sent.length, 0);
+});
+
+test("a recovery that cannot run does not stop the worker, and is tried again", async () => {
   const db = fresh();
   const now = new Date("2026-09-30T10:00:00.000Z");
   const stuck = insertOutboxRow({
@@ -186,16 +227,51 @@ test("rows a crash left claimed go back to the queue when the worker starts", as
     toAddress: "ana@example.com", locale: "pt-BR", subject: "s", html: "<p>s</p>", text: "s",
     status: "sending", nextAttemptAt: null,
   }, now, db)!;
-  assert.equal(claimDueEmails(10, now, db).length, 0);
+  const logged: string[] = [];
+  const { transport } = fakeTransport();
 
-  const { transport, sent } = fakeTransport();
+  // A busy or missing table at boot must not be able to kill the process, which
+  // is why recovery happens inside a tick and not while the worker is built.
+  db.exec("ALTER TABLE email_outbox RENAME TO email_outbox_away");
   const worker = startEmailWorker({
-    database: db, now: () => now, secrets: new NoSecrets(), transport, log: () => {}, intervalMs: 60_000,
+    database: db, now: () => now, secrets: new NoSecrets(), transport, log: (m) => logged.push(m), intervalMs: 60_000,
   });
-  assert.equal((db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(stuck) as { status: string }).status, "queued");
-  const tick = await worker.tick();
+  assert.equal(await worker.tick(), null);
+  assert.equal(logged.length, 1);
+  assert.match(logged[0]!, /tick failed: SqliteError/);
+
+  db.exec("ALTER TABLE email_outbox_away RENAME TO email_outbox");
+  await worker.tick();
   await worker.stop();
-  assert.equal(tick?.sent, 1);
+  assert.equal((db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(stuck) as { status: string }).status, "queued");
+});
+
+test("a tick that throws before its first await leaves the loop working", async () => {
+  const db = fresh();
+  const at = new Date("2026-09-30T10:00:00.000Z");
+  queued(db, at);
+  const { transport, sent } = fakeTransport();
+  const logged: string[] = [];
+  let broken = true;
+  const worker = startEmailWorker({
+    database: db,
+    // Throws synchronously, before the tick has awaited anything: the guard that
+    // stops two ticks overlapping must not be left armed by it.
+    now: () => {
+      if (!broken) return at;
+      broken = false;
+      const error = new Error("the clock is broken");
+      error.name = "BrokenClock";
+      throw error;
+    },
+    secrets: new NoSecrets(), transport, log: (m) => logged.push(m), intervalMs: 60_000,
+  });
+
+  assert.equal(await worker.tick(), null);
+  assert.deepEqual(logged, ["E-mail worker tick failed: BrokenClock"]);
+  const after = await worker.tick();
+  await worker.stop();
+  assert.equal(after?.sent, 1);
   assert.equal(sent.length, 1);
 });
 
@@ -385,4 +461,119 @@ test("a queued message reaches a real SMTP relay through the loop", async (t) =>
   const row = only(db);
   assert.equal(row.status, "sent");
   assert.ok(row.providerMessageId);
+});
+
+
+const TOKEN = "Tk0000000000000000000000000000000000000000x";
+const ORIGIN = "https://sentinel.okami.example";
+
+function queueInvite(db: Database.Database, now: Date, dedupeKey = "account.u1.invite.1"): string {
+  const result = enqueueEmail(db, {
+    event: "account.invite", dedupeKey, userId: null, toAddress: "bruno@example.com",
+    locale: "pt-BR", data: { inviterName: "Marcos", inviteToken: TOKEN, expiresAt: new Date(now.getTime() + 72 * 3_600_000) },
+    now, origin: ORIGIN,
+  });
+  assert.equal(result.status, "queued");
+  return result.status === "queued" ? result.id : "";
+}
+
+const bodyOf = (db: Database.Database, id: string) =>
+  db.prepare("SELECT subject, html, text FROM email_outbox WHERE id = ?").get(id) as
+    { subject: string; html: string; text: string };
+
+test("a delivered invite keeps its history and loses its link", async () => {
+  const db = fresh();
+  const now = new Date("2026-09-30T10:00:00.000Z");
+  const id = queueInvite(db, now);
+  assert.ok(bodyOf(db, id).html.includes(TOKEN));
+  const { transport, sent } = fakeTransport();
+
+  await runEmailWorkerTick({ database: db, now: () => now, secrets: new NoSecrets(), transport, log: () => {} });
+
+  // The message that went out carried the link; what stays behind does not. The
+  // token is a live credential, and `user_invites` only ever stored its hash.
+  assert.ok(sent[0]!.html.includes(TOKEN));
+  const kept = bodyOf(db, id);
+  assert.deepEqual({ html: kept.html, text: kept.text }, { html: "", text: "" });
+  assert.match(kept.subject, /convite/);
+  const history = only(db);
+  assert.equal(history.status, "sent");
+  assert.equal(history.toAddress, "bruno@example.com");
+});
+
+test("a link is dropped when the message fails for good or is cancelled, and kept while it may still be sent", async () => {
+  const now = new Date("2026-09-30T10:00:00.000Z");
+
+  const retrying = fresh();
+  const willRetry = queueInvite(retrying, now);
+  const transient = fakeTransport();
+  transient.fail("transient");
+  await runEmailWorkerTick({ database: retrying, now: () => now, secrets: new NoSecrets(), transport: transient.transport, log: () => {} });
+  // Still due for another attempt, so the body it will send has to survive.
+  assert.ok(bodyOf(retrying, willRetry).html.includes(TOKEN));
+
+  const refused = fresh();
+  const willFail = queueInvite(refused, now);
+  const permanent = fakeTransport();
+  permanent.fail("permanent");
+  await runEmailWorkerTick({ database: refused, now: () => now, secrets: new NoSecrets(), transport: permanent.transport, log: () => {} });
+  assert.equal(only(refused).status, "failed");
+  assert.deepEqual(bodyOf(refused, willFail), { subject: bodyOf(refused, willFail).subject, html: "", text: "" });
+
+  const gone = fresh();
+  const user = createUser({ username: "ana", displayName: "Ana", isAdmin: false }, gone);
+  const cancelled = enqueueEmail(gone, {
+    event: "account.reset", dedupeKey: "account.u1.reset.1", userId: user.id, toAddress: "ana@example.com",
+    locale: "pt-BR", data: { resetToken: TOKEN, expiresAt: new Date(now.getTime() + 72 * 3_600_000) },
+    now, origin: ORIGIN,
+  });
+  assert.equal(cancelled.status, "queued");
+  updateUser(user.id, { status: "disabled" }, gone);
+  const unused = fakeTransport();
+  await runEmailWorkerTick({ database: gone, now: () => now, secrets: new NoSecrets(), transport: unused.transport, log: () => {} });
+  assert.equal(only(gone).status, "cancelled");
+  if (cancelled.status === "queued") {
+    assert.deepEqual(
+      { html: bodyOf(gone, cancelled.id).html, text: bodyOf(gone, cancelled.id).text },
+      { html: "", text: "" },
+    );
+  }
+
+  // A message that carries no credential keeps its body, which is what makes a
+  // delivery reproducible when someone asks what exactly was sent.
+  const ordinary = fresh();
+  queued(ordinary, now);
+  const plain = fakeTransport();
+  await runEmailWorkerTick({ database: ordinary, now: () => now, secrets: new NoSecrets(), transport: plain.transport, log: () => {} });
+  assert.equal(only(ordinary).status, "sent");
+  assert.ok((ordinary.prepare("SELECT text FROM email_outbox").get() as { text: string }).text.length > 0);
+});
+
+test("an invite still queued when its link expires is cancelled, not sent", async () => {
+  const db = fresh();
+  const created = new Date("2026-09-30T10:00:00.000Z");
+  const id = queueInvite(db, created);
+  const { transport, sent } = fakeTransport();
+
+  // One hour before the 72-hour window closes the message is still worth sending.
+  const nearly = new Date(created.getTime() + 71 * 3_600_000);
+  await runEmailWorkerTick({ database: db, now: () => nearly, secrets: new NoSecrets(), transport, log: () => {} });
+  assert.equal(only(db).status, "sent");
+  assert.equal(sent.length, 1);
+
+  const second = fresh();
+  const stale = queueInvite(second, created);
+  // Nothing sent it for three days — a stuck provider, a disabled switch — and the
+  // link in it is dead now, so the queue must not keep it alive.
+  const late = new Date(created.getTime() + 73 * 3_600_000);
+  const tick = await runEmailWorkerTick({ database: second, now: () => late, secrets: new NoSecrets(), transport, log: () => {} });
+  assert.equal(sent.length, 1);
+  assert.equal(tick.skipped, "empty");
+  const expired = only(second);
+  assert.equal(expired.status, "cancelled");
+  assert.match(expired.lastError ?? "", /expired/i);
+  assert.deepEqual(
+    { html: bodyOf(second, stale).html, text: bodyOf(second, stale).text },
+    { html: "", text: "" },
+  );
 });

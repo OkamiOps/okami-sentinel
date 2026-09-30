@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { INVITE_TTL_MS } from "../auth/invite-store.js";
 import { getUser } from "../auth/user-store.js";
 import {
   createSystemEmailCredentialStore,
@@ -9,10 +10,11 @@ import { globalSecretRedactor } from "../redaction.js";
 import {
   claimDueEmails,
   deleteFinishedEmailsBefore,
+  expireLinkBearingEmails,
+  listInterruptedEmails,
   markEmailCancelled,
   markEmailFailed,
   markEmailSent,
-  requeueSendingEmails,
   type EmailOutboxClaim,
 } from "./outbox-store.js";
 import { activeEmailTransportConfig } from "./transport-config.js";
@@ -32,6 +34,10 @@ export const EMAIL_RETRY_DELAYS_MS: readonly number[] = [60_000, 5 * 60_000, 30 
 export const EMAIL_MAX_ATTEMPTS = 5;
 export const EMAIL_RETENTION_DAYS = 90;
 const RETENTION_SWEEP_MS = 24 * 3_600_000;
+/** What a row says after the process that was sending it went away. */
+export const EMAIL_INTERRUPTED_ERROR = "The send was interrupted by a restart.";
+/** What a link-bearing row says once its token is past `INVITE_TTL_MS`. */
+export const EMAIL_LINK_EXPIRED_ERROR = "The link expired before the message could be sent.";
 
 /**
  * When the next attempt is due, or `null` when there will not be one.
@@ -100,6 +106,52 @@ function dependencies(supplied: Partial<EmailWorkerDependencies> = {}): EmailWor
 }
 
 /**
+ * What a starting worker does about the rows a dead process left claimed.
+ *
+ * A requeue costs the message an attempt and the next backoff step, because the
+ * process may have died *because* of this message: handing it straight back would
+ * let one poisonous row restart the API forever. A test send is not requeued at
+ * all — the settings screen sends it inside the request and the worker never
+ * claims it, so returning it to the queue would leave it there for good.
+ */
+export function recoverInterruptedEmails(
+  now: Date,
+  database: Database.Database,
+): { requeued: number; abandoned: number } {
+  let requeued = 0;
+  let abandoned = 0;
+  for (const row of listInterruptedEmails(database)) {
+    const nextAttemptAt = row.event === "account.test" ? null : nextEmailAttemptAt(row.attempts, now);
+    markEmailFailed(row.id, EMAIL_INTERRUPTED_ERROR, nextAttemptAt, database);
+    if (nextAttemptAt === null) abandoned += 1;
+    else requeued += 1;
+  }
+  return { requeued, abandoned };
+}
+
+/**
+ * Cancels the invites and resets whose link died in the queue. Run on every tick
+ * and before the provider is even looked at: a dead token must not be delivered
+ * just because e-mail came back on four days later.
+ */
+export function expireStaleLinkEmails(now: Date, database: Database.Database): number {
+  return expireLinkBearingEmails(new Date(now.getTime() - INVITE_TTL_MS), EMAIL_LINK_EXPIRED_ERROR, database);
+}
+
+/**
+ * A failure named by its kind and nothing else. An exception's message is written
+ * by whoever threw it — a provider, a driver, a module loader — so only the parts
+ * that cannot carry an address, a subject or a token reach the log.
+ */
+export function describeWorkerFailure(error: unknown): string {
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? (error as { code: unknown }).code
+    : undefined;
+  const name = error instanceof Error ? error.name : "unknown_error";
+  return typeof code === "string" && code !== "" ? `${name}/${code}` : name;
+}
+
+/**
  * One pass over the queue: claim, send, record. Nothing is claimed while the
  * provider is off or incomplete — a claimed row would have to be resolved, and
  * the only honest resolution would be a failed attempt the administrator did not
@@ -109,6 +161,8 @@ export async function runEmailWorkerTick(
   supplied: Partial<EmailWorkerDependencies> = {},
 ): Promise<EmailWorkerTick> {
   const deps = dependencies(supplied);
+  const expired = expireStaleLinkEmails(deps.now(), deps.database);
+  if (expired > 0) deps.log(`Cancelled ${expired} e-mail(s) whose invitation link had expired`);
   const active = await activeEmailTransportConfig(deps.secrets, deps.database);
   if (active.status !== "ready") return { ...EMPTY_TICK, skipped: active.status };
 
@@ -173,27 +227,39 @@ export interface EmailWorkerHandle {
 /**
  * The in-process loop. One timer, never two ticks at once — a slow provider must
  * delay the queue, not multiply the workers reading it — and `unref`ed so it can
- * never be the reason a process stays alive.
- *
- * Starting it is also the recovery step: rows a previous process left `sending`
- * are nobody's now, so they go back to the queue before the first tick.
+ * never be the reason a process stays alive. Building it touches nothing, so it
+ * cannot fail; the first tick does the recovery.
  */
 export function startEmailWorker(
   supplied: Partial<EmailWorkerDependencies> & { intervalMs?: number } = {},
 ): EmailWorkerHandle {
   const deps = dependencies(supplied);
-  const requeued = requeueSendingEmails(deps.now(), deps.database);
-  if (requeued > 0) deps.log(`Requeued ${requeued} e-mail(s) left claimed by a previous process`);
-
   let stopped = false;
+  // Two separate things: `running` is the overlap guard and must be cleared by a
+  // tick that throws before its first `await` — which a promise's own `finally`
+  // cannot do, because it runs before the assignment that stored the promise.
+  // `inFlight` exists only so `stop()` can wait for the work to finish.
+  let running = false;
   let inFlight: Promise<EmailWorkerTick | null> | null = null;
+  let recovered = false;
   let lastSweep = 0;
 
   const tick = async (): Promise<EmailWorkerTick | null> => {
-    if (stopped || inFlight !== null) return null;
-    inFlight = (async () => {
+    if (stopped || running) return null;
+    running = true;
+    const run = (async (): Promise<EmailWorkerTick | null> => {
       try {
         const now = deps.now();
+        // Recovery belongs to the first tick that manages it, not to the process's
+        // startup: a locked database at boot must not be able to stop the API, and
+        // a failure here is simply retried five seconds later.
+        if (!recovered) {
+          const { requeued, abandoned } = recoverInterruptedEmails(now, deps.database);
+          recovered = true;
+          if (requeued > 0 || abandoned > 0) {
+            deps.log(`Recovered ${requeued} and abandoned ${abandoned} e-mail(s) left claimed by a previous process`);
+          }
+        }
         if (now.getTime() - lastSweep >= RETENTION_SWEEP_MS) {
           lastSweep = now.getTime();
           const removed = sweepEmailRetention(now, deps.database);
@@ -203,13 +269,15 @@ export function startEmailWorker(
       } catch (error) {
         // A locked database, a closed handle during shutdown, a provider module
         // that failed to load: the loop survives all three and tries again.
-        if (!stopped) deps.log(`E-mail worker tick failed: ${error instanceof Error ? error.message : "unknown_error"}`);
+        if (!stopped) deps.log(`E-mail worker tick failed: ${describeWorkerFailure(error)}`);
         return null;
       } finally {
-        inFlight = null;
+        running = false;
       }
     })();
-    return inFlight;
+    inFlight = run;
+    void run.then(() => { if (inFlight === run) inFlight = null; });
+    return run;
   };
 
   const timer = setInterval(() => { void tick(); }, supplied.intervalMs ?? EMAIL_WORKER_INTERVAL_MS);

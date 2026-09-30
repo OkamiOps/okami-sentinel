@@ -4,7 +4,8 @@ import { Hono } from "hono";
 import { getDb } from "../db.js";
 import { LOCAL_PRINCIPAL, type Principal } from "./principal.js";
 import { createSession, getSessionById, resolveSession } from "./session-store.js";
-import type { EmailEnqueueResult, EnqueueEmailInput } from "../email/enqueue.js";
+import { enqueueEmail, type EmailEnqueueResult, type EnqueueEmailInput } from "../email/enqueue.js";
+import { DEFAULT_EMAIL_SETTINGS, saveEmailSettings } from "../email/settings-store.js";
 import type { EmailMessageKind } from "../email/templates.js";
 import { createUsersApi, type InviteEmailPort } from "./users-api.js";
 import { createUser, findUserByUsername, listUsers, updateUser } from "./user-store.js";
@@ -408,4 +409,72 @@ test("a reset queues its own message, to the user, in the user's language", asyn
   assert.equal(queued.locale, "fr");
   assert.equal(queued.dedupeKey, `account.${user.id}.reset.${body.expiresAt}`);
   assert.ok(String(body.inviteUrl).endsWith((queued.data as { resetToken: string }).resetToken));
+});
+
+
+interface CreatedUser {
+  user: { id: string };
+  invite: { inviteUrl: string; expiresAt: string; emailQueued: boolean; emailTo: string | null };
+}
+
+test("the real outbox row is written inside the route's transaction and rolls back with it", async () => {
+  const claimedTransaction: boolean[] = [];
+  const api = new Hono().route("/", createUsersApi({
+    publicOrigin: null,
+    enqueue: (database, input) => {
+      claimedTransaction.push(database.inTransaction);
+      return enqueueEmail(database, input);
+    },
+  }));
+  const enable = () => saveEmailSettings({
+    ...DEFAULT_EMAIL_SETTINGS, enabled: true, fromAddress: "sentinel@okami.example",
+    smtpHost: "smtp.okami.example", smtpPort: 465,
+  }, null, new Date(), getDb());
+
+  // The switch lives in the one database every file in this suite opens, and the
+  // e-mail API's own tests clear it between their cases. Enabling it and asking
+  // again is honest about that; pretending the two files cannot interleave is not.
+  let created: CreatedUser | null = null;
+  for (let attempt = 0; attempt < 5 && created === null; attempt += 1) {
+    enable();
+    const response = await api.request("/users", {
+      method: "POST", headers: JSON_HEADERS,
+      body: JSON.stringify({
+        username: `gustavo${Date.now()}${attempt}@example.com`, displayName: "Gustavo",
+        isAdmin: false, grants: [],
+      }),
+    });
+    assert.equal(response.status, 201);
+    const body = await response.json() as CreatedUser;
+    if (body.invite.emailQueued) created = body;
+  }
+  assert.ok(created, "the outbox never accepted a row in five attempts");
+
+  // The route enqueued while its own transaction was open, which is what makes
+  // the message and the account one write.
+  assert.equal(claimedTransaction.at(-1), true);
+  const row = getDb().prepare("SELECT event, user_id, status FROM email_outbox WHERE dedupe_key = ?")
+    .get(`account.${created.user.id}.invite.${created.invite.expiresAt}`);
+  assert.deepEqual(row, { event: "account.invite", user_id: created.user.id, status: "queued" });
+  // No public origin in this deployment, so the stored body names no token.
+  const body = getDb().prepare("SELECT html, text FROM email_outbox WHERE user_id = ?")
+    .get(created.user.id) as { html: string; text: string };
+  assert.equal(body.html.includes("href="), false);
+  assert.equal(body.text.includes(created.invite.inviteUrl.split("/invite/")[1] ?? "impossible"), false);
+
+  // And the same call against the same store leaves nothing behind when the
+  // transaction it joined is rolled back.
+  const rolledBack = `account.rollback.${Date.now()}`;
+  assert.throws(() => getDb().transaction(() => {
+    enqueueEmail(getDb(), {
+      event: "account.invite", dedupeKey: rolledBack, userId: null, toAddress: "zoe@example.com",
+      locale: "pt-BR", origin: null,
+      data: { inviterName: null, inviteToken: "Tk0000000000000000000000000000000000000000x", expiresAt: new Date() },
+    });
+    throw new Error("the account creation failed after the message was rendered");
+  })());
+  assert.equal(getDb().prepare("SELECT 1 FROM email_outbox WHERE dedupe_key = ?").get(rolledBack), undefined);
+
+  // Left as it was found: an installation that never opened the screen has no row.
+  getDb().prepare("DELETE FROM email_settings").run();
 });
