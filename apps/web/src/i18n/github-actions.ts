@@ -46,6 +46,7 @@ const ptBR = {
 
   "github.permissions": "PERMISSÕES",
   "github.permissionsTitle": "Exigida × concedida",
+  "github.permissions.name": "Permissão",
   "github.permissions.required": "Exigida",
   "github.permissions.granted": "Concedida",
   "github.permissions.none": "nenhuma",
@@ -124,6 +125,9 @@ const ptBR = {
   "github.delivery.stale": "Sem evento recente há {count} dia(s).",
   "github.delivery.staleDetail": "Isto é um aviso, não uma falha: a integração continua pronta. Um fim de semana quieto num repositório sem pull requests explica os dias.",
 
+  "github.deliveries24h": "ENTREGAS EM 24 H",
+  "github.sheet.effortHint": "Vazio deixa o provedor escolher. Preencha só se a conexão aceitar um esforço nomeado.",
+  "github.actions.pickRepository": "Escolha um repositório acima para criar uma ação: toda ação pertence a um, e a autoridade da App vem do cadastro dele.",
   "github.deliveries": "ENTREGAS",
   "github.deliveriesTitle": "As entregas mais recentes do webhook",
   "github.deliveries.empty": "Nenhuma entrega registrada",
@@ -344,6 +348,7 @@ const en: Record<GitHubActionsMessageKey, string> = {
 
   "github.permissions": "PERMISSIONS",
   "github.permissionsTitle": "Required × granted",
+  "github.permissions.name": "Permission",
   "github.permissions.required": "Required",
   "github.permissions.granted": "Granted",
   "github.permissions.none": "none",
@@ -422,6 +427,9 @@ const en: Record<GitHubActionsMessageKey, string> = {
   "github.delivery.stale": "No recent event for {count} day(s).",
   "github.delivery.staleDetail": "This is a warning, not a failure: the integration stays ready. A quiet weekend on a repository with no pull requests explains the days.",
 
+  "github.deliveries24h": "DELIVERIES IN 24 H",
+  "github.sheet.effortHint": "Empty lets the provider choose. Fill it only when the connection accepts a named effort.",
+  "github.actions.pickRepository": "Pick a repository above to create an action: every action belongs to one, and the App authority comes from its enrolment.",
   "github.deliveries": "DELIVERIES",
   "github.deliveriesTitle": "The most recent webhook deliveries",
   "github.deliveries.empty": "No delivery recorded",
@@ -640,6 +648,7 @@ const es: Record<GitHubActionsMessageKey, string> = {
 
   "github.permissions": "PERMISOS",
   "github.permissionsTitle": "Exigido × concedido",
+  "github.permissions.name": "Permiso",
   "github.permissions.required": "Exigido",
   "github.permissions.granted": "Concedido",
   "github.permissions.none": "ninguno",
@@ -718,6 +727,9 @@ const es: Record<GitHubActionsMessageKey, string> = {
   "github.delivery.stale": "Sin evento reciente desde hace {count} día(s).",
   "github.delivery.staleDetail": "Esto es un aviso, no un fallo: la integración sigue lista. Un fin de semana tranquilo en un repositorio sin pull requests explica los días.",
 
+  "github.deliveries24h": "ENTREGAS EN 24 H",
+  "github.sheet.effortHint": "Vacío deja que el proveedor elija. Rellénalo solo si la conexión acepta un esfuerzo con nombre.",
+  "github.actions.pickRepository": "Elige un repositorio arriba para crear una acción: toda acción pertenece a uno, y la autoridad de la App viene de su registro.",
   "github.deliveries": "ENTREGAS",
   "github.deliveriesTitle": "Las entregas más recientes del webhook",
   "github.deliveries.empty": "Ninguna entrega registrada",
@@ -936,6 +948,7 @@ const de: Record<GitHubActionsMessageKey, string> = {
 
   "github.permissions": "BERECHTIGUNGEN",
   "github.permissionsTitle": "Erforderlich × erteilt",
+  "github.permissions.name": "Berechtigung",
   "github.permissions.required": "Erforderlich",
   "github.permissions.granted": "Erteilt",
   "github.permissions.none": "keine",
@@ -1014,6 +1027,9 @@ const de: Record<GitHubActionsMessageKey, string> = {
   "github.delivery.stale": "Seit {count} Tag(en) kein aktuelles Ereignis.",
   "github.delivery.staleDetail": "Das ist ein Hinweis, kein Fehler: die Integration bleibt bereit. Ein ruhiges Wochenende in einem Repository ohne Pull Requests erklärt die Tage.",
 
+  "github.deliveries24h": "ZUSTELLUNGEN IN 24 H",
+  "github.sheet.effortHint": "Leer überlässt die Wahl dem Anbieter. Nur ausfüllen, wenn die Verbindung einen benannten Aufwand annimmt.",
+  "github.actions.pickRepository": "Wählen Sie oben ein Repository, um eine Aktion anzulegen: jede Aktion gehört zu einem, und die App-Autorität stammt aus dessen Registrierung.",
   "github.deliveries": "ZUSTELLUNGEN",
   "github.deliveriesTitle": "Die neuesten Webhook-Zustellungen",
   "github.deliveries.empty": "Keine Zustellung erfasst",
@@ -1232,6 +1248,7 @@ const fr: Record<GitHubActionsMessageKey, string> = {
 
   "github.permissions": "PERMISSIONS",
   "github.permissionsTitle": "Exigée × accordée",
+  "github.permissions.name": "Permission",
   "github.permissions.required": "Exigée",
   "github.permissions.granted": "Accordée",
   "github.permissions.none": "aucune",
@@ -1310,6 +1327,9 @@ const fr: Record<GitHubActionsMessageKey, string> = {
   "github.delivery.stale": "Aucun événement récent depuis {count} jour(s).",
   "github.delivery.staleDetail": "Ceci est un avertissement, pas une panne : l’intégration reste prête. Un week-end calme sur un dépôt sans pull requests explique les jours.",
 
+  "github.deliveries24h": "LIVRAISONS EN 24 H",
+  "github.sheet.effortHint": "Vide laisse le fournisseur choisir. À remplir seulement si la connexion accepte un effort nommé.",
+  "github.actions.pickRepository": "Choisissez un dépôt ci-dessus pour créer une action : chaque action appartient à un dépôt, et l’autorité de l’App vient de son enregistrement.",
   "github.deliveries": "LIVRAISONS",
   "github.deliveriesTitle": "Les livraisons de webhook les plus récentes",
   "github.deliveries.empty": "Aucune livraison enregistrée",
