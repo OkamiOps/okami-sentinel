@@ -453,7 +453,7 @@ test("a daily ceiling crossing sends one message per threshold per day", () => {
   assert.equal(evaluateDailyCost({ database: db, now: T0, origin: ORIGIN }), 1);
   let rows = queued(db);
   assert.equal(rows.length, 1);
-  assert.equal(rows[0]!.dedupe_key.startsWith(`ops.daily_cost.${ACTION_ID}.2026-09-30.80.`), true);
+  assert.equal(rows[0]!.dedupe_key.startsWith("ops.daily_cost.okami/one.10.2026-09-30.80."), true);
   assert.ok(rows[0]!.text.includes("Percentual: 80%"));
 
   // Still at 80%, re-evaluated a hundred times: the unique key is the guarantee,
@@ -468,7 +468,7 @@ test("a daily ceiling crossing sends one message per threshold per day", () => {
   assert.equal(evaluateDailyCost({ database: db, now: at(600_000), origin: ORIGIN }), 1);
   rows = queued(db);
   assert.equal(rows.length, 2);
-  assert.ok(rows.some((row) => row.dedupe_key.startsWith(`ops.daily_cost.${ACTION_ID}.2026-09-30.100.`)));
+  assert.ok(rows.some((row) => row.dedupe_key.startsWith("ops.daily_cost.okami/one.10.2026-09-30.100.")));
   assert.equal(evaluateDailyCost({ database: db, now: at(660_000), origin: ORIGIN }), 0);
 
   // The next UTC day is a fresh ceiling with fresh keys, and no reservations yet.
@@ -491,6 +491,30 @@ test("a jump straight past both thresholds says the useful one only", () => {
   const rows = queued(db);
   assert.equal(rows.length, 1);
   assert.ok(rows[0]!.dedupe_key.includes(".100."));
+  db.close();
+});
+
+test("the pair one rule became warns the repository once, not once per action", () => {
+  const db = fresh();
+  admin(db);
+  repository(db, "okami/one");
+  // What the migration writes: two actions, one ceiling, one repository.
+  const pr = rule(db, "okami/one", 6);
+  const push = createGitHubAction({
+    repositoryKey: "okami/one", name: "PR", triggerKind: "pull_request", branchPatterns: ["main"],
+    connectionId: "conn-1", installationId: "inst-1", repositoryId: "repo-1",
+    executor: "sentinel-managed", scanner: null, costCeilingUsd: 3,
+    dailyCostCeilingUsd: 6, enabled: true, includeForks: false, createdBy: null,
+  }, db, T0.toISOString()).id;
+  reserve(db, pr, "okami/one", 3, 1, T0);
+  reserve(db, push, "okami/one", 3, 2, T0);
+
+  // $6 of $6, reached by the pair together: one message, naming the repository.
+  assert.equal(evaluateDailyCost({ database: db, now: T0, origin: ORIGIN }), 1);
+  const rows = queued(db);
+  assert.equal(rows.length, 1);
+  assert.ok(rows[0]!.dedupe_key.startsWith("ops.daily_cost.okami/one.6.2026-09-30.100."));
+  assert.equal(evaluateDailyCost({ database: db, now: at(60_000), origin: ORIGIN }), 0);
   db.close();
 });
 

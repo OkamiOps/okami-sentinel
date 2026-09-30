@@ -287,9 +287,26 @@ test("scoped routes never answer with another repository's data", (t) => withSer
   );
   assert.equal(JSON.stringify(health).includes("/var/tmp/csb-scoped-"), false);
 
-  // The GitHub monitor routes are gone with the poller; task 1.5 replaces them
-  // with `/github/actions` and `/github/events`, which arrive with their own
-  // scoping tests.
+  // GET /github/branches — the branch read the Guardrails tab depends on. Its
+  // repository travels in the query string, so the handler is the only guard:
+  // a key outside the grants is invisible, and an unknown key answers the same.
+  const branchesB = await read(viewer, `/api/github/branches?repositoryKey=${encodeURIComponent(repoB)}`);
+  assert.equal(branchesB.status, 404);
+  assert.deepEqual(await branchesB.json(), { error: "not_found" });
+  const branchesMissing = await read(viewer, "/api/github/branches?repositoryKey=does-not-exist");
+  assert.equal(branchesMissing.status, 404);
+  assert.deepEqual(await branchesMissing.json(), { error: "not_found" });
+  // The granted key reaches the handler, whose refusal is about the repository's
+  // own shape (these fixtures are local), never about the scope.
+  const branchesA = await read(viewer, `/api/github/branches?repositoryKey=${encodeURIComponent(repoA)}`);
+  assert.equal(branchesA.status, 409);
+  assert.deepEqual(await branchesA.json(), { error: "github_repository_unsupported" });
+  const branchesUnnamed = await read(viewer, "/api/github/branches");
+  assert.equal(branchesUnnamed.status, 400);
+
+  // The rest of the GitHub monitor routes are gone with the poller; task 1.5
+  // replaces them with `/github/actions` and `/github/events`, which arrive with
+  // their own scoping tests.
 }));
 
 test("health discloses server paths to an administrator only", () => withServerRuntime(async () => {

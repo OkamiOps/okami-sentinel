@@ -8,6 +8,7 @@ import type {
 
 import type { GitHubInstallationPermissions } from "../github-app/github-app-client.js";
 import { matchesAnyBranchPattern } from "./branch-patterns.js";
+import type { InstallationScopeReport } from "./installation-scope.js";
 import { gitHubActionEventTargetIdentity, shortBranchName } from "./schema.js";
 import type { supersedeQueuedEvents } from "./store.js";
 
@@ -23,16 +24,27 @@ export const GITHUB_RECONCILE_MAX_INTERVAL_MS = 3_600_000;
 export const GITHUB_RECONCILE_DEFAULT_INTERVAL_MS = 900_000;
 
 /**
- * A queued change this old is not worth money. It is the same bound the webhook
- * applies to a late delivery (`stale_delivery`), applied to the other end: an
- * event that waited a day — because the process was down, or the daily ceiling
- * never freed — describes a commit nobody is waiting on any more. Without it, the
- * first reconciliation after an upgrade would dispatch the poller's whole leftover
- * queue.
+ * How long an event may wait **in our queue** before it is retired. Measured on
+ * `detectedAt` — the moment *we* learned of the change — and never on the payload
+ * clock: the whole point of the reconciliation is to recover a commit whose
+ * delivery was lost, and after an outage that commit's own clock is as old as the
+ * outage. Ageing a fresh recovery by the payload's clock created the event and
+ * threw it away in the same cycle (C-1).
+ *
+ * What it does still retire: a row a previous release queued and never
+ * dispatched — the poller's leftover queue at cutover carries the poller's own
+ * `detected_at` — and a row this process has failed to dispatch for a day.
  */
 const MAX_QUEUED_AGE_MS = 24 * 60 * 60_000;
 
 const READ_PERMISSIONS: GitHubInstallationPermissions = { contents: "read", pull_requests: "read" };
+
+/** The one read the reconciliation and `GET /github/branches` share. */
+export type ReadRepositoryJson = (
+  repository: GuardrailRepository,
+  resourcePath: string,
+  permissions: GitHubInstallationPermissions,
+) => Promise<unknown>;
 
 export interface GitHubReconcileResult {
   /** Repositories with at least one enabled action that were actually read. */
@@ -49,11 +61,7 @@ export interface GitHubReconcilerDependencies {
   listActions(): GitHubAction[];
   getRepository(repositoryKey: string): GuardrailRepository | null;
   /** Read-only GitHub reads, already scoped to the repository's App authority. */
-  readRepositoryJson(
-    repository: GuardrailRepository,
-    resourcePath: string,
-    permissions: GitHubInstallationPermissions,
-  ): Promise<unknown>;
+  readRepositoryJson: ReadRepositoryJson;
   createEvent(input: GitHubActionEventCreate): GitHubActionEvent | null;
   /** Wire it to `hasGitHubActionEventForHeadSha`. */
   hasEventForHeadSha(actionId: string, headSha: string): boolean;
@@ -70,15 +78,13 @@ export interface GitHubReconcilerDependencies {
   reconcileOrphans(): number;
   disableActionsForRepository(repositoryKey: string, reason: string): void;
   /**
-   * Every installation and the repositories it still reaches, or `null` when
-   * GitHub could not be asked. GitHub does **not** redeliver an `installation` or
-   * `installation_repositories` webhook, so without this a repository removed
-   * from the installation would keep its actions enabled for ever.
+   * Every installation that answered and the repositories it still reaches, plus
+   * how many could not be read. GitHub does **not** redeliver an `installation`
+   * or `installation_repositories` webhook, so without this a repository removed
+   * from the installation would keep its actions enabled for ever. `null` means
+   * nothing at all could be read; wire it to `readGitHubInstallationScopes`.
    */
-  listInstallationScopes?(): Promise<ReadonlyArray<{
-    installationId: string;
-    repositoryIds: readonly string[];
-  }> | null>;
+  listInstallationScopes?(): Promise<InstallationScopeReport | null>;
   /** The delivery-free half of the spec's `IMMEDIATE` rule: one write lock per repository. */
   runInTransaction<T>(work: () => T): T;
 }
@@ -103,13 +109,20 @@ interface RemoteBranch { name: string; headSha: string }
  * created. It reads and it never writes to GitHub, and it creates an event only
  * for a commit no event of that action already carries — so a cycle in which
  * nothing moved costs nothing and scans nothing.
+ *
+ * One consequence worth naming, because it differs from the poller: the second
+ * condition is `(action, head_sha)`, not the target identity, so a commit that is
+ * the head of two things the same action follows — a fast-forward that puts one
+ * SHA on `main` and on `release/1.2` — yields **one** event, for whichever the
+ * listing returned first. The poller would have paid for two gates over identical
+ * trees (M-5).
  */
 export async function reconcileGitHubActions(
   deps: GitHubReconcilerDependencies,
 ): Promise<GitHubReconcileResult> {
   const result: GitHubReconcileResult = { repositories: 0, created: 0, observed: 0, errors: 0 };
   deps.reconcileOrphans();
-  if (!await reconcileInstallationScope(deps)) result.errors += 1;
+  result.errors += await reconcileInstallationScope(deps);
 
   const byRepository = new Map<string, GitHubAction[]>();
   for (const action of deps.listActions()) {
@@ -132,10 +145,10 @@ export async function reconcileGitHubActions(
     let branches: RemoteBranch[] = [];
     try {
       if (actions.some((action) => action.triggerKind === "pull_request")) {
-        pullRequests = await listOpenPullRequests(repository, deps);
+        pullRequests = await listOpenPullRequests(repository, deps.readRepositoryJson);
       }
       if (actions.some((action) => action.triggerKind === "push")) {
-        branches = await listBranchHeads(repository, deps);
+        branches = await listBranchHeads(repository, deps.readRepositoryJson);
       }
     } catch {
       // Never the upstream message: it is written to a row a screen reads.
@@ -169,21 +182,23 @@ export async function reconcileGitHubActions(
 
 /**
  * Re-lists the installations and disables the actions of a repository the
- * installation no longer reaches. A listing that failed disables **nothing**: a
- * blinking GitHub API must not stop an operator's automation, and the next cycle
- * will ask again.
+ * installation no longer reaches. An installation that could not be read is
+ * simply absent from the report, and absent disables **nothing**: a blinking
+ * GitHub API must not stop an operator's automation, and the next cycle asks
+ * again. Returns how many reads failed, so `errors` counts real failures and one
+ * revoked installation does not make the number meaningless.
  */
-async function reconcileInstallationScope(deps: GitHubReconcilerDependencies): Promise<boolean> {
-  if (!deps.listInstallationScopes) return true;
-  let scopes: ReadonlyArray<{ installationId: string; repositoryIds: readonly string[] }> | null;
+async function reconcileInstallationScope(deps: GitHubReconcilerDependencies): Promise<number> {
+  if (!deps.listInstallationScopes) return 0;
+  let report: InstallationScopeReport | null;
   try {
-    scopes = await deps.listInstallationScopes();
+    report = await deps.listInstallationScopes();
   } catch {
-    return false;
+    return 1;
   }
-  if (scopes === null) return false;
+  if (report === null) return 1;
   const reachable = new Map<string, Set<string>>();
-  for (const scope of scopes) reachable.set(scope.installationId, new Set(scope.repositoryIds));
+  for (const scope of report.scopes) reachable.set(scope.installationId, new Set(scope.repositoryIds));
   const unauthorized = new Set<string>();
   for (const action of deps.listActions()) {
     if (!action.enabled) continue;
@@ -196,7 +211,7 @@ async function reconcileInstallationScope(deps: GitHubReconcilerDependencies): P
   for (const repositoryKey of unauthorized) {
     deps.disableActionsForRepository(repositoryKey, "repository_unauthorized");
   }
-  return true;
+  return report.failures;
 }
 
 function recordPullRequests(
@@ -336,7 +351,7 @@ function queuedForDispatch(
   const queued = [...deps.listQueuedEvents(action.id)]
     .sort((left, right) => left.detectedAt.localeCompare(right.detectedAt));
   for (const event of queued) {
-    const age = Date.parse(now) - Date.parse(event.observedAt ?? event.detectedAt);
+    const age = Date.parse(now) - Date.parse(event.detectedAt);
     if (Number.isFinite(age) && age > MAX_QUEUED_AGE_MS) {
       deps.patchEvent(event.id, {
         status: "skipped", reason: "queued_event_expired", completedAt: now,
@@ -350,32 +365,43 @@ function queuedForDispatch(
 
 async function listOpenPullRequests(
   repository: GuardrailRepository,
-  deps: GitHubReconcilerDependencies,
+  read: ReadRepositoryJson,
 ): Promise<RemotePullRequest[]> {
   const entries = await paginate(
-    repository, "/pulls?state=open", GITHUB_RECONCILE_MAX_PULL_REQUEST_PAGES, deps,
+    repository, "/pulls?state=open", GITHUB_RECONCILE_MAX_PULL_REQUEST_PAGES, read,
   );
   return entries.map((entry) => parsePullRequest(entry, repository));
 }
 
 async function listBranchHeads(
   repository: GuardrailRepository,
-  deps: GitHubReconcilerDependencies,
+  read: ReadRepositoryJson,
 ): Promise<RemoteBranch[]> {
-  const entries = await paginate(repository, "/branches", GITHUB_RECONCILE_MAX_BRANCH_PAGES, deps);
+  const entries = await paginate(repository, "/branches", GITHUB_RECONCILE_MAX_BRANCH_PAGES, read);
   return entries.map(parseBranch);
+}
+
+/**
+ * The branch names `GET /github/branches` answers with, read exactly as the
+ * reconciliation reads them — same ceiling, same validation, one implementation.
+ */
+export async function listGitHubBranchNames(
+  repository: GuardrailRepository,
+  read: ReadRepositoryJson,
+): Promise<string[]> {
+  return (await listBranchHeads(repository, read)).map((branch) => branch.name);
 }
 
 async function paginate(
   repository: GuardrailRepository,
   resourcePath: string,
   maxPages: number,
-  deps: GitHubReconcilerDependencies,
+  read: ReadRepositoryJson,
 ): Promise<unknown[]> {
   const all: unknown[] = [];
   for (let page = 1; page <= maxPages; page += 1) {
     const separator = resourcePath.includes("?") ? "&" : "?";
-    const value = await deps.readRepositoryJson(
+    const value = await read(
       repository,
       `${resourcePath}${separator}per_page=${PAGE_SIZE}&page=${page}`,
       READ_PERMISSIONS,
@@ -425,30 +451,91 @@ export interface GitHubReconcilerLoopOptions {
   reconcile(): Promise<GitHubReconcileResult>;
   intervalMs?: number | undefined;
   onError?(error: unknown): void;
+  /** How long `stop()` waits for the cycle in flight. */
+  stopDeadlineMs?: number;
   setInterval?: typeof setInterval;
   clearInterval?: typeof clearInterval;
 }
 
+export interface GitHubReconcilerHandle {
+  /**
+   * Runs one cycle now unless one is already in flight, and resolves when it
+   * ends. Boot uses it, so the "never overlapping" guarantee covers the boot
+   * cycle and not only the ticks.
+   */
+  runNow(): Promise<void>;
+  /**
+   * Clears the timer and **awaits** the cycle in flight, bounded. A cycle holds a
+   * write transaction and may be awaiting a paid dispatch, so a shutdown that did
+   * not wait let `closeDb` land on a gate that had already been started: the
+   * launch was written to a closed handle and the event stayed `dispatching`
+   * until the next boot called it uncertain.
+   */
+  stop(): Promise<void>;
+}
+
+/**
+ * How long `stop()` waits. A cycle can be inside a GitHub read with its own
+ * timeout, and a shutdown must not wait that out; nothing is lost by cutting it
+ * short, because the next boot reconciles again and `reconcileOrphanedGitHubActionDispatches`
+ * settles a reservation this process abandoned.
+ */
+export const GITHUB_RECONCILE_STOP_DEADLINE_MS = 5_000;
+
 /**
  * The loop that replaces `startPolling(60_000)`. It is clamped to the spec's five
- * minutes to one hour, it never overlaps itself, and it is unref'd so it cannot
- * hold the process open. The returned function stops it.
+ * minutes to one hour, it never overlaps itself — including the boot cycle — and
+ * it is unref'd so it cannot hold the process open.
  */
-export function startGitHubReconciler(options: GitHubReconcilerLoopOptions): () => void {
+export function startGitHubReconciler(options: GitHubReconcilerLoopOptions): GitHubReconcilerHandle {
   const schedule = options.setInterval ?? setInterval;
   const cancel = options.clearInterval ?? clearInterval;
+  const deadlineMs = options.stopDeadlineMs ?? GITHUB_RECONCILE_STOP_DEADLINE_MS;
   const interval = clampReconcileInterval(options.intervalMs);
+  let stopped = false;
   let running = false;
-  const tick = (): void => {
-    if (running) return;
+  let inFlight: Promise<void> | null = null;
+
+  const runNow = async (): Promise<void> => {
+    if (stopped || running) return;
     running = true;
-    void options.reconcile()
-      .catch((error: unknown) => { options.onError?.(error); })
-      .finally(() => { running = false; });
+    // The body is inside the `try`, so a **synchronous** throw from `reconcile`
+    // releases the guard too. Escaping it left `running` true and the loop dead
+    // for the life of the process (M-1).
+    const cycle = (async (): Promise<void> => {
+      try {
+        await options.reconcile();
+      } catch (error) {
+        options.onError?.(error);
+      } finally {
+        running = false;
+      }
+    })();
+    inFlight = cycle;
+    void cycle.then(() => { if (inFlight === cycle) inFlight = null; });
+    return cycle;
   };
-  const timer = schedule(tick, interval);
+
+  const timer = schedule(() => { void runNow(); }, interval);
   timer.unref?.();
-  return () => { cancel(timer); };
+
+  return {
+    runNow,
+    async stop() {
+      stopped = true;
+      cancel(timer);
+      if (inFlight === null) return;
+      let deadline: NodeJS.Timeout | undefined;
+      await Promise.race([
+        inFlight.catch(() => undefined),
+        new Promise<void>((resolve) => {
+          deadline = setTimeout(resolve, deadlineMs);
+          deadline.unref?.();
+        }),
+      ]);
+      if (deadline !== undefined) clearTimeout(deadline);
+    },
+  };
 }
 
 export function clampReconcileInterval(value: number | undefined): number {

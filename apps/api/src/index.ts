@@ -194,23 +194,24 @@ if (orphanedDispatches > 0) {
 
 // The 60 s poller is gone: webhooks are the trigger, and this is the read-only
 // safety net for the deliveries GitHub never retries.
-const stopGitHubReconciler = startGitHubReconciler({
-  reconcile: reconcileGitHubActionsNow,
+const githubReconciler = startGitHubReconciler({
+  reconcile: async () => {
+    const outcome = await reconcileGitHubActionsNow();
+    if (outcome.created > 0 || outcome.observed > 0 || outcome.errors > 0) {
+      console.log(`[csb-api] Reconciled ${outcome.repositories} GitHub repository(ies):`
+        + ` ${outcome.created} event(s) recovered, ${outcome.observed} observed, ${outcome.errors} error(s)`);
+    }
+    return outcome;
+  },
   intervalMs: GITHUB_RECONCILE_INTERVAL_MS,
   onError: () => {
     // Every failure is already recorded on the action rows it concerns.
     console.warn("[csb-api] GitHub reconciliation cycle failed");
   },
 });
-// One cycle at boot recovers whatever arrived while the process was down.
-void reconcileGitHubActionsNow().then((outcome) => {
-  if (outcome.created > 0 || outcome.observed > 0 || outcome.errors > 0) {
-    console.log(`[csb-api] Reconciled ${outcome.repositories} GitHub repository(ies):`
-      + ` ${outcome.created} event(s) recovered, ${outcome.observed} observed, ${outcome.errors} error(s)`);
-  }
-}).catch(() => {
-  console.warn("[csb-api] GitHub reconciliation deferred");
-});
+// One cycle at boot recovers whatever arrived while the process was down, through
+// the loop's own guard so it cannot be overlapped by the first tick.
+void githubReconciler.runNow();
 
 const serverApp = createServerApp(app, {
   settings,
@@ -224,13 +225,13 @@ const server = serve(
     hostname: API_HOST,
     port: API_PORT,
     // `headersTimeout` bounds the one phase every route shares and no handler can
-    // observe, so tightening it costs nothing and ends a header-slowloris on all
-    // of them. `requestTimeout` stays at Node's default: it is armed until the
-    // response finishes for a request whose body nothing read, which is exactly
-    // `POST /ingest` — a body-less POST whose response can take minutes — and
-    // SSE streams live under the same rule. The route that actually needs a tight
-    // bound is the unauthenticated webhook, and it enforces its own (10 s of
-    // progress, 2 s of silence) where it can tell a stalled read from a slow one.
+    // observe — it ends before routing, so it touches neither SSE nor a slow
+    // response — and tightening it ends a header-slowloris on every route at once.
+    // `requestTimeout` is Node's own default, stated and not changed: `POST
+    // /ingest` already runs under these five minutes (the timer stays armed until
+    // the response finishes for a request whose body nothing read), and the route
+    // that needs a tight bound is the unauthenticated webhook, which enforces its
+    // own (10 s of progress, 2 s of silence).
     serverOptions: {
       headersTimeout: API_HEADERS_TIMEOUT_MS,
       requestTimeout: API_REQUEST_TIMEOUT_MS,
@@ -246,7 +247,6 @@ if (settings.mode === "server") {
     stopHttp() {
       clearInterval(scanReconciler);
       clearInterval(gateReconciler);
-      stopGitHubReconciler();
       server.close();
       if ("closeAllConnections" in server) server.closeAllConnections();
     },
@@ -259,6 +259,10 @@ if (settings.mode === "server") {
     // to finish before `closeDb`, or a delivered message would lose its mark and
     // be sent again after the restart.
     drain: async () => {
+      // A reconciliation cycle holds a write transaction and may be awaiting a
+      // paid dispatch, so it is awaited here — before `closeDb` — exactly like the
+      // two other loops that own the store.
+      await githubReconciler.stop();
       await opsEvaluator.stop();
       await emailWorker.stop();
     },

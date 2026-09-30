@@ -222,13 +222,14 @@ export const API_PORT = Number(process.env.CSB_PORT || 8787);
 export const API_HEADERS_TIMEOUT_MS = 20_000;
 
 /**
- * Node's own default, kept deliberately. `requestTimeout` stays armed until the
- * **response** finishes for a request whose body nothing read, which is exactly
- * `POST /ingest`: a body-less POST whose response can take minutes on a large
- * state directory. Lowering it globally would destroy that socket mid-work, and
- * the route that genuinely needs a tight bound — the unauthenticated webhook —
- * enforces its own read deadlines, where a stalled read can be told from a slow
- * one.
+ * Node's own default, stated rather than changed. It is server-wide (there is no
+ * per-route form) and it stays armed until the **response** finishes for a request
+ * whose body nothing read — which is `POST /ingest`, a body-less POST whose
+ * response can take minutes on a large state directory. So `/ingest` is already
+ * subject to these five minutes today, and lowering the value would shorten that
+ * fuse for every route to buy nothing: the one route that needs a tight bound is
+ * the unauthenticated webhook, and it enforces its own read deadlines, where a
+ * stalled read can be told from a slow one.
  */
 export const API_REQUEST_TIMEOUT_MS = 300_000;
 

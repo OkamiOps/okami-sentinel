@@ -135,7 +135,8 @@ test("keeps the event queued when the daily ceiling is spent", async () => {
     detectedAt: "2026-09-30T09:00:00.000Z", observedAt: null,
   }, h.db)!;
   reserveGitHubActionEventDispatch({
-    eventId: spender.id, actionId: h.action.id, actionRevision: h.action.revision,
+    eventId: spender.id, actionId: h.action.id, repositoryKey: h.action.repositoryKey,
+    actionRevision: h.action.revision,
     dayStart: "2026-09-30T00:00:00.000Z", dayEnd: "2026-10-01T00:00:00.000Z",
     costCeilingUsd: 2, dailyCostCeilingUsd: 2, at: "2026-09-30T09:00:01.000Z",
   }, h.db);
@@ -293,18 +294,37 @@ test("a disabled action, a moved revision or a vanished event dispatches nothing
   assert.deepEqual(absent.started, []);
 });
 
-test("a draining server postpones the dispatch instead of failing it", async () => {
-  const h = harness({ start: async () => { throw new Error("server_draining"); } });
+test("a deploy mid-dispatch leaves the event queued, and the next process launches it", async () => {
+  // I-6. A refusal whose cause is the server, not the change: terminating it here
+  // was a commit nobody would ever scan — the webhook cannot recreate the event
+  // (UNIQUE) and the reconciliation would not either (the SHA is on the books).
+  let draining = true;
+  const h = harness({
+    start: async (input) => {
+      if (draining) throw new Error("server_draining");
+      return { gateId: "gate-1", headSha: input.event.headSha };
+    },
+  });
   await h.run();
-  const event = h.reread();
-  assert.equal(event.status, "skipped");
-  assert.equal(event.reason, "server_draining");
+  const postponed = h.reread();
+  assert.equal(postponed.status, "queued");
+  assert.equal(postponed.reason, "server_draining");
+  assert.equal(postponed.dispatchedAt, null, "the reservation is released with the refusal");
+  assert.equal(postponed.completedAt, null);
+
+  // The next process — or the next reconciliation cycle — finds it claimable.
+  draining = false;
+  await h.run();
+  const launched = h.reread();
+  assert.equal(launched.status, "launched");
+  assert.equal(launched.gateId, "gate-1");
 });
 
 test("an orphaned reservation from a dead process becomes terminal at boot", async () => {
   const h = harness();
   reserveGitHubActionEventDispatch({
-    eventId: h.event.id, actionId: h.action.id, actionRevision: h.action.revision,
+    eventId: h.event.id, actionId: h.action.id, repositoryKey: h.action.repositoryKey,
+    actionRevision: h.action.revision,
     dayStart: "2026-09-30T00:00:00.000Z", dayEnd: "2026-10-01T00:00:00.000Z",
     costCeilingUsd: 2, dailyCostCeilingUsd: 2, at: "2026-09-30T09:00:00.000Z",
   }, h.db);

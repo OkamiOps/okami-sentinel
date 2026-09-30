@@ -11,11 +11,14 @@ import {
   reconcileOrphanedGitHubActionDispatches,
 } from "./github-actions/dispatch.js";
 import {
+  listGitHubBranchNames,
   reconcileGitHubActions,
   type GitHubReconcileResult,
   type GitHubReconcilerDependencies,
 } from "./github-actions/reconciler.js";
+import { createGitHubBranchesApp } from "./github-actions/branches-api.js";
 import { rerunGitHubActionGate } from "./github-actions/rerun.js";
+import { readGitHubInstallationScopes } from "./github-actions/installation-scope.js";
 import {
   completeWebhookDelivery,
   createGitHubActionEvent,
@@ -977,7 +980,9 @@ const githubReconcilerDependencies: GitHubReconcilerDependencies = {
   createEvent: (input) => createGitHubActionEvent(input),
   hasEventForHeadSha: (actionId, headSha) => hasGitHubActionEventForHeadSha(actionId, headSha),
   supersede: (input) => supersedeQueuedEvents(input),
-  listQueuedEvents: (actionId) => listGitHubActionEvents({ actionId, statuses: ["queued"], limit: 200 }),
+  listQueuedEvents: (actionId) => listGitHubActionEvents({
+    actionId, statuses: ["queued"], limit: 200, order: "oldest",
+  }),
   patchEvent: (id, patch) => { patchGitHubActionEvent(id, patch); },
   recordReconciliation: (actionId, outcome) => { recordGitHubActionReconciliation(actionId, outcome); },
   dispatch: (eventId) => dispatchGitHubActionEventNow(eventId),
@@ -985,27 +990,14 @@ const githubReconcilerDependencies: GitHubReconcilerDependencies = {
   disableActionsForRepository: (repositoryKey, reason) => {
     disableGitHubActionsForRepository(repositoryKey, reason);
   },
-  listInstallationScopes: async () => {
-    const service = getSystemGitHubAppService();
-    const scopes: Array<{ installationId: string; repositoryIds: string[] }> = [];
-    try {
-      for (const connection of service.listConnections()) {
-        if (connection.status !== "ready") continue;
-        for (const installation of await service.refreshInstallations(connection.id)) {
-          const repositories = await service.refreshRepositories(installation.id);
-          scopes.push({
-            installationId: installation.id,
-            repositoryIds: repositories.map((repository) => repository.repositoryId),
-          });
-        }
-      }
-    } catch {
-      // `null` disables nothing: a blinking App API must not stop an operator's
-      // automation, and the next cycle asks again.
-      return null;
-    }
-    return scopes;
-  },
+  listInstallationScopes: () => readGitHubInstallationScopes({
+    listConnections: () => getSystemGitHubAppService().listConnections(),
+    listInstallations: (connectionId) => getSystemGitHubAppService().refreshInstallations(connectionId),
+    listRepositories: (installationId) => getSystemGitHubAppService().refreshRepositories(installationId),
+    disableActionsForInstallation: (installationId, reason) => {
+      disableGitHubActionsForInstallation(installationId, reason);
+    },
+  }),
   runInTransaction: (work) => getDb().transaction(work)(),
 };
 
@@ -1013,9 +1005,16 @@ export function reconcileGitHubActionsNow(): Promise<GitHubReconcileResult> {
   return reconcileGitHubActions(githubReconcilerDependencies);
 }
 
-for (const route of ["/github-checkouts", "/github-checkouts/*"]) {
+// The branch pickers of the Guardrails tab read this, so it moves with the model
+// instead of disappearing with the poller's routes (task 1.5 hangs the rest of
+// `/github/*` off the same tree).
+for (const route of ["/github/branches", "/github-checkouts", "/github-checkouts/*"]) {
   app.use(route, githubIntegrationSecurity());
 }
+app.route("/", createGitHubBranchesApp({
+  getRepository: findRepository,
+  listBranchNames: (repository) => listGitHubBranchNames(repository, readAuthorizedRepositoryJson),
+}));
 app.route("/", createGitHubCheckoutsApp({ getRepository: findRepository }));
 
 const providerRuntime = getProviderRuntime();

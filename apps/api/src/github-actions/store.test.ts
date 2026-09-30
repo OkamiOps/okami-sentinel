@@ -569,6 +569,18 @@ test("knows every commit the action has already seen, whatever became of it", ()
   assert.equal(hasGitHubActionEventForHeadSha(action.id, SHA_NEW, db), false);
 });
 
+test("a commit refused for a server-side transient is not treated as seen", () => {
+  const db = memoryDb();
+  const action = pullRequestAction(db);
+  const event = createGitHubActionEvent(pullRequestEvent(action, SHA_OLD, "2026-09-30T10:00:00.000Z"), db)!;
+  patchGitHubActionEvent(event.id, { status: "skipped", reason: "server_draining" }, db);
+  // The refusal was about us, not about the commit, so the never-twice rule must
+  // not close the door on it.
+  assert.equal(hasGitHubActionEventForHeadSha(action.id, SHA_OLD, db), false);
+  patchGitHubActionEvent(event.id, { status: "skipped", reason: "head_superseded" }, db);
+  assert.equal(hasGitHubActionEventForHeadSha(action.id, SHA_OLD, db), true);
+});
+
 test("finds the event a gate belongs to, for a rerequested check run", () => {
   const db = memoryDb();
   const action = pullRequestAction(db);
@@ -612,7 +624,7 @@ test("reserves the day's budget once, and refuses the dispatch that would exceed
     }),
   }, db)!;
   const reservation = {
-    actionId: action.id, actionRevision: action.revision,
+    actionId: action.id, repositoryKey: action.repositoryKey, actionRevision: action.revision,
     dayStart: "2026-09-30T00:00:00.000Z", dayEnd: "2026-10-01T00:00:00.000Z",
     costCeilingUsd: 2, dailyCostCeilingUsd: 3,
   };
@@ -637,13 +649,55 @@ test("reserves the day's budget once, and refuses the dispatch that would exceed
   }, db), null);
 });
 
+test("the daily ceiling bounds the repository, not one action of it", () => {
+  // The ruling: `daily_cost_ceiling_usd` caps what the **repository** may reserve
+  // in the UTC day, so the PR/Push pair the migration creates keeps exactly the
+  // one ceiling the rule had.
+  const db = memoryDb();
+  const base = {
+    repositoryKey: "github:1", connectionId: "c1", installationId: "i1", repositoryId: "1",
+    executor: "sentinel-managed" as const, scanner: null, costCeilingUsd: 3,
+    dailyCostCeilingUsd: 6, enabled: true, includeForks: false, createdBy: "u1",
+  };
+  const pr = createGitHubAction({ ...base, name: "PR", triggerKind: "pull_request", branchPatterns: ["main"] }, db);
+  const push = createGitHubAction({ ...base, name: "Push", triggerKind: "push", branchPatterns: ["main"] }, db);
+  const day = { dayStart: "2026-09-30T00:00:00.000Z", dayEnd: "2026-10-01T00:00:00.000Z" };
+  const queue = (action: GitHubAction, headSha: string, number: number) => createGitHubActionEvent({
+    ...pullRequestEvent(action, headSha, "2026-09-30T10:00:00.000Z"),
+    actionId: action.id, pullRequestNumber: number, costCeilingUsd: 3,
+    targetIdentity: gitHubActionEventTargetIdentity({
+      kind: "pull_request", headSha, headRef: "feature/login", pullRequestNumber: number,
+    }),
+  }, db)!;
+  const first = queue(pr, SHA_OLD, 7);
+  const second = queue(push, SHA_NEW, 8);
+  const third = queue(pr, "e".repeat(40), 9);
+  const reserve = (action: GitHubAction, eventId: string, at: string) =>
+    reserveGitHubActionEventDispatch({
+      ...day, eventId, actionId: action.id, repositoryKey: action.repositoryKey,
+      actionRevision: action.revision, costCeilingUsd: 3,
+      dailyCostCeilingUsd: action.dailyCostCeilingUsd!, at,
+    }, db);
+
+  assert.ok(reserve(pr, first.id, "2026-09-30T10:00:01.000Z"));
+  assert.ok(reserve(push, second.id, "2026-09-30T11:00:01.000Z"));
+  // $6 of $6 is spent by the pair, so the third is deferred even though its own
+  // action has only reserved $3.
+  assert.equal(reserve(pr, third.id, "2026-09-30T12:00:01.000Z"), null);
+  assert.equal(getGitHubActionEvent(third.id, db)!.status, "queued");
+  assert.equal(reservedGitHubActionCostForUtcDay("github:1", day.dayStart, day.dayEnd, db), 6);
+  // Another repository has its own bucket.
+  assert.equal(reservedGitHubActionCostForUtcDay("github:2", day.dayStart, day.dayEnd, db), 0);
+});
+
 test("a reservation of a revision that moved, or of a disabled action, is refused", () => {
   const db = memoryDb();
   const action = pullRequestAction(db);
   const event = createGitHubActionEvent(pullRequestEvent(action, SHA_OLD, "2026-09-30T10:00:00.000Z"), db)!;
   patchGitHubAction(action.id, { enabled: false }, db);
   const reservation = {
-    eventId: event.id, actionId: action.id, actionRevision: action.revision,
+    eventId: event.id, actionId: action.id, repositoryKey: action.repositoryKey,
+    actionRevision: action.revision,
     dayStart: "2026-09-30T00:00:00.000Z", dayEnd: "2026-10-01T00:00:00.000Z",
     costCeilingUsd: 2, dailyCostCeilingUsd: 10, at: "2026-09-30T10:00:01.000Z",
   };
@@ -657,7 +711,8 @@ test("an abandoned reservation becomes terminal, and a live one is left running"
   const action = pullRequestAction(db);
   const event = createGitHubActionEvent(pullRequestEvent(action, SHA_OLD, "2026-09-30T10:00:00.000Z"), db)!;
   reserveGitHubActionEventDispatch({
-    eventId: event.id, actionId: action.id, actionRevision: action.revision,
+    eventId: event.id, actionId: action.id, repositoryKey: action.repositoryKey,
+    actionRevision: action.revision,
     dayStart: "2026-09-30T00:00:00.000Z", dayEnd: "2026-10-01T00:00:00.000Z",
     costCeilingUsd: 2, dailyCostCeilingUsd: 10, at: "2026-09-30T10:00:01.000Z",
   }, db);
@@ -671,6 +726,6 @@ test("an abandoned reservation becomes terminal, and a live one is left running"
   assert.equal(orphan.error, "automatic_dispatch_uncertain");
   // The reservation stays spent for the day: the scan may have started.
   assert.equal(reservedGitHubActionCostForUtcDay(
-    action.id, "2026-09-30T00:00:00.000Z", "2026-10-01T00:00:00.000Z", db,
+    action.repositoryKey, "2026-09-30T00:00:00.000Z", "2026-10-01T00:00:00.000Z", db,
   ), 2);
 });

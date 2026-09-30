@@ -359,7 +359,8 @@ export function utcDayBounds(now: Date): { day: string; start: string; end: stri
 }
 
 /**
- * The crossings, not the level: one message per `(action, threshold, UTC day)`,
+ * The crossings, not the level: one message per `(repository, ceiling, threshold,
+ * UTC day)`,
  * enforced by the outbox's unique key rather than by a timer, so a restart cannot
  * produce a second one and a new day starts clean.
  *
@@ -372,18 +373,27 @@ export function evaluateDailyCost(options: OpsEvaluatorOptions = {}): number {
   const now = options.now ?? new Date();
   const { day, start, end } = utcDayBounds(now);
   let queued = 0;
+  // A daily ceiling caps the repository, not one action of it (the reservation
+  // sums every action of the repository), so the crossing is the repository's and
+  // the key must be too: the pair one migrated rule became would otherwise send
+  // the same warning twice. Two actions that disagree about the ceiling are two
+  // different facts, so the value is part of the key.
+  const warned = new Set<string>();
   for (const action of listGitHubActions({}, database)) {
     if (!action.enabled) continue;
     const ceiling = action.dailyCostCeilingUsd ?? action.costCeilingUsd;
     if (ceiling === null || ceiling <= 0) continue;
-    const reserved = reservedGitHubActionCostForUtcDay(action.id, start, end, database);
+    const scope = `${action.repositoryKey}.${ceiling}`;
+    if (warned.has(scope)) continue;
+    warned.add(scope);
+    const reserved = reservedGitHubActionCostForUtcDay(action.repositoryKey, start, end, database);
     const share = (reserved / ceiling) * 100;
     const crossed = [...OPS_DAILY_COST_THRESHOLDS].reverse().find((threshold) => share >= threshold);
     if (crossed === undefined) continue;
     queued += queueOps(database, {
       event: "ops.daily_cost",
       kind: "ops.daily_cost",
-      dedupeKey: `ops.daily_cost.${action.id}.${day}.${crossed}`,
+      dedupeKey: `ops.daily_cost.${scope}.${day}.${crossed}`,
       data: {
         repository: action.repositoryKey,
         day,

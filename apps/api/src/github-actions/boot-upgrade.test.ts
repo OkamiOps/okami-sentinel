@@ -21,6 +21,8 @@ import { reconcileGitHubActions, type GitHubReconcilerDependencies } from "./rec
 import {
   createGitHubActionEvent,
   disableGitHubActionsForRepository,
+  gitHubActionEventTargetIdentity,
+  reservedGitHubActionCostForUtcDay,
   ensureGitHubActionsSchema,
   failOrphanedGitHubActionDispatches,
   getGitHubAction,
@@ -284,6 +286,63 @@ test("a second cycle with nothing moved creates nothing and dispatches nothing",
   const outcome = await reconcileGitHubActions(harness.deps);
   assert.deepEqual(outcome, { repositories: 1, created: 0, observed: 0, errors: 0 });
   assert.equal(harness.launches.length, before, "a quiet cycle costs nothing");
+});
+
+test("the pair one rule became still shares the rule's one daily ceiling", async () => {
+  // I-3. The rule capped the repository at $6/day with $3 per scan. The migration
+  // gives both actions that $6, and the reservation sums the repository — so the
+  // pair can start two scans today and not a third.
+  const harness = upgraded();
+  const actions = listGitHubActions({}, harness.db);
+  const day = { dayStart: "2026-09-30T00:00:00.000Z", dayEnd: "2026-10-01T00:00:00.000Z" };
+  const queued: string[] = [];
+  for (const [index, action] of actions.entries()) {
+    const headSha = (index + 10).toString(16).padStart(40, "0");
+    const event = createGitHubActionEvent({
+      actionId: action.id, repositoryKey: action.repositoryKey, actionRevision: action.revision,
+      origin: "reconciliation", deliveryId: null, kind: action.triggerKind, status: "queued",
+      headSha, baseRef: "main", headRef: action.triggerKind === "push" ? "main" : "topic",
+      pullRequestNumber: action.triggerKind === "push" ? null : 20 + index,
+      targetIdentity: gitHubActionEventTargetIdentity({
+        kind: action.triggerKind, headSha,
+        headRef: action.triggerKind === "push" ? "main" : "topic",
+        pullRequestNumber: action.triggerKind === "push" ? null : 20 + index,
+      }),
+      title: null, gateId: null, costCeilingUsd: action.costCeilingUsd, reason: null, error: null,
+      detectedAt: NOW.toISOString(), observedAt: null,
+    }, harness.db)!;
+    queued.push(event.id);
+    assert.ok(reserveGitHubActionEventDispatch({
+      ...day, eventId: event.id, actionId: action.id, repositoryKey: action.repositoryKey,
+      actionRevision: action.revision, costCeilingUsd: action.costCeilingUsd,
+      dailyCostCeilingUsd: action.dailyCostCeilingUsd!, at: `2026-09-30T1${index}:00:00.000Z`,
+    }, harness.db), `reservation ${index}`);
+  }
+  assert.equal(queued.length, 2);
+  assert.equal(reservedGitHubActionCostForUtcDay(
+    "github:1", day.dayStart, day.dayEnd, harness.db,
+  ), 6, "$3 + $3, in one bucket");
+
+  // A third scan of the day, on either action, is deferred instead of doubling
+  // the cap the operator set.
+  const third = createGitHubActionEvent({
+    actionId: actions[0]!.id, repositoryKey: "github:1", actionRevision: actions[0]!.revision,
+    origin: "reconciliation", deliveryId: null, kind: actions[0]!.triggerKind, status: "queued",
+    headSha: "f".repeat(40), baseRef: "main", headRef: "third",
+    pullRequestNumber: actions[0]!.triggerKind === "push" ? null : 99,
+    targetIdentity: gitHubActionEventTargetIdentity({
+      kind: actions[0]!.triggerKind, headSha: "f".repeat(40), headRef: "third",
+      pullRequestNumber: actions[0]!.triggerKind === "push" ? null : 99,
+    }),
+    title: null, gateId: null, costCeilingUsd: 3, reason: null, error: null,
+    detectedAt: NOW.toISOString(), observedAt: null,
+  }, harness.db)!;
+  assert.equal(reserveGitHubActionEventDispatch({
+    ...day, eventId: third.id, actionId: actions[0]!.id, repositoryKey: "github:1",
+    actionRevision: actions[0]!.revision, costCeilingUsd: 3,
+    dailyCostCeilingUsd: actions[0]!.dailyCostCeilingUsd!, at: "2026-09-30T13:00:00.000Z",
+  }, harness.db), null);
+  assert.equal(getGitHubActionEvent(third.id, harness.db)!.status, "queued");
 });
 
 test("running the boot migration twice changes nothing", async () => {
