@@ -40,9 +40,9 @@ function fixture() {
         redirect_url: "http://127.0.0.1:8787/callback?flowId=flow-1",
         public: true,
         default_permissions: {
-          actions: "write", checks: "write", contents: "write", metadata: "read", pull_requests: "read", workflows: "write",
+          actions: "write", checks: "write", contents: "write", metadata: "read", pull_requests: "write", workflows: "write",
         },
-        default_events: [],
+        default_events: ["pull_request", "push", "installation", "installation_repositories", "check_run", "workflow_run"],
         request_oauth_on_install: false,
       },
     }),

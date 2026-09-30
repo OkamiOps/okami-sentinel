@@ -77,6 +77,69 @@ A chave do vault é pré-requisito: `CSB_VAULT_KEY_PATH` (na tabela acima) é o 
 
 O host SMTP aceita IP literal, inclusive privado, porque `segurança: none` existe para relays internos. Quem configura o e-mail pode, portanto, abrir uma conexão de dentro da rede do container e ver parte do banner da resposta no histórico. É uma capacidade de administrador, menor que as conexões de modelo e as credenciais do GitHub App que o mesmo papel já configura, mas é motivo para não dar o papel de administrador a quem não precisa dele.
 
+## GitHub App e webhook
+
+O Sentinel não consulta o GitHub em laço: quem dispara os gates são **webhooks
+assinados da GitHub App**. A App precisa, portanto, das permissões certas, dos
+eventos certos e de um segredo de webhook. A tela **GitHub → Integração** lista
+exatamente o que falta; esta seção é o que fazer no GitHub.
+
+**App nova (fluxo do manifest).** Nada a fazer. O manifest já pede as seis
+permissões, assina os seis eventos, declara a URL do webhook em
+`hook_attributes`, e o segredo que o GitHub gera na conversão é gravado no vault
+junto da chave privada da App. Confira depois em Integração que o segredo aparece
+como `configurado`.
+
+**App existente.** Três ajustes em `https://github.com/settings/apps/<slug>`:
+
+1. **Permissions** — `checks: write`, `contents: write`, `pull_requests: write`,
+   `actions: write`, `workflows: write`, `metadata: read`. Ampliar permissões
+   exige aprovar a revisão **em cada instalação**; até a aprovação, a tela de
+   Integração continua apontando a permissão que falta.
+2. **Subscribe to events** — `pull_request`, `push`, `installation`,
+   `installation_repositories`, `check_run`, `workflow_run`.
+3. **Webhook** — URL `https://sentinel.okamilab.com/api/github/webhook`, marcado
+   como *Active*, *Content type* `application/json`, e um **Secret**. Gere o
+   segredo no GitHub, copie e cole no Sentinel em **Integração → Webhook**. O
+   Sentinel guarda o segredo no vault e **nunca o mostra de novo** — a tela só
+   informa `configurado` ou `ausente`, e a API nunca devolve o valor.
+
+**Nenhuma variável de ambiente nova guarda segredo.**
+`CSB_GITHUB_WEBHOOK_SECRET` é deliberadamente não introduzida: o segredo do
+webhook segue a mesma custódia da chave privada da App, cifrado pela chave de
+`CSB_VAULT_KEY_FILE`. Rotacionar esse arquivo é rotacionar também o segredo do
+webhook. A única variável opcional desta área é
+`CSB_GITHUB_RECONCILE_INTERVAL_MS`, que ajusta o intervalo da reconciliação
+(padrão de 15 minutos) — a rede de segurança para a entrega que não chegou.
+
+**Proxy reverso.** A assinatura é um HMAC sobre os **bytes crus** do corpo, então
+o proxy não pode alterar nada no caminho:
+
+- não remover nem reescrever `X-Hub-Signature-256`, `X-GitHub-Event` e
+  `X-GitHub-Delivery`;
+- permitir corpo de até 1 MiB;
+- não *bufferizar* de forma que altere bytes (recompressão, reencode, injeção de
+  quebra de linha).
+
+Dokploy e Traefik atendem a isso por padrão. Uma entrega cujo corpo chegue
+alterado responde `401 signature_invalid` e não é registrada — se toda entrega
+falhar a assinatura, suspeite do proxy antes do segredo.
+
+**Escopo da instalação.** Se a App foi instalada em *only selected
+repositories*, o multi-select de cadastro só mostra os repositórios escolhidos.
+Amplie a seleção em `https://github.com/settings/installations/<id>` (instalação
+pessoal) ou em
+`https://github.com/organizations/<org>/settings/installations/<id>`
+(organização). A tela de Integração traz esse link pronto em **Ampliar seleção de
+repositórios**, junto de quantos repositórios a instalação alcança e quantos
+estão cadastrados.
+
+**Conferir que está chegando.** Em Integração, a lista de entregas mostra as mais
+recentes com resultado (`processado`, `ignorado`, `falhou`) e motivo, e a
+contagem das últimas 24 horas. Uma reentrega do mesmo `X-GitHub-Delivery`
+responde `duplicate` e não repete trabalho, então reenviar pelo painel do GitHub
+é seguro.
+
 ## Backups, restauração e atualização
 
 O volume nomeado `sentinel_data` contém SQLite, relatórios, estado de engines e o home privado. Programe backup em **Volume Backups** e escolha uma janela sem scans: um backup que para o container interrompe o processo em andamento. Bind mounts de repositórios não entram nesse backup; mantenha-os em sua origem Git ou em backup próprio.

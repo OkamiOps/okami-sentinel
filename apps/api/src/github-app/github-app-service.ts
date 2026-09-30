@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { GitHubAppCredentialStore } from "../credentials/system-github-app-credential-store.js";
+import { isStorableWebhookSecret } from "../credentials/system-github-app-credential-store.js";
 import type {
   GitHubAppConnectionMetadata,
   GitHubAppInstallationMetadata,
@@ -342,7 +343,12 @@ export class GitHubAppService {
   async #saveManifestApp(app: ManifestAppExchange): Promise<string> {
     const connectionId = this.#createConnectionId();
     const timestamp = this.#now().toISOString();
-    await this.#credentials.put(connectionId, { privateKeyPem: app.privateKeyPem });
+    await this.#credentials.put(connectionId, {
+      privateKeyPem: app.privateKeyPem,
+      // A manifest-created App needs no operator step: the secret GitHub
+      // generated for hook_attributes lands in the vault with the key.
+      ...(isStorableWebhookSecret(app.webhookSecret) ? { webhookSecret: app.webhookSecret } : {}),
+    });
     try {
       this.#store.saveConnection({
         id: connectionId,

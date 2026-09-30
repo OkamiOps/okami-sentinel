@@ -19,6 +19,11 @@ class MemoryCredentials implements GitHubAppCredentialStore {
   readonly values = new Map<string, GitHubAppCredentials>();
   async put(id: string, value: GitHubAppCredentials) { this.values.set(id, value); }
   async get(id: string) { return this.values.get(id) ?? null; }
+  async putWebhookSecret(id: string, secret: string) {
+    const current = this.values.get(id);
+    if (!current) throw new Error("credential_not_found");
+    this.values.set(id, { privateKeyPem: current.privateKeyPem, webhookSecret: secret });
+  }
   async delete(id: string) { this.values.delete(id); }
 }
 
@@ -63,7 +68,7 @@ class MemoryStore {
   getRepository(repositoryId: string) { return this.repositories.get(repositoryId) ?? null; }
 }
 
-function fixture() {
+function fixture(options: { webhookSecret?: string | null } = {}) {
   const pem = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({
     format: "pem", type: "pkcs8",
   }).toString();
@@ -91,6 +96,7 @@ function fixture() {
         appSlug: "okami-sentinel-local",
         clientId: "Iv1.client",
         privateKeyPem: pem,
+        webhookSecret: options.webhookSecret ?? null,
       });
     },
     async listInstallations(connection: GitHubAppConnectionMetadata) {
@@ -151,6 +157,7 @@ test("completes manifest exchange, stores PEM only in native credentials and dis
   assert.deepEqual(calls.exchanges, ["temporary-code"]);
   assert.equal(calls.installations, 1);
   assert.equal(credentials.values.get("connection-1")?.privateKeyPem.includes("PRIVATE KEY"), true);
+  assert.equal(credentials.values.get("connection-1")?.webhookSecret, undefined);
   assert.deepEqual(store.connections.get("connection-1"), {
     id: "connection-1",
     appId: "123",
@@ -162,6 +169,38 @@ test("completes manifest exchange, stores PEM only in native credentials and dis
   });
   assert.equal(JSON.stringify([...store.connections.values()]).includes("PRIVATE KEY"), false);
   assert.equal(store.installations.get("77")?.accountLogin, "OkamiOps");
+});
+
+test("keeps the webhook secret GitHub generated next to the private key", async () => {
+  const { service, flow, credentials, store } = fixture({ webhookSecret: "w".repeat(32) });
+  const started = service.startManifest();
+  const state = flow.authorization(started.flowId).state;
+
+  await service.completeManifestCallback({
+    flowId: started.flowId,
+    state,
+    code: "temporary-code",
+    error: null,
+  });
+
+  assert.equal(credentials.values.get("connection-1")?.webhookSecret, "w".repeat(32));
+  assert.equal(JSON.stringify([...store.connections.values()]).includes("w".repeat(32)), false);
+});
+
+test("completes the connection when the generated webhook secret is unusable", async () => {
+  const { service, flow, credentials } = fixture({ webhookSecret: "short" });
+  const started = service.startManifest();
+  const state = flow.authorization(started.flowId).state;
+
+  const result = await service.completeManifestCallback({
+    flowId: started.flowId,
+    state,
+    code: "temporary-code",
+    error: null,
+  });
+
+  assert.deepEqual(result, { status: "completed", connectionId: "connection-1" });
+  assert.equal(credentials.values.get("connection-1")?.webhookSecret, undefined);
 });
 
 test("does not accept a redirect installation id as authority", async () => {
@@ -281,6 +320,7 @@ function fixtureWithInstallationFailure() {
     client: {
       exchangeManifestCode: async <T>(_code: string, consume: (app: ManifestAppExchange) => Promise<T> | T) => consume({
         appId: "123", appSlug: "okami-sentinel-local", clientId: "Iv1.client", privateKeyPem: pem,
+        webhookSecret: null,
       }),
       listInstallations: async () => { throw new Error("private upstream response"); },
       listInstallationRepositories: async () => [],

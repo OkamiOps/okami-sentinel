@@ -20,6 +20,7 @@ class MemoryCredentialStore implements GitHubAppCredentialStore {
   constructor(readonly credentials: GitHubAppCredentials) {}
   put() { return Promise.resolve(); }
   get() { return Promise.resolve(this.credentials); }
+  putWebhookSecret() { return Promise.resolve(); }
   delete() { return Promise.resolve(); }
 }
 
@@ -334,12 +335,17 @@ test("exchanges a manifest code without returning client or webhook secrets", as
     }),
   });
 
-  const exchanged = await client.exchangeManifestCode("temporary-code", async (app) => ({
-    appId: app.appId,
-    appSlug: app.appSlug,
-    clientId: app.clientId,
-    pemLength: app.privateKeyPem.length,
-  }));
+  let handedSecret: string | null = "not seen";
+  const exchanged = await client.exchangeManifestCode("temporary-code", async (app) => {
+    handedSecret = app.webhookSecret;
+    return {
+      appId: app.appId,
+      appSlug: app.appSlug,
+      clientId: app.clientId,
+      pemLength: app.privateKeyPem.length,
+    };
+  });
+  assert.equal(handedSecret, "webhook-secret-value");
 
   assert.deepEqual(exchanged, {
     appId: "123",
@@ -349,6 +355,24 @@ test("exchanges a manifest code without returning client or webhook secrets", as
   });
   assert.equal(JSON.stringify(exchanged).includes("secret-value"), false);
   assert.equal(redactor.active.size, 0);
+});
+
+test("hands a null webhook secret when the conversion response carries none", async () => {
+  const { privateKey } = keyPair();
+  const pem = privateKey.export({ format: "pem", type: "pkcs8" }).toString();
+  const client = new GitHubAppClient({
+    credentials: new MemoryCredentialStore({ privateKeyPem: pem }),
+    redactor: new RecordingRedactor(),
+    transport: async () => ({
+      status: 201,
+      body: { id: 123, slug: "okami-sentinel-local", client_id: "Iv1.client-id", pem },
+    }),
+  });
+
+  assert.equal(
+    await client.exchangeManifestCode("temporary-code", (app) => app.webhookSecret),
+    null,
+  );
 });
 
 test("rejects unexpected API hosts before invoking the transport", () => {

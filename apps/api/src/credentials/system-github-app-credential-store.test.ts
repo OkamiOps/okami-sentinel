@@ -101,6 +101,96 @@ test("rejects malformed PEM payloads and unsupported native platforms", async ()
   });
 });
 
+test("stores a webhook secret without losing the private key", async () => {
+  const backend = new MemoryBackend();
+  const redactor = new RecordingRedactor();
+  const store = new SystemGitHubAppCredentialStore({
+    redactor,
+    loadBackend: async () => backend,
+    platform: "darwin",
+  });
+  const pem = privateKeyPem();
+  const secret = "s".repeat(32);
+
+  await store.put("c1", { privateKeyPem: pem });
+  await store.putWebhookSecret("c1", secret);
+
+  assert.deepEqual(await store.get("c1"), { privateKeyPem: pem, webhookSecret: secret });
+  assert.deepEqual(redactor.active.get("scm/github-app/c1"), [pem, secret]);
+});
+
+test("replaces a webhook secret and drops the previous value from redaction", async () => {
+  const backend = new MemoryBackend();
+  const redactor = new RecordingRedactor();
+  const store = new SystemGitHubAppCredentialStore({
+    redactor,
+    loadBackend: async () => backend,
+    platform: "darwin",
+  });
+  const pem = privateKeyPem();
+
+  await store.put("c1", { privateKeyPem: pem, webhookSecret: "a".repeat(20) });
+  await store.putWebhookSecret("c1", "b".repeat(20));
+
+  assert.deepEqual(await store.get("c1"), { privateKeyPem: pem, webhookSecret: "b".repeat(20) });
+  assert.deepEqual(redactor.active.get("scm/github-app/c1"), [pem, "b".repeat(20)]);
+});
+
+test("refuses a secret shorter than 16 characters", async () => {
+  const backend = new MemoryBackend();
+  const store = new SystemGitHubAppCredentialStore({
+    redactor: new RecordingRedactor(),
+    loadBackend: async () => backend,
+    platform: "darwin",
+  });
+  const pem = privateKeyPem();
+  await store.put("c1", { privateKeyPem: pem });
+
+  await assert.rejects(() => store.putWebhookSecret("c1", "s".repeat(15)), {
+    name: "VaultError",
+    code: "secure_storage_unavailable",
+  });
+  await assert.rejects(() => store.putWebhookSecret("c1", "s".repeat(257)), {
+    code: "secure_storage_unavailable",
+  });
+  await assert.rejects(() => store.putWebhookSecret("c1", `${"s".repeat(20)}\0`), {
+    code: "secure_storage_unavailable",
+  });
+  assert.deepEqual(await store.get("c1"), { privateKeyPem: pem });
+});
+
+test("refuses a webhook secret for a connection that has no private key", async () => {
+  const store = new SystemGitHubAppCredentialStore({
+    redactor: new RecordingRedactor(),
+    loadBackend: async () => new MemoryBackend(),
+    platform: "darwin",
+  });
+  await assert.rejects(() => store.putWebhookSecret("absent", "s".repeat(32)), {
+    code: "credential_not_found",
+  });
+});
+
+test("refuses an unknown field in the stored bundle", async () => {
+  const backend = new MemoryBackend();
+  const store = new SystemGitHubAppCredentialStore({
+    redactor: new RecordingRedactor(),
+    loadBackend: async () => backend,
+    platform: "darwin",
+  });
+  const pem = privateKeyPem();
+
+  await assert.rejects(
+    () => store.put("c1", { privateKeyPem: pem, nope: 1 } as never),
+    { code: "secure_storage_unavailable" },
+  );
+
+  backend.values.set(
+    "com.okamiops.sentinel.scm.github-app:c1",
+    JSON.stringify({ privateKeyPem: pem, nope: 1 }),
+  );
+  await assert.rejects(() => store.get("c1"), { code: "secure_storage_unavailable" });
+});
+
 test("keeps pending PEM redaction when the native write outcome is unknown", async () => {
   const backend = new MemoryBackend();
   backend.failAfterSet = true;
