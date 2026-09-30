@@ -130,6 +130,23 @@ segredo novo no instante do Save, então toda entrega entre o Save e a colagem
 falha a assinatura — a reconciliação de 15 minutos recupera os commits desse
 intervalo, de modo que a janela custa latência, não cobertura.
 
+**Uma réplica, e por quê.** A API precisa rodar como **réplica única** sobre o
+volume SQLite. Dois controles desta área são por processo, não por banco:
+
+- a reconciliação não se sobrepõe a si mesma por um sinalizador **em memória**, de
+  modo que duas réplicas reconciliariam o mesmo repositório no mesmo minuto e
+  dobrariam as leituras da App;
+- a varredura de despachos órfãos, no boot e a cada ciclo, encerra **todo** evento
+  em `dispatching` que não seja deste processo — a réplica B marcaria como
+  "incerto" o gate pago que a réplica A acabou de iniciar, e o gate ficaria sem
+  vínculo mesmo tendo custado.
+
+A tabela de *lease* que o poller usava (`github_monitor_poll_leases`) foi
+renomeada com as outras e nada a substitui: o modelo de ações não tem *lease*. Se
+duas réplicas passarem a ser necessárias, o instrumento é uma tabela de *lease* de
+despacho, não um sinalizador maior. Escalar a réplica no Dokploy sem isso não
+"distribui carga": duplica leituras e invalida despachos pagos.
+
 **Proxy reverso.** A assinatura é um HMAC sobre os **bytes crus** do corpo, então
 o proxy não pode alterar nada no caminho:
 

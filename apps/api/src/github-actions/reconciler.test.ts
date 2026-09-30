@@ -53,7 +53,7 @@ interface HarnessOptions {
   events?: Array<Partial<Parameters<typeof createGitHubActionEvent>[0]>>;
   repositoryMissing?: boolean;
   fail?: boolean;
-  installationScopes?: Array<{ installationId: string; repositoryIds: string[] }> | null;
+  installationScopes?: { scopes: Array<{ installationId: string; repositoryIds: string[] }>; failures: number } | null;
 }
 
 function repository(): GuardrailRepository {
@@ -337,6 +337,22 @@ test("a queued event older than a day is retired instead of resurrected", async 
   assert.equal(stale.reason, "queued_event_expired");
 });
 
+test("a commit the outage lost is recovered and dispatched, however old the change is", async () => {
+  // C-1. The API was down for two days; the pull request's own clock is 48 h old.
+  // The event the reconciliation creates is one we have just learned of, so its
+  // age is ours to measure, not the payload's.
+  const harness = reconcilerHarness({
+    openPullRequests: [{
+      number: 9, baseRef: "main", headRef: "topic", headSha: SHA_B, title: "t",
+      updatedAt: "2026-09-28T09:00:00.000Z",
+    }],
+  });
+  assert.deepEqual(await harness.run(), { repositories: 1, created: 1, observed: 0, errors: 0 });
+  const recovered = harness.events().find((event) => event.headSha === SHA_B)!;
+  assert.equal(recovered.status, "queued");
+  assert.deepEqual(harness.dispatched(), [recovered.id], "a recovery that is not dispatched recovers nothing");
+});
+
 test("a queued event the daily ceiling held back is dispatched again", async () => {
   const harness = reconcilerHarness({
     openPullRequests: [],
@@ -352,7 +368,7 @@ test("a queued event the daily ceiling held back is dispatched again", async () 
 test("re-lists the installations, because GitHub never redelivers an installation event", async () => {
   const harness = reconcilerHarness({
     openPullRequests: [],
-    installationScopes: [{ installationId: "i1", repositoryIds: ["99"] }],
+    installationScopes: { scopes: [{ installationId: "i1", repositoryIds: ["99"] }], failures: 0 },
   });
   await harness.run();
   const action = harness.action();
@@ -367,6 +383,29 @@ test("an installation listing that failed disables nothing", async () => {
   assert.equal(harness.action().enabled, true, "a blinking API must not stop the automation");
 });
 
+test("one unreadable installation costs one error, and the rest of the scope still applies", async () => {
+  // I-1 from the reconciler's side: a partial report is still a report. The
+  // installation that answered decides reachability; the one that failed is
+  // absent, so its repositories are left alone.
+  const harness = reconcilerHarness({
+    openPullRequests: [],
+    installationScopes: { scopes: [{ installationId: "i2", repositoryIds: ["1"] }], failures: 1 },
+  });
+  const outcome = await harness.run();
+  assert.equal(outcome.errors, 1);
+  // The action's installation (`i1`) is not in the report at all: not observed,
+  // so not disabled.
+  assert.equal(harness.action().enabled, true);
+
+  const observed = reconcilerHarness({
+    openPullRequests: [],
+    installationScopes: { scopes: [{ installationId: "i1", repositoryIds: ["1"] }], failures: 2 },
+  });
+  const seen = await observed.run();
+  assert.equal(seen.errors, 2, "errors count failed reads, not the shape of the report");
+  assert.equal(observed.action().enabled, true, "the repository is still reachable");
+});
+
 test("a repository that is no longer enrolled records the error and does not throw", async () => {
   const harness = reconcilerHarness({ repositoryMissing: true });
   assert.deepEqual(await harness.run(), { repositories: 0, created: 0, observed: 0, errors: 1 });
@@ -378,7 +417,7 @@ test("the loop is clamped, never overlaps, and stops on demand", async () => {
   const timers: Array<{ interval: number; fire: () => void }> = [];
   let cleared = 0;
   let release: () => void = () => {};
-  const stop = startGitHubReconciler({
+  const reconciler = startGitHubReconciler({
     reconcile: async () => {
       ticks.push(Date.now());
       await new Promise<void>((resolve) => { release = resolve; });
@@ -401,6 +440,80 @@ test("the loop is clamped, never overlaps, and stops on demand", async () => {
   timers[0]!.fire();
   assert.equal(ticks.length, 2);
   release();
-  stop();
+  await reconciler.stop();
   assert.equal(cleared, 1);
+});
+
+/**
+ * I-2. `stop()` used to be a bare `clearInterval`, so `closeDb` could run while a
+ * cycle was inside its transaction or awaiting a paid dispatch: the gate started
+ * and its outcome was written to a closed handle.
+ */
+test("stopping waits for the cycle in flight, and the boot cycle shares the guard", async () => {
+  const order: string[] = [];
+  let release: () => void = () => {};
+  const reconciler = startGitHubReconciler({
+    reconcile: async () => {
+      order.push("cycle-start");
+      await new Promise<void>((resolve) => { release = resolve; });
+      order.push("cycle-end");
+      return { repositories: 0, created: 0, observed: 0, errors: 0 };
+    },
+    setInterval: (() => ({ unref: () => undefined }) as unknown as NodeJS.Timeout) as unknown as typeof setInterval,
+    clearInterval: (() => undefined) as unknown as typeof clearInterval,
+  });
+
+  // The boot cycle goes through the same in-flight flag as a tick, so a slow boot
+  // cycle cannot be overlapped by the first tick either.
+  const boot = reconciler.runNow();
+  const overlapping = reconciler.runNow();
+  await overlapping;
+  assert.deepEqual(order, ["cycle-start"], "the second call found one in flight");
+
+  let stopped = false;
+  const stopping = reconciler.stop().then(() => { stopped = true; order.push("stopped"); });
+  await new Promise((resolve) => { setTimeout(resolve, 5); });
+  assert.equal(stopped, false, "stop waits for the cycle that is writing");
+  release();
+  await stopping;
+  await boot;
+  assert.deepEqual(order, ["cycle-start", "cycle-end", "stopped"]);
+
+  // Stopped means stopped: a later tick does nothing.
+  await reconciler.runNow();
+  assert.deepEqual(order, ["cycle-start", "cycle-end", "stopped"]);
+});
+
+test("a stop does not wait out a wedged cycle for ever", async () => {
+  const reconciler = startGitHubReconciler({
+    reconcile: () => new Promise(() => {}),
+    stopDeadlineMs: 5,
+    setInterval: (() => ({ unref: () => undefined }) as unknown as NodeJS.Timeout) as unknown as typeof setInterval,
+    clearInterval: (() => undefined) as unknown as typeof clearInterval,
+  });
+  void reconciler.runNow();
+  const started = Date.now();
+  await reconciler.stop();
+  assert.ok(Date.now() - started < 2_000, "bounded, like the outbox worker's own stop");
+});
+
+/** M-1. A synchronous throw used to leave `running` true and the loop dead. */
+test("a cycle that throws synchronously does not wedge the loop", async () => {
+  const failures: unknown[] = [];
+  let calls = 0;
+  const reconciler = startGitHubReconciler({
+    reconcile: () => {
+      calls += 1;
+      if (calls === 1) throw new Error("boom");
+      return Promise.resolve({ repositories: 1, created: 0, observed: 0, errors: 0 });
+    },
+    onError: (error) => { failures.push(error); },
+    setInterval: (() => ({ unref: () => undefined }) as unknown as NodeJS.Timeout) as unknown as typeof setInterval,
+    clearInterval: (() => undefined) as unknown as typeof clearInterval,
+  });
+  await reconciler.runNow();
+  assert.equal(failures.length, 1);
+  await reconciler.runNow();
+  assert.equal(calls, 2, "the guard was released");
+  await reconciler.stop();
 });

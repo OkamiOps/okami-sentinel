@@ -202,6 +202,16 @@ CREATE TABLE IF NOT EXISTS github_actions (
 
 - `cost_ceiling_usd` é `NOT NULL`: uma ação sem teto não pode existir, nem
   desabilitada. O teto era obrigatório apenas para ativar; agora é do registro.
+- `daily_cost_ceiling_usd` limita o **repositório**, não a ação: a reserva do dia
+  soma o `cost_ceiling_usd` de todos os eventos despachados por **qualquer** ação
+  daquele repositório na janela UTC, e a ação só despacha se
+  `reservado_hoje + teto_do_scan <= daily_cost_ceiling_usd dela`. Uma regra que
+  limitava o repositório a $6/dia virou duas ações na migração; sem esta
+  definição o mesmo repositório passaria a poder reservar $12 no dia do corte. O
+  custo da escolha é explícito: uma ação com teto diário baixo pode ficar sem
+  janela porque uma irmã gastou o dia do repositório. O alerta `ops.daily_cost`
+  é, pelo mesmo motivo, chaveado por `(repositório, teto, dia, limiar)` — não por
+  ação, ou o par migrado avisaria duas vezes o mesmo fato.
 - `checkout_mode` não existe. O caminho de sincronização de checkout sai inteiro.
 - `branch_patterns_json`: 1..20 padrões (`main`, `release/**`), validados pelo
   mesmo validador de branch já usado hoje. Para `pull_request` casam contra
@@ -454,6 +464,18 @@ pós-despacho como `failed` sem repetição cega.
 - Grava `last_reconciled_at` e `last_error` na ação. A tela de Integração mostra
   a última reconciliação e quantos eventos de `origin='reconciliation'` ela
   recuperou nas últimas 24 h — o número que diz se os webhooks estão chegando.
+- Um evento só é retirado da fila por idade pelo **nosso** relógio
+  (`detected_at`, 24 h), nunca pelo relógio do payload: depois de uma
+  indisponibilidade de dois dias, o commit que a reconciliação acaba de descobrir
+  tem `updated_at` de dois dias e é exatamente o que ela existe para recuperar.
+  O que a idade retira é fila antiga *nossa* — a que o poller deixou no corte, com
+  o `detected_at` dele.
+- **Uma réplica.** A garantia de não-sobreposição do ciclo é um sinalizador em
+  processo, e a varredura de despachos órfãos encerra **todo** `dispatching` que
+  não seja deste processo. Duas réplicas sobre o mesmo volume marcariam o despacho
+  pago da outra como incerto e dobrariam as leituras da App. A API roda como
+  réplica única (`docs/dokploy.md`); se isso mudar, o instrumento é uma tabela de
+  *lease* de despacho, não um sinalizador maior.
 
 ## Deduplicação e supersedência
 
@@ -469,7 +491,8 @@ pós-despacho como `failed` sem repetição cega.
 | Mesmo `head_sha` já analisado pela mesma ação (`launched` ou terminal) | `skipped` / `commit_already_analysed` |
 | Webhook e reconciliação vendo o mesmo commit | O segundo cai na `UNIQUE`; nenhuma corrida, porque ambos escrevem na mesma transação `IMMEDIATE` |
 | `check_run.rerequested` | Novo evento `origin='manual'`, `target_identity` sufixado `#rerun:<checkRunId>`, isento da regra do commit repetido |
-| Teto diário estourado | Evento fica `queued` com `reason='daily_cost_ceiling'`, como hoje; a próxima janela UTC o despacha |
+| Teto diário estourado | Evento fica `queued` com `reason='daily_cost_ceiling'`, como hoje; a próxima janela UTC o despacha. O teto é do repositório: a soma das reservas de **todas** as ações dele no dia |
+| Despacho recusado pelo servidor (`server_draining`) | Evento volta a `queued` com `reason='server_draining'` e sem reserva. Encerrá-lo perderia o commit para sempre: a entrega não recria o evento (`UNIQUE`) e a reconciliação não o recria (o SHA já está na ficha da ação) |
 
 ## Ciclo de vida da baseline
 

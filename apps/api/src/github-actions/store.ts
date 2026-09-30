@@ -394,6 +394,12 @@ export function listGitHubActionEvents(
     repositoryKeys?: string[];
     statuses?: GitHubActionEventStatus[];
     limit?: number;
+    /**
+     * A screen reads the newest first; a queue is drained oldest first, and with
+     * the default order a limit would hide exactly the rows the drain wants
+     * (M-6).
+     */
+    order?: "newest" | "oldest";
   } = {},
   database: Database.Database = getDb(),
 ): GitHubActionEvent[] {
@@ -413,8 +419,9 @@ export function listGitHubActionEvents(
     filter.statuses.forEach((status, index) => { parameters[`status_${index}`] = status; });
   }
   parameters.limit = Math.max(1, Math.min(filter.limit ?? 100, 500));
+  const direction = filter.order === "oldest" ? "ASC" : "DESC";
   const sql = `SELECT * FROM github_action_events${clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""}
-    ORDER BY detected_at DESC, id DESC LIMIT @limit`;
+    ORDER BY detected_at ${direction}, id ${direction} LIMIT @limit`;
   return (database.prepare(sql).all(parameters) as EventRow[]).map(rowToEvent);
 }
 
@@ -548,10 +555,19 @@ export function hasAnalysedCommit(
 }
 
 /**
- * Whether any event of this action already carries this commit, in any status and
- * at any revision. The reconciliation asks before creating: a commit the action has
- * already seen — even one it skipped — is not a commit a webhook missed, and
- * creating an event for it is how a safety net turns into a second scanner.
+ * Reasons a `skipped` row does not mean "this commit has been dealt with": the
+ * refusal was about this process, not about the change. Kept in step with
+ * `TRANSIENT_DISPATCH_CODES` in `dispatch.ts`, which no longer terminates them —
+ * this covers the rows a release that did left behind.
+ */
+const TRANSIENT_SKIP_REASONS = ["server_draining"];
+
+/**
+ * Whether any event of this action already carries this commit, at any revision
+ * and in any status but a transient refusal. The reconciliation asks before
+ * creating: a commit the action has already seen — even one it skipped because
+ * the head had moved — is not a commit a webhook missed, and creating an event
+ * for it is how a safety net turns into a second scanner.
  */
 export function hasGitHubActionEventForHeadSha(
   actionId: string,
@@ -559,9 +575,13 @@ export function hasGitHubActionEventForHeadSha(
   database: Database.Database = getDb(),
 ): boolean {
   ensureGitHubActionsSchema(database);
+  const placeholders = TRANSIENT_SKIP_REASONS.map(() => "?").join(",");
   const row = database.prepare(`
-    SELECT 1 FROM github_action_events WHERE action_id = ? AND head_sha = ? LIMIT 1
-  `).get(actionId, headSha);
+    SELECT 1 FROM github_action_events
+    WHERE action_id = ? AND head_sha = ?
+      AND NOT (status = 'skipped' AND reason IN (${placeholders}))
+    LIMIT 1
+  `).get(actionId, headSha, ...TRANSIENT_SKIP_REASONS);
   return row !== undefined;
 }
 
@@ -616,16 +636,27 @@ export function disableGitHubActionsForInstallation(
 }
 
 /**
- * Turns a queued event into a reservation against the action's UTC-day budget, in
- * one statement: the ceiling is reserved before the scan starts, so two dispatches
- * racing cannot both fit under a cap that only one of them has room for. `null`
- * means the day is spent, the revision moved or the action was disabled — the row
- * stays `queued` and the next window may dispatch it.
+ * Turns a queued event into a reservation against the **repository's** UTC-day
+ * budget, in one statement: the ceiling is reserved before the scan starts, so two
+ * dispatches racing cannot both fit under a cap that only one of them has room
+ * for. `null` means the day is spent, the revision moved, the action was disabled
+ * or another caller won the row — it stays `queued` and the next window may
+ * dispatch it.
+ *
+ * The sum is over every action of the repository, and the cap is the dispatching
+ * action's own `daily_cost_ceiling_usd`. That is the ruling on what a daily
+ * ceiling means: "this repository may reserve at most $X today". One rule became
+ * two actions at the migration, and this is what keeps the pair inside the single
+ * ceiling the rule had instead of giving each a full bucket. The cost of the
+ * choice is explicit: an action with a small daily cap can be starved by a
+ * sibling that spent the repository's day.
  */
 export function reserveGitHubActionEventDispatch(
   input: {
     eventId: string;
     actionId: string;
+    /** The repository whose day is being spent; the events carry it too. */
+    repositoryKey: string;
     actionRevision: number;
     dayStart: string;
     dayEnd: string;
@@ -653,13 +684,14 @@ export function reserveGitHubActionEventDispatch(
       AND (
         SELECT COALESCE(SUM(cost_ceiling_usd), 0)
         FROM github_action_events
-        WHERE action_id = @action_id
+        WHERE repository_key = @repository_key
           AND status IN ('dispatching', 'launched', 'failed')
           AND dispatched_at >= @day_start AND dispatched_at < @day_end
       ) + @cost_ceiling_usd <= @daily_cost_ceiling_usd
   `).run({
     event_id: input.eventId,
     action_id: input.actionId,
+    repository_key: input.repositoryKey,
     action_revision: input.actionRevision,
     day_start: input.dayStart,
     day_end: input.dayEnd,
@@ -697,9 +729,15 @@ export function failOrphanedGitHubActionDispatches(
   `).run(parameters).changes;
 }
 
-/** Cost ceilings are reservations, so a new automatic launch cannot overspend the daily cap. */
+/**
+ * What a **repository** has reserved in one UTC day, across every action it has.
+ * Cost ceilings are reservations, so a new automatic launch cannot overspend the
+ * daily cap, and the cap belongs to the repository (see
+ * `reserveGitHubActionEventDispatch`) — which is also why the daily-cost alert is
+ * keyed by repository and not by action.
+ */
 export function reservedGitHubActionCostForUtcDay(
-  actionId: string,
+  repositoryKey: string,
   dayStart: string,
   dayEnd: string,
   database: Database.Database = getDb(),
@@ -708,10 +746,10 @@ export function reservedGitHubActionCostForUtcDay(
   const row = database.prepare(`
     SELECT COALESCE(SUM(cost_ceiling_usd), 0) AS total
     FROM github_action_events
-    WHERE action_id = ?
+    WHERE repository_key = ?
       AND status IN ('dispatching', 'launched', 'failed')
       AND dispatched_at >= ? AND dispatched_at < ?
-  `).get(actionId, dayStart, dayEnd) as { total: number };
+  `).get(repositoryKey, dayStart, dayEnd) as { total: number };
   return Number(row.total) || 0;
 }
 

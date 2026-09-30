@@ -17,6 +17,21 @@ import {
  * scan may have reached its provider — and becomes `failed`, which is never
  * retried blindly.
  */
+/**
+ * Refusals whose cause is **this process**, not the change. Terminating one would
+ * lose the commit for good: the webhook cannot recreate the event (the `UNIQUE`
+ * on the target identity refuses it at the same revision) and the reconciliation
+ * would not either (the SHA is on the action's books). So the row goes back to
+ * `queued` with its reservation released, exactly as a spent daily ceiling does,
+ * and the next process's first reconciliation dispatches it.
+ *
+ * Only server-side transients belong here. `target_preview_executor_unavailable`
+ * does not: that is the repository's own configuration — an Actions caller that
+ * is not installed — and re-arming it every quarter of an hour would buy a
+ * preview call per cycle for a verdict that cannot change on its own.
+ */
+export const TRANSIENT_DISPATCH_CODES = new Set(["server_draining"]);
+
 const PRE_DISPATCH_CODES = new Set([
   "head_superseded",
   "fork_pull_request",
@@ -133,6 +148,7 @@ export async function dispatchGitHubActionEvent(
   const dispatching = reserve({
     eventId: event.id,
     actionId: action.id,
+    repositoryKey: action.repositoryKey,
     actionRevision: action.revision,
     dayStart,
     dayEnd,
@@ -141,8 +157,12 @@ export async function dispatchGitHubActionEvent(
     at: at.toISOString(),
   });
   if (dispatching === null) {
-    // Still queued: the next UTC window may dispatch it without a second event.
-    patch(event.id, { reason: "daily_cost_ceiling" });
+    // `reserve` also answers `null` when another caller won the row — the
+    // webhook's fire-and-forget dispatch and the reconciliation's awaited one can
+    // address the same event — so the reason is only written while the row really
+    // is still waiting for a budget. Stamping it on a live dispatch would report a
+    // ceiling that was never hit (M-2).
+    if (getEvent(event.id)?.status === "queued") patch(event.id, { reason: "daily_cost_ceiling" });
     return;
   }
 
@@ -168,6 +188,10 @@ export async function dispatchGitHubActionEvent(
     });
   } catch (error) {
     const code = dispatchCode(error);
+    if (TRANSIENT_DISPATCH_CODES.has(code)) {
+      patch(dispatching.id, { status: "queued", reason: code, dispatchedAt: null });
+      return;
+    }
     if (PRE_DISPATCH_CODES.has(code)) {
       skip(dispatching.id, code);
       return;
