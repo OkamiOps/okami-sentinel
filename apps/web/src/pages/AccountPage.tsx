@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useLocation } from "react-router-dom";
 import type { UserSessionSummary } from "@csb/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { NotificationsPanel } from "../components/account/NotificationsPanel";
 import { SettingsSectionNav } from "../components/settings/SettingsSectionNav";
 import { AlertBanner, EmptyState, FormFeedback, Loading, PageHeader, Panel, cx } from "../components/ui";
 import { useAuth } from "../auth/AuthProvider";
@@ -32,9 +34,28 @@ function changeFailureKey(failure: unknown): AccessMessageKey {
 export function AccountPage() {
   const { t } = useScopedI18n(accessMessages);
   const { session, status, isAdmin, refresh } = useAuth();
+  const { hash } = useLocation();
   // Changing the password ends every other session server-side, so the table
   // below it has to be re-read or it keeps listing sessions that are gone.
   const [sessionsReload, setSessionsReload] = useState(0);
+
+  // Every repository and operational e-mail ends in a link to
+  // `/settings/account#notifications`. React Router does not scroll to a
+  // fragment on its own, and the panel mounts after its own request resolves,
+  // so the scroll is retried until the element exists.
+  useEffect(() => {
+    if (hash !== "#notifications") return;
+    let frame = 0;
+    let attempts = 0;
+    const seek = () => {
+      const target = document.getElementById("notifications");
+      if (target) return target.scrollIntoView({ block: "start" });
+      if (++attempts > 60) return;
+      frame = window.requestAnimationFrame(seek);
+    };
+    seek();
+    return () => window.cancelAnimationFrame(frame);
+  }, [hash]);
 
   // The shell only gates `loading` and `signed-out`; an unreachable session
   // endpoint still reaches this page with nothing to render. Say so and offer
@@ -54,6 +75,9 @@ export function AccountPage() {
     <div className="grid gap-4 xl:grid-cols-2">
       <ProfilePanel displayName={session.user.displayName} username={session.user.username} isAdmin={isAdmin} editable={!local} onSaved={refresh} />
       {!local && <PasswordPanel username={session.user.username} onChanged={() => setSessionsReload((value) => value + 1)} />}
+      {/* Local mode has no accounts, so `/account/notifications` answers 404
+          there: the panel says so itself instead of reading a 404 as a fault. */}
+      <div className="min-w-0 xl:col-span-2"><NotificationsPanel local={local} /></div>
       {!local && <div className="min-w-0 xl:col-span-2"><SessionsPanel reloadKey={sessionsReload} /></div>}
     </div>
   </>;
