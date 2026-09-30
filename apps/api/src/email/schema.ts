@@ -16,6 +16,11 @@ import type Database from "better-sqlite3";
  * already happened is history, and history must not disappear because the
  * account was later removed. `notification_subscriptions` does cascade, because
  * a preference without its owner means nothing.
+ *
+ * `ops_alert_state` is the memory that keeps the operational alerts quiet: one
+ * row per `(event, target)` with when the condition started, when the last alert
+ * about it went out, and when it ended. Persisted rather than in-memory so a
+ * restart during a three-hour outage does not start the six-hour window over.
  */
 export function ensureEmailSchema(database: Database.Database): void {
   database.exec(`
@@ -61,7 +66,26 @@ export function ensureEmailSchema(database: Database.Database): void {
       enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
       PRIMARY KEY (user_id, scope, event)
     );
+    CREATE TABLE IF NOT EXISTS ops_alert_state (
+      event TEXT NOT NULL,
+      target TEXT NOT NULL,
+      active_since TEXT NOT NULL,
+      last_sent_at TEXT,
+      resolved_at TEXT,
+      PRIMARY KEY (event, target)
+    );
   `);
+  const outboxColumns = new Set(
+    (database.prepare("PRAGMA table_info(email_outbox)").all() as Array<{ name: string }>).map((c) => c.name),
+  );
+  // The subscription scope the message belongs to — a repository key, or `ops`.
+  // The worker re-checks access right before it sends, and the event id alone
+  // cannot tell it *which* repository a `gate.blocked` row was about: the gate
+  // may have been deleted by then, and a body is not something to parse. Null on
+  // account messages, which have no scope to lose.
+  if (!outboxColumns.has("scope")) {
+    database.exec("ALTER TABLE email_outbox ADD COLUMN scope TEXT");
+  }
   const userColumns = new Set(
     (database.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>).map((c) => c.name),
   );

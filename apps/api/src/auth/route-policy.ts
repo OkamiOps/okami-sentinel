@@ -49,6 +49,7 @@ export const ROUTE_POLICY: ReadonlyArray<readonly [method: string, pattern: stri
   ["POST", "/auth/login", PUBLIC], ["GET", "/auth/invites/:token", PUBLIC], ["POST", "/auth/invites/:token", PUBLIC],
   ["POST", "/auth/logout", AUTH], ["GET", "/auth/session", AUTH],
   ["PATCH", "/account/profile", AUTH], ["POST", "/account/password", AUTH], ["GET", "/account/sessions", AUTH],
+  ["GET", "/account/notifications", AUTH], ["PUT", "/account/notifications", AUTH],
   ["DELETE", "/account/sessions/others", AUTH], ["DELETE", "/account/sessions/:id", AUTH],
   ["GET", "/security-session", AUTH], ["GET", "/scanners", AUTH], ["GET", "/health", SCOPED],
   ["GET", "/users", ADMIN], ["POST", "/users", ADMIN], ["PATCH", "/users/:id", ADMIN], ["POST", "/users/:id/reset", ADMIN],

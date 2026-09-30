@@ -31,10 +31,22 @@ test("creates the e-mail tables and the user locale idempotently", () => {
     "id", "event", "dedupe_key", "user_id", "to_address", "locale", "subject",
     "html", "text", "status", "attempts", "next_attempt_at", "last_error",
     "provider_message_id", "created_at", "sent_at",
+    // Added by migration, so a database written before Task 3 keeps working.
+    "scope",
   ]);
   assert.deepEqual(columns(db, "notification_subscriptions"), [
     "user_id", "scope", "event", "enabled",
   ]);
+  assert.deepEqual(columns(db, "ops_alert_state"), [
+    "event", "target", "active_since", "last_sent_at", "resolved_at",
+  ]);
+  // Nullable: an account message has no scope, and a row written before the
+  // column existed has none either — the worker treats both the same way.
+  assert.equal(
+    (db.prepare("PRAGMA table_info(email_outbox)").all() as Array<{ name: string; notnull: number }>)
+      .find((column) => column.name === "scope")?.notnull,
+    0,
+  );
   assert.ok(columns(db, "users").includes("locale"));
   // Nullable, so every account created before the column existed keeps working.
   assert.equal(

@@ -1,6 +1,7 @@
 import type { EmailQueueSkip, UserLocale } from "./email.js";
 
 export * from "./email.js";
+export * from "./notifications.js";
 export * from "./user-agent.js";
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info" | "unknown";
@@ -417,6 +418,22 @@ export type ConnectionStatus =
   | "degraded"
   | "expired"
   | "unavailable";
+
+/**
+ * The statuses the interface already flags with a destructive badge: a route
+ * that was working and is not any more. `draft`, `testing` and
+ * `authentication-required` are stages of setting a connection up, not faults, so
+ * an operational alert about them would fire on every half-finished form.
+ */
+export const CONNECTION_ATTENTION_STATUSES: readonly ConnectionStatus[] = Object.freeze([
+  "degraded",
+  "expired",
+  "unavailable",
+]);
+
+export function connectionNeedsAttention(status: ConnectionStatus): boolean {
+  return CONNECTION_ATTENTION_STATUSES.includes(status);
+}
 
 export interface ConnectionDisplay {
   providerLabel: string;

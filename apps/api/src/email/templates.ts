@@ -1,4 +1,9 @@
-import { type UserLocale } from "@csb/shared";
+import {
+  type ConnectionStatus,
+  type GateOutcome,
+  type SeverityCounts,
+  type UserLocale,
+} from "@csb/shared";
 
 /**
  * Every e-mail the Sentinel sends is rendered here, by one shell, in the five
@@ -29,6 +34,86 @@ export interface RenderedEmail {
  * `email_outbox`, so the outbox row and the template that produced it can never
  * disagree about what the message was.
  */
+/**
+ * What a repository email says about a gate. Counts, money, time and a link —
+ * never a finding title, a file path, a code excerpt or a piece of evidence: the
+ * design forbids it, and an inbox is the one place a reader cannot choose not to
+ * look.
+ */
+export interface GateEmailData {
+  gateId: string;
+  /** The repository's display name, never its filesystem path. */
+  repository: string;
+  branch: string;
+  pullRequest: number | null;
+  outcome: GateOutcome;
+  /** `null` when the gate decided without a scan (an empty change set). */
+  severity: SeverityCounts | null;
+  costUsd: number | null;
+  durationMs: number | null;
+}
+
+/** The same rules, for a scan that reached a terminal status. */
+export interface ScanEmailData {
+  scanId: string;
+  repository: string;
+  /** The revision the scan ran against, when one was recorded. */
+  branch: string | null;
+  status: "completed" | "failed" | "incomplete";
+  severity: SeverityCounts | null;
+  costUsd: number | null;
+  durationMs: number | null;
+}
+
+export interface OpsEngineUnavailableData {
+  /** When the condition started, which is what the six-hour window is measured from. */
+  since: Date;
+  at: Date;
+  /** Engine ids, so the alert names what is down without naming the host. */
+  engines: readonly string[];
+}
+
+export interface OpsConnectionAttentionData {
+  connectionName: string;
+  status: ConnectionStatus;
+  since: Date;
+  at: Date;
+}
+
+export interface OpsDailyCostData {
+  repository: string;
+  /** The UTC day the ceiling belongs to, as `YYYY-MM-DD`. */
+  day: string;
+  /** 80 or 100: which crossing this message is about. */
+  percent: 80 | 100;
+  reservedUsd: number;
+  ceilingUsd: number;
+}
+
+export interface OpsPublishFailedData {
+  gateId: string;
+  repository: string;
+  branch: string;
+  /** The publish error as recorded on the gate row; a code or a provider message. */
+  reason: string;
+  at: Date;
+}
+
+/** The "it is over" twin of a condition alert. */
+export interface OpsResolvedData {
+  since: Date;
+  at: Date;
+}
+
+export interface OpsConnectionResolvedData extends OpsResolvedData {
+  connectionName: string;
+}
+
+export interface OpsPublishResolvedData extends OpsResolvedData {
+  gateId: string;
+  repository: string;
+}
+
 export interface EmailMessageDataMap {
   /** The one message an administrator sends on purpose, from the settings screen. */
   "account.test": { to: string; at: Date };
@@ -37,6 +122,19 @@ export interface EmailMessageDataMap {
   "account.new_login": { at: Date; ip: string | null; browser: string | null };
   "account.locked": { at: Date; retryAfterSeconds: number };
   "account.password_changed": { at: Date };
+  "gate.blocked": GateEmailData;
+  "gate.error": GateEmailData;
+  /** Passed, with or without warnings; the body says which. */
+  "gate.passed": GateEmailData;
+  "scan.failed": ScanEmailData;
+  "scan.completed": ScanEmailData;
+  "ops.engine_unavailable": OpsEngineUnavailableData;
+  "ops.engine_unavailable.resolved": OpsResolvedData;
+  "ops.connection_attention": OpsConnectionAttentionData;
+  "ops.connection_attention.resolved": OpsConnectionResolvedData;
+  "ops.daily_cost": OpsDailyCostData;
+  "ops.github_publish_failed": OpsPublishFailedData;
+  "ops.github_publish_failed.resolved": OpsPublishResolvedData;
 }
 
 export type EmailMessageKind = keyof EmailMessageDataMap;
@@ -558,10 +656,865 @@ const accountPasswordChanged = defineTemplate<"account.password_changed", {
   }),
 });
 
+// --------------------------------------------------------------------------
+// Repository events: the five results a repository can produce.
+// --------------------------------------------------------------------------
+
+/** `USD 0.42`, and four decimals while the number would otherwise round to zero. */
+export function formatUsd(value: number): string {
+  return `USD ${value > 0 && value < 0.01 ? value.toFixed(4) : value.toFixed(2)}`;
+}
+
 /**
- * The registry. Task 3 adds its repository and ops kinds here; the mapped type
- * makes a missing entry — or an entry for a kind that is not in the data map — a
- * compile error.
+ * `18 s`, `4m 07s`, `1h 12m`. No words, so the same string is correct in all five
+ * languages and no translation can disagree with the number next to it.
+ */
+export function formatDurationShort(milliseconds: number): string {
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return "-";
+  if (milliseconds < 1_000) return `${Math.round(milliseconds)} ms`;
+  const seconds = Math.round(milliseconds / 1_000);
+  if (seconds < 60) return `${seconds} s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
+  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
+}
+
+interface RepositoryKindCopy {
+  subject: (repository: string) => string;
+  heading: string;
+  body: string;
+}
+
+interface RepositoryCopy {
+  repository: string;
+  branch: string;
+  pullRequest: string;
+  outcome: string;
+  findings: string;
+  critical: string;
+  high: string;
+  medium: string;
+  low: string;
+  cost: string;
+  duration: string;
+  outcomes: Readonly<Record<GateOutcome, string>>;
+  statuses: Readonly<Record<ScanEmailData["status"], string>>;
+  openGate: string;
+  openScan: string;
+  /** Why this message arrived, and where to turn it off. */
+  reason: string;
+  gateBlocked: RepositoryKindCopy;
+  gateError: RepositoryKindCopy;
+  gatePassed: RepositoryKindCopy;
+  gateWarning: RepositoryKindCopy;
+  scanFailed: RepositoryKindCopy;
+  scanCompleted: RepositoryKindCopy;
+}
+
+const REPOSITORY_COPY: Readonly<Record<UserLocale, RepositoryCopy>> = Object.freeze({
+  "pt-BR": {
+    repository: "Repositório", branch: "Branch", pullRequest: "Pull request", outcome: "Resultado",
+    findings: "Findings", critical: "Críticos", high: "Altos", medium: "Médios", low: "Baixos",
+    cost: "Custo", duration: "Duração",
+    outcomes: {
+      no_changes: "sem mudanças", bootstrap: "linha de base", pass: "aprovado",
+      warning: "aprovado com aviso", blocked: "bloqueado", error: "erro",
+    },
+    statuses: { completed: "concluído", failed: "falhou", incomplete: "incompleto" },
+    openGate: "Abrir o gate", openScan: "Abrir o scan",
+    reason: "Você recebeu esta mensagem porque assina os eventos deste repositório. Ajuste em Minha conta → Notificações.",
+    gateBlocked: {
+      subject: (repository) => `Okami Sentinel: gate bloqueado em ${repository}`,
+      heading: "O gate bloqueou a mudança",
+      body: "A política do repositório bloqueou esta mudança. Abra o gate no Sentinel para ver a decisão e os findings.",
+    },
+    gateError: {
+      subject: (repository) => `Okami Sentinel: erro no gate em ${repository}`,
+      heading: "O gate terminou com erro",
+      body: "O gate não conseguiu concluir a avaliação, por isso ele falha fechado e a mudança fica sem decisão. Abra o gate no Sentinel para ver o motivo.",
+    },
+    gatePassed: {
+      subject: (repository) => `Okami Sentinel: gate aprovado em ${repository}`,
+      heading: "O gate aprovou a mudança",
+      body: "A política do repositório não encontrou motivo para bloquear esta mudança.",
+    },
+    gateWarning: {
+      subject: (repository) => `Okami Sentinel: gate aprovado com aviso em ${repository}`,
+      heading: "O gate aprovou com aviso",
+      body: "A mudança passou, mas a política registrou avisos. Abra o gate no Sentinel para ver quais.",
+    },
+    scanFailed: {
+      subject: (repository) => `Okami Sentinel: scan falhou em ${repository}`,
+      heading: "O scan não terminou",
+      body: "O scan terminou sem um resultado completo. Abra o scan no Sentinel para ver o que aconteceu.",
+    },
+    scanCompleted: {
+      subject: (repository) => `Okami Sentinel: scan concluído em ${repository}`,
+      heading: "O scan terminou",
+      body: "O scan terminou e o resultado já está indexado no Sentinel.",
+    },
+  },
+  en: {
+    repository: "Repository", branch: "Branch", pullRequest: "Pull request", outcome: "Result",
+    findings: "Findings", critical: "Critical", high: "High", medium: "Medium", low: "Low",
+    cost: "Cost", duration: "Duration",
+    outcomes: {
+      no_changes: "no changes", bootstrap: "baseline", pass: "passed",
+      warning: "passed with warnings", blocked: "blocked", error: "error",
+    },
+    statuses: { completed: "completed", failed: "failed", incomplete: "incomplete" },
+    openGate: "Open the gate", openScan: "Open the scan",
+    reason: "You received this message because you subscribe to this repository's events. Change that in My account → Notifications.",
+    gateBlocked: {
+      subject: (repository) => `Okami Sentinel: gate blocked on ${repository}`,
+      heading: "The gate blocked the change",
+      body: "The repository policy blocked this change. Open the gate in the Sentinel to see the decision and the findings.",
+    },
+    gateError: {
+      subject: (repository) => `Okami Sentinel: gate error on ${repository}`,
+      heading: "The gate ended in an error",
+      body: "The gate could not finish its evaluation, so it fails closed and the change has no decision. Open the gate in the Sentinel to see why.",
+    },
+    gatePassed: {
+      subject: (repository) => `Okami Sentinel: gate passed on ${repository}`,
+      heading: "The gate passed the change",
+      body: "The repository policy found no reason to block this change.",
+    },
+    gateWarning: {
+      subject: (repository) => `Okami Sentinel: gate passed with warnings on ${repository}`,
+      heading: "The gate passed with warnings",
+      body: "The change went through, but the policy recorded warnings. Open the gate in the Sentinel to see them.",
+    },
+    scanFailed: {
+      subject: (repository) => `Okami Sentinel: scan failed on ${repository}`,
+      heading: "The scan did not finish",
+      body: "The scan ended without a complete result. Open the scan in the Sentinel to see what happened.",
+    },
+    scanCompleted: {
+      subject: (repository) => `Okami Sentinel: scan completed on ${repository}`,
+      heading: "The scan finished",
+      body: "The scan finished and its result is indexed in the Sentinel.",
+    },
+  },
+  es: {
+    repository: "Repositorio", branch: "Rama", pullRequest: "Pull request", outcome: "Resultado",
+    findings: "Hallazgos", critical: "Críticos", high: "Altos", medium: "Medios", low: "Bajos",
+    cost: "Costo", duration: "Duración",
+    outcomes: {
+      no_changes: "sin cambios", bootstrap: "línea base", pass: "aprobado",
+      warning: "aprobado con avisos", blocked: "bloqueado", error: "error",
+    },
+    statuses: { completed: "completado", failed: "falló", incomplete: "incompleto" },
+    openGate: "Abrir el gate", openScan: "Abrir el scan",
+    reason: "Recibiste este mensaje porque estás suscrito a los eventos de este repositorio. Cámbialo en Mi cuenta → Notificaciones.",
+    gateBlocked: {
+      subject: (repository) => `Okami Sentinel: gate bloqueado en ${repository}`,
+      heading: "El gate bloqueó el cambio",
+      body: "La política del repositorio bloqueó este cambio. Abre el gate en el Sentinel para ver la decisión y los hallazgos.",
+    },
+    gateError: {
+      subject: (repository) => `Okami Sentinel: error del gate en ${repository}`,
+      heading: "El gate terminó con error",
+      body: "El gate no pudo terminar la evaluación, así que falla cerrado y el cambio queda sin decisión. Abre el gate en el Sentinel para ver el motivo.",
+    },
+    gatePassed: {
+      subject: (repository) => `Okami Sentinel: gate aprobado en ${repository}`,
+      heading: "El gate aprobó el cambio",
+      body: "La política del repositorio no encontró motivo para bloquear este cambio.",
+    },
+    gateWarning: {
+      subject: (repository) => `Okami Sentinel: gate aprobado con avisos en ${repository}`,
+      heading: "El gate aprobó con avisos",
+      body: "El cambio pasó, pero la política registró avisos. Abre el gate en el Sentinel para verlos.",
+    },
+    scanFailed: {
+      subject: (repository) => `Okami Sentinel: el scan falló en ${repository}`,
+      heading: "El scan no terminó",
+      body: "El scan terminó sin un resultado completo. Abre el scan en el Sentinel para ver qué pasó.",
+    },
+    scanCompleted: {
+      subject: (repository) => `Okami Sentinel: scan completado en ${repository}`,
+      heading: "El scan terminó",
+      body: "El scan terminó y su resultado ya está indexado en el Sentinel.",
+    },
+  },
+  de: {
+    repository: "Repository", branch: "Branch", pullRequest: "Pull Request", outcome: "Ergebnis",
+    findings: "Findings", critical: "Kritisch", high: "Hoch", medium: "Mittel", low: "Niedrig",
+    cost: "Kosten", duration: "Dauer",
+    outcomes: {
+      no_changes: "keine Änderungen", bootstrap: "Basislinie", pass: "bestanden",
+      warning: "bestanden mit Warnungen", blocked: "blockiert", error: "Fehler",
+    },
+    statuses: { completed: "abgeschlossen", failed: "fehlgeschlagen", incomplete: "unvollständig" },
+    openGate: "Gate öffnen", openScan: "Scan öffnen",
+    reason: "Sie haben diese Nachricht erhalten, weil Sie die Ereignisse dieses Repositorys abonniert haben. Änderbar unter Mein Konto → Benachrichtigungen.",
+    gateBlocked: {
+      subject: (repository) => `Okami Sentinel: Gate hat ${repository} blockiert`,
+      heading: "Das Gate hat die Änderung blockiert",
+      body: "Die Richtlinie des Repositorys hat diese Änderung blockiert. Öffnen Sie das Gate im Sentinel, um Entscheidung und Findings zu sehen.",
+    },
+    gateError: {
+      subject: (repository) => `Okami Sentinel: Gate-Fehler in ${repository}`,
+      heading: "Das Gate endete mit einem Fehler",
+      body: "Das Gate konnte die Auswertung nicht abschließen; es fällt daher geschlossen aus und die Änderung bleibt ohne Entscheidung. Öffnen Sie das Gate im Sentinel, um den Grund zu sehen.",
+    },
+    gatePassed: {
+      subject: (repository) => `Okami Sentinel: Gate in ${repository} bestanden`,
+      heading: "Das Gate hat die Änderung freigegeben",
+      body: "Die Richtlinie des Repositorys fand keinen Grund, diese Änderung zu blockieren.",
+    },
+    gateWarning: {
+      subject: (repository) => `Okami Sentinel: Gate in ${repository} mit Warnungen bestanden`,
+      heading: "Das Gate hat mit Warnungen freigegeben",
+      body: "Die Änderung ging durch, doch die Richtlinie hat Warnungen erfasst. Öffnen Sie das Gate im Sentinel, um sie zu sehen.",
+    },
+    scanFailed: {
+      subject: (repository) => `Okami Sentinel: Scan in ${repository} fehlgeschlagen`,
+      heading: "Der Scan wurde nicht abgeschlossen",
+      body: "Der Scan endete ohne vollständiges Ergebnis. Öffnen Sie den Scan im Sentinel, um zu sehen, was passiert ist.",
+    },
+    scanCompleted: {
+      subject: (repository) => `Okami Sentinel: Scan in ${repository} abgeschlossen`,
+      heading: "Der Scan ist fertig",
+      body: "Der Scan ist abgeschlossen und sein Ergebnis ist im Sentinel indexiert.",
+    },
+  },
+  fr: {
+    repository: "Dépôt", branch: "Branche", pullRequest: "Pull request", outcome: "Résultat",
+    findings: "Findings", critical: "Critiques", high: "Élevés", medium: "Moyens", low: "Faibles",
+    cost: "Coût", duration: "Durée",
+    outcomes: {
+      no_changes: "aucun changement", bootstrap: "référence", pass: "validé",
+      warning: "validé avec avertissements", blocked: "bloqué", error: "erreur",
+    },
+    statuses: { completed: "terminé", failed: "échoué", incomplete: "incomplet" },
+    openGate: "Ouvrir le gate", openScan: "Ouvrir le scan",
+    reason: "Vous recevez ce message parce que vous êtes abonné aux événements de ce dépôt. Modifiable dans Mon compte → Notifications.",
+    gateBlocked: {
+      subject: (repository) => `Okami Sentinel : gate bloqué sur ${repository}`,
+      heading: "Le gate a bloqué le changement",
+      body: "La politique du dépôt a bloqué ce changement. Ouvrez le gate dans le Sentinel pour voir la décision et les findings.",
+    },
+    gateError: {
+      subject: (repository) => `Okami Sentinel : erreur du gate sur ${repository}`,
+      heading: "Le gate s'est terminé en erreur",
+      body: "Le gate n'a pas pu terminer son évaluation ; il échoue donc fermé et le changement reste sans décision. Ouvrez le gate dans le Sentinel pour en voir la raison.",
+    },
+    gatePassed: {
+      subject: (repository) => `Okami Sentinel : gate validé sur ${repository}`,
+      heading: "Le gate a validé le changement",
+      body: "La politique du dépôt n'a trouvé aucune raison de bloquer ce changement.",
+    },
+    gateWarning: {
+      subject: (repository) => `Okami Sentinel : gate validé avec avertissements sur ${repository}`,
+      heading: "Le gate a validé avec des avertissements",
+      body: "Le changement est passé, mais la politique a enregistré des avertissements. Ouvrez le gate dans le Sentinel pour les voir.",
+    },
+    scanFailed: {
+      subject: (repository) => `Okami Sentinel : le scan a échoué sur ${repository}`,
+      heading: "Le scan ne s'est pas terminé",
+      body: "Le scan s'est arrêté sans résultat complet. Ouvrez le scan dans le Sentinel pour voir ce qui s'est passé.",
+    },
+    scanCompleted: {
+      subject: (repository) => `Okami Sentinel : scan terminé sur ${repository}`,
+      heading: "Le scan est terminé",
+      body: "Le scan est terminé et son résultat est indexé dans le Sentinel.",
+    },
+  },
+});
+
+/**
+ * The fact table every repository message shares: what ran, on what, how it
+ * came out, how many findings by severity, what it cost and how long it took.
+ * Severity is omitted entirely when there was no scan, because four zeros read
+ * like a clean result rather than like an absent one.
+ */
+function severityFacts(
+  severity: SeverityCounts | null,
+  copy: RepositoryCopy,
+): Array<{ label: string; value: string }> {
+  if (severity === null) return [];
+  return [
+    { label: copy.findings, value: String(severity.total) },
+    { label: copy.critical, value: String(severity.critical) },
+    { label: copy.high, value: String(severity.high) },
+    { label: copy.medium, value: String(severity.medium) },
+    { label: copy.low, value: String(severity.low) },
+  ];
+}
+
+function costAndDurationFacts(
+  data: { costUsd: number | null; durationMs: number | null },
+  copy: RepositoryCopy,
+): Array<{ label: string; value: string }> {
+  return [
+    ...(data.costUsd === null ? [] : [{ label: copy.cost, value: formatUsd(data.costUsd) }]),
+    ...(data.durationMs === null
+      ? []
+      : [{ label: copy.duration, value: formatDurationShort(data.durationMs) }]),
+  ];
+}
+
+function gateFacts(data: GateEmailData, copy: RepositoryCopy): Array<{ label: string; value: string }> {
+  return [
+    { label: copy.repository, value: data.repository },
+    { label: copy.branch, value: data.branch },
+    ...(data.pullRequest === null
+      ? []
+      : [{ label: copy.pullRequest, value: `#${data.pullRequest}` }]),
+    { label: copy.outcome, value: copy.outcomes[data.outcome] },
+    ...severityFacts(data.severity, copy),
+    ...costAndDurationFacts(data, copy),
+  ];
+}
+
+function gateBody(data: GateEmailData, copy: RepositoryCopy, kind: RepositoryKindCopy): EmailTemplateBody {
+  return {
+    subject: kind.subject(data.repository),
+    heading: kind.heading,
+    paragraphs: [kind.body],
+    facts: gateFacts(data, copy),
+    action: { label: copy.openGate, path: `/guardrails/${data.gateId}` },
+    reason: copy.reason,
+  };
+}
+
+function scanBody(data: ScanEmailData, copy: RepositoryCopy, kind: RepositoryKindCopy): EmailTemplateBody {
+  return {
+    subject: kind.subject(data.repository),
+    heading: kind.heading,
+    paragraphs: [kind.body],
+    facts: [
+      { label: copy.repository, value: data.repository },
+      ...(data.branch === null ? [] : [{ label: copy.branch, value: data.branch }]),
+      { label: copy.outcome, value: copy.statuses[data.status] },
+      ...severityFacts(data.severity, copy),
+      ...costAndDurationFacts(data, copy),
+    ],
+    action: { label: copy.openScan, path: `/scans/${data.scanId}` },
+    reason: copy.reason,
+  };
+}
+
+const gateBlocked = defineTemplate<"gate.blocked", RepositoryCopy>({
+  group: "repository",
+  copy: REPOSITORY_COPY,
+  build: (data, copy) => gateBody(data, copy, copy.gateBlocked),
+});
+
+const gateError = defineTemplate<"gate.error", RepositoryCopy>({
+  group: "repository",
+  copy: REPOSITORY_COPY,
+  build: (data, copy) => gateBody(data, copy, copy.gateError),
+});
+
+/**
+ * One subscription covers "passed" and "passed with warnings" — the design puts
+ * the warning inside `gate.passed` — so the template, not the subscription,
+ * decides which of the two the reader is told about.
+ */
+const gatePassed = defineTemplate<"gate.passed", RepositoryCopy>({
+  group: "repository",
+  copy: REPOSITORY_COPY,
+  build: (data, copy) =>
+    gateBody(data, copy, data.outcome === "warning" ? copy.gateWarning : copy.gatePassed),
+});
+
+const scanFailed = defineTemplate<"scan.failed", RepositoryCopy>({
+  group: "repository",
+  copy: REPOSITORY_COPY,
+  build: (data, copy) => scanBody(data, copy, copy.scanFailed),
+});
+
+const scanCompleted = defineTemplate<"scan.completed", RepositoryCopy>({
+  group: "repository",
+  copy: REPOSITORY_COPY,
+  build: (data, copy) => scanBody(data, copy, copy.scanCompleted),
+});
+
+// --------------------------------------------------------------------------
+// Operational events: administrators only, one alert per condition per six
+// hours, and one message when the condition ends.
+// --------------------------------------------------------------------------
+
+/** Where an administrator goes to act on each alert. */
+const ENGINE_SETTINGS_PATH = "/settings/connections";
+const CONNECTIONS_PATH = "/settings/connections";
+const MONITOR_PATH = "/github";
+
+interface OpsKindCopy {
+  subject: string;
+  heading: string;
+  body: string;
+  action: string;
+}
+
+interface OpsCopy {
+  since: string;
+  at: string;
+  endedAt: string;
+  outageDuration: string;
+  engines: string;
+  connection: string;
+  status: string;
+  statuses: Readonly<Record<ConnectionStatus, string>>;
+  repository: string;
+  branch: string;
+  gate: string;
+  reasonLabel: string;
+  day: string;
+  reserved: string;
+  ceiling: string;
+  share: string;
+  /** Why this message arrived, and where to turn it off. */
+  reason: string;
+  engineUnavailable: OpsKindCopy;
+  engineRecovered: OpsKindCopy;
+  connectionAttention: OpsKindCopy;
+  connectionRecovered: OpsKindCopy;
+  dailyCostWarning: OpsKindCopy;
+  dailyCostReached: OpsKindCopy;
+  publishFailed: OpsKindCopy;
+  publishRecovered: OpsKindCopy;
+}
+
+const OPS_COPY: Readonly<Record<UserLocale, OpsCopy>> = Object.freeze({
+  "pt-BR": {
+    since: "Desde", at: "Verificado em", endedAt: "Normalizado em", outageDuration: "Duração",
+    engines: "Engines", connection: "Conexão", status: "Status",
+    statuses: {
+      draft: "rascunho", "authentication-required": "autenticação necessária", testing: "em teste",
+      ready: "pronta", degraded: "degradada", expired: "expirada", unavailable: "indisponível",
+    },
+    repository: "Repositório", branch: "Branch", gate: "Gate", reasonLabel: "Motivo",
+    day: "Dia (UTC)", reserved: "Reservado", ceiling: "Teto diário", share: "Percentual",
+    reason: "Você recebeu esta mensagem porque é administrador e assina os alertas operacionais. Ajuste em Minha conta → Notificações.",
+    engineUnavailable: {
+      subject: "Okami Sentinel: engine indisponível",
+      heading: "A engine está indisponível",
+      body: "Nenhuma engine de scan está disponível há mais de cinco minutos. Novos scans e gates não vão iniciar até que isso se resolva.",
+      action: "Abrir as conexões",
+    },
+    engineRecovered: {
+      subject: "Okami Sentinel: engine disponível novamente",
+      heading: "A engine voltou",
+      body: "Ao menos uma engine de scan está disponível outra vez. Novos scans e gates podem iniciar.",
+      action: "Abrir as conexões",
+    },
+    connectionAttention: {
+      subject: "Okami Sentinel: conexão precisa de atenção",
+      heading: "Uma conexão precisa de atenção",
+      body: "Esta conexão de provedor deixou de responder como pronta. Os scans que dependem dela vão falhar até que ela seja restabelecida.",
+      action: "Abrir as conexões",
+    },
+    connectionRecovered: {
+      subject: "Okami Sentinel: conexão normalizada",
+      heading: "A conexão voltou a ficar pronta",
+      body: "Esta conexão de provedor está pronta novamente.",
+      action: "Abrir as conexões",
+    },
+    dailyCostWarning: {
+      subject: "Okami Sentinel: 80% do teto diário de custo",
+      heading: "O teto diário chegou a 80%",
+      body: "As reservas automáticas de scan deste repositório já usaram 80% do teto do dia.",
+      action: "Abrir o monitoramento do GitHub",
+    },
+    dailyCostReached: {
+      subject: "Okami Sentinel: teto diário de custo atingido",
+      heading: "O teto diário foi atingido",
+      body: "As reservas automáticas de scan deste repositório atingiram o teto do dia. Novos scans automáticos ficam na fila até o próximo dia UTC.",
+      action: "Abrir o monitoramento do GitHub",
+    },
+    publishFailed: {
+      subject: "Okami Sentinel: falha ao publicar o check no GitHub",
+      heading: "A publicação no GitHub falhou",
+      body: "A decisão do gate está gravada no Sentinel, mas o check não chegou ao GitHub. O pull request não mostra o resultado até que a publicação seja repetida.",
+      action: "Abrir o gate",
+    },
+    publishRecovered: {
+      subject: "Okami Sentinel: check publicado no GitHub",
+      heading: "A publicação no GitHub foi concluída",
+      body: "O check deste gate chegou ao GitHub.",
+      action: "Abrir o gate",
+    },
+  },
+  en: {
+    since: "Since", at: "Checked at", endedAt: "Recovered at", outageDuration: "Duration",
+    engines: "Engines", connection: "Connection", status: "Status",
+    statuses: {
+      draft: "draft", "authentication-required": "authentication required", testing: "testing",
+      ready: "ready", degraded: "degraded", expired: "expired", unavailable: "unavailable",
+    },
+    repository: "Repository", branch: "Branch", gate: "Gate", reasonLabel: "Reason",
+    day: "Day (UTC)", reserved: "Reserved", ceiling: "Daily ceiling", share: "Share",
+    reason: "You received this message because you are an administrator and subscribe to the operational alerts. Change that in My account → Notifications.",
+    engineUnavailable: {
+      subject: "Okami Sentinel: engine unavailable",
+      heading: "The engine is unavailable",
+      body: "No scan engine has been available for more than five minutes. New scans and gates will not start until this is resolved.",
+      action: "Open the connections",
+    },
+    engineRecovered: {
+      subject: "Okami Sentinel: engine available again",
+      heading: "The engine is back",
+      body: "At least one scan engine is available again. New scans and gates can start.",
+      action: "Open the connections",
+    },
+    connectionAttention: {
+      subject: "Okami Sentinel: a connection needs attention",
+      heading: "A connection needs attention",
+      body: "This provider connection stopped answering as ready. Scans that depend on it will fail until it is restored.",
+      action: "Open the connections",
+    },
+    connectionRecovered: {
+      subject: "Okami Sentinel: connection restored",
+      heading: "The connection is ready again",
+      body: "This provider connection is ready again.",
+      action: "Open the connections",
+    },
+    dailyCostWarning: {
+      subject: "Okami Sentinel: 80% of the daily cost ceiling",
+      heading: "The daily ceiling reached 80%",
+      body: "This repository's automatic scan reservations have used 80% of today's ceiling.",
+      action: "Open the GitHub monitor",
+    },
+    dailyCostReached: {
+      subject: "Okami Sentinel: daily cost ceiling reached",
+      heading: "The daily ceiling has been reached",
+      body: "This repository's automatic scan reservations reached today's ceiling. New automatic scans stay queued until the next UTC day.",
+      action: "Open the GitHub monitor",
+    },
+    publishFailed: {
+      subject: "Okami Sentinel: could not publish the GitHub check",
+      heading: "Publishing to GitHub failed",
+      body: "The gate decision is stored in the Sentinel, but the check never reached GitHub. The pull request shows no result until publishing is retried.",
+      action: "Open the gate",
+    },
+    publishRecovered: {
+      subject: "Okami Sentinel: GitHub check published",
+      heading: "Publishing to GitHub succeeded",
+      body: "This gate's check reached GitHub.",
+      action: "Open the gate",
+    },
+  },
+  es: {
+    since: "Desde", at: "Verificado el", endedAt: "Normalizado el", outageDuration: "Duración",
+    engines: "Engines", connection: "Conexión", status: "Estado",
+    statuses: {
+      draft: "borrador", "authentication-required": "requiere autenticación", testing: "en prueba",
+      ready: "lista", degraded: "degradada", expired: "expirada", unavailable: "no disponible",
+    },
+    repository: "Repositorio", branch: "Rama", gate: "Gate", reasonLabel: "Motivo",
+    day: "Día (UTC)", reserved: "Reservado", ceiling: "Techo diario", share: "Porcentaje",
+    reason: "Recibiste este mensaje porque eres administrador y estás suscrito a las alertas operativas. Cámbialo en Mi cuenta → Notificaciones.",
+    engineUnavailable: {
+      subject: "Okami Sentinel: engine no disponible",
+      heading: "La engine no está disponible",
+      body: "Ninguna engine de scan está disponible desde hace más de cinco minutos. Los nuevos scans y gates no van a iniciar hasta que se resuelva.",
+      action: "Abrir las conexiones",
+    },
+    engineRecovered: {
+      subject: "Okami Sentinel: engine disponible otra vez",
+      heading: "La engine volvió",
+      body: "Al menos una engine de scan está disponible otra vez. Los nuevos scans y gates pueden iniciar.",
+      action: "Abrir las conexiones",
+    },
+    connectionAttention: {
+      subject: "Okami Sentinel: una conexión necesita atención",
+      heading: "Una conexión necesita atención",
+      body: "Esta conexión de proveedor dejó de responder como lista. Los scans que dependen de ella van a fallar hasta que se restablezca.",
+      action: "Abrir las conexiones",
+    },
+    connectionRecovered: {
+      subject: "Okami Sentinel: conexión restablecida",
+      heading: "La conexión volvió a estar lista",
+      body: "Esta conexión de proveedor está lista otra vez.",
+      action: "Abrir las conexiones",
+    },
+    dailyCostWarning: {
+      subject: "Okami Sentinel: 80% del techo diario de costo",
+      heading: "El techo diario llegó al 80%",
+      body: "Las reservas automáticas de scan de este repositorio ya usaron el 80% del techo del día.",
+      action: "Abrir el monitoreo de GitHub",
+    },
+    dailyCostReached: {
+      subject: "Okami Sentinel: techo diario de costo alcanzado",
+      heading: "Se alcanzó el techo diario",
+      body: "Las reservas automáticas de scan de este repositorio alcanzaron el techo del día. Los nuevos scans automáticos quedan en la cola hasta el próximo día UTC.",
+      action: "Abrir el monitoreo de GitHub",
+    },
+    publishFailed: {
+      subject: "Okami Sentinel: no se pudo publicar el check en GitHub",
+      heading: "La publicación en GitHub falló",
+      body: "La decisión del gate está guardada en el Sentinel, pero el check no llegó a GitHub. El pull request no muestra el resultado hasta que se reintente la publicación.",
+      action: "Abrir el gate",
+    },
+    publishRecovered: {
+      subject: "Okami Sentinel: check publicado en GitHub",
+      heading: "La publicación en GitHub se completó",
+      body: "El check de este gate llegó a GitHub.",
+      action: "Abrir el gate",
+    },
+  },
+  de: {
+    since: "Seit", at: "Geprüft am", endedAt: "Behoben am", outageDuration: "Dauer",
+    engines: "Engines", connection: "Verbindung", status: "Status",
+    statuses: {
+      draft: "Entwurf", "authentication-required": "Anmeldung erforderlich", testing: "im Test",
+      ready: "bereit", degraded: "eingeschränkt", expired: "abgelaufen", unavailable: "nicht verfügbar",
+    },
+    repository: "Repository", branch: "Branch", gate: "Gate", reasonLabel: "Grund",
+    day: "Tag (UTC)", reserved: "Reserviert", ceiling: "Tagesobergrenze", share: "Anteil",
+    reason: "Sie haben diese Nachricht erhalten, weil Sie Administrator sind und die betrieblichen Warnungen abonniert haben. Änderbar unter Mein Konto → Benachrichtigungen.",
+    engineUnavailable: {
+      subject: "Okami Sentinel: Engine nicht verfügbar",
+      heading: "Die Engine ist nicht verfügbar",
+      body: "Seit mehr als fünf Minuten ist keine Scan-Engine verfügbar. Neue Scans und Gates starten nicht, bis das behoben ist.",
+      action: "Verbindungen öffnen",
+    },
+    engineRecovered: {
+      subject: "Okami Sentinel: Engine wieder verfügbar",
+      heading: "Die Engine ist zurück",
+      body: "Mindestens eine Scan-Engine ist wieder verfügbar. Neue Scans und Gates können starten.",
+      action: "Verbindungen öffnen",
+    },
+    connectionAttention: {
+      subject: "Okami Sentinel: eine Verbindung braucht Aufmerksamkeit",
+      heading: "Eine Verbindung braucht Aufmerksamkeit",
+      body: "Diese Anbieterverbindung meldet sich nicht mehr als bereit. Scans, die von ihr abhängen, schlagen fehl, bis sie wiederhergestellt ist.",
+      action: "Verbindungen öffnen",
+    },
+    connectionRecovered: {
+      subject: "Okami Sentinel: Verbindung wiederhergestellt",
+      heading: "Die Verbindung ist wieder bereit",
+      body: "Diese Anbieterverbindung ist wieder bereit.",
+      action: "Verbindungen öffnen",
+    },
+    dailyCostWarning: {
+      subject: "Okami Sentinel: 80 % der Tagesobergrenze",
+      heading: "Die Tagesobergrenze hat 80 % erreicht",
+      body: "Die automatischen Scan-Reservierungen dieses Repositorys haben 80 % der heutigen Obergrenze verbraucht.",
+      action: "GitHub-Überwachung öffnen",
+    },
+    dailyCostReached: {
+      subject: "Okami Sentinel: Tagesobergrenze erreicht",
+      heading: "Die Tagesobergrenze ist erreicht",
+      body: "Die automatischen Scan-Reservierungen dieses Repositorys haben die heutige Obergrenze erreicht. Neue automatische Scans bleiben bis zum nächsten UTC-Tag in der Warteschlange.",
+      action: "GitHub-Überwachung öffnen",
+    },
+    publishFailed: {
+      subject: "Okami Sentinel: GitHub-Check konnte nicht veröffentlicht werden",
+      heading: "Die Veröffentlichung auf GitHub ist fehlgeschlagen",
+      body: "Die Gate-Entscheidung ist im Sentinel gespeichert, der Check hat GitHub aber nicht erreicht. Der Pull Request zeigt kein Ergebnis, bis die Veröffentlichung wiederholt wird.",
+      action: "Gate öffnen",
+    },
+    publishRecovered: {
+      subject: "Okami Sentinel: GitHub-Check veröffentlicht",
+      heading: "Die Veröffentlichung auf GitHub war erfolgreich",
+      body: "Der Check dieses Gates hat GitHub erreicht.",
+      action: "Gate öffnen",
+    },
+  },
+  fr: {
+    since: "Depuis", at: "Vérifié le", endedAt: "Rétabli le", outageDuration: "Durée",
+    engines: "Engines", connection: "Connexion", status: "État",
+    statuses: {
+      draft: "brouillon", "authentication-required": "authentification requise", testing: "en test",
+      ready: "prête", degraded: "dégradée", expired: "expirée", unavailable: "indisponible",
+    },
+    repository: "Dépôt", branch: "Branche", gate: "Gate", reasonLabel: "Raison",
+    day: "Jour (UTC)", reserved: "Réservé", ceiling: "Plafond journalier", share: "Part",
+    reason: "Vous recevez ce message parce que vous êtes administrateur et abonné aux alertes opérationnelles. Modifiable dans Mon compte → Notifications.",
+    engineUnavailable: {
+      subject: "Okami Sentinel : engine indisponible",
+      heading: "L'engine est indisponible",
+      body: "Aucune engine de scan n'est disponible depuis plus de cinq minutes. Les nouveaux scans et gates ne démarreront pas tant que ce n'est pas résolu.",
+      action: "Ouvrir les connexions",
+    },
+    engineRecovered: {
+      subject: "Okami Sentinel : engine de nouveau disponible",
+      heading: "L'engine est revenue",
+      body: "Au moins une engine de scan est de nouveau disponible. Les nouveaux scans et gates peuvent démarrer.",
+      action: "Ouvrir les connexions",
+    },
+    connectionAttention: {
+      subject: "Okami Sentinel : une connexion demande votre attention",
+      heading: "Une connexion demande votre attention",
+      body: "Cette connexion de fournisseur ne répond plus comme prête. Les scans qui en dépendent échoueront tant qu'elle n'est pas rétablie.",
+      action: "Ouvrir les connexions",
+    },
+    connectionRecovered: {
+      subject: "Okami Sentinel : connexion rétablie",
+      heading: "La connexion est de nouveau prête",
+      body: "Cette connexion de fournisseur est de nouveau prête.",
+      action: "Ouvrir les connexions",
+    },
+    dailyCostWarning: {
+      subject: "Okami Sentinel : 80 % du plafond de coût journalier",
+      heading: "Le plafond journalier atteint 80 %",
+      body: "Les réservations automatiques de scan de ce dépôt ont consommé 80 % du plafond du jour.",
+      action: "Ouvrir la surveillance GitHub",
+    },
+    dailyCostReached: {
+      subject: "Okami Sentinel : plafond de coût journalier atteint",
+      heading: "Le plafond journalier est atteint",
+      body: "Les réservations automatiques de scan de ce dépôt ont atteint le plafond du jour. Les nouveaux scans automatiques restent en file jusqu'au prochain jour UTC.",
+      action: "Ouvrir la surveillance GitHub",
+    },
+    publishFailed: {
+      subject: "Okami Sentinel : échec de publication du check GitHub",
+      heading: "La publication sur GitHub a échoué",
+      body: "La décision du gate est enregistrée dans le Sentinel, mais le check n'est pas arrivé sur GitHub. La pull request n'affiche aucun résultat tant que la publication n'est pas relancée.",
+      action: "Ouvrir le gate",
+    },
+    publishRecovered: {
+      subject: "Okami Sentinel : check GitHub publié",
+      heading: "La publication sur GitHub a réussi",
+      body: "Le check de ce gate est arrivé sur GitHub.",
+      action: "Ouvrir le gate",
+    },
+  },
+});
+
+/** How long the condition lasted, from the two stamps the alert state keeps. */
+function outageFacts(data: OpsResolvedData, copy: OpsCopy): Array<{ label: string; value: string }> {
+  return [
+    { label: copy.since, value: formatMoment(data.since) },
+    { label: copy.endedAt, value: formatMoment(data.at) },
+    {
+      label: copy.outageDuration,
+      value: formatDurationShort(Math.max(0, data.at.getTime() - data.since.getTime())),
+    },
+  ];
+}
+
+const opsEngineUnavailable = defineTemplate<"ops.engine_unavailable", OpsCopy>({
+  group: "ops",
+  copy: OPS_COPY,
+  build: (data, copy) => ({
+    subject: copy.engineUnavailable.subject,
+    heading: copy.engineUnavailable.heading,
+    paragraphs: [copy.engineUnavailable.body],
+    facts: [
+      { label: copy.since, value: formatMoment(data.since) },
+      { label: copy.at, value: formatMoment(data.at) },
+      ...(data.engines.length === 0 ? [] : [{ label: copy.engines, value: data.engines.join(", ") }]),
+    ],
+    action: { label: copy.engineUnavailable.action, path: ENGINE_SETTINGS_PATH },
+    reason: copy.reason,
+  }),
+});
+
+const opsEngineRecovered = defineTemplate<"ops.engine_unavailable.resolved", OpsCopy>({
+  group: "ops",
+  copy: OPS_COPY,
+  build: (data, copy) => ({
+    subject: copy.engineRecovered.subject,
+    heading: copy.engineRecovered.heading,
+    paragraphs: [copy.engineRecovered.body],
+    facts: outageFacts(data, copy),
+    action: { label: copy.engineRecovered.action, path: ENGINE_SETTINGS_PATH },
+    reason: copy.reason,
+  }),
+});
+
+const opsConnectionAttention = defineTemplate<"ops.connection_attention", OpsCopy>({
+  group: "ops",
+  copy: OPS_COPY,
+  build: (data, copy) => ({
+    subject: copy.connectionAttention.subject,
+    heading: copy.connectionAttention.heading,
+    paragraphs: [copy.connectionAttention.body],
+    facts: [
+      { label: copy.connection, value: data.connectionName },
+      { label: copy.status, value: copy.statuses[data.status] },
+      { label: copy.since, value: formatMoment(data.since) },
+      { label: copy.at, value: formatMoment(data.at) },
+    ],
+    action: { label: copy.connectionAttention.action, path: CONNECTIONS_PATH },
+    reason: copy.reason,
+  }),
+});
+
+const opsConnectionRecovered = defineTemplate<"ops.connection_attention.resolved", OpsCopy>({
+  group: "ops",
+  copy: OPS_COPY,
+  build: (data, copy) => ({
+    subject: copy.connectionRecovered.subject,
+    heading: copy.connectionRecovered.heading,
+    paragraphs: [copy.connectionRecovered.body],
+    facts: [
+      { label: copy.connection, value: data.connectionName },
+      ...outageFacts(data, copy),
+    ],
+    action: { label: copy.connectionRecovered.action, path: CONNECTIONS_PATH },
+    reason: copy.reason,
+  }),
+});
+
+const opsDailyCost = defineTemplate<"ops.daily_cost", OpsCopy>({
+  group: "ops",
+  copy: OPS_COPY,
+  build: (data, copy) => {
+    const kind = data.percent >= 100 ? copy.dailyCostReached : copy.dailyCostWarning;
+    return {
+      subject: kind.subject,
+      heading: kind.heading,
+      paragraphs: [kind.body],
+      facts: [
+        { label: copy.repository, value: data.repository },
+        { label: copy.day, value: data.day },
+        { label: copy.reserved, value: formatUsd(data.reservedUsd) },
+        { label: copy.ceiling, value: formatUsd(data.ceilingUsd) },
+        { label: copy.share, value: `${data.percent}%` },
+      ],
+      action: { label: kind.action, path: MONITOR_PATH },
+      reason: copy.reason,
+    };
+  },
+});
+
+const opsPublishFailed = defineTemplate<"ops.github_publish_failed", OpsCopy>({
+  group: "ops",
+  copy: OPS_COPY,
+  build: (data, copy) => ({
+    subject: copy.publishFailed.subject,
+    heading: copy.publishFailed.heading,
+    paragraphs: [copy.publishFailed.body],
+    facts: [
+      { label: copy.repository, value: data.repository },
+      { label: copy.branch, value: data.branch },
+      { label: copy.gate, value: data.gateId },
+      { label: copy.reasonLabel, value: data.reason },
+      { label: copy.at, value: formatMoment(data.at) },
+    ],
+    action: { label: copy.publishFailed.action, path: `/guardrails/${data.gateId}` },
+    reason: copy.reason,
+  }),
+});
+
+const opsPublishRecovered = defineTemplate<"ops.github_publish_failed.resolved", OpsCopy>({
+  group: "ops",
+  copy: OPS_COPY,
+  build: (data, copy) => ({
+    subject: copy.publishRecovered.subject,
+    heading: copy.publishRecovered.heading,
+    paragraphs: [copy.publishRecovered.body],
+    facts: [
+      { label: copy.repository, value: data.repository },
+      { label: copy.gate, value: data.gateId },
+      ...outageFacts(data, copy),
+    ],
+    action: { label: copy.publishRecovered.action, path: `/guardrails/${data.gateId}` },
+    reason: copy.reason,
+  }),
+});
+
+/**
+ * The registry. The mapped type makes a missing entry — or an entry for a kind
+ * that is not in the data map — a compile error, so a new kind cannot reach the
+ * outbox without a body in all five languages.
  */
 const TEMPLATES: { [K in EmailMessageKind]: TemplateDefinition<K> } = {
   "account.test": accountTest,
@@ -570,6 +1523,18 @@ const TEMPLATES: { [K in EmailMessageKind]: TemplateDefinition<K> } = {
   "account.new_login": accountNewLogin,
   "account.locked": accountLocked,
   "account.password_changed": accountPasswordChanged,
+  "gate.blocked": gateBlocked,
+  "gate.error": gateError,
+  "gate.passed": gatePassed,
+  "scan.failed": scanFailed,
+  "scan.completed": scanCompleted,
+  "ops.engine_unavailable": opsEngineUnavailable,
+  "ops.engine_unavailable.resolved": opsEngineRecovered,
+  "ops.connection_attention": opsConnectionAttention,
+  "ops.connection_attention.resolved": opsConnectionRecovered,
+  "ops.daily_cost": opsDailyCost,
+  "ops.github_publish_failed": opsPublishFailed,
+  "ops.github_publish_failed.resolved": opsPublishRecovered,
 };
 
 export const EMAIL_MESSAGE_KINDS = Object.keys(TEMPLATES) as EmailMessageKind[];

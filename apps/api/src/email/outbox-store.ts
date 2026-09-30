@@ -10,6 +10,12 @@ export interface EmailOutboxInsert {
   event: string;
   /** `gate.<gateId>.<event>`, `scan.<scanId>.<event>` or `account.<userId>.<event>.<ref>`. */
   dedupeKey: string;
+  /**
+   * The subscription scope this message belongs to: a repository key, or `ops`.
+   * `null` for account messages, which nobody can lose access to. The worker
+   * re-reads it to confirm the recipient still qualifies.
+   */
+  scope?: string | null;
   userId: string | null;
   toAddress: string;
   locale: UserLocale;
@@ -44,12 +50,12 @@ export function insertOutboxRow(
   const id = `out_${nanoid(16)}`;
   const result = database.prepare(`
     INSERT INTO email_outbox (
-      id, event, dedupe_key, user_id, to_address, locale, subject, html, text,
+      id, event, dedupe_key, scope, user_id, to_address, locale, subject, html, text,
       status, attempts, next_attempt_at, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(dedupe_key) DO NOTHING
   `).run(
-    id, input.event, input.dedupeKey, input.userId, input.toAddress, input.locale,
+    id, input.event, input.dedupeKey, input.scope ?? null, input.userId, input.toAddress, input.locale,
     input.subject, input.html, input.text, input.status ?? "queued", input.attempts ?? 0,
     input.nextAttemptAt ?? now.toISOString(), now.toISOString(),
   );
@@ -154,6 +160,8 @@ export function listEmailDeliveries(
 export interface EmailOutboxClaim {
   id: string;
   event: string;
+  /** The repository key or `ops` the message belongs to; `null` for account mail. */
+  scope: string | null;
   userId: string | null;
   toAddress: string;
   locale: string;
@@ -214,7 +222,7 @@ export function claimDueEmails(
 ): EmailOutboxClaim[] {
   return database.transaction((): EmailOutboxClaim[] => {
     const rows = database.prepare(`
-      SELECT id, event, user_id, to_address, locale, subject, html, text, attempts
+      SELECT id, event, scope, user_id, to_address, locale, subject, html, text, attempts
         FROM email_outbox
        WHERE status = 'queued'
          AND event <> 'account.test'
@@ -222,17 +230,17 @@ export function claimDueEmails(
        ORDER BY next_attempt_at IS NULL DESC, next_attempt_at, created_at, id
        LIMIT ?
     `).all(now.toISOString(), Math.max(0, limit)) as Array<{
-      id: string; event: string; user_id: string | null; to_address: string; locale: string;
-      subject: string; html: string; text: string; attempts: number;
+      id: string; event: string; scope: string | null; user_id: string | null; to_address: string;
+      locale: string; subject: string; html: string; text: string; attempts: number;
     }>;
     if (rows.length === 0) return [];
     const claim = database.prepare("UPDATE email_outbox SET status = 'sending' WHERE id = ? AND status = 'queued'");
     return rows
       .filter((row) => claim.run(row.id).changes === 1)
       .map((row) => ({
-        id: row.id, event: row.event, userId: row.user_id, toAddress: row.to_address,
-        locale: row.locale, subject: row.subject, html: row.html, text: row.text,
-        attempts: row.attempts,
+        id: row.id, event: row.event, scope: row.scope, userId: row.user_id,
+        toAddress: row.to_address, locale: row.locale, subject: row.subject,
+        html: row.html, text: row.text, attempts: row.attempts,
       }));
   }).immediate();
 }
