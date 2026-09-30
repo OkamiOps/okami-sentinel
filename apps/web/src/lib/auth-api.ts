@@ -5,11 +5,13 @@ import type {
   RepositoryAccessEntry,
   RepositoryGrant,
   RepositoryRole,
+  UserLocale,
   UserSessionSummary,
   UserSummary,
 } from "@csb/shared";
+import { authedRequest, authedVoidRequest, jsonHeaders } from "./api-request.js";
 import { ApiError, parseApiResponse } from "./http.js";
-import { API_BASE, apiFetch } from "./security-session.js";
+import { API_BASE } from "./security-session.js";
 
 export interface InvitePreview {
   username: string;
@@ -18,8 +20,6 @@ export interface InvitePreview {
   invitedBy: string | null;
   expiresAt: string;
 }
-
-const jsonHeaders = { "Content-Type": "application/json", Accept: "application/json" };
 
 /**
  * `parseApiResponse` collapses an error body into a translated message, which
@@ -97,23 +97,6 @@ async function publicRequest<T>(path: string, init?: RequestInit): Promise<T> {
   return parseApiResponse<T>(response);
 }
 
-async function authedRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await apiFetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: { ...jsonHeaders, ...(init?.headers ?? {}) },
-  });
-  return parseApiResponse<T>(response);
-}
-
-async function authedVoidRequest(path: string, init?: RequestInit): Promise<void> {
-  const response = await apiFetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: { ...jsonHeaders, ...(init?.headers ?? {}) },
-  });
-  if (response.status === 204) return;
-  await parseApiResponse<unknown>(response);
-}
-
 export const authApi = {
   session(): Promise<AuthSessionResponse> {
     return authedRequest<AuthSessionResponse>("/auth/session");
@@ -139,6 +122,18 @@ export const authApi = {
     return authedRequest<AuthSessionUser>("/account/profile", {
       method: "PATCH",
       body: JSON.stringify({ displayName }),
+    });
+  },
+
+  /**
+   * The language the interface is in is also the language this account's
+   * e-mails are written in, so switching it has to reach the server. A
+   * locale-only body is a valid patch: it never touches the display name.
+   */
+  updateLocale(locale: UserLocale): Promise<AuthSessionUser> {
+    return authedRequest<AuthSessionUser>("/account/profile", {
+      method: "PATCH",
+      body: JSON.stringify({ locale }),
     });
   },
 
