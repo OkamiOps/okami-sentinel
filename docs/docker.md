@@ -151,6 +151,18 @@ curl --fail http://127.0.0.1:8787/readyz
 
 O template começa com `CSB_MAX_CONCURRENT_SCANS=1`. Aumente somente depois de medir CPU, RSS, disco temporário e tempo de scans representativos na máquina que hospedará o serviço.
 
+## E-mail
+
+O e-mail vem desligado e a imagem não traz variável nova para ele: o `nodemailer` já está na imagem de produção, nenhuma porta, volume ou capacidade é acrescentada, e o worker que envia roda dentro do processo da API. Com o interruptor desligado nada é enfileirado, então um deploy que nunca configurar e-mail não acumula fila.
+
+Para ligar, depois de entrar na interface como administrador:
+
+1. Verifique o domínio do remetente no provedor — SPF e DKIM (e de preferência DMARC) publicados no DNS. Sem isso o provedor recusa o remetente e o Sentinel registra `sender_not_verified` no histórico de entregas, sem outra pista.
+2. Preencha **Configurações → E-mail** (provedor, preset, remetente, interruptor). O segredo vai para o vault do servidor, que depende de `CSB_VAULT_KEY_FILE` — já obrigatório na inicialização em modo servidor.
+3. Use **"Enviar e-mail de teste"**, que mostra o erro real do provedor, e confira o histórico das últimas 200 entregas.
+
+Os links das mensagens usam `CSB_PUBLIC_ORIGIN`; sem ele o e-mail sai sem link em vez de sair com um link quebrado. O guia de produção tem o procedimento completo: [docs/dokploy.md](dokploy.md).
+
 ## Limites desta entrega
 
 - Uma única réplica usa um único volume SQLite. Não compartilhe o volume entre containers, hosts ou NFS.
