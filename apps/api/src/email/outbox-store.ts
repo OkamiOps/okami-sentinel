@@ -56,6 +56,30 @@ export function insertOutboxRow(
   return result.changes === 1 ? id : null;
 }
 
+/**
+ * The kinds whose rendered body contains a live single-use credential: the invite
+ * and reset links. `user_invites` keeps only the hash of those tokens, so an
+ * outbox row that keeps the cleartext one would be the weakest copy of it in the
+ * database — and it would outlive the delivery by up to ninety days.
+ */
+export const LINK_BEARING_EMAIL_EVENTS: readonly string[] = Object.freeze(["account.invite", "account.reset"]);
+
+const LINK_BEARING_LIST = LINK_BEARING_EMAIL_EVENTS.map((event) => `'${event}'`).join(", ");
+
+/**
+ * Empties the bodies of a row that will never be sent again, when those bodies
+ * carry a token. Everything the history shows — recipient, kind, status, attempts,
+ * error, times — is untouched; only the two columns nothing renders are cleared.
+ * A message that may still be retried keeps its body, because that body is what
+ * the retry sends.
+ */
+function dropLinkBody(id: string, database: Database.Database): void {
+  database.prepare(`
+    UPDATE email_outbox SET html = '', text = ''
+     WHERE id = ? AND event IN (${LINK_BEARING_LIST})
+  `).run(id);
+}
+
 export function markEmailSent(
   id: string,
   providerMessageId: string | null,
@@ -67,6 +91,7 @@ export function markEmailSent(
        SET status = 'sent', provider_message_id = ?, sent_at = ?, next_attempt_at = NULL, last_error = NULL
      WHERE id = ?
   `).run(providerMessageId, now.toISOString(), id);
+  dropLinkBody(id, database);
 }
 
 /**
@@ -85,6 +110,7 @@ export function markEmailFailed(
        SET status = ?, attempts = attempts + 1, last_error = ?, next_attempt_at = ?
      WHERE id = ?
   `).run(nextAttemptAt === null ? "failed" : "queued", error, nextAttemptAt, id);
+  if (nextAttemptAt === null) dropLinkBody(id, database);
 }
 
 /**
@@ -140,21 +166,37 @@ export interface EmailOutboxClaim {
 
 /**
  * `sending` means "a worker has this row right now". After a crash or a SIGKILL
- * nobody has it, so at startup every such row goes back to the queue — losing a
- * notification because the process restarted is exactly what the outbox exists
- * to prevent. A duplicate send is possible if the process died between the
- * provider accepting the message and the row being marked `sent`; the provider
- * idempotency key makes that harmless where the provider honours it.
+ * nobody has it, so these are the rows a starting worker has to decide about —
+ * losing a notification because the process restarted is exactly what the outbox
+ * exists to prevent. The decision itself is the worker's, because it is the one
+ * that owns the retry policy.
  */
-export function requeueSendingEmails(
-  now: Date = new Date(),
+export function listInterruptedEmails(
+  database: Database.Database = getDb(),
+): Array<{ id: string; event: string; attempts: number }> {
+  return database.prepare(
+    "SELECT id, event, attempts FROM email_outbox WHERE status = 'sending' ORDER BY created_at, id",
+  ).all() as Array<{ id: string; event: string; attempts: number }>;
+}
+
+/**
+ * Cancels the link-bearing messages whose link has expired, and empties their
+ * bodies. A provider that was off for three days leaves invites in the queue that
+ * would arrive with a dead token: an administrator reissuing the invite is the
+ * only thing that can help, and the history says which ones need it.
+ */
+export function expireLinkBearingEmails(
+  createdBefore: Date,
+  reason: string,
   database: Database.Database = getDb(),
 ): number {
   return database.prepare(`
     UPDATE email_outbox
-       SET status = 'queued', next_attempt_at = COALESCE(next_attempt_at, ?)
-     WHERE status = 'sending'
-  `).run(now.toISOString()).changes;
+       SET status = 'cancelled', next_attempt_at = NULL, last_error = ?, html = '', text = ''
+     WHERE event IN (${LINK_BEARING_LIST})
+       AND status IN ('queued', 'sending')
+       AND created_at < ?
+  `).run(reason, createdBefore.toISOString()).changes;
 }
 
 /**
@@ -210,6 +252,7 @@ export function markEmailCancelled(
        SET status = 'cancelled', next_attempt_at = NULL, last_error = ?
      WHERE id = ?
   `).run(reason, id);
+  dropLinkBody(id, database);
 }
 
 /**

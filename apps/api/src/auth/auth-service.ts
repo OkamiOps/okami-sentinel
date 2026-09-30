@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { getDb } from "../db.js";
-import { isUnfamiliarLogin, loginBrowser, notifyAccountEvent } from "../email/account-notifications.js";
+import { isUnfamiliarLogin, notifyAccountEvent, notifyNewLogin } from "../email/account-notifications.js";
 import { listUserGrants } from "./grant-store.js";
 import { consumeInvite, peekInvite } from "./invite-store.js";
 import { hashPassword, passwordPolicyError, verifyPassword } from "./passwords.js";
@@ -64,6 +64,7 @@ export async function login(
           kind: "account.locked",
           data: { at: now, retryAfterSeconds: Math.ceil(lock / 1000) },
           reference: lockedUntil!,
+          now,
         });
       }
     }
@@ -73,13 +74,9 @@ export async function login(
   const unfamiliar = isUnfamiliarLogin(database, user.id, { ip: input.ip, userAgent: input.userAgent, now });
   updateUser(user.id, { failedAttempts: 0, lockedUntil: null, lastLoginAt: now.toISOString() }, database);
   const { token, session } = createSession({ userId: user.id, ip: input.ip, userAgent: input.userAgent, now }, database);
-  if (unfamiliar) {
-    notifyAccountEvent(database, user, {
-      kind: "account.new_login",
-      data: { at: now, ip: input.ip, browser: loginBrowser(input.userAgent) },
-      reference: now.toISOString(),
-    });
-  }
+  // `notifyNewLogin` owns the noise control: one alert per account per hour, and
+  // one per device per day.
+  if (unfamiliar) notifyNewLogin(database, user, { ip: input.ip, userAgent: input.userAgent, now });
   return { ok: true, token, session, user: getUser(user.id, database)! };
 }
 
@@ -122,7 +119,7 @@ export async function acceptInvite(
   // Accepting an invite or a reset *is* a password change, and it is the one the
   // account's owner most needs to hear about if it was not them who did it.
   notifyAccountEvent(database, user, {
-    kind: "account.password_changed", data: { at: now }, reference: now.toISOString(),
+    kind: "account.password_changed", data: { at: now }, reference: now.toISOString(), now,
   });
   return { ok: true, token, session };
 }
@@ -141,7 +138,7 @@ export async function changePassword(
   updateUser(user.id, { passwordHash: await hashPassword(input.newPassword), failedAttempts: 0, lockedUntil: null }, database);
   revokeUserSessions(user.id, input.sessionId, database);
   notifyAccountEvent(database, user, {
-    kind: "account.password_changed", data: { at: now }, reference: now.toISOString(),
+    kind: "account.password_changed", data: { at: now }, reference: now.toISOString(), now,
   });
   return { ok: true };
 }

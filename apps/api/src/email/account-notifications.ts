@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import { describeUserAgent } from "@csb/shared";
 import type { UserRecord } from "../auth/user-store.js";
@@ -55,6 +56,64 @@ export function loginBrowser(userAgent: string | null): string | null {
   return describeUserAgent(userAgent?.slice(0, 300) ?? null);
 }
 
+/** At most one new-sign-in alert per account per hour, whatever happens. */
+export const NEW_LOGIN_MIN_INTERVAL_MS = 3_600_000;
+
+/**
+ * The dedupe reference for a new sign-in: the UTC day, and a digest of the
+ * (address, browser) pair.
+ *
+ * A digest rather than the values themselves, for two reasons. The pair is
+ * partly client-chosen — a user agent is whatever the caller typed — so it must
+ * not decide the length or the shape of a key that has a UNIQUE index on it. And
+ * a `dedupe_key` is a column an administrator's tooling may end up reading,
+ * which is no place for a recipient's address.
+ *
+ * Per day, so the same laptop on a dynamic address cannot alert twice on Tuesday
+ * but a genuinely new Wednesday still does.
+ */
+export function newLoginReference(input: { ip: string | null; userAgent: string | null; now: Date }): string {
+  const digest = createHash("sha256")
+    .update(`${input.ip ?? ""}\n${loginBrowser(input.userAgent) ?? ""}`)
+    .digest("hex")
+    .slice(0, 16);
+  return `${input.now.toISOString().slice(0, 10)}.${digest}`;
+}
+
+/**
+ * Queues `account.new_login`, twice guarded against being a nuisance.
+ *
+ * The unique key stops the same device on the same day producing a second
+ * message, and the hourly cap stops a caller that varies its user agent — which
+ * it is free to do — turning a security alert into a way to fill someone's inbox.
+ * Dropping the fifth alert in an hour costs nothing: the first one already said
+ * "someone is signing in from somewhere new", and Minha conta lists the rest.
+ */
+export function notifyNewLogin(
+  database: Database.Database,
+  user: UserRecord,
+  input: { ip: string | null; userAgent: string | null; now: Date },
+): void {
+  try {
+    const since = new Date(input.now.getTime() - NEW_LOGIN_MIN_INTERVAL_MS).toISOString();
+    const recent = database.prepare(`
+      SELECT 1 FROM email_outbox
+       WHERE user_id = ? AND event = 'account.new_login' AND created_at >= ?
+       LIMIT 1
+    `).get(user.id, since);
+    if (recent !== undefined) return;
+  } catch (error) {
+    // Unreadable outbox: the enqueue below will fail the same way and report it.
+    void error;
+  }
+  notifyAccountEvent(database, user, {
+    kind: "account.new_login",
+    data: { at: input.now, ip: input.ip, browser: loginBrowser(input.userAgent) },
+    reference: newLoginReference(input),
+    now: input.now,
+  });
+}
+
 /**
  * Queues one account event, or gives up quietly. Every failure path — no address
  * on file, e-mail switched off, a duplicate, a broken vault — ends here rather
@@ -64,7 +123,7 @@ export function loginBrowser(userAgent: string | null): string | null {
 export function notifyAccountEvent<K extends AccountEventKind>(
   database: Database.Database,
   user: UserRecord,
-  event: { kind: K; data: EmailMessageDataMap[K]; reference: string },
+  event: { kind: K; data: EmailMessageDataMap[K]; reference: string; now: Date },
 ): void {
   try {
     const to = resolveUserEmailAddress(user);
@@ -76,6 +135,10 @@ export function notifyAccountEvent<K extends AccountEventKind>(
       toAddress: to,
       locale: localeOf(user),
       data: event.data,
+      // The event's own time, not the wall clock: `created_at` is what the
+      // hourly cap and the history are read against, and a notification queued
+      // for a login must agree with the login about when it happened.
+      now: event.now,
     });
   } catch (error) {
     // Named by event and account, never by address or body.
