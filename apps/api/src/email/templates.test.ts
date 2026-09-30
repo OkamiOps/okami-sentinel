@@ -321,7 +321,7 @@ test("the mark and the watermark are fetched only when there is an origin to fet
   assert.ok(remote.html.includes("alt=\"Okami Sentinel\""));
   // The wolf needs no CSS opacity: the asset itself is pre-dimmed on the card
   // colour, so Outlook renders it exactly as designed.
-  assert.ok(remote.html.includes(`src="${ORIGIN}/brand/email-wolf-watermark.png" width="92" height="114"`));
+  assert.ok(remote.html.includes(`src="${ORIGIN}/brand/email-wolf-watermark.png" width="80" height="99"`));
   assert.equal(remote.html.includes("opacity"), false);
 
   const local = render("gate.blocked", "en", null);
@@ -390,15 +390,27 @@ test("every interpolated value is escaped, in the body and in the link", () => {
 test("the footer says why once, then offers one thing to do about it", () => {
   const accountKinds = EMAIL_MESSAGE_KINDS.filter((kind) => emailMessageGroup(kind) === "account");
   assert.equal(accountKinds.length, 6);
+  // The invitee has no password yet and the reset reader is locked out, so
+  // their footer keeps the reason and drops the "my account" link entirely.
+  const linkless = new Set<EmailMessageKind>(["account.invite", "account.reset"]);
   for (const kind of accountKinds) {
     const message = render(kind, "pt-BR");
-    assert.ok(message.html.includes(`href="${ORIGIN}/settings/account"`), kind);
-    assert.ok(message.text.includes(`Abrir minha conta: ${ORIGIN}/settings/account`), kind);
+    if (linkless.has(kind)) {
+      assert.equal(message.html.includes(`href="${ORIGIN}/settings/account"`), false, kind);
+      assert.equal(message.text.includes("Abrir minha conta"), false, kind);
+    } else {
+      assert.ok(message.html.includes(`href="${ORIGIN}/settings/account"`), kind);
+      assert.ok(message.text.includes(`Abrir minha conta: ${ORIGIN}/settings/account`), kind);
+    }
     assert.ok(/Você recebe este e-mail porque/.test(message.text), kind);
     // Account messages are never subscription-driven, so the footer must not
     // send the reader to a matrix that cannot switch them off.
     assert.equal(message.html.includes("#notifications"), false, kind);
   }
+  // The suppression never suppresses the CTA itself, and local mode still
+  // explains the missing links once.
+  assert.ok(render("account.invite", "en").html.includes(`href="${ORIGIN}/invite/`));
+  assert.ok(render("account.reset", "en", null).text.includes("no public address configured"));
 
   const switchable = EMAIL_MESSAGE_KINDS.filter((kind) => emailMessageGroup(kind) !== "account");
   // Five repository events, four operational ones and the three resolutions.

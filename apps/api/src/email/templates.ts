@@ -1898,6 +1898,16 @@ function statusWordBucket(label: string): { size: number; spacing: string; cls: 
   return { size: 17, spacing: ".05em", cls: "sw-x" };
 }
 
+/**
+ * The two messages whose reader cannot pass a login yet: the invitee has no
+ * password and the reset reader is locked out of theirs. A "my account" link
+ * would only open a door they cannot walk through, so their footer keeps the
+ * reason and drops the link.
+ */
+const KINDS_WITHOUT_FOOTER_LINK: ReadonlySet<EmailMessageKind> = new Set([
+  "account.invite", "account.reset",
+]);
+
 export interface RenderEmailInput<K extends EmailMessageKind> {
   kind: K;
   data: EmailMessageDataMap[K];
@@ -1918,8 +1928,8 @@ const LOGO_WIDTH = 30;
 const LOGO_HEIGHT = 37;
 /** Pre-dimmed on the card colour and shipped at 2x, so it needs no CSS opacity. */
 const WATERMARK_PATH = "/brand/email-wolf-watermark.png";
-const WATERMARK_WIDTH = 92;
-const WATERMARK_HEIGHT = 114;
+const WATERMARK_WIDTH = 80;
+const WATERMARK_HEIGHT = 99;
 
 /**
  * The head stylesheet. It is the only stylesheet, it is never required for the
@@ -1970,6 +1980,7 @@ export function renderEmail<K extends EmailMessageKind>(input: RenderEmailInput<
   // message carries no link and the footer says why instead of pretending.
   const url = (path: string): string | null => (input.origin === null ? null : `${input.origin}${path}`);
   const actionUrl = body.action === null ? null : url(body.action.path);
+  const linklessFooter = KINDS_WITHOUT_FOOTER_LINK.has(input.kind);
   const footerUrl = url(footerPath);
   const logoUrl = url(LOGO_PATH);
   const watermarkUrl = url(WATERMARK_PATH);
@@ -1990,7 +2001,9 @@ export function renderEmail<K extends EmailMessageKind>(input: RenderEmailInput<
     "",
     "--",
     body.reason,
-    footerUrl === null ? shell.noLinks : `${footerLabel}: ${footerUrl}`,
+    // Without an origin the missing links still get their one-line why; a
+    // linkless footer with an origin simply says nothing where the link was.
+    ...(footerUrl === null ? [shell.noLinks] : linklessFooter ? [] : [`${footerLabel}: ${footerUrl}`]),
     shell.signature,
   ].join("\n");
 
@@ -2161,7 +2174,9 @@ export function renderEmail<K extends EmailMessageKind>(input: RenderEmailInput<
 
   const footerLinkHtml = footerUrl === null
     ? `<p class="foot-t" style="margin:8px 0 0;font-family:${SANS};font-size:12px;line-height:1.6;color:${MUTED}">${escapeHtml(shell.noLinks)}</p>`
-    : `<p style="margin:8px 0 0;font-family:${SANS};font-size:12px;line-height:1.6"><a class="foot-a" href="${escapeHtml(footerUrl)}" style="color:${CYAN};text-decoration:underline">${escapeHtml(footerLabel)}</a></p>`;
+    : linklessFooter
+      ? ""
+      : `<p style="margin:8px 0 0;font-family:${SANS};font-size:12px;line-height:1.6"><a class="foot-a" href="${escapeHtml(footerUrl)}" style="color:${CYAN};text-decoration:underline">${escapeHtml(footerLabel)}</a></p>`;
 
   // The preview line most clients show next to the subject. Hidden in the body,
   // then padded, so the header's words do not become the preview instead.
