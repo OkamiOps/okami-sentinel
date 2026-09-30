@@ -184,8 +184,20 @@ export function getGitHubAction(
   return row ? rowToAction(row) : null;
 }
 
+/**
+ * `repositoryKeys` is the caller's scope and is pushed **into** the query: filtering
+ * a page after the limit would drop exactly the rows the caller may read and report
+ * a short page as the end of the list. An empty array is a real answer — a member
+ * with no grant sees nothing — and must not be confused with "no filter".
+ */
 export function listGitHubActions(
-  filter: { repositoryKey?: string | null; enabledOnly?: boolean } = {},
+  filter: {
+    repositoryKey?: string | null;
+    repositoryKeys?: readonly string[] | null;
+    enabledOnly?: boolean;
+    limit?: number;
+    offset?: number;
+  } = {},
   database: Database.Database = getDb(),
 ): GitHubAction[] {
   ensureGitHubActionsSchema(database);
@@ -195,9 +207,20 @@ export function listGitHubActions(
     clauses.push("repository_key = @repository_key");
     parameters.repository_key = filter.repositoryKey;
   }
+  if (filter.repositoryKeys !== undefined && filter.repositoryKeys !== null) {
+    if (filter.repositoryKeys.length === 0) return [];
+    const names = filter.repositoryKeys.map((_, index) => `@scope_${index}`);
+    clauses.push(`repository_key IN (${names.join(", ")})`);
+    for (const [index, key] of filter.repositoryKeys.entries()) parameters[`scope_${index}`] = key;
+  }
   if (filter.enabledOnly === true) clauses.push("enabled = 1");
-  const sql = `SELECT * FROM github_actions${clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""}
+  let sql = `SELECT * FROM github_actions${clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""}
     ORDER BY repository_key ASC, name ASC, trigger_kind ASC, id ASC`;
+  if (filter.limit !== undefined) {
+    sql += " LIMIT @limit OFFSET @offset";
+    parameters.limit = filter.limit;
+    parameters.offset = filter.offset ?? 0;
+  }
   return (database.prepare(sql).all(parameters) as ActionRow[]).map(rowToAction);
 }
 
@@ -917,6 +940,43 @@ export function lastVerifiedWebhookDeliveryAt(
     SELECT MAX(received_at) AS last FROM github_webhook_deliveries WHERE connection_id = ?
   `).get(connectionId) as { last: string | null } | undefined;
   return row?.last ?? null;
+}
+
+/**
+ * Records that this connection's webhook secret was stored now. The value stays in
+ * the vault; only the instant is kept, and only so a verified delivery cannot vouch
+ * for the secret it replaced (ruling N-2). One row per connection: a rotation
+ * overwrites the previous instant, because only the current secret matters.
+ */
+export function recordWebhookSecretStored(
+  connectionId: string,
+  storedAt: string = new Date().toISOString(),
+  database: Database.Database = getDb(),
+): void {
+  ensureGitHubActionsSchema(database);
+  database.prepare(`
+    INSERT INTO github_webhook_secret_rotations (connection_id, stored_at)
+    VALUES (@connection_id, @stored_at)
+    ON CONFLICT(connection_id) DO UPDATE SET stored_at = excluded.stored_at
+  `).run({ connection_id: connectionId, stored_at: storedAt });
+}
+
+/**
+ * When this connection's current webhook secret was stored, or `null` when no
+ * rotation was ever recorded — a secret written by the manifest exchange before the
+ * log existed. `null` must not read as "rotated at the epoch" or as "rotated now":
+ * the first would validate everything and the second would invalidate a secret that
+ * demonstrably works.
+ */
+export function webhookSecretStoredAt(
+  connectionId: string,
+  database: Database.Database = getDb(),
+): string | null {
+  ensureGitHubActionsSchema(database);
+  const row = database.prepare(`
+    SELECT stored_at FROM github_webhook_secret_rotations WHERE connection_id = ?
+  `).get(connectionId) as { stored_at: string } | undefined;
+  return row?.stored_at ?? null;
 }
 
 function rowToAction(row: ActionRow): GitHubAction {

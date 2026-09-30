@@ -14,7 +14,7 @@ import {
   listGitHubBranchNames,
   reconcileGitHubActions,
   singleFlightReconcile,
-  type GitHubReconcileResult,
+  type GitHubReconcileOutcome,
   type GitHubReconcilerDependencies,
 } from "./github-actions/reconciler.js";
 import { createGitHubBranchesApp } from "./github-actions/branches-api.js";
@@ -47,7 +47,9 @@ import {
   patchGitHubActionEvent,
   recordGitHubActionReconciliation,
   recordWebhookDelivery,
+  recordWebhookSecretStored,
   supersedeQueuedEvents,
+  webhookSecretStoredAt,
 } from "./github-actions/store.js";
 import { createGitHubCheckoutsApp } from "./github-checkouts.js";
 import { githubIntegrationSecurity } from "./github-integration-security.js";
@@ -1021,7 +1023,7 @@ const githubReconcilerDependencies: GitHubReconcilerDependencies = {
  * go through the same guard, so a button press joins the cycle in flight instead of
  * running a second set of GitHub reads beside it.
  */
-export const reconcileGitHubActionsNow: () => Promise<GitHubReconcileResult> =
+export const reconcileGitHubActionsNow: () => Promise<GitHubReconcileOutcome> =
   singleFlightReconcile(() => reconcileGitHubActions(githubReconcilerDependencies));
 
 /**
@@ -1068,6 +1070,10 @@ async function githubIntegrationConnections() {
       // value that is not it costs every delivery the capped loop.
       appId: metadata?.appId ?? null,
       recordedAppId: connection.appId,
+      // An unfinished or revoked connection is never asked anything, so its empty
+      // installation list must read as "finish the connection", not as "GitHub did
+      // not answer".
+      connectionReady: connection.status === "ready",
       requestedPermissions: metadata?.requestedPermissions ?? null,
       subscribedEvents: metadata?.subscribedEvents ?? null,
     });
@@ -1130,6 +1136,7 @@ app.route("/", createGitHubActionsApi({
       (await getSystemGitHubAppCredentialStore().get(connectionId).catch(() => null))
         ?.webhookSecret !== undefined,
     readLastVerifiedDeliveryAt: (connectionId) => lastVerifiedWebhookDeliveryAt(connectionId),
+    readWebhookSecretStoredAt: (connectionId) => webhookSecretStoredAt(connectionId),
     countDeliveries: (since) => countWebhookDeliveriesSince(since),
     countRecoveredEvents: (since) => countReconciledEventsSince(since),
     lastDelivery: () => listWebhookDeliveries(1)[0] ?? null,
@@ -1137,6 +1144,7 @@ app.route("/", createGitHubActionsApi({
   }),
   storeWebhookSecret: (connectionId, secret) =>
     getSystemGitHubAppCredentialStore().putWebhookSecret(connectionId, secret),
+  recordWebhookSecretStored: (connectionId) => { recordWebhookSecretStored(connectionId); },
   // A pasted secret must take effect on the very next delivery, or the operator
   // reads the signature failure of a stale snapshot as their own mistake.
   invalidateWebhookSecrets: () => { githubWebhookSecretCache.invalidate(); },

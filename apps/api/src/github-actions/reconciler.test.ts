@@ -540,13 +540,15 @@ test("a second reconciliation joins the one in flight instead of starting anothe
   const second = reconcile();
   assert.equal(started, 1, "the second call started a second cycle");
   release();
-  assert.deepEqual(await first, { repositories: 1, created: 2, observed: 3, errors: 0 });
-  assert.deepEqual(await second, await first);
+  // The caller that started the cycle owns its counts; the one that attached is
+  // told so, because those counts predate its request.
+  assert.deepEqual(await first, { repositories: 1, created: 2, observed: 3, errors: 0, joined: false });
+  assert.deepEqual(await second, { repositories: 1, created: 2, observed: 3, errors: 0, joined: true });
 
   // The guard is released when the cycle ends, including a failing one.
   const after = reconcile();
   assert.equal(started, 2);
-  await after;
+  assert.equal((await after).joined, false);
 
   let failures = 0;
   const failing = singleFlightReconcile(async () => {

@@ -36,8 +36,10 @@ import {
   patchGitHubAction,
   patchGitHubActionEvent,
   recordWebhookDelivery,
+  recordWebhookSecretStored,
   rerunTargetIdentity,
   supersedeQueuedEvents,
+  webhookSecretStoredAt,
 } from "./store.js";
 
 test("only the minting helpers produce a target identity", () => {
@@ -772,4 +774,63 @@ test("pages events and deliveries from an offset", () => {
     ["delivery-0"],
   );
   assert.deepEqual(listWebhookDeliveries(10, db, 2), []);
+});
+
+/**
+ * The caller's scope belongs in the WHERE clause. Filtering a page in memory drops
+ * exactly the rows the caller may read and reports a short page as the end of the
+ * register — and an empty scope is an answer ("no grant"), never "no filter".
+ */
+test("filters the actions listing by scope in SQL and pages it", () => {
+  const db = memoryDb();
+  db.prepare("INSERT INTO guardrail_repositories VALUES ('github:2')").run();
+  const first = pullRequestAction(db);
+  const second = createGitHubAction({
+    repositoryKey: "github:1", name: "Push", triggerKind: "push", branchPatterns: ["main"],
+    connectionId: "c1", installationId: "i1", repositoryId: "1", executor: "sentinel-managed",
+    scanner: null, costCeilingUsd: 2, dailyCostCeilingUsd: null, enabled: false,
+    includeForks: false, createdBy: "u1",
+  }, db);
+  const other = createGitHubAction({
+    repositoryKey: "github:2", name: "PR", triggerKind: "pull_request", branchPatterns: ["main"],
+    connectionId: "c1", installationId: "i2", repositoryId: "2", executor: "sentinel-managed",
+    scanner: null, costCeilingUsd: 2, dailyCostCeilingUsd: null, enabled: true,
+    includeForks: false, createdBy: "u1",
+  }, db);
+
+  assert.deepEqual(
+    listGitHubActions({ repositoryKeys: ["github:1"] }, db).map((action) => action.id).sort(),
+    [first.id, second.id].sort(),
+  );
+  // An empty scope is a member with no grant: nothing, not everything.
+  assert.deepEqual(listGitHubActions({ repositoryKeys: [] }, db), []);
+  assert.deepEqual(listGitHubActions({}, db).length, 3);
+
+  const page = listGitHubActions({ limit: 2, offset: 0 }, db);
+  assert.equal(page.length, 2);
+  assert.deepEqual(
+    listGitHubActions({ limit: 2, offset: 2 }, db).map((action) => action.id),
+    [other.id].filter((id) => !page.some((action) => action.id === id)),
+  );
+  // A quoted key cannot break out of the generated IN list.
+  assert.deepEqual(listGitHubActions({ repositoryKeys: ["github:1') OR 1=1 --"] }, db), []);
+});
+
+/**
+ * Only the instant, never the value: the rotation log exists so a verified delivery
+ * cannot vouch for the secret it replaced (ruling N-2).
+ */
+test("records when a webhook secret was stored, one row per connection", () => {
+  const db = memoryDb();
+  assert.equal(webhookSecretStoredAt("c1", db), null);
+  recordWebhookSecretStored("c1", "2026-09-30T10:00:00.000Z", db);
+  assert.equal(webhookSecretStoredAt("c1", db), "2026-09-30T10:00:00.000Z");
+  // A rotation replaces the instant; the log is not a history.
+  recordWebhookSecretStored("c1", "2026-09-30T11:00:00.000Z", db);
+  assert.equal(webhookSecretStoredAt("c1", db), "2026-09-30T11:00:00.000Z");
+  assert.equal(webhookSecretStoredAt("c2", db), null);
+  assert.equal(
+    (db.prepare("SELECT COUNT(*) AS total FROM github_webhook_secret_rotations").get() as { total: number }).total,
+    1,
+  );
 });

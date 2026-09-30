@@ -14,7 +14,10 @@ import {
  * a database that already recorded an earlier one. Version 1 mints the tables and
  * carries the monitor rules over; version 2 adds `migration_note`; version 3 adds
  * `github_actions.include_forks` (the administrator-only fork opt-in) and
- * `github_action_events.observed_at` (the payload clock the ordering guard reads).
+ * `github_action_events.observed_at` (the payload clock the ordering guard reads);
+ * version 4 adds `github_webhook_secret_rotations`, which records *when* each
+ * connection's webhook secret was last stored so a verified delivery cannot vouch
+ * for a secret it never saw.
  *
  * SQLite cannot add a `CHECK` through `ALTER TABLE`, so the two constraints
  * introduced with version 2 — `json_array_length(branch_patterns_json) BETWEEN 1
@@ -24,7 +27,7 @@ import {
  * them for real would mean rebuilding the table, which is not worth a lock on a
  * live database for an invariant two code paths already keep.
  */
-export const GITHUB_ACTIONS_SCHEMA_VERSION = 3;
+export const GITHUB_ACTIONS_SCHEMA_VERSION = 4;
 
 /** The ceiling a rule that was never activated inherits, disabled, so it cannot spend. */
 const MIGRATED_COST_CEILING_USD = 1;
@@ -135,10 +138,14 @@ export function migrateMonitorRulesToActions(
       addColumnIfMissing(database, "github_actions", "include_forks", "INTEGER NOT NULL DEFAULT 0");
       addColumnIfMissing(database, "github_action_events", "observed_at", "TEXT");
     }
+    // Version 4's table comes from the DDL above on every database, fresh or
+    // upgraded, because `CREATE TABLE IF NOT EXISTS` is idempotent; there is no
+    // backfill, and an absent row means "stored before the log existed", which the
+    // status reads as "the old proof still stands".
     database.prepare(`
       INSERT OR REPLACE INTO github_actions_schema_migrations (version, name, applied_at)
       VALUES (?, ?, ?)
-    `).run(GITHUB_ACTIONS_SCHEMA_VERSION, "actions model with fork opt-in and ordered supersession", now);
+    `).run(GITHUB_ACTIONS_SCHEMA_VERSION, "actions model with fork opt-in, ordered supersession and the secret rotation log", now);
     return carried;
   }).immediate();
   migratedHandles.add(database);

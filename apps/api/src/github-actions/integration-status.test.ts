@@ -97,6 +97,10 @@ interface ConnectionSpec {
   appId?: string | null;
   /** The id the connection row holds, which may be a slug or a client id. */
   recordedAppId?: string | null;
+  /** `false` reproduces a connection whose manifest exchange never finished. */
+  connectionReady?: boolean;
+  /** When the current secret was stored; `undefined` means "before the log existed". */
+  secretStoredAt?: string | null;
 }
 
 interface Overrides {
@@ -114,6 +118,8 @@ interface Overrides {
   publicOrigin?: string | null;
   lastDelivery?: WebhookDeliveryRecord | null;
   connections?: ConnectionSpec[];
+  connectionReady?: boolean;
+  secretStoredAt?: string | null;
 }
 
 function deps(overrides: Overrides = {}): GitHubIntegrationStatusDependencies & {
@@ -124,6 +130,8 @@ function deps(overrides: Overrides = {}): GitHubIntegrationStatusDependencies & 
     subscribed: overrides.subscribed,
     webhookSecret: overrides.webhookSecret,
     lastVerifiedDeliveryAt: overrides.lastVerifiedDeliveryAt,
+    ...(overrides.connectionReady === undefined ? {} : { connectionReady: overrides.connectionReady }),
+    ...(overrides.secretStoredAt === undefined ? {} : { secretStoredAt: overrides.secretStoredAt }),
     installations: [{
       installationId: overrides.installationId,
       accountType: overrides.accountType,
@@ -135,6 +143,7 @@ function deps(overrides: Overrides = {}): GitHubIntegrationStatusDependencies & 
   const windows: string[] = [];
   const secrets = new Map<string, boolean>();
   const verified = new Map<string, string | null>();
+  const storedAt = new Map<string, string | null>();
   const installations = new Map<string, GitHubIntegrationInstallationState[]>();
   const repositories = new Map<string, Array<{ repositoryId: string; repositoryKey: string | null }>>();
   const connections = specs.map((spec, index) => {
@@ -146,6 +155,7 @@ function deps(overrides: Overrides = {}): GitHubIntegrationStatusDependencies & 
     verified.set(connectionId, spec.lastVerifiedDeliveryAt === undefined
       ? (secretConfigured ? "2026-09-30T11:55:00.000Z" : null)
       : spec.lastVerifiedDeliveryAt);
+    storedAt.set(connectionId, spec.secretStoredAt ?? null);
     installations.set(connectionId, (spec.installations ?? [{}]).map((installation, position) => {
       const installationId = installation.installationId ?? `${77 + index * 10 + position}`;
       repositories.set(installationId, installation.repositories ?? [
@@ -168,6 +178,7 @@ function deps(overrides: Overrides = {}): GitHubIntegrationStatusDependencies & 
       appName: "OKAMI Sentinel Guardrails",
       appId: spec.appId === undefined ? "4242" : spec.appId,
       recordedAppId: spec.recordedAppId === undefined ? "4242" : spec.recordedAppId,
+      connectionReady: spec.connectionReady ?? true,
       requestedPermissions: spec.requested === undefined ? { ...REQUIRED_GRANTS } : spec.requested,
       subscribedEvents: spec.subscribed === undefined ? [...ALL_EVENTS] : spec.subscribed,
     };
@@ -184,6 +195,7 @@ function deps(overrides: Overrides = {}): GitHubIntegrationStatusDependencies & 
       overrides.baseline?.[repositoryKey] ?? "ready",
     readWebhookSecretConfigured: (connectionId) => secrets.get(connectionId) ?? false,
     readLastVerifiedDeliveryAt: (connectionId) => verified.get(connectionId) ?? null,
+    readWebhookSecretStoredAt: (connectionId) => storedAt.get(connectionId) ?? null,
     countDeliveries: (since) => {
       windows.push(since);
       return { processed: 4, ignored: 2, failed: 1 };
@@ -699,15 +711,18 @@ test("a suspended installation does not enrol a repository", async () => {
 });
 
 /**
- * `lastVerifiedWebhookDeliveryAt` is a high-water mark: without a window it stays
- * green forever, so an App suspended, a secret rotated on GitHub alone, or a hook
- * switched off all keep the step that exists to catch them (I-2).
+ * Ruling N-2: a quiet week is a warning, not a broken integration. The step stays
+ * met, the connection stays `ready`, and the screen says "sem evento recente há N
+ * dias" beside it. Turning the whole screen red because nobody opened a pull
+ * request over a holiday teaches the operator to ignore the one signal that
+ * matters.
  */
-test("a verified delivery goes stale after the window", async () => {
+test("a stale verified delivery warns without unmeeting the step", async () => {
   const fresh = await buildGitHubIntegrationStatus(deps({
     lastVerifiedDeliveryAt: "2026-09-24T12:00:00.000Z",
   }));
   assert.equal(fresh.connections[0]!.deliveryVerifiedStale, false);
+  assert.equal(fresh.connections[0]!.deliveryVerifiedAgeDays, 6);
   assert.equal(fresh.checklist.find((item) => item.id === "delivery_verified")?.ok, true);
 
   // Eight days before the frozen clock of 2026-09-30T12:00:00Z.
@@ -716,11 +731,66 @@ test("a verified delivery goes stale after the window", async () => {
   }));
   assert.equal(stale.connections[0]!.lastVerifiedDeliveryAt, "2026-09-22T11:59:59.000Z");
   assert.equal(stale.connections[0]!.deliveryVerifiedStale, true);
-  assert.equal(stale.checklist.find((item) => item.id === "delivery_verified")?.ok, false);
-  assert.ok(stale.connections[0]!.missing.includes("delivery_verified"));
+  assert.equal(stale.connections[0]!.deliveryVerifiedAgeDays, 8);
+  // The warning does not flip the step, the connection, or the integration.
+  assert.equal(stale.checklist.find((item) => item.id === "delivery_verified")?.ok, true);
+  assert.deepEqual(stale.connections[0]!.missing, []);
+  assert.equal(stale.connections[0]!.ready, true);
+  assert.equal(stale.readyConnectionId, "connection-1");
 
   // Never verified is not "stale": the screen says something different for it.
   const never = await buildGitHubIntegrationStatus(deps({ lastVerifiedDeliveryAt: null }));
   assert.equal(never.connections[0]!.deliveryVerifiedStale, false);
+  assert.equal(never.connections[0]!.deliveryVerifiedAgeDays, null);
   assert.equal(never.connections[0]!.lastVerifiedDeliveryAt, null);
+});
+
+/**
+ * The proof belongs to the value that was verified. Rotating the secret retires it:
+ * every old delivery verified against something GitHub no longer signs with, and a
+ * step that stayed green would vouch for a paste nobody has tested.
+ */
+test("rotating the webhook secret retires the verified delivery", async () => {
+  const rotated = await buildGitHubIntegrationStatus(deps({
+    lastVerifiedDeliveryAt: "2026-09-30T10:00:00.000Z",
+    secretStoredAt: "2026-09-30T11:00:00.000Z",
+  }));
+  assert.equal(rotated.checklist.find((item) => item.id === "delivery_verified")?.ok, false);
+  assert.deepEqual(rotated.connections[0]!.missing, ["delivery_verified"]);
+  assert.equal(rotated.connections[0]!.ready, false);
+  assert.equal(rotated.readyConnectionId, null);
+  // Not "stale": it verified an hour ago. It verified the *previous* secret.
+  assert.equal(rotated.connections[0]!.deliveryVerifiedStale, false);
+
+  const proven = await buildGitHubIntegrationStatus(deps({
+    lastVerifiedDeliveryAt: "2026-09-30T11:30:00.000Z",
+    secretStoredAt: "2026-09-30T11:00:00.000Z",
+  }));
+  assert.equal(proven.connections[0]!.ready, true);
+
+  // No rotation was ever recorded: the existing proof still stands.
+  const legacy = await buildGitHubIntegrationStatus(deps({
+    lastVerifiedDeliveryAt: "2026-09-30T10:00:00.000Z",
+    secretStoredAt: null,
+  }));
+  assert.equal(legacy.connections[0]!.ready, true);
+});
+
+/**
+ * An unfinished connection was never asked anything, so "installed nowhere" and
+ * "GitHub did not answer" are both lies about it. The screen has one sentence for
+ * this state and it is about finishing the connection.
+ */
+test("an unfinished connection reports not_ready rather than unknown", async () => {
+  const status = await buildGitHubIntegrationStatus(deps({ connectionReady: false }));
+  const connection = status.connections[0]!;
+  assert.equal(connection.installationsState, "not_ready");
+  assert.deepEqual(connection.installations, []);
+  assert.equal(connection.ready, false);
+  assert.ok(connection.missing.includes("app_installed"));
+  assert.deepEqual(
+    connection.permissions.map((permission) => permission.granted).filter((value) => value !== null),
+    [],
+  );
+  assert.equal(status.readyConnectionId, null);
 });
