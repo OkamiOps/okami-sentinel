@@ -42,6 +42,8 @@ export interface MockApiOptions {
   publicOrigin?: string | null;
   /** A refusal from `PUT /email/settings`, field code included. */
   saveEmailSettingsResponse?: { status: number; body: unknown };
+  /** `GET /email/settings` itself refuses — a 403 the route guard let through. */
+  emailSettingsFail?: { status: number; body: unknown };
   /** `POST /email/test` answers 200 on a provider rejection too. */
   emailTestResult?: EmailTestResult;
   emailTestResponse?: { status: number; body: unknown };
@@ -52,6 +54,14 @@ export interface MockApiOptions {
   notificationsFail?: boolean;
   /** A refusal from `PUT /account/notifications`, which must roll the cell back. */
   notificationsUpdateResponse?: { status: number; body: unknown };
+  /**
+   * Refuse only the cells named here, so a spec can have one toggle fail while
+   * another succeeds — the case where a whole-matrix rollback undoes the
+   * wrong cell.
+   */
+  notificationsUpdateRefusals?: Array<{ scope: string; event: string }>;
+  /** Hold every notification write, so the optimistic flip can be observed. */
+  notificationsUpdateDelayMs?: number;
   /** Nobody has shared a repository with this account yet. */
   noNotificationRepositories?: boolean;
   /** What the invite and reset routes report about the e-mail they queued. */
@@ -418,6 +428,14 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
         const body = req.postDataJSON() as { subscriptions?: AccountNotificationsUpdateEntry[] };
         const subscriptions = body.subscriptions ?? [];
         state.notificationWrites.push(subscriptions);
+        if (options.notificationsUpdateDelayMs) {
+          await new Promise((resolve) => setTimeout(resolve, options.notificationsUpdateDelayMs));
+        }
+        const refused = (options.notificationsUpdateRefusals ?? []).some((cell) =>
+          subscriptions.some((entry) => entry.scope === cell.scope && entry.event === cell.event));
+        // All or nothing, exactly as the API does it: a refused batch writes
+        // nothing at all.
+        if (refused) return json({ error: "scope_unknown", scope: subscriptions[0]?.scope }, 400);
         if (options.notificationsUpdateResponse) {
           // A refused batch writes nothing, so the stored matrix is returned
           // untouched on the next read and the screen has to roll back.
@@ -439,6 +457,7 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
       }
     }
     if (path === "/email/settings") {
+      if (options.emailSettingsFail && req.method() === "GET") return json(options.emailSettingsFail.body, options.emailSettingsFail.status);
       if (req.method() === "GET") return json({ settings: state.emailSettings, presets: EMAIL_PROVIDER_PRESETS, publicOrigin: state.publicOrigin });
       if (req.method() === "PUT") {
         const body = req.postDataJSON() as Record<string, unknown>;

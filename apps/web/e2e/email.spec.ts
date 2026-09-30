@@ -34,27 +34,62 @@ test("fills the SMTP transport from a preset and saves without inventing a secre
   await expect(page.getByText("Configured", { exact: true })).toBeVisible();
 });
 
-test("the Resend API provider sends no SMTP transport at all", async ({ page }) => {
+test("the Resend API provider sends no SMTP transport, and never inherits the SMTP secret", async ({ page }) => {
   const state = await mockApi(page, "en", {
     emailSettings: { fromAddress: "alerts@okami.test", smtpHost: "smtp.zoho.eu", smtpPort: 465, smtpUsername: "ana@okami.test", secretConfigured: true },
   });
   await page.goto("/settings/email");
   await expect(page.getByLabel("Host", { exact: true })).toHaveValue("smtp.zoho.eu");
+  await expect(page.getByText("Configured", { exact: true })).toBeVisible();
 
   await page.getByRole("combobox", { name: "Provider type" }).click();
   await page.getByRole("option", { name: "Resend API" }).click();
   await expect(page.getByLabel("Host", { exact: true })).toHaveCount(0);
   await expect(page.getByLabel("Preset")).toHaveCount(0);
   await expect(page.getByLabel("Resend API key")).toBeVisible();
+  // The vault has one slot: the stored SMTP password is not a Resend API key,
+  // and the field must not claim otherwise.
+  await expect(page.getByText("Configured", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Not configured", { exact: true })).toBeVisible();
+  await expect(page.getByText(/stored value belongs to the other provider/)).toBeVisible();
+  // The test would exercise the saved configuration, not this one.
+  await expect(page.getByRole("button", { name: "Send test e-mail" })).toBeDisabled();
+  await expect(page.getByText("Save the provider change before testing: the test uses the stored configuration.")).toBeVisible();
 
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Configuration saved.")).toBeVisible();
   const body = state.emailSettingsWrites[0];
   expect(body.provider).toBe("resend");
   expect("smtpHost" in body).toBe(false);
-  // Nothing was typed into the key field, so the stored one has to survive.
-  expect("secret" in body).toBe(false);
-  expect(state.emailSettings.secretConfigured).toBe(true);
+  // Explicitly cleared, not silently reused for a provider it cannot
+  // authenticate against.
+  expect(body.secret).toBeNull();
+  expect(state.emailSettings.secretConfigured).toBe(false);
+});
+
+test("a stored secret can be removed, once it has been confirmed", async ({ page }) => {
+  const state = await mockApi(page, "en", {
+    emailSettings: { fromAddress: "alerts@okami.test", smtpHost: "mail.internal", smtpPort: 25, smtpUsername: null, secretConfigured: true, enabled: true },
+  });
+  await page.goto("/settings/email");
+  await expect(page.getByText("Configured", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Remove", exact: true }).click();
+  await expect(page.getByText("Delete the stored value on save?")).toBeVisible();
+  // Backing out leaves the stored value exactly as it was.
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByText("Configured", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Remove", exact: true }).click();
+  await page.getByRole("button", { name: "Confirm removal" }).click();
+  await expect(page.getByText("Will be removed")).toBeVisible();
+  await expect(page.getByText("The stored value will be deleted when you save.")).toBeVisible();
+
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByText("Configuration saved.")).toBeVisible();
+  expect(state.emailSettingsWrites[0].secret).toBeNull();
+  expect(state.emailSettings.secretConfigured).toBe(false);
+  await expect(page.getByText("Not configured", { exact: true })).toBeVisible();
 });
 
 test("a stored secret is never shown, and staying empty keeps it", async ({ page }) => {
@@ -79,18 +114,34 @@ test("a stored secret is never shown, and staying empty keeps it", async ({ page
   await expect(secret).toHaveValue("");
 });
 
-test("a refused field is named on the field itself", async ({ page }) => {
-  await mockApi(page, "en", {
+test("a refused field is named under the field, which also takes focus", async ({ page }) => {
+  const state = await mockApi(page, "en", {
     emailSettings: { fromAddress: "alerts@okami.test", smtpHost: "smtp.hostinger.com" },
     saveEmailSettingsResponse: { status: 400, body: { error: "smtp_port_invalid" } },
   });
   await page.goto("/settings/email");
-  await page.getByLabel("Port", { exact: true }).fill("999999");
+  const port = page.getByLabel("Port", { exact: true });
+  await port.fill("999999");
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(page.getByText("Enter a port between 1 and 65535.")).toBeVisible();
-  await expect(page.getByLabel("Port", { exact: true })).toHaveAttribute("aria-invalid", "true");
+
+  const message = page.locator("#email-port-help");
+  await expect(message).toHaveText("Enter a port between 1 and 65535.");
+  await expect(port).toHaveAttribute("aria-invalid", "true");
+  await expect(port).toHaveAttribute("aria-describedby", "email-port-help");
+  await expect(port).toBeFocused();
   // The typed value stays on screen: the administrator has to see what was refused.
-  await expect(page.getByLabel("Port", { exact: true })).toHaveValue("999999");
+  await expect(port).toHaveValue("999999");
+  // A port that is not a port still reaches the API, so the API names the
+  // field instead of the screen inventing a rule.
+  expect(state.emailSettingsWrites[0].smtpPort).toBe("999999");
+});
+
+test("a refused read of the configuration itself is stated and retryable", async ({ page }) => {
+  await mockApi(page, "en", { emailSettingsFail: { status: 403, body: { error: "forbidden" } } });
+  await page.goto("/settings/email");
+  await expect(page.getByText("Could not load the e-mail configuration.")).toBeVisible();
+  await expect(page.getByLabel("Sender address")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Try again" })).toBeVisible();
 });
 
 test("no encryption is allowed and warned about", async ({ page }) => {
@@ -193,11 +244,50 @@ test("toggling a notification sends only the cell that changed", async ({ page }
   await expect(cell).toBeChecked();
   await expect.poll(() => state.notificationWrites).toEqual([[{ scope: "github:1", event: "gate.passed", enabled: true }]]);
 
+  // The row is named for what it covers; the accessible name still says which
+  // group the cell belongs to.
+  await expect(page.getByText("This installation")).toBeVisible();
+  await expect(page.getByText("Loose scans")).toBeVisible();
   await page.getByRole("checkbox", { name: "Daily cost at the ceiling for Operational alerts" }).click();
   await expect.poll(() => state.notificationWrites[1]).toEqual([{ scope: "ops", event: "ops.daily_cost", enabled: false }]);
 
   await page.getByRole("checkbox", { name: "Scan completed for Scans with no repository" }).click();
   await expect.poll(() => state.notificationWrites[2]).toEqual([{ scope: "unassigned", event: "scan.completed", enabled: true }]);
+});
+
+test("a refused toggle does not undo a second one made while it was in flight", async ({ page }) => {
+  const state = await mockApi(page, "en", {
+    session: { isAdmin: true, grants: [] },
+    notificationsUpdateDelayMs: 600,
+    notificationsUpdateRefusals: [{ scope: "github:1", event: "gate.passed" }],
+  });
+  await page.goto("/settings/account");
+  const refused = page.getByRole("checkbox", { name: "Gate passed for luna-core" });
+  const accepted = page.getByRole("checkbox", { name: "Scan completed for luna-core" });
+
+  await refused.click();
+  // The flip is on screen before the reply: optimistic, not "waited 600 ms".
+  await expect(refused).toBeChecked({ timeout: 300 });
+  await accepted.click();
+  await expect(accepted).toBeChecked({ timeout: 300 });
+
+  await expect(page.getByText("Could not save that choice. The previous value was restored.")).toBeVisible();
+  // Only the refused cell goes back. The accepted one was written and stays.
+  await expect(refused).not.toBeChecked();
+  await expect(accepted).toBeChecked();
+  await expect.poll(() => state.notificationWrites).toHaveLength(2);
+});
+
+test("a network failure on a toggle rolls it back like a refusal", async ({ page }) => {
+  await mockApi(page, "en", { session: { isAdmin: true, grants: [] } });
+  await page.route("**/api/account/notifications", (route) =>
+    route.request().method() === "PUT" ? route.abort("failed") : route.fallback());
+  await page.goto("/settings/account");
+  const cell = page.getByRole("checkbox", { name: "Gate passed for luna-core" });
+  await expect(cell).not.toBeChecked();
+  await cell.click();
+  await expect(page.getByText("Could not save that choice. The previous value was restored.")).toBeVisible();
+  await expect(cell).not.toBeChecked();
 });
 
 test("a refused toggle rolls the cell back and says so", async ({ page }) => {
