@@ -74,8 +74,8 @@ export function listUnresolvedOpsAlerts(
  *
  * The evaluator asks before it does anything expensive: with e-mail off and no
  * open episode there is nothing a pass could produce and nothing it could close,
- * so the scanner probe and the per-condition writes are pure cost. One indexed
- * read replaces them.
+ * so the scanner probe and the per-condition writes are pure cost. One read of a
+ * table with a row per open condition replaces them.
  */
 export function hasUnresolvedOpsAlerts(database: Database.Database = getDb()): boolean {
   return database.prepare("SELECT 1 FROM ops_alert_state WHERE resolved_at IS NULL LIMIT 1")

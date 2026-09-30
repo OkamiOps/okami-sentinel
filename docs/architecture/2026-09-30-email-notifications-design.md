@@ -149,7 +149,9 @@ um endereço. O diálogo mostra se o convite será enviado por e-mail.
   A janela só avança quando alguma mensagem foi realmente enfileirada: com o
   e-mail desligado, sem endereço ou sem assinante, a condição continua sendo
   reavaliada em vez de ficar seis horas em silêncio. A resolução também só
-  fecha o episódio se saiu de fato.
+  fecha o episódio se saiu de fato. Com o e-mail desligado e nenhum episódio
+  aberto, o avaliador não observa nada; a carência começa quando o envio é
+  ligado, para que ligar o e-mail não anuncie de uma vez uma falha antiga.
 - Custo diário: um e-mail ao cruzar 80% e outro ao cruzar 100%, por dia e teto.
   Quando os dois limites são cruzados de uma vez, vale só o de 100%.
 - `ops.github_publish_failed` tem o gate como alvo e repete a cada 6 horas
