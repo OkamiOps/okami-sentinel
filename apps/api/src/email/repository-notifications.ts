@@ -10,6 +10,7 @@ import {
 } from "@csb/shared";
 import { getDb } from "../db.js";
 import { emailQueueEnabled, enqueueEmail } from "./enqueue.js";
+import { failureKind } from "./failure-kind.js";
 import { repositoryRecipients, type EmailRecipient } from "./recipients.js";
 import { subscribedUserIds } from "./subscription-store.js";
 import type { GateEmailData, ScanEmailData } from "./templates.js";
@@ -245,13 +246,4 @@ export function notifyScanOutcome(run: ScanRun, options: NotifyOptions = {}): nu
     log(`Could not queue the ${run.status} notification for scan ${run.id}: ${failureKind(error)}`);
     return 0;
   }
-}
-
-/** A failure named by its kind. An exception's message belongs to whoever threw it. */
-function failureKind(error: unknown): string {
-  const code = typeof error === "object" && error !== null && "code" in error
-    ? (error as { code: unknown }).code
-    : undefined;
-  const name = error instanceof Error ? error.name : "unknown_error";
-  return typeof code === "string" && code !== "" ? `${name}/${code}` : name;
 }

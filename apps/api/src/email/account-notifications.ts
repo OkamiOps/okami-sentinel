@@ -4,6 +4,7 @@ import { describeUserAgent } from "@csb/shared";
 import type { UserRecord } from "../auth/user-store.js";
 import { localeOf, resolveUserEmailAddress } from "./address.js";
 import { enqueueEmail } from "./enqueue.js";
+import { failureKind } from "./failure-kind.js";
 import type { EmailMessageDataMap } from "./templates.js";
 
 /**
@@ -141,10 +142,8 @@ export function notifyAccountEvent<K extends AccountEventKind>(
       now: event.now,
     });
   } catch (error) {
-    // Named by event and account, never by address or body.
-    console.warn(
-      `[csb-api] Could not queue ${event.kind} for ${user.id}: `
-        + `${error instanceof Error ? error.message : "unknown_error"}`,
-    );
+    // Named by event, account and failure kind — never by address, body, or a
+    // message whoever threw it chose the contents of.
+    console.warn(`[csb-api] Could not queue ${event.kind} for ${user.id}: ${failureKind(error)}`);
   }
 }

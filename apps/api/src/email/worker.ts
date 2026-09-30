@@ -18,6 +18,7 @@ import {
   markEmailSent,
   type EmailOutboxClaim,
 } from "./outbox-store.js";
+import { failureKind } from "./failure-kind.js";
 import { deleteResolvedOpsAlertsBefore } from "./ops-alert-store.js";
 import { OPS_ALERT_REPEAT_MS } from "./ops-notifications.js";
 import { userSeesRepository } from "./recipients.js";
@@ -159,19 +160,6 @@ export function expireStaleLinkEmails(now: Date, database: Database.Database): n
 }
 
 /**
- * A failure named by its kind and nothing else. An exception's message is written
- * by whoever threw it — a provider, a driver, a module loader — so only the parts
- * that cannot carry an address, a subject or a token reach the log.
- */
-export function describeWorkerFailure(error: unknown): string {
-  const code = typeof error === "object" && error !== null && "code" in error
-    ? (error as { code: unknown }).code
-    : undefined;
-  const name = error instanceof Error ? error.name : "unknown_error";
-  return typeof code === "string" && code !== "" ? `${name}/${code}` : name;
-}
-
-/**
  * One pass over the queue: claim, send, record. Nothing is claimed while the
  * provider is off or incomplete — a claimed row would have to be resolved, and
  * the only honest resolution would be a failed attempt the administrator did not
@@ -299,7 +287,7 @@ export function startEmailWorker(
       } catch (error) {
         // A locked database, a closed handle during shutdown, a provider module
         // that failed to load: the loop survives all three and tries again.
-        if (!stopped) deps.log(`E-mail worker tick failed: ${describeWorkerFailure(error)}`);
+        if (!stopped) deps.log(`E-mail worker tick failed: ${failureKind(error)}`);
         return null;
       } finally {
         running = false;
