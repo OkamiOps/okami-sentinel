@@ -1448,6 +1448,142 @@ export interface GitHubMonitorOverview {
   };
 }
 
+/**
+ * A per-repository GitHub action: one trigger kind, one set of branch patterns,
+ * one executor and one mandatory cost ceiling. Replaces the single monitor rule
+ * per repository, so "watch `main` cheaply and `release/*` deeply" is
+ * expressible. Several actions may share a repository.
+ */
+export type GitHubActionTriggerKind = "pull_request" | "push";
+/** How the event reached Sentinel. Webhooks are the norm; reconciliation is the safety net. */
+export type GitHubActionEventOrigin = "webhook" | "reconciliation" | "manual";
+export type GitHubActionEventStatus =
+  | "observed"
+  | "queued"
+  | "dispatching"
+  | "launched"
+  | "skipped"
+  | "failed"
+  | "superseded";
+
+/** The scanner route freezes provider selection; the USD ceiling stays on the action. */
+export interface GitHubActionScannerSelection {
+  engine: "codex-security";
+  connection: ScanConnectionSelection;
+  effort?: string;
+  mode: ScanMode;
+}
+
+export interface GitHubAction {
+  id: string;
+  repositoryKey: string;
+  /** Operator-chosen label, unique per repository and trigger kind. */
+  name: string;
+  triggerKind: GitHubActionTriggerKind;
+  /**
+   * 1..20 exact names or `*`/`**` patterns. Matched against the pull request's
+   * `base.ref` for `pull_request`, and against the short branch name for `push`.
+   */
+  branchPatterns: string[];
+  executor: GateExecutorKind;
+  /** GitHub App authority copied from the enrolled repository, never user-entered. */
+  connectionId: string;
+  installationId: string;
+  repositoryId: string;
+  scanner: GitHubActionScannerSelection | null;
+  /** Mandatory on the record: an action without a ceiling cannot exist, not even disabled. */
+  costCeilingUsd: number;
+  /** Maximum reserved ceiling for automatic scans started in one UTC day. */
+  dailyCostCeilingUsd: number | null;
+  enabled: boolean;
+  /** Incremented whenever a change to what the action observes invalidates event deduplication. */
+  revision: number;
+  /** The first reconciliation of a revision establishes a no-scan baseline. */
+  baselineInitializedAt: string | null;
+  createdBy: string | null;
+  lastEventAt: string | null;
+  lastReconciledAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GitHubActionEvent {
+  id: string;
+  actionId: string;
+  repositoryKey: string;
+  actionRevision: number;
+  origin: GitHubActionEventOrigin;
+  /** The webhook delivery that produced it, when one did. */
+  deliveryId: string | null;
+  kind: GitHubActionTriggerKind;
+  status: GitHubActionEventStatus;
+  headSha: string;
+  baseRef: string | null;
+  headRef: string;
+  pullRequestNumber: number | null;
+  /** `pr:<number>@<headSha>` or `push:<shortRef>@<headSha>`, the deduplication key. */
+  targetIdentity: string;
+  title: string | null;
+  gateId: string | null;
+  costCeilingUsd: number | null;
+  reason: string | null;
+  error: string | null;
+  detectedAt: string;
+  dispatchedAt: string | null;
+  completedAt: string | null;
+}
+
+/** One received GitHub webhook delivery. `deliveryId` is the idempotency key. */
+export type GitHubWebhookDeliveryOutcome = "processed" | "ignored" | "failed";
+
+export interface WebhookDeliveryRecord {
+  deliveryId: string;
+  connectionId: string;
+  event: string;
+  action: string | null;
+  repositoryKey: string | null;
+  installationId: string | null;
+  headSha: string | null;
+  outcome: GitHubWebhookDeliveryOutcome;
+  reason: string | null;
+  matchedActionIds: string[];
+  eventIds: string[];
+  receivedAt: string;
+  durationMs: number | null;
+}
+
+/** The write shapes the store and the API both use. */
+export type GitHubActionCreate = Omit<GitHubAction,
+  | "id"
+  | "revision"
+  | "baselineInitializedAt"
+  | "lastEventAt"
+  | "lastReconciledAt"
+  | "lastError"
+  | "createdAt"
+  | "updatedAt">;
+
+export type GitHubActionPatch = Partial<Pick<GitHubAction,
+  | "name"
+  | "triggerKind"
+  | "branchPatterns"
+  | "executor"
+  | "connectionId"
+  | "installationId"
+  | "repositoryId"
+  | "scanner"
+  | "costCeilingUsd"
+  | "dailyCostCeilingUsd"
+  | "enabled">>;
+
+export type GitHubActionEventCreate =
+  Omit<GitHubActionEvent, "id" | "status" | "dispatchedAt" | "completedAt">
+  & { status?: GitHubActionEventStatus };
+
+export type GitHubActionEventPatch = Partial<Pick<GitHubActionEvent,
+  "status" | "gateId" | "reason" | "error" | "dispatchedAt" | "completedAt">>;
+
 export interface ScanAnalysisMetrics {
   measuredAt: string;
   files: number | null;
