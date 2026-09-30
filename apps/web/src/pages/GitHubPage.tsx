@@ -303,6 +303,13 @@ export function GitHubPage() {
           <span className={cx("absolute inset-x-0 bottom-0 h-px bg-chart-1 transition-transform", active ? "scale-x-100" : "scale-x-0 group-hover:scale-x-100")} />
         </button>;
       })}
+      {/* The tabs sit on a border-coloured track separated by a one-pixel gap,
+          which is what draws the hairlines. A member sees two tabs, not three, so
+          the empty cell of the grid would expose the track as a solid block —
+          the same filler the Settings tabs use. */}
+      {Array.from({ length: (3 - (sections.length % 3)) % 3 }, (_, index) => (
+        <span key={`filler-${index}`} aria-hidden="true" className="h-10 bg-background lg:hidden" />
+      ))}
       <span aria-hidden="true" className="hidden bg-background lg:block lg:flex-1" />
     </nav>
 

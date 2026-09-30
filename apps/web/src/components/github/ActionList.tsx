@@ -73,6 +73,12 @@ export function ActionList({
   // names none.
   const canCreate = scopePermissions.canSpend && selected !== null && !isLocal;
   const anyMaintainer = actions.some((action) => can("maintainer", action.repositoryKey));
+  // One footnote, and it is about what *this* reader may do. An administrator
+  // standing on "all repositories" has no create button, and being told why beats
+  // a fork note they did not ask for.
+  const footnote = scopePermissions.canSpend
+    ? (selected === null ? t("github.actions.pickRepository") : null)
+    : anyMaintainer ? t("github.actions.maintainerHint") : t("github.actions.viewerReadOnly");
 
   return <Panel
     label={t("github.actions")}
@@ -136,10 +142,8 @@ export function ActionList({
               </li>)}
             </ul>}
 
-        {!isLocal && actions.length > 0 && <p className="border-t px-4 py-3 text-[11px] leading-relaxed text-muted-foreground">
-          {isAdmin ? t("github.actions.includeForksHint")
-            : anyMaintainer ? t("github.actions.maintainerHint")
-              : t("github.actions.viewerReadOnly")}
+        {!isLocal && footnote !== null && <p className="border-t px-4 py-3 text-[11px] leading-relaxed text-muted-foreground">
+          {footnote}
         </p>}
       </>}
   </Panel>;
@@ -238,7 +242,14 @@ function ActionRow({
       {canReshape(action, permissions) && <Button type="button" variant="outline" size="sm" disabled={busy} onClick={onEdit}>
         {t("github.actions.edit")}
       </Button>}
-      {permissions.canMaintain && <Button type="button" variant="destructive" size="sm" disabled={busy} onClick={onDelete}>
+      {permissions.canMaintain && <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="text-destructive hover:text-destructive"
+        disabled={busy}
+        onClick={onDelete}
+      >
         {busy ? t("github.actions.deleting") : t("github.actions.delete")}
       </Button>}
     </div>

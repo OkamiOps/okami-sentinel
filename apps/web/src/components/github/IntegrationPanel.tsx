@@ -152,7 +152,15 @@ function ConnectionBlock({
         <div className="bench-label text-primary">{t("github.permissions")}</div>
         <h3 className="mt-1 text-sm font-semibold">{t("github.permissionsTitle")}</h3>
       </div>
-      <div className="mt-3 divide-y border-t">
+      {/* A header row, so "write / write" under nothing is not two anonymous
+          columns. The same labels repeat inline below `sm`, where the row stacks. */}
+      <div className="mt-3 hidden grid-cols-[minmax(0,1fr)_7rem_7rem_14rem] items-center gap-2 border-t bg-secondary/[.16] px-4 py-2 sm:grid">
+        <span className="bench-label">{t("github.permissions.name")}</span>
+        <span className="bench-label">{t("github.permissions.required")}</span>
+        <span className="bench-label">{t("github.permissions.granted")}</span>
+        <span />
+      </div>
+      <div className="divide-y border-t">
         {connection.permissions.map((permission) => {
           // The review link belongs to every unmet permission, not only the ones
           // GitHub reports as pending: a level that was never asked for is fixed on
@@ -166,7 +174,7 @@ function ConnectionBlock({
           return <div
             key={permission.name}
             className={cx(
-              "grid min-w-0 items-center gap-2 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_7rem_7rem_auto]",
+              "grid min-w-0 items-center gap-2 px-4 py-3 sm:grid-cols-[minmax(0,1fr)_7rem_7rem_14rem]",
               !permission.ok && "bg-chart-3/[.06]",
             )}
           >
@@ -179,7 +187,7 @@ function ConnectionBlock({
               <span className="bench-label mr-1 inline sm:hidden">{t("github.permissions.granted")}</span>
               {permission.granted ?? t("github.permissions.none")}
             </span>
-            <span className="flex flex-wrap items-center justify-end gap-2">
+            <span className="flex flex-wrap items-center gap-2 sm:justify-end">
               <OkBadge ok={permission.ok} okLabel={t("github.permissions.ok")} failLabel={t("github.permissions.missing")} />
               {permission.pendingInstallationIds.length > 0 && <span className="font-mono text-[9px] text-chart-3">
                 {t("github.permissions.pending", { count: permission.pendingInstallationIds.length })}
@@ -432,7 +440,7 @@ function ReconcilePanel({
 }) {
   const last = status.deliveries.last;
   return <Panel
-    label={t("github.webhook")}
+    label={t("github.deliveries24h")}
     title={t("github.webhook.last24h")}
     aside={canEdit && <Button type="button" variant="outline" size="sm" disabled={reconciling} onClick={onReconcile}>
       <RefreshCw aria-hidden className={cx("size-3", reconciling && "animate-spin motion-reduce:animate-none")} />

@@ -130,6 +130,20 @@ test("creates two actions on one repository with different events", async ({ pag
   await expect(page.getByText("release deep")).toBeVisible();
 });
 
+/**
+ * Every action belongs to one repository, and the body carries it, so "all
+ * repositories" cannot create one. The button is absent and the reason is not.
+ */
+test("tells an administrator why all repositories offers no create button", async ({ page }) => {
+  await openTab(page, "actions", { locale: "en", repositories: [githubRepository, githubSecondRepository] });
+  await expect(page.getByRole("button", { name: "NEW ACTION" })).toHaveCount(0);
+  await expect(page.getByText("Pick a repository above to create an action", { exact: false })).toBeVisible();
+
+  await page.goto(`/github?section=actions&repository=${encodeURIComponent(githubRepository.repositoryKey)}`);
+  await expect(page.getByRole("button", { name: "NEW ACTION" })).toBeVisible();
+  await expect(page.getByText("Pick a repository above", { exact: false })).toHaveCount(0);
+});
+
 test("refuses a day budget below the per-scan ceiling before the round trip", async ({ page }) => {
   const state = await openTab(page, "actions", { locale: "en", actions: [], repositories: [githubRepository] });
   await page.goto(`/github?section=actions&repository=${encodeURIComponent(githubRepository.repositoryKey)}`);

@@ -204,7 +204,7 @@ export function ActionSheet({
               </Select>
             </Field>
 
-            <Field label={t("github.sheet.effort")} htmlFor="github-action-effort" hint={t("github.sheet.effortProvider")}>
+            <Field label={t("github.sheet.effort")} htmlFor="github-action-effort" hint={t("github.sheet.effortHint")}>
               <Input
                 id="github-action-effort"
                 value={draft.effort ?? ""}
@@ -248,7 +248,6 @@ export function ActionSheet({
               />
             </Field>
           </div>
-          <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">{t("github.actions.dayBudgetHint")}</p>
         </section>
 
         <section className="border-t pt-5">
