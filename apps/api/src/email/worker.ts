@@ -134,14 +134,20 @@ function dependencies(supplied: Partial<EmailWorkerDependencies> = {}): EmailWor
  * let one poisonous row restart the API forever. A test send is not requeued at
  * all — the settings screen sends it inside the request and the worker never
  * claims it, so returning it to the queue would leave it there for good.
+ *
+ * `startedAt` bounds what "left claimed" can mean. Recovery runs on the first
+ * tick, a few seconds after boot, and a test send started in a request that is
+ * still open is `sending` for a perfectly good reason; claiming it would write a
+ * failure and an error into the history of a message that is about to succeed.
  */
 export function recoverInterruptedEmails(
   now: Date,
   database: Database.Database,
+  startedAt: Date = now,
 ): { requeued: number; abandoned: number } {
   let requeued = 0;
   let abandoned = 0;
-  for (const row of listInterruptedEmails(database)) {
+  for (const row of listInterruptedEmails(startedAt, database)) {
     const nextAttemptAt = row.event === "account.test" ? null : nextEmailAttemptAt(row.attempts, now);
     markEmailFailed(row.id, EMAIL_INTERRUPTED_ERROR, nextAttemptAt, database);
     if (nextAttemptAt === null) abandoned += 1;
@@ -169,16 +175,21 @@ export async function runEmailWorkerTick(
   supplied: Partial<EmailWorkerDependencies> = {},
 ): Promise<EmailWorkerTick> {
   const deps = dependencies(supplied);
+  // Counted into every outcome below, including the two early returns: this runs
+  // before the provider is even looked at, so a disabled installation is exactly
+  // where a dead invite is most likely to be cancelled — and a tick that reported
+  // `cancelled: 0` after cancelling eight of them would be lying about the only
+  // work it did.
   const expired = expireStaleLinkEmails(deps.now(), deps.database);
   if (expired > 0) deps.log(`Cancelled ${expired} e-mail(s) whose invitation link had expired`);
   const active = await activeEmailTransportConfig(deps.secrets, deps.database);
-  if (active.status !== "ready") return { ...EMPTY_TICK, skipped: active.status };
+  if (active.status !== "ready") return { ...EMPTY_TICK, skipped: active.status, cancelled: expired };
 
   const rows = claimDueEmails(EMAIL_WORKER_BATCH, deps.now(), deps.database);
-  if (rows.length === 0) return { ...EMPTY_TICK };
+  if (rows.length === 0) return { ...EMPTY_TICK, cancelled: expired };
 
   const transport = deps.transport(active.config);
-  const tick: EmailWorkerTick = { skipped: null, sent: 0, retried: 0, failed: 0, cancelled: 0 };
+  const tick: EmailWorkerTick = { skipped: null, sent: 0, retried: 0, failed: 0, cancelled: expired };
   for (const row of rows) {
     const cancellation = emailCancellationReason(row, deps.database);
     if (cancellation !== null) {
@@ -245,8 +256,9 @@ export interface EmailWorkerHandle {
 /**
  * The in-process loop. One timer, never two ticks at once — a slow provider must
  * delay the queue, not multiply the workers reading it — and `unref`ed so it can
- * never be the reason a process stays alive. Building it touches nothing, so it
- * cannot fail; the first tick does the recovery.
+ * never be the reason a process stays alive. Building it reads the clock and
+ * nothing else — no database, no vault — so it cannot fail; the first tick does
+ * the recovery.
  */
 export function startEmailWorker(
   supplied: Partial<EmailWorkerDependencies> & { intervalMs?: number } = {},
@@ -261,6 +273,10 @@ export function startEmailWorker(
   let inFlight: Promise<EmailWorkerTick | null> | null = null;
   let recovered = false;
   let lastSweep = 0;
+  // Captured here rather than on the first tick: recovery's job is the rows a
+  // *previous* process left claimed, and the boundary between those and this
+  // process's own in-request sends is the moment this worker came into being.
+  const startedAt = deps.now();
 
   const tick = async (): Promise<EmailWorkerTick | null> => {
     if (stopped || running) return null;
@@ -272,7 +288,7 @@ export function startEmailWorker(
         // startup: a locked database at boot must not be able to stop the API, and
         // a failure here is simply retried five seconds later.
         if (!recovered) {
-          const { requeued, abandoned } = recoverInterruptedEmails(now, deps.database);
+          const { requeued, abandoned } = recoverInterruptedEmails(now, deps.database, startedAt);
           recovered = true;
           if (requeued > 0 || abandoned > 0) {
             deps.log(`Recovered ${requeued} and abandoned ${abandoned} e-mail(s) left claimed by a previous process`);

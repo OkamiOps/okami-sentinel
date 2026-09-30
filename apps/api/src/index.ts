@@ -157,8 +157,9 @@ const gateReconciler = setInterval(() => {
 
 // Notifications are written to the outbox by whatever event produced them and
 // sent from here, in both modes: a local workbench with a provider configured
-// still has invites and security alerts to deliver. Starting the worker also
-// returns rows a previous process left claimed to the queue.
+// still has invites and security alerts to deliver. Building the worker touches
+// nothing; the rows a previous process left claimed are returned to the queue by
+// its first tick, so a locked database at boot cannot stop the API.
 const emailWorker = startEmailWorker();
 
 // The operational conditions have no moment to hook, so they are sampled. Same

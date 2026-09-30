@@ -180,11 +180,16 @@ export interface EmailOutboxClaim {
  * that owns the retry policy.
  */
 export function listInterruptedEmails(
+  createdBefore: Date,
   database: Database.Database = getDb(),
 ): Array<{ id: string; event: string; attempts: number }> {
+  // `createdBefore` is the caller's own start time. A `sending` row younger than
+  // that was claimed by something still running — `POST /email/test` writes its row
+  // already `sending` and resolves it inside a request that can take twenty
+  // seconds — so it is nobody's to recover.
   return database.prepare(
-    "SELECT id, event, attempts FROM email_outbox WHERE status = 'sending' ORDER BY created_at, id",
-  ).all() as Array<{ id: string; event: string; attempts: number }>;
+    "SELECT id, event, attempts FROM email_outbox WHERE status = 'sending' AND created_at < ? ORDER BY created_at, id",
+  ).all(createdBefore.toISOString()) as Array<{ id: string; event: string; attempts: number }>;
 }
 
 /**
@@ -198,6 +203,20 @@ export function expireLinkBearingEmails(
   reason: string,
   database: Database.Database = getDb(),
 ): number {
+  // Asked before it is done. The worker runs this every five seconds, for the whole
+  // life of the process, and on an installation that never enabled e-mail there is
+  // never a row to cancel — but the `UPDATE` would still take the WAL writer lock
+  // every five seconds, on the same file as the scan and gate hot paths. The read
+  // uses the same predicate, so the ordering guarantee is unchanged: a dead token
+  // is still cancelled before any provider is consulted.
+  const pending = database.prepare(`
+    SELECT 1 FROM email_outbox
+     WHERE event IN (${LINK_BEARING_LIST})
+       AND status IN ('queued', 'sending')
+       AND created_at < ?
+     LIMIT 1
+  `).get(createdBefore.toISOString());
+  if (pending === undefined) return 0;
   return database.prepare(`
     UPDATE email_outbox
        SET status = 'cancelled', next_attempt_at = NULL, last_error = ?, html = '', text = ''
