@@ -16,6 +16,7 @@ import { failureKind } from "./failure-kind.js";
 import {
   deleteOpsAlertState,
   getOpsAlertState,
+  hasUnresolvedOpsAlerts,
   listUnresolvedOpsAlerts,
   putOpsAlertState,
   type OpsAlertState,
@@ -505,17 +506,46 @@ export interface OpsEvaluatorTick {
   connections: OpsConditionOutcome[];
   publish: OpsConditionOutcome[];
   dailyCost: number;
+  /**
+   * Set when the pass declined to look at all, because e-mail is off and no
+   * episode is open. Distinguishes "nothing happened" from "nothing was asked".
+   */
+  skipped: "disabled" | null;
 }
 
 /**
  * One pass over all four conditions. Each is independent and each is wrapped: a
  * scanner probe that hangs must not stop the cost ceiling from being noticed.
+ *
+ * With e-mail off, a pass can produce nothing — `queueOps` returns 0, so no window
+ * ever advances — and the state a no-op pass would still write is state nobody can
+ * read. So it is skipped: no four-binary scanner probe every sixty seconds, and no
+ * write transaction per active-but-unalerted condition, for the whole life of an
+ * installation that never turns e-mail on. An episode already open is the one
+ * exception, because the hooked publish failure can open one while e-mail is off
+ * and something has to close it.
+ *
+ * A side effect worth naming: `active_since` then begins when e-mail is switched
+ * on rather than describing an outage nobody could have been told about, which is
+ * the same reasoning the grace period already applies.
  */
 export async function runOpsEvaluatorTick(
   options: OpsEvaluatorOptions & { log?: (message: string) => void } = {},
 ): Promise<OpsEvaluatorTick> {
   const log = options.log ?? ((message: string) => console.warn(`[csb-api] ${message}`));
-  const tick: OpsEvaluatorTick = { engine: null, connections: [], publish: [], dailyCost: 0 };
+  const tick: OpsEvaluatorTick = {
+    engine: null, connections: [], publish: [], dailyCost: 0, skipped: null,
+  };
+  const database = options.database ?? getDb();
+  try {
+    if (!emailQueueEnabled(database) && !hasUnresolvedOpsAlerts(database)) {
+      return { ...tick, skipped: "disabled" };
+    }
+  } catch (error) {
+    // A locked or closed database here is the same non-event it is below: the pass
+    // goes ahead and each condition reports its own failure.
+    log(`Operational evaluation could not read the e-mail switch: ${failureKind(error)}`);
+  }
   try {
     tick.engine = await evaluateEngineAvailability(options);
   } catch (error) {

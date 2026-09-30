@@ -28,6 +28,7 @@ import {
   OPS_EVALUATOR_INTERVAL_MS,
   OPS_EVALUATOR_STOP_DEADLINE_MS,
   opsRecipients,
+  runOpsEvaluatorTick,
   stepOpsCondition,
   utcDayBounds,
 } from "./ops-notifications.js";
@@ -758,6 +759,60 @@ test("the scanner is probed at most once every two and a half minutes, not once 
     engineAvailability(db, counted),
   ]);
   assert.equal(probes, 2, "engineAvailability itself does not cache; the evaluator's memo does");
+  db.close();
+});
+
+test("with e-mail off and no episode open, a pass declines instead of paying for itself", async () => {
+  const db = fresh();
+  saveEmailSettings({ ...DEFAULT_EMAIL_SETTINGS, enabled: false }, null, T0, db);
+  admin(db);
+  // Every engine down and a connection broken: a pass that ran would find work.
+  insertConnection(connection("conn-1", "OpenRouter principal"), db);
+  updateConnectionRecord("conn-1", { status: "unavailable" }, db);
+  let probes = 0;
+  const probe = async () => {
+    probes += 1;
+    return catalog({})();
+  };
+
+  const tick = await runOpsEvaluatorTick({
+    database: db, now: T0, origin: ORIGIN, catalog: probe, log: () => {},
+  });
+  assert.deepEqual(tick, {
+    engine: null, connections: [], publish: [], dailyCost: 0, skipped: "disabled",
+  });
+  // The four `execFile` spawns behind the catalogue are the expensive part, and on
+  // an installation that never enabled e-mail they would run twice a minute forever.
+  assert.equal(probes, 0);
+  // And no `ops_alert_state` row, so nothing was written either: with no message
+  // possible, `active_since` would describe an outage nobody could be told about.
+  assert.equal(
+    (db.prepare("SELECT count(*) AS rows FROM ops_alert_state").get() as { rows: number }).rows, 0,
+  );
+  assert.equal(queued(db).length, 0);
+  db.close();
+});
+
+test("an episode already open is still evaluated with e-mail off, because something must close it", async () => {
+  const db = fresh();
+  admin(db);
+  gateRow(db, "gate-1");
+  updateGateRun("gate-1", { publishStatus: "failed", publishError: "actions_check_missing" }, db);
+  // The hook can open an episode while e-mail is on; the switch may go off after.
+  notifyGitHubPublishFailed("gate-1", { database: db, now: T0, origin: ORIGIN });
+  assert.ok(listUnresolvedOpsAlerts("ops.github_publish_failed", db).length > 0);
+  saveEmailSettings({ ...DEFAULT_EMAIL_SETTINGS, enabled: false }, null, T0, db);
+
+  let probes = 0;
+  const tick = await runOpsEvaluatorTick({
+    database: db,
+    now: T0,
+    origin: ORIGIN,
+    catalog: async () => { probes += 1; return catalog({ "codex-security": true })(); },
+    log: () => {},
+  });
+  assert.equal(tick.skipped, null);
+  assert.equal(probes, 1);
   db.close();
 });
 

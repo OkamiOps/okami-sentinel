@@ -180,13 +180,19 @@ test("an error the transport did not classify is transient, because it may be th
 test("recovery charges an interrupted row an attempt, and abandons an interrupted test send", async () => {
   const db = fresh();
   const now = new Date("2026-09-30T10:00:00.000Z");
-  const claimed = (dedupeKey: string, event: string, attempts = 0): string => insertOutboxRow({
+  // A row a dead process left claimed is, by definition, older than this worker.
+  const before = new Date("2026-09-30T09:59:00.000Z");
+  const claimed = (dedupeKey: string, event: string, attempts = 0, at = before): string => insertOutboxRow({
     event, dedupeKey, userId: null, toAddress: "ana@example.com", locale: "pt-BR",
     subject: "s", html: "<p>s</p>", text: "s", status: "sending", nextAttemptAt: null, attempts,
-  }, now, db)!;
+  }, at, db)!;
   const interrupted = claimed("account.u1.locked.x", "account.locked");
   const exhausted = claimed("account.u1.locked.y", "account.locked", 4);
   const testSend = claimed("account.u1.test.z", "account.test");
+  // And one that is not: `POST /email/test` writes its row already `sending` and
+  // resolves it inside the request, which can still be open when the first tick
+  // arrives five seconds after boot.
+  const inFlight = claimed("account.u1.test.now", "account.test", 0, now);
   assert.equal(claimDueEmails(10, now, db).length, 0);
 
   const { transport, sent } = fakeTransport();
@@ -214,6 +220,13 @@ test("recovery charges an interrupted row an attempt, and abandons an interrupte
   assert.equal(row(testSend).status, "failed");
   assert.equal(row(testSend).attempts, 1);
   assert.match(row(testSend).last_error ?? "", /interrupted by a restart/i);
+  // The request that is sending this one right now still owns it. Stamping it as
+  // interrupted would put a failure and an error in the history for a send that
+  // is about to succeed.
+  assert.deepEqual(
+    { status: row(inFlight).status, attempts: row(inFlight).attempts, error: row(inFlight).last_error },
+    { status: "sending", attempts: 0, error: null },
+  );
   // Nothing was due this tick: every recovered row is waiting out its backoff.
   assert.equal(tick?.sent, 0);
   assert.equal(sent.length, 0);
@@ -226,7 +239,8 @@ test("a recovery that cannot run does not stop the worker, and is tried again", 
     event: "account.locked", dedupeKey: "account.u1.locked.x", userId: null,
     toAddress: "ana@example.com", locale: "pt-BR", subject: "s", html: "<p>s</p>", text: "s",
     status: "sending", nextAttemptAt: null,
-  }, now, db)!;
+    // Older than the worker below, which is what makes it a row to recover.
+  }, new Date("2026-09-30T09:59:00.000Z"), db)!;
   const logged: string[] = [];
   const { transport } = fakeTransport();
 
@@ -252,14 +266,16 @@ test("a tick that throws before its first await leaves the loop working", async 
   queued(db, at);
   const { transport, sent } = fakeTransport();
   const logged: string[] = [];
-  let broken = true;
+  // The first read is the worker's own construction, which records where "left
+  // claimed by a previous process" stops. The second is the first tick's, and that
+  // is the one that throws — synchronously, before the tick has awaited anything,
+  // because the guard that stops two ticks overlapping must not be left armed by it.
+  let reads = 0;
   const worker = startEmailWorker({
     database: db,
-    // Throws synchronously, before the tick has awaited anything: the guard that
-    // stops two ticks overlapping must not be left armed by it.
     now: () => {
-      if (!broken) return at;
-      broken = false;
+      reads += 1;
+      if (reads !== 2) return at;
       const error = new Error("the clock is broken");
       error.name = "BrokenClock";
       throw error;
@@ -569,6 +585,9 @@ test("an invite still queued when its link expires is cancelled, not sent", asyn
   const tick = await runEmailWorkerTick({ database: second, now: () => late, secrets: new NoSecrets(), transport, log: () => {} });
   assert.equal(sent.length, 1);
   assert.equal(tick.skipped, "empty");
+  // A tick that cancelled a dead invite says so. Reporting `cancelled: 0` next to
+  // `skipped: "empty"` would hide the one thing this pass actually did.
+  assert.equal(tick.cancelled, 1);
   const expired = only(second);
   assert.equal(expired.status, "cancelled");
   assert.match(expired.lastError ?? "", /expired/i);
@@ -576,4 +595,14 @@ test("an invite still queued when its link expires is cancelled, not sent", asyn
     { html: bodyOf(second, stale).html, text: bodyOf(second, stale).text },
     { html: "", text: "" },
   );
+
+  // The same on the path that gives up earliest: expiry runs before the provider is
+  // consulted precisely so a dead token cannot be delivered, so a disabled
+  // installation still has to report what it cancelled.
+  const third = fresh();
+  queueInvite(third, created);
+  saveEmailSettings({ ...DEFAULT_EMAIL_SETTINGS, enabled: false }, null, created, third);
+  const off = await runEmailWorkerTick({ database: third, now: () => late, secrets: new NoSecrets(), transport, log: () => {} });
+  assert.deepEqual({ skipped: off.skipped, cancelled: off.cancelled }, { skipped: "disabled", cancelled: 1 });
+  assert.equal(only(third).status, "cancelled");
 });
