@@ -707,7 +707,7 @@ substituindo `"monitorRule"`.
 | `PUT /github/integration/webhook-secret` | admin | Grava ou substitui o segredo de uma conexão. Nunca devolve o valor |
 | `GET /github/deliveries` | admin | Últimas 200 entregas com resultado e motivo |
 | `POST /github/reconcile` | admin | Reconciliação imediata (leitura) |
-| `GET /github/actions` | scoped | Ações visíveis ao chamador, com filtro opcional `repositoryKey` |
+| `GET /github/actions` | scoped | Ações visíveis ao chamador, com filtro opcional `repositoryKey`, escopo aplicado em SQL e paginação (`limit`/`offset`/`hasMore`) |
 | `POST /github/actions` | admin | Criar ação |
 | `PATCH /github/actions/:actionId` | maintainer (`action`) | Alterar; campos que gastam exigem admin |
 | `DELETE /github/actions/:actionId` | maintainer (`action`) | Remover |
@@ -761,22 +761,41 @@ explicitamente que ela é isenta de CSRF e que nenhuma outra rota nova é públi
   assinatura validou prova isso, e uma linha de entrega só existe depois de a
   assinatura validar. Um segredo colado com espaço, um segredo trocado só no
   GitHub, ou um `appId` gravado errado deixam o passo vermelho em vez de a tela
-  ficar verde sobre nada.
-- **A entrega verificada expira em 7 dias.** A última entrega válida é uma marca
-  d'água: sem janela, o passo fica verde para sempre e sobrevive justamente às
-  falhas que ele existe para pegar — App suspensa, segredo trocado só no GitHub,
-  hook desligado. Passados 7 dias sem uma entrega cuja assinatura validou, o passo
-  volta a vermelho e a tela diz **"sem evento recente"**, que é diferente de "nunca
-  verificado". Sete dias passa de qualquer fim de semana quieto num repositório que
-  recebe PRs e fica bem longe de "ninguém notou por um mês".
+  ficar verde sobre nada. O passo `baseline` é da Fase 2
+  (`guardrail_repository_baselines` não existe na Fase 1): a tela o rotula
+  **"disponível na fase 2"** e não o apresenta como falha, ou o operador leria um
+  checklist eternamente incompleto como defeito.
+- **"Reconciliar agora" pode entrar num ciclo já em curso.** As duas bocas — o laço
+  de 15 minutos e o botão — passam pelo mesmo guarda, então o pedido concorrente
+  *entra* no ciclo em voo em vez de abrir um segundo conjunto de leituras. A
+  resposta carrega `joined: true` nesse caso e a tela diz isso: os números são do
+  ciclo que já estava rodando, não do pedido.
+- **A entrega verificada prova o segredo atual, e só ele.** O passo fica verde com
+  ao menos uma entrega cuja assinatura validou **depois** de o segredo vigente ter
+  sido gravado. Trocar o segredo aposenta a prova anterior: as entregas antigas
+  validaram um valor que o GitHub já não assina, e um passo verde estaria
+  garantindo uma colagem que ninguém testou. O registro
+  (`github_webhook_secret_rotations`) guarda só o instante da gravação, nunca o
+  valor; linha ausente significa "gravado antes de o registro existir", e a prova
+  antiga continua valendo.
+- **Passados 7 dias sem entrega verificada, a tela avisa em âmbar — não reprova.**
+  A linha diz **"sem evento recente há N dias"**, que é diferente de "nunca
+  verificado" e diferente de "errado": o passo continua cumprido, a conexão
+  continua pronta e `readyConnectionId` não muda. Um feriado num repositório quieto
+  não é uma integração quebrada, e pintar a tela de vermelho por isso ensina o
+  operador a ignorar exatamente o sinal que importa. Sete dias passa de qualquer
+  fim de semana e fica longe de "ninguém notou por um mês".
 - **Instalação suspensa não é instalação.** `suspended_at` numa instalação faz o
   GitHub recusar todo token dela, então ela não conta para "App instalada", não
   concede permissão nenhuma e não cadastra repositório — mas continua listada, com
   o link que a retoma. A tela mostra o estado da lista de instalações em uma
-  palavra: `desconhecido` (a leitura de `GET /app/installations` falhou — nada se
-  sabe, e todo passo que dependa dela fica vermelho), `nenhuma` (a App existe e
-  não está instalada em lugar nenhum), `suspensa` (todas as instalações estão
-  suspensas) ou `ativa`. Nos três primeiros nenhuma permissão é reportada como
+  palavra: `conexão incompleta` (a conexão em si não terminou o fluxo do manifesto,
+  ou foi revogada — nada foi perguntado ao GitHub, e a única frase útil é terminar
+  a conexão), `desconhecido` (a leitura de `GET /app/installations` falhou numa
+  conexão pronta — nada se sabe, e todo passo que dependa dela fica vermelho),
+  `nenhuma` (a App existe e não está instalada em lugar nenhum), `suspensa` (todas
+  as instalações estão suspensas) ou `ativa`. Nos quatro primeiros nenhuma
+  permissão é reportada como
   concedida: `concedida` só pode vir de uma instalação viva, nunca do que a App
   *pede*.
 

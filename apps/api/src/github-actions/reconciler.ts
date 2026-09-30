@@ -56,6 +56,13 @@ export interface GitHubReconcileResult {
   errors: number;
 }
 
+/**
+ * What a caller of the shared guard gets back. `joined: true` means this request
+ * did not start a cycle — it attached to the one already running, and the counts
+ * below are that cycle's, not this request's.
+ */
+export type GitHubReconcileOutcome = GitHubReconcileResult & { joined: boolean };
+
 export interface GitHubReconcilerDependencies {
   now(): Date;
   listActions(): GitHubAction[];
@@ -494,12 +501,18 @@ export const GITHUB_RECONCILE_STOP_DEADLINE_MS = 5_000;
  *
  * A failed cycle releases the guard: holding it would leave reconciliation dead for
  * the life of the process.
+ *
+ * `joined` says which of the two happened. The counts of a joined cycle describe
+ * work that started before the button was pressed, so a screen that reported them
+ * as "your reconciliation found nothing" would be lying about a cycle that had
+ * already passed the repository the operator was looking at.
  */
 export function singleFlightReconcile(
   reconcile: () => Promise<GitHubReconcileResult>,
-): () => Promise<GitHubReconcileResult> {
+): () => Promise<GitHubReconcileOutcome> {
   let inFlight: Promise<GitHubReconcileResult> | null = null;
   return () => {
+    const joined = inFlight !== null;
     inFlight ??= (async () => {
       try {
         return await reconcile();
@@ -507,7 +520,7 @@ export function singleFlightReconcile(
         inFlight = null;
       }
     })();
-    return inFlight;
+    return inFlight.then((result) => ({ ...result, joined }));
   };
 }
 

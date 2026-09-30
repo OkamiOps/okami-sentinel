@@ -16,7 +16,6 @@ import { isStorableWebhookSecret } from "../credentials/system-github-app-creden
 import {
   canSeeRepository,
   hasRepositoryRole,
-  inScope,
   principalOf,
   scopeOf,
   type Principal,
@@ -26,7 +25,7 @@ import {
   branchPatternWildcards,
 } from "./branch-patterns.js";
 import type { GitHubIntegrationStatus } from "./integration-status.js";
-import type { GitHubReconcileResult } from "./reconciler.js";
+import type { GitHubReconcileOutcome } from "./reconciler.js";
 import { MAX_BRANCH_PATTERNS } from "./schema.js";
 import { gitHubActionNeedsBranchPatternReview } from "./store.js";
 
@@ -43,6 +42,13 @@ const MAX_EVENT_LIMIT = 200;
 const DEFAULT_DELIVERY_LIMIT = 200;
 const MAX_DELIVERY_LIMIT = 200;
 /**
+ * The actions listing is the register itself, not a feed, so the default page is
+ * generous: the screen shows every action of every repository the caller can see and
+ * would paginate only an unusually large install.
+ */
+const DEFAULT_ACTION_LIMIT = 200;
+const MAX_ACTION_LIMIT = 500;
+/**
  * The shape the vault requires of a connection id. Validating it here is what keeps
  * a malformed id a 404 like an unknown one, instead of the 502 the vault's
  * `secure_storage_unavailable` used to become — which was both a lie about whose
@@ -58,8 +64,17 @@ const CONNECTION_ID = /^[A-Za-z0-9-]{1,100}$/;
 export interface GitHubActionsApiDependencies {
   /** Wire to `getGitHubAction`. */
   getAction(actionId: string): GitHubAction | null;
-  /** Wire to `listGitHubActions`. */
-  listActions(filter: { repositoryKey?: string | null }): GitHubAction[];
+  /**
+   * Wire to `listGitHubActions`. `repositoryKeys` is the caller's scope and must be
+   * applied in SQL: an in-memory filter over a page would hide the rows the caller
+   * may read and make a short page look like the end of the list.
+   */
+  listActions(filter: {
+    repositoryKey?: string | null;
+    repositoryKeys?: readonly string[] | null;
+    limit?: number;
+    offset?: number;
+  }): GitHubAction[];
   /** Wire to `createGitHubAction`; may throw `github_action_name_taken`. */
   createAction(input: GitHubActionCreate): GitHubAction;
   /** Wire to `patchGitHubAction`; may throw `github_action_branch_patterns_unreviewed`. */
@@ -86,13 +101,23 @@ export interface GitHubActionsApiDependencies {
    */
   storeWebhookSecret(connectionId: string, secret: string): Promise<void>;
   /**
+   * Wire to `recordWebhookSecretStored`. Rotating the secret retires every delivery
+   * that verified against the old one, so the instant has to be recorded or the
+   * `delivery_verified` step keeps vouching for a value GitHub no longer signs with.
+   */
+  recordWebhookSecretStored(connectionId: string): void;
+  /**
    * Wire to `githubWebhookSecretCache.invalidate`. Without it a freshly pasted
    * secret is ignored for a whole cache window and the operator reads a signature
    * failure as their own mistake.
    */
   invalidateWebhookSecrets(): void;
-  /** Wire to `reconcileGitHubActionsNow`. */
-  reconcile(): Promise<GitHubReconcileResult>;
+  /**
+   * Wire to `reconcileGitHubActionsNow`. Its `joined` flag reaches the response
+   * verbatim: the operator has to know the counts belong to a cycle that was
+   * already running when the button was pressed.
+   */
+  reconcile(): Promise<GitHubReconcileOutcome>;
 }
 
 class ApiError extends Error {
@@ -184,6 +209,7 @@ export function createGitHubActionsApi(deps: GitHubActionsApiDependencies): Hono
       // Every refusal of the *input* is settled above, so anything left is ours.
       throw new ApiError("webhook_secret_not_stored", 502);
     }
+    deps.recordWebhookSecretStored(connectionId);
     deps.invalidateWebhookSecrets();
     return c.body(null, 204);
   }));
@@ -213,10 +239,16 @@ export function createGitHubActionsApi(deps: GitHubActionsApiDependencies): Hono
     // A repository the caller cannot see answers like one that does not exist,
     // before the listing reveals whether any action belongs to it.
     if (requested !== null && !canSeeRepository(principal, requested)) repositoryNotFound();
-    const scope = scopeOf(principal);
+    const { limit, offset } = page(c, DEFAULT_ACTION_LIMIT, MAX_ACTION_LIMIT);
+    const keys = repositoryKeysFor(principal, requested);
+    // One row beyond the page decides `hasMore` without a second count query.
+    const rows = deps.listActions({
+      ...(keys === null ? {} : { repositoryKeys: keys }),
+      limit: limit + 1,
+      offset,
+    });
     return c.json({
-      actions: deps.listActions({ repositoryKey: requested })
-        .filter((action) => inScope(scope, action.repositoryKey)),
+      actions: rows.slice(0, limit), limit, offset, hasMore: rows.length > limit,
     });
   }));
 

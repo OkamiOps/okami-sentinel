@@ -114,6 +114,18 @@ export const GITHUB_ACTIONS_SCHEMA_SQL = `
   );
   CREATE INDEX IF NOT EXISTS github_webhook_deliveries_by_received
     ON github_webhook_deliveries(received_at DESC);
+
+  /*
+   * When each connection's current webhook secret was stored. The value itself
+   * never leaves the vault; only the instant is kept, and only so the
+   * "delivery verified" step can tell a proof of the *current* secret from a
+   * proof of the one it replaced (ruling N-2). A row is written on every
+   * rotation, so it is one row per connection, never a history.
+   */
+  CREATE TABLE IF NOT EXISTS github_webhook_secret_rotations (
+    connection_id TEXT PRIMARY KEY,
+    stored_at TEXT NOT NULL
+  );
 `;
 
 /** The most recent deliveries kept; the excess is pruned in the insert transaction. */

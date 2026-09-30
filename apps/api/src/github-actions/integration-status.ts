@@ -102,11 +102,17 @@ export interface GitHubIntegrationStatus {
     /** The last delivery of this connection whose signature verified; `null` if none. */
     lastVerifiedDeliveryAt: string | null;
     /**
-     * A signature did verify once, but longer than `DELIVERY_VERIFIED_MAX_AGE_MS`
-     * ago. The step is unmet, and the screen says "sem evento recente" rather than
-     * the "nunca verificado" a `null` above would mean.
+     * A signature did verify against the current secret, but longer than
+     * `DELIVERY_VERIFIED_MAX_AGE_MS` ago. This is an **amber warning**, not a
+     * failure: the connection stays `ready` and the checklist step stays met.
+     * A quiet week is not a broken integration, and turning the whole screen red
+     * for one would teach the operator to ignore it (ruling N-2). The screen says
+     * "sem evento recente há N dias", which is a different sentence from the
+     * "nunca verificado" a `null` above would mean.
      */
     deliveryVerifiedStale: boolean;
+    /** Whole days since `lastVerifiedDeliveryAt`; `null` when never verified. */
+    deliveryVerifiedAgeDays: number | null;
     webhookUrl: string | null;
     /** Every connection-level step this connection satisfies. */
     ready: boolean;
@@ -114,9 +120,14 @@ export interface GitHubIntegrationStatus {
      * What the installation list turned out to be, as one word the screen switches
      * on. The three unhappy values are different facts and read differently:
      *
-     * - `unknown` — `GET /app/installations` failed. Nothing is known, so every
-     *   step that depends on it fails **closed**; the screen says "we could not ask
-     *   GitHub", never "installed nowhere".
+     * - `not_ready` — the **connection itself** is unfinished (the manifest flow
+     *   was started and never completed, or the connection was revoked). Nothing
+     *   was asked of GitHub at all, so this is neither "GitHub is unreachable" nor
+     *   "installed nowhere": the operator has to finish the connection first, and
+     *   that is the only sentence the screen should show.
+     * - `unknown` — `GET /app/installations` failed on a *ready* connection.
+     *   Nothing is known, so every step that depends on it fails **closed**; the
+     *   screen says "we could not ask GitHub", never "installed nowhere".
      * - `none` — the read succeeded and the App is installed nowhere: registered
      *   through the manifest and never installed, or uninstalled by an org owner.
      * - `suspended` — every installation exists and every one is suspended, so
@@ -127,7 +138,7 @@ export interface GitHubIntegrationStatus {
      * In the first three, no permission is reported granted: `granted` may only
      * ever come from a live installation.
      */
-    installationsState: "unknown" | "none" | "suspended" | "active";
+    installationsState: "not_ready" | "unknown" | "none" | "suspended" | "active";
     /** The connection-level steps it does not, in checklist order. */
     missing: GitHubConnectionChecklistItemId[];
     permissions: Array<{
@@ -174,6 +185,13 @@ export interface GitHubIntegrationConnectionState {
   appId: string | null;
   /** The id the connection row holds, which may be a slug or a client id. */
   recordedAppId: string | null;
+  /**
+   * The connection's own lifecycle: `false` while the manifest exchange is
+   * unfinished, or once it has been revoked. Nothing is ever asked of GitHub for
+   * such a connection, so its empty installation list must read as `not_ready`
+   * and not as the `unknown` that means "we asked and GitHub did not answer".
+   */
+  connectionReady: boolean;
   /**
    * What the App **requests**, from `GET /app.permissions` — not what any
    * installation has approved. An installation only ever holds a subset.
@@ -242,6 +260,16 @@ export interface GitHubIntegrationStatusDependencies {
    * all leave it `null`. Wire it to `lastVerifiedWebhookDeliveryAt`.
    */
   readLastVerifiedDeliveryAt: (connectionId: string) => Awaitable<string | null>;
+  /**
+   * When the **current** webhook secret was stored, or `null` when no rotation was
+   * ever recorded (a secret written by the manifest exchange before this was kept,
+   * which must not be read as "rotated just now" and invalidate a working proof).
+   *
+   * Rotating the secret retires the proof that came before it: the old deliveries
+   * verified against a value GitHub no longer signs with, so the step goes back to
+   * unmet until one delivery verifies against the new one (ruling N-2).
+   */
+  readWebhookSecretStoredAt: (connectionId: string) => Awaitable<string | null>;
   countDeliveries: (
     sinceIsoTimestamp: string,
   ) => Awaitable<{ processed: number; ignored: number; failed: number }>;
@@ -269,7 +297,11 @@ export async function buildGitHubIntegrationStatus(
       .readWebhookSecretConfigured(connection.connectionId);
     const lastVerifiedDeliveryAt = await dependencies
       .readLastVerifiedDeliveryAt(connection.connectionId);
-    const installationStates = await dependencies.listInstallations(connection.connectionId);
+    const secretStoredAt = await dependencies
+      .readWebhookSecretStoredAt(connection.connectionId);
+    const installationStates = connection.connectionReady
+      ? await dependencies.listInstallations(connection.connectionId)
+      : null;
     // A suspended installation refuses every token request, so it grants nothing
     // and installs nothing. It still appears on the row, with the URL that resumes
     // it — hiding it would leave the operator with a screen that reports no
@@ -300,13 +332,19 @@ export async function buildGitHubIntegrationStatus(
       permissions: permissions.every((permission) => permission.ok),
       events: events.every((event) => event.subscribed),
       webhook_secret: secretConfigured,
-      // A high-water mark that never expires would keep this green through every
-      // failure it exists to catch.
-      delivery_verified: lastVerifiedDeliveryAt !== null
-        && now.getTime() - Date.parse(lastVerifiedDeliveryAt) <= DELIVERY_VERIFIED_MAX_AGE_MS,
+      // What proves the secret is the right one: one delivery whose signature
+      // verified **against the value stored now**. Rotating the secret retires
+      // every proof that came before it, which is the one case where a green step
+      // would otherwise vouch for a value GitHub no longer signs with. Going quiet
+      // afterwards does **not** unmeet it — that is `deliveryVerifiedStale`, an
+      // amber warning (ruling N-2).
+      delivery_verified: verifiedSinceSecret(lastVerifiedDeliveryAt, secretStoredAt),
       repository_enrolled: installations.some((item) =>
         !item.suspended && item.enrolledRepositoryCount > 0),
     };
+    const ageMs = lastVerifiedDeliveryAt === null
+      ? null
+      : Math.max(0, now.getTime() - Date.parse(lastVerifiedDeliveryAt));
     connectionChecks.set(connection.connectionId, checks);
     const missing = CONNECTION_CHECKLIST_ORDER.filter((id) => !checks[id]);
     connections.push({
@@ -317,10 +355,13 @@ export async function buildGitHubIntegrationStatus(
       recordedAppId: connection.recordedAppId,
       webhookSecretConfigured: secretConfigured,
       lastVerifiedDeliveryAt,
-      deliveryVerifiedStale: lastVerifiedDeliveryAt !== null && !checks.delivery_verified,
+      deliveryVerifiedStale: ageMs !== null && ageMs > DELIVERY_VERIFIED_MAX_AGE_MS,
+      deliveryVerifiedAgeDays: ageMs === null ? null : Math.floor(ageMs / 86_400_000),
       webhookUrl,
       ready: missing.length === 0,
-      installationsState: installationsState(installationStates),
+      installationsState: connection.connectionReady
+        ? installationsState(installationStates)
+        : "not_ready",
       missing,
       permissions,
       events,
@@ -397,6 +438,27 @@ function furthestConnection(
     }
   }
   return best;
+}
+
+/**
+ * A verified delivery only vouches for the secret it verified against. A secret
+ * stored *after* the last verified delivery is unproven, whatever the old delivery
+ * said. No recorded rotation means the value predates the rotation log, and the old
+ * proof still stands — refusing it would turn every upgraded install red for a
+ * secret that demonstrably works.
+ */
+function verifiedSinceSecret(
+  lastVerifiedDeliveryAt: string | null,
+  secretStoredAt: string | null,
+): boolean {
+  if (lastVerifiedDeliveryAt === null) return false;
+  if (secretStoredAt === null) return true;
+  const verified = Date.parse(lastVerifiedDeliveryAt);
+  const stored = Date.parse(secretStoredAt);
+  // An unparseable timestamp proves nothing either way; fail closed on the proof.
+  if (Number.isNaN(verified)) return false;
+  if (Number.isNaN(stored)) return true;
+  return verified >= stored;
 }
 
 /**

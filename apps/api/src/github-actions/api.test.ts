@@ -139,6 +139,10 @@ interface Harness {
   invalidations: number;
   reconciles: number;
   vaultCalls: number;
+  /** Every connection whose secret rotation was recorded, in order. */
+  secretsRecorded: string[];
+  /** Every filter `listActions` was called with, in order. */
+  listActionFilters: Array<Parameters<GitHubActionsApiDependencies["listActions"]>[0]>;
 }
 
 function harness(options: {
@@ -146,6 +150,7 @@ function harness(options: {
   repositories?: GuardrailRepository[];
   events?: GitHubActionEvent[];
   deliveries?: WebhookDeliveryRecord[];
+  listActionFilters?: Harness["listActionFilters"];
 } = {}): Harness {
   const actions = options.actions ?? [];
   const repositories = options.repositories
@@ -153,13 +158,19 @@ function harness(options: {
   const events = options.events ?? [];
   const deliveries = options.deliveries ?? [];
   const secrets = new Map<string, string>();
-  const state = { invalidations: 0, reconciles: 0, vaultCalls: 0 };
+  const listActionFilters = options.listActionFilters ?? [];
+  const state = { invalidations: 0, reconciles: 0, vaultCalls: 0, secretsRecorded: [] as string[] };
 
   const dependencies: GitHubActionsApiDependencies = {
     getAction: (id) => actions.find((candidate) => candidate.id === id) ?? null,
-    listActions: (filter) => actions.filter((candidate) =>
-      filter.repositoryKey === undefined || filter.repositoryKey === null
-      || candidate.repositoryKey === filter.repositoryKey),
+    // The scope arrives as `repositoryKeys` and the fake honours it exactly as SQL
+    // would: the page is cut *after* the filter, never before.
+    listActions: (filter) => (listActionFilters.push(filter), actions)
+      .filter((candidate) => filter.repositoryKey === undefined || filter.repositoryKey === null
+        || candidate.repositoryKey === filter.repositoryKey)
+      .filter((candidate) => filter.repositoryKeys === undefined || filter.repositoryKeys === null
+        || filter.repositoryKeys.includes(candidate.repositoryKey))
+      .slice(filter.offset ?? 0, (filter.offset ?? 0) + (filter.limit ?? actions.length)),
     createAction: (input: GitHubActionCreate) => {
       if (actions.some((candidate) => candidate.repositoryKey === input.repositoryKey
         && candidate.triggerKind === input.triggerKind && candidate.name === input.name)) {
@@ -198,7 +209,7 @@ function harness(options: {
     readIntegrationStatus: () => buildGitHubIntegrationStatus({
       listConnections: () => [{
         connectionId: "c1", appSlug: "okami", appName: "Okami Sentinel",
-        appId: "4242", recordedAppId: "4242",
+        appId: "4242", recordedAppId: "4242", connectionReady: true,
         requestedPermissions: { metadata: "read" }, subscribedEvents: ["push"],
       }],
       listInstallations: () => [{
@@ -211,6 +222,7 @@ function harness(options: {
       // The value never enters the status: only whether one is stored.
       readWebhookSecretConfigured: (id) => secrets.has(id),
       readLastVerifiedDeliveryAt: () => deliveries[0]?.receivedAt ?? null,
+      readWebhookSecretStoredAt: () => null,
       countDeliveries: () => ({ processed: 1, ignored: 0, failed: 0 }),
       countRecoveredEvents: () => 0,
       lastDelivery: () => deliveries[0] ?? null,
@@ -227,10 +239,11 @@ function harness(options: {
       if (connectionId !== "c1") throw new Error("credential_not_found");
       secrets.set(connectionId, secret);
     },
+    recordWebhookSecretStored: (connectionId) => { state.secretsRecorded.push(connectionId); },
     invalidateWebhookSecrets: () => { state.invalidations += 1; },
     reconcile: async () => {
       state.reconciles += 1;
-      return { repositories: 1, created: 2, observed: 3, errors: 0 };
+      return { repositories: 1, created: 2, observed: 3, errors: 0, joined: false };
     },
   };
 
@@ -240,6 +253,8 @@ function harness(options: {
     get invalidations() { return state.invalidations; },
     get reconciles() { return state.reconciles; },
     get vaultCalls() { return state.vaultCalls; },
+    get secretsRecorded() { return state.secretsRecorded; },
+    listActionFilters,
     server: (principal) => {
       const app = new Hono();
       app.use("*", async (c, next) => {
@@ -430,6 +445,9 @@ test("never returns the webhook secret", async () => {
   // The cache the webhook reads must forget its snapshot, or a fresh secret is
   // ignored for a whole window and reads as the operator's own mistake.
   assert.equal(bench.invalidations, 1);
+  // And the rotation is recorded, or the delivery that proved the *previous*
+  // secret keeps the checklist step green over an untested paste (ruling N-2).
+  assert.deepEqual(bench.secretsRecorded, ["c1"]);
 
   const status = await server.request("/github/integration");
   assert.equal(status.status, 200);
@@ -490,6 +508,41 @@ test("scopes GET /github/actions to the caller's grants", async () => {
     ((await everything.json()) as { actions: GitHubAction[] }).actions.map((item) => item.id),
     ["a1", "a2"],
   );
+});
+
+/**
+ * The scope has to reach the query, not the page: filtering after `LIMIT` drops the
+ * rows the caller may read and reports a short page as the end of the list.
+ */
+test("pages the actions listing with the scope inside the query", async () => {
+  const bench = harness({
+    actions: [
+      action("a1"),
+      action("a2", { name: "PR A2" }),
+      action("a3", { repositoryKey: REPO_B, name: "PR B" }),
+    ],
+    listActionFilters: [],
+  });
+  const first = await bench.server(admin).request("/github/actions?limit=2");
+  assert.equal(first.status, 200);
+  assert.deepEqual(await first.json(), {
+    actions: bench.actions.slice(0, 2), limit: 2, offset: 0, hasMore: true,
+  });
+  const second = await bench.server(admin).request("/github/actions?limit=2&offset=2");
+  const body = await second.json() as { actions: GitHubAction[]; hasMore: boolean };
+  assert.deepEqual(body.actions.map((item) => item.id), ["a3"]);
+  assert.equal(body.hasMore, false);
+
+  // A member's grants travel as `repositoryKeys`, and the page is asked for one
+  // row beyond the limit so `hasMore` needs no second count.
+  await bench.server(member("viewer")).request("/github/actions?limit=1");
+  assert.deepEqual(bench.listActionFilters.at(-1), {
+    repositoryKeys: [REPO_A], limit: 2, offset: 0,
+  });
+  assert.equal(bench.listActionFilters.at(-1)!.repositoryKey, undefined);
+
+  // A bad page is a refusal, not a silent clamp.
+  assert.equal((await bench.server(admin).request("/github/actions?limit=0")).status, 400);
 });
 
 test("validates branch patterns and the cost ceiling", async () => {
@@ -650,7 +703,12 @@ test("reconciles on demand for an administrator only", async () => {
   assert.equal(bench.reconciles, 0);
   const response = await post(bench.server(admin), "/github/reconcile", {});
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { repositories: 1, created: 2, observed: 3, errors: 0 });
+  // `joined` reaches the screen: the counts of a cycle that was already running
+  // are not the counts of this request, and the operator has to be told which.
+  assert.deepEqual(
+    await response.json(),
+    { repositories: 1, created: 2, observed: 3, errors: 0, joined: false },
+  );
   assert.equal(bench.reconciles, 1);
 });
 
