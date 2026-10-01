@@ -167,6 +167,7 @@ import {
 import {
   getRepositoryBaselineState,
   markRepositoryBaselineBuilding,
+  markRepositoryBaselineStale,
   refreshRepositoryBaselineState,
   type RepositoryBaseline,
 } from "./guardrails/baseline-state.js";
@@ -391,10 +392,18 @@ const guardrailsDependencies: GuardrailsApiDependencies = {
   },
   getSentinelPolicy: (repositoryKey) => getRepositoryPolicy(repositoryKey),
   putSentinelPolicy: (repositoryKey, policy, preset, updatedBy) => {
+    const previous = getRepositoryPolicy(repositoryKey)?.policy ?? defaultGuardrailPolicy();
     const stored = putRepositoryPolicy(repositoryKey, policy, preset, updatedBy);
     // The policy names the protected branches, so saving it can retire a baseline
     // that stands on a branch the policy no longer protects.
     refreshRepositoryBaselineState(repositoryKey);
+    // And it names the model, the effort and the mode. A baseline built with the old
+    // ones cannot be compared against a scan run with the new ones (spec: "troca de
+    // modelo, esforço ou modo — na política ou numa ação — → stale/scan_lineage"),
+    // and the executor would discover that while the screen still said "pronta".
+    if (JSON.stringify(previous.scan) !== JSON.stringify(stored.policy.scan)) {
+      markRepositoryBaselineStale(repositoryKey, "scan_lineage");
+    }
     return stored;
   },
   parsePolicy: parseGuardrailPolicy,
@@ -520,8 +529,16 @@ async function startProtectedBranchBaselineGate(repository: GuardrailRepository)
   // No protected branch means there is no commit a baseline could stand on, which
   // is a configuration answer rather than a failure of this request.
   if (ref === null) throw new TargetPreviewError("target_preview_invalid");
+  // Pressing twice must not buy two full-repository scans. The check is a read of
+  // the gate rows the button itself creates, and the window between it and the
+  // insert is this process's own — the API runs as a single replica.
+  if (hasRunningProtectedBranchGate(repository.repositoryKey)) throw new Error(BASELINE_BUILDING);
   const target = { kind: "protected_branch" as const, ref };
-  const executor = repository.defaultExecutor;
+  // Always Sentinel-managed. The baseline is the Sentinel projection's own
+  // reference, the GitHub Actions executor cannot be previewed from here, and a
+  // button that answered `target_preview_executor_unavailable` would be a control
+  // offered for a dead end it cannot get out of.
+  const executor = "sentinel-managed" as const;
   const preview = await targetPreviewService.create(repository, { target, executor });
   const accepted = await targetPreviewService.accept(repository, {
     previewIdentity: preview.previewIdentity,
@@ -529,6 +546,14 @@ async function startProtectedBranchBaselineGate(repository: GuardrailRepository)
     executor,
   });
   return startGuardrailGate({ repositoryKey: repository.repositoryKey, target, executor }, accepted);
+}
+
+/** A protected-branch gate of this repository that has not reached a terminal state. */
+function hasRunningProtectedBranchGate(repositoryKey: string): boolean {
+  return listGateRuns(repositoryKey).some((gate) =>
+    gate.pullRequestNumber === null
+    && gate.baseRef === gate.headRef
+    && !TERMINAL_GATE_STATUSES.has(gate.status));
 }
 
 /**
@@ -554,6 +579,9 @@ function removeGuardrailRepository(repositoryKey: string): void {
 }
 
 const TERMINAL_GATE_STATUSES = new Set<GateRun["status"]>(["completed", "cancelled", "error"]);
+
+/** A protected-branch gate for this repository is already running. */
+const BASELINE_BUILDING = "repository_baseline_building";
 
 function attributeExistingRuns(deps: GuardrailsApiDependencies, repositoryKey: string): void {
   // The registration is persisted by now. Attributing historical runs to it is a
@@ -720,8 +748,15 @@ export function createGuardrailsApp(
     try {
       if (repository.source === "github") {
         // The remote read is what tells us whether `.csb/guardrails.json` exists at
-        // the protected branch's SHA, which is the only way level 1 can be known.
-        const bundle = await deps.readRemotePolicy(repository);
+        // the protected branch's SHA, which is the only way level 1 can be known. When
+        // GitHub is unreachable this is the one block of the repository page that
+        // cannot be answered — and 400 would blame the caller for an outage.
+        let bundle: ProtectedPolicyBundle;
+        try {
+          bundle = await deps.readRemotePolicy(repository);
+        } catch (error) {
+          return c.json({ error: errorMessage(error) }, 502);
+        }
         const stored = deps.getSentinelPolicy(repository.repositoryKey);
         return c.json({
           policy: bundle.policy,
@@ -957,6 +992,11 @@ export function createGuardrailsApp(
     try {
       gate = await deps.startBaselineGate(repository);
     } catch (error) {
+      // A build already running is not a bad request: it is the answer "that is
+      // already happening", and a second press must not buy a second scan.
+      if (errorMessage(error) === BASELINE_BUILDING) {
+        return c.json({ error: BASELINE_BUILDING, baseline: deps.getBaseline(repositoryKey) }, 409);
+      }
       return c.json({ error: errorMessage(error) }, targetPreviewStatus(error));
     }
     // After the gate exists: a row saying `building` with no run behind it would
@@ -1430,10 +1470,9 @@ app.route("/", createGitHubActionsApi({
           && candidate.githubRepositoryId === repository.repositoryId)?.repositoryKey ?? null,
       })),
     listActions: () => listGitHubActions({}),
-    // Phase 2 owns `guardrail_repository_baselines`; until it exists no
-    // repository can claim a ready baseline, which keeps the last checklist step
-    // honest rather than optimistic.
-    readBaselineState: () => "absent",
+    // The projection, read locally: the checklist step says the word the
+    // repository page says, so the two screens cannot disagree.
+    readBaselineState: (repositoryKey) => getRepositoryBaselineState(repositoryKey).state,
     readWebhookSecretConfigured: async (connectionId) =>
       (await getSystemGitHubAppCredentialStore().get(connectionId).catch(() => null))
         ?.webhookSecret !== undefined,

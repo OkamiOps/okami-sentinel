@@ -90,7 +90,9 @@ export function GuardrailSetupPage() {
       setMessage(t("guardrails.baselineBuilding"));
       await loadStatus(selected);
     } catch (error) {
-      setBaselineError(error instanceof Error ? error.message : t("guardrails.baselineSyncError"));
+      // `formatApiError` turns the route's code into the operator's sentence; the raw
+      // message was a wire code on screen.
+      setBaselineError(formatApiError(error, t));
     } finally {
       setBusy(false);
     }

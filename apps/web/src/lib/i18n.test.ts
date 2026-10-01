@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import ts from "typescript";
 import { resolveLocale, translate } from "../i18n";
 import { CONNECTION_PRESETS } from "./connection-presets";
@@ -201,7 +201,14 @@ test("localizes the repository list, the policy precedence and the baseline in f
     "guardrails.gateHistoryTitle",
     "guardrails.prCommentTitle",
     "guardrails.prCommentDescription",
-    "guardrails.prCommentPhase3",
+    "guardrails.rulesSection",
+    "guardrails.diffSection",
+    "guardrails.effort",
+    "guardrails.lifecycleValue.reopened",
+    "guardrails.baselineBuildInFlight",
+    "guardrails.baselineBuildExecutor",
+    "guardrails.policyUnavailable",
+    "guardrails.policyUnavailableDescription",
   ] as const;
   const placeholders = (value: string) => [...new Set(value.match(/\{\w+\}/g) ?? [])].sort();
   for (const locale of ["pt-BR", "en", "es", "de", "fr"] as const) {
@@ -230,6 +237,26 @@ test("localizes the repository list, the policy precedence and the baseline in f
     const words = (["absent", "building", "ready", "stale"] as const)
       .map((state) => translate(locale, `guardrails.baseline.${state}` as typeof keys[number]));
     assert.equal(new Set(words).size, 4, locale);
+  }
+});
+
+test("no catalogue promises an internal phase", () => {
+  // Our release plan is not a product fact. A sentence that says "arrives in phase 2"
+  // is a note to ourselves printed on the operator's screen, and it ages into a lie.
+  // The check reads the catalogues as text, so it covers every locale and every key
+  // name without needing a list that someone must remember to extend.
+  const phases = /\b(fase|phase|phasen)\s*\d/i;
+  const directory = new URL("../i18n/", import.meta.url);
+  const files = [
+    new URL("../i18n.tsx", import.meta.url),
+    ...readdirSync(directory)
+      .filter((name) => name.endsWith(".ts"))
+      .map((name) => new URL(name, directory)),
+  ];
+  for (const file of files) {
+    for (const literal of readFileSync(file, "utf8").match(/"[^"\n]*"/g) ?? []) {
+      assert.equal(phases.test(literal), false, `${file.pathname}: ${literal}`);
+    }
   }
 });
 
@@ -493,7 +520,6 @@ test("the GitHub tab is translated key-for-key in five locales", async () => {
     }
   }
   // The copy the carries pin, in the language the operator reads.
-  assert.match(githubActionsMessages["pt-BR"]["github.checklist.phase2"], /fase 2/);
   assert.match(githubActionsMessages["pt-BR"]["github.delivery.stale"], /sem evento recente/i);
   assert.match(githubActionsMessages["pt-BR"]["github.delivery.pingHint"], /ping/i);
   assert.match(githubActionsMessages.de["github.executor.soon"], /Kürze/);

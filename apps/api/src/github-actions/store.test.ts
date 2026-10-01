@@ -855,6 +855,7 @@ test("changing what an action scans with retires the baseline built with the old
       builtAt: "2026-10-01T09:00:00.000Z",
       incompatibleReason: null,
     }),
+    hasRunningBuild: () => false,
   });
   assert.equal(getRepositoryBaselineState("github:1", db).state, "ready");
 

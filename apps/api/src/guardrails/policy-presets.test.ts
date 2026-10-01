@@ -5,6 +5,7 @@ import { defaultGuardrailPolicy } from "@csb/gate-core";
 import { parseGuardrailPolicy } from "@csb/gate-runtime";
 
 import {
+  DEFAULT_GUARDRAIL_POLICY_PRESET,
   GUARDRAIL_POLICY_PRESETS,
   policyForPreset,
   presetForPolicy,
@@ -64,10 +65,22 @@ test("recognises a hand-edited policy as custom", () => {
   assert.equal(presetForPolicy(policy), "custom");
 });
 
-test("the gate-core default is its own shape, not a preset", () => {
-  // It reviews nothing below `high`, which no preset does. Saying otherwise on
-  // the screen would name a preset whose rules the repository does not have.
-  assert.equal(presetForPolicy(defaultGuardrailPolicy()), "custom");
+test("the untouched product default reads as the named default preset", () => {
+  // A repository nobody has configured must not open labelled "Personalizado".
+  // The product default's three rules are the shape every repository starts with,
+  // so they are recognised as `block-critical-high` by name.
+  assert.equal(presetForPolicy(defaultGuardrailPolicy()), DEFAULT_GUARDRAIL_POLICY_PRESET);
+  assert.equal(DEFAULT_GUARDRAIL_POLICY_PRESET, "block-critical-high");
+});
+
+test("the product default is still the shape the preset detector recognises", () => {
+  // `@csb/shared` keeps its own copy of these rules because the browser cannot import
+  // gate-core. If the product default ever changes, this is where it is noticed.
+  assert.deepEqual(defaultGuardrailPolicy().rules, [
+    { severity: ["critical"], lifecycle: ["new", "reopened"], decision: "block" },
+    { severity: ["high"], lifecycle: ["new", "reopened"], decision: "block" },
+    { severity: ["high"], lifecycle: ["persistent"], decision: "review" },
+  ]);
 });
 
 test("round-trips every preset", () => {

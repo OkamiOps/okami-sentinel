@@ -174,6 +174,37 @@ test("builds the baseline now and shows it building", async ({ page }) => {
   expect(mock.guardrails.baselineBuilds).toBe(1);
 });
 
+test("a baseline already building offers no second press", async ({ page }) => {
+  // The route refuses the second press with a 409. A button that can only fail is
+  // worse than no button, so it goes inert and the panel says why.
+  const mock = await mockGuardrails(page, {
+    repositories: [githubRepository],
+    baseline: baselineOf({ state: "building", requestedAt: "2026-10-01T12:30:00.000Z" }),
+  });
+  await page.goto("/guardrails/repositories/github%3A1");
+
+  const card = page.getByRole("region", { name: pt("guardrails.baselineSectionTitle") });
+  await expect(card.getByRole("button", { name: pt("guardrails.baselineBuildNow") })).toBeDisabled();
+  await expect(card.getByText(pt("guardrails.baselineBuildInFlight"))).toBeVisible();
+  expect(mock.guardrails.baselineBuilds).toBe(0);
+});
+
+test("a GitHub outage reading the policy costs one block, not the page", async ({ page }) => {
+  await mockGuardrails(page, {
+    repositories: [githubRepository],
+    baseline: baselineOf({ state: "ready", commitSha: SHA, protectedBranch: "main" }),
+    policyOutage: true,
+  });
+  await page.goto("/guardrails/repositories/github%3A1");
+
+  await expect(page.getByText(pt("guardrails.policyUnavailableDescription")).first()).toBeVisible();
+  // The three blocks that need no policy are still there, with their facts.
+  const card = page.getByRole("region", { name: pt("guardrails.baselineSectionTitle") });
+  await expect(card.getByText(pt("guardrails.baseline.ready"), { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: pt("guardrails.prCommentTitle") })).toBeVisible();
+  await expect(page.getByRole("region", { name: pt("guardrails.gateHistoryTitle") })).toBeVisible();
+});
+
 test("says when no push action would ever build the baseline", async ({ page }) => {
   await mockGuardrails(page, { repositories: [githubRepository], hasProtectedBranchAction: false });
   await page.goto("/guardrails/repositories/github%3A1");

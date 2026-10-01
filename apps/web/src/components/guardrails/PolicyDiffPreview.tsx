@@ -8,7 +8,7 @@ export function PolicyDiffPreview({ before, after }: { before: GuardrailPolicy; 
   return (
     <section className="bench-panel min-w-0" aria-labelledby="policy-diff-title">
       <div className="border-b px-4 py-2.5">
-        <div className="bench-label text-primary">EXACT JSON DIFF</div>
+        <div className="bench-label text-primary">{t("guardrails.diffSection")}</div>
         <h2 id="policy-diff-title" className="mt-0.5 text-sm font-semibold">{t("guardrails.diffTitle")}</h2>
       </div>
       <div className="grid min-w-0 lg:grid-cols-2">

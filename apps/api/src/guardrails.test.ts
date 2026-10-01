@@ -213,7 +213,9 @@ function dependencies(options: {
   baseline?: RepositoryBaseline;
   hasProtectedBranchAction?: boolean;
   baselineGateError?: boolean;
+  baselineBuildingError?: boolean;
   removeRepositoryError?: string;
+  remotePolicyError?: Error;
   /** Level 1 of the precedence: whether the repository carries its own file. */
   repositoryFileWins?: boolean;
   fileInvalidReason?: string | null;
@@ -352,6 +354,7 @@ function dependencies(options: {
     readPolicy: () => defaultGuardrailPolicy(),
     readRemotePolicy: async (value) => {
       remotePolicyReads.push(value.repositoryKey);
+      if (options.remotePolicyError) throw options.remotePolicyError;
       const fileWins = options.repositoryFileWins ?? true;
       return {
         policy: sentinelPolicy !== null && !fileWins ? sentinelPolicy.policy : defaultGuardrailPolicy(),
@@ -473,6 +476,7 @@ function dependencies(options: {
     },
     hasProtectedBranchAction: () => options.hasProtectedBranchAction ?? false,
     startBaselineGate: async (value) => {
+      if (options.baselineBuildingError) throw new Error("repository_baseline_building");
       baselineGates.push(value.repositoryKey);
       if (options.baselineGateError) throw new TargetPreviewError("target_preview_invalid");
       return { ...currentGate, id: "baseline-gate-1", startedAt: "2026-10-01T12:30:00.000Z" };
@@ -1094,6 +1098,31 @@ test("building the baseline now starts a protected-branch gate and marks it buil
     repositoryKey: remote.repositoryKey,
     requestedAt: "2026-10-01T12:30:00.000Z",
   }]);
+});
+
+test("a second press while a build is in flight is refused, and spends nothing", async () => {
+  const remote = remoteRepository();
+  const deps = dependencies({ repository: remote, baselineBuildingError: true });
+  const response = await createGuardrailsApp(deps).request(
+    `/guardrails/repositories/${encodeURIComponent(remote.repositoryKey)}/baseline`,
+    { method: "POST" },
+  );
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error, "repository_baseline_building");
+  assert.deepEqual(deps.baselineGates, []);
+  assert.deepEqual(deps.baselineRequests, []);
+});
+
+test("a GitHub outage reading the policy is reported as an outage, not a bad request", async () => {
+  const remote = remoteRepository();
+  const deps = dependencies({ repository: remote, remotePolicyError: new Error("github_unreachable") });
+  const response = await createGuardrailsApp(deps).request(
+    `/guardrails/repositories/${encodeURIComponent(remote.repositoryKey)}/policy`,
+  );
+  // 400 told the operator their request was wrong. It was GitHub that was down, and
+  // the rest of the repository page does not need GitHub at all.
+  assert.equal(response.status, 502);
+  assert.equal((await response.json()).error, "github_unreachable");
 });
 
 test("a baseline request that cannot start a gate writes no building row", async () => {

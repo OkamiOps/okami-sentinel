@@ -100,6 +100,8 @@ interface GuardrailsScenario {
   enrollResponse?: { enrolled: GuardrailRepositoryListRow[]; skipped: GuardrailEnrollmentSkip[] };
   /** `DELETE` refuses because a gate is still running. */
   deleteConflict?: boolean;
+  /** `GET .../policy` fails the way a GitHub outage makes it fail. */
+  policyOutage?: boolean;
   artifact?: unknown;
 }
 
@@ -165,7 +167,10 @@ export async function mockGuardrails(page: Page, scenario: GuardrailsScenario = 
         state.repositories = state.repositories.filter((row) => row.repositoryKey !== repositoryKey);
         return route.fulfill({ status: 204 });
       }
-      if (sub === "policy" && request.method() === "GET") return json(state.policy);
+      if (sub === "policy" && request.method() === "GET") {
+        if (scenario.policyOutage) return json({ error: "github_unavailable" }, 502);
+        return json(state.policy);
+      }
       if (sub === "policy" && request.method() === "PUT") {
         const body = request.postDataJSON() as { policy: GuardrailPolicy };
         state.policyWrites.push(body);

@@ -38,12 +38,16 @@ export function BaselineCard({
 }) {
   const { t, locale } = useI18n();
   const tone = baselineToneOf(baseline);
+  // A second press while the first build runs is refused by the route with a 409. A
+  // button that can only fail is worse than no button: the control goes inert and the
+  // reason is written next to it.
+  const building = baseline.state === "building";
 
   return <Panel
     label={t("guardrails.baselineSection")}
     title={t("guardrails.baselineSectionTitle")}
     wrapTitle
-    aside={canBuild && <Button type="button" size="sm" disabled={busy} onClick={onBuild}>
+    aside={canBuild && <Button type="button" size="sm" disabled={busy || building} onClick={onBuild}>
       <Hammer aria-hidden className="size-3" />
       {busy ? t("guardrails.baselineBuildStarting") : t("guardrails.baselineBuildNow")}
     </Button>}
@@ -98,8 +102,12 @@ export function BaselineCard({
       {t("guardrails.baselineNoPushAction")}
     </p>}
 
+    {/* One line under the button: what it costs and which executor runs it — the
+        repository's default does not decide this run. */}
     {canBuild && <p className="border-t px-4 py-3 text-[11px] leading-relaxed text-muted-foreground">
-      {t("guardrails.baselineBuildCost")}
+      {building
+        ? t("guardrails.baselineBuildInFlight")
+        : `${t("guardrails.baselineBuildCost")} ${t("guardrails.baselineBuildExecutor")}`}
     </p>}
   </Panel>;
 }

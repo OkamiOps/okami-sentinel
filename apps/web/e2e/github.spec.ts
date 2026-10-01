@@ -46,8 +46,8 @@ test("names the permission and the event the App is missing", async ({ page }) =
   // The checklist stops at the first unmet step and never claims what follows.
   await expect(page.getByRole("listitem").filter({ hasText: "Permissions granted" })).toContainText("pending");
   await expect(page.getByRole("listitem").filter({ hasText: "Delivery verified" })).toContainText("pending");
-  // And the last step says it is phase 2's, not that it failed.
-  await expect(page.getByRole("listitem").filter({ hasText: "Baseline ready" })).toContainText("arriving in phase 2");
+  // The baseline step reads the projection now: no repository has one here.
+  await expect(page.getByRole("listitem").filter({ hasText: "Baseline ready" })).toContainText("pending");
 });
 
 test("tells the four installation states apart", async ({ page }) => {

@@ -16,7 +16,9 @@ import {
 import { createGitHubAction, ensureGitHubActionsSchema } from "../github-actions/store.js";
 import { defaultToImmediateTransactions } from "../sqlite.js";
 import {
+  backfillRepositoryBaselines,
   ensureRepositoryBaselineSchema,
+  getRepositoryBaselineState,
   refreshRepositoryBaselineState,
 } from "./baseline-state.js";
 import { policyForPreset } from "./policy-presets.js";
@@ -184,6 +186,23 @@ test("the default executor and the comment toggle are editable, and nothing else
   assert.equal(listGuardrailRepositoryRows(db)[0]?.prCommentDetail, "detailed");
 });
 
+test("the projection is backfilled for a repository enrolled before it existed", () => {
+  // The baseline table arrives in a later release than the registry. A repository
+  // that already merged on its protected branch paid for that scan; if the new table
+  // started empty the screen would say "sem baseline" and ask for the money again.
+  const db = memoryDb();
+  upsertGuardrailRepository(repository(), db);
+  insertGateRun(gate(), db);
+  db.prepare("DELETE FROM guardrail_repository_baselines").run();
+
+  assert.equal(backfillRepositoryBaselines(db), 1);
+
+  assert.equal(getRepositoryBaselineState("github:1", db).state, "ready");
+  assert.equal(getRepositoryBaselineState("github:1", db).gateId, "gate-1");
+  // A second pass is a no-op: the row now exists, decided.
+  assert.equal(backfillRepositoryBaselines(db), 0);
+});
+
 test("patching an unknown repository reports it rather than inventing one", () => {
   const db = memoryDb();
   assert.equal(patchGuardrailRepository("github:absent", { enabled: false }, db), null);
@@ -206,6 +225,7 @@ test("deleting a repository takes its gates, policy and baseline with it", () =>
       builtAt: "2026-10-01T10:05:00.000Z",
       incompatibleReason: null,
     }),
+    hasRunningBuild: () => false,
   });
 
   assert.equal(deleteGuardrailRepository("github:1", db), true);
@@ -273,6 +293,7 @@ test("lists repositories with baseline, action count and last verdict in one cal
       builtAt: "2026-10-01T10:05:00.000Z",
       incompatibleReason: null,
     }),
+    hasRunningBuild: () => false,
   });
 
   const row = listGuardrailRepositoryRows(db)[0]!;
