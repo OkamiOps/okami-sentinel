@@ -21,7 +21,6 @@ export function GuardrailSetupPage() {
   const [actionsStatus, setActionsStatus] = useState<GuardrailActionsStatus | null>(null);
   const [caller, setCaller] = useState<GuardrailCallerWorkflow | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [baselineError, setBaselineError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [permissionRecovery, setPermissionRecovery] = useState<GitHubPermissionRecovery | null>(null);
   const [workflowPermissionBlocked, setWorkflowPermissionBlocked] = useState(false);
@@ -74,29 +73,10 @@ export function GuardrailSetupPage() {
 
   useEffect(() => { void loadRepositories(); }, [loadRepositories]);
   useEffect(() => {
-    setBaselineError(null);
     setMessage(null);
     setWorkflowPermissionBlocked(false);
     if (selected) void loadStatus(selected);
   }, [selected?.repositoryKey, loadStatus]);
-
-  async function syncBaseline() {
-    if (!selected) return;
-    setBusy(true);
-    setBaselineError(null);
-    setMessage(null);
-    try {
-      await api.buildGuardrailBaseline(selected.repositoryKey);
-      setMessage(t("guardrails.baselineBuilding"));
-      await loadStatus(selected);
-    } catch (error) {
-      // `formatApiError` turns the route's code into the operator's sentence; the raw
-      // message was a wire code on screen.
-      setBaselineError(formatApiError(error, t));
-    } finally {
-      setBusy(false);
-    }
-  }
 
   async function configureWorkflow(triggers: GuardrailAutomationTriggers) {
     if (!selected) return;
@@ -136,7 +116,7 @@ export function GuardrailSetupPage() {
             </div>
           </section>
           {selected.source === "github" ? (
-            status ? <GitHubStatusPanel repository={selected} status={status} actionsStatus={actionsStatus} callerWorkflow={caller} baselineError={baselineError} busy={busy} permissionRecovery={permissionRecovery} workflowPermissionBlocked={workflowPermissionBlocked} onRefresh={() => loadStatus(selected)} onConfigureWorkflow={configureWorkflow} onSyncBaseline={syncBaseline} /> : !loadError ? <Loading /> : null
+            status ? <GitHubStatusPanel repository={selected} status={status} actionsStatus={actionsStatus} callerWorkflow={caller} busy={busy} permissionRecovery={permissionRecovery} workflowPermissionBlocked={workflowPermissionBlocked} onRefresh={() => loadStatus(selected)} onConfigureWorkflow={configureWorkflow} /> : !loadError ? <Loading /> : null
           ) : (
             <section className="bench-panel bench-corners"><EmptyState title={t("guardrails.localExecutionTitle")} description={t("guardrails.localExecutionDescription")} /></section>
           )}

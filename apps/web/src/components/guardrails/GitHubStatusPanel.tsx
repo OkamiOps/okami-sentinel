@@ -18,31 +18,24 @@ export function GitHubStatusPanel({
   status,
   actionsStatus,
   callerWorkflow,
-  baselineError,
   busy,
   permissionRecovery,
   workflowPermissionBlocked,
   onRefresh,
   onConfigureWorkflow,
-  onSyncBaseline,
 }: {
   repository: GuardrailRepository;
   status: GuardrailGitHubStatus;
   actionsStatus: GuardrailActionsStatus | null;
   callerWorkflow: GuardrailCallerWorkflow | null;
-  baselineError: string | null;
   busy: boolean;
   permissionRecovery: GitHubPermissionRecovery | null;
   workflowPermissionBlocked: boolean;
   onRefresh: () => Promise<void>;
   onConfigureWorkflow: (triggers: GuardrailAutomationTriggers) => Promise<void>;
-  onSyncBaseline: () => Promise<void>;
 }) {
   const { t } = useI18n();
-  const { can, isAdmin } = useAuth();
-  // Building a baseline is an admin's spend, and the route says so. An operator who
-  // saw the button here only ever got a 403 back.
-  const canSyncBaseline = isAdmin;
+  const { can } = useAuth();
   const canConfigureWorkflow = can("maintainer", repository.repositoryKey);
   const { t: tb } = useScopedI18n(githubBranchesMessages);
   const [branchInput, setBranchInput] = useState(actionsStatus?.triggers?.branches?.join(", ") ?? "");
@@ -157,8 +150,6 @@ export function GitHubStatusPanel({
             <div className="p-5 xl:p-6">
               <div className="bench-label">BASELINE ARTIFACT</div>
               <p className="mt-2 text-xs leading-5 text-muted-foreground">{status.baseline.ready ? t("guardrails.baselineAuthorityReady") : status.baseline.message}</p>
-              {baselineError && <p className="mt-4 break-words border border-destructive/40 bg-destructive/[.04] p-3 text-xs leading-5 text-destructive">{baselineError}</p>}
-              {canSyncBaseline && <Button className="mt-4 min-h-11 w-full" disabled={busy || !remoteReady || (repository.defaultExecutor === "github-actions" && !actionsReady)} onClick={() => void onSyncBaseline()}><RotateCw aria-hidden size={14} />{t("guardrails.syncBaseline")}</Button>}
               <p className="mt-3 text-[10px] leading-4 text-muted-foreground">{t("guardrails.baselineArtifactHint")}</p>
             </div>
           </div>
