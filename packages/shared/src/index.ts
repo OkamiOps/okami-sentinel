@@ -1,6 +1,7 @@
 import type { EmailQueueSkip, UserLocale } from "./email.js";
 
 export * from "./email.js";
+export * from "./guardrail-policy-presets.js";
 export * from "./notifications.js";
 export * from "./user-agent.js";
 
@@ -1411,6 +1412,12 @@ export interface GuardrailRepositoryPatch {
   defaultExecutor?: GateExecutorKind;
   prCommentEnabled?: boolean;
 }
+
+/**
+ * How many repositories one enrolment request may carry. The API refuses past it,
+ * and the multi-select has to refuse before sending rather than learn by 400.
+ */
+export const MAX_GUARDRAIL_ENROLLMENT_BATCH = 50;
 
 /** Why a repository in a bulk enrolment produced no row. A normal result, not a failure. */
 export interface GuardrailEnrollmentSkip {

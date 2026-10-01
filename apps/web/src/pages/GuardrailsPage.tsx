@@ -1,17 +1,27 @@
 import { repositoryPickerMessages } from "../i18n/repository-picker";
 import { useScopedI18n } from "../i18n/scoped";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type {
   DecisionGraphNode,
   GateArtifact,
   GateRun,
   GuardrailRepository,
+  GuardrailRepositoryListRow,
   ScanRun,
 } from "@csb/shared";
-import { ArrowRight, GitBranch, HardDrive, Plus, Search, ShieldAlert, ShieldCheck, Square, Workflow } from "lucide-react";
+import { ArrowRight, GitBranch, HardDrive, Plus, Square } from "lucide-react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
-import { api, type EnrollGuardrailRepositoryRequest, type GuardrailActionsStatus } from "../api";
+import {
+  api,
+  type EnrollGuardrailRepositoriesRequest,
+  type EnrollGuardrailRepositoriesResponse,
+  type EnrollGuardrailRepositoryRequest,
+} from "../api";
+import { ConfirmDialog } from "../components/access/ConfirmDialog";
+import { baselineReasonKey, baselineToneOf } from "../lib/guardrail-repository-page";
+import { policySourceLabelKey } from "../lib/guardrail-repository-page";
+import { Panel } from "../components/ui";
 import { revalidateSession, useAuth } from "../auth/AuthProvider";
 import {
   DecisionGraph,
@@ -27,7 +37,9 @@ import {
 } from "../components/guardrails";
 import { AlertBanner, EmptyState, Loading, PageHeader, cx } from "../components/ui";
 import {
+  baselineNoticeKey,
   bootstrapBranchLabel,
+  gateBaselineNotice,
   guardrailHref,
   isGateActive,
   isProtectedBranchBaselineRun,
@@ -37,29 +49,21 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { formatDuration, formatUsd } from "../format";
-import { formatApiError } from "../lib/http";
-import { useI18n } from "../i18n";
+import { formatUsd } from "../format";
+import { ApiError, formatApiError } from "../lib/http";
+import { useI18n, type TranslationKey } from "../i18n";
 
 type GuardrailsState =
   | { status: "loading" }
   | { status: "error"; message: string }
   | {
       status: "ready";
-      repositories: GuardrailRepository[];
+      repositories: GuardrailRepositoryListRow[];
       gates: GateRun[];
       selectedGate: GateRun | null;
       artifact: GateArtifact | null;
       scans: ScanRun[];
-      readiness: Record<string, RepositoryReadiness>;
     };
-
-type RepositoryReadiness = {
-  authorityReady: boolean;
-  baselineReady: boolean;
-  executorReady: boolean;
-  executorCode: GuardrailActionsStatus["code"] | "managed" | "unavailable";
-};
 
 export function GuardrailsPage() {
   const { t, locale } = useI18n();
@@ -74,6 +78,7 @@ export function GuardrailsPage() {
   const [enrollOpen, setEnrollOpen] = useState(false);
   const [runOpen, setRunOpen] = useState(false);
   const [runRepositoryKey, setRunRepositoryKey] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<GuardrailRepositoryListRow | null>(null);
 
   const load = useCallback(async () => {
     setState({ status: "loading" });
@@ -84,38 +89,9 @@ export function GuardrailsPage() {
         gateId ? api.getGate(gateId) : Promise.resolve(null),
         api.listScans(),
       ]);
-      const readinessEntries = await Promise.all(repositoryList.repositories.map(async (repository) => {
-        if (repository.source === "local") {
-          return [repository.repositoryKey, {
-            authorityReady: true,
-            baselineReady: gateList.gates.some((gate) => gate.repositoryKey === repository.repositoryKey
-              && gate.status === "completed" && gate.outcome !== "error" && isProtectedBranchBaselineRun(gate)),
-            executorReady: true,
-            executorCode: "managed",
-          } satisfies RepositoryReadiness] as const;
-        }
-        try {
-          const [github, actions] = await Promise.all([
-            api.getGuardrailGitHubStatus(repository.repositoryKey),
-            api.getGuardrailActionsStatus(repository.repositoryKey),
-          ]);
-          const authorityReady = github.status.remote.ready && github.status.auth.ready && github.status.permissions.ready;
-          return [repository.repositoryKey, {
-            authorityReady,
-            baselineReady: gateList.gates.some((gate) => gate.repositoryKey === repository.repositoryKey
-              && gate.status === "completed" && gate.outcome !== "error" && isProtectedBranchBaselineRun(gate)),
-            executorReady: authorityReady && (repository.defaultExecutor === "sentinel-managed" || actions.status.ready),
-            executorCode: repository.defaultExecutor === "sentinel-managed" ? "managed" : actions.status.code,
-          } satisfies RepositoryReadiness] as const;
-        } catch {
-          return [repository.repositoryKey, {
-            authorityReady: false,
-            baselineReady: false,
-            executorReady: false,
-            executorCode: "unavailable",
-          } satisfies RepositoryReadiness] as const;
-        }
-      }));
+      // No remote call per repository: everything the list shows travels on the row.
+      // The old readiness probe cost two GitHub reads per enrolled repository on
+      // every load of this page, which is the N+1 the list was rebuilt to remove.
       const selected = selectedResponse?.gate ?? (gateId ? selectGate(gateList.gates, gateId) : null);
       const detail = selectedResponse ?? (selected ? await api.getGate(selected.id) : null);
       setState({
@@ -127,7 +103,6 @@ export function GuardrailsPage() {
         selectedGate: detail?.gate ?? selected,
         artifact: detail?.artifact ?? null,
         scans: scanList.scans,
-        readiness: Object.fromEntries(readinessEntries),
       });
     } catch (error) {
       setState({
@@ -136,6 +111,12 @@ export function GuardrailsPage() {
       });
     }
   }, [gateId]);
+
+  /** Re-reads the rows in place, leaving whatever is open on screen open. */
+  const refreshRepositories = useCallback(async () => {
+    const { repositories } = await api.listGuardrailRepositories();
+    setState((current) => current.status === "ready" ? { ...current, repositories } : current);
+  }, []);
 
   const refreshGate = useCallback((selectedId: string) => {
     void api.getGate(selectedId).then((response) => {
@@ -228,6 +209,54 @@ export function GuardrailsPage() {
     }
   }
 
+  async function enrollBatch(request: EnrollGuardrailRepositoriesRequest): Promise<EnrollGuardrailRepositoriesResponse> {
+    setBusy(true);
+    setActionError(null);
+    try {
+      const answer = await api.enrollGuardrailRepositories(request);
+      // The rows are refreshed **without** going through `load()`: that sets the page
+      // back to its loading state, which unmounts the sheet — and with it the partial
+      // result the operator is reading and the selection they just made.
+      await refreshRepositories();
+      return answer;
+    } catch (error) {
+      setActionError(formatApiError(error, t));
+      throw error;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function setRepositoryEnabled(repositoryKey: string, enabled: boolean) {
+    setBusy(true);
+    setActionError(null);
+    try {
+      await api.patchGuardrailRepository(repositoryKey, { enabled });
+      await refreshRepositories();
+    } catch (error) {
+      setActionError(formatApiError(error, t) || t("guardrails.repositoryPatchError"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeRepository(repositoryKey: string) {
+    setBusy(true);
+    setActionError(null);
+    try {
+      await api.deleteGuardrailRepository(repositoryKey);
+      setRemoving(null);
+      await refreshRepositories();
+    } catch (error) {
+      setActionError(error instanceof ApiError && error.message === "repository_has_active_gate"
+        ? t("guardrails.removeRepositoryBusy")
+        : formatApiError(error, t) || t("guardrails.removeRepositoryError"));
+      setRemoving(null);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function cancelSelected() {
     const selectedGateId = readyState.selectedGate?.id;
     if (!selectedGateId) return;
@@ -278,13 +307,15 @@ export function GuardrailsPage() {
   const bootstrapBranch = readyState.selectedGate
     ? bootstrapBranchLabel(readyState.selectedGate, readyState.artifact, selectedRepository?.defaultBranch)
     : "";
+  const noticeKey = baselineNoticeKey(gateBaselineNotice(readyState.artifact));
+  const baselineNoticeMessage = noticeKey === null ? null : t(noticeKey);
 
   return (
     <div className="min-w-0">
       <PageHeader
         code="03 / GUARDRAILS"
         title={gateId ? t("guardrails.title") : t("guardrails.projectsTitle")}
-        description={gateId ? t("guardrails.description") : t("guardrails.projectsDescription")}
+        description={gateId ? t("guardrails.description") : t("guardrails.projectsDescriptionPhase2")}
         actions={(
           <>
             {gateId && <Button asChild variant="outline" className="min-h-11"><Link to="/guardrails"><ArrowRight aria-hidden size={14} className="rotate-180" />{t("guardrails.backProjects")}</Link></Button>}
@@ -300,7 +331,7 @@ export function GuardrailsPage() {
             {readyState.selectedGate && !selectedGateActive && (
               <DeleteGateButton gate={readyState.selectedGate} onDeleted={() => handleGateDeleted(readyState.selectedGate!.id)} />
             )}
-            {isAdmin && <EnrollmentSheet open={enrollOpen} onOpenChange={setEnrollOpen} busy={busy} onEnroll={enroll} />}
+            {isAdmin && <EnrollmentSheet open={enrollOpen} onOpenChange={setEnrollOpen} busy={busy} onEnroll={enroll} onEnrollBatch={enrollBatch} />}
             {isAdmin && (
               <GuardrailPreflightSheet
                 repositories={readyState.repositories}
@@ -327,22 +358,41 @@ export function GuardrailsPage() {
           onSelect={selectLane}
         />
       ) : (
-        <GuardrailLaunchpad
-          repositories={readyState.repositories}
-          readiness={readyState.readiness}
-          gates={readyState.gates}
-          onRun={(repositoryKey) => { setRunRepositoryKey(repositoryKey); setRunOpen(true); }}
-          onOpenGate={(gate) => navigate(guardrailHref(gate.id))}
-        />
+        <>
+          <RepositoryList
+            repositories={readyState.repositories}
+            busy={busy}
+            canAdminister={isAdmin}
+            onToggle={(repositoryKey, enabled) => void setRepositoryEnabled(repositoryKey, enabled)}
+            onRemove={setRemoving}
+          />
+          <GateList repositories={readyState.repositories} gates={readyState.gates} />
+        </>
       )}
+
+      {removing !== null && <ConfirmDialog
+        open
+        destructive
+        pending={busy}
+        onOpenChange={(open) => { if (!open) setRemoving(null); }}
+        title={t("guardrails.removeRepositoryTitle", { name: removing.displayName })}
+        description={t("guardrails.removeRepositoryConfirm")}
+        onConfirm={() => void removeRepository(removing.repositoryKey)}
+      />}
 
       {readyState.selectedGate && readyState.selectedGate.error && (
         <div className="mt-4"><AlertBanner>{gateFailureMessage(readyState.selectedGate.error, t)}</AlertBanner></div>
       )}
+      {/* A gate that had nothing to compare against says so in the words the artifact
+          recorded, including *why* when an existing baseline was not comparable. The
+          older "run the gate on main" sentence is kept for a protected-branch run and
+          for artifacts written before the notice existed. */}
       {readyState.selectedGate?.outcome === "bootstrap" && (
         <div className="mt-4"><AlertBanner tone="warning">{protectedBaseline
           ? t("guardrails.bootstrapProtected", { branch: bootstrapBranch })
-          : t("guardrails.bootstrapMissing", { branch: bootstrapBranch })}</AlertBanner></div>
+          : baselineNoticeMessage === null
+            ? t("guardrails.bootstrapMissing", { branch: bootstrapBranch })
+            : baselineNoticeMessage}</AlertBanner></div>
       )}
       {readyState.selectedGate?.outcome === "no_changes" && (
         <div className="mt-4"><AlertBanner tone="success">{t("guardrails.noChangesBanner")}</AlertBanner></div>
@@ -415,132 +465,242 @@ function gateFailureMessage(code: string, t: ReturnType<typeof useI18n>["t"]): s
   return code;
 }
 
-function GuardrailLaunchpad({ repositories, readiness, gates, onRun, onOpenGate }: { repositories: readonly GuardrailRepository[]; readiness: Readonly<Record<string, RepositoryReadiness>>; gates: readonly GateRun[]; onRun: (repositoryKey: string) => void; onOpenGate: (gate: GateRun) => void }) {
+/**
+ * One grid for the header and every row, so the baseline, the last analysis, the
+ * action count and the verdict start at the same x on every line instead of being
+ * measured by whatever that row's buttons happen to be.
+ */
+const REPOSITORY_GRID = "xl:grid-cols-[minmax(0,0.9fr)_minmax(0,2.4fr)_17rem]";
+
+/** The five cells of a repository row, header and body on the same tracks. */
+const REPOSITORY_CELLS = "sm:grid-cols-[minmax(0,0.9fr)_minmax(0,1.4fr)_minmax(0,0.9fr)_minmax(0,0.8fr)_minmax(0,1fr)]";
+
+const BASELINE_TONE = {
+  good: "border-chart-2/45 text-chart-2",
+  warning: "border-chart-3/45 text-chart-3",
+  active: "border-primary/45 text-primary",
+  neutral: "border-border text-muted-foreground",
+  risk: "border-destructive/45 text-destructive",
+} as const;
+
+/**
+ * `/guardrails` — the repositories under guardrail. Everything on a row travels on
+ * the row: no GitHub call, and no second request per repository.
+ */
+function RepositoryList({ repositories, busy, canAdminister, onToggle, onRemove }: {
+  repositories: readonly GuardrailRepositoryListRow[];
+  busy: boolean;
+  canAdminister: boolean;
+  onToggle: (repositoryKey: string, enabled: boolean) => void;
+  onRemove: (repository: GuardrailRepositoryListRow) => void;
+}) {
   const { t, locale } = useI18n();
-  const { isAdmin } = useAuth();
-  const [selectedKey, setSelectedKey] = useState(repositories[0]?.repositoryKey ?? "");
-  const [selectedGateId, setSelectedGateId] = useState<string | null>(null);
-  const [projectQuery, setProjectQuery] = useState("");
-  const [linkedScan, setLinkedScan] = useState<ScanRun | null>(null);
-  const [linkedScanState, setLinkedScanState] = useState<"idle" | "loading" | "ready" | "error">("idle");
-  const [linkedScanError, setLinkedScanError] = useState<string | null>(null);
-  const linkedScanRequest = useRef(0);
-  const repository = repositories.find((item) => item.repositoryKey === selectedKey) ?? repositories[0] ?? null;
-  const repositoryGates = repository ? [...gates].filter((gate) => gate.repositoryKey === repository.repositoryKey).sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt)) : [];
-  const selectedGate = repositoryGates.find((gate) => gate.id === selectedGateId) ?? repositoryGates[0] ?? null;
-  const repoReadiness = repository ? readiness[repository.repositoryKey] : null;
-  const scanReady = repoReadiness?.executorReady === true;
-  const matchingRepositories = repositories.filter((item) => `${item.displayName} ${item.defaultBranch} ${item.defaultExecutor}`.toLowerCase().includes(projectQuery.trim().toLowerCase()));
-  const setupHref = repository ? `/guardrails/setup?repository=${encodeURIComponent(repository.repositoryKey)}` : "/guardrails/setup";
+  return <Panel
+    className="mb-4"
+    label={t("guardrails.repositoriesSection")}
+    title={t("guardrails.repositoriesTitle")}
+    wrapTitle
+  >
+    <p className="border-b px-4 py-3 text-xs leading-relaxed text-muted-foreground">
+      {t("guardrails.repositoriesDescription")}
+    </p>
+    {repositories.length === 0
+      ? <EmptyState title={t("guardrails.repositoriesEmpty")} description={t("guardrails.repositoriesEmptyDescription")} />
+      : <>
+        <div className={cx("hidden gap-3 border-b bg-secondary/[.16] px-4 py-2", REPOSITORY_GRID, "xl:grid")}>
+          <span className="bench-label">{t("guardrails.column.repository")}</span>
+          <dl className={cx("grid gap-x-4", REPOSITORY_CELLS)}>
+            <span className="bench-label pl-3">{t("guardrails.column.baseline")}</span>
+            <span className="bench-label pl-3">{t("guardrails.column.verdict")}</span>
+            <span className="bench-label pl-3">{t("guardrails.column.lastAnalysis")}</span>
+            <span className="bench-label pl-3">{t("guardrails.column.actions")}</span>
+            <span className="bench-label pl-3">{t("guardrails.column.policy")}</span>
+          </dl>
+          <span />
+        </div>
+        <ul className="divide-y">
+          {repositories.map((repository) => {
+            const tone = baselineToneOf(repository.baseline);
+            const reasonKey = baselineReasonKey(repository.baseline);
+            return <li key={repository.repositoryKey}>
+              <article className={cx("grid min-w-0 gap-3 px-4 py-4 xl:items-start", REPOSITORY_GRID)}>
+                <div className="min-w-0">
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <Link
+                      to={`/guardrails/repositories/${encodeURIComponent(repository.repositoryKey)}`}
+                      className="min-w-0 break-words text-sm font-semibold hover:underline"
+                    >{repository.displayName}</Link>
+                    {!repository.enabled && <span className="inline-flex h-5 shrink-0 items-center border border-border px-1.5 font-mono text-[8px] uppercase tracking-wider text-muted-foreground">
+                      {t("guardrails.stateDisabled")}
+                    </span>}
+                  </div>
+                  <div className="mt-1 flex min-w-0 items-center gap-1 break-all font-mono text-[10px] text-muted-foreground">
+                    {repository.source === "github" ? <GitBranch aria-hidden size={10} className="shrink-0" /> : <HardDrive aria-hidden size={10} className="shrink-0" />}
+                    {repository.defaultBranch}
+                  </div>
+                </div>
 
-  const loadLinkedScan = useCallback(async (scanId: string) => {
-    const requestId = ++linkedScanRequest.current;
-    setLinkedScanState("loading");
-    setLinkedScanError(null);
-    try {
-      const { scan } = await api.getScan(scanId);
-      if (requestId !== linkedScanRequest.current) return;
-      setLinkedScan(scan);
-      setLinkedScanState("ready");
-    } catch (error) {
-      if (requestId !== linkedScanRequest.current) return;
-      setLinkedScan(null);
-      setLinkedScanState("error");
-      setLinkedScanError(formatApiError(error, t));
-    }
-  }, [t]);
+                <dl className={cx("grid min-w-0 grid-cols-2 gap-x-4 gap-y-3", REPOSITORY_CELLS)}>
+                  <RepositoryCell label={t("guardrails.column.baseline")}>
+                    {/* The word is the chip; the reason is a line under it, so a stale
+                        baseline does not wrap a two-line sentence inside a border and
+                        make this row taller than the ones beside it. */}
+                    <span className={cx(
+                      "inline-flex h-5 items-center gap-1.5 border px-1.5 font-mono text-[8px] uppercase tracking-wider",
+                      BASELINE_TONE[tone],
+                    )}>
+                      <span className={cx("size-1 rounded-full bg-current", tone === "active" && "live-dot")} />
+                      {t(`guardrails.baseline.${repository.baseline.state}` as TranslationKey)}
+                    </span>
+                    {reasonKey !== null && <span className="mt-1 block font-mono text-[9px] leading-tight text-muted-foreground">
+                      {t(reasonKey, { code: repository.baseline.staleReason ?? "" })}
+                    </span>}
+                  </RepositoryCell>
+                  <RepositoryCell label={t("guardrails.column.verdict")}>
+                    {repository.lastGate === null
+                      ? <span className="font-mono text-[10px] text-muted-foreground">—</span>
+                      : <Link to={guardrailHref(repository.lastGate.gateId)} className="inline-flex">
+                        <GateOutcomeBadge outcome={repository.lastGate.outcome} status="completed" />
+                      </Link>}
+                  </RepositoryCell>
+                  <RepositoryCell label={t("guardrails.column.lastAnalysis")}>
+                    <span className="font-mono text-[10px]">
+                      {repository.lastGate?.completedAt == null
+                        ? t("guardrails.repositoryNever")
+                        : formatProjectDate(repository.lastGate.completedAt, locale)}
+                    </span>
+                  </RepositoryCell>
+                  <RepositoryCell label={t("guardrails.column.actions")}>
+                    <span className="font-mono text-[10px]">{repository.enabledActionCount}</span>
+                  </RepositoryCell>
+                  <RepositoryCell label={t("guardrails.column.policy")}>
+                    <span className="break-words font-mono text-[10px]">
+                      {t(policySourceLabelKey(repository.policySource, null))}
+                    </span>
+                  </RepositoryCell>
+                </dl>
 
-  useEffect(() => {
-    linkedScanRequest.current++;
-    setLinkedScan(null);
-    setLinkedScanError(null);
-    if (!selectedGate?.scanId) {
-      setLinkedScanState("idle");
-      return;
-    }
-    void loadLinkedScan(selectedGate.scanId);
-    return () => { linkedScanRequest.current++; };
-  }, [loadLinkedScan, selectedGate?.scanId]);
-
-  return <section className="bench-panel bench-corners mb-16 min-w-0 overflow-hidden" aria-labelledby="guardrail-launchpad-title">
-    <div className="grid min-h-[42rem] min-w-0 lg:grid-cols-[17rem_19rem_minmax(0,1fr)]">
-      <aside className="min-w-0 border-b bg-secondary/[.07] lg:border-b-0 lg:border-r" aria-label={t("guardrails.portfolioRepositories")}>
-        <div className="border-b p-4"><div className="flex items-center justify-between gap-3"><span className="bench-label text-primary">{t("guardrails.portfolioRepositories")}</span><span className="font-mono text-[9px]">{repositories.length}</span></div><label className="mt-3 flex h-10 items-center gap-2 border px-3"><Search aria-hidden size={13} className="text-muted-foreground" /><Input value={projectQuery} onChange={(event) => setProjectQuery(event.target.value)} placeholder={t("guardrails.projectSearch")} className="h-full border-0 bg-transparent px-0 text-xs shadow-none focus-visible:ring-0" /></label></div>
-        <div className="max-h-[38rem] overflow-y-auto">{matchingRepositories.map((item) => { const itemReady = readiness[item.repositoryKey]?.executorReady === true; const itemGates = gates.filter((gate) => gate.repositoryKey === item.repositoryKey); const active = item.repositoryKey === repository?.repositoryKey; return <button key={item.repositoryKey} type="button" title={item.displayName} onClick={() => { setSelectedKey(item.repositoryKey); setSelectedGateId(null); }} className={cx("grid w-full min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 border-b px-4 py-4 text-left", active ? "bg-primary/[.08] shadow-[inset_3px_0_var(--primary)]" : "hover:bg-secondary/40")}><span className={cx("grid size-8 place-items-center border", itemReady ? "border-chart-2/50 text-chart-2" : "border-destructive/50 text-destructive")}>{item.source === "github" ? <GitBranch aria-hidden size={14} /> : <HardDrive aria-hidden size={14} />}</span><span className="min-w-0"><strong className="block truncate text-xs">{item.displayName}</strong><span className="mt-1 block truncate font-mono text-[7px] uppercase text-muted-foreground">{item.defaultBranch} · {item.defaultExecutor}</span></span><span className="text-right"><b className={cx("block font-mono text-sm", itemReady ? "text-chart-2" : "text-destructive")}>{itemGates.length}</b><span className="font-mono text-[6px] uppercase text-muted-foreground">gates</span></span></button>; })}{matchingRepositories.length === 0 && <div className="p-4 text-xs text-muted-foreground">{t("guardrails.projectNoMatches")}</div>}</div>
-      </aside>
-
-      <aside className="min-w-0 border-b lg:border-b-0 lg:border-r" aria-label={t("guardrails.projectRecentHistory")}>
-        <div className="border-b p-4"><div className="bench-label text-primary">{t("guardrails.projectRecentHistory")}</div><h2 id="guardrail-launchpad-title" className="mt-2 truncate font-heading text-lg font-semibold">{repository?.displayName ?? t("guardrails.noRepository")}</h2><p className="mt-1 font-mono text-[7px] uppercase text-muted-foreground">{repository?.defaultBranch ?? "—"} · {repositoryGates.length} gates</p></div>
-        <div className="max-h-[38rem] overflow-y-auto">{repositoryGates.map((gate) => { const active = gate.id === selectedGate?.id; return <button key={gate.id} type="button" onClick={() => setSelectedGateId(gate.id)} className={cx("w-full min-w-0 border-b px-4 py-4 text-left", active ? "bg-primary/[.06] shadow-[inset_3px_0_var(--primary)]" : "hover:bg-secondary/40")}><div className="flex items-center justify-between gap-2"><GateOutcomeBadge outcome={gate.outcome} status={gate.status} protectedBaseline={isProtectedBranchBaselineRun(gate)} /><span className="font-mono text-[7px] text-muted-foreground">{formatProjectDate(gate.startedAt, locale)}</span></div><strong className="mt-3 block truncate text-sm">{gate.pullRequestNumber ? `PR #${gate.pullRequestNumber}` : gate.headRef}</strong><span className="mt-1 block truncate font-mono text-[8px] text-muted-foreground">{gate.headRef}</span><div className="mt-3 flex items-center justify-between font-mono text-[8px]"><span className="text-muted-foreground">{gate.executor}</span><span className="text-primary">{gate.estimatedUsd > 0 ? formatUsd(gate.estimatedUsd) : "—"}</span></div></button>; })}{repositoryGates.length === 0 && <div className="p-5"><ProjectChartEmpty title={t("guardrails.projectNoGates")} detail={t("guardrails.projectNoGatesDescription")} /></div>}</div>
-      </aside>
-
-      <main className="min-w-0">
-        {repository ? <>
-          <header className="grid gap-5 border-b p-5 md:grid-cols-[minmax(0,1fr)_auto] md:p-7"><div className="min-w-0"><div className={cx("flex items-center gap-2 bench-label", scanReady ? "text-chart-2" : "text-destructive")}>{scanReady ? <ShieldCheck aria-hidden size={14} /> : <ShieldAlert aria-hidden size={14} />}{scanReady ? t("guardrails.readyToProtect") : t("guardrails.actionRequired")}</div><h2 className="mt-3 break-words font-heading text-2xl font-semibold">{repository.displayName}</h2><p className="mt-2 font-mono text-[8px] uppercase text-muted-foreground">{repository.source} · {repository.defaultBranch} · {repository.defaultExecutor}</p></div><div className="flex gap-2 md:flex-col"><Button asChild variant="configuration" size="sm"><Link to={setupHref}><Workflow aria-hidden size={13} />{t("guardrails.setup")}</Link></Button>{isAdmin && <Button size="sm" disabled={!scanReady} onClick={() => onRun(repository.repositoryKey)}><ArrowRight aria-hidden size={13} />{t("guardrails.scanNow")}</Button>}</div></header>
-          <div className="grid gap-px border-b bg-border sm:grid-cols-3"><SignalFact label={t("guardrails.projectAuthority")} value={repository.source === "github" ? "GitHub App" : "Local root"} primary={repoReadiness?.authorityReady} danger={!repoReadiness?.authorityReady} /><SignalFact label={t("guardrails.projectBaseline")} value={repoReadiness?.baselineReady ? t("guardrails.baselineCandidate") : t("guardrails.baselineUnchecked")} primary={repoReadiness?.baselineReady} danger={!repoReadiness?.baselineReady} /><SignalFact label={t("guardrails.projectExecution")} value={repository.defaultExecutor} primary={scanReady} danger={!scanReady} /></div>
-          {selectedGate ? <div className="p-5 md:p-7"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-3"><GateOutcomeBadge outcome={selectedGate.outcome} status={selectedGate.status} protectedBaseline={isProtectedBranchBaselineRun(selectedGate)} /><span className="font-mono text-[8px] uppercase text-muted-foreground">{formatProjectDate(selectedGate.startedAt, locale)} · {formatProjectTime(selectedGate.startedAt, locale)}</span></div><span className="font-mono text-[8px] uppercase text-muted-foreground">{selectedGate.id}</span></div><div className="mt-7"><div className="bench-label">{t("guardrails.projectTarget")}</div><h3 className="mt-3 break-words font-heading text-3xl font-semibold">{selectedGate.pullRequestNumber ? `PR #${selectedGate.pullRequestNumber}` : selectedGate.headRef}</h3><p className="mt-2 break-all font-mono text-[9px] text-muted-foreground">{selectedGate.baseRef} → {selectedGate.headRef}</p></div><RunInsightPanel gate={selectedGate} scan={linkedScan} scanState={linkedScanState} scanError={linkedScanError} onRetry={() => selectedGate.scanId && void loadLinkedScan(selectedGate.scanId)} t={t} /><div className="mt-7 grid gap-px bg-border sm:grid-cols-2"><RunFact label={t("guardrails.factTargetSha")} value={selectedGate.resolvedHeadSha ?? "—"} /><RunFact label={t("guardrails.factPolicy")} value={selectedGate.policySha ?? "—"} /><RunFact label={t("guardrails.factBaseline")} value={selectedGate.baselineCommit ?? t("guardrails.noBaseline")} /><RunFact label={t("guardrails.factPublication")} value={selectedGate.publishStatus} /></div><Button className="mt-7 w-full" onClick={() => onOpenGate(selectedGate)}>{t("guardrails.openGate")}<ArrowRight aria-hidden size={14} /></Button></div> : <div className="p-8"><ProjectChartEmpty title={t("guardrails.projectNoGates")} detail={t("guardrails.projectNoGatesDescription")} /></div>}
-        </> : <div className="p-8"><EmptyState title={t("guardrails.noRepository")} description={t("guardrails.noRepositoryDescription")} /></div>}
-      </main>
-    </div>
-  </section>;
+                <div className="flex min-w-0 flex-wrap items-center gap-2 xl:justify-end">
+                  <Button asChild variant="outline" size="sm">
+                    <Link to={`/guardrails/repositories/${encodeURIComponent(repository.repositoryKey)}`}>{t("guardrails.openRepository")}</Link>
+                  </Button>
+                  {canAdminister && <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => onToggle(repository.repositoryKey, !repository.enabled)}>
+                    {repository.enabled ? t("guardrails.disableRepository") : t("guardrails.enableRepository")}
+                  </Button>}
+                  {canAdminister && <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="text-destructive hover:text-destructive"
+                    disabled={busy}
+                    onClick={() => onRemove(repository)}
+                  >{t("guardrails.removeRepository")}</Button>}
+                </div>
+              </article>
+            </li>;
+          })}
+        </ul>
+      </>}
+  </Panel>;
 }
 
-function RunFact({ label, value }: { label: string; value: string }) { return <div className="min-w-0 bg-background p-4"><div className="bench-label">{label}</div><div className="mt-2 break-all font-mono text-[9px] leading-5">{value}</div></div>; }
-
-function RunInsightPanel({ gate, scan, scanState, scanError, onRetry, t }: { gate: GateRun; scan: ScanRun | null; scanState: "idle" | "loading" | "ready" | "error"; scanError: string | null; onRetry: () => void; t: ReturnType<typeof useI18n>["t"] }) {
-  if (scanState === "error" && !scan) {
-    return <section className="mt-7"><AlertBanner tone="warning"><div className="flex flex-wrap items-center justify-between gap-3"><span>{scanError ?? t("guardrails.scanUnavailable")}</span><Button type="button" variant="outline" size="sm" onClick={onRetry}>{t("common.retry")}</Button></div></AlertBanner></section>;
-  }
-  if (scanState === "loading" && !scan) {
-    return <section className="mt-7"><Loading label={t("guardrails.telemetryLoading")} /></section>;
-  }
-  const highPlus = scan ? scan.severity.critical + scan.severity.high : null;
-  const severity = scan ? [
-    { label: "Critical", value: scan.severity.critical, color: "var(--chart-4)" },
-    { label: "High", value: scan.severity.high, color: "var(--destructive)" },
-    { label: "Medium", value: scan.severity.medium, color: "var(--chart-3)" },
-    { label: "Low", value: scan.severity.low, color: "var(--chart-2)" },
-    { label: "Info", value: scan.severity.info, color: "var(--muted-foreground)" },
-  ] : [];
-  const total = Math.max(1, scan?.severity.total ?? 0);
-  const priorityRatio = scan && scan.severity.total > 0 ? highPlus! / scan.severity.total : 0;
-  const priorityPercent = Math.round(priorityRatio * 100);
-  const unitCost = scan && scan.severity.total > 0 && gate.estimatedUsd > 0 ? gate.estimatedUsd / scan.severity.total : null;
-
-  return <section className="mt-7 grid gap-px bg-border">
-    <div className="min-w-0 bg-background p-4 md:p-5">
-      <div className="flex flex-wrap items-start justify-between gap-4"><div><div className="bench-label">{t("guardrails.findings")}</div><div className="mt-2 flex items-end gap-5"><strong className="font-mono text-4xl leading-none">{scan?.severity.total ?? "—"}</strong><span className="font-mono text-xs text-destructive">{highPlus == null ? "—" : highPlus} HIGH+</span></div></div><div className="text-right"><div className="bench-label">{t("guardrails.duration")}</div><div className="mt-2 font-mono text-sm">{scan ? formatDuration(scan.durationMs) : "—"}</div></div></div>
-      <div className="mt-5 flex h-3 overflow-hidden bg-muted" aria-label={t("guardrails.severityProfile")}>
-        {severity.map((entry) => entry.value > 0 && <span key={entry.label} title={`${entry.label}: ${entry.value}`} style={{ width: `${entry.value / total * 100}%`, background: entry.color }} />)}
-      </div>
-      <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-5">{severity.map((entry) => <div key={entry.label} className="min-w-0 border-l-2 pl-2" style={{ borderColor: entry.color }}><span className="block truncate font-mono text-[7px] uppercase text-muted-foreground">{entry.label}</span><strong className="mt-1 block font-mono text-sm">{entry.value}</strong></div>)}</div>
-    </div>
-    <div className="grid gap-px bg-border md:grid-cols-3">
-      <div className="min-w-0 bg-background p-4 md:p-5"><div className="bench-label">{t("guardrails.riskDensity")}</div><div className="mt-4 grid grid-cols-[5.5rem_minmax(0,1fr)] items-center gap-4"><div className="relative grid size-20 place-items-center"><svg viewBox="0 0 42 42" className="size-20 -rotate-90" role="img" aria-label={`${priorityPercent}% HIGH+`}><circle cx="21" cy="21" r="15.9" fill="none" stroke="var(--muted)" strokeWidth="3" /><circle cx="21" cy="21" r="15.9" fill="none" stroke="var(--destructive)" strokeWidth="3" strokeDasharray={`${priorityPercent} ${100 - priorityPercent}`} strokeLinecap="butt" /></svg><strong className="absolute font-mono text-lg">{scan ? `${priorityPercent}%` : "—"}</strong></div><div className="min-w-0"><strong className="block font-heading text-lg">{highPlus == null ? "—" : highPlus} HIGH+</strong><p className="mt-2 text-xs leading-5 text-muted-foreground">{t("guardrails.priorityShareDetail")}</p></div></div></div>
-      <div className="min-w-0 bg-background p-4 md:p-5"><div className="bench-label">{t("guardrails.costEfficiency")}</div><div className="mt-5 grid grid-cols-2 gap-px bg-border"><SignalFact label={t("guardrails.unitCost")} value={unitCost === null ? "—" : formatUsd(unitCost)} primary /><SignalFact label={t("guardrails.projectObservedCost")} value={gate.estimatedUsd > 0 ? formatUsd(gate.estimatedUsd) : "—"} /></div><p className="mt-4 text-xs leading-5 text-muted-foreground">{t("guardrails.costEfficiencyDetail")}</p></div>
-      <div className="min-w-0 bg-background p-4 md:p-5"><div className="bench-label">{t("guardrails.executionReadout")}</div><div className="mt-4 border border-primary/30 bg-primary/[.04] px-4 py-4"><div className="bench-label text-primary">{t("guardrails.model")}</div><strong className="mt-2 block break-words font-mono text-base leading-6 text-primary">{scan?.model ?? "—"}</strong></div><div className="mt-px grid grid-cols-2 gap-px bg-border"><SignalFact label={t("guardrails.projectExecutor")} value={scan?.engine ?? gate.executor} /><SignalFact label={t("guardrails.duration")} value={scan ? formatDuration(scan.durationMs) : "—"} /></div></div>
-    </div>
-  </section>;
+function RepositoryCell({ label, children }: { label: string; children: React.ReactNode }) {
+  return <div className="min-w-0 border-l border-border pl-3">
+    {/* Below `xl` each cell carries its own label; at `xl` the header above does, and
+        repeating it would print the same word down one column. */}
+    <dt className="bench-label xl:hidden">{label}</dt>
+    <dd className="mt-1 min-w-0 xl:mt-0">{children}</dd>
+  </div>;
 }
 
-function SignalFact({ label, value, primary = false, danger = false }: { label: string; value: string; primary?: boolean; danger?: boolean }) { return <div className="min-w-0 bg-background px-3 py-3"><div className="bench-label">{label}</div><div className={cx("mt-2 break-words font-mono text-sm font-semibold", primary && "text-primary", danger && "text-destructive")}>{value}</div></div>; }
+/**
+ * The gate list below the repositories. One row per gate, in the order they started,
+ * with the link to the gate's own page — which is where the diff, the decision graph
+ * and the evidence already live. The three-pane launchpad that used to stand here
+ * repeated the repository list above it and guessed a baseline word the projection
+ * now reports, so it said two things about one fact.
+ */
+function GateList({ repositories, gates }: {
+  repositories: readonly GuardrailRepositoryListRow[];
+  gates: readonly GateRun[];
+}) {
+  const { t, locale } = useI18n();
+  const nameOf = (repositoryKey: string) =>
+    repositories.find((row) => row.repositoryKey === repositoryKey)?.displayName ?? repositoryKey;
+  const ordered = [...gates].sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
 
-function ProjectChartEmpty({ title, detail }: { title: string; detail: string }) { return <div className="grid h-full place-content-center border border-dashed px-5 text-center"><strong className="text-sm">{title}</strong><p className="mt-2 max-w-sm text-xs leading-5 text-muted-foreground">{detail}</p></div>; }
+  return <Panel label={t("guardrails.gatesSection")} title={t("guardrails.gatesTitle")} wrapTitle>
+    <p className="border-b px-4 py-3 text-xs leading-relaxed text-muted-foreground">
+      {t("guardrails.gatesDescription")}
+    </p>
+    {ordered.length === 0
+      ? <EmptyState title={t("guardrails.gateHistoryEmpty")} description={t("guardrails.gateHistoryEmptyDescription")} />
+      : <>
+        <div className={cx("hidden gap-3 border-b bg-secondary/[.16] px-4 py-2", GATE_GRID, "xl:grid")}>
+          <span className="bench-label">{t("guardrails.column.repository")}</span>
+          <dl className="grid grid-cols-3 gap-x-4">
+            <span className="bench-label pl-3">{t("guardrails.column.verdict")}</span>
+            <span className="bench-label pl-3">{t("guardrails.column.cost")}</span>
+            <span className="bench-label pl-3">{t("guardrails.column.startedAt")}</span>
+          </dl>
+          <span />
+        </div>
+        <ul className="divide-y">
+          {ordered.map((gate) => <li key={gate.id}>
+            <article className={cx("grid min-w-0 gap-3 px-4 py-4 xl:items-center", GATE_GRID)}>
+              <div className="min-w-0">
+                <strong className="block truncate text-sm">
+                  {gate.pullRequestNumber === null ? gate.headRef : `PR #${gate.pullRequestNumber}`}
+                </strong>
+                <span className="mt-1 flex min-w-0 items-center gap-1 truncate font-mono text-[10px] text-muted-foreground">
+                  <GitBranch aria-hidden size={10} className="shrink-0" />
+                  {nameOf(gate.repositoryKey)} · {gate.baseRef} → {gate.headRef}
+                </span>
+              </div>
+              <dl className="grid min-w-0 grid-cols-3 gap-x-4 gap-y-3">
+                <RepositoryCell label={t("guardrails.column.verdict")}>
+                  <GateOutcomeBadge
+                    outcome={gate.outcome}
+                    status={gate.status}
+                    protectedBaseline={isProtectedBranchBaselineRun(gate)}
+                  />
+                </RepositoryCell>
+                <RepositoryCell label={t("guardrails.column.cost")}>
+                  <span className="font-mono text-[10px]">{gate.estimatedUsd > 0 ? formatUsd(gate.estimatedUsd) : "—"}</span>
+                </RepositoryCell>
+                <RepositoryCell label={t("guardrails.column.startedAt")}>
+                  <span className="font-mono text-[10px]">{formatProjectDate(gate.startedAt, locale)}</span>
+                </RepositoryCell>
+              </dl>
+              <div className="flex min-w-0 flex-wrap items-center gap-2 xl:justify-end">
+                <Button asChild variant="outline" size="sm">
+                  <Link to={guardrailHref(gate.id)}>{t("guardrails.openGate")}</Link>
+                </Button>
+              </div>
+            </article>
+          </li>)}
+        </ul>
+      </>}
+  </Panel>;
+}
 
-function gateOutcomeColor(gate: GateRun): string { if (isGateActive(gate.status)) return "var(--primary)"; if (gate.status === "cancelled") return "var(--muted-foreground)"; if (gate.status === "error" || gate.outcome === "error" || gate.outcome === "blocked") return "var(--destructive)"; if (gate.outcome === "warning" || gate.outcome === "bootstrap") return "var(--chart-3)"; return "var(--chart-2)"; }
+const GATE_GRID = "xl:grid-cols-[minmax(0,1.2fr)_minmax(0,1.5fr)_8rem]";
+
 function formatProjectDate(value: string, locale: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? "—" : new Intl.DateTimeFormat(locale, { day: "2-digit", month: "short", year: "2-digit" }).format(date); }
-function formatProjectTime(value: string, locale: string): string { const date = new Date(value); return Number.isNaN(date.getTime()) ? "—" : new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(date); }
+
 
 function EnrollmentSheet({
   open,
   onOpenChange,
   busy,
   onEnroll,
+  onEnrollBatch,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   busy: boolean;
   onEnroll: (request: EnrollGuardrailRepositoryRequest) => Promise<void>;
+  onEnrollBatch: (request: EnrollGuardrailRepositoriesRequest) => Promise<EnrollGuardrailRepositoriesResponse>;
 }) {
   const { t } = useI18n();
   const { t: tr } = useScopedI18n(repositoryPickerMessages);
@@ -548,16 +708,16 @@ function EnrollmentSheet({
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetTrigger asChild>
-        <Button variant="outline" className="min-h-11"><Plus aria-hidden size={14} />{t("guardrails.register")}</Button>
+        <Button variant="outline" className="min-h-11"><Plus aria-hidden size={14} />{t("guardrails.addRepositories")}</Button>
       </SheetTrigger>
       <SheetContent className={`w-full gap-0 border-border bg-background ${expanded ? "data-[side=right]:sm:max-w-[min(92vw,1200px)]" : "data-[side=right]:sm:max-w-[48rem]"}`}>
 
         <SheetHeader className="border-b pr-14">
           <Button type="button" variant="outline" size="sm" aria-pressed={expanded} onClick={() => setExpanded((value) => !value)} className="hidden w-fit sm:inline-flex">{expanded ? tr("collapse") : tr("expand")}</Button>
-          <SheetTitle className="font-heading">{t("guardrails.enrollTitle")}</SheetTitle>
+          <SheetTitle className="font-heading">{t("guardrails.addRepositories")}</SheetTitle>
           <SheetDescription>{t("guardrails.enrollDescription")}</SheetDescription>
         </SheetHeader>
-        <RepositoryEnrollmentForm active={open} busy={busy} onEnroll={onEnroll} />
+        <RepositoryEnrollmentForm active={open} busy={busy} onEnroll={onEnroll} onEnrollBatch={onEnrollBatch} />
       </SheetContent>
     </Sheet>
   );

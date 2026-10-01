@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import type { GateRun, GuardrailRepository, ScanRun } from "@csb/shared";
 import { localeMeta, translate, type Locale } from "../src/i18n";
-import { baseRun, mockApi } from "./fixtures";
+import { baseRun, guardrailRow, mockApi } from "./fixtures";
 
 for (const locale of ["pt-BR", "en", "es", "de", "fr"] as Locale[]) {
   test(`offline status, accessible retry and recovery in ${locale}`, async ({ page }) => {
@@ -236,7 +236,7 @@ test("guardrail monitor ends a failed scan without progress and preserves its la
   } satisfies GateRun;
   state.runs.push(failedScan);
 
-  await page.route("**/api/guardrails/repositories", (route) => route.fulfill({ json: { repositories: [repository] } }));
+  await page.route("**/api/guardrails/repositories", (route) => route.fulfill({ json: { repositories: [guardrailRow(repository)] } }));
   await page.route("**/api/guardrails/gates", (route) => route.fulfill({ json: { gates: [gate] } }));
   await page.route(`**/api/guardrails/gates/${gate.id}`, (route) => route.fulfill({ json: { gate, artifact: null } }));
   await page.route(new RegExp(`/api/scans/${failedScan.id}/telemetry(?:\\?.*)?$`), (route) => route.fulfill({
@@ -272,12 +272,12 @@ test("dashboard marks a failed run without evidence as unavailable instead of no
 test("local preflight exposes its scan route and explains how to add a missing connection", async ({ page }) => {
   await mockApi(page);
   await page.route("**/api/connections", (route) => route.fulfill({ json: { connections: [] } }));
-  await page.route("**/api/guardrails/repositories", (route) => route.fulfill({ json: { repositories: [{
+  await page.route("**/api/guardrails/repositories", (route) => route.fulfill({ json: { repositories: [guardrailRow({
     repositoryKey: "local:qa", repositoryPath: "/fixture/alpha", displayName: "QA protected project",
     source: "local", defaultBranch: "main", defaultExecutor: "sentinel-managed", remoteOwner: null,
     remoteName: null, githubConnectionId: null, githubInstallationId: null, githubRepositoryId: null,
     enabled: true, policyPath: ".sentinel/policy.json", lastGateId: null, githubStatus: "not_configured",
-  }] } }));
+  })] } }));
   await page.route("**/api/guardrails/gates", (route) => route.fulfill({ json: { gates: [] } }));
   await page.goto("/guardrails");
   await page.getByRole("button", { name: translate("en", "guardrails.preflight"), exact: true }).click();

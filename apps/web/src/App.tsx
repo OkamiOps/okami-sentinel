@@ -21,6 +21,7 @@ const ComparePage = lazy(() => import("./pages/ComparePage").then(({ ComparePage
 const CompareReportPage = lazy(() => import("./pages/CompareReportPage").then(({ CompareReportPage: page }) => ({ default: page })));
 const DashboardPage = lazy(() => import("./pages/DashboardPage").then(({ DashboardPage: page }) => ({ default: page })));
 const GuardrailsPage = lazy(() => import("./pages/GuardrailsPage").then(({ GuardrailsPage: page }) => ({ default: page })));
+const GuardrailRepositoryPage = lazy(() => import("./pages/GuardrailRepositoryPage").then(({ GuardrailRepositoryPage: page }) => ({ default: page })));
 const GuardrailPolicyPage = lazy(() => import("./pages/GuardrailPolicyPage").then(({ GuardrailPolicyPage: page }) => ({ default: page })));
 const GuardrailSetupPage = lazy(() => import("./pages/GuardrailSetupPage").then(({ GuardrailSetupPage: page }) => ({ default: page })));
 const NewScanPage = lazy(() => import("./pages/NewScanPage").then(({ NewScanPage: page }) => ({ default: page })));
@@ -182,6 +183,9 @@ export function App() {
         <Route path="/scans/new" element={<AdminOnly to="/scans"><NewScanPage /></AdminOnly>} />
         <Route path="/guardrails" element={<GuardrailsPage />} />
         <Route path="/guardrails/setup" element={<GuardrailSetupPage />} />
+        <Route path="/guardrails/repositories/:repositoryKey" element={<GuardrailRepositoryPage />} />
+        {/* The policy's old address. It stays reachable because every gate artifact
+            already written links to it. */}
         <Route path="/guardrails/repositories/:repositoryKey/policy" element={<GuardrailPolicyPage />} />
         <Route path="/guardrails/:gateId" element={<GuardrailsPage />} />
         <Route path="/github" element={<GitHubPage />} />

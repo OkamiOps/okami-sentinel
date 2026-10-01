@@ -5,6 +5,7 @@ import type {
   GitHubAction,
   GitHubActionEvent,
   GuardrailRepository,
+  GuardrailRepositoryListRow,
   WebhookDeliveryRecord,
   AccountNotificationsUpdateEntry,
   EmailDelivery,
@@ -621,22 +622,56 @@ const REQUIRED_EVENTS = [
   "pull_request", "push", "installation", "installation_repositories", "check_run", "workflow_run",
 ];
 
-export const githubRepository: GuardrailRepository = {
+/**
+ * `GET /guardrails/repositories` answers rows, not bare registry entries: the
+ * baseline word, the enabled action count, the last verdict and the policy level all
+ * travel with each one, which is what lets the list render without a second call.
+ */
+export function guardrailRow(
+  repository: GuardrailRepository,
+  overrides: Partial<Omit<GuardrailRepositoryListRow, keyof GuardrailRepository>> = {},
+): GuardrailRepositoryListRow {
+  return {
+    ...repository,
+    prCommentEnabled: true,
+    prCommentDetail: "detailed",
+    baseline: {
+      repositoryKey: repository.repositoryKey,
+      state: "absent",
+      gateId: null,
+      commitSha: null,
+      protectedBranch: null,
+      scanLineageHash: null,
+      builtAt: null,
+      staleReason: null,
+      requestedAt: null,
+      updatedAt: "1970-01-01T00:00:00.000Z",
+    },
+    enabledActionCount: 0,
+    lastGate: null,
+    policySource: "default",
+    ...overrides,
+  };
+}
+
+export const githubRepository: GuardrailRepositoryListRow = guardrailRow({
   repositoryKey: "github:1", repositoryPath: null, source: "github", displayName: "luna-core",
   defaultBranch: "main", defaultExecutor: "sentinel-managed", remoteOwner: "okamiops", remoteName: "luna-core",
   githubConnectionId: "github-connection", githubInstallationId: "77", githubRepositoryId: "9001",
   enabled: true, policyPath: ".csb/guardrails.json", lastGateId: null, githubStatus: "ready",
-};
+});
 
-export const githubSecondRepository: GuardrailRepository = {
+export const githubSecondRepository: GuardrailRepositoryListRow = {
   ...githubRepository, repositoryKey: "github:2", displayName: "solar-api",
   remoteName: "solar-api", githubRepositoryId: "9002",
+  baseline: { ...githubRepository.baseline, repositoryKey: "github:2" },
 };
 
-export const localRepository: GuardrailRepository = {
+export const localRepository: GuardrailRepositoryListRow = {
   ...githubRepository, repositoryKey: "local:1", source: "local", displayName: "bench-local",
   repositoryPath: "/srv/bench", remoteOwner: null, remoteName: null,
   githubConnectionId: null, githubInstallationId: null, githubRepositoryId: null,
+  baseline: { ...githubRepository.baseline, repositoryKey: "local:1" },
 };
 
 export function githubAction(overrides: Partial<GitHubAction> = {}): GitHubAction {
@@ -764,7 +799,7 @@ function githubIntegration(scenario: GitHubIntegrationScenario) {
 export interface GitHubTabOptions {
   locale?: string;
   session?: MockApiOptions["session"];
-  repositories?: GuardrailRepository[];
+  repositories?: GuardrailRepositoryListRow[];
   actions?: GitHubAction[];
   events?: GitHubActionEvent[];
   deliveries?: WebhookDeliveryRecord[];

@@ -9,7 +9,6 @@ import {
   ExternalLink,
   GitBranch,
   HardDrive,
-  LockKeyhole,
   Plus,
   Radio,
   RefreshCw,
@@ -18,11 +17,17 @@ import {
 
 import {
   api,
+  type EnrollGuardrailRepositoriesRequest,
+  type EnrollGuardrailRepositoriesResponse,
   type EnrollGuardrailRepositoryRequest,
   type GitHubAppConnection,
   type GitHubAppInstallation,
   type GitHubInstallationRepository,
 } from "../../api";
+import { enrollmentSelectionState } from "../../lib/guardrail-repository-page";
+import { MAX_GUARDRAIL_ENROLLMENT_BATCH, type GuardrailEnrollmentSkip } from "@csb/shared";
+import { Checkbox } from "@/components/ui/checkbox";
+import { EmptyState, cx } from "../ui";
 import {
   canEnrollGuardrailRepository,
   enrollmentRequest,
@@ -40,20 +45,30 @@ import { ChoiceCard } from "./ChoiceCard";
 import { RepositoryDirectoryBrowser } from "./RepositoryDirectoryBrowser";
 import { useI18n } from "../../i18n";
 
-export function RepositoryEnrollmentForm({ active, busy, onEnroll }: {
+export function RepositoryEnrollmentForm({ active, busy, onEnroll, onEnrollBatch }: {
   active: boolean;
   busy: boolean;
+  /** A local checkout is one path at a time: there is no installation to pick from. */
   onEnroll: (request: EnrollGuardrailRepositoryRequest) => Promise<void>;
+  /** The multi-select's one request, answering with what it enrolled and skipped. */
+  onEnrollBatch: (request: EnrollGuardrailRepositoriesRequest) => Promise<EnrollGuardrailRepositoriesResponse>;
 }) {
   const { t } = useI18n();
   const { t: tr } = useScopedI18n(repositoryPickerMessages);
-  const [registeredIds, setRegisteredIds] = useState<string[]>([]);
+  const [registeredIds, setRegisteredIds] = useState<ReadonlySet<string>>(new Set());
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(new Set());
+  const [result, setResult] = useState<EnrollGuardrailRepositoriesResponse | null>(null);
+  const readRegister = useCallback(() => {
+    void api.listGuardrailRepositories()
+      .then(({ repositories }) => setRegisteredIds(
+        new Set(repositories.flatMap((item) => item.githubRepositoryId === null ? [] : [item.githubRepositoryId])),
+      ))
+      .catch(() => undefined);
+  }, []);
   useEffect(() => {
     if (!active) return;
-    let current = true;
-    void api.listGuardrailRepositories().then(({ repositories }) => { if (current) setRegisteredIds(repositories.flatMap((item) => item.githubRepositoryId ? [item.githubRepositoryId] : [])); }).catch(() => undefined);
-    return () => { current = false; };
-  }, [active]);
+    readRegister();
+  }, [active, readRegister]);
   const [state, setState] = useState(initialEnrollmentState);
   const [connections, setConnections] = useState<GitHubAppConnection[]>([]);
   const [installations, setInstallations] = useState<GitHubAppInstallation[]>([]);
@@ -66,12 +81,13 @@ export function RepositoryEnrollmentForm({ active, busy, onEnroll }: {
 
   const selectedConnection = connections.find((item) => item.id === state.connectionId) ?? null;
   const readyInstallations = installations.filter((item) => item.status === "ready");
-  const selectedRepository = repositories.find((item) => item.repositoryId === state.repositoryId) ?? null;
-  const availability = useMemo(() => ({
-    managed: selectedRepository !== null && !selectedRepository.archived,
-    actions: selectedRepository !== null && !selectedRepository.archived,
-  }), [selectedRepository]);
-  const canSubmit = canEnrollGuardrailRepository(state, availability) && (state.source !== "github" || !registeredIds.includes(state.repositoryId));
+  const selection = useMemo(
+    () => enrollmentSelectionState(repositories, registeredIds, selectedIds),
+    [repositories, registeredIds, selectedIds],
+  );
+  const canSubmit = state.source === "local"
+    ? canEnrollGuardrailRepository(state, { managed: true, actions: true })
+    : state.connectionId.length > 0 && state.installationId.length > 0 && selection.canSubmit;
 
   const loadConnections = useCallback(async (preferredId?: string) => {
     setLoading(true);
@@ -200,12 +216,43 @@ export function RepositoryEnrollmentForm({ active, busy, onEnroll }: {
     );
   }
 
+  function toggle(repositoryId: string) {
+    setResult(null);
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(repositoryId)) next.delete(repositoryId);
+      else next.add(repositoryId);
+      return next;
+    });
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!canSubmit) return;
     setError(null);
-    try { await onEnroll(enrollmentRequest(state)); }
-    catch (cause) { setError(cause instanceof Error && cause.message.includes("repository_already_registered") ? tr("duplicate") : cause instanceof Error ? cause.message : t("guardrails.repositoriesError")); }
+    setResult(null);
+    try {
+      if (state.source === "local") {
+        await onEnroll(enrollmentRequest(state));
+        return;
+      }
+      const answer = await onEnrollBatch({
+        source: "github",
+        connectionId: state.connectionId,
+        installationId: state.installationId,
+        repositoryIds: selection.selectedIds,
+        defaultExecutor: state.defaultExecutor,
+      });
+      // The partial result stays on screen: three repositories enrolled and one
+      // skipped is the answer, not a failure to report somewhere else.
+      setResult(answer);
+      setSelectedIds(new Set());
+      readRegister();
+    } catch (cause) {
+      setError(cause instanceof Error && cause.message.includes("repository_already_registered")
+        ? tr("duplicate")
+        : cause instanceof Error ? cause.message : t("guardrails.repositoriesError"));
+    }
   }
 
   return (
@@ -308,22 +355,67 @@ export function RepositoryEnrollmentForm({ active, busy, onEnroll }: {
                     <SelectContent position="popper" className="rounded-none border-border bg-popover">{installations.filter((item) => item.status === "ready").map((item) => <SelectItem key={item.id} value={item.id} className="min-h-11 rounded-none">{item.accountLogin}</SelectItem>)}</SelectContent>
                   </Select>
                 </Field>
-                <div className="sm:col-span-2"><Field label={t("guardrails.repository")} htmlFor="guardrail-github-repository">
-                  <SearchableRepositorySelect key={`${state.connectionId}:${state.installationId}`} id="guardrail-github-repository" disabled={!state.installationId || loading} value={state.repositoryId} options={repositories.map((item) => ({ id: item.repositoryId, label: `${item.owner}/${item.name}`, disabled: item.archived || registeredIds.includes(item.repositoryId), disabledLabel: registeredIds.includes(item.repositoryId) ? tr("registered") : undefined }))} onChange={(repositoryId) => setState((current) => ({ ...current, repositoryId }))} />
-                </Field></div>
               </div>
 
-              <div>
-                <StepHeading code="03 / EXECUTION PLANE" title={t("guardrails.executionQuestion")} />
-                <div className="grid gap-2" role="radiogroup" aria-label={t("guardrails.executionQuestion")}>
-                  <ChoiceCard checked={state.defaultExecutor === "sentinel-managed"} disabled={selectedRepository?.archived === true} icon={<Cloud aria-hidden size={17} />} title="Sentinel managed" meta="APP TOKEN" description={t("guardrails.managedEnrollmentDescription")} onSelect={() => setState((current) => ({ ...current, defaultExecutor: "sentinel-managed" }))} />
+              <section aria-labelledby="enrollment-selection-title">
+                <div className="flex flex-wrap items-end justify-between gap-3 border-b pb-3">
+                  <StepHeading code="03 / REPOSITORIES" id="enrollment-selection-title" title={t("guardrails.enrollSelectTitle")}>
+                    {t("guardrails.enrollSelectDescription")}
+                  </StepHeading>
+                  <div className="flex shrink-0 gap-2">
+                    <Button type="button" variant="outline" size="sm" disabled={selection.selectableIds.length === 0} onClick={() => { setResult(null); setSelectedIds(new Set(selection.selectableIds)); }}>
+                      {t("guardrails.enrollSelectAll")}
+                    </Button>
+                    <Button type="button" variant="outline" size="sm" disabled={selection.selectedIds.length === 0} onClick={() => { setResult(null); setSelectedIds(new Set()); }}>
+                      {t("guardrails.enrollClear")}
+                    </Button>
+                  </div>
                 </div>
-              </div>
 
-              <div className="grid gap-3 border bg-secondary/20 p-4 sm:grid-cols-[auto_minmax(0,1fr)]">
-                <span className="grid size-9 place-items-center border border-info text-info"><LockKeyhole aria-hidden size={16} /></span>
-                <div className="min-w-0"><div className="bench-label text-info">SERVER-RESOLVED IDENTITY</div><p className="mt-1 text-xs leading-5 text-muted-foreground">{selectedRepository ? `${selectedRepository.owner}/${selectedRepository.name} · ${selectedRepository.private ? "PRIVATE" : "PUBLIC"} · ${selectedRepository.defaultBranch}` : t("guardrails.remoteIdentityPrompt")}</p></div>
-              </div>
+                {!state.installationId
+                  ? <p className="py-3 text-xs leading-relaxed text-muted-foreground">{t("guardrails.remoteIdentityPrompt")}</p>
+                  : selection.rows.length === 0
+                    ? <EmptyState title={t("guardrails.enrollNoCandidates")} description={t("guardrails.enrollNoCandidatesDescription")} />
+                    : <>
+                      <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                        <span className="bench-label">{t("guardrails.enrollSelected", { count: selection.selectedIds.length, total: selection.selectableIds.length })}</span>
+                        {selection.overBound && <span className="font-mono text-[10px] text-destructive">{t("guardrails.enrollOverBound", { max: MAX_GUARDRAIL_ENROLLMENT_BATCH })}</span>}
+                      </div>
+                      {/* One fixed grid for every row, so the name and the reason start
+                          at the same x whether a row is selectable or not. */}
+                      <ul className="mt-2 max-h-80 divide-y overflow-y-auto border" aria-label={t("guardrails.enrollSelectTitle")}>
+                        {selection.rows.map((row) => <li key={row.repositoryId}>
+                          <label className={cx(
+                            "grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-3 py-2.5",
+                            row.disabled ? "opacity-60" : "cursor-pointer hover:bg-accent",
+                          )}>
+                            <Checkbox
+                              checked={row.selected}
+                              disabled={row.disabled}
+                              aria-label={row.label}
+                              onCheckedChange={() => toggle(row.repositoryId)}
+                            />
+                            <span className="min-w-0 truncate text-xs">{row.label}</span>
+                            <span className="shrink-0 font-mono text-[9px] uppercase tracking-wider text-muted-foreground">
+                              {row.reason === null ? "" : t(`guardrails.enrollSkip.${row.reason}`)}
+                            </span>
+                          </label>
+                        </li>)}
+                      </ul>
+                    </>}
+
+                {result !== null && <div className="mt-3 border border-chart-2/40 bg-chart-2/[.06] p-3" aria-live="polite">
+                  <div className="bench-label text-chart-2">
+                    {t("guardrails.enrollResult", { enrolled: result.enrolled.length, skipped: result.skipped.length })}
+                  </div>
+                  {result.skipped.length > 0 && <ul className="mt-2 grid gap-1">
+                    {result.skipped.map((skip: GuardrailEnrollmentSkip) => <li key={skip.repositoryId} className="font-mono text-[10px] text-muted-foreground">
+                      {skip.repositoryId} · {t(`guardrails.enrollSkip.${skip.reason}`)}
+                    </li>)}
+                  </ul>}
+                </div>}
+              </section>
+
             </section>
           )}
         </div>
@@ -331,7 +423,7 @@ export function RepositoryEnrollmentForm({ active, busy, onEnroll }: {
 
       <div className="sticky bottom-0 mt-auto grid gap-3 border-t bg-background/95 p-4 backdrop-blur sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
         <div className="flex min-w-0 items-start gap-2 text-xs leading-5 text-muted-foreground"><Radio aria-hidden size={14} className="mt-0.5 shrink-0 text-primary" /><span>{state.source === "local" ? t("guardrails.localScopeNotice") : t("guardrails.remoteScopeNotice")}</span></div>
-        <Button type="submit" className="min-h-11 w-full sm:w-auto" disabled={busy || loading || !canSubmit}><Plus aria-hidden size={14} />{busy ? t("guardrails.registering") : state.source === "local" ? t("guardrails.registerFolder") : t("guardrails.registerRemote")}</Button>
+        <Button type="submit" className="min-h-11 w-full sm:w-auto" disabled={busy || loading || !canSubmit}><Plus aria-hidden size={14} />{busy ? t("guardrails.registering") : state.source === "local" ? t("guardrails.registerFolder") : t("guardrails.enrollSubmit")}</Button>
       </div>
     </form>
   );
