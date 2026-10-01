@@ -94,12 +94,14 @@ import type {
   GuardrailEnrollmentSkip,
   GuardrailException,
   GuardrailPolicy,
+  GuardrailPrCommentState,
   GuardrailRepository,
   GuardrailRepositoryListRow,
   GuardrailRepositoryPatch,
   HealthResponse,
   UpdateFindingTriageRequest,
 } from "@csb/shared";
+import { DEFAULT_GUARDRAIL_PR_COMMENT_LOCALE } from "@csb/shared";
 import {
   purgeScanRunArtifacts,
   readCliLogSnapshot,
@@ -124,6 +126,7 @@ import {
   type GatePublicationAttempt,
   type GateRunUpdate,
   getGateRun,
+  getGuardrailRepositoryPrComment,
   listGatePublicationAttempts,
   listGateRuns,
   deleteGuardrailRepository,
@@ -137,9 +140,20 @@ import {
   type GateEvent,
 } from "./gate-store.js";
 import {
-  publishGateCheck,
-  type PublishGateCheckInput,
+  publishManagedGateCheck,
+  type ManagedGitHubCheckClient,
+  type PublishManagedGateCheckInput,
 } from "./github-check.js";
+import {
+  publishPrComment,
+  type PublishPrCommentInput,
+  type PublishPrCommentResult,
+} from "./github/pr-comment-publisher.js";
+import {
+  getPrComment,
+  listPrComments,
+  upsertPrComment,
+} from "./github/pr-comment-store.js";
 import { getGitHubStatus, getRemoteGitHubStatus } from "./github-status.js";
 import {
   createGitHubAppApi,
@@ -309,7 +323,11 @@ export interface GuardrailsApiDependencies {
   hasProtectedBranchAction(repositoryKey: string): boolean;
   /** "Criar baseline agora": a protected-branch gate on the repository's branch. */
   startBaselineGate(repository: GuardrailRepository): Promise<GateRun>;
-  publishCheck(input: PublishGateCheckInput): Promise<void>;
+  publishCheck(input: PublishManagedGateCheckInput): Promise<"created" | "updated">;
+  /** "Republicar comentário": the same publisher the gate uses, by hand. */
+  publishComment(input: PublishPrCommentInput): Promise<PublishPrCommentResult>;
+  getComment(repositoryKey: string, pullRequestNumber: number): GuardrailPrCommentState | null;
+  listComments(repositoryKey: string): GuardrailPrCommentState[];
   updateGate(gateId: string, updates: GateRunUpdate): void;
   recordPublicationAttempt(attempt: GatePublicationAttempt): void;
   listPublicationAttempts(gateId: string): GatePublicationAttempt[];
@@ -486,7 +504,32 @@ const guardrailsDependencies: GuardrailsApiDependencies = {
     markRepositoryBaselineBuilding(repositoryKey, requestedAt),
   hasProtectedBranchAction: (repositoryKey) => repositoryHasProtectedBranchAction(repositoryKey),
   startBaselineGate: (repository) => startProtectedBranchBaselineGate(repository),
-  publishCheck: publishGateCheck,
+  publishCheck: (input) => publishManagedGateCheck(
+    input,
+    getSystemGitHubAppService() as ManagedGitHubCheckClient,
+  ),
+  publishComment: (input) => publishPrComment(input, {
+    readAuthorizedRepositoryJson: (connectionId, installationId, repositoryId, resourcePath, permissions) =>
+      getSystemGitHubAppService().readAuthorizedRepositoryJson(
+        connectionId, installationId, repositoryId, resourcePath, permissions,
+      ),
+    writeAuthorizedRepositoryJson: (connectionId, installationId, repositoryId, resourcePath, method, body, permissions) =>
+      getSystemGitHubAppService().writeAuthorizedRepositoryJson(
+        connectionId, installationId, repositoryId, resourcePath, method, body, permissions,
+      ),
+    getComment: (repositoryKey, pullRequestNumber) => getPrComment(repositoryKey, pullRequestNumber),
+    upsertComment: (record) => { upsertPrComment(record); },
+    // A manual republication is the operator saying "write it now". The
+    // repository's switch still decides whether Sentinel may speak at all.
+    commentsEnabled: (repositoryKey) =>
+      getGuardrailRepositoryPrComment(repositoryKey)?.enabled ?? false,
+    commentLocale: (repositoryKey) =>
+      getGuardrailRepositoryPrComment(repositoryKey)?.locale ?? DEFAULT_GUARDRAIL_PR_COMMENT_LOCALE,
+    publicOrigin: () => loadServerSettings().origin,
+    now: () => new Date().toISOString(),
+  }),
+  getComment: (repositoryKey, pullRequestNumber) => getPrComment(repositoryKey, pullRequestNumber),
+  listComments: (repositoryKey) => listPrComments(repositoryKey),
   updateGate: updateGateRun,
   recordPublicationAttempt: recordGatePublicationAttempt,
   listPublicationAttempts: listGatePublicationAttempts,
@@ -1100,10 +1143,20 @@ export function createGuardrailsApp(
     }
     const artifact = deps.getArtifact(gateId);
     if (!artifact) return c.json({ error: "Gate ainda não possui artifact" }, 409);
+    if (artifact.schemaVersion !== 2) {
+      return c.json({ error: "O Check gerenciado exige um artifact v2" }, 409);
+    }
     const repository = deps.getRepository(gate.repositoryKey);
     if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
     if (!hasGitHubRemote(repository)) {
       return c.json({ error: "Repositório não possui remoto GitHub" }, 400);
+    }
+    // The retry must use the credential the first attempt used. The App is the
+    // only one the gate ever had: the `gh` CLI is the operator's own token, which
+    // on a server is nobody's, and on a laptop is the wrong author.
+    const authority = githubAuthority(repository);
+    if (authority === null) {
+      return c.json({ error: "Repositório não está ligado ao GitHub App" }, 400);
     }
 
     const attempt: GatePublicationAttempt = {
@@ -1123,9 +1176,8 @@ export function createGuardrailsApp(
     try {
       await deps.publishCheck({
         artifact,
-        owner: repository.remoteOwner!,
-        repository: repository.remoteName!,
-        detailsUrl: null,
+        authority,
+        detailsUrl: gateDetailsUrl(gateId),
       });
       const publishedAttempt = { ...attempt, status: "published" as const };
       deps.recordPublicationAttempt(publishedAttempt);
@@ -1151,6 +1203,50 @@ export function createGuardrailsApp(
       notifyGitHubPublishFailed(gateId);
       return c.json({ error: message }, 502);
     }
+  });
+
+  /**
+   * "Republicar comentário". It writes the same body the gate would have, through
+   * the same publisher, so a comment lost to a GitHub outage or a revoked
+   * permission can be recovered without rerunning — and paying for — the scan.
+   */
+  guardrails.post("/guardrails/gates/:gateId/comment", async (c) => {
+    const gateId = c.req.param("gateId");
+    const gate = deps.getGate(gateId);
+    if (!gate) return c.json({ error: "Gate não encontrado" }, 404);
+    const artifact = deps.getArtifact(gateId);
+    if (!artifact) return c.json({ error: "Gate ainda não possui artifact" }, 409);
+    if (artifact.schemaVersion !== 2 || artifact.target.kind !== "pull_request") {
+      return c.json({ error: "Este gate não pertence a um pull request" }, 409);
+    }
+    if (artifact.repository.locator.kind !== "github") {
+      return c.json({ error: "Este gate não pertence a um pull request" }, 409);
+    }
+    const repository = deps.getRepository(gate.repositoryKey);
+    if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
+    const authority = githubAuthority(repository);
+    if (authority === null) {
+      return c.json({ error: "Repositório não está ligado ao GitHub App" }, 400);
+    }
+    const result = await deps.publishComment({
+      artifact,
+      repositoryKey: gate.repositoryKey,
+      authority,
+      owner: artifact.repository.locator.owner,
+      name: artifact.repository.locator.name,
+      pullRequestNumber: artifact.resolvedTarget.pullRequestNumber,
+      durationMs: gate.completedAt === null
+        ? null
+        : Date.parse(gate.completedAt) - Date.parse(gate.startedAt),
+    });
+    const comment = artifact.resolvedTarget.pullRequestNumber === null
+      ? null
+      : deps.getComment(gate.repositoryKey, artifact.resolvedTarget.pullRequestNumber);
+    if (result.status === "failed") {
+      notifyGitHubPublishFailed(gateId);
+      return c.json({ error: result.reason, result, comment }, 502);
+    }
+    return c.json({ result, comment });
   });
 
   return guardrails;
@@ -1403,6 +1499,13 @@ async function githubIntegrationConnections() {
         metadata = null;
       }
     }
+    // The screen is where the mismatch is detected, so it is also where it is
+    // repaired: the recorded id is replaced by the one GitHub just reported. The
+    // row still names both, so the next read shows them agreeing.
+    const recordedAppId = metadata?.appId !== undefined && metadata.appId !== null
+      && getSystemGitHubAppService().repairRecordedAppId(connection.id, metadata.appId)
+      ? metadata.appId
+      : connection.appId;
     connections.push({
       connectionId: connection.id,
       appSlug: connection.appSlug,
@@ -1411,7 +1514,7 @@ async function githubIntegrationConnections() {
       // `X-GitHub-Hook-Installation-Target-ID` carries the former, and a stored
       // value that is not it costs every delivery the capped loop.
       appId: metadata?.appId ?? null,
-      recordedAppId: connection.appId,
+      recordedAppId,
       // An unfinished or revoked connection is never asked anything, so its empty
       // installation list must read as "finish the connection", not as "GitHub did
       // not answer".
@@ -1972,6 +2075,33 @@ function targetPreviewStatus(error: unknown): 400 | 409 {
     )
     ? 409
     : 400;
+}
+
+/**
+ * The three identifiers an installation token is minted against. `null` for a
+ * local repository, which has no App to speak through.
+ */
+function githubAuthority(
+  repository: GuardrailRepository,
+): { connectionId: string; installationId: string; repositoryId: string } | null {
+  if (
+    repository.githubConnectionId === null
+    || repository.githubInstallationId === null
+    || repository.githubRepositoryId === null
+  ) {
+    return null;
+  }
+  return {
+    connectionId: repository.githubConnectionId,
+    installationId: repository.githubInstallationId,
+    repositoryId: repository.githubRepositoryId,
+  };
+}
+
+/** Where "Details" on the Check sends a reviewer; `null` with no public origin. */
+function gateDetailsUrl(gateId: string): string | null {
+  const origin = loadServerSettings().origin;
+  return origin === null ? null : `${origin}/guardrails/${encodeURIComponent(gateId)}`;
 }
 
 function hasGitHubRemote(

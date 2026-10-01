@@ -1111,8 +1111,13 @@ export interface GateWorkflowRunReference {
 
 export interface GatePublicationEligibility {
   eligible: boolean;
+  /**
+   * The protected branch the gate stands on, which is what a baseline is built
+   * from. A pull request to an unprotected base is publishable and still has
+   * none, so this stays `null` and the baseline rules are unchanged.
+   */
   protectedBranch: string | null;
-  reason: "protected_branch" | "off_policy_preflight";
+  reason: "protected_branch" | "pull_request" | "off_policy_preflight";
 }
 
 export interface GuardrailRule {

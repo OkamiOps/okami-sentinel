@@ -87,6 +87,7 @@ export const ROUTE_POLICY: ReadonlyArray<readonly [method: string, pattern: stri
   ["GET", "/guardrails/gates/:gateId", R("viewer", "gate")], ["DELETE", "/guardrails/gates/:gateId", R("maintainer", "gate")],
   ["POST", "/guardrails/gates/:gateId/cancel", R("operator", "gate")], ["GET", "/guardrails/gates/:gateId/events", R("viewer", "gate")],
   ["POST", "/guardrails/gates/:gateId/publish", R("operator", "gate")],
+  ["POST", "/guardrails/gates/:gateId/comment", R("operator", "gate")],
   ["GET", "/guardrails/github-app/connections", ADMIN], ["DELETE", "/guardrails/github-app/connections/:connectionId", ADMIN],
   ["GET", "/guardrails/github-app/connections/:connectionId/installations", ADMIN],
   ["GET", "/guardrails/github-app/installations/:installationId/repositories", ADMIN],

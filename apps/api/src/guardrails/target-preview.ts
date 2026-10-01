@@ -206,6 +206,7 @@ export class TargetPreviewService {
         protectedPolicy.policy,
         target,
         resolvedTarget,
+        repository.source,
       ),
     };
     this.#previews.set(preview.previewIdentity, {

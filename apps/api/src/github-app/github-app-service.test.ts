@@ -338,3 +338,23 @@ function fixtureWithInstallationFailure() {
   });
   return { ...base, service, started, state };
 }
+
+test("repairs an appId recorded as something other than GitHub's own", async () => {
+  const { service, flow, store } = fixture();
+  const started = flow.start();
+  const state = flow.authorization(started.flowId).state;
+  await service.completeManifestCallback({
+    flowId: started.flowId, state, code: "temporary-code", error: null,
+  });
+  // The installation id, recorded where the App id belongs: every delivery then
+  // falls back to the capped loop over all connections.
+  store.saveConnection({ ...store.connections.get("connection-1")!, appId: "77" });
+
+  assert.equal(service.repairRecordedAppId("connection-1", "123"), true);
+  assert.equal(store.connections.get("connection-1")?.appId, "123");
+  // Idempotent, and never writes a value that is not an App id.
+  assert.equal(service.repairRecordedAppId("connection-1", "123"), false);
+  assert.equal(service.repairRecordedAppId("connection-1", "not-an-id"), false);
+  assert.equal(service.repairRecordedAppId("missing", "123"), false);
+  assert.equal(store.connections.get("connection-1")?.appId, "123");
+});

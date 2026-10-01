@@ -27,7 +27,7 @@ test("uses the exact least-privilege GitHub App manifest contract", () => {
     checks: "write",
     contents: "write",
     metadata: "read",
-    pull_requests: "read",
+    pull_requests: "write",
     workflows: "write",
   });
   assert.equal(Object.isFrozen(GITHUB_APP_MANIFEST_PERMISSIONS), true);
@@ -55,20 +55,19 @@ test("asks for no write the shipped phases do not use", () => {
   // `workflow_dispatch` and cancelling a run need `actions: write`, and both belong
   // to the phase 4 executor.
   assert.equal(GITHUB_APP_MANIFEST_PERMISSIONS.actions, "read");
-  // Phases 1-3 only list and read pull requests. Opening the caller-workflow PR is
-  // phase 4's, and so is the write it needs.
-  assert.equal(GITHUB_APP_MANIFEST_PERMISSIONS.pull_requests, "read");
-  // The sticky PR comment is phase 3's and needs `issues: write`; it is not
-  // requested until phase 3 asks for it.
+  // The sticky pull-request comment writes through `pull_requests: write`.
+  assert.equal(GITHUB_APP_MANIFEST_PERMISSIONS.pull_requests, "write");
+  // `issues: write` would serve the same comment and hand over every issue in the
+  // repository besides. It is never requested, in any phase.
   assert.equal("issues" in GITHUB_APP_MANIFEST_PERMISSIONS, false);
-  // What is left is used today: the Check Run, and the caller workflow this
-  // release already commits through `PUT .../caller-workflow`.
+  // What is left is used today: the Check Run, the caller workflow this release
+  // commits through `PUT .../caller-workflow`, and the comment.
   assert.deepEqual(
     Object.entries(GITHUB_APP_MANIFEST_PERMISSIONS)
       .filter(([, level]) => level === "write")
       .map(([name]) => name)
       .sort(),
-    ["checks", "contents", "workflows"],
+    ["checks", "contents", "pull_requests", "workflows"],
   );
 });
 

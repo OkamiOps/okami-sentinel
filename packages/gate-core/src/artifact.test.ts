@@ -569,6 +569,61 @@ test("makes protectedBranches authoritative for Check publication", () => {
   );
 });
 
+function unprotectedPullRequestInput(): BuildGateArtifactV2Input {
+  const input = artifactV2Input();
+  input.policy = { ...input.policy, protectedBranches: ["release"] };
+  input.baselineCommit = null;
+  input.evaluation = {
+    deltas: input.evaluation.deltas.map((delta) => ({ ...delta, lifecycle: "new" as const })),
+    decision: {
+      outcome: "bootstrap",
+      summary: "Sem baseline comparável.",
+      violations: [],
+      warnings: [],
+      exceptionsApplied: [],
+      githubConclusion: "neutral",
+    },
+  };
+  return input;
+}
+
+test("a pull request to a non-protected base is publishable", () => {
+  const artifact = buildGateArtifactV2(unprotectedPullRequestInput());
+  assert.equal(artifact.publication.eligible, true);
+  assert.equal(artifact.publication.reason, "pull_request");
+});
+
+test("the protected branch field is unchanged for that artifact", () => {
+  const artifact = buildGateArtifactV2(unprotectedPullRequestInput());
+  assert.equal(artifact.publication.protectedBranch, null);
+});
+
+test("a local-source gate is still not publishable", () => {
+  const input = unprotectedPullRequestInput();
+  assert.deepEqual(
+    gatePublicationEligibility(input.policy, input.target, input.resolvedTarget, "local"),
+    { eligible: false, protectedBranch: null, reason: "off_policy_preflight" },
+  );
+});
+
+test("an artifact written before the widening still parses", () => {
+  const artifact = buildGateArtifactV2(unprotectedPullRequestInput());
+  const legacy = {
+    ...structuredClone(artifact),
+    publication: { eligible: false, protectedBranch: null, reason: "off_policy_preflight" },
+  };
+  assert.equal(parseGateArtifact(legacy).schemaVersion, 2);
+});
+
+test("a publication neither rule produces is still refused", () => {
+  const artifact = buildGateArtifactV2(unprotectedPullRequestInput());
+  const forged = {
+    ...structuredClone(artifact),
+    publication: { eligible: true, protectedBranch: "release", reason: "protected_branch" },
+  };
+  assert.throws(() => parseGateArtifact(forged), /publication/);
+});
+
 test("rejects an absolute local path in finding evidence", () => {
   const input = artifactInput();
   input.evaluation.deltas[0]!.primaryPath = "/Users/marcos/private-repository/src/report.ts:88";
