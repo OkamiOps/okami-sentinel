@@ -201,8 +201,15 @@ export function createGitHubActionsClient(fetcher?: Fetcher) {
     fetchDeliveries: (limit = 50) =>
       read<GitHubDeliveriesPage>(`/github/deliveries${query({ limit })}`),
     reconcileNow: () => write<GitHubReconcileResponse>("/github/reconcile", "POST", {}),
-    fetchActions: (repositoryKey?: string | null) =>
-      read<GitHubActionsPage>(`/github/actions${query({ repositoryKey })}`),
+    /**
+     * `hasMore` comes back on the page, and the screen has to show it: an action
+     * past the bound stays enabled and keeps spending while being invisible on the
+     * only screen that can switch it off.
+     */
+    fetchActions: (repositoryKey?: string | null, page?: { limit?: number; offset?: number }) =>
+      read<GitHubActionsPage>(`/github/actions${query({
+        repositoryKey, limit: page?.limit, offset: page?.offset,
+      })}`),
     createAction: (body: GitHubActionRequestBody) =>
       write<{ action: GitHubAction }>("/github/actions", "POST", body).then(({ action }) => action),
     patchAction: (actionId: string, patch: GitHubActionPatch) =>

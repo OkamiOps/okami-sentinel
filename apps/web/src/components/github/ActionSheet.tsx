@@ -5,6 +5,7 @@ import type { GitHubAction, ProviderConnection, ProviderModel } from "@csb/share
 import { AlertBanner, cx } from "../ui";
 import { ChoiceCard } from "../guardrails/ChoiceCard";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -29,6 +30,7 @@ export function ActionSheet({
   open,
   action,
   repositoryKey,
+  repositoryName,
   connections,
   models,
   isAdmin,
@@ -43,6 +45,8 @@ export function ActionSheet({
   /** `null` creates; an action edits it. */
   action: GitHubAction | null;
   repositoryKey: string;
+  /** Every action belongs to exactly one repository; the sheet has to say which. */
+  repositoryName: string;
   connections: ProviderConnection[];
   models: ProviderModel[];
   isAdmin: boolean;
@@ -94,7 +98,11 @@ export function ActionSheet({
     <SheetContent className="w-full gap-0 overflow-y-auto border-border bg-background data-[side=right]:sm:max-w-[42rem]">
       <SheetHeader className="border-b pr-14">
         <SheetTitle className="font-heading">{action === null ? t("github.sheet.createTitle") : t("github.sheet.editTitle")}</SheetTitle>
-        <SheetDescription>{action === null ? t("github.sheet.createDescription") : t("github.sheet.editDescription")}</SheetDescription>
+        <SheetDescription>
+          {t("github.sheet.onRepository", { repository: repositoryName })}
+          {" "}
+          {action === null ? t("github.sheet.createDescription") : t("github.sheet.editDescription")}
+        </SheetDescription>
       </SheetHeader>
 
       <form
@@ -107,7 +115,7 @@ export function ActionSheet({
           <Input
             id="github-action-name"
             value={draft.name}
-            maxLength={120}
+            maxLength={80}
             aria-invalid={errorFor("name") !== null}
             onChange={(event) => update({ name: event.target.value })}
           />
@@ -157,33 +165,49 @@ export function ActionSheet({
               onSelect={() => {}}
             />
           </div>
-          {!isAdmin && <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">{t("github.actions.adminOnlyField")}</p>}
+          {!isAdmin && <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">{t("github.sheet.adminOwnsSpending")}</p>}
 
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            {/* A maintainer never reads the connection catalogue (the page does not
+                even fetch it for them), so an empty disabled Select plus "no ready
+                connection was found" would blame them for a state they cannot see
+                and cannot change. They get the stored route, in words. */}
             <Field label={t("github.sheet.connection")} htmlFor="github-action-connection" error={errorFor("connectionId")}>
-              <Select
-                value={draft.connectionId ?? undefined}
-                disabled={!isAdmin}
-                onValueChange={(value) => { update({ connectionId: value, model: null }); onConnectionChange(value); }}
-              >
-                <SelectTrigger id="github-action-connection" className="w-full" aria-invalid={errorFor("connectionId") !== null}>
-                  <SelectValue placeholder={t("github.sheet.connectionEmpty")} />
-                </SelectTrigger>
-                <SelectContent position="popper" className="rounded-none border-border bg-popover">
-                  {readyConnections.map((connection) => <SelectItem key={connection.id} value={connection.id}>
-                    {connection.name} · {connection.display.routeLabel}
-                  </SelectItem>)}
-                </SelectContent>
-              </Select>
-              {readyConnections.length === 0 && <p className="mt-2 text-xs text-destructive">{t("github.sheet.connectionMissing")}</p>}
+              {isAdmin
+                ? <Select
+                  value={draft.connectionId ?? undefined}
+                  onValueChange={(value) => { update({ connectionId: value, model: null }); onConnectionChange(value); }}
+                >
+                  <SelectTrigger id="github-action-connection" className="w-full" aria-invalid={errorFor("connectionId") !== null}>
+                    <SelectValue placeholder={t("github.sheet.connectionEmpty")} />
+                  </SelectTrigger>
+                  <SelectContent position="popper" className="rounded-none border-border bg-popover">
+                    {readyConnections.map((connection) => <SelectItem key={connection.id} value={connection.id}>
+                      {connection.name} · {connection.display.routeLabel}
+                    </SelectItem>)}
+                  </SelectContent>
+                </Select>
+                : <Input
+                  id="github-action-connection"
+                  value={draft.connectionId ?? t("github.sheet.connectionEmpty")}
+                  readOnly
+                  aria-readonly="true"
+                />}
+              {isAdmin && readyConnections.length === 0
+                && <p className="mt-2 text-xs text-destructive">{t("github.sheet.connectionMissing")}</p>}
             </Field>
 
             <Field label={t("github.sheet.model")} htmlFor="github-action-model">
-              {runtimeOnly
-                ? <Input id="github-action-model" value={t("github.sheet.modelRuntime")} readOnly aria-readonly="true" />
+              {runtimeOnly || !isAdmin
+                ? <Input
+                  id="github-action-model"
+                  value={draft.model ?? t("github.sheet.modelRuntime")}
+                  readOnly
+                  aria-readonly="true"
+                />
                 : <Select
                   value={draft.model ?? "__runtime__"}
-                  disabled={!isAdmin || selectedConnection === null}
+                  disabled={selectedConnection === null}
                   onValueChange={(value) => update({ model: value === "__runtime__" ? null : value })}
                 >
                   <SelectTrigger id="github-action-model" className="w-full"><SelectValue /></SelectTrigger>
@@ -195,20 +219,23 @@ export function ActionSheet({
             </Field>
 
             <Field label={t("github.sheet.mode")} htmlFor="github-action-mode">
-              <Select value={draft.mode} disabled={!isAdmin} onValueChange={(value) => update({ mode: value as GitHubActionDraft["mode"] })}>
-                <SelectTrigger id="github-action-mode" className="w-full"><SelectValue /></SelectTrigger>
-                <SelectContent position="popper" className="rounded-none border-border bg-popover">
-                  <SelectItem value="standard">{t("github.mode.standard")}</SelectItem>
-                  <SelectItem value="deep">{t("github.mode.deep")}</SelectItem>
-                </SelectContent>
-              </Select>
+              {isAdmin
+                ? <Select value={draft.mode} onValueChange={(value) => update({ mode: value as GitHubActionDraft["mode"] })}>
+                  <SelectTrigger id="github-action-mode" className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectContent position="popper" className="rounded-none border-border bg-popover">
+                    <SelectItem value="standard">{t("github.mode.standard")}</SelectItem>
+                    <SelectItem value="deep">{t("github.mode.deep")}</SelectItem>
+                  </SelectContent>
+                </Select>
+                : <Input id="github-action-mode" value={t(`github.mode.${draft.mode}`)} readOnly aria-readonly="true" />}
             </Field>
 
             <Field label={t("github.sheet.effort")} htmlFor="github-action-effort" hint={t("github.sheet.effortHint")}>
               <Input
                 id="github-action-effort"
-                value={draft.effort ?? ""}
-                disabled={!isAdmin}
+                value={draft.effort ?? (isAdmin ? "" : t("github.sheet.effortProvider"))}
+                readOnly={!isAdmin}
+                aria-readonly={isAdmin ? undefined : "true"}
                 placeholder={t("github.sheet.effortProvider")}
                 onChange={(event) => update({ effort: event.target.value === "" ? null : event.target.value })}
               />
@@ -228,6 +255,7 @@ export function ActionSheet({
                 inputMode="decimal"
                 disabled={!isAdmin}
                 value={draft.costCeilingUsd}
+                readOnly={!isAdmin}
                 aria-invalid={errorFor("costCeilingUsd") !== null}
                 placeholder="2.00"
                 onChange={(event) => update({ costCeilingUsd: event.target.value })}
@@ -242,6 +270,7 @@ export function ActionSheet({
                 inputMode="decimal"
                 disabled={!isAdmin}
                 value={draft.dailyCostCeilingUsd}
+                readOnly={!isAdmin}
                 aria-invalid={errorFor("dailyCostCeilingUsd") !== null}
                 placeholder={draft.costCeilingUsd || "10.00"}
                 onChange={(event) => update({ dailyCostCeilingUsd: event.target.value })}
@@ -258,19 +287,24 @@ export function ActionSheet({
               checked={draft.enabled}
               disabled={!isAdmin}
               label={t("github.sheet.enable")}
+              hint={t("github.sheet.enableHint")}
+              error={errorFor("enabled")}
               onChange={(checked) => update({ enabled: checked })}
             />
+            {/* Turning forks **on** admits code nobody in the organisation wrote and
+                is an administrator's. Turning them **off** narrows what the action
+                scans, and the API lets a maintainer do it for the same reason it
+                lets them disable the action — greying it out left them with no
+                lever but disabling the action and losing every internal PR too. */}
             <Toggle
               id="github-action-forks"
               checked={draft.includeForks}
-              disabled={!isAdmin}
+              disabled={!isAdmin && !draft.includeForks}
               label={t("github.actions.includeForks")}
+              hint={isAdmin ? t("github.actions.includeForksHint") : t("github.actions.includeForksMaintainer")}
               onChange={(checked) => update({ includeForks: checked })}
             />
           </div>
-          {errorFor("enabled") && <p role="alert" className="mt-2 text-xs text-destructive">{errorFor("enabled")}</p>}
-          <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">{t("github.sheet.enableHint")}</p>
-          <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">{t("github.actions.includeForksHint")}</p>
         </section>
 
         <SheetFooter className="flex-row justify-end gap-2 px-0">
@@ -295,13 +329,16 @@ function Field({
   error?: string | null;
   children: React.ReactNode;
 }) {
+  // The error and the hint are announced *with* the field: `aria-invalid` alone
+  // tells a screen reader that something is wrong and not what.
+  const describedBy = error ? `${htmlFor}-error` : hint ? `${htmlFor}-hint` : undefined;
   return <div className="min-w-0">
-    <label className="text-xs font-semibold" htmlFor={htmlFor}>{label}</label>
-    <div className="mt-2">{children}</div>
+    <label className="bench-label" htmlFor={htmlFor}>{label}</label>
+    <div className="mt-2" aria-describedby={describedBy}>{children}</div>
     {/* The message sits under its own control, so a form with three problems shows
         three of them instead of one banner that names none. */}
-    {error && <p role="alert" className="mt-2 text-xs leading-relaxed text-destructive">{error}</p>}
-    {!error && hint && <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">{hint}</p>}
+    {error && <p id={`${htmlFor}-error`} role="alert" className="mt-2 text-xs leading-relaxed text-destructive">{error}</p>}
+    {!error && hint && <p id={`${htmlFor}-hint`} className="mt-2 text-[11px] leading-relaxed text-muted-foreground">{hint}</p>}
   </div>;
 }
 
@@ -310,29 +347,34 @@ function Toggle({
   checked,
   disabled,
   label,
+  hint,
+  error,
   onChange,
 }: {
   id: string;
   checked: boolean;
   disabled: boolean;
   label: string;
+  hint?: string;
+  error?: string | null;
   onChange: (checked: boolean) => void;
 }) {
-  return <label
-    htmlFor={id}
-    className={cx(
-      "flex min-h-11 min-w-0 cursor-pointer items-center gap-3 border px-3 py-2 text-xs",
-      disabled && "cursor-not-allowed opacity-60",
-    )}
-  >
-    <input
-      id={id}
-      type="checkbox"
-      className="size-4 shrink-0 accent-primary"
-      checked={checked}
-      disabled={disabled}
-      onChange={(event) => onChange(event.target.checked)}
-    />
-    <span className="min-w-0 break-words">{label}</span>
-  </label>;
+  const hintId = `${id}-hint`;
+  return <div className="min-w-0">
+    <div className={cx(
+      "flex min-h-11 min-w-0 items-center gap-3 border px-3 py-2",
+      disabled && "opacity-60",
+    )}>
+      <Checkbox
+        id={id}
+        checked={checked}
+        disabled={disabled}
+        aria-describedby={hint ? hintId : undefined}
+        onCheckedChange={(next) => onChange(next === true)}
+      />
+      <label htmlFor={id} className={cx("min-w-0 break-words text-xs", !disabled && "cursor-pointer")}>{label}</label>
+    </div>
+    {error && <p role="alert" className="mt-2 text-xs leading-relaxed text-destructive">{error}</p>}
+    {hint && <p id={hintId} className="mt-2 text-[11px] leading-relaxed text-muted-foreground">{hint}</p>}
+  </div>;
 }

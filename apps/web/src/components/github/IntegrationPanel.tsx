@@ -20,34 +20,46 @@ import { deliveryOutcomeTone, safeExternalUrl, type GitHubT } from "./labels";
  */
 export function IntegrationPanel({
   status,
+  unavailable,
   t,
   canEdit,
-  busySecret,
-  secretNotice,
-  secretError,
+  secretState,
   reconciling,
   reconcileNotice,
   reconcileError,
   deliveries,
   onSaveSecret,
   onReconcile,
+  onRetry,
 }: {
   status: GitHubIntegrationStatus | null;
+  /** The read failed, as opposed to succeeding with nothing to show. */
+  unavailable: boolean;
   t: GitHubT;
   canEdit: boolean;
-  busySecret: boolean;
-  secretNotice: string | null;
-  secretError: string | null;
+  /** Which connection's form is busy and what it has to say; `null` for none. */
+  secretState: { connectionId: string; busy: boolean; notice: string | null; error: string | null } | null;
   reconciling: boolean;
   reconcileNotice: string | null;
   reconcileError: string | null;
   deliveries: GitHubIntegrationStatus["deliveries"]["last"][] | null;
   onSaveSecret: (connectionId: string, secret: string) => void;
   onReconcile: () => void;
+  onRetry: () => void;
 }) {
   if (status === null) {
+    // One statement of the outage, inside the panel that failed, with the way out.
+    // The page used to print the same sentence in a banner above an empty panel
+    // that repeated it and offered nothing.
     return <Panel label={t("github.integration")} title={t("github.integrationTitle")}>
-      <EmptyState title={t("github.integration.unavailable")} />
+      <EmptyState
+        title={unavailable ? t("github.integration.unavailable") : t("github.integration.none")}
+        description={unavailable ? t("github.integration.unavailableDetail") : t("github.integration.noneDescription")}
+      >
+        {unavailable && <Button type="button" variant="outline" size="sm" onClick={onRetry}>
+          {t("common.retry")}
+        </Button>}
+      </EmptyState>
     </Panel>;
   }
   if (status.connections.length === 0) {
@@ -65,26 +77,28 @@ export function IntegrationPanel({
       connection={connection}
       t={t}
       canEdit={canEdit}
-      busySecret={busySecret}
-      secretNotice={secretNotice}
-      secretError={secretError}
+      secret={secretState?.connectionId === connection.connectionId ? secretState : null}
       onSaveSecret={onSaveSecret}
     />)}
 
-    <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(22rem,.62fr)]">
+    {/* The checklist is eight rows; the 24 h panel is four. Side by side the right
+        column ended in a third of a screen of white, so the deliveries list — which
+        is long — stacks under the reconcile panel and fills it. */}
+    <div className="grid min-w-0 items-start gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(22rem,.62fr)]">
       <ChecklistPanel status={status} t={t} />
-      <ReconcilePanel
-        status={status}
-        t={t}
-        canEdit={canEdit}
-        reconciling={reconciling}
-        notice={reconcileNotice}
-        error={reconcileError}
-        onReconcile={onReconcile}
-      />
+      <div className="grid min-w-0 content-start gap-4">
+        <ReconcilePanel
+          status={status}
+          t={t}
+          canEdit={canEdit}
+          reconciling={reconciling}
+          notice={reconcileNotice}
+          error={reconcileError}
+          onReconcile={onReconcile}
+        />
+        <DeliveryList deliveries={deliveries} t={t} />
+      </div>
     </div>
-
-    <DeliveryList deliveries={deliveries} t={t} />
   </div>;
 }
 
@@ -92,17 +106,14 @@ function ConnectionBlock({
   connection,
   t,
   canEdit,
-  busySecret,
-  secretNotice,
-  secretError,
+  secret,
   onSaveSecret,
 }: {
   connection: GitHubIntegrationConnection;
   t: GitHubT;
   canEdit: boolean;
-  busySecret: boolean;
-  secretNotice: string | null;
-  secretError: string | null;
+  /** `null` unless this is the connection whose form was last submitted. */
+  secret: { busy: boolean; notice: string | null; error: string | null } | null;
   onSaveSecret: (connectionId: string, secret: string) => void;
 }) {
   const appUrl = safeExternalUrl(`https://github.com/settings/apps/${connection.appSlug}`);
@@ -264,9 +275,9 @@ function ConnectionBlock({
       connection={connection}
       t={t}
       canEdit={canEdit}
-      busy={busySecret}
-      notice={secretNotice}
-      error={secretError}
+      busy={secret?.busy === true}
+      notice={secret?.notice ?? null}
+      error={secret?.error ?? null}
       onSaveSecret={onSaveSecret}
     />
   </Panel>;
@@ -292,6 +303,16 @@ function WebhookSection({
   const [secret, setSecret] = useState("");
   const [copied, setCopied] = useState(false);
   const inputId = `github-webhook-secret-${connection.connectionId}`;
+  /**
+   * The step is unmet *and* a delivery did verify once: the secret was rotated and
+   * the old proof retired. Without this branch the panel printed the amber "the
+   * integration is still ready" next to the field the operator had just pasted into,
+   * while the checklist two panels below showed the same step red — and the
+   * reassuring sentence is the one they read.
+   */
+  const proofRetired = connection.missing.includes("delivery_verified")
+    && connection.lastVerifiedDeliveryAt !== null;
+  const verified = !connection.missing.includes("delivery_verified");
 
   async function copy() {
     if (!connection.webhookUrl) return;
@@ -333,27 +354,31 @@ function WebhookSection({
         value={connection.lastVerifiedDeliveryAt === null
           ? t("github.webhook.never")
           : formatDate(connection.lastVerifiedDeliveryAt)}
-        tone={connection.lastVerifiedDeliveryAt === null ? "risk" : connection.deliveryVerifiedStale ? "signal" : "good"}
+        tone={!verified ? "risk" : connection.deliveryVerifiedStale ? "signal" : "good"}
       />
     </dl>
 
-    <div className="border-t px-4 py-3">
-      {connection.lastVerifiedDeliveryAt === null
-        ? <div className="grid gap-2">
-          <p className="text-xs leading-relaxed text-destructive">{t("github.delivery.neverVerified")}</p>
-          <p className="text-xs leading-relaxed text-muted-foreground">{t("github.delivery.pingHint")}</p>
-        </div>
-        : connection.deliveryVerifiedStale
-          ? <div className="flex min-w-0 items-start gap-2">
-            <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0 text-chart-3" />
-            <p className="min-w-0 text-xs leading-relaxed text-chart-3">
-              {t("github.delivery.stale", { count: connection.deliveryVerifiedAgeDays ?? 0 })}
-              {" "}
-              <span className="text-muted-foreground">{t("github.delivery.staleDetail")}</span>
-            </p>
-          </div>
-          : <p className="text-xs leading-relaxed text-chart-2">{t("github.delivery.verifiedAt", { date: formatDate(connection.lastVerifiedDeliveryAt) })}</p>}
-    </div>
+    {/* One sentence, and only when there is something to say. The happy path says
+        nothing here: the cell above already prints the timestamp, and printing it
+        twice two lines apart was the duplication the operator spotted. */}
+    {!verified && <div className="border-t px-4 py-3">
+      <div className="grid gap-2">
+        <p className="text-xs leading-relaxed text-destructive">
+          {proofRetired ? t("github.delivery.proofRetired") : t("github.delivery.neverVerified")}
+        </p>
+        <p className="text-xs leading-relaxed text-muted-foreground">{t("github.delivery.pingHint")}</p>
+      </div>
+    </div>}
+    {verified && connection.deliveryVerifiedStale && <div className="border-t px-4 py-3">
+      <div className="flex min-w-0 items-start gap-2">
+        <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0 text-chart-3" />
+        <p className="min-w-0 text-xs leading-relaxed text-chart-3">
+          {t("github.delivery.stale", { count: connection.deliveryVerifiedAgeDays ?? 0 })}
+          {" "}
+          <span className="text-muted-foreground">{t("github.delivery.staleDetail")}</span>
+        </p>
+      </div>
+    </div>}
 
     {canEdit && <form
       className="grid gap-3 border-t p-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end"
@@ -364,7 +389,7 @@ function WebhookSection({
       }}
     >
       <div className="min-w-0">
-        <label className="text-xs font-semibold" htmlFor={inputId}>{t("github.webhook.secret")}</label>
+        <label className="bench-label" htmlFor={inputId}>{t("github.webhook.secretNew")}</label>
         <div className="mt-2">
           {/* A password input, never a readback: the stored value is not fetchable. */}
           <Input

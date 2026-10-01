@@ -1,6 +1,6 @@
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { ArrowUpRight, GitBranch } from "lucide-react";
-import type { GitHubActionEvent, GitHubActionEventStatus, GuardrailRepository } from "@csb/shared";
+import type { GitHubAction, GitHubActionEvent, GitHubActionEventStatus, GuardrailRepository } from "@csb/shared";
 
 import { EmptyState, Panel, cx } from "../ui";
 import { Button } from "@/components/ui/button";
@@ -18,33 +18,40 @@ const OUTCOMES: readonly GitHubActionEventStatus[] = [
  */
 export function ActivityList({
   events,
+  actions,
   repositories,
   repositoryKey,
   outcome,
   hasMore,
   loading,
   t,
-  onRepositoryChange,
-  onOutcomeChange,
+  repositoryHref,
+  outcomeHref,
   onLoadMore,
 }: {
   events: GitHubActionEvent[];
+  /** Already loaded by the page; the row needs the matched action's name. */
+  actions: GitHubAction[];
   repositories: GuardrailRepository[];
   repositoryKey: string;
   outcome: GitHubActionEventStatus | "";
   hasMore: boolean;
   loading: boolean;
   t: GitHubT;
-  onRepositoryChange: (repositoryKey: string) => void;
-  onOutcomeChange: (outcome: GitHubActionEventStatus | "") => void;
+  repositoryHref: (repositoryKey: string) => string;
+  outcomeHref: (outcome: string) => string;
   onLoadMore: () => void;
 }) {
+  const navigate = useNavigate();
   return <Panel label={t("github.activity")} title={t("github.activityTitle")} wrapTitle>
     <p className="border-b px-4 py-3 text-xs leading-relaxed text-muted-foreground">{t("github.activityDescription")}</p>
 
     <div className="grid gap-3 border-b p-4 sm:grid-cols-2 lg:grid-cols-[minmax(14rem,.5fr)_minmax(11rem,.35fr)]">
       <Field label={t("github.actions.repository")} htmlFor="github-activity-repository">
-        <Select value={repositoryKey || "__all__"} onValueChange={(value) => onRepositoryChange(value === "__all__" ? "" : value)}>
+        <Select
+          value={repositoryKey || "__all__"}
+          onValueChange={(value) => navigate(repositoryHref(value === "__all__" ? "" : value))}
+        >
           <SelectTrigger id="github-activity-repository" className="w-full"><SelectValue /></SelectTrigger>
           <SelectContent position="popper" className="rounded-none border-border bg-popover">
             <SelectItem value="__all__">{t("github.actions.allRepositories")}</SelectItem>
@@ -53,7 +60,10 @@ export function ActivityList({
         </Select>
       </Field>
       <Field label={t("github.activity.filterOutcome")} htmlFor="github-activity-outcome">
-        <Select value={outcome || "__all__"} onValueChange={(value) => onOutcomeChange(value === "__all__" ? "" : value as GitHubActionEventStatus)}>
+        <Select
+          value={outcome || "__all__"}
+          onValueChange={(value) => navigate(outcomeHref(value === "__all__" ? "" : value))}
+        >
           <SelectTrigger id="github-activity-outcome" className="w-full"><SelectValue /></SelectTrigger>
           <SelectContent position="popper" className="rounded-none border-border bg-popover">
             <SelectItem value="__all__">{t("github.activity.allOutcomes")}</SelectItem>
@@ -66,18 +76,33 @@ export function ActivityList({
     {events.length === 0
       ? <EmptyState title={t("github.activity.empty")} description={t("github.activity.emptyDescription")} />
       : <ul className="divide-y">
-        {events.map((event) => <li key={event.id}><ActivityRow event={event} t={t} /></li>)}
+        {events.map((event) => <li key={event.id}>
+          <ActivityRow
+            event={event}
+            actionName={actions.find((action) => action.id === event.actionId)?.name ?? null}
+            t={t}
+          />
+        </li>)}
       </ul>}
 
     {hasMore && <div className="border-t p-4">
       <Button type="button" variant="outline" size="sm" disabled={loading} onClick={onLoadMore}>
-        {loading ? t("github.refreshing") : t("github.activity.loadMore")}
+        {loading ? t("github.activity.loadingMore") : t("github.activity.loadMore")}
       </Button>
     </div>}
   </Panel>;
 }
 
-export function ActivityRow({ event, t }: { event: GitHubActionEvent; t: GitHubT }) {
+export function ActivityRow({
+  event,
+  actionName,
+  t,
+}: {
+  event: GitHubActionEvent;
+  /** `null` when the action was deleted; the id still identifies the row. */
+  actionName: string | null;
+  t: GitHubT;
+}) {
   const gateUrl = event.gateId ? `/guardrails/${encodeURIComponent(event.gateId)}` : null;
   // A failure shows what failed; anything else shows why nothing happened, and both
   // are sentences.
@@ -105,6 +130,18 @@ export function ActivityRow({ event, t }: { event: GitHubActionEvent; t: GitHubT
       <div className="mt-1 min-w-0 break-all font-mono text-[10px] text-muted-foreground">
         {event.headRef || t("github.activity.unknownRef")} · {t("github.activity.head")} {shortId(event.headSha)}
         {event.baseRef ? ` · ${event.baseRef}` : ""}
+        {/* The delivery id is what correlates a row with Entregas and with GitHub's
+            own Recent Deliveries; without it the two lists cannot be joined. */}
+        {event.deliveryId !== null ? ` · ${shortId(event.deliveryId)}` : ""}
+      </div>
+      {/* Several actions may now share a repository, so two rows of one push differ
+          only by which action matched. Naming it is the question this list exists
+          to answer. */}
+      <div className="mt-1 flex min-w-0 items-baseline gap-1.5">
+        <span className="bench-label">{t("github.actions.column.name")}</span>
+        <span className="min-w-0 break-words font-mono text-[10px]">
+          {actionName ?? shortId(event.actionId)}
+        </span>
       </div>
       {event.title && <p className="mt-1 min-w-0 break-words text-xs text-muted-foreground">{event.title}</p>}
       {reason && <p className={cx(
@@ -116,8 +153,9 @@ export function ActivityRow({ event, t }: { event: GitHubActionEvent; t: GitHubT
     </div>
 
     <div className="flex shrink-0 flex-wrap items-center gap-2 lg:justify-end">
-      {event.costCeilingUsd !== null && <span className="font-mono text-[10px] text-primary">
-        {formatUsd(event.costCeilingUsd, true)}
+      {event.costCeilingUsd !== null && <span className="inline-flex min-w-0 items-baseline gap-1.5">
+        <span className="bench-label">{t("github.activity.ceiling")}</span>
+        <span className="font-mono text-[10px] text-primary">{formatUsd(event.costCeilingUsd, true)}</span>
       </span>}
       {gateUrl && <Button asChild variant="outline" size="sm">
         <Link to={gateUrl}>{t("github.activity.openGate")}<ArrowUpRight aria-hidden className="size-3" /></Link>
@@ -128,7 +166,7 @@ export function ActivityRow({ event, t }: { event: GitHubActionEvent; t: GitHubT
 
 function Field({ label, htmlFor, children }: { label: string; htmlFor: string; children: React.ReactNode }) {
   return <div className="min-w-0">
-    <label className="text-xs font-semibold" htmlFor={htmlFor}>{label}</label>
+    <label className="bench-label" htmlFor={htmlFor}>{label}</label>
     <div className="mt-2">{children}</div>
   </div>;
 }

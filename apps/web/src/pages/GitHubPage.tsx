@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
 import type {
   GitHubAction,
@@ -13,6 +13,7 @@ import type {
 
 import { api } from "../api";
 import { useAuth } from "../auth/AuthProvider";
+import { ConfirmDialog } from "../components/access/ConfirmDialog";
 import {
   ActionList,
   ActionSheet,
@@ -31,7 +32,15 @@ import { loadLiveConnectionModels } from "../lib/new-scan-routing";
 
 type Section = "integration" | "actions" | "activity";
 
-const ACTIVITY_PAGE = 50;
+const PAGE = 50;
+
+/** Which connection's secret form is busy, and what it has to say. */
+interface SecretState {
+  connectionId: string;
+  busy: boolean;
+  notice: string | null;
+  error: string | null;
+}
 
 /**
  * The GitHub tab: `01 INTEGRAÇÃO` (administrator only), `02 AÇÕES` and
@@ -41,7 +50,7 @@ const ACTIVITY_PAGE = 50;
 export function GitHubPage() {
   const { t } = useScopedI18n(githubActionsMessages);
   const { isAdmin, can, canAny } = useAuth();
-  const [params, setParams] = useSearchParams();
+  const [params] = useSearchParams();
 
   const [repositories, setRepositories] = useState<GuardrailRepository[]>([]);
   const [connections, setConnections] = useState<ProviderConnection[]>([]);
@@ -49,25 +58,26 @@ export function GitHubPage() {
   const [integration, setIntegration] = useState<GitHubIntegrationStatus | null>(null);
   const [deliveries, setDeliveries] = useState<WebhookDeliveryRecord[] | null>(null);
   const [actions, setActions] = useState<GitHubAction[]>([]);
+  const [actionsHasMore, setActionsHasMore] = useState(false);
   const [events, setEvents] = useState<GitHubActionEvent[]>([]);
   const [eventsHasMore, setEventsHasMore] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [scopedLoading, setScopedLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [integrationFailed, setIntegrationFailed] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busyActionId, setBusyActionId] = useState<string | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [editing, setEditing] = useState<GitHubAction | null>(null);
+  const [deleting, setDeleting] = useState<GitHubAction | null>(null);
   const [saving, setSaving] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [savingSecret, setSavingSecret] = useState(false);
-  const [secretNotice, setSecretNotice] = useState<string | null>(null);
-  const [secretError, setSecretError] = useState<string | null>(null);
+  const [secretState, setSecretState] = useState<SecretState | null>(null);
   const [reconciling, setReconciling] = useState(false);
   const [reconcileNotice, setReconcileNotice] = useState<string | null>(null);
   const [reconcileError, setReconcileError] = useState<string | null>(null);
-  const [activityLoading, setActivityLoading] = useState(false);
 
   const sections = useMemo<ReadonlyArray<{ id: Section; code: string; label: string }>>(() => [
     ...(isAdmin ? [{ id: "integration" as const, code: "01", label: t("github.section.integration") }] : []),
@@ -82,57 +92,78 @@ export function GitHubPage() {
   const repositoryKey = params.get("repository") ?? "";
   const outcome = (params.get("outcome") ?? "") as GitHubActionEventStatus | "";
 
-  const setParam = useCallback((key: string, value: string) => {
-    setParams((current) => {
-      const next = new URLSearchParams(current);
-      if (value === "") next.delete(key);
-      else next.set(key, value);
-      return next;
-    }, { replace: true });
-  }, [setParams]);
+  const sectionHref = useCallback((next: Partial<Record<"section" | "repository" | "outcome", string>>) => {
+    const query = new URLSearchParams(params);
+    for (const [key, value] of Object.entries(next)) {
+      if (value === "") query.delete(key);
+      else query.set(key, value);
+    }
+    const search = query.toString();
+    return search === "" ? "/github" : `/github?${search}`;
+  }, [params]);
 
   /**
-   * One read per visit, and one per press of Refresh. The integration status calls
-   * GitHub twice per connection, so an interval would spend those calls on a screen
-   * nobody is looking at.
+   * The integration, the connections and the register. It does **not** depend on the
+   * repository or the outcome filter: each read costs `GET /app` plus
+   * `GET /app/installations` per connection, and flipping a filter in `03 Atividade`
+   * must not spend four GitHub calls — nor unmount the `Select` the operator is
+   * standing on.
    */
-  const load = useCallback(async (mode: "initial" | "refresh") => {
+  const loadIntegration = useCallback(async (mode: "initial" | "refresh") => {
     if (mode === "initial") setLoading(true);
     else setRefreshing(true);
-    const [repositoryResult, connectionResult, actionResult, eventResult, integrationResult, deliveryResult] =
+    const [repositoryResult, connectionResult, integrationResult, deliveryResult] =
       await Promise.allSettled([
         api.listGuardrailRepositories(),
         isAdmin ? api.listConnections() : Promise.resolve([]),
-        githubActionsApi.fetchActions(repositoryKey || null),
-        githubActionsApi.fetchEvents({
-          repositoryKey: repositoryKey || null,
-          outcome: outcome || null,
-          limit: ACTIVITY_PAGE,
-        }),
         isAdmin ? githubActionsApi.fetchIntegration() : Promise.resolve(null),
-        isAdmin ? githubActionsApi.fetchDeliveries(50) : Promise.resolve(null),
+        isAdmin ? githubActionsApi.fetchDeliveries(PAGE) : Promise.resolve(null),
       ]);
 
     if (repositoryResult.status === "fulfilled") setRepositories(repositoryResult.value.repositories);
     if (connectionResult.status === "fulfilled") setConnections(connectionResult.value);
-    if (actionResult.status === "fulfilled") setActions(actionResult.value.actions);
+    // A 502 from the integration read is GitHub's outage, not the tab's: the actions
+    // and the activity are still readable and still worth showing.
+    setIntegration(integrationResult.status === "fulfilled" ? integrationResult.value : null);
+    setIntegrationFailed(integrationResult.status === "rejected");
+    if (deliveryResult.status === "fulfilled") setDeliveries(deliveryResult.value?.deliveries ?? null);
+
+    setLoadError(repositoryResult.status === "rejected" ? t("github.loadError") : null);
+    setLoading(false);
+    setRefreshing(false);
+  }, [isAdmin, t]);
+
+  /** Everything the repository and outcome filters decide, and nothing else. */
+  const loadScoped = useCallback(async () => {
+    setScopedLoading(true);
+    const [actionResult, eventResult] = await Promise.allSettled([
+      githubActionsApi.fetchActions(repositoryKey || null),
+      githubActionsApi.fetchEvents({
+        repositoryKey: repositoryKey || null,
+        outcome: outcome || null,
+        limit: PAGE,
+      }),
+    ]);
+    if (actionResult.status === "fulfilled") {
+      setActions(actionResult.value.actions);
+      setActionsHasMore(actionResult.value.hasMore);
+    }
     if (eventResult.status === "fulfilled") {
       setEvents(eventResult.value.events);
       setEventsHasMore(eventResult.value.hasMore);
     }
-    // A 502 from the integration read is GitHub's outage, not the tab's: the actions
-    // and the activity are still readable and still worth showing.
-    if (integrationResult.status === "fulfilled") setIntegration(integrationResult.value);
-    else setIntegration(null);
-    if (deliveryResult.status === "fulfilled") setDeliveries(deliveryResult.value?.deliveries ?? null);
+    if (actionResult.status === "rejected" || eventResult.status === "rejected") {
+      setLoadError(t("github.loadError"));
+    }
+    setScopedLoading(false);
+  }, [repositoryKey, outcome, t]);
 
-    const failed = [repositoryResult, actionResult, eventResult].some((result) => result.status === "rejected");
-    setLoadError(failed ? t("github.loadError") : null);
-    setLoading(false);
-    setRefreshing(false);
-  }, [isAdmin, repositoryKey, outcome, t]);
+  useEffect(() => { void loadIntegration("initial"); }, [loadIntegration]);
+  useEffect(() => { void loadScoped(); }, [loadScoped]);
 
-  useEffect(() => { void load("initial"); }, [load]);
+  const refreshAll = useCallback(async () => {
+    await Promise.all([loadIntegration("refresh"), loadScoped()]);
+  }, [loadIntegration, loadScoped]);
 
   // The models of the connection the sheet has selected, loaded only while it is
   // open: a catalogue read per row of the table would be a remote call per render.
@@ -180,6 +211,11 @@ export function GitHubPage() {
           name: body.name,
           triggerKind: body.triggerKind,
           branchPatterns: body.branchPatterns,
+          // Turning forks **off** narrows what the action scans, and the API lets a
+          // maintainer do it for the same reason it lets them disable the action.
+          // Stripping it here made the screen stricter than the server on the one
+          // control that admits untrusted code.
+          ...(!isAdmin && body.includeForks === false ? { includeForks: false } : {}),
           ...(isAdmin
             ? {
               executor: body.executor,
@@ -193,7 +229,7 @@ export function GitHubPage() {
         });
       }
       setSheetOpen(false);
-      await load("refresh");
+      await refreshAll();
     } catch (error) {
       setSubmitError(writeErrorMessage(error, t));
     } finally {
@@ -206,7 +242,7 @@ export function GitHubPage() {
     setActionError(null);
     try {
       await githubActionsApi.patchAction(action.id, { enabled });
-      await load("refresh");
+      await refreshAll();
     } catch (error) {
       setActionError(writeErrorMessage(error, t));
     } finally {
@@ -215,31 +251,44 @@ export function GitHubPage() {
   }
 
   async function remove(action: GitHubAction) {
-    if (!window.confirm(t("github.actions.deleteConfirm", { name: action.name }))) return;
     setBusyActionId(action.id);
     setActionError(null);
     try {
       await githubActionsApi.deleteAction(action.id);
-      await load("refresh");
+      setDeleting(null);
+      await refreshAll();
     } catch (error) {
       setActionError(writeErrorMessage(error, t, "github.error.deleteFailed"));
+      setDeleting(null);
     } finally {
       setBusyActionId(null);
     }
   }
 
+  async function loadMoreActions() {
+    setScopedLoading(true);
+    try {
+      const page = await githubActionsApi.fetchActions(repositoryKey || null, {
+        limit: PAGE,
+        offset: actions.length,
+      });
+      setActions((current) => [...current, ...page.actions]);
+      setActionsHasMore(page.hasMore);
+    } catch {
+      setLoadError(t("github.loadError"));
+    } finally {
+      setScopedLoading(false);
+    }
+  }
+
   async function saveSecret(connectionId: string, secret: string) {
-    setSavingSecret(true);
-    setSecretNotice(null);
-    setSecretError(null);
+    setSecretState({ connectionId, busy: true, notice: null, error: null });
     try {
       await githubActionsApi.saveWebhookSecret(connectionId, secret);
-      setSecretNotice(t("github.webhook.saved"));
-      await load("refresh");
+      setSecretState({ connectionId, busy: false, notice: t("github.webhook.saved"), error: null });
+      await loadIntegration("refresh");
     } catch (error) {
-      setSecretError(secretErrorMessage(error, t));
-    } finally {
-      setSavingSecret(false);
+      setSecretState({ connectionId, busy: false, notice: null, error: secretErrorMessage(error, t) });
     }
   }
 
@@ -255,7 +304,7 @@ export function GitHubPage() {
         created: result.created,
         observed: result.observed,
       }));
-      await load("refresh");
+      await refreshAll();
     } catch {
       setReconcileError(t("github.reconcile.error"));
     } finally {
@@ -264,12 +313,12 @@ export function GitHubPage() {
   }
 
   async function loadMoreEvents() {
-    setActivityLoading(true);
+    setScopedLoading(true);
     try {
       const page = await githubActionsApi.fetchEvents({
         repositoryKey: repositoryKey || null,
         outcome: outcome || null,
-        limit: ACTIVITY_PAGE,
+        limit: PAGE,
         offset: events.length,
       });
       setEvents((current) => [...current, ...page.events]);
@@ -277,22 +326,25 @@ export function GitHubPage() {
     } catch {
       setLoadError(t("github.loadError"));
     } finally {
-      setActivityLoading(false);
+      setScopedLoading(false);
     }
   }
 
   const sheetRepositoryKey = editing?.repositoryKey ?? repositoryKey;
+  const sheetRepository = enrolledRepositories.find((item) => item.repositoryKey === sheetRepositoryKey) ?? null;
+  const fillers = (3 - (sections.length % 3)) % 3;
 
   return <div className="min-w-0">
-    {/* Tab bar first, then the header — the order every section screen uses. */}
-    <nav aria-label={t("github.title")} className="mb-4 grid w-full grid-cols-3 gap-px overflow-hidden border border-border bg-border lg:flex">
+    {/* Tab bar first, then the header — the order every section screen uses. Links,
+        not buttons, so middle-click and open-in-new-tab keep working. */}
+    <nav aria-label={t("github.title")} className="mb-4 grid w-full grid-cols-2 gap-px overflow-hidden border border-border bg-border sm:grid-cols-3 lg:flex">
       {sections.map((item) => {
         const active = item.id === section;
-        return <button
+        return <Link
           key={item.id}
-          type="button"
+          to={sectionHref({ section: item.id })}
+          replace
           aria-current={active ? "page" : undefined}
-          onClick={() => setParam("section", item.id)}
           className={cx(
             "group relative flex h-10 min-w-0 items-center justify-center gap-2 bg-background px-3 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:z-10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring lg:shrink-0 lg:justify-start lg:px-4",
             active && "bg-accent text-chart-1",
@@ -301,14 +353,17 @@ export function GitHubPage() {
           <span className="text-[8px] opacity-55">{item.code}</span>
           <span className="truncate">{item.label}</span>
           <span className={cx("absolute inset-x-0 bottom-0 h-px bg-chart-1 transition-transform", active ? "scale-x-100" : "scale-x-0 group-hover:scale-x-100")} />
-        </button>;
+        </Link>;
       })}
-      {/* The tabs sit on a border-coloured track separated by a one-pixel gap,
-          which is what draws the hairlines. A member sees two tabs, not three, so
-          the empty cell of the grid would expose the track as a solid block —
-          the same filler the Settings tabs use. */}
-      {Array.from({ length: (3 - (sections.length % 3)) % 3 }, (_, index) => (
-        <span key={`filler-${index}`} aria-hidden="true" className="h-10 bg-background lg:hidden" />
+      {/* The tabs sit on a border-coloured track separated by a one-pixel gap, which
+          is what draws the hairlines. A member sees two tabs, not three, so the
+          empty cell would expose the track as a solid block. */}
+      {Array.from({ length: fillers }, (_, index) => (
+        <span
+          key={`filler-${index}`}
+          aria-hidden="true"
+          className={cx("h-10 bg-background lg:hidden", index === 0 ? "hidden sm:block" : "block")}
+        />
       ))}
       <span aria-hidden="true" className="hidden bg-background lg:block lg:flex-1" />
     </nav>
@@ -317,32 +372,30 @@ export function GitHubPage() {
       code={t("github.moduleCode")}
       title={t("github.title")}
       description={t("github.description")}
-      actions={<Button variant="outline" size="sm" disabled={loading || refreshing} onClick={() => void load("refresh")}>
+      actions={<Button variant="outline" size="sm" disabled={loading || refreshing} onClick={() => void refreshAll()}>
         <RefreshCw aria-hidden className={cx("size-3", refreshing && "animate-spin motion-reduce:animate-none")} />
         {refreshing ? t("github.refreshing") : t("github.refresh")}
       </Button>}
     />
 
     {loadError && <AlertBanner>{loadError}</AlertBanner>}
-    {isAdmin && section === "integration" && integration === null && !loading
-      && <AlertBanner tone="warning">{t("github.integration.unavailable")}</AlertBanner>}
 
     {loading
       ? <Loading label={t("github.loading")} />
       : <>
         {section === "integration" && isAdmin && <IntegrationPanel
           status={integration}
+          unavailable={integrationFailed}
           t={t}
           canEdit={isAdmin}
-          busySecret={savingSecret}
-          secretNotice={secretNotice}
-          secretError={secretError}
+          secretState={secretState}
           reconciling={reconciling}
           reconcileNotice={reconcileNotice}
           reconcileError={reconcileError}
           deliveries={deliveries}
           onSaveSecret={(connectionId, secret) => void saveSecret(connectionId, secret)}
           onReconcile={() => void reconcile()}
+          onRetry={() => void loadIntegration("refresh")}
         />}
 
         {section === "actions" && <>
@@ -355,16 +408,20 @@ export function GitHubPage() {
             can={can}
             busyActionId={busyActionId}
             error={actionError}
-            onRepositoryChange={(value) => setParam("repository", value)}
+            hasMore={actionsHasMore}
+            loading={scopedLoading}
+            repositoryHref={(value) => sectionHref({ repository: value })}
             onCreate={openCreate}
             onEdit={openEdit}
             onToggle={(action, enabled) => void toggle(action, enabled)}
-            onDelete={(action) => void remove(action)}
+            onDelete={setDeleting}
+            onLoadMore={() => void loadMoreActions()}
           />
           {(isAdmin || canAny("maintainer")) && <ActionSheet
             open={sheetOpen}
             action={editing}
             repositoryKey={sheetRepositoryKey}
+            repositoryName={sheetRepository?.displayName ?? sheetRepositoryKey}
             connections={connections}
             models={models}
             isAdmin={isAdmin}
@@ -375,18 +432,30 @@ export function GitHubPage() {
             onSubmit={(body) => void submit(body)}
             onConnectionChange={loadModels}
           />}
+          {/* The product's own confirmation, not the browser's: the only
+              `window.confirm` in `apps/web/src` was this one. */}
+          {deleting !== null && <ConfirmDialog
+            open
+            onOpenChange={(open) => { if (!open) setDeleting(null); }}
+            destructive
+            pending={busyActionId === deleting.id}
+            title={t("github.actions.deleteTitle", { name: deleting.name })}
+            description={t("github.actions.deleteConfirm", { name: deleting.name })}
+            onConfirm={() => void remove(deleting)}
+          />}
         </>}
 
         {section === "activity" && <ActivityList
           events={events}
+          actions={actions}
           repositories={enrolledRepositories}
           repositoryKey={repositoryKey}
           outcome={outcome}
           hasMore={eventsHasMore}
-          loading={activityLoading}
+          loading={scopedLoading}
           t={t}
-          onRepositoryChange={(value) => setParam("repository", value)}
-          onOutcomeChange={(value) => setParam("outcome", value)}
+          repositoryHref={(value) => sectionHref({ repository: value })}
+          outcomeHref={(value) => sectionHref({ outcome: value })}
           onLoadMore={() => void loadMoreEvents()}
         />}
       </>}

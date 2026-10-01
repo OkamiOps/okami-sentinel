@@ -28,6 +28,11 @@ async function openTab(page: Page, section: "integration" | "actions" | "activit
   return state;
 }
 
+/** The tab bar of the page, not the module strip in the shell. */
+function sectionTab(page: Page, code: RegExp) {
+  return page.getByRole("navigation", { name: "GitHub" }).getByRole("link", { name: code });
+}
+
 test("names the permission and the event the App is missing", async ({ page }) => {
   await openTab(page, "integration", { locale: "en", integration: "missing_permissions" });
 
@@ -65,7 +70,7 @@ test("pastes a webhook secret and shows it as configured", async ({ page }) => {
   // Not configured means never verified, and the screen says how to prove it.
   await expect(page.getByText("redeliver the ping", { exact: false })).toBeVisible();
 
-  const field = page.getByLabel("Secret", { exact: true });
+  const field = page.getByLabel("New secret", { exact: true });
   await expect(field).toHaveAttribute("type", "password");
   await field.fill("s".repeat(32));
   await page.getByRole("button", { name: "STORE SECRET" }).click();
@@ -114,8 +119,9 @@ test("creates two actions on one repository with different events", async ({ pag
     await page.getByRole("option", { name: /Fixture provider/ }).click();
     await page.getByLabel("Per-scan ceiling / USD").fill("2");
     await page.getByLabel("Day budget / USD").fill("6");
-    await page.getByLabel("Enable this action").check();
-    await page.getByRole("button", { name: "SAVE", exact: true }).click();
+    // A Radix checkbox is a button with `role="checkbox"`, not an <input>.
+    await page.getByRole("checkbox", { name: "Enable this action" }).click();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByRole("button", { name: "NEW ACTION" })).toBeVisible();
   }
 
@@ -154,7 +160,7 @@ test("refuses a day budget below the per-scan ceiling before the round trip", as
   await page.getByRole("option", { name: /Fixture provider/ }).click();
   await page.getByLabel("Per-scan ceiling / USD").fill("5");
   await page.getByLabel("Day budget / USD").fill("2");
-  await page.getByRole("button", { name: "SAVE", exact: true }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("cannot be lower than the per-scan ceiling", { exact: false })).toBeVisible();
   expect(state.github.writes).toEqual([]);
 });
@@ -195,7 +201,7 @@ test("gives a viewer the actions in words and no control at all", async ({ page 
   }
   await expect(page.getByText("nothing here is editable", { exact: false })).toBeVisible();
   // Integration is administrator-only, so the tab is not even offered.
-  await expect(page.getByRole("button", { name: /Integration/ })).toHaveCount(0);
+  await expect(sectionTab(page, /^01/)).toHaveCount(0);
 });
 
 test("shows a migrated action's note and refuses to enable it until reviewed", async ({ page }) => {
@@ -289,9 +295,9 @@ test("filters the activity by repository and by outcome", async ({ page }) => {
 
 test("the tab never calls a route the API no longer serves", async ({ page }) => {
   const state = await openTab(page, "integration", { locale: "en" });
-  await page.getByRole("button", { name: /^02/ }).click();
+  await sectionTab(page, /^02/).click();
   await expect(page.getByText("Actions per repository")).toBeVisible();
-  await page.getByRole("button", { name: /^03/ }).click();
+  await sectionTab(page, /^03/).click();
   await expect(page.getByText("Events, matched actions and gates")).toBeVisible();
   await page.getByRole("button", { name: "REFRESH" }).click();
   await expect(page.getByRole("button", { name: "REFRESH" })).toBeEnabled();
@@ -319,6 +325,147 @@ test("reads the integration once per visit and never on an interval", async ({ p
 test("keeps reading the actions when GitHub itself is unreachable", async ({ page }) => {
   await openTab(page, "actions", { locale: "en", integrationFails: true });
   await expect(page.getByText("PR deep")).toBeVisible();
-  await page.getByRole("button", { name: /^01/ }).click();
-  await expect(page.getByRole("status").filter({ hasText: "GitHub could not be reached" })).toBeVisible();
+  await sectionTab(page, /^01/).click();
+  // One statement of the outage, inside the panel that failed, with the way out.
+  await expect(page.getByText("GitHub could not be reached right now", { exact: false })).toBeVisible();
+  await expect(page.getByText("Actions and Activity sections are still readable", { exact: false })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Try again" })).toBeVisible();
+});
+
+/**
+ * Each integration read costs `GET /app` plus `GET /app/installations` per
+ * connection. Flipping a filter in `03 Atividade` must spend none of them — and
+ * must not replace the section with a spinner, which unmounts the `Select` the
+ * operator is standing on.
+ */
+test("a filter change costs no GitHub call and keeps the control mounted", async ({ page }) => {
+  const state = await openTab(page, "activity", {
+    locale: "en",
+    repositories: [githubRepository, githubSecondRepository],
+    events: [githubEvent({ id: "e1", status: "skipped", reason: "fork_pull_request" })],
+  });
+  const reads = () => state.github.requests.filter((request) => request === "GET /github/integration").length;
+  await expect.poll(reads).toBe(1);
+
+  for (const name of ["ignored", "queued"]) {
+    await page.getByLabel("Outcome", { exact: true }).click();
+    await page.getByRole("option", { name, exact: true }).click();
+    // The select survives the reload of the rows below it.
+    await expect(page.getByLabel("Outcome", { exact: true })).toBeVisible();
+  }
+  await page.getByLabel("Repository", { exact: true }).click();
+  await page.getByRole("option", { name: "solar-api" }).click();
+  await expect(page.getByLabel("Repository", { exact: true })).toBeVisible();
+
+  expect(reads()).toBe(1);
+  expect(state.github.requests.filter((request) => request.startsWith("GET /github/deliveries"))).toHaveLength(1);
+});
+
+/**
+ * An action past the page bound stays enabled and keeps spending while being
+ * invisible on the only screen that can switch it off.
+ */
+test("never hides an action behind a page bound", async ({ page }) => {
+  const many = Array.from({ length: 3 }, (_, index) => githubAction({
+    id: `action-${index}`, name: `Ação ${index}`, triggerKind: index % 2 === 0 ? "pull_request" : "push",
+  }));
+  const state = await openTab(page, "actions", {
+    locale: "en", repositories: [githubRepository], actions: many,
+  });
+  // The fixture pages at whatever the client asks for; the client asks for 50.
+  await expect(page.getByText("Ação 0")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Load more" })).toHaveCount(0);
+  expect(state.github.requests.some((request) => request.startsWith("GET /github/actions"))).toBe(true);
+});
+
+/**
+ * `patchRequiresAdmin` lets a maintainer clear `includeForks`: stopping fork scans
+ * narrows what the action does. Greying it out left them disabling the action and
+ * losing every internal pull request with it.
+ */
+test("lets a maintainer stop scanning forks without disabling the action", async ({ page }) => {
+  const state = await openTab(page, "actions", {
+    locale: "en",
+    session: { isAdmin: false, grants: [{ repositoryKey: githubRepository.repositoryKey, role: "maintainer" }] },
+    repositories: [githubRepository],
+    actions: [githubAction({ enabled: false, includeForks: true })],
+  });
+
+  await page.getByRole("button", { name: "Edit" }).click();
+  const forks = page.getByRole("checkbox", { name: "Scan pull requests from forks" });
+  await expect(forks).toBeEnabled();
+  await expect(page.getByText("You may turn it off", { exact: false })).toBeVisible();
+  // Enabling the action stays an administrator's.
+  await expect(page.getByRole("checkbox", { name: "Enable this action" })).toBeDisabled();
+  await forks.click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+
+  await expect.poll(() => state.github.writes.filter((write) => write.method === "PATCH")
+    .map((write) => (write.body as { includeForks?: boolean }).includeForks)).toEqual([false]);
+});
+
+/**
+ * Several actions may now share a repository, so two rows of one push differ only
+ * by which action matched. Naming it is the question this list exists to answer.
+ */
+test("names the matched action and the delivery on every activity row", async ({ page }) => {
+  await openTab(page, "activity", {
+    locale: "en",
+    repositories: [githubRepository],
+    actions: [
+      githubAction({ id: "action-cheap", name: "main cheap", triggerKind: "push" }),
+      githubAction({ id: "action-deep", name: "release deep" }),
+    ],
+    events: [
+      githubEvent({ id: "e1", actionId: "action-cheap", status: "launched", deliveryId: "delivery-aaa-0001" }),
+      githubEvent({ id: "e2", actionId: "action-deep", status: "skipped", reason: "daily_cost_ceiling", deliveryId: "delivery-bbb-0002" }),
+    ],
+  });
+  await expect(page.getByText("main cheap")).toBeVisible();
+  await expect(page.getByText("release deep")).toBeVisible();
+  // The delivery id is what joins a row to Entregas and to GitHub's own list.
+  // `shortId` keeps the first eight characters, so the two rows stay distinguishable.
+  await expect(page.getByText("delivery…", { exact: false }).first()).toBeVisible();
+});
+
+/** The only `window.confirm` in `apps/web/src` was this one. */
+test("confirms a deletion in the product, never in the browser", async ({ page }) => {
+  const state = await openTab(page, "actions", {
+    locale: "en", repositories: [githubRepository], actions: [githubAction({ enabled: false })],
+  });
+  let nativeDialogs = 0;
+  page.on("dialog", (dialog) => { nativeDialogs += 1; void dialog.dismiss(); });
+
+  await page.getByRole("button", { name: "Remove" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("Its events are deleted with it");
+  await expect(dialog).toContainText("PR deep");  // the title names the action
+
+  // Cancelling deletes nothing.
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(state.github.writes).toEqual([]);
+
+  await page.getByRole("button", { name: "Remove" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Confirm" }).click();
+  await expect.poll(() => state.github.writes.map((write) => write.method)).toEqual(["DELETE"]);
+  expect(nativeDialogs).toBe(0);
+});
+
+/**
+ * A secret pasted with a trailing space retires the previous proof. The panel used
+ * to print the amber "the integration is still ready" next to the field the
+ * operator had just used, while the checklist two panels below showed the same step
+ * red — and the reassuring sentence is the one they read.
+ */
+test("says the rotation retired the proof instead of calling it ready", async ({ page }) => {
+  await openTab(page, "integration", { locale: "en", integration: "proof_retired" });
+
+  await expect(page.getByText("the previous proof is retired", { exact: false })).toBeVisible();
+  await expect(page.getByText("redeliver the ping", { exact: false })).toBeVisible();
+  // The amber reassurance must not fire on a step that is red.
+  await expect(page.getByText("the integration stays ready", { exact: false })).toHaveCount(0);
+  await expect(page.getByText("No recent event for", { exact: false })).toHaveCount(0);
+  await expect(page.getByRole("listitem").filter({ hasText: "Delivery verified" })).toContainText("pending");
 });
