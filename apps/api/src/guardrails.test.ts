@@ -496,7 +496,7 @@ function dependencies(options: {
     publishComment: async (input) => {
       commentInputs.push(input);
       if (options.commentError !== undefined) {
-        return { status: "failed", reason: options.commentError };
+        return { status: "failed", reason: options.commentError, alert: true };
       }
       comments.set(input.pullRequestNumber ?? 0, {
         repositoryKey: input.repositoryKey,

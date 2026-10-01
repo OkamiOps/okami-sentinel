@@ -672,7 +672,11 @@ test("keeps a persisted managed decision completed when cleanup fails afterwards
 
 test("a comment failure leaves the gate completed", async () => {
   const { deps, runs } = remoteDeps({
-    publishComment: async () => ({ status: "failed", reason: "github_permission_missing" }),
+    publishComment: async () => ({
+      status: "failed",
+      reason: "github_permission_missing",
+      alert: true,
+    }),
   });
   const gate = await startRemoteManagedGate(remotePreview(), deps);
   await waitForGate(gate.id);
@@ -695,6 +699,19 @@ test("a comment that throws leaves the gate completed", async () => {
   }
   assert.equal(runs.get(gate.id)?.status, "completed");
   assert.equal(runs.get(gate.id)?.error, null);
+});
+
+test("a refusal the publisher has already announced raises no second alert", async () => {
+  const { deps, runs } = remoteDeps({
+    publishComment: async () => ({
+      status: "failed",
+      reason: "github_permission_missing",
+      alert: false,
+    }),
+  });
+  const gate = await startRemoteManagedGate(remotePreview(), deps);
+  await waitForGate(gate.id);
+  assert.equal(runs.get(gate.id)?.status, "completed");
 });
 
 test("the comment is published after the check, for a pull-request gate", async () => {

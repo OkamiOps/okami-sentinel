@@ -58,19 +58,34 @@ interface FakeOptions {
   postError?: string;
   commentsEnabled?: boolean;
   stored?: GuardrailPrCommentState | null;
+  blockedInstallations?: Set<string>;
 }
 
 function publisherDeps(options: FakeOptions = {}): PrCommentPublisherDependencies & {
   calls: Call[];
   rows: Map<number, GuardrailPrCommentState>;
+  blocked: Set<string>;
+  blockRecords: number;
 } {
   const calls: Call[] = [];
   const rows = new Map<number, GuardrailPrCommentState>();
+  const blocked = new Set(options.blockedInstallations ?? []);
+  let blockRecords = 0;
   if (options.stored) rows.set(options.stored.pullRequestNumber, options.stored);
   let nextId = 100;
   return {
     calls,
     rows,
+    blocked,
+    get blockRecords() { return blockRecords; },
+    isPermissionBlocked: (installationId) => blocked.has(installationId),
+    recordPermissionBlock: (installationId) => {
+      blockRecords += 1;
+      if (blocked.has(installationId)) return false;
+      blocked.add(installationId);
+      return true;
+    },
+    clearPermissionBlock: (installationId) => { blocked.delete(installationId); },
     readAuthorizedRepositoryJson: async (_c, _i, _r, path) => {
       calls.push({ method: "GET", path });
       const page = Number(/[?&]page=(\d+)/.exec(path)?.[1] ?? "1");
@@ -217,9 +232,54 @@ test("skips a protected-branch gate", async () => {
 test("records a failure and its reason without throwing", async () => {
   const deps = publisherDeps({ patchStatus: 403, stored: storedRow() });
   const result = await publishPrComment(input(), deps);
-  assert.deepEqual(result, { status: "failed", reason: "github_permission_missing" });
+  assert.deepEqual(result, {
+    status: "failed",
+    reason: "github_permission_missing",
+    alert: true,
+  });
   assert.equal(deps.rows.get(7)?.status, "failed");
   assert.equal(deps.rows.get(7)?.reason, "github_permission_missing");
+});
+
+test("a missing permission is announced once, then recorded against the installation", async () => {
+  const deps = publisherDeps({ patchStatus: 403, stored: storedRow() });
+  const first = await publishPrComment(input(), deps);
+  assert.deepEqual(first, { status: "failed", reason: "github_permission_missing", alert: true });
+  assert.ok(deps.blocked.has("77"));
+  // The second pull request under the same installation is not a second alert.
+  const second = await publishPrComment(input({ pullRequestNumber: 8 }), {
+    ...deps,
+    getComment: () => storedRow({ pullRequestNumber: 8 }),
+  });
+  assert.deepEqual(second, { status: "skipped", reason: "permission_pending" });
+});
+
+test("a blocked installation costs no GitHub call at all", async () => {
+  const deps = publisherDeps({ blockedInstallations: new Set(["77"]) });
+  const result = await publishPrComment(input(), deps);
+  assert.deepEqual(result, { status: "skipped", reason: "permission_pending" });
+  assert.equal(deps.calls.length, 0);
+});
+
+test("a comment that goes through lifts the installation's block", async () => {
+  const deps = publisherDeps({ blockedInstallations: new Set(["99"]) });
+  // Another installation's block is not this one's.
+  const result = await publishPrComment(input(), deps);
+  assert.equal(result.status, "created");
+  assert.deepEqual([...deps.blocked], ["99"]);
+
+  const recovered = publisherDeps({ blockedInstallations: new Set(["77"]) });
+  recovered.blocked.delete("77");
+  const second = await publishPrComment(input(), recovered);
+  assert.equal(second.status, "created");
+  assert.equal(recovered.blocked.size, 0);
+});
+
+test("a failure that is not the permission is always announced", async () => {
+  const deps = publisherDeps({ postError: "github_unavailable" });
+  const result = await publishPrComment(input(), deps);
+  assert.deepEqual(result, { status: "failed", reason: "github_comment_failed", alert: true });
+  assert.equal(deps.blocked.size, 0);
 });
 
 test("a failed row is retried instead of being read as unchanged", async () => {

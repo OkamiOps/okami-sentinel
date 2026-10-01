@@ -22,6 +22,7 @@ import { createGitHubActionsApi } from "./github-actions/api.js";
 import {
   buildGitHubIntegrationStatus,
   type GitHubIntegrationInstallationState,
+  type GitHubIntegrationStatus,
 } from "./github-actions/integration-status.js";
 import { rerunGitHubActionGate } from "./github-actions/rerun.js";
 import { readGitHubInstallationScopes } from "./github-actions/installation-scope.js";
@@ -150,8 +151,11 @@ import {
   type PublishPrCommentResult,
 } from "./github/pr-comment-publisher.js";
 import {
+  clearPrCommentPermissionBlock,
   getPrComment,
+  isPrCommentPermissionBlocked,
   listPrComments,
+  recordPrCommentPermissionBlock,
   upsertPrComment,
 } from "./github/pr-comment-store.js";
 import { getGitHubStatus, getRemoteGitHubStatus } from "./github-status.js";
@@ -519,6 +523,10 @@ const guardrailsDependencies: GuardrailsApiDependencies = {
       ),
     getComment: (repositoryKey, pullRequestNumber) => getPrComment(repositoryKey, pullRequestNumber),
     upsertComment: (record) => { upsertPrComment(record); },
+    isPermissionBlocked: (installationId) => isPrCommentPermissionBlocked(installationId),
+    recordPermissionBlock: (installationId, reason) =>
+      recordPrCommentPermissionBlock(installationId, reason, new Date().toISOString()),
+    clearPermissionBlock: (installationId) => { clearPrCommentPermissionBlock(installationId); },
     // A manual republication is the operator saying "write it now". The
     // repository's switch still decides whether Sentinel may speak at all.
     commentsEnabled: (repositoryKey) =>
@@ -1256,7 +1264,7 @@ export function createGuardrailsApp(
       ? null
       : deps.getComment(gate.repositoryKey, artifact.resolvedTarget.pullRequestNumber);
     if (result.status === "failed") {
-      notifyGitHubPublishFailed(gateId);
+      if (result.alert) notifyGitHubPublishFailed(gateId);
       return c.json({ error: result.reason, result, comment }, 502);
     }
     return c.json({ result, comment });
@@ -1575,7 +1583,7 @@ app.route("/", createGitHubActionsApi({
   getRepository: findRepository,
   listEvents: (filter) => listGitHubActionEvents(filter),
   listDeliveries: ({ limit, offset }) => listWebhookDeliveries(limit, getDb(), offset),
-  readIntegrationStatus: () => buildGitHubIntegrationStatus({
+  readIntegrationStatus: async () => liftGrantedCommentBlocks(await buildGitHubIntegrationStatus({
     listConnections: githubIntegrationConnections,
     listInstallations: githubIntegrationInstallations,
     listRepositories: (installationId) =>
@@ -1598,7 +1606,7 @@ app.route("/", createGitHubActionsApi({
     countRecoveredEvents: (since) => countReconciledEventsSince(since),
     lastDelivery: () => listWebhookDeliveries(1)[0] ?? null,
     publicOrigin: runtimeMode() === "server" ? loadServerSettings().origin : null,
-  }),
+  })),
   storeWebhookSecret: (connectionId, secret) =>
     getSystemGitHubAppCredentialStore().putWebhookSecret(connectionId, secret),
   recordWebhookSecretStored: (connectionId, storedAt) => {
@@ -2088,6 +2096,30 @@ function targetPreviewStatus(error: unknown): 400 | 409 {
     )
     ? 409
     : 400;
+}
+
+/**
+ * The cheap re-check the comment publisher relies on. The status already knows, per
+ * permission, which installations have not approved it; every installation that is
+ * no longer pending on `pull_requests` may write comments again.
+ *
+ * It runs on the Integração screen's own read, so the recovery costs nothing extra
+ * and happens where the operator is already looking.
+ */
+function liftGrantedCommentBlocks(
+  status: GitHubIntegrationStatus,
+): GitHubIntegrationStatus {
+  for (const connection of status.connections) {
+    const permission = connection.permissions.find((entry) => entry.name === "pull_requests");
+    if (permission === undefined) continue;
+    const pending = new Set(permission.pendingInstallationIds);
+    for (const installation of connection.installations) {
+      if (!pending.has(installation.installationId)) {
+        clearPrCommentPermissionBlock(installation.installationId);
+      }
+    }
+  }
+  return status;
 }
 
 /**

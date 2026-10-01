@@ -39,8 +39,17 @@ export interface PublishPrCommentInput {
 export type PublishPrCommentResult =
   | { status: "created" | "updated"; commentId: string }
   | { status: "unchanged"; commentId: string }
-  | { status: "skipped"; reason: "comments_disabled" | "not_a_pull_request" }
-  | { status: "failed"; reason: string };
+  | {
+    status: "skipped";
+    reason: "comments_disabled" | "not_a_pull_request" | "permission_pending";
+  }
+  /**
+   * `alert` is whether this failure is worth telling an administrator about. A
+   * missing permission is told once per installation, not once per gate: the
+   * Integration screen already names the installation whose review is pending,
+   * and one alert per pull request would be the thing that gets muted.
+   */
+  | { status: "failed"; reason: string; alert: boolean };
 
 export interface PrCommentPublisherDependencies {
   readAuthorizedRepositoryJson(
@@ -62,6 +71,11 @@ export interface PrCommentPublisherDependencies {
   getComment(repositoryKey: string, pullRequestNumber: number): GuardrailPrCommentState | null;
   upsertComment(record: GuardrailPrCommentState): void;
   commentsEnabled(repositoryKey: string): boolean;
+  /** Whether this installation has already refused for want of the permission. */
+  isPermissionBlocked(installationId: string): boolean;
+  /** Records the refusal; `true` only the first time, which is the one alert. */
+  recordPermissionBlock(installationId: string, reason: string): boolean;
+  clearPermissionBlock(installationId: string): void;
   /** The language the repository's pull-request comments are written in. */
   commentLocale(repositoryKey: string): GuardrailPrCommentLocale;
   /** `null` in local mode: the comment then carries neither banner nor links. */
@@ -85,6 +99,12 @@ export async function publishPrComment(
   if (!deps.commentsEnabled(input.repositoryKey)) {
     return { status: "skipped", reason: "comments_disabled" };
   }
+  // The installation has already said no. Asking again on every gate spends a
+  // request to be refused and raises nothing new; the block is lifted by the
+  // Integration refresh that sees the grant.
+  if (deps.isPermissionBlocked(input.authority.installationId)) {
+    return { status: "skipped", reason: "permission_pending" };
+  }
   if (!SAFE_SLUG.test(input.owner) || !SAFE_SLUG.test(input.name)) {
     return record(deps, input, pullRequestNumber, null, null, "github_repository_invalid");
   }
@@ -95,7 +115,7 @@ export async function publishPrComment(
     repositoryKey: input.repositoryKey,
     locale: deps.commentLocale(input.repositoryKey),
     gateUrl: origin === null ? null : `${origin}/guardrails/${encodeURIComponent(input.artifact.gateId)}`,
-    bannerUrl: origin === null ? null : `${origin}/brand/pr-comment-banner.png`,
+    assetUrl: (fileName) => origin === null ? null : `${origin}/brand/${fileName}`,
     findingUrl: (identity) => origin === null
       ? null
       : `${origin}/guardrails/${encodeURIComponent(input.artifact.gateId)}?node=${encodeURIComponent(identity)}`,
@@ -159,9 +179,7 @@ export async function publishPrComment(
     record(deps, input, pullRequestNumber, createdId, bodyHash, null, reason);
     return { status: "created", commentId: createdId };
   } catch (error) {
-    const reason = failureReason(error);
-    record(deps, input, pullRequestNumber, stored?.commentId ?? null, null, reason);
-    return { status: "failed", reason };
+    return record(deps, input, pullRequestNumber, stored?.commentId ?? null, null, failureReason(error));
   }
 }
 
@@ -205,7 +223,7 @@ function record(
   bodyHash: string | null,
   failure: string | null,
   reason: string | null = null,
-): { status: "failed"; reason: string } {
+): { status: "failed"; reason: string; alert: boolean } {
   deps.upsertComment({
     repositoryKey: input.repositoryKey,
     pullRequestNumber,
@@ -216,7 +234,15 @@ function record(
     gateId: input.artifact.gateId,
     updatedAt: deps.now(),
   });
-  return { status: "failed", reason: failure ?? "github_comment_failed" };
+  if (failure === null) {
+    // A comment that went through proves the permission is there.
+    deps.clearPermissionBlock(input.authority.installationId);
+    return { status: "failed", reason: "unreachable", alert: false };
+  }
+  const alert = failure === "github_permission_missing"
+    ? deps.recordPermissionBlock(input.authority.installationId, failure)
+    : true;
+  return { status: "failed", reason: failure, alert };
 }
 
 function commentRows(value: unknown): Array<{ id: string; body: string }> {

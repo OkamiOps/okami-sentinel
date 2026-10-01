@@ -2,6 +2,7 @@ import { isRepositoryRelativePath, redactPublicText } from "@csb/gate-core";
 import type {
   GateArtifactV2,
   GateFindingDelta,
+  GateOutcome,
   GuardrailPrCommentLocale,
   Severity,
 } from "@csb/shared";
@@ -43,6 +44,17 @@ const MARKDOWN_ENTITIES: Readonly<Record<string, string>> = Object.freeze({
   "&": "&amp;", "<": "&lt;", ">": "&gt;",
 });
 
+/**
+ * The three verdicts that get a coloured pill. The pill carries no words — one
+ * file serves all five languages — so the localised verdict travels as its alt
+ * text, and the heading repeats it in words for anyone whose client blocks images.
+ */
+const VERDICT_BADGE: Partial<Record<GateOutcome, string>> = {
+  blocked: "pr-verdict-blocked.png",
+  warning: "pr-verdict-warning.png",
+  pass: "pr-verdict-passed.png",
+};
+
 export function prCommentMarker(repositoryKey: string): string {
   return `${PR_COMMENT_MARKER_PREFIX}${repositoryKey} -->`;
 }
@@ -57,7 +69,12 @@ export interface RenderPrCommentInput {
   locale: GuardrailPrCommentLocale;
   /** `null` with no public origin: the comment then carries no link at all. */
   gateUrl: string | null;
-  bannerUrl: string | null;
+  /**
+   * Where a brand asset of the Sentinel origin lives — the banner, the verdict
+   * pill, the severity markers. `null` with no public origin, and the comment
+   * then renders as words alone.
+   */
+  assetUrl(fileName: string): string | null;
   findingUrl(findingIdentity: string): string | null;
   durationMs: number | null;
 }
@@ -77,7 +94,7 @@ export function renderPrComment(input: RenderPrCommentInput): RenderedPrComment 
   const fixedCount = artifact.findings.filter((finding) => finding.lifecycle === "fixed").length;
   const rows = newFindings
     .slice(0, PR_COMMENT_MAX_ROWS)
-    .map((finding) => renderRow(finding, input, copy.pathWithheld, copy.viewFinding));
+    .map((finding) => renderRow(finding, input, copy));
 
   const compose = (shown: number): string => fullBody(input, copy, {
     newFindings,
@@ -117,13 +134,11 @@ function fullBody(
 ): string {
   const artifact = input.artifact;
   const lines: string[] = [prCommentMarker(input.repositoryKey), ""];
-  if (input.bannerUrl !== null) lines.push(`![Okami Sentinel](${input.bannerUrl})`, "");
-  lines.push(`## Okami Sentinel — ${copy.verdict[artifact.decision.outcome]}`, "");
+  lines.push(...heading(input, copy));
   lines.push(`> ${cell(artifact.decision.summary, Number.MAX_SAFE_INTEGER)}`, "");
 
   const summaryRows: string[] = [
-    `| **${copy.verdictLabel}** | ${copy.verdict[artifact.decision.outcome]} |`,
-    `| **${copy.newFindingsLabel}** | ${severitySummary(parts.newFindings, copy.none)} |`,
+    `| **${copy.newFindingsLabel}** | ${severitySummary(parts.newFindings, copy, input)} |`,
   ];
   // A repository with no baseline has nothing to have fixed against, so the row
   // would be a zero that reads as "you fixed nothing".
@@ -133,7 +148,12 @@ function fullBody(
   summaryRows.push(`| **${copy.baselineLabel}** | ${baselineCell(artifact, copy)} |`);
   summaryRows.push(`| **${copy.costLabel}** | ${costCell(artifact, copy.none)} |`);
   summaryRows.push(`| **${copy.durationLabel}** | ${durationCell(input.durationMs, copy.none)} |`);
-  lines.push("| | |", "|---|---|", ...summaryRows, "");
+  lines.push(
+    `| ${copy.columnSummary} | ${copy.columnValue} |`,
+    "|---|---|",
+    ...summaryRows,
+    "",
+  );
 
   lines.push(`### ${copy.newFindingsHeading}`, "");
   if (parts.rows.length === 0) {
@@ -159,11 +179,31 @@ function minimalBody(
   copy: (typeof PR_COMMENT_COPY)[GuardrailPrCommentLocale],
 ): string {
   const lines: string[] = [prCommentMarker(input.repositoryKey), ""];
-  if (input.bannerUrl !== null) lines.push(`![Okami Sentinel](${input.bannerUrl})`, "");
-  lines.push(`## Okami Sentinel — ${copy.verdict[input.artifact.decision.outcome]}`, "");
+  lines.push(...heading(input, copy));
   lines.push(copy.informational, "");
   lines.push(footer(input, copy));
   return lines.join("\n");
+}
+
+/**
+ * The banner, the verdict pill, and the verdict in words. The words stay even
+ * when both images are there: a pill alone is a colour, and a colour is not a
+ * verdict for anyone reading this on a client that blocks images.
+ */
+function heading(
+  input: RenderPrCommentInput,
+  copy: (typeof PR_COMMENT_COPY)[GuardrailPrCommentLocale],
+): string[] {
+  const outcome = input.artifact.decision.outcome;
+  const verdict = copy.verdict[outcome];
+  const lines: string[] = [];
+  const banner = input.assetUrl("pr-comment-banner.png");
+  if (banner !== null) lines.push(`![Okami Sentinel](${banner})`, "");
+  lines.push(`## Okami Sentinel — ${verdict}`, "");
+  const badgeFile = VERDICT_BADGE[outcome];
+  const badge = badgeFile === undefined ? null : input.assetUrl(badgeFile);
+  if (badge !== null) lines.push(`![${verdict}](${badge})`, "");
+  return lines;
 }
 
 function footer(
@@ -182,13 +222,24 @@ function footer(
 function renderRow(
   finding: GateFindingDelta,
   input: RenderPrCommentInput,
-  pathWithheld: string,
-  viewLabel: string,
+  copy: (typeof PR_COMMENT_COPY)[GuardrailPrCommentLocale],
 ): string {
   const title = cell(finding.title, CELL_LIMIT) || "—";
   const url = input.findingUrl(finding.identity);
-  const link = url === null ? "" : `[${viewLabel}](${url})`;
-  return `| ${finding.severity} | ${title} | ${location(finding.primaryPath, pathWithheld)} | ${link} |`;
+  const link = url === null ? "" : `[${copy.viewFinding}](${url})`;
+  const place = location(finding.primaryPath, copy.pathWithheld);
+  return `| ${severityCell(finding.severity, copy, input)} | ${title} | ${place} | ${link} |`;
+}
+
+/** The coloured marker and the severity's name, in the repository's language. */
+function severityCell(
+  severity: Severity,
+  copy: (typeof PR_COMMENT_COPY)[GuardrailPrCommentLocale],
+  input: RenderPrCommentInput,
+): string {
+  const name = copy.severity[severity];
+  const icon = input.assetUrl(`pr-severity-${severity}.png`);
+  return icon === null ? name : `![${name}](${icon}) ${name}`;
 }
 
 function location(primaryPath: string | null, pathWithheld: string): string {
@@ -197,12 +248,16 @@ function location(primaryPath: string | null, pathWithheld: string): string {
   return `\`${cell(primaryPath, CELL_LIMIT)}\``;
 }
 
-function severitySummary(findings: readonly GateFindingDelta[], none: string): string {
-  if (findings.length === 0) return `0 ${none}`.trim();
+function severitySummary(
+  findings: readonly GateFindingDelta[],
+  copy: (typeof PR_COMMENT_COPY)[GuardrailPrCommentLocale],
+  input: RenderPrCommentInput,
+): string {
+  if (findings.length === 0) return `0 ${copy.none}`.trim();
   const counts = SEVERITY_ORDER
     .map((severity) => ({ severity, count: findings.filter((f) => f.severity === severity).length }))
     .filter((entry) => entry.count > 0)
-    .map((entry) => `${entry.severity} ${entry.count}`);
+    .map((entry) => `${severityCell(entry.severity, copy, input)} ${entry.count}`);
   return `${findings.length} — ${counts.join(" · ")}`;
 }
 
