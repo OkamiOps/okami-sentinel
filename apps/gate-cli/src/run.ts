@@ -27,6 +27,7 @@ import type {
   EffectiveScanLineage,
   FindingSummary,
   GateArtifactV2,
+  GateBaselineNotice,
   GateCoverageEnvelope,
   GateFindingDelta,
   GateTarget,
@@ -57,6 +58,8 @@ export interface ActionsPolicyBundle {
   policy: GuardrailPolicy;
   exceptions: GuardrailException[];
   source: GateArtifactV2["policySource"];
+  /** `policy_invalid` when the repository's own file exists and cannot be parsed. */
+  invalidReason?: string | null;
 }
 
 export interface RunGateCliDependencies {
@@ -102,6 +105,7 @@ export async function runGateCli(
   // Until the policy is read, no file has been seen: an error artifact built before
   // that must not claim the repository decided anything.
   let policySource: GateArtifactV2["policySource"] = "default";
+  let policyInvalidReason: string | null = null;
   let exceptions: GuardrailException[] = [];
   let changeSet = emptyErrorChangeSet(options);
   let coverage = incompleteCoverage();
@@ -115,6 +119,7 @@ export async function runGateCli(
     policy = bundle.policy;
     exceptions = bundle.exceptions;
     policySource = bundle.source;
+    policyInvalidReason = bundle.invalidReason ?? null;
     const inspection = deps.inspectSnapshots(options, policyForTarget(policy, options.targetKind));
     changeSet = inspection.changeSet;
     coverage = inspection.coverage;
@@ -136,10 +141,12 @@ export async function runGateCli(
       policySchemaVersion: policy.schemaVersion,
       coverage,
     }, baselineCandidate);
-    if (
-      requiresBaseline
-      && (preflightBaseline.kind === "absent" || preflightBaseline.kind === "unavailable")
-    ) {
+    // An absent baseline no longer short-circuits, exactly as on the Sentinel
+    // executor: the change is scanned and judged, every finding is `new`, and the
+    // notice says there was nothing to compare against. Only an unreadable
+    // baseline artifact is still a failure of ours, and it is the one worth
+    // refusing before spending on a scan.
+    if (requiresBaseline && preflightBaseline.kind === "unavailable") {
       baseline = preflightBaseline;
     } else if (changeSet.files.length > 0 || establishesProtectedBaseline) {
       const outputDir = path.join(path.dirname(path.resolve(options.output)), `.csb-scan-${options.gateId}`);
@@ -167,6 +174,7 @@ export async function runGateCli(
       resolvedTarget,
       policy,
       policySource,
+      policyInvalidReason,
       changeSet,
       scan,
       baseline,
@@ -174,10 +182,9 @@ export async function runGateCli(
       coverage,
       snapshotIdentity,
       createdAt: deps.now(),
+      baselineNotice: baselineNoticeFor(options, baseline),
     });
-    const operational = operationalReason(scan, coverage, baseline)
-      ?? (baseline.kind === "absent" && !establishesProtectedBaseline && changeSet.files.length > 0
-        ? "baseline_absent:initialize_protected_branch" : null);
+    const operational = operationalReason(scan, coverage, baseline);
     const artifact = operational === null
       ? deps.buildGateArtifact({
           ...envelope,
@@ -212,6 +219,7 @@ export async function runGateCli(
         resolvedTarget,
         policy,
         policySource,
+        policyInvalidReason,
         changeSet,
         scan,
         baseline,
@@ -238,6 +246,7 @@ function artifactEnvelope(context: {
   resolvedTarget: ResolvedGateTarget;
   policy: GuardrailPolicy;
   policySource: GateArtifactV2["policySource"];
+  policyInvalidReason: string | null;
   changeSet: ChangeSet;
   scan: ScannerResult | null;
   baseline: GateBaselineSelection;
@@ -245,6 +254,7 @@ function artifactEnvelope(context: {
   coverage: GateCoverageEnvelope;
   snapshotIdentity: string;
   createdAt: string;
+  baselineNotice?: GateBaselineNotice | null;
 }): Omit<BuildGateArtifactV2Input, "evaluation"> {
   const { options } = context;
   return {
@@ -267,6 +277,7 @@ function artifactEnvelope(context: {
     target: context.target,
     resolvedTarget: context.resolvedTarget,
     policySource: context.policySource,
+    policyInvalidReason: context.policyInvalidReason,
     changeSet: context.changeSet,
     policy: context.policy,
     scan: context.scan === null
@@ -290,7 +301,23 @@ function artifactEnvelope(context: {
       scanner: context.scan?.scannerVersion ?? null,
     },
     createdAt: context.createdAt,
+    baselineNotice: context.baselineNotice ?? null,
   };
+}
+
+/**
+ * "Sem baseline", in the one field the screen, the Check and the comment all read.
+ * An incompatible baseline carries its reason; a protected-branch run is the thing
+ * that *establishes* a baseline, so it is never missing one and carries no notice.
+ */
+function baselineNoticeFor(
+  options: RunGateCliOptions,
+  baseline: GateBaselineSelection,
+): GateBaselineNotice | null {
+  if (options.targetKind === "protected_branch") return null;
+  if (baseline.kind === "incompatible") return { kind: "incompatible", reason: baseline.reason };
+  if (baseline.kind === "absent") return { kind: "absent", reason: null };
+  return null;
 }
 
 function evaluation(
@@ -349,20 +376,43 @@ function operationalReason(
 ): string | null {
   if (scan !== null && scan.status !== "completed") return "managed_scan_failed";
   if (coverage.status !== "complete") return "coverage_incomplete";
+  // An unreadable baseline artifact is a failure of ours. An **incompatible** one is
+  // not: it is a fact about an engine, a model or a branch changing, and it takes
+  // the absent baseline's path with its reason in `baselineNotice`.
   if (baseline.kind === "unavailable") return `baseline_unavailable:${baseline.reason}`;
-  if (baseline.kind === "incompatible") return `baseline_incompatible:${baseline.reason}`;
   return null;
 }
 
+/**
+ * A `.csb/guardrails.json` that exists and cannot be parsed is **not** an
+ * operational error. The spec's precedence says the gate records `policy_invalid`
+ * and runs the next level down; on the Actions executor the next reachable level is
+ * the shipped default — the caller workflow hands the CLI a repository, not
+ * Sentinel's stored policy — so that is what runs, named in the artifact instead of
+ * turning every pull request into an error nobody can act on.
+ */
 function readPolicyBundle(options: RunGateCliOptions): ActionsPolicyBundle {
   const policyPath = confinedPath(options.policyRoot, options.policy);
   const exceptionsPath = confinedPath(options.policyRoot, options.exceptions);
   const policyExists = fs.existsSync(policyPath);
-  return {
-    policy: readGuardrailPolicyFile(policyPath),
-    exceptions: readGuardrailExceptionsFile(exceptionsPath),
-    source: policyExists ? defaultPolicySource(options) : "default",
-  };
+  const exceptions = readGuardrailExceptionsFile(exceptionsPath);
+  if (!policyExists) {
+    return { policy: readGuardrailPolicyFile(policyPath), exceptions, source: "default" };
+  }
+  try {
+    return {
+      policy: readGuardrailPolicyFile(policyPath),
+      exceptions,
+      source: defaultPolicySource(options),
+    };
+  } catch {
+    return {
+      policy: defaultGuardrailPolicy(),
+      exceptions,
+      source: "default",
+      invalidReason: "policy_invalid",
+    };
+  }
 }
 
 function readBaselineCandidate(options: RunGateCliOptions): GateBaselineCandidate {
