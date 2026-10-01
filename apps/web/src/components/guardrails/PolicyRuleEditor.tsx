@@ -4,7 +4,7 @@ import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useI18n } from "../../i18n";
+import { useI18n, type TranslationKey } from "../../i18n";
 import { cx } from "../ui";
 
 const severities: Severity[] = ["critical", "high", "medium", "low", "info", "unknown"];
@@ -35,7 +35,7 @@ export function PolicyRuleEditor({
     <section className="bench-panel min-w-0" aria-labelledby="policy-rules-title">
       <div className="flex min-h-11 items-center justify-between gap-3 border-b px-4 py-2.5">
         <div>
-          <div className="bench-label text-primary">ORDERED RULES</div>
+          <div className="bench-label text-primary">{t("guardrails.rulesSection")}</div>
           <h2 id="policy-rules-title" className="mt-0.5 text-sm font-semibold">{t("guardrails.rulesTitle")}</h2>
         </div>
         <Button
@@ -53,7 +53,9 @@ export function PolicyRuleEditor({
             <legend className="sr-only">{t("guardrails.ruleLegend", { index: index + 1 })}</legend>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <div className="font-mono text-[9px] uppercase tracking-[0.12em] text-primary">RULE {String(index + 1).padStart(2, "0")}</div>
+                <div className="font-mono text-[9px] uppercase tracking-[0.12em] text-primary">
+                  {t("guardrails.ruleCode", { index: String(index + 1).padStart(2, "0") })}
+                </div>
                 <p className="mt-1 text-xs text-muted-foreground">{t("guardrails.ruleOrderHelp")}</p>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -67,17 +69,20 @@ export function PolicyRuleEditor({
               <ChoiceGroup
                 label={t("guardrails.severity")}
                 values={severities}
+                nameOf={(value) => t(`guardrails.severityValue.${value}` as TranslationKey)}
                 selected={rule.severity}
                 onToggle={(value) => update(index, { ...rule, severity: toggle(rule.severity, value) })}
               />
               <ChoiceGroup
                 label={t("guardrails.lifecycle")}
                 values={lifecycles}
+                nameOf={(value) => t(`guardrails.lifecycleValue.${value}` as TranslationKey)}
                 selected={rule.lifecycle}
                 onToggle={(value) => update(index, { ...rule, lifecycle: toggle(rule.lifecycle, value) })}
               />
               <div>
-                <label className="text-sm font-semibold" htmlFor={`policy-rule-${index}-decision`}>{t("guardrails.decision")}</label>
+                {/* Mono uppercase, like every other field label in the product. */}
+                <label className="bench-label" htmlFor={`policy-rule-${index}-decision`}>{t("guardrails.decision")}</label>
                 <Select value={rule.decision} onValueChange={(decision: GuardrailRule["decision"]) => update(index, { ...rule, decision })}>
                   <SelectTrigger id={`policy-rule-${index}-decision`} className="mt-2 min-h-11 w-full rounded-none"><SelectValue /></SelectTrigger>
                   <SelectContent position="popper" className="rounded-none border-border bg-popover">
@@ -94,27 +99,34 @@ export function PolicyRuleEditor({
   );
 }
 
+/**
+ * The chips carry the operator's words, not the wire's. The value itself stays in
+ * the `aria-label` and in the JSON diff, which is where an exact `critical` or
+ * `reopened` is the fact being edited.
+ */
 function ChoiceGroup<T extends string>({
   label,
   values,
+  nameOf,
   selected,
   onToggle,
 }: {
   label: string;
   values: readonly T[];
+  nameOf: (value: T) => string;
   selected: readonly T[];
   onToggle: (value: T) => void;
 }) {
   return (
     <fieldset>
-      <legend className="text-sm font-semibold">{label}</legend>
+      <legend className="bench-label">{label}</legend>
       <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
         {values.map((value) => {
           const checked = selected.includes(value);
           return (
             <label key={value} className={cx("flex min-h-11 cursor-pointer items-center gap-2 border px-3 text-xs transition-colors hover:bg-accent", checked && "border-primary bg-primary/[.06] text-primary")}>
               <Checkbox checked={checked} onCheckedChange={() => onToggle(value)} aria-label={`${label}: ${value}`} />
-              <span>{value}</span>
+              <span className="min-w-0 truncate">{nameOf(value)}</span>
             </label>
           );
         })}

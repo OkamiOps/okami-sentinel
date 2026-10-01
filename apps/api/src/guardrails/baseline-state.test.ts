@@ -42,13 +42,14 @@ function candidate(overrides: Partial<BaselineCandidate> = {}): BaselineCandidat
 function deps(
   database: Database.Database,
   found: BaselineCandidate | null,
-  options: { protectedBranch?: string | null; now?: string } = {},
+  options: { protectedBranch?: string | null; now?: string; building?: boolean } = {},
 ): BaselineStateDependencies {
   return {
     database,
     now: () => options.now ?? "2026-10-01T12:00:00.000Z",
     protectedBranch: () => options.protectedBranch === undefined ? "main" : options.protectedBranch,
     findBaselineCandidate: () => found,
+    hasRunningBuild: () => options.building ?? false,
   };
 }
 
@@ -159,7 +160,7 @@ test("the button marks it building and the gate resolves it", () => {
   assert.equal(building.requestedAt, "2026-10-01T12:30:00.000Z");
   // Nothing finished yet, so a refresh must not drop back to absent and lose the
   // fact that a paid run is in flight.
-  assert.equal(refreshRepositoryBaselineState("github:1", deps(db, null)).state, "building");
+  assert.equal(refreshRepositoryBaselineState("github:1", deps(db, null, { building: true })).state, "building");
 
   const resolved = refreshRepositoryBaselineState("github:1", deps(db, candidate()));
   assert.equal(resolved.state, "ready");
@@ -173,6 +174,17 @@ test("pressing the button over a ready baseline keeps the commit it replaces vis
   assert.equal(building.state, "building");
   assert.equal(building.commitSha, SHA_FIRST);
   assert.equal(building.gateId, "gate-1");
+});
+
+test("a build that failed stops promising a build", () => {
+  const db = memoryDb();
+  markRepositoryBaselineBuilding("github:1", "2026-10-01T12:30:00.000Z", db);
+  // The gate errored, so no gate is running and no candidate appeared. Keeping
+  // `building` would promise a run nobody is doing, and the screen would never say
+  // "absent" again — which is the word the bootstrap notice depends on.
+  const settled = refreshRepositoryBaselineState("github:1", deps(db, null, { building: false }));
+  assert.equal(settled.state, "absent");
+  assert.equal(settled.requestedAt, null);
 });
 
 test("refreshing twice with no change writes the same row", () => {

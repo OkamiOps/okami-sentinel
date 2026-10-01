@@ -1,11 +1,12 @@
 import type Database from "better-sqlite3";
 
+import { backfillRepositoryBaselines } from "./guardrails/baseline-state.js";
 import {
   REPOSITORY_BASELINE_SCHEMA_SQL,
   REPOSITORY_POLICY_SCHEMA_SQL,
 } from "./guardrails/projection-schema.js";
 
-export const CURRENT_GUARDRAILS_SCHEMA_VERSION = 6;
+export const CURRENT_GUARDRAILS_SCHEMA_VERSION = 7;
 
 export type GuardrailsMigrationStep =
   | "repositories_rebuilt"
@@ -14,7 +15,8 @@ export type GuardrailsMigrationStep =
   | "repository_executor_added"
   | "actions_dispatches_added"
   | "gate_cost_ceiling_added"
-  | "repository_pr_comment_added";
+  | "repository_pr_comment_added"
+  | "baselines_backfilled";
 
 export interface GuardrailsMigrationHooks {
   afterStep?(step: GuardrailsMigrationStep): void;
@@ -26,6 +28,7 @@ export function migrateGuardrailsSchema(
 ): void {
   database.pragma("foreign_keys = ON");
   if (schemaIsCurrent(database)) return;
+  let backfillBaselines = false;
   const migrate = database.transaction(() => {
     database.exec(`
       CREATE TABLE IF NOT EXISTS guardrail_schema_migrations (
@@ -67,6 +70,10 @@ export function migrateGuardrailsSchema(
       ensureGatePolicySource(database);
       hooks.afterStep?.("repository_pr_comment_added");
     }
+    // Version 7's work runs after this transaction commits: the projection reads the
+    // tables created above and writes through its own ladder, which keeps its own
+    // transaction.
+    backfillBaselines = currentVersion < 7;
     // The two projections the repository list joins. They have their own version
     // ladders in `policy-store` and `baseline-state`; creating them here too means
     // the list can join them on a database that has never written one.
@@ -77,11 +84,15 @@ export function migrateGuardrailsSchema(
       VALUES (?, ?, ?)
     `).run(
       CURRENT_GUARDRAILS_SCHEMA_VERSION,
-      "repository pull-request comment settings",
+      "baseline projection backfilled for enrolled repositories",
       new Date().toISOString(),
     );
   });
   migrate.immediate();
+  if (backfillBaselines) {
+    backfillRepositoryBaselines(database);
+    hooks.afterStep?.("baselines_backfilled");
+  }
 }
 
 function schemaIsCurrent(database: Database.Database): boolean {

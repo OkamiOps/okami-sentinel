@@ -48,5 +48,7 @@ test("localizes transport failures in every supported locale and preserves busin
     assert.equal(formatApiError(new ApiError("invalid_api_response", "invalid", 200), t), t("common.apiInvalidResponse"));
     assert.equal(formatApiError(new ApiError("empty_api_response", "empty", 204), t), t("common.apiEmptyResponse"));
     assert.equal(formatApiError(new ApiError("Concurrent scan limit reached", "http", 409), t), "Concurrent scan limit reached");
+    // The route table denies with one word. On screen that word has to be a sentence.
+    assert.equal(formatApiError(new ApiError("forbidden", "http", 403), t), t("common.forbidden"));
   }
 });

@@ -329,13 +329,14 @@ test("a completed gate refreshes the repository's baseline word", async () => {
   assert.deepEqual(deps.baselineRefreshes, [gate.repositoryKey]);
 });
 
-test("a failed gate leaves the baseline word alone", async () => {
+test("a failed gate refreshes the baseline word, so a build never sticks on building", async () => {
+  // `markRepositoryBaselineBuilding` writes `building` before the gate runs. If the
+  // gate then errors and nobody recomputes, the projection promises a build nobody
+  // is running and the screen never goes back to "absent".
   const deps = fakeDeps({ scanStatus: "failed" });
   const gate = await startLocalGate(request(), deps);
   await waitForGate(gate.id);
-  // An errored run is not a baseline, and refreshing on it would be a write that
-  // means nothing.
-  assert.deepEqual(deps.baselineRefreshes, []);
+  assert.deepEqual(deps.baselineRefreshes, [gate.repositoryKey]);
 });
 
 test("a refresh that throws still leaves the gate decided", async () => {

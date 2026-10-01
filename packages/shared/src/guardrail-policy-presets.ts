@@ -77,10 +77,28 @@ export function guardrailPolicyPresetRules(preset: GuardrailPolicyPreset): Guard
   return PRESET_RULES[preset]();
 }
 
+/**
+ * The rules `defaultGuardrailPolicy()` has shipped with since before the presets
+ * existed. They are not `block-critical-high`'s three disjoint rules — they block the
+ * same findings and simply say nothing about `medium` and below — but they are the
+ * shape every repository nobody has configured is in, and a screen that called that
+ * "Personalizado" would be labelling a policy the operator never touched.
+ *
+ * They live here rather than being imported from gate-core because this module is read
+ * by the browser, which does not depend on gate-core. The round-trip test in the API
+ * pins the two together, so a change to the product default fails there.
+ */
+const PRODUCT_DEFAULT_RULES: readonly GuardrailRule[] = [
+  { severity: ["critical"], lifecycle: ["new", "reopened"], decision: "block" },
+  { severity: ["high"], lifecycle: ["new", "reopened"], decision: "block" },
+  { severity: ["high"], lifecycle: ["persistent"], decision: "review" },
+];
+
 export function guardrailPolicyPresetOf(
   policy: Pick<GuardrailPolicy, "rules">,
 ): GuardrailPolicyPreset {
   const actual = canonicalRules(policy.rules);
+  if (actual === canonicalRules(PRODUCT_DEFAULT_RULES)) return DEFAULT_GUARDRAIL_POLICY_PRESET;
   for (const preset of ["block-critical-high", "block-critical", "warn-only"] as const) {
     if (actual === canonicalRules(PRESET_RULES[preset]())) return preset;
   }

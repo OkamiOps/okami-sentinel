@@ -417,6 +417,9 @@ export function cancelGate(
   if (gate.scanId !== null) deps.cancelScan(gate.scanId);
   const completedAt = deps.now();
   deps.updateGateRun(gateId, { status: "cancelled", completedAt });
+  // A cancelled baseline build is a build nobody is running: the projection has to
+  // stop promising one.
+  settleBaselineForGate(gateId, deps);
   emit(gateId, "done", { gateId, status: "cancelled", completedAt }, deps);
   return true;
 }
@@ -516,6 +519,7 @@ export function reconcileGateWithLinkedScan(
     materializationState,
     completedAt,
   });
+  settleBaseline(gate.repositoryKey, deps);
   emit(gate.id, cancelled ? "done" : "error", {
     gateId: gate.id,
     status: cancelled ? "cancelled" : "error",
@@ -742,6 +746,7 @@ async function runRemoteManagedGate(
       error: code,
       completedAt,
     });
+    settleBaseline(repository.repositoryKey, deps);
     emit(gateId, "error", {
       gateId,
       status: "error",
@@ -890,6 +895,7 @@ function recordUnrecordedGateFailure(
     estimatedUsd: scan?.cost?.estimatedUsd ?? 0,
     completedAt,
   });
+  settleBaselineForGate(gateId, deps);
   emit(gateId, "error", {
     gateId,
     status: "error",
@@ -1002,6 +1008,7 @@ async function failGate(
     estimatedUsd: scan?.cost?.estimatedUsd ?? 0,
     completedAt,
   });
+  settleBaseline(repository.repositoryKey, deps);
   emit(gateId, "error", {
     gateId,
     status: "error",
@@ -1322,6 +1329,16 @@ function currentPolicySource(
 ): GuardrailResolvedPolicySource {
   if (source === "base" || source === "protected_branch") return "repository_file";
   return source;
+}
+
+/** The same, when only the gate id is at hand. */
+function settleBaselineForGate(
+  gateId: string,
+  deps: { getGateRun(gateId: string): GateRun | null; refreshBaselineState(repositoryKey: string): void },
+): void {
+  const repositoryKey = deps.getGateRun(gateId)?.repositoryKey;
+  if (repositoryKey === undefined) return;
+  settleBaseline(repositoryKey, deps);
 }
 
 function settleBaseline(

@@ -416,33 +416,24 @@ function WebhookSection({
 function ChecklistPanel({ status, t }: { status: GitHubIntegrationStatus; t: GitHubT }) {
   return <Panel label={t("github.checklist")} title={t("github.checklistTitle")} wrapTitle>
     <ol className="divide-y">
-      {status.checklist.map((item, index) => {
-        // Phase 2 owns the baseline table, so this step cannot go green in phase 1.
-        // It is rendered as "arriving in phase 2" and in a neutral tone: a red step
-        // nobody can clear reads as a defect and teaches the operator to ignore the
-        // whole list.
-        const phase2 = item.id === "baseline";
-        return <li key={item.id} className="grid min-w-0 grid-cols-[2.5rem_1.25rem_minmax(0,1fr)_auto] items-center gap-2 px-4 py-3">
-          <span className="font-mono text-[9px] text-muted-foreground">{String(index + 1).padStart(2, "0")}</span>
-          <span className={cx(
-            "grid size-5 place-items-center border",
-            phase2 ? "border-border text-muted-foreground" : item.ok ? "border-chart-2/60 text-chart-2" : "border-destructive/50 text-destructive",
-          )}>
-            {phase2 ? <span aria-hidden className="size-1.5 rounded-full bg-current" />
-              : item.ok ? <Check aria-hidden className="size-3" /> : <X aria-hidden className="size-3" />}
-          </span>
-          <span className="min-w-0 text-xs">{t(`github.checklist.${item.id}`)}</span>
-          <span className={cx(
-            "shrink-0 border px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-wider",
-            phase2 ? "border-border text-muted-foreground" : item.ok ? "border-chart-2/45 text-chart-2" : "border-destructive/45 text-destructive",
-          )}>
-            {phase2 ? t("github.checklist.phase2") : item.ok ? t("github.checklist.ok") : t("github.checklist.pending")}
-          </span>
-        </li>;
-      })}
+      {status.checklist.map((item, index) => <li key={item.id} className="grid min-w-0 grid-cols-[2.5rem_1.25rem_minmax(0,1fr)_auto] items-center gap-2 px-4 py-3">
+        <span className="font-mono text-[9px] text-muted-foreground">{String(index + 1).padStart(2, "0")}</span>
+        <span className={cx(
+          "grid size-5 place-items-center border",
+          item.ok ? "border-chart-2/60 text-chart-2" : "border-destructive/50 text-destructive",
+        )}>
+          {item.ok ? <Check aria-hidden className="size-3" /> : <X aria-hidden className="size-3" />}
+        </span>
+        <span className="min-w-0 text-xs">{t(`github.checklist.${item.id}`)}</span>
+        <span className={cx(
+          "shrink-0 border px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-wider",
+          item.ok ? "border-chart-2/45 text-chart-2" : "border-destructive/45 text-destructive",
+        )}>
+          {item.ok ? t("github.checklist.ok") : t("github.checklist.pending")}
+        </span>
+      </li>)}
     </ol>
     <p className="border-t px-4 py-3 text-[11px] leading-relaxed text-muted-foreground">{t("github.checklist.hint")}</p>
-    <p className="border-t px-4 py-3 text-[11px] leading-relaxed text-muted-foreground">{t("github.checklist.phase2Detail")}</p>
   </Panel>;
 }
 

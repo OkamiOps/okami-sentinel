@@ -470,10 +470,15 @@ function gateFailureMessage(code: string, t: ReturnType<typeof useI18n>["t"]): s
  * action count and the verdict start at the same x on every line instead of being
  * measured by whatever that row's buttons happen to be.
  */
-const REPOSITORY_GRID = "xl:grid-cols-[minmax(0,0.9fr)_minmax(0,2.4fr)_17rem]";
+const REPOSITORY_GRID = "xl:grid-cols-[minmax(0,0.8fr)_minmax(0,2.6fr)_17rem]";
 
-/** The five cells of a repository row, header and body on the same tracks. */
-const REPOSITORY_CELLS = "sm:grid-cols-[minmax(0,0.9fr)_minmax(0,1.4fr)_minmax(0,0.9fr)_minmax(0,0.8fr)_minmax(0,1fr)]";
+/**
+ * The five cells of a repository row, header and body on the same tracks. The policy
+ * level is the longest sentence of the five ("Controlada pelo repositório"), and the
+ * verdict and the action count are a badge and a number — so the width goes where the
+ * words are, and every cell stays one line tall.
+ */
+const REPOSITORY_CELLS = "sm:grid-cols-[minmax(0,0.9fr)_minmax(0,0.9fr)_minmax(0,1fr)_minmax(0,0.5fr)_minmax(0,1.6fr)]";
 
 const BASELINE_TONE = {
   good: "border-chart-2/45 text-chart-2",

@@ -39,8 +39,10 @@ export function GitHubStatusPanel({
   onSyncBaseline: () => Promise<void>;
 }) {
   const { t } = useI18n();
-  const { can } = useAuth();
-  const canSyncBaseline = can("operator", repository.repositoryKey);
+  const { can, isAdmin } = useAuth();
+  // Building a baseline is an admin's spend, and the route says so. An operator who
+  // saw the button here only ever got a 403 back.
+  const canSyncBaseline = isAdmin;
   const canConfigureWorkflow = can("maintainer", repository.repositoryKey);
   const { t: tb } = useScopedI18n(githubBranchesMessages);
   const [branchInput, setBranchInput] = useState(actionsStatus?.triggers?.branches?.join(", ") ?? "");

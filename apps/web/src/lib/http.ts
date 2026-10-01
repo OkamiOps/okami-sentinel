@@ -27,6 +27,9 @@ export function formatApiError(error: unknown, t: Translator): string {
     if (error.kind === "invalid") return t("common.apiInvalidResponse");
     if (error.kind === "empty") return t("common.apiEmptyResponse");
     if (error.hasGenericHttpMessage) return t("common.apiUnavailable", { status: error.status ?? "—" });
+    // A deny from the route table is a single word on the wire. Printed as-is it tells
+    // the operator nothing; what they need to know is that the permission is missing.
+    if (error.status === 403 && error.message === "forbidden") return t("common.forbidden");
     return localizeOperatorText(error.message, getIntlLocale());
   }
   if (error instanceof TypeError && /failed to fetch|fetch failed|networkerror|network request failed|load failed/i.test(error.message)) {

@@ -39,6 +39,12 @@ export interface BaselineStateDependencies {
   /** The branch a baseline must have been built on to count. */
   protectedBranch(repositoryKey: string): string | null;
   findBaselineCandidate(repositoryKey: string): BaselineCandidate | null;
+  /**
+   * Whether a protected-branch gate is still running. Without this the projection
+   * could only keep `building` forever: a build that errored produces no candidate,
+   * and "no candidate" alone cannot tell a run in flight from a run that died.
+   */
+  hasRunningBuild(repositoryKey: string): boolean;
 }
 
 const BASELINE_SCHEMA_VERSION = 1;
@@ -83,6 +89,30 @@ export function ensureRepositoryBaselineSchema(database: Database.Database = get
   migratedHandles.add(database);
 }
 
+/**
+ * Computes the word for every enrolled repository that has no row yet, so that a
+ * repository enrolled before this projection existed keeps the baseline it already
+ * paid a scan for. Without it the screen would say "sem baseline" to an operator who
+ * has merged on the protected branch for weeks, and ask for the money again.
+ *
+ * Only missing rows are written: a repository the product has already decided about
+ * keeps that decision, including a `building` it is waiting on.
+ */
+export function backfillRepositoryBaselines(database: Database.Database = getDb()): number {
+  ensureRepositoryBaselineSchema(database);
+  const keys = database.prepare(`
+    SELECT r.repository_key AS repository_key
+    FROM guardrail_repositories AS r
+    LEFT JOIN guardrail_repository_baselines AS b ON b.repository_key = r.repository_key
+    WHERE b.repository_key IS NULL
+    ORDER BY r.repository_key
+  `).all().map((row) => (row as { repository_key: string }).repository_key);
+  for (const repositoryKey of keys) {
+    refreshRepositoryBaselineState(repositoryKey, productionDependencies(database));
+  }
+  return keys.length;
+}
+
 export function getRepositoryBaselineState(
   repositoryKey: string,
   database: Database.Database = getDb(),
@@ -120,7 +150,14 @@ export function refreshRepositoryBaselineState(
   const candidate = dependencies.findBaselineCandidate(repositoryKey);
   const now = (dependencies.now ?? (() => new Date().toISOString()))();
 
-  const next = derive({ repositoryKey, stored, candidate, protectedBranch, now });
+  const next = derive({
+    repositoryKey,
+    stored,
+    candidate,
+    protectedBranch,
+    buildRunning: dependencies.hasRunningBuild(repositoryKey),
+    now,
+  });
   // Writing an identical row would move `updated_at` for nothing, and the screen
   // would report a change the product did not make.
   if (sameProjection(stored, next)) return stored;
@@ -171,12 +208,15 @@ function derive(input: {
   stored: RepositoryBaseline;
   candidate: BaselineCandidate | null;
   protectedBranch: string | null;
+  buildRunning: boolean;
   now: string;
 }): RepositoryBaseline {
   const { stored, candidate, protectedBranch, now } = input;
   if (candidate === null) {
-    // A requested build that has not produced a gate yet is still in flight.
-    if (stored.state === "building") return stored;
+    // A requested build that has not produced a gate yet is still in flight — but
+    // only while a gate is actually running. A build that failed must fall back to
+    // `absent`, or the screen promises a run nobody is doing.
+    if (stored.state === "building" && input.buildRunning) return stored;
     return { ...absent(input.repositoryKey), updatedAt: now };
   }
   const base: RepositoryBaseline = {
@@ -308,11 +348,23 @@ function recordedVersion(database: Database.Database): number {
  * recomputing an effective lineage here would mean planning a scan that nobody
  * asked for.
  */
-function productionDependencies(): BaselineStateDependencies {
+function productionDependencies(database?: Database.Database): BaselineStateDependencies {
   return {
-    protectedBranch: protectedBranchOf,
-    findBaselineCandidate: newestBaselineGate,
+    database,
+    protectedBranch: (key) => protectedBranchOf(key, database),
+    findBaselineCandidate: (key) => newestBaselineGate(key, database),
+    hasRunningBuild: (key) => runningBaselineGate(key, database),
   };
+}
+
+/** A protected-branch-shaped gate that has not reached a terminal status. */
+function runningBaselineGate(repositoryKey: string, database?: Database.Database): boolean {
+  return listGateRuns(repositoryKey, database).some((gate) =>
+    gate.pullRequestNumber === null
+    && gate.baseRef === gate.headRef
+    && gate.status !== "completed"
+    && gate.status !== "cancelled"
+    && gate.status !== "error");
 }
 
 /**
@@ -325,11 +377,11 @@ function productionDependencies(): BaselineStateDependencies {
  * protects a different branch converges anyway, because the gate it runs there
  * becomes the newest candidate and the comparison below notices.
  */
-function protectedBranchOf(repositoryKey: string): string | null {
-  const repository = listGuardrailRepositories()
+function protectedBranchOf(repositoryKey: string, database?: Database.Database): string | null {
+  const repository = listGuardrailRepositories(database)
     .find((candidate) => candidate.repositoryKey === repositoryKey) ?? null;
   if (repository === null) return null;
-  const policy = getRepositoryPolicy(repositoryKey)?.policy ?? defaultGuardrailPolicy();
+  const policy = getRepositoryPolicy(repositoryKey, database)?.policy ?? defaultGuardrailPolicy();
   if (policy.protectedBranches.includes(repository.defaultBranch)) return repository.defaultBranch;
   return policy.protectedBranches[0] ?? null;
 }
@@ -343,11 +395,14 @@ function protectedBranchOf(repositoryKey: string): string | null {
  * say "the baseline you have is not on the branch the policy protects" instead of
  * "there is no baseline", which would be a different and less useful fact.
  */
-function newestBaselineGate(repositoryKey: string): BaselineCandidate | null {
-  const protectedBranch = protectedBranchOf(repositoryKey);
+function newestBaselineGate(
+  repositoryKey: string,
+  database?: Database.Database,
+): BaselineCandidate | null {
+  const protectedBranch = protectedBranchOf(repositoryKey, database);
   let offBranch: BaselineCandidate | null = null;
   // `listGateRuns` is newest first.
-  for (const gate of listGateRuns(repositoryKey)) {
+  for (const gate of listGateRuns(repositoryKey, database)) {
     if (
       gate.status !== "completed"
       || gate.outcome === "error"

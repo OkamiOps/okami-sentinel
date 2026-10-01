@@ -6,10 +6,14 @@ import test from "node:test";
 
 import Database from "better-sqlite3";
 
+import { insertGateRun, upsertGuardrailRepository } from "./gate-store.js";
 import {
   CURRENT_GUARDRAILS_SCHEMA_VERSION,
   migrateGuardrailsSchema,
+  type GuardrailsMigrationStep,
 } from "./guardrails-migrations.js";
+import { getRepositoryBaselineState } from "./guardrails/baseline-state.js";
+import { defaultToImmediateTransactions } from "./sqlite.js";
 
 test("migrates every legacy guardrail row atomically and idempotently", () => {
   const database = new Database(":memory:");
@@ -189,6 +193,75 @@ test("rolls the complete migration back when a rebuild step fails", () => {
     });
     assert.equal(tableExists(database, "guardrail_schema_migrations"), false);
     assert.equal(tableExists(database, "guardrail_repositories_v2"), false);
+  } finally {
+    database.close();
+  }
+});
+
+test("the upgrade backfills the baseline of a repository enrolled before the projection", () => {
+  const database = new Database(":memory:");
+  defaultToImmediateTransactions(database);
+  try {
+    migrateGuardrailsSchema(database);
+    upsertGuardrailRepository({
+      repositoryKey: "github:1",
+      repositoryPath: null,
+      source: "github",
+      displayName: "OkamiOps/sentinel",
+      defaultBranch: "main",
+      defaultExecutor: "sentinel-managed",
+      remoteOwner: "OkamiOps",
+      remoteName: "sentinel",
+      githubConnectionId: "connection-1",
+      githubInstallationId: "77",
+      githubRepositoryId: "1",
+      enabled: true,
+      policyPath: ".csb/guardrails.json",
+      lastGateId: null,
+      githubStatus: "not_checked",
+    }, database);
+    insertGateRun({
+      id: "gate-1",
+      repositoryKey: "github:1",
+      repositoryPath: null,
+      source: "github",
+      executor: "sentinel-managed",
+      baseRef: "main",
+      headRef: "main",
+      resolvedBaseSha: "a".repeat(40),
+      resolvedHeadSha: "a".repeat(40),
+      policySha: "a".repeat(40),
+      policySource: "sentinel",
+      pullRequestNumber: null,
+      workflowRunId: null,
+      materializationState: "released",
+      scanLineageHash: "sha256:1",
+      artifactSchemaVersion: 2,
+      scanId: null,
+      status: "completed",
+      outcome: "bootstrap",
+      policyVersion: 1,
+      baselineCommit: null,
+      artifactPath: "gate-1/csb-gate-result.json",
+      publishStatus: "not_configured",
+      publishError: null,
+      publishedAt: null,
+      error: null,
+      startedAt: NOW,
+      completedAt: NOW,
+      costCeilingUsd: 2,
+      estimatedUsd: 1,
+    }, database);
+
+    // The state the upgrade finds: rows from before the projection existed.
+    database.prepare("DELETE FROM guardrail_repository_baselines").run();
+    database.prepare("UPDATE guardrail_schema_migrations SET version = 6").run();
+    const steps: GuardrailsMigrationStep[] = [];
+    migrateGuardrailsSchema(database, { afterStep: (step) => steps.push(step) });
+
+    assert.equal(steps.includes("baselines_backfilled"), true);
+    assert.equal(getRepositoryBaselineState("github:1", database).state, "ready");
+    assert.equal(getRepositoryBaselineState("github:1", database).gateId, "gate-1");
   } finally {
     database.close();
   }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, Beaker, FileCheck2, GitBranch, Save, ShieldAlert, Workflow } from "lucide-react";
 import type {
@@ -43,7 +43,8 @@ import { useI18n } from "../i18n";
 
 interface RepositoryPageData {
   repository: GuardrailRepositoryListRow;
-  policy: GuardrailPolicyResponse;
+  /** `null` when reading it failed. */
+  policy: GuardrailPolicyResponse | null;
   baseline: GuardrailBaseline;
   hasProtectedBranchAction: boolean;
   gates: GateRun[];
@@ -79,9 +80,12 @@ export function GuardrailRepositoryPage() {
   const load = useCallback(async () => {
     setState({ status: "loading" });
     try {
+      // The policy is the one read that can depend on GitHub — the repository's own
+      // file lives on the protected branch. An outage there must cost the operator
+      // that one block, not the baseline, the comment setting and the history too.
       const [repositories, policy, baseline, gates] = await Promise.all([
         api.listGuardrailRepositories(),
-        api.getGuardrailPolicy(repositoryKey),
+        api.getGuardrailPolicy(repositoryKey).then((value) => value, () => null),
         api.getGuardrailBaseline(repositoryKey),
         api.listGates(repositoryKey),
       ]);
@@ -97,7 +101,7 @@ export function GuardrailRepositoryPage() {
           gates: gates.gates,
         },
       });
-      setEditor(editorStateFromPolicy(policy.policy));
+      setEditor(policy === null ? null : editorStateFromPolicy(policy.policy));
       const eligible = gates.gates.filter((gate) => gate.artifactPath !== null);
       setGateId((current) => eligible.some((gate) => gate.id === current) ? current : eligible[0]?.id ?? "");
     } catch (error) {
@@ -116,17 +120,17 @@ export function GuardrailRepositoryPage() {
       </Button>
     </div>;
   }
-  if (editor === null) return <Loading />;
-
   const { repository, policy, baseline, hasProtectedBranchAction, gates } = state.data;
-  const proposed = policyFromEditor(editor);
-  const validation = validatePolicyEditor(editor);
-  const changed = JSON.stringify(policy.policy) !== JSON.stringify(proposed);
+  if (policy !== null && editor === null) return <Loading />;
+
+  const proposed = editor === null ? null : policyFromEditor(editor);
+  const validation = editor === null ? null : validatePolicyEditor(editor);
+  const changed = policy !== null && JSON.stringify(policy.policy) !== JSON.stringify(proposed);
   const eligibleGates = gates.filter((gate) => gate.artifactPath !== null);
   // The repository's own file outranks everybody; below that, writing is a
-  // maintainer's and the API re-decides it either way.
-  const readOnly = policy.readOnly || !can("maintainer", repositoryKey);
-  const preset = selectedPresetFromPolicy(proposed);
+  // maintainer's and the API re-decides it either way. With no policy in hand
+  // nothing is writable, which is the honest answer during an outage.
+  const readOnly = policy === null || policy.readOnly || !can("maintainer", repositoryKey);
 
   function update<K extends keyof PolicyEditorState>(key: K, value: PolicyEditorState[K]) {
     setEditor((current) => current === null ? current : { ...current, [key]: value });
@@ -135,7 +139,7 @@ export function GuardrailRepositoryPage() {
   }
 
   async function save() {
-    if (validation !== null || !changed || readOnly) return;
+    if (validation !== null || proposed === null || !changed || readOnly) return;
     setBusy(true);
     setActionError(null);
     try {
@@ -153,7 +157,7 @@ export function GuardrailRepositoryPage() {
   }
 
   async function simulate() {
-    if (validation !== null) return;
+    if (validation !== null || proposed === null) return;
     setBusy(true);
     setActionError(null);
     try {
@@ -199,9 +203,167 @@ export function GuardrailRepositoryPage() {
     }
   }
 
+  // The policy block, and everything that edits it, needs a policy in hand. When the
+  // read failed the page keeps the baseline, the comment setting and the history, and
+  // says what is missing in the one place that is missing it.
+  let policySection: ReactNode;
+  if (policy === null || editor === null) {
+    policySection = <Panel label={t("guardrails.column.policy")} title={t("guardrails.policyUnavailable")} wrapTitle>
+      <p className="border-t border-chart-3/40 bg-chart-3/[.06] px-4 py-3 text-xs leading-relaxed text-chart-3">
+        {t("guardrails.policyUnavailableDescription")}
+      </p>
+    </Panel>;
+  } else {
+    const current = policy;
+    const nextPolicy = policyFromEditor(editor);
+    const nextPreset = selectedPresetFromPolicy(nextPolicy);
+    const fromFile = current.policySource === "repository_file";
+    policySection = <>
+        {/* 01 — which level of the precedence decides, and whether the editor writes. */}
+        <Panel label={t("guardrails.column.policy")} title={t(policySourceLabelKey(current.policySource, current.fileInvalidReason))} wrapTitle>
+          {current.fileInvalidReason !== null
+            ? <p className="border-b border-chart-3/40 bg-chart-3/[.06] px-4 py-3 text-xs leading-relaxed text-chart-3">
+              {t("guardrails.policyFileInvalid")}
+            </p>
+            : current.readOnly
+              ? <p className="border-b border-chart-5/40 bg-chart-5/[.06] px-4 py-3 text-xs leading-relaxed text-chart-5">
+                {t("guardrails.policyFileBanner")}
+              </p>
+              : null}
+          {/* The level is the panel's title; repeating it as a field would print the
+              same sentence twice on one line. */}
+          <dl className={cx("grid gap-4 p-4", fromFile ? "sm:grid-cols-3" : "sm:grid-cols-2")}>
+            {/* The file and its SHA are facts about the repository's own policy. Under
+                "saved in Sentinel" they would claim a file that is not deciding — and
+                that may not exist at all. */}
+            {fromFile && <Fact label={t("guardrails.policyPath")} value={repository.policyPath} />}
+            {fromFile && <Fact label="SHA" value={current.policySha === null ? "—" : current.policySha.slice(0, 12)} />}
+            {!fromFile && <Fact label={t("guardrails.protectedBranches")} value={current.policy.protectedBranches.join(", ")} />}
+            <Fact label={t("guardrails.defaultBranch")} value={repository.defaultBranch} />
+          </dl>
+          {current.sentinel !== null && <p className="border-t px-4 py-3 text-[11px] leading-relaxed text-muted-foreground">
+            {current.sentinel.updatedBy === null
+              ? t("guardrails.policySavedAt", { date: formatDate(current.sentinel.updatedAt, locale) })
+              : t("guardrails.policySavedBy", {
+                date: formatDate(current.sentinel.updatedAt, locale),
+                author: current.sentinel.updatedBy,
+              })}
+          </p>}
+        </Panel>
+
+        <PolicyPresetPicker
+          preset={nextPreset}
+          readOnly={readOnly}
+          onChange={(rules: GuardrailRule[]) => update("rules", rules.map((rule) => ({
+            severity: [...rule.severity],
+            lifecycle: [...rule.lifecycle],
+            decision: rule.decision,
+          })))}
+        />
+
+        <Panel label={t("guardrails.policyEnvelopeSection")} title={t("guardrails.scopeExecution")} wrapTitle>
+          <div className="grid gap-5 p-4 lg:grid-cols-2">
+            <Field label={t("guardrails.protectedBranches")} htmlFor="policy-branches" hint={t("guardrails.branchesHint")}>
+              <Input
+                id="policy-branches"
+                className="font-mono"
+                disabled={readOnly}
+                value={editor.protectedBranches.join(", ")}
+                onChange={(event) => update("protectedBranches", event.target.value.split(",").map((value) => value.trim()))}
+              />
+            </Field>
+            <Field label={t("guardrails.model")} htmlFor="policy-model">
+              <Input
+                id="policy-model"
+                className="font-mono"
+                disabled={readOnly}
+                value={editor.model}
+                onChange={(event) => update("model", event.target.value)}
+              />
+            </Field>
+            <Field label={t("guardrails.effort")} htmlFor="policy-effort">
+              <Input
+                id="policy-effort"
+                className="font-mono"
+                disabled={readOnly}
+                value={editor.effort}
+                onChange={(event) => update("effort", event.target.value)}
+              />
+            </Field>
+            <Field label={t("guardrails.maxCost")} htmlFor="policy-max-cost" hint={t("guardrails.maxCostHint")}>
+              <Input
+                id="policy-max-cost"
+                type="number"
+                min="0.01"
+                step="0.01"
+                className="font-mono"
+                disabled={readOnly}
+                value={editor.maxCostUsd}
+                onChange={(event) => update("maxCostUsd", Number(event.target.value))}
+              />
+            </Field>
+          </div>
+        </Panel>
+
+        {/* A `fieldset` is what makes every control inside it inert in one line. Without
+            it the rules table invited edits that the save button — absent while the
+            repository's file decides — could never have written. */}
+        <fieldset disabled={readOnly} className="min-w-0 disabled:opacity-70">
+          <PolicyRuleEditor rules={editor.rules} onChange={(rules) => update("rules", rules)} />
+        </fieldset>
+
+        <Panel label={t("guardrails.simulationSection")} title={t("guardrails.simulationTitle")} wrapTitle>
+          {/* The controls live in the body, not in the panel's aside: at 390 the aside
+              does not shrink and squeezes the title into one word per line. */}
+          {can("analyst", repositoryKey) && <div className="grid gap-3 border-b p-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+            <div className="min-w-0">
+              <label className="bench-label" htmlFor="policy-simulation-gate">{t("guardrails.simulationGateLabel")}</label>
+              <div className="mt-2">
+                <Select value={gateId} onValueChange={setGateId}>
+                  <SelectTrigger id="policy-simulation-gate" className="w-full" disabled={eligibleGates.length === 0}>
+                    <SelectValue placeholder={t("guardrails.selectGate")} />
+                  </SelectTrigger>
+                  <SelectContent position="popper" className="rounded-none border-border bg-popover">
+                    {eligibleGates.map((gate) => <SelectItem key={gate.id} value={gate.id}>
+                      {gate.baseRef} → {gate.headRef} · {gate.outcome ?? gate.status}
+                    </SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <Button type="button" variant="outline" size="sm" disabled={busy || validation !== null || eligibleGates.length === 0} onClick={() => void simulate()}>
+              <Beaker aria-hidden className="size-3" />{busy ? t("guardrails.simulating") : t("guardrails.simulatePolicy")}
+            </Button>
+          </div>}
+          {simulation === null
+            ? <EmptyState
+              title={eligibleGates.length > 0 ? t("guardrails.simulationEmpty") : t("guardrails.noArtifact")}
+              description={eligibleGates.length > 0 ? t("guardrails.simulationEmptyDescription") : t("guardrails.noArtifactDescription")}
+            />
+            : <div>
+              <div className="grid gap-4 border-b p-4 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-start">
+                <GateOutcomeBadge outcome={simulation.decision.outcome} status="completed" />
+                <div className="min-w-0">
+                  <p className="text-sm leading-6">{simulation.decision.summary}</p>
+                  <p className="mt-1 font-mono text-[9px] uppercase text-muted-foreground">{t("guardrails.simulationMemory")}</p>
+                </div>
+              </div>
+              {simulation.configurationErrors.length > 0
+                ? simulation.configurationErrors.map((error, index) => <div key={`${error.field}-${index}`} className="flex items-start gap-2 border-b px-4 py-3 text-xs last:border-b-0">
+                  <ShieldAlert aria-hidden className="mt-0.5 size-3 shrink-0 text-destructive" />
+                  <span className="min-w-0"><code className="font-mono text-[10px] text-destructive">{error.field}</code> · {error.message}</span>
+                </div>)
+                : <p className="px-4 py-3 text-xs text-chart-2">{t("guardrails.noConfigurationErrors")}</p>}
+            </div>}
+        </Panel>
+
+        <PolicyDiffPreview before={current.policy} after={nextPolicy} />
+    </>;
+  }
+
   return <div className="min-w-0">
     <PageHeader
-      code={t("guardrails.repositoryPageCode")}
+      code="03 / GUARDRAILS"
       title={repository.displayName}
       description={t("guardrails.repositoryPageDescription")}
       actions={<>
@@ -224,141 +386,7 @@ export function GuardrailRepositoryPage() {
     {validation && <AlertBanner>{validation.message}</AlertBanner>}
 
     <div className="grid gap-4">
-      {/* 01 — which level of the precedence decides, and whether the editor writes. */}
-      <Panel label={t("guardrails.column.policy")} title={t(policySourceLabelKey(policy.policySource, policy.fileInvalidReason))} wrapTitle>
-        {policy.fileInvalidReason !== null
-          ? <p className="border-b border-chart-3/40 bg-chart-3/[.06] px-4 py-3 text-xs leading-relaxed text-chart-3">
-            {t("guardrails.policyFileInvalid")}
-          </p>
-          : policy.readOnly
-            ? <p className="border-b border-chart-5/40 bg-chart-5/[.06] px-4 py-3 text-xs leading-relaxed text-chart-5">
-              {t("guardrails.policyFileBanner")}
-            </p>
-            : null}
-        {/* The level is the panel's title; repeating it as a field would print the
-            same sentence twice on one line. */}
-        <dl className="grid gap-4 p-4 sm:grid-cols-3">
-          <Fact label={t("guardrails.policyPath")} value=".csb/guardrails.json" />
-          <Fact label="SHA" value={policy.policySha === null ? "—" : policy.policySha.slice(0, 12)} />
-          <Fact label={t("guardrails.defaultBranch")} value={repository.defaultBranch} />
-        </dl>
-        {policy.sentinel !== null && <p className="border-t px-4 py-3 text-[11px] leading-relaxed text-muted-foreground">
-          {policy.sentinel.updatedBy === null
-            ? t("guardrails.policySavedAt", { date: formatDate(policy.sentinel.updatedAt, locale) })
-            : t("guardrails.policySavedBy", {
-              date: formatDate(policy.sentinel.updatedAt, locale),
-              author: policy.sentinel.updatedBy,
-            })}
-        </p>}
-      </Panel>
-
-      <PolicyPresetPicker
-        preset={preset}
-        readOnly={readOnly}
-        onChange={(rules: GuardrailRule[]) => update("rules", rules.map((rule) => ({
-          severity: [...rule.severity],
-          lifecycle: [...rule.lifecycle],
-          decision: rule.decision,
-        })))}
-      />
-
-      <Panel label={t("guardrails.policyEnvelopeSection")} title={t("guardrails.scopeExecution")} wrapTitle>
-        <div className="grid gap-5 p-4 lg:grid-cols-2">
-          <Field label={t("guardrails.protectedBranches")} htmlFor="policy-branches" hint={t("guardrails.branchesHint")}>
-            <Input
-              id="policy-branches"
-              className="font-mono"
-              disabled={readOnly}
-              value={editor.protectedBranches.join(", ")}
-              onChange={(event) => update("protectedBranches", event.target.value.split(",").map((value) => value.trim()))}
-            />
-          </Field>
-          <Field label={t("guardrails.model")} htmlFor="policy-model">
-            <Input
-              id="policy-model"
-              className="font-mono"
-              disabled={readOnly}
-              value={editor.model}
-              onChange={(event) => update("model", event.target.value)}
-            />
-          </Field>
-          <Field label="EFFORT" htmlFor="policy-effort">
-            <Input
-              id="policy-effort"
-              className="font-mono"
-              disabled={readOnly}
-              value={editor.effort}
-              onChange={(event) => update("effort", event.target.value)}
-            />
-          </Field>
-          <Field label={t("guardrails.maxCost")} htmlFor="policy-max-cost" hint={t("guardrails.maxCostHint")}>
-            <Input
-              id="policy-max-cost"
-              type="number"
-              min="0.01"
-              step="0.01"
-              className="font-mono"
-              disabled={readOnly}
-              value={editor.maxCostUsd}
-              onChange={(event) => update("maxCostUsd", Number(event.target.value))}
-            />
-          </Field>
-        </div>
-      </Panel>
-
-      {/* A `fieldset` is what makes every control inside it inert in one line. Without
-          it the rules table invited edits that the save button — absent while the
-          repository's file decides — could never have written. */}
-      <fieldset disabled={readOnly} className="min-w-0 disabled:opacity-70">
-        <PolicyRuleEditor rules={editor.rules} onChange={(rules) => update("rules", rules)} />
-      </fieldset>
-
-      <Panel label="SIMULATION" title={t("guardrails.simulationTitle")} wrapTitle>
-        {/* The controls live in the body, not in the panel's aside: at 390 the aside
-            does not shrink and squeezes the title into one word per line. */}
-        {can("analyst", repositoryKey) && <div className="grid gap-3 border-b p-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
-          <div className="min-w-0">
-            <label className="bench-label" htmlFor="policy-simulation-gate">{t("guardrails.simulationGateLabel")}</label>
-            <div className="mt-2">
-              <Select value={gateId} onValueChange={setGateId}>
-                <SelectTrigger id="policy-simulation-gate" className="w-full" disabled={eligibleGates.length === 0}>
-                  <SelectValue placeholder={t("guardrails.selectGate")} />
-                </SelectTrigger>
-                <SelectContent position="popper" className="rounded-none border-border bg-popover">
-                  {eligibleGates.map((gate) => <SelectItem key={gate.id} value={gate.id}>
-                    {gate.baseRef} → {gate.headRef} · {gate.outcome ?? gate.status}
-                  </SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <Button type="button" variant="outline" size="sm" disabled={busy || validation !== null || eligibleGates.length === 0} onClick={() => void simulate()}>
-            <Beaker aria-hidden className="size-3" />{busy ? t("guardrails.simulating") : t("guardrails.simulatePolicy")}
-          </Button>
-        </div>}
-        {simulation === null
-          ? <EmptyState
-            title={eligibleGates.length > 0 ? t("guardrails.simulationEmpty") : t("guardrails.noArtifact")}
-            description={eligibleGates.length > 0 ? t("guardrails.simulationEmptyDescription") : t("guardrails.noArtifactDescription")}
-          />
-          : <div>
-            <div className="grid gap-4 border-b p-4 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-start">
-              <GateOutcomeBadge outcome={simulation.decision.outcome} status="completed" />
-              <div className="min-w-0">
-                <p className="text-sm leading-6">{simulation.decision.summary}</p>
-                <p className="mt-1 font-mono text-[9px] uppercase text-muted-foreground">{t("guardrails.simulationMemory")}</p>
-              </div>
-            </div>
-            {simulation.configurationErrors.length > 0
-              ? simulation.configurationErrors.map((error, index) => <div key={`${error.field}-${index}`} className="flex items-start gap-2 border-b px-4 py-3 text-xs last:border-b-0">
-                <ShieldAlert aria-hidden className="mt-0.5 size-3 shrink-0 text-destructive" />
-                <span className="min-w-0"><code className="font-mono text-[10px] text-destructive">{error.field}</code> · {error.message}</span>
-              </div>)
-              : <p className="px-4 py-3 text-xs text-chart-2">{t("guardrails.noConfigurationErrors")}</p>}
-          </div>}
-      </Panel>
-
-      <PolicyDiffPreview before={policy.policy} after={proposed} />
+      {policySection}
 
       <BaselineCard
         baseline={baseline}
@@ -396,9 +424,6 @@ export function GuardrailRepositoryPage() {
             {repository.prCommentEnabled ? t("guardrails.disableRepository") : t("guardrails.enableRepository")}
           </Button>}
         </div>
-        <p className="border-t px-4 py-3 text-[11px] leading-relaxed text-muted-foreground">
-          {t("guardrails.prCommentPhase3")}
-        </p>
       </Panel>
 
       <Panel label={t("guardrails.gateHistorySection")} title={t("guardrails.gateHistoryTitle")} wrapTitle>
