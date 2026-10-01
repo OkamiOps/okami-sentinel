@@ -13,9 +13,31 @@ import {
 const REPOSITORY_KEY = "github:1";
 
 class FakeGitHubError extends Error {
-  constructor(readonly code: string) {
+  readonly status: number | null;
+  readonly detail: string;
+  readonly retryAfter: string | null;
+  constructor(
+    readonly code: string,
+    options: { status?: number; detail?: string; retryAfter?: string } = {},
+  ) {
     super(code);
+    this.status = options.status ?? null;
+    this.detail = options.detail ?? "";
+    this.retryAfter = options.retryAfter ?? null;
   }
+}
+
+/** What GitHub says when the App has no `pull_requests: write`. */
+const NO_SCOPE = { status: 403, detail: "Resource not accessible by integration" };
+
+/** A comment written by the App itself, which is the only one it may adopt. */
+function ourComment(id: string, body: string) {
+  return { id, body, user: { login: "okami-sentinel[bot]", type: "Bot" }, performed_via_github_app: { id: 4242 } };
+}
+
+/** A comment by a human who pasted — or quoted — the marker. */
+function strangerComment(id: string, body: string) {
+  return { id, body, user: { login: "attacker", type: "User" }, performed_via_github_app: null };
 }
 
 /**
@@ -53,12 +75,15 @@ interface Call { method: string; path: string; body?: unknown }
 
 interface FakeOptions {
   patchStatus?: number;
-  existingComments?: Array<{ id: string; body: string }>;
+  existingComments?: unknown[];
   commentPages?: number;
   postError?: string;
   commentsEnabled?: boolean;
   stored?: GuardrailPrCommentState | null;
   blockedInstallations?: Set<string>;
+  blockedAt?: string;
+  patchError?: FakeGitHubError;
+  postFailure?: FakeGitHubError;
 }
 
 function publisherDeps(options: FakeOptions = {}): PrCommentPublisherDependencies & {
@@ -78,7 +103,9 @@ function publisherDeps(options: FakeOptions = {}): PrCommentPublisherDependencie
     rows,
     blocked,
     get blockRecords() { return blockRecords; },
-    isPermissionBlocked: (installationId) => blocked.has(installationId),
+    appIdentity: () => ({ appId: "4242", appSlug: "okami-sentinel" }),
+    permissionBlockedAt: (installationId) =>
+      blocked.has(installationId) ? options.blockedAt ?? "2026-09-30T11:59:00.000Z" : null,
     recordPermissionBlock: (installationId) => {
       blockRecords += 1;
       if (blocked.has(installationId)) return false;
@@ -92,7 +119,7 @@ function publisherDeps(options: FakeOptions = {}): PrCommentPublisherDependencie
       if (options.commentPages !== undefined) {
         // Every page full, so the scan only stops because it is capped.
         return page <= options.commentPages
-          ? Array.from({ length: 100 }, (_, index) => ({ id: String(page * 1000 + index + 1), body: "chatter" }))
+          ? Array.from({ length: 100 }, (_, index) => strangerComment(String(page * 1000 + index + 1), "chatter"))
           : [];
       }
       return page === 1 ? options.existingComments ?? [] : [];
@@ -103,8 +130,9 @@ function publisherDeps(options: FakeOptions = {}): PrCommentPublisherDependencie
         throw new FakeGitHubError("github_not_found");
       }
       if (method === "PATCH" && options.patchStatus === 403) {
-        throw new FakeGitHubError("github_credential_rejected");
+        throw options.patchError ?? new FakeGitHubError("github_credential_rejected", NO_SCOPE);
       }
+      if (method === "POST" && options.postFailure !== undefined) throw options.postFailure;
       if (method === "POST" && options.postError !== undefined) {
         throw new FakeGitHubError(options.postError);
       }
@@ -185,7 +213,7 @@ test("recreates the comment a human deleted", async () => {
 
 test("finds an existing comment by its marker when the row is missing", async () => {
   const deps = publisherDeps({
-    existingComments: [{ id: "77", body: `${prCommentMarker(REPOSITORY_KEY)}\nold` }],
+    existingComments: [ourComment("77", `${prCommentMarker(REPOSITORY_KEY)}\nold`)],
   });
   const result = await publishPrComment(input(), deps);
   assert.deepEqual(result, { status: "updated", commentId: "77" });
@@ -200,8 +228,8 @@ test("stops the marker scan at three pages", async () => {
 test("uses the oldest of two marked comments and records the ambiguity", async () => {
   const deps = publisherDeps({
     existingComments: [
-      { id: "88", body: `${prCommentMarker(REPOSITORY_KEY)}\nnewer` },
-      { id: "77", body: `${prCommentMarker(REPOSITORY_KEY)}\nolder` },
+      ourComment("88", `${prCommentMarker(REPOSITORY_KEY)}\nnewer`),
+      ourComment("77", `${prCommentMarker(REPOSITORY_KEY)}\nolder`),
     ],
   });
   const result = await publishPrComment(input(), deps);
@@ -302,4 +330,155 @@ test("asks GitHub for pull_requests write and never for issues", async () => {
     },
   });
   assert.deepEqual(permissions, [{ pull_requests: "write" }]);
+});
+
+test("ignores a marker a stranger planted, and writes its own comment", async () => {
+  // The marker is public: it sits in plain text at the top of every comment
+  // Sentinel writes, and GitHub's "Quote reply" copies it verbatim. Adopting it
+  // means a PATCH on someone else's comment, which GitHub refuses with the same
+  // 403 a missing permission gives.
+  const deps = publisherDeps({
+    existingComments: [strangerComment("55", `${prCommentMarker(REPOSITORY_KEY)}\nplanted`)],
+  });
+  const result = await publishPrComment(input(), deps);
+  assert.equal(result.status, "created");
+  assert.ok(!deps.calls.some((call) => call.method === "PATCH"));
+  assert.equal(deps.blocked.size, 0);
+});
+
+test("ignores a marker quoted by another App's bot", async () => {
+  const deps = publisherDeps({
+    existingComments: [{
+      id: "56",
+      body: `> ${prCommentMarker(REPOSITORY_KEY)}\nquoted`,
+      user: { login: "dependabot[bot]", type: "Bot" },
+      performed_via_github_app: { id: 9999 },
+    }],
+  });
+  assert.equal((await publishPrComment(input(), deps)).status, "created");
+});
+
+test("adopts the comment the App itself wrote, by its own app id", async () => {
+  const deps = publisherDeps({
+    existingComments: [{
+      id: "77",
+      body: `${prCommentMarker(REPOSITORY_KEY)}\nold`,
+      user: { login: "someone-else", type: "User" },
+      performed_via_github_app: { id: 4242 },
+    }],
+  });
+  assert.deepEqual(await publishPrComment(input(), deps), { status: "updated", commentId: "77" });
+});
+
+test("prefers the stored comment id and never searches", async () => {
+  const deps = publisherDeps({ stored: storedRow() });
+  await publishPrComment(input(), deps);
+  assert.equal(deps.calls.filter((call) => call.method === "GET").length, 0);
+});
+
+test("a locked conversation does not latch the installation", async () => {
+  const deps = publisherDeps({
+    postFailure: new FakeGitHubError("github_credential_rejected", {
+      status: 403,
+      detail: "Unable to create comment because issue is locked.",
+    }),
+  });
+  const result = await publishPrComment(input(), deps);
+  assert.deepEqual(result, { status: "failed", reason: "github_conversation_locked", alert: true });
+  assert.equal(deps.blocked.size, 0);
+});
+
+test("an archived repository does not latch the installation", async () => {
+  const deps = publisherDeps({
+    postFailure: new FakeGitHubError("github_credential_rejected", {
+      status: 403,
+      detail: "Repository was archived so is read-only.",
+    }),
+  });
+  const result = await publishPrComment(input(), deps);
+  assert.deepEqual(result, { status: "failed", reason: "github_repository_archived", alert: true });
+  assert.equal(deps.blocked.size, 0);
+});
+
+test("a secondary rate limit does not latch the installation", async () => {
+  const byMessage = publisherDeps({
+    postFailure: new FakeGitHubError("github_credential_rejected", {
+      status: 403,
+      detail: "You have exceeded a secondary rate limit. Please wait a few minutes.",
+    }),
+  });
+  assert.deepEqual(
+    await publishPrComment(input(), byMessage),
+    { status: "failed", reason: "github_rate_limited", alert: true },
+  );
+  assert.equal(byMessage.blocked.size, 0);
+
+  const byHeader = publisherDeps({
+    postFailure: new FakeGitHubError("github_credential_rejected", { status: 403, retryAfter: "60" }),
+  });
+  const rateLimited = await publishPrComment(input(), byHeader);
+  assert.equal(rateLimited.status === "failed" && rateLimited.reason, "github_rate_limited");
+  assert.equal(byHeader.blocked.size, 0);
+});
+
+test("a token problem does not latch the installation", async () => {
+  const deps = publisherDeps({
+    postFailure: new FakeGitHubError("github_credential_rejected", { status: 401, detail: "Bad credentials" }),
+  });
+  const result = await publishPrComment(input(), deps);
+  assert.deepEqual(result, { status: "failed", reason: "github_credential_rejected", alert: true });
+  assert.equal(deps.blocked.size, 0);
+});
+
+test("only GitHub's own words about the scope latch the installation", async () => {
+  const deps = publisherDeps({
+    postFailure: new FakeGitHubError("github_credential_rejected", {
+      status: 403,
+      detail: "Resource not accessible by integration",
+    }),
+  });
+  const result = await publishPrComment(input(), deps);
+  assert.deepEqual(result, { status: "failed", reason: "github_permission_missing", alert: true });
+  assert.deepEqual([...deps.blocked], ["77"]);
+});
+
+test("a 403 GitHub does not explain is a failure, not a latch", async () => {
+  const deps = publisherDeps({
+    postFailure: new FakeGitHubError("github_credential_rejected", { status: 403, detail: "" }),
+  });
+  const result = await publishPrComment(input(), deps);
+  assert.equal(result.status, "failed");
+  assert.equal(deps.blocked.size, 0);
+});
+
+test("the latch is probed again after an hour, and the probe is not a second alert", async () => {
+  const fresh = publisherDeps({
+    blockedInstallations: new Set(["77"]),
+    blockedAt: "2026-09-30T11:59:00.000Z",
+  });
+  assert.deepEqual(
+    await publishPrComment(input(), fresh),
+    { status: "skipped", reason: "permission_pending" },
+  );
+  assert.equal(fresh.calls.length, 0);
+
+  // An hour later the publisher tries once. It still fails, and the operator is
+  // not told again: the row is refreshed, not inserted.
+  const stale = publisherDeps({
+    blockedInstallations: new Set(["77"]),
+    blockedAt: "2026-09-30T10:00:00.000Z",
+    postFailure: new FakeGitHubError("github_credential_rejected", NO_SCOPE),
+  });
+  const probed = await publishPrComment(input(), stale);
+  assert.deepEqual(probed, { status: "failed", reason: "github_permission_missing", alert: false });
+  assert.ok(stale.calls.some((call) => call.method === "POST"));
+});
+
+test("an hourly probe that goes through lifts the latch", async () => {
+  const deps = publisherDeps({
+    blockedInstallations: new Set(["77"]),
+    blockedAt: "2026-09-30T10:00:00.000Z",
+  });
+  assert.equal((await publishPrComment(input(), deps)).status, "created");
+  assert.equal(deps.blocked.size, 0);
 });

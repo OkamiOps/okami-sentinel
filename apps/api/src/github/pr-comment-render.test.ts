@@ -321,7 +321,9 @@ test("redacts a secret and a host path out of a finding title", () => {
     unsafeFindings: [critical(`API_KEY=sk-proj-${"a".repeat(22)} leaked`, "src/a.ts:1")],
   }));
   assert.ok(!body.includes("sk-proj-"));
-  assert.match(body, /\[REDACTED\]/);
+  // The brackets of the placeholder are escaped like any other, so it reads as
+  // `[REDACTED]` to a human and cannot become a link.
+  assert.match(body, /\\\[REDACTED\\\]/);
 });
 
 test("withholds a location that is not repository-relative", () => {
@@ -425,4 +427,59 @@ test("marks the comment with the repository it belongs to and no other", () => {
   assert.equal(prCommentMarker("github:1"), "<!-- okami-sentinel:gate repository=github:1 -->");
   assert.ok(!isSentinelComment("<!-- okami-sentinel:gate repository=github:2 -->", "github:1"));
   assert.ok(isSentinelComment("before\n<!-- okami-sentinel:gate repository=github:1 -->\nafter", "github:1"));
+});
+
+test("neutralises a mention so nobody is notified by a finding title", () => {
+  const { body } = renderPrComment(input({
+    newFindings: [critical("@okamiops/security and @marcos should look at this", "src/a.ts:1")],
+  }));
+  assert.ok(!/(^|[^\\‍])@okamiops/.test(body), body);
+  assert.match(body, /@‍okamiops\/security/);
+  assert.match(body, /@‍marcos/);
+});
+
+test("neutralises an issue reference so no other thread is cross-linked", () => {
+  const { body } = renderPrComment(input({
+    newFindings: [critical("Regression of #1234, see GH-77", "src/a.ts:1")],
+  }));
+  assert.match(body, /#‍1234/);
+  assert.match(body, /GH‍-77/);
+  assert.ok(!body.includes("#1234"));
+  assert.ok(!body.includes("GH-77"));
+});
+
+test("a finding title cannot render a link or an image inside Sentinel's comment", () => {
+  const { body } = renderPrComment(input({
+    newFindings: [critical(
+      "![APPROVED](https://evil.example/badge.png) and [click](https://evil.example)",
+      "src/a.ts:1",
+    )],
+  }));
+  const row = body.split("\n").find((line) => line.includes("evil.example"))!;
+  const title = row.split(" | ")[1]!;
+  assert.ok(title.includes("\\!\\[APPROVED\\]\\(https://evil.example/badge.png\\)"), title);
+  assert.ok(title.includes("\\[click\\]\\(https://evil.example\\)"), title);
+  // No unescaped bracket survives the title, so neither markdown form can close.
+  assert.ok(!/(^|[^\\])[[\]()!]/.test(title), title);
+});
+
+test("strips the bidi and invisible controls that can reverse how a cell reads", () => {
+  // Written as escapes, never as literal characters: a source file carrying a
+  // bidi override is the very trick this test is about.
+  const CONTROLS = ["200e", "200f", "202a", "202b", "202c", "202d", "202e", "2066", "2067", "2068", "2069"]
+    .map((code) => String.fromCodePoint(Number.parseInt(code, 16)));
+  const { body } = renderPrComment(input({
+    newFindings: [critical(`safe${CONTROLS.join("")}reads forward`, "src/a.ts:1")],
+  }));
+  for (const control of CONTROLS) assert.ok(!body.includes(control), JSON.stringify(control));
+  assert.match(body, /safereads forward/);
+});
+
+test("a path in a code span keeps its own characters, with no backslashes added", () => {
+  const { body } = renderPrComment(input({
+    newFindings: [critical("x", "src/(group)/a!b.ts:1")],
+  }));
+  // Markdown does not parse inside a code span, so escaping there would only
+  // print backslashes at the reader.
+  assert.match(body, /`src\/\(group\)\/a!b\.ts:1`/);
 });
