@@ -526,6 +526,7 @@ function actionsGateRun(
     resolvedBaseSha: preview.resolvedTarget.baseSha,
     resolvedHeadSha: preview.resolvedTarget.headSha,
     policySha: preview.resolvedTarget.policySha,
+    policySource: null,
     pullRequestNumber: preview.resolvedTarget.pullRequestNumber,
     workflowRunId: null,
     materializationState: "not_required",

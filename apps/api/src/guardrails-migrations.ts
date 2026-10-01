@@ -1,6 +1,11 @@
 import type Database from "better-sqlite3";
 
-export const CURRENT_GUARDRAILS_SCHEMA_VERSION = 5;
+import {
+  REPOSITORY_BASELINE_SCHEMA_SQL,
+  REPOSITORY_POLICY_SCHEMA_SQL,
+} from "./guardrails/projection-schema.js";
+
+export const CURRENT_GUARDRAILS_SCHEMA_VERSION = 6;
 
 export type GuardrailsMigrationStep =
   | "repositories_rebuilt"
@@ -8,7 +13,8 @@ export type GuardrailsMigrationStep =
   | "metadata_created"
   | "repository_executor_added"
   | "actions_dispatches_added"
-  | "gate_cost_ceiling_added";
+  | "gate_cost_ceiling_added"
+  | "repository_pr_comment_added";
 
 export interface GuardrailsMigrationHooks {
   afterStep?(step: GuardrailsMigrationStep): void;
@@ -56,12 +62,22 @@ export function migrateGuardrailsSchema(
       ensureGateCostCeiling(database);
       hooks.afterStep?.("gate_cost_ceiling_added");
     }
+    if (currentVersion < 6) {
+      ensureRepositoryPrComment(database);
+      ensureGatePolicySource(database);
+      hooks.afterStep?.("repository_pr_comment_added");
+    }
+    // The two projections the repository list joins. They have their own version
+    // ladders in `policy-store` and `baseline-state`; creating them here too means
+    // the list can join them on a database that has never written one.
+    database.exec(REPOSITORY_POLICY_SCHEMA_SQL);
+    database.exec(REPOSITORY_BASELINE_SCHEMA_SQL);
     database.prepare(`
       INSERT OR REPLACE INTO guardrail_schema_migrations (version, name, applied_at)
       VALUES (?, ?, ?)
     `).run(
       CURRENT_GUARDRAILS_SCHEMA_VERSION,
-      "gate cost ceiling",
+      "repository pull-request comment settings",
       new Date().toISOString(),
     );
   });
@@ -76,7 +92,11 @@ function schemaIsCurrent(database: Database.Database): boolean {
   return (row.version ?? 0) >= CURRENT_GUARDRAILS_SCHEMA_VERSION
     && tableColumns(database, "guardrail_repositories").has("default_executor")
     && tableColumns(database, "gate_runs").has("cost_ceiling_usd")
-    && tableExists(database, "github_actions_dispatches");
+    && tableColumns(database, "gate_runs").has("policy_source")
+    && tableColumns(database, "guardrail_repositories").has("pr_comment_enabled")
+    && tableExists(database, "github_actions_dispatches")
+    && tableExists(database, "guardrail_repository_policies")
+    && tableExists(database, "guardrail_repository_baselines");
 }
 
 function rebuildRepositories(database: Database.Database): void {
@@ -154,6 +174,37 @@ function ensureFinalGateRunTable(database: Database.Database): void {
   createGateRunIndexes(database);
 }
 
+/**
+ * Two columns, added in place. SQLite cannot add a `CHECK` through `ALTER TABLE`,
+ * so the `pr_comment_detail` domain is enforced by the DDL on a freshly created
+ * database and by the store's own validation on an upgraded one — the same trade
+ * the actions schema already makes. Rebuilding this table to add a constraint two
+ * code paths keep would mean a lock on the live database for nothing.
+ */
+function ensureRepositoryPrComment(database: Database.Database): void {
+  const columns = tableColumns(database, "guardrail_repositories");
+  if (!columns.has("pr_comment_enabled")) {
+    database.exec(
+      "ALTER TABLE guardrail_repositories ADD COLUMN pr_comment_enabled INTEGER NOT NULL DEFAULT 1",
+    );
+  }
+  if (!columns.has("pr_comment_detail")) {
+    database.exec(
+      "ALTER TABLE guardrail_repositories ADD COLUMN pr_comment_detail TEXT NOT NULL DEFAULT 'detailed'",
+    );
+  }
+}
+
+/**
+ * Which level of the policy precedence a gate ran under. Nullable, because every
+ * row written before the column existed ran before the three levels were named, and
+ * inventing a level for it would be a guess the list screen would then print.
+ */
+function ensureGatePolicySource(database: Database.Database): void {
+  if (tableColumns(database, "gate_runs").has("policy_source")) return;
+  database.exec("ALTER TABLE gate_runs ADD COLUMN policy_source TEXT");
+}
+
 function ensureGateCostCeiling(database: Database.Database): void {
   if (tableColumns(database, "gate_runs").has("cost_ceiling_usd")) return;
   database.exec("ALTER TABLE gate_runs ADD COLUMN cost_ceiling_usd REAL NOT NULL DEFAULT 0");
@@ -176,9 +227,13 @@ function createRepositoryTable(database: Database.Database, table: string): void
       github_repository_id TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       policy_path TEXT NOT NULL,
+      pr_comment_enabled INTEGER NOT NULL DEFAULT 1,
+      pr_comment_detail TEXT NOT NULL DEFAULT 'detailed',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       CHECK (source IN ('local', 'github')),
+      CHECK (pr_comment_enabled IN (0, 1)),
+      CHECK (pr_comment_detail IN ('detailed', 'summary')),
       CHECK (default_executor IN ('sentinel-managed', 'github-actions')),
       CHECK (source = 'github' OR default_executor = 'sentinel-managed'),
       CHECK (
@@ -232,6 +287,7 @@ function createGateRunTable(database: Database.Database, table: string): void {
       resolved_base_sha TEXT,
       resolved_head_sha TEXT,
       policy_sha TEXT,
+      policy_source TEXT,
       pull_request_number INTEGER,
       workflow_run_id TEXT,
       materialization_state TEXT NOT NULL,

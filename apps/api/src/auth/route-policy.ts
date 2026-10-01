@@ -65,6 +65,10 @@ export const ROUTE_POLICY: ReadonlyArray<readonly [method: string, pattern: stri
   ["GET", "/scans/:id/findings/:findingId", viewerScan], ["POST", "/scans/:id/findings/:findingId/triage", R("analyst", "scan")],
   ["POST", "/scans/:id/cancel", R("operator", "scan")], ["GET", "/scans/:id/events", viewerScan],
   ["GET", "/guardrails/repositories", SCOPED], ["POST", "/guardrails/repositories", ADMIN],
+  // Enrolling, disabling and removing a repository are all the administrator's: the
+  // first two decide what the product is allowed to spend on, the third deletes.
+  ["PATCH", "/guardrails/repositories/:repositoryKey", ADMIN],
+  ["DELETE", "/guardrails/repositories/:repositoryKey", ADMIN],
   ["POST", "/guardrails/repositories/:repositoryKey/actions-dispatch", R("operator", "param")],
   ["GET", "/guardrails/repositories/:repositoryKey/actions-status", R("viewer", "param")],
   ["GET", "/guardrails/repositories/:repositoryKey/baseline", R("viewer", "param")],

@@ -1,5 +1,5 @@
 import { defaultGuardrailPolicy } from "@csb/gate-core";
-import type { GuardrailPolicy } from "@csb/shared";
+import type { GuardrailPolicy, GuardrailResolvedPolicySource } from "@csb/shared";
 
 /**
  * The three levels of the spec's precedence table, in the order they win:
@@ -9,7 +9,7 @@ import type { GuardrailPolicy } from "@csb/shared";
  * 2. `sentinel` — the policy saved in `guardrail_repository_policies`.
  * 3. `default` — `defaultGuardrailPolicy()`.
  */
-export type ResolvedPolicySource = "repository_file" | "sentinel" | "default";
+export type ResolvedPolicySource = GuardrailResolvedPolicySource;
 
 export interface ResolvedGuardrailPolicy {
   policy: GuardrailPolicy;

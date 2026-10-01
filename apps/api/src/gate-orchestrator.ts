@@ -28,10 +28,12 @@ import {
   type FindingSummary,
   type FindingTriage,
   type GateArtifact,
+  type GateArtifactV2,
   type GateRun,
   type GuardrailException,
   type GuardrailPolicy,
   type GuardrailRepository,
+  type GuardrailResolvedPolicySource,
   type GuardrailScanSelection,
   type ScanRun,
   type StartScanRequest,
@@ -296,6 +298,7 @@ export async function startLocalGate(
     resolvedBaseSha: null,
     resolvedHeadSha: null,
     policySha: null,
+    policySource: null,
     pullRequestNumber: null,
     workflowRunId: null,
     materializationState: "not_required",
@@ -352,6 +355,7 @@ export async function startRemoteManagedGate(
     resolvedBaseSha: preview.resolvedTarget.baseSha,
     resolvedHeadSha: preview.resolvedTarget.headSha,
     policySha: preview.resolvedTarget.policySha,
+    policySource: null,
     pullRequestNumber: preview.resolvedTarget.pullRequestNumber,
     workflowRunId: null,
     materializationState: "queued",
@@ -646,6 +650,9 @@ async function runRemoteManagedGate(
             scanLineageHash: execution.artifact.lineage.scanLineageHash,
             baselineCommit: execution.artifact.baselineCommit,
             outcome: execution.artifact.decision.outcome,
+            // Which level of the precedence decided, recorded on the row so the
+            // repository list can name it without a GitHub call per repository.
+            policySource: currentPolicySource(execution.artifact.policySource),
             estimatedUsd,
           });
           if (execution.artifact.publication.eligible) {
@@ -1305,6 +1312,18 @@ function systemActionsExecutor(): GitHubActionsExecutor {
  * and swallowed: the gate's decision is already durable, and a projection that
  * could not be rewritten is a stale word on a screen, not a lost verdict.
  */
+/**
+ * The three words a gate may have run under. An artifact that still carries one of
+ * the two retired ones means `repository_file`: both only ever described reading
+ * `.csb/guardrails.json`.
+ */
+function currentPolicySource(
+  source: GateArtifactV2["policySource"],
+): GuardrailResolvedPolicySource {
+  if (source === "base" || source === "protected_branch") return "repository_file";
+  return source;
+}
+
 function settleBaseline(
   repositoryKey: string,
   deps: { refreshBaselineState(repositoryKey: string): void },

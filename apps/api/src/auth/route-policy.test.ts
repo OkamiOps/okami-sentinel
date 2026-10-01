@@ -120,6 +120,47 @@ test("declares every route of the GitHub tab with the requirement the spec names
   }
 });
 
+/**
+ * The Guardrails tab's own routes, with the requirement the spec's permission table
+ * names. Enrolling, removing and building a baseline all spend or delete, so all
+ * three are the administrator's; saving a policy is a maintainer's and simulating
+ * one an analyst's.
+ */
+test("declares every repository route of the Guardrails tab with the requirement the spec names", () => {
+  const declared = ROUTE_POLICY
+    .filter(([, pattern]) => pattern.startsWith("/guardrails/repositories"))
+    .map(([method, pattern, requirement]) => [
+      `${method} ${pattern}`,
+      requirement.kind === "repository" ? `${requirement.role}:${requirement.from}` : requirement.kind,
+    ]);
+  assert.deepEqual(Object.fromEntries(declared), {
+    "GET /guardrails/repositories": "scoped",
+    "POST /guardrails/repositories": "admin",
+    "PATCH /guardrails/repositories/:repositoryKey": "admin",
+    "DELETE /guardrails/repositories/:repositoryKey": "admin",
+    "POST /guardrails/repositories/:repositoryKey/actions-dispatch": "operator:param",
+    "GET /guardrails/repositories/:repositoryKey/actions-status": "viewer:param",
+    "GET /guardrails/repositories/:repositoryKey/baseline": "viewer:param",
+    "POST /guardrails/repositories/:repositoryKey/baseline": "admin",
+    "GET /guardrails/repositories/:repositoryKey/caller-workflow": "viewer:param",
+    "PUT /guardrails/repositories/:repositoryKey/caller-workflow": "maintainer:param",
+    "GET /guardrails/repositories/:repositoryKey/github-status": "viewer:param",
+    "GET /guardrails/repositories/:repositoryKey/policy": "viewer:param",
+    "PUT /guardrails/repositories/:repositoryKey/policy": "maintainer:param",
+    "POST /guardrails/repositories/:repositoryKey/policy/simulate": "analyst:param",
+    "GET /guardrails/repositories/:repositoryKey/pull-requests": "viewer:param",
+    "POST /guardrails/repositories/:repositoryKey/target-preview": "operator:param",
+  });
+  // The retired parallel path for the baseline must not be reachable at all.
+  assert.equal(matchPolicy("POST", "/guardrails/repositories/github:1/baseline/sync"), null);
+  // Nothing here is public.
+  assert.deepEqual(
+    ROUTE_POLICY.filter(([, pattern, requirement]) =>
+      pattern.startsWith("/guardrails/") && requirement.kind === "public"),
+    [],
+  );
+});
+
 test("path segments are decoded exactly once and bad encoding never matches", () => {
   assert.deepEqual(matchPolicy("GET", "/github-checkouts/local%2Fone")?.params, { repositoryKey: "local/one" });
   assert.deepEqual(matchPolicy("GET", "/github-checkouts/local%252Fone")?.params, { repositoryKey: "local%2Fone" });

@@ -17,7 +17,10 @@ import type {
   GuardrailScanSelection,
   GuardrailPullRequestSummary,
   GuardrailPolicy,
+  GuardrailEnrollmentSkip,
   GuardrailRepository,
+  GuardrailRepositoryListRow,
+  GuardrailRepositoryPatch,
   HealthResponse,
   MetricsSummary,
   ProviderConnection,
@@ -169,6 +172,20 @@ export type EnrollGuardrailRepositoryRequest =
       defaultExecutor: GateExecutorKind;
       displayName?: string;
     };
+
+/** The batch the Guardrails multi-select submits: one request for N repositories. */
+export interface EnrollGuardrailRepositoriesRequest {
+  source: "github";
+  connectionId: string;
+  installationId: string;
+  repositoryIds: string[];
+  defaultExecutor: GateExecutorKind;
+}
+
+export interface EnrollGuardrailRepositoriesResponse {
+  enrolled: GuardrailRepository[];
+  skipped: GuardrailEnrollmentSkip[];
+}
 
 export interface StartGuardrailGateRequest {
   scanSelection?: GuardrailScanSelection;
@@ -510,7 +527,7 @@ export const api = {
       `/fs/list${path ? `?path=${encodeURIComponent(path)}` : ""}`,
     ),
   listGuardrailRepositories: () =>
-    request<{ repositories: GuardrailRepository[] }>("/guardrails/repositories"),
+    request<{ repositories: GuardrailRepositoryListRow[] }>("/guardrails/repositories"),
   listGuardrailPullRequests: (repositoryKey: string) =>
     request<{ pullRequests: GuardrailPullRequestSummary[] }>(
       `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/pull-requests`,
@@ -527,6 +544,22 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  /** The multi-select's one request. A partial result is a normal answer. */
+  enrollGuardrailRepositories: (body: EnrollGuardrailRepositoriesRequest) =>
+    request<EnrollGuardrailRepositoriesResponse>("/guardrails/repositories", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  patchGuardrailRepository: (repositoryKey: string, patch: GuardrailRepositoryPatch) =>
+    request<{ repository: GuardrailRepository }>(
+      `/guardrails/repositories/${encodeURIComponent(repositoryKey)}`,
+      { method: "PATCH", body: JSON.stringify(patch) },
+    ),
+  deleteGuardrailRepository: (repositoryKey: string) =>
+    request<null>(
+      `/guardrails/repositories/${encodeURIComponent(repositoryKey)}`,
+      { method: "DELETE" },
+    ),
   getGuardrailPolicy: (repositoryKey: string) =>
     request<GuardrailPolicyResponse>(
       `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/policy`,

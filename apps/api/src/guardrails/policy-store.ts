@@ -8,6 +8,7 @@ import {
   isGuardrailPolicyPreset,
   type GuardrailPolicyPreset,
 } from "./policy-presets.js";
+import { REPOSITORY_POLICY_SCHEMA_SQL } from "./projection-schema.js";
 
 /**
  * Level 2 of the precedence table: the policy a maintainer edits in the Sentinel
@@ -21,17 +22,7 @@ import {
  */
 const POLICY_SCHEMA_VERSION = 1;
 
-const POLICY_SCHEMA_SQL = `
-  CREATE TABLE IF NOT EXISTS guardrail_repository_policies (
-    repository_key TEXT PRIMARY KEY REFERENCES guardrail_repositories(repository_key) ON DELETE CASCADE,
-    policy_json TEXT NOT NULL,
-    preset TEXT NOT NULL,
-    schema_version INTEGER NOT NULL,
-    updated_at TEXT NOT NULL,
-    updated_by TEXT,
-    CHECK (preset IN ('block-critical-high', 'block-critical', 'warn-only', 'custom'))
-  );
-`;
+
 
 export interface StoredRepositoryPolicy {
   policy: GuardrailPolicy;
@@ -66,7 +57,7 @@ export function ensureRepositoryPolicySchema(database: Database.Database = getDb
     `);
     const from = recordedVersion(database);
     if (from >= POLICY_SCHEMA_VERSION) return;
-    database.exec(POLICY_SCHEMA_SQL);
+    database.exec(REPOSITORY_POLICY_SCHEMA_SQL);
     database.prepare(`
       INSERT OR REPLACE INTO guardrail_policy_schema_migrations (version, name, applied_at)
       VALUES (?, ?, ?)

@@ -1,10 +1,12 @@
 import type Database from "better-sqlite3";
 
 import { defaultGuardrailPolicy } from "@csb/gate-core";
+import type { GuardrailBaseline, GuardrailBaselineState } from "@csb/shared";
 
 import { getDb } from "../db.js";
 import { listGateRuns, listGuardrailRepositories } from "../gate-store.js";
 import { getRepositoryPolicy } from "./policy-store.js";
+import { REPOSITORY_BASELINE_SCHEMA_SQL } from "./projection-schema.js";
 
 /**
  * The one word the screen reads for a repository's baseline.
@@ -16,20 +18,8 @@ import { getRepositoryPolicy } from "./policy-store.js";
  * - `stale`: there is a baseline, and something changed that makes it
  *   incomparable. The next merge rebuilds it; nothing is blocked meanwhile.
  */
-export type BaselineState = "absent" | "building" | "ready" | "stale";
-
-export interface RepositoryBaseline {
-  repositoryKey: string;
-  state: BaselineState;
-  gateId: string | null;
-  commitSha: string | null;
-  protectedBranch: string | null;
-  scanLineageHash: string | null;
-  builtAt: string | null;
-  staleReason: string | null;
-  requestedAt: string | null;
-  updatedAt: string;
-}
+export type BaselineState = GuardrailBaselineState;
+export type RepositoryBaseline = GuardrailBaseline;
 
 /** The newest protected-branch gate of a repository, as the projection sees it. */
 export interface BaselineCandidate {
@@ -53,21 +43,7 @@ export interface BaselineStateDependencies {
 
 const BASELINE_SCHEMA_VERSION = 1;
 
-const BASELINE_SCHEMA_SQL = `
-  CREATE TABLE IF NOT EXISTS guardrail_repository_baselines (
-    repository_key TEXT PRIMARY KEY REFERENCES guardrail_repositories(repository_key) ON DELETE CASCADE,
-    state TEXT NOT NULL,
-    gate_id TEXT,
-    commit_sha TEXT,
-    protected_branch TEXT,
-    scan_lineage_hash TEXT,
-    built_at TEXT,
-    stale_reason TEXT,
-    requested_at TEXT,
-    updated_at TEXT NOT NULL,
-    CHECK (state IN ('absent', 'building', 'ready', 'stale'))
-  );
-`;
+
 
 interface BaselineRow {
   state: string;
@@ -98,7 +74,7 @@ export function ensureRepositoryBaselineSchema(database: Database.Database = get
       )
     `);
     if (recordedVersion(database) >= BASELINE_SCHEMA_VERSION) return;
-    database.exec(BASELINE_SCHEMA_SQL);
+    database.exec(REPOSITORY_BASELINE_SCHEMA_SQL);
     database.prepare(`
       INSERT OR REPLACE INTO guardrail_baseline_schema_migrations (version, name, applied_at)
       VALUES (?, ?, ?)
