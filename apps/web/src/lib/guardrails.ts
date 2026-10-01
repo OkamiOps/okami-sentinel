@@ -3,6 +3,7 @@ import type {
   DecisionGraph,
   DecisionGraphNode,
   GateArtifact,
+  GateBaselineNotice,
   GateFindingDelta,
   GateOutcome,
   GateFindingLifecycle,
@@ -167,6 +168,29 @@ export function bootstrapBranchLabel(
   }
   if (typeof defaultBranch === "string" && defaultBranch.length > 0) return defaultBranch;
   return gate.headRef;
+}
+
+/**
+ * The notice a gate carries when it had nothing to compare against. `null` for a
+ * gate that did, and for every artifact written before the field existed — which is
+ * why the screen must not read "no notice" as "there was a baseline" on a v1
+ * artifact; it only means nothing was recorded.
+ */
+export function gateBaselineNotice(artifact: GateArtifact | null): GateBaselineNotice | null {
+  if (artifact === null || artifact.schemaVersion !== 2) return null;
+  return artifact.baselineNotice;
+}
+
+/**
+ * The message key for the notice: one sentence per fact, and the reason only when
+ * there is one to name.
+ */
+export function baselineNoticeKey(notice: GateBaselineNotice | null): string | null {
+  if (notice === null) return null;
+  if (notice.kind === "absent") return "guardrails.baselineNotice.absent";
+  return notice.reason === null
+    ? "guardrails.baselineNotice.incompatible"
+    : `guardrails.baselineNotice.incompatible.${notice.reason}`;
 }
 
 export function isGateActive(status: GateStatus): boolean {

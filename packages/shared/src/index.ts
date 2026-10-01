@@ -1242,6 +1242,11 @@ export const CURRENT_GATE_ARTIFACT_POLICY_SOURCES = [
   "default",
 ] as const;
 
+export interface GateBaselineNotice {
+  kind: "absent" | "incompatible";
+  reason: string | null;
+}
+
 export interface GateArtifactV2 {
   schemaVersion: 2;
   gateId: string;
@@ -1267,6 +1272,18 @@ export interface GateArtifactV2 {
    * `parseGateArtifact` normalises a missing one to `null`.
    */
   policyInvalidReason: string | null;
+  /**
+   * Why this gate had nothing to compare against, or `null` when it did.
+   *
+   * `absent` is a repository whose baseline has not been built yet; `incompatible`
+   * is one whose baseline exists and cannot be compared, with the reason. Either
+   * way the gate still reports its findings, all of them `new`, and the decision is
+   * `bootstrap` → `neutral`: without a baseline there is no proof of what is new,
+   * so nothing is blocked.
+   *
+   * Artifacts written before the field existed normalise to `null` on parse.
+   */
+  baselineNotice: GateBaselineNotice | null;
   publication: GatePublicationEligibility;
   changeSet: ChangeSet;
   policy: GuardrailPolicy;

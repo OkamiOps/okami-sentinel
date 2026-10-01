@@ -84,10 +84,11 @@ test("scans only the immutable head path and finalizes v2 before cleanup without
   assert.equal(result.artifact.schemaVersion, 2);
   assert.equal(result.artifact.executor, "sentinel-managed");
   assert.equal(result.artifact.resolvedTarget.headSha, HEAD_SHA);
-  assert.equal(result.artifact.decision.outcome, "error");
-  assert.equal(result.artifact.decision.githubConclusion, "action_required");
-  assert.match(result.artifact.decision.summary, /^baseline_incompatible:/);
-  assert.equal(result.artifact.findings.length, 0);
+  // The default fixture's baseline is incompatible, which is no longer a failure:
+  // the change is reported without comparison and the notice says why.
+  assert.equal(result.artifact.decision.outcome, "bootstrap");
+  assert.equal(result.artifact.decision.githubConclusion, "neutral");
+  assert.deepEqual(result.artifact.baselineNotice, { kind: "incompatible", reason: "scan_lineage" });
   assert.equal(finalized.includes(PRIVATE_HEAD), false);
   assert.equal(finalized.includes("/private/managed"), false);
   assert.equal(finalized.includes("/scan/output"), false);
@@ -105,30 +106,91 @@ test("known unavailable baseline closes as action_required and never produces li
   assert.match(result.artifact.decision.summary, /^baseline_unavailable:/);
 });
 
-test("does not start a scan when a PR baseline is absent or unavailable", async () => {
-  for (const candidate of [
-    { kind: "absent" } as const,
-    { kind: "unavailable", reason: "artifact_not_readable" } as const,
-  ]) {
-    let starts = 0;
-    let lookups = 0;
-    const executor = new SentinelManagedExecutor(dependencies({
-      baselineCandidate: async () => {
-        lookups += 1;
-        return candidate;
-      },
-      startScan: async () => {
-        starts += 1;
-        return scan("running");
-      },
-    }));
+test("an unavailable baseline is still an operational error, refused before any scan", async () => {
+  let starts = 0;
+  let lookups = 0;
+  const executor = new SentinelManagedExecutor(dependencies({
+    baselineCandidate: async () => {
+      lookups += 1;
+      return { kind: "unavailable", reason: "artifact_not_readable" };
+    },
+    startScan: async () => {
+      starts += 1;
+      return scan("running");
+    },
+  }));
 
-    const result = await executor.execute(executionInput());
-    assert.equal(lookups, 1, candidate.kind);
-    assert.equal(starts, 0, candidate.kind);
-    assert.equal(result.scan, null, candidate.kind);
-    assert.match(result.artifact.decision.summary, new RegExp(`^baseline_${candidate.kind}:`));
-  }
+  const result = await executor.execute(executionInput());
+  assert.equal(lookups, 1);
+  assert.equal(starts, 0);
+  assert.equal(result.scan, null);
+  assert.match(result.artifact.decision.summary, /^baseline_unavailable:/);
+  assert.equal(result.artifact.baselineNotice, null);
+});
+
+test("evaluates a pull request with no baseline instead of erroring", async () => {
+  const executor = new SentinelManagedExecutor(dependencies({
+    baselineCandidate: async () => ({ kind: "absent" }),
+  }));
+  const result = await executor.execute(executionInput());
+
+  assert.equal(result.artifact.decision.outcome, "bootstrap");
+  assert.equal(result.artifact.decision.githubConclusion, "neutral");
+  assert.ok(result.artifact.findings.length > 0);
+  assert.ok(result.artifact.findings.every((finding) => finding.lifecycle === "new"));
+  assert.deepEqual(result.artifact.baselineNotice, { kind: "absent", reason: null });
+  assert.deepEqual(result.artifact.decision.violations, []);
+  // The scan did run: the findings are the whole point of judging without a baseline.
+  assert.equal(result.scan?.status, "completed");
+});
+
+test("never blocks without a baseline, even with critical findings and a blocking policy", async () => {
+  const executor = new SentinelManagedExecutor(dependencies({
+    baselineCandidate: async () => ({ kind: "absent" }),
+    readFindings: () => [{ ...finding(), findingId: "PCS-CRIT", severity: "critical" }],
+  }));
+  const result = await executor.execute(executionInput());
+  assert.notEqual(result.artifact.decision.outcome, "blocked");
+  assert.equal(result.artifact.decision.outcome, "bootstrap");
+});
+
+test("an incompatible baseline degrades to the same path with the reason", async () => {
+  // The retained candidate's lineage does not match the scan that just ran, which
+  // is what an engine update looks like. It used to turn every pull request red.
+  const executor = new SentinelManagedExecutor(dependencies({}));
+  const result = await executor.execute(executionInput());
+  assert.deepEqual(result.artifact.baselineNotice, { kind: "incompatible", reason: "scan_lineage" });
+  assert.equal(result.artifact.decision.outcome, "bootstrap");
+  assert.notEqual(result.artifact.decision.outcome, "error");
+});
+
+test("a comparable baseline leaves baselineNotice null", async () => {
+  const observed: string[] = [];
+  const executor = new SentinelManagedExecutor(dependencies({
+    readFindings: () => [],
+    baselineCandidate: async (input) => {
+      observed.push(input.lineage.engineVersion);
+      const artifact = structuredClone(retainedBaselineCandidate().artifact);
+      artifact.lineage = structuredClone(input.lineage);
+      return { kind: "artifact", artifact };
+    },
+  }));
+  const result = await executor.execute(executionInput());
+  assert.equal(result.artifact.baselineNotice, null);
+  assert.ok(observed.length > 0);
+});
+
+test("a protected-branch run establishes the baseline and carries no notice", async () => {
+  const executor = new SentinelManagedExecutor(dependencies({}));
+  const input = executionInput();
+  input.preview.target = { kind: "protected_branch", ref: "main" };
+  input.preview.resolvedTarget = {
+    baseRef: "main", headRef: "main", baseSha: HEAD_SHA, headSha: HEAD_SHA,
+    policySha: HEAD_SHA, pullRequestNumber: null,
+  };
+  const result = await executor.execute(input);
+  assert.equal(result.artifact.baselineNotice, null);
+  assert.equal(result.artifact.decision.outcome, "bootstrap");
 });
 
 test("reselects the managed baseline with the real lineage after a planned mismatch", async () => {
