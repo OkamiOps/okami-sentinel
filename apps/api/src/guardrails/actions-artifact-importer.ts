@@ -16,6 +16,12 @@ import type {
   GateRunUpdate,
 } from "../gate-store.js";
 
+/**
+ * What the gate-cli writes in `baselineNotice.reason` when the baseline run it was
+ * pointed at no longer has an artifact. The one code both sides read.
+ */
+export const BASELINE_ARTIFACT_EXPIRED = "baseline_artifact_expired";
+
 const ARTIFACT_FILE = "csb-gate-result.json";
 const MANIFEST_FILE = "csb-gate-manifest.json";
 const MAX_ARCHIVE_BYTES = 32 * 1024 * 1024;
@@ -78,6 +84,13 @@ export interface ActionsArtifactImporterDependencies {
    * Phase-2 finding I-2).
    */
   refreshBaselineState?(repositoryKey: string): void;
+  /**
+   * Retires the projection when the run it names has lost its artifact. GitHub keeps
+   * an artifact for its retention window and the projection has no notion of that,
+   * so without this a repository that has not merged in a month keeps reading
+   * `pronta` for a baseline no run can open (review N-1).
+   */
+  markBaselineStale?(repositoryKey: string, reason: string): void;
   now?(): string;
 }
 
@@ -98,12 +111,14 @@ export class ActionsArtifactImporter {
   readonly #store: ActionsArtifactImporterStore;
   readonly #writeArtifact: ActionsArtifactImporterDependencies["writeArtifact"];
   readonly #refreshBaselineState: (repositoryKey: string) => void;
+  readonly #markBaselineStale: (repositoryKey: string, reason: string) => void;
   readonly #now: () => string;
 
   constructor(dependencies: ActionsArtifactImporterDependencies) {
     this.#store = dependencies.store;
     this.#writeArtifact = dependencies.writeArtifact;
     this.#refreshBaselineState = dependencies.refreshBaselineState ?? (() => undefined);
+    this.#markBaselineStale = dependencies.markBaselineStale ?? (() => undefined);
     this.#now = dependencies.now ?? (() => new Date().toISOString());
   }
 
@@ -194,6 +209,10 @@ export class ActionsArtifactImporter {
       // and a projection that could not be rewritten is a stale word on a screen.
       try {
         this.#refreshBaselineState(gate.repositoryKey);
+        // After the refresh, which would otherwise call the same gate ready again.
+        if (bundle.artifact.baselineNotice?.reason === BASELINE_ARTIFACT_EXPIRED) {
+          this.#markBaselineStale(gate.repositoryKey, BASELINE_ARTIFACT_EXPIRED);
+        }
       } catch {
         // The gate's decision stands; the next terminal gate refreshes it again.
       }

@@ -45,8 +45,20 @@ test("workflow v2 freezes policy and head, restores a baseline and publishes one
   // Sentinel-started gate — including the protected-branch one that *is* the
   // baseline — is a `workflow_dispatch` run.
   assert.match(workflow, /inputs\.baseline_workflow_run_id/);
-  assert.match(workflow, /\.event == "push" or \.event == "workflow_dispatch"/);
-  assert.doesNotMatch(workflow, /-f event=push/);
+  // N-2: every Sentinel dispatch runs on the default branch, a pull-request gate
+  // included, so the fallback prefers `push` runs, only falls back to
+  // `workflow_dispatch` when there are none, and never accepts a candidate whose
+  // artifact is not a protected-branch gate.
+  assert.match(workflow, /-f event=push/);
+  assert.match(workflow, /-f event=workflow_dispatch/);
+  assert.match(workflow, /if \[\[ -z "\$\{push_runs\}" \]\]; then/);
+  assert.match(workflow, /for run_id in \$\{candidates\}; do/);
+  assert.match(workflow, /\.target\.kind \/\/ empty/);
+  assert.match(workflow, /"\$\{kind\}" != "protected_branch"/);
+  // A run is never taken by position: the lists are bounded and every candidate is
+  // checked. (Selecting *the* artifact inside one chosen run still may be.)
+  assert.doesNotMatch(workflow, /workflow_runs[^\n]*\[0\]\.id/);
+  assert.match(workflow, /workflow_runs[^\n]*\[0:5\]\[\]\.id/);
   // I-4: the ceiling the console showed reaches the run.
   assert.match(workflow, /inputs\.cost_ceiling_usd/);
   assert.match(workflow, /--max-cost-usd/);

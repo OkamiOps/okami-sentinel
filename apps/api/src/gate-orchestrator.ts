@@ -93,6 +93,7 @@ import {
 } from "./github-baseline.js";
 import {
   getRepositoryBaselineState,
+  markRepositoryBaselineStale,
   refreshRepositoryBaselineState,
 } from "./guardrails/baseline-state.js";
 import { readFindingsFile, toFindingSummaries } from "./ingest.js";
@@ -1313,6 +1314,7 @@ function systemActionsExecutor(): GitHubActionsExecutor {
     },
     writeArtifact: (gateId, artifact) => writeGateArtifact(gateId, artifact),
     refreshBaselineState: (repositoryKey) => { refreshRepositoryBaselineState(repositoryKey); },
+    markBaselineStale: (repositoryKey, reason) => { markRepositoryBaselineStale(repositoryKey, reason); },
   });
   const service = getSystemGitHubAppService();
   actionsExecutor = new GitHubActionsExecutor({

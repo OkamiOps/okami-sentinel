@@ -46,6 +46,19 @@ import { defaultScannerAdapter, type ScannerAdapter, type ScannerResult } from "
 export type { RunGateCliOptions } from "./args.js";
 
 const GATE_CORE_VERSION = "0.2.0";
+
+/**
+ * The baseline run Sentinel named has no artifact any more: GitHub keeps one for its
+ * retention window, and nothing in the projection knows that. A baseline that
+ * *expired* is repository state, not a failure of ours — it takes the absent path,
+ * with its own notice, so a repository that has not merged in a month keeps getting
+ * verdicts instead of operational errors. Anything else `unavailable` still fails
+ * closed: an artifact we downloaded and could not read is ours to explain.
+ */
+const EXPIRED_BASELINE_REASONS = new Set(["protected-artifact-unavailable", "artifact_unavailable"]);
+
+/** The notice an expired baseline carries, in the one code every surface reads. */
+export const BASELINE_ARTIFACT_EXPIRED = "baseline_artifact_expired";
 const ACTIONS_MATERIALIZER_VERSION = "actions-git-index-v1";
 
 export interface RunGateCliResult {
@@ -134,13 +147,13 @@ export async function runGateCli(
     const baselineCandidate = requiresBaseline
       ? deps.readBaseline(options)
       : { kind: "absent" } as const;
-    const preflightBaseline = selectGateBaseline({
+    const preflightBaseline = expiredAsAbsent(selectGateBaseline({
       repositoryId: repositoryIdentity(options),
       protectedBranch: options.protectedBranch,
       lineage,
       policySchemaVersion: policy.schemaVersion,
       coverage,
-    }, baselineCandidate);
+    }, baselineCandidate));
     // An absent baseline no longer short-circuits, exactly as on the Sentinel
     // executor: the change is scanned and judged, every finding is `new`, and the
     // notice says there was nothing to compare against. Only an unreadable
@@ -162,13 +175,13 @@ export async function runGateCli(
       });
       if (scan.status !== "completed") throw new Error("managed_scan_failed");
       lineage = plannedLineage(options, policy, scan);
-      baseline = selectGateBaseline({
+      baseline = expiredAsAbsent(selectGateBaseline({
         repositoryId: repositoryIdentity(options),
         protectedBranch: options.protectedBranch,
         lineage,
         policySchemaVersion: policy.schemaVersion,
         coverage,
-      }, baselineCandidate);
+      }, baselineCandidate));
     } else {
       baseline = preflightBaseline;
     }
@@ -320,8 +333,24 @@ function baselineNoticeFor(
 ): GateBaselineNotice | null {
   if (options.targetKind === "protected_branch") return null;
   if (baseline.kind === "incompatible") return { kind: "incompatible", reason: baseline.reason };
-  if (baseline.kind === "absent") return { kind: "absent", reason: null };
-  return null;
+  if (baseline.kind !== "absent") return null;
+  return {
+    kind: "absent",
+    reason: expiredBaseline(options) ? BASELINE_ARTIFACT_EXPIRED : null,
+  };
+}
+
+/** The baseline the run was pointed at exists on the books and not on GitHub. */
+function expiredBaseline(options: RunGateCliOptions): boolean {
+  return options.baselineState === "unavailable"
+    && options.baselineReason !== null
+    && EXPIRED_BASELINE_REASONS.has(options.baselineReason);
+}
+
+function expiredAsAbsent(selection: GateBaselineSelection): GateBaselineSelection {
+  return selection.kind === "unavailable" && EXPIRED_BASELINE_REASONS.has(selection.reason)
+    ? { kind: "absent" }
+    : selection;
 }
 
 function evaluation(

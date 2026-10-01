@@ -228,6 +228,7 @@ function importerFixture(gateOverrides: Partial<GateRun> = {}) {
     },
   };
   const baselineRefreshes: string[] = [];
+  const baselineStale: Array<{ repositoryKey: string; reason: string }> = [];
   const importer = new ActionsArtifactImporter({
     store,
     writeArtifact: (_gateId, value) => {
@@ -235,9 +236,10 @@ function importerFixture(gateOverrides: Partial<GateRun> = {}) {
       return "/managed/gates/gate-actions-1/csb-gate-result.json";
     },
     refreshBaselineState: (repositoryKey) => { baselineRefreshes.push(repositoryKey); },
+    markBaselineStale: (repositoryKey, reason) => { baselineStale.push({ repositoryKey, reason }); },
     now: () => "2026-08-12T12:05:00.000Z",
   });
-  return { artifact, gate, dispatch, metadata, writes, importer, baselineRefreshes, store };
+  return { artifact, gate, dispatch, metadata, writes, importer, baselineRefreshes, baselineStale, store };
 }
 
 function artifactFixture(options: { bootstrap?: boolean } = {}): GateArtifactV2 {
@@ -455,4 +457,38 @@ test("a baseline projection that cannot be rewritten never loses the verdict", (
   });
   assert.equal(result.applied, true);
   assert.equal(h.gate.status, "completed");
+});
+
+/**
+ * N-1: the run Sentinel named has lost its artifact. The gate still produced a
+ * verdict (bootstrap, with the notice), and the projection has to stop claiming
+ * `ready` for a baseline no run can open — so the console reads "desatualizada" and
+ * the next merge rebuilds it.
+ */
+test("an expired baseline retires the projection instead of leaving it ready", () => {
+  const h = importerFixture();
+  h.artifact.baselineNotice = { kind: "absent", reason: "baseline_artifact_expired" };
+  h.metadata.artifactDigest = digest(archiveFixture(h.artifact));
+  h.importer.import({
+    artifactId: h.metadata.id,
+    gateId: h.gate.id,
+    githubDigest: h.metadata.artifactDigest,
+    archive: archiveFixture(h.artifact),
+  });
+  assert.deepEqual(h.baselineRefreshes, [h.gate.repositoryKey]);
+  assert.deepEqual(h.baselineStale, [{
+    repositoryKey: h.gate.repositoryKey,
+    reason: "baseline_artifact_expired",
+  }]);
+});
+
+test("a gate with a baseline leaves the projection alone", () => {
+  const h = importerFixture();
+  h.importer.import({
+    artifactId: h.metadata.id,
+    gateId: h.gate.id,
+    githubDigest: h.metadata.artifactDigest,
+    archive: archiveFixture(h.artifact),
+  });
+  assert.deepEqual(h.baselineStale, []);
 });
