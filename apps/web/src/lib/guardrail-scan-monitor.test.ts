@@ -21,6 +21,7 @@ function gate(costCeilingUsd: number): GateRun {
     resolvedBaseSha: "a".repeat(40),
     resolvedHeadSha: "b".repeat(40),
     policySha: "a".repeat(40),
+    policySource: null,
     pullRequestNumber: 12,
     workflowRunId: null,
     materializationState: "materializing",

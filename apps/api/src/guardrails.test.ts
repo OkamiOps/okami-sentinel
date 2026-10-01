@@ -27,6 +27,7 @@ import {
   type StartGateRequest,
 } from "./guardrails/target-preview.js";
 import type { GuardrailAutomationTriggers } from "./github-workflow.js";
+import type { GuardrailRepositoryPatch } from "@csb/shared";
 import { policyForPreset, type GuardrailPolicyPreset } from "./guardrails/policy-presets.js";
 import type { RepositoryBaseline } from "./guardrails/baseline-state.js";
 import type { StoredRepositoryPolicy } from "./guardrails/policy-store.js";
@@ -136,6 +137,7 @@ const gate: GateRun = {
   resolvedBaseSha: null,
   resolvedHeadSha: null,
   policySha: null,
+  policySource: null,
   pullRequestNumber: null,
   workflowRunId: null,
   materializationState: "not_required",
@@ -211,6 +213,7 @@ function dependencies(options: {
   baseline?: RepositoryBaseline;
   hasProtectedBranchAction?: boolean;
   baselineGateError?: boolean;
+  removeRepositoryError?: string;
   /** Level 1 of the precedence: whether the repository carries its own file. */
   repositoryFileWins?: boolean;
   fileInvalidReason?: string | null;
@@ -225,6 +228,8 @@ function dependencies(options: {
   }>;
   baselineRequests: Array<{ repositoryKey: string; requestedAt: string }>;
   baselineGates: string[];
+  patchedRepositories: Array<{ repositoryKey: string; patch: GuardrailRepositoryPatch }>;
+  removedRepositories: string[];
   remotePolicyReads: string[];
   savedPolicies: Array<{
     repositoryKey: string;
@@ -255,6 +260,8 @@ function dependencies(options: {
   }> = [];
   const baselineRequests: Array<{ repositoryKey: string; requestedAt: string }> = [];
   const baselineGates: string[] = [];
+  const patchedRepositories: Array<{ repositoryKey: string; patch: GuardrailRepositoryPatch }> = [];
+  const removedRepositories: string[] = [];
   const remotePolicyReads: string[] = [];
   const savedPolicies: Array<{
     repositoryKey: string;
@@ -298,6 +305,8 @@ function dependencies(options: {
     workflowInstalls,
     baselineRequests,
     baselineGates,
+    patchedRepositories,
+    removedRepositories,
     remotePolicyReads,
     savedPolicies,
     publicationInputs,
@@ -309,7 +318,35 @@ function dependencies(options: {
         [...attempts.values()].filter((attempt) => attempt.gateId === id),
     },
     listRepositories: () => [currentRepository],
+    listRepositoryRows: () => [{
+      ...currentRepository,
+      prCommentEnabled: true,
+      prCommentDetail: "detailed",
+      baseline: {
+        repositoryKey: currentRepository.repositoryKey,
+        state: "absent",
+        gateId: null,
+        commitSha: null,
+        protectedBranch: null,
+        scanLineageHash: null,
+        builtAt: null,
+        staleReason: null,
+        requestedAt: null,
+        updatedAt: "1970-01-01T00:00:00.000Z",
+      },
+      enabledActionCount: 0,
+      lastGate: null,
+      policySource: "default",
+    }],
     enrollRepository: async () => currentRepository,
+    patchRepository: (repositoryKey, patch) => {
+      patchedRepositories.push({ repositoryKey, patch });
+      return { ...currentRepository, ...patch };
+    },
+    removeRepository: (repositoryKey) => {
+      if (options.removeRepositoryError) throw new Error(options.removeRepositoryError);
+      removedRepositories.push(repositoryKey);
+    },
     upsertRepository: (value) => enrolled.push(value),
     getRepository: (key) => key === currentRepository.repositoryKey ? currentRepository : null,
     readPolicy: () => defaultGuardrailPolicy(),
@@ -461,6 +498,8 @@ test("exposes local and github guardrail routes", () => {
   assert.deepEqual(routes, [
     "GET /guardrails/repositories",
     "POST /guardrails/repositories",
+    "PATCH /guardrails/repositories/:repositoryKey",
+    "DELETE /guardrails/repositories/:repositoryKey",
     "POST /guardrails/repositories/:repositoryKey/target-preview",
     "GET /guardrails/repositories/:repositoryKey/pull-requests",
     "GET /guardrails/repositories/:repositoryKey/policy",
@@ -649,6 +688,130 @@ test("enrollment persists only the server-resolved repository identity", async (
   assert.equal(response.status, 201);
   assert.deepEqual(deps.enrolled, [repository]);
   assert.equal((await response.json()).repository.policyPath, ".csb/guardrails.json");
+});
+
+test("enrols a batch and reports the partial result rather than a 409", async () => {
+  const remote = remoteRepository();
+  const deps = dependencies({ repository: remote });
+  const known = new Set([remote.repositoryKey]);
+  deps.getRepository = (key) => known.has(key) ? remote : null;
+  deps.enrollRepository = async (request) => {
+    if (request.source !== "github") assert.fail("the batch is a GitHub batch");
+    if (request.repositoryId === "900") throw new Error("github_repository_unavailable");
+    if (request.repositoryId === "901") throw new Error("github_repository_authority_mismatch");
+    return { ...remote, repositoryKey: `github:${request.repositoryId}`, githubRepositoryId: request.repositoryId };
+  };
+  const response = await createGuardrailsApp(deps).request("/guardrails/repositories", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      source: "github",
+      connectionId: "connection-1",
+      installationId: "77",
+      // The first is already in the register, then two that fail differently, then
+      // three that are enrolled.
+      repositoryIds: [remote.githubRepositoryId, "900", "901", "11", "12", "13"],
+      defaultExecutor: "sentinel-managed",
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.deepEqual(body.enrolled.map((row: GuardrailRepository) => row.repositoryKey), [
+    "github:11", "github:12", "github:13",
+  ]);
+  assert.deepEqual(body.skipped, [
+    { repositoryId: remote.githubRepositoryId, reason: "already_enrolled" },
+    { repositoryId: "900", reason: "archived" },
+    { repositoryId: "901", reason: "not_authorized" },
+  ]);
+  assert.equal(deps.enrolled.length, 3);
+});
+
+test("refuses a batch above fifty without enrolling any of it", async () => {
+  const deps = dependencies({ repository: remoteRepository() });
+  deps.getRepository = () => null;
+  const response = await createGuardrailsApp(deps).request("/guardrails/repositories", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      source: "github",
+      connectionId: "connection-1",
+      installationId: "77",
+      repositoryIds: Array.from({ length: 51 }, (_, index) => String(index + 1)),
+      defaultExecutor: "sentinel-managed",
+    }),
+  });
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error, "too_many_repositories");
+  assert.deepEqual(deps.enrolled, []);
+});
+
+test("disables a repository and refuses a patch field that is not an administrator's to set", async () => {
+  const remote = remoteRepository();
+  const deps = dependencies({ repository: remote });
+  const route = `/guardrails/repositories/${encodeURIComponent(remote.repositoryKey)}`;
+  const app = createGuardrailsApp(deps);
+
+  const disabled = await app.request(route, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled: false }),
+  });
+  assert.equal(disabled.status, 200);
+  assert.equal((await disabled.json()).repository.enabled, false);
+  assert.deepEqual(deps.patchedRepositories, [{
+    repositoryKey: remote.repositoryKey,
+    patch: { enabled: false },
+  }]);
+
+  const invalid = await app.request(route, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ displayName: "Renamed" }),
+  });
+  assert.equal(invalid.status, 400);
+  assert.equal(deps.patchedRepositories.length, 1);
+});
+
+test("patching an unknown repository answers 404 rather than creating one", async () => {
+  const deps = dependencies();
+  deps.getRepository = () => null;
+  const response = await createGuardrailsApp(deps).request("/guardrails/repositories/github:absent", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled: false }),
+  });
+  assert.equal(response.status, 404);
+  assert.deepEqual(deps.patchedRepositories, []);
+});
+
+test("removing a repository answers 204 and names what it could not remove", async () => {
+  const remote = remoteRepository();
+  const deps = dependencies({ repository: remote });
+  const route = `/guardrails/repositories/${encodeURIComponent(remote.repositoryKey)}`;
+  const removed = await createGuardrailsApp(deps).request(route, { method: "DELETE" });
+  assert.equal(removed.status, 204);
+  assert.deepEqual(deps.removedRepositories, [remote.repositoryKey]);
+
+  const busy = dependencies({ repository: remote, removeRepositoryError: "repository_has_active_gate" });
+  const refused = await createGuardrailsApp(busy).request(route, { method: "DELETE" });
+  assert.equal(refused.status, 409);
+  assert.equal((await refused.json()).error, "repository_has_active_gate");
+  assert.deepEqual(busy.removedRepositories, []);
+});
+
+test("the repository list carries the baseline, the action count and the last verdict", async () => {
+  const deps = dependencies();
+  const response = await createGuardrailsApp(deps).request("/guardrails/repositories");
+  assert.equal(response.status, 200);
+  const row = (await response.json()).repositories[0];
+  assert.equal(row.baseline.state, "absent");
+  assert.equal(row.enabledActionCount, 0);
+  assert.equal(row.policySource, "default");
+  assert.equal(row.prCommentEnabled, true);
+  // No remote read happened for the list: that is the whole point of the row.
+  assert.deepEqual(deps.remotePolicyReads, []);
 });
 
 test("a failed run attribution does not report the persisted registration as invalid", async () => {

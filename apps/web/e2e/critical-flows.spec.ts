@@ -213,6 +213,7 @@ test("guardrail monitor ends a failed scan without progress and preserves its la
     resolvedBaseSha: "a".repeat(40),
     resolvedHeadSha: "b".repeat(40),
     policySha: "c".repeat(40),
+    policySource: null,
     pullRequestNumber: null,
     workflowRunId: null,
     materializationState: "ready",

@@ -22,13 +22,75 @@ export type EnrollGuardrailRepositoryRequest =
       displayName?: string;
     };
 
-export type RepositorySourceInputErrorCode = "repository_request_invalid";
+/**
+ * A batch of repositories chosen in the App installation's multi-select, which is
+ * how the Guardrails tab enrols. A local checkout is still one path at a time:
+ * there is no installation to pick several from.
+ */
+export type EnrollGuardrailRepositoriesRequest =
+  | {
+      source: "local";
+      repositoryPath: string;
+      displayName?: string;
+    }
+  | {
+      source: "github";
+      connectionId: string;
+      installationId: string;
+      repositoryIds: string[];
+      defaultExecutor: GateExecutorKind;
+      displayName?: string;
+    };
+
+/** The bound the spec sets on one request, so a slip of the mouse cannot enrol 4000. */
+export const MAX_ENROLLED_REPOSITORIES_PER_REQUEST = 50;
+
+export type RepositorySourceInputErrorCode =
+  | "repository_request_invalid"
+  | "too_many_repositories";
 
 export class RepositorySourceInputError extends Error {
   constructor(readonly code: RepositorySourceInputErrorCode) {
     super(code);
     this.name = "RepositorySourceInputError";
   }
+}
+
+/**
+ * Accepts the batch body and the single-`repositoryId` body that came before it,
+ * because a browser tab opened before the deploy still sends the old one and a
+ * repository enrolled by it is the same row either way.
+ */
+export function parseEnrollGuardrailRepositoriesRequest(
+  value: unknown,
+): EnrollGuardrailRepositoriesRequest {
+  const input = record(value);
+  if (input.source === "local") {
+    return parseEnrollGuardrailRepositoryRequest(value) as EnrollGuardrailRepositoriesRequest;
+  }
+  if (input.source !== "github") fail();
+  if (input.repositoryIds === undefined) {
+    const single = parseEnrollGuardrailRepositoryRequest(value);
+    if (single.source !== "github") fail();
+    const { repositoryId, ...rest } = single;
+    return { ...rest, repositoryIds: [repositoryId] };
+  }
+  exactKeys(input, GITHUB_BATCH_KEYS);
+  const defaultExecutor = input.defaultExecutor;
+  if (defaultExecutor !== "sentinel-managed" && defaultExecutor !== "github-actions") fail();
+  if (!Array.isArray(input.repositoryIds) || input.repositoryIds.length === 0) fail();
+  if (input.repositoryIds.length > MAX_ENROLLED_REPOSITORIES_PER_REQUEST) {
+    throw new RepositorySourceInputError("too_many_repositories");
+  }
+  // The same repository named twice is one row, not a duplicate skip report.
+  const repositoryIds = [...new Set(input.repositoryIds.map(positiveIdentifier))];
+  return optionalDisplayName({
+    source: "github",
+    connectionId: identifier(input.connectionId),
+    installationId: positiveIdentifier(input.installationId),
+    repositoryIds,
+    defaultExecutor,
+  }, input.displayName);
 }
 
 export interface RemoteRepositoryFile {
@@ -175,6 +237,14 @@ const GITHUB_KEYS = new Set([
   "connectionId",
   "installationId",
   "repositoryId",
+  "defaultExecutor",
+  "displayName",
+]);
+const GITHUB_BATCH_KEYS = new Set([
+  "source",
+  "connectionId",
+  "installationId",
+  "repositoryIds",
   "defaultExecutor",
   "displayName",
 ]);

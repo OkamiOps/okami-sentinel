@@ -28,10 +28,17 @@ test("rejects invalid and empty successful responses", async () => {
     () => parseApiResponse(new Response("not-json", { status: 200 })),
     (error: unknown) => error instanceof ApiError && error.kind === "invalid",
   );
+  // A 200 that promised JSON and sent nothing is a broken answer.
   await assert.rejects(
-    () => parseApiResponse(new Response(null, { status: 204 })),
+    () => parseApiResponse(new Response(null, { status: 200 })),
     (error: unknown) => error instanceof ApiError && error.kind === "empty",
   );
+});
+
+test("a 204 is an answer with no body, not an empty answer", async () => {
+  // `DELETE /guardrails/repositories/:key` answers 204. Treating that as a broken
+  // response would show the operator an error for a removal that succeeded.
+  assert.equal(await parseApiResponse(new Response(null, { status: 204 })), null);
 });
 
 test("localizes transport failures in every supported locale and preserves business errors", () => {

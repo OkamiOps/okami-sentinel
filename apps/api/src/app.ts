@@ -91,9 +91,12 @@ import type {
   GateFindingDelta,
   GateRun,
   GuardrailPullRequestSummary,
+  GuardrailEnrollmentSkip,
   GuardrailException,
   GuardrailPolicy,
   GuardrailRepository,
+  GuardrailRepositoryListRow,
+  GuardrailRepositoryPatch,
   HealthResponse,
   UpdateFindingTriageRequest,
 } from "@csb/shared";
@@ -123,8 +126,11 @@ import {
   getGateRun,
   listGatePublicationAttempts,
   listGateRuns,
+  deleteGuardrailRepository,
   listGitHubInstallationRepositories,
   listGuardrailRepositories,
+  listGuardrailRepositoryRows,
+  patchGuardrailRepository,
   recordGatePublicationAttempt,
   updateGateRun,
   upsertGuardrailRepository,
@@ -144,7 +150,8 @@ import {
 import { GitHubRepositoryService } from "./guardrails/github-repository-service.js";
 import {
   GitHubRepositorySourceAdapter,
-  parseEnrollGuardrailRepositoryRequest,
+  parseEnrollGuardrailRepositoriesRequest,
+  type EnrollGuardrailRepositoriesRequest,
   type EnrollGuardrailRepositoryRequest,
 } from "./guardrails/repository-source-adapter.js";
 import { GitHubRefResolver } from "./guardrails/github-ref-resolver.js";
@@ -239,7 +246,12 @@ app.get("/security-session", (c) => {
 
 export interface GuardrailsApiDependencies {
   listRepositories(): GuardrailRepository[];
+  /** Everything the list screen shows, in one read and with no remote request. */
+  listRepositoryRows(): GuardrailRepositoryListRow[];
   enrollRepository(request: EnrollGuardrailRepositoryRequest): Promise<GuardrailRepository>;
+  patchRepository(repositoryKey: string, patch: GuardrailRepositoryPatch): GuardrailRepository | null;
+  /** Removes the row, its gates and their artifacts. Refuses while a gate runs. */
+  removeRepository(repositoryKey: string): void;
   upsertRepository(repository: GuardrailRepository): void;
   getRepository(repositoryKey: string): GuardrailRepository | null;
   /** Attributes existing runs to a freshly registered repository. */
@@ -364,7 +376,10 @@ async function resolveGuardrailScanSelection(selection: import("@csb/shared").Gu
 
 const guardrailsDependencies: GuardrailsApiDependencies = {
   listRepositories: listGuardrailRepositories,
+  listRepositoryRows: listGuardrailRepositoryRows,
   enrollRepository: (request) => repositoryEnrollmentService.enroll(request),
+  patchRepository: (repositoryKey, patch) => patchGuardrailRepository(repositoryKey, patch),
+  removeRepository: removeGuardrailRepository,
   upsertRepository: upsertGuardrailRepository,
   getRepository: findRepository,
   backfillRepositoryKeys: backfillRunRepositoryKeys,
@@ -516,6 +531,76 @@ async function startProtectedBranchBaselineGate(repository: GuardrailRepository)
   return startGuardrailGate({ repositoryKey: repository.repositoryKey, target, executor }, accepted);
 }
 
+/**
+ * Removing a repository takes its gates with it, and their artifacts on disk: a
+ * `data/gates/<gateId>/` directory whose row is gone is evidence nothing can open
+ * and nothing will ever clean up.
+ *
+ * It refuses while a gate is still running. The cascade would delete the row of a
+ * scan somebody is paying for right now, and the run would keep going with nothing
+ * left to record its verdict on.
+ *
+ * Linked scans are **kept**. A scan is visible on its own screen and deletable
+ * there; losing one because a repository was unregistered would be a deletion the
+ * operator did not ask for.
+ */
+function removeGuardrailRepository(repositoryKey: string): void {
+  const gates = listGateRuns(repositoryKey);
+  if (gates.some((gate) => !TERMINAL_GATE_STATUSES.has(gate.status))) {
+    throw new Error("repository_has_active_gate");
+  }
+  for (const gate of gates) deleteTerminalGate(gate.id, { preserveLinkedScan: true });
+  deleteGuardrailRepository(repositoryKey);
+}
+
+const TERMINAL_GATE_STATUSES = new Set<GateRun["status"]>(["completed", "cancelled", "error"]);
+
+function attributeExistingRuns(deps: GuardrailsApiDependencies, repositoryKey: string): void {
+  // The registration is persisted by now. Attributing historical runs to it is a
+  // follow-up the next registration or restart retries, so a failure here must not
+  // answer 400 and send the operator to fix a request that was fine.
+  try {
+    (deps.backfillRepositoryKeys ?? backfillRunRepositoryKeys)();
+  } catch (error) {
+    console.warn(`[csb-api] Could not attribute existing runs to ${repositoryKey}: ${errorMessage(error)}`);
+  }
+}
+
+/**
+ * Why one repository of a batch produced no row. An archived repository is named
+ * separately from an unauthorized one because the operator fixes them differently:
+ * one is un-archived on GitHub, the other is added to the installation.
+ */
+function enrollmentSkipReason(error: unknown): GuardrailEnrollmentSkip["reason"] {
+  const code = error instanceof Error ? error.message : String(error);
+  return code === "github_repository_unavailable" ? "archived" : "not_authorized";
+}
+
+function parseGuardrailRepositoryPatch(value: unknown): GuardrailRepositoryPatch {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("repository_patch_invalid");
+  }
+  const body = value as Record<string, unknown>;
+  const allowed = new Set(["enabled", "defaultExecutor", "prCommentEnabled"]);
+  if (Object.keys(body).some((key) => !allowed.has(key))) throw new Error("repository_patch_invalid");
+  const patch: GuardrailRepositoryPatch = {};
+  if (body.enabled !== undefined) {
+    if (typeof body.enabled !== "boolean") throw new Error("repository_patch_invalid");
+    patch.enabled = body.enabled;
+  }
+  if (body.defaultExecutor !== undefined) {
+    if (body.defaultExecutor !== "sentinel-managed" && body.defaultExecutor !== "github-actions") {
+      throw new Error("repository_patch_invalid");
+    }
+    patch.defaultExecutor = body.defaultExecutor;
+  }
+  if (body.prCommentEnabled !== undefined) {
+    if (typeof body.prCommentEnabled !== "boolean") throw new Error("repository_patch_invalid");
+    patch.prCommentEnabled = body.prCommentEnabled;
+  }
+  return patch;
+}
+
 export function createGuardrailsApp(
   deps: GuardrailsApiDependencies = guardrailsDependencies,
 ): Hono {
@@ -523,30 +608,88 @@ export function createGuardrailsApp(
 
   guardrails.get("/guardrails/repositories", (c) => {
     const scope = scopeOf(principalOf(c));
-    return c.json({ repositories: deps.listRepositories().filter((repository) => inScope(scope, repository.repositoryKey)) });
+    return c.json({
+      repositories: deps.listRepositoryRows().filter((row) => inScope(scope, row.repositoryKey)),
+    });
   });
 
   guardrails.post("/guardrails/repositories", async (c) => {
-    let repository: GuardrailRepository;
+    let request: EnrollGuardrailRepositoriesRequest;
     try {
-      const request = parseEnrollGuardrailRepositoryRequest(await c.req.json<unknown>());
-      repository = await deps.enrollRepository(request);
-      if (deps.getRepository(repository.repositoryKey)) {
-        return c.json({ error: "repository_already_registered", repositoryKey: repository.repositoryKey }, 409);
-      }
-      deps.upsertRepository(repository);
+      request = parseEnrollGuardrailRepositoriesRequest(await c.req.json<unknown>());
     } catch (error) {
       return c.json({ error: errorMessage(error) }, 400);
     }
-    // The registration is persisted by now. Attributing historical runs to it is
-    // a follow-up the next registration or restart retries, so a failure here
-    // must not answer 400 and send the operator to fix a request that was fine.
-    try {
-      (deps.backfillRepositoryKeys ?? backfillRunRepositoryKeys)();
-    } catch (error) {
-      console.warn(`[csb-api] Could not attribute existing runs to ${repository.repositoryKey}: ${errorMessage(error)}`);
+
+    if (request.source === "local") {
+      let repository: GuardrailRepository;
+      try {
+        repository = await deps.enrollRepository(request);
+        if (deps.getRepository(repository.repositoryKey)) {
+          return c.json({ error: "repository_already_registered", repositoryKey: repository.repositoryKey }, 409);
+        }
+        deps.upsertRepository(repository);
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+      attributeExistingRuns(deps, repository.repositoryKey);
+      return c.json({ repository }, 201);
     }
-    return c.json({ repository }, 201);
+
+    // A partial result is a normal answer, not an error: a repository already in
+    // the register, one the installation no longer reaches, and one that was
+    // archived are three different facts, and the operator reads all three
+    // alongside the rows that were created.
+    const enrolled: GuardrailRepository[] = [];
+    const skipped: GuardrailEnrollmentSkip[] = [];
+    for (const repositoryId of request.repositoryIds) {
+      let repository: GuardrailRepository;
+      try {
+        repository = await deps.enrollRepository({
+          source: "github",
+          connectionId: request.connectionId,
+          installationId: request.installationId,
+          repositoryId,
+          defaultExecutor: request.defaultExecutor,
+        });
+      } catch (error) {
+        skipped.push({ repositoryId, reason: enrollmentSkipReason(error) });
+        continue;
+      }
+      if (deps.getRepository(repository.repositoryKey)) {
+        skipped.push({ repositoryId, reason: "already_enrolled" });
+        continue;
+      }
+      deps.upsertRepository(repository);
+      enrolled.push(repository);
+    }
+    for (const repository of enrolled) attributeExistingRuns(deps, repository.repositoryKey);
+    return c.json({ enrolled, skipped });
+  });
+
+  guardrails.patch("/guardrails/repositories/:repositoryKey", async (c) => {
+    const repositoryKey = c.req.param("repositoryKey");
+    if (!deps.getRepository(repositoryKey)) return c.json({ error: "Repositório não encontrado" }, 404);
+    let patch: GuardrailRepositoryPatch;
+    try {
+      patch = parseGuardrailRepositoryPatch(await c.req.json<unknown>());
+    } catch (error) {
+      return c.json({ error: errorMessage(error) }, 400);
+    }
+    const repository = deps.patchRepository(repositoryKey, patch);
+    if (repository === null) return c.json({ error: "Repositório não encontrado" }, 404);
+    return c.json({ repository });
+  });
+
+  guardrails.delete("/guardrails/repositories/:repositoryKey", (c) => {
+    const repositoryKey = c.req.param("repositoryKey");
+    if (!deps.getRepository(repositoryKey)) return c.json({ error: "Repositório não encontrado" }, 404);
+    try {
+      deps.removeRepository(repositoryKey);
+    } catch (error) {
+      return c.json({ error: errorMessage(error) }, 409);
+    }
+    return c.body(null, 204);
   });
 
   guardrails.post("/guardrails/repositories/:repositoryKey/target-preview", async (c) => {

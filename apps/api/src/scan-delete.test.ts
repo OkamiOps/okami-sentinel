@@ -87,6 +87,7 @@ function linkedGate(id: string, scanId: string, repositoryPath: string): GateRun
     resolvedBaseSha: "a".repeat(40),
     resolvedHeadSha: "b".repeat(40),
     policySha: "c".repeat(64),
+    policySource: null,
     pullRequestNumber: null,
     workflowRunId: null,
     materializationState: "released",

@@ -1,6 +1,10 @@
 import Database from "better-sqlite3";
 import type {
   GateExecutorKind,
+  GuardrailBaselineState,
+  GuardrailRepositoryListRow,
+  GuardrailRepositoryPatch,
+  GuardrailResolvedPolicySource,
   GateMaterializationState,
   GateOutcome,
   GatePublishStatus,
@@ -28,6 +32,8 @@ interface GuardrailRepositoryRow {
   github_repository_id: string | null;
   enabled: number;
   policy_path: string;
+  pr_comment_enabled: number;
+  pr_comment_detail: string;
   last_gate_id: string | null;
 }
 
@@ -42,6 +48,7 @@ interface GateRunRow {
   resolved_base_sha: string | null;
   resolved_head_sha: string | null;
   policy_sha: string | null;
+  policy_source: string | null;
   pull_request_number: number | null;
   workflow_run_id: string | null;
   materialization_state: string;
@@ -218,6 +225,7 @@ export type GateRunUpdate = Partial<
     | "resolvedBaseSha"
     | "resolvedHeadSha"
     | "policySha"
+    | "policySource"
     | "workflowRunId"
     | "materializationState"
     | "scanLineageHash"
@@ -948,6 +956,213 @@ export function listGuardrailRepositories(
   return rows.map(rowToGuardrailRepository);
 }
 
+/**
+ * Everything the Guardrails list shows, in one statement and with no remote call:
+ * the registry row, the baseline projection, how many actions are switched on, the
+ * last gate's verdict, and which level of the policy precedence is in force.
+ *
+ * `policySource` is answered locally on purpose. `repository_file` can only be
+ * known by reading the protected branch, which is a GitHub call per repository —
+ * exactly the N+1 this route exists to remove — so the answer is drawn from what
+ * the newest gate recorded, falling back to whether a Sentinel policy is saved.
+ */
+export function listGuardrailRepositoryRows(
+  database: Database.Database = getDb(),
+): GuardrailRepositoryListRow[] {
+  ensureGateSchema(database);
+  const rows = database
+    .prepare(
+      `SELECT repositories.*,
+         last_gate.id AS last_gate_id,
+         last_gate.outcome AS last_gate_outcome,
+         last_gate.completed_at AS last_gate_completed_at,
+         last_gate.policy_source AS policy_source,
+         baselines.state AS baseline_state,
+         baselines.gate_id AS baseline_gate_id,
+         baselines.commit_sha AS baseline_commit_sha,
+         baselines.protected_branch AS baseline_protected_branch,
+         baselines.scan_lineage_hash AS baseline_scan_lineage_hash,
+         baselines.built_at AS baseline_built_at,
+         baselines.stale_reason AS baseline_stale_reason,
+         baselines.requested_at AS baseline_requested_at,
+         baselines.updated_at AS baseline_updated_at,
+         (
+           SELECT 1 FROM guardrail_repository_policies
+           WHERE guardrail_repository_policies.repository_key = repositories.repository_key
+         ) AS has_sentinel_policy
+       FROM guardrail_repositories repositories
+       LEFT JOIN guardrail_repository_baselines baselines
+         ON baselines.repository_key = repositories.repository_key
+       LEFT JOIN gate_runs last_gate
+         ON last_gate.id = (
+           SELECT gate_runs.id FROM gate_runs
+           WHERE gate_runs.repository_key = repositories.repository_key
+           ORDER BY gate_runs.started_at DESC, gate_runs.id DESC
+           LIMIT 1
+         )
+       ORDER BY repositories.display_name COLLATE NOCASE, repositories.repository_key`,
+    )
+    .all() as Array<GuardrailRepositoryRow & RepositoryListExtras>;
+
+  // One more statement, not one per repository. It is separate because the actions
+  // schema is minted by its own migration — which also carries the legacy monitor
+  // rules over — so this read must not be the thing that creates those tables, and
+  // must still answer on a database where they do not exist yet.
+  const enabledActions = new Map<string, number>();
+  if (tableExists(database, "github_actions")) {
+    const counted = database.prepare(
+      `SELECT repository_key, COUNT(*) AS total
+       FROM github_actions WHERE enabled = 1 GROUP BY repository_key`,
+    ).all() as Array<{ repository_key: string; total: number }>;
+    for (const entry of counted) enabledActions.set(entry.repository_key, entry.total);
+  }
+
+  return rows.map((row) => ({
+    ...rowToGuardrailRepository(row),
+    prCommentEnabled: row.pr_comment_enabled === 1,
+    prCommentDetail: row.pr_comment_detail === "summary" ? "summary" : "detailed",
+    baseline: {
+      repositoryKey: row.repository_key,
+      state: (row.baseline_state ?? "absent") as GuardrailBaselineState,
+      gateId: row.baseline_gate_id ?? null,
+      commitSha: row.baseline_commit_sha ?? null,
+      protectedBranch: row.baseline_protected_branch ?? null,
+      scanLineageHash: row.baseline_scan_lineage_hash ?? null,
+      builtAt: row.baseline_built_at ?? null,
+      staleReason: row.baseline_stale_reason ?? null,
+      requestedAt: row.baseline_requested_at ?? null,
+      updatedAt: row.baseline_updated_at ?? "1970-01-01T00:00:00.000Z",
+    },
+    enabledActionCount: enabledActions.get(row.repository_key) ?? 0,
+    lastGate: row.last_gate_id === null ? null : {
+      gateId: row.last_gate_id,
+      outcome: (row.last_gate_outcome ?? null) as GateOutcome | null,
+      completedAt: row.last_gate_completed_at ?? null,
+    },
+    policySource: resolvedPolicySourceOf(row),
+  }));
+}
+
+interface RepositoryListExtras {
+  last_gate_outcome: string | null;
+  last_gate_completed_at: string | null;
+  baseline_state: string | null;
+  baseline_gate_id: string | null;
+  baseline_commit_sha: string | null;
+  baseline_protected_branch: string | null;
+  baseline_scan_lineage_hash: string | null;
+  baseline_built_at: string | null;
+  baseline_stale_reason: string | null;
+  baseline_requested_at: string | null;
+  baseline_updated_at: string | null;
+  has_sentinel_policy: number | null;
+  policy_source: string | null;
+}
+
+/**
+ * What the newest gate recorded, or what the registry can prove. A gate that ran
+ * under the repository's own file is the only local evidence that level 1 exists;
+ * without such a gate, a saved policy means level 2 and nothing means level 3.
+ */
+function resolvedPolicySourceOf(
+  row: { policy_source: string | null; has_sentinel_policy: number | null },
+): GuardrailResolvedPolicySource {
+  if (row.policy_source === "repository_file") return "repository_file";
+  return row.has_sentinel_policy === null ? "default" : "sentinel";
+}
+
+/**
+ * Disabling is not removing. `enabled = 0` stops every action of the repository
+ * from being dispatched while the gates, the policy and the baseline stay readable.
+ */
+export function patchGuardrailRepository(
+  repositoryKey: string,
+  patch: GuardrailRepositoryPatch,
+  database: Database.Database = getDb(),
+  now: string = new Date().toISOString(),
+): GuardrailRepository | null {
+  ensureGateSchema(database);
+  const assignments: string[] = [];
+  const parameters: Record<string, unknown> = { repository_key: repositoryKey, updated_at: now };
+  if (patch.enabled !== undefined) {
+    assignments.push("enabled = @enabled");
+    parameters.enabled = patch.enabled ? 1 : 0;
+  }
+  if (patch.defaultExecutor !== undefined) {
+    assignments.push("default_executor = @default_executor");
+    parameters.default_executor = patch.defaultExecutor;
+  }
+  if (patch.prCommentEnabled !== undefined) {
+    assignments.push("pr_comment_enabled = @pr_comment_enabled");
+    parameters.pr_comment_enabled = patch.prCommentEnabled ? 1 : 0;
+  }
+  // A patch with nothing in it still has to answer "does this repository exist?",
+  // so it reads rather than silently reporting success for an unknown key.
+  if (assignments.length === 0) return getGuardrailRepository(repositoryKey, database);
+  const changed = database.prepare(
+    `UPDATE guardrail_repositories
+     SET ${assignments.join(", ")}, updated_at = @updated_at
+     WHERE repository_key = @repository_key`,
+  ).run(parameters).changes;
+  return changed === 0 ? null : getGuardrailRepository(repositoryKey, database);
+}
+
+export function getGuardrailRepository(
+  repositoryKey: string,
+  database: Database.Database = getDb(),
+): GuardrailRepository | null {
+  ensureGateSchema(database);
+  const row = database.prepare(
+    `SELECT repositories.*, NULL AS last_gate_id
+     FROM guardrail_repositories repositories
+     WHERE repository_key = ?`,
+  ).get(repositoryKey) as GuardrailRepositoryRow | undefined;
+  return row === undefined ? null : rowToGuardrailRepository(row);
+}
+
+/**
+ * Removes the registry row and everything keyed to it, in one transaction.
+ *
+ * Actions, their events, grants, the policy, the baseline, leases and dispatches
+ * follow by `ON DELETE CASCADE`. Three tables do not have the foreign key and are
+ * deleted by hand: `gate_runs` and `gate_events` predate it, and
+ * `notification_subscriptions.scope` holds a repository key *or* one of the reserved
+ * scopes, so it cannot carry one. Leaving any of them behind would be rows no screen
+ * can reach and nothing will ever clean up.
+ *
+ * Scan runs are deliberately **not** touched: a scan is visible on its own screen
+ * and deletable there, and losing one because a repository was unregistered would be
+ * a deletion nobody asked for. The artifacts on disk are the caller's to remove —
+ * this module owns the database, not the filesystem.
+ */
+export function deleteGuardrailRepository(
+  repositoryKey: string,
+  database: Database.Database = getDb(),
+): boolean {
+  ensureGateSchema(database);
+  database.pragma("foreign_keys = ON");
+  return database.transaction(() => {
+    database.prepare(
+      `DELETE FROM gate_events WHERE gate_id IN (
+         SELECT id FROM gate_runs WHERE repository_key = ?
+       )`,
+    ).run(repositoryKey);
+    database.prepare("DELETE FROM gate_runs WHERE repository_key = ?").run(repositoryKey);
+    if (tableExists(database, "notification_subscriptions")) {
+      database.prepare("DELETE FROM notification_subscriptions WHERE scope = ?").run(repositoryKey);
+    }
+    return database
+      .prepare("DELETE FROM guardrail_repositories WHERE repository_key = ?")
+      .run(repositoryKey).changes > 0;
+  })();
+}
+
+function tableExists(database: Database.Database, name: string): boolean {
+  return database.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+  ).get(name) !== undefined;
+}
+
 export function insertGateRun(
   run: GateRun,
   database: Database.Database = getDb(),
@@ -957,14 +1172,14 @@ export function insertGateRun(
     .prepare(
       `INSERT INTO gate_runs (
          id, repository_key, repository_path, source, executor, base_ref, head_ref,
-         resolved_base_sha, resolved_head_sha, policy_sha, pull_request_number,
+         resolved_base_sha, resolved_head_sha, policy_sha, policy_source, pull_request_number,
          workflow_run_id, materialization_state, scan_lineage_hash,
          artifact_schema_version, scan_id, status, outcome, policy_version,
          baseline_commit, artifact_path, publish_status, publish_error,
          published_at, error, cost_ceiling_usd, estimated_usd, started_at, completed_at
        ) VALUES (
          @id, @repository_key, @repository_path, @source, @executor, @base_ref, @head_ref,
-         @resolved_base_sha, @resolved_head_sha, @policy_sha, @pull_request_number,
+         @resolved_base_sha, @resolved_head_sha, @policy_sha, @policy_source, @pull_request_number,
          @workflow_run_id, @materialization_state, @scan_lineage_hash,
          @artifact_schema_version, @scan_id, @status, @outcome, @policy_version,
          @baseline_commit, @artifact_path, @publish_status, @publish_error,
@@ -994,6 +1209,10 @@ export function updateGateRun(
   if (updates.policySha !== undefined) {
     assignments.push("policy_sha = @policy_sha");
     params.policy_sha = updates.policySha;
+  }
+  if (updates.policySource !== undefined) {
+    assignments.push("policy_source = @policy_source");
+    params.policy_source = updates.policySource;
   }
   if (updates.workflowRunId !== undefined) {
     assignments.push("workflow_run_id = @workflow_run_id");
@@ -1195,6 +1414,7 @@ function gateRunToParams(run: GateRun): Record<string, unknown> {
     resolved_base_sha: run.resolvedBaseSha,
     resolved_head_sha: run.resolvedHeadSha,
     policy_sha: run.policySha,
+    policy_source: run.policySource,
     pull_request_number:
       run.pullRequestNumber === null ? null : run.pullRequestNumber,
     workflow_run_id: run.workflowRunId,
@@ -1231,6 +1451,7 @@ function rowToGateRun(row: GateRunRow): GateRun {
     resolvedBaseSha: row.resolved_base_sha,
     resolvedHeadSha: row.resolved_head_sha,
     policySha: row.policy_sha,
+    policySource: (row.policy_source ?? null) as GuardrailResolvedPolicySource | null,
     pullRequestNumber:
       row.pull_request_number === null ? null : row.pull_request_number,
     workflowRunId: row.workflow_run_id,

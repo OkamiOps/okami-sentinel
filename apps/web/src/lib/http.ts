@@ -50,6 +50,9 @@ export async function parseApiResponse<T>(response: Response): Promise<T> {
     // allowing the UI to translate the visible message by status.
     throw new ApiError(body?.error ?? `api_http_${response.status}`, "http", response.status);
   }
+  // A 204 has no body by definition — a successful delete is not an empty answer to
+  // a question, it is the absence of one.
+  if (response.status === 204) return null as T;
   if (!body) throw new ApiError("empty_api_response", "empty", response.status);
   return body;
 }

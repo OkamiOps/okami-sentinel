@@ -1312,6 +1312,13 @@ export interface GateRun {
   resolvedBaseSha: string | null;
   resolvedHeadSha: string | null;
   policySha: string | null;
+  /**
+   * Which level of the policy precedence decided this gate, as its artifact
+   * recorded it. `null` until the gate completes, and on rows written before the
+   * column existed — the list screen reads it to name the level without a GitHub
+   * call per repository.
+   */
+  policySource: GuardrailResolvedPolicySource | null;
   pullRequestNumber: number | null;
   workflowRunId: string | null;
   materializationState: GateMaterializationState;
@@ -1353,6 +1360,62 @@ export interface GuardrailRepository {
   policyPath: string;
   lastGateId: string | null;
   githubStatus: RepositoryGitHubStatus;
+}
+
+/** The three levels of the policy precedence, as a gate resolved them. */
+export type GuardrailResolvedPolicySource = "repository_file" | "sentinel" | "default";
+
+/** One word for a repository's baseline. */
+export type GuardrailBaselineState = "absent" | "building" | "ready" | "stale";
+
+/**
+ * The baseline projection: what the list screen reads instead of asking GitHub, or
+ * the artifact store, once per repository.
+ */
+export interface GuardrailBaseline {
+  repositoryKey: string;
+  state: GuardrailBaselineState;
+  gateId: string | null;
+  commitSha: string | null;
+  protectedBranch: string | null;
+  scanLineageHash: string | null;
+  builtAt: string | null;
+  staleReason: string | null;
+  requestedAt: string | null;
+  updatedAt: string;
+}
+
+/**
+ * How much the pull-request comment says. `detailed` is the only value the product
+ * uses; the other exists so the choice is recorded and reversible without a
+ * migration.
+ */
+export type GuardrailPrCommentDetail = "detailed" | "summary";
+
+/**
+ * A row of `GET /guardrails/repositories`: the repository plus everything the list
+ * shows about it, so the screen needs one call and no remote request at all.
+ */
+export interface GuardrailRepositoryListRow extends GuardrailRepository {
+  prCommentEnabled: boolean;
+  prCommentDetail: GuardrailPrCommentDetail;
+  baseline: GuardrailBaseline;
+  enabledActionCount: number;
+  lastGate: { gateId: string; outcome: GateOutcome | null; completedAt: string | null } | null;
+  policySource: GuardrailResolvedPolicySource;
+}
+
+/** What an administrator may change about an enrolled repository. */
+export interface GuardrailRepositoryPatch {
+  enabled?: boolean;
+  defaultExecutor?: GateExecutorKind;
+  prCommentEnabled?: boolean;
+}
+
+/** Why a repository in a bulk enrolment produced no row. A normal result, not a failure. */
+export interface GuardrailEnrollmentSkip {
+  repositoryId: string;
+  reason: "already_enrolled" | "not_authorized" | "archived";
 }
 
 export interface GitHubCapabilityStatus {

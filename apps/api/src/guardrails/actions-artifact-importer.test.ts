@@ -154,6 +154,7 @@ function importerFixture(gateOverrides: Partial<GateRun> = {}) {
     resolvedBaseSha: BASE,
     resolvedHeadSha: HEAD,
     policySha: BASE,
+    policySource: null,
     pullRequestNumber: 42,
     workflowRunId: "7001",
     materializationState: "not_required",
