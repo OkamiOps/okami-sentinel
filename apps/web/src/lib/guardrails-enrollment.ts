@@ -52,7 +52,8 @@ export function selectEnrollmentSource(
         connectionId: "",
         installationId: "",
         repositoryId: "",
-        defaultExecutor: "sentinel-managed",
+        // The executor the operator picked survives the switch: only a local folder
+        // forces `sentinel-managed`, because it has no caller workflow to run.
       };
 }
 

@@ -13,6 +13,20 @@ export interface GuardrailTargetDraft {
   headRef: string;
 }
 
+/**
+ * The execution planes a repository can be asked for. Both are offered to every
+ * GitHub repository: `defaultExecutor` is the one enrolment preferred, not the only
+ * one the installation can reach, and a radiogroup with a single card is not a
+ * choice. A local folder has no caller workflow, so it keeps one plane.
+ */
+export function guardrailExecutorChoices(
+  repository: GuardrailRepository,
+): GateExecutorKind[] {
+  return repository.source === "github"
+    ? ["sentinel-managed", "github-actions"]
+    : ["sentinel-managed"];
+}
+
 export function initialGuardrailTargetDraft(
   repository: GuardrailRepository,
 ): GuardrailTargetDraft {

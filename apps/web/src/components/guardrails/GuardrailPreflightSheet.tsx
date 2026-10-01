@@ -30,6 +30,7 @@ import {
 import { api, type GuardrailTargetPreview } from "../../api";
 import { githubActionsApi } from "../../lib/github-actions-api";
 import {
+  guardrailExecutorChoices,
   initialGuardrailTargetDraft,
   preflightFingerprint,
   reconcileRemotePullRequestDraft,
@@ -738,9 +739,9 @@ export function GuardrailPreflightSheet({
             {selected?.source === "github" && (
               <section aria-labelledby="preflight-executor-title">
                 <StepHeading code="04 / EXECUTION PLANE" id="preflight-executor-title" title={t("guardrails.executorTitle")} />
-                <div className={cx("grid gap-2", selected.defaultExecutor === "github-actions" && "sm:grid-cols-2")} role="radiogroup" aria-label={t("guardrails.executorTitle")}>
-                  <ChoiceCard checked={executor === "sentinel-managed"} icon={<Cloud aria-hidden size={17} />} title="Sentinel managed" meta="IMMUTABLE SNAPSHOT" description={t("guardrails.managedDescription")} onSelect={() => selectExecutor("sentinel-managed")} />
-                  {selected.defaultExecutor === "github-actions" && <ChoiceCard checked={executor === "github-actions"} icon={<Workflow aria-hidden size={17} />} title="GitHub Actions" meta="PINNED CALLER" description={t("guardrails.actionsDescription")} onSelect={() => selectExecutor("github-actions")} />}
+                <div className={cx("grid gap-2", guardrailExecutorChoices(selected).length > 1 && "sm:grid-cols-2")} role="radiogroup" aria-label={t("guardrails.executorTitle")}>
+                  {guardrailExecutorChoices(selected).includes("sentinel-managed") && <ChoiceCard checked={executor === "sentinel-managed"} icon={<Cloud aria-hidden size={17} />} title="Sentinel managed" meta="IMMUTABLE SNAPSHOT" description={t("guardrails.managedDescription")} onSelect={() => selectExecutor("sentinel-managed")} />}
+                  {guardrailExecutorChoices(selected).includes("github-actions") && <ChoiceCard checked={executor === "github-actions"} icon={<Workflow aria-hidden size={17} />} title="GitHub Actions" meta="PINNED CALLER" description={t("guardrails.actionsDescription")} onSelect={() => selectExecutor("github-actions")} />}
                 </div>
                 {managedFallback && <div className="mt-3 border border-primary/40 bg-primary/[.06] px-4 py-3 text-xs leading-5 text-muted-foreground"><span className="font-semibold text-primary">Sentinel managed</span> · {t("guardrails.managedFallbackReady")}</div>}
               </section>

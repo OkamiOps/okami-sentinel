@@ -337,3 +337,49 @@ test("an orphaned reservation from a dead process becomes terminal at boot", asy
     },
   }), 1);
 });
+
+test("dispatches a github-actions action through its own executor", async () => {
+  const h = harness({
+    action: { executor: "github-actions", scanner: null },
+  });
+  await h.run();
+  const event = h.reread();
+  assert.equal(event.status, "launched");
+  assert.equal(event.gateId, "gate-1");
+  assert.equal(h.action.executor, "github-actions");
+});
+
+test("refuses a github-actions dispatch while the caller still has automatic triggers", async () => {
+  const h = harness({
+    action: { executor: "github-actions", scanner: null },
+    start: async () => { throw new Error("monitor_actions_duplicate_triggers"); },
+  });
+  await h.run();
+  const event = h.reread();
+  assert.equal(event.status, "skipped");
+  assert.equal(event.reason, "monitor_actions_duplicate_triggers");
+  assert.equal(event.gateId, null);
+});
+
+test("refuses a github-actions dispatch when the caller workflow is absent", async () => {
+  const h = harness({
+    action: { executor: "github-actions", scanner: null },
+    start: async () => { throw new Error("target_preview_executor_unavailable"); },
+  });
+  await h.run();
+  const event = h.reread();
+  assert.equal(event.status, "skipped");
+  assert.equal(event.reason, "target_preview_executor_unavailable");
+});
+
+test("refuses a fork pull request for the Actions executor too", async () => {
+  const h = harness({
+    action: { executor: "github-actions", scanner: null, includeForks: false },
+    event: { kind: "pull_request", headRef: "pull/7/head", pullRequestNumber: 7 },
+  });
+  await h.run();
+  const event = h.reread();
+  assert.equal(event.status, "skipped");
+  assert.equal(event.reason, "fork_pull_request");
+  assert.deepEqual(h.started, []);
+});
