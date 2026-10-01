@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 import { inflateRawSync } from "node:zlib";
 
 import { parseGateArtifact } from "@csb/gate-core";
-import type { GateArtifactV2, GateRun, GuardrailRepository } from "@csb/shared";
+import type {
+  GateArtifactV2,
+  GateRun,
+  GuardrailRepository,
+  GuardrailResolvedPolicySource,
+} from "@csb/shared";
 
 import type {
   GitHubActionsArtifactMetadata,
@@ -65,6 +70,14 @@ export interface ActionsArtifactImporterStore {
 export interface ActionsArtifactImporterDependencies {
   store: ActionsArtifactImporterStore;
   writeArtifact(gateId: string, artifact: GateArtifactV2): string;
+  /**
+   * The repository's baseline projection, recomputed once the gate is terminal. The
+   * Sentinel-managed executor does this through `settleBaseline`; without it here, a
+   * customer running on their own Actions minutes would merge to the protected
+   * branch for ever and the list would keep saying the baseline is absent (carried
+   * Phase-2 finding I-2).
+   */
+  refreshBaselineState?(repositoryKey: string): void;
   now?(): string;
 }
 
@@ -84,11 +97,13 @@ export interface ImportActionsArtifactResult {
 export class ActionsArtifactImporter {
   readonly #store: ActionsArtifactImporterStore;
   readonly #writeArtifact: ActionsArtifactImporterDependencies["writeArtifact"];
+  readonly #refreshBaselineState: (repositoryKey: string) => void;
   readonly #now: () => string;
 
   constructor(dependencies: ActionsArtifactImporterDependencies) {
     this.#store = dependencies.store;
     this.#writeArtifact = dependencies.writeArtifact;
+    this.#refreshBaselineState = dependencies.refreshBaselineState ?? (() => undefined);
     this.#now = dependencies.now ?? (() => new Date().toISOString());
   }
 
@@ -157,6 +172,9 @@ export class ActionsArtifactImporter {
           scanLineageHash: bundle.artifact.lineage.scanLineageHash,
           baselineCommit: bundle.artifact.baselineCommit,
           outcome: bundle.artifact.decision.outcome,
+          // Which level of the precedence decided, on the row, so the repository
+          // list can name it without one GitHub call per repository.
+          policySource: currentPolicySource(bundle.artifact.policySource),
           status: "completed",
           estimatedUsd,
           error: null,
@@ -171,6 +189,15 @@ export class ActionsArtifactImporter {
           }
         : { state: "completed", completedAt: now, error: null },
     });
+    if (!terminal) {
+      // After `finalize`, and swallowed on failure: the verdict is already durable,
+      // and a projection that could not be rewritten is a stale word on a screen.
+      try {
+        this.#refreshBaselineState(gate.repositoryKey);
+      } catch {
+        // The gate's decision stands; the next terminal gate refreshes it again.
+      }
+    }
     return { artifact: bundle.artifact, applied: !terminal, duplicate: false };
   }
 }
@@ -399,6 +426,18 @@ function plainRecord(
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) fail(code);
   return value as Record<string, unknown>;
+}
+
+/**
+ * The three words a gate may have run under. An artifact carrying one of the two
+ * retired ones means `repository_file`: both only ever described reading
+ * `.csb/guardrails.json`.
+ */
+function currentPolicySource(
+  source: GateArtifactV2["policySource"],
+): GuardrailResolvedPolicySource {
+  if (source === "base" || source === "protected_branch") return "repository_file";
+  return source;
 }
 
 function artifactImportCode(error: unknown): ActionsArtifactImportErrorCode {

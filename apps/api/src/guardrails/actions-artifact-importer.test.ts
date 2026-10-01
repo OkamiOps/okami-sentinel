@@ -227,15 +227,17 @@ function importerFixture(gateOverrides: Partial<GateRun> = {}) {
       Object.assign(dispatch, input.dispatchUpdates);
     },
   };
+  const baselineRefreshes: string[] = [];
   const importer = new ActionsArtifactImporter({
     store,
     writeArtifact: (_gateId, value) => {
       writes.push(value);
       return "/managed/gates/gate-actions-1/csb-gate-result.json";
     },
+    refreshBaselineState: (repositoryKey) => { baselineRefreshes.push(repositoryKey); },
     now: () => "2026-08-12T12:05:00.000Z",
   });
-  return { artifact, gate, dispatch, metadata, writes, importer };
+  return { artifact, gate, dispatch, metadata, writes, importer, baselineRefreshes, store };
 }
 
 function artifactFixture(options: { bootstrap?: boolean } = {}): GateArtifactV2 {
@@ -418,3 +420,39 @@ function storedZip(entries: ReadonlyArray<readonly [string, Buffer]>): Uint8Arra
 function digest(bytes: Uint8Array): string {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
+
+/**
+ * Carried Phase-2 finding I-2: the Actions executor got none of Phase 2. A gate the
+ * customer's own minutes produced has to name the policy level that decided and
+ * refresh the baseline projection, exactly as the Sentinel-managed one does.
+ */
+test("an imported gate names its policy level and refreshes the baseline projection", () => {
+  const h = importerFixture();
+  const result = h.importer.import({
+    artifactId: h.metadata.id,
+    gateId: h.gate.id,
+    githubDigest: h.metadata.artifactDigest,
+    archive: archiveFixture(h.artifact),
+  });
+  assert.equal(result.applied, true);
+  assert.equal(h.gate.policySource, "repository_file");
+  assert.deepEqual(h.baselineRefreshes, [h.gate.repositoryKey]);
+});
+
+test("a baseline projection that cannot be rewritten never loses the verdict", () => {
+  const h = importerFixture();
+  const importer = new ActionsArtifactImporter({
+    store: h.store,
+    writeArtifact: () => "/managed/gates/gate-actions-1/csb-gate-result.json",
+    refreshBaselineState: () => { throw new Error("projection_unavailable"); },
+    now: () => "2026-08-12T12:05:00.000Z",
+  });
+  const result = importer.import({
+    artifactId: h.metadata.id,
+    gateId: h.gate.id,
+    githubDigest: h.metadata.artifactDigest,
+    archive: archiveFixture(h.artifact),
+  });
+  assert.equal(result.applied, true);
+  assert.equal(h.gate.status, "completed");
+});

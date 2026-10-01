@@ -246,20 +246,50 @@ test("returns zero for pass, warning and no_changes using the shared baseline se
   }
 });
 
-test("PR and compare without a baseline fail closed instead of publishing a neutral bootstrap", async () => {
+/**
+ * Ruling P2-1: the Actions executor stopped failing closed without a baseline. The
+ * change is scanned and judged, every finding is `new`, nothing is blocked, and the
+ * notice says there was nothing to compare against — the same semantics the
+ * Sentinel-managed executor already had.
+ */
+test("PR and compare without a baseline bootstrap instead of failing closed", async () => {
   for (const targetKind of ["pull_request", "compare"] as const) {
     let scans = 0;
     const result = await runGateCli(options({ targetKind, pullRequest: targetKind === "compare" ? null : 42,
       baselineState: "absent", baseline: null }), {
       ...fakeDeps({ outcome: "bootstrap" }),
-      scanner: { run: async () => { scans += 1; throw new Error("scanner must not start"); } },
+      readBaseline: () => ({ kind: "absent" }),
+      scanner: {
+        run: async () => {
+          scans += 1;
+          return {
+            scanId: "scan-current", scanDir: "/tmp/scan-current", status: "completed",
+            findings: [finding()], cost: null, scannerVersion: "test",
+          };
+        },
+      },
     });
-    assert.equal(result.exitCode, 3);
-    assert.equal(result.artifact.decision.outcome, "error");
-    assert.equal(result.artifact.decision.githubConclusion, "action_required");
-    assert.match(result.artifact.decision.summary, /^baseline_absent:/);
-    assert.equal(scans, 0, targetKind);
+    assert.equal(result.exitCode, 0, targetKind);
+    assert.equal(result.artifact.decision.outcome, "bootstrap", targetKind);
+    assert.equal(result.artifact.decision.githubConclusion, "neutral", targetKind);
+    assert.deepEqual(result.artifact.baselineNotice, { kind: "absent", reason: null }, targetKind);
+    assert.equal(result.artifact.baselineCommit, null, targetKind);
+    assert.equal(result.artifact.findings.every((row) => row.lifecycle === "new"), true, targetKind);
+    assert.equal(scans, 1, targetKind);
   }
+});
+
+test("an incompatible baseline carries its reason into the notice instead of an error", async () => {
+  // A baseline standing on another protected branch is incompatible, which is a
+  // fact about a branch changing — not a broken repository.
+  const result = await runGateCli(options({ baselineState: "available", protectedBranch: "release" }), {
+    ...fakeDeps({ outcome: "bootstrap" }),
+    readBaseline: () => ({ kind: "artifact", artifact: comparableBaseline([finding()]) }),
+  });
+  assert.equal(result.exitCode, 0, result.artifact.decision.summary);
+  assert.equal(result.artifact.decision.outcome, "bootstrap");
+  assert.equal(result.artifact.baselineNotice?.kind, "incompatible");
+  assert.ok((result.artifact.baselineNotice?.reason ?? "").length > 0);
 });
 
 test("an unavailable PR baseline fails closed without starting the scanner", async () => {
@@ -304,6 +334,40 @@ test("reads policy and exceptions only from the frozen base checkout", async () 
   assert.equal(result.artifact.policy.scan.maxCostUsd, 7);
   assert.notEqual(result.artifact.policy.scan.maxCostUsd, 999);
   assert.equal(result.artifact.policySource, "repository_file");
+});
+
+/**
+ * Phase-4 ruling on the carried I-2: an unparseable `.csb/guardrails.json` is not an
+ * operational error on the Actions executor either. The gate records `policy_invalid`
+ * and runs the next reachable level, which on the CLI is the shipped default — the
+ * caller workflow hands it a repository, never Sentinel's stored policy.
+ */
+test("an invalid policy file falls back and names policy_invalid instead of failing hard", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "csb-actions-policy-invalid-"));
+  const head = path.join(root, "head");
+  const policyRoot = path.join(root, "policy");
+  fs.mkdirSync(path.join(head, ".csb"), { recursive: true });
+  fs.mkdirSync(path.join(policyRoot, ".csb"), { recursive: true });
+  fs.writeFileSync(path.join(policyRoot, ".csb", "guardrails.json"), "{ not json");
+
+  const result = await runGateCli(options({
+    repository: head,
+    policyRoot,
+    baseline: null,
+    baselineState: "absent",
+    output: path.join(root, "result.json"),
+  }), {
+    inspectSnapshots: () => ({ changeSet: changeSet(), coverage: completeCoverage(), identity: hash("head") }),
+    readBaseline: () => ({ kind: "absent" }),
+    scanner: fakeDeps({ outcome: "bootstrap" }).scanner,
+    now: () => "2026-08-12T12:00:00.000Z",
+  });
+
+  assert.equal(result.exitCode, 0, result.artifact.decision.summary);
+  assert.notEqual(result.artifact.decision.outcome, "error");
+  assert.equal(result.artifact.policySource, "default");
+  assert.equal(result.artifact.policyInvalidReason, "policy_invalid");
+  assert.deepEqual(result.artifact.policy, defaultGuardrailPolicy());
 });
 
 test("forces a protected-branch Actions baseline to use the repository scan plan", async () => {

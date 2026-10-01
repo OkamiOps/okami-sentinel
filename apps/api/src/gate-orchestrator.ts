@@ -1309,6 +1309,7 @@ function systemActionsExecutor(): GitHubActionsExecutor {
       finalize: finalizeGitHubActionsArtifact,
     },
     writeArtifact: (gateId, artifact) => writeGateArtifact(gateId, artifact),
+    refreshBaselineState: (repositoryKey) => { refreshRepositoryBaselineState(repositoryKey); },
   });
   const service = getSystemGitHubAppService();
   actionsExecutor = new GitHubActionsExecutor({
@@ -1339,6 +1340,13 @@ function systemActionsExecutor(): GitHubActionsExecutor {
           ...(gate.error ? { code: gate.error } : {}), completedAt: gate.completedAt }, productionDeps);
       } else if (gate.status === "completed") {
         const artifact = getGateArtifact(gate.id);
+        // The pull-request comment is Phase 3's, and it belongs to both executors:
+        // the Check the caller workflow publishes says the verdict, and the comment
+        // is what a reviewer reads. Fire-and-forget, like the managed path's, and a
+        // failure is recorded on the comment's own row.
+        if (artifact !== null && artifact.schemaVersion === 2) {
+          void publishActionsGateComment(gate, artifact).catch(() => undefined);
+        }
         emit(gate.id, "decision", {
           gateId: gate.id,
           status: gate.status,
@@ -1408,6 +1416,53 @@ async function publishGateComment(
   } catch (error) {
     logGateFailure(gateId, error);
     notifyGitHubPublishFailed(gateId);
+  }
+}
+
+/**
+ * The sticky comment for a gate the customer's own Actions minutes produced.
+ *
+ * The authority comes from the repository row rather than from a frozen preview:
+ * an Actions gate is imported from a webhook or the reconciliation loop, long after
+ * the preview that started it. Everything else — the marker, the one comment per
+ * pull request, the per-installation permission block — is Phase 3's publisher,
+ * unchanged.
+ */
+async function publishActionsGateComment(
+  gate: GateRun,
+  artifact: GateArtifactV2,
+): Promise<void> {
+  if (artifact.target.kind !== "pull_request") return;
+  if (artifact.repository.locator.kind !== "github") return;
+  const repository = listGuardrailRepositories().find(
+    (candidate) => candidate.repositoryKey === gate.repositoryKey,
+  ) ?? null;
+  if (
+    repository === null
+    || repository.githubConnectionId === null
+    || repository.githubInstallationId === null
+    || repository.githubRepositoryId === null
+  ) return;
+  try {
+    const result = await publishPrComment({
+      artifact,
+      repositoryKey: gate.repositoryKey,
+      authority: {
+        connectionId: repository.githubConnectionId,
+        installationId: repository.githubInstallationId,
+        repositoryId: repository.githubRepositoryId,
+      },
+      owner: artifact.repository.locator.owner,
+      name: artifact.repository.locator.name,
+      pullRequestNumber: artifact.resolvedTarget.pullRequestNumber,
+      durationMs: gate.startedAt === null || gate.completedAt === null
+        ? null
+        : Date.parse(gate.completedAt) - Date.parse(gate.startedAt),
+    }, productionPrCommentDependencies());
+    if (result.status === "failed" && result.alert) notifyGitHubPublishFailed(gate.id);
+  } catch (error) {
+    logGateFailure(gate.id, error);
+    notifyGitHubPublishFailed(gate.id);
   }
 }
 
