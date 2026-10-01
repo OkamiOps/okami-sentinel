@@ -43,12 +43,17 @@ const VERIFIED_WINDOW_MS = 60_000;
  *
  * **Body reads, per calling address** — this is the boundary. A flood is charged
  * to whoever caused it, so no single address (and no handful of them) can consume
- * the global pool, whatever it names. Excess here **waits** rather than being
- * shed, because the address that a flood shares might be GitHub's own egress and a
- * shed delivery is a lost event: GitHub does not retry. The wait is bounded, the
- * queue is depth-capped, and a freed slot passes to the waiter ahead of any fresh
- * arrival — so a stalled flood delays a legitimate delivery by the idle deadline
- * instead of denying it.
+ * the global pool, whatever it names. Excess here **waits** rather than being shed
+ * immediately, because the address that a flood shares might be GitHub's own egress
+ * and a shed delivery is a lost event: GitHub does not retry. The wait is bounded
+ * and a freed slot passes to the waiter ahead of any fresh arrival, so a stalled
+ * flood costs a legitimate delivery the idle deadline and not the event.
+ *
+ * The queue is also depth-capped, and that cap is a **loss**, not a delay: past
+ * four waiters the fifth delivery is answered `429` and is gone. The bound has to
+ * exist — an unbounded queue of waiters is the memory the flood was shed to protect
+ * — so the honest accounting is that a sustained flood from GitHub's own egress can
+ * cost events, and the reconciliation loop below is what recovers them.
  *
  * **Hashes** — our own CPU over bytes already in memory, so its excess waits in a
  * depth-capped queue rather than throwing a completed read away, and the slot is
@@ -104,6 +109,18 @@ const APP_ID_NOTICE_WINDOW_MS = 10 * 60_000;
 const MAX_LOGGED_HEADER = 64;
 
 const GLOBAL_KEY = "verified";
+
+/**
+ * The bucket for a caller whose address cannot be attributed: `CSB_TRUST_PROXY=1`
+ * with no `X-Forwarded-For`, which means the proxy in front of us is not appending
+ * it. Those requests share **one** pool rather than bypassing the limiter
+ * altogether, which is what they used to do — an attacker who stripped the header
+ * got an unmetered endpoint. One shared pool is the deliberate trade: a
+ * misconfigured proxy makes every delivery compete for one address's budget, which
+ * is visible as throttling, instead of silently removing the boundary (N-14). The
+ * requirement is documented in the spec's reverse-proxy section.
+ */
+const UNATTRIBUTED_KEY = "unattributed";
 
 /**
  * What a refused delivery leaves behind. GitHub does not retry a webhook, so every
@@ -183,7 +200,7 @@ export function createGitHubWebhookApp(options: GitHubWebhookAppOptions): Hono {
   app.post(GITHUB_WEBHOOK_PATH, async (c) => {
     c.header("Cache-Control", "no-store");
     const trustProxy = options.trustProxy ?? trustsProxy();
-    const address = clientIp(c, trustProxy);
+    const address = clientIp(c, trustProxy) ?? UNATTRIBUTED_KEY;
     const event = c.req.header("X-GitHub-Event")?.trim() ?? "";
     const delivery = c.req.header("X-GitHub-Delivery")?.trim() ?? "";
     const signature = c.req.header("X-Hub-Signature-256")?.trim() ?? "";
@@ -232,11 +249,9 @@ export function createGitHubWebhookApp(options: GitHubWebhookAppOptions): Hono {
     // never refused for another connection's wrong secret — whatever second it
     // arrives in. Anything else from that address is shed here, before the body.
     const appId = c.req.header("X-GitHub-Hook-Installation-Target-ID")?.trim() || undefined;
-    if (address !== null) {
-      const blockedFor = failedVerifications.blocked(address);
-      if (blockedFor !== null && !namesKnownWebhookApp(await dependencies.listSecrets(), appId)) {
-        return refuse(429, "rate_limited", { retryAfterMs: blockedFor * 1_000 });
-      }
+    const blockedFor = failedVerifications.blocked(address);
+    if (blockedFor !== null && !namesKnownWebhookApp(await dependencies.listSecrets(), appId)) {
+      return refuse(429, "rate_limited", { retryAfterMs: blockedFor * 1_000 });
     }
 
     // The read budget is charged to the calling address first and to the process
@@ -247,7 +262,7 @@ export function createGitHubWebhookApp(options: GitHubWebhookAppOptions): Hono {
     // rather than the event. The global ceiling behind it is shed, not queued: a
     // caller-paced socket must not be able to occupy anything by waiting, and by
     // then the per-address budgets have already made a single flood harmless.
-    const admitted = address === null ? "acquired" : await addressReads.acquire(address, readAdmissionWaitMs);
+    const admitted = await addressReads.acquire(address, readAdmissionWaitMs);
     if (admitted !== "acquired") return refuse(429, "rate_limited", { retryAfterMs: readIdleTimeoutMs });
     let body: Uint8Array | "too_large" | "timeout" | "no_read_slot" = "no_read_slot";
     try {
@@ -259,7 +274,7 @@ export function createGitHubWebhookApp(options: GitHubWebhookAppOptions): Hono {
         }
       }
     } finally {
-      if (address !== null) addressReads.release(address);
+      addressReads.release(address);
     }
     if (body === "no_read_slot") return refuse(429, "rate_limited", { retryAfterMs: readIdleTimeoutMs });
     if (body === "too_large") return refuse(413, "payload_too_large");
@@ -322,12 +337,10 @@ export function createGitHubWebhookApp(options: GitHubWebhookAppOptions): Hono {
       // every connection's deliveries from the same handful of addresses — and it
       // does not clear the window either, so one accepted delivery cannot reset an
       // attacker's own budget.
-      if (address !== null) {
-        if (failedVerifications.blocked(address) !== null) {
-          return refuse(429, "rate_limited", { retryAfterMs: FAILED_VERIFICATION_WINDOW_MS });
-        }
-        failedVerifications.fail(address);
+      if (failedVerifications.blocked(address) !== null) {
+        return refuse(429, "rate_limited", { retryAfterMs: FAILED_VERIFICATION_WINDOW_MS });
       }
+      failedVerifications.fail(address);
       return refuse(401, "signature_invalid");
     }
     verified.fail(GLOBAL_KEY);
