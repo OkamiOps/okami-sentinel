@@ -11,6 +11,11 @@ import type {
 } from "@csb/shared";
 
 import {
+  ensureRepositoryBaselineSchema,
+  getRepositoryBaselineState,
+  refreshRepositoryBaselineState,
+} from "../guardrails/baseline-state.js";
+import {
   completeWebhookDelivery,
   disableGitHubActionsForInstallation,
   disableGitHubActionsForRepository,
@@ -833,4 +838,40 @@ test("records when a webhook secret was stored, one row per connection", () => {
     (db.prepare("SELECT COUNT(*) AS total FROM github_webhook_secret_rotations").get() as { total: number }).total,
     1,
   );
+});
+
+test("changing what an action scans with retires the baseline built with the old settings", () => {
+  const db = memoryDb();
+  ensureRepositoryBaselineSchema(db);
+  refreshRepositoryBaselineState("github:1", {
+    database: db,
+    now: () => "2026-10-01T10:00:00.000Z",
+    protectedBranch: () => "main",
+    findBaselineCandidate: () => ({
+      gateId: "gate-1",
+      commitSha: "a".repeat(40),
+      protectedBranch: "main",
+      scanLineageHash: "sha256:1",
+      builtAt: "2026-10-01T09:00:00.000Z",
+      incompatibleReason: null,
+    }),
+  });
+  assert.equal(getRepositoryBaselineState("github:1", db).state, "ready");
+
+  const action = pullRequestAction(db);
+  patchGitHubAction(action.id, {
+    scanner: {
+      engine: "codex-security",
+      connection: { connectionId: "c1", modelId: "gpt-5.6-terra", modelSelectionMode: "catalog" },
+      effort: "high",
+      mode: "deep",
+    },
+  }, db);
+  const after = getRepositoryBaselineState("github:1", db);
+  assert.equal(after.state, "stale");
+  assert.equal(after.staleReason, "scan_lineage");
+
+  // Renaming decides nothing about what a scan compares to.
+  patchGitHubAction(action.id, { name: "PR renamed" }, db);
+  assert.equal(getRepositoryBaselineState("github:1", db).staleReason, "scan_lineage");
 });

@@ -86,8 +86,8 @@ export function GuardrailSetupPage() {
     setBaselineError(null);
     setMessage(null);
     try {
-      const response = await api.syncGuardrailBaseline(selected.repositoryKey);
-      setMessage(response.baseline ? t("guardrails.baselineSynced", { sha: response.baseline.changeSet.headSha }) : t("guardrails.baselineMissing"));
+      await api.buildGuardrailBaseline(selected.repositoryKey);
+      setMessage(t("guardrails.baselineBuilding"));
       await loadStatus(selected);
     } catch (error) {
       setBaselineError(error instanceof Error ? error.message : t("guardrails.baselineSyncError"));

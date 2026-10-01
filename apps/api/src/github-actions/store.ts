@@ -17,6 +17,7 @@ import type {
 } from "@csb/shared";
 
 import { getDb } from "../db.js";
+import { markRepositoryBaselineStale } from "../guardrails/baseline-state.js";
 import {
   migrateMonitorRulesToActions,
   type MonitorRuleMigrationResult,
@@ -289,6 +290,13 @@ export function patchGitHubAction(
     migration_note: patch.branchPatterns === undefined ? current.migrationNote : null,
     updated_at: now,
   }));
+  // What a scan is run *with* decides what a baseline can be compared to, so
+  // changing the model, the effort or the mode retires the baseline built with the
+  // old one. Nothing is blocked meanwhile: the next merge on the protected branch
+  // rebuilds it, and a pull request without a comparable baseline is still judged.
+  if (JSON.stringify(current.scanner) !== JSON.stringify(next.scanner)) {
+    markRepositoryBaselineStale(current.repositoryKey, "scan_lineage", database, now);
+  }
   return getGitHubAction(id, database);
 }
 
