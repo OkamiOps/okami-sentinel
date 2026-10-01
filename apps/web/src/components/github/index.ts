@@ -1,6 +1,7 @@
 export { ActionList, canReshape, permissionsFor } from "./ActionList";
 export type { GitHubActionPermissions } from "./ActionList";
 export { ActionSheet } from "./ActionSheet";
+export { CallerWorkflowPanel } from "./CallerWorkflowPanel";
 export { ActivityList, ActivityRow } from "./ActivityList";
 export { DeliveryList } from "./DeliveryList";
 export { IntegrationPanel } from "./IntegrationPanel";

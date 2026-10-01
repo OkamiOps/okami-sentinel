@@ -24,7 +24,7 @@ import type {
   UserSessionSummary,
   UserSummary,
 } from "@csb/shared";
-import type { ScanFilesGraph } from "../src/api";
+import type { GuardrailActionsStatus, ScanFilesGraph } from "../src/api";
 
 export interface MockApiOptions {
   signedOut?: boolean;
@@ -809,7 +809,21 @@ export interface GitHubTabOptions {
   reconcileJoined?: boolean;
   /** `GET /github/integration` answers 502, as it does while GitHub is down. */
   integrationFails?: boolean;
+  /** What `GET .../actions-status` answers for the caller workflow panel. */
+  actionsStatus?: GuardrailActionsStatus;
+  /** A pull request that is already open: the button has to say so, not fail. */
+  callerPullRequestExists?: boolean;
 }
+
+const CALLER_WORKFLOW_PATH = ".github/workflows/csb-security-change-gate.yml";
+
+const READY_ACTIONS_STATUS: GuardrailActionsStatus = {
+  ready: true,
+  code: "ready",
+  workflowPath: CALLER_WORKFLOW_PATH,
+  releaseSha: "f".repeat(40),
+  triggers: { push: false, pullRequest: false, merge: false },
+};
 
 /**
  * Every `/github/*` route the tab reads, on top of `mockApi`. Registered **after**
@@ -832,12 +846,48 @@ export async function mockGitHubTab(page: Page, options: GitHubTabOptions = {}) 
     /** Every action write, in order, so a spec can assert the exact patch. */
     writes: [] as Array<{ method: string; id: string | null; body: unknown }>,
     reconciles: 0,
+    actionsStatus: structuredClone(options.actionsStatus ?? READY_ACTIONS_STATUS),
+    /** Every repository key the caller-workflow pull request was opened for. */
+    callerPullRequests: [] as string[],
   };
 
   const base = await mockApi(page, options.locale ?? "pt-BR", { session: options.session });
 
   await page.route("**/api/guardrails/repositories", (route) =>
     route.fulfill({ json: { repositories: state.repositories } }));
+
+  // The three reads and the one write the caller workflow panel makes. Registered
+  // here rather than in `mockApi` because only the GitHub tab reaches them.
+  await page.route("**/api/guardrails/repositories/*/caller-workflow", (route) =>
+    route.fulfill({
+      json: {
+        workflow: {
+          path: CALLER_WORKFLOW_PATH,
+          filename: "csb-security-change-gate.yml",
+          mediaType: "application/yaml",
+          content: "# csb-automation: push=0,pr=0,merge=0\nname: CSB Security Change Gate\non:\n  workflow_dispatch:\n",
+        },
+      },
+    }));
+  await page.route("**/api/guardrails/repositories/*/actions-status", (route) =>
+    route.fulfill({ json: { status: state.actionsStatus } }));
+  await page.route("**/api/guardrails/repositories/*/caller-workflow/pull-request", (route) => {
+    const key = decodeURIComponent(new URL(route.request().url()).pathname.split("/")[4] ?? "");
+    state.callerPullRequests.push(key);
+    const exists = options.callerPullRequestExists === true;
+    return route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({
+        pullRequest: {
+          status: exists ? "exists" : "created",
+          pullRequestNumber: exists ? 41 : 42,
+          pullRequestUrl: `https://github.com/okami/example/pull/${exists ? 41 : 42}`,
+          branch: "okami-sentinel/caller-workflow",
+        },
+      }),
+    });
+  });
 
   await page.route("**/api/github/**", async (route) => {
     const request = route.request();

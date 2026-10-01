@@ -3,6 +3,7 @@ import { ShieldCheck, Workflow } from "lucide-react";
 import type { GitHubAction, ProviderConnection, ProviderModel } from "@csb/shared";
 
 import { AlertBanner, cx } from "../ui";
+import { CallerWorkflowPanel } from "./CallerWorkflowPanel";
 import { ChoiceCard } from "../guardrails/ChoiceCard";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -21,10 +22,14 @@ import type { GitHubT } from "./labels";
 import type { GitHubActionsMessageKey } from "../../i18n/github-actions";
 
 /**
- * Create and edit in one side panel. Both executor cards are always rendered — a
- * radiogroup with one option is not a choice, and hiding GitHub Actions entirely
- * would leave the operator wondering whether it exists — but only `sentinel-managed`
- * is selectable in phase 1, and the other says "coming soon" out loud.
+ * Create and edit in one side panel. Both executor cards are real choices now, and
+ * both are an administrator's: either one spends — one the account's provider
+ * connection, the other the repository's Actions minutes — so a maintainer reads the
+ * stored route instead of changing it.
+ *
+ * Choosing GitHub Actions replaces the scan route with the caller workflow panel: the
+ * customer's minutes carry no Sentinel scanner selection at all, and what the
+ * repository still needs is what belongs in its place.
  */
 export function ActionSheet({
   open,
@@ -147,27 +152,31 @@ export function ActionSheet({
           <div className="mt-3 grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label={t("github.sheet.executorTitle")}>
             <ChoiceCard
               checked={draft.executor === "sentinel-managed"}
+              disabled={!isAdmin}
               icon={<ShieldCheck aria-hidden size={16} />}
               title={t("github.executor.sentinel-managed")}
               meta={t("github.sheet.engine")}
               description={t("github.executor.sentinelDescription")}
               onSelect={() => update({ executor: "sentinel-managed" })}
             />
-            {/* Rendered and disabled, with the reason on it: GitHub Actions arrives
-                in phase 4, and a card that simply vanished would read as a bug. */}
             <ChoiceCard
-              checked={false}
-              disabled
+              checked={draft.executor === "github-actions"}
+              disabled={!isAdmin}
               icon={<Workflow aria-hidden size={16} />}
               title={t("github.executor.github-actions")}
-              meta={t("github.executor.soon")}
+              meta={t("github.caller.section")}
               description={t("github.executor.actionsDescription")}
-              onSelect={() => {}}
+              onSelect={() => update({ executor: "github-actions", connectionId: null, model: null, effort: null })}
             />
           </div>
           {!isAdmin && <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">{t("github.sheet.adminOwnsSpending")}</p>}
 
-          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          {/* The customer's own minutes carry no provider connection, no model and
+              no effort: the repository's `.csb/guardrails.json` decides, and the
+              caller workflow is what has to exist instead. */}
+          {draft.executor === "github-actions"
+            ? <CallerWorkflowPanel repositoryKey={repositoryKey} isAdmin={isAdmin} t={t} />
+            : <div className="mt-4 grid gap-4 sm:grid-cols-2">
             {/* A maintainer never reads the connection catalogue (the page does not
                 even fetch it for them), so an empty disabled Select plus "no ready
                 connection was found" would blame them for a state they cannot see
@@ -240,7 +249,7 @@ export function ActionSheet({
                 onChange={(event) => update({ effort: event.target.value === "" ? null : event.target.value })}
               />
             </Field>
-          </div>
+          </div>}
         </section>
 
         <section className="border-t pt-5">

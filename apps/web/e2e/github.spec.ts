@@ -226,15 +226,144 @@ test("explains why a local repository cannot be automated", async ({ page }) => 
   await expect(page.getByRole("button", { name: "NEW ACTION" })).toHaveCount(0);
 });
 
-test("offers GitHub Actions as coming soon and never as a choice", async ({ page }) => {
-  await openTab(page, "actions", { locale: "en", repositories: [githubRepository], actions: [] });
+/**
+ * Phase 4: GitHub Actions is a real choice. Picking it drops the provider route the
+ * customer's own minutes never use and names the three things the repository still
+ * needs, one of which Sentinel cannot check for anybody.
+ */
+test("creates a github-actions action and shows the prerequisites", async ({ page }) => {
+  const state = await openTab(page, "actions", {
+    locale: "en",
+    repositories: [githubRepository],
+    actions: [],
+  });
   await page.goto(`/github?section=actions&repository=${encodeURIComponent(githubRepository.repositoryKey)}`);
   await page.getByRole("button", { name: "NEW ACTION" }).click();
+
   const actions = page.getByRole("radio", { name: /GitHub Actions/ });
-  await expect(actions).toBeVisible();
-  await expect(actions).toBeDisabled();
-  await expect(actions).toContainText("coming soon");
-  await expect(page.getByRole("radio", { name: /Sentinel/ })).toHaveAttribute("aria-checked", "true");
+  await expect(actions).toBeEnabled();
+  await actions.click();
+  await expect(actions).toHaveAttribute("aria-checked", "true");
+
+  // The provider route is gone: nothing here spends a Sentinel connection.
+  await expect(page.getByLabel("Model connection")).toHaveCount(0);
+  const panel = page.getByTestId("caller-workflow-panel");
+  await expect(panel).toContainText("Pinned workflow on the default branch");
+  await expect(panel).toContainText("Automatic triggers removed from the caller");
+  await expect(panel).toContainText("OPENAI_API_KEY secret in the repository");
+  // Sentinel asks for no grant to read secrets, so it says so instead of ticking it.
+  await expect(panel).toContainText("Confirm yourself");
+  await expect(panel).toContainText("Settings → Secrets and variables → Actions");
+
+  await page.getByLabel("Name", { exact: true }).fill("actions pr");
+  await page.getByLabel("Branch patterns").fill("main");
+  await page.getByLabel("Per-scan ceiling / USD").fill("2");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("button", { name: "NEW ACTION" })).toBeVisible();
+
+  const posted = state.github.writes.filter((write) => write.method === "POST");
+  expect(posted).toHaveLength(1);
+  expect(posted[0]!.body).toEqual(expect.objectContaining({
+    executor: "github-actions",
+    // The customer's minutes carry no scanner selection at all.
+    scanner: null,
+  }));
+});
+
+test("opens the workflow pull request and shows the link", async ({ page }) => {
+  const state = await openTab(page, "actions", {
+    locale: "en",
+    repositories: [githubRepository],
+    actions: [],
+  });
+  await page.goto(`/github?section=actions&repository=${encodeURIComponent(githubRepository.repositoryKey)}`);
+  await page.getByRole("button", { name: "NEW ACTION" }).click();
+  await page.getByRole("radio", { name: /GitHub Actions/ }).click();
+  await page.getByRole("button", { name: "Open PR With Workflow" }).click();
+
+  const panel = page.getByTestId("caller-workflow-panel");
+  await expect(panel).toContainText("Pull request #42 opened on branch okami-sentinel/caller-workflow");
+  await expect(panel.getByRole("link", { name: "View On GitHub" }))
+    .toHaveAttribute("href", "https://github.com/okami/example/pull/42");
+  expect(state.github.callerPullRequests).toEqual([githubRepository.repositoryKey]);
+});
+
+test("says a workflow pull request was already open instead of failing", async ({ page }) => {
+  await openTab(page, "actions", {
+    locale: "en",
+    repositories: [githubRepository],
+    actions: [],
+    callerPullRequestExists: true,
+  });
+  await page.goto(`/github?section=actions&repository=${encodeURIComponent(githubRepository.repositoryKey)}`);
+  await page.getByRole("button", { name: "NEW ACTION" }).click();
+  await page.getByRole("radio", { name: /GitHub Actions/ }).click();
+  await page.getByRole("button", { name: "Open PR With Workflow" }).click();
+  await expect(page.getByTestId("caller-workflow-panel"))
+    .toContainText("Pull request #41 was already open");
+});
+
+/**
+ * A caller that still fires on its own is what `monitor_actions_duplicate_triggers`
+ * refuses at dispatch. The sheet says so before anybody creates the action.
+ */
+test("shows the duplicate-triggers refusal in words", async ({ page }) => {
+  await openTab(page, "actions", {
+    locale: "en",
+    repositories: [githubRepository],
+    actions: [],
+    actionsStatus: {
+      ready: true,
+      code: "ready",
+      workflowPath: ".github/workflows/csb-security-change-gate.yml",
+      releaseSha: "f".repeat(40),
+      triggers: { push: true, pullRequest: true, merge: true },
+    },
+  });
+  await page.goto(`/github?section=actions&repository=${encodeURIComponent(githubRepository.repositoryKey)}`);
+  await page.getByRole("button", { name: "NEW ACTION" }).click();
+  await page.getByRole("radio", { name: /GitHub Actions/ }).click();
+
+  const triggers = page.getByRole("listitem").filter({ hasText: "Automatic triggers removed from the caller" });
+  await expect(triggers).toContainText("Still to do");
+  await expect(triggers).toContainText("Delete the push: and pull_request: blocks");
+  await expect(triggers).toContainText("would scan each change twice");
+});
+
+test("a maintainer reads the stored executor and cannot change it", async ({ page }) => {
+  await openTab(page, "actions", {
+    locale: "en",
+    repositories: [githubRepository],
+    actions: [githubAction({ enabled: false })],
+    session: {
+      isAdmin: false,
+      grants: [{ repositoryKey: githubRepository.repositoryKey, role: "maintainer" }],
+    },
+  });
+  await page.getByRole("button", { name: "Edit" }).click();
+  // Both executors spend — one the account's connection, the other the repository's
+  // minutes — so the choice is an administrator's on both cards.
+  await expect(page.getByRole("radio", { name: /GitHub Actions/ })).toBeDisabled();
+  await expect(page.getByRole("radio", { name: /^Sentinel\b/ })).toBeDisabled();
+});
+
+test("a maintainer never gets the button that opens the workflow pull request", async ({ page }) => {
+  const state = await openTab(page, "actions", {
+    locale: "en",
+    repositories: [githubRepository],
+    actions: [githubAction({ enabled: false, executor: "github-actions", scanner: null })],
+    session: {
+      isAdmin: false,
+      grants: [{ repositoryKey: githubRepository.repositoryKey, role: "maintainer" }],
+    },
+  });
+  await page.getByRole("button", { name: "Edit" }).click();
+  const panel = page.getByTestId("caller-workflow-panel");
+  await expect(panel).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open PR With Workflow" })).toHaveCount(0);
+  await expect(panel).toContainText("Only an administrator opens the pull request");
+  // Reading the workflow is a viewer's; nothing was written.
+  expect(state.github.callerPullRequests).toEqual([]);
 });
 
 test("lists deliveries with the ignore reason in words", async ({ page }) => {

@@ -6,6 +6,8 @@ import type {
   ScanMode,
 } from "@csb/shared";
 
+import type { GuardrailActionsStatus } from "../api";
+
 /** 1..20 patterns, the bound the API and the store both enforce. */
 export const MAX_BRANCH_PATTERNS = 20;
 /** The matcher compiles at most four wildcards; a fifth matches nothing. */
@@ -77,7 +79,8 @@ export function initialGitHubActionDraft(repositoryKey: string): GitHubActionDra
     name: "",
     triggerKind: "pull_request",
     branchPatterns: "",
-    // Phase 1 has one selectable executor; GitHub Actions arrives in phase 4.
+    // The safe default, not the only one: a new action runs on Sentinel's own
+    // snapshot unless an administrator chooses the repository's Actions minutes.
     executor: "sentinel-managed",
     connectionId: null,
     model: null,
@@ -223,4 +226,46 @@ function parseUsd(value: string): number | null {
   const parsed = Number(trimmed);
   if (!Number.isFinite(parsed) || parsed <= 0 || parsed > MAX_USD) return null;
   return parsed;
+}
+
+export type CallerWorkflowChecklistId =
+  | "workflow_installed"
+  | "triggers_removed"
+  | "secret_present";
+
+export interface CallerWorkflowChecklistItem {
+  id: CallerWorkflowChecklistId;
+  ok: boolean;
+}
+
+/**
+ * What has to be true in the repository before a GitHub Actions action can run,
+ * read from the one status the API already answers.
+ *
+ * - `workflow_installed`: the pinned caller is on the default branch and matches
+ *   the release. `caller_workflow_inactive` still counts as installed — the file is
+ *   there and current, GitHub has merely disabled the workflow.
+ * - `triggers_removed`: the caller answers `workflow_dispatch` and nothing else.
+ *   Sentinel starts every gate; a caller that also fired on push or pull_request
+ *   would scan each change twice, outside every ceiling the console holds. This is
+ *   the same condition `monitor_actions_duplicate_triggers` refuses at dispatch.
+ * - `secret_present`: never `true`. Sentinel has no grant to read repository
+ *   secrets and deliberately asks for none, so `OPENAI_API_KEY` is the one
+ *   prerequisite it names in words and cannot verify.
+ */
+export function callerWorkflowChecklist(
+  status: GuardrailActionsStatus,
+): CallerWorkflowChecklistItem[] {
+  const triggers = status.triggers ?? null;
+  return [
+    {
+      id: "workflow_installed",
+      ok: status.code === "ready" || status.code === "caller_workflow_inactive",
+    },
+    {
+      id: "triggers_removed",
+      ok: triggers !== null && !triggers.push && !triggers.pullRequest && !triggers.merge,
+    },
+    { id: "secret_present", ok: false },
+  ];
 }
