@@ -18,6 +18,7 @@ import type {
   FindingSummary,
   FindingTriage,
   GateArtifactV2,
+  GateBaselineNotice,
   GateCoverageEnvelope,
   GateFindingDelta,
   GuardrailRepository,
@@ -150,10 +151,11 @@ export class SentinelManagedExecutor {
         policySchemaVersion: input.preview.policy.schemaVersion,
         coverage,
       }, preflightCandidate);
-      if (
-        requiresBaseline
-        && (preflightBaseline.kind === "absent" || preflightBaseline.kind === "unavailable")
-      ) {
+      // An absent baseline no longer short-circuits: the pull request is scanned and
+      // judged, with every finding `new` and a notice saying there was nothing to
+      // compare against. Only an unreadable baseline artifact is still a failure of
+      // ours, and it is the one worth refusing before spending on a scan.
+      if (requiresBaseline && preflightBaseline.kind === "unavailable") {
         return await this.#finalizeWithoutScan({
           input,
           materialization,
@@ -282,20 +284,21 @@ export class SentinelManagedExecutor {
         operationalSummary: `baseline_unavailable:${context.baseline.reason}`,
       });
     }
-    if (context.baseline.kind === "incompatible") {
-      return buildOperationalErrorArtifactV2({
-        ...envelope,
-        operationalSummary: `baseline_incompatible:${context.baseline.reason}`,
-      });
-    }
-    if (context.baseline.kind === "absent"
-        && context.input.preview.target.kind !== "protected_branch"
-        && context.changeSet.files.length > 0) {
-      return buildOperationalErrorArtifactV2({
-        ...envelope,
-        operationalSummary: "baseline_absent:initialize_protected_branch",
-      });
-    }
+    // An incompatible baseline is a fact about an engine or a branch changing, not
+    // a broken repository: it takes the same path as an absent one, carrying its
+    // reason into the notice so the screen, the Check and the comment can say why
+    // there was no comparison.
+    //
+    // A protected-branch run is the thing that *establishes* a baseline, so it is
+    // never missing one and carries no notice.
+    const baselineNotice: GateBaselineNotice | null =
+      context.input.preview.target.kind === "protected_branch"
+        ? null
+        : context.baseline.kind === "incompatible"
+          ? { kind: "incompatible", reason: context.baseline.reason }
+          : context.baseline.kind === "absent"
+            ? { kind: "absent", reason: null }
+            : null;
 
     const currentFindings = context.scan === null
       ? []
@@ -336,7 +339,7 @@ export class SentinelManagedExecutor {
           },
         }
       : evaluateGate(evaluationInput);
-    return buildGateArtifactV2({ ...envelope, evaluation });
+    return buildGateArtifactV2({ ...envelope, baselineNotice, evaluation });
   }
 }
 

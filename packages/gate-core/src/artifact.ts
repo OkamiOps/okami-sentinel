@@ -6,6 +6,7 @@ import type {
   GateArtifact,
   GateArtifactV1,
   GateArtifactV2,
+  GateBaselineNotice,
   GateCoverageEnvelope,
   GateDecision,
   GateExecutorKind,
@@ -71,6 +72,7 @@ export interface BuildGateArtifactV2Input extends Omit<PublicArtifactEnvelope, "
   resolvedTarget: ResolvedGateTarget;
   policySource: GateArtifactV2["policySource"];
   policyInvalidReason?: string | null;
+  baselineNotice?: GateBaselineNotice | null;
   evaluation: EvaluateGateResult;
   lineage: EffectiveScanLineage;
   coverage: GateCoverageEnvelope;
@@ -173,6 +175,7 @@ export function buildGateArtifactV2(input: BuildGateArtifactV2Input): GateArtifa
     resolvedTarget: copyResolvedTarget(input.resolvedTarget),
     policySource: input.policySource,
     policyInvalidReason: normalizedNotice(input.policyInvalidReason),
+    baselineNotice: input.baselineNotice === undefined ? null : copyBaselineNotice(input.baselineNotice),
     publication: gatePublicationEligibility(input.policy, input.target, input.resolvedTarget),
     changeSet,
     policy: copyPolicy(input.policy),
@@ -264,8 +267,22 @@ export function parseGateArtifact(value: unknown): GateArtifact {
  */
 function withArtifactV2Defaults(value: unknown): unknown {
   const artifact = record(value, "GateArtifact");
-  if ("policyInvalidReason" in artifact) return artifact;
-  return { ...artifact, policyInvalidReason: null };
+  const filled: Record<string, unknown> = { ...artifact };
+  if (!("policyInvalidReason" in filled)) filled.policyInvalidReason = null;
+  if (!("baselineNotice" in filled)) filled.baselineNotice = null;
+  return filled;
+}
+
+function copyBaselineNotice(notice: GateBaselineNotice | null): GateBaselineNotice | null {
+  return notice === null ? null : { kind: notice.kind, reason: notice.reason };
+}
+
+function validateBaselineNotice(value: unknown): void {
+  if (value === null) return;
+  const notice = record(value, "GateArtifact.baselineNotice");
+  exactKeys(notice, ["kind", "reason"], "GateArtifact.baselineNotice");
+  enumValue(notice.kind, ["absent", "incompatible"] as const, "GateArtifact.baselineNotice.kind");
+  if (notice.reason !== null) boundedCode(notice.reason, "GateArtifact.baselineNotice.reason");
 }
 
 function normalizedNotice(value: string | null | undefined): string | null {
@@ -331,6 +348,7 @@ function validateGateArtifactV2(value: unknown): asserts value is GateArtifactV2
     "resolvedTarget",
     "policySource",
     "policyInvalidReason",
+    "baselineNotice",
     "publication",
     "changeSet",
     "policy",
@@ -368,6 +386,7 @@ function validateGateArtifactV2(value: unknown): asserts value is GateArtifactV2
   if (artifact.policyInvalidReason !== null) {
     boundedCode(artifact.policyInvalidReason, "GateArtifact.policyInvalidReason");
   }
+  validateBaselineNotice(artifact.baselineNotice);
   validatePolicy(artifact.policy);
   validatePublication(artifact.publication, artifact.policy as GuardrailPolicy, target, resolvedTarget);
   validateChangeSet(artifact.changeSet);

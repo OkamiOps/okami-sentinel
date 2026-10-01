@@ -388,12 +388,39 @@ test("omitting the reason is the same as reporting nothing", () => {
   assert.equal(artifact.policyInvalidReason, null);
 });
 
+test("records why a gate had nothing to compare against", () => {
+  for (const notice of [
+    { kind: "absent" as const, reason: null },
+    { kind: "incompatible" as const, reason: "scan_lineage" },
+  ]) {
+    const input = artifactV2Input();
+    input.baselineNotice = notice;
+    const artifact = buildGateArtifactV2(input);
+    assert.deepEqual(artifact.baselineNotice, notice);
+    assert.deepEqual(
+      (parseGateArtifact(JSON.parse(JSON.stringify(artifact))) as GateArtifactV2).baselineNotice,
+      notice,
+    );
+  }
+
+  const invented = artifactV2Input();
+  // @ts-expect-error there is no third kind of missing baseline.
+  invented.baselineNotice = { kind: "sideways", reason: null };
+  assert.throws(() => buildGateArtifactV2(invented), /baselineNotice\.kind/);
+
+  const prose = artifactV2Input();
+  prose.baselineNotice = { kind: "absent", reason: "the baseline lives in /Users/marcos" };
+  assert.throws(() => buildGateArtifactV2(prose), /baselineNotice\.reason/);
+});
+
 test("parses a historical v2 artifact that predates the policy reason", () => {
   const artifact = buildGateArtifactV2(artifactV2Input()) as unknown as Record<string, unknown>;
   const historical = JSON.parse(JSON.stringify(artifact)) as Record<string, unknown>;
   delete historical.policyInvalidReason;
+  delete historical.baselineNotice;
   const parsed = parseGateArtifact(historical) as GateArtifactV2;
   assert.equal(parsed.policyInvalidReason, null);
+  assert.equal(parsed.baselineNotice, null);
   // The legacy word for level 1 is still readable: artifacts on disk carry it.
   assert.equal(parsed.policySource, "base");
 });
