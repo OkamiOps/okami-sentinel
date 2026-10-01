@@ -223,16 +223,6 @@ test("scoped routes never answer with another repository's data", (t) => withSer
       body: JSON.stringify(body),
     });
 
-  // GET /github-checkouts?repositoryKey=… — a query key outside the grant is invisible.
-  const checkoutB = await read(viewer, `/api/github-checkouts?repositoryKey=${encodeURIComponent(repoB)}`);
-  assert.equal(checkoutB.status, 404);
-  assert.deepEqual(await checkoutB.json(), { error: "not_found" });
-  // The granted key is visible: the refusal that follows is the checkout's own
-  // state (this fixture has no working tree), never the 404 scope produces.
-  const checkoutA = await read(viewer, `/api/github-checkouts?repositoryKey=${encodeURIComponent(repoA)}`);
-  assert.equal(checkoutA.status, 409);
-  assert.deepEqual(await checkoutA.json(), { error: "checkout_unavailable" });
-
   // GET /guardrails/gates — an out-of-scope query key yields nothing; the
   // unfiltered list is narrowed to the grants.
   const gatesB = await read(viewer, `/api/guardrails/gates?repositoryKey=${encodeURIComponent(repoB)}`);

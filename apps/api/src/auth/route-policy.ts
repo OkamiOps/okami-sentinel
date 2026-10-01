@@ -122,8 +122,6 @@ export const ROUTE_POLICY: ReadonlyArray<readonly [method: string, pattern: stri
   // The repository travels in the query string, where only the handler can read
   // it; it authorizes the one key it touches and answers 404 for an invisible one.
   ["GET", "/github/branches", SCOPED],
-  ["GET", "/github-checkouts", SCOPED], ["GET", "/github-checkouts/:repositoryKey", R("viewer", "param")],
-  ["POST", "/github-checkouts/:repositoryKey/fetch", R("operator", "param")], ["POST", "/github-checkouts/:repositoryKey/pull", R("operator", "param")],
   ["GET", "/connections", ADMIN], ["POST", "/connections", ADMIN], ["POST", "/connections/compatibility", ADMIN],
   ["GET", "/connections/security-session", AUTH], ["GET", "/connections/:id", ADMIN], ["PATCH", "/connections/:id", ADMIN],
   ["DELETE", "/connections/:id", ADMIN], ["GET", "/connections/:id/auth/:flowId", ADMIN],

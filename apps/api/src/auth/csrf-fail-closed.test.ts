@@ -28,7 +28,7 @@ const serverSettings: ServerSettings = {
 const GUARDED_MUTATIONS = [
   ["connections", "/connections/no-such-connection/auth/start", {}],
   ["engine updates", "/engine-updates/not-a-runtime/update", { version: "1.0.0" }],
-  ["github integration", "/github-checkouts/no-such-repository/fetch", {}],
+  ["github integration", "/github/actions", { repositoryKey: "no-such-repository" }],
 ] as const;
 
 function withServerRuntime<T>(body: () => T): T {

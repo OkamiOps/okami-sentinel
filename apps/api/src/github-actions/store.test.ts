@@ -79,6 +79,22 @@ function memoryDb(): Database.Database {
   return db;
 }
 
+/**
+ * `checkout_mode` was the local checkout panel's one column. The panel is gone, and
+ * a column that survived it would be a field every insert has to carry and nothing
+ * ever reads.
+ */
+test("no table the actions schema creates has a checkout_mode column", () => {
+  const db = memoryDb();
+  const tables = (db.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table'",
+  ).all() as Array<{ name: string }>).map((row) => row.name);
+  const offenders = tables.filter((table) =>
+    (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
+      .some((column) => column.name === "checkout_mode"));
+  assert.deepEqual(offenders, []);
+});
+
 test("allows several actions on one repository", () => {
   const db = memoryDb();
   const base = {

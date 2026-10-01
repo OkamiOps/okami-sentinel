@@ -52,7 +52,6 @@ import {
   supersedeQueuedEvents,
   webhookSecretStoredAt,
 } from "./github-actions/store.js";
-import { createGitHubCheckoutsApp } from "./github-checkouts.js";
 import { githubIntegrationSecurity } from "./github-integration-security.js";
 import { isDraining } from "./shutdown.js";
 import { randomUUID } from "node:crypto";
@@ -1551,9 +1550,7 @@ export const reconcileGitHubActionsNow: () => Promise<GitHubReconcileOutcome> =
  * authentication), so the exemption does not depend on the order the routes above
  * happen to be registered in.
  */
-for (const route of ["/github/*", "/github-checkouts", "/github-checkouts/*"]) {
-  app.use(route, githubIntegrationSecurity());
-}
+app.use("/github/*", githubIntegrationSecurity());
 app.route("/", createGitHubBranchesApp({
   getRepository: findRepository,
   listBranchNames: (repository) => listGitHubBranchNames(repository, readAuthorizedRepositoryJson),
@@ -1677,7 +1674,6 @@ app.route("/", createGitHubActionsApi({
   invalidateWebhookSecrets: () => { githubWebhookSecretCache.invalidate(); },
   reconcile: () => reconcileGitHubActionsNow(),
 }));
-app.route("/", createGitHubCheckoutsApp({ getRepository: findRepository }));
 
 const providerRuntime = getProviderRuntime();
 app.route("/", createConnectionsApp({
