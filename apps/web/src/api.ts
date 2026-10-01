@@ -341,7 +341,8 @@ export function createGuardrailsGitHubAppClient(fetcher?: Fetcher) {
 }
 
 export interface PolicySimulationRequest {
-  gateId: string;
+  /** Omitted, the server simulates against the repository's last gate with an artifact. */
+  gateId?: string;
   policy: GuardrailPolicy;
   now?: string;
 }

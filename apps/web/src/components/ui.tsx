@@ -1,6 +1,6 @@
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 import clsx from "clsx";
 import { useElapsedMs } from "../hooks";
 import { formatDuration } from "../format";
@@ -25,12 +25,16 @@ export function PageHeader({ code, title, description, actions }: { code?: strin
 }
 
 export function Panel({ children, className, id, label, title, aside, wrapTitle = false }: { children: ReactNode; className?: string; id?: string; label?: ReactNode; title?: ReactNode; aside?: ReactNode; wrapTitle?: boolean }) {
+  // A `section` with no accessible name is not a landmark: a reader moving between
+  // panels hears nothing that tells them which one they are in. The title is the
+  // name, so it is wired as one whenever there is a title.
+  const titleId = useId();
   return (
     // `id` exists so a panel can be the target of a link from outside the app
     // (an e-mail footer pointing at one section of a page).
-    <section id={id} className={cx("bench-panel min-w-0", className)}>
+    <section id={id} aria-labelledby={title ? titleId : undefined} className={cx("bench-panel min-w-0", className)}>
       {(label || title || aside) && <div className={cx("flex min-h-11 justify-between gap-4 border-b px-4 py-2.5", wrapTitle ? "items-start" : "items-center")}>
-        <div className="min-w-0 flex-1">{label && <div className="bench-label">{label}</div>}{title && <div className={cx("mt-0.5 text-sm font-semibold", wrapTitle ? "whitespace-normal pr-2 leading-snug" : "truncate")}>{title}</div>}</div>
+        <div className="min-w-0 flex-1">{label && <div className="bench-label">{label}</div>}{title && <div id={titleId} className={cx("mt-0.5 text-sm font-semibold", wrapTitle ? "whitespace-normal pr-2 leading-snug" : "truncate")}>{title}</div>}</div>
         {aside && <div className="shrink-0">{aside}</div>}
       </div>}
       {children}

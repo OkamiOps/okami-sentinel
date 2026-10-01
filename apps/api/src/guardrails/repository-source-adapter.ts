@@ -1,3 +1,4 @@
+import { MAX_GUARDRAIL_ENROLLMENT_BATCH } from "@csb/shared";
 import type {
   GateExecutorKind,
   GuardrailPullRequestSummary,
@@ -43,7 +44,7 @@ export type EnrollGuardrailRepositoriesRequest =
     };
 
 /** The bound the spec sets on one request, so a slip of the mouse cannot enrol 4000. */
-export const MAX_ENROLLED_REPOSITORIES_PER_REQUEST = 50;
+export const MAX_ENROLLED_REPOSITORIES_PER_REQUEST = MAX_GUARDRAIL_ENROLLMENT_BATCH;
 
 export type RepositorySourceInputErrorCode =
   | "repository_request_invalid"

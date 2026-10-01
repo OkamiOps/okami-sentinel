@@ -1,4 +1,4 @@
-import { getIntlLocale, translate } from "../i18n";
+import { getIntlLocale, translate, type TranslationKey } from "../i18n";
 import type {
   DecisionGraph,
   DecisionGraphNode,
@@ -185,12 +185,16 @@ export function gateBaselineNotice(artifact: GateArtifact | null): GateBaselineN
  * The message key for the notice: one sentence per fact, and the reason only when
  * there is one to name.
  */
-export function baselineNoticeKey(notice: GateBaselineNotice | null): string | null {
+const NAMED_INCOMPATIBLE_REASONS = new Set(["scan_lineage", "coverage", "policy_schema"]);
+
+export function baselineNoticeKey(notice: GateBaselineNotice | null): TranslationKey | null {
   if (notice === null) return null;
   if (notice.kind === "absent") return "guardrails.baselineNotice.absent";
-  return notice.reason === null
-    ? "guardrails.baselineNotice.incompatible"
-    : `guardrails.baselineNotice.incompatible.${notice.reason}`;
+  // A reason nobody has translated yet still gets the general sentence rather than
+  // printing a raw code at the operator.
+  return notice.reason !== null && NAMED_INCOMPATIBLE_REASONS.has(notice.reason)
+    ? `guardrails.baselineNotice.incompatible.${notice.reason}` as TranslationKey
+    : "guardrails.baselineNotice.incompatible";
 }
 
 export function isGateActive(status: GateStatus): boolean {

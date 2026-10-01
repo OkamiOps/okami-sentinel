@@ -4,6 +4,8 @@ import test from "node:test";
 import type { DecisionGraph, GateArtifact, GateRun, GuardrailPolicy } from "@csb/shared";
 
 import {
+  baselineNoticeKey,
+  gateBaselineNotice,
   bootstrapBranchLabel,
   editorStateFromPolicy,
   findingForDecisionNode,
@@ -227,4 +229,28 @@ test("a v2 protected-branch artifact names the scanned branch as the established
   const artifact = { schemaVersion: 2, target: { kind: "protected_branch", ref: "main" } } as unknown as GateArtifact;
   assert.equal(isProtectedBranchBaselineRun(gate, artifact), true);
   assert.equal(bootstrapBranchLabel(gate, artifact, "develop"), "main");
+});
+
+test("a gate says why it had nothing to compare against, and nothing when it did", () => {
+  const withNotice = (notice: unknown) =>
+    ({ schemaVersion: 2, baselineNotice: notice } as unknown as GateArtifact);
+
+  assert.equal(baselineNoticeKey(gateBaselineNotice(withNotice(null))), null);
+  assert.equal(
+    baselineNoticeKey(gateBaselineNotice(withNotice({ kind: "absent", reason: null }))),
+    "guardrails.baselineNotice.absent",
+  );
+  assert.equal(
+    baselineNoticeKey(gateBaselineNotice(withNotice({ kind: "incompatible", reason: "scan_lineage" }))),
+    "guardrails.baselineNotice.incompatible.scan_lineage",
+  );
+  // A reason nobody has translated yet gets the general sentence, not a raw code.
+  assert.equal(
+    baselineNoticeKey(gateBaselineNotice(withNotice({ kind: "incompatible", reason: "something_new" }))),
+    "guardrails.baselineNotice.incompatible",
+  );
+  // A v1 artifact has no notice to read: that is "nothing was recorded", and the
+  // older copy on the gate page covers it.
+  assert.equal(gateBaselineNotice({ schemaVersion: 1 } as unknown as GateArtifact), null);
+  assert.equal(gateBaselineNotice(null), null);
 });

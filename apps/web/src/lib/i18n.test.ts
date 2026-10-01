@@ -149,6 +149,90 @@ test("localizes remote guardrail enrollment, preflight, and policy authority", (
   assert.match(translate("fr", "guardrails.previewDescription"), /dix minutes/i);
 });
 
+/**
+ * The Guardrails tab's phase-2 copy. A key missing from a locale would fall back to
+ * Portuguese in a German screenshot, which is the inconsistency the operator will
+ * see first.
+ */
+test("localizes the repository list, the policy precedence and the baseline in five locales", () => {
+  const keys = [
+    "guardrails.baseline.absent",
+    "guardrails.baseline.building",
+    "guardrails.baseline.ready",
+    "guardrails.baseline.stale",
+    "guardrails.baseline.stale.scan_lineage",
+    "guardrails.baseline.stale.protected_branch",
+    "guardrails.baselineSectionTitle",
+    "guardrails.baselineSectionDescription",
+    "guardrails.baselineBuildNow",
+    "guardrails.baselineBuildCost",
+    "guardrails.baselineNoPushAction",
+    "guardrails.baselineNotice.absent",
+    "guardrails.baselineNotice.incompatible",
+    "guardrails.baselineNotice.incompatible.scan_lineage",
+    "guardrails.policySource.repository_file",
+    "guardrails.policySource.sentinel",
+    "guardrails.policySource.default",
+    "guardrails.policySource.workspace",
+    "guardrails.policySource.fileInvalid",
+    "guardrails.policyFileBanner",
+    "guardrails.policyFileInvalid",
+    "guardrails.presetTitle",
+    "guardrails.presetDescription",
+    "guardrails.preset.block-critical-high",
+    "guardrails.preset.block-critical-highDetail",
+    "guardrails.preset.block-critical",
+    "guardrails.preset.warn-only",
+    "guardrails.preset.custom",
+    "guardrails.preset.customDetail",
+    "guardrails.repositoriesTitle",
+    "guardrails.repositoriesDescription",
+    "guardrails.repositoriesEmpty",
+    "guardrails.repositoriesEmptyDescription",
+    "guardrails.addRepositories",
+    "guardrails.removeRepositoryConfirm",
+    "guardrails.removeRepositoryBusy",
+    "guardrails.enrollSelectTitle",
+    "guardrails.enrollSelectDescription",
+    "guardrails.enrollSkip.already_enrolled",
+    "guardrails.enrollSkip.not_authorized",
+    "guardrails.enrollSkip.archived",
+    "guardrails.repositoryPageDescription",
+    "guardrails.gateHistoryTitle",
+    "guardrails.prCommentTitle",
+    "guardrails.prCommentDescription",
+    "guardrails.prCommentPhase3",
+  ] as const;
+  const placeholders = (value: string) => [...new Set(value.match(/\{\w+\}/g) ?? [])].sort();
+  for (const locale of ["pt-BR", "en", "es", "de", "fr"] as const) {
+    for (const key of keys) {
+      assert.notEqual(translate(locale, key).trim(), "", `${locale}.${key}`);
+      assert.deepEqual(placeholders(translate(locale, key)), placeholders(translate("pt-BR", key)), `${locale}.${key}`);
+      // A sentence that merely inherited Portuguese is not a translation of it. Short
+      // labels are exempt: Spanish and Portuguese really do share words like
+      // "Ausente", and demanding a difference would force a worse translation.
+      if (locale !== "pt-BR" && translate("pt-BR", key).length > 40) {
+        assert.notEqual(translate(locale, key), translate("pt-BR", key), `${locale}.${key}`);
+      }
+    }
+  }
+  // The interpolated ones keep their variables.
+  for (const locale of ["pt-BR", "en", "es", "de", "fr"] as const) {
+    const removal = translate(locale, "guardrails.removeRepositoryTitle", { name: "OkamiOps/sentinel" });
+    assert.ok(removal.includes("OkamiOps/sentinel"), locale);
+    const selected = translate(locale, "guardrails.enrollSelected", { count: 3, total: 9 });
+    assert.ok(selected.includes("3") && selected.includes("9"), locale);
+    const result = translate(locale, "guardrails.enrollResult", { enrolled: 3, skipped: 1 });
+    assert.ok(result.includes("3") && result.includes("1"), locale);
+  }
+  // Four distinct baseline words, so the list cannot say the same thing twice.
+  for (const locale of ["pt-BR", "en", "es", "de", "fr"] as const) {
+    const words = (["absent", "building", "ready", "stale"] as const)
+      .map((state) => translate(locale, `guardrails.baseline.${state}` as typeof keys[number]));
+    assert.equal(new Set(words).size, 4, locale);
+  }
+});
+
 test("localizes every provider preset label and its critical setup guidance", () => {
   const customBundleKeys = [
     "connections.preset.customBundleRequiredHelp",
