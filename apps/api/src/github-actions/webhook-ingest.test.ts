@@ -955,8 +955,12 @@ test("a fault after the events are written leaves nothing behind", async () => {
 
   let breakCompletion = false;
   const dispatched: string[] = [];
+  // Pinned to the clock the payloads below carry. With the real one their
+  // `updated_at` ages past the staleness window and every delivery here reads
+  // `stale_delivery` a day after the test was written.
+  let clock = Date.parse("2026-09-30T12:00:00.000Z");
   const deps: GitHubWebhookIngestDependencies = {
-    now: () => new Date().toISOString(),
+    now: () => { clock += 3; return new Date(clock).toISOString(); },
     listSecrets: async () => [{ connectionId: "c1", secret: SECRET }],
     findRepository: (connectionId, repositoryId) =>
       connectionId === "c1" && repositoryId === "1" ? repository : null,

@@ -748,10 +748,20 @@ test("an abandoned reservation becomes terminal, and a live one is left running"
   const orphan = getGitHubActionEvent(event.id, db)!;
   assert.equal(orphan.status, "failed");
   assert.equal(orphan.error, "automatic_dispatch_uncertain");
-  // The reservation stays spent for the day: the scan may have started.
+  // The reservation is released: no gate was ever linked to it, so there is no
+  // scan for the day to have paid for, and a standing failure must not be able to
+  // spend the repository's budget on launches that never happened (1.4 N-2).
   assert.equal(reservedGitHubActionCostForUtcDay(
     action.repositoryKey, "2026-09-30T00:00:00.000Z", "2026-10-01T00:00:00.000Z", db,
-  ), 2);
+  ), 0);
+  // And the released budget is reservable again, by the next change.
+  const next = createGitHubActionEvent(pullRequestEvent(action, SHA_NEW, "2026-09-30T11:00:00.000Z"), db)!;
+  assert.notEqual(reserveGitHubActionEventDispatch({
+    eventId: next.id, actionId: action.id, repositoryKey: action.repositoryKey,
+    actionRevision: action.revision,
+    dayStart: "2026-09-30T00:00:00.000Z", dayEnd: "2026-10-01T00:00:00.000Z",
+    costCeilingUsd: 10, dailyCostCeilingUsd: 10, at: "2026-09-30T11:00:01.000Z",
+  }, db), null);
 });
 
 /**

@@ -719,7 +719,7 @@ export function reserveGitHubActionEventDispatch(
         SELECT COALESCE(SUM(cost_ceiling_usd), 0)
         FROM github_action_events
         WHERE repository_key = @repository_key
-          AND status IN ('dispatching', 'launched', 'failed')
+          AND status IN ('dispatching', 'launched')
           AND dispatched_at >= @day_start AND dispatched_at < @day_end
       ) + @cost_ceiling_usd <= @daily_cost_ceiling_usd
   `).run({
@@ -738,10 +738,11 @@ export function reserveGitHubActionEventDispatch(
 }
 
 /**
- * A process died after reserving a paid dispatch. The reservation stays spent for
- * the day — the scan may well have started — and the event becomes terminal
- * instead of being retried blindly. `exceptEventIds` are the dispatches this
- * process is running right now, which are not orphans.
+ * A process died after reserving a paid dispatch. The event becomes terminal
+ * instead of being retried blindly — the scan may well have started — and its
+ * reservation is released with every other `failed` one, because no gate was ever
+ * linked to charge it to. `exceptEventIds` are the dispatches this process is
+ * running right now, which are not orphans.
  */
 export function failOrphanedGitHubActionDispatches(
   now: string,
@@ -768,7 +769,8 @@ export function failOrphanedGitHubActionDispatches(
  * Cost ceilings are reservations, so a new automatic launch cannot overspend the
  * daily cap, and the cap belongs to the repository (see
  * `reserveGitHubActionEventDispatch`) — which is also why the daily-cost alert is
- * keyed by repository and not by action.
+ * keyed by repository and not by action. A `failed` dispatch is released, for the
+ * reason that function gives.
  */
 export function reservedGitHubActionCostForUtcDay(
   repositoryKey: string,
@@ -781,7 +783,7 @@ export function reservedGitHubActionCostForUtcDay(
     SELECT COALESCE(SUM(cost_ceiling_usd), 0) AS total
     FROM github_action_events
     WHERE repository_key = ?
-      AND status IN ('dispatching', 'launched', 'failed')
+      AND status IN ('dispatching', 'launched')
       AND dispatched_at >= ? AND dispatched_at < ?
   `).get(repositoryKey, dayStart, dayEnd) as { total: number };
   return Number(row.total) || 0;

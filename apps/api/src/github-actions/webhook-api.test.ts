@@ -151,6 +151,14 @@ const appFor = (record: Recorder, overrides: Partial<GitHubWebhookAppOptions> = 
 };
 
 /** A body that is offered and never finished, the cheapest denial there is. */
+/** Addresses the request, which `CSB_TRUST_PROXY=1` reads as the caller's own. */
+function from(ip: string, request: RequestInit): RequestInit {
+  return {
+    ...request,
+    headers: { ...(request.headers as Record<string, string>), "X-Forwarded-For": ip },
+  };
+}
+
 function stalledRequest(delivery: string, extra: Record<string, string> = {}, options: { silent?: boolean } = {}): RequestInit {
   const body = new ReadableStream<Uint8Array>({
     start(controller) { if (!options.silent) controller.enqueue(new Uint8Array(16)); },
@@ -356,9 +364,11 @@ test("answers 500 without a body when the ingestion itself faults", async () => 
 test("the limiter cannot be split by a forwarded header behind an untrusted proxy", async () => {
   const record = recorder();
   const app = appFor(record, { trustProxy: false });
-  // No socket peer and no trusted proxy means no attributable bucket, so the
-  // per-IP window must not be keyed off the caller's own header.
-  for (let attempt = 0; attempt < 31; attempt += 1) {
+  // No socket peer and no trusted proxy means no attributable bucket. Thirty-one
+  // failures keyed off the caller's own header would be thirty-one buckets of one;
+  // they share the single `unattributed` pool instead, so the window still closes
+  // (N-14). What must never happen is the old behaviour: no bucket at all.
+  for (let attempt = 0; attempt < 30; attempt += 1) {
     const response = await app.request(URL, {
       ...signedRequest({ secret: "wrong", delivery: `x-${attempt}` }),
       headers: {
@@ -368,6 +378,15 @@ test("the limiter cannot be split by a forwarded header behind an untrusted prox
     });
     assert.equal(response.status, 401, `attempt ${attempt}`);
   }
+  const past = await app.request(URL, {
+    ...signedRequest({ secret: "wrong", delivery: "x-30", appId: null }),
+    headers: {
+      ...(signedRequest({ secret: "wrong", appId: null }).headers as Record<string, string>),
+      "X-Forwarded-For": "203.0.113.30",
+    },
+  });
+  assert.equal(past.status, 429);
+  assert.deepEqual(await past.json(), { error: "rate_limited" });
 });
 
 /**
@@ -437,8 +456,12 @@ test("a signed delivery reaches the real store, once", async () => {
   }, db);
 
   const dispatched: string[] = [];
+  // Pinned to the fixture's own clock, like `recorder()`: with the real one the
+  // payload's `updated_at` ages past the staleness window and this test would start
+  // reading `stale_delivery` a day after it was written.
+  let clock = Date.parse("2026-09-30T12:00:00.000Z");
   const dependencies: GitHubWebhookIngestDependencies = {
-    now: () => new Date().toISOString(),
+    now: () => { clock += 3; return new Date(clock).toISOString(); },
     listSecrets: async () => [{ connectionId: "c1", secret: SECRET }],
     findRepository: (connectionId, repositoryId) =>
       connectionId === "c1" && repositoryId === "1" ? repository : null,
@@ -686,10 +709,12 @@ test("hashes at most N bodies at once, and queues the rest instead of losing the
 test("eight stalled bodies do not stop a signed delivery, and each is cut off", async () => {
   const record = recorder();
   const app = appFor(record, { readTimeoutMs: 150 });
+  // Two stalled sockets per address, under the four-slot per-address budget: this
+  // is the global ceiling being tested, not the per-address one.
   const stalled = Array.from({ length: 8 }, (_, index) =>
-    app.request(URL, stalledRequest(`stalled-${index}`)));
+    app.request(URL, from(`198.51.100.${Math.floor(index / 2)}`, stalledRequest(`stalled-${index}`))));
   // While all eight hang on their sockets, a real delivery is served.
-  const valid = await app.request(URL, signedRequest({ delivery: "through-the-flood" }));
+  const valid = await app.request(URL, from("140.82.115.1", signedRequest({ delivery: "through-the-flood" })));
   assert.equal(valid.status, 200);
   assert.deepEqual(await valid.json(), { status: "processed" });
   // And none of the eight holds anything for longer than the deadline.
@@ -700,6 +725,28 @@ test("eight stalled bodies do not stop a signed delivery, and each is cut off", 
   }
   assert.equal(record.deliveries.length, 1, "a body that never arrived is not a delivery");
   assert.deepEqual(logged.filter((entry) => entry.status === 408).length, 8);
+});
+
+/**
+ * N-14: an address that cannot be attributed used to skip the per-address read
+ * budget entirely, which handed anyone who could strip `X-Forwarded-For` from a
+ * trusted-proxy deployment an unmetered endpoint. They share one pool now.
+ */
+test("an unattributable caller is metered in one shared pool, not exempted", async () => {
+  const record = recorder();
+  const app = appFor(record, {
+    readTimeoutMs: 300, maxBodyReadsPerAddress: 1, readAdmissionWaitMs: 10,
+  });
+  // No X-Forwarded-For under a trusted proxy: nothing to attribute this to.
+  const holding = app.request(URL, stalledRequest("unattributed-holding"));
+  await new Promise((resolve) => { setTimeout(resolve, 10); });
+  const shed = await app.request(URL, signedRequest({ delivery: "unattributed-shed" }));
+  assert.equal(shed.status, 429);
+  assert.deepEqual(await shed.json(), { error: "rate_limited" });
+  assert.equal((await holding).status, 408);
+  // An attributable delivery was never in that pool, so it is served throughout.
+  const named = await app.request(URL, from("140.82.115.1", signedRequest({ delivery: "attributed" })));
+  assert.equal(named.status, 200);
 });
 
 test("sheds a body read that would exceed the read budget", async () => {
