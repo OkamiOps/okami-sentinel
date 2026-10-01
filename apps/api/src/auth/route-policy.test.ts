@@ -170,10 +170,30 @@ test("declares every repository route of the Guardrails tab with the requirement
   );
 });
 
+/**
+ * The local checkout panel could never write anything the gate read, so it is gone
+ * with its four routes. A policy row left behind would describe a door that is not
+ * there, and the first thing to notice it would be the "every route declares a
+ * requirement" test failing in reverse.
+ */
+test("the local checkout path is gone from the policy and from the app", async () => {
+  assert.deepEqual(ROUTE_POLICY.filter(([, pattern]) => pattern.includes("github-checkouts")), []);
+  const removed = [
+    ["GET", "/github-checkouts"],
+    ["GET", "/github-checkouts/local%2Fone"],
+    ["POST", "/github-checkouts/local%2Fone/fetch"],
+    ["POST", "/github-checkouts/local%2Fone/pull"],
+  ] as const;
+  for (const [method, target] of removed) {
+    assert.equal(matchPolicy(method, target), null, `${method} ${target} still has a policy row`);
+    assert.equal((await app.request(target, { method })).status, 404, `${method} ${target} still answers`);
+  }
+});
+
 test("path segments are decoded exactly once and bad encoding never matches", () => {
-  assert.deepEqual(matchPolicy("GET", "/github-checkouts/local%2Fone")?.params, { repositoryKey: "local/one" });
-  assert.deepEqual(matchPolicy("GET", "/github-checkouts/local%252Fone")?.params, { repositoryKey: "local%2Fone" });
-  assert.equal(matchPolicy("GET", "/github-checkouts/%ZZ"), null);
+  assert.deepEqual(matchPolicy("GET", "/guardrails/repositories/local%2Fone/policy")?.params, { repositoryKey: "local/one" });
+  assert.deepEqual(matchPolicy("GET", "/guardrails/repositories/local%252Fone/policy")?.params, { repositoryKey: "local%2Fone" });
+  assert.equal(matchPolicy("GET", "/guardrails/repositories/%ZZ/policy"), null);
   // An encoded separator stays inside one segment, so it cannot forge extra
   // ones, and the captured value is what the handler will read back.
   assert.deepEqual(matchPolicy("GET", "/scans/a%2Fb/report")?.params, { id: "a/b" });
@@ -186,12 +206,12 @@ test("the matcher captures the same repository key the handler will read", async
     c.set("matched" as never, matchPolicy(c.req.method, c.req.path)?.params.repositoryKey as never);
     await next();
   });
-  probe.get("/github-checkouts/:repositoryKey", (c) => c.json({
+  probe.get("/guardrails/repositories/:repositoryKey/policy", (c) => c.json({
     matched: c.get("matched" as never) as string | undefined,
     handler: c.req.param("repositoryKey"),
   }));
   for (const raw of ["local%2Fone", "github%3A1", "local%252Fone", "plain"]) {
-    const body = await (await probe.request(`/github-checkouts/${raw}`)).json();
+    const body = await (await probe.request(`/guardrails/repositories/${raw}/policy`)).json();
     assert.equal(body.matched, body.handler, `mismatch for ${raw}`);
   }
 });
