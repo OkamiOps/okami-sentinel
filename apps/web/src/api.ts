@@ -192,7 +192,8 @@ export interface GuardrailTargetPreview {
     policySha: string;
     pullRequestNumber: number | null;
   };
-  policySource: "base" | "protected_branch" | "default";
+  policySource: ResolvedPolicySource;
+  policyInvalidReason: string | null;
   policySha: string;
   policyPath: ".csb/guardrails.json";
   protectedBranches: string[];
@@ -331,13 +332,30 @@ export interface PolicySimulationRequest {
 export interface PolicySimulationResponse {
   decision: GateDecision;
   configurationErrors: Array<{ field: string; message: string }>;
+  /** Which gate the simulation ran against, named even when the body did not. */
+  gateId: string;
 }
+
+/** The three levels of the policy precedence, plus the local-workspace case. */
+export type ResolvedPolicySource = "repository_file" | "sentinel" | "default";
+export type GuardrailPolicySource = ResolvedPolicySource | "workspace";
+export type GuardrailPolicyPreset =
+  | "block-critical-high"
+  | "block-critical"
+  | "warn-only"
+  | "custom";
 
 export interface GuardrailPolicyResponse {
   policy: GuardrailPolicy;
-  policySource: "workspace" | "base" | "protected_branch" | "default";
+  policySource: GuardrailPolicySource;
   policySha: string | null;
+  /** True only while `.csb/guardrails.json` is in force. */
   readOnly: boolean;
+  preset: GuardrailPolicyPreset;
+  /** Why a file that is present was not obeyed, or `null`. */
+  fileInvalidReason: string | null;
+  /** What the editor writes back to, even while the repository file wins. */
+  sentinel: { preset: GuardrailPolicyPreset; updatedAt: string; updatedBy: string | null } | null;
 }
 
 export interface GatePublicationAttempt {
@@ -500,7 +518,7 @@ export const api = {
   updateGuardrailPolicy: (repositoryKey: string, policy: GuardrailPolicy) =>
     request<GuardrailPolicyResponse>(
       `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/policy`,
-      { method: "PUT", body: JSON.stringify(policy) },
+      { method: "PUT", body: JSON.stringify({ policy }) },
     ),
   simulateGuardrailPolicy: (
     repositoryKey: string,

@@ -21,6 +21,7 @@ import type {
   ScanCost,
   Severity,
 } from "@csb/shared";
+import { GATE_ARTIFACT_POLICY_SOURCES } from "@csb/shared";
 import type { EvaluateGateResult } from "./evaluate.js";
 import { buildDecisionGraph } from "./decision-graph.js";
 import { buildScanLineage } from "./lineage.js";
@@ -69,6 +70,7 @@ export interface BuildGateArtifactV2Input extends Omit<PublicArtifactEnvelope, "
   target: GateTarget;
   resolvedTarget: ResolvedGateTarget;
   policySource: GateArtifactV2["policySource"];
+  policyInvalidReason?: string | null;
   evaluation: EvaluateGateResult;
   lineage: EffectiveScanLineage;
   coverage: GateCoverageEnvelope;
@@ -170,6 +172,7 @@ export function buildGateArtifactV2(input: BuildGateArtifactV2Input): GateArtifa
     target: copyGateTarget(input.target),
     resolvedTarget: copyResolvedTarget(input.resolvedTarget),
     policySource: input.policySource,
+    policyInvalidReason: normalizedNotice(input.policyInvalidReason),
     publication: gatePublicationEligibility(input.policy, input.target, input.resolvedTarget),
     changeSet,
     policy: copyPolicy(input.policy),
@@ -244,10 +247,37 @@ export function parseGateArtifact(value: unknown): GateArtifact {
     return copyGateArtifactV1(value);
   }
   if (schemaVersion === 2) {
-    validateGateArtifactV2(value);
-    return structuredClone(value);
+    // Fields added after a release shipped are absent from the artifacts that
+    // release wrote. They are filled in before validation, so `exactKeys` stays an
+    // exact check and a historical artifact still parses.
+    const upgraded = withArtifactV2Defaults(value);
+    validateGateArtifactV2(upgraded);
+    return structuredClone(upgraded);
   }
   throw new Error(`GateArtifact schema ${String(schemaVersion)} não suportado`);
+}
+
+/**
+ * The one place a v2 artifact read from disk is brought up to the current shape.
+ * Only fields whose absence has an unambiguous meaning belong here, and `null` is
+ * that meaning for every one of them: nothing was reported.
+ */
+function withArtifactV2Defaults(value: unknown): unknown {
+  const artifact = record(value, "GateArtifact");
+  if ("policyInvalidReason" in artifact) return artifact;
+  return { ...artifact, policyInvalidReason: null };
+}
+
+function normalizedNotice(value: string | null | undefined): string | null {
+  return value === undefined ? null : value;
+}
+
+/** A short machine code, never free text from a scan. */
+function boundedCode(value: unknown, path: string): string {
+  const code = nonEmptyString(value, path);
+  if (code.length > 120) fail(path, "excede 120 caracteres");
+  if (!/^[a-z0-9_:.-]+$/.test(code)) fail(path, "deve ser um código em minúsculas");
+  return code;
 }
 
 function validatedArtifact(artifact: GateArtifactV1): GateArtifactV1 {
@@ -300,6 +330,7 @@ function validateGateArtifactV2(value: unknown): asserts value is GateArtifactV2
     "target",
     "resolvedTarget",
     "policySource",
+    "policyInvalidReason",
     "publication",
     "changeSet",
     "policy",
@@ -330,10 +361,13 @@ function validateGateArtifactV2(value: unknown): asserts value is GateArtifactV2
   const resolvedTarget = validateResolvedTarget(artifact.resolvedTarget);
   const policySource = enumValue(
     artifact.policySource,
-    ["base", "protected_branch", "default"] as const,
+    GATE_ARTIFACT_POLICY_SOURCES,
     "GateArtifact.policySource",
   );
   validateTargetResolution(target, resolvedTarget, policySource);
+  if (artifact.policyInvalidReason !== null) {
+    boundedCode(artifact.policyInvalidReason, "GateArtifact.policyInvalidReason");
+  }
   validatePolicy(artifact.policy);
   validatePublication(artifact.publication, artifact.policy as GuardrailPolicy, target, resolvedTarget);
   validateChangeSet(artifact.changeSet);
@@ -452,6 +486,8 @@ function validateTargetResolution(
       fail("GateArtifact.resolvedTarget", "não corresponde à branch protegida");
     }
   }
+  // Legacy words, written before the three-level precedence existed. Their own
+  // invariants are kept so an artifact on disk still validates exactly as it did.
   if (policySource === "base" && resolved.policySha !== resolved.baseSha) {
     fail("GateArtifact.policySource", "base exige policySha igual ao baseSha");
   }
@@ -461,11 +497,15 @@ function validateTargetResolution(
   ) {
     fail("GateArtifact.policySource", "protected_branch exige alvo e policySha protegidos");
   }
+  // All three current levels read the policy at the same commit — the protected
+  // source the target resolved to — because that is where `.csb/guardrails.json`
+  // is looked for whether or not it turned out to be there. What differs between
+  // them is which policy won, not where we looked.
   if (
-    policySource === "default"
+    (policySource === "repository_file" || policySource === "sentinel" || policySource === "default")
     && resolved.policySha !== (target.kind === "protected_branch" ? resolved.headSha : resolved.baseSha)
   ) {
-    fail("GateArtifact.policySource", "default exige policySha da fonte protegida resolvida");
+    fail("GateArtifact.policySource", `${policySource} exige policySha da fonte protegida resolvida`);
   }
 }
 

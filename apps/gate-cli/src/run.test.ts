@@ -147,7 +147,7 @@ function comparableBaseline(findings: FindingSummary[]): GateArtifactV2 {
       policySha: BASE_SHA,
       pullRequestNumber: null,
     },
-    policySource: "protected_branch",
+    policySource: "repository_file",
     changeSet: baselineChangeSet,
     policy,
     scan: { id: "scan-baseline", cost: null, status: "completed" },
@@ -186,7 +186,7 @@ function fakeDeps(input: {
     readPolicy: () => ({
       policy: defaultGuardrailPolicy(),
       exceptions: [],
-      source: "base",
+      source: "repository_file",
     }),
     inspectSnapshots: () => ({
       changeSet: changeSet(outcome === "no_changes" ? [] : undefined),
@@ -303,7 +303,7 @@ test("reads policy and exceptions only from the frozen base checkout", async () 
 
   assert.equal(result.artifact.policy.scan.maxCostUsd, 7);
   assert.notEqual(result.artifact.policy.scan.maxCostUsd, 999);
-  assert.equal(result.artifact.policySource, "base");
+  assert.equal(result.artifact.policySource, "repository_file");
 });
 
 test("forces a protected-branch Actions baseline to use the repository scan plan", async () => {
@@ -320,7 +320,7 @@ test("forces a protected-branch Actions baseline to use the repository scan plan
     baseline: null,
     baselineState: "absent",
   }), {
-    readPolicy: () => ({ policy: defaultGuardrailPolicy(), exceptions: [], source: "protected_branch" }),
+    readPolicy: () => ({ policy: defaultGuardrailPolicy(), exceptions: [], source: "repository_file" }),
     inspectSnapshots: (_options, policy) => {
       inspectedScope = policy.scope.mode;
       return {
