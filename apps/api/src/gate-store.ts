@@ -14,7 +14,11 @@ import type {
   GitHubConclusion,
   GuardrailRepository,
 } from "@csb/shared";
-import { isReservedNotificationScope } from "@csb/shared";
+import {
+  DEFAULT_GUARDRAIL_PR_COMMENT_LOCALE,
+  isGuardrailPrCommentLocale,
+  isReservedNotificationScope,
+} from "@csb/shared";
 import { getDb } from "./db.js";
 import { migrateGuardrailsSchema } from "./guardrails-migrations.js";
 
@@ -34,6 +38,7 @@ interface GuardrailRepositoryRow {
   policy_path: string;
   pr_comment_enabled: number;
   pr_comment_detail: string;
+  pr_comment_locale: string;
   last_gate_id: string | null;
 }
 
@@ -1021,6 +1026,9 @@ export function listGuardrailRepositoryRows(
     ...rowToGuardrailRepository(row),
     prCommentEnabled: row.pr_comment_enabled === 1,
     prCommentDetail: row.pr_comment_detail === "summary" ? "summary" : "detailed",
+    prCommentLocale: isGuardrailPrCommentLocale(row.pr_comment_locale)
+      ? row.pr_comment_locale
+      : DEFAULT_GUARDRAIL_PR_COMMENT_LOCALE,
     baseline: {
       repositoryKey: row.repository_key,
       state: (row.baseline_state ?? "absent") as GuardrailBaselineState,
@@ -1095,6 +1103,15 @@ export function patchGuardrailRepository(
   if (patch.prCommentEnabled !== undefined) {
     assignments.push("pr_comment_enabled = @pr_comment_enabled");
     parameters.pr_comment_enabled = patch.prCommentEnabled ? 1 : 0;
+  }
+  // The `CHECK` constraint only exists on a freshly created table (SQLite cannot
+  // add one through `ALTER TABLE`), so the domain is enforced here too.
+  if (patch.prCommentLocale !== undefined) {
+    if (!isGuardrailPrCommentLocale(patch.prCommentLocale)) {
+      throw new Error("repository_pr_comment_locale_invalid");
+    }
+    assignments.push("pr_comment_locale = @pr_comment_locale");
+    parameters.pr_comment_locale = patch.prCommentLocale;
   }
   // A patch with nothing in it still has to answer "does this repository exist?",
   // so it reads rather than silently reporting success for an unknown key.
