@@ -916,6 +916,16 @@ não introduzida: o segredo segue a mesma custódia da chave privada, cifrado po
 `X-GitHub-Event` e `X-GitHub-Delivery`; permitir corpo de 1 MiB; não *bufferizar*
 de forma a alterar bytes. Dokploy/Traefik atendem por padrão.
 
+Com `CSB_TRUST_PROXY=1`, o proxy **precisa** acrescentar `X-Forwarded-For` — é
+dele que sai o endereço que identifica cada balde de admissão do webhook. Se o
+cabeçalho não chegar, a requisição não é atribuível e cai num balde único
+compartilhado, `unattributed`: continua medida (nunca isenta, que era a brecha de
+quem removia o cabeçalho), mas todas as entregas disputam o orçamento de leitura
+de um só endereço, o que aparece como `429 rate_limited` sob carga. Ou seja: um
+proxy mal configurado se manifesta como estrangulamento visível, não como
+fronteira ausente. Com `CSB_TRUST_PROXY=0` o endereço vem do socket e isso não
+se aplica.
+
 **Escopo da instalação.** Se a App foi instalada em "only selected
 repositories", ampliar a seleção em
 `https://github.com/settings/installations/<id>`. Sem isso, o multi-select de

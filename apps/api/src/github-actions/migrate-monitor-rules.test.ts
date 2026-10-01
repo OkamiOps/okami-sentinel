@@ -111,6 +111,18 @@ function legacyDb(options: {
   return db;
 }
 
+const LEGACY_TABLES = [
+  "github_monitor_rules",
+  "github_monitor_events",
+  "github_monitor_actions_runs",
+  "github_monitor_poll_leases",
+];
+
+function recordedVersion(db: Database.Database): number {
+  return (db.prepare("SELECT max(version) AS version FROM github_actions_schema_migrations")
+    .get() as { version: number }).version;
+}
+
 function tableExists(db: Database.Database, name: string): boolean {
   return db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined;
 }
@@ -260,15 +272,71 @@ test("preserves the gate id on migrated events", () => {
   assert.equal(pushAction.lastEventAt, "2026-09-28T08:00:00.000Z");
 });
 
-test("renames the legacy tables and is a no-op on the second run", () => {
+test("drops the migrated tables once the actions are in place", () => {
   const db = legacyDb();
   migrateMonitorRulesToActions(db);
   assert.deepEqual(migrateMonitorRulesToActions(db), { actions: 0, events: 0, skipped: 0 });
-  assert.ok(tableExists(db, "github_monitor_rules_migrated"));
-  assert.ok(!tableExists(db, "github_monitor_rules"));
-  assert.ok(tableExists(db, "github_monitor_events_migrated"));
-  assert.ok(tableExists(db, "github_monitor_actions_runs_migrated"));
-  assert.ok(tableExists(db, "github_monitor_poll_leases_migrated"));
+  for (const table of LEGACY_TABLES) {
+    assert.ok(!tableExists(db, table), `${table} came back`);
+    assert.ok(!tableExists(db, `${table}_migrated`), `${table}_migrated survived`);
+  }
+  assert.equal(listGitHubActions({ repositoryKey: "github:1" }, db).length, 2);
+  assert.equal(recordedVersion(db), GITHUB_ACTIONS_SCHEMA_VERSION);
+});
+
+/**
+ * A database as the previous release left it: carried over, recorded at version 4,
+ * with the four `_migrated` tables still standing. `legacyRules` is how many rules
+ * they say were carried; `actions` how many survived into the new model.
+ */
+function versionFourDb(options: { legacyRules: number; actions: number }): Database.Database {
+  const db = new Database(":memory:");
+  db.pragma("foreign_keys = ON");
+  db.exec("CREATE TABLE guardrail_repositories (repository_key TEXT PRIMARY KEY)");
+  db.prepare("INSERT INTO guardrail_repositories VALUES ('github:1')").run();
+  db.exec(GITHUB_ACTIONS_SCHEMA_SQL);
+  db.exec(`
+    CREATE TABLE github_actions_schema_migrations (
+      version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL
+    );
+    INSERT INTO github_actions_schema_migrations VALUES (4, 'actions model', '2026-09-30T10:00:00.000Z');
+    CREATE TABLE github_monitor_rules_migrated (id TEXT PRIMARY KEY);
+    CREATE TABLE github_monitor_events_migrated (id TEXT PRIMARY KEY);
+    CREATE TABLE github_monitor_actions_runs_migrated (id TEXT PRIMARY KEY);
+    CREATE TABLE github_monitor_poll_leases_migrated (rule_id TEXT PRIMARY KEY);
+  `);
+  const rule = db.prepare("INSERT INTO github_monitor_rules_migrated VALUES (?)");
+  for (let index = 0; index < options.legacyRules; index += 1) rule.run(`rule-${index}`);
+  const action = db.prepare(`
+    INSERT INTO github_actions (
+      id, repository_key, name, trigger_kind, branch_patterns_json, connection_id,
+      installation_id, repository_id, cost_ceiling_usd, created_at, updated_at
+    ) VALUES (?, 'github:1', ?, 'push', '["main"]', 'c1', 'i1', '1', 2,
+      '2026-09-01T08:00:00.000Z', '2026-09-01T08:00:00.000Z')
+  `);
+  for (let index = 0; index < options.actions; index += 1) action.run(`action-${index}`, `A${index}`);
+  return db;
+}
+
+test("refuses to drop when no action exists but legacy rows did", () => {
+  // The half-finished phase 1 the guard is for: the recorded version claims the
+  // carry happened, and the `_migrated` rows are still the only copy of it.
+  const db = versionFourDb({ legacyRules: 1, actions: 0 });
+
+  assert.deepEqual(migrateMonitorRulesToActions(db), { actions: 0, events: 0, skipped: 0 });
+
+  for (const table of LEGACY_TABLES) assert.ok(tableExists(db, `${table}_migrated`), table);
+  assert.equal(recordedVersion(db), 4);
+});
+
+test("drops them once the carried actions are there", () => {
+  // One rule became two actions, so one rule and two actions is a finished carry.
+  const db = versionFourDb({ legacyRules: 1, actions: 2 });
+
+  assert.deepEqual(migrateMonitorRulesToActions(db), { actions: 0, events: 0, skipped: 0 });
+
+  for (const table of LEGACY_TABLES) assert.ok(!tableExists(db, `${table}_migrated`), table);
+  assert.equal(recordedVersion(db), GITHUB_ACTIONS_SCHEMA_VERSION);
   assert.equal(listGitHubActions({ repositoryKey: "github:1" }, db).length, 2);
 });
 
@@ -280,74 +348,22 @@ test("is a no-op on a database that never had monitor rules", () => {
   assert.ok(tableExists(db, "github_actions"));
   assert.ok(tableExists(db, "github_action_events"));
   assert.ok(tableExists(db, "github_webhook_deliveries"));
+  // There was nothing to drop, and the drop still records itself as applied.
+  assert.equal(recordedVersion(db), GITHUB_ACTIONS_SCHEMA_VERSION);
 });
 
-test("rolls the rename back so a downgraded release finds its rules again", () => {
+test("the rollback has expired and says so instead of dropping the automation", () => {
   const db = legacyDb();
   migrateMonitorRulesToActions(db);
-  // Rolling the API back makes ensureGitHubMonitorSchema recreate these empty on
-  // its first call; the poller would then find zero rules and stop firing in
-  // silence while the real ones sat in the _migrated tables.
-  db.exec(`
-    CREATE TABLE github_monitor_rules (id TEXT PRIMARY KEY);
-    CREATE TABLE github_monitor_events (id TEXT PRIMARY KEY);
-  `);
-
-  const result = rollbackGitHubActionsMigration(db);
-  assert.deepEqual(result, {
-    restored: [
-      "github_monitor_rules",
-      "github_monitor_events",
-      "github_monitor_actions_runs",
-      "github_monitor_poll_leases",
-    ],
-    discardedActions: 2,
-    discardedEvents: 2,
-    discardedDeliveries: 0,
-  });
-  assert.ok(!tableExists(db, "github_monitor_rules_migrated"));
-  assert.ok(!tableExists(db, "github_actions"));
-  assert.equal(
-    (db.prepare("SELECT COUNT(*) AS total FROM github_monitor_rules").get() as { total: number }).total,
-    1,
-  );
-  assert.equal(
-    (db.prepare("SELECT COUNT(*) AS total FROM github_monitor_events").get() as { total: number }).total,
-    2,
-  );
-
-  // The forward migration must then be able to run again from scratch.
-  assert.deepEqual(migrateMonitorRulesToActions(db), { actions: 2, events: 2, skipped: 0 });
-});
-
-test("refuses to roll back a database that was never migrated", () => {
-  const db = legacyDb();
-  assert.throws(
-    () => rollbackGitHubActionsMigration(db),
-    /github_actions_rollback_unavailable/,
-  );
-  assert.ok(tableExists(db, "github_monitor_rules"));
-});
-
-test("refuses to roll back once there is nothing left to restore", () => {
-  const db = legacyDb();
-  migrateMonitorRulesToActions(db);
-  // The state phase 5 deliberately creates. Without a precondition the runbook
-  // command drops the whole automation and prints a success-looking result.
-  for (const table of [
-    "github_monitor_rules_migrated",
-    "github_monitor_events_migrated",
-    "github_monitor_actions_runs_migrated",
-    "github_monitor_poll_leases_migrated",
-  ]) {
-    db.exec(`DROP TABLE ${table}`);
-  }
-  assert.throws(
-    () => rollbackGitHubActionsMigration(db),
-    /github_actions_rollback_unavailable/,
-  );
+  // Version 5 took the `_migrated` tables, so the restore half of the procedure has
+  // nothing to put back; running the discard half alone would delete the operator's
+  // automation. The runbook names this code.
+  assert.throws(() => rollbackGitHubActionsMigration(db), /github_actions_rollback_unavailable/);
   assert.ok(tableExists(db, "github_actions"));
   assert.equal(listGitHubActions({ repositoryKey: "github:1" }, db).length, 2);
+
+  // It refuses on a database that was never migrated too: there is one answer now.
+  assert.throws(() => rollbackGitHubActionsMigration(legacyDb()), /github_actions_rollback_unavailable/);
 });
 
 /** A database as the previous release left it: version 1, no `migration_note`. */

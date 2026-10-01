@@ -236,14 +236,18 @@ test("the upgrade turns one live rule into two actions and keeps it firing", asy
     assert.equal(action.includeForks, false);
     assert.deepEqual(action.branchPatterns, ["main"]);
   }
-  // The legacy tables are renamed, not dropped: the rollback still has its rows.
+  // The legacy tables are renamed so the carry can read them, then dropped in the
+  // same transaction: nothing is dropped unread, and nothing is left behind either.
   const tables = new Set((harness.db.prepare(
     "SELECT name FROM sqlite_master WHERE type = 'table'",
   ).all() as Array<{ name: string }>).map((row) => row.name));
-  assert.equal(tables.has("github_monitor_rules"), false);
-  assert.equal(tables.has("github_monitor_rules_migrated"), true);
-  assert.equal(tables.has("github_monitor_events_migrated"), true);
-  assert.equal(tables.has("github_monitor_poll_leases_migrated"), true);
+  for (const table of [
+    "github_monitor_rules", "github_monitor_events",
+    "github_monitor_actions_runs", "github_monitor_poll_leases",
+  ]) {
+    assert.equal(tables.has(table), false, table);
+    assert.equal(tables.has(`${table}_migrated`), false, `${table}_migrated`);
+  }
 
   // The history survived, attached to the action of its own kind.
   const pr = actions.find((action) => action.triggerKind === "pull_request")!;
