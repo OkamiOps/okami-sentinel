@@ -99,7 +99,9 @@ export async function runGateCli(
   const target = gateTarget(options);
   const resolvedTarget = resolvedGateTarget(options);
   let policy = defaultGuardrailPolicy();
-  let policySource: GateArtifactV2["policySource"] = defaultPolicySource(options);
+  // Until the policy is read, no file has been seen: an error artifact built before
+  // that must not claim the repository decided anything.
+  let policySource: GateArtifactV2["policySource"] = "default";
   let exceptions: GuardrailException[] = [];
   let changeSet = emptyErrorChangeSet(options);
   let coverage = incompleteCoverage();
@@ -444,8 +446,15 @@ function repositoryIdentity(options: RunGateCliOptions): string {
   return `github:${options.repositoryId}`;
 }
 
+/**
+ * The caller workflow reads the checkout's own `.csb/guardrails.json`, so when the
+ * file is there the repository is the authority — level 1 of the precedence. There
+ * is no Sentinel-side policy inside a GitHub Actions run, so the only other answer
+ * is the product default.
+ */
 function defaultPolicySource(options: RunGateCliOptions): GateArtifactV2["policySource"] {
-  return options.targetKind === "protected_branch" ? "protected_branch" : "base";
+  void options;
+  return "repository_file";
 }
 
 function plannedLineage(

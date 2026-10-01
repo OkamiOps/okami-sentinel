@@ -80,6 +80,12 @@ export interface GateTargetPreview {
   target: GateTarget;
   resolvedTarget: ResolvedGateTarget;
   policySource: ProtectedPolicyBundle["policySource"];
+  /**
+   * Why `.csb/guardrails.json` was present and not obeyed, or `null`. It travels
+   * with the preview so the artifact can record it: a gate that silently ran the
+   * Sentinel policy over a broken file is the silence the spec forbids.
+   */
+  policyInvalidReason: string | null;
   policySha: string;
   policyPath: ".csb/guardrails.json";
   protectedBranches: string[];
@@ -170,6 +176,7 @@ export class TargetPreviewService {
       target,
       resolvedTarget: structuredClone(resolvedTarget),
       policySource: protectedPolicy.policySource,
+      policyInvalidReason: protectedPolicy.fileInvalidReason,
       policySha: protectedPolicy.policySha,
       policyPath: ".csb/guardrails.json",
       protectedBranches: [...protectedPolicy.policy.protectedBranches],

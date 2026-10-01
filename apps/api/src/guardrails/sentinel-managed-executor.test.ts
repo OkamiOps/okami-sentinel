@@ -287,7 +287,7 @@ test("finalizes a completed provider-managed Mantis scan with priced findings", 
   const input = executionInput();
   input.preview.target = { kind: "protected_branch", ref: "main" };
   input.preview.resolvedTarget = { baseRef: "main", headRef: "main", baseSha: HEAD_SHA, headSha: HEAD_SHA, policySha: HEAD_SHA, pullRequestNumber: null };
-  input.preview.policySource = "protected_branch";
+  input.preview.policySource = "repository_file";
   const result = await executor.execute(input);
 
   assert.equal(result.scan?.status, "completed");
@@ -690,7 +690,8 @@ function preview(): AcceptedGateTargetPreview {
       policySha: BASE_SHA,
       pullRequestNumber: 7,
     },
-    policySource: "base",
+    policySource: "repository_file",
+    policyInvalidReason: null,
     policySha: BASE_SHA,
     policyPath: ".csb/guardrails.json",
     protectedBranches: ["main"],

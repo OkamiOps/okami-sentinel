@@ -371,6 +371,7 @@ function artifactEnvelope(
     target: context.input.preview.target,
     resolvedTarget: context.input.preview.resolvedTarget,
     policySource: context.input.preview.policySource,
+    policyInvalidReason: context.input.preview.policyInvalidReason,
     changeSet: context.changeSet,
     policy: context.input.preview.policy,
     scan: {

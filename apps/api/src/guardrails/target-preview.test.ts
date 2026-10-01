@@ -134,7 +134,7 @@ test("returns frozen target, policy, executor, scan, cost and publication facts 
   assert.equal(preview.previewIdentity, "preview-1");
   assert.equal(preview.expiresAt, "2026-08-12T12:10:00.000Z");
   assert.equal(preview.resolvedTarget.headSha, FIRST_HEAD_SHA);
-  assert.equal(preview.policySource, "base");
+  assert.equal(preview.policySource, "repository_file");
   assert.equal(preview.policySha, BASE_SHA);
   assert.deepEqual(preview.executorCapability, { ready: true, code: "ready" });
   assert.deepEqual(preview.scanPlan, {
@@ -404,8 +404,10 @@ function policyBundle(): ProtectedPolicyBundle {
   return {
     policy: defaultGuardrailPolicy(),
     exceptions: [],
-    policySource: "base",
+    policySource: "repository_file",
     policySha: BASE_SHA,
+    readOnly: true,
+    fileInvalidReason: null,
   };
 }
 

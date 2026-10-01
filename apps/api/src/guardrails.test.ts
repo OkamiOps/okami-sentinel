@@ -27,6 +27,8 @@ import {
   type StartGateRequest,
 } from "./guardrails/target-preview.js";
 import type { GuardrailAutomationTriggers } from "./github-workflow.js";
+import { policyForPreset, type GuardrailPolicyPreset } from "./guardrails/policy-presets.js";
+import type { StoredRepositoryPolicy } from "./guardrails/policy-store.js";
 
 function testPreview(
   value: GuardrailRepository,
@@ -55,7 +57,8 @@ function testPreview(
       policySha: baseSha,
       pullRequestNumber: target.kind === "pull_request" ? target.number : null,
     },
-    policySource: target.kind === "protected_branch" ? "protected_branch" : "base",
+    policySource: "repository_file",
+    policyInvalidReason: null,
     policySha: baseSha,
     policyPath: ".csb/guardrails.json",
     protectedBranches: ["main"],
@@ -204,6 +207,10 @@ function dependencies(options: {
   repository?: GuardrailRepository;
   acceptPreviewError?: boolean;
   publishError?: string;
+  /** Level 1 of the precedence: whether the repository carries its own file. */
+  repositoryFileWins?: boolean;
+  fileInvalidReason?: string | null;
+  sentinelPolicy?: StoredRepositoryPolicy | null;
 } = {}): GuardrailsApiDependencies & {
   enrolled: GuardrailRepository[];
   writes: Array<{ repositoryPath: string; policy: GuardrailPolicy }>;
@@ -214,6 +221,12 @@ function dependencies(options: {
   }>;
   baselineSyncs: string[];
   remotePolicyReads: string[];
+  savedPolicies: Array<{
+    repositoryKey: string;
+    policy: GuardrailPolicy;
+    preset: GuardrailPolicyPreset;
+    updatedBy: string | null;
+  }>;
   publicationInputs: Array<Parameters<GuardrailsApiDependencies["publishCheck"]>[0]>;
   started: Array<{
     request: StartGateRequest;
@@ -237,6 +250,13 @@ function dependencies(options: {
   }> = [];
   const baselineSyncs: string[] = [];
   const remotePolicyReads: string[] = [];
+  const savedPolicies: Array<{
+    repositoryKey: string;
+    policy: GuardrailPolicy;
+    preset: GuardrailPolicyPreset;
+    updatedBy: string | null;
+  }> = [];
+  let sentinelPolicy: StoredRepositoryPolicy | null = options.sentinelPolicy ?? null;
   const publicationInputs: Array<Parameters<GuardrailsApiDependencies["publishCheck"]>[0]> = [];
   const started: Array<{
     request: StartGateRequest;
@@ -272,6 +292,7 @@ function dependencies(options: {
     workflowInstalls,
     baselineSyncs,
     remotePolicyReads,
+    savedPolicies,
     publicationInputs,
     started,
     dispatched,
@@ -287,12 +308,23 @@ function dependencies(options: {
     readPolicy: () => defaultGuardrailPolicy(),
     readRemotePolicy: async (value) => {
       remotePolicyReads.push(value.repositoryKey);
+      const fileWins = options.repositoryFileWins ?? true;
       return {
-        policy: defaultGuardrailPolicy(),
+        policy: sentinelPolicy !== null && !fileWins ? sentinelPolicy.policy : defaultGuardrailPolicy(),
         exceptions: options.exceptions ?? [],
-        policySource: "protected_branch" as const,
+        policySource: fileWins
+          ? ("repository_file" as const)
+          : sentinelPolicy !== null ? ("sentinel" as const) : ("default" as const),
         policySha: "c".repeat(40),
+        readOnly: fileWins,
+        fileInvalidReason: options.fileInvalidReason ?? null,
       };
+    },
+    getSentinelPolicy: () => sentinelPolicy,
+    putSentinelPolicy: (repositoryKey, policy, preset, updatedBy) => {
+      savedPolicies.push({ repositoryKey, policy, preset, updatedBy });
+      sentinelPolicy = { policy, preset, updatedAt: "2026-10-01T12:00:00.000Z", updatedBy };
+      return sentinelPolicy;
     },
     parsePolicy: (value) => value as GuardrailPolicy,
     writePolicy: (repositoryPath, policy) => writes.push({ repositoryPath, policy }),
@@ -627,7 +659,7 @@ test("remote policy reads through GitHub authority and remains read-only", async
 
   assert.equal(getResponse.status, 200);
   assert.equal(getBody.readOnly, true);
-  assert.equal(getBody.policySource, "protected_branch");
+  assert.equal(getBody.policySource, "repository_file");
   assert.equal(getBody.policySha, "c".repeat(40));
   assert.deepEqual(deps.remotePolicyReads, [remote.repositoryKey]);
 
@@ -637,7 +669,100 @@ test("remote policy reads through GitHub authority and remains read-only", async
     body: JSON.stringify(defaultGuardrailPolicy()),
   });
   assert.equal(putResponse.status, 409);
+  assert.equal((await putResponse.json()).error, "policy_controlled_by_repository");
   assert.deepEqual(deps.writes, []);
+  assert.deepEqual(deps.savedPolicies, []);
+});
+
+test("saves a policy for a GitHub repository instead of answering 409", async () => {
+  const remote = remoteRepository();
+  const deps = dependencies({ repository: remote, repositoryFileWins: false });
+  const route = `/guardrails/repositories/${encodeURIComponent(remote.repositoryKey)}/policy`;
+  const app = createGuardrailsApp(deps);
+  const saved = policyForPreset("warn-only", ["main"]);
+
+  const putResponse = await app.request(route, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ policy: saved }),
+  });
+  assert.equal(putResponse.status, 200);
+  const putBody = await putResponse.json();
+  assert.equal(putBody.policySource, "sentinel");
+  assert.equal(putBody.readOnly, false);
+  assert.equal(putBody.preset, "warn-only");
+  assert.equal(deps.savedPolicies.length, 1);
+  assert.equal(deps.savedPolicies[0]?.preset, "warn-only");
+
+  const getBody = await (await app.request(route)).json();
+  assert.equal(getBody.policySource, "sentinel");
+  assert.deepEqual(getBody.policy, saved);
+  assert.equal(getBody.sentinel?.preset, "warn-only");
+});
+
+test("the stored preset is derived, never the preset the body claimed", async () => {
+  const remote = remoteRepository();
+  const deps = dependencies({ repository: remote, repositoryFileWins: false });
+  const handEdited = policyForPreset("warn-only", ["main"]);
+  handEdited.rules.push({ severity: ["critical"], lifecycle: ["new"], decision: "block" });
+  const response = await createGuardrailsApp(deps).request(
+    `/guardrails/repositories/${encodeURIComponent(remote.repositoryKey)}/policy`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ policy: handEdited, preset: "warn-only" }),
+    },
+  );
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).preset, "custom");
+  assert.equal(deps.savedPolicies[0]?.preset, "custom");
+});
+
+test("reports the invalid-file reason on GET", async () => {
+  const remote = remoteRepository();
+  const deps = dependencies({
+    repository: remote,
+    repositoryFileWins: false,
+    fileInvalidReason: "policy_invalid",
+  });
+  const body = await (await createGuardrailsApp(deps).request(
+    `/guardrails/repositories/${encodeURIComponent(remote.repositoryKey)}/policy`,
+  )).json();
+  assert.equal(body.fileInvalidReason, "policy_invalid");
+  assert.equal(body.readOnly, false);
+  assert.equal(body.policySource, "default");
+});
+
+test("a policy save refuses to guess when the remote read fails", async () => {
+  const remote = remoteRepository();
+  const deps = dependencies({ repository: remote, repositoryFileWins: false });
+  deps.readRemotePolicy = async () => { throw new Error("github_unreachable"); };
+  const response = await createGuardrailsApp(deps).request(
+    `/guardrails/repositories/${encodeURIComponent(remote.repositoryKey)}/policy`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ policy: policyForPreset("warn-only", ["main"]) }),
+    },
+  );
+  assert.equal(response.status, 502);
+  assert.deepEqual(deps.savedPolicies, []);
+});
+
+test("simulates the policy about to be saved against the last gate", async () => {
+  const deps = dependencies({ gate: { artifactPath: "gate-1/artifact.json" } });
+  const response = await createGuardrailsApp(deps).request(
+    `/guardrails/repositories/${encodeURIComponent(repository.repositoryKey)}/policy/simulate`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ policy: policyForPreset("warn-only", ["main"]) }),
+    },
+  );
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.gateId, "gate-1");
+  assert.ok(body.decision.outcome);
 });
 
 test("remote policy simulation reads exceptions from the protected GitHub policy bundle", async () => {

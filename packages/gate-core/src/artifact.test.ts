@@ -358,6 +358,46 @@ test("keeps schema v1 parseable as history", () => {
   assert.equal(parseGateArtifact(legacy).schemaVersion, 1);
 });
 
+test("accepts the three levels of the policy precedence and nothing else", () => {
+  for (const source of ["repository_file", "sentinel", "default"] as const) {
+    const input = artifactV2Input();
+    input.policySource = source;
+    assert.equal(buildGateArtifactV2(input).policySource, source);
+  }
+  const invented = artifactV2Input();
+  // @ts-expect-error a fourth level does not exist.
+  invented.policySource = "whatever";
+  assert.throws(() => buildGateArtifactV2(invented), /policySource/);
+});
+
+test("reports why a present repository file was not obeyed, and refuses free text for it", () => {
+  const input = artifactV2Input();
+  input.policySource = "sentinel";
+  input.policyInvalidReason = "policy_invalid";
+  const artifact = buildGateArtifactV2(input);
+  assert.equal(artifact.policyInvalidReason, "policy_invalid");
+  assert.equal((parseGateArtifact(JSON.parse(JSON.stringify(artifact))) as GateArtifactV2).policyInvalidReason, "policy_invalid");
+
+  const prose = artifactV2Input();
+  prose.policyInvalidReason = "Could not read /Users/marcos/repo/.csb/guardrails.json";
+  assert.throws(() => buildGateArtifactV2(prose), /policyInvalidReason/);
+});
+
+test("omitting the reason is the same as reporting nothing", () => {
+  const artifact = buildGateArtifactV2(artifactV2Input());
+  assert.equal(artifact.policyInvalidReason, null);
+});
+
+test("parses a historical v2 artifact that predates the policy reason", () => {
+  const artifact = buildGateArtifactV2(artifactV2Input()) as unknown as Record<string, unknown>;
+  const historical = JSON.parse(JSON.stringify(artifact)) as Record<string, unknown>;
+  delete historical.policyInvalidReason;
+  const parsed = parseGateArtifact(historical) as GateArtifactV2;
+  assert.equal(parsed.policyInvalidReason, null);
+  // The legacy word for level 1 is still readable: artifacts on disk carry it.
+  assert.equal(parsed.policySource, "base");
+});
+
 test("rejects malformed or over-trusting GateArtifact v2 envelopes", () => {
   const shortSha = artifactV2Input();
   shortSha.resolvedTarget.headSha = "short";

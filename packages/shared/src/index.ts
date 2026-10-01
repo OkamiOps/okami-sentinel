@@ -1209,6 +1209,39 @@ export interface GateArtifactV1 {
   createdAt: string;
 }
 
+/**
+ * Which of the three levels of the policy precedence decided this gate.
+ *
+ * `repository_file` is `.csb/guardrails.json` at the protected branch's SHA,
+ * `sentinel` the policy saved in the interface, `default` the product fallback.
+ *
+ * `base` and `protected_branch` are the two words releases before the three-level
+ * precedence wrote for what is now `repository_file`. They are accepted on read —
+ * artifacts on disk still carry them and must stay parseable — and nothing writes
+ * them any more.
+ */
+export type GateArtifactPolicySource =
+  | "repository_file"
+  | "sentinel"
+  | "default"
+  | "base"
+  | "protected_branch";
+
+export const GATE_ARTIFACT_POLICY_SOURCES: readonly GateArtifactPolicySource[] = [
+  "repository_file",
+  "sentinel",
+  "default",
+  "base",
+  "protected_branch",
+];
+
+/** The values this release writes; the other two only ever arrive from disk. */
+export const CURRENT_GATE_ARTIFACT_POLICY_SOURCES = [
+  "repository_file",
+  "sentinel",
+  "default",
+] as const;
+
 export interface GateArtifactV2 {
   schemaVersion: 2;
   gateId: string;
@@ -1224,7 +1257,16 @@ export interface GateArtifactV2 {
   executor: GateExecutorKind;
   target: GateTarget;
   resolvedTarget: ResolvedGateTarget;
-  policySource: "base" | "protected_branch" | "default";
+  policySource: GateArtifactPolicySource;
+  /**
+   * Why the repository's own `.csb/guardrails.json` was present and not obeyed —
+   * `policy_invalid` today — or `null` when there was nothing to report. An invalid
+   * file never falls to another level in silence.
+   *
+   * Artifacts written before the three-level precedence do not carry the field;
+   * `parseGateArtifact` normalises a missing one to `null`.
+   */
+  policyInvalidReason: string | null;
   publication: GatePublicationEligibility;
   changeSet: ChangeSet;
   policy: GuardrailPolicy;

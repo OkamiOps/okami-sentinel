@@ -153,6 +153,15 @@ import {
   type ProtectedPolicyBundle,
 } from "./guardrails/protected-policy-loader.js";
 import {
+  getRepositoryPolicy,
+  putRepositoryPolicy,
+  type StoredRepositoryPolicy,
+} from "./guardrails/policy-store.js";
+import {
+  presetForPolicy,
+  type GuardrailPolicyPreset,
+} from "./guardrails/policy-presets.js";
+import {
   TargetPreviewError,
   TargetPreviewService,
   nativeScanCostCeilingSupported,
@@ -230,6 +239,14 @@ export interface GuardrailsApiDependencies {
   backfillRepositoryKeys?(): void;
   readPolicy(repositoryPath: string): GuardrailPolicy;
   readRemotePolicy(repository: GuardrailRepository): Promise<ProtectedPolicyBundle>;
+  /** Level 2 of the precedence: the policy a maintainer saves in the interface. */
+  getSentinelPolicy(repositoryKey: string): StoredRepositoryPolicy | null;
+  putSentinelPolicy(
+    repositoryKey: string,
+    policy: GuardrailPolicy,
+    preset: GuardrailPolicyPreset,
+    updatedBy: string | null,
+  ): StoredRepositoryPolicy;
   parsePolicy(value: unknown): GuardrailPolicy;
   writePolicy(repositoryPath: string, policy: GuardrailPolicy): void;
   readExceptions(repositoryPath: string): GuardrailException[];
@@ -362,6 +379,9 @@ const guardrailsDependencies: GuardrailsApiDependencies = {
     const resolved = await githubRefResolver.resolve(repository, target);
     return protectedPolicyLoader.load(repository, target, resolved);
   },
+  getSentinelPolicy: (repositoryKey) => getRepositoryPolicy(repositoryKey),
+  putSentinelPolicy: (repositoryKey, policy, preset, updatedBy) =>
+    putRepositoryPolicy(repositoryKey, policy, preset, updatedBy),
   parsePolicy: parseGuardrailPolicy,
   writePolicy: writeGuardrailPolicy,
   readExceptions: readGuardrailExceptions,
@@ -512,19 +532,35 @@ export function createGuardrailsApp(
     if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
     try {
       if (repository.source === "github") {
+        // The remote read is what tells us whether `.csb/guardrails.json` exists at
+        // the protected branch's SHA, which is the only way level 1 can be known.
         const bundle = await deps.readRemotePolicy(repository);
+        const stored = deps.getSentinelPolicy(repository.repositoryKey);
         return c.json({
           policy: bundle.policy,
           policySource: bundle.policySource,
           policySha: bundle.policySha,
-          readOnly: true,
+          readOnly: bundle.readOnly,
+          preset: presetForPolicy(bundle.policy),
+          fileInvalidReason: bundle.fileInvalidReason,
+          // What the editor would write back to, shown as "saved on <date> by <who>"
+          // even while the repository's own file is the one in force.
+          sentinel: stored === null ? null : {
+            preset: stored.preset,
+            updatedAt: stored.updatedAt,
+            updatedBy: stored.updatedBy,
+          },
         });
       }
+      const policy = deps.readPolicy(localRepositoryPath(repository));
       return c.json({
-        policy: deps.readPolicy(localRepositoryPath(repository)),
+        policy,
         policySource: "workspace",
         policySha: null,
         readOnly: false,
+        preset: presetForPolicy(policy),
+        fileInvalidReason: null,
+        sentinel: null,
       });
     } catch (error) {
       return c.json({ error: errorMessage(error) }, 400);
@@ -532,23 +568,76 @@ export function createGuardrailsApp(
   });
 
   guardrails.put("/guardrails/repositories/:repositoryKey/policy", async (c) => {
-    const repository = deps.getRepository(c.req.param("repositoryKey"));
+    const repositoryKey = c.req.param("repositoryKey");
+    const repository = deps.getRepository(repositoryKey);
     if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
-    if (repository.source === "github") {
-      return c.json({ error: "remote_policy_read_only" }, 409);
-    }
+    let body: unknown;
     try {
-      const policy = deps.parsePolicy(await c.req.json());
-      deps.writePolicy(localRepositoryPath(repository), policy);
-      return c.json({
-        policy,
-        policySource: "workspace",
-        policySha: null,
-        readOnly: false,
-      });
+      body = await c.req.json<unknown>();
     } catch (error) {
       return c.json({ error: errorMessage(error) }, 400);
     }
+    // The body used to be the policy itself. It still may be, so a client that was
+    // not redeployed with this release keeps working.
+    const payload = body !== null && typeof body === "object" && "policy" in body
+      ? (body as { policy: unknown }).policy
+      : body;
+    if (repository.source !== "github") {
+      try {
+        const policy = deps.parsePolicy(payload);
+        deps.writePolicy(localRepositoryPath(repository), policy);
+        return c.json({
+          policy,
+          policySource: "workspace",
+          policySha: null,
+          readOnly: false,
+          preset: presetForPolicy(policy),
+          fileInvalidReason: null,
+          sentinel: null,
+        });
+      } catch (error) {
+        return c.json({ error: errorMessage(error) }, 400);
+      }
+    }
+    let policy: GuardrailPolicy;
+    try {
+      policy = deps.parsePolicy(payload);
+    } catch (error) {
+      return c.json({ error: errorMessage(error) }, 400);
+    }
+    let bundle: ProtectedPolicyBundle;
+    try {
+      bundle = await deps.readRemotePolicy(repository);
+    } catch (error) {
+      // Without the remote read we cannot tell whether the repository's own file is
+      // in force, and overwriting the Sentinel policy under a file that wins would
+      // save a policy that decides nothing while the screen says it does.
+      return c.json({ error: errorMessage(error) }, 502);
+    }
+    if (bundle.readOnly) {
+      return c.json({
+        error: "policy_controlled_by_repository",
+        policyPath: ".csb/guardrails.json",
+        policySha: bundle.policySha,
+      }, 409);
+    }
+    // The preset is a derived fact, never the client's claim: a body that named
+    // `warn-only` while carrying blocking rules would label the row a lie.
+    const stored = deps.putSentinelPolicy(
+      repository.repositoryKey,
+      policy,
+      presetForPolicy(policy),
+      principalOf(c).userId,
+    );
+    return c.json({
+      policy: stored.policy,
+      policySource: "sentinel",
+      policySha: bundle.policySha,
+      readOnly: false,
+      preset: stored.preset,
+      fileInvalidReason: bundle.fileInvalidReason,
+      sentinel: { preset: stored.preset, updatedAt: stored.updatedAt, updatedBy: stored.updatedBy },
+    });
   });
 
   guardrails.post("/guardrails/repositories/:repositoryKey/policy/simulate", async (c) => {
@@ -556,8 +645,15 @@ export function createGuardrailsApp(
     if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
     try {
       const body = await c.req.json<{ gateId?: string; policy?: unknown; now?: string }>();
-      if (typeof body.gateId !== "string") throw new Error("gateId é obrigatório");
-      const artifact = deps.getArtifact(body.gateId);
+      // Without a named gate, simulate against the repository's last gate that has
+      // an artifact — the question the screen is really asking.
+      const gateId = typeof body.gateId === "string" && body.gateId !== ""
+        ? body.gateId
+        : deps.listGates(repository.repositoryKey)
+          .filter((gate) => gate.artifactPath !== null)
+          .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))[0]?.id ?? null;
+      if (gateId === null) return c.json({ error: "policy_simulation_no_gate" }, 404);
+      const artifact = deps.getArtifact(gateId);
       if (!artifact || artifact.repository.key !== repository.repositoryKey) {
         return c.json({ error: "Artifact do gate não encontrado" }, 404);
       }
@@ -577,7 +673,7 @@ export function createGuardrailsApp(
         exceptions.filter((exception) => Date.parse(exception.expiresAt) > Date.parse(now)),
         now,
       );
-      return c.json({ decision, configurationErrors });
+      return c.json({ decision, configurationErrors, gateId });
     } catch (error) {
       return c.json({ error: errorMessage(error) }, 400);
     }

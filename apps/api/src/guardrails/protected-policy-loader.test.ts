@@ -8,6 +8,7 @@ import type {
   ResolvedGateTarget,
 } from "@csb/shared";
 
+import { policyForPreset } from "./policy-presets.js";
 import {
   ProtectedPolicyLoader,
   ProtectedPolicyLoaderError,
@@ -42,7 +43,9 @@ test("loads policy and exceptions only from the frozen PR base SHA", async () =>
     resolvedTarget(),
   );
 
-  assert.equal(loaded.policySource, "base");
+  assert.equal(loaded.policySource, "repository_file");
+  assert.equal(loaded.readOnly, true);
+  assert.equal(loaded.fileInvalidReason, null);
   assert.equal(loaded.policySha, BASE_SHA);
   assert.deepEqual(loaded.policy, defaultGuardrailPolicy());
   assert.equal(loaded.exceptions.length, 1);
@@ -54,13 +57,15 @@ test("loads policy and exceptions only from the frozen PR base SHA", async () =>
 
 test("uses the default policy only when the protected policy file is absent", async () => {
   const calls: Array<{ sha: string; path: string }> = [];
-  const loaded = await new ProtectedPolicyLoader(policyReader(calls, new Map())).load(
+  const loaded = await new ProtectedPolicyLoader(policyReader(calls, new Map()), () => null).load(
     repository(),
     { kind: "compare", baseRef: "main", headRef: "feature" },
     resolvedTarget(),
   );
 
   assert.equal(loaded.policySource, "default");
+  assert.equal(loaded.readOnly, false);
+  assert.equal(loaded.fileInvalidReason, null);
   assert.deepEqual(loaded.policy, defaultGuardrailPolicy());
   assert.deepEqual(loaded.exceptions, []);
   assert.equal(calls.every((call) => call.sha === BASE_SHA), true);
@@ -82,25 +87,66 @@ test("loads protected-branch policy from its single resolved head SHA", async ()
   };
 
   const loaded = await new ProtectedPolicyLoader(reader).load(repository(), target, resolved);
-  assert.equal(loaded.policySource, "protected_branch");
+  assert.equal(loaded.policySource, "repository_file");
   assert.equal(calls.every((call) => call.sha === HEAD_SHA), true);
 });
 
-test("malformed and future policy files fail closed without default fallback", async () => {
+test("the Sentinel policy wins when the repository carries no file", async () => {
+  const sentinel = policyForPreset("warn-only", ["main"]);
+  const loaded = await new ProtectedPolicyLoader(policyReader([], new Map()), () => sentinel).load(
+    repository(),
+    { kind: "pull_request", number: 42 },
+    resolvedTarget(),
+  );
+  assert.equal(loaded.policySource, "sentinel");
+  assert.equal(loaded.readOnly, false);
+  assert.deepEqual(loaded.policy, sentinel);
+});
+
+test("the repository file still wins over a saved Sentinel policy", async () => {
+  const reader = policyReader([], new Map([
+    [`${BASE_SHA}:.csb/guardrails.json`, JSON.stringify(policyForPreset("block-critical", ["main"]))],
+  ]));
+  const loaded = await new ProtectedPolicyLoader(reader, () => policyForPreset("warn-only", ["main"])).load(
+    repository(),
+    { kind: "pull_request", number: 42 },
+    resolvedTarget(),
+  );
+  assert.equal(loaded.policySource, "repository_file");
+  assert.equal(loaded.readOnly, true);
+  assert.deepEqual(loaded.policy, policyForPreset("block-critical", ["main"]));
+});
+
+test("an invalid policy file reports the reason and falls to the Sentinel policy", async () => {
+  const sentinel = policyForPreset("warn-only", ["main"]);
   for (const content of ["{", JSON.stringify({ ...defaultGuardrailPolicy(), schemaVersion: 2 })]) {
     const reader = policyReader([], new Map([
       [`${BASE_SHA}:.csb/guardrails.json`, content],
     ]));
-    await assert.rejects(
-      new ProtectedPolicyLoader(reader).load(
-        repository(),
-        { kind: "pull_request", number: 42 },
-        resolvedTarget(),
-      ),
-      (error: unknown) => error instanceof ProtectedPolicyLoaderError
-        && error.code === "protected_policy_invalid",
+    const loaded = await new ProtectedPolicyLoader(reader, () => sentinel).load(
+      repository(),
+      { kind: "pull_request", number: 42 },
+      resolvedTarget(),
     );
+    assert.equal(loaded.policySource, "sentinel");
+    assert.equal(loaded.readOnly, false);
+    assert.equal(loaded.fileInvalidReason, "policy_invalid");
+    assert.deepEqual(loaded.policy, sentinel);
   }
+});
+
+test("an invalid policy file with nothing saved falls to the default, still reporting the reason", async () => {
+  const reader = policyReader([], new Map([
+    [`${BASE_SHA}:.csb/guardrails.json`, "{"],
+  ]));
+  const loaded = await new ProtectedPolicyLoader(reader, () => null).load(
+    repository(),
+    { kind: "pull_request", number: 42 },
+    resolvedTarget(),
+  );
+  assert.equal(loaded.policySource, "default");
+  assert.equal(loaded.fileInvalidReason, "policy_invalid");
+  assert.deepEqual(loaded.policy, defaultGuardrailPolicy());
 });
 
 test("malformed protected exceptions fail closed with their own typed code", async () => {
@@ -109,7 +155,7 @@ test("malformed protected exceptions fail closed with their own typed code", asy
     [`${BASE_SHA}:.csb/guardrails-exceptions.json`, JSON.stringify({ schemaVersion: 2, exceptions: [] })],
   ]));
   await assert.rejects(
-    new ProtectedPolicyLoader(reader).load(
+    new ProtectedPolicyLoader(reader, () => null).load(
       repository(),
       { kind: "pull_request", number: 42 },
       resolvedTarget(),

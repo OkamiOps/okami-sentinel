@@ -3,7 +3,7 @@ import type { GateRun, GuardrailPolicy, GuardrailRepository } from "@csb/shared"
 import { ArrowLeft, Beaker, Clipboard, Download, FileCheck2, GitBranch, HardDrive, Save, ShieldAlert } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 
-import { api, type PolicySimulationResponse } from "../api";
+import { api, type GuardrailPolicySource, type PolicySimulationResponse } from "../api";
 import { useAuth } from "../auth/AuthProvider";
 import { GateOutcomeBadge, PolicyDiffPreview, PolicyRuleEditor } from "../components/guardrails";
 import { AlertBanner, EmptyState, Loading, PageHeader } from "../components/ui";
@@ -26,7 +26,7 @@ type PolicyPageState =
       status: "ready";
       repository: GuardrailRepository;
       policy: GuardrailPolicy;
-      policySource: "workspace" | "base" | "protected_branch" | "default";
+      policySource: GuardrailPolicySource;
       policySha: string | null;
       readOnly: boolean;
       gates: GateRun[];
