@@ -88,10 +88,6 @@ import {
   type GitHubActionsDispatchMetadata,
 } from "./gate-store.js";
 import {
-  GitHubBaselineProvider,
-  type BaselineProvider,
-} from "./github-baseline.js";
-import {
   getRepositoryBaselineState,
   markRepositoryBaselineStale,
   refreshRepositoryBaselineState,
@@ -146,7 +142,6 @@ export interface LocalGateRequest {
   repositoryKey: string;
   baseRef: string;
   headRef: string;
-  baselineSource?: "local" | "github";
 }
 
 export interface LocalGateDependencies {
@@ -165,7 +160,6 @@ export interface LocalGateDependencies {
   cancelScan(scanId: string): boolean;
   isScanActive(scanId: string): boolean;
   getBaselineScanId(repositoryKey: string): string | null;
-  githubBaselineProvider: BaselineProvider;
   getScan(scanId: string): ScanRun | null;
   listScans(): ScanRun[];
   readFindings(scanDir: string): FindingSummary[];
@@ -217,24 +211,6 @@ export interface RemoteManagedGateDependencies {
 
 const activeGates = new Map<string, Promise<void>>();
 const activeManagedGates = new Map<string, { controller: AbortController; scanId: string | null }>();
-const githubBaselineProvider = new GitHubBaselineProvider({
-  readAuthorizedRepositoryJson: (connectionId, installationId, repositoryId, resourcePath, permissions) =>
-    getSystemGitHubAppService().readAuthorizedRepositoryJson(
-      connectionId,
-      installationId,
-      repositoryId,
-      resourcePath,
-      permissions,
-    ),
-  downloadAuthorizedRepositoryBytes: (connectionId, installationId, repositoryId, resourcePath, permissions) =>
-    getSystemGitHubAppService().downloadAuthorizedRepositoryBytes(
-      connectionId,
-      installationId,
-      repositoryId,
-      resourcePath,
-      permissions,
-    ),
-});
 let managedExecutor: SentinelManagedExecutor | null = null;
 let actionsExecutor: GitHubActionsExecutor | null = null;
 
@@ -257,7 +233,6 @@ const productionDeps: LocalGateDependencies = {
   cancelScan,
   isScanActive,
   getBaselineScanId: getRepositoryBaseline,
-  githubBaselineProvider,
   getScan: getRun,
   listScans: listRuns,
   readFindings: (scanDir) => toFindingSummaries(readFindingsFile(scanDir)),
@@ -306,14 +281,6 @@ export async function startLocalGate(
   const costCeilingUsd = selection?.costLimit?.kind === "none" ? 0
     : selection?.costLimit?.kind === "manual" ? selection.costLimit.maxCostUsd
     : localCostCeiling(repositoryPath, deps);
-  const baselineSource = request.baselineSource ?? "local";
-  if (
-    baselineSource === "github" &&
-    (repository.remoteOwner === null || repository.remoteName === null)
-  ) {
-    throw new Error("O remoto GitHub não está pronto para fornecer baselines");
-  }
-
   const run: GateRun = {
     id: deps.createGateId(),
     repositoryKey: repository.repositoryKey,
@@ -351,7 +318,7 @@ export async function startLocalGate(
   };
   deps.insertGateRun(run);
   emit(run.id, "status", { gateId: run.id, status: "queued" }, deps);
-  launchGate(run.id, deps, false, baselineSource, selection);
+  launchGate(run.id, deps, false, selection);
   return run;
 }
 
@@ -626,7 +593,7 @@ export function subscribeGate(
     gate.scanId !== null &&
     deps.isScanActive(gate.scanId)
   ) {
-    launchGate(gateId, deps, true, "local");
+    launchGate(gateId, deps, true);
   }
   return unsubscribe;
 }
@@ -821,13 +788,12 @@ function launchGate(
   gateId: string,
   deps: LocalGateDependencies,
   recoverScan: boolean,
-  baselineSource: "local" | "github",
   selection?: GuardrailScanSelection,
 ): void {
   if (activeGates.has(gateId)) return;
   // The launch is fire and forget, so this is the last place a rejection can be
   // observed. Leaving it unhandled would take the process down with it.
-  const task: Promise<void> = runGate(gateId, deps, recoverScan, baselineSource, selection)
+  const task: Promise<void> = runGate(gateId, deps, recoverScan, selection)
     .catch((error: unknown) => {
       logGateFailure(gateId, error);
     })
@@ -841,7 +807,6 @@ async function runGate(
   gateId: string,
   deps: LocalGateDependencies,
   recoverScan: boolean,
-  baselineSource: "local" | "github",
   selection?: GuardrailScanSelection,
 ): Promise<void> {
   const gate = requiredGate(gateId, deps);
@@ -871,7 +836,6 @@ async function runGate(
         policy,
         changeSet,
         null,
-        baselineSource,
         deps,
       );
       return;
@@ -915,7 +879,6 @@ async function runGate(
       policy,
       changeSet,
       scan,
-      baselineSource,
       deps,
     );
   } catch (error) {
@@ -928,7 +891,6 @@ async function runGate(
         policy,
         changeSet,
         scan,
-        baselineSource,
         error,
         deps,
       );
@@ -971,10 +933,9 @@ async function evaluateAndComplete(
   policy: GuardrailPolicy,
   changeSet: import("@csb/shared").ChangeSet,
   scan: ScanRun | null,
-  baselineSource: "local" | "github",
   deps: LocalGateDependencies,
 ): Promise<void> {
-  const baseline = await resolveBaseline(repository, baselineSource, deps);
+  const baseline = localBaseline(repository.repositoryKey, deps);
   const baselineScanId = baseline.scanId;
   const baselineFindings = baseline.findings;
   const currentFindings = scan === null ? [] : deps.readFindings(scan.scanDir);
@@ -1041,7 +1002,6 @@ async function failGate(
   policy: GuardrailPolicy | null,
   changeSet: import("@csb/shared").ChangeSet | null,
   scan: ScanRun | null,
-  baselineSource: "local" | "github",
   error: unknown,
   deps: LocalGateDependencies,
 ): Promise<void> {
@@ -1049,10 +1009,7 @@ async function failGate(
   const message = error instanceof Error ? error.message : "Falha operacional no gate";
   let artifactPath: string | null = null;
   if (policy !== null && changeSet !== null) {
-    const baselineCommit =
-      baselineSource === "local"
-        ? localBaseline(repository.repositoryKey, deps).commit
-        : null;
+    const baselineCommit = localBaseline(repository.repositoryKey, deps).commit;
     const artifact = deps.buildOperationalErrorArtifact({
       ...artifactEnvelope(gateId, repository, policy, changeSet, scan, baselineCommit, completedAt),
       operationalSummary: message,
@@ -1127,41 +1084,12 @@ function localRepositoryIdentity(repositoryPath: string): string {
  * A stored baseline artifact already carries the identity gate-core assigned to
  * each finding, so keep that field typed all the way into the evaluation instead
  * of letting it be re-derived from an already redacted summary.
+ *
+ * A local gate reads a local baseline, and only that. The parallel path that read
+ * one back from GitHub Actions is gone: the Actions executor compares against its
+ * own baseline inside the workflow, and two answers to "what is this repository's
+ * baseline" was the whole defect.
  */
-async function resolveBaseline(
-  repository: GuardrailRepository,
-  source: "local" | "github",
-  deps: LocalGateDependencies,
-): Promise<{
-  scanId: string | null;
-  findings: BaselineFindingSummary[] | null;
-  commit: string | null;
-}> {
-  if (source === "local") return localBaseline(repository.repositoryKey, deps);
-  if (repository.remoteOwner === null || repository.remoteName === null) {
-    throw new Error("O remoto GitHub não está pronto para fornecer baselines");
-  }
-  const artifact = await deps.githubBaselineProvider.getBaseline({
-    repositoryKey: repository.repositoryKey,
-    owner: repository.remoteOwner,
-    name: repository.remoteName,
-    defaultBranch: repository.defaultBranch,
-    connectionId: requiredRemoteIdentity(repository.githubConnectionId),
-    installationId: requiredRemoteIdentity(repository.githubInstallationId),
-    repositoryId: requiredRemoteIdentity(repository.githubRepositoryId),
-  });
-  if (artifact === null) {
-    return { scanId: null, findings: null, commit: null };
-  }
-  return {
-    scanId: artifact.scan.id ?? artifact.gateId,
-    findings: artifact.findings.filter(
-      (finding) => finding.lifecycle !== "fixed",
-    ),
-    commit: artifact.changeSet.headSha,
-  };
-}
-
 function localBaseline(
   repositoryKey: string,
   deps: LocalGateDependencies,

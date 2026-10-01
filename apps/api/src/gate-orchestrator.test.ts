@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -114,7 +116,6 @@ function highFinding(): FindingSummary {
 interface FakeDeps extends LocalGateDependencies {
   readonly runs: Map<string, GateRun>;
   startScanCalls: number;
-  githubBaselineCalls: number;
   lastScanRequest: StartScanRequest | null;
   cancelledScanId: string | null;
   /** Every gate the orchestrator asked to notify about, in order. */
@@ -125,9 +126,6 @@ interface FakeDeps extends LocalGateDependencies {
 
 function fakeDeps(options: {
   changeSet?: ChangeSet;
-  githubBaseline?: GateArtifact | null;
-  githubBaselineError?: Error;
-  remoteReady?: boolean;
   scanStatus?: ScanRun["status"];
   holdScan?: boolean;
   scanActive?: boolean;
@@ -143,8 +141,8 @@ function fakeDeps(options: {
     displayName: "Codex Security Benchmark",
     defaultBranch: "main",
     defaultExecutor: "sentinel-managed",
-    remoteOwner: options.remoteReady === false ? null : "okami",
-    remoteName: options.remoteReady === false ? null : "csb",
+    remoteOwner: "okami",
+    remoteName: "csb",
     githubConnectionId: null,
     githubInstallationId: null,
     githubRepositoryId: null,
@@ -165,7 +163,6 @@ function fakeDeps(options: {
     runs,
     notified,
     startScanCalls: 0,
-    githubBaselineCalls: 0,
     lastScanRequest: null,
     cancelledScanId: null,
     baselineRefreshes,
@@ -200,13 +197,6 @@ function fakeDeps(options: {
     },
     isScanActive: () => options.scanActive ?? true,
     getBaselineScanId: () => null,
-    githubBaselineProvider: {
-      getBaseline: async () => {
-        deps.githubBaselineCalls += 1;
-        if (options.githubBaselineError) throw options.githubBaselineError;
-        return options.githubBaseline ?? null;
-      },
-    },
     getScan: (id) => id === "scan-1" ? completedScan : null,
     listScans: () => [],
     readFindings: () => [] as FindingSummary[],
@@ -221,40 +211,6 @@ function fakeDeps(options: {
     },
   };
   return deps;
-}
-
-function githubBaseline(headSha = "remote-head"): GateArtifact {
-  return buildGateArtifact({
-    gateId: "github-gate",
-    repository: {
-      key: "github.com/okami/csb",
-      owner: "okami",
-      name: "csb",
-      defaultBranch: "main",
-    },
-    source: "github",
-    changeSet: {
-      ...changeSet(["src/a.ts"]),
-      headRef: headSha,
-      headSha,
-    },
-    policy: defaultGuardrailPolicy(),
-    scan: { id: "github-scan", cost: null, status: "completed" },
-    baselineCommit: null,
-    evaluation: {
-      deltas: [],
-      decision: {
-        outcome: "bootstrap",
-        summary: "Baseline initialized with 0 finding(s).",
-        violations: [],
-        warnings: [],
-        exceptionsApplied: [],
-        githubConclusion: "neutral",
-      },
-    },
-    versions: { gateCore: "0.1.0", scanner: "gpt-5.6-sol" },
-    createdAt: "2026-08-07T09:00:00.000Z",
-  });
 }
 
 test("finishes no_changes without starting a scan", async () => {
@@ -385,27 +341,23 @@ test("cancels the linked scan", async () => {
   assert.equal(deps.cancelledScanId, "scan-1");
 });
 
-test("local gates fail closed instead of using a remote baseline without App authority", async () => {
-  const deps = fakeDeps({ githubBaseline: githubBaseline() });
-  const gate = await startLocalGate(
-    { ...request(), baselineSource: "github" },
-    deps,
-  );
-  await waitForGate(gate.id);
-
-  assert.equal(deps.githubBaselineCalls, 0);
-  assert.equal(deps.runs.get(gate.id)?.status, "error");
-  assert.equal(deps.runs.get(gate.id)?.outcome, "error");
-  assert.equal(deps.runs.get(gate.id)?.error, "github_repository_authority_invalid");
-});
-
-test("keeps the local baseline provider intact by default", async () => {
-  const deps = fakeDeps({ githubBaseline: githubBaseline() });
+/**
+ * A local gate has one baseline and it is local. The option that asked GitHub
+ * Actions for a second one is gone from the request, so there is nothing left to
+ * fail closed about.
+ */
+test("a local gate reads the local baseline, and there is no other to ask for", async () => {
+  const deps = fakeDeps();
   const gate = await startLocalGate(request(), deps);
   await waitForGate(gate.id);
 
-  assert.equal(deps.githubBaselineCalls, 0);
   assert.equal(deps.runs.get(gate.id)?.outcome, "bootstrap");
+  assert.equal("baselineSource" in request(), false);
+  assert.equal(existsSync(new URL("./github-baseline.ts", import.meta.url)), false);
+  const source = await readFile(new URL("./gate-orchestrator.ts", import.meta.url), "utf8");
+  for (const removed of ["GitHubBaselineProvider", "github-baseline", "baselineSource"]) {
+    assert.equal(source.includes(removed), false, `gate-orchestrator.ts still names ${removed}`);
+  }
 });
 
 test("does not classify an identical finding from another checkout as reopened", async () => {
@@ -562,35 +514,6 @@ function captureServerErrors(): { messages: string[]; restore(): void } {
     },
   };
 }
-
-test("rejects github baseline selection when the repository has no ready remote", async () => {
-  const deps = fakeDeps({ remoteReady: false });
-
-  await assert.rejects(
-    () => startLocalGate({ ...request(), baselineSource: "github" }, deps),
-    /remoto GitHub não está pronto/,
-  );
-  assert.equal(deps.githubBaselineCalls, 0);
-  assert.equal(deps.runs.size, 0);
-});
-
-test("legacy github baseline requests cannot bypass missing App enrollment", async () => {
-  const deps = fakeDeps({
-    githubBaselineError: new Error(
-      "histórico encontrado, mas o artifact de baseline não está disponível",
-    ),
-  });
-  const gate = await startLocalGate(
-    { ...request(), baselineSource: "github" },
-    deps,
-  );
-  await waitForGate(gate.id);
-
-  assert.equal(deps.githubBaselineCalls, 0);
-  assert.equal(deps.runs.get(gate.id)?.status, "error");
-  assert.equal(deps.runs.get(gate.id)?.outcome, "error");
-  assert.equal(deps.runs.get(gate.id)?.error, "github_repository_authority_invalid");
-});
 
 test("the managed path notifies once too, and a throwing notifier keeps the decision", async () => {
   const succeeded = remoteDeps();

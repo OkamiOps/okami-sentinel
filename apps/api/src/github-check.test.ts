@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 
 import {
   buildGateArtifactV2,
@@ -258,4 +258,20 @@ test("publishGateCheck no longer exists", async () => {
   // No gh runner: the Check is published with the App credential, everywhere.
   const source = await readFile(new URL("./github-check.ts", import.meta.url), "utf8");
   assert.equal(source.includes("github-cli"), false);
+});
+
+/**
+ * `github-cli.ts` stays, for exactly one reader: the Git state of a repository that
+ * lives in a folder on this machine. Any second importer would be a publication
+ * path that needs a credential the GitHub App already carries.
+ */
+test("github-status.ts is the only module that reaches for the gh runner", async () => {
+  const sources = await readdir(new URL("./", import.meta.url), { recursive: true });
+  const importers: string[] = [];
+  for (const entry of sources) {
+    if (!entry.endsWith(".ts") || entry.endsWith(".test.ts")) continue;
+    const text = await readFile(new URL(`./${entry}`, import.meta.url), "utf8");
+    if (/from "\.{1,2}\/?[^"]*github-cli\.js"/.test(text)) importers.push(entry);
+  }
+  assert.deepEqual(importers.sort(), ["github-status.ts"]);
 });
