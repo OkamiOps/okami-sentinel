@@ -148,6 +148,7 @@ test("declares every repository route of the Guardrails tab with the requirement
     "GET /guardrails/repositories/:repositoryKey/policy": "viewer:param",
     "PUT /guardrails/repositories/:repositoryKey/policy": "maintainer:param",
     "POST /guardrails/repositories/:repositoryKey/policy/simulate": "analyst:param",
+    "GET /guardrails/repositories/:repositoryKey/pr-comments": "viewer:param",
     "GET /guardrails/repositories/:repositoryKey/pull-requests": "viewer:param",
     "POST /guardrails/repositories/:repositoryKey/target-preview": "operator:param",
   });

@@ -11,7 +11,7 @@ import { guardrailPolicyPresetRules } from "@csb/shared";
 import { translate } from "../src/i18n";
 import { accessMessages } from "../src/i18n/access";
 import { githubRepository, githubSecondRepository, guardrailRow } from "./fixtures";
-import { baselineOf, bootstrapArtifact, gateOf, mockGuardrails, policyOf, SHA } from "./guardrails-mock";
+import { baselineOf, bootstrapArtifact, gateOf, mockGuardrails, policyOf, prCommentOf, SHA } from "./guardrails-mock";
 
 const pt = (key: Parameters<typeof translate>[1], values?: Record<string, string | number>) =>
   translate("pt-BR", key, values);
@@ -237,4 +237,57 @@ test("a member sees the repository page in read-only and no administrator contro
   await page.goto("/guardrails/repositories/github%3A1");
   await expect(page.getByRole("button", { name: pt("guardrails.savePolicy") })).toHaveCount(0);
   await expect(page.getByRole("button", { name: pt("guardrails.baselineBuildNow") })).toHaveCount(0);
+});
+
+test("opens the pull request and the published comment from the gate page", async ({ page }) => {
+  const gate = gateOf({ publishStatus: "published" });
+  await mockGuardrails(page, {
+    repositories: [githubRepository],
+    gates: [gate],
+    artifact: bootstrapArtifact(),
+    prComments: [prCommentOf()],
+  });
+  await page.goto(`/guardrails/${gate.id}`);
+  await expect(page.getByTestId("open-pull-request")).toHaveAttribute(
+    "href",
+    "https://github.com/okamiops/luna-core/pull/7",
+  );
+  await expect(page.getByTestId("open-published-comment")).toHaveAttribute(
+    "href",
+    "https://github.com/okamiops/luna-core/pull/7#issuecomment-101",
+  );
+  await expect(page.getByTestId("gate-comment-state")).toHaveText(pt("guardrails.comment.published"));
+});
+
+test("republishes a failed comment", async ({ page }) => {
+  const gate = gateOf({ publishStatus: "published" });
+  const mock = await mockGuardrails(page, {
+    repositories: [githubRepository],
+    gates: [gate],
+    artifact: bootstrapArtifact(),
+    prComments: [prCommentOf({ status: "failed", commentId: null, reason: "github_permission_missing" })],
+  });
+  await page.goto(`/guardrails/${gate.id}`);
+  await expect(page.getByTestId("gate-comment-state")).toHaveText(pt("guardrails.comment.failed"));
+  await expect(page.getByTestId("open-published-comment")).toHaveCount(0);
+  await page.getByTestId("republish-comment").click();
+  await expect(page.getByTestId("gate-comment-state")).toHaveText(pt("guardrails.comment.published"));
+  await expect(page.getByTestId("open-published-comment")).toBeVisible();
+  expect(mock.guardrails.commentRepublishes).toBe(1);
+});
+
+test("turns the pull request comment off for a repository", async ({ page }) => {
+  const mock = await mockGuardrails(page, { repositories: [githubRepository] });
+  await page.goto("/guardrails/repositories/github%3A1");
+  await expect(page.getByText(pt("guardrails.prCommentTitle"))).toBeVisible();
+  await page.getByRole("button", { name: pt("guardrails.disableRepository"), exact: true }).click();
+  await expect.poll(() => mock.guardrails.patches.at(-1)?.body).toEqual({ prCommentEnabled: false });
+});
+
+test("writes the comment in the language the repository chose", async ({ page }) => {
+  const mock = await mockGuardrails(page, { repositories: [githubRepository] });
+  await page.goto("/guardrails/repositories/github%3A1");
+  await page.getByRole("combobox", { name: pt("guardrails.prCommentLanguage") }).click();
+  await page.getByRole("option", { name: "English", exact: true }).click();
+  await expect.poll(() => mock.guardrails.patches.at(-1)?.body).toEqual({ prCommentLocale: "en" });
 });

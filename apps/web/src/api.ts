@@ -18,6 +18,7 @@ import type {
   GuardrailPullRequestSummary,
   GuardrailPolicy,
   GuardrailEnrollmentSkip,
+  GuardrailPrCommentState,
   GuardrailRepository,
   GuardrailRepositoryListRow,
   GuardrailRepositoryPatch,
@@ -594,6 +595,10 @@ export const api = {
       `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/caller-workflow`,
       { method: "PUT", body: JSON.stringify(triggers) },
     ),
+  listGuardrailPrComments: (repositoryKey: string) =>
+    request<{ comments: GuardrailPrCommentState[] }>(
+      `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/pr-comments`,
+    ),
   getGuardrailBaseline: (repositoryKey: string) =>
     request<{ baseline: RepositoryBaseline; hasProtectedBranchAction: boolean }>(
       `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/baseline`,
@@ -633,9 +638,11 @@ export const api = {
     },
   ),
   getGate: (gateId: string) =>
-    request<{ gate: GateRun; artifact: GateArtifact | null }>(
-      `/guardrails/gates/${encodeURIComponent(gateId)}`,
-    ),
+    request<{
+      gate: GateRun;
+      artifact: GateArtifact | null;
+      comment: GuardrailPrCommentState | null;
+    }>(`/guardrails/gates/${encodeURIComponent(gateId)}`),
   cancelGate: (gateId: string) =>
     request<{ ok: boolean }>(
       `/guardrails/gates/${encodeURIComponent(gateId)}/cancel`,
@@ -651,6 +658,12 @@ export const api = {
       `/guardrails/gates/${encodeURIComponent(gateId)}/publish`,
       { method: "POST" },
     ),
+  /** "Republicar comentário": writes the gate's comment again, through the App. */
+  publishGateComment: (gateId: string) =>
+    request<{
+      result: { status: string; commentId?: string; reason?: string };
+      comment: GuardrailPrCommentState | null;
+    }>(`/guardrails/gates/${encodeURIComponent(gateId)}/comment`, { method: "POST" }),
   gateEventsUrl: (gateId: string) =>
     `${BASE}/guardrails/gates/${encodeURIComponent(gateId)}/events`,
 };

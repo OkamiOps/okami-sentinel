@@ -1011,6 +1011,13 @@ export function createGuardrailsApp(
     }
   });
 
+  /** Every pull request of this repository Sentinel has written in. */
+  guardrails.get("/guardrails/repositories/:repositoryKey/pr-comments", (c) => {
+    const repositoryKey = c.req.param("repositoryKey");
+    if (!deps.getRepository(repositoryKey)) return c.json({ error: "Repositório não encontrado" }, 404);
+    return c.json({ comments: deps.listComments(repositoryKey) });
+  });
+
   guardrails.get("/guardrails/repositories/:repositoryKey/baseline", (c) => {
     const repositoryKey = c.req.param("repositoryKey");
     const repository = deps.getRepository(repositoryKey);
@@ -1081,7 +1088,13 @@ export function createGuardrailsApp(
   guardrails.get("/guardrails/gates/:gateId", (c) => {
     const gate = deps.getGate(c.req.param("gateId"));
     if (!gate) return c.json({ error: "Gate não encontrado" }, 404);
-    return c.json({ gate, artifact: deps.getArtifact(gate.id) });
+    // The comment travels with the gate: the page that shows the Check's state
+    // shows the comment's beside it, and a second round trip for one row would
+    // make the two of them disagree while it was in flight.
+    const comment = gate.pullRequestNumber === null
+      ? null
+      : deps.getComment(gate.repositoryKey, gate.pullRequestNumber);
+    return c.json({ gate, artifact: deps.getArtifact(gate.id), comment });
   });
 
   guardrails.get("/guardrails/gates/:gateId/events", (c) => {
