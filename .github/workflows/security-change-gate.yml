@@ -329,14 +329,22 @@ jobs:
           # *is* the baseline — is a workflow_dispatch run, so searching push
           # history would never find it for a dispatch-only caller, and the console
           # and the comparison would disagree about the same repository.
-          run_id=""
+          named=0
+          candidates=""
           if [[ "${BASELINE_RUN_ID}" =~ ^[1-9][0-9]*$ ]]; then
-            run_id="${BASELINE_RUN_ID}"
+            named=1
+            candidates="${BASELINE_RUN_ID}"
           else
+            # The fallback, for a caller older than this contract or a hand-made
+            # dispatch. A `push` run on the protected branch can only be a
+            # protected-branch gate, so those come first. Every Sentinel dispatch
+            # runs on the default branch — a pull-request gate included — so a
+            # `workflow_dispatch` candidate is never trusted on its position alone:
+            # the artifact's own target kind decides, below.
             set +e
-            run_id="$(gh api --method GET "/repos/${GITHUB_REPOSITORY}/actions/runs" \
-              -f branch="${PROTECTED_BRANCH}" -f status=completed -f per_page=100 \
-              --jq '[.workflow_runs[] | select((.path == ".github/workflows/csb-security-change-gate.yml" or .path == ".github/workflows/security-change-gate.yml") and (.event == "push" or .event == "workflow_dispatch"))][0].id // empty')"
+            push_runs="$(gh api --method GET "/repos/${GITHUB_REPOSITORY}/actions/runs" \
+              -f branch="${PROTECTED_BRANCH}" -f status=completed -f event=push -f per_page=100 \
+              --jq '[.workflow_runs[] | select(.path == ".github/workflows/csb-security-change-gate.yml" or .path == ".github/workflows/security-change-gate.yml")][0:5][].id')"
             history_status=$?
             set -e
             if [[ ${history_status} -ne 0 ]]; then
@@ -344,38 +352,66 @@ jobs:
               echo "reason=protected-history-unavailable" >> "${GITHUB_OUTPUT}"
               exit 0
             fi
+            candidates="${push_runs}"
+            if [[ -z "${push_runs}" ]]; then
+              set +e
+              dispatch_runs="$(gh api --method GET "/repos/${GITHUB_REPOSITORY}/actions/runs" \
+                -f branch="${PROTECTED_BRANCH}" -f status=completed -f event=workflow_dispatch -f per_page=100 \
+                --jq '[.workflow_runs[] | select(.path == ".github/workflows/csb-security-change-gate.yml" or .path == ".github/workflows/security-change-gate.yml")][0:5][].id')"
+              history_status=$?
+              set -e
+              if [[ ${history_status} -ne 0 ]]; then
+                echo "state=unavailable" >> "${GITHUB_OUTPUT}"
+                echo "reason=protected-history-unavailable" >> "${GITHUB_OUTPUT}"
+                exit 0
+              fi
+              candidates="${dispatch_runs}"
+            fi
           fi
-          if [[ -z "${run_id}" ]]; then
+          if [[ -z "${candidates}" ]]; then
             echo "state=absent" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
 
-          set +e
-          artifact_id="$(gh api --method GET "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" \
-            -f per_page=100 --jq '[.artifacts[] | select(.name == "csb-gate-artifact-v2" and .expired == false)][0].id // empty')"
-          artifact_status=$?
-          set -e
-          if [[ ${artifact_status} -ne 0 || -z "${artifact_id}" ]]; then
+          for run_id in ${candidates}; do
+            set +e
+            artifact_id="$(gh api --method GET "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts" \
+              -f per_page=100 --jq '[.artifacts[] | select(.name == "csb-gate-artifact-v2" and .expired == false)][0].id // empty')"
+            artifact_status=$?
+            set -e
+            if [[ ${artifact_status} -ne 0 || -z "${artifact_id}" ]]; then continue; fi
+
+            set +e
+            gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
+              > "${RUNNER_TEMP}/csb-baseline/artifact.zip"
+            download_status=$?
+            unzip -p "${RUNNER_TEMP}/csb-baseline/artifact.zip" csb-gate-result.json \
+              > "${RUNNER_TEMP}/csb-baseline/csb-gate-result.json"
+            unzip_status=$?
+            set -e
+            if [[ ${download_status} -ne 0 || ${unzip_status} -ne 0 || ! -s "${RUNNER_TEMP}/csb-baseline/csb-gate-result.json" ]]; then
+              continue
+            fi
+            # Only a protected-branch gate is a baseline. A pull-request artifact
+            # would be refused as incompatible by the gate anyway, but accepting it
+            # here would hide a good baseline sitting one entry below.
+            kind="$(jq -r '.target.kind // empty' "${RUNNER_TEMP}/csb-baseline/csb-gate-result.json")"
+            if [[ "${kind}" != "protected_branch" ]]; then continue; fi
+            echo "state=available" >> "${GITHUB_OUTPUT}"
+            echo "path=${RUNNER_TEMP}/csb-baseline/csb-gate-result.json" >> "${GITHUB_OUTPUT}"
+            exit 0
+          done
+
+          # The run Sentinel named has lost its artifact: GitHub keeps one for its
+          # retention window. That is repository state, and the gate reports it as a
+          # baseline that expired rather than an operational error — Sentinel then
+          # retires the projection so the next merge rebuilds it.
+          if [[ ${named} -eq 1 ]]; then
             echo "state=unavailable" >> "${GITHUB_OUTPUT}"
             echo "reason=protected-artifact-unavailable" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
-
-          set +e
-          gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
-            > "${RUNNER_TEMP}/csb-baseline/artifact.zip"
-          download_status=$?
-          unzip -p "${RUNNER_TEMP}/csb-baseline/artifact.zip" csb-gate-result.json \
-            > "${RUNNER_TEMP}/csb-baseline/csb-gate-result.json"
-          unzip_status=$?
-          set -e
-          if [[ ${download_status} -ne 0 || ${unzip_status} -ne 0 || ! -s "${RUNNER_TEMP}/csb-baseline/csb-gate-result.json" ]]; then
-            echo "state=unavailable" >> "${GITHUB_OUTPUT}"
-            echo "reason=protected-artifact-unreadable" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-          echo "state=available" >> "${GITHUB_OUTPUT}"
-          echo "path=${RUNNER_TEMP}/csb-baseline/csb-gate-result.json" >> "${GITHUB_OUTPUT}"
+          echo "state=absent" >> "${GITHUB_OUTPUT}"
 
       - name: Run frozen security change gate
         id: gate

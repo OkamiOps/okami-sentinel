@@ -38,6 +38,38 @@ test("is ready only when the active caller exactly matches the pinned release", 
   assert.equal(reads.length, 2);
 });
 
+/**
+ * The residual of C-1: readiness has to be the capability the executor will need,
+ * not a weaker one. Asking for `actions: write` on the workflow-state read means an
+ * installation that only ever approved `actions: read` is refused the token here,
+ * and the preflight says so — instead of reporting `ready` and failing later as an
+ * opaque dispatch error.
+ */
+test("asks for the level the dispatch will need, so an unapproved installation is not ready", async () => {
+  const asked: Array<Record<string, unknown>> = [];
+  const content = callerWorkflowDocument({
+    defaultBranch: "main",
+    secretName: "OPENAI_API_KEY",
+    workflowSha: RELEASE_SHA,
+  }).content;
+  const authority: GitHubActionsStatusAuthority = {
+    readAuthorizedRepositoryJson: async (_connection, _installation, _repository, path, permissions) => {
+      asked.push({ path, ...permissions });
+      if (path.includes("/contents/")) {
+        return { type: "file", encoding: "base64", content: Buffer.from(content).toString("base64") };
+      }
+      // GitHub answers a token request for an ungranted level with 422, which the
+      // App client reports as `github_request_rejected`.
+      throw Object.assign(new Error("github_request_rejected"), { code: "github_request_rejected" });
+    },
+  };
+
+  const status = await getGitHubActionsStatus(repository(), authority, RELEASE_SHA);
+  assert.equal(status.ready, false);
+  assert.equal(status.code, "github_actions_unavailable");
+  assert.equal(asked.at(-1)?.actions, "write");
+});
+
 test("reports an outdated caller without dispatching or modifying the repository", async () => {
   const authority: GitHubActionsStatusAuthority = {
     readAuthorizedRepositoryJson: async () => ({

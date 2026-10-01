@@ -25,7 +25,7 @@ export interface GitHubActionsStatusAuthority {
     installationId: string,
     repositoryId: string,
     path: string,
-    permissions: { actions?: "read"; contents?: "read" },
+    permissions: { actions?: "read" | "write"; contents?: "read" },
   ): Promise<unknown>;
 }
 
@@ -90,7 +90,11 @@ export async function getGitHubActionsStatus(
     const workflow = record(await authority.readAuthorizedRepositoryJson(
       ...authorityInput,
       `/repos/${owner}/${name}/actions/workflows/${encodeURIComponent(ACTIONS_CALLER_WORKFLOW_PATH)}`,
-      { actions: "read" },
+      // `write`, not `read`: readiness has to be the capability the executor will
+      // need. GitHub refuses a token for a level the installation never approved,
+      // so this one read is also the proof that `workflow_dispatch` will be allowed
+      // — instead of a green preflight followed by an opaque dispatch error.
+      { actions: "write" },
     ));
     if (workflow.state !== "active" || workflow.path !== ACTIONS_CALLER_WORKFLOW_PATH) {
       return unavailable("caller_workflow_inactive");

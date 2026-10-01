@@ -293,6 +293,40 @@ test("an incompatible baseline carries its reason into the notice instead of an 
   assert.ok((result.artifact.baselineNotice?.reason ?? "").length > 0);
 });
 
+/**
+ * N-1: a protected-branch artifact only lives for its retention window. When the run
+ * Sentinel named has lost its artifact, that is repository state — not a failure of
+ * ours — so it takes the absent path with a notice naming why, instead of turning
+ * every pull request into an operational error while the console says `ready`.
+ */
+test("an expired baseline artifact bootstraps with a notice instead of failing closed", async () => {
+  let scans = 0;
+  const result = await runGateCli(
+    options({ baselineState: "unavailable", baseline: null, baselineReason: "protected-artifact-unavailable" }),
+    {
+      ...fakeDeps({ outcome: "bootstrap" }),
+      readBaseline: () => ({ kind: "unavailable", reason: "protected-artifact-unavailable" }),
+      scanner: {
+        run: async () => {
+          scans += 1;
+          return {
+            scanId: "scan-current", scanDir: "/tmp/scan-current", status: "completed" as const,
+            findings: [finding()], cost: null, scannerVersion: "test",
+          };
+        },
+      },
+    },
+  );
+  assert.equal(result.exitCode, 0, result.artifact.decision.summary);
+  assert.equal(result.artifact.decision.outcome, "bootstrap");
+  assert.equal(result.artifact.decision.githubConclusion, "neutral");
+  assert.deepEqual(result.artifact.baselineNotice, {
+    kind: "absent",
+    reason: "baseline_artifact_expired",
+  });
+  assert.equal(scans, 1);
+});
+
 test("an unavailable PR baseline fails closed without starting the scanner", async () => {
   let scans = 0;
   const result = await runGateCli(options({ baselineState: "unavailable", baseline: null }), {
