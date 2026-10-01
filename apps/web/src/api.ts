@@ -336,6 +336,22 @@ export interface PolicySimulationResponse {
   gateId: string;
 }
 
+/** One word for a repository's baseline, read without a single remote call. */
+export type BaselineState = "absent" | "building" | "ready" | "stale";
+
+export interface RepositoryBaseline {
+  repositoryKey: string;
+  state: BaselineState;
+  gateId: string | null;
+  commitSha: string | null;
+  protectedBranch: string | null;
+  scanLineageHash: string | null;
+  builtAt: string | null;
+  staleReason: string | null;
+  requestedAt: string | null;
+  updatedAt: string;
+}
+
 /** The three levels of the policy precedence, plus the local-workspace case. */
 export type ResolvedPolicySource = "repository_file" | "sentinel" | "default";
 export type GuardrailPolicySource = ResolvedPolicySource | "workspace";
@@ -544,9 +560,14 @@ export const api = {
       `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/caller-workflow`,
       { method: "PUT", body: JSON.stringify(triggers) },
     ),
-  syncGuardrailBaseline: (repositoryKey: string) =>
-    request<{ baseline: GateArtifact | null }>(
-      `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/baseline/sync`,
+  getGuardrailBaseline: (repositoryKey: string) =>
+    request<{ baseline: RepositoryBaseline; hasProtectedBranchAction: boolean }>(
+      `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/baseline`,
+    ),
+  /** "Criar baseline agora": starts a protected-branch gate. Administrator only. */
+  buildGuardrailBaseline: (repositoryKey: string) =>
+    request<{ gateId: string; baseline: RepositoryBaseline }>(
+      `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/baseline`,
       { method: "POST" },
     ),
   listGates: (repositoryKey?: string) =>

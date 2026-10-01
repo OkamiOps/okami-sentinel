@@ -85,6 +85,7 @@ import {
   GitHubBaselineProvider,
   type BaselineProvider,
 } from "./github-baseline.js";
+import { refreshRepositoryBaselineState } from "./guardrails/baseline-state.js";
 import { readFindingsFile, toFindingSummaries } from "./ingest.js";
 import { getSystemGitHubAppService } from "./github-app-api.js";
 import {
@@ -156,6 +157,13 @@ export interface LocalGateDependencies {
    * it fire — and watch it throw without costing the gate its decision.
    */
   notifyOutcome(gate: GateRun): void;
+  /**
+   * Recomputes the repository's baseline word once a gate is terminal. It is the
+   * whole of "the baseline is built on the first merge": nothing else writes
+   * `guardrail_repository_baselines`, and a failure here must never cost the gate
+   * its decision, so every call site swallows it into the log.
+   */
+  refreshBaselineState(repositoryKey: string): void;
 }
 
 export interface RemoteManagedGateDependencies {
@@ -176,6 +184,7 @@ export interface RemoteManagedGateDependencies {
     detailsUrl: string | null;
   }): Promise<"created" | "updated">;
   notifyOutcome(gate: GateRun): void;
+  refreshBaselineState(repositoryKey: string): void;
 }
 
 const activeGates = new Map<string, Promise<void>>();
@@ -231,6 +240,7 @@ const productionDeps: LocalGateDependencies = {
   buildOperationalErrorArtifact,
   writeArtifact: writeGateArtifact,
   notifyOutcome: notifyGateOutcome,
+  refreshBaselineState: refreshRepositoryBaselineState,
 };
 
 const productionManagedDeps: RemoteManagedGateDependencies = {
@@ -253,6 +263,7 @@ const productionManagedDeps: RemoteManagedGateDependencies = {
     getSystemGitHubAppService() as ManagedGitHubCheckClient,
   ),
   notifyOutcome: notifyGateOutcome,
+  refreshBaselineState: refreshRepositoryBaselineState,
 };
 
 export async function startLocalGate(
@@ -477,6 +488,7 @@ export function reconcileGateWithLinkedScan(
         materializationState,
         completedAt,
       });
+      settleBaseline(gate.repositoryKey, deps);
       emit(gate.id, "done", {
         gateId: gate.id,
         status: "completed",
@@ -672,6 +684,7 @@ async function runRemoteManagedGate(
       estimatedUsd,
       completedAt,
     });
+    settleBaseline(repository.repositoryKey, deps);
     emit(gateId, "decision", {
       gateId,
       status: "completed",
@@ -704,6 +717,7 @@ async function runRemoteManagedGate(
         error: null,
         completedAt,
       });
+      settleBaseline(repository.repositoryKey, deps);
       emit(gateId, "done", {
         gateId,
         status: "completed",
@@ -931,6 +945,7 @@ async function evaluateAndComplete(
     estimatedUsd,
     completedAt,
   });
+  settleBaseline(repository.repositoryKey, deps);
   emit(gateId, "decision", {
     gateId,
     status: "completed",
@@ -1283,6 +1298,22 @@ function systemActionsExecutor(): GitHubActionsExecutor {
     },
   });
   return actionsExecutor;
+}
+
+/**
+ * The baseline projection, refreshed once a gate is terminal. A failure is logged
+ * and swallowed: the gate's decision is already durable, and a projection that
+ * could not be rewritten is a stale word on a screen, not a lost verdict.
+ */
+function settleBaseline(
+  repositoryKey: string,
+  deps: { refreshBaselineState(repositoryKey: string): void },
+): void {
+  try {
+    deps.refreshBaselineState(repositoryKey);
+  } catch (error) {
+    console.warn(`[csb-api] Could not refresh the baseline of ${repositoryKey}: ${String(error)}`);
+  }
 }
 
 async function managedBaselineCandidate(input: {

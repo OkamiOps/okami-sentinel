@@ -28,6 +28,7 @@ import {
 } from "./guardrails/target-preview.js";
 import type { GuardrailAutomationTriggers } from "./github-workflow.js";
 import { policyForPreset, type GuardrailPolicyPreset } from "./guardrails/policy-presets.js";
+import type { RepositoryBaseline } from "./guardrails/baseline-state.js";
 import type { StoredRepositoryPolicy } from "./guardrails/policy-store.js";
 
 function testPreview(
@@ -207,6 +208,9 @@ function dependencies(options: {
   repository?: GuardrailRepository;
   acceptPreviewError?: boolean;
   publishError?: string;
+  baseline?: RepositoryBaseline;
+  hasProtectedBranchAction?: boolean;
+  baselineGateError?: boolean;
   /** Level 1 of the precedence: whether the repository carries its own file. */
   repositoryFileWins?: boolean;
   fileInvalidReason?: string | null;
@@ -219,7 +223,8 @@ function dependencies(options: {
     repositoryKey: string;
     triggers: GuardrailAutomationTriggers;
   }>;
-  baselineSyncs: string[];
+  baselineRequests: Array<{ repositoryKey: string; requestedAt: string }>;
+  baselineGates: string[];
   remotePolicyReads: string[];
   savedPolicies: Array<{
     repositoryKey: string;
@@ -248,7 +253,8 @@ function dependencies(options: {
     repositoryKey: string;
     triggers: GuardrailAutomationTriggers;
   }> = [];
-  const baselineSyncs: string[] = [];
+  const baselineRequests: Array<{ repositoryKey: string; requestedAt: string }> = [];
+  const baselineGates: string[] = [];
   const remotePolicyReads: string[] = [];
   const savedPolicies: Array<{
     repositoryKey: string;
@@ -290,7 +296,8 @@ function dependencies(options: {
     writes,
     callerWorkflowRequests,
     workflowInstalls,
-    baselineSyncs,
+    baselineRequests,
+    baselineGates,
     remotePolicyReads,
     savedPolicies,
     publicationInputs,
@@ -400,9 +407,38 @@ function dependencies(options: {
         triggers,
       };
     },
-    syncBaseline: async (value) => {
-      baselineSyncs.push(value.repositoryKey);
-      return artifact;
+    getBaseline: (repositoryKey) => options.baseline ?? {
+      repositoryKey,
+      state: "absent",
+      gateId: null,
+      commitSha: null,
+      protectedBranch: null,
+      scanLineageHash: null,
+      builtAt: null,
+      staleReason: null,
+      requestedAt: null,
+      updatedAt: "1970-01-01T00:00:00.000Z",
+    },
+    markBaselineBuilding: (repositoryKey, requestedAt) => {
+      baselineRequests.push({ repositoryKey, requestedAt });
+      return {
+        repositoryKey,
+        state: "building",
+        gateId: null,
+        commitSha: null,
+        protectedBranch: null,
+        scanLineageHash: null,
+        builtAt: null,
+        staleReason: null,
+        requestedAt,
+        updatedAt: requestedAt,
+      };
+    },
+    hasProtectedBranchAction: () => options.hasProtectedBranchAction ?? false,
+    startBaselineGate: async (value) => {
+      baselineGates.push(value.repositoryKey);
+      if (options.baselineGateError) throw new TargetPreviewError("target_preview_invalid");
+      return { ...currentGate, id: "baseline-gate-1", startedAt: "2026-10-01T12:30:00.000Z" };
     },
     publishCheck: async (input) => {
       publicationInputs.push(input);
@@ -435,7 +471,8 @@ test("exposes local and github guardrail routes", () => {
     "GET /guardrails/repositories/:repositoryKey/caller-workflow",
     "PUT /guardrails/repositories/:repositoryKey/caller-workflow",
     "POST /guardrails/repositories/:repositoryKey/actions-dispatch",
-    "POST /guardrails/repositories/:repositoryKey/baseline/sync",
+    "GET /guardrails/repositories/:repositoryKey/baseline",
+    "POST /guardrails/repositories/:repositoryKey/baseline",
     "GET /guardrails/gates",
     "POST /guardrails/gates",
     "GET /guardrails/gates/:gateId",
@@ -835,24 +872,86 @@ test("policy simulation reports an expired exception and does not apply it", asy
   assert.equal(body.configurationErrors[0]?.field, "exceptions[0].expiresAt");
 });
 
-test("github status, read-only caller workflow and baseline sync use the enrolled repository", async () => {
+test("github status and the read-only caller workflow use the enrolled repository", async () => {
   const deps = dependencies();
   const base = `/guardrails/repositories/${encodeURIComponent(repository.repositoryKey)}`;
 
   const statusResponse = await createGuardrailsApp(deps).request(`${base}/github-status`);
   const callerResponse = await createGuardrailsApp(deps).request(`${base}/caller-workflow`);
-  const baselineResponse = await createGuardrailsApp(deps).request(`${base}/baseline/sync`, {
-    method: "POST",
-  });
 
   assert.equal(statusResponse.status, 200);
   assert.equal((await statusResponse.json()).status.ready, true);
   assert.equal(callerResponse.status, 200);
   assert.equal((await callerResponse.json()).workflow.path, ".github/workflows/csb-security-change-gate.yml");
-  assert.equal(baselineResponse.status, 200);
-  assert.equal((await baselineResponse.json()).baseline.gateId, artifact.gateId);
   assert.deepEqual(deps.callerWorkflowRequests, [repository.repositoryKey]);
-  assert.deepEqual(deps.baselineSyncs, [repository.repositoryKey]);
+});
+
+test("the removed sync route answers 404", async () => {
+  const response = await createGuardrailsApp(dependencies()).request(
+    `/guardrails/repositories/${encodeURIComponent(repository.repositoryKey)}/baseline/sync`,
+    { method: "POST" },
+  );
+  assert.equal(response.status, 404);
+});
+
+test("reports the baseline word and whether a merge would build it", async () => {
+  const remote = remoteRepository();
+  const deps = dependencies({ repository: remote, hasProtectedBranchAction: true });
+  const response = await createGuardrailsApp(deps).request(
+    `/guardrails/repositories/${encodeURIComponent(remote.repositoryKey)}/baseline`,
+  );
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.baseline.state, "absent");
+  assert.equal(body.hasProtectedBranchAction, true);
+});
+
+test("reports that no push action covers the protected branch", async () => {
+  const remote = remoteRepository();
+  const deps = dependencies({ repository: remote });
+  const body = await (await createGuardrailsApp(deps).request(
+    `/guardrails/repositories/${encodeURIComponent(remote.repositoryKey)}/baseline`,
+  )).json();
+  assert.equal(body.hasProtectedBranchAction, false);
+});
+
+test("building the baseline now starts a protected-branch gate and marks it building", async () => {
+  const remote = remoteRepository();
+  const deps = dependencies({ repository: remote });
+  const response = await createGuardrailsApp(deps).request(
+    `/guardrails/repositories/${encodeURIComponent(remote.repositoryKey)}/baseline`,
+    { method: "POST" },
+  );
+  assert.equal(response.status, 202);
+  const body = await response.json();
+  assert.equal(body.gateId, "baseline-gate-1");
+  assert.equal(body.baseline.state, "building");
+  assert.deepEqual(deps.baselineGates, [remote.repositoryKey]);
+  assert.deepEqual(deps.baselineRequests, [{
+    repositoryKey: remote.repositoryKey,
+    requestedAt: "2026-10-01T12:30:00.000Z",
+  }]);
+});
+
+test("a baseline request that cannot start a gate writes no building row", async () => {
+  const remote = remoteRepository();
+  const deps = dependencies({ repository: remote, baselineGateError: true });
+  const response = await createGuardrailsApp(deps).request(
+    `/guardrails/repositories/${encodeURIComponent(remote.repositoryKey)}/baseline`,
+    { method: "POST" },
+  );
+  assert.equal(response.status, 400);
+  assert.deepEqual(deps.baselineRequests, []);
+});
+
+test("a local repository has no protected-branch gate to build a baseline with", async () => {
+  const deps = dependencies({ remote: false });
+  const response = await createGuardrailsApp(deps).request(
+    `/guardrails/repositories/${encodeURIComponent(repository.repositoryKey)}/baseline`,
+    { method: "POST" },
+  );
+  assert.equal(response.status, 400);
+  assert.deepEqual(deps.baselineGates, []);
 });
 
 test("caller workflow PUT installs the selected automation triggers", async () => {
@@ -904,7 +1003,7 @@ test("github actions reject a repository without a remote", async () => {
   const base = `/guardrails/repositories/${encodeURIComponent(repository.repositoryKey)}`;
 
   assert.equal((await testApp.request(`${base}/caller-workflow`)).status, 400);
-  assert.equal((await testApp.request(`${base}/baseline/sync`, { method: "POST" })).status, 400);
+  assert.equal((await testApp.request(`${base}/baseline`, { method: "POST" })).status, 400);
 });
 
 test("POST publish returns 409 when the gate has no artifact", async () => {

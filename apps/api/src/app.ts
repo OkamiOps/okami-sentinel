@@ -72,6 +72,7 @@ import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import {
   buildDecisionGraph,
+  defaultGuardrailPolicy,
   evaluateGate,
 } from "@csb/gate-core";
 import {
@@ -129,7 +130,6 @@ import {
   upsertGuardrailRepository,
   type GateEvent,
 } from "./gate-store.js";
-import { GitHubBaselineProvider } from "./github-baseline.js";
 import {
   publishGateCheck,
   type PublishGateCheckInput,
@@ -157,6 +157,13 @@ import {
   putRepositoryPolicy,
   type StoredRepositoryPolicy,
 } from "./guardrails/policy-store.js";
+import {
+  getRepositoryBaselineState,
+  markRepositoryBaselineBuilding,
+  refreshRepositoryBaselineState,
+  type RepositoryBaseline,
+} from "./guardrails/baseline-state.js";
+import { matchesAnyBranchPattern } from "./github-actions/branch-patterns.js";
 import {
   presetForPolicy,
   type GuardrailPolicyPreset,
@@ -282,31 +289,19 @@ export interface GuardrailsApiDependencies {
   getActionsStatus(repository: GuardrailRepository): Promise<GitHubActionsStatus>;
   getCallerWorkflow(repository: GuardrailRepository): Promise<CallerWorkflowDocument>;
   installCallerWorkflow?(repository: GuardrailRepository, triggers: GuardrailAutomationTriggers): Promise<GitHubActionsStatus>;
-  syncBaseline(repository: GuardrailRepository): Promise<GateArtifact | null>;
+  /** The baseline projection: one word the screen reads without N remote calls. */
+  getBaseline(repositoryKey: string): RepositoryBaseline;
+  markBaselineBuilding(repositoryKey: string, requestedAt: string): RepositoryBaseline;
+  /** Whether an enabled `push` action covers the repository's protected branch. */
+  hasProtectedBranchAction(repositoryKey: string): boolean;
+  /** "Criar baseline agora": a protected-branch gate on the repository's branch. */
+  startBaselineGate(repository: GuardrailRepository): Promise<GateRun>;
   publishCheck(input: PublishGateCheckInput): Promise<void>;
   updateGate(gateId: string, updates: GateRunUpdate): void;
   recordPublicationAttempt(attempt: GatePublicationAttempt): void;
   listPublicationAttempts(gateId: string): GatePublicationAttempt[];
 }
 
-const githubBaselineProvider = new GitHubBaselineProvider({
-  readAuthorizedRepositoryJson: (connectionId, installationId, repositoryId, resourcePath, permissions) =>
-    getSystemGitHubAppService().readAuthorizedRepositoryJson(
-      connectionId,
-      installationId,
-      repositoryId,
-      resourcePath,
-      permissions,
-    ),
-  downloadAuthorizedRepositoryBytes: (connectionId, installationId, repositoryId, resourcePath, permissions) =>
-    getSystemGitHubAppService().downloadAuthorizedRepositoryBytes(
-      connectionId,
-      installationId,
-      repositoryId,
-      resourcePath,
-      permissions,
-    ),
-});
 const repositoryEnrollmentService = new GitHubRepositoryService({
   inspectLocal: inspectRepository,
   requireAuthorizedRepository: (connectionId, installationId, repositoryId) =>
@@ -380,8 +375,13 @@ const guardrailsDependencies: GuardrailsApiDependencies = {
     return protectedPolicyLoader.load(repository, target, resolved);
   },
   getSentinelPolicy: (repositoryKey) => getRepositoryPolicy(repositoryKey),
-  putSentinelPolicy: (repositoryKey, policy, preset, updatedBy) =>
-    putRepositoryPolicy(repositoryKey, policy, preset, updatedBy),
+  putSentinelPolicy: (repositoryKey, policy, preset, updatedBy) => {
+    const stored = putRepositoryPolicy(repositoryKey, policy, preset, updatedBy);
+    // The policy names the protected branches, so saving it can retire a baseline
+    // that stands on a branch the policy no longer protects.
+    refreshRepositoryBaselineState(repositoryKey);
+    return stored;
+  },
   parsePolicy: parseGuardrailPolicy,
   writePolicy: writeGuardrailPolicy,
   readExceptions: readGuardrailExceptions,
@@ -457,20 +457,64 @@ const guardrailsDependencies: GuardrailsApiDependencies = {
     );
     return getGitHubActionsStatus(repository, getSystemGitHubAppService(), GITHUB_ACTIONS_WORKFLOW_SHA);
   },
-  syncBaseline: (repository) => githubBaselineProvider.getBaseline({
-    repositoryKey: repository.repositoryKey,
-    owner: repository.remoteOwner!,
-    name: repository.remoteName!,
-    defaultBranch: repository.defaultBranch,
-    connectionId: requiredRemoteAuthority(repository.githubConnectionId),
-    installationId: requiredRemoteAuthority(repository.githubInstallationId),
-    repositoryId: requiredRemoteAuthority(repository.githubRepositoryId),
-  }),
+  getBaseline: (repositoryKey) => getRepositoryBaselineState(repositoryKey),
+  markBaselineBuilding: (repositoryKey, requestedAt) =>
+    markRepositoryBaselineBuilding(repositoryKey, requestedAt),
+  hasProtectedBranchAction: (repositoryKey) => repositoryHasProtectedBranchAction(repositoryKey),
+  startBaselineGate: (repository) => startProtectedBranchBaselineGate(repository),
   publishCheck: publishGateCheck,
   updateGate: updateGateRun,
   recordPublicationAttempt: recordGatePublicationAttempt,
   listPublicationAttempts: listGatePublicationAttempts,
 };
+
+/**
+ * Whether a merge will build this repository's baseline on its own: an enabled
+ * `push` action whose patterns cover the protected branch. Without one the screen
+ * offers "Criar baseline agora" instead of promising something that never happens.
+ */
+function repositoryHasProtectedBranchAction(repositoryKey: string): boolean {
+  const branch = protectedBranchForBaseline(repositoryKey);
+  if (branch === null) return false;
+  return listGitHubActions({ repositoryKey }).some((action) =>
+    action.enabled
+    && action.triggerKind === "push"
+    && matchesAnyBranchPattern(action.branchPatterns, branch));
+}
+
+/**
+ * The branch a baseline stands on, read the same way the projection reads it: from
+ * the effective policy's protected branches, preferring the repository's default.
+ */
+function protectedBranchForBaseline(repositoryKey: string): string | null {
+  const repository = findRepository(repositoryKey);
+  if (repository === null) return null;
+  const policy = getRepositoryPolicy(repositoryKey)?.policy ?? defaultGuardrailPolicy();
+  if (policy.protectedBranches.includes(repository.defaultBranch)) return repository.defaultBranch;
+  return policy.protectedBranches[0] ?? null;
+}
+
+/**
+ * "Criar baseline agora". It goes through the same preflight as any other gate —
+ * resolve the ref, read the policy, freeze a preview — so the run is priced and
+ * authorized exactly like one an operator starts by hand. The button is an
+ * administrator's because it spends.
+ */
+async function startProtectedBranchBaselineGate(repository: GuardrailRepository): Promise<GateRun> {
+  const ref = protectedBranchForBaseline(repository.repositoryKey);
+  // No protected branch means there is no commit a baseline could stand on, which
+  // is a configuration answer rather than a failure of this request.
+  if (ref === null) throw new TargetPreviewError("target_preview_invalid");
+  const target = { kind: "protected_branch" as const, ref };
+  const executor = repository.defaultExecutor;
+  const preview = await targetPreviewService.create(repository, { target, executor });
+  const accepted = await targetPreviewService.accept(repository, {
+    previewIdentity: preview.previewIdentity,
+    target,
+    executor,
+  });
+  return startGuardrailGate({ repositoryKey: repository.repositoryKey, target, executor }, accepted);
+}
 
 export function createGuardrailsApp(
   deps: GuardrailsApiDependencies = guardrailsDependencies,
@@ -746,17 +790,36 @@ export function createGuardrailsApp(
     }
   });
 
-  guardrails.post("/guardrails/repositories/:repositoryKey/baseline/sync", async (c) => {
-    const repository = deps.getRepository(c.req.param("repositoryKey"));
+  guardrails.get("/guardrails/repositories/:repositoryKey/baseline", (c) => {
+    const repositoryKey = c.req.param("repositoryKey");
+    const repository = deps.getRepository(repositoryKey);
+    if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
+    return c.json({
+      baseline: deps.getBaseline(repositoryKey),
+      // Without a push action covering the protected branch, no merge will ever
+      // build the baseline by itself, and the screen has to say so instead of
+      // waiting forever.
+      hasProtectedBranchAction: deps.hasProtectedBranchAction(repositoryKey),
+    });
+  });
+
+  guardrails.post("/guardrails/repositories/:repositoryKey/baseline", async (c) => {
+    const repositoryKey = c.req.param("repositoryKey");
+    const repository = deps.getRepository(repositoryKey);
     if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
     if (!hasGitHubRemote(repository)) {
       return c.json({ error: "Repositório não possui remoto GitHub" }, 400);
     }
+    let gate: GateRun;
     try {
-      return c.json({ baseline: await deps.syncBaseline(repository) });
+      gate = await deps.startBaselineGate(repository);
     } catch (error) {
-      return c.json({ error: errorMessage(error) }, 502);
+      return c.json({ error: errorMessage(error) }, targetPreviewStatus(error));
     }
+    // After the gate exists: a row saying `building` with no run behind it would
+    // leave the screen waiting on nothing.
+    const baseline = deps.markBaselineBuilding(repositoryKey, gate.startedAt);
+    return c.json({ gateId: gate.id, baseline }, 202);
   });
 
   guardrails.get("/guardrails/gates", (c) => {

@@ -118,6 +118,8 @@ interface FakeDeps extends LocalGateDependencies {
   cancelledScanId: string | null;
   /** Every gate the orchestrator asked to notify about, in order. */
   readonly notified: GateRun[];
+  /** Every repository whose baseline projection the orchestrator refreshed. */
+  readonly baselineRefreshes: string[];
 }
 
 function fakeDeps(options: {
@@ -157,6 +159,7 @@ function fakeDeps(options: {
   });
 
   const notified: GateRun[] = [];
+  const baselineRefreshes: string[] = [];
   const deps: FakeDeps = {
     runs,
     notified,
@@ -164,6 +167,8 @@ function fakeDeps(options: {
     githubBaselineCalls: 0,
     lastScanRequest: null,
     cancelledScanId: null,
+    baselineRefreshes,
+    refreshBaselineState: (repositoryKey) => { baselineRefreshes.push(repositoryKey); },
     notifyOutcome: (gate) => {
       notified.push(gate);
       if (options.notifyThrows) throw new Error("the outbox is unwritable");
@@ -315,6 +320,30 @@ test("a terminal gate is notified once, with the persisted outcome", async () =>
   const unchanged = await startLocalGate(request(), empty);
   await waitForGate(unchanged.id);
   assert.deepEqual(empty.notified.map((run) => run.outcome), ["no_changes"]);
+});
+
+test("a completed gate refreshes the repository's baseline word", async () => {
+  const deps = fakeDeps();
+  const gate = await startLocalGate(request(), deps);
+  await waitForGate(gate.id);
+  assert.deepEqual(deps.baselineRefreshes, [gate.repositoryKey]);
+});
+
+test("a failed gate leaves the baseline word alone", async () => {
+  const deps = fakeDeps({ scanStatus: "failed" });
+  const gate = await startLocalGate(request(), deps);
+  await waitForGate(gate.id);
+  // An errored run is not a baseline, and refreshing on it would be a write that
+  // means nothing.
+  assert.deepEqual(deps.baselineRefreshes, []);
+});
+
+test("a refresh that throws still leaves the gate decided", async () => {
+  const deps = fakeDeps();
+  deps.refreshBaselineState = () => { throw new Error("the projection is unwritable"); };
+  const gate = await startLocalGate(request(), deps);
+  await waitForGate(gate.id);
+  assert.equal(deps.runs.get(gate.id)?.status, "completed");
 });
 
 test("a notification that throws still leaves the gate decided", async () => {
@@ -606,6 +635,13 @@ test("remote managed gate persists frozen identity before execution and publishe
   assert.equal(JSON.stringify(completed).includes("/private/managed"), false);
 });
 
+test("a completed managed gate refreshes the repository's baseline word", async () => {
+  const { deps, baselineRefreshes } = remoteDeps();
+  const gate = await startRemoteManagedGate(remotePreview(), deps);
+  await waitForGate(gate.id);
+  assert.deepEqual(baselineRefreshes, [gate.repositoryKey]);
+});
+
 test("keeps a persisted managed decision completed when cleanup fails afterwards", async () => {
   const execution = remoteExecutionResult();
   const { deps, runs, events } = remoteDeps({ execute: async (input) => {
@@ -663,13 +699,16 @@ function remoteDeps(overrides: {
   events: Map<string, Parameters<RemoteManagedGateDependencies["appendGateEvent"]>[1][]>;
   calls: string[];
   notified: GateRun[];
+  baselineRefreshes: string[];
 } {
   const runs = new Map<string, GateRun>();
   const events = new Map<string, Parameters<RemoteManagedGateDependencies["appendGateEvent"]>[1][]>();
   const calls: string[] = [];
   const notified: GateRun[] = [];
+  const baselineRefreshes: string[] = [];
   const result = remoteExecutionResult();
   const deps: RemoteManagedGateDependencies = {
+    refreshBaselineState: (repositoryKey) => { baselineRefreshes.push(repositoryKey); },
     notifyOutcome: (gate) => {
       notified.push(gate);
       if (overrides.notifyThrows) throw new Error("the outbox is unwritable");
@@ -704,7 +743,7 @@ function remoteDeps(overrides: {
       return "created";
     },
   };
-  return { deps, runs, events, calls, notified };
+  return { deps, runs, events, calls, notified, baselineRefreshes };
 }
 
 function remoteRepository(): GuardrailRepository {
