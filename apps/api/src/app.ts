@@ -1144,7 +1144,10 @@ app.route("/", createGitHubActionsApi({
   }),
   storeWebhookSecret: (connectionId, secret) =>
     getSystemGitHubAppCredentialStore().putWebhookSecret(connectionId, secret),
-  recordWebhookSecretStored: (connectionId) => { recordWebhookSecretStored(connectionId); },
+  recordWebhookSecretStored: (connectionId, storedAt) => {
+    recordWebhookSecretStored(connectionId, storedAt === undefined ? new Date().toISOString() : storedAt);
+  },
+  readWebhookSecretStoredAt: (connectionId) => webhookSecretStoredAt(connectionId),
   // A pasted secret must take effect on the very next delivery, or the operator
   // reads the signature failure of a stale snapshot as their own mistake.
   invalidateWebhookSecrets: () => { githubWebhookSecretCache.invalidate(); },

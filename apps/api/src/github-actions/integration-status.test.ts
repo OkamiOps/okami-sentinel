@@ -10,11 +10,11 @@ import {
 } from "./integration-status.js";
 
 const REQUIRED_GRANTS = {
-  actions: "write",
+  actions: "read",
   checks: "write",
   contents: "write",
   metadata: "read",
-  pull_requests: "write",
+  pull_requests: "read",
   workflows: "write",
 } as const;
 
@@ -249,14 +249,16 @@ test("reports a ready integration with every checklist step met", async () => {
 });
 
 test("names the permission the App is missing", async () => {
+  // `contents` is the write the product uses today, so it is the one a narrowed
+  // grant has to be caught on.
   const status = await buildGitHubIntegrationStatus(
-    deps({ granted: { checks: "write", pull_requests: "read" } }),
+    deps({ granted: { checks: "write", contents: "read" } }),
   );
   const pr = status.connections[0]!.permissions.find((p) => p.name === "pull_requests")!;
   assert.deepEqual(pr, {
     name: "pull_requests",
-    required: "write",
-    granted: "read",
+    required: "read",
+    granted: null,
     ok: false,
     pendingInstallationIds: [],
   });
@@ -264,7 +266,7 @@ test("names the permission the App is missing", async () => {
   assert.deepEqual(contents, {
     name: "contents",
     required: "write",
-    granted: null,
+    granted: "read",
     ok: false,
     pendingInstallationIds: [],
   });
@@ -435,8 +437,8 @@ test("never reads as ready when two connections are each half configured", async
       { connectionId: "connection-a", webhookSecret: null },
       {
         connectionId: "connection-b",
-        requested: { ...REQUIRED_GRANTS, pull_requests: "read" },
-        installations: [{ granted: { ...REQUIRED_GRANTS, pull_requests: "read" } }],
+        requested: { ...REQUIRED_GRANTS, contents: "read" },
+        installations: [{ granted: { ...REQUIRED_GRANTS, contents: "read" } }],
       },
     ],
     actions: [action({ connectionId: "connection-a" }), action({ id: "action-2", connectionId: "connection-b" })],
@@ -495,14 +497,14 @@ test("names the installation whose permission review is still pending", async ()
       requested: { ...REQUIRED_GRANTS },
       installations: [
         { installationId: "77", granted: { ...REQUIRED_GRANTS } },
-        { installationId: "88", granted: { ...REQUIRED_GRANTS, pull_requests: "read" } },
+        { installationId: "88", granted: { ...REQUIRED_GRANTS, contents: "read" } },
       ],
     }],
   }));
 
-  const pr = status.connections[0]!.permissions.find((p) => p.name === "pull_requests")!;
+  const pr = status.connections[0]!.permissions.find((p) => p.name === "contents")!;
   assert.deepEqual(pr, {
-    name: "pull_requests",
+    name: "contents",
     required: "write",
     granted: "read",
     ok: false,

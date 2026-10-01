@@ -661,9 +661,11 @@ de corrigidos desaparece.
   branch `okami-sentinel/caller-workflow`, comita
   `.github/workflows/csb-security-change-gate.yml` fixado em
   `CSB_GITHUB_ACTIONS_WORKFLOW_SHA` e abre o PR, com `contents: write` +
-  `pull_requests: write`), e os pré-requisitos: segredo `OPENAI_API_KEY` no
+  `pull_requests: write` — esta última é uma **ampliação da fase 4**, não está no
+  manifest das fases 1–3), e os pré-requisitos: segredo `OPENAI_API_KEY` no
   repositório e o caller sem gatilhos automáticos de `push`/`pull_request`/merge.
-- Agendamento: `workflow_dispatch` pela App, como hoje. O Sentinel continua
+- Agendamento: `workflow_dispatch` pela App, como hoje — o que exige ampliar
+  `actions` de `read` para `write`, também uma ampliação da fase 4. O Sentinel continua
   recusando com `monitor_actions_duplicate_triggers` quando o caller mantém os
   gatilhos nativos.
 - Retorno: `workflow_run.completed` do caller vira o gatilho primário de
@@ -672,6 +674,29 @@ de corrigidos desaparece.
   como rede de segurança.
 - Artefato importado que veio de uma execução não despachada pelo Sentinel
   continua sendo atividade observada, nunca evidência aprovada.
+
+## Permissões da App
+
+Cada nível é pago por uma chamada que existe, não pelo que pode vir a ser
+conveniente: o token de instalação carrega todos eles contra os repositórios do
+cliente, e um nível que ninguém chama é uma capacidade que ninguém audita.
+
+| Permissão | Nível | Quem exige | Fase |
+|---|---|---|---|
+| `metadata` | read | obrigatório pelo GitHub em qualquer App | — |
+| `checks` | write | publicar e atualizar o Check Run (`github-check.ts`) | 1 |
+| `contents` | write | `PUT /guardrails/repositories/:key/caller-workflow` comita `.github/workflows/csb-security-change-gate.yml`; a fase 4 comita o mesmo arquivo num branch | hoje + 4 |
+| `workflows` | write | o GitHub recusa qualquer escrita sob `.github/workflows/` sem ela; viaja junto de `contents: write` e com mais nada | hoje + 4 |
+| `actions` | read | ler runs do workflow, seus artefatos e o estado do caller | 1 |
+| `pull_requests` | read | listar e ler pull requests | 1 |
+
+**Ampliações previstas, não pedidas agora.** `actions: write`
+(`workflow_dispatch` e cancelar um run) e `pull_requests: write` (abrir o PR do
+caller) são da **fase 4**; `issues: write` (comentário sticky no PR) é da
+**fase 3**. Nenhum dos três entra no manifest antes da fase que os usa. Ampliar
+depois enfileira uma revisão por instalação — que é exatamente o que a tela de
+Integração já mostra, nomeando a instalação pendente, então o custo da ampliação
+é trabalho visível e não uma falha silenciosa.
 
 ## Permissões e regra de custo
 
@@ -750,14 +775,15 @@ explicitamente que ela é isenta de CSRF e que nenhuma outra rota nova é públi
 - Tabela de eventos assinados: exigido × assinado, com o que falta.
 - Escopo da instalação: quantos repositórios a App alcança, quantos estão
   cadastrados, e **Ampliar seleção de repositórios** apontando para
-  `https://github.com/settings/installations/<id>` (ou a URL da organização) —
-  a causa literal de "a aba está presa em um repositório".
+  `https://github.com/settings/installations/<id>` (ou a URL da organização).
+  Com a instalação restrita a repositórios escolhidos, só os escolhidos aparecem
+  na tela, e esse é o passo que amplia a seleção.
 - Webhook: URL copiável, `Segredo: configurado`/`ausente` com campo para colar e
   botão de substituir, última entrega, contagem de `processado`/`ignorado`/
   `falhou` nas últimas 24 h, e as 50 entregas mais recentes com motivo.
 - Checklist de prontidão: App instalada → permissões → eventos → segredo →
   **entrega verificada** → repositório cadastrado → ação habilitada → baseline.
-  "Segredo configurado" não quer dizer "segredo certo": só uma entrega cuja
+  Um segredo gravado ainda não é um segredo correto: só uma entrega cuja
   assinatura validou prova isso, e uma linha de entrega só existe depois de a
   assinatura validar. Um segredo colado com espaço, um segredo trocado só no
   GitHub, ou um `appId` gravado errado deixam o passo vermelho em vez de a tela
@@ -866,9 +892,10 @@ gerado pelo GitHub (`webhook_secret` da resposta de conversão, hoje descartado)
 **App existente.** Três ajustes no GitHub, listados pela própria tela de
 Integração com o que falta:
 
-1. **Permissions**: `checks: write`, `contents: write`, `pull_requests: write`,
-   `actions: write`, `workflows: write`, `metadata: read`. Aprovar a revisão em
-   cada instalação.
+1. **Permissions**: `checks: write`, `contents: write`, `workflows: write`,
+   `actions: read`, `pull_requests: read`, `metadata: read`. Aprovar a revisão em
+   cada instalação. É o conjunto mínimo das fases 1–3; a fase 4 amplia
+   `actions` e `pull_requests` para `write` (veja *Permissões da App*).
 2. **Subscribe to events**: `pull_request`, `push`, `installation`,
    `installation_repositories`, `check_run`, `workflow_run`.
 3. **Webhook**: URL `https://sentinel.okamilab.com/api/github/webhook`, ativo,

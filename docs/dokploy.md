@@ -92,8 +92,11 @@ como `configurado`.
 
 **App existente.** Três ajustes em `https://github.com/settings/apps/<slug>`:
 
-1. **Permissions** — `checks: write`, `contents: write`, `pull_requests: write`,
-   `actions: write`, `workflows: write`, `metadata: read`. Salvar no GitHub só
+1. **Permissions** — `checks: write`, `contents: write`, `workflows: write`,
+   `actions: read`, `pull_requests: read`, `metadata: read`. É o conjunto mínimo
+   que as fases 1–3 usam: a fase 4 (executor GitHub Actions) amplia `actions` e
+   `pull_requests` para `write`, e a fase 3 acrescenta `issues: write` para o
+   comentário no PR — nenhum dos três é pedido antes da fase que o usa. Salvar no GitHub só
    muda o que a App **pede**: ampliar permissões enfileira uma revisão **em cada
    instalação**, e até a aprovação a instalação continua com os níveis antigos. A
    tela de Integração compara as duas coisas — ela aponta a permissão que falta e

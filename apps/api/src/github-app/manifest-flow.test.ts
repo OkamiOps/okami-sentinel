@@ -23,11 +23,11 @@ function fixture() {
 
 test("uses the exact least-privilege GitHub App manifest contract", () => {
   assert.deepEqual(GITHUB_APP_MANIFEST_PERMISSIONS, {
-    actions: "write",
+    actions: "read",
     checks: "write",
     contents: "write",
     metadata: "read",
-    pull_requests: "write",
+    pull_requests: "read",
     workflows: "write",
   });
   assert.equal(Object.isFrozen(GITHUB_APP_MANIFEST_PERMISSIONS), true);
@@ -43,8 +43,33 @@ test("uses the exact least-privilege GitHub App manifest contract", () => {
   assert.equal(authorization.manifest.description, "Evidence-backed repository security guardrails");
 });
 
-test("asks for pull_requests write", () => {
-  assert.equal(GITHUB_APP_MANIFEST_PERMISSIONS.pull_requests, "write");
+/**
+ * Each write has to be earned by a call site in a shipped phase. An installation
+ * token carries every level here against the customer's repositories, so a level
+ * nobody calls is a capability nobody audits — and widening later is visible work
+ * the Integração screen already guides (it names the installation whose review is
+ * pending).
+ */
+test("asks for no write the shipped phases do not use", () => {
+  // Phases 1-3 only read workflow runs, their artifacts and the caller's state.
+  // `workflow_dispatch` and cancelling a run need `actions: write`, and both belong
+  // to the phase 4 executor.
+  assert.equal(GITHUB_APP_MANIFEST_PERMISSIONS.actions, "read");
+  // Phases 1-3 only list and read pull requests. Opening the caller-workflow PR is
+  // phase 4's, and so is the write it needs.
+  assert.equal(GITHUB_APP_MANIFEST_PERMISSIONS.pull_requests, "read");
+  // The sticky PR comment is phase 3's and needs `issues: write`; it is not
+  // requested until phase 3 asks for it.
+  assert.equal("issues" in GITHUB_APP_MANIFEST_PERMISSIONS, false);
+  // What is left is used today: the Check Run, and the caller workflow this
+  // release already commits through `PUT .../caller-workflow`.
+  assert.deepEqual(
+    Object.entries(GITHUB_APP_MANIFEST_PERMISSIONS)
+      .filter(([, level]) => level === "write")
+      .map(([name]) => name)
+      .sort(),
+    ["checks", "contents", "workflows"],
+  );
 });
 
 test("subscribes to the six events the product needs", () => {

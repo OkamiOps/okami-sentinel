@@ -141,6 +141,8 @@ interface Harness {
   vaultCalls: number;
   /** Every connection whose secret rotation was recorded, in order. */
   secretsRecorded: string[];
+  /** The rotation log as the route left it. */
+  rotations: Map<string, string>;
   /** Every filter `listActions` was called with, in order. */
   listActionFilters: Array<Parameters<GitHubActionsApiDependencies["listActions"]>[0]>;
 }
@@ -151,6 +153,7 @@ function harness(options: {
   events?: GitHubActionEvent[];
   deliveries?: WebhookDeliveryRecord[];
   listActionFilters?: Harness["listActionFilters"];
+  rotations?: Array<[string, string]>;
 } = {}): Harness {
   const actions = options.actions ?? [];
   const repositories = options.repositories
@@ -159,7 +162,10 @@ function harness(options: {
   const deliveries = options.deliveries ?? [];
   const secrets = new Map<string, string>();
   const listActionFilters = options.listActionFilters ?? [];
-  const state = { invalidations: 0, reconciles: 0, vaultCalls: 0, secretsRecorded: [] as string[] };
+  const state = {
+    invalidations: 0, reconciles: 0, vaultCalls: 0, secretsRecorded: [] as string[],
+    rotations: new Map<string, string>(options.rotations ?? []),
+  };
 
   const dependencies: GitHubActionsApiDependencies = {
     getAction: (id) => actions.find((candidate) => candidate.id === id) ?? null,
@@ -239,7 +245,13 @@ function harness(options: {
       if (connectionId !== "c1") throw new Error("credential_not_found");
       secrets.set(connectionId, secret);
     },
-    recordWebhookSecretStored: (connectionId) => { state.secretsRecorded.push(connectionId); },
+    recordWebhookSecretStored: (connectionId, storedAt) => {
+      state.secretsRecorded.push(connectionId);
+      if (storedAt === undefined) state.rotations.set(connectionId, "2026-09-30T12:00:00.000Z");
+      else if (storedAt === null) state.rotations.delete(connectionId);
+      else state.rotations.set(connectionId, storedAt);
+    },
+    readWebhookSecretStoredAt: (connectionId) => state.rotations.get(connectionId) ?? null,
     invalidateWebhookSecrets: () => { state.invalidations += 1; },
     reconcile: async () => {
       state.reconciles += 1;
@@ -254,6 +266,7 @@ function harness(options: {
     get reconciles() { return state.reconciles; },
     get vaultCalls() { return state.vaultCalls; },
     get secretsRecorded() { return state.secretsRecorded; },
+    get rotations() { return state.rotations; },
     listActionFilters,
     server: (principal) => {
       const app = new Hono();
@@ -456,6 +469,36 @@ test("never returns the webhook secret", async () => {
   assert.ok(!text.includes("super-secret"), "the status echoed part of the secret");
   const body = JSON.parse(text) as { connections: Array<{ webhookSecretConfigured: boolean }> };
   assert.equal(body.connections[0]!.webhookSecretConfigured, true);
+});
+
+/**
+ * The two writes are not atomic, so the order decides which failure is survivable.
+ * Storing first and losing the rotation leaves the old proof vouching for a value
+ * that no longer exists — the checklist reads green over a paste nobody has tested.
+ * Recording first can only fail the other way, and the rollback closes even that.
+ */
+test("never leaves a stored secret without its rotation", async () => {
+  const bench = harness({ rotations: [["c1", "2026-09-01T00:00:00.000Z"]] });
+  const server = bench.server(admin);
+
+  // A refused vault write must leave the previous instant exactly as it was, or a
+  // failed paste would retire a proof the working secret still deserves.
+  const refused = await server.request("/github/integration/webhook-secret", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ connectionId: "c2", secret: SECRET }),
+  });
+  assert.equal(refused.status, 404);
+  assert.equal(bench.rotations.get("c2"), undefined);
+  assert.equal(bench.rotations.get("c1"), "2026-09-01T00:00:00.000Z");
+
+  const stored = await server.request("/github/integration/webhook-secret", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ connectionId: "c1", secret: SECRET }),
+  });
+  assert.equal(stored.status, 204);
+  assert.equal(bench.rotations.get("c1"), "2026-09-30T12:00:00.000Z");
 });
 
 test("refuses a webhook secret for an unknown connection and a short one", async () => {

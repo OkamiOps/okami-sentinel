@@ -5,12 +5,37 @@ import path from "node:path";
 const MANIFEST_FLOW_TTL_MS = 10 * 60_000;
 const FLOW_ID = /^[A-Za-z0-9-]{1,100}$/;
 
+/**
+ * The least set the shipped phases actually use. Each level is justified by a call
+ * site, not by what might be convenient later — an installation token carries every
+ * one of these against the customer's repositories, and a level nobody calls is a
+ * capability nobody audits.
+ *
+ * - `metadata: read` — mandatory for every App; GitHub refuses the manifest without it.
+ * - `checks: write` — phase 1 publishes and updates the Check Run (`github-check.ts`).
+ * - `contents: write` — `PUT /guardrails/repositories/:key/caller-workflow` commits
+ *   `.github/workflows/csb-security-change-gate.yml` today (`app.ts`), and phase 4's
+ *   "Abrir PR com o workflow" commits the same file on a branch. Reads (the policy
+ *   file, the tree, the baseline) only need `read`, but the write path exists now.
+ * - `workflows: write` — GitHub refuses a write to any path under `.github/workflows/`
+ *   without it, so it travels with `contents: write` and with nothing else.
+ * - `actions: read` — phases 1–3 only *read*: workflow runs, their artifacts and the
+ *   caller's state. `workflow_dispatch` and cancelling a run need `actions: write`,
+ *   and those belong to the phase 4 executor; the Integração screen names the
+ *   installation whose review is pending when that widening happens.
+ * - `pull_requests: read` — phases 1–3 only list and read pull requests. Opening the
+ *   caller-workflow PR needs `pull_requests: write`, which is phase 4's as well.
+ *
+ * Deliberately absent: `issues: write`, which the phase 3 sticky comment will need
+ * (`POST /repos/.../issues/{n}/comments`). It is not requested until phase 3 asks
+ * for it, for the same reason.
+ */
 export const GITHUB_APP_MANIFEST_PERMISSIONS = Object.freeze({
-  actions: "write",
+  actions: "read",
   checks: "write",
   contents: "write",
   metadata: "read",
-  pull_requests: "write",
+  pull_requests: "read",
   workflows: "write",
 } as const);
 
