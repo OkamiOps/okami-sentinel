@@ -39,11 +39,41 @@ export type GitHubAppClientErrorCode =
   | "github_request_rejected"
   | "github_unavailable";
 
+/**
+ * What GitHub refused with, beyond the code. 401 and 403 share one code because
+ * every caller but one treats them alike; the pull-request comment is that one,
+ * and it has to tell "the App has no such permission" from "this conversation is
+ * locked" or "you are rate-limited" before it stops trying installation-wide.
+ */
+export interface GitHubAppClientErrorContext {
+  status: number;
+  /** GitHub's own `message`, verbatim. Never a body, never a header but one. */
+  detail: string;
+  retryAfter: string | null;
+}
+
 export class GitHubAppClientError extends Error {
-  constructor(readonly code: GitHubAppClientErrorCode) {
+  readonly status: number | null;
+  readonly detail: string;
+  readonly retryAfter: string | null;
+
+  constructor(
+    readonly code: GitHubAppClientErrorCode,
+    context?: GitHubAppClientErrorContext,
+  ) {
     super(code);
     this.name = "GitHubAppClientError";
+    this.status = context?.status ?? null;
+    this.detail = context?.detail ?? "";
+    this.retryAfter = context?.retryAfter ?? null;
   }
+}
+
+/** GitHub's `message` field, bounded so a hostile body cannot travel in a log. */
+function responseDetail(body: unknown): string {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return "";
+  const message = (body as Record<string, unknown>).message;
+  return typeof message === "string" ? message.slice(0, 200) : "";
 }
 
 export interface GitHubHttpRequest {
@@ -57,6 +87,8 @@ export interface GitHubHttpRequest {
 export interface GitHubHttpResponse {
   status: number;
   body: unknown;
+  /** The `Retry-After` header, when GitHub sent one. The only header any caller reads. */
+  retryAfter?: string | null;
 }
 
 export type GitHubHttpTransport = (request: GitHubHttpRequest) => Promise<GitHubHttpResponse>;
@@ -507,7 +539,11 @@ export class GitHubAppClient {
       return response.body;
     }
     if (response.status === 401 || response.status === 403) {
-      throw new GitHubAppClientError("github_credential_rejected");
+      throw new GitHubAppClientError("github_credential_rejected", {
+        status: response.status,
+        detail: responseDetail(response.body),
+        retryAfter: response.retryAfter ?? null,
+      });
     }
     if (response.status === 404) throw new GitHubAppClientError("github_not_found");
     if (response.status === 409 || response.status === 422) {
@@ -764,7 +800,7 @@ async function fetchGitHubJson(request: GitHubHttpRequest): Promise<GitHubHttpRe
       throw new GitHubAppClientError("github_protocol_error");
     }
   }
-  return { status: response.status, body };
+  return { status: response.status, body, retryAfter: response.headers.get("retry-after") };
 }
 
 async function readBoundedResponseBytes(

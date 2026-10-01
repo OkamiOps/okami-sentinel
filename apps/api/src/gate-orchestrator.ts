@@ -106,7 +106,7 @@ import {
 import {
   clearPrCommentPermissionBlock,
   getPrComment,
-  isPrCommentPermissionBlocked,
+  prCommentPermissionBlockedAt,
   recordPrCommentPermissionBlock,
   upsertPrComment,
 } from "./github/pr-comment-store.js";
@@ -1407,7 +1407,11 @@ function productionPrCommentDependencies(): PrCommentPublisherDependencies {
       ),
     getComment: (repositoryKey, pullRequestNumber) => getPrComment(repositoryKey, pullRequestNumber),
     upsertComment: (record) => { upsertPrComment(record); },
-    isPermissionBlocked: (installationId) => isPrCommentPermissionBlocked(installationId),
+    appIdentity: (connectionId) => {
+      const connection = service.listConnections().find((row) => row.id === connectionId);
+      return { appId: connection?.appId ?? null, appSlug: connection?.appSlug ?? null };
+    },
+    permissionBlockedAt: (installationId) => prCommentPermissionBlockedAt(installationId),
     recordPermissionBlock: (installationId, reason) =>
       recordPrCommentPermissionBlock(installationId, reason, new Date().toISOString()),
     clearPermissionBlock: (installationId) => { clearPrCommentPermissionBlock(installationId); },

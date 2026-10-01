@@ -161,22 +161,31 @@ export function recordPrCommentPermissionBlock(
   database: Database.Database = getDb(),
 ): boolean {
   ensurePrCommentSchema(database);
-  const inserted = database.prepare(`
-    INSERT INTO guardrail_pr_comment_permission_blocks (installation_id, reason, recorded_at)
-    VALUES (?, ?, ?)
-    ON CONFLICT (installation_id) DO NOTHING
-  `).run(installationId, reason, now);
-  return inserted.changes > 0;
+  // `recorded_at` is always refreshed: it is the clock the hourly re-probe reads.
+  // Only the first insert returns `true`, so a probe that fails again is silent.
+  return database.transaction(() => {
+    const first = prCommentPermissionBlockedAt(installationId, database) === null;
+    database.prepare(`
+      INSERT INTO guardrail_pr_comment_permission_blocks (installation_id, reason, recorded_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT (installation_id) DO UPDATE SET
+        reason = excluded.reason,
+        recorded_at = excluded.recorded_at
+    `).run(installationId, reason, now);
+    return first;
+  }).immediate();
 }
 
-export function isPrCommentPermissionBlocked(
+/** When this installation's refusal was recorded, or `null` if there is none. */
+export function prCommentPermissionBlockedAt(
   installationId: string,
   database: Database.Database = getDb(),
-): boolean {
+): string | null {
   ensurePrCommentSchema(database);
-  return database.prepare(
-    "SELECT 1 FROM guardrail_pr_comment_permission_blocks WHERE installation_id = ?",
-  ).get(installationId) !== undefined;
+  const row = database.prepare(
+    "SELECT recorded_at FROM guardrail_pr_comment_permission_blocks WHERE installation_id = ?",
+  ).get(installationId) as { recorded_at: string } | undefined;
+  return row?.recorded_at ?? null;
 }
 
 /**

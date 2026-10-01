@@ -153,7 +153,7 @@ import {
 import {
   clearPrCommentPermissionBlock,
   getPrComment,
-  isPrCommentPermissionBlocked,
+  prCommentPermissionBlockedAt,
   listPrComments,
   recordPrCommentPermissionBlock,
   upsertPrComment,
@@ -523,7 +523,12 @@ const guardrailsDependencies: GuardrailsApiDependencies = {
       ),
     getComment: (repositoryKey, pullRequestNumber) => getPrComment(repositoryKey, pullRequestNumber),
     upsertComment: (record) => { upsertPrComment(record); },
-    isPermissionBlocked: (installationId) => isPrCommentPermissionBlocked(installationId),
+    appIdentity: (connectionId) => {
+      const connection = getSystemGitHubAppService().listConnections()
+        .find((row) => row.id === connectionId);
+      return { appId: connection?.appId ?? null, appSlug: connection?.appSlug ?? null };
+    },
+    permissionBlockedAt: (installationId) => prCommentPermissionBlockedAt(installationId),
     recordPermissionBlock: (installationId, reason) =>
       recordPrCommentPermissionBlock(installationId, reason, new Date().toISOString()),
     clearPermissionBlock: (installationId) => { clearPrCommentPermissionBlock(installationId); },
@@ -1583,7 +1588,7 @@ app.route("/", createGitHubActionsApi({
   getRepository: findRepository,
   listEvents: (filter) => listGitHubActionEvents(filter),
   listDeliveries: ({ limit, offset }) => listWebhookDeliveries(limit, getDb(), offset),
-  readIntegrationStatus: async () => liftGrantedCommentBlocks(await buildGitHubIntegrationStatus({
+  readIntegrationStatus: async () => reconcileCommentPermissionBlocks(await buildGitHubIntegrationStatus({
     listConnections: githubIntegrationConnections,
     listInstallations: githubIntegrationInstallations,
     listRepositories: (installationId) =>
@@ -2099,22 +2104,29 @@ function targetPreviewStatus(error: unknown): 400 | 409 {
 }
 
 /**
- * The cheap re-check the comment publisher relies on. The status already knows, per
- * permission, which installations have not approved it; every installation that is
- * no longer pending on `pull_requests` may write comments again.
+ * The authoritative answer about the permission, where it is already known. The
+ * status lists, per permission, which installations have not approved it: those
+ * are latched, and every other one is freed. It runs on the Integração screen's
+ * own read, so neither direction costs a call of its own.
  *
- * It runs on the Integração screen's own read, so the recovery costs nothing extra
- * and happens where the operator is already looking.
+ * It is not the only way out of a latch — the publisher re-probes hourly — because
+ * this route is admin-only, and a transient 403 must not need an administrator.
  */
-function liftGrantedCommentBlocks(
+function reconcileCommentPermissionBlocks(
   status: GitHubIntegrationStatus,
 ): GitHubIntegrationStatus {
+  const now = new Date().toISOString();
   for (const connection of status.connections) {
     const permission = connection.permissions.find((entry) => entry.name === "pull_requests");
     if (permission === undefined) continue;
     const pending = new Set(permission.pendingInstallationIds);
     for (const installation of connection.installations) {
-      if (!pending.has(installation.installationId)) {
+      if (pending.has(installation.installationId)) {
+        // The grants themselves say the scope is absent, which is the second of
+        // the two things that may silence an installation. Nothing was attempted,
+        // so nothing is announced — the screen is already saying it.
+        recordPrCommentPermissionBlock(installation.installationId, "github_permission_missing", now);
+      } else {
         clearPrCommentPermissionBlock(installation.installationId);
       }
     }

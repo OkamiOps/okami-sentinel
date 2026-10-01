@@ -8,7 +8,7 @@ import {
   clearPrCommentPermissionBlock,
   ensurePrCommentSchema,
   getPrComment,
-  isPrCommentPermissionBlocked,
+  prCommentPermissionBlockedAt,
   listPrComments,
   recordPrCommentPermissionBlock,
   upsertPrComment,
@@ -92,12 +92,13 @@ test("the schema is created once and is safe to ask for twice", () => {
 
 test("a permission refusal is recorded once per installation", () => {
   const db = memoryDb();
-  assert.equal(isPrCommentPermissionBlocked("77", db), false);
+  assert.equal(prCommentPermissionBlockedAt("77", db), null);
   assert.equal(recordPrCommentPermissionBlock("77", "github_permission_missing", "2026-09-30T12:00:00.000Z", db), true);
-  // The second gate under the same installation is not a second alert.
+  // The second gate under the same installation is not a second alert, and it
+  // pushes the hourly re-probe out by its own clock.
   assert.equal(recordPrCommentPermissionBlock("77", "github_permission_missing", "2026-09-30T12:05:00.000Z", db), false);
-  assert.equal(isPrCommentPermissionBlocked("77", db), true);
-  assert.equal(isPrCommentPermissionBlocked("88", db), false);
+  assert.equal(prCommentPermissionBlockedAt("77", db), "2026-09-30T12:05:00.000Z");
+  assert.equal(prCommentPermissionBlockedAt("88", db), null);
   db.close();
 });
 
@@ -106,7 +107,7 @@ test("granting the permission lifts the block, and lifting twice is not an error
   recordPrCommentPermissionBlock("77", "github_permission_missing", "2026-09-30T12:00:00.000Z", db);
   assert.equal(clearPrCommentPermissionBlock("77", db), true);
   assert.equal(clearPrCommentPermissionBlock("77", db), false);
-  assert.equal(isPrCommentPermissionBlocked("77", db), false);
+  assert.equal(prCommentPermissionBlockedAt("77", db), null);
   // And it can be recorded again if the permission is revoked.
   assert.equal(recordPrCommentPermissionBlock("77", "github_permission_missing", "2026-10-01T12:00:00.000Z", db), true);
   db.close();
