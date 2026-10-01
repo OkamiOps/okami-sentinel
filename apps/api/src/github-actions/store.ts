@@ -684,6 +684,17 @@ export function disableGitHubActionsForInstallation(
  * ceiling the rule had instead of giving each a full bucket. The cost of the
  * choice is explicit: an action with a small daily cap can be starved by a
  * sibling that spent the repository's day.
+ *
+ * `failed` counts too, and that is deliberate (1.4 N-2, decided to keep it). A
+ * failure here is post-dispatch ambiguity: the reservation was taken, `deps.start`
+ * was called, and the run may well have reached its provider and be spending right
+ * now — the event carries no gate id only because the launch never got to answer.
+ * Releasing the ceiling on that reading would let the repository reserve past its
+ * own cap for work already in flight, so the day stays charged. The cost is equally
+ * explicit and is the lesser one: a standing misconfiguration that keeps failing
+ * can exhaust the repository's budget until midnight UTC, which an operator sees as
+ * `daily_cost_ceiling` on the queued events and in the daily-cost alert. Counting
+ * conservatively is the money-safe default; the alternative risks overspend.
  */
 export function reserveGitHubActionEventDispatch(
   input: {
@@ -719,7 +730,7 @@ export function reserveGitHubActionEventDispatch(
         SELECT COALESCE(SUM(cost_ceiling_usd), 0)
         FROM github_action_events
         WHERE repository_key = @repository_key
-          AND status IN ('dispatching', 'launched')
+          AND status IN ('dispatching', 'launched', 'failed')
           AND dispatched_at >= @day_start AND dispatched_at < @day_end
       ) + @cost_ceiling_usd <= @daily_cost_ceiling_usd
   `).run({
@@ -738,11 +749,10 @@ export function reserveGitHubActionEventDispatch(
 }
 
 /**
- * A process died after reserving a paid dispatch. The event becomes terminal
- * instead of being retried blindly — the scan may well have started — and its
- * reservation is released with every other `failed` one, because no gate was ever
- * linked to charge it to. `exceptEventIds` are the dispatches this process is
- * running right now, which are not orphans.
+ * A process died after reserving a paid dispatch. The reservation stays spent for
+ * the day — the scan may well have started, and nothing here can tell — and the
+ * event becomes terminal instead of being retried blindly. `exceptEventIds` are the
+ * dispatches this process is running right now, which are not orphans.
  */
 export function failOrphanedGitHubActionDispatches(
   now: string,
@@ -769,8 +779,8 @@ export function failOrphanedGitHubActionDispatches(
  * Cost ceilings are reservations, so a new automatic launch cannot overspend the
  * daily cap, and the cap belongs to the repository (see
  * `reserveGitHubActionEventDispatch`) — which is also why the daily-cost alert is
- * keyed by repository and not by action. A `failed` dispatch is released, for the
- * reason that function gives.
+ * keyed by repository and not by action. `failed` is included for the reason that
+ * function gives: a failed dispatch may already be spending at its provider.
  */
 export function reservedGitHubActionCostForUtcDay(
   repositoryKey: string,
@@ -783,7 +793,7 @@ export function reservedGitHubActionCostForUtcDay(
     SELECT COALESCE(SUM(cost_ceiling_usd), 0) AS total
     FROM github_action_events
     WHERE repository_key = ?
-      AND status IN ('dispatching', 'launched')
+      AND status IN ('dispatching', 'launched', 'failed')
       AND dispatched_at >= ? AND dispatched_at < ?
   `).get(repositoryKey, dayStart, dayEnd) as { total: number };
   return Number(row.total) || 0;

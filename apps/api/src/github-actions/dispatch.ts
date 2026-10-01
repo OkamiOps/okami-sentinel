@@ -177,8 +177,7 @@ export async function dispatchGitHubActionEvent(
     }
     const result = await deps.start({ action, event: dispatching, target });
     if (result.headSha !== dispatching.headSha) {
-      // The launch answered about another commit, so no gate of ours is linked and
-      // the reservation is released with the failure.
+      // The launch answered about another commit. The reservation stays spent.
       patch(dispatching.id, {
         status: "failed", error: "automatic_dispatch_uncertain", completedAt: now().toISOString(),
       });
@@ -198,8 +197,7 @@ export async function dispatchGitHubActionEvent(
       return;
     }
     // The scan may or may not have reached its provider. The uncertainty is
-    // preserved — the event is terminal, never retried blindly — but the day's
-    // budget is not: a standing refusal would otherwise spend it on nothing.
+    // preserved, with the reservation, instead of paying for a blind retry.
     patch(dispatching.id, { status: "failed", error: code, completedAt: now().toISOString() });
   } finally {
     inFlight.delete(dispatching.id);
