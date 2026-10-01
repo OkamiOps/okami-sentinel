@@ -309,3 +309,24 @@ test("lets a signed webhook through with no session, no Origin and no CSRF token
     assert.equal(neighbour.status, 401);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test("serves the pull-request banner without a session", async () => {
+  // GitHub fetches the comment's banner anonymously, through its image proxy. A
+  // banner behind the session cookie is a broken image on every pull request.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "csb-server-banner-"));
+  fs.writeFileSync(path.join(root, "index.html"), "<!doctype html><h1>Sentinel</h1>");
+  fs.mkdirSync(path.join(root, "brand"));
+  fs.copyFileSync(
+    path.join(import.meta.dirname, "../../web/public/brand/pr-comment-banner.png"),
+    path.join(root, "brand", "pr-comment-banner.png"),
+  );
+  const app = createServerApp(new Hono(), { webRoot: root, settings: serverSettings() });
+  try {
+    const response = await app.request(`${origin}/brand/pr-comment-banner.png`);
+    assert.equal(response.status, 200);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    assert.ok(bytes.byteLength > 0 && bytes.byteLength < 120_000, `banner is ${bytes.byteLength} bytes`);
+    // A PNG, not an HTML fallback that happens to answer 200.
+    assert.deepEqual([...bytes.slice(0, 4)], [0x89, 0x50, 0x4e, 0x47]);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

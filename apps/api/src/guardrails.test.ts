@@ -324,6 +324,7 @@ function dependencies(options: {
       ...currentRepository,
       prCommentEnabled: true,
       prCommentDetail: "detailed",
+      prCommentLocale: "pt-BR",
       baseline: {
         repositoryKey: currentRepository.repositoryKey,
         state: "absent",

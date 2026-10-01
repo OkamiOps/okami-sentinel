@@ -6,7 +6,7 @@ import {
   REPOSITORY_POLICY_SCHEMA_SQL,
 } from "./guardrails/projection-schema.js";
 
-export const CURRENT_GUARDRAILS_SCHEMA_VERSION = 7;
+export const CURRENT_GUARDRAILS_SCHEMA_VERSION = 8;
 
 export type GuardrailsMigrationStep =
   | "repositories_rebuilt"
@@ -16,6 +16,7 @@ export type GuardrailsMigrationStep =
   | "actions_dispatches_added"
   | "gate_cost_ceiling_added"
   | "repository_pr_comment_added"
+  | "repository_pr_comment_locale_added"
   | "baselines_backfilled";
 
 export interface GuardrailsMigrationHooks {
@@ -70,6 +71,10 @@ export function migrateGuardrailsSchema(
       ensureGatePolicySource(database);
       hooks.afterStep?.("repository_pr_comment_added");
     }
+    if (currentVersion < 8) {
+      ensureRepositoryPrCommentLocale(database);
+      hooks.afterStep?.("repository_pr_comment_locale_added");
+    }
     // Version 7's work runs after this transaction commits: the projection reads the
     // tables created above and writes through its own ladder, which keeps its own
     // transaction.
@@ -84,7 +89,7 @@ export function migrateGuardrailsSchema(
       VALUES (?, ?, ?)
     `).run(
       CURRENT_GUARDRAILS_SCHEMA_VERSION,
-      "baseline projection backfilled for enrolled repositories",
+      "pull-request comment language recorded per repository",
       new Date().toISOString(),
     );
   });
@@ -105,6 +110,7 @@ function schemaIsCurrent(database: Database.Database): boolean {
     && tableColumns(database, "gate_runs").has("cost_ceiling_usd")
     && tableColumns(database, "gate_runs").has("policy_source")
     && tableColumns(database, "guardrail_repositories").has("pr_comment_enabled")
+    && tableColumns(database, "guardrail_repositories").has("pr_comment_locale")
     && tableExists(database, "github_actions_dispatches")
     && tableExists(database, "guardrail_repository_policies")
     && tableExists(database, "guardrail_repository_baselines");
@@ -207,6 +213,18 @@ function ensureRepositoryPrComment(database: Database.Database): void {
 }
 
 /**
+ * The language the pull-request comment is written in. Defaulting to `pt-BR`
+ * keeps every repository enrolled before the setting existed reading as it did
+ * when the operator enrolled it, instead of silently switching language on them.
+ */
+function ensureRepositoryPrCommentLocale(database: Database.Database): void {
+  if (tableColumns(database, "guardrail_repositories").has("pr_comment_locale")) return;
+  database.exec(
+    "ALTER TABLE guardrail_repositories ADD COLUMN pr_comment_locale TEXT NOT NULL DEFAULT 'pt-BR'",
+  );
+}
+
+/**
  * Which level of the policy precedence a gate ran under. Nullable, because every
  * row written before the column existed ran before the three levels were named, and
  * inventing a level for it would be a guess the list screen would then print.
@@ -240,11 +258,13 @@ function createRepositoryTable(database: Database.Database, table: string): void
       policy_path TEXT NOT NULL,
       pr_comment_enabled INTEGER NOT NULL DEFAULT 1,
       pr_comment_detail TEXT NOT NULL DEFAULT 'detailed',
+      pr_comment_locale TEXT NOT NULL DEFAULT 'pt-BR',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       CHECK (source IN ('local', 'github')),
       CHECK (pr_comment_enabled IN (0, 1)),
       CHECK (pr_comment_detail IN ('detailed', 'summary')),
+      CHECK (pr_comment_locale IN ('pt-BR', 'en', 'es', 'de', 'fr')),
       CHECK (default_executor IN ('sentinel-managed', 'github-actions')),
       CHECK (source = 'github' OR default_executor = 'sentinel-managed'),
       CHECK (

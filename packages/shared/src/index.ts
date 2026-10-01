@@ -1394,12 +1394,45 @@ export interface GuardrailBaseline {
 export type GuardrailPrCommentDetail = "detailed" | "summary";
 
 /**
+ * The language the pull-request comment is written in, chosen per repository. The
+ * people who read a pull request are not always the people who read the console,
+ * so this is a repository setting and not the operator's interface locale. The
+ * five values are the five the interface itself ships.
+ */
+export const GUARDRAIL_PR_COMMENT_LOCALES = ["pt-BR", "en", "es", "de", "fr"] as const;
+
+export type GuardrailPrCommentLocale = typeof GUARDRAIL_PR_COMMENT_LOCALES[number];
+
+export const DEFAULT_GUARDRAIL_PR_COMMENT_LOCALE: GuardrailPrCommentLocale = "pt-BR";
+
+export function isGuardrailPrCommentLocale(value: unknown): value is GuardrailPrCommentLocale {
+  return typeof value === "string"
+    && (GUARDRAIL_PR_COMMENT_LOCALES as readonly string[]).includes(value);
+}
+
+/**
+ * The state of the one sticky comment Sentinel keeps on a pull request. `commentId`
+ * is GitHub's id for it, so the interface can link straight at it.
+ */
+export interface GuardrailPrCommentState {
+  repositoryKey: string;
+  pullRequestNumber: number;
+  commentId: string | null;
+  status: "published" | "failed";
+  reason: string | null;
+  bodyHash: string | null;
+  gateId: string | null;
+  updatedAt: string;
+}
+
+/**
  * A row of `GET /guardrails/repositories`: the repository plus everything the list
  * shows about it, so the screen needs one call and no remote request at all.
  */
 export interface GuardrailRepositoryListRow extends GuardrailRepository {
   prCommentEnabled: boolean;
   prCommentDetail: GuardrailPrCommentDetail;
+  prCommentLocale: GuardrailPrCommentLocale;
   baseline: GuardrailBaseline;
   enabledActionCount: number;
   lastGate: { gateId: string; outcome: GateOutcome | null; completedAt: string | null } | null;
@@ -1411,6 +1444,7 @@ export interface GuardrailRepositoryPatch {
   enabled?: boolean;
   defaultExecutor?: GateExecutorKind;
   prCommentEnabled?: boolean;
+  prCommentLocale?: GuardrailPrCommentLocale;
 }
 
 /**
