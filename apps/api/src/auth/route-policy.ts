@@ -78,6 +78,10 @@ export const ROUTE_POLICY: ReadonlyArray<readonly [method: string, pattern: stri
   ["POST", "/guardrails/repositories/:repositoryKey/baseline", ADMIN],
   ["GET", "/guardrails/repositories/:repositoryKey/caller-workflow", R("viewer", "param")],
   ["PUT", "/guardrails/repositories/:repositoryKey/caller-workflow", R("maintainer", "param")],
+  // Opening the pull request writes a branch and a file in the customer's
+  // repository and installs the plane that spends their Actions minutes. That is
+  // the administrator's, like every other control that commits the account.
+  ["POST", "/guardrails/repositories/:repositoryKey/caller-workflow/pull-request", ADMIN],
   ["GET", "/guardrails/repositories/:repositoryKey/github-status", R("viewer", "param")],
   ["GET", "/guardrails/repositories/:repositoryKey/policy", R("viewer", "param")],
   ["PUT", "/guardrails/repositories/:repositoryKey/policy", R("maintainer", "param")],

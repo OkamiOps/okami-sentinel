@@ -226,6 +226,7 @@ function dependencies(options: {
   enrolled: GuardrailRepository[];
   writes: Array<{ repositoryPath: string; policy: GuardrailPolicy }>;
   callerWorkflowRequests: string[];
+  callerWorkflowPullRequests: string[];
   workflowInstalls: Array<{
     repositoryKey: string;
     triggers: GuardrailAutomationTriggers;
@@ -259,6 +260,7 @@ function dependencies(options: {
   const enrolled: GuardrailRepository[] = [];
   const writes: Array<{ repositoryPath: string; policy: GuardrailPolicy }> = [];
   const callerWorkflowRequests: string[] = [];
+  const callerWorkflowPullRequests: string[] = [];
   const workflowInstalls: Array<{
     repositoryKey: string;
     triggers: GuardrailAutomationTriggers;
@@ -309,6 +311,7 @@ function dependencies(options: {
     enrolled,
     writes,
     callerWorkflowRequests,
+    callerWorkflowPullRequests,
     workflowInstalls,
     baselineRequests,
     baselineGates,
@@ -444,6 +447,15 @@ function dependencies(options: {
         content: "name: CSB Security Change Gate\n",
       };
     },
+    openCallerWorkflowPullRequest: async (value) => {
+      callerWorkflowPullRequests.push(value.repositoryKey);
+      return {
+        status: "created" as const,
+        pullRequestNumber: 42,
+        pullRequestUrl: "https://github.com/OkamiOps/okami/pull/42",
+        branch: "okami-sentinel/caller-workflow",
+      };
+    },
     installCallerWorkflow: async (value, triggers) => {
       workflowInstalls.push({ repositoryKey: value.repositoryKey, triggers });
       return {
@@ -540,6 +552,7 @@ test("exposes local and github guardrail routes", () => {
     "GET /guardrails/repositories/:repositoryKey/actions-status",
     "GET /guardrails/repositories/:repositoryKey/caller-workflow",
     "PUT /guardrails/repositories/:repositoryKey/caller-workflow",
+    "POST /guardrails/repositories/:repositoryKey/caller-workflow/pull-request",
     "POST /guardrails/repositories/:repositoryKey/actions-dispatch",
     "GET /guardrails/repositories/:repositoryKey/pr-comments",
     "GET /guardrails/repositories/:repositoryKey/baseline",
@@ -1173,6 +1186,36 @@ test("a local repository has no protected-branch gate to build a baseline with",
   );
   assert.equal(response.status, 400);
   assert.deepEqual(deps.baselineGates, []);
+});
+
+test("the caller workflow pull request answers with the number it opened", async () => {
+  const remote = remoteRepository();
+  const deps = dependencies({ repository: remote });
+  const response = await createGuardrailsApp(deps).request(
+    `/guardrails/repositories/${encodeURIComponent(remote.repositoryKey)}/caller-workflow/pull-request`,
+    { method: "POST" },
+  );
+
+  assert.equal(response.status, 201);
+  assert.deepEqual(await response.json(), {
+    pullRequest: {
+      status: "created",
+      pullRequestNumber: 42,
+      pullRequestUrl: "https://github.com/OkamiOps/okami/pull/42",
+      branch: "okami-sentinel/caller-workflow",
+    },
+  });
+  assert.deepEqual(deps.callerWorkflowPullRequests, [remote.repositoryKey]);
+});
+
+test("a local repository has no remote to open a caller workflow pull request on", async () => {
+  const deps = dependencies({ remote: false });
+  const response = await createGuardrailsApp(deps).request(
+    `/guardrails/repositories/${encodeURIComponent(repository.repositoryKey)}/caller-workflow/pull-request`,
+    { method: "POST" },
+  );
+  assert.equal(response.status, 400);
+  assert.deepEqual(deps.callerWorkflowPullRequests, []);
 });
 
 test("caller workflow PUT installs the selected automation triggers", async () => {
