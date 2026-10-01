@@ -578,7 +578,9 @@ test("hands a completed workflow run to the importer when there is one", async (
   const seen: string[] = [];
   const harness = ingestHarness({ actions: [prAction()], importWorkflowRun: (id) => seen.push(id) });
   const result = await harness.deliver("workflow_run", {
-    action: "completed", workflow_run: { id: 4242 }, repository: { id: 1 },
+    action: "completed",
+    workflow_run: { id: 4242, path: ".github/workflows/csb-security-change-gate.yml" },
+    repository: { id: 1 },
   });
   assert.equal(result.outcome, "processed");
   assert.deepEqual(seen, ["4242"]);
@@ -589,6 +591,32 @@ test("hands a completed workflow run to the importer when there is one", async (
   });
   assert.equal(deferred.outcome, "ignored");
   assert.equal(deferred.reason, "workflow_run_not_supported");
+});
+
+test("ignores a workflow_run that is not the caller", async () => {
+  const seen: string[] = [];
+  const harness = ingestHarness({ actions: [prAction()], importWorkflowRun: (id) => seen.push(id) });
+  const result = await harness.deliver("workflow_run", {
+    action: "completed",
+    workflow_run: { id: 4242, path: ".github/workflows/release.yml" },
+    repository: { id: 1 },
+  });
+  assert.equal(result.outcome, "ignored");
+  assert.equal(result.reason, "workflow_not_dispatched");
+  assert.deepEqual(seen, []);
+});
+
+test("ignores a workflow_run that is still in progress", async () => {
+  const seen: string[] = [];
+  const harness = ingestHarness({ actions: [prAction()], importWorkflowRun: (id) => seen.push(id) });
+  const result = await harness.deliver("workflow_run", {
+    action: "requested",
+    workflow_run: { id: 4242, path: ".github/workflows/csb-security-change-gate.yml" },
+    repository: { id: 1 },
+  });
+  assert.equal(result.outcome, "ignored");
+  assert.equal(result.reason, "action_not_handled");
+  assert.deepEqual(seen, []);
 });
 
 test("answers duplicate on a redelivered delivery id", async () => {

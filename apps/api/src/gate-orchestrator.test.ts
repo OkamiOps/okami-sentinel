@@ -21,6 +21,7 @@ import type {
 
 import {
   cancelGate,
+  importGitHubActionsGateByWorkflowRun,
   reconcileGateWithLinkedScan,
   startLocalGate,
   startRemoteManagedGate,
@@ -1053,4 +1054,68 @@ test("local gates pass explicit routes and selected cost controls to the scanner
     assert.equal(deps.lastScanRequest?.maxCostUsd, costLimit.kind === "manual" ? 3.5 : undefined);
     assert.equal(gate.costCeilingUsd, costLimit.kind === "manual" ? 3.5 : 0);
   }
+});
+
+/** Only the two fields the lookup reads; the rest of the row is irrelevant here. */
+function pendingDispatch(gateId: string, workflowRunId: string | null) {
+  return { gateId, workflowRunId };
+}
+
+test("a completed caller run imports the gate the dispatch owns", async () => {
+  const reconciled: string[] = [];
+  const gateId = await importGitHubActionsGateByWorkflowRun("4242", {
+    listPendingDispatches: () => [
+      pendingDispatch("gate-other", "4241"),
+      pendingDispatch("gate-ours", "4242"),
+    ] as never,
+    reconcileGate: async (id) => {
+      reconciled.push(id);
+      return { id } as GateRun;
+    },
+  });
+  assert.equal(gateId, "gate-ours");
+  assert.deepEqual(reconciled, ["gate-ours"]);
+});
+
+test("an unknown workflow run id imports nothing and returns null", async () => {
+  const reconciled: string[] = [];
+  const reconcileGate = async (id: string) => {
+    reconciled.push(id);
+    return { id } as GateRun;
+  };
+  assert.equal(await importGitHubActionsGateByWorkflowRun("9999", {
+    listPendingDispatches: () => [pendingDispatch("gate-ours", "4242")] as never,
+    reconcileGate,
+  }), null);
+  // A dispatch this process has not correlated yet owns no run id, so it is not a
+  // candidate either: the fifteen-second loop is what finds the run in the first place.
+  assert.equal(await importGitHubActionsGateByWorkflowRun("4242", {
+    listPendingDispatches: () => [pendingDispatch("gate-ours", null)] as never,
+    reconcileGate,
+  }), null);
+  // And a run id that is not a GitHub run id never reaches the store.
+  assert.equal(await importGitHubActionsGateByWorkflowRun("../4242", {
+    listPendingDispatches: () => { throw new Error("must not be read"); },
+    reconcileGate,
+  }), null);
+  assert.deepEqual(reconciled, []);
+});
+
+test("the webhook and the fifteen-second reconciler import once between them", async () => {
+  // Both callers reach the same `reconcileGate`, which is the executor's own
+  // single-flight: a terminal dispatch leaves the pending list, so the second
+  // caller has nothing to reconcile.
+  const reconciled: string[] = [];
+  let terminal = false;
+  const deps = {
+    listPendingDispatches: () => (terminal ? [] : [pendingDispatch("gate-ours", "4242")]) as never,
+    reconcileGate: async (id: string) => {
+      reconciled.push(id);
+      terminal = true;
+      return { id, status: "completed" } as GateRun;
+    },
+  };
+  assert.equal(await importGitHubActionsGateByWorkflowRun("4242", deps), "gate-ours");
+  assert.equal(await importGitHubActionsGateByWorkflowRun("4242", deps), null);
+  assert.deepEqual(reconciled, ["gate-ours"]);
 });

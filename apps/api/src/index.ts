@@ -168,6 +168,13 @@ const scanReconciler = setInterval(() => {
   });
 }, 15_000).unref();
 
+/**
+ * The **fallback** for the Actions executor, not its primary path. A completed
+ * caller run arrives as a `workflow_run` delivery and imports its artifact at once
+ * (`importGitHubActionsGateByWorkflowRun`); this loop exists for the delivery that
+ * never came, the correlation that had not happened yet, and the dispatch that
+ * survived a restart. A persisted dispatch stays retryable either way.
+ */
 const gateReconciler = setInterval(() => {
   void reconcileGitHubActionsGates().catch(() => {
     // A persisted dispatch remains retryable after transient App/API failures.

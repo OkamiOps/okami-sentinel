@@ -8,6 +8,7 @@ import type {
   WebhookDeliveryRecord,
 } from "@csb/shared";
 
+import { ACTIONS_CALLER_WORKFLOW_PATH } from "../guardrails/github-actions-executor.js";
 import { matchesAnyBranchPattern } from "./branch-patterns.js";
 import { gitHubActionEventTargetIdentity, shortBranchName } from "./schema.js";
 import type { newestObservedEventAt, supersedeQueuedEvents } from "./store.js";
@@ -62,7 +63,10 @@ export interface GitHubWebhookIngestDependencies {
     headSha: string;
     checkRunId: string;
   }): GitHubActionEvent | null;
-  /** Phase 4. Absent until the Actions executor returns by event. */
+  /**
+   * `workflow_run.completed` is the Actions executor's primary import trigger: the
+   * run says it finished instead of the fifteen-second loop asking.
+   */
   importWorkflowRun?(workflowRunId: string): void;
   /**
    * The delivery row, the events and the supersession in one `IMMEDIATE`
@@ -253,8 +257,15 @@ function route(
       return nothing("processed", "installation_unauthorized", { installationId });
     case "workflow_run": {
       if (action !== "completed") return nothing("ignored", "action_not_handled", { installationId });
-      const workflowRunId = numericId(pick(payload, "workflow_run"), "id");
+      const run = pick(payload, "workflow_run");
+      const workflowRunId = numericId(run, "id");
       if (!workflowRunId) return nothing("failed", "malformed_payload", { installationId });
+      // Every workflow in the repository delivers here. Only the pinned caller can
+      // have produced a gate artifact, and the path is what says so without a call.
+      const workflowPath = run === null ? null : run.path;
+      if (typeof workflowPath === "string" && workflowPath !== ACTIONS_CALLER_WORKFLOW_PATH) {
+        return nothing("ignored", "workflow_not_dispatched", { installationId });
+      }
       if (!deps.importWorkflowRun) return nothing("ignored", "workflow_run_not_supported", { installationId });
       deps.importWorkflowRun(workflowRunId);
       return nothing("processed", null, { installationId });
