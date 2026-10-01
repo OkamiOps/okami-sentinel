@@ -4,6 +4,7 @@ import test from "node:test";
 import type { GuardrailRepository } from "@csb/shared";
 
 import {
+  guardrailExecutorChoices,
   initialGuardrailTargetDraft,
   preflightFingerprint,
   reconcileRemotePullRequestDraft,
@@ -100,6 +101,18 @@ function remoteRepository(): GuardrailRepository {
     githubStatus: "ready",
   };
 }
+
+test("the preflight sheet offers both executors for a github repository", () => {
+  // A radiogroup with one option is not a choice: a GitHub repository can reach
+  // either executor regardless of which one enrolment made the default.
+  assert.deepEqual(guardrailExecutorChoices(remoteRepository()), ["sentinel-managed", "github-actions"]);
+  assert.deepEqual(
+    guardrailExecutorChoices({ ...remoteRepository(), defaultExecutor: "github-actions" }),
+    ["sentinel-managed", "github-actions"],
+  );
+  // A local folder has no caller workflow to run, so it keeps the single plane.
+  assert.deepEqual(guardrailExecutorChoices(localRepository()), ["sentinel-managed"]);
+});
 
 function localRepository(): GuardrailRepository {
   return {

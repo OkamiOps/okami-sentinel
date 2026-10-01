@@ -65,6 +65,20 @@ test("changing enrollment authority clears every dependent selection", () => {
   assert.equal(local.connectionId, "");
   assert.equal(local.installationId, "");
   assert.equal(local.repositoryId, "");
+  // A local folder has no caller workflow, so it is the one source that forces the
+  // executor back.
+  assert.equal(selectEnrollmentSource({ ...selected, defaultExecutor: "github-actions" }, "local").defaultExecutor, "sentinel-managed");
+});
+
+test("enrolment no longer forces the sentinel executor on the GitHub source", () => {
+  const chosen: GuardrailEnrollmentState = {
+    ...initialEnrollmentState(),
+    defaultExecutor: "github-actions",
+  };
+  const github = selectEnrollmentSource(chosen, "github");
+  assert.equal(github.defaultExecutor, "github-actions");
+  const body = enrollmentRequest({ ...github, connectionId: "c", installationId: "7", repositoryId: "9" });
+  assert.equal(body.source === "github" ? body.defaultExecutor : null, "github-actions");
 });
 
 test("an unavailable executor prevents remote enrollment", () => {
