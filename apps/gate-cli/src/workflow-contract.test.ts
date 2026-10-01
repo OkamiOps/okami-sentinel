@@ -11,7 +11,7 @@ const callerPath = path.join(repositoryRoot, ".github", "workflows", "fixtures",
 test("workflow v2 freezes policy and head, restores a baseline and publishes one validated Check", () => {
   const workflow = fs.readFileSync(workflowPath, "utf8");
   const triggerEnvelope = workflow.slice(0, workflow.indexOf("permissions:"));
-  assert.match(workflow, /^# csb-guardrail-contract: 2$/m);
+  assert.match(workflow, /^# csb-guardrail-contract: 3$/m);
   assert.match(triggerEnvelope, /workflow_call:/);
   assert.match(workflow, /workflow_dispatch:/);
   assert.doesNotMatch(triggerEnvelope, /^\s{2}pull_request:/m);
@@ -39,8 +39,17 @@ test("workflow v2 freezes policy and head, restores a baseline and publishes one
   assert.match(workflow, /--repository\s+"\$\{GITHUB_WORKSPACE\}\/head"/);
   assert.match(workflow, /--baseline-state/);
   assert.match(workflow, /--baseline\s+"\$\{BASELINE_PATH\}"/);
-  assert.match(workflow, /event=push/);
   assert.match(workflow, /status=completed/);
+  // C-2: the baseline Sentinel counts is the baseline the run compares against. A
+  // dispatch-only caller produces no `event=push` history to search, and every
+  // Sentinel-started gate — including the protected-branch one that *is* the
+  // baseline — is a `workflow_dispatch` run.
+  assert.match(workflow, /inputs\.baseline_workflow_run_id/);
+  assert.match(workflow, /\.event == "push" or \.event == "workflow_dispatch"/);
+  assert.doesNotMatch(workflow, /-f event=push/);
+  // I-4: the ceiling the console showed reaches the run.
+  assert.match(workflow, /inputs\.cost_ceiling_usd/);
+  assert.match(workflow, /--max-cost-usd/);
 
   assert.match(workflow, /publish-check/);
   assert.match(workflow, /csb-gate-manifest\.json/);

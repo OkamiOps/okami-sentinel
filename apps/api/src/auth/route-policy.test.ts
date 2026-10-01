@@ -138,7 +138,7 @@ test("declares every repository route of the Guardrails tab with the requirement
     "POST /guardrails/repositories": "admin",
     "PATCH /guardrails/repositories/:repositoryKey": "admin",
     "DELETE /guardrails/repositories/:repositoryKey": "admin",
-    "POST /guardrails/repositories/:repositoryKey/actions-dispatch": "operator:param",
+    "POST /guardrails/repositories/:repositoryKey/actions-dispatch": "admin",
     "GET /guardrails/repositories/:repositoryKey/actions-status": "viewer:param",
     "GET /guardrails/repositories/:repositoryKey/baseline": "viewer:param",
     "POST /guardrails/repositories/:repositoryKey/baseline": "admin",

@@ -55,7 +55,7 @@ export function renderCallerWorkflow(options: CallerWorkflowOptions): string {
   const mergeGuard = triggers.merge
     ? "    if: github.event.action != 'closed' || github.event.pull_request.merged == true\n"
     : "";
-  return `# csb-guardrail-caller: 3
+  return `# csb-guardrail-caller: 4
 # csb-automation: push=${Number(triggers.push)},pr=${Number(triggers.pullRequest)},merge=${Number(triggers.merge)}
 ${triggers.branches?.length ? `# csb-branches: ${JSON.stringify(triggers.branches)}\n` : ""}name: CSB Security Change Gate
 run-name: CSB gate \${{ inputs.gate_id || github.run_id }} · \${{ inputs.head_sha || github.sha }}
@@ -100,6 +100,16 @@ ${automaticEvents}${automaticEvents ? "\n" : ""}  workflow_dispatch:
         description: Optional fork owner/repository
         required: false
         type: string
+      cost_ceiling_usd:
+        description: Frozen per-scan ceiling in USD
+        required: false
+        default: "0"
+        type: string
+      baseline_workflow_run_id:
+        description: Workflow run holding the protected-branch baseline, or 0
+        required: false
+        default: "0"
+        type: string
 permissions:
   contents: read
   pull-requests: read
@@ -122,6 +132,8 @@ ${mergeGuard}    uses: OkamiOps/okami-sentinel/.github/workflows/security-change
       protected_branch: \${{ inputs.protected_branch }}
       pull_request_number: \${{ inputs.pull_request_number }}
       head_repository: \${{ inputs.head_repository }}
+      cost_ceiling_usd: \${{ inputs.cost_ceiling_usd }}
+      baseline_workflow_run_id: \${{ inputs.baseline_workflow_run_id }}
     secrets:
       ${secretName}: \${{ secrets.${secretName} }}
 `;

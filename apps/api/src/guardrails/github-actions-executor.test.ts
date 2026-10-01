@@ -320,6 +320,7 @@ function executorFixture() {
       return { artifact: importedArtifact, applied: true, duplicate: false };
     },
   } as unknown as ActionsArtifactImporter;
+  let baselineWorkflowRunId: string | null = null;
   const executor = new GitHubActionsExecutor({
     store,
     remote,
@@ -327,8 +328,13 @@ function executorFixture() {
     releaseSha: RELEASE,
     createGateId: () => "gate-actions-1",
     now: () => now,
+    baselineWorkflowRunId: () => baselineWorkflowRunId,
   });
-  return { repository, preview, store, remote, calls, executor, setNow: (value: string) => { now = value; } };
+  return {
+    repository, preview, store, remote, calls, executor,
+    setNow: (value: string) => { now = value; },
+    setBaselineWorkflowRunId: (value: string | null) => { baselineWorkflowRunId = value; },
+  };
 }
 
 function repositoryFixture(): GuardrailRepository {
@@ -402,3 +408,40 @@ function previewFixture(): AcceptedGateTargetPreview {
     },
   };
 }
+
+/**
+ * I-4 and C-2: the two facts the run cannot work out for itself. Without the
+ * ceiling the CLI spends the policy's (shipped default: 18) while the console shows
+ * and reserves the action's; without the baseline run id the caller searches
+ * `event=push` history that a dispatch-only caller never produces, so every pull
+ * request is judged with no baseline while the console says `ready`.
+ */
+test("the dispatch carries the frozen ceiling and the baseline run the console counts", async () => {
+  const fixture = executorFixture();
+  fixture.setBaselineWorkflowRunId("7001");
+  let inputs: Record<string, string> = {};
+  fixture.remote.dispatchWorkflow = async (input) => {
+    inputs = { ...input.inputs };
+  };
+
+  await fixture.executor.start({
+    repository: fixture.repository,
+    preview: fixture.preview,
+    idempotencyKey: "request-idempotency-000002",
+  });
+
+  assert.equal(inputs.cost_ceiling_usd, String(fixture.preview.costBudget.maxCostUsd));
+  assert.equal(inputs.baseline_workflow_run_id, "7001");
+});
+
+test("no baseline the console can point at is the empty run id, never a guess", async () => {
+  const fixture = executorFixture();
+  let inputs: Record<string, string> = {};
+  fixture.remote.dispatchWorkflow = async (input) => { inputs = { ...input.inputs }; };
+  await fixture.executor.start({
+    repository: fixture.repository,
+    preview: fixture.preview,
+    idempotencyKey: "request-idempotency-000003",
+  });
+  assert.equal(inputs.baseline_workflow_run_id, "0");
+});

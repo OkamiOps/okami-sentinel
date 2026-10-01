@@ -62,6 +62,7 @@ function options(overrides: Partial<RunGateCliOptions> = {}): RunGateCliOptions 
     pullRequest: 42,
     workflowRunId: "778899",
     workflowRunAttempt: 1,
+    maxCostUsd: null,
     ...overrides,
   };
 }
@@ -451,8 +452,13 @@ test("parses the frozen v2 CLI identity and rejects ambiguous baseline or target
     "--pull-request", "42",
     "--workflow-run-id", "778899",
     "--workflow-run-attempt", "2",
+    "--max-cost-usd", "2.5",
   ];
   const parsed = parseArgs(argv);
+  assert.equal(parsed.maxCostUsd, 2.5);
+  assert.equal(parseArgs(argv.slice(0, -2)).maxCostUsd, null);
+  assert.throws(() => parseArgs([...argv.slice(0, -1), "0"]), /--max-cost-usd/);
+  assert.throws(() => parseArgs([...argv.slice(0, -1), "nope"]), /--max-cost-usd/);
   assert.equal(parsed.executor, "github-actions");
   assert.equal(parsed.pullRequest, 42);
   assert.equal(parsed.workflowRunAttempt, 2);
@@ -571,3 +577,38 @@ function completeCoverage(scope: "changed" | "repository" = "changed") {
 function hash(value: unknown): string {
   return `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
 }
+
+/**
+ * I-4: the ceiling the console showed and the day budget reserved has to bound the
+ * run. Without it the scanner is handed the policy's own `scan.maxCostUsd` — the
+ * shipped default is 18 — and a "≤ USD 2,50 por scan" card is followed by an
+ * eighteen-dollar run.
+ */
+test("the frozen per-scan ceiling bounds the scanner, and the policy never loosens it", async () => {
+  const ceilings: Array<number | undefined> = [];
+  const scanner = {
+    run: async (input: { maxCostUsd?: number }) => {
+      ceilings.push(input.maxCostUsd);
+      return {
+        scanId: "scan-current", scanDir: "/tmp/scan-current", status: "completed" as const,
+        findings: [finding()], cost: null, scannerVersion: "test",
+      };
+    },
+  };
+  const bounded = await runGateCli(options({ maxCostUsd: 2.5 }), {
+    ...fakeDeps({ outcome: "bootstrap" }),
+    readBaseline: () => ({ kind: "absent" }),
+    scanner,
+  });
+  assert.deepEqual(ceilings, [2.5]);
+  // The policy the artifact records is untouched: clamping it would move the scan
+  // lineage and make every baseline incomparable.
+  assert.equal(bounded.artifact.policy.scan.maxCostUsd, defaultGuardrailPolicy().scan.maxCostUsd);
+
+  await runGateCli(options({ maxCostUsd: null }), {
+    ...fakeDeps({ outcome: "bootstrap" }),
+    readBaseline: () => ({ kind: "absent" }),
+    scanner,
+  });
+  assert.equal(ceilings[1], undefined);
+});

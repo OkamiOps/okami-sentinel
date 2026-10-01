@@ -37,7 +37,12 @@ function repository(overrides: Partial<GuardrailRepository> = {}): GuardrailRepo
 }
 
 interface HarnessOptions {
-  refConflict?: boolean;
+  /** Branch names whose `POST /git/refs` answers 422, as GitHub does when it exists. */
+  refConflict?: readonly string[];
+  /** Branch names that really exist, mapped to their head SHA. */
+  existingBranches?: Record<string, string>;
+  /** Files the existing branch carries on top of the default head. */
+  compareFiles?: readonly string[];
   fileExists?: boolean;
   pullRequestConflict?: boolean;
   openPullRequests?: unknown;
@@ -46,10 +51,22 @@ interface HarnessOptions {
 function harness(options: HarnessOptions = {}) {
   const calls: string[] = [];
   const bodies: unknown[] = [];
+  const conflicts = new Set(options.refConflict ?? []);
+  const existing = options.existingBranches ?? {};
   const deps: CallerWorkflowPullRequestDependencies = {
     readJson: async (_authority, resourcePath) => {
       calls.push(`GET ${resourcePath}`);
-      if (resourcePath.includes("/git/ref/heads/")) return { object: { sha: SHA } };
+      const ref = /\/git\/ref\/heads\/(.+)$/.exec(resourcePath);
+      if (ref !== null) {
+        const branch = ref[1]!;
+        if (branch === "main") return { object: { sha: SHA } };
+        const head = existing[branch];
+        if (head === undefined) throw new ClientError("github_not_found");
+        return { object: { sha: head } };
+      }
+      if (resourcePath.includes("/compare/")) {
+        return { files: (options.compareFiles ?? []).map((filename) => ({ filename })) };
+      }
       if (resourcePath.includes("/contents/")) {
         if (options.fileExists !== true) throw new ClientError("github_not_found");
         return { sha: "c".repeat(40) };
@@ -64,8 +81,9 @@ function harness(options: HarnessOptions = {}) {
       calls.push(`${method} ${resourcePath}`);
       bodies.push(body);
       if (resourcePath.endsWith("/git/refs")) {
-        if (options.refConflict === true) throw new ClientError("github_request_rejected");
-        return { ref: `refs/heads/${CALLER_WORKFLOW_BRANCH}` };
+        const branch = String((body as { ref: string }).ref).replace("refs/heads/", "");
+        if (conflicts.has(branch)) throw new ClientError("github_request_rejected");
+        return { ref: `refs/heads/${branch}` };
       }
       if (resourcePath.endsWith("/pulls")) {
         if (options.pullRequestConflict === true) throw new ClientError("github_request_rejected");
@@ -105,7 +123,7 @@ test("creates the branch, the file and the pull request", async () => {
 });
 
 test("reuses an existing branch", async () => {
-  const h = harness({ refConflict: true });
+  const h = harness({ refConflict: [CALLER_WORKFLOW_BRANCH], existingBranches: { [CALLER_WORKFLOW_BRANCH]: SHA } });
   const result = await openCallerWorkflowPullRequest(
     { repository: repository(), workflowSha: RELEASE },
     h.deps,
@@ -139,7 +157,7 @@ test("a rejected pull request with nothing open is still a refusal", async () =>
 });
 
 test("updates the file when it already exists on the branch", async () => {
-  const h = harness({ refConflict: true, fileExists: true });
+  const h = harness({ refConflict: [CALLER_WORKFLOW_BRANCH], existingBranches: { [CALLER_WORKFLOW_BRANCH]: SHA }, fileExists: true });
   await openCallerWorkflowPullRequest(
     { repository: repository(), workflowSha: RELEASE },
     h.deps,
@@ -201,4 +219,67 @@ test("refuses a repository with no remote authority", async () => {
     /caller_workflow_authority_invalid/,
   );
   assert.deepEqual(h.calls, []);
+});
+
+test("a default branch with a slash is encoded one segment at a time", async () => {
+  const h = harness();
+  const reads: string[] = [];
+  await openCallerWorkflowPullRequest(
+    { repository: repository({ defaultBranch: "release/main" }), workflowSha: RELEASE },
+    {
+      ...h.deps,
+      readJson: async (authority, resourcePath, permissions) => {
+        reads.push(resourcePath);
+        if (resourcePath.endsWith("/git/ref/heads/release/main")) return { object: { sha: SHA } };
+        return h.deps.readJson(authority, resourcePath, permissions);
+      },
+    },
+  );
+  // `encodeURIComponent` on the whole name would ask for `heads/release%2Fmain`,
+  // which resolves to nothing.
+  assert.ok(reads.includes("/repos/OkamiOps/okami/git/ref/heads/release/main"));
+  assert.equal(reads.some((call) => call.includes("%2Fmain")), false);
+});
+
+test("a 422 that is not an existing branch is refused, never read as already done", async () => {
+  // GitHub answers 422 both for "the reference exists" and for a token request the
+  // installation has not granted. Only the first leaves a branch behind.
+  const h = harness({ refConflict: [CALLER_WORKFLOW_BRANCH] });
+  await assert.rejects(
+    openCallerWorkflowPullRequest({ repository: repository(), workflowSha: RELEASE }, h.deps),
+    /caller_workflow_branch_unavailable/,
+  );
+  assert.equal(h.calls.some((call) => call.startsWith("PUT ")), false);
+});
+
+test("refuses to reuse a branch carrying commits that are not ours", async () => {
+  const h = harness({
+    refConflict: [CALLER_WORKFLOW_BRANCH],
+    existingBranches: { [CALLER_WORKFLOW_BRANCH]: "e".repeat(40) },
+    compareFiles: ["src/payroll.ts"],
+  });
+  const result = await openCallerWorkflowPullRequest(
+    { repository: repository(), workflowSha: RELEASE },
+    h.deps,
+  );
+  // Anyone with push access could have pre-created that branch. The button must not
+  // open a pull request titled "install the guardrail caller" that carries their work.
+  assert.equal(result.branch, `okami-sentinel/caller-workflow-${SHA.slice(0, 7)}`);
+  assert.ok(h.bodies.some((body) =>
+    (body as { ref?: string }).ref === `refs/heads/okami-sentinel/caller-workflow-${SHA.slice(0, 7)}`));
+  const put = h.bodies.find((body) => (body as { content?: unknown }).content !== undefined) as Record<string, unknown>;
+  assert.equal(put.branch, `okami-sentinel/caller-workflow-${SHA.slice(0, 7)}`);
+});
+
+test("reuses a branch that carries only our own workflow file", async () => {
+  const h = harness({
+    refConflict: [CALLER_WORKFLOW_BRANCH],
+    existingBranches: { [CALLER_WORKFLOW_BRANCH]: "e".repeat(40) },
+    compareFiles: [".github/workflows/csb-security-change-gate.yml"],
+  });
+  const result = await openCallerWorkflowPullRequest(
+    { repository: repository(), workflowSha: RELEASE },
+    h.deps,
+  );
+  assert.equal(result.branch, CALLER_WORKFLOW_BRANCH);
 });

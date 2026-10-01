@@ -25,6 +25,12 @@ export interface ScannerAdapter {
     paths: string[];
     policy: GuardrailPolicy;
     outputDir: string;
+    /**
+     * The ceiling Sentinel froze for this dispatch. It only ever narrows the
+     * policy's own: the console showed it, the UTC-day budget reserved it, and the
+     * run must not be able to spend more than either.
+     */
+    maxCostUsd?: number;
   }): Promise<ScannerResult>;
 }
 
@@ -69,7 +75,7 @@ export function createScannerAdapter(
         "--model", input.policy.scan.model,
         "--effort", input.policy.scan.effort,
         "--mode", input.policy.scan.mode,
-        "--max-cost", String(input.policy.scan.maxCostUsd),
+        "--max-cost", String(Math.min(input.policy.scan.maxCostUsd, input.maxCostUsd ?? Infinity)),
         "--output-dir", outputDir,
         "--json",
       ];

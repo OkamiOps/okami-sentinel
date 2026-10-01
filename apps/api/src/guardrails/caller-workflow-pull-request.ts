@@ -36,6 +36,7 @@ const PULL_REQUEST_BODY = [
 
 export type CallerWorkflowPullRequestErrorCode =
   | "caller_workflow_authority_invalid"
+  | "caller_workflow_branch_unavailable"
   | "caller_workflow_release_unavailable"
   | "caller_workflow_pull_request_failed";
 
@@ -104,35 +105,18 @@ export async function openCallerWorkflowPullRequest(
   }
   const repo = `/repos/${authority.owner}/${authority.name}`;
 
-  const head = record(await deps.readJson(
-    authority,
-    `${repo}/git/ref/heads/${encodeURIComponent(defaultBranch)}`,
-    { contents: "read" },
-  ));
-  const headSha = record(head.object).sha;
-  if (typeof headSha !== "string" || !/^[0-9a-f]{40}$/.test(headSha)) {
+  const headSha = await refHead(deps, authority, repo, defaultBranch);
+  if (headSha === null) {
     throw new CallerWorkflowPullRequestError("caller_workflow_pull_request_failed");
   }
 
-  try {
-    await deps.writeJson(
-      authority,
-      `${repo}/git/refs`,
-      "POST",
-      { ref: `refs/heads/${CALLER_WORKFLOW_BRANCH}`, sha: headSha },
-      { contents: "write" },
-    );
-  } catch (error) {
-    // A 422 here is GitHub saying the reference exists. The branch from the first
-    // press is the branch this press writes to.
-    if (!rejected(error)) throw error;
-  }
+  const branch = await usableBranch(deps, authority, repo, headSha, workflow.path);
 
   let blobSha: string | undefined;
   try {
     const current = record(await deps.readJson(
       authority,
-      `${repo}/contents/${workflow.path}?ref=${encodeURIComponent(CALLER_WORKFLOW_BRANCH)}`,
+      `${repo}/contents/${workflow.path}?ref=${encodeURIComponent(branch)}`,
       { contents: "read" },
     ));
     if (typeof current.sha === "string") blobSha = current.sha;
@@ -147,7 +131,7 @@ export async function openCallerWorkflowPullRequest(
     {
       message: PULL_REQUEST_TITLE,
       content: Buffer.from(workflow.content).toString("base64"),
-      branch: CALLER_WORKFLOW_BRANCH,
+      branch,
       ...(blobSha === undefined ? {} : { sha: blobSha }),
     },
     { contents: "write", workflows: "write" },
@@ -160,27 +144,132 @@ export async function openCallerWorkflowPullRequest(
       "POST",
       {
         title: PULL_REQUEST_TITLE,
-        head: CALLER_WORKFLOW_BRANCH,
+        head: branch,
         base: defaultBranch,
         body: PULL_REQUEST_BODY,
       },
       { pull_requests: "write" },
     ));
-    return { status: "created", ...pullRequestIdentity(created), branch: CALLER_WORKFLOW_BRANCH };
+    return { status: "created", ...pullRequestIdentity(created), branch };
   } catch (error) {
     if (!rejected(error)) throw error;
     // "A pull request already exists for …" is the one 422 worth resolving: the
     // operator gets the number that is already open instead of a refusal.
     const open = await deps.readJson(
       authority,
-      `${repo}/pulls?state=open&head=${encodeURIComponent(`${authority.owner}:${CALLER_WORKFLOW_BRANCH}`)}`,
+      `${repo}/pulls?state=open&head=${encodeURIComponent(`${authority.owner}:${branch}`)}`,
       { pull_requests: "read" },
     );
     if (!Array.isArray(open) || open.length === 0) {
       throw new CallerWorkflowPullRequestError("caller_workflow_pull_request_failed");
     }
-    return { status: "exists", ...pullRequestIdentity(record(open[0])), branch: CALLER_WORKFLOW_BRANCH };
+    return { status: "exists", ...pullRequestIdentity(record(open[0])), branch };
   }
+}
+
+/**
+ * The branch this press will write on.
+ *
+ * `POST /git/refs` answering 422 is **not** proof that the branch exists: GitHub
+ * answers the same way when the installation has not granted a permission the
+ * token asks for. So the reference is read back. A 404 there means the 422 was
+ * something else — a missing grant, most likely — and the button refuses with its
+ * own code instead of writing on top of a branch it never created.
+ *
+ * A branch that does exist is only reused when a pull request from it would carry
+ * nothing but our own workflow file. Anyone with push access can pre-create
+ * `okami-sentinel/caller-workflow` with unrelated commits, and an administrator
+ * pressing a button labelled "install the guardrail caller" must not open a pull
+ * request that smuggles them in. When it carries anything else, the commit goes on
+ * a uniquely suffixed branch of its own.
+ */
+async function usableBranch(
+  deps: CallerWorkflowPullRequestDependencies,
+  authority: CallerWorkflowAuthority,
+  repo: string,
+  headSha: string,
+  workflowPath: string,
+): Promise<string> {
+  const candidates = [CALLER_WORKFLOW_BRANCH, `${CALLER_WORKFLOW_BRANCH}-${headSha.slice(0, 7)}`];
+  for (const branch of candidates) {
+    try {
+      await deps.writeJson(
+        authority,
+        `${repo}/git/refs`,
+        "POST",
+        { ref: `refs/heads/${branch}`, sha: headSha },
+        { contents: "write" },
+      );
+      return branch;
+    } catch (error) {
+      if (!rejected(error)) throw error;
+    }
+    const existing = await refHead(deps, authority, repo, branch);
+    if (existing === null) {
+      throw new CallerWorkflowPullRequestError("caller_workflow_branch_unavailable");
+    }
+    if (existing === headSha) return branch;
+    if (await carriesOnly(deps, authority, repo, headSha, branch, workflowPath)) return branch;
+  }
+  throw new CallerWorkflowPullRequestError("caller_workflow_branch_unavailable");
+}
+
+/** The head SHA of a ref, or `null` when GitHub says it does not exist. */
+async function refHead(
+  deps: CallerWorkflowPullRequestDependencies,
+  authority: CallerWorkflowAuthority,
+  repo: string,
+  branch: string,
+): Promise<string | null> {
+  let answer: unknown;
+  try {
+    answer = await deps.readJson(
+      authority,
+      `${repo}/git/ref/heads/${refPath(branch)}`,
+      { contents: "read" },
+    );
+  } catch (error) {
+    if (notFound(error)) return null;
+    throw error;
+  }
+  const sha = record(record(answer).object).sha;
+  return typeof sha === "string" && /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+}
+
+/** Whether a pull request from `branch` would change nothing but `workflowPath`. */
+async function carriesOnly(
+  deps: CallerWorkflowPullRequestDependencies,
+  authority: CallerWorkflowAuthority,
+  repo: string,
+  headSha: string,
+  branch: string,
+  workflowPath: string,
+): Promise<boolean> {
+  let comparison: unknown;
+  try {
+    comparison = await deps.readJson(
+      authority,
+      `${repo}/compare/${headSha}...${refPath(branch)}`,
+      { contents: "read" },
+    );
+  } catch {
+    return false;
+  }
+  const files = record(comparison).files;
+  if (!Array.isArray(files)) return false;
+  return files.every((file) =>
+    typeof file === "object" && file !== null
+    && (file as { filename?: unknown }).filename === workflowPath);
+}
+
+/**
+ * A branch name is one or more **path segments**, not one. `encodeURIComponent` on
+ * the whole name turns `release/main` into `release%2Fmain`, which resolves to
+ * nothing — so every repository whose default branch has a slash would get a
+ * refusal from a button that should work.
+ */
+function refPath(branch: string): string {
+  return branch.split("/").map(encodeURIComponent).join("/");
 }
 
 function callerWorkflowAuthority(repository: GuardrailRepository): CallerWorkflowAuthority {

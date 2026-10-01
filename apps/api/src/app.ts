@@ -612,17 +612,26 @@ async function startProtectedBranchBaselineGate(repository: GuardrailRepository)
   // insert is this process's own — the API runs as a single replica.
   if (hasRunningProtectedBranchGate(repository.repositoryKey)) throw new Error(BASELINE_BUILDING);
   const target = { kind: "protected_branch" as const, ref };
-  // Always Sentinel-managed. The baseline is the Sentinel projection's own
-  // reference, the GitHub Actions executor cannot be previewed from here, and a
-  // button that answered `target_preview_executor_unavailable` would be a control
-  // offered for a dead end it cannot get out of.
-  const executor = "sentinel-managed" as const;
+  // The repository's own plane, not Sentinel's. A baseline built here and a pull
+  // request judged on GitHub Actions have to be the same artifact: the Actions run
+  // reads the baseline from a workflow run, and a Sentinel-side artifact is one it
+  // cannot open. Building on the wrong plane is exactly how the console comes to say
+  // `ready` about a baseline no gate will ever compare against (review C-2).
+  const executor = repository.defaultExecutor;
   const preview = await targetPreviewService.create(repository, { target, executor });
+  if (!preview.executorCapability.ready) {
+    throw new TargetPreviewError("target_preview_executor_unavailable");
+  }
   const accepted = await targetPreviewService.accept(repository, {
     previewIdentity: preview.previewIdentity,
     target,
     executor,
   });
+  if (executor === "github-actions") {
+    // One dispatch per head: pressing twice at the same commit reuses the gate the
+    // first press created instead of buying a second full-repository scan.
+    return startRemoteActionsGate(accepted, `baseline-${accepted.resolvedTarget.headSha}`);
+  }
   return startGuardrailGate({ repositoryKey: repository.repositoryKey, target, executor }, accepted);
 }
 
