@@ -85,6 +85,7 @@ test("lists, creates, patches and deletes actions on the actions routes", async 
 
   await api.fetchActions("github:1");
   await api.fetchActions();
+  await api.fetchActions(null, { limit: 50, offset: 50 });
   await api.createAction({
     repositoryKey: "github:1", name: "PR deep", triggerKind: "pull_request",
     branchPatterns: ["main"], executor: "sentinel-managed", scanner: null,
@@ -98,6 +99,7 @@ test("lists, creates, patches and deletes actions on the actions routes", async 
     .map((call) => [call.method, call.path]), [
     ["GET", "/api/github/actions?repositoryKey=github%3A1"],
     ["GET", "/api/github/actions"],
+    ["GET", "/api/github/actions?limit=50&offset=50"],
     ["POST", "/api/github/actions"],
     ["PATCH", "/api/github/actions/a1"],
     // The id is a path segment, so it is encoded and cannot climb out of it.

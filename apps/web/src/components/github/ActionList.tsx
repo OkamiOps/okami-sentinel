@@ -1,3 +1,4 @@
+import { useNavigate } from "react-router-dom";
 import { AlertTriangle, HardDrive, Plus } from "lucide-react";
 import type { GitHubAction, GuardrailRepository } from "@csb/shared";
 
@@ -19,6 +20,14 @@ export interface GitHubActionPermissions {
   /** Disable, delete, and reshape a **disabled** action. */
   canMaintain: boolean;
 }
+
+/**
+ * One grid for the header and every row. The third track used to be `auto`, so it
+ * measured whatever that row's buttons happened to be and the first two tracks
+ * absorbed the difference — the profile and ceiling columns started at a different
+ * x on every line.
+ */
+const ACTION_GRID = "xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_17rem]";
 
 export function permissionsFor(
   isAdmin: boolean,
@@ -46,11 +55,14 @@ export function ActionList({
   can,
   busyActionId,
   error,
-  onRepositoryChange,
+  hasMore,
+  loading,
+  repositoryHref,
   onCreate,
   onEdit,
   onToggle,
   onDelete,
+  onLoadMore,
 }: {
   actions: GitHubAction[];
   repositories: GuardrailRepository[];
@@ -60,12 +72,16 @@ export function ActionList({
   can: (role: "maintainer", repositoryKey: string | null) => boolean;
   busyActionId: string | null;
   error: string | null;
-  onRepositoryChange: (repositoryKey: string) => void;
+  hasMore: boolean;
+  loading: boolean;
+  repositoryHref: (repositoryKey: string) => string;
   onCreate: () => void;
   onEdit: (action: GitHubAction) => void;
   onToggle: (action: GitHubAction, enabled: boolean) => void;
   onDelete: (action: GitHubAction) => void;
+  onLoadMore: () => void;
 }) {
+  const navigate = useNavigate();
   const selected = repositories.find((repository) => repository.repositoryKey === repositoryKey) ?? null;
   const isLocal = selected !== null && selected.source === "local";
   const scopePermissions = permissionsFor(isAdmin, can, repositoryKey || null);
@@ -95,9 +111,12 @@ export function ActionList({
       : <>
         <div className="grid gap-3 border-b p-4 lg:grid-cols-[minmax(16rem,.5fr)_minmax(0,1fr)] lg:items-end">
           <div className="min-w-0">
-            <label className="text-xs font-semibold" htmlFor="github-actions-repository">{t("github.actions.repository")}</label>
+            <label className="bench-label" htmlFor="github-actions-repository">{t("github.actions.repository")}</label>
             <div className="mt-2">
-              <Select value={repositoryKey || "__all__"} onValueChange={(value) => onRepositoryChange(value === "__all__" ? "" : value)}>
+              <Select
+                value={repositoryKey || "__all__"}
+                onValueChange={(value) => navigate(repositoryHref(value === "__all__" ? "" : value))}
+              >
                 <SelectTrigger id="github-actions-repository" className="w-full"><SelectValue /></SelectTrigger>
                 <SelectContent position="popper" className="rounded-none border-border bg-popover">
                   <SelectItem value="__all__">{t("github.actions.allRepositories")}</SelectItem>
@@ -127,20 +146,41 @@ export function ActionList({
           </div>
           : actions.length === 0
             ? <EmptyState title={t("github.actions.empty")} description={t("github.actions.emptyDescription")} />
-            : <ul className="divide-y">
-              {actions.map((action) => <li key={action.id}>
-                <ActionRow
-                  action={action}
-                  repositories={repositories}
-                  t={t}
-                  permissions={permissionsFor(isAdmin, can, action.repositoryKey)}
-                  busy={busyActionId === action.id}
-                  onEdit={() => onEdit(action)}
-                  onToggle={(enabled) => onToggle(action, enabled)}
-                  onDelete={() => onDelete(action)}
-                />
-              </li>)}
-            </ul>}
+            : <>
+              {/* The header the spec's "Tabela de ações" implies, over exactly the
+                  tracks the rows use — and the third track is a fixed width, so the
+                  profile and ceiling columns start at the same x whether a row holds
+                  three buttons, one, or none. */}
+              <div className={cx("hidden gap-3 border-b bg-secondary/[.16] px-4 py-2", ACTION_GRID, "xl:grid")}>
+                <span className="bench-label">{t("github.actions.column.name")}</span>
+                <dl className="grid grid-cols-2 gap-x-4">
+                  <span className="bench-label pl-3">{t("github.actions.column.profile")}</span>
+                  <span className="bench-label pl-3">{t("github.actions.column.ceiling")}</span>
+                </dl>
+                <span />
+              </div>
+              <ul className="divide-y">
+                {actions.map((action) => <li key={action.id}>
+                  <ActionRow
+                    action={action}
+                    repositories={repositories}
+                    t={t}
+                    permissions={permissionsFor(isAdmin, can, action.repositoryKey)}
+                    busy={busyActionId === action.id}
+                    onEdit={() => onEdit(action)}
+                    onToggle={(enabled) => onToggle(action, enabled)}
+                    onDelete={() => onDelete(action)}
+                  />
+                </li>)}
+              </ul>
+              {/* An action past the page bound stays enabled and keeps spending while
+                  being invisible on the only screen that can switch it off. */}
+              {hasMore && <div className="border-t p-4">
+                <Button type="button" variant="outline" size="sm" disabled={loading} onClick={onLoadMore}>
+                  {loading ? t("github.activity.loadingMore") : t("github.activity.loadMore")}
+                </Button>
+              </div>}
+            </>}
 
         {!isLocal && footnote !== null && <p className="border-t px-4 py-3 text-[11px] leading-relaxed text-muted-foreground">
           {footnote}
@@ -188,7 +228,7 @@ function ActionRow({
       action.scanner.effort ?? null,
     ].filter((part): part is string => part !== null).join(" · ");
 
-  return <article className="grid min-w-0 gap-3 px-4 py-4 xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)_auto] xl:items-start">
+  return <article className={cx("grid min-w-0 gap-3 px-4 py-4 xl:items-start", ACTION_GRID)}>
     <div className="min-w-0">
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         <strong className="min-w-0 break-words text-sm">{action.name}</strong>
@@ -230,7 +270,7 @@ function ActionRow({
       />
     </dl>
 
-    <div className="flex shrink-0 flex-wrap items-center gap-2 xl:justify-end">
+    <div className="flex min-w-0 flex-wrap items-center gap-2 xl:justify-end">
       {/* Enabling spends, so it is an administrator's; switching off never is. */}
       {action.enabled
         ? permissions.canMaintain && <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => onToggle(false)}>
@@ -265,9 +305,12 @@ function Datum({ label, value }: { label: string; value: string }) {
 
 function Cell({ label, value, detail }: { label: string; value: string; detail?: string }) {
   return <div className="min-w-0 border-l border-border pl-3">
-    <dt className="bench-label">{label}</dt>
-    <dd className="mt-1 min-w-0 break-words font-mono text-[10px] leading-relaxed">{value}</dd>
-    {detail && <dd className="mt-0.5 min-w-0 break-words text-[10px] leading-relaxed text-muted-foreground">{detail}</dd>}
+    {/* Below `xl` the row stacks and each cell carries its own label; at `xl` the
+        table header above carries it, and repeating it in every row would print
+        the same word six times down one column. */}
+    <dt className="bench-label xl:hidden">{label}</dt>
+    <dd className="mt-1 min-w-0 break-words font-mono text-[10px] leading-relaxed xl:mt-0">{value}</dd>
+    {detail && <dd className="mt-0.5 min-w-0 break-words font-mono text-[10px] leading-relaxed text-muted-foreground">{detail}</dd>}
   </div>;
 }
 

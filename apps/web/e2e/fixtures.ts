@@ -607,12 +607,14 @@ export type GitHubIntegrationScenario =
   | "not_ready"
   | "installed_nowhere"
   | "stale_delivery"
+  | "proof_retired"
   | "unreachable"
   | "no_connection";
 
+/** Mirrors `GITHUB_APP_MANIFEST_PERMISSIONS`: the least set the shipped phases use. */
 const REQUIRED_PERMISSIONS: ReadonlyArray<readonly [string, string]> = [
-  ["actions", "write"], ["checks", "write"], ["contents", "write"],
-  ["metadata", "read"], ["pull_requests", "write"], ["workflows", "write"],
+  ["actions", "read"], ["checks", "write"], ["contents", "write"],
+  ["metadata", "read"], ["pull_requests", "read"], ["workflows", "write"],
 ];
 
 const REQUIRED_EVENTS = [
@@ -682,12 +684,16 @@ export function githubDelivery(overrides: Partial<WebhookDeliveryRecord> = {}): 
 
 function githubIntegration(scenario: GitHubIntegrationScenario) {
   const missing = scenario === "missing_permissions" ? new Set(["workflows"]) : new Set<string>();
-  const pending = scenario === "pending_approval" ? new Set(["checks", "workflows"]) : new Set<string>();
+  const pending = scenario === "pending_approval" ? new Set(["checks", "contents"]) : new Set<string>();
   const notConfigured = scenario === "not_configured";
   const suspended = scenario === "suspended";
   const notReady = scenario === "not_ready";
   const nowhere = scenario === "installed_nowhere";
   const stale = scenario === "stale_delivery";
+  // The secret was rotated: a delivery did verify, but against the value it
+  // replaced. The step is unmet and the connection is not ready, even though the
+  // timestamp is recent — the one state whose copy used to contradict itself.
+  const retired = scenario === "proof_retired";
   const live = !suspended && !notReady && !nowhere;
   const permissions = REQUIRED_PERMISSIONS.map(([name, required]) => {
     const granted = !live || missing.has(name) || pending.has(name)
@@ -716,7 +722,7 @@ function githubIntegration(scenario: GitHubIntegrationScenario) {
     permissions: permissions.every((permission) => permission.ok),
     events: true,
     webhook_secret: secretConfigured,
-    delivery_verified: lastVerified !== null,
+    delivery_verified: lastVerified !== null && !retired,
     repository_enrolled: live && !suspended,
     action_enabled: scenario === "all_green" || stale,
     baseline: false,
@@ -843,8 +849,15 @@ export async function mockGitHubTab(page: Page, options: GitHubTabOptions = {}) 
     }
     if (path === "/github/actions" && request.method() === "GET") {
       const repositoryKey = url.searchParams.get("repositoryKey");
-      const actions = state.actions.filter((action) => !repositoryKey || action.repositoryKey === repositoryKey);
-      return json({ actions, limit: 200, offset: 0, hasMore: false });
+      const scoped = state.actions.filter((action) => !repositoryKey || action.repositoryKey === repositoryKey);
+      const limit = Number(url.searchParams.get("limit") ?? 200);
+      const offset = Number(url.searchParams.get("offset") ?? 0);
+      return json({
+        actions: scoped.slice(offset, offset + limit),
+        limit,
+        offset,
+        hasMore: scoped.length > offset + limit,
+      });
     }
     if (path === "/github/actions" && request.method() === "POST") {
       const body = request.postDataJSON() as Record<string, unknown>;
