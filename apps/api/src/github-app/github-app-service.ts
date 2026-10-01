@@ -196,6 +196,27 @@ export class GitHubAppService {
     return this.#store.listConnections();
   }
 
+  /**
+   * Corrects an `appId` that was recorded as something else — an installation id,
+   * a client id, a slug. A wrong one costs every webhook delivery the capped loop
+   * over all connections instead of a single HMAC, which makes a genuinely wrong
+   * secret on another connection indistinguishable from a wrong secret here.
+   *
+   * It only ever writes the value `GET /app` just reported, and only when it
+   * differs. Returns whether anything changed.
+   */
+  repairRecordedAppId(connectionId: string, appId: string): boolean {
+    const connection = this.#store.getConnection(connectionId);
+    if (connection === null || connection.appId === appId) return false;
+    if (!/^[1-9][0-9]{0,18}$/.test(appId)) return false;
+    this.#store.saveConnection({
+      ...connection,
+      appId,
+      updatedAt: new Date().toISOString(),
+    });
+    return true;
+  }
+
   listInstallations(connectionId: string): GitHubAppInstallationMetadata[] {
     this.#connection(connectionId);
     return this.#store.listInstallations(connectionId);

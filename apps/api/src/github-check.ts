@@ -9,14 +9,14 @@ import type {
 } from "@csb/shared";
 import { parseGateArtifact } from "@csb/gate-core";
 
-import { defaultGhRunner, type GhRunner } from "./github-cli.js";
-
-export interface PublishGateCheckInput {
-  artifact: GateArtifact;
-  owner: string;
-  repository: string;
-  detailsUrl: string | null;
-}
+/**
+ * What the Check says about itself, in the summary and the text. The gate reports
+ * what changed; whether a pull request may merge is the repository's branch
+ * protection to decide, and a Check that implies otherwise teaches reviewers to
+ * read a red mark as a veto nobody configured.
+ */
+const INFORMATIONAL_NOTE =
+  "This check is informational: it reports what the gate found and does not block the merge on its own.";
 
 export interface ManagedGateCheckAuthority {
   connectionId: string;
@@ -76,39 +76,6 @@ const LIFECYCLE_RANK: Record<GateFindingLifecycle, number> = {
 
 const SAFE_SLUG = /^[A-Za-z0-9_.-]+$/;
 const LOCAL_PATH = /(?:[A-Za-z]:\\|\/(?:Users|home|private|tmp|var\/folders)\/)[^\s"'`)<>,;]*/g;
-
-export async function publishGateCheck(
-  input: PublishGateCheckInput,
-  runner: GhRunner = defaultGhRunner,
-): Promise<void> {
-  if (!SAFE_SLUG.test(input.owner) || !SAFE_SLUG.test(input.repository)) {
-    throw new Error("GitHub owner or repository is invalid");
-  }
-
-  const payload = checkPayload(input.artifact, input.detailsUrl);
-
-  let result;
-  try {
-    result = await runner(
-      [
-        "api",
-        "--method",
-        "POST",
-        `repos/${input.owner}/${input.repository}/check-runs`,
-        "--input",
-        "-",
-      ],
-      { cwd: process.cwd(), stdin: JSON.stringify(payload) },
-    );
-  } catch (error) {
-    throw new Error(`GitHub Check publication failed: ${errorMessage(error)}`);
-  }
-  if (result.exitCode !== 0) {
-    throw new Error(
-      `GitHub Check publication failed: ${redact(result.stderr.trim() || "gh exited with an error")}`,
-    );
-  }
-}
 
 export async function publishManagedGateCheck(
   input: PublishManagedGateCheckInput,
@@ -188,10 +155,14 @@ function checkPayload(artifact: GateArtifact, detailsUrl: string | null): Record
     summary: [
       redact(artifact.decision.summary),
       findingSummary,
+      INFORMATIONAL_NOTE,
     ].filter(Boolean).join("\n\n"),
-    text: findings.length === 0
-      ? "No security findings were attached to this gate."
-      : findingSummary,
+    text: [
+      findings.length === 0
+        ? "No security findings were attached to this gate."
+        : findingSummary,
+      INFORMATIONAL_NOTE,
+    ].join("\n\n"),
     annotations,
   };
   const payload: Record<string, unknown> = {
@@ -282,8 +253,4 @@ function annotationLevel(severity: Severity): CheckAnnotation["annotation_level"
 
 function redact(value: string): string {
   return value.replace(LOCAL_PATH, "[local path redacted]");
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? redact(error.message) : "unknown error";
 }

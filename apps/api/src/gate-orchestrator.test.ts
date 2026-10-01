@@ -626,7 +626,7 @@ test("remote managed gate persists frozen identity before execution and publishe
   assert.equal(gate.artifactSchemaVersion, 2);
   assert.equal(gate.costCeilingUsd, 18);
   assert.equal(gate.estimatedUsd, 0);
-  assert.deepEqual(calls, ["execute", "write", "publish"]);
+  assert.deepEqual(calls, ["execute", "write", "publish", "comment"]);
   const completed = runs.get(gate.id)!;
   assert.equal(completed.status, "completed");
   assert.equal(completed.outcome, "bootstrap");
@@ -670,6 +670,40 @@ test("keeps a persisted managed decision completed when cleanup fails afterwards
   assert.equal(logged.messages.length, 1);
 });
 
+test("a comment failure leaves the gate completed", async () => {
+  const { deps, runs } = remoteDeps({
+    publishComment: async () => ({ status: "failed", reason: "github_permission_missing" }),
+  });
+  const gate = await startRemoteManagedGate(remotePreview(), deps);
+  await waitForGate(gate.id);
+  assert.equal(runs.get(gate.id)?.status, "completed");
+  assert.equal(runs.get(gate.id)?.publishStatus, "published");
+  assert.equal(runs.get(gate.id)?.error, null);
+});
+
+test("a comment that throws leaves the gate completed", async () => {
+  const { deps, runs } = remoteDeps({
+    publishComment: async () => { throw new Error("the comment client exploded"); },
+  });
+  const logged = captureServerErrors();
+  let gate;
+  try {
+    gate = await startRemoteManagedGate(remotePreview(), deps);
+    await waitForGate(gate.id);
+  } finally {
+    logged.restore();
+  }
+  assert.equal(runs.get(gate.id)?.status, "completed");
+  assert.equal(runs.get(gate.id)?.error, null);
+});
+
+test("the comment is published after the check, for a pull-request gate", async () => {
+  const { deps, calls } = remoteDeps();
+  const gate = await startRemoteManagedGate(remotePreview(), deps);
+  await waitForGate(gate.id);
+  assert.ok(calls.indexOf("comment") > calls.indexOf("publish"));
+});
+
 test("remote managed gate cancellation aborts the executor and linked scan", async () => {
   let rejectExecution: ((error: Error) => void) | null = null;
   const held = new Promise<SentinelManagedExecutionResult>((_resolve, reject) => {
@@ -694,6 +728,7 @@ test("remote managed gate cancellation aborts the executor and linked scan", asy
 function remoteDeps(overrides: {
   execute?: RemoteManagedGateDependencies["execute"];
   notifyThrows?: boolean;
+  publishComment?: RemoteManagedGateDependencies["publishComment"];
 } = {}): {
   deps: RemoteManagedGateDependencies;
   runs: Map<string, GateRun>;
@@ -743,6 +778,10 @@ function remoteDeps(overrides: {
       assert.equal(artifact.schemaVersion, 2);
       return "created";
     },
+    publishComment: overrides.publishComment ?? (async () => {
+      calls.push("comment");
+      return { status: "created", commentId: "101" };
+    }),
   };
   return { deps, runs, events, calls, notified, baselineRefreshes };
 }

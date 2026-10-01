@@ -39,6 +39,7 @@ import {
   type StartScanRequest,
   type GateCoverageEnvelope,
 } from "@csb/shared";
+import { DEFAULT_GUARDRAIL_PR_COMMENT_LOCALE } from "@csb/shared";
 import { nanoid } from "nanoid";
 
 import {
@@ -47,6 +48,7 @@ import {
   GUARDRAIL_MATERIALIZATIONS_DIR,
 } from "./config.js";
 import { purgeScanRunArtifacts } from "./activity.js";
+import { loadServerSettings } from "./deployment-settings.js";
 import { notifyGitHubPublishFailed } from "./email/ops-notifications.js";
 import { notifyGateOutcome } from "./email/repository-notifications.js";
 import {
@@ -76,6 +78,7 @@ import {
   listGuardrailRepositories,
   listPendingGitHubActionsDispatches,
   listMaterializationLeases,
+  getGuardrailRepositoryPrComment,
   reserveGitHubActionsArtifact,
   upsertMaterializationLease,
   updateGateRun,
@@ -94,6 +97,13 @@ import {
   publishManagedGateCheck,
   type ManagedGitHubCheckClient,
 } from "./github-check.js";
+import {
+  publishPrComment,
+  type PrCommentPublisherDependencies,
+  type PublishPrCommentInput,
+  type PublishPrCommentResult,
+} from "./github/pr-comment-publisher.js";
+import { getPrComment, upsertPrComment } from "./github/pr-comment-store.js";
 import { ActionsArtifactImporter } from "./guardrails/actions-artifact-importer.js";
 import {
   GitHubActionsExecutor,
@@ -185,6 +195,11 @@ export interface RemoteManagedGateDependencies {
     authority: AcceptedGateTargetPreview["repositoryAuthority"];
     detailsUrl: string | null;
   }): Promise<"created" | "updated">;
+  /**
+   * The sticky pull-request comment. It never throws and never fails the gate:
+   * the decision is already durable by the time it runs.
+   */
+  publishComment(input: PublishPrCommentInput): Promise<PublishPrCommentResult>;
   notifyOutcome(gate: GateRun): void;
   refreshBaselineState(repositoryKey: string): void;
 }
@@ -264,6 +279,7 @@ const productionManagedDeps: RemoteManagedGateDependencies = {
     input,
     getSystemGitHubAppService() as ManagedGitHubCheckClient,
   ),
+  publishComment: (input) => publishPrComment(input, productionPrCommentDependencies()),
   notifyOutcome: notifyGateOutcome,
   refreshBaselineState: refreshRepositoryBaselineState,
 };
@@ -681,6 +697,7 @@ async function runRemoteManagedGate(
               notifyGitHubPublishFailed(gateId);
             }
           }
+          await publishGateComment(gateId, execution.artifact, preview, deps);
         },
       },
     });
@@ -1319,6 +1336,79 @@ function systemActionsExecutor(): GitHubActionsExecutor {
  * and swallowed: the gate's decision is already durable, and a projection that
  * could not be rewritten is a stale word on a screen, not a lost verdict.
  */
+/**
+ * The sticky comment, next to the Check and after it.
+ *
+ * A comment failure never fails the gate: the decision is already written, the
+ * money is already spent, and a pull request with a Check and no comment is a
+ * degraded result, not a wrong one. The failure is recorded on the comment's own
+ * row and raised through the alert the Check publication already uses
+ * (`ops.github_publish_failed`), so an administrator sees one event for "Sentinel
+ * could not write to GitHub" instead of two that mean the same thing.
+ */
+async function publishGateComment(
+  gateId: string,
+  artifact: GateArtifactV2,
+  preview: AcceptedGateTargetPreview,
+  deps: RemoteManagedGateDependencies,
+): Promise<void> {
+  if (artifact.target.kind !== "pull_request") return;
+  if (artifact.repository.locator.kind !== "github") return;
+  try {
+    const startedAt = deps.getGateRun(gateId)?.startedAt ?? null;
+    const result = await deps.publishComment({
+      artifact,
+      repositoryKey: artifact.repository.key,
+      authority: preview.repositoryAuthority,
+      owner: artifact.repository.locator.owner,
+      name: artifact.repository.locator.name,
+      pullRequestNumber: artifact.resolvedTarget.pullRequestNumber,
+      durationMs: startedAt === null ? null : Date.parse(deps.now()) - Date.parse(startedAt),
+    });
+    if (result.status === "failed") notifyGitHubPublishFailed(gateId);
+  } catch (error) {
+    logGateFailure(gateId, error);
+    notifyGitHubPublishFailed(gateId);
+  }
+}
+
+/**
+ * The App credential, the projection and the repository's own two comment settings.
+ * It is built per call rather than frozen into `productionManagedDeps` because the
+ * public origin and the repository row can both change between two gates.
+ */
+function productionPrCommentDependencies(): PrCommentPublisherDependencies {
+  const service = getSystemGitHubAppService();
+  return {
+    readAuthorizedRepositoryJson: (connectionId, installationId, repositoryId, resourcePath, permissions) =>
+      service.readAuthorizedRepositoryJson(
+        connectionId,
+        installationId,
+        repositoryId,
+        resourcePath,
+        permissions,
+      ),
+    writeAuthorizedRepositoryJson: (connectionId, installationId, repositoryId, resourcePath, method, body, permissions) =>
+      service.writeAuthorizedRepositoryJson(
+        connectionId,
+        installationId,
+        repositoryId,
+        resourcePath,
+        method,
+        body,
+        permissions,
+      ),
+    getComment: (repositoryKey, pullRequestNumber) => getPrComment(repositoryKey, pullRequestNumber),
+    upsertComment: (record) => { upsertPrComment(record); },
+    commentsEnabled: (repositoryKey) =>
+      getGuardrailRepositoryPrComment(repositoryKey)?.enabled ?? false,
+    commentLocale: (repositoryKey) =>
+      getGuardrailRepositoryPrComment(repositoryKey)?.locale ?? DEFAULT_GUARDRAIL_PR_COMMENT_LOCALE,
+    publicOrigin: () => loadServerSettings().origin,
+    now: () => new Date().toISOString(),
+  };
+}
+
 /**
  * The three words a gate may have run under. An artifact that still carries one of
  * the two retired ones means `repository_file`: both only ever described reading

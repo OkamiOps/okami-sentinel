@@ -176,7 +176,12 @@ export function buildGateArtifactV2(input: BuildGateArtifactV2Input): GateArtifa
     policySource: input.policySource,
     policyInvalidReason: normalizedNotice(input.policyInvalidReason),
     baselineNotice: input.baselineNotice === undefined ? null : copyBaselineNotice(input.baselineNotice),
-    publication: gatePublicationEligibility(input.policy, input.target, input.resolvedTarget),
+    publication: gatePublicationEligibility(
+      input.policy,
+      input.target,
+      input.resolvedTarget,
+      input.source,
+    ),
     changeSet,
     policy: copyPolicy(input.policy),
     scan: copyScan(input.scan),
@@ -223,10 +228,23 @@ export function buildOperationalErrorArtifactV2(
   });
 }
 
+/**
+ * Whether the gate may say anything on GitHub.
+ *
+ * Two ways in. A gate standing on a protected branch always could, and that is
+ * what a baseline is built from. A pull request on a GitHub repository now also
+ * can, whatever its base branch: the Check and the comment are informational, and
+ * refusing to speak on a pull request to an unprotected base was refusing to
+ * answer the one question the author asked.
+ *
+ * `protectedBranch` keeps its meaning exactly — the branch a baseline would come
+ * from — so `null` on the second path is the truth, and `baseline.ts` is untouched.
+ */
 export function gatePublicationEligibility(
   policy: GuardrailPolicy,
   target: GateTarget,
   resolvedTarget: ResolvedGateTarget,
+  source: GateSource = "local",
 ): GatePublicationEligibility {
   const candidate = target.kind === "protected_branch" ? target.ref : resolvedTarget.baseRef;
   if (policy.protectedBranches.includes(candidate)) {
@@ -234,6 +252,13 @@ export function gatePublicationEligibility(
       eligible: true,
       protectedBranch: candidate,
       reason: "protected_branch",
+    };
+  }
+  if (source === "github" && target.kind === "pull_request") {
+    return {
+      eligible: true,
+      protectedBranch: null,
+      reason: "pull_request",
     };
   }
   return {
@@ -388,7 +413,13 @@ function validateGateArtifactV2(value: unknown): asserts value is GateArtifactV2
   }
   validateBaselineNotice(artifact.baselineNotice);
   validatePolicy(artifact.policy);
-  validatePublication(artifact.publication, artifact.policy as GuardrailPolicy, target, resolvedTarget);
+  validatePublication(
+    artifact.publication,
+    artifact.policy as GuardrailPolicy,
+    target,
+    resolvedTarget,
+    artifact.source as GateSource,
+  );
   validateChangeSet(artifact.changeSet);
   validateChangeSetResolution(artifact.changeSet as ChangeSet, resolvedTarget);
   validateScan(artifact.scan);
@@ -544,6 +575,7 @@ function validatePublication(
   policy: GuardrailPolicy,
   target: GateTarget,
   resolved: ResolvedGateTarget,
+  source: GateSource,
 ): void {
   const publication = record(value, "GateArtifact.publication");
   exactKeys(publication, ["eligible", "protectedBranch", "reason"], "GateArtifact.publication");
@@ -552,12 +584,20 @@ function validatePublication(
     protectedBranch: nullableString(publication.protectedBranch, "GateArtifact.publication.protectedBranch"),
     reason: enumValue(
       publication.reason,
-      ["protected_branch", "off_policy_preflight"] as const,
+      ["protected_branch", "pull_request", "off_policy_preflight"] as const,
       "GateArtifact.publication.reason",
     ),
   };
-  const expected = gatePublicationEligibility(policy, target, resolved);
-  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+  const expected = gatePublicationEligibility(policy, target, resolved, source);
+  // Artifacts written before a pull request to an unprotected base was publishable
+  // recorded the protected-branch-only answer. Rejecting them would make every one
+  // of them unreadable, which is a migration nobody asked for; the rule that
+  // produced them is still a valid answer for the same inputs.
+  const beforeWidening = gatePublicationEligibility(policy, target, resolved, "local");
+  if (
+    JSON.stringify(actual) !== JSON.stringify(expected)
+    && JSON.stringify(actual) !== JSON.stringify(beforeWidening)
+  ) {
     fail("GateArtifact.publication", "não corresponde a protectedBranches");
   }
 }

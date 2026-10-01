@@ -23,19 +23,21 @@ const FLOW_ID = /^[A-Za-z0-9-]{1,100}$/;
  *   caller's state. `workflow_dispatch` and cancelling a run need `actions: write`,
  *   and those belong to the phase 4 executor; the Integração screen names the
  *   installation whose review is pending when that widening happens.
- * - `pull_requests: read` — phases 1–3 only list and read pull requests. Opening the
- *   caller-workflow PR needs `pull_requests: write`, which is phase 4's as well.
+ * - `pull_requests: write` — the sticky comment. GitHub serves a pull request's
+ *   comments from the issues API (`POST /repos/.../issues/{n}/comments`), and
+ *   `pull_requests: write` is the narrower of the two levels that open it. Listing
+ *   and reading pull requests, which the preflight does, only needs `read`.
  *
- * Deliberately absent: `issues: write`, which the phase 3 sticky comment will need
- * (`POST /repos/.../issues/{n}/comments`). It is not requested until phase 3 asks
- * for it, for the same reason.
+ * Deliberately absent: `issues: write`, the other level that would serve the same
+ * comment. It would also hand Sentinel every issue in the repository, which nothing
+ * here reads and nobody agreed to.
  */
 export const GITHUB_APP_MANIFEST_PERMISSIONS = Object.freeze({
   actions: "read",
   checks: "write",
   contents: "write",
   metadata: "read",
-  pull_requests: "read",
+  pull_requests: "write",
   workflows: "write",
 } as const);
 

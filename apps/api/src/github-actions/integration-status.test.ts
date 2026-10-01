@@ -14,7 +14,7 @@ const REQUIRED_GRANTS = {
   checks: "write",
   contents: "write",
   metadata: "read",
-  pull_requests: "read",
+  pull_requests: "write",
   workflows: "write",
 } as const;
 
@@ -257,7 +257,7 @@ test("names the permission the App is missing", async () => {
   const pr = status.connections[0]!.permissions.find((p) => p.name === "pull_requests")!;
   assert.deepEqual(pr, {
     name: "pull_requests",
-    required: "read",
+    required: "write",
     granted: null,
     ok: false,
     pendingInstallationIds: [],

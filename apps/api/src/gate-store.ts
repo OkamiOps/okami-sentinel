@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import type {
   GateExecutorKind,
   GuardrailBaselineState,
+  GuardrailPrCommentLocale,
   GuardrailRepositoryListRow,
   GuardrailRepositoryPatch,
   GuardrailResolvedPolicySource,
@@ -1122,6 +1123,28 @@ export function patchGuardrailRepository(
      WHERE repository_key = @repository_key`,
   ).run(parameters).changes;
   return changed === 0 ? null : getGuardrailRepository(repositoryKey, database);
+}
+
+/**
+ * The two pull-request-comment settings of one repository, without the list's
+ * joins. The publisher runs once per gate and needs nothing else from the row.
+ */
+export function getGuardrailRepositoryPrComment(
+  repositoryKey: string,
+  database: Database.Database = getDb(),
+): { enabled: boolean; locale: GuardrailPrCommentLocale } | null {
+  ensureGateSchema(database);
+  const row = database.prepare(
+    `SELECT pr_comment_enabled, pr_comment_locale
+     FROM guardrail_repositories WHERE repository_key = ?`,
+  ).get(repositoryKey) as { pr_comment_enabled: number; pr_comment_locale: string } | undefined;
+  if (row === undefined) return null;
+  return {
+    enabled: row.pr_comment_enabled === 1,
+    locale: isGuardrailPrCommentLocale(row.pr_comment_locale)
+      ? row.pr_comment_locale
+      : DEFAULT_GUARDRAIL_PR_COMMENT_LOCALE,
+  };
 }
 
 export function getGuardrailRepository(

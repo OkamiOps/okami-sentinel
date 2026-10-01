@@ -9,6 +9,7 @@ import type {
   GuardrailGitHubStatus,
   GuardrailException,
   GuardrailPolicy,
+  GuardrailPrCommentState,
   GuardrailRepository,
 } from "@csb/shared";
 
@@ -210,6 +211,7 @@ function dependencies(options: {
   repository?: GuardrailRepository;
   acceptPreviewError?: boolean;
   publishError?: string;
+  commentError?: string;
   baseline?: RepositoryBaseline;
   hasProtectedBranchAction?: boolean;
   baselineGateError?: boolean;
@@ -240,6 +242,7 @@ function dependencies(options: {
     updatedBy: string | null;
   }>;
   publicationInputs: Array<Parameters<GuardrailsApiDependencies["publishCheck"]>[0]>;
+  commentInputs: Array<Parameters<GuardrailsApiDependencies["publishComment"]>[0]>;
   started: Array<{
     request: StartGateRequest;
     acceptedPreview: AcceptedGateTargetPreview | null;
@@ -273,6 +276,8 @@ function dependencies(options: {
   }> = [];
   let sentinelPolicy: StoredRepositoryPolicy | null = options.sentinelPolicy ?? null;
   const publicationInputs: Array<Parameters<GuardrailsApiDependencies["publishCheck"]>[0]> = [];
+  const commentInputs: Array<Parameters<GuardrailsApiDependencies["publishComment"]>[0]> = [];
+  const comments = new Map<number, GuardrailPrCommentState>();
   const started: Array<{
     request: StartGateRequest;
     acceptedPreview: AcceptedGateTargetPreview | null;
@@ -312,6 +317,7 @@ function dependencies(options: {
     remotePolicyReads,
     savedPolicies,
     publicationInputs,
+    commentInputs,
     started,
     dispatched,
     store: {
@@ -485,7 +491,27 @@ function dependencies(options: {
     publishCheck: async (input) => {
       publicationInputs.push(input);
       if (options.publishError) throw new Error(options.publishError);
+      return "created";
     },
+    publishComment: async (input) => {
+      commentInputs.push(input);
+      if (options.commentError !== undefined) {
+        return { status: "failed", reason: options.commentError };
+      }
+      comments.set(input.pullRequestNumber ?? 0, {
+        repositoryKey: input.repositoryKey,
+        pullRequestNumber: input.pullRequestNumber ?? 0,
+        commentId: "101",
+        status: "published",
+        reason: null,
+        bodyHash: "hash-1",
+        gateId: input.artifact.gateId,
+        updatedAt: "2026-10-01T12:00:00.000Z",
+      });
+      return { status: "created", commentId: "101" };
+    },
+    getComment: (_key, pullRequestNumber) => comments.get(pullRequestNumber) ?? null,
+    listComments: () => [...comments.values()],
     updateGate: (id: string, updates: GateRunUpdate) => {
       if (id === currentGate.id) Object.assign(currentGate, updates);
     },
@@ -524,6 +550,7 @@ test("exposes local and github guardrail routes", () => {
     "POST /guardrails/gates/:gateId/cancel",
     "DELETE /guardrails/gates/:gateId",
     "POST /guardrails/gates/:gateId/publish",
+    "POST /guardrails/gates/:gateId/comment",
   ]);
 });
 
@@ -1219,11 +1246,130 @@ test("managed publish endpoint refuses an Actions-owned gate", async () => {
   assert.equal(deps.publicationInputs.length, 0);
 });
 
-test("POST publish keeps the local outcome when github fails", async () => {
-  const deps = dependencies({
-    gate: { status: "completed", outcome: "blocked" },
-    publishError: "GitHub API unavailable",
+const githubRepository: GuardrailRepository = {
+  ...repository,
+  repositoryKey: "github:991122",
+  repositoryPath: null,
+  source: "github",
+  remoteOwner: "OkamiOps",
+  remoteName: "private-sentinel",
+  githubConnectionId: "connection-1",
+  githubInstallationId: "77",
+  githubRepositoryId: "991122",
+};
+
+/**
+ * Only the fields the two routes read. The artifact's own validation has its own
+ * suite; what is under test here is which credential and which route answer.
+ */
+function pullRequestArtifact(overrides: Record<string, unknown> = {}): GateArtifact {
+  return {
+    ...artifact,
+    schemaVersion: 2,
+    repository: {
+      ...artifact.repository,
+      id: "github:991122",
+      key: githubRepository.repositoryKey,
+      locator: { kind: "github", repositoryId: "991122", owner: "OkamiOps", name: "private-sentinel" },
+    },
+    source: "github",
+    executor: "sentinel-managed",
+    target: { kind: "pull_request", number: 7 },
+    resolvedTarget: {
+      baseRef: "main",
+      headRef: "refs/pull/7/head",
+      baseSha: "a".repeat(40),
+      headSha: "b".repeat(40),
+      policySha: "a".repeat(40),
+      pullRequestNumber: 7,
+    },
+    ...overrides,
+  } as unknown as GateArtifact;
+}
+
+function publishableDeps(options: Parameters<typeof dependencies>[0] = {}) {
+  return dependencies({
+    repository: githubRepository,
+    artifact: pullRequestArtifact(),
+    gate: {
+      repositoryKey: githubRepository.repositoryKey,
+      status: "completed",
+      outcome: "blocked",
+      artifactSchemaVersion: 2,
+      pullRequestNumber: 7,
+      completedAt: "2026-08-07T00:05:00.000Z",
+    },
+    ...options,
   });
+}
+
+test("the manual publish uses the App and succeeds without a gh token", async () => {
+  const deps = publishableDeps();
+  const response = await createGuardrailsApp(deps).request(
+    "/guardrails/gates/gate-1/publish",
+    { method: "POST" },
+  );
+  assert.equal(response.status, 200);
+  assert.equal(deps.publicationInputs.length, 1);
+  assert.deepEqual(deps.publicationInputs[0]?.authority, {
+    connectionId: "connection-1",
+    installationId: "77",
+    repositoryId: "991122",
+  });
+  assert.equal(deps.store.getGateRun("gate-1")?.publishStatus, "published");
+});
+
+test("an operator republishes the comment", async () => {
+  const deps = publishableDeps();
+  const response = await createGuardrailsApp(deps).request(
+    "/guardrails/gates/gate-1/comment",
+    { method: "POST" },
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(
+    await response.json(),
+    {
+      result: { status: "created", commentId: "101" },
+      comment: {
+        repositoryKey: githubRepository.repositoryKey,
+        pullRequestNumber: 7,
+        commentId: "101",
+        status: "published",
+        reason: null,
+        bodyHash: "hash-1",
+        gateId: "gate-1",
+        updatedAt: "2026-10-01T12:00:00.000Z",
+      },
+    },
+  );
+  assert.equal(deps.commentInputs[0]?.pullRequestNumber, 7);
+  assert.equal(deps.commentInputs[0]?.durationMs, 300_000);
+});
+
+test("republishing a non-pull-request gate answers 409", async () => {
+  const deps = publishableDeps({
+    artifact: pullRequestArtifact({ target: { kind: "protected_branch", ref: "main" } }),
+  });
+  const response = await createGuardrailsApp(deps).request(
+    "/guardrails/gates/gate-1/comment",
+    { method: "POST" },
+  );
+  assert.equal(response.status, 409);
+  assert.equal(deps.commentInputs.length, 0);
+});
+
+test("a comment failure answers 502 and keeps the gate's own state", async () => {
+  const deps = publishableDeps({ commentError: "github_permission_missing" });
+  const response = await createGuardrailsApp(deps).request(
+    "/guardrails/gates/gate-1/comment",
+    { method: "POST" },
+  );
+  assert.equal(response.status, 502);
+  assert.equal(deps.store.getGateRun("gate-1")?.outcome, "blocked");
+});
+
+test("POST publish keeps the local outcome when github fails", async () => {
+  const deps = publishableDeps({ publishError: "GitHub API unavailable" });
   const response = await createGuardrailsApp(deps).request(
     "/guardrails/gates/gate-1/publish",
     { method: "POST" },

@@ -19,7 +19,7 @@ const MAX_PERMISSION = Object.freeze({
   checks: "write",
   contents: "write",
   metadata: "read",
-  pull_requests: "read",
+  pull_requests: "write",
   workflows: "write",
 } as const);
 
