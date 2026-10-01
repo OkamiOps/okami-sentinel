@@ -72,6 +72,7 @@ export const ROUTE_POLICY: ReadonlyArray<readonly [method: string, pattern: stri
   ["POST", "/guardrails/repositories/:repositoryKey/actions-dispatch", R("operator", "param")],
   ["GET", "/guardrails/repositories/:repositoryKey/actions-status", R("viewer", "param")],
   ["GET", "/guardrails/repositories/:repositoryKey/baseline", R("viewer", "param")],
+  ["GET", "/guardrails/repositories/:repositoryKey/pr-comments", R("viewer", "param")],
   // "Criar baseline agora" starts a scan, so it is an administrator's, like every
   // other control that spends.
   ["POST", "/guardrails/repositories/:repositoryKey/baseline", ADMIN],

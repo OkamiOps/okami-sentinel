@@ -635,6 +635,7 @@ export function guardrailRow(
     ...repository,
     prCommentEnabled: true,
     prCommentDetail: "detailed",
+    prCommentLocale: "pt-BR",
     baseline: {
       repositoryKey: repository.repositoryKey,
       state: "absent",

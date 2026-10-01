@@ -5,6 +5,7 @@ import type {
   DecisionGraphNode,
   GateArtifact,
   GateRun,
+  GuardrailPrCommentState,
   GuardrailRepository,
   GuardrailRepositoryListRow,
   ScanRun,
@@ -62,6 +63,7 @@ type GuardrailsState =
       gates: GateRun[];
       selectedGate: GateRun | null;
       artifact: GateArtifact | null;
+      comment: GuardrailPrCommentState | null;
       scans: ScanRun[];
     };
 
@@ -102,6 +104,7 @@ export function GuardrailsPage() {
           : gateList.gates,
         selectedGate: detail?.gate ?? selected,
         artifact: detail?.artifact ?? null,
+        comment: detail?.comment ?? null,
         scans: scanList.scans,
       });
     } catch (error) {
@@ -127,6 +130,7 @@ export function GuardrailsPage() {
           gates: current.gates.map((gate) => gate.id === selectedId ? response.gate : gate),
           selectedGate: response.gate,
           artifact: response.artifact,
+          comment: response.comment,
         };
       });
     }).catch((error) => {
@@ -272,6 +276,10 @@ export function GuardrailsPage() {
     }
   }
 
+  function updateSelectedComment(comment: GuardrailPrCommentState | null) {
+    setState((current) => current.status === "ready" ? { ...current, comment } : current);
+  }
+
   function updateSelectedGate(gate: GateRun) {
     setState((current) => {
       if (current.status !== "ready" || current.selectedGate?.id !== gate.id) return current;
@@ -400,7 +408,13 @@ export function GuardrailsPage() {
 
       {readyState.selectedGate?.status === "completed" && readyState.artifact && (
         <div className="mt-4">
-          <PublishGateControl gate={readyState.selectedGate} artifact={readyState.artifact} onGateChange={updateSelectedGate} />
+          <PublishGateControl
+            gate={readyState.selectedGate}
+            artifact={readyState.artifact}
+            comment={readyState.comment}
+            onGateChange={updateSelectedGate}
+            onCommentChange={updateSelectedComment}
+          />
         </div>
       )}
 

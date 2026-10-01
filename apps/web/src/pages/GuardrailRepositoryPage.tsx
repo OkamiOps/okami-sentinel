@@ -5,9 +5,12 @@ import type {
   GateRun,
   GuardrailBaseline,
   GuardrailPolicy,
+  GuardrailPrCommentLocale,
+  GuardrailPrCommentState,
   GuardrailRepositoryListRow,
   GuardrailRule,
 } from "@csb/shared";
+import { GUARDRAIL_PR_COMMENT_LOCALES } from "@csb/shared";
 
 import {
   api,
@@ -39,7 +42,8 @@ import {
   policySourceLabelKey,
   selectedPresetFromPolicy,
 } from "../lib/guardrail-repository-page";
-import { useI18n } from "../i18n";
+import { localeMeta, useI18n } from "../i18n";
+import { commentStateLabelKey } from "../lib/gate-publication";
 
 interface RepositoryPageData {
   repository: GuardrailRepositoryListRow;
@@ -48,6 +52,7 @@ interface RepositoryPageData {
   baseline: GuardrailBaseline;
   hasProtectedBranchAction: boolean;
   gates: GateRun[];
+  prComments: GuardrailPrCommentState[];
 }
 
 type PageState =
@@ -83,11 +88,12 @@ export function GuardrailRepositoryPage() {
       // The policy is the one read that can depend on GitHub — the repository's own
       // file lives on the protected branch. An outage there must cost the operator
       // that one block, not the baseline, the comment setting and the history too.
-      const [repositories, policy, baseline, gates] = await Promise.all([
+      const [repositories, policy, baseline, gates, prComments] = await Promise.all([
         api.listGuardrailRepositories(),
         api.getGuardrailPolicy(repositoryKey).then((value) => value, () => null),
         api.getGuardrailBaseline(repositoryKey),
         api.listGates(repositoryKey),
+        api.listGuardrailPrComments(repositoryKey),
       ]);
       const repository = repositories.repositories.find((row) => row.repositoryKey === repositoryKey);
       if (!repository) throw new Error(t("guardrails.repositoryNotFound"));
@@ -99,6 +105,7 @@ export function GuardrailRepositoryPage() {
           baseline: baseline.baseline,
           hasProtectedBranchAction: baseline.hasProtectedBranchAction,
           gates: gates.gates,
+          prComments: prComments.comments,
         },
       });
       setEditor(policy === null ? null : editorStateFromPolicy(policy.policy));
@@ -120,7 +127,7 @@ export function GuardrailRepositoryPage() {
       </Button>
     </div>;
   }
-  const { repository, policy, baseline, hasProtectedBranchAction, gates } = state.data;
+  const { repository, policy, baseline, hasProtectedBranchAction, gates, prComments } = state.data;
   if (policy !== null && editor === null) return <Loading />;
 
   const proposed = editor === null ? null : policyFromEditor(editor);
@@ -189,12 +196,26 @@ export function GuardrailRepositoryPage() {
   }
 
   async function togglePrComment(enabled: boolean) {
+    await patchPrComment({ prCommentEnabled: enabled });
+  }
+
+  /**
+   * The comment's language is the repository's, not the session's: the people who
+   * read a pull request are not always the people who read this page.
+   */
+  async function setPrCommentLocale(prCommentLocale: GuardrailPrCommentLocale) {
+    await patchPrComment({ prCommentLocale });
+  }
+
+  async function patchPrComment(
+    patch: { prCommentEnabled?: boolean; prCommentLocale?: GuardrailPrCommentLocale },
+  ) {
     setBusy(true);
     setActionError(null);
     try {
-      await api.patchGuardrailRepository(repositoryKey, { prCommentEnabled: enabled });
+      await api.patchGuardrailRepository(repositoryKey, patch);
       setState((current) => current.status === "ready"
-        ? { ...current, data: { ...current.data, repository: { ...current.data.repository, prCommentEnabled: enabled } } }
+        ? { ...current, data: { ...current.data, repository: { ...current.data.repository, ...patch } } }
         : current);
     } catch (error) {
       setActionError(formatApiError(error, t));
@@ -423,6 +444,54 @@ export function GuardrailRepositoryPage() {
           >
             {repository.prCommentEnabled ? t("guardrails.disableRepository") : t("guardrails.enableRepository")}
           </Button>}
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t p-4">
+          <span className="min-w-0">
+            <span className="bench-label">{t("guardrails.prCommentLanguage")}</span>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              {t("guardrails.prCommentLanguageHint")}
+            </p>
+          </span>
+          <Select
+            value={repository.prCommentLocale}
+            disabled={!isAdmin || busy}
+            onValueChange={(value) => void setPrCommentLocale(value as GuardrailPrCommentLocale)}
+          >
+            <SelectTrigger className="h-9 w-48" aria-label={t("guardrails.prCommentLanguage")}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {GUARDRAIL_PR_COMMENT_LOCALES.map((value) => <SelectItem key={value} value={value}>
+                {localeMeta[value].label}
+              </SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="border-t">
+          <div className="px-4 pt-3 bench-label">{t("guardrails.prCommentHistory")}</div>
+          {prComments.length === 0
+            ? <p className="px-4 pb-3 pt-2 text-xs leading-relaxed text-muted-foreground">
+              {t("guardrails.prCommentHistoryEmpty")}
+            </p>
+            : <ul className="mt-2 divide-y border-t">
+              {prComments.slice(0, 5).map((comment) => <li
+                key={comment.pullRequestNumber}
+                className="grid min-w-0 gap-2 px-4 py-3 sm:grid-cols-[6rem_minmax(0,1fr)_12rem] sm:items-center"
+              >
+                <span className="font-mono text-xs">PR #{comment.pullRequestNumber}</span>
+                <span className={cx(
+                  // Not `bench-label`: that class carries its own colour, and the
+                  // state's colour is the point of the row.
+                  "font-mono text-[10px] uppercase tracking-[0.14em]",
+                  comment.status === "failed" ? "text-destructive" : "text-chart-2",
+                )}>
+                  {t(commentStateLabelKey(comment))}
+                </span>
+                <span className="truncate font-mono text-[10px] text-muted-foreground">
+                  {comment.reason ?? formatDate(comment.updatedAt, locale)}
+                </span>
+              </li>)}
+            </ul>}
         </div>
       </Panel>
 

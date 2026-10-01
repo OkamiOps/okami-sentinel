@@ -4,6 +4,7 @@ import type {
   GuardrailBaseline,
   GuardrailEnrollmentSkip,
   GuardrailPolicy,
+  GuardrailPrCommentState,
   GuardrailRepositoryListRow,
 } from "@csb/shared";
 import { guardrailPolicyPresetRules } from "@csb/shared";
@@ -103,6 +104,10 @@ interface GuardrailsScenario {
   /** `GET .../policy` fails the way a GitHub outage makes it fail. */
   policyOutage?: boolean;
   artifact?: unknown;
+  /** The sticky comments Sentinel already owns in this repository. */
+  prComments?: GuardrailPrCommentState[];
+  /** `POST .../comment` answers the way a revoked permission makes it answer. */
+  commentRepublishFails?: boolean;
 }
 
 /** Every `/guardrails/*` route the tab reads, so an unmocked one fails loudly. */
@@ -126,6 +131,8 @@ export async function mockGuardrails(page: Page, scenario: GuardrailsScenario = 
     deletes: [] as string[],
     enrolments: [] as unknown[],
     baselineBuilds: 0,
+    prComments: structuredClone(scenario.prComments ?? []),
+    commentRepublishes: 0,
   };
 
   const base = await mockApi(page, scenario.locale ?? "pt-BR", { session: scenario.session });
@@ -148,7 +155,7 @@ export async function mockGuardrails(page: Page, scenario: GuardrailsScenario = 
       state.repositories = [...state.repositories, ...answer.enrolled];
       return json(answer);
     }
-    const repositoryMatch = path.match(/^\/guardrails\/repositories\/([^/]+)(?:\/(policy|policy\/simulate|baseline))?$/);
+    const repositoryMatch = path.match(/^\/guardrails\/repositories\/([^/]+)(?:\/(policy|policy\/simulate|baseline|pr-comments))?$/);
     if (repositoryMatch) {
       const repositoryKey = decodeURIComponent(repositoryMatch[1]!);
       const sub = repositoryMatch[2];
@@ -194,6 +201,9 @@ export async function mockGuardrails(page: Page, scenario: GuardrailsScenario = 
           },
           configurationErrors: [],
         });
+      }
+      if (sub === "pr-comments" && request.method() === "GET") {
+        return json({ comments: state.prComments.filter((row) => row.repositoryKey === repositoryKey) });
       }
       if (sub === "baseline" && request.method() === "GET") {
         return json({
@@ -244,7 +254,35 @@ export async function mockGuardrails(page: Page, scenario: GuardrailsScenario = 
     const gateMatch = path.match(/^\/guardrails\/gates\/([^/]+)$/);
     if (gateMatch && request.method() === "GET") {
       const found = state.gates.find((row) => row.id === gateMatch[1]) ?? null;
-      return json({ gate: found, artifact: scenario.artifact ?? null });
+      const comment = found?.pullRequestNumber == null ? null : state.prComments.find(
+        (row) => row.repositoryKey === found.repositoryKey
+          && row.pullRequestNumber === found.pullRequestNumber,
+      ) ?? null;
+      return json({ gate: found, artifact: scenario.artifact ?? null, comment });
+    }
+    const commentMatch = path.match(/^\/guardrails\/gates\/([^/]+)\/comment$/);
+    if (commentMatch && request.method() === "POST") {
+      state.commentRepublishes += 1;
+      const gate = state.gates.find((row) => row.id === commentMatch[1]);
+      if (!gate || gate.pullRequestNumber === null) return json({ error: "not_a_pull_request" }, 409);
+      if (scenario.commentRepublishFails) {
+        return json({ error: "github_permission_missing", result: { status: "failed", reason: "github_permission_missing" }, comment: null }, 502);
+      }
+      const comment: GuardrailPrCommentState = {
+        repositoryKey: gate.repositoryKey,
+        pullRequestNumber: gate.pullRequestNumber,
+        commentId: "101",
+        status: "published",
+        reason: null,
+        bodyHash: "hash-1",
+        gateId: gate.id,
+        updatedAt: "2026-10-01T12:00:00.000Z",
+      };
+      state.prComments = [
+        ...state.prComments.filter((row) => row.pullRequestNumber !== comment.pullRequestNumber),
+        comment,
+      ];
+      return json({ result: { status: "created", commentId: "101" }, comment });
     }
     throw new Error(`Unmocked guardrails request: ${request.method()} ${path}`);
   });
@@ -305,3 +343,19 @@ export function bootstrapArtifact() {
   };
 }
 
+
+export function prCommentOf(
+  overrides: Partial<GuardrailPrCommentState> = {},
+): GuardrailPrCommentState {
+  return {
+    repositoryKey: "github:1",
+    pullRequestNumber: 7,
+    commentId: "101",
+    status: "published",
+    reason: null,
+    bodyHash: "hash-1",
+    gateId: "gate-1",
+    updatedAt: "2026-10-01T09:06:00.000Z",
+    ...overrides,
+  };
+}

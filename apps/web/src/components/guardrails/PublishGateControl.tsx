@@ -1,14 +1,20 @@
 import { useI18n } from "../../i18n";
 import { useState } from "react";
-import type { GateArtifact, GateRun } from "@csb/shared";
-import { ExternalLink, RotateCw, Send } from "lucide-react";
+import type { GateArtifact, GateRun, GuardrailPrCommentState } from "@csb/shared";
+import { ExternalLink, MessageSquare, RotateCw, Send } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../api";
 import { useAuth } from "../../auth/AuthProvider";
+import {
+  commentStateLabelKey,
+  commentUrl,
+  gitHubRepositoryName,
+  pullRequestUrl,
+} from "../../lib/gate-publication";
 import { prCheckLabel, publicationTarget } from "../../lib/github-guardrails";
 import { isProtectedBranchBaselineRun } from "../../lib/guardrails";
-import { AlertBanner } from "../ui";
+import { AlertBanner, cx } from "../ui";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -23,17 +29,25 @@ import { GateOutcomeBadge } from "./GateOutcomeBadge";
 export function PublishGateControl({
   gate,
   artifact,
+  comment = null,
   onGateChange,
+  onCommentChange,
 }: {
   gate: GateRun;
   artifact: GateArtifact;
+  comment?: GuardrailPrCommentState | null;
   onGateChange: (gate: GateRun) => void;
+  onCommentChange?: (comment: GuardrailPrCommentState | null) => void;
 }) {
   const { t } = useI18n();
   const { can } = useAuth();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [commentBusy, setCommentBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const repositoryName = gitHubRepositoryName(artifact);
+  const prUrl = pullRequestUrl(gate, repositoryName);
+  const publishedCommentUrl = commentUrl(gate, comment, repositoryName);
   const target = publicationTarget(artifact);
   const configured = gate.publishStatus !== "not_configured";
   const canPublish = can("operator", gate.repositoryKey);
@@ -61,6 +75,19 @@ export function PublishGateControl({
     }
   }
 
+  async function republishComment() {
+    setCommentBusy(true);
+    setActionError(null);
+    try {
+      const response = await api.publishGateComment(gate.id);
+      onCommentChange?.(response.comment);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : t("guardrails.comment.failed"));
+    } finally {
+      setCommentBusy(false);
+    }
+  }
+
   return (
     <section className="bench-panel min-w-0 overflow-hidden" aria-labelledby="publish-gate-title">
       <div className="grid min-w-0 lg:grid-cols-[minmax(14rem,.55fr)_minmax(0,1.45fr)_minmax(13rem,.55fr)]">
@@ -81,6 +108,18 @@ export function PublishGateControl({
             <div className="bench-label">{t("guardrails.checkState")}</div>
             <div className="mt-1 break-words font-mono text-[10px] font-semibold text-foreground">{prCheckLabel(gate)}</div>
             {gate.publishError && <p className="mt-2 break-words text-xs leading-5 text-destructive">{gate.publishError}</p>}
+            {prUrl !== null && <>
+              <div className="bench-label mt-3">{t("guardrails.commentState")}</div>
+              <div className={cx(
+                "mt-1 break-words font-mono text-[10px] font-semibold uppercase",
+                comment?.status === "failed" ? "text-destructive" : "text-foreground",
+              )} data-testid="gate-comment-state">
+                {t(commentStateLabelKey(comment ?? null))}
+              </div>
+              {comment?.reason === "ambiguous_comment" && <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                {t("guardrails.commentAmbiguous")}
+              </p>}
+            </>}
           </div>
           {actionsOwned ? (
             <div className="border border-info/35 bg-info/[.05] p-3">
@@ -98,6 +137,32 @@ export function PublishGateControl({
               {busy || gate.publishStatus === "publishing" ? t("guardrails.publication.publishing") : gate.publishStatus === "failed" ? t("guardrails.publishRetry") : t("guardrails.publishCheck")}
             </Button>
           ) : null}
+
+          {/* The pull request Sentinel already wrote in, and the comment it wrote
+              there. Both are links out, so they never sit behind a confirmation. */}
+          {prUrl !== null && <div className="grid gap-2">
+            <Button asChild variant="outline" size="sm" className="min-h-11 w-full">
+              <a href={prUrl} target="_blank" rel="noreferrer" data-testid="open-pull-request">
+                <ExternalLink aria-hidden size={14} />{t("guardrails.openPullRequest")}
+              </a>
+            </Button>
+            {publishedCommentUrl !== null && <Button asChild variant="outline" size="sm" className="min-h-11 w-full">
+              <a href={publishedCommentUrl} target="_blank" rel="noreferrer" data-testid="open-published-comment">
+                <MessageSquare aria-hidden size={14} />{t("guardrails.viewComment")}
+              </a>
+            </Button>}
+            {canPublish && !actionsOwned && <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="min-h-11 w-full"
+              disabled={commentBusy}
+              data-testid="republish-comment"
+              onClick={() => void republishComment()}
+            >
+              <RotateCw aria-hidden size={14} />{t("guardrails.republishComment")}
+            </Button>}
+          </div>}
         </div>
       </div>
 

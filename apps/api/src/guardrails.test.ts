@@ -541,6 +541,7 @@ test("exposes local and github guardrail routes", () => {
     "GET /guardrails/repositories/:repositoryKey/caller-workflow",
     "PUT /guardrails/repositories/:repositoryKey/caller-workflow",
     "POST /guardrails/repositories/:repositoryKey/actions-dispatch",
+    "GET /guardrails/repositories/:repositoryKey/pr-comments",
     "GET /guardrails/repositories/:repositoryKey/baseline",
     "POST /guardrails/repositories/:repositoryKey/baseline",
     "GET /guardrails/gates",
