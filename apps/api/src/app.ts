@@ -218,6 +218,10 @@ import {
   type GitHubActionsStatus,
 } from "./guardrails/github-actions-status.js";
 import {
+  openCallerWorkflowPullRequest,
+  type OpenCallerWorkflowPullRequestResult,
+} from "./guardrails/caller-workflow-pull-request.js";
+import {
   importExternalScans,
   readFindingsFile,
   refreshRunFromDisk,
@@ -320,6 +324,8 @@ export interface GuardrailsApiDependencies {
   getActionsStatus(repository: GuardrailRepository): Promise<GitHubActionsStatus>;
   getCallerWorkflow(repository: GuardrailRepository): Promise<CallerWorkflowDocument>;
   installCallerWorkflow?(repository: GuardrailRepository, triggers: GuardrailAutomationTriggers): Promise<GitHubActionsStatus>;
+  /** "Abrir PR com o workflow": the branch, the file and the pull request. */
+  openCallerWorkflowPullRequest(repository: GuardrailRepository): Promise<OpenCallerWorkflowPullRequestResult>;
   /** The baseline projection: one word the screen reads without N remote calls. */
   getBaseline(repositoryKey: string): RepositoryBaseline;
   markBaselineBuilding(repositoryKey: string, requestedAt: string): RepositoryBaseline;
@@ -503,6 +509,21 @@ const guardrailsDependencies: GuardrailsApiDependencies = {
     );
     return getGitHubActionsStatus(repository, getSystemGitHubAppService(), GITHUB_ACTIONS_WORKFLOW_SHA);
   },
+  openCallerWorkflowPullRequest: (repository) => openCallerWorkflowPullRequest(
+    { repository, workflowSha: GITHUB_ACTIONS_WORKFLOW_SHA ?? "" },
+    {
+      readJson: (authority, resourcePath, permissions) =>
+        getSystemGitHubAppService().readAuthorizedRepositoryJson(
+          authority.connectionId, authority.installationId, authority.repositoryId,
+          resourcePath, permissions,
+        ),
+      writeJson: (authority, resourcePath, method, body, permissions) =>
+        getSystemGitHubAppService().writeAuthorizedRepositoryJson(
+          authority.connectionId, authority.installationId, authority.repositoryId,
+          resourcePath, method, body, permissions,
+        ),
+    },
+  ),
   getBaseline: (repositoryKey) => getRepositoryBaselineState(repositoryKey),
   markBaselineBuilding: (repositoryKey, requestedAt) =>
     markRepositoryBaselineBuilding(repositoryKey, requestedAt),
@@ -996,6 +1017,19 @@ export function createGuardrailsApp(
     }
     try {
       return c.json({ status: await deps.installCallerWorkflow(repository, triggers) });
+    } catch (error) {
+      return c.json({ error: errorMessage(error) }, 409);
+    }
+  });
+
+  // The button that writes the workflow it wants installed. Sentinel never touches
+  // the default branch: it opens a pull request the repository reviews as usual.
+  guardrails.post("/guardrails/repositories/:repositoryKey/caller-workflow/pull-request", async (c) => {
+    const repository = deps.getRepository(c.req.param("repositoryKey"));
+    if (!repository) return c.json({ error: "Repositório não encontrado" }, 404);
+    if (!hasGitHubRemote(repository)) return c.json({ error: "Repositório não possui remoto GitHub" }, 400);
+    try {
+      return c.json({ pullRequest: await deps.openCallerWorkflowPullRequest(repository) }, 201);
     } catch (error) {
       return c.json({ error: errorMessage(error) }, 409);
     }

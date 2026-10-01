@@ -144,6 +144,7 @@ test("declares every repository route of the Guardrails tab with the requirement
     "POST /guardrails/repositories/:repositoryKey/baseline": "admin",
     "GET /guardrails/repositories/:repositoryKey/caller-workflow": "viewer:param",
     "PUT /guardrails/repositories/:repositoryKey/caller-workflow": "maintainer:param",
+    "POST /guardrails/repositories/:repositoryKey/caller-workflow/pull-request": "admin",
     "GET /guardrails/repositories/:repositoryKey/github-status": "viewer:param",
     "GET /guardrails/repositories/:repositoryKey/policy": "viewer:param",
     "PUT /guardrails/repositories/:repositoryKey/policy": "maintainer:param",
@@ -152,6 +153,13 @@ test("declares every repository route of the Guardrails tab with the requirement
     "GET /guardrails/repositories/:repositoryKey/pull-requests": "viewer:param",
     "POST /guardrails/repositories/:repositoryKey/target-preview": "operator:param",
   });
+  // The literal `pull-request` tail is its own route, so it can neither be reached
+  // as a repository key nor fall back to the maintainer's PUT.
+  assert.equal(
+    matchPolicy("POST", "/guardrails/repositories/github:1/caller-workflow/pull-request")?.requirement.kind,
+    "admin",
+  );
+  assert.equal(matchPolicy("PUT", "/guardrails/repositories/github:1/caller-workflow/pull-request"), null);
   // The retired parallel path for the baseline must not be reachable at all.
   assert.equal(matchPolicy("POST", "/guardrails/repositories/github:1/baseline/sync"), null);
   // Nothing here is public.
@@ -288,6 +296,12 @@ function seedRepository(key: string): void {
     .run(key, `/repos/${key.replaceAll(/[^A-Za-z0-9]/g, "-")}`, key);
 }
 
+function administrator(name: string) {
+  const user = createUser({ username: name, displayName: name, isAdmin: true }, getDb());
+  const { token, session } = createSession({ userId: user.id, ip: null, userAgent: null }, getDb());
+  return { cookie: `${SECURE_SESSION_COOKIE}=${token}`, csrf: session.csrfToken };
+}
+
 function seedRun(id: string, repositoryKey: string): void {
   const now = new Date().toISOString();
   getDb().prepare(`INSERT OR REPLACE INTO runs
@@ -376,6 +390,40 @@ test("the HTTP role matrix decides in server mode", async () => {
 
   // Public routes need neither a session nor a policy exemption downstream.
   assert.equal((await server.request(`${origin}/healthz`)).status, 200);
+});
+
+/**
+ * The caller-workflow pull request writes a branch and a file in the customer's
+ * repository and installs the plane that spends their Actions minutes. A maintainer
+ * may install the workflow by hand (`PUT`), but only an administrator may have
+ * Sentinel open the pull request.
+ */
+test("only an administrator opens the caller workflow pull request", async () => {
+  const stamp = Date.now();
+  const repositoryKey = `github:pr-${stamp}`;
+  seedGitHubRepository(repositoryKey, `${stamp}9`);
+  const webRoot = fs.mkdtempSync(path.join(os.tmpdir(), "csb-policy-callerpr-"));
+  const server = createServerApp(app, { webRoot, settings: serverSettings });
+  const maintainer = member(`callermaint${stamp}`, [{ repositoryKey, role: "maintainer" }]);
+  const admin = administrator(`calleradmin${stamp}`);
+  const target = `${origin}/api/guardrails/repositories/${encodeURIComponent(repositoryKey)}/caller-workflow/pull-request`;
+  const send = (actor: { cookie: string; csrf: string }) => server.request(target, {
+    method: "POST",
+    headers: {
+      Cookie: actor.cookie, Origin: origin, "Content-Type": "application/json",
+      "X-CSRF-Token": actor.csrf,
+    },
+    body: "{}",
+  });
+
+  const refused = await send(maintainer);
+  assert.equal(refused.status, 403);
+  assert.deepEqual(await refused.json(), { error: "forbidden" });
+
+  // The administrator is let through; the handler owns the outcome, which without a
+  // reachable installation is a refusal and never a 403.
+  const allowed = await send(admin);
+  assert.equal([401, 403].includes(allowed.status), false, `admin status ${allowed.status}`);
 });
 
 function seedGitHubRepository(key: string, repositoryId: string): void {
