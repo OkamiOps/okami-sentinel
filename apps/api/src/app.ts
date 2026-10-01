@@ -117,6 +117,7 @@ import {
   cancelGate,
   deleteTerminalGate,
   getGateArtifact,
+  importGitHubActionsGateByWorkflowRun,
   reconcileGateWithLinkedScan,
   startLocalGate,
   startRemoteActionsGate,
@@ -1461,6 +1462,16 @@ const githubWebhookDependencies: GitHubWebhookIngestDependencies = {
     // Deliberately not awaited: the response is already on its way to GitHub.
     void dispatchGitHubActionEventNow(eventId).catch((error: unknown) => {
       console.warn(`[csb-api] github action dispatch failed event=${eventId}`
+        + ` reason=${error instanceof Error ? error.message : "unknown_error"}`);
+    });
+  },
+  // The primary import trigger for the Actions executor. Not awaited, for the same
+  // reason the dispatch is not: GitHub is owed an answer, not a scan. A run that
+  // belongs to no pending dispatch imports nothing, and the fifteen-second loop
+  // remains the safety net for a delivery that never arrives.
+  importWorkflowRun: (workflowRunId) => {
+    void importGitHubActionsGateByWorkflowRun(workflowRunId).catch((error: unknown) => {
+      console.warn(`[csb-api] github actions artifact import failed run=${workflowRunId}`
         + ` reason=${error instanceof Error ? error.message : "unknown_error"}`);
     });
   },

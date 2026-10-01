@@ -85,6 +85,7 @@ import {
   updateGitHubActionsDispatch,
   type GateEvent,
   type GateRunUpdate,
+  type GitHubActionsDispatchMetadata,
 } from "./gate-store.js";
 import {
   GitHubBaselineProvider,
@@ -417,6 +418,37 @@ export async function startRemoteActionsGate(
 
 export async function reconcileGitHubActionsGates(): Promise<GateRun[]> {
   return systemActionsExecutor().reconcilePending();
+}
+
+export interface ImportGitHubActionsGateByWorkflowRunDependencies {
+  listPendingDispatches?(): GitHubActionsDispatchMetadata[];
+  reconcileGate?(gateId: string): Promise<GateRun | null>;
+}
+
+/**
+ * The run telling us it finished, instead of us asking every fifteen seconds.
+ *
+ * `workflow_run.completed` names a run id; the dispatch that owns it is the one
+ * this process correlated when the run first appeared. A run that belongs to no
+ * pending Sentinel dispatch imports nothing and answers `null` — the webhook is
+ * repository-wide, and most runs in a repository are not ours.
+ *
+ * It is the same reconciliation the fifteen-second loop runs, so the two are
+ * idempotent by construction: `reconcileGate` collapses concurrent calls for one
+ * gate, a terminal dispatch returns early, and an artifact already validated is
+ * recognised as a duplicate rather than applied twice.
+ */
+export async function importGitHubActionsGateByWorkflowRun(
+  workflowRunId: string,
+  deps: ImportGitHubActionsGateByWorkflowRunDependencies = {},
+): Promise<string | null> {
+  if (!/^[1-9][0-9]{0,30}$/.test(workflowRunId)) return null;
+  const listPending = deps.listPendingDispatches ?? (() => listPendingGitHubActionsDispatches());
+  const dispatch = listPending().find((candidate) => candidate.workflowRunId === workflowRunId) ?? null;
+  if (dispatch === null) return null;
+  const reconcile = deps.reconcileGate ?? ((gateId: string) => systemActionsExecutor().reconcileGate(gateId));
+  const gate = await reconcile(dispatch.gateId);
+  return gate === null ? null : gate.id;
 }
 
 export function cancelGate(
