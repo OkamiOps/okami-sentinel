@@ -950,10 +950,18 @@ export function lastVerifiedWebhookDeliveryAt(
  */
 export function recordWebhookSecretStored(
   connectionId: string,
-  storedAt: string = new Date().toISOString(),
+  storedAt: string | null = new Date().toISOString(),
   database: Database.Database = getDb(),
 ): void {
   ensureGitHubActionsSchema(database);
+  // `null` removes the row, which is what a rollback needs: a connection whose
+  // secret predates the log has no row, and writing the epoch instead would
+  // silently validate every old proof.
+  if (storedAt === null) {
+    database.prepare("DELETE FROM github_webhook_secret_rotations WHERE connection_id = ?")
+      .run(connectionId);
+    return;
+  }
   database.prepare(`
     INSERT INTO github_webhook_secret_rotations (connection_id, stored_at)
     VALUES (@connection_id, @stored_at)

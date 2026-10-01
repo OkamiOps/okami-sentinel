@@ -105,7 +105,9 @@ export interface GitHubActionsApiDependencies {
    * that verified against the old one, so the instant has to be recorded or the
    * `delivery_verified` step keeps vouching for a value GitHub no longer signs with.
    */
-  recordWebhookSecretStored(connectionId: string): void;
+  recordWebhookSecretStored(connectionId: string, storedAt?: string | null): void;
+  /** Wire to `webhookSecretStoredAt`; the route needs it to roll the instant back. */
+  readWebhookSecretStoredAt(connectionId: string): string | null;
   /**
    * Wire to `githubWebhookSecretCache.invalidate`. Without it a freshly pasted
    * secret is ignored for a whole cache window and the operator reads a signature
@@ -200,16 +202,23 @@ export function createGitHubActionsApi(deps: GitHubActionsApiDependencies): Hono
     // A shape the vault would refuse answers exactly like an id it does not hold, so
     // the pair cannot be used to learn which ids are well formed.
     if (!CONNECTION_ID.test(connectionId)) throw new ApiError("connection_not_found", 404);
+    // The instant is recorded *before* the vault write, and rolled back if the write
+    // fails. The other order has one unrecoverable outcome: the secret stored and the
+    // rotation lost, which leaves the old proof vouching for a value that no longer
+    // exists — a green "entrega verificada" over a paste nobody has tested. Recording
+    // first can only ever fail the other way, and the rollback closes even that.
+    const previous = deps.readWebhookSecretStoredAt(connectionId);
+    deps.recordWebhookSecretStored(connectionId);
     try {
       await deps.storeWebhookSecret(connectionId, secret);
     } catch (error) {
+      deps.recordWebhookSecretStored(connectionId, previous);
       if (error instanceof Error && error.message === "credential_not_found") {
         throw new ApiError("connection_not_found", 404);
       }
       // Every refusal of the *input* is settled above, so anything left is ours.
       throw new ApiError("webhook_secret_not_stored", 502);
     }
-    deps.recordWebhookSecretStored(connectionId);
     deps.invalidateWebhookSecrets();
     return c.body(null, 204);
   }));
