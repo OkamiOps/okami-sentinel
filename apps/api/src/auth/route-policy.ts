@@ -69,7 +69,11 @@ export const ROUTE_POLICY: ReadonlyArray<readonly [method: string, pattern: stri
   // first two decide what the product is allowed to spend on, the third deletes.
   ["PATCH", "/guardrails/repositories/:repositoryKey", ADMIN],
   ["DELETE", "/guardrails/repositories/:repositoryKey", ADMIN],
-  ["POST", "/guardrails/repositories/:repositoryKey/actions-dispatch", R("operator", "param")],
+  // Dispatching on the Actions executor spends the repository's Actions minutes and
+  // the customer's own API key. `POST /guardrails/gates` and `POST .../baseline` are
+  // the administrator's for the same act on the managed plane, and the spec's cost
+  // rule applies equally to both executors.
+  ["POST", "/guardrails/repositories/:repositoryKey/actions-dispatch", ADMIN],
   ["GET", "/guardrails/repositories/:repositoryKey/actions-status", R("viewer", "param")],
   ["GET", "/guardrails/repositories/:repositoryKey/baseline", R("viewer", "param")],
   ["GET", "/guardrails/repositories/:repositoryKey/pr-comments", R("viewer", "param")],

@@ -23,7 +23,7 @@ function fixture() {
 
 test("uses the exact least-privilege GitHub App manifest contract", () => {
   assert.deepEqual(GITHUB_APP_MANIFEST_PERMISSIONS, {
-    actions: "read",
+    actions: "write",
     checks: "write",
     contents: "write",
     metadata: "read",
@@ -51,10 +51,10 @@ test("uses the exact least-privilege GitHub App manifest contract", () => {
  * pending).
  */
 test("asks for no write the shipped phases do not use", () => {
-  // Phases 1-3 only read workflow runs, their artifacts and the caller's state.
-  // `workflow_dispatch` and cancelling a run need `actions: write`, and both belong
-  // to the phase 4 executor.
-  assert.equal(GITHUB_APP_MANIFEST_PERMISSIONS.actions, "read");
+  // Phase 4 ships the Actions executor, which dispatches the caller workflow and
+  // cancels its run. GitHub answers a token request for an ungranted permission with
+  // 422, so an App that still asked for `actions: read` could never dispatch at all.
+  assert.equal(GITHUB_APP_MANIFEST_PERMISSIONS.actions, "write");
   // The sticky pull-request comment writes through `pull_requests: write`.
   assert.equal(GITHUB_APP_MANIFEST_PERMISSIONS.pull_requests, "write");
   // `issues: write` would serve the same comment and hand over every issue in the
@@ -67,7 +67,7 @@ test("asks for no write the shipped phases do not use", () => {
       .filter(([, level]) => level === "write")
       .map(([name]) => name)
       .sort(),
-    ["checks", "contents", "pull_requests", "workflows"],
+    ["actions", "checks", "contents", "pull_requests", "workflows"],
   );
 });
 

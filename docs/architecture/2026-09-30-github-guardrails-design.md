@@ -502,7 +502,7 @@ pós-despacho como `failed` sem repetição cega.
 | Repositório cadastrado | `state='absent'`. Nada é gasto |
 | Primeiro merge/push na branch protegida após o cadastro | A ação `push` cujo padrão casa a branch protegida dispara um gate `protected_branch`. Ao concluir com `outcome != error`, `state='ready'` |
 | Merges seguintes | Novo gate `protected_branch` substitui a baseline; a mais recente comparável vence |
-| "Criar baseline agora" | `POST /guardrails/repositories/:key/baseline` (administrador). `state='building'`, `requested_at` gravado, gate `protected_branch` imediato |
+| "Criar baseline agora" | `POST /guardrails/repositories/:key/baseline` (administrador). `state='building'`, `requested_at` gravado, gate `protected_branch` imediato, **no executor padrão do repositório** — num repositório GitHub Actions a baseline nasce de um run do caller, que é o artefato que o próximo PR vai comparar |
 | Troca de modelo, esforço ou modo (na política ou numa ação) | `state='stale'`, `stale_reason='scan_lineage'`. O próximo gate de branch protegida reconstrói |
 | Troca da branch protegida na política | `state='stale'`, `stale_reason='protected_branch'` |
 | Repositório sem ação `push` na branch protegida | A tela diz isso e oferece criar a ação ou usar o botão |
@@ -665,8 +665,8 @@ de corrigidos desaparece.
   `pull_requests: write`, que a fase 3 já pede pelo comentário sticky), e os
   pré-requisitos: segredo `OPENAI_API_KEY` no
   repositório e o caller sem gatilhos automáticos de `push`/`pull_request`/merge.
-- Agendamento: `workflow_dispatch` pela App, como hoje — o que exige ampliar
-  `actions` de `read` para `write`, também uma ampliação da fase 4. O Sentinel continua
+- Agendamento: `workflow_dispatch` pela App, como hoje — o que exigiu ampliar
+  `actions` de `read` para `write`, já no manifest desta fase. O Sentinel continua
   recusando com `monitor_actions_duplicate_triggers` quando o caller mantém os
   gatilhos nativos.
 - Retorno: `workflow_run.completed` do caller vira o gatilho primário de
@@ -688,7 +688,7 @@ cliente, e um nível que ninguém chama é uma capacidade que ninguém audita.
 | `checks` | write | publicar e atualizar o Check Run (`github-check.ts`) | 1 |
 | `contents` | write | `PUT /guardrails/repositories/:key/caller-workflow` comita `.github/workflows/csb-security-change-gate.yml`; a fase 4 comita o mesmo arquivo num branch | hoje + 4 |
 | `workflows` | write | o GitHub recusa qualquer escrita sob `.github/workflows/` sem ela; viaja junto de `contents: write` e com mais nada | hoje + 4 |
-| `actions` | read | ler runs do workflow, seus artefatos e o estado do caller | 1 |
+| `actions` | write | despachar o caller (`workflow_dispatch`) e cancelar o run; a leitura de runs, artefatos e do estado do caller vem junto | 1 (read) + 4 (write) |
 | `pull_requests` | write | listar e ler pull requests, e escrever o comentário sticky (`POST /repos/.../issues/{n}/comments`) | 1 (read) + 3 (write) |
 
 **`issues: write` nunca é pedido.** O GitHub serve os comentários de um pull
@@ -697,12 +697,12 @@ também entregaria **todas as issues** do repositório, e `pull_requests: write`
 que entrega só os pull requests. O comentário usa o segundo. Ninguém aqui lê uma
 issue, e uma permissão que ninguém chama é uma capacidade que ninguém audita.
 
-**Ampliações previstas, não pedidas agora.** `actions: write`
-(`workflow_dispatch` e cancelar um run) é da **fase 4**. Não entra no manifest
-antes da fase que a usa. Ampliar depois enfileira uma revisão por instalação —
-que é exatamente o que a tela de Integração já mostra, nomeando a instalação
-pendente, então o custo da ampliação é trabalho visível e não uma falha
-silenciosa.
+**Ampliação da fase 4, já pedida.** `actions` subiu de `read` para `write` com o
+executor GitHub Actions: sem ela o `workflow_dispatch` recebe 422 e **nenhum**
+gate Actions chega a começar. A ampliação enfileira uma revisão por instalação —
+que é exatamente o que a tela de Integração mostra, nomeando a instalação
+pendente, então o custo é trabalho visível e não uma falha silenciosa. Nenhuma
+outra ampliação está prevista.
 
 ## Permissões e regra de custo
 
@@ -899,9 +899,9 @@ gerado pelo GitHub (`webhook_secret` da resposta de conversão, hoje descartado)
 Integração com o que falta:
 
 1. **Permissions**: `checks: write`, `contents: write`, `workflows: write`,
-   `pull_requests: write`, `actions: read`, `metadata: read`. Aprovar a revisão em
-   cada instalação. É o conjunto mínimo das fases 1–3; a fase 4 amplia `actions`
-   para `write` (veja *Permissões da App*).
+   `pull_requests: write`, `actions: write`, `metadata: read`. Aprovar a revisão em
+   cada instalação. É o conjunto mínimo das fases 1–4; `actions: write` é o que o
+   executor GitHub Actions usa para despachar o caller (veja *Permissões da App*).
 2. **Subscribe to events**: `pull_request`, `push`, `installation`,
    `installation_repositories`, `check_run`, `workflow_run`.
 3. **Webhook**: URL `https://sentinel.okamilab.com/api/github/webhook`, ativo,

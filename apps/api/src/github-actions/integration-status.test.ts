@@ -10,7 +10,7 @@ import {
 } from "./integration-status.js";
 
 const REQUIRED_GRANTS = {
-  actions: "read",
+  actions: "write",
   checks: "write",
   contents: "write",
   metadata: "read",
@@ -697,6 +697,29 @@ test("a suspended installation neither lends nor withholds another one's grants"
   assert.deepEqual(connection.permissions[0]!.pendingInstallationIds, []);
   assert.equal(connection.installations.length, 2);
   assert.equal(connection.installations[1]!.suspended, true);
+});
+
+/**
+ * C-1: the phase-4 widening. An installation that only ever approved `actions: read`
+ * cannot dispatch the caller — GitHub answers the token request with 422 — so the
+ * screen has to name it as pending instead of reading all green.
+ */
+test("names the installation that has not approved actions: write yet", async () => {
+  const status = await buildGitHubIntegrationStatus(deps({
+    connections: [{
+      installations: [
+        { installationId: "77" },
+        { installationId: "78", granted: { ...REQUIRED_GRANTS, actions: "read" } },
+      ],
+    }],
+  }));
+  const connection = status.connections[0]!;
+  const actions = connection.permissions.find((permission) => permission.name === "actions")!;
+  assert.equal(actions.required, "write");
+  assert.equal(actions.ok, false);
+  assert.deepEqual(actions.pendingInstallationIds, ["78"]);
+  assert.ok(connection.missing.includes("permissions"));
+  assert.equal(connection.ready, false);
 });
 
 test("a suspended installation does not enrol a repository", async () => {

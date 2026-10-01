@@ -614,7 +614,7 @@ export type GitHubIntegrationScenario =
 
 /** Mirrors `GITHUB_APP_MANIFEST_PERMISSIONS`: the least set the shipped phases use. */
 const REQUIRED_PERMISSIONS: ReadonlyArray<readonly [string, string]> = [
-  ["actions", "read"], ["checks", "write"], ["contents", "write"],
+  ["actions", "write"], ["checks", "write"], ["contents", "write"],
   ["metadata", "read"], ["pull_requests", "read"], ["workflows", "write"],
 ];
 

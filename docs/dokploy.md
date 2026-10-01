@@ -93,11 +93,12 @@ como `configurado`.
 **App existente.** Três ajustes em `https://github.com/settings/apps/<slug>`:
 
 1. **Permissions** — `checks: write`, `contents: write`, `workflows: write`,
-   `pull_requests: write`, `actions: read`, `metadata: read`. É o conjunto mínimo
-   que as fases 1–3 usam: o comentário no pull request escreve por
+   `pull_requests: write`, `actions: write`, `metadata: read`. É o conjunto mínimo
+   que as fases 1–4 usam: o comentário no pull request escreve por
    `pull_requests: write`, e **nunca** por `issues: write`, que daria junto todas
-   as issues do repositório. A fase 4 (executor GitHub Actions) amplia `actions`
-   para `write` — não é pedido antes da fase que o usa. Salvar no GitHub só
+   as issues do repositório. `actions: write` é o que o executor GitHub Actions
+   usa para despachar o caller — sem ela o `workflow_dispatch` recebe 422 e
+   nenhum gate Actions começa. Salvar no GitHub só
    muda o que a App **pede**: ampliar permissões enfileira uma revisão **em cada
    instalação**, e até a aprovação a instalação continua com os níveis antigos. A
    tela de Integração compara as duas coisas — ela aponta a permissão que falta e

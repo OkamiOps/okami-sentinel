@@ -19,10 +19,12 @@ const FLOW_ID = /^[A-Za-z0-9-]{1,100}$/;
  *   file, the tree, the baseline) only need `read`, but the write path exists now.
  * - `workflows: write` — GitHub refuses a write to any path under `.github/workflows/`
  *   without it, so it travels with `contents: write` and with nothing else.
- * - `actions: read` — phases 1–3 only *read*: workflow runs, their artifacts and the
- *   caller's state. `workflow_dispatch` and cancelling a run need `actions: write`,
- *   and those belong to the phase 4 executor; the Integração screen names the
- *   installation whose review is pending when that widening happens.
+ * - `actions: write` — the phase 4 executor dispatches the caller workflow
+ *   (`workflow_dispatch`) and cancels its run. GitHub answers a token request for an
+ *   ungranted permission with 422, so this level is what makes an Actions gate
+ *   possible at all; reads (runs, artifacts, the caller's state) come with it. The
+ *   widening queues a review per installation, and the Integração screen names each
+ *   installation that has not approved it yet.
  * - `pull_requests: write` — the sticky comment. GitHub serves a pull request's
  *   comments from the issues API (`POST /repos/.../issues/{n}/comments`), and
  *   `pull_requests: write` is the narrower of the two levels that open it. Listing
@@ -33,7 +35,7 @@ const FLOW_ID = /^[A-Za-z0-9-]{1,100}$/;
  * here reads and nobody agreed to.
  */
 export const GITHUB_APP_MANIFEST_PERMISSIONS = Object.freeze({
-  actions: "read",
+  actions: "write",
   checks: "write",
   contents: "write",
   metadata: "read",

@@ -1,4 +1,4 @@
-# csb-guardrail-contract: 2
+# csb-guardrail-contract: 3
 name: CSB Security Change Gate
 run-name: >-
   CSB gate ${{ inputs.gate_id || github.run_id }} · ${{ inputs.head_sha || github.sha }}
@@ -62,6 +62,16 @@ on:
         description: Head owner/repository for a fork
         required: false
         type: string
+      cost_ceiling_usd:
+        description: Frozen per-scan ceiling in USD, or 0 to use the policy's own
+        required: false
+        default: "0"
+        type: string
+      baseline_workflow_run_id:
+        description: Workflow run holding the protected-branch baseline, or 0
+        required: false
+        default: "0"
+        type: string
     secrets:
       OPENAI_API_KEY:
         description: Scanner credential
@@ -119,6 +129,16 @@ on:
       head_repository:
         description: Head owner/repository for a fork
         required: false
+        type: string
+      cost_ceiling_usd:
+        description: Frozen per-scan ceiling in USD, or 0 to use the policy's own
+        required: false
+        default: "0"
+        type: string
+      baseline_workflow_run_id:
+        description: Workflow run holding the protected-branch baseline, or 0
+        required: false
+        default: "0"
         type: string
 
 permissions:
@@ -295,6 +315,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PROTECTED_BRANCH: ${{ steps.revisions.outputs.protected_branch }}
           TARGET_KIND: ${{ steps.revisions.outputs.target_kind }}
+          BASELINE_RUN_ID: ${{ inputs.baseline_workflow_run_id }}
         run: |
           set -euo pipefail
           mkdir -p "${RUNNER_TEMP}/csb-baseline"
@@ -303,16 +324,26 @@ jobs:
             exit 0
           fi
 
-          set +e
-          run_id="$(gh api --method GET "/repos/${GITHUB_REPOSITORY}/actions/runs" \
-            -f branch="${PROTECTED_BRANCH}" -f status=completed -f event=push -f per_page=100 \
-            --jq '[.workflow_runs[] | select(.path == ".github/workflows/csb-security-change-gate.yml" or .path == ".github/workflows/security-change-gate.yml")][0].id // empty')"
-          history_status=$?
-          set -e
-          if [[ ${history_status} -ne 0 ]]; then
-            echo "state=unavailable" >> "${GITHUB_OUTPUT}"
-            echo "reason=protected-history-unavailable" >> "${GITHUB_OUTPUT}"
-            exit 0
+          # Sentinel names the run that produced the baseline it counts as ready.
+          # Every Sentinel-started gate — including the protected-branch one that
+          # *is* the baseline — is a workflow_dispatch run, so searching push
+          # history would never find it for a dispatch-only caller, and the console
+          # and the comparison would disagree about the same repository.
+          run_id=""
+          if [[ "${BASELINE_RUN_ID}" =~ ^[1-9][0-9]*$ ]]; then
+            run_id="${BASELINE_RUN_ID}"
+          else
+            set +e
+            run_id="$(gh api --method GET "/repos/${GITHUB_REPOSITORY}/actions/runs" \
+              -f branch="${PROTECTED_BRANCH}" -f status=completed -f per_page=100 \
+              --jq '[.workflow_runs[] | select((.path == ".github/workflows/csb-security-change-gate.yml" or .path == ".github/workflows/security-change-gate.yml") and (.event == "push" or .event == "workflow_dispatch"))][0].id // empty')"
+            history_status=$?
+            set -e
+            if [[ ${history_status} -ne 0 ]]; then
+              echo "state=unavailable" >> "${GITHUB_OUTPUT}"
+              echo "reason=protected-history-unavailable" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
           fi
           if [[ -z "${run_id}" ]]; then
             echo "state=absent" >> "${GITHUB_OUTPUT}"
@@ -364,6 +395,7 @@ jobs:
           BASELINE_STATE: ${{ steps.baseline.outputs.state }}
           BASELINE_PATH: ${{ steps.baseline.outputs.path }}
           BASELINE_REASON: ${{ steps.baseline.outputs.reason }}
+          COST_CEILING_USD: ${{ inputs.cost_ceiling_usd }}
         run: |
           set -euo pipefail
           mkdir -p "${GITHUB_WORKSPACE}/.csb-results"
@@ -393,6 +425,12 @@ jobs:
           )
           if [[ "${TARGET_KIND}" == "pull_request" ]]; then
             args+=(--pull-request "${PULL_REQUEST_NUMBER}")
+          fi
+          # The ceiling the console showed and the day budget reserved. Absent (or
+          # "0") leaves the policy's own `scan.maxCostUsd` in force, which is what a
+          # caller older than this contract passes.
+          if [[ -n "${COST_CEILING_USD:-}" && "${COST_CEILING_USD}" != "0" ]]; then
+            args+=(--max-cost-usd "${COST_CEILING_USD}")
           fi
           if [[ "${BASELINE_STATE}" == "available" ]]; then
             args+=(--baseline "${BASELINE_PATH}")

@@ -115,6 +115,15 @@ export interface GitHubActionsExecutorDependencies {
   createGateId?(): string;
   now?(): string;
   onGateChanged?(gate: GateRun): void;
+  /**
+   * The workflow run that produced the baseline the console counts as `ready`, or
+   * `null` when there is none. The caller cannot find it by itself: every
+   * Sentinel-started gate — including the protected-branch one that *is* the
+   * baseline — is a `workflow_dispatch` run, and a dispatch-only caller produces no
+   * `event=push` history to search. Naming the run here is what makes the word on
+   * the screen and the artifact the run compares against the same thing.
+   */
+  baselineWorkflowRunId?(repositoryKey: string): string | null;
 }
 
 export interface StartGitHubActionsGateInput {
@@ -130,6 +139,7 @@ export class GitHubActionsExecutor {
   readonly #importer: ActionsArtifactImporter;
   readonly #releaseSha: string | null;
   readonly #createGateId: () => string;
+  readonly #baselineWorkflowRunId: (repositoryKey: string) => string | null;
   readonly #now: () => string;
   readonly #onGateChanged: (gate: GateRun) => void;
 
@@ -139,6 +149,7 @@ export class GitHubActionsExecutor {
     this.#importer = dependencies.importer;
     this.#releaseSha = dependencies.releaseSha === null ? null : fullSha(dependencies.releaseSha);
     this.#createGateId = dependencies.createGateId ?? (() => randomUUID());
+    this.#baselineWorkflowRunId = dependencies.baselineWorkflowRunId ?? (() => null);
     this.#now = dependencies.now ?? (() => new Date().toISOString());
     this.#onGateChanged = dependencies.onGateChanged ?? (() => undefined);
   }
@@ -174,7 +185,13 @@ export class GitHubActionsExecutor {
       await this.#remote.dispatchWorkflow({
         dispatch,
         repository: input.repository,
-        inputs: dispatchInputs(input.repository, input.preview, dispatch, protectedBranch),
+        inputs: dispatchInputs(
+          input.repository,
+          input.preview,
+          dispatch,
+          protectedBranch,
+          this.#baselineWorkflowRunId(input.repository.repositoryKey),
+        ),
       });
       this.#store.updateDispatch(run.id, {
         state: "dispatch_accepted",
@@ -599,6 +616,7 @@ function dispatchInputs(
   preview: AcceptedGateTargetPreview,
   dispatch: GitHubActionsDispatchMetadata,
   protectedBranch: string,
+  baselineWorkflowRunId: string | null,
 ): Readonly<Record<string, string>> {
   return {
     gate_id: dispatch.gateId,
@@ -610,7 +628,28 @@ function dispatchInputs(
     protected_branch: protectedBranch,
     pull_request_number: String(preview.resolvedTarget.pullRequestNumber ?? 0),
     head_repository: `${repository.remoteOwner}/${repository.remoteName}`,
+    // The ceiling the console showed and the day budget reserved. Without it the
+    // run spends the policy's own `scan.maxCostUsd`, and a "≤ USD 2,50 por scan"
+    // card could be followed by an eighteen-dollar run (I-4).
+    cost_ceiling_usd: costCeiling(preview),
+    // `"0"` means "no baseline the console can point at". Never a guess: a run that
+    // compared against an artifact Sentinel does not count as the baseline would be
+    // the two executors disagreeing again (C-2).
+    baseline_workflow_run_id: numericRunId(baselineWorkflowRunId),
   };
+}
+
+/** The frozen ceiling, as the gate-cli will read it: a positive decimal. */
+function costCeiling(preview: AcceptedGateTargetPreview): string {
+  const ceiling = preview.costBudget.maxCostUsd;
+  if (ceiling === null || !Number.isFinite(ceiling) || ceiling <= 0) {
+    throw new GitHubActionsExecutionError("actions_gate_identity_invalid");
+  }
+  return String(ceiling);
+}
+
+function numericRunId(value: string | null): string {
+  return value !== null && /^[1-9][0-9]{0,30}$/.test(value) ? value : "0";
 }
 
 function correlatedRuns(

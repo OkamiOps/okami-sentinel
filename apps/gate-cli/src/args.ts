@@ -29,6 +29,12 @@ export interface RunGateCliOptions {
   pullRequest: number | null;
   workflowRunId: string;
   workflowRunAttempt: number;
+  /**
+   * The per-scan ceiling Sentinel froze for this dispatch, in USD. `null` when the
+   * caller is older than the contract that passes it, and the policy's own
+   * `scan.maxCostUsd` stands alone.
+   */
+  maxCostUsd: number | null;
 }
 
 export class CliArgumentError extends Error {
@@ -62,7 +68,7 @@ const requiredFlags = [
   "workflow-run-id",
   "workflow-run-attempt",
 ] as const;
-const optionalFlags = ["baseline", "baseline-reason", "pull-request"] as const;
+const optionalFlags = ["baseline", "baseline-reason", "pull-request", "max-cost-usd"] as const;
 const allowedFlags = new Set<string>([...requiredFlags, ...optionalFlags]);
 const commitSha = /^[0-9a-f]{40}$/;
 const repositoryIdPattern = /^[1-9][0-9]*$/;
@@ -176,7 +182,22 @@ export function parseArgs(argv: readonly string[]): RunGateCliOptions {
     pullRequest,
     workflowRunId,
     workflowRunAttempt,
+    maxCostUsd: optionalPositiveAmount(values, "max-cost-usd"),
   };
+}
+
+/** A positive USD amount, or `null` when the flag was not passed at all. */
+function optionalPositiveAmount(
+  values: ReadonlyMap<string, string>,
+  flag: string,
+): number | null {
+  const raw = values.get(flag);
+  if (raw === undefined) return null;
+  const parsed = Number(raw.trim());
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 100_000) {
+    throw new CliArgumentError(`--${flag} must be a positive USD amount`);
+  }
+  return parsed;
 }
 
 function required(values: ReadonlyMap<string, string>, flag: string): string {

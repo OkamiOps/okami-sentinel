@@ -155,6 +155,10 @@ export async function runGateCli(
         paths: changeSet.scopeMode === "changed" ? changeSet.scanPaths : [],
         policy,
         outputDir,
+        // Never folded into the policy: `scan.maxCostUsd` is part of the recipe hash,
+        // and moving it would make every baseline built under the other ceiling
+        // incomparable. It bounds the spend and nothing else.
+        ...(options.maxCostUsd === null ? {} : { maxCostUsd: options.maxCostUsd }),
       });
       if (scan.status !== "completed") throw new Error("managed_scan_failed");
       lineage = plannedLineage(options, policy, scan);

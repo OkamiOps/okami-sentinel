@@ -91,7 +91,10 @@ import {
   GitHubBaselineProvider,
   type BaselineProvider,
 } from "./github-baseline.js";
-import { refreshRepositoryBaselineState } from "./guardrails/baseline-state.js";
+import {
+  getRepositoryBaselineState,
+  refreshRepositoryBaselineState,
+} from "./guardrails/baseline-state.js";
 import { readFindingsFile, toFindingSummaries } from "./ingest.js";
 import { getSystemGitHubAppService } from "./github-app-api.js";
 import {
@@ -1327,6 +1330,14 @@ function systemActionsExecutor(): GitHubActionsExecutor {
     importer,
     releaseSha: GITHUB_ACTIONS_WORKFLOW_SHA,
     createGateId: () => nanoid(20),
+    // The run behind the word the console shows. The projection names the gate; the
+    // gate row carries the run that produced its artifact. Anything but a `ready`
+    // baseline is no run at all, so the screen and the comparison never disagree.
+    baselineWorkflowRunId: (repositoryKey) => {
+      const baseline = getRepositoryBaselineState(repositoryKey);
+      if (baseline.state !== "ready" || baseline.gateId === null) return null;
+      return getGateRun(baseline.gateId)?.workflowRunId ?? null;
+    },
     onGateChanged: (gate) => {
       if (gate.status === "scanning" || gate.status === "cancelling") {
         emit(gate.id, "status", {
