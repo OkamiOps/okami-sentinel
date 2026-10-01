@@ -103,7 +103,13 @@ import {
   type PublishPrCommentInput,
   type PublishPrCommentResult,
 } from "./github/pr-comment-publisher.js";
-import { getPrComment, upsertPrComment } from "./github/pr-comment-store.js";
+import {
+  clearPrCommentPermissionBlock,
+  getPrComment,
+  isPrCommentPermissionBlocked,
+  recordPrCommentPermissionBlock,
+  upsertPrComment,
+} from "./github/pr-comment-store.js";
 import { ActionsArtifactImporter } from "./guardrails/actions-artifact-importer.js";
 import {
   GitHubActionsExecutor,
@@ -1365,7 +1371,8 @@ async function publishGateComment(
       pullRequestNumber: artifact.resolvedTarget.pullRequestNumber,
       durationMs: startedAt === null ? null : Date.parse(deps.now()) - Date.parse(startedAt),
     });
-    if (result.status === "failed") notifyGitHubPublishFailed(gateId);
+    // Already-known refusals are recorded, not re-announced (see `alert`).
+    if (result.status === "failed" && result.alert) notifyGitHubPublishFailed(gateId);
   } catch (error) {
     logGateFailure(gateId, error);
     notifyGitHubPublishFailed(gateId);
@@ -1400,6 +1407,10 @@ function productionPrCommentDependencies(): PrCommentPublisherDependencies {
       ),
     getComment: (repositoryKey, pullRequestNumber) => getPrComment(repositoryKey, pullRequestNumber),
     upsertComment: (record) => { upsertPrComment(record); },
+    isPermissionBlocked: (installationId) => isPrCommentPermissionBlocked(installationId),
+    recordPermissionBlock: (installationId, reason) =>
+      recordPrCommentPermissionBlock(installationId, reason, new Date().toISOString()),
+    clearPermissionBlock: (installationId) => { clearPrCommentPermissionBlock(installationId); },
     commentsEnabled: (repositoryKey) =>
       getGuardrailRepositoryPrComment(repositoryKey)?.enabled ?? false,
     commentLocale: (repositoryKey) =>

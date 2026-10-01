@@ -206,7 +206,7 @@ function input(
   options: InputOptions & {
     locale?: GuardrailPrCommentLocale;
     gateUrl?: string | null;
-    bannerUrl?: string | null;
+    assets?: boolean;
     durationMs?: number | null;
     /**
      * Findings the artifact validator itself would refuse — a secret, a host path.
@@ -225,7 +225,9 @@ function input(
     repositoryKey: REPOSITORY_KEY,
     locale: options.locale ?? "en",
     gateUrl: options.gateUrl === undefined ? "https://sentinel.example/guardrails/gate-pr-1" : options.gateUrl,
-    bannerUrl: options.bannerUrl === undefined ? "https://sentinel.example/brand/pr-comment-banner.png" : options.bannerUrl,
+    assetUrl: (fileName) => options.assets === false
+      ? null
+      : `https://sentinel.example/brand/${fileName}`,
     findingUrl: (identity) => options.gateUrl === null
       ? null
       : `https://sentinel.example/guardrails/gate-pr-1?node=${encodeURIComponent(identity)}`,
@@ -233,8 +235,9 @@ function input(
   };
 }
 
+/** A finding row starts with its severity marker; the summary table never does. */
 function findingRows(body: string): string[] {
-  return body.split("\n").filter((line) => /^\| (?:critical|high|medium|low|info|unknown) \|/.test(line));
+  return body.split("\n").filter((line) => /^\| !\[[^\]]+\]\(\S*pr-severity-/.test(line));
 }
 
 test("renders the blocked verdict with counts, baseline, cost and table", () => {
@@ -243,7 +246,10 @@ test("renders the blocked verdict with counts, baseline, cost and table", () => 
   assert.ok(isSentinelComment(body, REPOSITORY_KEY));
   assert.match(body, /## Okami Sentinel — BLOCKED/);
   assert.match(body, /\| \*\*Fixed by this PR\*\* \| 3 \|/);
-  assert.match(body, /\| \*\*New findings\*\* \| 1 — critical 1 \|/);
+  assert.match(body, /\| Summary \| Value \|/);
+  assert.ok(!body.includes("| | |"), "the summary table has a real header");
+  assert.match(body, /\| \*\*New findings\*\* \| 1 — !\[Critical\]\(\S+pr-severity-critical\.png\) Critical 1 \|/);
+  assert.match(body, /!\[BLOCKED\]\(https:\/\/sentinel\.example\/brand\/pr-verdict-blocked\.png\)/);
   assert.match(body, /`scripts\/deploy\.ts:88`/);
   assert.match(body, /\| \*\*Cost\*\* \| US\$ 0\.42 \|/);
   assert.match(body, /\| \*\*Duration\*\* \| 3m 12s \|/);
@@ -349,8 +355,8 @@ test("drops the lowest severity first when truncating", () => {
   const { body } = renderPrComment(input({ newFindings: findings }));
   const rows = findingRows(body);
   assert.equal(rows.length, PR_COMMENT_MAX_ROWS);
-  assert.equal(rows.filter((row) => row.startsWith("| critical |")).length, 40);
-  assert.equal(rows.filter((row) => row.startsWith("| low |")).length, 10);
+  assert.equal(rows.filter((row) => row.includes("pr-severity-critical.png")).length, 40);
+  assert.equal(rows.filter((row) => row.includes("pr-severity-low.png")).length, 10);
 });
 
 test("degrades to banner, verdict and link when even the header exceeds the budget", () => {
@@ -363,10 +369,13 @@ test("degrades to banner, verdict and link when even the header exceeds the budg
   assert.equal(truncatedCount, 1);
 });
 
-test("omits the banner and the links with no public origin", () => {
-  const { body } = renderPrComment(input({ gateUrl: null, bannerUrl: null }));
+test("omits the banner, the badges and the links with no public origin", () => {
+  const { body } = renderPrComment(input({ gateUrl: null, assets: false }));
   assert.ok(!/https?:\/\//.test(body), body);
+  assert.ok(!body.includes("!["), body);
+  // The verdict and every severity still read, in words.
   assert.match(body, /## Okami Sentinel — BLOCKED/);
+  assert.match(body, /\| Critical \| Command injection/);
 });
 
 test("writes the comment in each of the five locales", () => {
@@ -383,7 +392,33 @@ test("writes the comment in each of the five locales", () => {
   }
   const ptBR = renderPrComment(input({ locale: "pt-BR", newFindings: manyFindings(60) }));
   assert.match(ptBR.body, /\+10 mais no Sentinel/);
-  assert.match(ptBR.body, /\| \*\*Veredito\*\* \| BLOQUEADO \|/);
+  assert.match(ptBR.body, /\| Resumo \| Valor \|/);
+  // The pill carries no words, so the localised verdict is its alt text.
+  assert.match(ptBR.body, /!\[BLOQUEADO\]\(\S+pr-verdict-blocked\.png\)/);
+});
+
+test("names every severity in the repository's language, with its marker", () => {
+  const findings = [
+    critical("Critical one", "src/a.ts:1"),
+    finding("high", "High one", "src/b.ts:1"),
+    finding("medium", "Medium one", "src/c.ts:1"),
+    finding("low", "Low one", "src/d.ts:1"),
+  ];
+  const { body } = renderPrComment(input({ locale: "pt-BR", newFindings: findings }));
+  for (const [severity, name] of [["critical", "Crítico"], ["high", "Alto"], ["medium", "Médio"], ["low", "Baixo"]]) {
+    assert.match(
+      body,
+      new RegExp(`\\| !\\[${name}\\]\\(\\S+pr-severity-${severity}\\.png\\) ${name} \\|`),
+      severity,
+    );
+  }
+  assert.ok(!body.includes("| critical |"));
+});
+
+test("gives no verdict pill to an outcome that has none, and still says the word", () => {
+  const { body } = renderPrComment(input({ outcome: "bootstrap", baselineCommit: null }));
+  assert.ok(!body.includes("pr-verdict-"));
+  assert.match(body, /## Okami Sentinel — REVIEW/);
 });
 
 test("marks the comment with the repository it belongs to and no other", () => {

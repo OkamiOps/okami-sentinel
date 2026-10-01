@@ -1,4 +1,4 @@
-import type { GateOutcome, GuardrailPrCommentLocale } from "@csb/shared";
+import type { GateOutcome, GuardrailPrCommentLocale, Severity } from "@csb/shared";
 
 /**
  * Every word the pull-request comment says, in the five languages the interface
@@ -12,7 +12,9 @@ import type { GateOutcome, GuardrailPrCommentLocale } from "@csb/shared";
  */
 export interface PrCommentCopy {
   verdict: Record<GateOutcome, string>;
-  verdictLabel: string;
+  severity: Record<Severity, string>;
+  columnSummary: string;
+  columnValue: string;
   newFindingsLabel: string;
   fixedLabel: string;
   baselineLabel: string;
@@ -45,7 +47,16 @@ export const PR_COMMENT_COPY: Record<GuardrailPrCommentLocale, PrCommentCopy> = 
       no_changes: "SEM MUDANÇAS",
       error: "ERRO",
     },
-    verdictLabel: "Veredito",
+    severity: {
+      critical: "Crítico",
+      high: "Alto",
+      medium: "Médio",
+      low: "Baixo",
+      info: "Informativo",
+      unknown: "Desconhecido",
+    },
+    columnSummary: "Resumo",
+    columnValue: "Valor",
     newFindingsLabel: "Novos achados",
     fixedLabel: "Corrigidos neste PR",
     baselineLabel: "Baseline",
@@ -81,7 +92,16 @@ export const PR_COMMENT_COPY: Record<GuardrailPrCommentLocale, PrCommentCopy> = 
       no_changes: "NO CHANGES",
       error: "ERROR",
     },
-    verdictLabel: "Verdict",
+    severity: {
+      critical: "Critical",
+      high: "High",
+      medium: "Medium",
+      low: "Low",
+      info: "Info",
+      unknown: "Unknown",
+    },
+    columnSummary: "Summary",
+    columnValue: "Value",
     newFindingsLabel: "New findings",
     fixedLabel: "Fixed by this PR",
     baselineLabel: "Baseline",
@@ -117,7 +137,16 @@ export const PR_COMMENT_COPY: Record<GuardrailPrCommentLocale, PrCommentCopy> = 
       no_changes: "SIN CAMBIOS",
       error: "ERROR",
     },
-    verdictLabel: "Veredicto",
+    severity: {
+      critical: "Crítico",
+      high: "Alto",
+      medium: "Medio",
+      low: "Bajo",
+      info: "Informativo",
+      unknown: "Desconocido",
+    },
+    columnSummary: "Resumen",
+    columnValue: "Valor",
     newFindingsLabel: "Hallazgos nuevos",
     fixedLabel: "Corregidos en este PR",
     baselineLabel: "Baseline",
@@ -153,7 +182,16 @@ export const PR_COMMENT_COPY: Record<GuardrailPrCommentLocale, PrCommentCopy> = 
       no_changes: "KEINE ÄNDERUNGEN",
       error: "FEHLER",
     },
-    verdictLabel: "Urteil",
+    severity: {
+      critical: "Kritisch",
+      high: "Hoch",
+      medium: "Mittel",
+      low: "Niedrig",
+      info: "Hinweis",
+      unknown: "Unbekannt",
+    },
+    columnSummary: "Zusammenfassung",
+    columnValue: "Wert",
     newFindingsLabel: "Neue Funde",
     fixedLabel: "Von diesem PR behoben",
     baselineLabel: "Baseline",
@@ -189,7 +227,16 @@ export const PR_COMMENT_COPY: Record<GuardrailPrCommentLocale, PrCommentCopy> = 
       no_changes: "AUCUN CHANGEMENT",
       error: "ERREUR",
     },
-    verdictLabel: "Verdict",
+    severity: {
+      critical: "Critique",
+      high: "Élevé",
+      medium: "Moyen",
+      low: "Faible",
+      info: "Information",
+      unknown: "Inconnu",
+    },
+    columnSummary: "Résumé",
+    columnValue: "Valeur",
     newFindingsLabel: "Nouveaux constats",
     fixedLabel: "Corrigés par cette PR",
     baselineLabel: "Baseline",

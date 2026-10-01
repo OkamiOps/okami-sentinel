@@ -10,7 +10,7 @@ import { getDb } from "../db.js";
  * policy and baseline projections, because nothing else joins it — the gate page
  * and the publisher read it by key.
  */
-const PR_COMMENT_SCHEMA_VERSION = 1;
+const PR_COMMENT_SCHEMA_VERSION = 2;
 
 const PR_COMMENT_SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS guardrail_pr_comments (
@@ -24,6 +24,21 @@ const PR_COMMENT_SCHEMA_SQL = `
     updated_at TEXT NOT NULL,
     PRIMARY KEY (repository_key, pull_request_number),
     CHECK (status IN ('published', 'failed'))
+  );
+`;
+
+/**
+ * One row per installation that refused the comment for want of
+ * `pull_requests: write`. It exists so the refusal is recorded once, not once per
+ * gate: the Integration screen already names the installation whose review is
+ * pending, and an alert on every pull request of every repository under that
+ * installation teaches an administrator to ignore the alert.
+ */
+const PR_COMMENT_PERMISSION_SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS guardrail_pr_comment_permission_blocks (
+    installation_id TEXT PRIMARY KEY,
+    reason TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
   );
 `;
 
@@ -45,10 +60,15 @@ export function ensurePrCommentSchema(database: Database.Database = getDb()): vo
     `);
     if (recordedVersion(database) >= PR_COMMENT_SCHEMA_VERSION) return;
     database.exec(PR_COMMENT_SCHEMA_SQL);
+    database.exec(PR_COMMENT_PERMISSION_SCHEMA_SQL);
     database.prepare(`
       INSERT OR REPLACE INTO guardrail_pr_comment_schema_migrations (version, name, applied_at)
       VALUES (?, ?, ?)
-    `).run(PR_COMMENT_SCHEMA_VERSION, "pull-request comment projection", new Date().toISOString());
+    `).run(
+      PR_COMMENT_SCHEMA_VERSION,
+      "pull-request comment projection and permission blocks",
+      new Date().toISOString(),
+    );
   })();
   migratedHandles.add(database);
 }
@@ -128,6 +148,50 @@ export function upsertPrComment(
     updated_at: record.updatedAt,
   });
   return record;
+}
+
+/**
+ * Records that this installation cannot write comments. Returns `true` only the
+ * first time, which is the one time the operator is told.
+ */
+export function recordPrCommentPermissionBlock(
+  installationId: string,
+  reason: string,
+  now: string,
+  database: Database.Database = getDb(),
+): boolean {
+  ensurePrCommentSchema(database);
+  const inserted = database.prepare(`
+    INSERT INTO guardrail_pr_comment_permission_blocks (installation_id, reason, recorded_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT (installation_id) DO NOTHING
+  `).run(installationId, reason, now);
+  return inserted.changes > 0;
+}
+
+export function isPrCommentPermissionBlocked(
+  installationId: string,
+  database: Database.Database = getDb(),
+): boolean {
+  ensurePrCommentSchema(database);
+  return database.prepare(
+    "SELECT 1 FROM guardrail_pr_comment_permission_blocks WHERE installation_id = ?",
+  ).get(installationId) !== undefined;
+}
+
+/**
+ * The installation may write comments again — because a comment just succeeded,
+ * or because the Integration refresh saw the grant. Returns whether a block was
+ * actually lifted, so the caller can tell a recovery from a no-op.
+ */
+export function clearPrCommentPermissionBlock(
+  installationId: string,
+  database: Database.Database = getDb(),
+): boolean {
+  ensurePrCommentSchema(database);
+  return database.prepare(
+    "DELETE FROM guardrail_pr_comment_permission_blocks WHERE installation_id = ?",
+  ).run(installationId).changes > 0;
 }
 
 interface PrCommentRow {

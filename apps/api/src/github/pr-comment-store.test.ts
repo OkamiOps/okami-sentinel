@@ -5,9 +5,12 @@ import Database from "better-sqlite3";
 
 import { defaultToImmediateTransactions } from "../sqlite.js";
 import {
+  clearPrCommentPermissionBlock,
   ensurePrCommentSchema,
   getPrComment,
+  isPrCommentPermissionBlocked,
   listPrComments,
+  recordPrCommentPermissionBlock,
   upsertPrComment,
 } from "./pr-comment-store.js";
 
@@ -83,6 +86,28 @@ test("the schema is created once and is safe to ask for twice", () => {
   const version = db
     .prepare("SELECT max(version) AS version FROM guardrail_pr_comment_schema_migrations")
     .get() as { version: number };
-  assert.equal(version.version, 1);
+  assert.equal(version.version, 2);
+  db.close();
+});
+
+test("a permission refusal is recorded once per installation", () => {
+  const db = memoryDb();
+  assert.equal(isPrCommentPermissionBlocked("77", db), false);
+  assert.equal(recordPrCommentPermissionBlock("77", "github_permission_missing", "2026-09-30T12:00:00.000Z", db), true);
+  // The second gate under the same installation is not a second alert.
+  assert.equal(recordPrCommentPermissionBlock("77", "github_permission_missing", "2026-09-30T12:05:00.000Z", db), false);
+  assert.equal(isPrCommentPermissionBlocked("77", db), true);
+  assert.equal(isPrCommentPermissionBlocked("88", db), false);
+  db.close();
+});
+
+test("granting the permission lifts the block, and lifting twice is not an error", () => {
+  const db = memoryDb();
+  recordPrCommentPermissionBlock("77", "github_permission_missing", "2026-09-30T12:00:00.000Z", db);
+  assert.equal(clearPrCommentPermissionBlock("77", db), true);
+  assert.equal(clearPrCommentPermissionBlock("77", db), false);
+  assert.equal(isPrCommentPermissionBlocked("77", db), false);
+  // And it can be recorded again if the permission is revoked.
+  assert.equal(recordPrCommentPermissionBlock("77", "github_permission_missing", "2026-10-01T12:00:00.000Z", db), true);
   db.close();
 });
