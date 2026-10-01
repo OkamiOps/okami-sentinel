@@ -147,7 +147,7 @@ volume SQLite. Dois controles desta área são por processo, não por banco:
   vínculo mesmo tendo custado.
 
 A tabela de *lease* que o poller usava (`github_monitor_poll_leases`) foi
-renomeada com as outras e nada a substitui: o modelo de ações não tem *lease*. Se
+removida com as outras e nada a substitui: o modelo de ações não tem *lease*. Se
 duas réplicas passarem a ser necessárias, o instrumento é uma tabela de *lease* de
 despacho, não um sinalizador maior. Escalar a réplica no Dokploy sem isso não
 "distribui carga": duplica leituras e invalida despachos pagos.
@@ -159,7 +159,12 @@ o proxy não pode alterar nada no caminho:
   `X-GitHub-Delivery`;
 - permitir corpo de até 1 MiB;
 - não *bufferizar* de forma que altere bytes (recompressão, reencode, injeção de
-  quebra de linha).
+  quebra de linha);
+- com `CSB_TRUST_PROXY=1`, **acrescentar `X-Forwarded-For`** — é dele que sai o
+  endereço de cada balde de admissão do webhook. Sem o cabeçalho a requisição não
+  é atribuível e entra num balde único compartilhado (`unattributed`): segue
+  medida, mas todas as entregas disputam o orçamento de leitura de um só endereço
+  e aparecem `429 rate_limited` sob carga.
 
 Dokploy e Traefik atendem a isso por padrão. Uma entrega cujo corpo chegue
 alterado responde `401 signature_invalid` e, **por desenho, não é registrada** —
@@ -206,63 +211,40 @@ Dokploy dá suporte a backup automatizado apenas para volumes nomeados, não bin
 - O domínio abre mas scans não veem arquivos: confirme o mount de `/repos/projeto` no host Docker e `CSB_REPOSITORY_ROOTS=/repos`; não monte `/` ou a home do servidor.
 - A senha ou o vault falha após restore: verifique se os arquivos externos corretos foram preservados. Restaurar somente o volume sem a chave do vault não restaura acesso às credenciais.
 
-## Reverter a migração das regras de monitor para ações
+## A migração das regras de monitor para ações não é mais reversível
 
-A fase 1 de GitHub + Guardrails renomeia `github_monitor_rules`,
+A fase 1 de GitHub + Guardrails renomeou `github_monitor_rules`,
 `github_monitor_events`, `github_monitor_actions_runs` e
-`github_monitor_poll_leases` com o sufixo `_migrated`, e cria `github_actions`,
-`github_action_events` e `github_webhook_deliveries`. Reverter a imagem para uma
-versão anterior **não** desfaz isso: a versão antiga recria as quatro tabelas
-**vazias** na primeira chamada, o poller não encontra nenhuma regra e a
-automação da operadora para em silêncio, enquanto as linhas reais seguem nas
-tabelas `_migrated`.
+`github_monitor_poll_leases` com o sufixo `_migrated`, e criou `github_actions`,
+`github_action_events` e `github_webhook_deliveries`. A fase 5 **apagou as quatro
+tabelas `_migrated`** (versão 5 do esquema, `drop_migrated_monitor_tables`),
+porque mantê-las era manter um segundo modelo de automação no banco sem nada que
+o lesse. Isso fecha a janela de reversão de propósito.
 
-Antes de reverter a imagem, execute o passo inverso com o container ainda na
-versão nova e sem scans ativos:
+Consequências operacionais:
 
-```sh
-docker exec -i <container> node --import tsx -e "
-  import { getDb } from '/app/apps/api/src/db.js';
-  import { rollbackGitHubActionsMigration } from '/app/apps/api/src/github-actions/migrate-monitor-rules.js';
-  console.log(rollbackGitHubActionsMigration(getDb()));
-"
-```
+- `rollbackGitHubActionsMigration` **sempre** falha, com
+  `github_actions_rollback_unavailable`. Ela não é um procedimento disponível: é a
+  recusa nomeada que impede alguém de executar só a metade destrutiva (descartar
+  as ações) quando não há mais regras para restaurar.
+- Não existe passo inverso em SQL. As linhas que ele restauraria não existem mais.
+- Reverter a imagem para uma versão com o *poller* **não** devolve a automação: a
+  versão antiga recria as quatro tabelas **vazias**, não encontra regra nenhuma e
+  para em silêncio.
 
-Ele devolve `{ restored, discardedActions, discardedEvents, discardedDeliveries }`.
-As ações criadas depois da migração, seus eventos e o log de entregas são
-descartados — é o significado de voltar a um esquema que não tinha ações. As
-regras de monitor voltam intactas.
-
-**Este procedimento expira na fase 5**, que remove as tabelas `_migrated`. Sem
-nenhuma delas não há para onde voltar, e o passo inverso falha de propósito com
-`github_actions_rollback_unavailable` em vez de apagar a automação. Confirme
-primeiro que ainda existe o que restaurar:
+O caminho para voltar a uma versão anterior a essa migração é, portanto, um só:
+**restaurar o backup do volume `sentinel_data`** correspondente, como descrito em
+*Backups, restauração e atualização*. Confirme antes que o banco não tem mais o
+que restaurar:
 
 ```sql
 SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'github_monitor_%_migrated';
+SELECT max(version) FROM github_actions_schema_migrations;
 ```
 
-Se essa consulta não devolver linha nenhuma, **não continue**: reverter a
-migração já não é possível e o caminho é restaurar o backup do volume.
-
-Se o container já não subir, e só depois de a consulta acima devolver linhas, o
-mesmo efeito em SQL, dentro de uma transação:
-
-```sql
-BEGIN IMMEDIATE;
-DROP TABLE IF EXISTS github_monitor_rules;
-DROP TABLE IF EXISTS github_monitor_events;
-DROP TABLE IF EXISTS github_monitor_actions_runs;
-DROP TABLE IF EXISTS github_monitor_poll_leases;
-ALTER TABLE github_monitor_rules_migrated        RENAME TO github_monitor_rules;
-ALTER TABLE github_monitor_events_migrated       RENAME TO github_monitor_events;
-ALTER TABLE github_monitor_actions_runs_migrated RENAME TO github_monitor_actions_runs;
-ALTER TABLE github_monitor_poll_leases_migrated  RENAME TO github_monitor_poll_leases;
-DROP TABLE IF EXISTS github_action_events;
-DROP TABLE IF EXISTS github_actions;
-DROP TABLE IF EXISTS github_webhook_deliveries;
-DROP TABLE IF EXISTS github_actions_schema_migrations;
-COMMIT;
-```
-
-Faça backup do volume `sentinel_data` antes, em qualquer um dos dois caminhos.
+Zero linhas na primeira e `5` na segunda é o estado esperado. Se a primeira
+devolver linhas e a versão for `4`, a migração está **pela metade**: o esquema
+recusou apagar as tabelas porque `github_actions` tem menos linhas do que as
+regras legadas (uma regra virava duas ações), e as `_migrated` ainda são a única
+cópia. Nesse caso não atualize nem reverta nada — restaure o backup do volume e
+investigue, porque esse estado significa que o modelo de ações foi perdido.

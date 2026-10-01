@@ -6,6 +6,10 @@ installed dependencies, and engineering reports have different lifecycles.
 | Path | Purpose | Maintenance rule |
 | --- | --- | --- |
 | `apps/api/src` | HTTP API, SQLite persistence, ingestion, scanner orchestration, provider connections, agent and guardrail domains | Keep production modules and their co-located tests. Child-process workers and the snapshot MCP server are runtime entrypoints even without static imports. |
+| `apps/api/src/github-actions` | The GitHub automation model: per-repository actions, the signed webhook, its admission control, dispatch, reconciliation and the versioned schema ladder | One row per trigger kind; no poller and no `github_monitor_*` table. Schema version 5 dropped the `_migrated` tables, so `rollbackGitHubActionsMigration` always refuses — see `docs/dokploy.md`. |
+| `apps/api/src/github` | The sticky pull-request comment: render, publish, store, copy | Rendered text is untrusted input; markdown is neutralised before it is published. |
+| `apps/api/src/guardrails` | Repository registry, policy precedence and presets, the local baseline projection (`baseline-state.ts`), and the two executors (Sentinel-managed and GitHub Actions) with their artifact importer | One baseline per repository, projected from `gate_runs` and the saved policy. There is no second provider that reads one back from GitHub. |
+| `apps/web/src/components/github` | The GitHub tab: integration checklist, actions, activity, deliveries, caller workflow | Admin-only diagnostics stay admin-only; product copy never names an internal phase. |
 | `apps/api/scripts/run-tests.mjs` | Recursively discovers `src/**/*.test.ts` with isolated test data | Preserve discovery when reorganizing tests. |
 | `apps/web/src` | React interface and five interface languages | Keep user-facing translations consistent across pt-BR, en, es, de, fr. |
 | `apps/web/e2e` | Browser regressions; separate mocked and real-API suites | Real-API tests use a temporary SQLite database and controlled executable, never a real provider. |

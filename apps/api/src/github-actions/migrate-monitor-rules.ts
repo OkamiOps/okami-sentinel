@@ -17,7 +17,8 @@ import {
  * `github_action_events.observed_at` (the payload clock the ordering guard reads);
  * version 4 adds `github_webhook_secret_rotations`, which records *when* each
  * connection's webhook secret was last stored so a verified delivery cannot vouch
- * for a secret it never saw.
+ * for a secret it never saw; version 5 drops the four `_migrated` tables, which
+ * ends the rollback window on purpose.
  *
  * SQLite cannot add a `CHECK` through `ALTER TABLE`, so the two constraints
  * introduced with version 2 — `json_array_length(branch_patterns_json) BETWEEN 1
@@ -27,7 +28,17 @@ import {
  * them for real would mean rebuilding the table, which is not worth a lock on a
  * live database for an invariant two code paths already keep.
  */
-export const GITHUB_ACTIONS_SCHEMA_VERSION = 4;
+export const GITHUB_ACTIONS_SCHEMA_VERSION = 5;
+
+/**
+ * What the recorded row says it is. Version 5 can be *refused* while the rest of
+ * the ladder applies (see `dropMigratedMonitorTables`), so the name written has to
+ * follow the version actually reached instead of being the constant above.
+ */
+const SCHEMA_VERSION_NAMES: Record<number, string> = {
+  4: "actions model with fork opt-in, ordered supersession and the secret rotation log",
+  5: "drop_migrated_monitor_tables",
+};
 
 /** The ceiling a rule that was never activated inherits, disabled, so it cannot spend. */
 const MIGRATED_COST_CEILING_USD = 1;
@@ -102,8 +113,8 @@ const LEGACY_TABLES = [
 /**
  * One monitor rule watched pull requests and pushes at once, with a single set of
  * followed branches and an optional ceiling. Two actions say the same thing and
- * can then diverge. The legacy tables are renamed rather than dropped, so a
- * rollback keeps the rows; phase 5 removes them.
+ * can then diverge. The legacy tables are renamed before being dropped, so the
+ * carry reads the rows it is replacing and nothing is dropped unread.
  */
 export function migrateMonitorRulesToActions(
   database: Database.Database = getDb(),
@@ -142,10 +153,15 @@ export function migrateMonitorRulesToActions(
     // upgraded, because `CREATE TABLE IF NOT EXISTS` is idempotent; there is no
     // backfill, and an absent row means "stored before the log existed", which the
     // status reads as "the old proof still stands".
+    let reached = GITHUB_ACTIONS_SCHEMA_VERSION;
+    // `from < 1` means the carry above happened in this very transaction, so the
+    // actions model is as complete as the legacy rows allowed and the count guard
+    // has nothing left to protect.
+    if (from < 5 && !dropMigratedMonitorTables(database, from < 1)) reached = 4;
     database.prepare(`
       INSERT OR REPLACE INTO github_actions_schema_migrations (version, name, applied_at)
       VALUES (?, ?, ?)
-    `).run(GITHUB_ACTIONS_SCHEMA_VERSION, "actions model with fork opt-in, ordered supersession and the secret rotation log", now);
+    `).run(reached, SCHEMA_VERSION_NAMES[reached], now);
     return carried;
   }).immediate();
   migratedHandles.add(database);
@@ -153,51 +169,38 @@ export function migrateMonitorRulesToActions(
 }
 
 /**
- * Undoes the rename so a release rolled back to the poller finds its rules where
- * it left them. Without it, `ensureGitHubMonitorSchema` recreates the four tables
- * *empty* on its first call and the operator's automation stops firing in silence.
- *
- * It discards the actions model, which is the meaning of rolling back to a schema
- * that had none: actions created after the migration, their events and the
- * delivery log go, and the counts say how many. It therefore refuses outright
- * unless at least one `_migrated` table is still there to restore — after phase 5
- * removes them this procedure has expired, and running it would destroy the
- * automation it exists to protect with nothing to fall back on.
+ * The rollback window closed with version 5, which dropped the `_migrated` tables.
+ * There is nothing left to restore, so this refuses instead of running: the
+ * procedure it used to perform discards the actions model, and performing that
+ * half — the discard — with no rules to put back would delete the operator's
+ * automation outright. The code is the one `docs/dokploy.md` names, so an operator
+ * running the old runbook command reads why rather than a stack trace.
  */
-export function rollbackGitHubActionsMigration(
-  database: Database.Database = getDb(),
-): {
-  restored: string[];
-  discardedActions: number;
-  discardedEvents: number;
-  discardedDeliveries: number;
-} {
-  return database.transaction(() => {
-    // Before any DROP: nothing to restore means nothing to roll back to.
-    if (!LEGACY_TABLES.some((table) => tableExists(database, `${table}_migrated`))) {
-      throw new Error("github_actions_rollback_unavailable");
-    }
-    const discardedActions = countRows(database, "github_actions");
-    const discardedEvents = countRows(database, "github_action_events");
-    const discardedDeliveries = countRows(database, "github_webhook_deliveries");
-    const restored: string[] = [];
-    for (const table of LEGACY_TABLES) {
-      const source = `${table}_migrated`;
-      if (!tableExists(database, source)) continue;
-      // Whatever the rolled-back release recreated is empty and in the way.
-      database.exec(`DROP TABLE IF EXISTS ${table}`);
-      database.exec(`ALTER TABLE ${source} RENAME TO ${table}`);
-      restored.push(table);
-    }
-    database.exec(`
-      DROP TABLE IF EXISTS github_action_events;
-      DROP TABLE IF EXISTS github_actions;
-      DROP TABLE IF EXISTS github_webhook_deliveries;
-      DROP TABLE IF EXISTS github_actions_schema_migrations;
-    `);
-    migratedHandles.delete(database);
-    return { restored, discardedActions, discardedEvents, discardedDeliveries };
-  }).immediate();
+export function rollbackGitHubActionsMigration(_database?: Database.Database): never {
+  throw new Error("github_actions_rollback_unavailable");
+}
+
+/**
+ * Ends the rollback window. Idempotent by `DROP TABLE IF EXISTS`, and a no-op on a
+ * database that never had the legacy tables.
+ *
+ * The guard is for the one state that could lose rows: a database whose recorded
+ * version claims the carry happened, while `github_actions` is emptier than the
+ * legacy rules it was supposed to hold. One rule became two actions, so fewer
+ * actions than rules means the carry never finished or was undone, and the
+ * `_migrated` tables are then the only copy. It keeps them, stays at version 4 and
+ * is retried on the next boot rather than throwing: a half-finished phase 1 is an
+ * operator's problem to look at, not a reason to refuse to serve.
+ */
+function dropMigratedMonitorTables(database: Database.Database, carriedHere: boolean): boolean {
+  if (!carriedHere) {
+    const legacyRules = countRows(database, "github_monitor_rules_migrated");
+    if (legacyRules > 0 && countRows(database, "github_actions") < legacyRules) return false;
+  }
+  for (const table of LEGACY_TABLES) {
+    database.exec(`DROP TABLE IF EXISTS ${table}_migrated`);
+  }
+  return true;
 }
 
 /**

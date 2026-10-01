@@ -1,3 +1,5 @@
+> **Superseded by** docs/architecture/2026-09-30-github-guardrails-design.md (2026-09-30). Polling and the one-rule-per-repository limit no longer exist.
+
 # GitHub no Sentinel
 
 Abra **GitHub** no menu principal. Os repositórios já cadastrados continuam
