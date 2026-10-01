@@ -530,7 +530,7 @@ test("the GitHub tab is translated key-for-key in five locales", async () => {
   // The copy the carries pin, in the language the operator reads.
   assert.match(githubActionsMessages["pt-BR"]["github.delivery.stale"], /sem evento recente/i);
   assert.match(githubActionsMessages["pt-BR"]["github.delivery.pingHint"], /ping/i);
-  assert.match(githubActionsMessages.de["github.executor.soon"], /Kürze/);
+  assert.match(githubActionsMessages.de["github.caller.check.secret_present"], /OPENAI_API_KEY/);
   // Every state has its own sentence; two of them must not read the same.
   const states = ["not_ready", "unknown", "none", "suspended"] as const;
   for (const locale of locales) {

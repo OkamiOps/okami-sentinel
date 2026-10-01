@@ -294,6 +294,13 @@ export interface GuardrailActionsStatus {
   triggers?: GuardrailAutomationTriggers | null;
 }
 
+export interface GuardrailCallerWorkflowPullRequest {
+  status: "created" | "exists";
+  pullRequestNumber: number;
+  pullRequestUrl: string;
+  branch: string;
+}
+
 export interface GuardrailAutomationTriggers {
   push: boolean;
   pullRequest: boolean;
@@ -594,6 +601,16 @@ export const api = {
     request<{ status: GuardrailActionsStatus }>(
       `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/caller-workflow`,
       { method: "PUT", body: JSON.stringify(triggers) },
+    ),
+  /**
+   * "Abrir PR com o workflow": Sentinel writes the pinned caller on its own branch
+   * and opens the pull request. Administrator only — the route commits the account
+   * to spending the repository's Actions minutes.
+   */
+  openGuardrailCallerWorkflowPullRequest: (repositoryKey: string) =>
+    request<{ pullRequest: GuardrailCallerWorkflowPullRequest }>(
+      `/guardrails/repositories/${encodeURIComponent(repositoryKey)}/caller-workflow/pull-request`,
+      { method: "POST" },
     ),
   listGuardrailPrComments: (repositoryKey: string) =>
     request<{ comments: GuardrailPrCommentState[] }>(

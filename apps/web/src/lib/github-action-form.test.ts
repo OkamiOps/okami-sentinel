@@ -4,6 +4,7 @@ import test from "node:test";
 import type { GitHubAction } from "@csb/shared";
 
 import {
+  callerWorkflowChecklist,
   draftFromAction,
   initialGitHubActionDraft,
   validateGitHubActionDraft,
@@ -201,4 +202,84 @@ test("a fresh draft is disabled, Sentinel-run and free of a ceiling nobody chose
   assert.equal(fresh.costCeilingUsd, "");
   assert.equal(fresh.dailyCostCeilingUsd, "");
   assert.equal(fresh.includeForks, false);
+});
+
+test("reports the three Actions prerequisites", () => {
+  assert.deepEqual(
+    callerWorkflowChecklist({
+      ready: true,
+      code: "ready",
+      workflowPath: ".github/workflows/csb-security-change-gate.yml",
+      releaseSha: "f".repeat(40),
+      triggers: { push: false, pullRequest: false, merge: false },
+    }),
+    [
+      { id: "workflow_installed", ok: true },
+      { id: "triggers_removed", ok: true },
+      // Sentinel has no grant to read repository secrets and asks for none, so this
+      // is the prerequisite it names and never claims to have checked.
+      { id: "secret_present", ok: false },
+    ],
+  );
+
+  // A caller that still fires on its own is installed and not usable.
+  assert.deepEqual(
+    callerWorkflowChecklist({
+      ready: true,
+      code: "ready",
+      workflowPath: ".github/workflows/csb-security-change-gate.yml",
+      releaseSha: "f".repeat(40),
+      triggers: { push: false, pullRequest: true, merge: true },
+    }).map((item) => item.ok),
+    [true, false, false],
+  );
+
+  // The file is there and current; GitHub merely disabled the workflow.
+  assert.deepEqual(
+    callerWorkflowChecklist({
+      ready: false,
+      code: "caller_workflow_inactive",
+      workflowPath: ".github/workflows/csb-security-change-gate.yml",
+      releaseSha: "f".repeat(40),
+      triggers: null,
+    }).map((item) => item.ok),
+    [true, false, false],
+  );
+
+  // Nothing installed at all.
+  assert.deepEqual(
+    callerWorkflowChecklist({
+      ready: false,
+      code: "caller_workflow_missing",
+      workflowPath: ".github/workflows/csb-security-change-gate.yml",
+      releaseSha: "f".repeat(40),
+      triggers: null,
+    }).map((item) => item.ok),
+    [false, false, false],
+  );
+});
+
+test("requires no model connection for the github-actions executor", () => {
+  const draft = {
+    ...initialGitHubActionDraft("github:1"),
+    name: "Actions PR",
+    branchPatterns: "main",
+    executor: "github-actions" as const,
+    connectionId: null,
+    costCeilingUsd: "2",
+  };
+  const result = validateGitHubActionDraft(draft, { isAdmin: true });
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.body.executor, "github-actions");
+    // The customer's minutes carry no Sentinel scanner selection at all.
+    assert.equal(result.body.scanner, null);
+  }
+
+  // The Sentinel executor still demands one.
+  const managed = validateGitHubActionDraft({ ...draft, executor: "sentinel-managed" }, { isAdmin: true });
+  assert.equal(managed.ok, false);
+  if (!managed.ok) {
+    assert.deepEqual(managed.errors, [{ field: "connectionId", code: "required" }]);
+  }
 });
