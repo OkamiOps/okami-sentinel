@@ -443,6 +443,7 @@ test("Codex Security persists its Portable profile and exact capability ID from 
 
   assert.equal(plan.runnerKind, "agent-session");
   assert.equal(plan.capabilityCheckId, "probe-a");
+  assert.equal(plan.model?.id, "mimo-v2.6-flash");
   assert.equal(plan.reasoningEffort, undefined);
   assert.deepEqual(plan.execution, {
     executionProfile: "portable",
@@ -459,7 +460,7 @@ test("Codex Security persists its Portable profile and exact capability ID from 
     connectionId: "conn-a",
     routeKind: "mimo-token-plan",
     modelSelectionMode: "catalog",
-    modelId: "mimo-v2.5",
+    modelId: "mimo-v2.6-flash",
     capabilityCheckId: "probe-a",
     executionProfile: "portable",
     profileVersion: "sentinel-codex-security-portable-v1",
@@ -469,6 +470,34 @@ test("Codex Security persists its Portable profile and exact capability ID from 
     capturedAt: NOW.toISOString(),
   });
   assert.deepEqual(mimo.snapshots, [plan.snapshot]);
+});
+
+test("a saved MiMo v2.5 Pro selection launches as v2.6 Pro and reuses the retired probe", () => {
+  const mimo = fixture({
+    connection: connection({
+      providerKind: "xiaomi",
+      routeKind: "mimo-token-plan",
+      transport: "http-inference",
+      authKind: "api-key",
+      protocol: "openai-chat",
+    }),
+    model: model({ id: "mimo-v2.5-pro", displayName: "MiMo V2.5 Pro" }),
+    probe: probe({ modelId: "mimo-v2.5-pro", protocol: "openai-chat" }),
+  });
+  const plan = mimo.resolver.resolve({
+    scanId: "scan-mimo-pro",
+    engine: "mantis",
+    selection: {
+      connectionId: "conn-a",
+      modelSelectionMode: "catalog",
+      modelId: "mimo-v2.5-pro",
+    },
+  });
+
+  assert.equal(plan.model?.id, "mimo-v2.6-pro");
+  assert.equal(plan.model?.displayName, "MiMo V2.5 Pro");
+  assert.equal(plan.snapshot.modelId, "mimo-v2.6-pro");
+  assert.equal(plan.capabilityCheckId, "probe-a");
 });
 
 test("Codex Security ignores browser-forged provenance and rejects an unavailable requested profile", () => {

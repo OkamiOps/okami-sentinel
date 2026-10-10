@@ -4,9 +4,11 @@ import test from "node:test";
 import {
   HTTP_RESPONSE_LIMIT_BYTES,
   discoverGeminiModels,
+  discoverMimoTokenPlanModels,
   discoverOpenAiModels,
   discoverOpenRouterModels,
   discoverXaiModels,
+  isMimoTokenPlanResponsesModel,
   safeFetchJson,
   type HttpFetch,
 } from "./http-model-discovery.js";
@@ -349,6 +351,35 @@ test("rejects or redacts catalog fields that echo a registered header secret", a
   );
   assert.equal(JSON.stringify(result).includes(syntheticHeaderSecret), false);
   assert.equal(JSON.stringify(result).includes("synthetic-body-secret"), false);
+});
+
+test("MiMo Token Plan discovery stores v2.6 successors and keeps other catalog rows", async () => {
+  const result = await discoverMimoTokenPlanModels({
+    apiKey: "tp-mimo-secret",
+    baseUrl: "https://token-plan-ams.xiaomimimo.com/v1",
+  }, fakeFetch({
+    "GET https://token-plan-ams.xiaomimimo.com/v1/models": json(200, {
+      object: "list",
+      data: [
+        { id: "mimo-v2.5", name: "mimo-v2.5" },
+        { id: "mimo-v2.6-flash", name: "MiMo-V2.6-Flash" },
+        { id: "mimo-v2.5-pro", name: "MiMo V2.5 Pro" },
+        { id: "mimo-v2.6-pro-ultraspeed", name: "MiMo-V2.6-Pro-Ultraspeed" },
+      ],
+    }),
+  }));
+
+  assert.deepEqual(result.models.map((model) => [model.id, model.displayName]), [
+    ["mimo-v2.6-flash", "MiMo-V2.6-Flash"],
+    ["mimo-v2.6-pro", "MiMo V2.5 Pro"],
+    ["mimo-v2.6-pro-ultraspeed", "MiMo-V2.6-Pro-Ultraspeed"],
+  ]);
+  assert.equal(isMimoTokenPlanResponsesModel("mimo-v2.6-pro"), true);
+  assert.equal(isMimoTokenPlanResponsesModel("mimo-v2.6-flash"), true);
+  assert.equal(isMimoTokenPlanResponsesModel("mimo-v2.5-pro"), true);
+  assert.equal(isMimoTokenPlanResponsesModel("mimo-v2.5"), true);
+  assert.equal(isMimoTokenPlanResponsesModel("mimo-v2.6-pro-ultraspeed"), false);
+  assert.equal(isMimoTokenPlanResponsesModel("mimo-v2.5-pro-preview"), false);
 });
 
 test("rejects a catalog identifier that echoes a discovery URL query secret", async () => {

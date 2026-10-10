@@ -1120,7 +1120,9 @@ function sanitizeScanCost(value: unknown): ScanCost | null {
   if (
     value.pricingRateCardId === "xai.grok-4.5.2026-07-03" ||
     value.pricingRateCardId === "minimax.m3.payg.2026-08-11" ||
-    value.pricingRateCardId === "xiaomi.mimo-v2.5-pro.payg.2026-08-06"
+    value.pricingRateCardId === "xiaomi.mimo-v2.5-pro.payg.2026-08-06" ||
+    value.pricingRateCardId === "xiaomi.mimo-v2.6-pro.payg.2026-10-08" ||
+    value.pricingRateCardId === "xiaomi.mimo-v2.6-flash.payg.2026-10-08"
   ) {
     cost.pricingRateCardId = value.pricingRateCardId;
   }

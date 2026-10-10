@@ -46,10 +46,35 @@ const MINIMAX_M3_PAYG_RATES: ModelPricing = {
   outputUsdPerMillionTokens: 1.2,
 };
 
+/**
+ * Overseas real-time USD per million tokens.
+ * https://mimo.mi.com/docs/en-US/price/pay-as-you-go (updated 8 Oct 2026).
+ * Cache writes are limited-time free on that page. Token Plan spends credits
+ * (https://mimo.mi.com/docs/en-US/price/token-plan); these USD figures are the
+ * pay-as-you-go equivalent Sentinel already uses for the subscription route.
+ */
+const MIMO_V26_PRO_PAYG_RATES: ModelPricing = {
+  inputUsdPerMillionTokens: 0.435,
+  cachedInputUsdPerMillionTokens: 0.0036,
+  cacheWriteInputUsdPerMillionTokens: 0,
+  outputUsdPerMillionTokens: 0.87,
+};
+
+const MIMO_V26_FLASH_PAYG_RATES: ModelPricing = {
+  inputUsdPerMillionTokens: 0.14,
+  cachedInputUsdPerMillionTokens: 0.0028,
+  cacheWriteInputUsdPerMillionTokens: 0,
+  outputUsdPerMillionTokens: 0.28,
+};
+
+/**
+ * Historical runs that still record mimo-v2.5-pro keep the card frozen at
+ * launch. The current overseas v2.6-pro USD rates match this older card; the
+ * id stays distinct so a completed run is not rewritten onto the new card.
+ */
 const MIMO_V25_PRO_PAYG_RATES: ModelPricing = {
   inputUsdPerMillionTokens: 0.435,
   cachedInputUsdPerMillionTokens: 0.0036,
-  // Xiaomi's published rate card currently lists cache writes as free.
   cacheWriteInputUsdPerMillionTokens: 0,
   outputUsdPerMillionTokens: 0.87,
 };
@@ -85,7 +110,29 @@ export function resolveScannerPricingQuote(
     });
   }
 
-  if (isExactMimoV25ProTokenPlan(input)) {
+  if (isExactMimoTokenPlanModel(input, "mimo-v2.6-pro")) {
+    return freezeQuote(input, MIMO_V26_PRO_PAYG_RATES, {
+      pricingSource: "official-rate-card",
+      pricingBasis: "payg-equivalent",
+      billingMode: "subscription",
+      pricingRateCardId: "xiaomi.mimo-v2.6-pro.payg.2026-10-08",
+      rateCardUpdatedAt: "2026-10-08T00:00:00.000Z",
+      maximumInputTokensInclusive: null,
+    });
+  }
+
+  if (isExactMimoTokenPlanModel(input, "mimo-v2.6-flash")) {
+    return freezeQuote(input, MIMO_V26_FLASH_PAYG_RATES, {
+      pricingSource: "official-rate-card",
+      pricingBasis: "payg-equivalent",
+      billingMode: "subscription",
+      pricingRateCardId: "xiaomi.mimo-v2.6-flash.payg.2026-10-08",
+      rateCardUpdatedAt: "2026-10-08T00:00:00.000Z",
+      maximumInputTokensInclusive: null,
+    });
+  }
+
+  if (isExactMimoTokenPlanModel(input, "mimo-v2.5-pro")) {
     return freezeQuote(input, MIMO_V25_PRO_PAYG_RATES, {
       pricingSource: "official-rate-card",
       pricingBasis: "payg-equivalent",
@@ -238,11 +285,14 @@ function isExactMiniMaxM3TokenPlan(input: ResolveScannerPricingQuoteInput): bool
     input.modelId === "MiniMax-M3";
 }
 
-function isExactMimoV25ProTokenPlan(input: ResolveScannerPricingQuoteInput): boolean {
+function isExactMimoTokenPlanModel(
+  input: ResolveScannerPricingQuoteInput,
+  modelId: string,
+): boolean {
   return input.providerKind === "xiaomi" &&
     input.routeKind === "mimo-token-plan" &&
     input.protocol === "openai-chat" &&
-    input.modelId === "mimo-v2.5-pro";
+    input.modelId === modelId;
 }
 
 function safeIdentifier(value: string): boolean {

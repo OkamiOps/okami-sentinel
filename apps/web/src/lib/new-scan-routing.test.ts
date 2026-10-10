@@ -197,6 +197,27 @@ test("uses a catalog model only when it was returned by the selected connection"
   assert.equal(connectionSelectionFor(connection(), [{ ...model("live-model"), connectionId: "other-connection" }], "live-model"), null);
 });
 
+test("a saved MiMo v2.5 selection resolves to the listed v2.6 successor", () => {
+  const mimo = {
+    ...connection(),
+    providerKind: "xiaomi",
+    routeKind: "mimo-token-plan" as const,
+    transport: "http-inference" as const,
+    protocol: "openai-chat" as const,
+  };
+  assert.deepEqual(connectionSelectionFor(mimo, [model("mimo-v2.6-flash")], "mimo-v2.5"), {
+    connectionId: "connection-a",
+    modelSelectionMode: "catalog",
+    modelId: "mimo-v2.6-flash",
+  });
+  assert.deepEqual(connectionSelectionFor(mimo, [model("mimo-v2.6-pro")], "mimo-v2.5-pro"), {
+    connectionId: "connection-a",
+    modelSelectionMode: "catalog",
+    modelId: "mimo-v2.6-pro",
+  });
+  assert.equal(connectionSelectionFor(connection(), [model("mimo-v2.6-flash")], "mimo-v2.5"), null);
+});
+
 test("uses runtime default only when the connection declares that selection mode", () => {
   assert.deepEqual(connectionSelectionFor(connection("runtime-default"), [model("ignored")], null), {
     connectionId: "connection-a",

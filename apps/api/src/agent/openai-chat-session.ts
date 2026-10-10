@@ -1,5 +1,5 @@
 import type { GraphIndex } from "../graphify/graph-index.js";
-import type { ModelCapabilities, ProviderModel } from "@csb/shared";
+import { canonicalMimoTokenPlanModelId, type ModelCapabilities, type ProviderModel } from "@csb/shared";
 
 import { createWorkspaceToolHost } from "./workspace-tool-host.js";
 import {
@@ -99,7 +99,9 @@ export function createOpenAiChatWireAdapter(spec: OpenAiChatSessionSpec): WireSe
       return {
         operation: "chat-completions",
         body: {
-          model: spec.model.id,
+          model: spec.routeKind === "mimo-token-plan"
+            ? canonicalMimoTokenPlanModelId(spec.model.id)
+            : spec.model.id,
           ...(spec.maxCompletionTokens === undefined ? {} :
             spec.routeKind === "openai-api" || spec.routeKind === "openrouter-api"
               ? { max_completion_tokens: spec.maxCompletionTokens }

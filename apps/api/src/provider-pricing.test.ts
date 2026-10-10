@@ -162,6 +162,53 @@ test("freezes MiMo Token Plan and exposes only an explicit upper bound for parti
     modelPricing: null,
     capturedAt: CAPTURED_AT,
   }), null);
+
+  assert.equal(resolveScannerPricingQuote({
+    connectionId: "mimo-connection",
+    providerKind: "xiaomi",
+    routeKind: "mimo-token-plan",
+    protocol: "openai-chat",
+    modelId: "mimo-v2.5",
+    modelPricing: null,
+    capturedAt: CAPTURED_AT,
+  }), null);
+});
+
+test("freezes overseas MiMo v2.6 pay-as-you-go equivalents for Token Plan", () => {
+  const pro = resolveScannerPricingQuote({
+    connectionId: "mimo-connection",
+    providerKind: "xiaomi",
+    routeKind: "mimo-token-plan",
+    protocol: "openai-chat",
+    modelId: "mimo-v2.6-pro",
+    modelPricing: null,
+    capturedAt: CAPTURED_AT,
+  });
+  assert.equal(pro?.pricingSource, "official-rate-card");
+  assert.equal(pro?.pricingBasis, "payg-equivalent");
+  assert.equal(pro?.billingMode, "subscription");
+  assert.equal(pro?.pricingRateCardId, "xiaomi.mimo-v2.6-pro.payg.2026-10-08");
+  assert.equal(pro?.rateCardUpdatedAt, "2026-10-08T00:00:00.000Z");
+  assert.equal(pro?.inputUsdPerMillionTokens, 0.435);
+  assert.equal(pro?.cachedInputUsdPerMillionTokens, 0.0036);
+  assert.equal(pro?.cacheWriteInputUsdPerMillionTokens, 0);
+  assert.equal(pro?.outputUsdPerMillionTokens, 0.87);
+
+  const flash = resolveScannerPricingQuote({
+    connectionId: "mimo-connection",
+    providerKind: "xiaomi",
+    routeKind: "mimo-token-plan",
+    protocol: "openai-chat",
+    modelId: "mimo-v2.6-flash",
+    modelPricing: null,
+    capturedAt: CAPTURED_AT,
+  });
+  assert.equal(flash?.pricingRateCardId, "xiaomi.mimo-v2.6-flash.payg.2026-10-08");
+  assert.equal(flash?.inputUsdPerMillionTokens, 0.14);
+  assert.equal(flash?.cachedInputUsdPerMillionTokens, 0.0028);
+  assert.equal(flash?.cacheWriteInputUsdPerMillionTokens, 0);
+  assert.equal(flash?.outputUsdPerMillionTokens, 0.28);
+  assert.equal(flash?.maximumInputTokensInclusive, null);
 });
 
 test("prices multiple short requests by their maximum request size, not their scan total", () => {

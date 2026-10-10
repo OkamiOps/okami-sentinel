@@ -1,18 +1,21 @@
 import type Database from "better-sqlite3";
 import { isSafeProviderErrorCode } from "@csb/shared";
-import type {
-  CapabilityReport,
-  CodexSecurityExecutionProfile,
-  ConnectionDisplay,
-  ConnectionStatus,
-  ModelCapabilities,
-  ModelPricing,
-  ModelReasoningEffort,
-  ModelSelectionMode,
-  ProviderConnection,
-  ProviderModel,
-  SafeProviderErrorCode,
-  ScanConnectionSnapshot,
+import {
+  canonicalMimoTokenPlanModelId,
+  mimoTokenPlanModelAliases,
+  mimoTokenPlanModelIdsMatch,
+  type CapabilityReport,
+  type CodexSecurityExecutionProfile,
+  type ConnectionDisplay,
+  type ConnectionStatus,
+  type ModelCapabilities,
+  type ModelPricing,
+  type ModelReasoningEffort,
+  type ModelSelectionMode,
+  type ProviderConnection,
+  type ProviderModel,
+  type SafeProviderErrorCode,
+  type ScanConnectionSnapshot,
 } from "@csb/shared";
 import { getDb } from "./db.js";
 import type {
@@ -308,19 +311,40 @@ export class ConnectionStore {
          ORDER BY discovered_at DESC, model_id ASC`,
       )
       .all(connectionId) as ProviderModelRow[];
-    return rows.map(rowToProviderModel);
+    const models = rows.map(rowToProviderModel);
+    return this.connectionRouteKind(connectionId) === "mimo-token-plan"
+      ? listMimoTokenPlanModels(models)
+      : models;
   }
 
   getModel(connectionId: string, modelId: string): ProviderModel | null {
+    const routeKind = this.connectionRouteKind(connectionId);
+    const candidates = routeKind === "mimo-token-plan"
+      ? uniqueModelIds([modelId, ...mimoTokenPlanModelAliases(modelId)])
+      : [modelId];
+    for (const candidate of candidates) {
+      const row = this.database
+        .prepare(
+          `SELECT connection_id, model_id, display_name, context_window, capabilities_json,
+            pricing_json, reasoning_effort_json, discovered_at, source
+           FROM provider_models
+           WHERE connection_id = ? AND model_id = ?`,
+        )
+        .get(connectionId, candidate) as ProviderModelRow | undefined;
+      if (row === undefined) continue;
+      return presentMimoModel(rowToProviderModel(row), modelId, routeKind);
+    }
+    return null;
+  }
+
+  private connectionRouteKind(connectionId: string): string | null {
     const row = this.database
       .prepare(
-        `SELECT connection_id, model_id, display_name, context_window, capabilities_json,
-          pricing_json, reasoning_effort_json, discovered_at, source
-         FROM provider_models
-         WHERE connection_id = ? AND model_id = ?`,
+        `SELECT route_kind FROM provider_connections
+         WHERE id = ? AND scope_id = 'local'`,
       )
-      .get(connectionId, modelId) as ProviderModelRow | undefined;
-    return row === undefined ? null : rowToProviderModel(row);
+      .get(connectionId) as { route_kind: string } | undefined;
+    return row?.route_kind ?? null;
   }
 
   replaceModels(connectionId: string, models: readonly ProviderModel[]): void {
@@ -401,6 +425,25 @@ export class ConnectionStore {
     modelId: string | null,
     protocol: CapabilityReport["protocol"],
   ): CapabilityReport | null {
+    if (modelId === null || this.connectionRouteKind(connectionId) !== "mimo-token-plan") {
+      const row = this.database
+        .prepare(
+          `SELECT id, connection_id, model_id, protocol, agent_contract_version,
+            status, capabilities_json,
+            error_code, checked_at
+           FROM connection_capability_checks
+           WHERE connection_id = ?
+             AND model_id IS ?
+             AND protocol = ?
+           ORDER BY checked_at DESC, rowid DESC
+           LIMIT 1`,
+        )
+        .get(connectionId, modelId, protocol) as CapabilityReportRow | undefined;
+      return row === undefined ? null : rowToCapabilityReport(row);
+    }
+
+    const aliases = uniqueModelIds(mimoTokenPlanModelAliases(modelId));
+    const placeholders = aliases.map(() => "?").join(", ");
     const row = this.database
       .prepare(
         `SELECT id, connection_id, model_id, protocol, agent_contract_version,
@@ -408,13 +451,22 @@ export class ConnectionStore {
           error_code, checked_at
          FROM connection_capability_checks
          WHERE connection_id = ?
-           AND model_id IS ?
+           AND model_id IN (${placeholders})
            AND protocol = ?
          ORDER BY checked_at DESC, rowid DESC
          LIMIT 1`,
       )
-      .get(connectionId, modelId, protocol) as CapabilityReportRow | undefined;
-    return row === undefined ? null : rowToCapabilityReport(row);
+      .get(connectionId, ...aliases, protocol) as CapabilityReportRow | undefined;
+    if (row === undefined) return null;
+    const report = rowToCapabilityReport(row);
+    if (
+      report.modelId !== modelId &&
+      report.modelId !== null &&
+      mimoTokenPlanModelIdsMatch(report.modelId, modelId)
+    ) {
+      return { ...report, modelId };
+    }
+    return report;
   }
 
   writeSnapshot(snapshot: ScanConnectionSnapshot): void {
@@ -775,7 +827,9 @@ function rowToStoredProviderConnection(
     protocol: row.protocol,
     status: row.status,
     modelSelectionMode: row.model_selection_mode,
-    defaultModelId: row.default_model_id,
+    defaultModelId: row.route_kind === "mimo-token-plan" && row.default_model_id !== null
+      ? canonicalMimoTokenPlanModelId(row.default_model_id)
+      : row.default_model_id,
     lastTestedAt: row.last_tested_at,
     lastModelSyncAt: row.last_model_sync_at,
     modelCatalogStale: row.model_catalog_stale === 1 || (
@@ -808,6 +862,48 @@ function modelToParams(model: ProviderModel): Record<string, unknown> {
     discovered_at: model.discoveredAt,
     source: model.source,
   };
+}
+
+function uniqueModelIds(ids: readonly string[]): string[] {
+  return [...new Set(ids)];
+}
+
+function presentMimoModel(
+  model: ProviderModel,
+  requestedModelId: string,
+  routeKind: string | null,
+): ProviderModel {
+  if (routeKind !== "mimo-token-plan" || model.id === requestedModelId) return model;
+  if (!mimoTokenPlanModelIdsMatch(model.id, requestedModelId)) return model;
+  return {
+    ...model,
+    id: requestedModelId,
+    displayName: model.displayName === model.id ? requestedModelId : model.displayName,
+  };
+}
+
+/**
+ * Lists the v2.6 successor once. A native v2.6 row keeps its metadata when a
+ * retired v2.5 row is still stored beside it. Scan snapshots stay untouched.
+ */
+function listMimoTokenPlanModels(models: readonly ProviderModel[]): ProviderModel[] {
+  const chosen = new Map<string, { model: ProviderModel; native: boolean; index: number }>();
+  models.forEach((model, index) => {
+    const canonicalId = canonicalMimoTokenPlanModelId(model.id);
+    const native = model.id === canonicalId;
+    const view: ProviderModel = native ? model : {
+      ...model,
+      id: canonicalId,
+      displayName: model.displayName === model.id ? canonicalId : model.displayName,
+    };
+    const existing = chosen.get(canonicalId);
+    if (existing === undefined || (native && !existing.native)) {
+      chosen.set(canonicalId, { model: view, native, index: existing?.index ?? index });
+    }
+  });
+  return [...chosen.values()]
+    .sort((left, right) => left.index - right.index)
+    .map((entry) => entry.model);
 }
 
 function rowToProviderModel(row: ProviderModelRow): ProviderModel {

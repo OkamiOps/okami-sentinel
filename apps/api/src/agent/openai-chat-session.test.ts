@@ -14,6 +14,7 @@ test("MiMo replays an opaque reasoning field and wire-safe tool call from its fi
   });
 
   const firstRequest = chatBody(adapter.nextRequest([]));
+  assert.equal(firstRequest.model, "mimo-v2.6-pro");
   assert.equal(firstRequest.tool_choice, "required");
   assert.equal("parallel_tool_calls" in firstRequest, false);
   assert.deepEqual(firstRequest.tools.map((tool) => tool.function.name), [
@@ -65,6 +66,15 @@ test("MiMo replays an opaque reasoning field and wire-safe tool call from its fi
     },
     { role: "tool", tool_call_id: "call-read-1", content: "quarterly report" },
   ]);
+});
+
+test("a non-MiMo route keeps a retired MiMo id unchanged on the wire", () => {
+  const adapter = openAiChat.createOpenAiChatWireAdapter({
+    model: model("mimo-v2.5"),
+    instructions: "Use only the declared workspace tools.",
+    routeKind: "custom-openai-compatible",
+  });
+  assert.equal(chatBody(adapter.nextRequest([])).model, "mimo-v2.5");
 });
 
 test("OpenAI chat rejects dotted internal names from a non-MiMo wire response", () => {
@@ -299,6 +309,7 @@ test("OpenAI chat keeps the VulnHunter result tool on the universal string contr
 });
 
 function chatBody(request: AgentWireRequest): {
+  model: string;
   tools: Array<{ function: { name: string; description: string; parameters?: unknown } }>;
   messages: unknown[];
   tool_choice?: unknown;
@@ -309,6 +320,7 @@ function chatBody(request: AgentWireRequest): {
 } {
   assert.equal(request.operation, "chat-completions");
   return request.body as {
+    model: string;
     tools: Array<{ function: { name: string; description: string; parameters?: unknown } }>;
     messages: unknown[];
     tool_choice?: unknown;
