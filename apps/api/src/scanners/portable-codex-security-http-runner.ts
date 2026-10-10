@@ -10,13 +10,14 @@ import { createPortableAssessmentPages, assessmentPageDirectory } from "./portab
 import { resolveDeepPlan, STANDARD_PLAN_FILE } from "./portable-deep-plan.js";
 import { prepareManagedGraph } from "../graphify/managed-graph.js";
 
-import type {
-  CapabilityReport,
-  ProviderModel,
-  ProviderProtocol,
-  SafeProviderErrorCode,
-  ScanConnectionSnapshot,
-  ScanMode,
+import {
+  mimoTokenPlanModelIdsMatch,
+  type CapabilityReport,
+  type ProviderModel,
+  type ProviderProtocol,
+  type SafeProviderErrorCode,
+  type ScanConnectionSnapshot,
+  type ScanMode,
 } from "@csb/shared";
 
 import {
@@ -930,6 +931,32 @@ function validateConfiguration(
   }
 }
 
+function alignMimoCatalogModel(
+  routeKind: string,
+  model: ProviderModel,
+  requestedModelId: string,
+): ProviderModel | null {
+  if (model.id === requestedModelId) return model;
+  if (routeKind !== "mimo-token-plan" || !mimoTokenPlanModelIdsMatch(model.id, requestedModelId)) {
+    return null;
+  }
+  return { ...model, id: requestedModelId };
+}
+
+function alignMimoCapabilityModel(
+  routeKind: string,
+  capability: CapabilityReport | null,
+  modelId: string,
+): CapabilityReport | null {
+  if (capability === null || capability.modelId === modelId) return capability;
+  if (
+    routeKind !== "mimo-token-plan" ||
+    capability.modelId === null ||
+    !mimoTokenPlanModelIdsMatch(capability.modelId, modelId)
+  ) return capability;
+  return { ...capability, modelId };
+}
+
 function revalidatePortablePlan(
   plan: SafePortableCodexSecurityProviderPlan,
   reasoningEffort: string | undefined,
@@ -958,8 +985,11 @@ function revalidatePortablePlan(
   ) {
     throw new PortableCodexSecurityRunnerError("provider_plan_revalidation_failed");
   }
-  const model = dependencies.getModel(connection.id, plan.modelId);
-  if (model === null || model.connectionId !== connection.id || model.id !== plan.modelId) {
+  const storedModel = dependencies.getModel(connection.id, plan.modelId);
+  const model = storedModel === null
+    ? null
+    : alignMimoCatalogModel(connection.routeKind, storedModel, plan.modelId);
+  if (model === null || model.connectionId !== connection.id) {
     throw new PortableCodexSecurityRunnerError("provider_plan_revalidation_failed");
   }
   try {
@@ -972,7 +1002,8 @@ function revalidatePortablePlan(
   } catch {
     throw new PortableCodexSecurityRunnerError("provider_plan_revalidation_failed");
   }
-  const capability = dependencies.getCapabilityCheck(plan.capabilityCheckId);
+  const storedCapability = dependencies.getCapabilityCheck(plan.capabilityCheckId);
+  const capability = alignMimoCapabilityModel(connection.routeKind, storedCapability, model.id);
   if (
     capability === null ||
     capability.id !== plan.capabilityCheckId ||

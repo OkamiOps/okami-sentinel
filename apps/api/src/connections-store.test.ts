@@ -772,6 +772,104 @@ test("deletion cascades models and checks while scan snapshots remain", () => {
   }
 });
 
+test("MiMo catalog reads map retired v2.5 rows onto v2.6 without rewriting snapshots", () => {
+  const db = new Database(":memory:");
+  const capabilities = {
+    tools: "unknown", artifactOutput: "unknown", structuredOutput: "unknown",
+    boundedExecution: "unknown", osIsolation: "unknown", streaming: "unknown",
+    usage: "unknown", cancellation: "unknown",
+  } as const;
+  try {
+    const store = new ConnectionStore(db);
+    store.insert(connectionFixture({
+      id: "mimo-1",
+      providerKind: "xiaomi",
+      routeKind: "mimo-token-plan",
+      protocol: "openai-chat",
+      defaultModelId: "mimo-v2.5-pro",
+      credentialRef: "connection/mimo-1",
+    }));
+    store.replaceModels("mimo-1", [
+      {
+        connectionId: "mimo-1",
+        id: "mimo-v2.5",
+        displayName: "mimo-v2.5",
+        contextWindow: 128_000,
+        capabilities,
+        pricing: null,
+        discoveredAt: "2026-10-01T00:00:00.000Z",
+        source: "provider-api",
+      },
+      {
+        connectionId: "mimo-1",
+        id: "mimo-v2.6-flash",
+        displayName: "MiMo-V2.6-Flash",
+        contextWindow: 256_000,
+        capabilities,
+        pricing: null,
+        discoveredAt: "2026-10-09T00:00:00.000Z",
+        source: "provider-api",
+      },
+      {
+        connectionId: "mimo-1",
+        id: "mimo-v2.5-pro",
+        displayName: "MiMo V2.5 Pro",
+        contextWindow: 256_000,
+        capabilities,
+        pricing: null,
+        discoveredAt: "2026-10-01T00:00:00.000Z",
+        source: "provider-api",
+      },
+    ]);
+    store.writeCapabilityCheck({
+      id: "probe-flash",
+      connectionId: "mimo-1",
+      modelId: "mimo-v2.5",
+      protocol: "openai-chat",
+      status: "passed",
+      capabilities,
+      errorCode: null,
+      checkedAt: "2026-10-09T01:00:00.000Z",
+    });
+    store.writeSnapshot({
+      scanId: "historical-mimo",
+      connectionId: "mimo-1",
+      routeKind: "mimo-token-plan",
+      modelSelectionMode: "catalog",
+      modelId: "mimo-v2.5",
+      capabilityCheckId: "probe-flash",
+      executionProfile: "portable",
+      profileVersion: "sentinel-codex-security-portable-v1",
+      methodologyRef: "sentinel/codex-security-methodology@v1",
+      protocol: "openai-chat",
+      authKind: "api-key",
+      capturedAt: "2026-10-01T00:00:00.000Z",
+    });
+
+    assert.deepEqual(store.getModels("mimo-1").map((model) => [model.id, model.displayName, model.contextWindow]), [
+      ["mimo-v2.6-flash", "MiMo-V2.6-Flash", 256_000],
+      ["mimo-v2.6-pro", "MiMo V2.5 Pro", 256_000],
+    ]);
+    assert.equal(store.get("mimo-1")?.defaultModelId, "mimo-v2.6-pro");
+    assert.equal(store.getModel("mimo-1", "mimo-v2.6-flash")?.id, "mimo-v2.6-flash");
+    assert.equal(store.getModel("mimo-1", "mimo-v2.6-flash")?.contextWindow, 256_000);
+    assert.equal(store.getModel("mimo-1", "mimo-v2.5")?.id, "mimo-v2.5");
+    assert.equal(store.getModel("mimo-1", "mimo-v2.5-pro")?.id, "mimo-v2.5-pro");
+    assert.equal(store.getLatestCapabilityCheck("mimo-1", "mimo-v2.6-flash", "openai-chat")?.id, "probe-flash");
+    assert.equal(store.getLatestCapabilityCheck("mimo-1", "mimo-v2.6-flash", "openai-chat")?.modelId, "mimo-v2.6-flash");
+    assert.equal(store.getCapabilityCheck("probe-flash")?.modelId, "mimo-v2.5");
+    assert.equal(store.getSnapshot("historical-mimo")?.modelId, "mimo-v2.5");
+    assert.equal(
+      (db.prepare(
+        "SELECT model_id FROM provider_models WHERE connection_id = ? AND model_id = ?",
+      ).get("mimo-1", "mimo-v2.5") as { model_id: string }).model_id,
+      "mimo-v2.5",
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test("same-ID recovery refreshes only the probe reference without reinserting or changing frozen selection", () => {
   const db = new Database(":memory:");
   try {

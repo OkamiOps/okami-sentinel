@@ -163,6 +163,34 @@ test("restores a MiMo PAYG-equivalent upper bound with its audited rate card", (
   assert.equal(run.cost?.estimateKind, "upper-bound");
 });
 
+test("keeps a MiMo v2.6 rate card on a restored run", () => {
+  for (const pricingRateCardId of [
+    "xiaomi.mimo-v2.6-pro.payg.2026-10-08",
+    "xiaomi.mimo-v2.6-flash.payg.2026-10-08",
+  ]) {
+    const run = rowToScanRun({
+      ...subscriptionRow({ input_tokens: 1_000, output_tokens: 1_000 }),
+      engine: "codex-security",
+      provider: "xiaomi",
+      auth_mode: null,
+      model: pricingRateCardId.includes("flash") ? "mimo-v2.6-flash" : "mimo-v2.6-pro",
+      cost_json: JSON.stringify({
+        estimatedUsd: 0.42,
+        inputTokens: 1_000,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        outputTokens: 1_000,
+        pricingSource: "official-rate-card",
+        pricingBasis: "payg-equivalent",
+        billingMode: "subscription",
+        pricingRateCardId,
+        pricingTiming: "launch",
+      }),
+    } as BenchmarkRow);
+    assert.equal(run.cost?.pricingRateCardId, pricingRateCardId);
+  }
+});
+
 test("never assigns OpenRouter-like cost to a local existing-session scan", () => {
   const run = rowToScanRun({
     ...subscriptionRow({ input_tokens: 120, output_tokens: 30 }),

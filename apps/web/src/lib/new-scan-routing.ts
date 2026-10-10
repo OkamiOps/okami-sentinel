@@ -1,13 +1,15 @@
-import type {
-  CapabilityReport,
-  ConnectionCompatibility,
-  ProviderConnection,
-  ProviderModel,
-  ResolveScanCompatibilityRequest,
-  ScanConnectionSelection,
-  ScannerEngine,
-  ScanMode,
-  StartScanRequest,
+import {
+  canonicalMimoTokenPlanModelId,
+  retiredMimoTokenPlanModelId,
+  type CapabilityReport,
+  type ConnectionCompatibility,
+  type ProviderConnection,
+  type ProviderModel,
+  type ResolveScanCompatibilityRequest,
+  type ScanConnectionSelection,
+  type ScannerEngine,
+  type ScanMode,
+  type StartScanRequest,
 } from "@csb/shared";
 
 const CAPABILITY_PROBE_REASONS = new Set([
@@ -33,8 +35,26 @@ export function connectionSelectionFor(
   if (connection.modelSelectionMode === "runtime-default") {
     return { connectionId: connection.id, modelSelectionMode: "runtime-default", modelId: null };
   }
-  if (selectedModelId === null || !models.some((model) => model.connectionId === connection.id && model.id === selectedModelId)) return null;
-  return { connectionId: connection.id, modelSelectionMode: "catalog", modelId: selectedModelId };
+  const modelId = selectedCatalogModelId(connection, models, selectedModelId);
+  if (modelId === null) return null;
+  return { connectionId: connection.id, modelSelectionMode: "catalog", modelId };
+}
+
+function selectedCatalogModelId(
+  connection: ProviderConnection,
+  models: readonly ProviderModel[],
+  selectedModelId: string | null,
+): string | null {
+  if (selectedModelId === null) return null;
+  const listed = (modelId: string) => models.some((model) =>
+    model.connectionId === connection.id && model.id === modelId);
+  if (listed(selectedModelId)) return selectedModelId;
+  if (connection.routeKind !== "mimo-token-plan") return null;
+  const canonicalId = canonicalMimoTokenPlanModelId(selectedModelId);
+  if (listed(canonicalId)) return canonicalId;
+  const retiredId = retiredMimoTokenPlanModelId(canonicalId);
+  if (retiredId !== null && selectedModelId === canonicalId && listed(retiredId)) return retiredId;
+  return null;
 }
 
 export type CatalogSelectionBlockKey =

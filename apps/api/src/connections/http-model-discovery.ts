@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 
-import type {
-  ModelCapabilities,
-  ModelPricing,
-  ModelReasoningEffort,
-  ProviderModel,
-  SafeProviderError,
-  SafeProviderErrorCode,
+import {
+  canonicalMimoTokenPlanModelId,
+  isMimoTokenPlanAgentModelId,
+  type ModelCapabilities,
+  type ModelPricing,
+  type ModelReasoningEffort,
+  type ProviderModel,
+  type SafeProviderError,
+  type SafeProviderErrorCode,
 } from "@csb/shared";
 import {
   connectionSecretValues,
@@ -118,10 +120,6 @@ const MIMO_TOKEN_PLAN_OPENAI_BASES = new Set([
   "https://token-plan-cn.xiaomimimo.com/v1",
   "https://token-plan-sgp.xiaomimimo.com/v1",
   "https://token-plan-ams.xiaomimimo.com/v1",
-]);
-const MIMO_RESPONSES_AGENT_MODELS = new Set([
-  "mimo-v2.5",
-  "mimo-v2.5-pro",
 ]);
 const XAI_GROK_4_6_REASONING_EFFORT: ModelReasoningEffort = Object.freeze({
   options: ["low", "medium", "high", "xhigh"],
@@ -286,10 +284,10 @@ export async function discoverMimoTokenPlanModels(
     const redactor = credentials.redactor ?? globalSecretRedactor;
     redactor.register(bodyScope, bodySecrets);
     try {
-      return successfulDiscovery(normalizeOpenAiRows(rows, {
+      return successfulDiscovery(canonicalizeDiscoveredMimoModels(normalizeOpenAiRows(rows, {
         connectionId: credentials.connectionId ?? "unbound",
         discoveredAt: (credentials.now ?? (() => new Date()))().toISOString(),
-      }, [...secretValues, ...bodySecrets]), 1);
+      }, [...secretValues, ...bodySecrets])), 1);
     } finally {
       redactor.unregister(bodyScope);
     }
@@ -306,9 +304,41 @@ export function isMimoTokenPlanApiKey(apiKey: string | undefined): boolean {
   return typeof apiKey === "string" && /^tp-\S+$/.test(apiKey);
 }
 
-/** Models currently documented by Xiaomi for the Responses agent contract. */
+/**
+ * Chat models documented for the MiMo Token Plan agent contract.
+ * Retired v2.5 ids remain true only as aliases of mimo-v2.6-pro and
+ * mimo-v2.6-flash; callers that send a request must use the canonical id.
+ * https://mimo.mi.com/docs/en-US/updates/deprecate
+ */
 export function isMimoTokenPlanResponsesModel(modelId: string): boolean {
-  return MIMO_RESPONSES_AGENT_MODELS.has(modelId);
+  return isMimoTokenPlanAgentModelId(modelId);
+}
+
+/**
+ * Stores the successor id when Xiaomi still lists a retiring v2.5 row.
+ * A native v2.6 row wins over a rewritten predecessor so its display name
+ * and metadata are kept. Other catalog ids are unchanged.
+ */
+export function canonicalizeDiscoveredMimoModels(
+  models: readonly DiscoveredProviderModel[],
+): DiscoveredProviderModel[] {
+  const chosen = new Map<string, { model: DiscoveredProviderModel; native: boolean; index: number }>();
+  models.forEach((model, index) => {
+    const canonicalId = canonicalMimoTokenPlanModelId(model.id);
+    const native = model.id === canonicalId;
+    const next: DiscoveredProviderModel = native ? model : {
+      ...model,
+      id: canonicalId,
+      displayName: model.displayName === model.id ? canonicalId : model.displayName,
+    };
+    const existing = chosen.get(canonicalId);
+    if (existing === undefined || (native && !existing.native)) {
+      chosen.set(canonicalId, { model: next, native, index: existing?.index ?? index });
+    }
+  });
+  return [...chosen.values()]
+    .sort((left, right) => left.index - right.index)
+    .map((entry) => entry.model);
 }
 
 /** xAI's API may return OpenAI-style `data` or a top-level `models` array. */
