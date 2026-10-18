@@ -1,12 +1,7 @@
 <div align="center">
   <img src="apps/web/public/brand/okami-sentinel-mark.png" width="112" alt="OKAMI Sentinel wolf mark" />
   <h1>OKAMI Sentinel</h1>
-  <p><strong>One local evidence workbench. Multiple security-scanning methodologies.</strong></p>
-  <p>Run, inspect, compare, and govern AI-assisted security scans without losing the evidence, cost, or operational context behind each result.</p>
-
-  <p>
-    <a href="https://sentinel.okamiops.com"><img alt="Open the OKAMI Sentinel website" src="https://img.shields.io/badge/OPEN_SENTINEL-sentinel.okamiops.com-FF7028?style=for-the-badge" /></a>
-  </p>
+  <p><strong>Run, compare and govern AI security scans. Local-first.</strong></p>
 
   <p>
     <a href="README.md"><strong>English</strong></a> ·
@@ -16,19 +11,72 @@
   </p>
 
   <p>
+    <a href="#license"><img alt="License" src="https://img.shields.io/github/license/OkamiOps/okami-sentinel?label=license" /></a>
+    <a href="https://github.com/OkamiOps/okami-sentinel/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/OkamiOps/okami-sentinel?style=social" /></a>
+    <a href="https://github.com/OkamiOps/okami-sentinel/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/OkamiOps/okami-sentinel" /></a>
     <a href="https://github.com/OkamiOps/okami-sentinel/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/OkamiOps/okami-sentinel/actions/workflows/ci.yml/badge.svg" /></a>
+    <a href="https://github.com/OkamiOps/okami-sentinel/actions/workflows/docker.yml"><img alt="Docker image" src="https://github.com/OkamiOps/okami-sentinel/actions/workflows/docker.yml/badge.svg" /></a>
+    <a href="CONTRIBUTING.md"><img alt="PRs welcome" src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" /></a>
+  </p>
+
+  <p>
+    <a href="https://sentinel.okamiops.com"><img alt="Open the OKAMI Sentinel website" src="https://img.shields.io/badge/site-sentinel.okamiops.com-FF7028" /></a>
     <img alt="Node.js 24" src="https://img.shields.io/badge/Node.js-24.x-5FA04E?logo=nodedotjs&logoColor=white" />
     <img alt="pnpm 11.5.2" src="https://img.shields.io/badge/pnpm-11.5.2-F69220?logo=pnpm&logoColor=white" />
-    <img alt="React 19" src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=0B0B12" />
     <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white" />
-    <img alt="Local first" src="https://img.shields.io/badge/architecture-local--first-11CDBB" />
   </p>
 </div>
 
-![OKAMI Sentinel launch sequencer showing Codex Security, Google Mantis, Capital One VulnHunter, a live provider model, and preflight authorization](docs/assets/okami-sentinel-overview.png)
+<p align="center">
+  <img src="docs/assets/launch/sentinel-demo.gif" alt="Animated OKAMI Sentinel demo" width="880" />
+</p>
+
+## Why Sentinel
+
+- Compare engines and models in one local workspace: [Codex Security](https://github.com/openai/codex-security) (Native or Portable), [Google Mantis](https://github.com/google/mantis) (scan-only preview), and [Capital One VulnHunter](https://github.com/capitalone/vulnhunter) (experimental read-only profile).
+- Findings stay evidence-first: severity, location, and attack path when the run recorded one, plus an explicit mark when structured evidence was not attached. A comparison is of what each run reported, not of ground-truth accuracy.
+- Every run keeps duration. Token volume and estimated cost appear when the provider reports usage and a matching quote exists. Otherwise cost stays unavailable. It is never shown as `$0`.
+- Versioned guardrails judge a changeset and can publish that decision as a GitHub Check: pass, warning, blocked, or an operational error. An error is never turned into an approval.
+- Credentials stay out of scan manifests. Local mode stores them in the OS credential vault. Docker stores them in the encrypted server vault. SQLite keeps an opaque reference.
 
 > [!IMPORTANT]
 > OKAMI Sentinel compares **reported evidence**, not ground-truth accuracy. More findings do not automatically mean a better scan, and a missing finding does not prove remediation. Confirm findings and triage false positives before using precision, recall, or F1.
+
+## Quickstart
+
+Docker Compose on Linux amd64. Docker Engine with Compose v2 is required. Node and pnpm are not required on the host. The image runs Codex Security Portable, Mantis HTTP, and VulnHunter HTTP. Native and host-local CLI sessions stay on the [pnpm install](#install-with-pnpm).
+
+```bash
+git clone https://github.com/OkamiOps/okami-sentinel.git
+cd okami-sentinel
+sh scripts/docker/setup.sh
+docker compose --env-file .env.local -f compose.yaml -f compose.local.yaml up --build -d
+```
+
+Open <http://127.0.0.1:8787> and sign in as `admin`. Setup writes the password outside the checkout at `~/.local/share/okami-sentinel/admin_password` and does not print it. Readiness check: `curl --fail http://127.0.0.1:8787/readyz`.
+
+Apple Silicon, Windows, and Linux arm64 are outside the validated Docker matrix. Alternate ports, backups, and HTTPS hosting are in the [Docker](docs/docker.md) and [Dokploy](docs/dokploy.md) guides. Both are in Portuguese.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/launch/overview.png" alt="Overview evidence field with severity composition, estimated cost, and duration for one scan channel" /></td>
+    <td width="50%"><img src="docs/assets/launch/launch.png" alt="Launch sequencer offering Codex Security, Google Mantis, and Capital One VulnHunter, with a connection selector and a USD cost ceiling" /></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Evidence field</strong><br />Severity, cost, and duration for one run.</td>
+    <td align="center"><strong>Launch sequencer</strong><br />Engine, connection, model, and cost ceiling.</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/assets/launch/execution-graph.png" alt="Completed scan with stage telemetry, token counts, a cost ceiling, and a snapshot file graph" /></td>
+    <td width="50%"><img src="docs/assets/launch/change-gate.png" alt="Security change gate showing authority, frozen SHAs, policy, baseline, and GitHub Check publication" /></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Execution</strong><br />Telemetry, tokens, cost, and the snapshot graph.</td>
+    <td align="center"><strong>Change gate</strong><br />Policy decision and GitHub Check publication.</td>
+  </tr>
+</table>
 
 ## Why this exists
 
@@ -86,7 +134,7 @@ Every completed scan can produce a branded report with execution identity, sever
 
 ## Core capabilities
 
-- **GitHub workspace** — follow PR and branch activity, inspect Actions runs, configure budgeted automatic scans, and fetch/pull enrolled local checkouts. [Setup and limits](docs/github-monitoring.md).
+- **GitHub workspace** — follow PR and branch activity, inspect Actions runs, configure budgeted automatic scans, and fetch/pull enrolled local checkouts. [Setup and limits](docs/github-monitoring.md) (Portuguese; the page marks itself superseded by the 2026-09-30 guardrails design).
 - **Capability-aware scanner routing** — choose a methodology first; the UI then exposes only authentication, model, effort, and mode combinations the adapter can actually run.
 - **Provider connections** — configure local sessions, managed browser/device authentication, API keys, Token Plan endpoints, or compatible custom APIs without putting credentials in scan manifests.
 - **Live model discovery** — choose only models returned by the selected authenticated connection; Sentinel does not invent a fallback catalog.
@@ -322,7 +370,7 @@ Setup authorizes the Sentinel checkout by default. To scan another project, use 
 
 The Docker image also includes the managed Graphify runtime; no host installation or startup download is required.
 
-Docker supports Codex Security Portable, Mantis HTTP, and VulnHunter HTTP. Native and host-local CLI sessions remain pnpm-only. Linux amd64 is validated; Apple Silicon, Windows, and Linux arm64 are not part of the initial validation. See the operational guides for alternate ports, backups, restoration, and HTTPS hosting: [Docker](docs/docker.md) and [Dokploy](docs/dokploy.md) (Portuguese).
+Docker supports Codex Security Portable, Mantis HTTP, and VulnHunter HTTP. Native and host-local CLI sessions remain pnpm-only. Linux amd64 is validated; Apple Silicon, Windows, and Linux arm64 are not part of the initial validation. Alternate ports, backups, restoration, and HTTPS hosting: [Docker](docs/docker.md) and [Dokploy](docs/dokploy.md). Both guides are in Portuguese.
 
 ## Typical workflow
 
@@ -466,6 +514,7 @@ For ChatGPT-subscription runs on macOS, Sentinel prefers the Codex executable bu
 pnpm dev          # API + web
 pnpm dev:api      # API only
 pnpm dev:web      # web only
+pnpm check:repository
 pnpm typecheck
 pnpm test
 pnpm build
@@ -502,16 +551,40 @@ okami-sentinel/
 ## Project documentation
 
 - [Contributing](CONTRIBUTING.md)
+- [Starter issues](docs/good-first-issues.md)
 - [Security policy](SECURITY.md)
 - [Localization architecture](docs/localization.md)
 - [Product principles](apps/web/PRODUCT.md)
 - [Design system](apps/web/DESIGN.md)
+- [Repository map and maintenance](docs/repository-map.md)
 
-- [Repository map and maintenance](docs/repository-map.md) (English).
+## Roadmap
+
+No dates. These are boundaries already recorded in this tree:
+
+- The finding lifecycle `fixed` is reserved for an explicit incremental contract. A missing finding is not treated as remediation.
+- Cursor connections can be stored and can refresh a live catalog. Scanner execution stays unavailable until the remote and local artifact contract exists.
+- Local Grok scanning stays blocked until its plugin and hook surface can be isolated. xAI OAuth and API routes are separate.
+- The Mantis adapter is scan-only. It does not run `mantis-reproduce`, `mantis-chain`, or `mantis-patch`, and it does not write to the target repository.
+- Docker is validated on Linux amd64 for the HTTP engines. Native and host-local CLI sessions stay on the pnpm install. Apple Silicon, Windows, and Linux arm64 are outside that validation.
+
+## Contributing
+
+Setup, tests, and commit style are in [CONTRIBUTING.md](CONTRIBUTING.md). Small tasks already scoped against this tree are listed in [docs/good-first-issues.md](docs/good-first-issues.md). Bug reports and feature requests use the templates in `.github/ISSUE_TEMPLATE`.
+
+Security issues go through [Security → Report a vulnerability](https://github.com/OkamiOps/okami-sentinel/security/advisories/new), not a public issue. See [SECURITY.md](SECURITY.md).
+
+## Star the repo if this is useful
+
+If Sentinel helps you compare a scanner or gate a change, star [OkamiOps/okami-sentinel](https://github.com/OkamiOps/okami-sentinel). Stars are how the next person finds a local workbench instead of another one-off report.
 
 ## Status
 
 This repository is under active development. Interfaces, local schemas, and the reusable gate may change before a stable release. Pin the gate to a versioned release reference and review changes before upgrading.
+
+## License
+
+This repository has no `LICENSE` file. GitHub reports no license. Nothing in this README grants a right to use, modify, or distribute the code. The maintainers have to add a license before one exists.
 
 ---
 
