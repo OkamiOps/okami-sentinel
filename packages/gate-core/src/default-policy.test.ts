@@ -15,6 +15,6 @@ test("default policy blocks new or reopened critical and high findings", () => {
     model: "gpt-5.6-sol",
     effort: "low",
     mode: "standard",
-    maxCostUsd: 18,
+    maxCostUsd: 200,
   });
 });

@@ -90,6 +90,7 @@ function mappedStatus(
   run: ScanRun,
 ): ScanStatus {
   if (runtimeStatus === "completed") return "completed";
+  if (runtimeStatus === "incomplete") return "incomplete";
   if (runtimeStatus === "cancelled") return "cancelled";
   if (runtimeStatus === "failed") return hasFindings ? "incomplete" : "failed";
   if (workerIsCurrent(run) || withinBootstrapGrace(run)) return "running";
@@ -109,8 +110,9 @@ export function refreshPortableCodexSecurityRunFromDisk(run: ScanRun): ScanRun {
   // old worker runtime may still say running.
   // Queued recovery is owned by its launcher while the capability probe runs;
   // a status read must not mistake its not-yet-spawned worker for another crash.
-  if (run.status === "queued" || run.status === "cancelled" || run.status === "incomplete") return run;
   const runtime = readPortableCodexSecurityRuntime(run.scanDir);
+  if (run.status === "queued" || run.status === "cancelled" ||
+      (run.status === "incomplete" && runtime?.status !== "incomplete")) return run;
   const severity = countSeverity(path.join(run.scanDir, "findings.json")) ?? run.severity;
   if (
     runtime === null ||
@@ -136,6 +138,7 @@ export function refreshPortableCodexSecurityRunFromDisk(run: ScanRun): ScanRun {
     ...run,
     revision: runtime.snapshotId ?? run.revision,
     status,
+    ...(runtime.budgetPartial === undefined ? {} : { statusReason: "budget_exhausted" as const, budgetPartial: runtime.budgetPartial }),
     completedAt,
     durationMs,
     cost: scannerQuoteExists

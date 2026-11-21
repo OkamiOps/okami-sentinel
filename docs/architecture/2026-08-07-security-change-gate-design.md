@@ -166,7 +166,7 @@ Cada repositório protegido usa `.csb/guardrails.json`:
     "model": "gpt-5.6-sol",
     "effort": "high",
     "mode": "standard",
-    "maxCostUsd": 18
+    "maxCostUsd": 200
   },
   "rules": [
     { "severity": ["critical"], "lifecycle": ["new", "reopened"], "decision": "block" },

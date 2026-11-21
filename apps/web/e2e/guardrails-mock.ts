@@ -22,7 +22,7 @@ export function policyOf(preset: "block-critical-high" | "block-critical" | "war
     schemaVersion: 1,
     protectedBranches: ["main"],
     scope: { mode: "changed", maxChangedPaths: 50, fallback: "repository" },
-    scan: { model: "gpt-5.6-sol", effort: "low", mode: "standard", maxCostUsd: 18 },
+    scan: { model: "gpt-5.6-sol", effort: "low", mode: "standard", maxCostUsd: 200 },
     rules: guardrailPolicyPresetRules(preset),
   };
 }
