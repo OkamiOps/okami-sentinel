@@ -9,6 +9,17 @@ import { getManagedRuntimeCommand } from "./scanners/managed-runtime-store.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export const ROOT_DIR = path.resolve(__dirname, "../../..");
+
+export function opengrepConfiguration() {
+  const timeout = Number(process.env.SENTINEL_OPENGREP_TIMEOUT_MS ?? 300_000);
+  return {
+    enabled: !["0", "false", "off"].includes((process.env.SENTINEL_OPENGREP_ENABLED ?? "true").toLowerCase()),
+    binary: process.env.SENTINEL_OPENGREP_BIN?.trim() || "opengrep",
+    rules: process.env.SENTINEL_OPENGREP_RULES?.split(path.delimiter).map(value => value.trim()).filter(Boolean)
+      ?? [path.join(ROOT_DIR, "apps/api/opengrep-rules")],
+    timeoutMs: Number.isFinite(timeout) && timeout > 0 ? timeout : 300_000,
+  };
+}
 const configuredDataDir = process.env.CSB_DATA_DIR?.trim();
 const testDataDir = process.env.NODE_TEST_CONTEXT
   ? path.join(os.tmpdir(), `csb-api-test-${process.pid}`)

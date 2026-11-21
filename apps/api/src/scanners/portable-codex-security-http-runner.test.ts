@@ -1,4 +1,7 @@
 import { createPortableCodexSecuritySnapshot } from "./portable-codex-security-worker-support.js";
+import { fileURLToPath } from "node:url";
+import { readScanFindings } from "../ingest.js";
+import { readOpengrepStatus } from "../sast/opengrep.js";
 import { materializePortableCodexSecurityReportShard } from "./portable-codex-security-report-shards.js";
 import assert from "node:assert/strict";
 import { reservePortableTurn } from "./portable-turn-budget.js";
@@ -1348,10 +1351,18 @@ test("Portable turn reservations clamp partially affordable output and preserve 
   assert.equal((defaulted.body as Record<string, number>).max_output_tokens, 65_536);
 });
 
-test("Portable reservation blocks unaffordable turns before upstream in production and injected sessions", async () => {
+test("Portable reservation blocks unaffordable turns before upstream in production and injected sessions", async (t) => {
+  const keys = ["SENTINEL_OPENGREP_BIN", "SENTINEL_OPENGREP_ENABLED", "SENTINEL_OPENGREP_RULES"] as const;
+  const previous = keys.map(key => process.env[key]);
+  t.after(() => keys.forEach((key, index) => { if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index]; }));
+  process.env.SENTINEL_OPENGREP_BIN = fileURLToPath(new URL("../sast/fixtures/fake-opengrep.mjs", import.meta.url));
+  process.env.SENTINEL_OPENGREP_ENABLED = "true";
   for (const injected of [false, true]) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-reservation-"));
     const config = configuration(root);
+    const rules = path.join(root, "rules.json");
+    fs.writeFileSync(rules, JSON.stringify({ mode: "completed" }));
+    process.env.SENTINEL_OPENGREP_RULES = rules;
     config.costBudget = costBudget({ maxCostUsd: 0.000001 });
     let calls = 0;
     const upstream = { async request() { calls++; throw new Error("must-not-send"); } };
@@ -1368,6 +1379,11 @@ test("Portable reservation blocks unaffordable turns before upstream in producti
       assert.deepEqual(runtime.budgetPartial.completed, []);
       assert.equal(runtime.budgetPartial.interrupted.stage, "inventory");
       assert.ok(fs.existsSync(path.join(config.outputDir, "budget-partial.json")));
+      assert.equal(runtime.stageLabel, "Parcial por orçamento");
+      assert.equal(readOpengrepStatus(config.outputDir)?.status, "completed");
+      const findings = readScanFindings(config.outputDir);
+      assert.equal(findings.length, 1);
+      assert.equal(findings[0].origin?.kind, "sast");
     } finally { remove(root); }
   }
 });

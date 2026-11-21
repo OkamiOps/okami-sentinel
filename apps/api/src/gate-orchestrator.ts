@@ -92,7 +92,7 @@ import {
   markRepositoryBaselineStale,
   refreshRepositoryBaselineState,
 } from "./guardrails/baseline-state.js";
-import { readFindingsFile, toFindingSummaries } from "./ingest.js";
+import { readAiFindingsFile, toFindingSummaries } from "./ingest.js";
 import { getSystemGitHubAppService } from "./github-app-api.js";
 import {
   publishManagedGateCheck,
@@ -235,7 +235,7 @@ const productionDeps: LocalGateDependencies = {
   getBaselineScanId: getRepositoryBaseline,
   getScan: getRun,
   listScans: listRuns,
-  readFindings: (scanDir) => toFindingSummaries(readFindingsFile(scanDir)),
+  readFindings: (scanDir) => toFindingSummaries(readAiFindingsFile(scanDir)),
   readTriage: getFindingTriage,
   readExceptions: readGuardrailExceptions,
   evaluateGate,
@@ -1221,7 +1221,7 @@ function systemManagedExecutor(): SentinelManagedExecutor {
     materializer,
     startScan,
     waitForScan,
-    readFindings: (scanDir) => toFindingSummaries(readFindingsFile(scanDir)),
+    readFindings: (scanDir) => toFindingSummaries(readAiFindingsFile(scanDir)),
     readTriage: getFindingTriage,
     baselineCandidate: managedBaselineCandidate,
   });

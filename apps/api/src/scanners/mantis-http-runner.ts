@@ -1,3 +1,4 @@
+import { runOpengrep } from "../sast/opengrep.js";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -280,6 +281,7 @@ export async function runMantisHttpAgent(
     if (!snapshot.reused) {
       initializeAndLockMantisSnapshot(stateRoot, snapshotRoot, snapshotId, now());
     }
+    await runOpengrep(snapshotRoot, outputDir);
 
     // Metadata and the immutable source snapshot are both pinned before this
     // worker may read a secret or construct a network-capable session.

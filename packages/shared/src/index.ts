@@ -662,6 +662,7 @@ export interface ScanBudgetPartial {
 }
 
 export interface ScanRun {
+  sast?: ScanSastSummary | null;
   id: string;
   displayName: string;
   repositoryPath: string | null;
@@ -718,6 +719,7 @@ export function scanEstimatedUsd(
 }
 
 export interface FindingSummary {
+  origin?: { kind: "sast" | "ai"; tool?: string };
   findingId: string;
   occurrenceId: string | null;
   title: string;
@@ -729,6 +731,15 @@ export interface FindingSummary {
   fingerprints: string[];
   category: string | null;
   cwe: string[];
+}
+
+export interface ScanSastSummary {
+  status: "completed" | "failed" | "skipped" | "timeout";
+  tool: "opengrep";
+  version: string | null;
+  count: number;
+  durationMs: number;
+  reason: string | null;
 }
 
 export type AttackPathEvidenceState = "proven" | "inferred" | "missing";

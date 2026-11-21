@@ -1,4 +1,5 @@
 import { scanFilesGraph } from "./scan-files-graph.js";
+import { readSastSummary } from "./sast/opengrep.js";
 import { scanCandidatePreview } from "./scan-candidate-preview.js";
 import { scanAnalysisMetrics } from "./scan-analysis-metrics.js";
 import { automaticGitHubScanDispatcher } from "./github-monitor-dispatch.js";
@@ -223,7 +224,7 @@ import {
 } from "./guardrails/caller-workflow-pull-request.js";
 import {
   importExternalScans,
-  readFindingsFile,
+  readScanFindings as readFindingsFile,
   refreshRunFromDisk,
   toFindingSummaries,
 } from "./ingest.js";
@@ -1804,7 +1805,7 @@ app.get("/scans/:id", async (c) => {
   const run = readRunWithEngineRefresh(id);
   if (!run) return c.json({ error: "Scan não encontrado" }, 404);
   const findings = toFindingSummaries(readFindingsFile(run.scanDir));
-  return c.json({ scan: withProgress(run), findings });
+  return c.json({ scan: { ...withProgress(run), sast: readSastSummary(run.scanDir) }, findings });
 });
 
 app.get("/scans/:id/analysis-metrics", (c) => {
@@ -1854,7 +1855,7 @@ app.get("/scans/:id/report", async (c) => {
   if (!run) return c.json({ error: "Scan não encontrado" }, 404);
   try {
     return c.json({
-      scan: withProgress(run),
+      scan: { ...withProgress(run), sast: readSastSummary(run.scanDir) },
       findings: readFindingsFile(run.scanDir),
       regression: buildRegressionSummary(run.id),
       generatedAt: new Date().toISOString(),
@@ -1886,6 +1887,8 @@ app.get("/scans/:id/findings", (c) => {
   const severity = c.req.query("severity");
   const q = (c.req.query("q") || "").toLowerCase();
   let findings = readFindingsFile(run.scanDir);
+  const origin = c.req.query("origin");
+  if (origin) findings = findings.filter(finding => finding.origin?.kind === origin);
   if (severity) {
     findings = findings.filter((f) => f.severity === severity);
   }

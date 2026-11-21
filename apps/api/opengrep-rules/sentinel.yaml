@@ -1,0 +1,169 @@
+rules:
+  - id: sentinel-js-dynamic-code
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: Dynamic code execution can evaluate untrusted input
+    metadata: { cwe: [CWE-95], author: Sentinel, category: security }
+    patterns:
+      - pattern-either:
+          - pattern: eval($CODE)
+          - pattern: new Function(..., $CODE)
+      - pattern-not: eval("...")
+      - pattern-not: new Function(..., "...")
+  - id: sentinel-js-shell-exec
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: Non-literal shell command may allow command injection
+    metadata: { cwe: [CWE-78], author: Sentinel, category: security }
+    patterns:
+      - pattern-either:
+          - pattern: exec($CMD, ...)
+          - pattern: $CP.exec($CMD, ...)
+          - pattern: execSync($CMD, ...)
+          - pattern: $CP.execSync($CMD, ...)
+      - pattern-not: exec("...", ...)
+      - pattern-not: $CP.exec("...", ...)
+      - pattern-not: execSync("...", ...)
+      - pattern-not: $CP.execSync("...", ...)
+  - id: sentinel-js-shell-option
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: Child process shell mode enables shell interpretation
+    metadata: { cwe: [CWE-78], author: Sentinel, category: security }
+    pattern-either:
+      - pattern: 'spawn(..., { ..., shell: true, ... })'
+      - pattern: '$CP.spawn(..., { ..., shell: true, ... })'
+      - pattern: 'execFile(..., { ..., shell: true, ... })'
+      - pattern: '$CP.execFile(..., { ..., shell: true, ... })'
+  - id: sentinel-js-sql-construction
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: Constructed SQL should use bound parameters
+    metadata: { cwe: [CWE-89], author: Sentinel, category: security }
+    pattern-either:
+      - pattern: $DB.query($A + $B, ...)
+      - pattern: $DB.query(`...${$VALUE}...`, ...)
+  - id: sentinel-js-tls-disabled
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: TLS certificate verification is disabled
+    metadata: { cwe: [CWE-295], author: Sentinel, category: security }
+    pattern: "{ ..., rejectUnauthorized: false, ... }"
+  - id: sentinel-js-password-weak-hash
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: Password hashing requires a password-specific slow hash
+    metadata: { cwe: [CWE-916], author: Sentinel, category: security }
+    patterns:
+      - pattern-either:
+          - pattern: $C.createHash($ALG).update($PASSWORD, ...)
+          - pattern: createHash($ALG).update($PASSWORD, ...)
+      - metavariable-regex: { metavariable: $ALG, regex: "['\"](md5|sha1)['\"]" }
+      - metavariable-regex: { metavariable: $PASSWORD, regex: '(?i).*(password|passwd|pwd).*' }
+  - id: sentinel-js-html-injection
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: Dynamic HTML requires sanitization before insertion
+    metadata: { cwe: [CWE-79], author: Sentinel, category: security }
+    patterns:
+      - pattern-either:
+          - pattern: $EL.innerHTML = $HTML
+          - pattern: "{ ..., dangerouslySetInnerHTML: { __html: $HTML }, ... }"
+          - pattern: '<$TAG ... dangerouslySetInnerHTML={{ __html: $HTML }} ... />'
+      - metavariable-pattern:
+          metavariable: $HTML
+          patterns:
+            - pattern-not: '"..."'
+  - id: sentinel-python-eval
+    languages: [python]
+    severity: ERROR
+    message: Dynamic evaluation can execute untrusted input
+    metadata: { cwe: [CWE-95], author: Sentinel, category: security }
+    patterns:
+      - pattern: eval($CODE, ...)
+      - pattern-not: eval("...", ...)
+  - id: sentinel-python-shell
+    languages: [python]
+    severity: ERROR
+    message: Subprocess shell mode may enable command injection
+    metadata: { cwe: [CWE-78], author: Sentinel, category: security }
+    pattern: subprocess.$METHOD(..., shell=True, ...)
+  - id: sentinel-python-sql-construction
+    languages: [python]
+    severity: ERROR
+    message: Constructed SQL should use bound parameters
+    metadata: { cwe: [CWE-89], author: Sentinel, category: security }
+    pattern-either:
+      - pattern: $DB.execute($A + $B, ...)
+      - pattern: $DB.execute(f"...{$VALUE}...", ...)
+      - pattern: $DB.execute($FMT % $VALUE, ...)
+  - id: sentinel-python-tls-disabled
+    languages: [python]
+    severity: ERROR
+    message: TLS certificate verification is disabled
+    metadata: { cwe: [CWE-295], author: Sentinel, category: security }
+    pattern: requests.$METHOD(..., verify=False, ...)
+  - id: sentinel-python-password-weak-hash
+    languages: [python]
+    severity: WARNING
+    message: Password hashing requires a password-specific slow hash
+    metadata: { cwe: [CWE-916], author: Sentinel, category: security }
+    patterns:
+      - pattern-either:
+          - pattern: hashlib.md5($PASSWORD, ...)
+          - pattern: hashlib.sha1($PASSWORD, ...)
+      - metavariable-regex: { metavariable: $PASSWORD, regex: '(?i).*(password|passwd|pwd).*' }
+  - id: sentinel-python-pickle
+    languages: [python]
+    severity: WARNING
+    message: Pickle deserialization can execute code from untrusted data
+    metadata: { cwe: [CWE-502], author: Sentinel, category: security }
+    pattern: pickle.loads(...)
+  - id: sentinel-python-yaml-load
+    languages: [python]
+    severity: WARNING
+    message: YAML parsing should use SafeLoader or safe_load
+    metadata: { cwe: [CWE-502], author: Sentinel, category: security }
+    patterns:
+      - pattern: yaml.load(...)
+      - pattern-not: yaml.load(..., Loader=yaml.SafeLoader, ...)
+      - pattern-not: yaml.load($DATA, yaml.SafeLoader)
+      - pattern-not: yaml.load(..., Loader=SafeLoader, ...)
+      - pattern-not: yaml.load(..., Loader=yaml.CSafeLoader, ...)
+  - id: sentinel-go-sql-construction
+    languages: [go]
+    severity: ERROR
+    message: Constructed SQL should use bound parameters
+    metadata: { cwe: [CWE-89], author: Sentinel, category: security }
+    pattern-either:
+      - pattern: $DB.Query($A + $B, ...)
+      - pattern: $DB.Exec($A + $B, ...)
+      - pattern: $DB.Query(fmt.Sprintf(...), ...)
+  - id: sentinel-go-tls-disabled
+    languages: [go]
+    severity: ERROR
+    message: TLS certificate verification is disabled
+    metadata: { cwe: [CWE-295], author: Sentinel, category: security }
+    pattern: "tls.Config{..., InsecureSkipVerify: true, ...}"
+  - id: sentinel-go-password-weak-hash
+    languages: [go]
+    severity: WARNING
+    message: Password hashing requires a password-specific slow hash
+    metadata: { cwe: [CWE-916], author: Sentinel, category: security }
+    patterns:
+      - pattern-either:
+          - pattern: md5.Sum([]byte($PASSWORD))
+          - pattern: sha1.Sum([]byte($PASSWORD))
+      - metavariable-regex: { metavariable: $PASSWORD, regex: '(?i).*(password|passwd|pwd).*' }
+  - id: sentinel-hardcoded-aws-key
+    languages: [generic]
+    severity: ERROR
+    message: Hardcoded AWS access key identifier
+    metadata: { cwe: [CWE-798], author: Sentinel, category: security }
+    pattern-regex: '["''](?:AKIA|ASIA)[A-Z0-9]{16}["'']'
+  - id: sentinel-hardcoded-private-key
+    languages: [generic]
+    severity: ERROR
+    message: Embedded private key material
+    metadata: { cwe: [CWE-321], author: Sentinel, category: security }
+    pattern-regex: '-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----'
