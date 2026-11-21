@@ -1817,6 +1817,36 @@ export interface ScanAiVerdicts {
   verdicts: AiVerdict[];
 }
 
+/** One representative candidate reviewed by AI on behalf of deterministic duplicates. */
+export type ScanCandidateGroupVerdictStatus = "confirmed" | "rejected" | "inconclusive" | "pending";
+
+export interface ScanCandidateGroupMember {
+  id: string;
+  category: string;
+  hypothesis: string;
+  anchors: Array<{ path: string; startLine: number; endLine: number; role: string }>;
+}
+
+export interface ScanCandidateGroup {
+  representativeId: string;
+  memberIds: string[];
+  members: ScanCandidateGroupMember[];
+  /** The representative's AI verdict, applied to every member. */
+  verdict: { status: ScanCandidateGroupVerdictStatus; stage?: "dataflow" | "validation"; reason?: string };
+}
+
+export interface ScanCandidateGroups {
+  scanId: string;
+  /** False for scans that predate grouping or have not reached AI review. */
+  recorded: boolean;
+  rule: string | null;
+  /** Discovery candidates before grouping, when recorded. */
+  candidates: number | null;
+  /** Candidates sent to AI review after grouping, when known. */
+  reviewed: number | null;
+  groups: ScanCandidateGroup[];
+}
+
 export type RepositoryRole = "viewer" | "analyst" | "operator" | "maintainer";
 export interface RepositoryGrant { repositoryKey: string; role: RepositoryRole; }
 export interface AuthSessionUser {

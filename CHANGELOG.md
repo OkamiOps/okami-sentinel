@@ -17,6 +17,8 @@ with the Docker and engine-update work; earlier history remains in
 
 ### Added
 
+- Portable Codex Security groups duplicate candidates in code, without AI, before dataflow and validation: same normalized category and attacker, the same primary control or sink with overlapping lines, and overlapping sinks when both name one. Each group is reviewed once, its verdict applies to every member, and `GET /scans/:id/candidate-groups` plus the scan Evidence view show the groups and shared verdicts. Scans that predate grouping, or resumed runs whose AI review already started, keep reviewing every candidate on its own.
+
 - Scan details include a Files tab between Telemetry and Profile: searchable snapshot files, directed Graphify relationships, interactive neighbor navigation and explicit missing-index states. The view reads existing artifacts without running a scan or rebuilding a graph; connections do not imply inspected coverage or confirmed vulnerabilities.
 
 - Portable Codex Security scans show a live, searchable preview of saved discovery candidates, including hypotheses, potential impact and source locations. Candidates remain explicitly provisional until final validation and are never counted as confirmed findings.

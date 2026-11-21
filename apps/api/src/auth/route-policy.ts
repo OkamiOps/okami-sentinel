@@ -59,7 +59,7 @@ export const ROUTE_POLICY: ReadonlyArray<readonly [method: string, pattern: stri
   ["GET", "/scans", SCOPED], ["POST", "/scans", ADMIN], ["GET", "/scans/active", SCOPED], ["GET", "/scans/catalog", SCOPED],
   ["GET", "/scans/:id", viewerScan], ["DELETE", "/scans/:id", R("maintainer", "scan")],
   ["GET", "/scans/:id/analysis-metrics", viewerScan], ["GET", "/scans/:id/files-graph", viewerScan],
-  ["GET", "/scans/:id/candidate-preview", viewerScan], ["GET", "/scans/:id/verdicts", viewerScan], ["GET", "/scans/:id/telemetry", viewerScan],
+  ["GET", "/scans/:id/candidate-preview", viewerScan], ["GET", "/scans/:id/candidate-groups", viewerScan], ["GET", "/scans/:id/verdicts", viewerScan], ["GET", "/scans/:id/telemetry", viewerScan],
   ["GET", "/scans/:id/report", viewerScan], ["GET", "/scans/:id/regression", viewerScan],
   ["POST", "/scans/:id/baseline", R("operator", "scan")], ["GET", "/scans/:id/findings", viewerScan],
   ["GET", "/scans/:id/findings/:findingId", viewerScan], ["POST", "/scans/:id/findings/:findingId/triage", R("analyst", "scan")],

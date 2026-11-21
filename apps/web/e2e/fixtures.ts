@@ -2,6 +2,7 @@ import type { Page } from "@playwright/test";
 import { EMAIL_PROVIDER_PRESETS } from "@csb/shared";
 import type {
   ScanAiVerdicts,
+  ScanCandidateGroups,
   AccountNotificationsResponse,
   GitHubAction,
   GitHubActionEvent,
@@ -28,6 +29,7 @@ import type {
 import type { GuardrailActionsStatus, ScanFilesGraph } from "../src/api";
 
 export interface MockApiOptions {
+  candidateGroups?: Record<string, ScanCandidateGroups>;
   signedOut?: boolean;
   session?: { isAdmin: boolean; grants: RepositoryGrant[]; username?: string };
   loginResponse?: { status: number; body: unknown };
@@ -343,6 +345,7 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
       if (match[2] === "analysis-metrics") return json(analysisMetrics);
       if (match[2] === "files-graph") return json(filesGraph);
       if (match[2] === "verdicts") return json(state.verdicts ?? { scanId: run.id, available: false, snapshotAvailable: false, counts: { confirmed: 0, rejected: 0, inconclusive: 0, downgraded: 0, legacy: 0 }, verdicts: [] });
+      if (match[2] === "candidate-groups") return json(options.candidateGroups?.[run.id] ?? { scanId: run.id, recorded: false, rule: null, candidates: null, reviewed: null, groups: [] } satisfies ScanCandidateGroups);
       if (match[2] === "report") return json({ scan: run, findings: state.reportFindings, regression, generatedAt: "2026-09-07T10:02:00Z" });
       if (match[2] === "events") return route.fulfill({ contentType: "text/event-stream", body: ": fixture\n\n" });
       const findingDetailMatch = match[2].match(/^findings\/([^/]+)$/);
