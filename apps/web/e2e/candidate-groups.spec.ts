@@ -46,7 +46,7 @@ async function evidence(page: Page, name: string) {
 
 test("scan page shows deterministic groups and the verdict every member shares", async ({ page }) => {
   const panel = await openPortableScan(page, grouped);
-  await expect(panel.getByRole("status")).toHaveText("7 candidatos · 4 revisões por IA · 2 grupos");
+  await expect(panel.getByRole("status")).toHaveText("Candidatos: 7 · Revisões por IA: 4 · Grupos: 2");
   const tenant = panel.getByRole("listitem", { name: "authorization · 3 membros" });
   await expect(tenant).toContainText("Rejeitado · not-vulnerable");
   await expect(tenant.getByText("Revisado pela IA")).toHaveCount(1);
