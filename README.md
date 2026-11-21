@@ -507,6 +507,14 @@ Mantis and VulnHunter are adapted methodologies bundled with Sentinel, not indep
 | `CSB_PORT` | `8787` | API port |
 | `CSB_GITHUB_ACTIONS_WORKFLOW_SHA` | unavailable | Immutable 40-character Sentinel release SHA accepted by remote Actions callers |
 | `CSB_MAX_CONCURRENT_SCANS` | `8` | Maximum concurrent scanner processes |
+| `SENTINEL_OPENGREP_ENABLED` | `true` | Run deterministic SAST before AI; `false`, `0`, or `off` disables it |
+| `SENTINEL_OPENGREP_BIN` | `opengrep` on PATH | CLI executable; image: `/opt/sentinel-engines/bin/opengrep` |
+| `SENTINEL_OPENGREP_RULES` | `apps/api/opengrep-rules` (bundled Sentinel-authored pack) | Local paths separated by the OS path delimiter (`:` on Linux/macOS); image: `/app/apps/api/opengrep-rules` |
+| `SENTINEL_OPENGREP_TIMEOUT_MS` | `300000` | Independent SAST timeout in milliseconds; timeout/failure never prevents AI execution |
+
+The Docker image bundles OpenGrep **2.0.0** for Linux amd64/arm64 with pinned SHA-256 checksums and local rules. Rebuild/redeploy to pick up the binary and pack; scans never download rules from the Registry. Existing AI runtime support constraints still apply to the image. Compose forwards the four variables above; custom paths must exist inside the container (mount custom rules read-only). For source development, install OpenGrep separately or set the executable path; a missing binary records a skipped SAST status.
+
+SAST consumes no AI budget. Findings and status are persisted separately before AI starts, remain visible on budget-partial scans, and completed SAST is reused on resume. The scan page shows SAST status and origin filters; scan findings, reports and regression include both origins. Gates, comparisons and stored run-level severity totals remain **AI-only** until SAST classification/review is implemented.
 
 For ChatGPT-subscription runs on macOS, Sentinel prefers the Codex executable bundled with ChatGPT Desktop. This keeps the inference host aligned with the shared authentication and model-cache schema; an explicit `CODEX_BIN` always wins.
 

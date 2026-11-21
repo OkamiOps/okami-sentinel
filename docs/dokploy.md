@@ -46,6 +46,23 @@ As variáveis criadas na interface do Dokploy são gravadas em `.env` para inter
 
 ## Depois do primeiro deploy
 
+### OpenGrep antes da IA
+
+A imagem inclui OpenGrep **2.0.0** para Linux amd64/arm64, com SHA-256 fixado por arquitetura, e o pacote de regras autorais do Sentinel. Faça rebuild/redeploy para receber essa etapa; não é necessário instalar nada no host nem liberar acesso ao Registry em tempo de scan. O suporte dos demais runtimes continua sujeito à matriz documentada no README.
+
+O `compose.yaml` encaminha explicitamente estas variáveis opcionais do Environment do Dokploy:
+
+| Variável | Padrão na imagem/Compose |
+| --- | --- |
+| `SENTINEL_OPENGREP_ENABLED` | `true`; use `false`, `0` ou `off` para desativar |
+| `SENTINEL_OPENGREP_BIN` | `/opt/sentinel-engines/bin/opengrep` |
+| `SENTINEL_OPENGREP_RULES` | `/app/apps/api/opengrep-rules`; lista de caminhos locais separados por `:` |
+| `SENTINEL_OPENGREP_TIMEOUT_MS` | `300000` (5 minutos, independente do orçamento de IA) |
+
+Regras personalizadas precisam de mount somente leitura em um caminho acessível ao UID 1000, e esse caminho **interno** deve ser usado na variável. Não use `auto` nem fontes remotas: o runner exige regras locais. A etapa roda após fixar o snapshot e antes da IA, sem consumir tokens/custo de IA. Timeout, binário ausente ou falha registram estado sem impedir a análise por IA. Os artefatos ficam em `sast/` no diretório persistente do scan; resultados continuam disponíveis em scans parciais por orçamento e são reutilizados na retomada quando concluídos. Gates, comparações e totais de severidade do scan continuam restritos à IA; a lista de achados e relatórios incluem também SAST.
+
+### Acesso e operação
+
 Entre no domínio HTTPS com o usuário administrativo. Leia a senha apenas do arquivo de operador em uma sessão controlada. A primeira inicialização cria essa conta a partir de `CSB_ADMIN_USER` e `CSB_ADMIN_PASSWORD_PATH`; nas inicializações seguintes, esses valores só voltam a ser usados para restaurar um administrador quando nenhum estiver ativo — eles não funcionam como credencial de autenticação a cada requisição. Convide as demais pessoas em **Configurações → Usuários**, já autenticado como administrador. Configure depois as conexões e credenciais no vault do servidor; não copie o keychain ou a pasta pessoal de uma estação de trabalho para o volume.
 
 Se o administrador configurado ficar bloqueado por tentativas erradas de senha e não houver outra pessoa administradora disponível para desbloqueá-lo na interface, use **Redeploy** ou reinicie o serviço `sentinel`. A inicialização limpa o bloqueio e o contador de falhas apenas da conta indicada em `CSB_ADMIN_USER` e registra isso nos logs; a senha em uso continua a mesma, e o limite de tentativas por IP continua valendo.

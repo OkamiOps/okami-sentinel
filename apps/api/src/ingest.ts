@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { readOpengrepFindings } from "./sast/opengrep.js";
 import {
   emptySeverityCounts,
   normalizeSeverity,
@@ -1054,6 +1055,7 @@ export function readFindingsFile(
         : null;
 
     const detail: FindingDetail = {
+      origin: { kind: "ai" },
       findingId: String(f.findingId ?? f.occurrenceId ?? cryptoRandom()),
       occurrenceId: typeof f.occurrenceId === "string" ? f.occurrenceId : null,
       title: String(f.title ?? "Untitled finding"),
@@ -1081,11 +1083,24 @@ export function readFindingsFile(
           : null,
       confidenceRationale,
     };
+    if (f.origin && typeof f.origin === "object" && "kind" in f.origin &&
+      (f.origin.kind === "sast" || f.origin.kind === "ai")) {
+      detail.origin = { kind: f.origin.kind, ...("tool" in f.origin && typeof f.origin.tool === "string" ? { tool: f.origin.tool } : {}) };
+    }
     return {
       ...detail,
       attackPathModel: normalizeAttackPath(detail),
     };
   });
+}
+
+// Gates and comparisons intentionally consume only AI-reviewed evidence.
+export function readAiFindingsFile(scanDir: string, sessionsRoot = CODEX_SECURITY_SESSIONS_DIR): FindingDetail[] {
+  return readFindingsFile(scanDir, sessionsRoot).filter(finding => finding.origin?.kind !== "sast");
+}
+
+export function readScanFindings(scanDir: string, sessionsRoot = CODEX_SECURITY_SESSIONS_DIR): FindingDetail[] {
+  return [...readAiFindingsFile(scanDir, sessionsRoot), ...readOpengrepFindings(scanDir)];
 }
 
 function findingCategorySourceKey(run: ScanRun): string {
@@ -1218,6 +1233,7 @@ export function toFindingSummaries(details: FindingDetail[]): FindingSummary[] {
         fingerprints,
         category,
         cwe,
+        origin,
       }) => {
         const trimmedTitle = typeof title === "string" ? title.trim() : "";
         return {
@@ -1232,6 +1248,7 @@ export function toFindingSummaries(details: FindingDetail[]): FindingSummary[] {
           fingerprints: normalizeTextList(fingerprints),
           category: normalizeOptionalText(category),
           cwe: normalizeTextList(cwe),
+          origin: origin ?? { kind: "ai" },
         };
       },
     );

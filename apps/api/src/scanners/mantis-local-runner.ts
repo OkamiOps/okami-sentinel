@@ -1,3 +1,4 @@
+import { runOpengrep } from "../sast/opengrep.js";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -163,6 +164,7 @@ export async function runMantisLocalClaude(
     const stateRoot = path.join(outputDir, "mantis");
     initializeMantisState(stateRoot, snapshotRoot, snapshotId, now());
     lockMantisSnapshot(snapshotRoot);
+    await runOpengrep(snapshotRoot, outputDir);
 
     update({
       status: "running",

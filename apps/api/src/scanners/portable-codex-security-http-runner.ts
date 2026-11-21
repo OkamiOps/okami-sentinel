@@ -1,4 +1,5 @@
 import { projectionBudget } from "../graphify/projection-budget.js";
+import { runOpengrep } from "../sast/opengrep.js";
 import { reservePortableTurn } from "./portable-turn-budget.js";
 import { assertBudgetResumeCap, syncBudgetArtifact, writeBudgetPartial } from "./portable-budget-partial.js";
 import { buildDiscoveryGraphContext, buildPartitionRelations } from "../graphify/discovery-context.js";
@@ -330,6 +331,7 @@ export async function runPortableCodexSecurity(
     }
 
     assertPortableCodexSecuritySnapshot(snapshot);
+    await runOpengrep(snapshot.snapshotRoot, outputDir);
     throwIfStopped(deadline);
     // Snapshotting is local-only; repeat metadata validation immediately
     // before crossing into the vault/network credential boundary.
