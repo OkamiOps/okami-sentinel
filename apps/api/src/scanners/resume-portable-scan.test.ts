@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { resolveDeepPlan, STANDARD_PLAN_FILE } from "./portable-deep-plan.js";
 import { preflightPortableResume } from "./resume-portable-scan.js";
+import { assertBudgetResumeCap } from "./portable-budget-partial.js";
 import { createPortableCodexSecuritySnapshot } from "./portable-codex-security-worker-support.js";
 
 function fixture(candidateCount = 1, extraFiles = 0) {
@@ -35,6 +36,15 @@ function fixture(candidateCount = 1, extraFiles = 0) {
   return { root, scan, snapshot, write, assessments };
 }
 function cleanup(root: string) { for (const entry of fs.readdirSync(root,{withFileTypes:true})) {const p=path.join(root,entry.name); if(entry.isDirectory()) { fs.chmodSync(p,0o700); cleanup(p); }} fs.rmSync(root,{recursive:true,force:true}); }
+
+test("budget resume requires a higher finite cap above prior spend", () => {
+  const summary = { stopReason: "budget" as const, spentUsd: 2, maxCostUsd: 1,
+    completed: [], pending: [], interrupted: { stage: "inventory", page: "inventory", artifactPath: null } };
+  for (const cap of [undefined, NaN, Infinity, -1, 1, 2]) {
+    assert.throws(() => assertBudgetResumeCap(summary, cap), /resume_budget_cap_must_exceed_prior_spend_and_cap/);
+  }
+  assert.doesNotThrow(() => assertBudgetResumeCap(summary, 3));
+});
 
 test("validation recovery preflight preserves and accepts discovery/dataflow checkpoints", () => {
   const f=fixture(); try {

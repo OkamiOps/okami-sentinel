@@ -1507,7 +1507,7 @@ export function importExternalScans(
 
 export function refreshRunFromDisk(id: string): ScanRun | null {
   const stored = getRun(id);
-  if (stored?.status === "incomplete") return stored;
+  if (stored?.status === "incomplete" && !isPortableCodexSecurityRun(stored)) return stored;
   if (stored?.engine === "mantis") {
     const refreshed = withOpenRouterPricingEstimate(refreshMantisRunFromDisk(stored));
     persistRunWithFindingCategoryMetrics(refreshed, true);

@@ -37,13 +37,18 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { formatUsd } from "../format";
-import { useI18n, type TranslationKey } from "../i18n";
+import type { TranslationKey } from "../i18n";
+import { useScopedI18n } from "../i18n/scoped";
+import { scanBudgetMessages } from "../i18n/scan-budget";
 import {
   parsePortableRetryIntent,
   selectionMatchesPortableRetry,
 } from "../lib/execution-profile";
 import {
   buildConnectionAwareStartRequest,
+  DEFAULT_SCAN_MAX_COST_USD,
+  costCeilingDisclosureKey,
+  authorizationBudgetKey,
   canResolveConnectionWithEngine,
   compatibilityReasonKey,
   connectionSelectionFor,
@@ -55,6 +60,7 @@ import {
   reasoningEffortGridClass,
   reasoningEffortOptionClass,
   parseCostCeiling,
+  requiresUsdCapAcknowledgement,
   reasoningEffortForCompatibility,
   reconcileReasoningEffort,
   validateConnectionCapability,
@@ -162,7 +168,7 @@ function ScannerGlyph({ engine, size = 18 }: { engine: ScannerEngine; size?: num
 }
 
 export function NewScanPage() {
-  const { t } = useI18n();
+  const { t } = useScopedI18n(scanBudgetMessages);
   const reduceMotion = useReducedMotion();
   const [searchParams] = useSearchParams();
   const initial = useMemo(() => launchInitial(searchParams), [searchParams]);
@@ -189,7 +195,7 @@ export function NewScanPage() {
   const [providerValidation, setProviderValidation] = useState<"validating" | "ready" | "failed" | "error" | null>(null);
   const [effort, setEffort] = useState<string | null>(initial.effort ?? null);
   const [mode, setMode] = useState<ScanMode>(initial.mode ?? "standard");
-  const [maxCostUsd, setMaxCostUsd] = useState(initial.maxCostUsd ?? "1");
+  const [maxCostUsd, setMaxCostUsd] = useState(initial.maxCostUsd ?? String(DEFAULT_SCAN_MAX_COST_USD));
   const [unlimited, setUnlimited] = useState(initial.unlimited ?? false);
   const [paths, setPaths] = useState(initial.paths ?? "");
   const [authorized, setAuthorized] = useState(false);
@@ -243,7 +249,10 @@ export function NewScanPage() {
     compatibility.modelSelectionMode === selection.modelSelectionMode &&
     compatibility.modelId === selection.modelId;
   const usesCostEnvelope = engine === "codex-security";
-  const cost = parseCostCeiling(maxCostUsd) ?? 1;
+  const authorizationBudget = authorizationBudgetKey(engine, unlimited);
+  const costLaunchBlocked = requiresUsdCapAcknowledgement(engine, unlimited);
+  const costWarning = t("capWarning", { engine: scanner?.name ?? engine });
+  const cost = parseCostCeiling(maxCostUsd) ?? DEFAULT_SCAN_MAX_COST_USD;
   const executionProfile = engine === "codex-security" ? compatibility?.selectedProfile ?? null : null;
   const executionProfileLabel = executionProfile === "native"
     ? t("newScan.profile.native")
@@ -469,6 +478,7 @@ export function NewScanPage() {
     event.preventDefault();
     setError(null);
     setStarted(null);
+    if (costLaunchBlocked) return setError(costWarning);
     if (!repositoryPath.trim()) return setError(t("newScan.selectRepository"));
     if (selectedConnection === null) return setError(t("newScan.connectionRequired"));
     if (selection === null) return setError(t("newScan.connectionModelRequired"));
@@ -492,7 +502,7 @@ export function NewScanPage() {
         effort: reasoning.selected ?? undefined,
         reasoning,
         mode,
-        maxCostUsd: usesCostEnvelope && !unlimited ? cost : undefined,
+        maxCostUsd: !unlimited ? cost : undefined,
         paths: paths.split(",").map((item) => item.trim()).filter(Boolean),
       });
       if (request === null) throw new Error(t("newScan.routeUnavailable"));
@@ -830,38 +840,10 @@ export function NewScanPage() {
 
           <Panel className="bench-corners" label="STAGE 03 / AUTHORIZE" title={t("newScan.authorize")}>
             {usesCostEnvelope ? (
-              <>
-                <div className="grid grid-cols-2 border-b p-4">
-                  <Readout label={t("newScan.expected")} value={unlimited ? "OPEN" : t("common.unknown").toUpperCase()} tone="signal" />
-                  <Readout label={t("newScan.ceiling")} value={unlimited ? "NONE" : formatUsd(cost)} />
-                </div>
-                <div className="border-b p-4">
-                  <label className="bench-label" htmlFor="cost">
-                    {t("newScan.maxCost")}
-                  </label>
-                  <Input
-                    id="cost"
-                    type="number"
-                    min="0.01"
-                    step="0.01"
-                    value={maxCostUsd}
-                    onChange={(event) => setMaxCostUsd(event.target.value)}
-                    disabled={unlimited}
-                    className="mt-2 font-mono text-lg"
-                  />
-                  <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
-                    {t("newScan.costCeilingDisclosure")}
-                  </p>
-                  <label htmlFor="unlimited-cost" className="mt-3 flex cursor-pointer items-center gap-3 text-xs text-muted-foreground">
-                    <Checkbox
-                      id="unlimited-cost"
-                      checked={unlimited}
-                      onCheckedChange={(checked) => setUnlimited(checked === true)}
-                    />
-                    {t("newScan.unlimited")}
-                  </label>
-                </div>
-              </>
+              <div className="grid grid-cols-2 border-b p-4">
+                <Readout label={t("newScan.expected")} value={unlimited ? "OPEN" : t("common.unknown").toUpperCase()} tone="signal" />
+                <Readout label={t("newScan.ceiling")} value={unlimited ? "NONE" : formatUsd(cost)} />
+              </div>
             ) : (
               <>
                 <div className="grid grid-cols-2 border-b p-4">
@@ -873,19 +855,50 @@ export function NewScanPage() {
                   <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
                     {t(engine === "vulnhunter" ? "newScan.vulnHunterPlanUsageDescription" : "newScan.planUsageDescription")}
                   </p>
-                  <div className="mt-4 grid gap-2 font-mono text-[8px] uppercase text-muted-foreground">
-                    <span className="flex items-center justify-between border-b pb-2">
-                      <span>{t("newScan.targetWrites")}</span><strong className="text-chart-2">0</strong>
-                    </span>
-                    <span className="flex items-center justify-between border-b pb-2">
-                      <span>{t("newScan.generatedExecution")}</span><strong className="text-chart-2">OFF</strong>
-                    </span>
-                    <span className="flex items-center justify-between">
-                      <span>{t("newScan.authSource")}</span><strong className="max-w-32 truncate text-foreground">{selectedConnection?.display.providerLabel ?? "—"}</strong>
-                    </span>
-                  </div>
                 </div>
               </>
+            )}
+            <div className="border-b p-4">
+              <label className="bench-label" htmlFor="cost">
+                {t("newScan.maxCost")}
+              </label>
+              <Input
+                id="cost"
+                type="number"
+                min="0.01"
+                step="0.01"
+                value={maxCostUsd}
+                onChange={(event) => setMaxCostUsd(event.target.value)}
+                disabled={unlimited}
+                className="mt-2 font-mono text-lg"
+              />
+              {usesCostEnvelope && <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
+                {t(costCeilingDisclosureKey(routeReady ? executionProfile : null))}
+              </p>}
+              {costLaunchBlocked && <div className="mt-3"><AlertBanner tone="warning">{costWarning}</AlertBanner></div>}
+              <label htmlFor="unlimited-cost" className="mt-3 flex cursor-pointer items-center gap-3 text-xs text-muted-foreground">
+                <Checkbox
+                  id="unlimited-cost"
+                  checked={unlimited}
+                  onCheckedChange={(checked) => setUnlimited(checked === true)}
+                />
+                {t("unlimitedUsd")}
+              </label>
+            </div>
+            {!usesCostEnvelope && (
+              <div className="border-b p-4">
+                <div className="grid gap-2 font-mono text-[8px] uppercase text-muted-foreground">
+                  <span className="flex items-center justify-between border-b pb-2">
+                    <span>{t("newScan.targetWrites")}</span><strong className="text-chart-2">0</strong>
+                  </span>
+                  <span className="flex items-center justify-between border-b pb-2">
+                    <span>{t("newScan.generatedExecution")}</span><strong className="text-chart-2">OFF</strong>
+                  </span>
+                  <span className="flex items-center justify-between">
+                    <span>{t("newScan.authSource")}</span><strong className="max-w-32 truncate text-foreground">{selectedConnection?.display.providerLabel ?? "—"}</strong>
+                  </span>
+                </div>
+              </div>
             )}
 
             {engine === "codex-security" && (
@@ -936,7 +949,7 @@ export function NewScanPage() {
                 <span>
                   <span className="block text-sm font-semibold">{t("newScan.authorizeExecution")}</span>
                   <span className="mt-1 block text-[11px] leading-relaxed text-muted-foreground">
-                    {scanner?.name} / {selection?.modelId ?? (selection ? t("newScan.runtimeDefault") : "—")} / {reasoning.selected ?? t("newScan.providerManagedEffort")} · {usesCostEnvelope ? t("newScan.ceiling").toLowerCase() : t("newScan.planAllowance")}.
+                    {scanner?.name} / {selection?.modelId ?? (selection ? t("newScan.runtimeDefault") : "—")} / {reasoning.selected ?? t("newScan.providerManagedEffort")}{authorizationBudget !== null && <> · {t(authorizationBudget).toLowerCase()}</>}.
                   </span>
                 </span>
               </label>
@@ -979,7 +992,7 @@ export function NewScanPage() {
               <Button
                 type="submit"
                 size="lg"
-                disabled={busy || !authorized || !routeReady}
+                disabled={busy || !authorized || !routeReady || costLaunchBlocked}
                 className="w-full justify-between"
               >
                 {providerValidation === "validating" ? t("newScan.providerValidating") : busy ? t("newScan.starting") : t("newScan.submit")}

@@ -615,7 +615,7 @@ function hash(value: unknown): string {
 /**
  * I-4: the ceiling the console showed and the day budget reserved has to bound the
  * run. Without it the scanner is handed the policy's own `scan.maxCostUsd` — the
- * shipped default is 18 — and a "≤ USD 2,50 por scan" card is followed by an
+ * shipped default is 200 — and a "≤ USD 2,50 por scan" card is followed by an
  * eighteen-dollar run.
  */
 test("the frozen per-scan ceiling bounds the scanner, and the policy never loosens it", async () => {

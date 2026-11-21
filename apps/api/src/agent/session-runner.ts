@@ -56,6 +56,7 @@ export async function createAgentSession(
     host,
     upstream,
     adapter: adapterFor(input),
+    ...(input.beforeModelRequest === undefined ? {} : { beforeModelRequest: input.beforeModelRequest }),
     ...(input.terminalMode === undefined ? {} : { terminalMode: input.terminalMode }),
     ...(input.artifactWriteByTurn === undefined
       ? {}
