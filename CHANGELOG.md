@@ -6,6 +6,10 @@ with the Docker and engine-update work; earlier history remains in
 
 ## Unreleased
 
+### Changed
+
+- Graphify is now off by default for Portable Codex scans. Enable it per scan in the new-scan form or with `graphify: true` in the create-scan API. The choice is persisted for recovery; historical scans without the option stay off.
+
 ### Documentation
 
 - Refresh English, Portuguese, German and French READMEs with full Standard/Deep source coverage, managed Graphify, adaptive assessment context, mode effort defaults, provisional candidate previews and checkpoint recovery. Remove obsolete cumulative turn/tool budget tables.

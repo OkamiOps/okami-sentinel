@@ -26,6 +26,7 @@ import { withOpenRouterPricingEstimate } from "./openrouter-pricing.js";
 import { openSqliteFile } from "./sqlite.js";
 
 export interface BenchmarkRow {
+  graphify?: number;
   id: string;
   display_name: string;
   repository_path: string | null;
@@ -205,6 +206,7 @@ export function ensureRunMetadataColumns(database: Database.Database): void {
     ),
   );
   const additions = [
+    ["graphify", "INTEGER NOT NULL DEFAULT 0"],
     ["engine", "TEXT NOT NULL DEFAULT 'codex-security'"],
     ["provider", "TEXT"],
     ["auth_mode", "TEXT"],
@@ -437,6 +439,7 @@ export function rowToScanRun(row: BenchmarkRow): ScanRun {
     model: row.model,
     effort: row.effort,
     mode: row.mode,
+    graphify: row.graphify === 1,
     engine: (row.engine ?? "codex-security") as ScannerEngine,
     provider: row.provider,
     authMode: row.auth_mode as ScannerAuthMode | null,
@@ -498,7 +501,7 @@ export function upsertRun(run: ScanRun): void {
     .prepare(
       `INSERT INTO runs (
         id, display_name, repository_path, repository_key, revision, scan_dir, status,
-        model, effort, mode, engine, provider, auth_mode, scanner_version, recipe_hash,
+        model, effort, mode, graphify, engine, provider, auth_mode, scanner_version, recipe_hash,
         execution_profile, profile_version, methodology_ref, capability_check_id,
         connection_id, route_kind, protocol, auth_kind, launch_selection_json, cost_json,
         started_at, completed_at, duration_ms,
@@ -508,7 +511,7 @@ export function upsertRun(run: ScanRun): void {
         source, pid, created_at, updated_at
       ) VALUES (
         @id, @display_name, @repository_path, @repository_key, @revision, @scan_dir, @status,
-        @model, @effort, @mode, @engine, @provider, @auth_mode, @scanner_version, @recipe_hash,
+        @model, @effort, @mode, @graphify, @engine, @provider, @auth_mode, @scanner_version, @recipe_hash,
         @execution_profile, @profile_version, @methodology_ref, @capability_check_id,
         @connection_id, @route_kind, @protocol, @auth_kind, @launch_selection_json, @cost_json,
         @started_at, @completed_at, @duration_ms,
@@ -528,6 +531,7 @@ export function upsertRun(run: ScanRun): void {
         effort=excluded.effort,
         mode=excluded.mode,
         engine=excluded.engine,
+        graphify=excluded.graphify,
         provider=excluded.provider,
         auth_mode=excluded.auth_mode,
         scanner_version=excluded.scanner_version,
@@ -577,6 +581,7 @@ export function upsertRun(run: ScanRun): void {
       model: run.model,
       effort: run.effort,
       mode: run.mode,
+      graphify: run.graphify === true ? 1 : 0,
       engine: run.engine,
       provider: run.provider,
       auth_mode: run.authMode,

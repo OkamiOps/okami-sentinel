@@ -14,7 +14,10 @@ export function createScanStartApp(dependencies: ScanStartApiDependencies): Hono
   scans.post("/scans", async (c) => {
     const body = (await c.req.json()) as StartScanRequest;
     try {
-      const scan = await dependencies.startScan(body, { signal: c.req.raw.signal });
+      if (body.graphify !== undefined && typeof body.graphify !== "boolean") {
+        throw new Error("graphify must be a boolean");
+      }
+      const scan = await dependencies.startScan({ ...body, graphify: body.graphify === true }, { signal: c.req.raw.signal });
       return c.json({ scan }, 201);
     } catch (err) {
       return c.json(

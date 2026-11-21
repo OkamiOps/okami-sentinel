@@ -15,7 +15,7 @@ import {
   setRepositoryBaseline,
   upsertFindingTriage,
 } from "./db.js";
-import { readFindingsFile, toFindingSummaries } from "./ingest.js";
+import { readScanFindings as readFindingsFile, toFindingSummaries } from "./ingest.js";
 import { classifyCurrentFinding, findingIdentity, normalizeRepositoryKey } from "./lifecycle.js";
 
 const unreviewed: FindingTriage = { status: "unreviewed", note: null, updatedAt: null };

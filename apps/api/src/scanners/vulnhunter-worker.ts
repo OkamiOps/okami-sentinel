@@ -1,4 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { runOpengrep } from "../sast/opengrep.js";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
@@ -642,6 +643,7 @@ async function main(): Promise<void> {
     config.repositoryPath,
     config.outputDir,
   );
+  await runOpengrep(snapshotRoot, config.outputDir);
   const sourceFiles = countInspectableSnapshotFiles(snapshotRoot);
   if (sourceFiles === 0) {
     throw new Error("VulnHunter snapshot contains no inspectable source files.");

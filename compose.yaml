@@ -45,6 +45,10 @@ services:
       TMPDIR: /var/lib/sentinel/tmp
       CODEX_HOME: /var/lib/sentinel/codex-home
       CODEX_SECURITY_STATE_DIR: /var/lib/sentinel/codex-security-state
+      SENTINEL_OPENGREP_ENABLED: ${SENTINEL_OPENGREP_ENABLED:-true}
+      SENTINEL_OPENGREP_BIN: ${SENTINEL_OPENGREP_BIN:-/opt/sentinel-engines/bin/opengrep}
+      SENTINEL_OPENGREP_RULES: ${SENTINEL_OPENGREP_RULES:-/app/apps/api/opengrep-rules}
+      SENTINEL_OPENGREP_TIMEOUT_MS: ${SENTINEL_OPENGREP_TIMEOUT_MS:-300000}
     volumes:
       - sentinel_data:/var/lib/sentinel
     secrets:

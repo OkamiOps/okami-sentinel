@@ -3,6 +3,7 @@ import { ScanCandidatePreview } from "../components/scans/ScanCandidatePreview";
 import { ScanCandidateGroupsPanel } from "../components/scans/ScanCandidateGroupsPanel";
 import { ScanAnalysisMetrics } from "../components/scans/ScanAnalysisMetrics";
 import { ScanBudgetPartialBanner } from "../components/scans/ScanBudgetPartialBanner";
+import { FindingOriginBadge, FindingOriginFilter, ScanSastSummary } from "../components/scans/ScanSastSummary";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -46,6 +47,7 @@ export function ScanDetailPage() {
   const [selectedSignal, setSelectedSignal] = useState<LifecycleFinding | null>(null);
   const [view, setView] = useState<View>("evidence");
   const [severity, setSeverity] = useState("");
+  const [origin, setOrigin] = useState("");
   const [lifecycle, setLifecycle] = useState<FindingLifecycle | "">("");
   const [query, setQuery] = useState("");
   const [telemetry, setTelemetry] = useState(() => telemetrySnapshot([], 0));
@@ -79,12 +81,12 @@ export function ScanDetailPage() {
   }, [load]);
   useEffect(() => { if (!scan || scan.status !== "running") return; const es = new EventSource(`/api/scans/${id}/events?after=${telemetry.cursor}`); es.onerror = () => revalidateSession(); const handler = (event: MessageEvent) => { try { const data = JSON.parse(String(event.data)) as ScanEvent; if (data.message) setTelemetry((old) => appendTelemetryEvent(old, data)); if (data.scan) setScan(data.scan); else if (data.progress) setScan((old) => old ? { ...old, progress: data.progress! } : old); if (data.type === "done") { void load(); es.close(); } } catch { /* malformed event */ } }; ["log", "status", "cost", "progress", "done", "error"].forEach((name) => es.addEventListener(name, handler)); const poll = window.setInterval(() => void load().catch(() => undefined), 4500); return () => { es.close(); window.clearInterval(poll); }; }, [id, scan?.status, load]);
   useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, [telemetry.lines]);
-  const filtered = useMemo(() => findings.filter((f) => (!severity || f.severity === severity) && (!lifecycle || f.lifecycle === lifecycle) && `${f.title} ${f.summary} ${f.primaryPath} ${f.category} ${f.cwe.join(" ")} ${f.lifecycle} ${f.triage.status}`.toLowerCase().includes(query.toLowerCase())), [findings, severity, lifecycle, query]);
+  const filtered = useMemo(() => findings.filter((f) => (!origin || (f.origin?.kind ?? "ai") === origin) && (!severity || f.severity === severity) && (!lifecycle || f.lifecycle === lifecycle) && `${f.title} ${f.summary} ${f.primaryPath} ${f.category} ${f.cwe.join(" ")} ${f.lifecycle} ${f.triage.status}`.toLowerCase().includes(query.toLowerCase())), [findings, severity, lifecycle, origin, query]);
   async function openFinding(f: LifecycleFinding, update = true) { try { const r = await api.getFinding(f.sourceScanId, f.findingId); setSelected(r.finding); setSelectedSignal(f); setView("evidence"); if (update) setParams({ f: f.findingId }, { replace: true }); } catch (err) { setError(err); } }
   useEffect(() => { const fid = params.get("f"); const hit = findings.find((f) => f.findingId === fid); if (hit && (selected?.findingId !== fid || selectedSignal?.sourceScanId !== hit.sourceScanId)) void openFinding(hit, false); }, [findings, params]);
   useEffect(() => {
     if (!selectedSignal) return;
-    const stillCurrent = findings.some((finding) =>
+    const stillCurrent = filtered.some((finding) =>
       finding.findingId === selectedSignal.findingId &&
       finding.sourceScanId === selectedSignal.sourceScanId
     );
@@ -92,7 +94,7 @@ export function ScanDetailPage() {
     setSelected(null);
     setSelectedSignal(null);
     setParams({}, { replace: true });
-  }, [findings, selectedSignal?.findingId, selectedSignal?.sourceScanId]);
+  }, [filtered, selectedSignal?.findingId, selectedSignal?.sourceScanId]);
   async function cancel() { try { await api.cancelScan(id); await load(); } catch (err) { setError(err); } }
   async function setBaseline() { setBaselineBusy(true); try { const delta = await api.setBaseline(id); setRegression(delta); setFindings(delta.findings); setLifecycle(""); } catch (err) { setError(err); } finally { setBaselineBusy(false); } }
   async function saveTriage(status: FindingTriageStatus, note: string) { if (!selectedSignal) return; const { triage } = await api.updateTriage(id, selectedSignal.findingId, { status, note }); setFindings((items) => items.map((item) => item.identity === selectedSignal.identity ? { ...item, triage } : item)); setSelectedSignal((item) => item ? { ...item, triage } : item); }
@@ -130,12 +132,13 @@ export function ScanDetailPage() {
       {scan.progress && <div className="border-t px-4 py-3"><div className="mb-2 flex items-center justify-between gap-4 font-mono text-[9px]"><span className="truncate">{formatProgressLabel(scan.progress)}{scan.progress.detail ? ` / ${formatRecoveryProgressText(scan.progress.detail)}` : ""}</span><span className="shrink-0 text-primary">{formatProgressMetric(scan.progress)}</span></div><ProgressTrack value={displayedProgress.value} indeterminate={displayedProgress.indeterminate} /></div>}
     </header>
     {errorBanner}
+    <ScanSastSummary summary={scan.sast} />
     <ScanBudgetPartialBanner scan={scan} />
     <ScanAnalysisMetrics key={`metrics:${scan.id}`} scan={scan} />
     <div className="mb-4 flex overflow-x-auto border border-border">{(["evidence", "telemetry", "files", "profile"] as View[]).map((id, i) => <button key={id} type="button" onClick={() => setView(id)} className={cx("h-10 border-r px-4 font-mono text-[9px] uppercase tracking-wider", view === id ? "bg-accent text-primary" : "text-muted-foreground hover:text-foreground")}>0{i + 1} / {t(`scanDetail.view${id[0].toUpperCase()}${id.slice(1)}` as "scanDetail.viewEvidence")}</button>)}</div>
     {scan.status !== "completed" && scan.execution?.executionProfile === "portable" && scan.engine === "codex-security" && <ScanCandidatePreview key={`preview:${scan.id}`} scan={scan} expanded={view === "evidence"} />}
     {view === "evidence" && scan.execution?.executionProfile === "portable" && scan.engine === "codex-security" && <ScanCandidateGroupsPanel key={`groups:${scan.id}`} scan={scan} />}
-    {view === "evidence" && (findings.length > 0 || scan.status === "completed" || scan.execution?.executionProfile !== "portable" || scan.engine !== "codex-security") && <EvidenceWorkbench scan={scan} findings={filtered} allFindings={findings} selected={selected} selectedSignal={selectedSignal} query={query} severity={severity} lifecycle={lifecycle} onQuery={setQuery} onSeverity={setSeverity} onLifecycle={setLifecycle} onOpen={(f) => void openFinding(f)} onSaveTriage={saveTriage} />}
+    {view === "evidence" && (findings.length > 0 || scan.status === "completed" || scan.execution?.executionProfile !== "portable" || scan.engine !== "codex-security") && <><FindingOriginFilter value={origin} onChange={setOrigin} /><EvidenceWorkbench scan={scan} findings={filtered} allFindings={findings} selected={selected} selectedSignal={selectedSignal} query={query} severity={severity} lifecycle={lifecycle} onQuery={setQuery} onSeverity={setSeverity} onLifecycle={setLifecycle} onOpen={(f) => void openFinding(f)} onSaveTriage={saveTriage} /></>}
     {view === "telemetry" && <Telemetry scan={scan} logs={telemetry.lines} logRef={logRef} />}
     {view === "files" && <ScanFilesGraphPanel key={`files:${scan.id}`} scan={scan} />}
     {view === "profile" && <Profile scan={scan} />}
@@ -146,7 +149,7 @@ function EvidenceWorkbench({ scan, findings, allFindings, selected, selectedSign
   const { t } = useI18n();
   return <div className="grid min-h-[36rem] md:grid-cols-[minmax(18rem,.75fr)_minmax(26rem,1.25fr)] xl:grid-cols-[14rem_minmax(18rem,.75fr)_minmax(24rem,1.25fr)]">
     <aside className="bench-panel border-b md:col-start-1 md:row-start-1 md:border-r xl:col-auto xl:row-auto xl:border-b-0"><div className="border-b p-3"><label className="flex items-center gap-2"><HugeiconsIcon icon={Search01Icon} size={12} className="text-muted-foreground" /><Input aria-label={t("scanDetail.searchEvidence")} value={query} onChange={(e) => onQuery(e.target.value)} placeholder={t("scanDetail.searchEvidence")} className="h-8 border-0 bg-transparent px-0 font-mono text-[10px] shadow-none focus-visible:ring-0" /></label></div><FilterGroup label={t("scanDetail.severity")}><FilterButton label={t("scanDetail.allSignals")} count={allFindings.length} active={!severity} onClick={() => onSeverity("")} />{["critical", "high", "medium", "low", "info"].map((value) => <FilterButton key={value} label={t(`compare.severity.${value}` as "compare.severity.critical")} count={allFindings.filter((finding) => finding.severity === value).length} active={severity === value} onClick={() => onSeverity(value)} />)}</FilterGroup><FilterGroup label={t("scanDetail.lifecycle")}><FilterButton label={t("scanDetail.allStates")} count={allFindings.length} active={!lifecycle} onClick={() => onLifecycle("")} />{lifecycleOrder.map((value) => <FilterButton key={value} label={t(`scanDetail.lifecycle.${value}` as "scanDetail.lifecycle.new")} count={allFindings.filter((finding) => finding.lifecycle === value).length} active={lifecycle === value} onClick={() => onLifecycle(value)} tone={lifecycleTone[value]} />)}</FilterGroup><div className="border-t p-3 text-[10px] leading-relaxed text-muted-foreground">{t("scanDetail.currentRunNote")}</div></aside>
-    <Panel className="border-b md:col-start-1 md:row-start-2 md:border-r xl:col-auto xl:row-auto xl:border-b-0" label={t("scanDetail.signalDeltaList")} title={t("scanDetail.evidenceCount", { count: findings.length })}><div className="max-h-[42rem] overflow-auto">{findings.map((f) => <button key={`${f.sourceScanId}:${f.findingId}`} onClick={() => onOpen(f)} className={cx("w-full border-b px-3 py-3 text-left hover:bg-accent", selectedSignal?.identity === f.identity && "bg-accent shadow-[inset_2px_0_0_var(--primary)]")}><div className="flex items-start gap-2"><SeverityBadge severity={f.severity} /><LifecycleBadge state={f.lifecycle} /><span className="min-w-0 flex-1 text-xs font-semibold leading-snug">{f.title}</span></div><div className="mt-2 flex min-w-0 items-center gap-2 font-mono text-[8px] text-muted-foreground"><span className="min-w-0 flex-1 truncate">{f.primaryPath ?? f.category ?? f.findingId}</span>{f.triage.status !== "unreviewed" && <span className="shrink-0 uppercase text-chart-2">{t(triageLabels[f.triage.status])}</span>}</div></button>)}{!findings.length && <EmptyState title={t("scanDetail.noSignal")} description={t("scanDetail.removeFilters")} />}</div></Panel>
+    <Panel className="border-b md:col-start-1 md:row-start-2 md:border-r xl:col-auto xl:row-auto xl:border-b-0" label={t("scanDetail.signalDeltaList")} title={t("scanDetail.evidenceCount", { count: findings.length })}><div className="max-h-[42rem] overflow-auto">{findings.map((f) => <button key={`${f.sourceScanId}:${f.findingId}`} onClick={() => onOpen(f)} className={cx("w-full border-b px-3 py-3 text-left hover:bg-accent", selectedSignal?.identity === f.identity && "bg-accent shadow-[inset_2px_0_0_var(--primary)]")}><div className="flex items-start gap-2"><SeverityBadge severity={f.severity} /><LifecycleBadge state={f.lifecycle} /><span className="min-w-0 flex-1 text-xs font-semibold leading-snug">{f.title}</span></div><div className="mt-2 flex min-w-0 flex-wrap items-center gap-2 font-mono text-[8px] text-muted-foreground"><FindingOriginBadge finding={f} /><span className="min-w-0 flex-1 truncate">{f.primaryPath ?? f.category ?? f.findingId}</span>{f.triage.status !== "unreviewed" && <span className="shrink-0 uppercase text-chart-2">{t(triageLabels[f.triage.status])}</span>}</div></button>)}{!findings.length && <EmptyState title={t("scanDetail.noSignal")} description={t("scanDetail.removeFilters")} />}</div></Panel>
     <Panel className="md:col-start-2 md:row-span-2 md:row-start-1 xl:col-auto xl:row-auto xl:row-span-1" label={t("scanDetail.inspector")} title={selected?.title ?? t("scanDetail.selectEvidence")} aside={selected && <div className="flex items-center gap-2"><LifecycleBadge state={selectedSignal?.lifecycle ?? "new"} /><SeverityBadge severity={selected.severity} /></div>} wrapTitle><div className="max-h-[42rem] overflow-auto">{selected && selectedSignal ? <FindingInspector key={`${selectedSignal.identity}:${selectedSignal.triage.updatedAt}`} scan={scan} finding={selected} signal={selectedSignal} onSaveTriage={onSaveTriage} /> : <EmptyState title={t("scanDetail.inspectorDisarmed")} description={t("scanDetail.openFinding")} />}</div></Panel>
   </div>;
 }
@@ -213,6 +216,7 @@ function FindingInspector({ scan, finding, signal, onSaveTriage }: { scan: ScanR
 
   return <div>
     <TriageConsole signal={signal} onSave={onSaveTriage} canEdit={can("analyst", scan.repositoryKey)} />
+    <div className="border-b px-4 py-2"><FindingOriginBadge finding={finding} /></div>
     <div className="sticky top-0 z-10 flex overflow-x-auto border-b bg-card/95 backdrop-blur-sm">
       {tabs.map(([id, code, label]) => <button key={id} type="button" onClick={() => setView(id)} className={cx("h-10 shrink-0 border-r px-3 font-mono text-[8px] uppercase tracking-wider", view === id ? "bg-accent text-primary" : "text-muted-foreground hover:text-foreground")}><span className="mr-2 opacity-55">{code}</span>{label}</button>)}
     </div>

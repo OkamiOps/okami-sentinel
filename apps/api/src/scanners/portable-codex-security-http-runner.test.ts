@@ -1,5 +1,8 @@
 import { readPortableCandidateGrouping } from "./portable-codex-security-candidate-groups.js";
 import { createPortableCodexSecuritySnapshot } from "./portable-codex-security-worker-support.js";
+import { fileURLToPath } from "node:url";
+import { readScanFindings } from "../ingest.js";
+import { readOpengrepStatus } from "../sast/opengrep.js";
 import { materializePortableCodexSecurityReportShard } from "./portable-codex-security-report-shards.js";
 import assert from "node:assert/strict";
 import { reservePortableTurn } from "./portable-turn-budget.js";
@@ -270,6 +273,7 @@ function configuration(
     repositoryPath,
     paths: ["src"],
     sourceRef: "a".repeat(40),
+    graphify: true,
     mode: "standard",
     providerPlan,
     limits: {
@@ -795,6 +799,30 @@ test("Portable Codex Security reads only the persisted vault reference for an AP
     remove(root);
   }
 });
+
+for (const graphify of [undefined, false]) {
+  test(`Portable Graphify ${String(graphify)} skips indexing and graph context`, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-no-graph-"));
+    try {
+      const config = configuration(root);
+      delete config.graphify;
+      if (graphify !== undefined) config.graphify = graphify;
+      const specs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }> = [];
+      const result = await runPortableCodexSecurity(config, dependencies({
+        prepareGraph: async () => { throw new Error("Graphify must not run"); },
+        createSession: stageSessionFactory(specs),
+      }));
+      assert.equal(result.runtime.status, "completed");
+      assert.ok(specs.length > 0);
+      for (const { spec, toolSurface } of specs) {
+        assert.equal(spec.graphIndex, undefined);
+        assert.equal(toolSurface.includes("workspace.graph"), false);
+        assert.doesNotMatch(spec.instructions, /Server-selected candidate source windows|A local code graph is available|Cross-file navigation/);
+      }
+      assert.equal(fs.existsSync(path.join(config.outputDir, "graphify-status.json")), false);
+    } finally { remove(root); }
+  });
+}
 
 test("Portable stages receive the prepared graph once without treating graph queries as source reads", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-graph-stages-"));
@@ -1405,10 +1433,18 @@ test("Portable turn reservations clamp partially affordable output and preserve 
   assert.equal((defaulted.body as Record<string, number>).max_output_tokens, 65_536);
 });
 
-test("Portable reservation blocks unaffordable turns before upstream in production and injected sessions", async () => {
+test("Portable reservation blocks unaffordable turns before upstream in production and injected sessions", async (t) => {
+  const keys = ["SENTINEL_OPENGREP_BIN", "SENTINEL_OPENGREP_ENABLED", "SENTINEL_OPENGREP_RULES"] as const;
+  const previous = keys.map(key => process.env[key]);
+  t.after(() => keys.forEach((key, index) => { if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index]; }));
+  process.env.SENTINEL_OPENGREP_BIN = fileURLToPath(new URL("../sast/fixtures/fake-opengrep.mjs", import.meta.url));
+  process.env.SENTINEL_OPENGREP_ENABLED = "true";
   for (const injected of [false, true]) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-reservation-"));
     const config = configuration(root);
+    const rules = path.join(root, "rules.json");
+    fs.writeFileSync(rules, JSON.stringify({ mode: "completed" }));
+    process.env.SENTINEL_OPENGREP_RULES = rules;
     config.costBudget = costBudget({ maxCostUsd: 0.000001 });
     let calls = 0;
     const upstream = { async request() { calls++; throw new Error("must-not-send"); } };
@@ -1425,6 +1461,11 @@ test("Portable reservation blocks unaffordable turns before upstream in producti
       assert.deepEqual(runtime.budgetPartial.completed, []);
       assert.equal(runtime.budgetPartial.interrupted.stage, "inventory");
       assert.ok(fs.existsSync(path.join(config.outputDir, "budget-partial.json")));
+      assert.equal(runtime.stageLabel, "Parcial por orçamento");
+      assert.equal(readOpengrepStatus(config.outputDir)?.status, "completed");
+      const findings = readScanFindings(config.outputDir);
+      assert.equal(findings.length, 1);
+      assert.equal(findings[0].origin?.kind, "sast");
     } finally { remove(root); }
   }
 });
@@ -1598,6 +1639,11 @@ test("Portable Codex Security worker accepts only a 0600 closed configuration an
     const configured = { ...config, reasoningEffort: "high" };
     fs.writeFileSync(target, JSON.stringify(configured), { mode: 0o600 });
     assert.deepEqual(readPortableCodexSecurityWorkerConfiguration(target), configured);
+    const { graphify: _graphify, ...historical } = configured;
+    fs.writeFileSync(target, JSON.stringify(historical), { mode: 0o600 });
+    assert.deepEqual(readPortableCodexSecurityWorkerConfiguration(target), { ...historical, graphify: false });
+    fs.writeFileSync(target, JSON.stringify({ ...configured, graphify: "true" }), { mode: 0o600 });
+    assert.throws(() => readPortableCodexSecurityWorkerConfiguration(target));
     fs.chmodSync(target, 0o644);
     assert.throws(() => readPortableCodexSecurityWorkerConfiguration(target));
     fs.chmodSync(target, 0o600);
@@ -1662,9 +1708,10 @@ test("Portable untimed scans finish all stages after more than 90 minutes", asyn
   } finally { remove(root); }
 });
 
-test("discovery recovery reuses validated artifacts and retains prior usage without repeating model stages", async () => {
+test("historical configuration without Graphify resumes off and reuses validated artifacts and prior usage", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-resume-"));
   const config = configuration(root);
+  delete config.graphify;
   config.limits.totalTimeoutMs = 0;
   const factory = stageSessionFactory();
   try {
@@ -1678,7 +1725,9 @@ test("discovery recovery reuses validated artifacts and retains prior usage with
     const runtimePath = path.join(config.outputDir, "portable-codex-security-runtime.json");
     const before = JSON.parse(fs.readFileSync(runtimePath, "utf8"));
     const specs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }> = [];
-    await runPortableCodexSecurity(config, dependencies({ resumeDiscovery: true, createSession: stageSessionFactory(specs) }));
+    await runPortableCodexSecurity(config, dependencies({ resumeDiscovery: true,
+      prepareGraph: async () => { throw new Error("historical resume must not index"); },
+      createSession: stageSessionFactory(specs) }));
     assert.ok(specs.every(({ spec }) => !/stage "(inventory|threat-model)"/.test(spec.instructions)));
     assert.deepEqual(
       specs.filter(({ spec }) => /stage "discovery"/.test(spec.instructions)).map(({ spec }) => path.basename(spec.artifactRoot)),

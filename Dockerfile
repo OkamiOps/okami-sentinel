@@ -54,6 +54,22 @@ RUN npm install --prefix /opt/sentinel-engines/codex-cli \
       --omit=dev --no-audit --no-fund "@openai/codex@${CODEX_VERSION}" \
   && test -x /opt/sentinel-engines/codex-cli/node_modules/.bin/codex
 
+FROM base AS sentinel-opengrep
+
+ARG TARGETARCH
+
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+  && rm -rf /var/lib/apt/lists/* \
+  && case "$TARGETARCH" in \
+    amd64) asset=opengrep_linux_x86; sha256=37e93f4da5fd04a18c5c1febbdd12f7e98dfccd4d0c9cf2593bcb25eeb462da0 ;; \
+    arm64) asset=opengrep_linux_aarch64; sha256=6257b65423a744b704af2ff9beeb8f222c2f6925236af386b56b031d4c06d6d8 ;; \
+    *) echo "Unsupported OpenGrep architecture: $TARGETARCH" >&2; exit 1 ;; \
+  esac \
+  && mkdir -p /opt/sentinel-engines/bin \
+  && curl --fail --location --retry 3 "https://github.com/opengrep/opengrep/releases/download/v2.0.0/$asset" -o /opt/sentinel-engines/bin/opengrep \
+  && echo "$sha256  /opt/sentinel-engines/bin/opengrep" | sha256sum --check --strict \
+  && chmod 755 /opt/sentinel-engines/bin/opengrep
+
 FROM base AS sentinel-graphify
 
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
@@ -70,7 +86,9 @@ LABEL org.opencontainers.image.revision=${CSB_GITHUB_ACTIONS_WORKFLOW_SHA}
 ENV NODE_ENV=production \
     CSB_BUNDLED_RUNTIME_DIR=/opt/sentinel-engines \
     CSB_GRAPHIFY_BIN=/opt/sentinel-engines/graphify/venv/bin/graphify \
-    PATH=/opt/sentinel-engines/codex-cli/node_modules/.bin:/opt/sentinel-engines/codex-security/node_modules/.bin:$PATH \
+    SENTINEL_OPENGREP_BIN=/opt/sentinel-engines/bin/opengrep \
+    SENTINEL_OPENGREP_RULES=/app/apps/api/opengrep-rules \
+    PATH=/opt/sentinel-engines/bin:/opt/sentinel-engines/codex-cli/node_modules/.bin:/opt/sentinel-engines/codex-security/node_modules/.bin:$PATH \
     CSB_GITHUB_ACTIONS_WORKFLOW_SHA=${CSB_GITHUB_ACTIONS_WORKFLOW_SHA}
 
 # Runtime utilities used by bounded repository operations and external engine
@@ -96,6 +114,8 @@ COPY --from=build /app/apps/web/dist ./apps/web/dist
 COPY --from=build /app/scripts/docker/init-volume.mjs ./scripts/docker/init-volume.mjs
 COPY --from=build /app/scripts/docker/healthcheck.mjs ./scripts/docker/healthcheck.mjs
 COPY --from=sentinel-engines /opt/sentinel-engines /opt/sentinel-engines
+COPY --from=sentinel-opengrep /opt/sentinel-engines/bin /opt/sentinel-engines/bin
+COPY apps/api/opengrep-rules ./apps/api/opengrep-rules
 COPY --from=build /opt/gate-cli-runtime/node_modules /opt/sentinel-engines/codex-security/node_modules
 COPY --from=sentinel-graphify /opt/sentinel-engines/graphify /opt/sentinel-engines/graphify
 

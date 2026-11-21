@@ -120,7 +120,8 @@ test("detail recovers from offline and retains loaded evidence when polling fail
   await expect(page.getByRole("status").filter({ hasText: translate("fr", "common.apiUnavailable", { status: 503 }) })).toBeVisible({ timeout: 10000 });
   await expect(page.getByRole("heading", { name: "Repository alpha", exact: true })).toBeVisible();
   state.offline = false;
-  await page.getByRole("button", { name: translate("fr", "common.retry"), exact: true }).click();
+  await page.getByRole("status").filter({ hasText: translate("fr", "common.apiUnavailable", { status: 503 }) })
+    .getByRole("button", { name: translate("fr", "common.retry"), exact: true }).click();
   await expect(page.getByRole("status").filter({ hasText: translate("fr", "common.apiUnavailable", { status: 503 }) })).toHaveCount(0);
 });
 

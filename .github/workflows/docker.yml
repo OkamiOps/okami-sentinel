@@ -31,6 +31,9 @@ jobs:
           --tag csb-sentinel:${{ github.sha }}
           .
 
+      - name: Verify bundled OpenGrep version
+        run: docker run --rm --user 1000:1000 csb-sentinel:${{ github.sha }} opengrep --version | grep -Fx '2.0.0'
+
       - name: Smoke server without engines or providers
         run: node scripts/docker/smoke.mjs csb-sentinel:${{ github.sha }}
 
