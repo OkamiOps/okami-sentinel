@@ -46,6 +46,9 @@ import {
 } from "../lib/execution-profile";
 import {
   buildConnectionAwareStartRequest,
+  DEFAULT_SCAN_MAX_COST_USD,
+  costCeilingDisclosureKey,
+  authorizationBudgetKey,
   canResolveConnectionWithEngine,
   compatibilityReasonKey,
   connectionSelectionFor,
@@ -192,7 +195,7 @@ export function NewScanPage() {
   const [providerValidation, setProviderValidation] = useState<"validating" | "ready" | "failed" | "error" | null>(null);
   const [effort, setEffort] = useState<string | null>(initial.effort ?? null);
   const [mode, setMode] = useState<ScanMode>(initial.mode ?? "standard");
-  const [maxCostUsd, setMaxCostUsd] = useState(initial.maxCostUsd ?? "1");
+  const [maxCostUsd, setMaxCostUsd] = useState(initial.maxCostUsd ?? String(DEFAULT_SCAN_MAX_COST_USD));
   const [unlimited, setUnlimited] = useState(initial.unlimited ?? false);
   const [paths, setPaths] = useState(initial.paths ?? "");
   const [authorized, setAuthorized] = useState(false);
@@ -246,9 +249,10 @@ export function NewScanPage() {
     compatibility.modelSelectionMode === selection.modelSelectionMode &&
     compatibility.modelId === selection.modelId;
   const usesCostEnvelope = engine === "codex-security";
+  const authorizationBudget = authorizationBudgetKey(engine, unlimited);
   const costLaunchBlocked = requiresUsdCapAcknowledgement(engine, unlimited);
   const costWarning = t("capWarning", { engine: scanner?.name ?? engine });
-  const cost = parseCostCeiling(maxCostUsd) ?? 1;
+  const cost = parseCostCeiling(maxCostUsd) ?? DEFAULT_SCAN_MAX_COST_USD;
   const executionProfile = engine === "codex-security" ? compatibility?.selectedProfile ?? null : null;
   const executionProfileLabel = executionProfile === "native"
     ? t("newScan.profile.native")
@@ -869,7 +873,7 @@ export function NewScanPage() {
                 className="mt-2 font-mono text-lg"
               />
               {usesCostEnvelope && <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
-                {t("newScan.costCeilingDisclosure")}
+                {t(costCeilingDisclosureKey(routeReady ? executionProfile : null))}
               </p>}
               {costLaunchBlocked && <div className="mt-3"><AlertBanner tone="warning">{costWarning}</AlertBanner></div>}
               <label htmlFor="unlimited-cost" className="mt-3 flex cursor-pointer items-center gap-3 text-xs text-muted-foreground">
@@ -945,7 +949,7 @@ export function NewScanPage() {
                 <span>
                   <span className="block text-sm font-semibold">{t("newScan.authorizeExecution")}</span>
                   <span className="mt-1 block text-[11px] leading-relaxed text-muted-foreground">
-                    {scanner?.name} / {selection?.modelId ?? (selection ? t("newScan.runtimeDefault") : "—")} / {reasoning.selected ?? t("newScan.providerManagedEffort")} · {usesCostEnvelope ? t("newScan.ceiling").toLowerCase() : t("newScan.planAllowance")}.
+                    {scanner?.name} / {selection?.modelId ?? (selection ? t("newScan.runtimeDefault") : "—")} / {reasoning.selected ?? t("newScan.providerManagedEffort")}{authorizationBudget !== null && <> · {t(authorizationBudget).toLowerCase()}</>}.
                   </span>
                 </span>
               </label>

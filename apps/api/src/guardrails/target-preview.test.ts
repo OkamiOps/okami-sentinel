@@ -147,7 +147,7 @@ test("returns frozen target, policy, executor, scan, cost and publication facts 
   });
   assert.deepEqual(preview.costBudget, {
     source: "policy",
-    maxCostUsd: 18,
+    maxCostUsd: 200,
     kind: "estimated_ceiling",
     requestInFlightMayExceed: true,
   });

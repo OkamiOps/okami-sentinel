@@ -4,6 +4,9 @@ import type { ConnectionCompatibility, ProviderConnection, ProviderModel } from 
 
 import {
   buildConnectionAwareStartRequest,
+  DEFAULT_SCAN_MAX_COST_USD,
+  costCeilingDisclosureKey,
+  authorizationBudgetKey,
   canResolveConnectionWithEngine,
   catalogSelectionBlockKey,
   compatibilityReasonKey,
@@ -25,6 +28,28 @@ import {
   reconcileReasoningEffort,
 } from "./new-scan-routing.js";
 import type { CapabilityValidationClient } from "./new-scan-routing.js";
+
+test("new scans default to an editable USD 200 ceiling", () => {
+  assert.equal(DEFAULT_SCAN_MAX_COST_USD, 200);
+  assert.equal(parseCostCeiling(String(DEFAULT_SCAN_MAX_COST_USD)), 200);
+  assert.equal(parseCostCeiling("6"), 6);
+  assert.equal(parseCostCeiling("1"), 1);
+});
+
+test("only a resolved Portable execution claims pre-request reservation", () => {
+  assert.equal(costCeilingDisclosureKey("portable"), "newScan.portableCostCeilingDisclosure");
+  assert.equal(costCeilingDisclosureKey("native"), "newScan.costCeilingDisclosure");
+  assert.equal(costCeilingDisclosureKey(null), "newScan.costCeilingDisclosure");
+});
+
+test("unlimited Codex authorization omits the cap while plan engines retain their usage disclosure", () => {
+  assert.equal(authorizationBudgetKey("codex-security", true), null);
+  assert.equal(authorizationBudgetKey("codex-security", false), "newScan.ceiling");
+  for (const engine of ["mantis", "vulnhunter"] as const) {
+    assert.equal(authorizationBudgetKey(engine, true), "newScan.planAllowance");
+    assert.equal(authorizationBudgetKey(engine, false), "newScan.planAllowance");
+  }
+});
 
 test("plan-usage engines require explicit no-USD-cap acknowledgement without dropping a chosen cap", () => {
   const selection = { connectionId: "connection-a", modelSelectionMode: "runtime-default" as const, modelId: null };

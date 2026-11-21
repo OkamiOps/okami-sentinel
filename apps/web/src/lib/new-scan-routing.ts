@@ -12,6 +12,16 @@ import {
   type StartScanRequest,
 } from "@csb/shared";
 
+export const DEFAULT_SCAN_MAX_COST_USD = 200;
+
+export function costCeilingDisclosureKey(executionProfile: "native" | "portable" | null) {
+  return executionProfile === "portable" ? "newScan.portableCostCeilingDisclosure" : "newScan.costCeilingDisclosure";
+}
+
+export function authorizationBudgetKey(engine: ScannerEngine, unlimited: boolean) {
+  return engine === "codex-security" ? unlimited ? null : "newScan.ceiling" : "newScan.planAllowance";
+}
+
 const CAPABILITY_PROBE_REASONS = new Set([
   "capability_probe_missing",
   "capability_probe_stale",

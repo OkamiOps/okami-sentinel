@@ -4,7 +4,7 @@ import type { ScanBudgetPartial, ScanRun } from "@csb/shared";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ScanBudgetPartialBanner } from "../components/scans/ScanBudgetPartialBanner.js";
-import { I18nProvider } from "../i18n.js";
+import { I18nProvider, translate, type Locale } from "../i18n.js";
 import { budgetResumeCommand, isBudgetPartial } from "./scan-budget.js";
 import { scanBudgetMessages } from "../i18n/scan-budget.js";
 
@@ -33,6 +33,23 @@ test("Portuguese budget copy explains the cap limitation and explicit acknowledg
   assert.equal(copy.budgetPartial, "Parcial por orçamento");
   assert.match(copy.capWarning, /\{engine\}.*consumo do plano.*Codex Security.*explicitamente.*Sem teto em USD/);
   assert.match(copy.budgetResume, /gasto anterior.*novo teto.*apps\/api/);
+});
+
+test("Codex cap disclosures explain reservations, reduced or skipped calls, estimated usage, and resumable partial stages in every locale", () => {
+  const expected: Record<Locale, string[]> = {
+    "pt-BR": ["reserva orçamento antes do envio", "saída é reduzida", "chamada é pulada", "estimado", "uso reportado pelo provedor", "parcial por orçamento", "etapas salvas", "retomar"],
+    en: ["reserves budget before sending", "output is reduced", "call is skipped", "estimated", "provider-reported usage", "budget-partial", "saved stages", "resumed"],
+    es: ["reserva presupuesto antes del envío", "reduce la salida", "omite la llamada", "estima", "uso reportado por el proveedor", "parcial por presupuesto", "etapas guardadas", "reanudar"],
+    de: ["vor dem Senden Budget", "Ausgabe gekürzt", "Aufruf übersprungen", "Providernutzung geschätzt", "fortsetzbares Budget-Teilergebnis", "gespeicherten Stufen"],
+    fr: ["réserve du budget avant l’envoi", "sortie est réduite", "appel ignoré", "estimé", "usage déclaré par le fournisseur", "partiel", "étapes sauvegardées", "reprise possible"],
+  };
+  for (const locale of Object.keys(expected) as Locale[]) {
+    const copy = translate(locale, "newScan.portableCostCeilingDisclosure");
+    for (const phrase of expected[locale]) assert.ok(copy.includes(phrase), `${locale}: ${phrase}`);
+    const nativeCopy = translate(locale, "newScan.costCeilingDisclosure");
+    assert.notEqual(nativeCopy, copy);
+    assert.doesNotMatch(nativeCopy, /reserva|reserves|reserviert|réserve|Budget-Teilergebnis/);
+  }
 });
 
 function renderBanner(scan: Pick<ScanRun, "id" | "status" | "statusReason" | "budgetPartial">): string {
