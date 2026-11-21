@@ -85,7 +85,7 @@ export function ScanDetailPage() {
   useEffect(() => { const fid = params.get("f"); const hit = findings.find((f) => f.findingId === fid); if (hit && (selected?.findingId !== fid || selectedSignal?.sourceScanId !== hit.sourceScanId)) void openFinding(hit, false); }, [findings, params]);
   useEffect(() => {
     if (!selectedSignal) return;
-    const stillCurrent = findings.some((finding) =>
+    const stillCurrent = filtered.some((finding) =>
       finding.findingId === selectedSignal.findingId &&
       finding.sourceScanId === selectedSignal.sourceScanId
     );
@@ -93,7 +93,7 @@ export function ScanDetailPage() {
     setSelected(null);
     setSelectedSignal(null);
     setParams({}, { replace: true });
-  }, [findings, selectedSignal?.findingId, selectedSignal?.sourceScanId]);
+  }, [filtered, selectedSignal?.findingId, selectedSignal?.sourceScanId]);
   async function cancel() { try { await api.cancelScan(id); await load(); } catch (err) { setError(err); } }
   async function setBaseline() { setBaselineBusy(true); try { const delta = await api.setBaseline(id); setRegression(delta); setFindings(delta.findings); setLifecycle(""); } catch (err) { setError(err); } finally { setBaselineBusy(false); } }
   async function saveTriage(status: FindingTriageStatus, note: string) { if (!selectedSignal) return; const { triage } = await api.updateTriage(id, selectedSignal.findingId, { status, note }); setFindings((items) => items.map((item) => item.identity === selectedSignal.identity ? { ...item, triage } : item)); setSelectedSignal((item) => item ? { ...item, triage } : item); }

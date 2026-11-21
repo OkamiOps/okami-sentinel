@@ -69,9 +69,14 @@ test("mixed findings show origin badges, SAST summary, and composable origin fil
   await expect(sast).toHaveCount(0);
   await query.clear();
   await expect(sast).toBeVisible();
+  await sast.click();
+  await expect(page.getByText("SAST · OpenGrep", { exact: true })).toHaveCount(2);
   await origin.getByRole("button", { name: "IA", exact: true }).click();
   await expect(sast).toHaveCount(0);
   await expect(ai).toBeVisible();
+  await expect(page.getByText("Inspector desarmado", { exact: true })).toBeVisible();
+  await expect(page.getByText("SAST · OpenGrep", { exact: true })).toHaveCount(0);
+  await expect(page).not.toHaveURL(/[?&]f=/);
   await ai.click();
   await expect(page.getByText("IA", { exact: true })).toHaveCount(3);
   await origin.getByRole("button", { name: "Todos", exact: true }).click();
