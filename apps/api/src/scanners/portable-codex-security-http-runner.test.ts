@@ -1,6 +1,8 @@
 import { createPortableCodexSecuritySnapshot } from "./portable-codex-security-worker-support.js";
 import { materializePortableCodexSecurityReportShard } from "./portable-codex-security-report-shards.js";
 import assert from "node:assert/strict";
+import { reservePortableTurn } from "./portable-turn-budget.js";
+import { createAgentSession } from "../agent/session-runner.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -1323,6 +1325,44 @@ test("Portable Codex Security rejects an incomplete cost quote before its first 
     assert.equal(sessions, 0);
   } finally {
     remove(root);
+  }
+});
+
+test("Portable turn reservations clamp partially affordable output and preserve affordable requests", () => {
+  const pricing = costBudget().pricing;
+  for (const [operation, key] of [
+    ["responses", "max_output_tokens"], ["messages", "max_tokens"],
+    ["chat-completions", "max_completion_tokens"], ["chat-completions", "max_tokens"],
+  ] as const) {
+    const request = { operation, body: { [key]: 8_192, messages: [] } };
+    const clamped = reservePortableTurn(request, pricing, 0.004)!;
+    const cap = (clamped.body as Record<string, number>)[key]!;
+    assert.ok(cap >= 1_024 && cap < 8_192);
+    assert.equal(reservePortableTurn(request, pricing, 1), request);
+    assert.equal(request.body[key], 8_192);
+    assert.equal(reservePortableTurn(request, pricing, 0.0001), null);
+  }
+  const defaulted = reservePortableTurn({ operation: "responses", body: {} }, pricing, 1)!;
+  assert.equal((defaulted.body as Record<string, number>).max_output_tokens, 65_536);
+});
+
+test("Portable reservation blocks unaffordable turns before upstream in production and injected sessions", async () => {
+  for (const injected of [false, true]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-reservation-"));
+    const config = configuration(root);
+    config.costBudget = costBudget({ maxCostUsd: 0.000001 });
+    let calls = 0;
+    const upstream = { async request() { calls++; throw new Error("must-not-send"); } };
+    try {
+      await assert.rejects(runPortableCodexSecurity(config, dependencies(injected ? {
+        createSession: async (input: { spec: AgentSessionSpec; capability: CapabilityReport }) =>
+          createAgentSession({ ...input.spec, probe: input.capability.capabilities }, upstream),
+      } : { createUpstream: () => upstream })), { code: "cost_limit_reached" });
+      assert.equal(calls, 0);
+      const runtime = JSON.parse(fs.readFileSync(path.join(config.outputDir, "portable-codex-security-runtime.json"), "utf8"));
+      assert.equal(runtime.status, "failed");
+      assert.equal(runtime.error, "cost_limit_reached");
+    } finally { remove(root); }
   }
 });
 

@@ -1,4 +1,5 @@
 import { projectionBudget } from "../graphify/projection-budget.js";
+import { reservePortableTurn } from "./portable-turn-budget.js";
 import { buildDiscoveryGraphContext, buildPartitionRelations } from "../graphify/discovery-context.js";
 import { buildDiscoveryPriorities } from "../graphify/discovery-priorities.js";
 import { runPortableStageWithRecovery, PortableStageRecoveryError } from "./portable-stage-recovery.js";
@@ -570,6 +571,16 @@ export async function runPortableCodexSecurity(
         }
         let graphContext = discoveryContext;
         const spec: AgentSessionSpec = {
+        ...(safeConfiguration.costBudget === undefined ? {} : { beforeModelRequest: (request) => {
+          const budget = safeConfiguration.costBudget!;
+          const spent = runtime.usage.reported
+            ? estimateFrozenScannerUsageCost(runtime.usage, budget.pricing)?.estimatedUsd
+            : 0;
+          const reserved = spent === undefined ? null : reservePortableTurn(request, budget.pricing, budget.maxCostUsd - spent);
+          if (reserved !== null) return reserved;
+          costBudgetStop = spent === undefined ? "cost_budget_unavailable" : "cost_limit_reached";
+          throw new PortableCodexSecurityRunnerError(costBudgetStop);
+        } }),
         connectionId: resolved.connection.id,
         routeKind: resolved.connection.routeKind,
         protocol: resolved.connection.protocol as AgentSessionSpec["protocol"],
