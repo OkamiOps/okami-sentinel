@@ -61,7 +61,7 @@ export function ScanAiVerdictsPanel({ scan }: { scan: ScanRun }) {
     {data && verdicts.length > 0 && <div className="border-t">
       <div className="border-b p-3"><Input className="w-full md:max-w-lg" aria-label={t("search")} placeholder={t("search")} value={query} onChange={(event) => setQuery(event.target.value)} /></div>
       <div className="grid min-w-0 md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
-        <div className="max-h-[34rem] min-w-0 overflow-y-auto border-b md:border-b-0 md:border-r">{visible.map((verdict) =>
+        <div className="max-h-[34rem] min-w-0 overflow-y-auto border-b md:border-b-0 md:border-r">{visible.length === 0 && <p className="p-4 text-xs text-muted-foreground">{t("noMatches")}</p>}{visible.map((verdict) =>
           <button type="button" key={verdict.candidateId} onClick={() => setSelectedId(verdict.candidateId)} aria-pressed={selected?.candidateId === verdict.candidateId}
             className={`w-full border-b p-4 text-left focus-visible:outline focus-visible:outline-primary ${selected?.candidateId === verdict.candidateId ? "bg-primary/10 shadow-[inset_2px_0_0_var(--primary)]" : "hover:bg-accent"}`}>
             <div className="mb-2 flex flex-wrap items-center gap-2">

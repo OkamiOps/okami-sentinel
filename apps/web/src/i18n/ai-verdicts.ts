@@ -2,7 +2,7 @@ import type { ScopedMessages } from "./scoped";
 
 type Key =
   | "title" | "note" | "confirmed" | "rejected" | "inconclusive" | "downgraded" | "legacy" | "legacyNote"
-  | "snapshotMissing" | "empty" | "loading" | "error" | "retry" | "search" | "all" | "proposed" | "claim" | "noClaim"
+  | "snapshotMissing" | "empty" | "noMatches" | "loading" | "error" | "retry" | "search" | "all" | "proposed" | "claim" | "noClaim"
   | "citations" | "noCitations" | "missing" | "invalid" | "reason"
   | "m.assessment-missing" | "m.claim-missing" | "m.citation-missing" | "m.citation-invalid" | "m.candidate-path-missing"
   | "m.entry-missing" | "m.sink-missing" | "m.control-missing" | "m.confirmation-reason" | "m.snapshot-unavailable"
@@ -16,7 +16,7 @@ export const aiVerdictMessages: ScopedMessages<Key> = {
     confirmed: "Confirmado (TP)", rejected: "Descartado (FP)", inconclusive: "Inconclusivo", downgraded: "Rebaixado",
     legacy: "Sem citação (scan antigo)", legacyNote: "Avaliações registradas antes da exigência de citação aparecem como inconclusivas; reexecute o scan para obter vereditos citados.",
     snapshotMissing: "O snapshot do scan não está disponível; nenhuma citação pôde ser verificada.",
-    empty: "Nenhum candidato avaliado neste scan.", loading: "Carregando vereditos…", error: "Não foi possível carregar os vereditos.", retry: "Tentar novamente",
+    empty: "Nenhum candidato avaliado neste scan.", noMatches: "Nenhum candidato corresponde ao filtro.", loading: "Carregando vereditos…", error: "Não foi possível carregar os vereditos.", retry: "Tentar novamente",
     search: "Buscar candidatos, categorias ou arquivos", all: "Todos", proposed: "Proposto pela IA", claim: "Afirmação", noClaim: "A IA não registrou uma afirmação.",
     citations: "Trechos citados", noCitations: "Nenhum trecho citado.", missing: "O que falta para decidir", invalid: "Inválida", reason: "Motivo",
     "m.assessment-missing": "A IA não avaliou este candidato.",
@@ -39,7 +39,7 @@ export const aiVerdictMessages: ScopedMessages<Key> = {
     confirmed: "Confirmed (TP)", rejected: "Dismissed (FP)", inconclusive: "Inconclusive", downgraded: "Downgraded",
     legacy: "Uncited (older scan)", legacyNote: "Assessments recorded before citations were required are shown as inconclusive; rerun the scan for cited verdicts.",
     snapshotMissing: "The scan snapshot is unavailable; no citation could be verified.",
-    empty: "No candidates were assessed in this scan.", loading: "Loading verdicts…", error: "Verdicts could not be loaded.", retry: "Retry",
+    empty: "No candidates were assessed in this scan.", noMatches: "No candidates match the filter.", loading: "Loading verdicts…", error: "Verdicts could not be loaded.", retry: "Retry",
     search: "Search candidates, categories or files", all: "All", proposed: "Proposed by the AI", claim: "Claim", noClaim: "The AI recorded no claim.",
     citations: "Cited code", noCitations: "No code cited.", missing: "Missing to decide", invalid: "Invalid", reason: "Reason",
     "m.assessment-missing": "The AI did not assess this candidate.",
@@ -62,7 +62,7 @@ export const aiVerdictMessages: ScopedMessages<Key> = {
     confirmed: "Confirmado (TP)", rejected: "Descartado (FP)", inconclusive: "Inconcluso", downgraded: "Degradado",
     legacy: "Sin cita (escaneo antiguo)", legacyNote: "Las evaluaciones anteriores a la exigencia de citas aparecen como inconclusas; vuelva a ejecutar el escaneo.",
     snapshotMissing: "El snapshot del escaneo no está disponible; no se pudo verificar ninguna cita.",
-    empty: "No se evaluaron candidatos en este escaneo.", loading: "Cargando veredictos…", error: "No se pudieron cargar los veredictos.", retry: "Reintentar",
+    empty: "No se evaluaron candidatos en este escaneo.", noMatches: "Ningún candidato coincide con el filtro.", loading: "Cargando veredictos…", error: "No se pudieron cargar los veredictos.", retry: "Reintentar",
     search: "Buscar candidatos, categorías o archivos", all: "Todos", proposed: "Propuesto por la IA", claim: "Afirmación", noClaim: "La IA no registró una afirmación.",
     citations: "Código citado", noCitations: "No se citó código.", missing: "Falta para decidir", invalid: "Inválida", reason: "Motivo",
     "m.assessment-missing": "La IA no evaluó este candidato.",
@@ -85,7 +85,7 @@ export const aiVerdictMessages: ScopedMessages<Key> = {
     confirmed: "Bestätigt (TP)", rejected: "Verworfen (FP)", inconclusive: "Unentschieden", downgraded: "Herabgestuft",
     legacy: "Ohne Zitat (älterer Scan)", legacyNote: "Bewertungen aus der Zeit vor der Zitatpflicht erscheinen als unentschieden; Scan erneut ausführen.",
     snapshotMissing: "Der Scan-Snapshot ist nicht verfügbar; kein Zitat konnte geprüft werden.",
-    empty: "In diesem Scan wurden keine Kandidaten bewertet.", loading: "Urteile werden geladen…", error: "Urteile konnten nicht geladen werden.", retry: "Erneut versuchen",
+    empty: "In diesem Scan wurden keine Kandidaten bewertet.", noMatches: "Keine Kandidaten entsprechen dem Filter.", loading: "Urteile werden geladen…", error: "Urteile konnten nicht geladen werden.", retry: "Erneut versuchen",
     search: "Kandidaten, Kategorien oder Dateien suchen", all: "Alle", proposed: "Von der KI vorgeschlagen", claim: "Aussage", noClaim: "Die KI hat keine Aussage hinterlegt.",
     citations: "Zitierter Code", noCitations: "Kein Code zitiert.", missing: "Fehlt zur Entscheidung", invalid: "Ungültig", reason: "Grund",
     "m.assessment-missing": "Die KI hat diesen Kandidaten nicht bewertet.",
@@ -108,7 +108,7 @@ export const aiVerdictMessages: ScopedMessages<Key> = {
     confirmed: "Confirmé (TP)", rejected: "Écarté (FP)", inconclusive: "Non concluant", downgraded: "Rétrogradé",
     legacy: "Sans citation (ancien scan)", legacyNote: "Les évaluations antérieures à l'exigence de citation apparaissent non concluantes ; relancez le scan.",
     snapshotMissing: "Le snapshot du scan est indisponible ; aucune citation n'a pu être vérifiée.",
-    empty: "Aucun candidat évalué dans ce scan.", loading: "Chargement des verdicts…", error: "Impossible de charger les verdicts.", retry: "Réessayer",
+    empty: "Aucun candidat évalué dans ce scan.", noMatches: "Aucun candidat ne correspond au filtre.", loading: "Chargement des verdicts…", error: "Impossible de charger les verdicts.", retry: "Réessayer",
     search: "Rechercher candidats, catégories ou fichiers", all: "Tous", proposed: "Proposé par l'IA", claim: "Affirmation", noClaim: "L'IA n'a enregistré aucune affirmation.",
     citations: "Code cité", noCitations: "Aucun code cité.", missing: "Manque pour décider", invalid: "Invalide", reason: "Motif",
     "m.assessment-missing": "L'IA n'a pas évalué ce candidat.",
