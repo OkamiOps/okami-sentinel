@@ -15,7 +15,7 @@ concurrency:
 jobs:
   build-and-smoke:
     name: Build Linux image and smoke server
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '["self-hosted"]') }}
     timeout-minutes: 30
     steps:
       - name: Checkout repository

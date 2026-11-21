@@ -39,7 +39,7 @@ There is no separate lint script. Static checking is `pnpm typecheck`. `pnpm che
 
 ## Required checks
 
-CI (`.github/workflows/ci.yml`) runs this sequence on Ubuntu with a frozen lockfile. Run the same gates before opening a pull request:
+CI (`.github/workflows/ci.yml`) runs this sequence on the self-hosted runners (labels from the `CI_RUNS_ON` repository variable, a JSON array, default `["self-hosted"]`) with a frozen lockfile. Run the same gates before opening a pull request:
 
 ```bash
 pnpm check:repository
