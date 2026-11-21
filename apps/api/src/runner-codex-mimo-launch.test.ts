@@ -206,6 +206,8 @@ test("startScan dispatches only the Portable worker for a resolved Portable Code
     assert.equal(vaultReads, 0);
     assert.equal(run.repositoryPath, publicRepositoryPath);
     assert.equal(getRun(run.id)?.repositoryPath, publicRepositoryPath);
+    assert.equal(getRun(run.id)?.graphify, false);
+    assert.equal(run.graphify, false);
     assert.equal(run.authMode, null);
     assert.equal(run.cost, null);
     assert.deepEqual(run.execution, selectedPlan!.execution);
@@ -231,8 +233,9 @@ test("startScan dispatches only the Portable worker for a resolved Portable Code
     const config = JSON.parse(fs.readFileSync(configPath!, "utf8")) as Record<string, unknown>;
     const text = JSON.stringify({ config, args: launch.args, env: launch.env });
     assert.deepEqual(Object.keys(config).sort(), [
-      "limits", "mode", "outputDir", "paths", "providerPlan", "repositoryPath", "sourceRef",
+      "graphify", "limits", "mode", "outputDir", "paths", "providerPlan", "repositoryPath", "sourceRef",
     ]);
+    assert.equal(config.graphify, false);
     assert.equal(config.mode, "standard");
     assert.equal(config.repositoryPath, repositoryPath);
     assert.deepEqual(config.paths, []);
@@ -375,7 +378,7 @@ test("Portable Standard and Deep keep a bounded scan-sized cumulative input budg
       const outputDir = path.join(root, mode);
       fs.mkdirSync(outputDir, { mode: 0o700 });
       preparePortableCodexSecurityLaunch({
-        request: { repositoryPath: "/repository", mode },
+        request: { repositoryPath: "/repository", mode, graphify: true },
         repositoryPath: "/repository",
         outputDir,
         model: model.id,
@@ -399,7 +402,8 @@ test("Portable Standard and Deep keep a bounded scan-sized cumulative input budg
       const config = JSON.parse(fs.readFileSync(
         path.join(outputDir, "portable-codex-security-run.json"),
         "utf8",
-      )) as { limits: { maxInputBytes: number; maxOutputBytes: number } };
+      )) as { graphify: boolean; limits: { maxInputBytes: number; maxOutputBytes: number } };
+      assert.equal(config.graphify, true);
       assert.equal(config.limits.maxInputBytes, 67_108_864);
       assert.equal(config.limits.maxOutputBytes, 1_048_576);
     }

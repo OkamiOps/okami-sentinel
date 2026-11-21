@@ -181,6 +181,8 @@ Dense Deep runs keep assessment and reporting bounded without truncating the fin
 
 ### Graphify, coverage and recovery
 
+Graphify is **off by default** for Portable Codex scans. Enable it explicitly in the new-scan form or send `"graphify": true` to `POST /api/scans`. The choice is stored with the scan and retained on resume; historical scans without this field stay off. When off, no indexing runs and no graph context is added to prompts. The graph behavior described below applies only when enabled.
+
 New full Standard and Deep scans enumerate the same auditable source/configuration universe and project complete assigned files. Graphify groups related files and supplies source relationships; files without graph nodes remain included. Standard reviews the main paths with default `low` effort; Deep investigates alternate paths and counterevidence with default `high`. Explicit supported choices are preserved, and routes without effort controls use the provider default. Supplied source is not proof of model attention or detection quality. Each full scan is independent; recovery reuses only validated checkpoints belonging to that run.
 
 Graphify is managed by Sentinel: pnpm provisions its isolated runtime and Docker bundles it. Assessment and report source projections adapt to the available context after reserving instructions, completion and continuation capacity. There is no fixed excerpt count or function-length cutoff; pending ranges remain available for directed reads. The estimated context guard uses the smaller of 300K tokens and the model window. Graph relationships are navigation aids, never vulnerability proof.

@@ -2,6 +2,26 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createScanStartApp } from "./scan-start-api.js";
+import type { ScanRun } from "@csb/shared";
+
+for (const graphify of [undefined, false, true, "true", null]) {
+  test(`POST /scans validates and defaults Graphify: ${String(graphify)}`, async () => {
+    const stored: boolean[] = [];
+    const api = createScanStartApp({
+      async startScan(request) {
+        stored.push(request.graphify!);
+        return { id: "scan", graphify: request.graphify } as ScanRun;
+      },
+    });
+    const response = await api.request("/scans", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ repositoryPath: "/repo", graphify }),
+    });
+    const valid = graphify === undefined || typeof graphify === "boolean";
+    assert.equal(response.status, valid ? 201 : 400);
+    assert.deepEqual(stored, valid ? [graphify === true] : []);
+  });
+}
 
 function withTestDeadline<T>(operation: Promise<T>, timeoutMs = 250): Promise<T> {
   return new Promise<T>((resolve, reject) => {

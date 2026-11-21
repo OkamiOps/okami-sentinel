@@ -127,6 +127,7 @@ export interface PortableCodexSecurityCostBudget {
 
 /** The only child-process configuration: route identifiers and explicit local budgets. */
 export interface PortableCodexSecurityWorkerConfiguration {
+  graphify?: boolean;
   outputDir: string;
   repositoryPath: string;
   paths: string[];
@@ -351,19 +352,23 @@ export async function runPortableCodexSecurity(
     runtimeWritable = true;
     writePortableCodexSecurityRuntime(outputDir, runtime);
 
-    update({ detail: "indexing snapshot relationships locally with Graphify" });
-    log(JSON.stringify({ type: "graphify", status: "indexing" }));
-    const graph = await (dependencies.prepareGraph ?? prepareManagedGraph)({
-      snapshotRoot: snapshot.snapshotRoot, snapshotId: snapshot.snapshotId, signal: deadline.signal,
-    });
-    throwIfStopped(deadline);
-    assertPortableCodexSecuritySnapshot(snapshot);
-    const { index: graphIndex, ...graphMetrics } = graph;
-    fs.writeFileSync(path.join(outputDir, "graphify-status.json"), JSON.stringify(graphMetrics), { mode: 0o600 });
-    log(JSON.stringify({ type: "graphify", ...graphMetrics }));
-    update({ detail: graph.status === "ready"
-      ? `Graphify ready: ${graph.nodes} symbols, ${graph.edges} relationships${graph.cacheHit ? " (cached)" : ""}`
-      : "Graphify unavailable; continuing with source inspection" });
+    let graphIndex: Awaited<ReturnType<typeof prepareManagedGraph>>["index"];
+    if (safeConfiguration.graphify === true) {
+      update({ detail: "indexing snapshot relationships locally with Graphify" });
+      log(JSON.stringify({ type: "graphify", status: "indexing" }));
+      const graph = await (dependencies.prepareGraph ?? prepareManagedGraph)({
+        snapshotRoot: snapshot.snapshotRoot, snapshotId: snapshot.snapshotId, signal: deadline.signal,
+      });
+      throwIfStopped(deadline);
+      assertPortableCodexSecuritySnapshot(snapshot);
+      const { index, ...graphMetrics } = graph;
+      graphIndex = index;
+      fs.writeFileSync(path.join(outputDir, "graphify-status.json"), JSON.stringify(graphMetrics), { mode: 0o600 });
+      log(JSON.stringify({ type: "graphify", ...graphMetrics }));
+      update({ detail: graph.status === "ready"
+        ? `Graphify ready: ${graph.nodes} symbols, ${graph.edges} relationships${graph.cacheHit ? " (cached)" : ""}`
+        : "Graphify unavailable; continuing with source inspection" });
+    }
 
     const credentials = resolved.directXaiOAuth
       ? await readXaiOAuthCredentials(resolved.connection, dependencies.xaiOAuth, deadline)
@@ -572,7 +577,7 @@ export async function runPortableCodexSecurity(
         // Legitimate exploration is not terminated by cumulative action counts.
         // Mode-specific prompts and effort control depth; repeats receive guidance.
         const effectiveSessionLimits = { ...stageSessionLimits, maxModelTurns: 0, maxToolCalls: 0 };
-        const graphProjection = (partition as StandardRecoveryPartition | null)?.sourceProjection === "graph-windows-v1";
+        const graphProjection = safeConfiguration.graphify === true && (partition as StandardRecoveryPartition | null)?.sourceProjection === "graph-windows-v1";
         const stageDossierStateBase64 = portableCodexSecurityDossierBase64(stageDossier);
         fs.mkdirSync(artifactRoot, { recursive: true, mode: 0o700 });
         const deepCoverage = partition === null || graphProjection
@@ -977,13 +982,14 @@ function validateConfiguration(
   value: PortableCodexSecurityWorkerConfiguration,
 ): PortableCodexSecurityWorkerConfiguration {
   if (!isRecord(value) || !hasOnlyKeys(value, new Set([
-    "outputDir", "repositoryPath", "paths", "sourceRef", "mode", "providerPlan", "limits", "reasoningEffort", "costBudget",
+    "outputDir", "repositoryPath", "paths", "sourceRef", "mode", "providerPlan", "limits", "reasoningEffort", "costBudget", "graphify",
   ]))) invalidPlan();
   if (
     !isSafeText(value.outputDir, MAX_PATH_LENGTH * 4) ||
     !isSafeText(value.repositoryPath, MAX_PATH_LENGTH * 4) ||
     !isSafeText(value.sourceRef, 256) ||
     (value.mode !== "standard" && value.mode !== "deep") ||
+    (value.graphify !== undefined && typeof value.graphify !== "boolean") ||
     !Array.isArray(value.paths) ||
     value.paths.length > MAX_CONFIG_PATHS ||
     !value.paths.every((item) => isSafeRelativePath(item, MAX_PATH_LENGTH)) ||
@@ -998,6 +1004,7 @@ function validateConfiguration(
       paths: [...value.paths],
       sourceRef: value.sourceRef,
       mode: value.mode,
+      graphify: value.graphify === true,
       providerPlan: createSafePortableCodexSecurityProviderPlan(value.providerPlan),
       limits: { ...value.limits },
       ...(value.reasoningEffort === undefined ? {} : { reasoningEffort: value.reasoningEffort }),

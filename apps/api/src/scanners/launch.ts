@@ -251,6 +251,7 @@ export function preparePortableCodexSecurityLaunch(
     providerPlan: {
       ...input.portableCodexSecurityProviderPlan,
     },
+    graphify: input.request.graphify === true,
     limits: resolvePortableCodexSecurityExecutionLimits(input.mode, input.effort),
     ...(input.effort === null ? {} : { reasoningEffort: input.effort }),
     ...(requestedCostCeiling === undefined

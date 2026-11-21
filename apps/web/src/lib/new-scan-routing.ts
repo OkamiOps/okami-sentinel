@@ -314,6 +314,8 @@ export function buildConnectionAwareStartRequest(input: ConnectionAwareStartInpu
   ) return null;
   return {
     ...request,
+    ...(request.engine === "codex-security" && compatibility.selectedProfile === "portable"
+      ? { graphify: request.graphify === true } : {}),
     ...(request.engine === "codex-security" ? { executionProfilePreference: "auto" as const } : {}),
     ...(reasoning.kind === "configurable" && reasoning.selected !== null
       ? { effort: reasoning.selected }
