@@ -19,6 +19,15 @@ import {
 import { openSqliteFile } from "./sqlite.js";
 import type { ScanRun } from "@csb/shared";
 
+test("migrates historical runs to Graphify off", () => {
+  const database = new Database(":memory:");
+  try {
+    database.exec("CREATE TABLE runs (id TEXT PRIMARY KEY); INSERT INTO runs (id) VALUES ('old-scan')");
+    dbModule.ensureRunMetadataColumns(database);
+    assert.deepEqual(database.prepare("SELECT graphify FROM runs WHERE id = ?").get("old-scan"), { graphify: 0 });
+  } finally { database.close(); }
+});
+
 test("scan capacity reservation is atomic across preflight failure and a restarted worker", () => {
   const database = new Database(":memory:");
   const now = new Date("2026-09-07T10:00:00.000Z");
@@ -176,6 +185,13 @@ test("round-trips frozen provider-catalog pricing and null costs", () => {
   try {
     upsertRun(pricedRun);
     upsertRun(nullCostRun);
+
+    assert.equal(getRun(pricedRun.id)?.graphify, false);
+    const historicalRow = dbModule.getDb().prepare("SELECT * FROM runs WHERE id = ?").get(pricedRun.id) as dbModule.BenchmarkRow;
+    delete historicalRow.graphify;
+    assert.equal(dbModule.rowToScanRun(historicalRow).graphify, false);
+    upsertRun({ ...pricedRun, graphify: true });
+    assert.equal(getRun(pricedRun.id)?.graphify, true);
 
     assert.deepEqual(getRun(pricedRun.id)?.cost, pricedRun.cost);
     assert.deepEqual(getRun(pricedRun.id)?.execution, pricedRun.execution);

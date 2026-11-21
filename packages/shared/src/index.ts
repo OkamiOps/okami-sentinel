@@ -662,6 +662,7 @@ export interface ScanBudgetPartial {
 }
 
 export interface ScanRun {
+  graphify?: boolean;
   id: string;
   displayName: string;
   repositoryPath: string | null;
@@ -882,6 +883,8 @@ export interface MetricsSummary {
 }
 
 export interface StartScanRequest {
+  /** Enable local Graphify indexing for this Portable scan. Defaults to false. */
+  graphify?: boolean;
   repositoryPath: string;
   engine?: ScannerEngine;
   executionProfilePreference?: CodexSecurityProfilePreference;

@@ -181,12 +181,12 @@ export async function resumeBudgetPortableScan(scanId: string, maxCostUsd: numbe
     const workerLog = path.join(original.scanDir, "portable-worker-events.log");
     const eventLog = fs.existsSync(workerLog) ? workerLog : legacyLog;
     if (fs.existsSync(eventLog)) fs.copyFileSync(eventLog, path.join(outputDir, "portable-worker-events.log"));
-    const resumedConfig = { ...config, outputDir, costBudget: { ...config.costBudget, maxCostUsd }, limits: { ...config.limits, totalTimeoutMs: 0 }, providerPlan: { ...config.providerPlan, scanId: id, capabilityCheckId: probe.report.id } };
+    const resumedConfig = { ...config, graphify: config.graphify === true, outputDir, costBudget: { ...config.costBudget, maxCostUsd }, limits: { ...config.limits, totalTimeoutMs: 0 }, providerPlan: { ...config.providerPlan, scanId: id, capabilityCheckId: probe.report.id } };
     const configPath = path.join(outputDir, "portable-codex-security-run.json");
     fs.writeFileSync(configPath, JSON.stringify(resumedConfig), { mode: 0o600 });
     fs.writeFileSync(path.join(outputDir, "resume-source.json"), JSON.stringify({ scanId, resumedAt: new Date().toISOString(), verifiedBatches: completed, verifiedStages, snapshotId: previous.snapshotId }), { mode: 0o600 });
     runtime.store.writeSnapshot({ ...frozen, scanId: id, capabilityCheckId: probe.report.id, capturedAt: new Date().toISOString() });
-    const run = { ...original, id, scanDir: outputDir, status: "queued" as const, displayName: `${original.displayName} · resumed`, pid: null, completedAt: null, durationMs: null, progress: null, execution: { ...original.execution, capabilityCheckId: probe.report.id } };
+    const run = { ...original, graphify: resumedConfig.graphify, id, scanDir: outputDir, status: "queued" as const, displayName: `${original.displayName} · resumed`, pid: null, completedAt: null, durationMs: null, progress: null, execution: { ...original.execution, capabilityCheckId: probe.report.id } };
     upsertRun(run);
     const fd = fs.openSync(cliLogPath(outputDir), "a", 0o600);
     const child = spawn(process.execPath, ["--import", "tsx", path.join(import.meta.dirname, "portable-codex-security-worker.ts"), configPath, "--resume-discovery"], { cwd: path.resolve(import.meta.dirname, "../.."), detached: true, stdio: ["ignore", fd, fd], env: process.env });
