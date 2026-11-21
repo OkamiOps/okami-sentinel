@@ -193,6 +193,7 @@ export function NewScanPage() {
   const [unlimited, setUnlimited] = useState(initial.unlimited ?? false);
   const [paths, setPaths] = useState(initial.paths ?? "");
   const [authorized, setAuthorized] = useState(false);
+  const [graphify, setGraphify] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [started, setStarted] = useState<string | null>(null);
@@ -490,6 +491,7 @@ export function NewScanPage() {
         compatibility,
         remoteRepositoryConfirmed: authorized,
         effort: reasoning.selected ?? undefined,
+        graphify: executionProfile === "portable" && graphify,
         reasoning,
         mode,
         maxCostUsd: usesCostEnvelope && !unlimited ? cost : undefined,
@@ -800,6 +802,12 @@ export function NewScanPage() {
               </div>
             </div>
 
+            {executionProfile === "portable" && (
+              <label className="flex items-start gap-3 border-t p-4 text-xs">
+                <input type="checkbox" checked={graphify} onChange={(event) => setGraphify(event.target.checked)} />
+                <span>{t("newScan.graphify")}<span className="mt-1 block text-muted-foreground">{t("newScan.graphifyHelp")}</span></span>
+              </label>
+            )}
             <div className="p-4">
               <div className="flex flex-wrap items-center gap-2 font-mono text-[9px] uppercase">
                 <span className="border border-primary/50 px-2 py-1 text-primary">{scanner?.name ?? engine}</span>

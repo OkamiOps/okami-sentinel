@@ -3,6 +3,12 @@
 Applies to Codex Security Portable in pnpm and server/Docker installations.
 Native Codex Security, Mantis and VulnHunter retain their existing executors.
 
+Graphify is off by default. The create-scan request accepts the optional boolean
+`graphify`; only `true` enables indexing and graph prompt context. The `runs.graphify`
+column defaults to 0, and the Portable worker configuration stores the same choice.
+Resume retains that configuration; missing historical values mean off. Graph-specific
+planning and context behavior below applies only to opted-in scans.
+
 ## Complete Standard and Deep coverage
 
 New full Standard scans enumerate the same auditable source/configuration universe as

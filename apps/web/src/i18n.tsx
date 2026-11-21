@@ -425,6 +425,8 @@ const ptBR = {
   "newScan.selectRepository": "Selecione um repositório.",
   "newScan.routeUnavailable": "A rota escolhida não está disponível neste host.",
   "newScan.confirmRoute": "Confirme explicitamente a rota de execução.",
+  "newScan.graphify": "Ativar Graphify neste scan",
+  "newScan.graphifyHelp": "Opcional, desativado por padrão. Indexa relações do código localmente para enriquecer o contexto do Portable Codex.",
   "newScan.minimumCost": "O teto deve ser de pelo menos US$ 0,01.",
   "newScan.launchFailed": "Falha ao iniciar o scan.",
   "newScan.activeProcesses": "{count} processo(s) ativos · capacidade {capacity}.",
@@ -2435,6 +2437,8 @@ const frUi: Partial<Record<TranslationKey, string>> = {
 
 const en: Record<TranslationKey, string> = {
   ...ptBR, ...enUi,
+  "newScan.graphify": "Enable Graphify for this scan",
+  "newScan.graphifyHelp": "Optional, off by default. Index code relationships locally to enrich Portable Codex context.",
   "session.unverified": "Your session could not be verified. Data may be out of date.", "session.recheck": "Check session",
   "guardrails.outcome.no_changes": "No changes",
   "guardrails.outcome.bootstrap": "Missing baseline",
@@ -2778,6 +2782,8 @@ const en: Record<TranslationKey, string> = {
 
 const es: Record<TranslationKey, string> = {
   ...en, ...esUi,
+  "newScan.graphify": "Activar Graphify para este scan",
+  "newScan.graphifyHelp": "Opcional, desactivado por defecto. Indexa relaciones del código localmente para enriquecer el contexto de Portable Codex.",
   "session.unverified": "No se pudo verificar tu sesión. Los datos pueden estar desactualizados.", "session.recheck": "Verificar sesión",
   "guardrails.outcome.no_changes": "Sin cambios",
   "guardrails.outcome.bootstrap": "Falta baseline",
@@ -3121,6 +3127,8 @@ const es: Record<TranslationKey, string> = {
 
 const de: Record<TranslationKey, string> = {
   ...en, ...deUi,
+  "newScan.graphify": "Graphify für diesen Scan aktivieren",
+  "newScan.graphifyHelp": "Optional, standardmäßig aus. Indexiert Codebeziehungen lokal für zusätzlichen Portable-Codex-Kontext.",
   "session.unverified": "Deine Sitzung konnte nicht geprüft werden. Die Daten sind möglicherweise veraltet.", "session.recheck": "Sitzung prüfen",
   "guardrails.outcome.no_changes": "Keine Änderungen",
   "guardrails.outcome.bootstrap": "Baseline fehlt",
@@ -3464,6 +3472,8 @@ const de: Record<TranslationKey, string> = {
 
 const fr: Record<TranslationKey, string> = {
   ...en, ...frUi,
+  "newScan.graphify": "Activer Graphify pour ce scan",
+  "newScan.graphifyHelp": "Facultatif, désactivé par défaut. Indexe les relations du code localement pour enrichir le contexte de Portable Codex.",
   "session.unverified": "Votre session n’a pas pu être vérifiée. Les données peuvent être obsolètes.", "session.recheck": "Vérifier la session",
   "guardrails.outcome.no_changes": "Aucun changement",
   "guardrails.outcome.bootstrap": "Baseline absente",

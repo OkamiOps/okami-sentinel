@@ -25,6 +25,18 @@ import {
 } from "./new-scan-routing.js";
 import type { CapabilityValidationClient } from "./new-scan-routing.js";
 
+test("Portable new-scan requests default Graphify off and preserve opt-in", () => {
+  const selection = { connectionId: "connection-a", modelSelectionMode: "catalog" as const, modelId: "live-model" };
+  for (const graphify of [undefined, false, true]) {
+    const request = buildConnectionAwareStartRequest({
+      repositoryPath: "/repo", engine: "codex-security", selection,
+      compatibility: { ...selection, eligible: true, reasons: [], selectedProfile: "portable" },
+      reasoning: reasoningEffortForCompatibility(null, null), graphify,
+    });
+    assert.equal(request?.graphify, graphify === true);
+  }
+});
+
 test("explains an unproven Codex Security gateway contract instead of a generic block", () => {
   assert.equal(
     compatibilityReasonKey(["codex_security_gateway_feature_unproven"]),
@@ -635,6 +647,7 @@ test("pins Codex Security browser requests to the automatic server-resolved prof
     remoteRepositoryConfirmed: true,
     executionProfilePreference: "auto",
     effort: "low",
+    graphify: false,
     mode: "standard",
     paths: ["src"],
   });
