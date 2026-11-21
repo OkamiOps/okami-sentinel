@@ -253,7 +253,7 @@ function validateMethodologyRequest(
   }
   if (["mantis", "vulnhunter"].includes(scanner.engine) && req.maxCostUsd != null) {
     throw new Error(
-      `${scanner.name} não consegue aplicar um teto USD neste runner; remova maxCostUsd.`,
+      `${scanner.name} não consegue aplicar um teto em USD por scan: a execução usa o consumo do plano. Escolha Codex Security para usar um teto ou marque explicitamente "Sem teto em USD" para este scan (omita maxCostUsd).`,
     );
   }
 }

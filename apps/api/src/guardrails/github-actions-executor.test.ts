@@ -47,7 +47,7 @@ test("persists dispatch_requested before the API call and deduplicates an idempo
 
   assert.equal(persistedBeforeRemote, true);
   assert.equal(first.id, second.id);
-  assert.equal(first.costCeilingUsd, 18);
+  assert.equal(first.costCeilingUsd, 200);
   assert.equal(first.estimatedUsd, 0);
   assert.equal(fixture.calls.dispatch, 1);
   assert.equal(fixture.store.dispatches.get(first.id)?.state, "dispatch_accepted");
@@ -411,7 +411,7 @@ function previewFixture(): AcceptedGateTargetPreview {
 
 /**
  * I-4 and C-2: the two facts the run cannot work out for itself. Without the
- * ceiling the CLI spends the policy's (shipped default: 18) while the console shows
+ * ceiling the CLI spends the policy's (shipped default: 200) while the console shows
  * and reserves the action's; without the baseline run id the caller searches
  * `event=push` history that a dispatch-only caller never produces, so every pull
  * request is judged with no baseline while the console says `ready`.

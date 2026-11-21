@@ -47,6 +47,7 @@ import { ChoiceCard } from "./ChoiceCard";
 import { useI18n } from "../../i18n";
 import {
   catalogSelectionBlockKey,
+  DEFAULT_SCAN_MAX_COST_USD,
   compatibilityReasonKey,
   connectionSelectionFor,
   defaultReasoningEffortForMode,
@@ -107,7 +108,7 @@ export function GuardrailPreflightSheet({
   const [effort, setEffort] = useState<string | null>(null);
   const [mode, setMode] = useState<ScanMode>("standard");
   const [costMode, setCostMode] = useState<"policy" | "manual" | "none">("policy");
-  const [manualCostUsd, setManualCostUsd] = useState("18");
+  const [manualCostUsd, setManualCostUsd] = useState(String(DEFAULT_SCAN_MAX_COST_USD));
   const [compatibility, setCompatibility] = useState<ConnectionCompatibility | null>(null);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState(false);

@@ -181,6 +181,8 @@ Dense Deep runs keep assessment and reporting bounded without truncating the fin
 
 ### Graphify, coverage and recovery
 
+Graphify is **off by default** for Portable Codex scans. Enable it explicitly in the new-scan form or send `"graphify": true` to `POST /api/scans`. The choice is stored with the scan and retained on resume; historical scans without this field stay off. When off, no indexing runs and no graph context is added to prompts. The graph behavior described below applies only when enabled.
+
 New full Standard and Deep scans enumerate the same auditable source/configuration universe and project complete assigned files. Graphify groups related files and supplies source relationships; files without graph nodes remain included. Standard reviews the main paths with default `low` effort; Deep investigates alternate paths and counterevidence with default `high`. Explicit supported choices are preserved, and routes without effort controls use the provider default. Supplied source is not proof of model attention or detection quality. Each full scan is independent; recovery reuses only validated checkpoints belonging to that run.
 
 Graphify is managed by Sentinel: pnpm provisions its isolated runtime and Docker bundles it. Assessment and report source projections adapt to the available context after reserving instructions, completion and continuation capacity. There is no fixed excerpt count or function-length cutoff; pending ranges remain available for directed reads. The estimated context guard uses the smaller of 300K tokens and the model window. Graph relationships are navigation aids, never vulnerability proof.
@@ -505,6 +507,14 @@ Mantis and VulnHunter are adapted methodologies bundled with Sentinel, not indep
 | `CSB_PORT` | `8787` | API port |
 | `CSB_GITHUB_ACTIONS_WORKFLOW_SHA` | unavailable | Immutable 40-character Sentinel release SHA accepted by remote Actions callers |
 | `CSB_MAX_CONCURRENT_SCANS` | `8` | Maximum concurrent scanner processes |
+| `SENTINEL_OPENGREP_ENABLED` | `true` | Run deterministic SAST before AI; `false`, `0`, or `off` disables it |
+| `SENTINEL_OPENGREP_BIN` | `opengrep` on PATH | CLI executable; image: `/opt/sentinel-engines/bin/opengrep` |
+| `SENTINEL_OPENGREP_RULES` | `apps/api/opengrep-rules` (bundled Sentinel-authored pack) | Local paths separated by the OS path delimiter (`:` on Linux/macOS); image: `/app/apps/api/opengrep-rules` |
+| `SENTINEL_OPENGREP_TIMEOUT_MS` | `300000` | Independent SAST timeout in milliseconds; timeout/failure never prevents AI execution |
+
+The Docker image bundles OpenGrep **2.0.0** for Linux amd64/arm64 with pinned SHA-256 checksums and local rules. Rebuild/redeploy to pick up the binary and pack; scans never download rules from the Registry. Existing AI runtime support constraints still apply to the image. Compose forwards the four variables above; custom paths must exist inside the container (mount custom rules read-only). For source development, install OpenGrep separately or set the executable path; a missing binary records a skipped SAST status.
+
+SAST consumes no AI budget. Findings and status are persisted separately before AI starts, remain visible on budget-partial scans, and completed SAST is reused on resume. The scan page shows SAST status and origin filters; scan findings, reports and regression include both origins. Gates, comparisons and stored run-level severity totals remain **AI-only** until SAST classification/review is implemented.
 
 For ChatGPT-subscription runs on macOS, Sentinel prefers the Codex executable bundled with ChatGPT Desktop. This keeps the inference host aligned with the shared authentication and model-cache schema; an explicit `CODEX_BIN` always wins.
 

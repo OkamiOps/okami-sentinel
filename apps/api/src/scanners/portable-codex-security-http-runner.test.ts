@@ -1,6 +1,13 @@
 import { createPortableCodexSecuritySnapshot } from "./portable-codex-security-worker-support.js";
+import { fileURLToPath } from "node:url";
+import { readScanFindings } from "../ingest.js";
+import { readOpengrepStatus } from "../sast/opengrep.js";
 import { materializePortableCodexSecurityReportShard } from "./portable-codex-security-report-shards.js";
 import assert from "node:assert/strict";
+import { reservePortableTurn } from "./portable-turn-budget.js";
+import { createAgentSession } from "../agent/session-runner.js";
+import { readPortableCodexSecurityRuntime } from "./portable-codex-security-runtime.js";
+import { preflightPortableResume } from "./resume-portable-scan.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -265,6 +272,7 @@ function configuration(
     repositoryPath,
     paths: ["src"],
     sourceRef: "a".repeat(40),
+    graphify: true,
     mode: "standard",
     providerPlan,
     limits: {
@@ -790,6 +798,30 @@ test("Portable Codex Security reads only the persisted vault reference for an AP
     remove(root);
   }
 });
+
+for (const graphify of [undefined, false]) {
+  test(`Portable Graphify ${String(graphify)} skips indexing and graph context`, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-no-graph-"));
+    try {
+      const config = configuration(root);
+      delete config.graphify;
+      if (graphify !== undefined) config.graphify = graphify;
+      const specs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }> = [];
+      const result = await runPortableCodexSecurity(config, dependencies({
+        prepareGraph: async () => { throw new Error("Graphify must not run"); },
+        createSession: stageSessionFactory(specs),
+      }));
+      assert.equal(result.runtime.status, "completed");
+      assert.ok(specs.length > 0);
+      for (const { spec, toolSurface } of specs) {
+        assert.equal(spec.graphIndex, undefined);
+        assert.equal(toolSurface.includes("workspace.graph"), false);
+        assert.doesNotMatch(spec.instructions, /Server-selected candidate source windows|A local code graph is available|Cross-file navigation/);
+      }
+      assert.equal(fs.existsSync(path.join(config.outputDir, "graphify-status.json")), false);
+    } finally { remove(root); }
+  });
+}
 
 test("Portable stages receive the prepared graph once without treating graph queries as source reads", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-graph-stages-"));
@@ -1326,6 +1358,112 @@ test("Portable Codex Security rejects an incomplete cost quote before its first 
   }
 });
 
+test("Portable turn reservations clamp partially affordable output and preserve affordable requests", () => {
+  const pricing = costBudget().pricing;
+  for (const [operation, key] of [
+    ["responses", "max_output_tokens"], ["messages", "max_tokens"],
+    ["chat-completions", "max_completion_tokens"], ["chat-completions", "max_tokens"],
+  ] as const) {
+    const request = { operation, body: { [key]: 8_192, messages: [] } };
+    const clamped = reservePortableTurn(request, pricing, 0.004)!;
+    const cap = (clamped.body as Record<string, number>)[key]!;
+    assert.ok(cap >= 1_024 && cap < 8_192);
+    assert.equal(reservePortableTurn(request, pricing, 1), request);
+    assert.equal(request.body[key], 8_192);
+    assert.equal(reservePortableTurn(request, pricing, 0.0001), null);
+  }
+  const defaulted = reservePortableTurn({ operation: "responses", body: {} }, pricing, 1)!;
+  assert.equal((defaulted.body as Record<string, number>).max_output_tokens, 65_536);
+});
+
+test("Portable reservation blocks unaffordable turns before upstream in production and injected sessions", async (t) => {
+  const keys = ["SENTINEL_OPENGREP_BIN", "SENTINEL_OPENGREP_ENABLED", "SENTINEL_OPENGREP_RULES"] as const;
+  const previous = keys.map(key => process.env[key]);
+  t.after(() => keys.forEach((key, index) => { if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index]; }));
+  process.env.SENTINEL_OPENGREP_BIN = fileURLToPath(new URL("../sast/fixtures/fake-opengrep.mjs", import.meta.url));
+  process.env.SENTINEL_OPENGREP_ENABLED = "true";
+  for (const injected of [false, true]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-reservation-"));
+    const config = configuration(root);
+    const rules = path.join(root, "rules.json");
+    fs.writeFileSync(rules, JSON.stringify({ mode: "completed" }));
+    process.env.SENTINEL_OPENGREP_RULES = rules;
+    config.costBudget = costBudget({ maxCostUsd: 0.000001 });
+    let calls = 0;
+    const upstream = { async request() { calls++; throw new Error("must-not-send"); } };
+    try {
+      await assert.rejects(runPortableCodexSecurity(config, dependencies(injected ? {
+        createSession: async (input: { spec: AgentSessionSpec; capability: CapabilityReport }) =>
+          createAgentSession({ ...input.spec, probe: input.capability.capabilities }, upstream),
+      } : { createUpstream: () => upstream })), { code: "cost_limit_reached" });
+      assert.equal(calls, 0);
+      const runtime = JSON.parse(fs.readFileSync(path.join(config.outputDir, "portable-codex-security-runtime.json"), "utf8"));
+      assert.equal(runtime.status, "incomplete");
+      assert.equal(runtime.error, "cost_limit_reached");
+      assert.equal(runtime.budgetPartial.stopReason, "budget");
+      assert.deepEqual(runtime.budgetPartial.completed, []);
+      assert.equal(runtime.budgetPartial.interrupted.stage, "inventory");
+      assert.ok(fs.existsSync(path.join(config.outputDir, "budget-partial.json")));
+      assert.equal(runtime.stageLabel, "Parcial por orçamento");
+      assert.equal(readOpengrepStatus(config.outputDir)?.status, "completed");
+      const findings = readScanFindings(config.outputDir);
+      assert.equal(findings.length, 1);
+      assert.equal(findings[0].origin?.kind, "sast");
+    } finally { remove(root); }
+  }
+});
+
+test("Portable budget partial retains completed pages and resumes only pending work with prior spend", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-budget-resume-"));
+  const config = configuration(root);
+  config.mode = "deep";
+  config.limits.totalTimeoutMs = 0;
+  config.costBudget = costBudget({ maxCostUsd: 0.3005 });
+  for (let i = 0; i < 64; i++) fs.writeFileSync(path.join(config.repositoryPath, "src", `file-${String(i).padStart(3, "0")}.ts`), "export const safe = true;\n");
+  const factory = stageSessionFactory();
+  const calls: string[] = [];
+  let stop = true;
+  const createSession = async (input: Parameters<typeof factory>[0]) => {
+    const page = path.basename(input.spec.artifactRoot);
+    calls.push(page);
+    if (stop && page === "discovery-002") {
+      input.spec.beforeModelRequest!({ operation: "chat-completions", body: {} });
+      assert.fail("unaffordable request must not be dispatched");
+    }
+    const session = await factory(input);
+    return { ...session, async *run() {
+      yield { type: "usage", usage: { inputTokens: 100_000, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 0, reasoningTokens: null } } as const;
+      yield* session.run();
+    } };
+  };
+  try {
+    await assert.rejects(runPortableCodexSecurity(config, dependencies({ createSession })), { code: "cost_limit_reached" });
+    const runtime = readPortableCodexSecurityRuntime(config.outputDir)!;
+    assert.equal(runtime.status, "incomplete");
+    const partial = runtime.budgetPartial!;
+    assert.equal(partial.stopReason, "budget");
+    assert.equal(partial.spentUsd, 0.3);
+    assert.equal(partial.maxCostUsd, 0.3005);
+    assert.deepEqual(partial.completed.map(item => item.page), ["inventory", "threat-model", "discovery-001"]);
+    for (const item of partial.completed) assert.ok(fs.existsSync(path.join(config.outputDir, item.artifactPath!)));
+    assert.equal(partial.interrupted.page, "discovery-002");
+    assert.deepEqual(partial.pending.map(item => item.page ?? item.stage), ["discovery-002", "discovery-003", "dataflow", "validation", "report"]);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(config.outputDir, "budget-partial.json"), "utf8")), partial);
+    assert.equal(preflightPortableResume(config.outputDir, "deep").completed, 1);
+    for (const maxCostUsd of [0.1, partial.spentUsd, partial.maxCostUsd]) {
+      await assert.rejects(runPortableCodexSecurity({ ...config, costBudget: { ...config.costBudget!, maxCostUsd } }, dependencies({ resumeDiscovery: true, createSession })), /resume_budget_cap_must_exceed_prior_spend_and_cap/);
+    }
+    assert.equal(calls.length, 4);
+    stop = false;
+    calls.length = 0;
+    const result = await runPortableCodexSecurity({ ...config, costBudget: { ...config.costBudget!, maxCostUsd: 2 } }, dependencies({ resumeDiscovery: true, createSession }));
+    assert.equal(result.runtime.status, "completed");
+    assert.deepEqual(calls, ["discovery-002", "discovery-003", "dataflow", "validation"]);
+    assert.equal(result.runtime.usage.inputTokens, 700_000);
+    assert.equal(result.runtime.budgetPartial, undefined);
+  } finally { remove(root); }
+});
+
 test("Portable Codex Security stops before the next agent event when the frozen cost ceiling is reached", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-cost-limit-"));
   const config = configuration(root);
@@ -1367,9 +1505,11 @@ test("Portable Codex Security stops before the next agent event when the frozen 
     const runtime = JSON.parse(fs.readFileSync(
       path.join(config.outputDir, "portable-codex-security-runtime.json"),
       "utf8",
-    )) as { usage: { inputTokens: number }; error: string };
+    )) as { usage: { inputTokens: number }; error: string; status: string; budgetPartial: { spentUsd: number } };
     assert.equal(runtime.usage.inputTokens, 1_000_000);
     assert.equal(runtime.error, "cost_limit_reached");
+    assert.equal(runtime.status, "incomplete");
+    assert.equal(runtime.budgetPartial.spentUsd, 1);
   } finally {
     remove(root);
   }
@@ -1442,6 +1582,11 @@ test("Portable Codex Security worker accepts only a 0600 closed configuration an
     const configured = { ...config, reasoningEffort: "high" };
     fs.writeFileSync(target, JSON.stringify(configured), { mode: 0o600 });
     assert.deepEqual(readPortableCodexSecurityWorkerConfiguration(target), configured);
+    const { graphify: _graphify, ...historical } = configured;
+    fs.writeFileSync(target, JSON.stringify(historical), { mode: 0o600 });
+    assert.deepEqual(readPortableCodexSecurityWorkerConfiguration(target), { ...historical, graphify: false });
+    fs.writeFileSync(target, JSON.stringify({ ...configured, graphify: "true" }), { mode: 0o600 });
+    assert.throws(() => readPortableCodexSecurityWorkerConfiguration(target));
     fs.chmodSync(target, 0o644);
     assert.throws(() => readPortableCodexSecurityWorkerConfiguration(target));
     fs.chmodSync(target, 0o600);
@@ -1506,9 +1651,10 @@ test("Portable untimed scans finish all stages after more than 90 minutes", asyn
   } finally { remove(root); }
 });
 
-test("discovery recovery reuses validated artifacts and retains prior usage without repeating model stages", async () => {
+test("historical configuration without Graphify resumes off and reuses validated artifacts and prior usage", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-resume-"));
   const config = configuration(root);
+  delete config.graphify;
   config.limits.totalTimeoutMs = 0;
   const factory = stageSessionFactory();
   try {
@@ -1522,7 +1668,9 @@ test("discovery recovery reuses validated artifacts and retains prior usage with
     const runtimePath = path.join(config.outputDir, "portable-codex-security-runtime.json");
     const before = JSON.parse(fs.readFileSync(runtimePath, "utf8"));
     const specs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }> = [];
-    await runPortableCodexSecurity(config, dependencies({ resumeDiscovery: true, createSession: stageSessionFactory(specs) }));
+    await runPortableCodexSecurity(config, dependencies({ resumeDiscovery: true,
+      prepareGraph: async () => { throw new Error("historical resume must not index"); },
+      createSession: stageSessionFactory(specs) }));
     assert.ok(specs.every(({ spec }) => !/stage "(inventory|threat-model)"/.test(spec.instructions)));
     assert.deepEqual(
       specs.filter(({ spec }) => /stage "discovery"/.test(spec.instructions)).map(({ spec }) => path.basename(spec.artifactRoot)),

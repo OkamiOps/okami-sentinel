@@ -48,6 +48,7 @@ test("warn-only never blocks", () => {
 test("every preset is a policy the parser accepts", () => {
   for (const preset of GUARDRAIL_POLICY_PRESETS) {
     if (preset === "custom") continue;
+    assert.equal(policyForPreset(preset, ["main"]).scan.maxCostUsd, 200);
     assert.doesNotThrow(() => parseGuardrailPolicy(policyForPreset(preset, ["main"])));
   }
 });

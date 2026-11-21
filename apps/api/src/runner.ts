@@ -880,6 +880,7 @@ async function startReservedScan(
 
   const initialProgress = progressForStatus("running", outputDir, mode, startedAt);
   const run: ScanRun = {
+    graphify: portablePlan !== undefined && req.graphify === true,
     id,
     displayName,
     repositoryPath: publicRepositoryPath,

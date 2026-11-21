@@ -12,6 +12,7 @@ import {
 } from "../model-pricing.js";
 import { resolveScannerPricingQuote } from "../provider-pricing.js";
 import { progressForStatus } from "../progress.js";
+import { withProgress } from "../progress.js";
 import {
   refreshPortableCodexSecurityRunFromDisk,
 } from "./portable-codex-security-reconcile.js";
@@ -21,6 +22,27 @@ import {
 } from "./portable-codex-security-runtime.js";
 
 const CAPTURED_AT = "2026-08-11T17:00:00.000Z";
+
+test("budget partial is incomplete without findings and its summary survives persisted run reads", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-budget-public-"));
+  const budgetPartial = {
+    stopReason: "budget" as const, spentUsd: 0.2, maxCostUsd: 0.3,
+    completed: [{ stage: "inventory", page: "inventory", artifactPath: "portable-codex-security-artifacts/inventory/01-inventory.json" }],
+    interrupted: { stage: "discovery", page: "discovery-002", artifactPath: "portable-codex-security-artifacts/discovery-002/03-discovery.json" },
+    pending: [{ stage: "validation", page: null, artifactPath: null }],
+  };
+  try {
+    writePortableCodexSecurityRuntime(root, runtime({ status: "incomplete", budgetPartial, error: "cost_limit_reached" }));
+    for (const status of ["running", "incomplete"] as const) {
+      const refreshed = refreshPortableCodexSecurityRunFromDisk({ ...run(root), status });
+      assert.equal(refreshed.status, "incomplete");
+      assert.equal(refreshed.statusReason, "budget_exhausted");
+      assert.deepEqual(refreshed.budgetPartial, budgetPartial);
+      assert.equal(refreshed.severity.total, 0);
+      assert.deepEqual(withProgress({ ...run(root), status: "incomplete" }).budgetPartial, budgetPartial);
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
 
 function run(scanDir: string): ScanRun {
   return {

@@ -12,6 +12,16 @@ import {
   type StartScanRequest,
 } from "@csb/shared";
 
+export const DEFAULT_SCAN_MAX_COST_USD = 200;
+
+export function costCeilingDisclosureKey(executionProfile: "native" | "portable" | null) {
+  return executionProfile === "portable" ? "newScan.portableCostCeilingDisclosure" : "newScan.costCeilingDisclosure";
+}
+
+export function authorizationBudgetKey(engine: ScannerEngine, unlimited: boolean) {
+  return engine === "codex-security" ? unlimited ? null : "newScan.ceiling" : "newScan.planAllowance";
+}
+
 const CAPABILITY_PROBE_REASONS = new Set([
   "capability_probe_missing",
   "capability_probe_stale",
@@ -20,6 +30,10 @@ const CAPABILITY_PROBE_REASONS = new Set([
   "codex_portable_capability_stale",
   "codex_portable_capability_failed",
 ]);
+
+export function requiresUsdCapAcknowledgement(engine: ScannerEngine, unlimited: boolean): boolean {
+  return (engine === "mantis" || engine === "vulnhunter") && !unlimited;
+}
 
 /** Legacy runtime discovery is informational; server compatibility owns route eligibility. */
 export function canResolveConnectionWithEngine(engine: Pick<{ enabled: boolean; available: boolean }, "enabled" | "available">): boolean {
@@ -282,6 +296,7 @@ type ConnectionAwareStartInput = Omit<StartScanRequest, "connection" | "provider
 };
 
 export function buildConnectionAwareStartRequest(input: ConnectionAwareStartInput): StartScanRequest | null {
+  if (requiresUsdCapAcknowledgement(input.engine ?? "codex-security", input.maxCostUsd == null)) return null;
   const {
     selection,
     compatibility,
@@ -299,6 +314,8 @@ export function buildConnectionAwareStartRequest(input: ConnectionAwareStartInpu
   ) return null;
   return {
     ...request,
+    ...(request.engine === "codex-security" && compatibility.selectedProfile === "portable"
+      ? { graphify: request.graphify === true } : {}),
     ...(request.engine === "codex-security" ? { executionProfilePreference: "auto" as const } : {}),
     ...(reasoning.kind === "configurable" && reasoning.selected !== null
       ? { effort: reasoning.selected }

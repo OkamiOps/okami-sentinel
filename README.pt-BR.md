@@ -133,6 +133,8 @@ Runs Deep densos mantêm assessment e report limitados sem truncar o resultado f
 
 ### Graphify, cobertura e recuperação
 
+O Graphify fica **desativado por padrão** no Portable Codex. Ative-o no formulário de novo scan ou envie `"graphify": true` à API de criação. A escolha é persistida e mantida na retomada; scans antigos sem o campo ficam desativados. Sem opt-in, não há indexação nem contexto de grafo nos prompts. O comportamento de grafo abaixo só se aplica quando ativado.
+
 Novos scans completos Standard e Deep enumeram o mesmo universo auditável de código/configuração e projetam os arquivos atribuídos completos. O Graphify agrupa arquivos relacionados e fornece relações do código; arquivos sem nós no grafo continuam incluídos. Standard revisa os caminhos principais com effort `low` por padrão; Deep investiga caminhos alternativos e contraevidências com `high`. Escolhas explícitas suportadas são preservadas; rotas sem controle de effort usam o default do provider. Código fornecido não comprova atenção do modelo nem qualidade de detecção. Cada scan completo é independente; a recuperação reutiliza apenas checkpoints validados daquele run.
 
 O Sentinel gerencia o Graphify: pnpm provisiona seu runtime isolado e Docker o inclui na imagem. A projeção de código para avaliação e relatório se adapta ao contexto disponível após reservar instruções, resposta e continuação. Não há quantidade fixa de trechos nem corte por tamanho de função; intervalos pendentes ficam disponíveis para leituras direcionadas. O guard de contexto estimado usa o menor valor entre 300K tokens e a janela do modelo. Relações do grafo orientam a navegação, nunca provam vulnerabilidades.

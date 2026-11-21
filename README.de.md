@@ -137,6 +137,8 @@ Dataflow verarbeitet Kandidaten in servergeführten Seiten mit höchstens 32 Kan
 
 ### Graphify, Abdeckung und Wiederherstellung
 
+Graphify ist für Portable Codex **standardmäßig deaktiviert**. Aktiviere es im Formular für neue Scans oder mit `"graphify": true` in der Scan-API. Die Auswahl bleibt bei der Wiederaufnahme erhalten; alte Scans ohne dieses Feld bleiben deaktiviert. Ohne Opt-in gibt es weder Indexierung noch Graphkontext in Prompts. Das folgende Graphverhalten gilt nur bei Aktivierung.
+
 Neue vollständige Standard- und Deep-Scans erfassen dieselben prüfbaren Quell- und Konfigurationsdateien und stellen zugewiesene Dateien vollständig bereit. Graphify gruppiert zusammenhängende Dateien; Dateien ohne Graphknoten bleiben enthalten. Standard prüft Hauptpfade mit standardmäßig `low`, Deep untersucht alternative Pfade und Gegenbelege mit `high`. Explizite unterstützte Optionen bleiben erhalten; ohne Effort-Steuerung gilt der Provider-Standard. Bereitgestellter Code beweist weder Modellaufmerksamkeit noch Erkennungsqualität. Jeder vollständige Scan ist unabhängig; die Wiederherstellung verwendet nur validierte Checkpoints dieses Laufs.
 
 Sentinel verwaltet Graphify: pnpm stellt die isolierte Laufzeit bereit, Docker enthält sie im Image. Quellprojektionen für Bewertung und Bericht passen sich dem verfügbaren Kontext an, mit Reserven für Anweisungen, Ausgabe und Fortsetzung. Es gibt keine feste Anzahl von Ausschnitten oder maximale Funktionslänge; ausstehende Bereiche bleiben gezielt lesbar. Die geschätzte Kontextgrenze ist das Minimum aus 300K Tokens und Modellfenster. Graphbeziehungen dienen der Navigation, nicht als Schwachstellenbeweis.

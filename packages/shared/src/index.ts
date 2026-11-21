@@ -645,7 +645,25 @@ export interface ScanProgress {
   lastActivityAt?: string | null;
 }
 
+export interface ScanBudgetWorkItem {
+  stage: string;
+  /** Null until the preceding stage determines the page plan. */
+  page: string | null;
+  artifactPath: string | null;
+}
+
+export interface ScanBudgetPartial {
+  stopReason: "budget";
+  spentUsd: number;
+  maxCostUsd: number;
+  completed: ScanBudgetWorkItem[];
+  interrupted: ScanBudgetWorkItem;
+  pending: ScanBudgetWorkItem[];
+}
+
 export interface ScanRun {
+  sast?: ScanSastSummary | null;
+  graphify?: boolean;
   id: string;
   displayName: string;
   repositoryPath: string | null;
@@ -654,6 +672,8 @@ export interface ScanRun {
   revision: string | null;
   scanDir: string;
   status: ScanStatus;
+  statusReason?: "budget_exhausted";
+  budgetPartial?: ScanBudgetPartial;
   model: string | null;
   effort: string | null;
   mode: ScanMode | string | null;
@@ -700,6 +720,7 @@ export function scanEstimatedUsd(
 }
 
 export interface FindingSummary {
+  origin?: { kind: "sast" | "ai"; tool?: string };
   findingId: string;
   occurrenceId: string | null;
   title: string;
@@ -711,6 +732,15 @@ export interface FindingSummary {
   fingerprints: string[];
   category: string | null;
   cwe: string[];
+}
+
+export interface ScanSastSummary {
+  status: "completed" | "failed" | "skipped" | "timeout";
+  tool: "opengrep";
+  version: string | null;
+  count: number;
+  durationMs: number;
+  reason: string | null;
 }
 
 export type AttackPathEvidenceState = "proven" | "inferred" | "missing";
@@ -864,6 +894,8 @@ export interface MetricsSummary {
 }
 
 export interface StartScanRequest {
+  /** Enable local Graphify indexing for this Portable scan. Defaults to false. */
+  graphify?: boolean;
   repositoryPath: string;
   engine?: ScannerEngine;
   executionProfilePreference?: CodexSecurityProfilePreference;

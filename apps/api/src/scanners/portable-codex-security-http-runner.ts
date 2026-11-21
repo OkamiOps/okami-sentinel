@@ -1,4 +1,7 @@
 import { projectionBudget } from "../graphify/projection-budget.js";
+import { runOpengrep } from "../sast/opengrep.js";
+import { reservePortableTurn } from "./portable-turn-budget.js";
+import { assertBudgetResumeCap, syncBudgetArtifact, writeBudgetPartial } from "./portable-budget-partial.js";
 import { buildDiscoveryGraphContext, buildPartitionRelations } from "../graphify/discovery-context.js";
 import { buildDiscoveryPriorities } from "../graphify/discovery-priorities.js";
 import { runPortableStageWithRecovery, PortableStageRecoveryError } from "./portable-stage-recovery.js";
@@ -18,6 +21,7 @@ import {
   type SafeProviderErrorCode,
   type ScanConnectionSnapshot,
   type ScanMode,
+  type ScanBudgetWorkItem,
 } from "@csb/shared";
 
 import {
@@ -123,6 +127,7 @@ export interface PortableCodexSecurityCostBudget {
 
 /** The only child-process configuration: route identifiers and explicit local budgets. */
 export interface PortableCodexSecurityWorkerConfiguration {
+  graphify?: boolean;
   outputDir: string;
   repositoryPath: string;
   paths: string[];
@@ -228,6 +233,8 @@ export async function runPortableCodexSecurity(
   dependencies: PortableCodexSecurityRunnerDependencies,
 ): Promise<PortableCodexSecurityRunResult> {
   const safeConfiguration = validateConfiguration(configuration);
+  const resumeState = dependencies.resumeDiscovery ? readPortableCodexSecurityRuntime(path.resolve(safeConfiguration.outputDir)) : null;
+  if (resumeState?.budgetPartial) assertBudgetResumeCap(resumeState.budgetPartial, safeConfiguration.costBudget?.maxCostUsd);
   const now = dependencies.now ?? (() => new Date());
   const externalSignal = dependencies.signal ?? new AbortController().signal;
   const deadline = createTotalDeadline(
@@ -286,6 +293,18 @@ export async function runPortableCodexSecurity(
 
   let releaseRedaction = () => undefined;
   let costBudgetStop: "cost_budget_unavailable" | "cost_limit_reached" | null = null;
+  const work = new Map<string, ScanBudgetWorkItem>(PORTABLE_CODEX_SECURITY_STAGES.map(stage =>
+    [stage.id, { stage: stage.id, page: null, artifactPath: null }]));
+  const completedWork = new Set<string>();
+  let interrupted: ScanBudgetWorkItem = { stage: "inventory", page: null, artifactPath: null };
+  const workItem = (stage: string, root: string, artifact: string): ScanBudgetWorkItem => ({
+    stage, page: path.basename(root), artifactPath: path.relative(outputDir, path.join(root, artifact)),
+  });
+  const completeWork = (item: ScanBudgetWorkItem) => {
+    syncBudgetArtifact(path.join(outputDir, item.artifactPath!));
+    work.set(item.artifactPath!, item);
+    completedWork.add(item.artifactPath!);
+  };
   try {
     throwIfStopped(deadline);
     const plan = createSafePortableCodexSecurityProviderPlan(safeConfiguration.providerPlan);
@@ -296,8 +315,9 @@ export async function runPortableCodexSecurity(
       authorizationTime,
     );
     assertPortableCostBudget(safeConfiguration.costBudget, plan, resolved);
-    const previous = dependencies.resumeDiscovery ? readPortableCodexSecurityRuntime(outputDir) : null;
-    if (dependencies.resumeDiscovery && (!previous || !["discovery", "dataflow", "validation", "report"].includes(previous.stage) || previous.status === "completed" ||
+    const previous = resumeState;
+    const resumableStages = previous?.budgetPartial ? ["inventory", "threat-model", "discovery", "dataflow", "validation", "report"] : ["discovery", "dataflow", "validation", "report"];
+    if (dependencies.resumeDiscovery && (!previous || !resumableStages.includes(previous.stage) || previous.status === "completed" ||
         previous.sourceRef !== safeConfiguration.sourceRef || !previous.snapshotId)) {
       throw new PortableCodexSecurityRunnerError("snapshot_invalid");
     }
@@ -307,10 +327,11 @@ export async function runPortableCodexSecurity(
     if (previous) {
       runtime = { ...runtime, startedAt: previous.startedAt, usage: previous.usage };
       const stop = costBudgetStopCode(safeConfiguration.costBudget, runtime.usage);
-      if (stop !== null) throw new PortableCodexSecurityRunnerError(stop);
+      if (stop !== null && (previous.usage.reported || !previous.budgetPartial)) throw new PortableCodexSecurityRunnerError(stop);
     }
 
     assertPortableCodexSecuritySnapshot(snapshot);
+    await runOpengrep(snapshot.snapshotRoot, outputDir);
     throwIfStopped(deadline);
     // Snapshotting is local-only; repeat metadata validation immediately
     // before crossing into the vault/network credential boundary.
@@ -331,19 +352,23 @@ export async function runPortableCodexSecurity(
     runtimeWritable = true;
     writePortableCodexSecurityRuntime(outputDir, runtime);
 
-    update({ detail: "indexing snapshot relationships locally with Graphify" });
-    log(JSON.stringify({ type: "graphify", status: "indexing" }));
-    const graph = await (dependencies.prepareGraph ?? prepareManagedGraph)({
-      snapshotRoot: snapshot.snapshotRoot, snapshotId: snapshot.snapshotId, signal: deadline.signal,
-    });
-    throwIfStopped(deadline);
-    assertPortableCodexSecuritySnapshot(snapshot);
-    const { index: graphIndex, ...graphMetrics } = graph;
-    fs.writeFileSync(path.join(outputDir, "graphify-status.json"), JSON.stringify(graphMetrics), { mode: 0o600 });
-    log(JSON.stringify({ type: "graphify", ...graphMetrics }));
-    update({ detail: graph.status === "ready"
-      ? `Graphify ready: ${graph.nodes} symbols, ${graph.edges} relationships${graph.cacheHit ? " (cached)" : ""}`
-      : "Graphify unavailable; continuing with source inspection" });
+    let graphIndex: Awaited<ReturnType<typeof prepareManagedGraph>>["index"];
+    if (safeConfiguration.graphify === true) {
+      update({ detail: "indexing snapshot relationships locally with Graphify" });
+      log(JSON.stringify({ type: "graphify", status: "indexing" }));
+      const graph = await (dependencies.prepareGraph ?? prepareManagedGraph)({
+        snapshotRoot: snapshot.snapshotRoot, snapshotId: snapshot.snapshotId, signal: deadline.signal,
+      });
+      throwIfStopped(deadline);
+      assertPortableCodexSecuritySnapshot(snapshot);
+      const { index, ...graphMetrics } = graph;
+      graphIndex = index;
+      fs.writeFileSync(path.join(outputDir, "graphify-status.json"), JSON.stringify(graphMetrics), { mode: 0o600 });
+      log(JSON.stringify({ type: "graphify", ...graphMetrics }));
+      update({ detail: graph.status === "ready"
+        ? `Graphify ready: ${graph.nodes} symbols, ${graph.edges} relationships${graph.cacheHit ? " (cached)" : ""}`
+        : "Graphify unavailable; continuing with source inspection" });
+    }
 
     const credentials = resolved.directXaiOAuth
       ? await readXaiOAuthCredentials(resolved.connection, dependencies.xaiOAuth, deadline)
@@ -384,6 +409,13 @@ export async function runPortableCodexSecurity(
       }
     }
     let dossier = createPortableCodexSecurityDossier();
+    if (deepCoveragePlan) {
+      work.delete("discovery");
+      for (const partition of deepCoveragePlan.partitions) {
+        const item = workItem("discovery", path.join(artifactsRoot, `discovery-${String(partition.index + 1).padStart(3, "0")}`), "03-discovery.json");
+        work.set(item.artifactPath!, item);
+      }
+    }
     let dossierStateBase64: string | null = null;
     let reportShardResults: PortableCodexSecurityReportShardResult[] | null = null;
     for (const stage of PORTABLE_CODEX_SECURITY_STAGES) {
@@ -446,6 +478,17 @@ export async function runPortableCodexSecurity(
           ? assessmentPages.map((assessmentPage) => ({ shard: null, partition: null, assessmentPage, supplementalDiscoveryReview: false }))
           : (modelShards ?? [null]).map((shard) => ({ shard, partition: null, assessmentPage: null, supplementalDiscoveryReview: false }));
       const discoveryBaseDossier = dossier;
+      const itemRoot = ({ shard, partition, assessmentPage, supplementalDiscoveryReview }: typeof stageItems[number]) => path.join(
+        artifactsRoot, supplementalDiscoveryReview ? "discovery-review"
+          : partition !== null ? `${stage.id}-${String(partition.index + 1).padStart(3, "0")}`
+          : assessmentPage !== null ? assessmentPageDirectory(stage.id, assessmentPage)
+          : shard === null ? stage.id : `${stage.id}-${String(shard.index + 1).padStart(2, "0")}`,
+      );
+      work.delete(stage.id);
+      for (const entry of stageItems) {
+        const item = workItem(stage.id, itemRoot(entry), stage.artifact);
+        work.set(item.artifactPath!, item);
+      }
       for (const { shard, partition, assessmentPage, supplementalDiscoveryReview } of stageItems) {
         const stageRemaining = deadline.remainingMs();
         if (stageRemaining <= 0) throw new PortableCodexSecurityRunnerError("agent_time_limit");
@@ -464,6 +507,8 @@ export async function runPortableCodexSecurity(
               ? assessmentPageDirectory(stage.id, assessmentPage)
               : shard === null ? stage.id : `${stage.id}-${String(shard.index + 1).padStart(2, "0")}`,
         );
+        interrupted = workItem(stage.id, artifactRoot, stage.artifact);
+        work.set(interrupted.artifactPath!, interrupted);
         if (supplementalDiscoveryReview) {
           update({
             stage: "discovery",
@@ -482,11 +527,13 @@ export async function runPortableCodexSecurity(
             const report = validatePortableCodexSecurityReportCoverage(artifact, stageDossier);
             assertPortableCodexSecurityReportAnchors(snapshot.snapshotRoot, report, deadline.remainingMs, anchorValidationCache);
             pageResults.push({ shard, report });
+            completeWork(interrupted);
             log(JSON.stringify({ type: "checkpoint_reused", stage: stage.id, page: shard.index + 1 }));
             continue;
           }
           const restored = applyPortableCodexSecurityStageArtifact(stageDossier, artifact);
           assertPortableCodexSecurityDossierAnchors(snapshot.snapshotRoot, restored, deadline.remainingMs, anchorValidationCache);
+          completeWork(interrupted);
           if (partition !== null) {
             const inspected = new Set(restored.scope.inspected);
             if (partition.paths.some((file) => !inspected.has(file))) {
@@ -525,10 +572,12 @@ export async function runPortableCodexSecurity(
             : portableReportShardSessionLimits(safeConfiguration.limits, stageRemaining, shards!.length);
         const execute = async (stageDossier: PortableCodexSecurityDossier, partition: PortableDeepCoveragePartition | null,
           shard: PortableCodexSecurityReportShardResult["shard"] | null, artifactRoot: string): Promise<PortableCodexSecurityStageObservation> => {
+        interrupted = workItem(stage.id, artifactRoot, stage.artifact);
+        work.set(interrupted.artifactPath!, interrupted);
         // Legitimate exploration is not terminated by cumulative action counts.
         // Mode-specific prompts and effort control depth; repeats receive guidance.
         const effectiveSessionLimits = { ...stageSessionLimits, maxModelTurns: 0, maxToolCalls: 0 };
-        const graphProjection = (partition as StandardRecoveryPartition | null)?.sourceProjection === "graph-windows-v1";
+        const graphProjection = safeConfiguration.graphify === true && (partition as StandardRecoveryPartition | null)?.sourceProjection === "graph-windows-v1";
         const stageDossierStateBase64 = portableCodexSecurityDossierBase64(stageDossier);
         fs.mkdirSync(artifactRoot, { recursive: true, mode: 0o700 });
         const deepCoverage = partition === null || graphProjection
@@ -570,6 +619,16 @@ export async function runPortableCodexSecurity(
         }
         let graphContext = discoveryContext;
         const spec: AgentSessionSpec = {
+        ...(safeConfiguration.costBudget === undefined ? {} : { beforeModelRequest: (request) => {
+          const budget = safeConfiguration.costBudget!;
+          const spent = runtime.usage.reported
+            ? estimateFrozenScannerUsageCost(runtime.usage, budget.pricing)?.estimatedUsd
+            : 0;
+          const reserved = spent === undefined ? null : reservePortableTurn(request, budget.pricing, budget.maxCostUsd - spent);
+          if (reserved !== null) return reserved;
+          costBudgetStop = spent === undefined ? "cost_budget_unavailable" : "cost_limit_reached";
+          throw new PortableCodexSecurityRunnerError(costBudgetStop);
+        } }),
         connectionId: resolved.connection.id,
         routeKind: resolved.connection.routeKind,
         protocol: resolved.connection.protocol as AgentSessionSpec["protocol"],
@@ -696,7 +755,11 @@ export async function runPortableCodexSecurity(
           return true;
         },
         });
+        completeWork(workItem(stage.id, artifactRoot, stage.artifact));
         return observed;
+        } catch (error) {
+          if (costBudgetStop !== null) throw new PortableCodexSecurityRunnerError(costBudgetStop);
+          throw error;
         } finally { cancelActive(); activeSession = null; sessionCancelled = false; }
         };
         const checkpoint = (root: string, base: PortableCodexSecurityDossier, part: PortableDeepCoveragePartition | null): PortableCodexSecurityStageObservation | undefined => {
@@ -763,6 +826,7 @@ export async function runPortableCodexSecurity(
               // Separate versioned slice layout from historical whole-file checkpoint numbering.
               const childRoot = path.join(outputDir, "portable-recovery", `${sourceUnits ? "source-units-v1" : "chunks"}-${path.basename(artifactRoot)}`, String(i + 1));
               const saved = checkpoint(childRoot, childDossier, childPart);
+              if (saved) completeWork(workItem(stage.id, childRoot, stage.artifact));
               update({ detail: `resuming ${stage.label.toLowerCase()}: part ${i + 1}/${count}${saved ? " (checkpoint reused)" : " (analyzing)"}` });
               childResults.push(saved ?? await execute(childDossier, childPart, childShard, childRoot));
               update({ detail: `resuming ${stage.label.toLowerCase()}: ${i + 1}/${count} parts completed` });
@@ -787,6 +851,7 @@ export async function runPortableCodexSecurity(
           },
         });
         runtime = { ...runtime, usage: observed.usage };
+        completeWork(workItem(stage.id, artifactRoot, stage.artifact));
         if (partition !== null) {
           discoveryResults.push(observed.dossier);
         } else if (assessmentPage !== null) {
@@ -877,16 +942,33 @@ export async function runPortableCodexSecurity(
     return { runtime };
   } catch (error) {
     const normalized = normalizeRunnerError(error, deadline, costBudgetStop);
+    const orderedWork = [...work.values()].sort((left, right) =>
+      PORTABLE_CODEX_SECURITY_STAGES.findIndex(stage => stage.id === left.stage) -
+      PORTABLE_CODEX_SECURITY_STAGES.findIndex(stage => stage.id === right.stage) ||
+      (left.page ?? "").localeCompare(right.page ?? ""));
+    const budgetPartial = normalized.code === "cost_limit_reached" && safeConfiguration.costBudget ? {
+      stopReason: "budget" as const,
+      spentUsd: estimateFrozenScannerUsageCost(runtime.usage, safeConfiguration.costBudget.pricing)?.estimatedUsd ?? 0,
+      maxCostUsd: safeConfiguration.costBudget.maxCostUsd,
+      completed: orderedWork.filter(item => completedWork.has(item.artifactPath!)),
+      interrupted,
+      pending: orderedWork.filter(item => !completedWork.has(item.artifactPath!)),
+    } : undefined;
     runtime = {
       ...runtime,
-      status: normalized.code === "agent_cancelled" ? "cancelled" : "failed",
-      detail: normalized.code,
+      status: budgetPartial ? "incomplete" : normalized.code === "agent_cancelled" ? "cancelled" : "failed",
+      ...(budgetPartial ? { budgetPartial, stageLabel: "Parcial por orçamento" } : {}),
+      detail: budgetPartial ? "Parcial por orçamento" : normalized.code,
       error: normalized.code,
       errorCode: safeProviderCode(normalized.code),
       completedAt: now().toISOString(),
       updatedAt: now().toISOString(),
     };
-    if (runtimeWritable) writePortableCodexSecurityRuntime(outputDir, runtime);
+    if (runtimeWritable) {
+      if (budgetPartial) writeBudgetPartial(outputDir, budgetPartial);
+      writePortableCodexSecurityRuntime(outputDir, runtime);
+      if (budgetPartial) syncBudgetArtifact(path.join(outputDir, "portable-codex-security-runtime.json"));
+    }
     throw normalized;
   } finally {
     deadline.signal.removeEventListener("abort", cancelActive);
@@ -900,13 +982,14 @@ function validateConfiguration(
   value: PortableCodexSecurityWorkerConfiguration,
 ): PortableCodexSecurityWorkerConfiguration {
   if (!isRecord(value) || !hasOnlyKeys(value, new Set([
-    "outputDir", "repositoryPath", "paths", "sourceRef", "mode", "providerPlan", "limits", "reasoningEffort", "costBudget",
+    "outputDir", "repositoryPath", "paths", "sourceRef", "mode", "providerPlan", "limits", "reasoningEffort", "costBudget", "graphify",
   ]))) invalidPlan();
   if (
     !isSafeText(value.outputDir, MAX_PATH_LENGTH * 4) ||
     !isSafeText(value.repositoryPath, MAX_PATH_LENGTH * 4) ||
     !isSafeText(value.sourceRef, 256) ||
     (value.mode !== "standard" && value.mode !== "deep") ||
+    (value.graphify !== undefined && typeof value.graphify !== "boolean") ||
     !Array.isArray(value.paths) ||
     value.paths.length > MAX_CONFIG_PATHS ||
     !value.paths.every((item) => isSafeRelativePath(item, MAX_PATH_LENGTH)) ||
@@ -921,6 +1004,7 @@ function validateConfiguration(
       paths: [...value.paths],
       sourceRef: value.sourceRef,
       mode: value.mode,
+      graphify: value.graphify === true,
       providerPlan: createSafePortableCodexSecurityProviderPlan(value.providerPlan),
       limits: { ...value.limits },
       ...(value.reasoningEffort === undefined ? {} : { reasoningEffort: value.reasoningEffort }),

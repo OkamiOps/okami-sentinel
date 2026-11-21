@@ -20,6 +20,21 @@ import {
 
 const NOW = "2026-08-11T15:00:00.000Z";
 
+test("runtime persists budget partials and rejects malformed summaries", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-budget-ledger-"));
+  try {
+    const budgetPartial = { stopReason: "budget" as const, spentUsd: 0, maxCostUsd: 1, completed: [],
+      interrupted: { stage: "inventory", page: "inventory", artifactPath: null }, pending: [] };
+    writePortableCodexSecurityRuntime(root, runtimeState({ status: "incomplete", budgetPartial }));
+    assert.deepEqual(readPortableCodexSecurityRuntime(root)?.budgetPartial, budgetPartial);
+    for (const invalid of [{ ...budgetPartial, spentUsd: -1 }, { ...budgetPartial, interrupted: null },
+      { ...budgetPartial, completed: [{ stage: "inventory", page: "inventory", artifactPath: "../outside" }] }]) {
+      fs.writeFileSync(portableCodexSecurityRuntimePath(root), JSON.stringify({ ...runtimeState(), status: "incomplete", budgetPartial: invalid }));
+      assert.equal(readPortableCodexSecurityRuntime(root), null);
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 function runtimeState(
   patch: Partial<PortableCodexSecurityRuntimeState> = {},
 ): PortableCodexSecurityRuntimeState {

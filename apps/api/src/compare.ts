@@ -9,7 +9,7 @@ import {
   scanEstimatedUsd,
 } from "@csb/shared";
 import { getRun } from "./db.js";
-import { readFindingsFile, toFindingSummaries } from "./ingest.js";
+import { readAiFindingsFile, toFindingSummaries } from "./ingest.js";
 import { findingIdentity } from "./lifecycle.js";
 
 interface ComparableFinding extends FindingSummary {
@@ -48,7 +48,7 @@ export function compareScans(scanIds: string[]): CompareResult {
     const run = getRun(id);
     if (!run) throw new Error(`Scan não encontrado: ${id}`);
     scans.push(run);
-    const details = readFindingsFile(run.scanDir);
+    const details = readAiFindingsFile(run.scanDir);
     const summaries = toFindingSummaries(details);
     findingsByScan.set(id, summaries.map((finding, index) => ({
       ...finding,

@@ -35,6 +35,14 @@ test("bounded budget persists across helper invocations", async t => {
   assert.equal(calls, 3);
 });
 
+test("budget pauses do not consume the stage recovery retry allowance", async t => {
+  const base = setup(t);
+  for (let i = 0; i < 4; i++) {
+    await assert.rejects(runPortableStageWithRecovery({ ...base, run: async () => { throw fail("cost_limit_reached"); } }), { code: "cost_limit_reached" });
+  }
+  assert.equal(await runPortableStageWithRecovery({ ...base, run: async attempt => attempt }), 1);
+});
+
 test("the same execution policy preserves an exhausted retry budget across resume", async t => {
   const base = { ...setup(t), executionPolicyId: "standard-discovery-output-16384-context-300000-v1" };
   let calls = 0;

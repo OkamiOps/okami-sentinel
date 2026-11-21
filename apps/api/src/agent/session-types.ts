@@ -123,6 +123,7 @@ export type AgentSessionTerminalMode = "provider-completion" | "artifact-write";
 export const MAX_AGENT_SESSION_COMPLETION_TOKENS = 65_536;
 
 export interface AgentSessionSpec {
+  beforeModelRequest?: (request: AgentWireRequest) => AgentWireRequest;
   /** Server-built index for this immutable snapshot. */
   graphIndex?: GraphIndex;
   connectionId: string;
@@ -354,6 +355,7 @@ const MIN_ARTIFACT_REPAIR_MODEL_TURNS = 4;
 const MAX_ARTIFACT_REPAIR_INSPECTION_CALLS = 1;
 
 export interface ConstrainedWireSessionOptions {
+  beforeModelRequest?: (request: AgentWireRequest) => AgentWireRequest;
   limits: AgentSessionLimits;
   signal: AbortSignal;
   host: WorkspaceToolHost;
@@ -524,7 +526,7 @@ class ConstrainedWireSession implements AgentSession {
           toolCallLimit - toolCalls <= 2
         );
         const requestInArtifactRepair = artifactRepairActive;
-        const request = this.#options.adapter.nextRequest(
+        let request = this.#options.adapter.nextRequest(
           toolResults,
           finalizationRequired
             ? {
@@ -534,6 +536,7 @@ class ConstrainedWireSession implements AgentSession {
             : undefined,
         );
         artifactRepairReminder = false;
+        request = this.#options.beforeModelRequest?.(request) ?? request;
         const requestBytes = serializedByteLength(request.body);
         if (this.#options.limits.maxContextTokens !== undefined &&
             contextEstimator.estimate(requestBytes, carriesRemoteContext(request.body)) + completionContextReserve(request.body) >

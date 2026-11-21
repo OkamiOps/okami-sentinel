@@ -251,6 +251,7 @@ export function preparePortableCodexSecurityLaunch(
     providerPlan: {
       ...input.portableCodexSecurityProviderPlan,
     },
+    graphify: input.request.graphify === true,
     limits: resolvePortableCodexSecurityExecutionLimits(input.mode, input.effort),
     ...(input.effort === null ? {} : { reasoningEffort: input.effort }),
     ...(requestedCostCeiling === undefined
@@ -612,7 +613,15 @@ function workerEnvironment(): NodeJS.ProcessEnv {
   return env;
 }
 
+const OPENGREP_CHILD_ENV_KEYS = [
+  "SENTINEL_OPENGREP_ENABLED",
+  "SENTINEL_OPENGREP_BIN",
+  "SENTINEL_OPENGREP_RULES",
+  "SENTINEL_OPENGREP_TIMEOUT_MS",
+] as const;
+
 const LOCAL_MANTIS_CHILD_ENV_KEYS = [
+  ...OPENGREP_CHILD_ENV_KEYS,
   "PATH",
   "HOME",
   "TMPDIR",
@@ -624,6 +633,7 @@ const LOCAL_MANTIS_CHILD_ENV_KEYS = [
 ] as const;
 
 const PORTABLE_CODEX_SECURITY_CHILD_ENV_KEYS = [
+  ...OPENGREP_CHILD_ENV_KEYS,
   "PATH",
   "HOME",
   "TMPDIR",
