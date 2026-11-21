@@ -1,6 +1,7 @@
 import type { Page } from "@playwright/test";
 import { EMAIL_PROVIDER_PRESETS } from "@csb/shared";
 import type {
+  ScanAiVerdicts,
   AccountNotificationsResponse,
   GitHubAction,
   GitHubActionEvent,
@@ -246,6 +247,7 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
     findings: [] as LifecycleFinding[],
     reportFindings: [] as FindingDetail[],
     lastLaunch: null as Record<string, unknown> | null,
+    verdicts: null as ScanAiVerdicts | null,
     connection: structuredClone(connection),
     auth: {
       signedIn: !options.signedOut,
@@ -340,6 +342,7 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
       if (match[2] === "telemetry") return json({ lines: [], cursor: 0 });
       if (match[2] === "analysis-metrics") return json(analysisMetrics);
       if (match[2] === "files-graph") return json(filesGraph);
+      if (match[2] === "verdicts") return json(state.verdicts ?? { scanId: run.id, available: false, snapshotAvailable: false, counts: { confirmed: 0, rejected: 0, inconclusive: 0, downgraded: 0, legacy: 0 }, verdicts: [] });
       if (match[2] === "report") return json({ scan: run, findings: state.reportFindings, regression, generatedAt: "2026-09-07T10:02:00Z" });
       if (match[2] === "events") return route.fulfill({ contentType: "text/event-stream", body: ": fixture\n\n" });
       const findingDetailMatch = match[2].match(/^findings\/([^/]+)$/);

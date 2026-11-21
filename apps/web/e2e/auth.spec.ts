@@ -457,6 +457,33 @@ test("a member does not see Repeat on a portable scan", async ({ page }) => {
   await expect(page.getByRole("link", { name: /retry portable/i })).toHaveCount(0);
 });
 
+test("a portable scan shows a verdict with a missing citation as inconclusive with what is missing", async ({ page }) => {
+  const state = await mockApi(page, "en", { session: { isAdmin: true, grants: [] } });
+  state.runs[0] = {
+    ...state.runs[0],
+    execution: {
+      executionProfile: "portable", profileVersion: "sentinel-portable-v1", methodologyRef: "sentinel/portable-agent-session/v1",
+      capabilityCheckId: null, connectionId: "fixture-connection", routeKind: null, protocol: null, authKind: null,
+    },
+  };
+  state.verdicts = {
+    scanId: "scan-one", available: true, snapshotAvailable: true,
+    counts: { confirmed: 0, rejected: 0, inconclusive: 1, downgraded: 1, legacy: 0 },
+    verdicts: [{
+      candidateId: "c-1", category: "path-traversal", hypothesis: "Report name reaches a filesystem path",
+      status: "inconclusive", proposedStatus: "confirmed", downgraded: true, legacy: false,
+      reason: "untrusted-flow-reaches-sink", claim: "req.params.name is joined into the report path",
+      citations: [{ path: "src/routes/reports.ts", startLine: 3, endLine: 9, role: "entrypoint", valid: false, problem: "file-missing" }],
+      missingEvidence: [{ code: "citation-invalid", detail: "src/routes/reports.ts:3-9" }, { code: "entry-missing" }],
+    }],
+  };
+  await page.goto("/scans/scan-one");
+  const panel = page.getByRole("region", { name: "AI verdicts with cited evidence" });
+  await expect(panel.getByText("Citation not found in the snapshot: src/routes/reports.ts:3-9")).toBeVisible();
+  await expect(panel.getByText("Missing a citation of where untrusted input enters (source or entrypoint).")).toBeVisible();
+  await expect(panel.getByText("file does not exist")).toBeVisible();
+});
+
 // The five Settings sections used to disagree with each other: two of them put
 // the section tabs above the heading and three below it. The order is now one
 // order, and these tests fail the moment a section drifts back.
