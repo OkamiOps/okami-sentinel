@@ -20,10 +20,35 @@ import {
   reasoningEffortGridClass,
   reasoningEffortOptionClass,
   parseCostCeiling,
+  requiresUsdCapAcknowledgement,
   reasoningEffortForCompatibility,
   reconcileReasoningEffort,
 } from "./new-scan-routing.js";
 import type { CapabilityValidationClient } from "./new-scan-routing.js";
+
+test("plan-usage engines require explicit no-USD-cap acknowledgement without dropping a chosen cap", () => {
+  const selection = { connectionId: "connection-a", modelSelectionMode: "runtime-default" as const, modelId: null };
+  for (const engine of ["mantis", "vulnhunter"] as const) {
+    assert.equal(requiresUsdCapAcknowledgement(engine, false), true);
+    assert.equal(requiresUsdCapAcknowledgement(engine, true), false);
+    const input = {
+      repositoryPath: "/workspace/repository", engine, selection,
+      compatibility: { ...selection, eligible: true, reasons: [] },
+      reasoning: { kind: "provider-managed" as const, options: [] as [], selected: null },
+      maxCostUsd: 3,
+    };
+    assert.equal(buildConnectionAwareStartRequest(input), null);
+    assert.equal(input.maxCostUsd, 3);
+    assert.equal(buildConnectionAwareStartRequest({ ...input, engine: "codex-security" })?.maxCostUsd, 3);
+    assert.equal(buildConnectionAwareStartRequest({ ...input, maxCostUsd: undefined })?.engine, engine);
+    assert.equal(buildConnectionAwareStartRequest({ ...input, maxCostUsd: undefined })?.maxCostUsd, undefined);
+    for (const maxCostUsd of [0, NaN, -1]) {
+      assert.equal(buildConnectionAwareStartRequest({ ...input, maxCostUsd }), null);
+    }
+  }
+  assert.equal(requiresUsdCapAcknowledgement("codex-security", false), false);
+  assert.equal(requiresUsdCapAcknowledgement("codex-security", true), false);
+});
 
 test("explains an unproven Codex Security gateway contract instead of a generic block", () => {
   assert.equal(

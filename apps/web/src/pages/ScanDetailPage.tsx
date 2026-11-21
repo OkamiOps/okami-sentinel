@@ -1,6 +1,7 @@
 import { ScanFilesGraphPanel } from "../components/scans/ScanFilesGraphPanel";
 import { ScanCandidatePreview } from "../components/scans/ScanCandidatePreview";
 import { ScanAnalysisMetrics } from "../components/scans/ScanAnalysisMetrics";
+import { ScanBudgetPartialBanner } from "../components/scans/ScanBudgetPartialBanner";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -128,6 +129,7 @@ export function ScanDetailPage() {
       {scan.progress && <div className="border-t px-4 py-3"><div className="mb-2 flex items-center justify-between gap-4 font-mono text-[9px]"><span className="truncate">{formatProgressLabel(scan.progress)}{scan.progress.detail ? ` / ${formatRecoveryProgressText(scan.progress.detail)}` : ""}</span><span className="shrink-0 text-primary">{formatProgressMetric(scan.progress)}</span></div><ProgressTrack value={displayedProgress.value} indeterminate={displayedProgress.indeterminate} /></div>}
     </header>
     {errorBanner}
+    <ScanBudgetPartialBanner scan={scan} />
     <ScanAnalysisMetrics key={`metrics:${scan.id}`} scan={scan} />
     <div className="mb-4 flex overflow-x-auto border border-border">{(["evidence", "telemetry", "files", "profile"] as View[]).map((id, i) => <button key={id} type="button" onClick={() => setView(id)} className={cx("h-10 border-r px-4 font-mono text-[9px] uppercase tracking-wider", view === id ? "bg-accent text-primary" : "text-muted-foreground hover:text-foreground")}>0{i + 1} / {t(`scanDetail.view${id[0].toUpperCase()}${id.slice(1)}` as "scanDetail.viewEvidence")}</button>)}</div>
     {scan.status !== "completed" && scan.execution?.executionProfile === "portable" && scan.engine === "codex-security" && <ScanCandidatePreview key={`preview:${scan.id}`} scan={scan} expanded={view === "evidence"} />}
