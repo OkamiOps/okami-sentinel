@@ -3,6 +3,7 @@ import path from "node:path";
 import type { ScanCandidateGroup, ScanCandidateGroups, ScanCandidateGroupVerdictStatus, ScanRun } from "@csb/shared";
 import { readPortableCandidateGrouping } from "./scanners/portable-codex-security-candidate-groups.js";
 import { readPortableCodexSecurityDossier, type PortableCodexSecurityDossier } from "./scanners/portable-codex-security-dossier.js";
+import { scanAiVerdicts } from "./scanners/portable-codex-security-verdicts.js";
 
 /** Deterministic duplicate groups for a Portable scan and the verdict each group shares. */
 export function scanCandidateGroups(scan: ScanRun): ScanCandidateGroups {
@@ -21,6 +22,7 @@ export function scanCandidateGroups(scan: ScanRun): ScanCandidateGroups {
   const dossier = readPortableCodexSecurityDossier(resultsDir);
   const grouped = grouping.groups.reduce((total, group) => total + group.memberIds.length - 1, 0);
   const reviewed = dossier === null ? null : dossier.candidates.length;
+  const gated = new Map(scanAiVerdicts(scan).verdicts.map((verdict) => [verdict.candidateId, verdict.status]));
   return {
     scanId: scan.id,
     recorded: true,
@@ -36,15 +38,20 @@ export function scanCandidateGroups(scan: ScanRun): ScanCandidateGroups {
         hypothesis: member.hypothesis ?? "",
         anchors: member.anchors.map(({ path: file, startLine, endLine, role }) => ({ path: file, startLine, endLine, role })),
       })),
-      verdict: groupVerdict(dossier, group.representativeId),
+      verdict: groupVerdict(dossier, group.representativeId, gated),
     })),
   };
 }
 
-function groupVerdict(dossier: PortableCodexSecurityDossier | null, representativeId: string): ScanCandidateGroup["verdict"] {
+/** The status is the cited-evidence gate's, so an uncited TP/FP is shared as inconclusive. */
+function groupVerdict(
+  dossier: PortableCodexSecurityDossier | null,
+  representativeId: string,
+  gated: ReadonlyMap<string, ScanCandidateGroupVerdictStatus>,
+): ScanCandidateGroup["verdict"] {
   const assessments = dossier?.assessments.filter((assessment) => assessment.candidateId === representativeId) ?? [];
   const decisive = assessments.find((assessment) => assessment.stage === "validation") ??
     assessments.find((assessment) => assessment.stage === "dataflow");
   if (decisive === undefined) return { status: "pending" satisfies ScanCandidateGroupVerdictStatus };
-  return { status: decisive.status, stage: decisive.stage, reason: decisive.reason };
+  return { status: gated.get(representativeId) ?? decisive.status, stage: decisive.stage, reason: decisive.reason };
 }
