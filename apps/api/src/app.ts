@@ -1,5 +1,6 @@
 import { scanFilesGraph } from "./scan-files-graph.js";
 import { scanCandidatePreview } from "./scan-candidate-preview.js";
+import { scanAiVerdicts } from "./scanners/portable-codex-security-verdicts.js";
 import { scanAnalysisMetrics } from "./scan-analysis-metrics.js";
 import { automaticGitHubScanDispatcher } from "./github-monitor-dispatch.js";
 import { createGitHubWebhookApp } from "./github-actions/webhook-api.js";
@@ -1823,6 +1824,12 @@ app.get("/scans/:id/candidate-preview", (c) => {
   const run = readRunWithEngineRefresh(c.req.param("id"));
   if (!run) return c.json({ error: "Scan not found" }, 404);
   return c.json(scanCandidatePreview(run));
+});
+
+app.get("/scans/:id/verdicts", (c) => {
+  const run = readRunWithEngineRefresh(c.req.param("id"));
+  if (!run) return c.json({ error: "Scan not found" }, 404);
+  return c.json(scanAiVerdicts(run));
 });
 
 app.get("/scans/:id/telemetry", (c) => {

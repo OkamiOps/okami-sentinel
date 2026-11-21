@@ -1734,6 +1734,57 @@ export interface ScanCandidatePreview {
   candidates: ScanCandidatePreviewItem[];
 }
 
+export type AiVerdictStatus = "confirmed" | "rejected" | "inconclusive";
+export type AiVerdictCitationRole = "source" | "entrypoint" | "control" | "sink" | "evidence";
+export type AiVerdictCitationProblem = "unsafe-path" | "file-missing" | "lines-out-of-range" | "snapshot-unavailable";
+
+/** One code citation an AI verdict relies on, checked mechanically against the scan snapshot. */
+export interface AiVerdictCitation {
+  path: string;
+  startLine: number;
+  endLine: number;
+  role: AiVerdictCitationRole;
+  explanation?: string;
+  valid: boolean;
+  problem?: AiVerdictCitationProblem;
+  excerpt?: string;
+}
+
+export type AiVerdictMissingCode =
+  | "assessment-missing" | "claim-missing" | "citation-missing" | "citation-invalid"
+  | "candidate-path-missing" | "entry-missing" | "sink-missing" | "control-missing"
+  | "confirmation-reason" | "snapshot-unavailable" | "ai-declared" | "ai-undeclared";
+
+export interface AiVerdictMissingEvidence {
+  code: AiVerdictMissingCode;
+  /** AI-declared text, or the citation location for citation-invalid. */
+  detail?: string;
+}
+
+/** TP/FP only when cited; otherwise inconclusive with what is still needed to decide. */
+export interface AiVerdict {
+  candidateId: string;
+  category: string;
+  hypothesis: string;
+  status: AiVerdictStatus;
+  proposedStatus: AiVerdictStatus | null;
+  downgraded: boolean;
+  /** Recorded before cited verdicts were required (no claim on the assessment). */
+  legacy: boolean;
+  reason: string | null;
+  claim: string | null;
+  citations: AiVerdictCitation[];
+  missingEvidence: AiVerdictMissingEvidence[];
+}
+
+export interface ScanAiVerdicts {
+  scanId: string;
+  available: boolean;
+  snapshotAvailable: boolean;
+  counts: Record<AiVerdictStatus, number> & { downgraded: number; legacy: number };
+  verdicts: AiVerdict[];
+}
+
 export type RepositoryRole = "viewer" | "analyst" | "operator" | "maintainer";
 export interface RepositoryGrant { repositoryKey: string; role: RepositoryRole; }
 export interface AuthSessionUser {
