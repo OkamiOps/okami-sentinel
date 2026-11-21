@@ -16,10 +16,11 @@ if (args.includes("--version")) {
   } else if (config.mode === "bad-json") console.log("not json");
   else if (config.mode === "nonzero") { console.error("secret must not be persisted"); process.exitCode = 2; }
   else {
-    console.log(JSON.stringify({ version: "2.0.0", rules: ["fixture"], errors: [], results: config.mode === "empty" ? [] : [{
+    console.log(JSON.stringify(config.payload ?? { version: "2.0.0", rules: ["fixture"], errors: [], results: config.mode === "empty" ? [] : [{
       check_id: "sentinel-test", path: path.join(args.at(-1), "source.ts"),
       start: { line: 1, col: 1 }, end: { line: 1, col: 12 },
       extra: { severity: "ERROR", message: "Review dynamic code", lines: "eval(input)", metadata: { cwe: ["CWE-95"] } },
     }] }));
+    process.exitCode = config.exitCode ?? 0;
   }
 }

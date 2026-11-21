@@ -10,6 +10,8 @@ export interface OpengrepStatus extends ScanSastSummary {
   ruleCount: number | null;
   startedAt: string;
   finishedAt: string;
+  errorCount: number;
+  errorTypes: string[];
 }
 
 type Configuration = ReturnType<typeof opengrepConfiguration>;
@@ -51,8 +53,13 @@ export function readSastSummary(scanDir: string): ScanSastSummary | null {
 }
 
 export function normalizeOpengrep(payload: unknown, snapshotRoot: string): FindingDetail[] {
+  return normalizeResults(payload, snapshotRoot).findings;
+}
+
+function normalizeResults(payload: unknown, snapshotRoot: string) {
   const root = record(payload);
-  if (!Array.isArray(root.results) || !Array.isArray(root.errors) || root.errors.length > 0) throw new Error("invalid_result");
+  if (!Array.isArray(root.results)) throw new Error("invalid_result");
+  const errors: string[] = [];
   const findings = new Map<string, FindingDetail>();
   for (const value of root.results) {
     const result = record(value);
@@ -60,10 +67,12 @@ export function normalizeOpengrep(payload: unknown, snapshotRoot: string): Findi
     const start = record(result.start);
     const end = record(result.end);
     if (typeof result.path !== "string" || typeof result.check_id !== "string" || !Number.isSafeInteger(start.line)
-      || Number(start.line) < 1 || !Number.isSafeInteger(end.line) || Number(end.line) < Number(start.line)) throw new Error("invalid_result");
+      || Number(start.line) < 1 || !Number.isSafeInteger(end.line) || Number(end.line) < Number(start.line)
+      || [start.col, end.col].some(column => column !== undefined && (!Number.isSafeInteger(column) || Number(column) < 1))) { errors.push("invalid_result"); continue; }
     const relative = path.relative(path.resolve(snapshotRoot), path.resolve(snapshotRoot, result.path)).split(path.sep).join("/");
-    if (!relative || relative === ".." || relative.startsWith("../") || path.isAbsolute(relative)) throw new Error("invalid_path");
+    if (!relative || relative === ".." || relative.startsWith("../") || path.isAbsolute(relative)) { errors.push("invalid_path"); continue; }
     const metadata = record(extra.metadata);
+    const severity = typeof extra.severity === "string" ? extra.severity : "";
     const cwe = Array.isArray(metadata.cwe) ? metadata.cwe.filter((item): item is string => typeof item === "string")
       : typeof metadata.cwe === "string" ? [metadata.cwe] : [];
     const id = "opengrep:" + createHash("sha256").update(`${result.check_id}:${relative}:${start.line}:${start.col ?? 1}`).digest("hex");
@@ -73,7 +82,8 @@ export function normalizeOpengrep(payload: unknown, snapshotRoot: string): Findi
       findingId: id, occurrenceId: id, ruleId: result.check_id,
       origin: { kind: "sast", tool: "opengrep" },
       title: message, summary: message,
-      severity: metadata.severity === "critical" ? "critical" : extra.severity === "ERROR" ? "high" : extra.severity === "INFO" ? "low" : "medium",
+      severity: (typeof metadata.severity === "string" && metadata.severity.toUpperCase() === "CRITICAL") || severity === "CRITICAL" ? "critical"
+        : ["ERROR", "HIGH"].includes(severity) ? "high" : ["INFO", "LOW"].includes(severity) ? "low" : "medium",
       confidence: null, primaryPath: relative, fingerprints: [id], category: "sast", cwe,
       locations: [location], codeEvidence: [{ ...location, code: typeof extra.lines === "string" ? extra.lines : "" }],
       taxonomy: { category: "sast", cwe }, attackPath: null, attackPathModel: null, remediation: null,
@@ -81,10 +91,10 @@ export function normalizeOpengrep(payload: unknown, snapshotRoot: string): Findi
       severityRationale: null, confidenceRationale: null,
     });
   }
-  return [...findings.values()];
+  return { findings: [...findings.values()], errors };
 }
 
-function execute(binary: string, args: string[], cwd: string, timeoutMs: number): Promise<string> {
+function execute(binary: string, args: string[], cwd: string, timeoutMs: number): Promise<{ output: string; code: number | null }> {
   return new Promise((resolve, reject) => {
     const child = spawn(binary, args, { cwd, detached: true, stdio: ["ignore", "pipe", "ignore"], env: {
       PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR,
@@ -108,8 +118,8 @@ function execute(binary: string, args: string[], cwd: string, timeoutMs: number)
     });
     child.once("close", code => {
       clearTimeout(timer);
-      if (failure || code !== 0) reject(new Error(failure ?? "nonzero_exit"));
-      else resolve(output);
+      if (failure) reject(new Error(failure));
+      else resolve({ output, code });
     });
   });
 }
@@ -120,20 +130,27 @@ export async function runOpengrep(snapshotRoot: string, scanDir: string, config:
   const status: OpengrepStatus = {
     status: "failed", tool: "opengrep", version: null,
     rules: config.rules.map(rule => /^(?:\w+:\/\/|git\+)/.test(rule) ? "<non-local>" : rule), ruleCount: null,
-    count: 0, startedAt: new Date(started).toISOString(), finishedAt: "", durationMs: 0, reason: null,
+    count: 0, startedAt: new Date(started).toISOString(), finishedAt: "", durationMs: 0, reason: null, errorCount: 0, errorTypes: [],
   };
   try {
     if (!config.enabled) { status.status = "skipped"; status.reason = "disabled"; }
     else {
       if (config.rules.length === 0 || config.rules.some(rule => !fs.existsSync(rule))) throw new Error("local_rules_unavailable");
       const remaining = () => Math.max(1, config.timeoutMs - (Date.now() - started));
-      const version = (await execute(config.binary, ["--version"], snapshotRoot, remaining())).trim();
+      const version = (await execute(config.binary, ["--version"], snapshotRoot, remaining())).output.trim();
       status.version = /^\d+\.\d+\.\d+(?:[-+.][\w.-]+)?$/.test(version) ? version : null;
-      const output = await execute(config.binary, ["scan", "--json", ...config.rules.flatMap(rule => ["--config", path.resolve(rule)]), snapshotRoot], snapshotRoot, remaining());
+      const { output, code } = await execute(config.binary, ["scan", "--json", ...config.rules.flatMap(rule => ["--config", path.resolve(rule)]), snapshotRoot], snapshotRoot, remaining());
       let payload: unknown;
-      try { payload = JSON.parse(output); } catch { throw new Error("invalid_json"); }
-      const findings = normalizeOpengrep(payload, snapshotRoot);
+      try { payload = JSON.parse(output); } catch { throw new Error(code !== 0 ? "nonzero_exit" : "invalid_json"); }
+      const { findings, errors } = normalizeResults(payload, snapshotRoot);
       const data = record(payload);
+      const knownErrorTypes = new Set(["ParseError", "PartialParsing", "SyntaxError", "LexicalError", "Timeout", "TimeoutError", "RuleTimeout", "UnsupportedLanguage", "UnsupportedFile", "RuleParseError", "PatternParseError", "InvalidRuleSchemaError", "MatchingError", "FatalError", "SemgrepError", "InternalError", "TooManyMatches", "OutOfMemory"]);
+      const scanErrors = Array.isArray(data.errors) ? data.errors : [];
+      status.errorCount = scanErrors.length + errors.length;
+      status.errorTypes = [...new Set([...scanErrors.map(error => {
+        const type = record(error).type;
+        return typeof type === "string" && knownErrorTypes.has(type) ? type : "unknown_error";
+      }), ...errors])].slice(0, 20);
       const rules = record(record(data.engine_requested).rules);
       status.ruleCount = Array.isArray(data.rules) ? data.rules.length : typeof rules.count === "number" ? rules.count : null;
       atomicWrite(path.join(scanDir, "sast/opengrep-findings.json"), { findings });

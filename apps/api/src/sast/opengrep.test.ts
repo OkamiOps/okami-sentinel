@@ -48,15 +48,17 @@ test("normalization preserves relative locations, stable identities, CWE, severi
   assert.deepEqual(finding.locations, [{ path: "src/app.ts", startLine: 2, startColumn: 3, endLine: 2, endColumn: 9 }]);
   assert.equal(normalize({ ...result, path: "src/app.ts" }).findingId, finding.findingId);
   assert.match(finding.findingId, /^opengrep:[a-f0-9]{64}$/);
-  for (const [severity, expected] of [["WARNING", "medium"], ["INFO", "low"]]) {
+  for (const [severity, expected] of [["WARNING", "medium"], ["INFO", "low"], ["CRITICAL", "critical"], ["HIGH", "high"], ["MEDIUM", "medium"], ["LOW", "low"]]) {
     assert.equal(normalize({ ...result, extra: { ...result.extra, severity } }).severity, expected);
   }
   assert.equal(normalize({ ...result, extra: { ...result.extra, metadata: { cwe: [], severity: "critical" } } } as typeof result).severity, "critical");
   assert.deepEqual(normalizeOpengrep({ results: [], errors: [] }, "/snapshot"), []);
-  for (const value of [{}, { results: [], errors: ["failure"] }, { results: [{}], errors: [] }]) {
+  for (const value of [{}, { results: null }, { results: "invalid" }]) {
     assert.throws(() => normalizeOpengrep(value, "/snapshot"), /invalid_result/);
   }
-  assert.throws(() => normalize({ ...result, path: "../escape.ts" }), /invalid_path/);
+  assert.equal(normalize({ ...result, path: "../escape.ts" }), undefined);
+  assert.deepEqual(normalizeOpengrep({ results: [{}], errors: [] }, "/snapshot"), []);
+  assert.deepEqual(normalizeOpengrep({ results: [], errors: ["failure"] }, "/snapshot"), []);
 });
 
 for (const mode of ["completed", "empty", "bad-json", "nonzero", "missing", "disabled", "timeout", "remote-rules"]) {
@@ -99,6 +101,45 @@ for (const mode of ["completed", "empty", "bad-json", "nonzero", "missing", "dis
     } else if (mode !== "empty") assert.deepEqual(readOpengrepFindings(root), []);
   });
 }
+
+for (const exitCode of [0, 2]) {
+  test(`valid partial JSON retains findings and safe diagnostics with exit ${exitCode}`, async (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-sast-partial-"));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const rules = path.join(root, "rules.json");
+    const results = ["CRITICAL", "HIGH", "MEDIUM", "LOW"].map((severity, index) => ({
+      check_id: `rule-${index}`, path: "source.ts", start: { line: index + 1 }, end: { line: index + 1 },
+      extra: { severity, message: "Review code" },
+    }));
+    fs.writeFileSync(rules, JSON.stringify({ exitCode, payload: { results: [...results, null, {}, { ...results[0], path: "../escape.ts" }, { ...results[0], start: { line: 1, col: { toString: null } } }], errors: [
+      { type: "ParseError", message: "secret must not be persisted", path: "/private/secret" },
+      { type: "Timeout", rule_id: "secret must not be persisted" },
+      { type: "/private/secret", message: "secret must not be persisted" },
+      ...Array.from({ length: 25 }, () => ({ type: "UnsupportedLanguage" })),
+    ] } }));
+    await runOpengrep(root, root, { enabled: true, binary, rules: [rules], timeoutMs: 5000 });
+    const status = readOpengrepStatus(root)!;
+    assert.equal(status.status, "completed");
+    assert.equal(status.reason, null);
+    assert.equal(status.count, 4);
+    assert.equal(status.errorCount, 32);
+    assert.deepEqual(status.errorTypes, ["ParseError", "Timeout", "unknown_error", "UnsupportedLanguage", "invalid_result", "invalid_path"]);
+    assert.ok(status.errorTypes.length <= 20);
+    assert.ok(!JSON.stringify(status).includes("secret"));
+    assert.deepEqual(readOpengrepFindings(root).map(finding => finding.severity), ["critical", "high", "medium", "low"]);
+  });
+}
+
+test("parseable JSON without results fails safely", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "sentinel-sast-invalid-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const rules = path.join(root, "rules.json");
+  fs.writeFileSync(rules, JSON.stringify({ exitCode: 2, payload: { errors: [{ type: "ParseError" }] } }));
+  await runOpengrep(root, root, { enabled: true, binary, rules: [rules], timeoutMs: 5000 });
+  assert.equal(readOpengrepStatus(root)?.status, "failed");
+  assert.equal(readOpengrepStatus(root)?.reason, "invalid_result");
+  assert.deepEqual(readOpengrepFindings(root), []);
+});
 
 test("SAST persistence failure cannot prevent the AI worker from continuing", async () => {
   await assert.doesNotReject(runOpengrep("/does-not-exist", "/dev/null", { enabled: false, binary, rules: [], timeoutMs: 10 }));
