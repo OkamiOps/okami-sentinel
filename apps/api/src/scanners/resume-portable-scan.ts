@@ -13,6 +13,7 @@ import { readPortableCodexSecurityRuntime } from "./portable-codex-security-runt
 import { assertPortableCodexSecuritySnapshot, assertExactStageArtifact, assertPortableCodexSecurityDossierAnchors, assertPortableCodexSecurityReportAnchors } from "./portable-codex-security-worker-support.js";
 import { createPortableCodexSecurityDossier, applyPortableCodexSecurityStageArtifact, validatePortableCodexSecurityReportCoverage } from "./portable-codex-security-dossier.js";
 import { mergePortableDeepDiscoveryDossiers } from "./portable-codex-security-deep-coverage.js";
+import { PORTABLE_CANDIDATE_GROUPS_FILE, groupPortableCandidatesBeforeReview } from "./portable-codex-security-candidate-groups.js";
 import { createPortableAssessmentPages, assessmentPageDirectory } from "./portable-codex-security-assessment-pages.js";
 import { createPortableCodexSecurityReportShards } from "./portable-codex-security-report-shards.js";
 import { PORTABLE_CODEX_SECURITY_STAGES } from "./portable-codex-security-profile.js";
@@ -88,6 +89,10 @@ export function preflightPortableResume(scanDir: string, mode: "standard" | "dee
   if (previous.stage !== "discovery" && !discoveryComplete) throw new Error("resume_missing_prerequisite_checkpoint");
   const verifiedStages: Record<string, number> = { discovery: completed };
   let prerequisiteComplete = discoveryComplete;
+  if (discoveryComplete) {
+    dossier = groupPortableCandidatesBeforeReview(dossier, artifacts, { resume: true, persist: false });
+    if (fs.existsSync(path.join(artifacts, PORTABLE_CANDIDATE_GROUPS_FILE))) accepted.add(PORTABLE_CANDIDATE_GROUPS_FILE);
+  }
   for (const stage of PORTABLE_CODEX_SECURITY_STAGES.filter(s => s.id === "dataflow" || s.id === "validation")) {
     const paged = fullCoverage && dossier.candidates.length > (stage.id === "validation" ? 8 : 32);
     const pages = paged ? createPortableAssessmentPages(dossier, stage.id, index => {
