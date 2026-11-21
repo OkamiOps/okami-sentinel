@@ -1,3 +1,4 @@
+import { readPortableCandidateGrouping } from "./portable-codex-security-candidate-groups.js";
 import { createPortableCodexSecuritySnapshot } from "./portable-codex-security-worker-support.js";
 import { materializePortableCodexSecurityReportShard } from "./portable-codex-security-report-shards.js";
 import assert from "node:assert/strict";
@@ -934,6 +935,62 @@ test("Legacy Portable Codex Security completes six methodology stages with a ser
     )) as { findings: unknown[]; coverage: { candidates: unknown[] } };
     assert.deepEqual(finalReport.findings, []);
     assert.deepEqual(finalReport.coverage.candidates, []);
+  } finally {
+    remove(root);
+  }
+});
+
+test("Portable groups duplicate candidates deterministically so AI reviews each group once", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-codex-candidate-groups-"));
+  const config = configuration(root);
+  config.limits.maxModelTurns = 32;
+  config.limits.maxToolCalls = 128;
+  const specs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }> = [];
+  const anchor = { path: "src/auth.ts", startLine: 1, endLine: 1, role: "sink" as const };
+  const candidate = (id: string, hypothesis: string, category = "authorization") => ({
+    id, category, hypothesis, attacker: "authenticated" as const,
+    prerequisites: "The attacker has an ordinary authenticated account.",
+    expectedImpact: "The attacker could access another account's protected state.",
+    controlHypothesis: "The route may rely on an authorization check that is absent or bypassed.",
+    anchors: [anchor],
+  });
+  const reviewed: string[][] = [];
+  try {
+    const result = await runPortableCodexSecurity(legacyConfiguration(config), dependencies({ resumeDiscovery: true,
+      createSession: async (input: { spec: AgentSessionSpec; toolSurface: readonly string[] }) => {
+        specs.push(input);
+        const stage = String(input.spec.instructions.match(/stage "([a-z-]+)"/)?.[1]);
+        const artifact = PORTABLE_CODEX_SECURITY_STAGES.find((item) => item.id === stage)!.artifact;
+        const isReview = path.basename(input.spec.artifactRoot) === "discovery-review";
+        if (stage === "discovery") input.spec.resultArtifactValidationContext?.discoveryCoverage?.observedReadPaths.add("src/auth.ts");
+        const carried = input.spec.resultArtifactValidationContext?.dossier.candidates ?? [];
+        if (stage === "dataflow" || stage === "validation") reviewed.push(carried.map((item) => item.id));
+        const contents = {
+          schemaVersion: 1, stage, summary: `${stage} completed the mapped review.`, observations: [],
+          scope: { inspected: ["src/auth.ts"], unexamined: [] },
+          candidates: stage !== "discovery" ? [] : isReview
+            ? [candidate("auth-review", "A second pass reworded the same missing authorization check.")]
+            : [
+              candidate("auth-initial", "The authorization control may not protect this sensitive sink."),
+              candidate("auth-injection", "User input reaches the same line as a query.", "injection"),
+            ],
+          assessments: stage === "dataflow" || stage === "validation"
+            ? carried.map((item) => ({ candidateId: item.id, status: "rejected", reason: "not-vulnerable", evidence: [anchor] }))
+            : [],
+        };
+        fs.writeFileSync(path.join(input.spec.artifactRoot, artifact), JSON.stringify(contents), { mode: 0o600 });
+        return completedStageSession(stage, artifact, `${stage} complete`);
+      },
+    }));
+    assert.equal(result.runtime.status, "completed");
+    assert.deepEqual(reviewed, [["auth-initial", "auth-injection"], ["auth-initial", "auth-injection"]],
+      "the reworded duplicate is not sent to AI review, the distinct injection candidate is");
+    const resultsDir = path.join(config.outputDir, "portable-codex-security-results");
+    const grouping = readPortableCandidateGrouping(resultsDir);
+    assert.deepEqual(grouping?.groups.map((group) => [group.representativeId, group.memberIds]),
+      [["auth-initial", ["auth-initial", "auth-review"]]]);
+    assert.deepEqual(readPortableCandidateGrouping(path.join(config.outputDir, "portable-codex-security-artifacts")), grouping);
+    assert.deepEqual(readPortableCodexSecurityDossier(resultsDir)?.candidates.map((item) => item.id), ["auth-initial", "auth-injection"]);
   } finally {
     remove(root);
   }

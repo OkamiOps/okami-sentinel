@@ -6,6 +6,11 @@ import { buildDiscoveryPriorities } from "../graphify/discovery-priorities.js";
 import { runPortableStageWithRecovery, PortableStageRecoveryError } from "./portable-stage-recovery.js";
 import { buildCandidateGraphContext } from "../graphify/candidate-context.js";
 import { createWorkspaceToolHost } from "../agent/workspace-tool-host.js";
+import {
+  groupPortableCandidatesBeforeReview,
+  readPortableCandidateGrouping,
+  writePortableCandidateGrouping,
+} from "./portable-codex-security-candidate-groups.js";
 import fs from "node:fs";
 import path from "node:path";
 import { createPortableAssessmentPages, assessmentPageDirectory } from "./portable-codex-security-assessment-pages.js";
@@ -420,6 +425,14 @@ export async function runPortableCodexSecurity(
         authorizationTime,
       );
       assertPortableCodexSecuritySnapshot(snapshot);
+      if (stage.id === "dataflow") {
+        try {
+          dossier = groupPortableCandidatesBeforeReview(dossier, artifactsRoot, { resume: dependencies.resumeDiscovery === true, persist: true });
+        } catch {
+          throw new PortableCodexSecurityRunnerError("stage_artifact_invalid");
+        }
+        dossierStateBase64 = portableCodexSecurityDossierBase64(dossier);
+      }
       const remaining = deadline.remainingMs();
       if (remaining <= 0) throw new PortableCodexSecurityRunnerError("agent_time_limit");
       update({
@@ -915,6 +928,8 @@ export async function runPortableCodexSecurity(
     const resultsDir = path.join(outputDir, "portable-codex-security-results");
     writePortableCodexSecurityReportShards(resultsDir, dossier, reportShardResults);
     writePortableCodexSecurityDossier(resultsDir, dossier);
+    const recordedGrouping = readPortableCandidateGrouping(artifactsRoot);
+    if (recordedGrouping !== null) writePortableCandidateGrouping(resultsDir, recordedGrouping);
     const findings = (dependencies.normalizeWorkspace ?? normalizePortableCodexSecurityWorkspace)(
       resultsDir,
       outputDir,
@@ -1541,3 +1556,4 @@ function standardRecoveryPartition(snapshotRoot: string, graph: Parameters<typeo
   fs.renameSync(`${planFile}.tmp`, planFile);
   return result;
 }
+
