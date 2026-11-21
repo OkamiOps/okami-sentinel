@@ -369,13 +369,17 @@ export function progressForStatus(
 }
 
 export function withProgress(run: ScanRun): ScanRun {
+  const runtime = run.engine === "codex-security" && run.execution?.executionProfile === "portable"
+    ? readPortableCodexSecurityRuntime(run.scanDir) : null;
   const progress = progressForStatus(
     run.status,
     run.scanDir,
     run.mode,
     run.startedAt,
   );
-  return { ...run, progress };
+  return { ...run, progress, ...(runtime?.budgetPartial === undefined ? {} : {
+    statusReason: "budget_exhausted" as const, budgetPartial: runtime.budgetPartial,
+  }) };
 }
 
 export function withProgressMany(runs: ScanRun[]): ScanRun[] {

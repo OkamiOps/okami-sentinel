@@ -4,7 +4,9 @@ import {
   isSafeProviderErrorCode,
   type SafeProviderErrorCode,
   type ScanProgress,
+  type ScanBudgetPartial,
 } from "@csb/shared";
+import { validBudgetPartial } from "./portable-budget-partial.js";
 
 import {
   PORTABLE_CODEX_SECURITY_METHODOLOGY_REF,
@@ -19,7 +21,8 @@ export interface PortableCodexSecurityRuntimeState {
   executionProfile: "portable";
   profileVersion: string;
   methodologyRef: string;
-  status: "preparing" | "running" | "completed" | "failed" | "cancelled";
+  status: "preparing" | "running" | "completed" | "failed" | "cancelled" | "incomplete";
+  budgetPartial?: ScanBudgetPartial;
   stage: PortableCodexSecurityStage["id"] | "normalize";
   stageLabel: string;
   percent: number;
@@ -42,6 +45,7 @@ export function portableCodexSecurityRuntimePath(scanDir: string): string {
 }
 
 const RUNTIME_STATUSES = new Set([
+  "incomplete",
   "preparing",
   "running",
   "completed",
@@ -53,6 +57,7 @@ const RUNTIME_STAGES = new Set([
   "normalize",
 ]);
 const RUNTIME_KEYS = new Set([
+  "budgetPartial",
   "engine",
   "executionProfile",
   "profileVersion",
@@ -135,6 +140,8 @@ function validPortableCodexSecurityRuntime(
     value.methodologyRef === PORTABLE_CODEX_SECURITY_METHODOLOGY_REF &&
     typeof value.status === "string" &&
     RUNTIME_STATUSES.has(value.status) &&
+    (value.budgetPartial === undefined || validBudgetPartial(value.budgetPartial)) &&
+    (value.status !== "incomplete" || validBudgetPartial(value.budgetPartial)) &&
     typeof value.stage === "string" &&
     RUNTIME_STAGES.has(value.stage) &&
     typeof value.stageLabel === "string" &&

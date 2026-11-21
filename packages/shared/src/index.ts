@@ -645,6 +645,22 @@ export interface ScanProgress {
   lastActivityAt?: string | null;
 }
 
+export interface ScanBudgetWorkItem {
+  stage: string;
+  /** Null until the preceding stage determines the page plan. */
+  page: string | null;
+  artifactPath: string | null;
+}
+
+export interface ScanBudgetPartial {
+  stopReason: "budget";
+  spentUsd: number;
+  maxCostUsd: number;
+  completed: ScanBudgetWorkItem[];
+  interrupted: ScanBudgetWorkItem;
+  pending: ScanBudgetWorkItem[];
+}
+
 export interface ScanRun {
   id: string;
   displayName: string;
@@ -654,6 +670,8 @@ export interface ScanRun {
   revision: string | null;
   scanDir: string;
   status: ScanStatus;
+  statusReason?: "budget_exhausted";
+  budgetPartial?: ScanBudgetPartial;
   model: string | null;
   effort: string | null;
   mode: ScanMode | string | null;

@@ -3,6 +3,8 @@ import { materializePortableCodexSecurityReportShard } from "./portable-codex-se
 import assert from "node:assert/strict";
 import { reservePortableTurn } from "./portable-turn-budget.js";
 import { createAgentSession } from "../agent/session-runner.js";
+import { readPortableCodexSecurityRuntime } from "./portable-codex-security-runtime.js";
+import { preflightPortableResume } from "./resume-portable-scan.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -1360,10 +1362,65 @@ test("Portable reservation blocks unaffordable turns before upstream in producti
       } : { createUpstream: () => upstream })), { code: "cost_limit_reached" });
       assert.equal(calls, 0);
       const runtime = JSON.parse(fs.readFileSync(path.join(config.outputDir, "portable-codex-security-runtime.json"), "utf8"));
-      assert.equal(runtime.status, "failed");
+      assert.equal(runtime.status, "incomplete");
       assert.equal(runtime.error, "cost_limit_reached");
+      assert.equal(runtime.budgetPartial.stopReason, "budget");
+      assert.deepEqual(runtime.budgetPartial.completed, []);
+      assert.equal(runtime.budgetPartial.interrupted.stage, "inventory");
+      assert.ok(fs.existsSync(path.join(config.outputDir, "budget-partial.json")));
     } finally { remove(root); }
   }
+});
+
+test("Portable budget partial retains completed pages and resumes only pending work with prior spend", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-budget-resume-"));
+  const config = configuration(root);
+  config.mode = "deep";
+  config.limits.totalTimeoutMs = 0;
+  config.costBudget = costBudget({ maxCostUsd: 0.3005 });
+  for (let i = 0; i < 64; i++) fs.writeFileSync(path.join(config.repositoryPath, "src", `file-${String(i).padStart(3, "0")}.ts`), "export const safe = true;\n");
+  const factory = stageSessionFactory();
+  const calls: string[] = [];
+  let stop = true;
+  const createSession = async (input: Parameters<typeof factory>[0]) => {
+    const page = path.basename(input.spec.artifactRoot);
+    calls.push(page);
+    if (stop && page === "discovery-002") {
+      input.spec.beforeModelRequest!({ operation: "chat-completions", body: {} });
+      assert.fail("unaffordable request must not be dispatched");
+    }
+    const session = await factory(input);
+    return { ...session, async *run() {
+      yield { type: "usage", usage: { inputTokens: 100_000, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 0, reasoningTokens: null } } as const;
+      yield* session.run();
+    } };
+  };
+  try {
+    await assert.rejects(runPortableCodexSecurity(config, dependencies({ createSession })), { code: "cost_limit_reached" });
+    const runtime = readPortableCodexSecurityRuntime(config.outputDir)!;
+    assert.equal(runtime.status, "incomplete");
+    const partial = runtime.budgetPartial!;
+    assert.equal(partial.stopReason, "budget");
+    assert.equal(partial.spentUsd, 0.3);
+    assert.equal(partial.maxCostUsd, 0.3005);
+    assert.deepEqual(partial.completed.map(item => item.page), ["inventory", "threat-model", "discovery-001"]);
+    for (const item of partial.completed) assert.ok(fs.existsSync(path.join(config.outputDir, item.artifactPath!)));
+    assert.equal(partial.interrupted.page, "discovery-002");
+    assert.deepEqual(partial.pending.map(item => item.page ?? item.stage), ["discovery-002", "discovery-003", "dataflow", "validation", "report"]);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(config.outputDir, "budget-partial.json"), "utf8")), partial);
+    assert.equal(preflightPortableResume(config.outputDir, "deep").completed, 1);
+    for (const maxCostUsd of [0.1, partial.spentUsd, partial.maxCostUsd]) {
+      await assert.rejects(runPortableCodexSecurity({ ...config, costBudget: { ...config.costBudget!, maxCostUsd } }, dependencies({ resumeDiscovery: true, createSession })), /resume_budget_cap_must_exceed_prior_spend_and_cap/);
+    }
+    assert.equal(calls.length, 4);
+    stop = false;
+    calls.length = 0;
+    const result = await runPortableCodexSecurity({ ...config, costBudget: { ...config.costBudget!, maxCostUsd: 2 } }, dependencies({ resumeDiscovery: true, createSession }));
+    assert.equal(result.runtime.status, "completed");
+    assert.deepEqual(calls, ["discovery-002", "discovery-003", "dataflow", "validation"]);
+    assert.equal(result.runtime.usage.inputTokens, 700_000);
+    assert.equal(result.runtime.budgetPartial, undefined);
+  } finally { remove(root); }
 });
 
 test("Portable Codex Security stops before the next agent event when the frozen cost ceiling is reached", async () => {
@@ -1407,9 +1464,11 @@ test("Portable Codex Security stops before the next agent event when the frozen 
     const runtime = JSON.parse(fs.readFileSync(
       path.join(config.outputDir, "portable-codex-security-runtime.json"),
       "utf8",
-    )) as { usage: { inputTokens: number }; error: string };
+    )) as { usage: { inputTokens: number }; error: string; status: string; budgetPartial: { spentUsd: number } };
     assert.equal(runtime.usage.inputTokens, 1_000_000);
     assert.equal(runtime.error, "cost_limit_reached");
+    assert.equal(runtime.status, "incomplete");
+    assert.equal(runtime.budgetPartial.spentUsd, 1);
   } finally {
     remove(root);
   }

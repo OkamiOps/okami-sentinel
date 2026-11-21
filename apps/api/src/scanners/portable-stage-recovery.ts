@@ -127,6 +127,11 @@ export async function runPortableStageWithRecovery<T>(options: PortableStageReco
       try { return await options.run(state.attempts, state.lastErrorCode); }
       catch (error) {
         options.signal?.throwIfAborted();
+        if (error && typeof error === "object" && "code" in error && error.code === "cost_limit_reached") {
+          state.attempts--;
+          save();
+          throw error;
+        }
         const code = errorCode(error);
         if (!code) throw error; // Authentication, cost, cancellation, protocol and unknown errors are terminal.
         state.lastErrorCode = code;

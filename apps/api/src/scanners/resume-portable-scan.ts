@@ -16,11 +16,12 @@ import { mergePortableDeepDiscoveryDossiers } from "./portable-codex-security-de
 import { createPortableAssessmentPages, assessmentPageDirectory } from "./portable-codex-security-assessment-pages.js";
 import { createPortableCodexSecurityReportShards } from "./portable-codex-security-report-shards.js";
 import { PORTABLE_CODEX_SECURITY_STAGES } from "./portable-codex-security-profile.js";
+import { assertBudgetResumeCap } from "./portable-budget-partial.js";
 
 /** Read-only checkpoint validation, shared by dry-run and actual recovery. */
 export function preflightPortableResume(scanDir: string, mode: "standard" | "deep") {
   const previous = readPortableCodexSecurityRuntime(scanDir);
-  const resumable = ["discovery", "dataflow", "validation", "report"];
+  const resumable = ["inventory", "threat-model", "discovery", "dataflow", "validation", "report"];
   if (!previous?.snapshotId || !resumable.includes(previous.stage ?? "") || previous.status === "completed") throw new Error("resume_requires_checkpoint");
   const snapshotRoot = path.join(scanDir, "portable-codex-security-snapshot");
   assertPortableCodexSecuritySnapshot({ snapshotRoot, snapshotId: previous.snapshotId });
@@ -36,6 +37,18 @@ export function preflightPortableResume(scanDir: string, mode: "standard" | "dee
     return assertExactStageArtifact(root, { artifact });
   }
   let dossier = createPortableCodexSecurityDossier();
+  if (previous.budgetPartial && ["inventory", "threat-model"].includes(previous.stage)) {
+    for (const stage of PORTABLE_CODEX_SECURITY_STAGES.slice(0, 2)) {
+      const artifact = read(stage.id, stage.artifact);
+      if (artifact) {
+        dossier = applyPortableCodexSecurityStageArtifact(dossier, artifact);
+        assertPortableCodexSecurityDossierAnchors(snapshotRoot, dossier);
+      } else if (stage.id !== previous.stage) throw new Error("resume_missing_prerequisite_checkpoint");
+      if (stage.id === previous.stage) break;
+    }
+    if (fs.readdirSync(artifacts).some(entry => !accepted.has(entry))) throw new Error("resume_unrecognized_checkpoint");
+    return { previous, completed: 0, totalBatches: 0, verifiedStages: {}, dossier };
+  }
   for (const stage of PORTABLE_CODEX_SECURITY_STAGES.slice(0, 2)) {
     const artifact = read(stage.id, stage.artifact);
     if (!artifact) throw new Error("resume_missing_prerequisite_checkpoint");
@@ -116,12 +129,14 @@ export function preflightPortableResume(scanDir: string, mode: "standard" | "dee
 }
 
 /** Local operator recovery. Does not mutate or overwrite the interrupted run. */
-async function resume(scanId: string, dryRun: boolean) {
+export async function resumeBudgetPortableScan(scanId: string, maxCostUsd: number, dryRun = false) {
   const original = getRun(scanId);
-  if (!original || !["failed", "cancelled"].includes(original.status) || original.engine !== "codex-security" || original.execution?.executionProfile !== "portable") throw new Error("resume_requires_interrupted_portable_scan");
+  if (!original || original.status !== "incomplete" || original.engine !== "codex-security" || original.execution?.executionProfile !== "portable") throw new Error("resume_requires_budget_partial_scan");
   if (findProcessIdentitiesForScanDir(original.scanDir).length > 0) throw new Error("resume_source_still_running");
   const config = readPortableCodexSecurityWorkerConfiguration(path.join(original.scanDir, "portable-codex-security-run.json"));
   const { previous, completed, totalBatches, verifiedStages } = preflightPortableResume(original.scanDir, config.mode);
+  if (previous.status !== "incomplete" || !previous.budgetPartial || !config.costBudget) throw new Error("resume_requires_budget_partial_scan");
+  assertBudgetResumeCap(previous.budgetPartial, maxCostUsd);
   console.log(JSON.stringify({ sourceScanId: scanId, snapshotId: previous.snapshotId, verifiedBatches: completed, totalBatches, verifiedStages, dryRun }));
   if (dryRun) return;
   const id = nanoid(12);
@@ -166,7 +181,7 @@ async function resume(scanId: string, dryRun: boolean) {
     const workerLog = path.join(original.scanDir, "portable-worker-events.log");
     const eventLog = fs.existsSync(workerLog) ? workerLog : legacyLog;
     if (fs.existsSync(eventLog)) fs.copyFileSync(eventLog, path.join(outputDir, "portable-worker-events.log"));
-    const resumedConfig = { ...config, outputDir, limits: { ...config.limits, totalTimeoutMs: 0 }, providerPlan: { ...config.providerPlan, scanId: id, capabilityCheckId: probe.report.id } };
+    const resumedConfig = { ...config, outputDir, costBudget: { ...config.costBudget, maxCostUsd }, limits: { ...config.limits, totalTimeoutMs: 0 }, providerPlan: { ...config.providerPlan, scanId: id, capabilityCheckId: probe.report.id } };
     const configPath = path.join(outputDir, "portable-codex-security-run.json");
     fs.writeFileSync(configPath, JSON.stringify(resumedConfig), { mode: 0o600 });
     fs.writeFileSync(path.join(outputDir, "resume-source.json"), JSON.stringify({ scanId, resumedAt: new Date().toISOString(), verifiedBatches: completed, verifiedStages, snapshotId: previous.snapshotId }), { mode: 0o600 });
@@ -185,5 +200,7 @@ async function resume(scanId: string, dryRun: boolean) {
   } catch (error) { releaseScanCapacity(id); throw error; }
 }
 if (process.argv[1]?.endsWith("resume-portable-scan.ts")) {
-  void resume(process.argv[2] ?? "", process.argv.includes("--dry-run")).catch(() => { console.error("portable_scan_resume_failed"); process.exitCode = 1; });
+  const capIndex = process.argv.indexOf("--max-cost-usd");
+  void resumeBudgetPortableScan(process.argv[2] ?? "", capIndex < 0 ? NaN : Number(process.argv[capIndex + 1]), process.argv.includes("--dry-run"))
+    .catch(error => { console.error(error instanceof Error && /^resume_[a-z_]+$/.test(error.message) ? error.message : "portable_scan_resume_failed"); process.exitCode = 1; });
 }
