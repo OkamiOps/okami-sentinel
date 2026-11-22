@@ -1,8 +1,13 @@
 import { readPortableCandidateGrouping } from "./portable-codex-security-candidate-groups.js";
 import { createPortableCodexSecuritySnapshot } from "./portable-codex-security-worker-support.js";
 import { fileURLToPath } from "node:url";
+import { createServer } from "node:http";
+import { once } from "node:events";
+import type { AddressInfo } from "node:net";
 import { readScanFindings } from "../ingest.js";
-import { readOpengrepStatus } from "../sast/opengrep.js";
+import { readOpengrepFindings, readOpengrepStatus } from "../sast/opengrep.js";
+import { gatePortableCodexSecurityVerdicts } from "./portable-codex-security-verdicts.js";
+import { readPortableSastTriage } from "./portable-sast-triage.js";
 import { materializePortableCodexSecurityReportShard } from "./portable-codex-security-report-shards.js";
 import assert from "node:assert/strict";
 import { reservePortableTurn } from "./portable-turn-budget.js";
@@ -1619,6 +1624,121 @@ test("Portable reservation blocks unaffordable turns before upstream in producti
       assert.equal(findings[0].origin?.kind, "sast");
     } finally { remove(root); }
   }
+});
+
+test("Portable routes OpenGrep through ranked review to cited verdicts over HTTP and replays the same checkpoint", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-sast-http-"));
+  t.after(() => remove(root));
+  const config = configuration(root);
+  config.graphify = false;
+  config.limits.totalTimeoutMs = 60_000;
+  const source = "src/auth.ts";
+  fs.writeFileSync(path.join(config.repositoryPath, source), ["one", "two", "three"].map(name => `export const ${name} = true;\n`).join(""));
+  const realBinary = process.env.SENTINEL_TEST_OPENGREP_BIN;
+  const rules = path.join(root, realBinary ? "rules.yaml" : "rules.json");
+  if (realBinary) {
+    fs.writeFileSync(rules, 'rules:\n  - id: unit-marker\n    languages: [typescript]\n    severity: ERROR\n    message: Test marker\n    pattern: export const $NAME = true;\n');
+  } else {
+    fs.writeFileSync(rules, JSON.stringify({ payload: { errors: [], results: [3, 1, 2].map(line => ({
+      check_id: "unit-marker", path: source, start: { line, col: 1 }, end: { line, col: 12 },
+      extra: { severity: "ERROR", message: "Test marker" },
+    })) } }));
+  }
+  const previousEnv = { ...process.env };
+  for (const [key, value] of Object.entries({
+    SENTINEL_OPENGREP_ENABLED: "true", SENTINEL_OPENGREP_RULES: rules,
+    SENTINEL_OPENGREP_BIN: realBinary ?? fileURLToPath(new URL("../sast/fixtures/fake-opengrep.mjs", import.meta.url)),
+  })) {
+    process.env[key] = value;
+    t.after(() => { if (previousEnv[key] === undefined) delete process.env[key]; else process.env[key] = previousEnv[key]; });
+  }
+  const stages: string[] = [];
+  const events: string[] = [];
+  const mockErrors: unknown[] = [];
+  let received = 0;
+  const server = createServer(async (request, response) => {
+    try {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(chunk);
+      const body = JSON.parse(Buffer.concat(chunks).toString());
+      const prompt: string = body.messages.find((message: { role: string }) => message.role === "system").content;
+      const stage = PORTABLE_CODEX_SECURITY_STAGES.find(item => prompt.includes(`stage "${item.id}"`))!;
+      const results = body.messages.filter((message: { role: string }) => message.role === "tool");
+      const call = (name: string, args: object) => ({
+        tool_calls: [{ id: `call-${++received}`, type: "function", function: { name, arguments: JSON.stringify(args) } }],
+      });
+      const plan = readPortableSastTriage(config.outputDir)!;
+      assert.equal(plan.total, 3, "triage runs before the first HTTP turn");
+      const ids = plan.queued.map(entry => entry.findingId);
+      const match = (line: number) => ({ path: source, startLine: line, endLine: line, role: "sink" });
+      let message: object;
+      if (results.length === 0) {
+        stages.push(stage.id);
+        message = call("workspace_read", { path: source });
+      } else if (results.length === 1) {
+        assert.match(results[0].content, /export const three/);
+        const carried: string[] = JSON.parse(/BEGIN_PORTABLE_CANDIDATE_IDS_JSON\s*\n([^\n]+)/.exec(prompt)?.[1] ?? "[]");
+        const independent = carried.find(id => !ids.includes(id));
+        const artifact = portableFixtureArtifact(stage.artifact, stage.id === "report", independent);
+        if (stage.id === "discovery") assert.ok(ids.every(id => !prompt.includes(id)), "discovery is independent of SAST");
+        if (stage.id === "dataflow" || stage.id === "validation") {
+          assert.deepEqual(carried, [...ids, independent]);
+          artifact.assessments[0].claim = "The independent review fixture cites the flow into its sink.";
+          artifact.assessments.push(
+            { candidateId: ids[0], status: "confirmed", reason: "untrusted-flow-reaches-sink",
+              evidence: [{ ...match(1), role: "entrypoint" }, match(1)], claim: "Fixture confirms the first marker after reading its source." },
+            { candidateId: ids[1], status: "rejected", reason: "not-vulnerable",
+              evidence: [match(2)], claim: "The second marker only assigns a constant and is not a sensitive operation." },
+            { candidateId: ids[2], status: "rejected", reason: "insufficient-evidence",
+              evidence: [match(3)], claim: "This fixture does not establish the caller or execution conditions." },
+          );
+        }
+        if (stage.id === "report") {
+          assert.ok(independent);
+          const base = artifact.findings[0];
+          artifact.findings = [{ ...base, id: "fixture-sast-confirmed", candidateId: ids[0] }, base];
+        }
+        message = call("results_write", { path: stage.artifact, content: artifact });
+      } else {
+        message = { content: '{"ok":true}' };
+      }
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ choices: [{ message }], usage: { prompt_tokens: 10, completion_tokens: 5 } }));
+    } catch (error) {
+      mockErrors.push(error);
+      response.writeHead(400).end();
+    }
+  }).listen(0, "127.0.0.1");
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  await once(server, "listening");
+  const deps = dependencies({ log: (line: string) => events.push(line), vault: { get: async () => ({
+    apiKey: "fixture-only", baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`, allowInsecureLocalhost: true,
+  }) } });
+  const { runtime } = await runPortableCodexSecurity(config, deps).catch(error => {
+    t.diagnostic(events.join("\n"));
+    throw mockErrors[0] ?? error;
+  });
+  assert.deepEqual(mockErrors, []);
+  assert.equal(runtime.percent, 100);
+  assert.equal(runtime.status, "completed");
+  assert.deepEqual(stages, PORTABLE_CODEX_SECURITY_STAGES.map(stage => stage.id));
+  assert.equal(readOpengrepStatus(config.outputDir)?.status, "completed");
+  const rawFindings = readOpengrepFindings(config.outputDir);
+  assert.equal(rawFindings.length, 3);
+  const plan = readPortableSastTriage(config.outputDir)!;
+  assert.deepEqual(plan.queued.map(entry => entry.startLine), [1, 2, 3]);
+  assert.deepEqual(new Set(plan.queued.map(entry => entry.findingId)), new Set(rawFindings.map(finding => finding.findingId)));
+  const dossier = readPortableCodexSecurityDossier(path.join(config.outputDir, "portable-codex-security-results"))!;
+  const gated = gatePortableCodexSecurityVerdicts(dossier, path.join(config.outputDir, "portable-codex-security-snapshot"));
+  assert.deepEqual(gated.verdicts.map(verdict => verdict.status), ["confirmed", "rejected", "inconclusive", "confirmed"]);
+  assert.ok(gated.verdicts.every(verdict => verdict.citations.every(citation => citation.valid)));
+  assert.equal(readScanFindings(config.outputDir).filter(finding => finding.origin?.kind === "sast").length, 3);
+  fs.writeFileSync(path.join(config.outputDir, "portable-codex-security-runtime.json"), JSON.stringify({ ...runtime, status: "failed", stage: "report" }));
+  assert.deepEqual(preflightPortableResume(config.outputDir, "standard").dossier.candidates, dossier.candidates);
+  fs.rmSync(path.join(config.outputDir, "portable-codex-security-results"), { recursive: true });
+  const resumed = await runPortableCodexSecurity(config, { ...deps, resumeDiscovery: true });
+  assert.equal(resumed.runtime.status, "completed");
+  assert.equal(stages.length, 6, "all stage checkpoints were reused");
 });
 
 test("Portable budget partial retains completed pages and resumes only pending work with prior spend", async () => {
