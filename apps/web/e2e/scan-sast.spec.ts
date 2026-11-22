@@ -2,6 +2,7 @@ import path from "node:path";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import type { FindingDetail, LifecycleFinding } from "@csb/shared";
 import { mockApi, reportFinding } from "./fixtures";
+import { scanReportMessages } from "../src/i18n/scan-report";
 
 const sastFinding: FindingDetail = {
   ...reportFinding, findingId: "opengrep-fixture", title: "Execução dinâmica de código",
@@ -121,7 +122,9 @@ test("scan report keeps OpenGrep alerts out of AI totals and lists them separate
   await expect(page.getByText("Alertas de análise estática · OpenGrep", { exact: true })).toBeVisible();
   await expect(page.getByText("SAST-001", { exact: true })).toBeVisible();
   await expect(page.getByText("OKS-002", { exact: true })).toHaveCount(0);
-  await expect(page.getByText("1 alertas do OpenGrep listados à parte", { exact: false })).toBeVisible();
+  await expect(page.getByText("1 alertas brutos do OpenGrep", { exact: false })).toBeVisible();
+  const newMetric = page.locator(".report-metric").filter({ hasText: scanReportMessages["pt-BR"]["scanReport.new"] });
+  await expect(newMetric.locator(".report-metric-value")).toHaveText("1");
 });
 
 test("scan report paginates long OpenGrep alert lists", async ({ page }) => {
