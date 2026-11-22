@@ -42,3 +42,9 @@ jobs:
           # Bind mounts retain the host UID, which can differ from app UID 1000.
           CSB_DOCKER_QA_FIXTURE_UID: "1001"
         run: node scripts/docker/workflow-smoke.mjs csb-sentinel:${{ github.sha }}
+
+      - name: Remove CI image
+        if: always()
+        run: |
+          docker rmi -f csb-sentinel:${{ github.sha }} || true
+          docker builder prune -f --filter until=72h || true
