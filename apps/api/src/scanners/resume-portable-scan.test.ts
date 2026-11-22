@@ -49,6 +49,25 @@ test("budget resume requires a higher finite cap above prior spend", () => {
   assert.doesNotThrow(() => assertBudgetResumeCap(summary, 3));
 });
 
+for (const threatModelComplete of [false, true]) {
+  test(`early budget resume counts every saved checkpoint regardless of stale runtime progress: ${threatModelComplete}`, () => {
+    const f = fixture();
+    try {
+      const artifacts = path.join(f.scan, "portable-codex-security-artifacts");
+      for (const entry of ["discovery-001", "dataflow"]) fs.rmSync(path.join(artifacts, entry), { recursive: true });
+      if (!threatModelComplete) fs.rmSync(path.join(artifacts, "threat-model"), { recursive: true });
+      const runtime = readPortableCodexSecurityRuntime(f.scan)!;
+      writePortableCodexSecurityRuntime(f.scan, { ...runtime, status: "incomplete", stage: "threat-model", percent: 0,
+        budgetPartial: { stopReason: "budget", spentUsd: 0.5, maxCostUsd: 0.5, completed: [], pending: [],
+          interrupted: { stage: "threat-model", page: null, artifactPath: null } } });
+      const result = preflightPortableResume(f.scan, "standard");
+      assert.deepEqual(result.verifiedStages, threatModelComplete ? { inventory: 1, "threat-model": 1 } : { inventory: 1 });
+      assert.equal(result.dossier.stageSummaries.length, threatModelComplete ? 2 : 1);
+      assert.equal(preparePortableResumeRuntime(result.previous).stage, "threat-model");
+    } finally { cleanup(f.root); }
+  });
+}
+
 for (const budget of [false, true]) {
   test(`resume bootstrap cannot persist the source terminal status before worker startup: budget=${budget}`, () => {
     const f = fixture();

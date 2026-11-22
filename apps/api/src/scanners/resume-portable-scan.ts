@@ -44,16 +44,18 @@ export function preflightPortableResume(scanDir: string, mode: "standard" | "dee
   }
   let dossier = createPortableCodexSecurityDossier();
   if (previous.budgetPartial && ["inventory", "threat-model"].includes(previous.stage)) {
+    const verifiedStages: Record<string, number> = {};
     for (const stage of PORTABLE_CODEX_SECURITY_STAGES.slice(0, 2)) {
       const artifact = read(stage.id, stage.artifact);
       if (artifact) {
         dossier = applyPortableCodexSecurityStageArtifact(dossier, artifact);
         assertPortableCodexSecurityDossierAnchors(snapshotRoot, dossier);
+        verifiedStages[stage.id] = 1;
       } else if (stage.id !== previous.stage) throw new Error("resume_missing_prerequisite_checkpoint");
       if (stage.id === previous.stage) break;
     }
     if (fs.readdirSync(artifacts).some(entry => !accepted.has(entry))) throw new Error("resume_unrecognized_checkpoint");
-    return { previous, completed: 0, totalBatches: 0, verifiedStages: {}, dossier };
+    return { previous, completed: 0, totalBatches: 0, verifiedStages, dossier };
   }
   for (const stage of PORTABLE_CODEX_SECURITY_STAGES.slice(0, 2)) {
     const artifact = read(stage.id, stage.artifact);

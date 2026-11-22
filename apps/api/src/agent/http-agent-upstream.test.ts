@@ -110,6 +110,25 @@ test("Grok OAuth and other non-authoritative protocols never use a text count as
   }
 });
 
+test("protocol failures distinguish HTTP rejection, body shape and local limits without provider content", async () => {
+  for (const [reply, issue] of [[json(422, { error: "private detail" }), "http_status_422"],
+    [new Response("private non-JSON detail", { status: 200 }), "response_json_invalid"],
+    [new Response(null, { status: 204 }), "response_body_empty"],
+    [new Response("x".repeat(HTTP_AGENT_BODY_LIMIT_BYTES + 1)), "response_body_too_large"]] as const) {
+    const transport = transcript([reply]);
+    const upstream = createHttpAgentUpstream({ routeKind: "xai-oauth", protocol: "xai-oauth-responses",
+      credentials: { apiKey: "fixture" }, maxRetries: 0, transport: transport.fetch });
+    await assert.rejects(upstream.request({ operation: "responses", body: {}, signal: new AbortController().signal }), error => {
+      assert.ok(error instanceof HttpAgentUpstreamError);
+      assert.equal(error.code, "protocol_unsupported");
+      assert.equal(error.protocolIssue, issue);
+      assert.ok(!JSON.stringify(error).includes("private"));
+      return true;
+    });
+    assert.equal(transport.calls.length, 1);
+  }
+});
+
 test("AgentUpstream pins official origins and the documented MiniMax Token Plan header", async () => {
   const cases = [
     ["xai-api", "openai-responses", "responses", "https://api.x.ai/v1/responses", "authorization", "Bearer xai-secret"],

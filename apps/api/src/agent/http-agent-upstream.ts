@@ -142,8 +142,10 @@ export interface HttpAgentUpstreamOptions {
  * carries neither a response body nor endpoint/header material.
  */
 export class HttpAgentUpstreamError extends AgentSessionError {
-  constructor(code: SafeProviderErrorCode) {
-    super(code);
+  constructor(code: SafeProviderErrorCode, protocolIssue?: "wire_operation_unsupported" | "request_body_invalid" |
+    "endpoint_policy_rejected" | "response_read_failed" | "response_body_empty" | "response_body_too_large" |
+    "response_json_invalid" | `http_status_${number}`) {
+    super(code, protocolIssue);
     this.name = "HttpAgentUpstreamError";
   }
 }
@@ -346,7 +348,7 @@ class HttpAgentUpstream implements AgentUpstream {
 
   async #requestOnce(request: AgentUpstreamRequest, endpoint = this.#endpoint): Promise<unknown> {
     if (endpoint === null || this.#operation === null || request.operation !== this.#operation) {
-      throw new HttpAgentUpstreamError("protocol_unsupported");
+      throw new HttpAgentUpstreamError("protocol_unsupported", "wire_operation_unsupported");
     }
     const serialized = serializeBody(request.body);
     const controller = new AbortController();
@@ -390,7 +392,7 @@ class HttpAgentUpstream implements AgentUpstream {
       } catch (error) {
         if (error instanceof AgentSessionError || error instanceof HttpAgentUpstreamError) throw error;
         if (error instanceof PinnedCustomEndpointError) {
-          throw new HttpAgentUpstreamError("protocol_unsupported");
+          throw new HttpAgentUpstreamError("protocol_unsupported", "endpoint_policy_rejected");
         }
         throw new HttpAgentUpstreamError("provider_unreachable");
       }
@@ -398,7 +400,7 @@ class HttpAgentUpstream implements AgentUpstream {
       const statusCode = statusError(response.status);
       if (statusCode !== null) {
         cancelResponseBody(response);
-        throw new HttpAgentUpstreamError(statusCode);
+        throw new HttpAgentUpstreamError(statusCode, statusCode === "protocol_unsupported" ? `http_status_${response.status}` : undefined);
       }
       try {
         const parsed = await readBoundedJson(response, controller.signal);
@@ -406,7 +408,7 @@ class HttpAgentUpstream implements AgentUpstream {
         return parsed;
       } catch (error) {
         if (error instanceof AgentSessionError || error instanceof HttpAgentUpstreamError) throw error;
-        throw new HttpAgentUpstreamError("protocol_unsupported");
+        throw new HttpAgentUpstreamError("protocol_unsupported", "response_read_failed");
       }
     } finally {
       this.#active.delete(controller);
@@ -667,7 +669,7 @@ function serializeBody(body: unknown): string {
     }
     return serialized;
   } catch {
-    throw new HttpAgentUpstreamError("protocol_unsupported");
+    throw new HttpAgentUpstreamError("protocol_unsupported", "request_body_invalid");
   }
 }
 
@@ -681,7 +683,7 @@ function statusError(status: number): SafeProviderErrorCode | null {
 }
 
 async function readBoundedJson(response: Response, signal: AbortSignal): Promise<unknown> {
-  if (response.body === null) throw new HttpAgentUpstreamError("protocol_unsupported");
+  if (response.body === null) throw new HttpAgentUpstreamError("protocol_unsupported", "response_body_empty");
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -695,7 +697,7 @@ async function readBoundedJson(response: Response, signal: AbortSignal): Promise
       size += next.value.byteLength;
       if (size > HTTP_AGENT_BODY_LIMIT_BYTES) {
         cancelReader();
-        throw new HttpAgentUpstreamError("protocol_unsupported");
+        throw new HttpAgentUpstreamError("protocol_unsupported", "response_body_too_large");
       }
       chunks.push(next.value);
     }
@@ -712,7 +714,7 @@ async function readBoundedJson(response: Response, signal: AbortSignal): Promise
   try {
     return JSON.parse(new TextDecoder().decode(body)) as unknown;
   } catch {
-    throw new HttpAgentUpstreamError("protocol_unsupported");
+    throw new HttpAgentUpstreamError("protocol_unsupported", "response_json_invalid");
   }
 }
 

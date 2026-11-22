@@ -11,10 +11,10 @@ import { readPortableSastTriage } from "./portable-sast-triage.js";
 import { materializePortableCodexSecurityReportShard } from "./portable-codex-security-report-shards.js";
 import assert from "node:assert/strict";
 import { reservePortableTurn } from "./portable-turn-budget.js";
-import type { HttpAgentUpstreamOptions } from "../agent/http-agent-upstream.js";
+import { createHttpAgentUpstream, type HttpAgentUpstreamOptions } from "../agent/http-agent-upstream.js";
 import { createAgentSession } from "../agent/session-runner.js";
 import { readPortableCodexSecurityRuntime } from "./portable-codex-security-runtime.js";
-import { preflightPortableResume } from "./resume-portable-scan.js";
+import { preflightPortableResume, preparePortableResumeRuntime } from "./resume-portable-scan.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -1879,6 +1879,91 @@ test("Portable routes OpenGrep through ranked review to cited verdicts over HTTP
   const resumed = await runPortableCodexSecurity(config, { ...deps, resumeDiscovery: true });
   assert.equal(resumed.runtime.status, "completed");
   assert.equal(stages.length, 6, "all stage checkpoints were reused");
+});
+
+test("Grok OAuth report resume keeps its protocol and reuses every earlier checkpoint over Responses HTTP", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-grok-report-resume-"));
+  const tuple = { routeKind: "xai-oauth", protocol: "xai-oauth-responses" } as const;
+  const config = configuration(root, plan(tuple));
+  config.limits.totalTimeoutMs = 0;
+  config.costBudget = costBudget({ maxCostUsd: 20, pricing: { ...costBudget().pricing, ...tuple, providerKind: "xai" } });
+  const starts: string[] = [], logs: string[] = [];
+  const history = new Map<string, { stage: typeof PORTABLE_CODEX_SECURITY_STAGES[number]; prompt: string; turn: number }>();
+  let rejectReport = true, calls = 0;
+  const deps = dependencies({
+    getSnapshot: () => snapshot({ ...tuple, authKind: "device-code" }),
+    getConnection: () => connection({ ...tuple, providerKind: "xai", authKind: "device-code", credentialRef: null }),
+    getCapabilityCheck: () => report({ protocol: tuple.protocol }),
+    vault: { get: async () => { throw new Error("OAuth must not read the API-key vault"); } },
+    xaiOAuth: { getAccessToken: async () => "fixture-oauth-token" },
+    log: (line: string) => logs.push(line),
+    createUpstream: (options: HttpAgentUpstreamOptions) => {
+      assert.equal(options.routeKind, tuple.routeKind);
+      assert.equal(options.protocol, tuple.protocol);
+      assert.equal(options.maxRetries, 0);
+      return createHttpAgentUpstream({ ...options, transport: (async (url, init) => {
+        assert.equal(String(url), "https://api.x.ai/v1/responses", "Grok never sends an input_tokens request");
+        assert.equal(new Headers(init?.headers).get("authorization"), "Bearer fixture-oauth-token");
+        calls++;
+        const body = JSON.parse(String(init?.body));
+        let state = history.get(body.previous_response_id);
+        if (!state) {
+          assert.equal(body.previous_response_id, undefined, "each stage starts a fresh immutable history");
+          const prompt = body.input.find((item: { role: string }) => item.role === "system").content as string;
+          const stage = PORTABLE_CODEX_SECURITY_STAGES.find(item => prompt.includes(`stage "${item.id}"`))!;
+          assert.ok(stage);
+          starts.push(stage.id);
+          state = { stage, prompt, turn: 0 };
+        }
+        if (state.stage.id === "report" && rejectReport) return new Response('{"error":"private provider detail"}', { status: 400 });
+        const artifact = portableFixtureArtifact(state.stage.artifact, state.stage.id === "report", portableCandidateIdFromInstruction(state.prompt));
+        const id = `grok-response-${calls}`;
+        history.set(id, { ...state, turn: state.turn + 1 });
+        return new Response(JSON.stringify({ id, output: [{ type: "function_call", call_id: `call-${calls}`,
+          name: state.turn === 0 ? "workspace_read" : "results_write",
+          arguments: JSON.stringify(state.turn === 0 ? { path: "src/auth.ts" } : { path: state.stage.artifact, content: artifact }),
+        }], usage: { input_tokens: 100, output_tokens: 100, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 } } }), { status: 200 });
+      }) as typeof fetch });
+    },
+  });
+  try {
+    await assert.rejects(runPortableCodexSecurity(config, deps), { code: "agent_session_failed" });
+    assert.deepEqual(starts, PORTABLE_CODEX_SECURITY_STAGES.map(stage => stage.id));
+    assert.ok(logs.some(line => line.includes('"protocolIssue":"http_status_400"')));
+    assert.ok(logs.every(line => !line.includes("private provider detail")));
+    const source = readPortableCodexSecurityRuntime(config.outputDir)!;
+    assert.equal(source.stage, "report");
+    const verified = preflightPortableResume(config.outputDir, "standard").verifiedStages;
+    assert.deepEqual(verified, { inventory: 1, "threat-model": 1, discovery: 1, dataflow: 1, validation: 1, report: 0 });
+    const resumedConfig = { ...config, outputDir: path.join(root, "resumed") };
+    fs.cpSync(config.outputDir, resumedConfig.outputDir, { recursive: true });
+    const restoreModes = (source: string, copied: string) => {
+      for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
+        if (entry.isDirectory()) restoreModes(path.join(source, entry.name), path.join(copied, entry.name));
+      }
+      fs.chmodSync(copied, fs.statSync(source).mode & 0o777);
+    };
+    restoreModes(config.outputDir, resumedConfig.outputDir);
+    fs.writeFileSync(path.join(resumedConfig.outputDir, "portable-codex-security-runtime.json"), JSON.stringify(preparePortableResumeRuntime(source)));
+    rejectReport = false;
+    const resumed = await runPortableCodexSecurity(resumedConfig, { ...deps, resumeDiscovery: true });
+    assert.equal(resumed.runtime.status, "completed");
+    assert.equal(resumed.runtime.percent, 100);
+    assert.deepEqual(starts, [...PORTABLE_CODEX_SECURITY_STAGES.map(stage => stage.id), "report"]);
+    assert.equal(logs.filter(line => line.includes('"type":"checkpoint_reused"')).length, 5);
+    assert.equal(preflightPortableResume(config.outputDir, "standard").verifiedStages.report, 0, "source remains untouched");
+    const callsBeforeReplay = calls;
+    fs.rmSync(path.join(resumedConfig.outputDir, "portable-codex-security-results"), { recursive: true });
+    fs.writeFileSync(path.join(resumedConfig.outputDir, "portable-codex-security-runtime.json"),
+      JSON.stringify({ ...resumed.runtime, status: "failed", stage: "report" }));
+    assert.equal(preflightPortableResume(resumedConfig.outputDir, "standard").verifiedStages.report, 1);
+    const replay = await runPortableCodexSecurity(resumedConfig, { ...deps, resumeDiscovery: true });
+    assert.equal(replay.runtime.status, "completed");
+    assert.equal(calls, callsBeforeReplay, "a saved report is also reused without any HTTP request");
+  } catch (error) {
+    t.diagnostic(logs.slice(-30).join("\n"));
+    throw error;
+  } finally { remove(root); }
 });
 
 test("Portable budget partial retains completed pages and resumes only pending work with prior spend", async () => {
