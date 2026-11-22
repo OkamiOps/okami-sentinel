@@ -17,6 +17,9 @@ export function createScanStartApp(dependencies: ScanStartApiDependencies): Hono
       if (body.graphify !== undefined && typeof body.graphify !== "boolean") {
         throw new Error("graphify must be a boolean");
       }
+      if (body.businessLogic !== undefined && typeof body.businessLogic !== "boolean") {
+        throw new Error("businessLogic must be a boolean");
+      }
       const scan = await dependencies.startScan({ ...body, graphify: body.graphify === true }, { signal: c.req.raw.signal });
       return c.json({ scan }, 201);
     } catch (err) {
