@@ -15,7 +15,7 @@ concurrency:
 jobs:
   verify:
     name: Typecheck, test, and build
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '["self-hosted"]') }}
     timeout-minutes: 15
     steps:
       - name: Checkout repository
