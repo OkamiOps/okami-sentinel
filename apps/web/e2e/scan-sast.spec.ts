@@ -2,6 +2,7 @@ import path from "node:path";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import type { FindingDetail, LifecycleFinding } from "@csb/shared";
 import { mockApi, reportFinding } from "./fixtures";
+import { scanReportMessages } from "../src/i18n/scan-report";
 
 const sastFinding: FindingDetail = {
   ...reportFinding, findingId: "opengrep-fixture", title: "Execução dinâmica de código",
@@ -110,3 +111,36 @@ for (const [status, label, reason] of [
     if (status === "failed") await expect(card).toContainText("Saída JSON inválida");
   });
 }
+
+test("scan report keeps OpenGrep alerts out of AI totals and lists them separately", async ({ page }) => {
+  const state = await setup(page);
+  state.reportFindings = [sastFinding, aiFinding];
+  state.runs[0].severity.high = 1;
+  state.runs[0].severity.total = 1;
+  await page.goto("/scans/scan-one/report");
+  await expect(page.getByText("1 findings critical/high possuem ficha técnica", { exact: false })).toBeVisible();
+  await expect(page.getByText("Alertas de análise estática · OpenGrep", { exact: true })).toBeVisible();
+  await expect(page.getByText("SAST-001", { exact: true })).toBeVisible();
+  await expect(page.getByText("OKS-002", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("1 alertas brutos do OpenGrep", { exact: false })).toBeVisible();
+  const newMetric = page.locator(".report-metric").filter({ hasText: scanReportMessages["pt-BR"]["scanReport.new"] });
+  await expect(newMetric.locator(".report-metric-value")).toHaveText("1");
+});
+
+test("scan report paginates long OpenGrep alert lists", async ({ page }) => {
+  const state = await setup(page);
+  state.reportFindings = Array.from({ length: 13 }, (_, index) => ({ ...sastFinding, findingId: `opengrep-${index}`, title: `Alerta ${String(index).padStart(2, "0")}` }));
+  await page.goto("/scans/scan-one/report");
+  await expect(page.getByText("Alertas de análise estática · OpenGrep / 2", { exact: true })).toBeVisible();
+  await expect(page.getByText("SAST-013", { exact: true })).toBeVisible();
+});
+
+test("scan report without OpenGrep alerts has no static analysis sheet", async ({ page }) => {
+  const state = await setup(page);
+  state.reportFindings = [aiFinding];
+  state.runs[0].severity.high = 1;
+  state.runs[0].severity.total = 1;
+  await page.goto("/scans/scan-one/report");
+  await expect(page.getByText("OKS-001", { exact: true })).toBeVisible();
+  await expect(page.getByText("Alertas de análise estática · OpenGrep", { exact: false })).toHaveCount(0);
+});

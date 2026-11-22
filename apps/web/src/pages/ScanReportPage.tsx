@@ -106,10 +106,21 @@ export function ScanReportPage() {
     return () => { document.title = previous; };
   }, [report, t]);
 
-  const findings = useMemo(() => sortFindings(report?.findings ?? []), [report]);
+  const allFindings = useMemo(() => sortFindings(report?.findings ?? []), [report]);
+  const findings = useMemo(() => allFindings.filter((finding) => finding.origin?.kind !== "sast"), [allFindings]);
+  const sastFindings = useMemo(() => allFindings.filter((finding) => finding.origin?.kind === "sast"), [allFindings]);
   const indexPages = useMemo(() => chunk(findings, 12), [findings]);
+  const sastPages = useMemo(() => (sastFindings.length > 0 ? chunk(sastFindings, 12) : []), [sastFindings]);
   const priorityFindings = useMemo(() => findings.filter((finding) => finding.severity === "critical" || finding.severity === "high"), [findings]);
   const lifecycle = useMemo(() => new Map((report?.regression.findings ?? []).map((finding) => [finding.findingId, finding])), [report]);
+  const lifecycleCounts = useMemo(() => {
+    const counts = { new: 0, regressed: 0, persisting: 0 };
+    for (const finding of findings) {
+      const state = lifecycle.get(finding.findingId)?.lifecycle;
+      if (state === "new" || state === "regressed" || state === "persisting") counts[state] += 1;
+    }
+    return counts;
+  }, [findings, lifecycle]);
 
   if (reportError && !report) {
     return <main className="flex min-h-screen items-center justify-center p-6" aria-labelledby="scan-report-load-error-title"><section role="alert" className="w-full max-w-xl border border-destructive/50 bg-destructive/10 p-6"><div className="font-mono text-[9px] uppercase tracking-[.16em] text-destructive">{t("scanReport.loadFailedEyebrow")}</div><h1 id="scan-report-load-error-title" className="mt-3 font-heading text-2xl font-semibold tracking-[-.04em]">{t("scanReport.loadFailedTitle")}</h1><p className="mt-3 text-sm text-muted-foreground">{t("scanReport.loadFailedMessage", { message: formatApiError(reportError.reason, t) })}</p><Button className="mt-5" onClick={() => setReload((value) => value + 1)}><HugeiconsIcon icon={RefreshIcon} size={13} />{t("common.retry")}</Button></section></main>;
@@ -189,9 +200,9 @@ export function ScanReportPage() {
               {severityOrder.slice(0, 5).map((severity) => <SeverityRow key={severity} severity={severity} count={scan.severity[severity]} total={scan.severity.total} />)}
             </div>
             <div className="grid grid-cols-3 border-t border-border md:border-l md:border-t-0">
-              <Metric label={t("scanReport.new")} value={regression.counts.new} tone="text-primary" kind="compact" />
-              <Metric label={t("scanReport.regressed")} value={regression.counts.regressed} tone="text-destructive" kind="compact" />
-              <Metric label={t("scanReport.persisting")} value={regression.counts.persisting} tone="text-chart-3" kind="compact" />
+              <Metric label={t("scanReport.new")} value={lifecycleCounts.new} tone="text-primary" kind="compact" />
+              <Metric label={t("scanReport.regressed")} value={lifecycleCounts.regressed} tone="text-destructive" kind="compact" />
+              <Metric label={t("scanReport.persisting")} value={lifecycleCounts.persisting} tone="text-chart-3" kind="compact" />
             </div>
           </div>
         </section>
@@ -259,6 +270,15 @@ export function ScanReportPage() {
         <ReportFooter reportId={reportId} />
       </ReportSheet>)}
 
+      {sastPages.map((page, pageIndex) => <ReportSheet key={`sast-${pageIndex}`}>
+        <ReportHeader section="03B" title={sastPages.length > 1 ? `${t("scanReport.sastIndexTitle")} / ${pageIndex + 1}` : t("scanReport.sastIndexTitle")} reportId={reportId} />
+        <div className="mt-8 border border-border">
+          {page.map((finding) => <FindingIndexRow key={finding.findingId} finding={finding} index={sastFindings.indexOf(finding)} prefix="SAST" signal={lifecycle.get(finding.findingId)} />)}
+        </div>
+        <div className="mt-5 border-l-2 border-chart-3 px-4 text-[11px] leading-6 text-muted-foreground">{t("scanReport.sastIndexNote", { count: sastFindings.length })}</div>
+        <ReportFooter reportId={reportId} />
+      </ReportSheet>)}
+
       {priorityFindings.map((finding) => <FindingSheet key={finding.findingId} finding={finding} index={findings.indexOf(finding)} signal={lifecycle.get(finding.findingId)} reportId={reportId} />)}
 
       <ReportSheet>
@@ -291,10 +311,10 @@ function SeverityRow({ severity, count, total }: { severity: Severity; count: nu
   return <div className="grid grid-cols-[5rem_minmax(0,1fr)_4rem] items-center gap-3 border-b border-border/70 py-3 last:border-0"><span className={`font-mono text-[9px] uppercase ${severityText[severity]}`}>{t(severityLabelKey[severity])}</span><div className="h-2 bg-muted"><div className={`h-full ${severityBar[severity]}`} style={{ width: `${percentage}%` }} /></div><span className="text-right font-mono text-[9px]">{count} / {percentage}%</span></div>;
 }
 
-function FindingIndexRow({ finding, index, signal }: { finding: FindingDetail; index: number; signal?: LifecycleFinding }) {
+function FindingIndexRow({ finding, index, signal, prefix = "OKS" }: { finding: FindingDetail; index: number; signal?: LifecycleFinding; prefix?: string }) {
   const { t } = useScopedI18n(scanReportMessages);
   const lifecycleLabel = signal ? t(lifecycleLabelKey[signal.lifecycle]) : t("scanReport.noDelta");
-  return <div className="report-index-grid grid grid-cols-[4.2rem_5.2rem_minmax(0,1fr)_7rem] items-center border-b border-border px-4 py-3 last:border-0"><span className="font-mono text-[8px] text-primary">OKS-{String(index + 1).padStart(3, "0")}</span><span className={`font-mono text-[8px] uppercase ${severityText[finding.severity]}`}>{t(severityLabelKey[finding.severity])}</span><div className="min-w-0 pr-4"><div className="truncate text-[11px] font-semibold">{finding.title}</div><div className="mt-1 truncate font-mono text-[7px] text-muted-foreground">{finding.primaryPath ?? finding.category ?? finding.findingId}</div><div className="mt-1 font-mono text-[7px] uppercase text-muted-foreground sm:hidden">{lifecycleLabel}</div></div><span className="report-index-lifecycle font-mono text-[7px] uppercase text-muted-foreground">{lifecycleLabel}</span></div>;
+  return <div className="report-index-grid grid grid-cols-[4.2rem_5.2rem_minmax(0,1fr)_7rem] items-center border-b border-border px-4 py-3 last:border-0"><span className="font-mono text-[8px] text-primary">{prefix}-{String(index + 1).padStart(3, "0")}</span><span className={`font-mono text-[8px] uppercase ${severityText[finding.severity]}`}>{t(severityLabelKey[finding.severity])}</span><div className="min-w-0 pr-4"><div className="truncate text-[11px] font-semibold">{finding.title}</div><div className="mt-1 truncate font-mono text-[7px] text-muted-foreground">{finding.primaryPath ?? finding.category ?? finding.findingId}</div><div className="mt-1 font-mono text-[7px] uppercase text-muted-foreground sm:hidden">{lifecycleLabel}</div></div><span className="report-index-lifecycle font-mono text-[7px] uppercase text-muted-foreground">{lifecycleLabel}</span></div>;
 }
 
 function FindingSheet({ finding, index, signal, reportId }: { finding: FindingDetail; index: number; signal?: LifecycleFinding; reportId: string }) {
