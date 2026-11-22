@@ -47,4 +47,4 @@ jobs:
         if: always()
         run: |
           docker rmi -f csb-sentinel:${{ github.sha }} || true
-          docker builder prune -f --filter until=72h || true
+          docker builder prune -f --filter until=24h || true

@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import { EMAIL_PROVIDER_PRESETS } from "@csb/shared";
+import { e2eWebOrigin } from "../src/lib/e2e-web-port";
 import type {
   ScanAiVerdicts,
   ScanBusinessLogic,
@@ -242,6 +243,7 @@ function inviteEmailFields(options: MockApiOptions, fallbackAddress: string | nu
 }
 
 export async function mockApi(page: Page, locale = "en", options: MockApiOptions = {}) {
+  const origin = e2eWebOrigin();
   const state = {
     offline: false, connectionsFail: false, modelsFail: false, launchCount: 0, cancelCount: 0, resetCount: 0,
     runs: [structuredClone(baseRun), { ...structuredClone(baseRun), id: "scan-two", displayName: "Repository beta" }],
@@ -271,7 +273,7 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
     accountSessionsFail: options.accountSessionsFail === true,
     invitePreviewFails: options.invitePreviewResponse !== undefined,
     emailSettings: { ...structuredClone(emailSettings), ...(options.emailSettings ?? {}) } as EmailSettings,
-    publicOrigin: options.publicOrigin === undefined ? "http://127.0.0.1:4175" : options.publicOrigin,
+    publicOrigin: options.publicOrigin === undefined ? origin : options.publicOrigin,
     emailDeliveries: structuredClone(options.emailDeliveries ?? emailDeliveries),
     emailDeliveriesFail: options.emailDeliveriesFail === true,
     /** Every body `PUT /email/settings` received, in order. */
@@ -509,7 +511,7 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
         repositoryCount: body.grants?.length ?? 0, lastLoginAt: null, createdAt: "2026-09-07T10:00:00.000Z",
       };
       state.users.push(created);
-      return json({ user: created, invite: { inviteUrl: `http://127.0.0.1:4175/invite/${"b".repeat(43)}`, expiresAt: "2026-10-06T10:00:00.000Z", ...inviteEmailFields(options, created.email ?? created.username) } }, 201);
+      return json({ user: created, invite: { inviteUrl: `${origin}/invite/${"b".repeat(43)}`, expiresAt: "2026-10-06T10:00:00.000Z", ...inviteEmailFields(options, created.email ?? created.username) } }, 201);
     }
     const userMatch = path.match(/^\/users\/([^/]+)(?:\/(.*))?$/);
     if (userMatch) {
@@ -537,7 +539,7 @@ export async function mockApi(page: Page, locale = "en", options: MockApiOptions
         const char = state.resetCount === 1 ? "c" : "d";
         const target = state.users.find((user) => user.id === id);
         return json({
-          inviteUrl: `http://127.0.0.1:4175/invite/${char.repeat(43)}`, expiresAt: "2026-10-06T10:00:00.000Z",
+          inviteUrl: `${origin}/invite/${char.repeat(43)}`, expiresAt: "2026-10-06T10:00:00.000Z",
           ...inviteEmailFields(options, target?.email ?? target?.username ?? null),
         });
       }
@@ -786,7 +788,7 @@ function githubIntegration(scenario: GitHubIntegrationScenario) {
       lastVerifiedDeliveryAt: lastVerified,
       deliveryVerifiedStale: stale,
       deliveryVerifiedAgeDays: stale ? 10 : lastVerified === null ? null : 0,
-      webhookUrl: "http://127.0.0.1:4175/api/github/webhook",
+      webhookUrl: `${e2eWebOrigin()}/api/github/webhook`,
       ready,
       installationsState: notReady ? "not_ready" as const
         : nowhere ? "none" as const
