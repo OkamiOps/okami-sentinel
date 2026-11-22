@@ -1698,6 +1698,36 @@ for (const missingUsage of [false, true]) {
   });
 }
 
+for (const budgetRefusal of [true, false]) {
+  test(`Portable business review logs ${budgetRefusal ? "budget refusals" : "protocol errors"} without changing their codes`, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-business-failure-log-"));
+    try {
+      const config = { ...configuration(root), graphify: false, businessLogic: true,
+        ...(budgetRefusal ? { costBudget: costBudget({ maxCostUsd: 0.000001 }) } : {}) };
+      const stages = stageSessionFactory();
+      const logs: string[] = [];
+      let requests = 0;
+      const result = await runPortableCodexSecurity(config, dependencies({
+        log: (line: string) => logs.push(line),
+        createSession: async (input: { spec: AgentSessionSpec; toolSurface: readonly string[]; capability: CapabilityReport }) => {
+          if (!input.spec.instructions.includes("business-logic reviewer")) return stages(input);
+          return createAgentSession({ ...input.spec, probe: input.capability.capabilities }, {
+            async request() { requests++; return {}; },
+          });
+        },
+      }));
+      assert.equal(result.runtime.status, "completed");
+      assert.equal(requests, budgetRefusal ? 0 : 3);
+      assert.deepEqual(logs.filter(line => line.startsWith('{"type":"failure"')).map(line => JSON.parse(line)),
+        [{ type: "failure", code: budgetRefusal ? "cost_limit_reached" : "agent_protocol_error" }]);
+      if (budgetRefusal) {
+        const record = JSON.parse(fs.readFileSync(path.join(config.outputDir, "portable-codex-security-results", "portable-business-logic.json"), "utf8"));
+        assert.ok(record.totals.skippedBudget > 0);
+      }
+    } finally { remove(root); }
+  });
+}
+
 test("Portable reservation blocks unaffordable turns before upstream in production and injected sessions", async (t) => {
   const keys = ["SENTINEL_OPENGREP_BIN", "SENTINEL_OPENGREP_ENABLED", "SENTINEL_OPENGREP_RULES"] as const;
   const previous = keys.map(key => process.env[key]);
@@ -1711,14 +1741,17 @@ test("Portable reservation blocks unaffordable turns before upstream in producti
     fs.writeFileSync(rules, JSON.stringify({ mode: "completed" }));
     process.env.SENTINEL_OPENGREP_RULES = rules;
     config.costBudget = costBudget({ maxCostUsd: 0.000001 });
+    const logs: string[] = [];
     let calls = 0;
     const upstream = { async request() { calls++; throw new Error("must-not-send"); } };
     try {
-      await assert.rejects(runPortableCodexSecurity(config, dependencies(injected ? {
+      await assert.rejects(runPortableCodexSecurity(config, dependencies({ log: (line: string) => logs.push(line), ...(injected ? {
         createSession: async (input: { spec: AgentSessionSpec; capability: CapabilityReport }) =>
           createAgentSession({ ...input.spec, probe: input.capability.capabilities }, upstream),
-      } : { createUpstream: (options: HttpAgentUpstreamOptions) => { assert.equal(options.maxRetries, 0); return upstream; } })), { code: "cost_limit_reached" });
+      } : { createUpstream: (options: HttpAgentUpstreamOptions) => { assert.equal(options.maxRetries, 0); return upstream; } }) })), { code: "cost_limit_reached" });
       assert.equal(calls, 0);
+      assert.deepEqual(logs.filter(line => line.startsWith('{"type":"failure"')).map(line => JSON.parse(line)),
+        [{ type: "failure", code: "cost_limit_reached" }]);
       const runtime = JSON.parse(fs.readFileSync(path.join(config.outputDir, "portable-codex-security-runtime.json"), "utf8"));
       assert.equal(runtime.status, "incomplete");
       assert.equal(runtime.error, "cost_limit_reached");

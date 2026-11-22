@@ -3238,6 +3238,8 @@ test("artifact protocol recovery permits only two malformed-response retries", a
   const events: unknown[] = [];
   await assert.rejects(collect(session.run(), events), { code: "agent_protocol_error" });
   assert.equal(requests, 3);
+  assert.deepEqual(events.filter((event) => (event as { type?: string }).type === "failure"),
+    [{ type: "failure", code: "agent_protocol_error", protocolIssue: "malformed_test_frame" }]);
   assert.ok(events.some((event) => (event as { protocolIssue?: string }).protocolIssue === "malformed_test_frame"));
 });
 
