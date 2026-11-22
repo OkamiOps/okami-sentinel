@@ -16,8 +16,16 @@
 #   JOB_STATUS          success, failure, or cancelled
 #   KEEP_MAIN           How many main-* tags to keep (default: 2)
 #   CACHE_UNTIL         Builder prune age filter (default: 24h)
-#   CACHE_CAP           Builder cache size cap (default: 8GB)
+#   CACHE_CAP           Reclaimable build-cache cap (default: 8GB)
+#   BUILDX_BUILDER      Builder to prune (default: the selected buildx builder)
 #   DRY_RUN             1 prints the tags and prunes it would apply
+#
+# --max-used-space is not a cap on the cache `docker system df` reports.
+# BuildKit sums only unshared records for that flag and, without --all, skips
+# shared records entirely, so a full shared cache reclaims 0B. On BuildKit the
+# cap is an age ladder of `docker buildx prune --all` against the same builder
+# `docker build` uses. Legacy Docker still uses --keep-storage, which is the
+# old keep-bytes cap there and a reserved-space floor on current Buildx.
 set -euo pipefail
 
 IMAGE_REPO="${IMAGE_REPO:-csb-sentinel}"
@@ -230,34 +238,173 @@ prune_dangling_images() {
   docker image prune -f || true
 }
 
+# Decimal units match go-units (8GB = 8e9). Binary units use 1024.
+parse_human_bytes() {
+  local input="$1" number unit factor base
+  input="${input%% (*}"
+  input="${input//[[:space:]]/}"
+  if [[ ! "$input" =~ ^([0-9]+([.][0-9]+)?)([kKmMgGtTpP]i?[bB]|[bB])?$ ]]; then
+    printf '0\n'
+    return 1
+  fi
+  number="${BASH_REMATCH[1]}"
+  unit="${BASH_REMATCH[3]}"
+  base=1000
+  case "$unit" in
+    *i[bB]) base=1024 ;;
+  esac
+  case "$unit" in
+    ""|[bB]) factor=1 ;;
+    [kK]*) factor="$base" ;;
+    [mM]*) factor=$((base * base)) ;;
+    [gG]*) factor=$((base * base * base)) ;;
+    [tT]*) factor=$((base * base * base * base)) ;;
+    [pP]*) factor=$((base * base * base * base * base)) ;;
+    *) factor=1 ;;
+  esac
+  awk -v n="$number" -v f="$factor" 'BEGIN { printf "%.0f\n", n * f }'
+}
+
+reclaimed_bytes_from_output() {
+  local line size bytes
+  line="$(printf '%s\n' "$1" | awk '/^Total/ { last = $0 } END { print last }')"
+  size="$(printf '%s\n' "$line" | awk '{ print $NF }')"
+  if [ -z "$size" ]; then
+    printf '0\n'
+    return 0
+  fi
+  bytes="$(parse_human_bytes "$size" || true)"
+  printf '%s\n' "${bytes:-0}"
+}
+
+log_reclaimed() {
+  local bytes="$1"
+  shift
+  printf 'reclaimed %s bytes:' "$bytes"
+  printf ' %s' "$@"
+  printf '\n'
+}
+
+current_buildx_builder() {
+  local name
+  if [ -n "${BUILDX_BUILDER:-}" ]; then
+    printf '%s\n' "$BUILDX_BUILDER"
+    return 0
+  fi
+  name="$(
+    docker buildx ls 2>/dev/null \
+      | awk 'NR > 1 && index($1, "*") { gsub(/\*/, "", $1); if ($1 != "") { print $1; exit } }' \
+      || true
+  )"
+  if [ -z "$name" ]; then
+    name="default"
+  fi
+  printf '%s\n' "$name"
+}
+
+build_cache_reclaimable_bytes() {
+  local raw bytes
+  raw="$(
+    docker system df --format '{{json .}}' 2>/dev/null \
+      | awk '/"Type":"Build Cache"/ {
+          if (match($0, /"Reclaimable":"[^"]+"/)) {
+            value = substr($0, RSTART, RLENGTH)
+            sub(/.*"Reclaimable":"/, "", value)
+            sub(/"$/, "", value)
+            print value
+            exit
+          }
+        }' \
+      || true
+  )"
+  if [ -z "$raw" ]; then
+    printf '0\n'
+    return 0
+  fi
+  bytes="$(parse_human_bytes "$raw" || true)"
+  printf '%s\n' "${bytes:-0}"
+}
+
+run_buildx_prune() {
+  local builder="$1"
+  shift
+  local output bytes
+  if is_dry; then
+    printf 'would run: docker buildx prune --builder %s -f' "$builder"
+    printf ' %s' "$@"
+    printf '\n'
+    log_reclaimed 0 dry-run docker buildx prune --builder "$builder" -f "$@"
+    return 0
+  fi
+  output="$(docker buildx prune --builder "$builder" -f "$@" 2>&1 || true)"
+  if [ -n "$output" ]; then
+    printf '%s\n' "$output"
+  fi
+  bytes="$(reclaimed_bytes_from_output "$output")"
+  log_reclaimed "$bytes" docker buildx prune --builder "$builder" -f "$@"
+}
+
+run_legacy_prune() {
+  local output bytes
+  if is_dry; then
+    printf 'would run: docker builder prune -f'
+    printf ' %s' "$@"
+    printf '\n'
+    log_reclaimed 0 dry-run docker builder prune -f "$@"
+    return 0
+  fi
+  output="$(docker builder prune -f "$@" 2>&1 || true)"
+  if [ -n "$output" ]; then
+    printf '%s\n' "$output"
+  fi
+  bytes="$(reclaimed_bytes_from_output "$output")"
+  log_reclaimed "$bytes" docker builder prune -f "$@"
+}
+
+cap_buildx_cache() {
+  local builder="$1"
+  local cap current age
+  local -a ages=(336h 168h 72h 48h 24h 12h 6h 3h 1h 10m 1m 0s)
+  cap="$(parse_human_bytes "$CACHE_CAP")"
+  if is_dry; then
+    current="$(build_cache_reclaimable_bytes)"
+    if [ "$current" -le "$cap" ]; then
+      printf 'build cache reclaimable %s bytes is within %s\n' "$current" "$CACHE_CAP"
+      return 0
+    fi
+    printf 'would run: docker buildx prune --builder %s -f --all --filter until=<age> while reclaimable > %s\n' "$builder" "$CACHE_CAP"
+    return 0
+  fi
+  for age in "${ages[@]}"; do
+    current="$(build_cache_reclaimable_bytes)"
+    if [ "$current" -le "$cap" ]; then
+      printf 'build cache reclaimable %s bytes is within %s\n' "$current" "$CACHE_CAP"
+      return 0
+    fi
+    # --all includes shared cache. --max-used-space never counts those records,
+    # so the age filter is what actually brings reclaimable usage under the cap.
+    run_buildx_prune "$builder" --all --filter "until=${age}"
+  done
+  current="$(build_cache_reclaimable_bytes)"
+  printf 'build cache reclaimable %s bytes after cap\n' "$current"
+}
+
 prune_builder_cache() {
-  local help flag
+  local help builder
   help="$(docker builder prune --help 2>&1 || true)"
+  # The age filter always runs, without --all, so young unshared cache stays.
   if [[ "$help" == *"--max-used-space"* ]]; then
-    flag="--max-used-space"
-  elif [[ "$help" == *"--keep-storage"* ]]; then
-    flag="--keep-storage"
-  else
-    flag=""
-  fi
-
-  if is_dry; then
-    printf 'would run: docker builder prune -f --filter until=%s\n' "$CACHE_UNTIL"
-  else
-    printf 'prune builder --filter until=%s\n' "$CACHE_UNTIL"
-    docker builder prune -f --filter "until=${CACHE_UNTIL}" || true
-  fi
-
-  if [ -z "$flag" ]; then
-    printf 'builder prune size cap unavailable; skipped\n' >&2
+    builder="$(current_buildx_builder)"
+    run_buildx_prune "$builder" --filter "until=${CACHE_UNTIL}"
+    cap_buildx_cache "$builder"
     return 0
   fi
-  if is_dry; then
-    printf 'would run: docker builder prune -f %s %s\n' "$flag" "$CACHE_CAP"
+  run_legacy_prune --filter "until=${CACHE_UNTIL}"
+  if [[ "$help" == *"--keep-storage"* ]]; then
+    run_legacy_prune --keep-storage "$CACHE_CAP"
     return 0
   fi
-  printf 'prune builder %s %s\n' "$flag" "$CACHE_CAP"
-  docker builder prune -f "$flag" "$CACHE_CAP" || true
+  printf 'builder prune size cap unavailable; skipped\n' >&2
 }
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
