@@ -1004,6 +1004,7 @@ export async function runPortableCodexSecurity(
         : spentBefore === null ? 0 : Math.max(0, Math.min(budget.maxCostUsd * BUSINESS_LOGIC_BUDGET_SHARE, budget.maxCostUsd - spentBefore));
       const pricing = budget?.pricing ?? readScannerPricingQuote(outputDir);
       let passUsage = emptyUsage();
+      let budgetRefused = false;
       const passCost = () => {
         if (!passUsage.reported) return 0;
         const cost = pricing ? estimateFrozenScannerUsageCost(passUsage, pricing)
@@ -1020,6 +1021,7 @@ export async function runPortableCodexSecurity(
           reuseSources: (dependencies.reviewReuseSources ?? reviewReuseSources)(plan.scanId, safeConfiguration.repositoryPath,
             outputDir, safeConfiguration.mode, startedAt),
           budgetUsd: passBudget,
+          budgetRefused: () => budgetRefused,
           signal: deadline.signal,
           log,
           startSession: (instructions, artifactRoot) => raceWithDeadline(createSession({
@@ -1031,9 +1033,9 @@ export async function runPortableCodexSecurity(
             spec: {
               ...(budget === undefined || passBudget === null ? {} : { beforeModelRequest: (request) => {
                 const spent = passCost();
-                if (spent === null) throw new PortableCodexSecurityRunnerError("cost_budget_unavailable");
+                if (spent === null) { budgetRefused = true; throw new PortableCodexSecurityRunnerError("cost_budget_unavailable"); }
                 const reserved = reservePortableTurn(request, budget.pricing, passBudget - spent);
-                if (reserved === null) throw new PortableCodexSecurityRunnerError("cost_limit_reached");
+                if (reserved === null) { budgetRefused = true; throw new PortableCodexSecurityRunnerError("cost_limit_reached"); }
                 return reserved;
               } }),
               connectionId: resolved.connection.id,

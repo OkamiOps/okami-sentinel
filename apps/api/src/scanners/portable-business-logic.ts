@@ -68,7 +68,8 @@ function lineCount(read: SnapshotReader, file: string): number {
 /** Deterministic flow selection: Graphify call chains from entry points, or route/domain files without a graph. */
 export function extractBusinessFlows(graph: GraphIndex | undefined, snapshotRoot: string, scopePaths: readonly string[] = []): BusinessFlowPlan[] {
   const read = snapshotReader(snapshotRoot).read;
-  const inScope = (file: string) => scopePaths.length === 0 || scopePaths.some(scope => scope === "." || file === scope || file.startsWith(`${scope.replace(/\/$/, "")}/`));
+  const scopes = scopePaths.map(scope => scope.replace(/^(\.\/)+/, "").replace(/\/+$/, "") || ".");
+  const inScope = (file: string) => scopes.length === 0 || scopes.some(scope => scope === "." || file === scope || file.startsWith(`${scope}/`));
   const flows: BusinessFlowPlan[] = [];
   if (graph && graph.nodes.length > 0) {
     const byId = new Map(graph.nodes.map(node => [node.id, node]));
@@ -149,8 +150,12 @@ export function extractBusinessFlows(graph: GraphIndex | undefined, snapshotRoot
   return flows;
 }
 
+/** Whole-file hashes of every step file, so a control edited elsewhere in those files invalidates reuse. */
 export function flowStepHashes(read: SnapshotReader, flow: BusinessFlowPlan): string[] | null {
-  const hashes = flow.steps.map(step => evidenceRangeHash(read, { ...step, role: "evidence" }));
+  const hashes = [...new Set(flow.steps.map(step => step.path))].sort().map(file => {
+    const source = read(file);
+    return "problem" in source ? null : sha(source.bytes.toString("binary"));
+  });
   return hashes.every((hash): hash is string => hash !== null) ? hashes : null;
 }
 
@@ -184,7 +189,7 @@ export function planBusinessLogicReuse(flows: BusinessFlowPlan[], snapshotRoot: 
     for (const flow of flows) {
       if (reused.has(flow.id)) continue;
       const match = prior.flows.find(f => f.key === flow.key && (f.status === "issues" || f.status === "no-issues"));
-      if (!match || match.steps.length !== flow.steps.length) continue;
+      if (!match) continue;
       const current = flowStepHashes(read, flow);
       if (!current || JSON.stringify(current) !== JSON.stringify(match.stepHashes)) continue;
       if (match.findings.some(f => !Array.isArray(f.evidenceHashes) || f.evidenceHashes.length !== f.evidence.length ||
@@ -234,11 +239,12 @@ export function parseBusinessLogicArtifact(raw: unknown, flowIds: readonly strin
     for (const finding of (Array.isArray(item.findings) ? item.findings : []).slice(0, MAX_FINDINGS_PER_FLOW) as Array<Record<string, unknown>>) {
       const title = text(finding?.title, 200), claim = text(finding?.claim, 2_000);
       if (!title || !claim) continue;
-      const evidence = (Array.isArray(finding.evidence) ? finding.evidence : []).slice(0, 8).flatMap((anchor: Record<string, unknown>) =>
+      const evidence = (Array.isArray(finding.evidence) ? finding.evidence : []).slice(0, 8).map((anchor: Record<string, unknown>) =>
         anchor && typeof anchor.path === "string" && Number.isSafeInteger(anchor.startLine) && Number.isSafeInteger(anchor.endLine)
           ? [{ path: anchor.path.slice(0, 1_024), startLine: anchor.startLine as number, endLine: anchor.endLine as number,
             role: (["entrypoint", "control", "sink", "evidence", "source"].includes(anchor.role as string) ? anchor.role : "evidence") as PortableCoverageAnchor["role"],
-            ...(text(anchor.explanation, 500) ? { explanation: text(anchor.explanation, 500)! } : {}) }] : []);
+            ...(text(anchor.explanation, 500) ? { explanation: text(anchor.explanation, 500)! } : {}) }]
+          : [{ path: "(malformed citation)", startLine: 0, endLine: 0, role: "evidence" as const }]).flat();
       findings.push({ title, claim, impact: text(finding.impact, 1_000),
         ruleKind: RULE_KINDS.includes(finding.ruleKind as BusinessLogicRuleKind) ? finding.ruleKind as BusinessLogicRuleKind : "other",
         severity: SEVERITIES.has(finding.severity as string) ? finding.severity as BusinessLogicFinding["severity"] : "medium", evidence });
@@ -262,6 +268,8 @@ export interface BusinessLogicPassInput {
   startSession(instructions: string, artifactRoot: string): Promise<AgentSession>;
   /** Cost (USD) of the usage reported so far in this pass, or null when unpriced. */
   observeUsage(event: Extract<AgentEvent, { type: "usage" }>): number | null;
+  /** True once the per-turn budget reservation refused a model request. */
+  budgetRefused?: () => boolean;
   signal?: AbortSignal;
   log?: (line: string) => void;
 }
@@ -286,6 +294,7 @@ export async function runBusinessLogicPass(input: BusinessLogicPassInput): Promi
     } else pending.push(flow);
   }
   let spent = 0;
+  let priced = input.budgetUsd !== null;
   let stopped = false;
   for (let offset = 0; offset < pending.length; offset += FLOWS_PER_SESSION) {
     const page = pending.slice(offset, offset + FLOWS_PER_SESSION);
@@ -307,16 +316,17 @@ export async function runBusinessLogicPass(input: BusinessLogicPassInput): Promi
         for await (const event of session.run()) {
           if (event.type === "usage") {
             const cost = input.observeUsage(event);
-            if (cost !== null) spent = cost;
+            if (cost !== null) { spent = cost; priced = true; }
             if (input.budgetUsd !== null && (cost === null || spent >= input.budgetUsd)) { budgetHit = true; break; }
           } else if (event.type === "failure" || event.type === "cancellation") break;
         }
       } finally { await session.cancel().catch(() => undefined); }
+      if (input.budgetRefused?.()) budgetHit = true;
       const artifact = path.join(root, BUSINESS_LOGIC_ARTIFACT);
       if (fs.existsSync(artifact) && fs.lstatSync(artifact).isFile() && fs.statSync(artifact).size <= MAX_FILE_BYTES) {
         parsed = parseBusinessLogicArtifact(JSON.parse(fs.readFileSync(artifact, "utf8")), page.map(f => f.id));
       }
-    } catch { parsed = parsed ?? null; }
+    } catch { if (input.budgetRefused?.()) budgetHit = true; }
     input.log?.(JSON.stringify({ type: "business_logic_page", page: offset / FLOWS_PER_SESSION + 1, flows: page.length,
       parsed: parsed?.length ?? 0, spentUsd: input.budgetUsd === null ? null : spent - before, budgetHit }));
     for (const flow of page) {
@@ -331,13 +341,13 @@ export async function runBusinessLogicPass(input: BusinessLogicPassInput): Promi
     }
     if (budgetHit) stopped = true;
   }
-  if (record.totals.spentUsd !== null) record.totals.spentUsd = spent;
+  record.totals.spentUsd = priced ? spent : null;
   return record;
 }
 
 function citation(anchor: PortableCoverageAnchor, read: SnapshotReader, redactor: SecretRedactor): AiVerdictCitation {
   const base: AiVerdictCitation = { path: anchor.path, startLine: anchor.startLine, endLine: anchor.endLine, role: anchor.role,
-    ...(anchor.explanation === undefined ? {} : { explanation: anchor.explanation }), valid: false };
+    ...(anchor.explanation === undefined ? {} : { explanation: redactor.redactText(anchor.explanation) }), valid: false };
   const source = read(anchor.path);
   if ("problem" in source) return { ...base, problem: source.problem };
   if (anchor.startLine < 1 || anchor.endLine < anchor.startLine || anchor.endLine > source.lines.length) return { ...base, problem: "lines-out-of-range" };
@@ -364,13 +374,15 @@ export function scanBusinessLogic(scan: ScanRun, redactor: SecretRedactor = glob
     const findings: BusinessLogicFinding[] = flow.findings.map(finding => {
       const citations = finding.evidence.map(anchor => citation(anchor, reader.read, redactor));
       const supported = citations.length > 0 && citations.every(c => c.valid);
-      return { title: finding.title, ruleKind: finding.ruleKind, severity: finding.severity, claim: finding.claim, impact: finding.impact ?? null,
+      const r = (value: string) => redactor.redactText(value);
+      return { title: r(finding.title), ruleKind: finding.ruleKind, severity: finding.severity, claim: r(finding.claim), impact: finding.impact ? r(finding.impact) : null,
         status: supported ? "confirmed" : "inconclusive", downgraded: !supported, citations };
     });
     let status = flow.status;
     if (status === "issues" && !findings.some(f => f.status === "confirmed")) status = "inconclusive";
-    const out: BusinessLogicFlow = { id: flow.id, entry: flow.entry, source: flow.source, status, summary: flow.summary,
-      steps: flow.steps, missingEvidence: flow.missingEvidence, findings, ...(flow.reusedFrom ? { reusedFrom: flow.reusedFrom } : {}) };
+    const out: BusinessLogicFlow = { id: flow.id, entry: flow.entry, source: flow.source, status,
+      summary: flow.summary === null ? null : redactor.redactText(flow.summary),
+      steps: flow.steps, missingEvidence: flow.missingEvidence.map(item => redactor.redactText(item)), findings, ...(flow.reusedFrom ? { reusedFrom: flow.reusedFrom } : {}) };
     result.flows.push(out);
     result.counts.flows++;
     if (status === "issues") result.counts.issues++;
