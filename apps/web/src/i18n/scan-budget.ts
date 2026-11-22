@@ -1,5 +1,12 @@
 export const scanBudgetMessages = {
   "pt-BR": {
+    resumeScan: "Retomar scan",
+    resuming: "Retomando…",
+    resumeCap: "Novo teto total (USD)",
+    resumeReuse: "As etapas salvas serão reutilizadas em um novo scan. O gasto anterior conta no teto total; você pode aumentar o orçamento antes de retomar.",
+    resumeStageFailed: "Scan parcial · etapa interrompida",
+    resumeAdvanced: "Avançado: retomar pela CLI",
+    resumeError: "Não foi possível retomar o scan.",
     capWarning: '{engine} não consegue aplicar um teto em USD por scan: a execução usa o consumo do plano. Para continuar, escolha Codex Security ou marque explicitamente “Sem teto em USD” para este scan.',
     unlimitedUsd: "Sem teto em USD para este scan",
     budgetPartial: "Parcial por orçamento",
@@ -13,6 +20,13 @@ export const scanBudgetMessages = {
     budgetResume: "Para retomar com um teto maior (o gasto anterior conta no novo teto), execute na pasta apps/api do servidor:",
   },
   en: {
+    resumeScan: "Resume scan",
+    resuming: "Resuming…",
+    resumeCap: "New total cap (USD)",
+    resumeReuse: "Saved stages will be reused in a new scan. Prior spend counts toward the total cap; you can raise the budget before resuming.",
+    resumeStageFailed: "Partial scan · stage interrupted",
+    resumeAdvanced: "Advanced: resume via CLI",
+    resumeError: "Unable to resume scan.",
     capWarning: '{engine} cannot enforce a per-scan USD cap: execution uses your plan allowance. Choose Codex Security or explicitly select “No USD cap” for this scan to continue.',
     unlimitedUsd: "No USD cap for this scan",
     budgetPartial: "Partial · budget exhausted",
@@ -26,6 +40,7 @@ export const scanBudgetMessages = {
     budgetResume: "To resume with a higher cap (prior spend counts against it), run from apps/api on the server:",
   },
   es: {
+    resumeScan: "Reanudar scan", resuming: "Reanudando…", resumeCap: "Nuevo límite total (USD)", resumeReuse: "Se reutilizan las etapas guardadas en un nuevo scan. El gasto previo cuenta para el límite total.", resumeStageFailed: "Scan parcial · etapa interrumpida", resumeAdvanced: "Avanzado: reanudar por CLI", resumeError: "No se pudo reanudar el scan.",
     capWarning: '{engine} no puede aplicar un techo en USD por scan: utiliza el consumo del plan. Elige Codex Security o marca explícitamente “Sin techo en USD” para este scan.',
     unlimitedUsd: "Sin techo en USD para este scan",
     budgetPartial: "Parcial por presupuesto",
@@ -39,6 +54,7 @@ export const scanBudgetMessages = {
     budgetResume: "Para reanudar con un techo mayor (incluye el gasto anterior), ejecuta desde apps/api en el servidor:",
   },
   de: {
+    resumeScan: "Scan fortsetzen", resuming: "Wird fortgesetzt…", resumeCap: "Neues Gesamtlimit (USD)", resumeReuse: "Gespeicherte Stufen werden in einem neuen Scan wiederverwendet. Bisherige Kosten zählen zum Gesamtlimit.", resumeStageFailed: "Teilscan · Stufe unterbrochen", resumeAdvanced: "Erweitert: über CLI fortsetzen", resumeError: "Scan konnte nicht fortgesetzt werden.",
     capWarning: '{engine} kann kein USD-Limit pro Scan erzwingen: die Ausführung nutzt das Plankontingent. Wähle Codex Security oder bestätige ausdrücklich „Kein USD-Limit“ für diesen Scan.',
     unlimitedUsd: "Kein USD-Limit für diesen Scan",
     budgetPartial: "Teilergebnis · Budget erschöpft",
@@ -52,6 +68,7 @@ export const scanBudgetMessages = {
     budgetResume: "Zum Fortsetzen mit höherem Limit (bisherige Kosten zählen mit) unter apps/api auf dem Server ausführen:",
   },
   fr: {
+    resumeScan: "Reprendre le scan", resuming: "Reprise…", resumeCap: "Nouveau plafond total (USD)", resumeReuse: "Les étapes sauvegardées seront réutilisées dans un nouveau scan. Les dépenses précédentes comptent dans le plafond total.", resumeStageFailed: "Scan partiel · étape interrompue", resumeAdvanced: "Avancé : reprendre via CLI", resumeError: "Impossible de reprendre le scan.",
     capWarning: '{engine} ne peut pas appliquer de plafond USD par scan : l’exécution utilise le quota du forfait. Choisissez Codex Security ou cochez explicitement « Sans plafond USD » pour ce scan.',
     unlimitedUsd: "Sans plafond USD pour ce scan",
     budgetPartial: "Partiel · budget épuisé",

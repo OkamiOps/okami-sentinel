@@ -1,4 +1,6 @@
 import { scanFilesGraph } from "./scan-files-graph.js";
+import { createScanResumeApp } from "./scan-resume-api.js";
+import { portableResumeAvailability, resumeBudgetPortableScan } from "./scanners/resume-portable-scan.js";
 import { readSastSummary } from "./sast/opengrep.js";
 import { scanCandidatePreview } from "./scan-candidate-preview.js";
 import { scanAiVerdicts } from "./scanners/portable-codex-security-verdicts.js";
@@ -1807,7 +1809,7 @@ app.get("/scans/:id", async (c) => {
   const run = readRunWithEngineRefresh(id);
   if (!run) return c.json({ error: "Scan não encontrado" }, 404);
   const findings = toFindingSummaries(readFindingsFile(run.scanDir));
-  return c.json({ scan: { ...withProgress(run), sast: readSastSummary(run.scanDir) }, findings });
+  return c.json({ scan: { ...withProgress(run), resume: principalOf(c).isAdmin ? portableResumeAvailability(run) : undefined, sast: readSastSummary(run.scanDir) }, findings });
 });
 
 app.get("/scans/:id/analysis-metrics", (c) => {
@@ -1946,6 +1948,7 @@ app.post("/scans/:id/findings/:findingId/triage", async (c) => {
 });
 
 app.route("/", createScanStartApp({ startScan }));
+app.route("/", createScanResumeApp({ resume: resumeBudgetPortableScan }));
 
 app.post("/scans/:id/cancel", (c) => {
   const ok = cancelScan(c.req.param("id"));

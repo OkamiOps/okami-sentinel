@@ -662,6 +662,7 @@ export interface ScanBudgetPartial {
 }
 
 export interface ScanRun {
+  resume?: { suggestedMaxCostUsd: number };
   sast?: ScanSastSummary | null;
   graphify?: boolean;
   id: string;
