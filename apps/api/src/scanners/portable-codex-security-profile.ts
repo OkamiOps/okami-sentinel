@@ -346,6 +346,10 @@ export function buildPortableCodexSecurityStagePrompt(
       "For partial projected source, scope.inspected may be empty. Put every projected path not fully read in scope.unexamined with reason 'insufficient-evidence' (the remaining code was not reviewed). Only complete source reads justify scope.inspected. Do not read whole files merely to populate inspected or satisfy a coverage counter. Expand source only to resolve an actual security question. Carry existing candidate ids unchanged; emit only NEW candidates, never copies of carried candidates.",
     ] : []),
     "Choose one enum value, never a pipe-separated list. Severity: critical, high, medium, low. Confidence: high, medium, low. Attacker: unauthenticated, authenticated, privileged, local, unknown. Anchor role: source, entrypoint, control, sink, evidence. Assessment status: confirmed, rejected, or (dataflow only) inconclusive. Examples illustrate structure; calibrate claims and classifications from the actual evidence.",
+    stage.id === "discovery" ? "The opengrep: candidate ID namespace is reserved for server-supplied scanner alerts." : "",
+    (stage.id === "dataflow" || stage.id === "validation") && candidateIds.some(id => id.startsWith("opengrep:"))
+      ? "OpenGrep candidates are ranked static matches, not proof. Assess them in the listed order. Establish the actual caller, attacker, prerequisites and impact from source; the scanner does not know them. A conclusive assessment must cite the matched lines and the source that supports or refutes their security impact. If evidence is missing, use reason insufficient-evidence; do not assert a false positive."
+      : "",
     "Write strict JSON matching this artifact contract:",
     stageArtifactContract(stage),
     `Pass the artifact as the structured object in ${writeTool}.content. Do not JSON-stringify it, wrap it in a string, or surround it with Markdown fences.`,
