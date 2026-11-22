@@ -1800,6 +1800,40 @@ for (const countedInputTokens of [1_000, null]) {
   });
 }
 
+for (const [cap, expected] of [[undefined, 32], [0.5, 8], [7, 16]] as const) {
+  test(`Portable plans SAST pages from frozen budget before the first model turn: ${cap}`, async t => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-sast-page-budget-"));
+    t.after(() => remove(root));
+    const config = configuration(root);
+    config.graphify = false;
+    config.limits.totalTimeoutMs = 60_000;
+    if (cap !== undefined) config.costBudget = costBudget({ maxCostUsd: cap });
+    fs.writeFileSync(path.join(config.repositoryPath, "src/auth.ts"), "export const value = 1;\n".repeat(40));
+    const rules = path.join(root, "rules.json");
+    fs.writeFileSync(rules, JSON.stringify({ payload: { errors: [], results: Array.from({ length: 40 }, (_, i) => ({
+      check_id: "unit-marker", path: "src/auth.ts", start: { line: i + 1 }, end: { line: i + 1 },
+      extra: { severity: "ERROR", message: "Test marker" },
+    })) } }));
+    for (const [key, value] of Object.entries({
+      SENTINEL_OPENGREP_ENABLED: "true", SENTINEL_OPENGREP_RULES: rules,
+      SENTINEL_OPENGREP_BIN: fileURLToPath(new URL("../sast/fixtures/fake-opengrep.mjs", import.meta.url)),
+    })) {
+      const previous = process.env[key];
+      process.env[key] = value;
+      t.after(() => { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; });
+    }
+    let starts = 0;
+    await assert.rejects(() => runPortableCodexSecurity(config, dependencies({ createSession: async () => {
+      starts++;
+      throw new Error("fixture stops before inference");
+    } })));
+    assert.equal(starts, 1);
+    const triage = readPortableSastTriage(config.outputDir)!;
+    assert.equal(triage.total, 40);
+    assert.equal(triage.queued.length, expected);
+  });
+}
+
 test("Portable routes OpenGrep through ranked review to cited verdicts over HTTP and replays the same checkpoint", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-sast-http-"));
   t.after(() => remove(root));

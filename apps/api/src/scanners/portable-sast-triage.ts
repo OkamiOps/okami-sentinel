@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { FindingDetail, Severity } from "@csb/shared";
+import { MAX_AGENT_SESSION_COMPLETION_TOKENS } from "../agent/session-types.js";
+import type { FrozenScannerPricing } from "../model-pricing.js";
 import {
   createPortableCodexSecurityDossier,
   isPortableSastCandidateId,
@@ -15,10 +17,12 @@ import {
 } from "./portable-codex-security-worker-support.js";
 
 export const PORTABLE_SAST_TRIAGE_FILE = "portable-sast-triage.json";
-// One validation page's worth of additional work, independent of alert volume.
-export const PORTABLE_SAST_REVIEW_LIMIT = 8;
+export const PORTABLE_SAST_REVIEW_LIMIT = 32;
+const REVIEW_PAGE_SIZE = 8;
+const REVIEW_BUDGET_SHARE = 0.25;
+const MAX_TRIAGE_BYTES = 128 * 1024;
 const PRIORITY = { critical: 0, high: 1, medium: 2, low: 3, info: 4, unknown: 5 } satisfies Record<Severity, number>;
-const SUPPORTING_PATH = /(?:^|\/)(?:__tests__|tests?|fixtures?|examples?|docs?|mocks?)(?:\/|$)|\.(?:spec|test)\.[^/]+$/i;
+const SUPPORTING_PATH = /(?:^|\/)(?:__(?:tests|fixtures|mocks)__|tests?|fixtures?|examples?|docs?|mocks?|vendors?|third[_-]?party|node_modules|bower_components|assets|static|public|dist|build|generated|samples?|demos?)(?:\/|$)|\.(?:spec|test)\.[^/]+$|\.(?:min|bundle)\.[cm]?js$/i;
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 
 interface ReviewEntry {
@@ -37,11 +41,37 @@ interface PortableSastTriage {
   queued: ReviewEntry[];
 }
 
+export interface PortableSastTriageBudget {
+  remainingUsd: number | null;
+  maximumInputTokens: number | null;
+  pricing: FrozenScannerPricing;
+}
+
+function reviewLimit(budget?: PortableSastTriageBudget): number {
+  if (budget === undefined) return PORTABLE_SAST_REVIEW_LIMIT;
+  const { remainingUsd, maximumInputTokens, pricing } = budget;
+  const inputRate = pricing.inputUsdPerMillionTokens;
+  const outputRate = pricing.outputUsdPerMillionTokens;
+  if (remainingUsd === null || !Number.isFinite(remainingUsd) || maximumInputTokens === null ||
+      !Number.isSafeInteger(maximumInputTokens) || maximumInputTokens <= 0 ||
+      (pricing.maximumInputTokensInclusive !== null && maximumInputTokens > pricing.maximumInputTokensInclusive) ||
+      inputRate === null || outputRate === null || !Number.isFinite(inputRate) || !Number.isFinite(outputRate) ||
+      inputRate < 0 || outputRate < 0) return REVIEW_PAGE_SIZE;
+  // Plan one dataflow, one validation and two four-finding report requests per page.
+  // Sessions can take more turns; only the shared pre-dispatch gate enforces spend.
+  const pageCost = 4 * (maximumInputTokens * inputRate + MAX_AGENT_SESSION_COMPLETION_TOKENS * outputRate) / 1_000_000;
+  const pages = pageCost === 0 ? PORTABLE_SAST_REVIEW_LIMIT / REVIEW_PAGE_SIZE
+    : Math.floor(Math.max(0, remainingUsd) * REVIEW_BUDGET_SHARE / pageCost);
+  return Math.min(PORTABLE_SAST_REVIEW_LIMIT, Math.max(1, pages) * REVIEW_PAGE_SIZE);
+}
+
 export function planPortableSastTriage(
   findings: readonly FindingDetail[],
   snapshotRoot: string,
   remainingMs?: () => number,
+  budget?: PortableSastTriageBudget,
 ): PortableSastTriage {
+  const limit = reviewLimit(budget);
   const ranked = findings.flatMap((finding): ReviewEntry[] => {
     const location = Array.isArray(finding.locations) ? finding.locations[0] : undefined;
     const entry = location && {
@@ -49,9 +79,8 @@ export function planPortableSastTriage(
       severity: finding.severity, scope: SUPPORTING_PATH.test(location.path) ? "supporting" : "runtime",
       path: location.path, startLine: location.startLine, endLine: location.endLine,
     };
-    return isReviewEntry(entry) ? [entry] : [];
+    return isReviewEntry(entry) && entry.scope === "runtime" ? [entry] : [];
   }).sort((a, b) => PRIORITY[a.severity] - PRIORITY[b.severity] ||
-    (a.scope === b.scope ? 0 : a.scope === "runtime" ? -1 : 1) ||
     compare(a.path, b.path) || a.startLine - b.startLine || compare(a.findingId, b.findingId));
   const queued: ReviewEntry[] = [];
   const seen = new Set<string>();
@@ -67,7 +96,7 @@ export function planPortableSastTriage(
       throw error;
     }
     queued.push(entry);
-    if (queued.length === PORTABLE_SAST_REVIEW_LIMIT) break;
+    if (queued.length === limit) break;
   }
   return { version: 1, total: findings.length, queued };
 }
@@ -102,7 +131,7 @@ export function readPortableSastTriage(scanDir: string): PortableSastTriage | nu
   const file = path.join(scanDir, PORTABLE_SAST_TRIAGE_FILE);
   if (!fs.existsSync(file)) return null;
   const info = fs.lstatSync(file);
-  if (!info.isFile() || info.size > 16_384) throw new Error("invalid_sast_triage");
+  if (!info.isFile() || info.size > MAX_TRIAGE_BYTES) throw new Error("invalid_sast_triage");
   const plan: PortableSastTriage = JSON.parse(fs.readFileSync(file, "utf8"));
   if (plan?.version !== 1 || !Array.isArray(plan.queued) || plan.queued.length > PORTABLE_SAST_REVIEW_LIMIT ||
       !Number.isSafeInteger(plan.total) || plan.total < plan.queued.length || !plan.queued.every(isReviewEntry) ||

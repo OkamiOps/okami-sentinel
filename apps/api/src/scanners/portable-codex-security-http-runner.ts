@@ -374,8 +374,18 @@ export async function runPortableCodexSecurity(
     runtimeWritable = true;
     writePortableCodexSecurityRuntime(outputDir, runtime);
 
+    const triageBudget = safeConfiguration.costBudget;
+    const triageSpent = triageBudget && runtime.usage.reported
+      ? estimateFrozenScannerUsageCost(runtime.usage, triageBudget.pricing)?.estimatedUsd
+      : 0;
     const sastTriage = previous ? readPortableSastTriage(outputDir)
-      : planPortableSastTriage(readOpengrepFindings(outputDir), snapshot.snapshotRoot, deadline.remainingMs);
+      : planPortableSastTriage(readOpengrepFindings(outputDir), snapshot.snapshotRoot, deadline.remainingMs,
+        triageBudget === undefined ? undefined : {
+          remainingUsd: triageSpent === undefined ? null
+            : Math.max(0, triageBudget.maxCostUsd - triageSpent - (runtime.budgetReservedUsd ?? 0)),
+          maximumInputTokens: resolved.model.contextWindow,
+          pricing: triageBudget.pricing,
+        });
     if (sastTriage && !previous) writePortableSastTriage(outputDir, sastTriage);
     if (sastTriage?.total) log(JSON.stringify({ type: "sast_triage", total: sastTriage.total, queued: sastTriage.queued.length }));
 
