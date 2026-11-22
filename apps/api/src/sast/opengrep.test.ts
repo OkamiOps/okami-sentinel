@@ -5,12 +5,27 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { readAiFindingsFile, readScanFindings, toFindingSummaries } from "../ingest.js";
-import { normalizeOpengrep, readOpengrepFindings, readOpengrepStatus, runOpengrep } from "./opengrep.js";
+import { filterOpengrepFindingsByScope, normalizeOpengrep, readOpengrepFindings, readOpengrepStatus, runOpengrep } from "./opengrep.js";
 import { opengrepConfiguration } from "../config.js";
 import { localMantisWorkerEnvironment, portableCodexSecurityWorkerEnvironment } from "../scanners/launch.js";
 import { planPortableSastTriage } from "../scanners/portable-sast-triage.js";
 
 const binary = fileURLToPath(new URL("./fixtures/fake-opengrep.mjs", import.meta.url));
+
+test("unrestricted OpenGrep scope preserves every finding, including unknown primary paths", () => {
+  const [inside, outside] = normalizeOpengrep({ results: ["routes/login.ts", "lib/context.ts"].map(file => ({
+    check_id: "unit-marker", path: file, start: { line: 1 }, end: { line: 1 }, extra: { severity: "ERROR" },
+  })) }, "/snapshot");
+  const unknown = { ...inside, primaryPath: null };
+  const findings = [inside, outside, unknown];
+  assert.equal(filterOpengrepFindingsByScope(findings), findings);
+  for (const scope of [[], ["."], ["./"], ["routes", "."]]) {
+    assert.equal(filterOpengrepFindingsByScope(findings, scope), findings);
+  }
+  assert.deepEqual(filterOpengrepFindingsByScope(findings, ["routes"]), [inside]);
+  assert.deepEqual(filterOpengrepFindingsByScope(findings, ["missing"]), []);
+  assert.deepEqual(filterOpengrepFindingsByScope([], ["routes"]), []);
+});
 
 test("scoped OpenGrep results exclude outside alerts from persistence, triage, totals and scan findings", async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "opengrep-scope-"));

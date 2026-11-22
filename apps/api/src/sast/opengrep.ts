@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { FindingDetail, ScanSastSummary } from "@csb/shared";
 import { opengrepConfiguration } from "../config.js";
-import { createScanScopeMatcher } from "../scan-scope-paths.js";
+import { createScanScopeMatcher, normalizeScanScopePaths } from "../scan-scope-paths.js";
 
 export interface OpengrepStatus extends ScanSastSummary {
   rules: string[];
@@ -55,6 +55,13 @@ export function readSastSummary(scanDir: string): ScanSastSummary | null {
 
 export function normalizeOpengrep(payload: unknown, snapshotRoot: string): FindingDetail[] {
   return normalizeResults(payload, snapshotRoot).findings;
+}
+
+export function filterOpengrepFindingsByScope(findings: FindingDetail[], scopePaths: readonly string[] = []): FindingDetail[] {
+  const scopes = normalizeScanScopePaths(scopePaths);
+  if (scopes.length === 0) return findings;
+  const inScope = createScanScopeMatcher(scopes);
+  return findings.filter(finding => finding.primaryPath !== null && inScope(finding.primaryPath));
 }
 
 function normalizeResults(payload: unknown, snapshotRoot: string) {
@@ -144,8 +151,7 @@ export async function runOpengrep(snapshotRoot: string, scanDir: string, config:
       let payload: unknown;
       try { payload = JSON.parse(output); } catch { throw new Error(code !== 0 ? "nonzero_exit" : "invalid_json"); }
       const normalized = normalizeResults(payload, snapshotRoot);
-      const inScope = createScanScopeMatcher(scopePaths);
-      const findings = normalized.findings.filter(finding => finding.primaryPath !== null && inScope(finding.primaryPath));
+      const findings = filterOpengrepFindingsByScope(normalized.findings, scopePaths);
       const errors = normalized.errors;
       const data = record(payload);
       const knownErrorTypes = new Set(["ParseError", "PartialParsing", "SyntaxError", "LexicalError", "Timeout", "TimeoutError", "RuleTimeout", "UnsupportedLanguage", "UnsupportedFile", "RuleParseError", "PatternParseError", "InvalidRuleSchemaError", "MatchingError", "FatalError", "SemgrepError", "InternalError", "TooManyMatches", "OutOfMemory"]);
