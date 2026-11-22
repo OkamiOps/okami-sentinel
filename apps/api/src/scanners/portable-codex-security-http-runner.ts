@@ -59,6 +59,7 @@ import {
 } from "../credentials/credential-vault.js";
 import { globalSecretRedactor } from "../redaction.js";
 import { normalizePortableCodexSecurityWorkspace } from "./portable-codex-security-normalize.js";
+import { BUSINESS_LOGIC_BUDGET_SHARE, extractBusinessFlows, runBusinessLogicPass, writeBusinessLogicRecord } from "./portable-business-logic.js";
 import {
   PORTABLE_CODEX_SECURITY_METHODOLOGY_REF,
   PORTABLE_CODEX_SECURITY_PROFILE_VERSION,
@@ -136,6 +137,8 @@ export interface PortableCodexSecurityCostBudget {
 /** The only child-process configuration: route identifiers and explicit local budgets. */
 export interface PortableCodexSecurityWorkerConfiguration {
   graphify?: boolean;
+  /** Runs the flow-level business-rule AI review after the SAST/candidate pipeline. */
+  businessLogic?: boolean;
   outputDir: string;
   repositoryPath: string;
   paths: string[];
@@ -991,6 +994,76 @@ export async function runPortableCodexSecurity(
     writePortableCodexSecurityDossier(resultsDir, dossier);
     const recordedGrouping = readPortableCandidateGrouping(artifactsRoot);
     if (recordedGrouping !== null) writePortableCandidateGrouping(resultsDir, recordedGrouping);
+    if (safeConfiguration.businessLogic === true) {
+      update({ stage: "normalize", stageLabel: "Business-logic review", percent: 99,
+        detail: "AI review of business rules and workflows over code flows" });
+      const budget = safeConfiguration.costBudget;
+      const spentBefore = budget === undefined ? null
+        : runtime.usage.reported ? estimateFrozenScannerUsageCost(runtime.usage, budget.pricing)?.estimatedUsd ?? null : 0;
+      const passBudget = budget === undefined ? null
+        : spentBefore === null ? 0 : Math.max(0, Math.min(budget.maxCostUsd * BUSINESS_LOGIC_BUDGET_SHARE, budget.maxCostUsd - spentBefore));
+      const pricing = budget?.pricing ?? readScannerPricingQuote(outputDir);
+      let passUsage = emptyUsage();
+      const passCost = () => {
+        if (!passUsage.reported) return 0;
+        const cost = pricing ? estimateFrozenScannerUsageCost(passUsage, pricing)
+          : estimateFrozenCatalogUsageCost(passUsage, readPortableCodexSecurityPricing(outputDir));
+        return cost?.estimatedUsd ?? null;
+      };
+      try {
+        const flows = extractBusinessFlows(graphIndex, snapshot.snapshotRoot, safeConfiguration.paths);
+        log(JSON.stringify({ type: "business_logic_flows", flows: flows.length, source: flows[0]?.source ?? null, budgetUsd: passBudget }));
+        const record = await runBusinessLogicPass({
+          flows,
+          snapshotRoot: snapshot.snapshotRoot,
+          artifactsRoot: path.join(artifactsRoot, "business-logic"),
+          reuseSources: (dependencies.reviewReuseSources ?? reviewReuseSources)(plan.scanId, safeConfiguration.repositoryPath,
+            outputDir, safeConfiguration.mode, startedAt),
+          budgetUsd: passBudget,
+          signal: deadline.signal,
+          log,
+          startSession: (instructions, artifactRoot) => raceWithDeadline(createSession({
+            connection: resolved.connection,
+            model: resolved.model,
+            capability: resolved.capability,
+            credentials,
+            toolSurface: ["workspace.read", "results.write"],
+            spec: {
+              ...(budget === undefined || passBudget === null ? {} : { beforeModelRequest: (request) => {
+                const spent = passCost();
+                if (spent === null) throw new PortableCodexSecurityRunnerError("cost_budget_unavailable");
+                const reserved = reservePortableTurn(request, budget.pricing, passBudget - spent);
+                if (reserved === null) throw new PortableCodexSecurityRunnerError("cost_limit_reached");
+                return reserved;
+              } }),
+              connectionId: resolved.connection.id,
+              routeKind: resolved.connection.routeKind,
+              protocol: resolved.connection.protocol as AgentSessionSpec["protocol"],
+              model: resolved.model,
+              ...(safeConfiguration.reasoningEffort === undefined ? {} : { reasoningEffort: safeConfiguration.reasoningEffort }),
+              terminalMode: "artifact-write",
+              maxCompletionTokens: 16_384,
+              snapshotRoot: snapshot.snapshotRoot,
+              artifactRoot,
+              instructions,
+              limits: { ...sessionLimits(safeConfiguration.limits, deadline.remainingMs()),
+                maxContextTokens: Math.min(300_000, resolved.model.contextWindow ?? 300_000) },
+              signal: deadline.signal,
+            },
+          }), deadline),
+          observeUsage: (event) => {
+            passUsage = addPortableCodexSecurityUsage(passUsage, event.usage);
+            runtime = { ...runtime, usage: addPortableCodexSecurityUsage(runtime.usage, event.usage), updatedAt: now().toISOString() };
+            if (runtimeWritable) writePortableCodexSecurityRuntime(outputDir, runtime);
+            return passCost();
+          },
+        });
+        writeBusinessLogicRecord(resultsDir, record);
+        log(JSON.stringify({ type: "business_logic_complete", ...record.totals }));
+      } catch {
+        log(JSON.stringify({ type: "business_logic_failed" }));
+      }
+    }
     const findings = (dependencies.normalizeWorkspace ?? normalizePortableCodexSecurityWorkspace)(
       resultsDir,
       outputDir,
@@ -1051,7 +1124,7 @@ function validateConfiguration(
   value: PortableCodexSecurityWorkerConfiguration,
 ): PortableCodexSecurityWorkerConfiguration {
   if (!isRecord(value) || !hasOnlyKeys(value, new Set([
-    "outputDir", "repositoryPath", "paths", "sourceRef", "mode", "providerPlan", "limits", "reasoningEffort", "costBudget", "graphify",
+    "outputDir", "repositoryPath", "paths", "sourceRef", "mode", "providerPlan", "limits", "reasoningEffort", "costBudget", "graphify", "businessLogic",
   ]))) invalidPlan();
   if (
     !isSafeText(value.outputDir, MAX_PATH_LENGTH * 4) ||
@@ -1059,6 +1132,7 @@ function validateConfiguration(
     !isSafeText(value.sourceRef, 256) ||
     (value.mode !== "standard" && value.mode !== "deep") ||
     (value.graphify !== undefined && typeof value.graphify !== "boolean") ||
+    (value.businessLogic !== undefined && typeof value.businessLogic !== "boolean") ||
     !Array.isArray(value.paths) ||
     value.paths.length > MAX_CONFIG_PATHS ||
     !value.paths.every((item) => isSafeRelativePath(item, MAX_PATH_LENGTH)) ||
@@ -1074,6 +1148,7 @@ function validateConfiguration(
       sourceRef: value.sourceRef,
       mode: value.mode,
       graphify: value.graphify === true,
+      ...(value.businessLogic === true ? { businessLogic: true } : {}),
       providerPlan: createSafePortableCodexSecurityProviderPlan(value.providerPlan),
       limits: { ...value.limits },
       ...(value.reasoningEffort === undefined ? {} : { reasoningEffort: value.reasoningEffort }),
