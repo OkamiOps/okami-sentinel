@@ -105,6 +105,23 @@ test("without a graph, route and domain files from the snapshot become code-cont
   assert.deepEqual(extractBusinessFlows(undefined, snapshot, ["src/services"]).map((f) => f.entry), ["src/services/payments.ts"]);
 });
 
+test("without a graph, handlers and files with business terms in their content become flows even when the name says nothing", () => {
+  const { snapshot } = scanDir();
+  fs.mkdirSync(path.join(snapshot, "core"), { recursive: true });
+  fs.mkdirSync(path.join(snapshot, "models"), { recursive: true });
+  fs.mkdirSync(path.join(snapshot, "public/js"), { recursive: true });
+  fs.writeFileSync(path.join(snapshot, "core/appHandler.js"), "module.exports.view = (req, res) => res.send(1);\n");
+  fs.writeFileSync(path.join(snapshot, "models/account_model.js"), "const x = 1;\n");
+  fs.writeFileSync(path.join(snapshot, "models/data.js"), "if (user.role === 'admin') { resetPassword(user, token); session.save(); }\n");
+  fs.writeFileSync(path.join(snapshot, "public/js/lib.js"), "user password session login admin role\n");
+  const entries = extractBusinessFlows(undefined, snapshot).map((f) => f.entry);
+  assert.ok(entries.includes("core/appHandler.js"));
+  assert.ok(entries.includes("models/data.js"));
+  assert.ok(entries.includes("models/account_model.js"));
+  assert.ok(!entries.includes("public/js/lib.js"));
+  assert.ok(!entries.includes("src/util.ts"));
+});
+
 test("the AI pass runs without any SAST alert, supplies flow source and gates findings on snapshot citations", async () => {
   const { dir, snapshot, results } = scanDir();
   const flows = extractBusinessFlows(GRAPH, snapshot);

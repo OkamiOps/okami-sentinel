@@ -28,7 +28,9 @@ const RULE_KINDS: readonly BusinessLogicRuleKind[] = [
 ];
 const SEVERITIES = new Set(["critical", "high", "medium", "low"]);
 const ENTRY = /route|handler|controller|endpoint|webhook|api|resolver|mutation|action|command|job|worker|consumer/i;
-const DOMAIN = /order|checkout|payment|pay|refund|invoice|billing|charge|price|discount|coupon|cart|subscription|plan|quota|limit|credit|balance|transfer|withdraw|approve|approval|reject|status|state|workflow|transition|role|permission|owner|tenant|member|invite|signup|register|reset|verify|confirm|cancel|delete|publish|budget|merge|gate|policy/i;
+const DOMAIN = /order|checkout|payment|pay|refund|invoice|billing|charge|price|discount|coupon|cart|subscription|plan|quota|limit|credit|balance|transfer|withdraw|approve|approval|reject|status|state|workflow|transition|role|permission|owner|tenant|member|invite|signup|register|reset|verify|confirm|cancel|delete|publish|budget|merge|gate|policy|auth|login|logout|password|session|account|user|profile|admin/i;
+const DOMAIN_TERMS = new RegExp(DOMAIN.source, "gi");
+const NOT_APP_CODE = /(?:^|\/)(?:vendor|third_party|dist|build|public|static|assets|coverage|migrations?)\/|\.min\./i;
 const SOURCE_FILE = /\.(?:[cm]?[jt]sx?|py|rb|go|java|kt|php|cs|rs|scala|swift)$/i;
 
 export interface BusinessFlowStep { path: string; startLine: number; endLine: number; symbol: string }
@@ -65,7 +67,7 @@ function lineCount(read: SnapshotReader, file: string): number {
   return "problem" in source ? 0 : source.lines.length;
 }
 
-/** Deterministic flow selection: Graphify call chains from entry points, or route/domain files without a graph. */
+/** Deterministic flow selection: Graphify call chains from entry points, or without a graph the route/handler files and files whose name or content carries business-domain terms. */
 export function extractBusinessFlows(graph: GraphIndex | undefined, snapshotRoot: string, scopePaths: readonly string[] = []): BusinessFlowPlan[] {
   const read = snapshotReader(snapshotRoot).read;
   const scopes = scopePaths.map(scope => scope.replace(/^(\.\/)+/, "").replace(/\/+$/, "") || ".");
@@ -139,8 +141,17 @@ export function extractBusinessFlows(graph: GraphIndex | undefined, snapshotRoot
     }
   };
   walk(snapshotRoot, "");
-  const ranked = files.filter(file => DOMAIN.test(file))
-    .sort((a, b) => Number(ENTRY.test(b)) - Number(ENTRY.test(a)) || compare(a, b));
+  const contentTerms = (file: string) => {
+    const source = read(file);
+    if ("problem" in source) return 0;
+    return new Set(source.lines.join("\n").match(DOMAIN_TERMS)?.map(term => term.toLowerCase()) ?? []).size;
+  };
+  const ranked = files.filter(file => !NOT_APP_CODE.test(file)).map(file => {
+    const terms = contentTerms(file);
+    const named = (ENTRY.test(file) ? 2 : 0) + (DOMAIN.test(file) ? 3 : 0);
+    return { file, eligible: named > 0 || terms >= 3, score: named + Math.min(terms, 6) };
+  }).filter(candidate => candidate.eligible)
+    .sort((a, b) => b.score - a.score || compare(a.file, b.file)).map(candidate => candidate.file);
   for (const file of ranked.slice(0, MAX_FLOWS)) {
     const total = lineCount(read, file);
     if (total === 0) continue;
