@@ -149,7 +149,8 @@ test("the pass stops at its budget and marks remaining flows as skipped instead 
 test("unchanged flow evidence reuses the earlier analysis; a changed step is analyzed again", async () => {
   const prior = scanDir();
   const flows = extractBusinessFlows(GRAPH, prior.snapshot);
-  writeBusinessLogicRecord(prior.results, await runBusinessLogicPass(pass({ flows, snapshotRoot: prior.snapshot, budgetUsd: 1 })));
+  const cited = { ...ARTIFACT, flows: [{ ...ARTIFACT.flows[0]!, findings: [ARTIFACT.flows[0]!.findings[0]!] }] };
+  writeBusinessLogicRecord(prior.results, await runBusinessLogicPass(pass({ flows, snapshotRoot: prior.snapshot, budgetUsd: 1 }, [], cited)));
 
   const same = scanDir();
   const sessions: string[] = [];
@@ -159,7 +160,7 @@ test("unchanged flow evidence reuses the earlier analysis; a changed step is ana
   assert.equal(reused.totals.reused, 1);
   assert.equal(reused.totals.estimatedCostAvoidedUsd, 0.1);
   assert.deepEqual(reused.flows[0]!.reusedFrom, { scanId: "prior", flowId: "flow-01" });
-  assert.equal(reused.flows[0]!.findings.length, 2);
+  assert.equal(reused.flows[0]!.findings.length, 1);
 
   const changed = scanDir(ORDERS.replace("return issueRefund(order);", "if (!order.refundedAt) return issueRefund(order);"));
   const again = await runBusinessLogicPass(pass({ flows: extractBusinessFlows(GRAPH, changed.snapshot), snapshotRoot: changed.snapshot,

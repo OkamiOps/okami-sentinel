@@ -193,7 +193,7 @@ export function planBusinessLogicReuse(flows: BusinessFlowPlan[], snapshotRoot: 
       const current = flowStepHashes(read, flow);
       if (!current || JSON.stringify(current) !== JSON.stringify(match.stepHashes)) continue;
       if (match.findings.some(f => !Array.isArray(f.evidenceHashes) || f.evidenceHashes.length !== f.evidence.length ||
-        f.evidence.some((anchor, i) => evidenceRangeHash(read, anchor) !== f.evidenceHashes![i]))) continue;
+        f.evidence.some((anchor, i) => f.evidenceHashes![i] === null || evidenceRangeHash(read, anchor) !== f.evidenceHashes![i]))) continue;
       reused.set(flow.id, { record: match, scanId: source.id, costUsd: unitCost });
     }
   }
@@ -295,6 +295,7 @@ export async function runBusinessLogicPass(input: BusinessLogicPassInput): Promi
   }
   let spent = 0;
   let priced = input.budgetUsd !== null;
+  let unpriced = false;
   let stopped = false;
   for (let offset = 0; offset < pending.length; offset += FLOWS_PER_SESSION) {
     const page = pending.slice(offset, offset + FLOWS_PER_SESSION);
@@ -316,7 +317,7 @@ export async function runBusinessLogicPass(input: BusinessLogicPassInput): Promi
         for await (const event of session.run()) {
           if (event.type === "usage") {
             const cost = input.observeUsage(event);
-            if (cost !== null) { spent = cost; priced = true; }
+            if (cost !== null) { spent = cost; priced = true; } else unpriced = true;
             if (input.budgetUsd !== null && (cost === null || spent >= input.budgetUsd)) { budgetHit = true; break; }
           } else if (event.type === "failure" || event.type === "cancellation") break;
         }
@@ -341,7 +342,7 @@ export async function runBusinessLogicPass(input: BusinessLogicPassInput): Promi
     }
     if (budgetHit) stopped = true;
   }
-  record.totals.spentUsd = priced ? spent : null;
+  record.totals.spentUsd = priced && !unpriced ? spent : null;
   return record;
 }
 
