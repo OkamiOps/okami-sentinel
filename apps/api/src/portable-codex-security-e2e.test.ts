@@ -12,6 +12,7 @@ import type {
   CredentialVault,
 } from "./credentials/credential-vault.js";
 import type { ScannerCapability } from "@csb/shared";
+import { BUSINESS_LOGIC_ARTIFACT } from "./scanners/portable-business-logic.js";
 
 class MemoryVault implements CredentialVault {
   readonly values = new Map<string, ConnectionSecretBundle>();
@@ -181,6 +182,15 @@ test("Portable Codex Security completes a local API-key HTTP route through launc
       vault,
       log: (line) => logs.push(line),
       createSession: async (input) => {
+        if (input.spec.instructions.startsWith("You are the business-logic reviewer")) {
+          createdStages.push("business-logic");
+          const flows = JSON.parse(input.spec.instructions.slice(input.spec.instructions.lastIndexOf("\n") + 1)) as Array<{ flowId: string }>;
+          fs.writeFileSync(path.join(input.spec.artifactRoot, BUSINESS_LOGIC_ARTIFACT), JSON.stringify({
+            schemaVersion: 1, stage: "business-logic", summary: "No business-rule flaw.",
+            flows: flows.map(({ flowId }) => ({ flowId, status: "no-issues", summary: "Controls hold.", missingEvidence: [], findings: [] })),
+          }), { mode: 0o600 });
+          return completedStageSession("business-logic", BUSINESS_LOGIC_ARTIFACT);
+        }
         const stage = String(input.spec.instructions.match(/stage "([a-z-]+)"/)?.[1]);
         createdStages.push(stage);
         const artifact = PORTABLE_CODEX_SECURITY_STAGES.find((item) => item.id === stage)?.artifact;
@@ -198,7 +208,7 @@ test("Portable Codex Security completes a local API-key HTTP route through launc
     assert.equal(execution.runtime.percent, 100);
     assert.deepEqual(
       createdStages,
-      PORTABLE_CODEX_SECURITY_STAGES.map((stage) => stage.id),
+      [...PORTABLE_CODEX_SECURITY_STAGES.map((stage) => stage.id), "business-logic"],
     );
     assert.deepEqual(execution.runtime.usage, {
       reported: true,
@@ -207,10 +217,10 @@ test("Portable Codex Security completes a local API-key HTTP route through launc
       cacheWriteInputTokensKnown: true,
       outputTokensKnown: true,
       maximumInputTokensPerRequest: 3,
-      inputTokens: 18,
-      cachedInputTokens: 6,
-      cacheWriteInputTokens: 12,
-      outputTokens: 24,
+      inputTokens: 21,
+      cachedInputTokens: 7,
+      cacheWriteInputTokens: 14,
+      outputTokens: 28,
     });
 
     child.emit("close", 0);
