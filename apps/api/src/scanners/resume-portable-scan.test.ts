@@ -4,7 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { resolveDeepPlan, STANDARD_PLAN_FILE } from "./portable-deep-plan.js";
-import { preflightPortableResume } from "./resume-portable-scan.js";
+import { preflightPortableResume, preparePortableResumeRuntime } from "./resume-portable-scan.js";
+import { readPortableCodexSecurityRuntime, writePortableCodexSecurityRuntime } from "./portable-codex-security-runtime.js";
+import { refreshPortableCodexSecurityRunFromDisk } from "./portable-codex-security-reconcile.js";
+import type { ScanRun } from "@csb/shared";
 import { assertBudgetResumeCap } from "./portable-budget-partial.js";
 import { createPortableCodexSecuritySnapshot } from "./portable-codex-security-worker-support.js";
 
@@ -45,6 +48,39 @@ test("budget resume requires a higher finite cap above prior spend", () => {
   }
   assert.doesNotThrow(() => assertBudgetResumeCap(summary, 3));
 });
+
+for (const budget of [false, true]) {
+  test(`resume bootstrap cannot persist the source terminal status before worker startup: budget=${budget}`, () => {
+    const f = fixture();
+    try {
+      const previous = readPortableCodexSecurityRuntime(f.scan)!;
+      if (budget) {
+        previous.status = "incomplete";
+        previous.budgetPartial = { stopReason: "budget", spentUsd: 2, maxCostUsd: 2,
+          completed: [], pending: [], interrupted: { stage: "validation", page: null, artifactPath: null } };
+      }
+      const prepared = preparePortableResumeRuntime(previous);
+      assert.equal(prepared.status, "preparing");
+      assert.equal(prepared.completedAt, null);
+      assert.equal(prepared.error, null);
+      assert.deepEqual(prepared.budgetPartial, previous.budgetPartial);
+      assert.equal(prepared.snapshotId, previous.snapshotId);
+      assert.equal(prepared.stage, previous.stage);
+      writePortableCodexSecurityRuntime(f.scan, prepared);
+      const launched = { id: "new", scanDir: f.scan, engine: "codex-security", status: "running",
+        startedAt: new Date().toISOString(), execution: { executionProfile: "portable", profileVersion: previous.profileVersion, methodologyRef: previous.methodologyRef },
+        severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0, total: 0 } } as ScanRun;
+      const polled = refreshPortableCodexSecurityRunFromDisk(launched);
+      assert.equal(polled.status, "running");
+      writePortableCodexSecurityRuntime(f.scan, { ...prepared, status: "completed", budgetPartial: undefined, percent: 100 });
+      const completed = refreshPortableCodexSecurityRunFromDisk(polled);
+      assert.equal(completed.status, "completed");
+      assert.equal(completed.statusReason, undefined);
+      assert.equal(completed.budgetPartial, undefined);
+      assert.notEqual(previous.status, "preparing");
+    } finally { cleanup(f.root); }
+  });
+}
 
 test("validation recovery preflight preserves and accepts discovery/dataflow checkpoints", () => {
   const f=fixture(); try {

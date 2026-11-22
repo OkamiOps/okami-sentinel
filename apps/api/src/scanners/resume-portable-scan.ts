@@ -11,7 +11,7 @@ import { getProviderRuntime } from "../provider-runtime.js";
 import { cliLogPath } from "../activity.js";
 import { captureProcessIdentity, persistProcessIdentity, findProcessIdentitiesForScanDir } from "../process-identity.js";
 import { readPortableCodexSecurityWorkerConfiguration } from "./portable-codex-security-worker.js";
-import { readPortableCodexSecurityRuntime } from "./portable-codex-security-runtime.js";
+import { readPortableCodexSecurityRuntime, type PortableCodexSecurityRuntimeState } from "./portable-codex-security-runtime.js";
 import { assertPortableCodexSecuritySnapshot, assertExactStageArtifact, assertPortableCodexSecurityDossierAnchors, assertPortableCodexSecurityReportAnchors } from "./portable-codex-security-worker-support.js";
 import { createPortableCodexSecurityDossier, applyPortableCodexSecurityStageArtifact, validatePortableCodexSecurityReportCoverage } from "./portable-codex-security-dossier.js";
 import { mergePortableDeepDiscoveryDossiers } from "./portable-codex-security-deep-coverage.js";
@@ -90,7 +90,7 @@ export function preflightPortableResume(scanDir: string, mode: "standard" | "dee
     discoveryComplete = completed === 2;
   }
   if (previous.stage !== "discovery" && !discoveryComplete) throw new Error("resume_missing_prerequisite_checkpoint");
-  const verifiedStages: Record<string, number> = { discovery: completed };
+  const verifiedStages: Record<string, number> = { inventory: 1, "threat-model": 1, discovery: completed };
   let prerequisiteComplete = discoveryComplete;
   if (discoveryComplete) {
     dossier = groupPortableCandidatesBeforeReview(dossier, artifacts, { resume: true, persist: false });
@@ -174,6 +174,10 @@ export function portableResumeAvailability(original: ScanRun) {
   } catch { return undefined; }
 }
 
+export function preparePortableResumeRuntime(previous: PortableCodexSecurityRuntimeState): PortableCodexSecurityRuntimeState {
+  return { ...previous, status: "preparing", completedAt: null, error: null, errorCode: null };
+}
+
 /** Does not mutate or overwrite the interrupted run. */
 export async function resumeBudgetPortableScan(scanId: string, requestedMaxCostUsd?: number, dryRun = false) {
   const original = getRun(scanId);
@@ -208,7 +212,7 @@ export async function resumeBudgetPortableScan(scanId: string, requestedMaxCostU
       restoreDirectoryModes(path.join(original.scanDir, name), path.join(outputDir, name));
     }
     assertPortableCodexSecuritySnapshot({ snapshotRoot: path.join(outputDir, "portable-codex-security-snapshot"), snapshotId: previous.snapshotId! });
-    fs.writeFileSync(path.join(outputDir, "portable-codex-security-runtime.json"), JSON.stringify(previous), { mode: 0o600 });
+    fs.writeFileSync(path.join(outputDir, "portable-codex-security-runtime.json"), JSON.stringify(preparePortableResumeRuntime(previous)), { mode: 0o600 });
     for (const name of ["portable-codex-security-pricing.json", "scanner-pricing.json", DEEP_PLAN_FILE, STANDARD_PLAN_FILE, REVIEW_REUSE_FILE]) if (fs.existsSync(path.join(original.scanDir, name))) fs.copyFileSync(path.join(original.scanDir, name), path.join(outputDir, name));
     // Preserve accepted recovery fragments and attempt budgets across a new run ID.
     const recoveryRoot = path.join(original.scanDir, "portable-recovery");
@@ -232,7 +236,7 @@ export async function resumeBudgetPortableScan(scanId: string, requestedMaxCostU
     fs.writeFileSync(configPath, JSON.stringify(resumedConfig), { mode: 0o600 });
     fs.writeFileSync(path.join(outputDir, "resume-source.json"), JSON.stringify({ scanId, resumedAt: new Date().toISOString(), verifiedBatches: completed, verifiedStages, snapshotId: previous.snapshotId }), { mode: 0o600 });
     runtime.store.writeSnapshot({ ...frozen, scanId: id, capabilityCheckId: probe.report.id, capturedAt: new Date().toISOString() });
-    const run = { ...original, statusReason: undefined, budgetPartial: undefined, resume: undefined, graphify: resumedConfig.graphify, id, scanDir: outputDir, status: "queued" as const, displayName: `${original.displayName} · resumed`, pid: null, completedAt: null, durationMs: null, progress: null, execution: { ...original.execution, capabilityCheckId: probe.report.id } };
+    const run = { ...original, startedAt: new Date().toISOString(), cost: null, usage: null, statusReason: undefined, budgetPartial: undefined, resume: undefined, graphify: resumedConfig.graphify, id, scanDir: outputDir, status: "queued" as const, displayName: `${original.displayName} · resumed`, pid: null, completedAt: null, durationMs: null, progress: null, execution: { ...original.execution, capabilityCheckId: probe.report.id } };
     upsertRun(run);
     const fd = fs.openSync(cliLogPath(outputDir), "a", 0o600);
     const child = spawn(process.execPath, ["--import", "tsx", path.join(import.meta.dirname, "portable-codex-security-worker.ts"), configPath, "--resume-discovery"], { cwd: path.resolve(import.meta.dirname, "../.."), detached: true, stdio: ["ignore", fd, fd], env: process.env });

@@ -138,7 +138,8 @@ export function refreshPortableCodexSecurityRunFromDisk(run: ScanRun): ScanRun {
     ...run,
     revision: runtime.snapshotId ?? run.revision,
     status,
-    ...(runtime.budgetPartial === undefined ? {} : { statusReason: "budget_exhausted" as const, budgetPartial: runtime.budgetPartial }),
+    statusReason: runtime.budgetPartial === undefined ? undefined : "budget_exhausted",
+    budgetPartial: runtime.budgetPartial,
     completedAt,
     durationMs,
     cost: scannerQuoteExists
