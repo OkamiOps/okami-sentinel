@@ -8,6 +8,7 @@ import type {
 import { globalSecretRedactor, type SecretRedactor } from "../redaction.js";
 import {
   portableConfirmationGap,
+  isPortableSastCandidateId,
   readPortableCodexSecurityDossier,
   type PortableCandidate,
   type PortableCandidateAssessment,
@@ -113,7 +114,8 @@ export function gatePortableCodexSecurityVerdict(
   const citations = assessment.evidence.map((anchor) => checkCitation(anchor, read, redactor));
   const legacy = assessment.claim === undefined && assessment.missingEvidence === undefined;
   const missing: AiVerdictMissingEvidence[] = [];
-  if (assessment.status === "inconclusive") {
+  if (assessment.status === "inconclusive" ||
+      (isPortableSastCandidateId(candidate.id) && assessment.reason === "insufficient-evidence")) {
     for (const detail of assessment.missingEvidence ?? []) missing.push({ code: "ai-declared", detail });
     if (missing.length === 0) missing.push({ code: "ai-undeclared" });
   } else {

@@ -90,6 +90,26 @@ export interface PortableCandidateAssessment {
   missingEvidence?: string[];
 }
 
+export function isPortableSastCandidateId(id: string): boolean {
+  return /^opengrep:[a-f0-9]{64}$/.test(id);
+}
+
+function adjudicateSastAssessment(
+  candidate: PortableCandidate,
+  assessment: Omit<PortableCandidateAssessment, "stage">,
+): Omit<PortableCandidateAssessment, "stage"> {
+  if (!isPortableSastCandidateId(candidate.id)) return assessment;
+  const citesMatch = assessment.evidence.some(evidence => candidate.anchors.some(anchor =>
+    anchor.path === evidence.path && anchor.startLine <= evidence.endLine && evidence.startLine <= anchor.endLine));
+  if (assessment.claim && citesMatch && (assessment.status === "confirmed"
+    ? portableConfirmationGap(candidate, assessment) === undefined
+    : assessment.status === "rejected" && ["no-untrusted-source", "not-reachable", "sanitized", "not-vulnerable"].includes(assessment.reason))) {
+    return assessment;
+  }
+  // The report contract excludes unresolved leads; the verdict API surfaces them as inconclusive.
+  return { ...assessment, status: "rejected", reason: "insufficient-evidence" };
+}
+
 export interface PortableScope {
   inspected: string[];
   unexamined: Array<{ path: string; reason: string }>;
@@ -457,17 +477,18 @@ export function applyPortableCodexSecurityStageArtifact(
       next.candidates.push(copyCandidate(candidate));
     }
   }
-  for (const assessment of artifact.assessments ?? []) {
-    const candidate = next.candidates.find((item) => item.id === assessment.candidateId);
+  for (const [index, proposed] of (artifact.assessments ?? []).entries()) {
+    const candidate = next.candidates.find((item) => item.id === proposed.candidateId);
     if (candidate === undefined) {
       throw new PortableCodexSecurityDossierError("assessment references an unknown candidate");
     }
+    const assessment = artifact.stage === "validation" ? adjudicateSastAssessment(candidate, proposed) : proposed;
     if (artifact.stage === "validation" && assessment.status === "confirmed" &&
         hasLiveCandidateContext(candidate) && !hasSupportedConfirmation(candidate, assessment)) {
       throw new PortableCodexSecurityDossierError(
         "confirmed candidate is not supported by its validation evidence",
         "report-candidate-assessment-inconclusive",
-        confirmationRepairDetail(candidate, assessment, `assessments[${(artifact.assessments ?? []).indexOf(assessment)}]`),
+        confirmationRepairDetail(candidate, assessment, `assessments[${index}]`),
       );
     }
     const existing = next.assessments.find((item) =>
@@ -826,7 +847,9 @@ function parseCandidatesWithRepair(
       ? undefined : substantiveText(record.expectedImpact, MAX_CANDIDATE_CONTEXT_BYTES);
     const controlHypothesis = record.controlHypothesis === undefined
       ? undefined : substantiveText(record.controlHypothesis, MAX_CANDIDATE_CONTEXT_BYTES);
-    if (id === null) return { value: null, detail: { kind: "candidate-contract", reason: "id", itemIndex } };
+    if (id === null || (requireLiveContext && isPortableSastCandidateId(id))) {
+      return { value: null, detail: { kind: "candidate-contract", reason: "id", itemIndex } };
+    }
     if (category === null) return { value: null, detail: { kind: "candidate-contract", reason: "category", itemIndex } };
     if (anchors === null) return { value: null, detail: diagnoseAnchorArray(record.anchors, `candidates[${itemIndex}].anchors`, false)! };
     if ((record.hypothesis !== undefined && hypothesis === null) || (requireLiveContext && hypothesis === undefined)) {
