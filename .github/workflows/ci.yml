@@ -55,11 +55,22 @@ jobs:
           node --input-type=module <<'NODE'
           import { appendFileSync } from "node:fs";
           import { createServer } from "node:net";
+          import { once } from "node:events";
+
+          const envFile = process.env.GITHUB_ENV;
+          if (!envFile) throw new Error("GITHUB_ENV is required to publish CSB_WEB_E2E_PORT");
           const server = createServer();
-          server.listen(0, "127.0.0.1", () => {
-            appendFileSync(process.env.GITHUB_ENV, `CSB_E2E_WEB_PORT=${server.address().port}\n`);
-            server.close();
-          });
+          server.once("error", (error) => { throw error; });
+          server.listen(0, "127.0.0.1");
+          await once(server, "listening");
+          const address = server.address();
+          server.close();
+          await once(server, "close");
+          if (address === null || typeof address === "string") {
+            throw new Error("Unable to allocate a browser regression port");
+          }
+          appendFileSync(envFile, `CSB_WEB_E2E_PORT=${address.port}\n`);
+          console.log(`CSB_WEB_E2E_PORT=${address.port}`);
           NODE
 
       - name: Browser regression tests
