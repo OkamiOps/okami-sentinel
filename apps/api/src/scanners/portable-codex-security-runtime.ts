@@ -16,7 +16,14 @@ import {
 } from "./portable-codex-security-profile.js";
 import type { ScannerUsage } from "./usage.js";
 
+export interface PortableReviewStageUsage {
+  usage: ScannerUsage;
+  estimatedCostUsd: number | null;
+  upperBound: boolean;
+}
+
 export interface PortableCodexSecurityRuntimeState {
+  reviewStages?: Partial<Record<"dataflow" | "validation", PortableReviewStageUsage>>;
   engine: "codex-security";
   executionProfile: "portable";
   profileVersion: string;
@@ -57,6 +64,7 @@ const RUNTIME_STAGES = new Set([
   "normalize",
 ]);
 const RUNTIME_KEYS = new Set([
+  "reviewStages",
   "budgetPartial",
   "engine",
   "executionProfile",
@@ -163,6 +171,11 @@ function validPortableCodexSecurityRuntime(
     value.sourceRef.length > 0 &&
     nonNegativeSafeInteger(value.findings) &&
     validUsage(value.usage) &&
+    (value.reviewStages === undefined || (isRecord(value.reviewStages) &&
+      Object.entries(value.reviewStages).every(([stage, entry]) =>
+        ["dataflow", "validation"].includes(stage) && isRecord(entry) && validUsage(entry.usage) &&
+        typeof entry.upperBound === "boolean" && (entry.estimatedCostUsd === null ||
+          (typeof entry.estimatedCostUsd === "number" && Number.isFinite(entry.estimatedCostUsd) && entry.estimatedCostUsd >= 0))))) &&
     (value.error === null || typeof value.error === "string") &&
     (value.errorCode === null || isSafeProviderErrorCode(value.errorCode))
   );

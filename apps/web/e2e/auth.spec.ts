@@ -1,5 +1,8 @@
 import { expect, test } from "@playwright/test";
 import { mockApi } from "./fixtures";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 test("signs in and returns to the requested page", async ({ page }) => {
   await mockApi(page, "en", { signedOut: true });
@@ -455,6 +458,42 @@ test("a member does not see Repeat on a portable scan", async ({ page }) => {
   await page.goto("/scans/scan-one");
   await expect(page.getByRole("heading").first()).toBeVisible();
   await expect(page.getByRole("link", { name: /retry portable/i })).toHaveCount(0);
+});
+
+test("a portable scan shows reused reviews with separate avoided cost and source link", async ({ page }, info) => {
+  const state = await mockApi(page, "pt-BR", { session: { isAdmin: true, grants: [] } });
+  state.runs[0] = { ...state.runs[0], execution: {
+    executionProfile: "portable", profileVersion: "sentinel-portable-v1", methodologyRef: "sentinel/portable-agent-session/v1",
+    capabilityCheckId: null, connectionId: "fixture-connection", routeKind: null, protocol: null, authKind: null,
+  } };
+  state.verdicts = {
+    scanId: "scan-one", available: true, snapshotAvailable: true,
+    counts: { confirmed: 1, rejected: 0, inconclusive: 0, downgraded: 0, legacy: 0 },
+    reuse: { reusedCount: 1, reviewedCount: 0, estimatedCostAvoidedUsd: 0.42, upperBound: false },
+    verdicts: [{ candidateId: "c-1", category: "authorization", hypothesis: "A consulta de contas não verifica o proprietário do registro",
+      status: "confirmed", proposedStatus: "confirmed", downgraded: false, legacy: false,
+      reason: "untrusted-flow-reaches-sink", claim: "O identificador controlado pela requisição chega à consulta sem controle de propriedade.",
+      citations: [
+        { path: "src/routes/accounts.ts", startLine: 3, endLine: 3, role: "entrypoint", valid: true, excerpt: "const accountId = req.params.id;" },
+        { path: "src/routes/accounts.ts", startLine: 4, endLine: 4, role: "sink", valid: true, excerpt: "return db.accounts.findById(accountId);" },
+      ], missingEvidence: [], reusedFrom: { scanId: "previous-scan", candidateId: "old-c-1" },
+    }],
+  };
+  await page.goto("/scans/scan-one");
+  const panel = page.getByRole("region", { name: "Vereditos da IA com evidência citada" });
+  await expect(panel.getByText(/1 revisão reaproveitada de scans anteriores · custo de IA evitado ≈ US\$ 0,42/)).toBeVisible();
+  const badge = panel.getByRole("link", { name: "Reaproveitada", exact: true });
+  await expect(badge).toHaveAttribute("href", "/scans/previous-scan");
+  await expect(panel.getByText("const accountId = req.params.id;")).toBeVisible();
+  const screenshots = path.join(os.homedir(), "screenshots");
+  fs.mkdirSync(screenshots, { recursive: true });
+  await panel.screenshot({ path: path.join(screenshots, `portable-review-reuse-${info.project.name}-pt-BR.png`) });
+  state.verdicts.reuse!.upperBound = true;
+  await page.reload();
+  await expect(panel.getByText(/estimativa máxima/)).toBeVisible();
+  state.verdicts.reuse!.estimatedCostAvoidedUsd = null;
+  await page.reload();
+  await expect(panel.getByText(/custo de IA evitado indisponível/)).toBeVisible();
 });
 
 test("a portable scan shows a verdict with a missing citation as inconclusive with what is missing", async ({ page }) => {

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { readPortableReviewReuse } from "./portable-review-reuse.js";
 import type {
   AiVerdict, AiVerdictCitation, AiVerdictMissingEvidence, AiVerdictStatus, ScanAiVerdicts, ScanRun,
 } from "@csb/shared";
@@ -28,9 +29,9 @@ const CONFIRMATION_GAPS: Record<string, AiVerdictMissingEvidence["code"][]> = {
   "control-roles-missing": ["control-missing"],
 };
 
-type SnapshotReader = (relativePath: string) => { lines: string[] } | { problem: AiVerdictCitation["problem"] };
+export type SnapshotReader = (relativePath: string) => { lines: string[]; bytes: Buffer } | { problem: AiVerdictCitation["problem"] };
 
-function snapshotReader(snapshotRoot: string | undefined): { available: boolean; read: SnapshotReader } {
+export function snapshotReader(snapshotRoot: string | undefined): { available: boolean; read: SnapshotReader } {
   let root: string | undefined;
   try {
     if (snapshotRoot !== undefined && fs.lstatSync(snapshotRoot).isDirectory()) root = fs.realpathSync(snapshotRoot);
@@ -53,10 +54,11 @@ function snapshotReader(snapshotRoot: string | undefined): { available: boolean;
         fd = fs.openSync(target, READ_NO_FOLLOW);
         const info = fs.fstatSync(fd);
         if (!info.isFile() || info.size > MAX_SOURCE_BYTES) throw new Error("not a bounded file");
-        const text = fs.readFileSync(fd, "utf8");
+        const bytes = fs.readFileSync(fd);
+        const text = bytes.toString("utf8");
         const lines = text.split(/\r?\n/);
         if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
-        result = { lines };
+        result = { lines, bytes };
       } catch { result = { problem: "file-missing" }; }
       finally { if (fd !== undefined) fs.closeSync(fd); }
     }
@@ -171,6 +173,16 @@ export function scanAiVerdicts(scan: ScanRun): ScanAiVerdicts {
   result.available = true;
   result.snapshotAvailable = gated.snapshotAvailable;
   result.verdicts = gated.verdicts;
+  try {
+    const reuse = readPortableReviewReuse(scan.scanDir);
+    if (reuse) {
+      result.reuse = reuse.totals;
+      for (const verdict of result.verdicts) {
+        const entry = reuse.candidates.find(c => c.candidateId === verdict.candidateId);
+        if (entry) verdict.reusedFrom = { scanId: entry.sourceScanId, candidateId: entry.sourceCandidateId };
+      }
+    }
+  } catch { /* Invalid reuse metadata cannot bypass the verdict gate. */ }
   for (const verdict of gated.verdicts) {
     result.counts[verdict.status] += 1;
     if (verdict.downgraded) result.counts.downgraded += 1;

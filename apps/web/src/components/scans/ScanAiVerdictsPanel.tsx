@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import type { AiVerdict, AiVerdictStatus, ScanAiVerdicts, ScanRun } from "@csb/shared";
 import { api } from "../../api";
 import { useScopedI18n } from "../../i18n/scoped";
@@ -17,7 +18,7 @@ function StatusTag({ status, label }: { status: AiVerdictStatus; label: string }
 }
 
 export function ScanAiVerdictsPanel({ scan }: { scan: ScanRun }) {
-  const { t } = useScopedI18n(aiVerdictMessages);
+  const { t, locale } = useScopedI18n(aiVerdictMessages);
   const [data, setData] = useState<ScanAiVerdicts | null>(null);
   const [error, setError] = useState(false);
   const [retry, setRetry] = useState(0);
@@ -48,6 +49,11 @@ export function ScanAiVerdictsPanel({ scan }: { scan: ScanRun }) {
     <div className="space-y-2 border-l-2 border-primary px-4 py-3">
       <div className="font-mono text-[9px] uppercase tracking-wider text-primary">{t("title")}</div>
       <p className="text-xs leading-relaxed text-muted-foreground">{t("note")}</p>
+      {data?.reuse && data.reuse.reusedCount > 0 && <p className="text-xs leading-relaxed text-primary">
+        {t(data.reuse.reusedCount === 1 ? "reuseSummaryOne" : "reuseSummary", { count: data.reuse.reusedCount })} · {t("avoidedCost")} {data.reuse.estimatedCostAvoidedUsd === null
+          ? t("unavailable") : `≈ US$ ${data.reuse.estimatedCostAvoidedUsd.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`}
+        {data.reuse.upperBound && data.reuse.estimatedCostAvoidedUsd !== null && ` (${t("upperBound")})`}
+      </p>}
       {data && <div role="group" className="flex flex-wrap gap-2">{filters.map(([id, label, count]) =>
         <Button key={id || "all"} size="sm" variant={filter === id ? "default" : "outline"} aria-pressed={filter === id} onClick={() => setFilter(id)}>{label} · {count}</Button>)}
         {data.counts.downgraded > 0 && <span className="self-center font-mono text-[10px] text-chart-3">{t("downgraded")}: {data.counts.downgraded}</span>}
@@ -68,6 +74,7 @@ export function ScanAiVerdictsPanel({ scan }: { scan: ScanRun }) {
               <StatusTag status={verdict.status} label={t(verdict.status)} />
               {verdict.downgraded && <span className="font-mono text-[9px] uppercase text-chart-3">{t("downgraded")}</span>}
               {verdict.legacy && <span className="font-mono text-[9px] uppercase text-muted-foreground">{t("legacy")}</span>}
+              {verdict.reusedFrom && <span className="font-mono text-[9px] uppercase text-primary">{t("reused")}</span>}
               <span className="font-mono text-[10px] uppercase text-primary">{verdict.category}</span>
             </div>
             <p className="line-clamp-2 text-xs leading-relaxed">{verdict.hypothesis || verdict.candidateId}</p>
@@ -76,6 +83,8 @@ export function ScanAiVerdictsPanel({ scan }: { scan: ScanRun }) {
         <div className="max-h-[42rem] min-w-0 overflow-y-auto p-5">{selected && <article className="space-y-5 break-words">
           <div>
             <div className="flex flex-wrap items-center gap-2"><StatusTag status={selected.status} label={t(selected.status)} />
+              {selected.reusedFrom && <Link className="border border-primary/50 px-1.5 py-0.5 text-[11px] text-primary underline"
+                to={`/scans/${encodeURIComponent(selected.reusedFrom.scanId)}`}>{t("reused")}</Link>}
               {selected.downgraded && selected.proposedStatus && <span className="text-[11px] text-muted-foreground">{t("proposed")}: {t(selected.proposedStatus)}</span>}
               {selected.reason && <span className="font-mono text-[10px] text-muted-foreground">{t("reason")}: {selected.reason}</span>}
             </div>

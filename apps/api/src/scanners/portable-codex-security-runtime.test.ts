@@ -20,6 +20,23 @@ import {
 
 const NOW = "2026-08-11T15:00:00.000Z";
 
+test("runtime round-trips review-stage usage and rejects invalid costs or stages", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-review-stage-"));
+  try {
+    const state = runtimeState({ reviewStages: { dataflow: {
+      usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 3 }, estimatedCostUsd: 0.2, upperBound: true,
+    } } });
+    writePortableCodexSecurityRuntime(root, state);
+    assert.deepEqual(readPortableCodexSecurityRuntime(root)?.reviewStages, state.reviewStages);
+    for (const reviewStages of [{ report: state.reviewStages!.dataflow },
+      { dataflow: { ...state.reviewStages!.dataflow, estimatedCostUsd: -1 } },
+      { dataflow: { ...state.reviewStages!.dataflow, usage: {} } }]) {
+      fs.writeFileSync(portableCodexSecurityRuntimePath(root), JSON.stringify({ ...state, reviewStages }));
+      assert.equal(readPortableCodexSecurityRuntime(root), null);
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test("runtime persists budget partials and rejects malformed summaries", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-budget-ledger-"));
   try {

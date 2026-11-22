@@ -17,6 +17,8 @@ import path from "node:path";
 import { createPortableAssessmentPages, assessmentPageDirectory } from "./portable-codex-security-assessment-pages.js";
 import { resolveDeepPlan, STANDARD_PLAN_FILE } from "./portable-deep-plan.js";
 import { prepareManagedGraph } from "../graphify/managed-graph.js";
+import { planPortableReviewReuse, readPortableReviewReuse, restorePortableReviewReuse, reviewReuseSources, writePortableReviewReuse, type PortableReviewReuse } from "./portable-review-reuse.js";
+import { readScannerPricingQuote, readPortableCodexSecurityPricing, estimateFrozenCatalogUsageCost } from "../model-pricing.js";
 
 import {
   mimoTokenPlanModelIdsMatch,
@@ -73,6 +75,7 @@ import {
   assertPortableCodexSecurityReportAnchors,
   createPortableCodexSecurityAnchorValidationCache,
   createPortableCodexSecuritySnapshot,
+  addPortableCodexSecurityUsage,
   observePortableCodexSecurityStage,
   PORTABLE_CODEX_SECURITY_TOOL_SURFACE,
   PortableCodexSecurityStageError,
@@ -191,6 +194,7 @@ export interface PortableCodexSecuritySessionInput {
 }
 
 export interface PortableCodexSecurityRunnerDependencies {
+  reviewReuseSources?: typeof reviewReuseSources;
   prepareGraph?: typeof prepareManagedGraph;
   /** Explicit local recovery of interrupted inventory/threat-model/discovery only. */
   resumeDiscovery?: boolean;
@@ -330,7 +334,7 @@ export async function runPortableCodexSecurity(
       ? { snapshotRoot: path.join(outputDir, "portable-codex-security-snapshot"), snapshotId: previous.snapshotId! }
       : createPortableCodexSecuritySnapshot(safeConfiguration.repositoryPath, outputDir);
     if (previous) {
-      runtime = { ...runtime, startedAt: previous.startedAt, usage: previous.usage };
+      runtime = { ...runtime, startedAt: previous.startedAt, usage: previous.usage, ...(previous.reviewStages ? { reviewStages: previous.reviewStages } : {}) };
       const stop = costBudgetStopCode(safeConfiguration.costBudget, runtime.usage);
       if (stop !== null && (previous.usage.reported || !previous.budgetPartial)) throw new PortableCodexSecurityRunnerError(stop);
     }
@@ -422,6 +426,7 @@ export async function runPortableCodexSecurity(
       }
     }
     let dossierStateBase64: string | null = null;
+    let reviewReuse: PortableReviewReuse | null = null;
     let reportShardResults: PortableCodexSecurityReportShardResult[] | null = null;
     for (const stage of PORTABLE_CODEX_SECURITY_STAGES) {
       throwIfStopped(deadline);
@@ -435,10 +440,44 @@ export async function runPortableCodexSecurity(
       if (stage.id === "dataflow") {
         try {
           dossier = groupPortableCandidatesBeforeReview(dossier, artifactsRoot, { resume: dependencies.resumeDiscovery === true, persist: true });
+          reviewReuse = dependencies.resumeDiscovery ? readPortableReviewReuse(outputDir) : null;
+          if (reviewReuse === null) {
+            if (dependencies.resumeDiscovery && ["dataflow", "validation", "report"].includes(previous!.stage)) {
+              reviewReuse = planPortableReviewReuse(dossier, snapshot.snapshotRoot, []);
+            } else {
+              const sources = (dependencies.reviewReuseSources ?? reviewReuseSources)(plan.scanId,
+                safeConfiguration.repositoryPath, outputDir, safeConfiguration.mode, startedAt);
+              reviewReuse = planPortableReviewReuse(dossier, snapshot.snapshotRoot, sources);
+            }
+            writePortableReviewReuse(outputDir, reviewReuse);
+          }
+          dossier = restorePortableReviewReuse(dossier, snapshot.snapshotRoot, reviewReuse);
+          for (const entry of reviewReuse.candidates) log(JSON.stringify({ type: "review_reused", candidateId: entry.candidateId,
+            sourceScanId: entry.sourceScanId, sourceCandidateId: entry.sourceCandidateId, stages: entry.stages }));
         } catch {
           throw new PortableCodexSecurityRunnerError("stage_artifact_invalid");
         }
         dossierStateBase64 = portableCodexSecurityDossierBase64(dossier);
+      }
+      const reviewStage = stage.id === "dataflow" || stage.id === "validation" ? stage.id : null;
+      const reusedIds = new Set(reviewReuse?.candidates.map(c => c.candidateId) ?? []);
+      if (reviewStage !== null && !runtime.reviewStages?.[reviewStage]) {
+        runtime = { ...runtime, reviewStages: { ...runtime.reviewStages, [reviewStage]: {
+          usage: emptyUsage(), estimatedCostUsd: dossier.candidates.every(c => reusedIds.has(c.id)) ? 0 : null, upperBound: false,
+        } } };
+      }
+      const fullReviewDossier = reviewStage !== null && reusedIds.size > 0 ? dossier : null;
+      if (fullReviewDossier) {
+        dossier = { ...dossier, candidates: dossier.candidates.filter(c => !reusedIds.has(c.id)),
+          assessments: dossier.assessments.filter(a => !reusedIds.has(a.candidateId)) };
+        dossierStateBase64 = portableCodexSecurityDossierBase64(dossier);
+        if (dossier.candidates.length === 0) {
+          dossier = fullReviewDossier;
+          dossierStateBase64 = portableCodexSecurityDossierBase64(dossier);
+          work.delete(stage.id);
+          update({ percent: stage.completePercent, detail: `${stage.label} reused` });
+          continue;
+        }
       }
       const remaining = deadline.remainingMs();
       if (remaining <= 0) throw new PortableCodexSecurityRunnerError("agent_time_limit");
@@ -756,7 +795,17 @@ export async function runPortableCodexSecurity(
         anchorValidationCache,
         redact: globalSecretRedactor.redactText.bind(globalSecretRedactor),
         onEvent: (safeEvent) => log(safeEvent),
-        onUsage: (usage) => {
+        onUsage: (usage, update) => {
+          if (reviewStage !== null) {
+            const prior = runtime.reviewStages?.[reviewStage];
+            const stageUsage = addPortableCodexSecurityUsage(prior?.usage ?? emptyUsage(), update);
+            const pricing = safeConfiguration.costBudget?.pricing ?? readScannerPricingQuote(outputDir);
+            const cost = pricing ? estimateFrozenScannerUsageCost(stageUsage, pricing)
+              : estimateFrozenCatalogUsageCost(stageUsage, readPortableCodexSecurityPricing(outputDir));
+            runtime = { ...runtime, reviewStages: { ...runtime.reviewStages, [reviewStage]: {
+              usage: stageUsage, estimatedCostUsd: cost?.estimatedUsd ?? null, upperBound: cost?.estimateKind === "upper-bound",
+            } } };
+          }
           runtime = { ...runtime, usage, updatedAt: now().toISOString() };
           if (runtimeWritable) writePortableCodexSecurityRuntime(outputDir, runtime);
           const stop = costBudgetStopCode(safeConfiguration.costBudget, usage);
@@ -921,6 +970,11 @@ export async function runPortableCodexSecurity(
         dossierStateBase64 = portableCodexSecurityDossierBase64(dossier);
       }
       if (shards !== null) reportShardResults = pageResults;
+      if (fullReviewDossier) {
+        dossier = { ...dossier, candidates: fullReviewDossier.candidates,
+          assessments: [...dossier.assessments, ...fullReviewDossier.assessments.filter(a => reusedIds.has(a.candidateId))] };
+        dossierStateBase64 = portableCodexSecurityDossierBase64(dossier);
+      }
       update({ percent: stage.completePercent, detail: `${stage.label} complete` });
     }
 

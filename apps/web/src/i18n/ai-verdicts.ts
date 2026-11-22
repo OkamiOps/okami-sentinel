@@ -1,6 +1,7 @@
 import type { ScopedMessages } from "./scoped";
 
 type Key =
+  | "reuseSummary" | "reuseSummaryOne" | "avoidedCost" | "unavailable" | "upperBound" | "reused"
   | "title" | "note" | "confirmed" | "rejected" | "inconclusive" | "downgraded" | "legacy" | "legacyNote"
   | "snapshotMissing" | "empty" | "noMatches" | "loading" | "error" | "retry" | "search" | "all" | "proposed" | "claim" | "noClaim"
   | "citations" | "noCitations" | "missing" | "invalid" | "reason"
@@ -11,6 +12,9 @@ type Key =
 
 export const aiVerdictMessages: ScopedMessages<Key> = {
   "pt-BR": {
+    reuseSummaryOne: "1 revisão reaproveitada de scans anteriores",
+    reuseSummary: "{count} revisões reaproveitadas de scans anteriores", avoidedCost: "custo de IA evitado",
+    unavailable: "indisponível", upperBound: "estimativa máxima", reused: "Reaproveitada",
     title: "Vereditos da IA com evidência citada",
     note: "A IA só confirma (TP) ou descarta (FP) citando trechos que existem no snapshot do scan; para TP, a citação mostra por onde a entrada chega ao trecho. Sem citação válida, o candidato fica inconclusivo com o que falta para decidir. A verificação é mecânica, não semântica.",
     confirmed: "Confirmado (TP)", rejected: "Descartado (FP)", inconclusive: "Inconclusivo", downgraded: "Rebaixado",
@@ -34,6 +38,9 @@ export const aiVerdictMessages: ScopedMessages<Key> = {
     "p.unsafe-path": "caminho fora do snapshot", "p.file-missing": "arquivo inexistente", "p.lines-out-of-range": "linhas inexistentes", "p.snapshot-unavailable": "snapshot indisponível",
   },
   en: {
+    reuseSummaryOne: "1 review reused from previous scans",
+    reuseSummary: "{count} reviews reused from previous scans", avoidedCost: "AI cost avoided",
+    unavailable: "unavailable", upperBound: "upper-bound estimate", reused: "Reused",
     title: "AI verdicts with cited evidence",
     note: "The AI may only confirm (TP) or dismiss (FP) by citing code that exists in the scan snapshot; a TP citation shows how input reaches the code. Without a valid citation the candidate stays inconclusive, listing what is missing. The check is mechanical, not semantic.",
     confirmed: "Confirmed (TP)", rejected: "Dismissed (FP)", inconclusive: "Inconclusive", downgraded: "Downgraded",
@@ -57,6 +64,9 @@ export const aiVerdictMessages: ScopedMessages<Key> = {
     "p.unsafe-path": "path outside snapshot", "p.file-missing": "file does not exist", "p.lines-out-of-range": "lines do not exist", "p.snapshot-unavailable": "snapshot unavailable",
   },
   es: {
+    reuseSummaryOne: "1 revisión reutilizada de escaneos anteriores",
+    reuseSummary: "{count} revisiones reutilizadas de escaneos anteriores", avoidedCost: "coste de IA evitado",
+    unavailable: "no disponible", upperBound: "estimación máxima", reused: "Reutilizada",
     title: "Veredictos de la IA con evidencia citada",
     note: "La IA solo confirma (TP) o descarta (FP) citando código que existe en el snapshot del escaneo; para TP, la cita muestra cómo llega la entrada al código. Sin cita válida el candidato queda inconcluso con lo que falta. La verificación es mecánica, no semántica.",
     confirmed: "Confirmado (TP)", rejected: "Descartado (FP)", inconclusive: "Inconcluso", downgraded: "Degradado",
@@ -80,6 +90,9 @@ export const aiVerdictMessages: ScopedMessages<Key> = {
     "p.unsafe-path": "ruta fuera del snapshot", "p.file-missing": "archivo inexistente", "p.lines-out-of-range": "líneas inexistentes", "p.snapshot-unavailable": "snapshot no disponible",
   },
   de: {
+    reuseSummaryOne: "1 Bewertung aus früheren Scans wiederverwendet",
+    reuseSummary: "{count} Bewertungen aus früheren Scans wiederverwendet", avoidedCost: "vermiedene KI-Kosten",
+    unavailable: "nicht verfügbar", upperBound: "obere Schätzung", reused: "Wiederverwendet",
     title: "KI-Urteile mit zitierten Belegen",
     note: "Die KI darf nur bestätigen (TP) oder verwerfen (FP), wenn sie Code aus dem Scan-Snapshot zitiert; ein TP zeigt, wie die Eingabe den Code erreicht. Ohne gültiges Zitat bleibt der Kandidat unentschieden, mit Angabe, was fehlt. Die Prüfung ist mechanisch, nicht semantisch.",
     confirmed: "Bestätigt (TP)", rejected: "Verworfen (FP)", inconclusive: "Unentschieden", downgraded: "Herabgestuft",
@@ -103,6 +116,9 @@ export const aiVerdictMessages: ScopedMessages<Key> = {
     "p.unsafe-path": "Pfad außerhalb des Snapshots", "p.file-missing": "Datei existiert nicht", "p.lines-out-of-range": "Zeilen existieren nicht", "p.snapshot-unavailable": "Snapshot nicht verfügbar",
   },
   fr: {
+    reuseSummaryOne: "1 évaluation réutilisée de scans précédents",
+    reuseSummary: "{count} évaluations réutilisées de scans précédents", avoidedCost: "coût IA évité",
+    unavailable: "indisponible", upperBound: "estimation maximale", reused: "Réutilisée",
     title: "Verdicts de l'IA avec preuves citées",
     note: "L'IA ne peut confirmer (TP) ou écarter (FP) qu'en citant du code présent dans le snapshot du scan ; pour un TP, la citation montre comment l'entrée atteint le code. Sans citation valide, le candidat reste non concluant avec ce qui manque. La vérification est mécanique, pas sémantique.",
     confirmed: "Confirmé (TP)", rejected: "Écarté (FP)", inconclusive: "Non concluant", downgraded: "Rétrogradé",
