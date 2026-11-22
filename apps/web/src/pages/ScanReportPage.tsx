@@ -110,7 +110,7 @@ export function ScanReportPage() {
   const findings = useMemo(() => allFindings.filter((finding) => finding.origin?.kind !== "sast"), [allFindings]);
   const sastFindings = useMemo(() => allFindings.filter((finding) => finding.origin?.kind === "sast"), [allFindings]);
   const indexPages = useMemo(() => chunk(findings, 12), [findings]);
-  const sastPages = useMemo(() => chunk(sastFindings, 12), [sastFindings]);
+  const sastPages = useMemo(() => (sastFindings.length > 0 ? chunk(sastFindings, 12) : []), [sastFindings]);
   const priorityFindings = useMemo(() => findings.filter((finding) => finding.severity === "critical" || finding.severity === "high"), [findings]);
   const lifecycle = useMemo(() => new Map((report?.regression.findings ?? []).map((finding) => [finding.findingId, finding])), [report]);
   const lifecycleCounts = useMemo(() => {

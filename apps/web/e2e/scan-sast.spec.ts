@@ -134,3 +134,13 @@ test("scan report paginates long OpenGrep alert lists", async ({ page }) => {
   await expect(page.getByText("Alertas de análise estática · OpenGrep / 2", { exact: true })).toBeVisible();
   await expect(page.getByText("SAST-013", { exact: true })).toBeVisible();
 });
+
+test("scan report without OpenGrep alerts has no static analysis sheet", async ({ page }) => {
+  const state = await setup(page);
+  state.reportFindings = [aiFinding];
+  state.runs[0].severity.high = 1;
+  state.runs[0].severity.total = 1;
+  await page.goto("/scans/scan-one/report");
+  await expect(page.getByText("OKS-001", { exact: true })).toBeVisible();
+  await expect(page.getByText("Alertas de análise estática · OpenGrep", { exact: false })).toHaveCount(0);
+});
