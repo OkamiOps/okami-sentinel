@@ -301,7 +301,9 @@ function estimateFrozenUsageCost(
       inputRate < cachedRate ||
       inputRate < cacheWriteRate
     ) return null;
-    const inputUsd = tokenCost(usage.inputTokens, inputRate);
+    const cachedInputTokens = usage.cachedInputTokensKnown === true ? usage.cachedInputTokens : 0;
+    const inputUsd = tokenCost(usage.inputTokens - cachedInputTokens, inputRate);
+    const cachedInputUsd = tokenCost(cachedInputTokens, cachedRate);
     const outputUsd = tokenCost(usage.outputTokens, outputRate);
     const cost = baseScanCost(
       usage,
@@ -310,7 +312,9 @@ function estimateFrozenUsageCost(
       cacheWriteInputTokens,
       inputUsd,
       outputUsd,
+      cachedInputUsd,
     );
+    if (usage.cachedInputTokensKnown === true) cost.cachedInputUsd = cachedInputUsd;
     cost.estimateKind = "upper-bound";
     return cost;
   }

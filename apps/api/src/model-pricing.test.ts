@@ -29,6 +29,32 @@ const pricingWithCacheWrite: ModelPricing = {
   cacheWriteInputUsdPerMillionTokens: 6,
 };
 
+test("partial cache coverage discounts known reads and bounds the remaining input at the normal rate", () => {
+  const usage: ScannerUsage = {
+    reported: true,
+    inputTokensKnown: true,
+    cachedInputTokensKnown: true,
+    cacheWriteInputTokensKnown: false,
+    outputTokensKnown: true,
+    inputTokens: 17_160_000,
+    cachedInputTokens: 15_960_000,
+    outputTokens: 0,
+  };
+  const rates = { ...pricing, cacheWriteInputUsdPerMillionTokens: 2 };
+  const estimate = (update: Partial<ScannerUsage> = {}) =>
+    estimateCatalogUsageCost({ ...usage, ...update }, rates, CAPTURED_AT, MODEL_ID);
+  const cost = estimate();
+  assert.equal(cost?.estimatedUsd, 10.38);
+  assert.equal(cost?.inputUsd, 2.4);
+  assert.equal(cost?.cachedInputUsd, 7.98);
+  assert.equal(cost?.estimateKind, "upper-bound");
+  assert.equal(estimate({ cachedInputTokensKnown: false })?.estimatedUsd, 34.32);
+  assert.equal(estimate({ cachedInputTokensKnown: false })?.estimateKind, "upper-bound");
+  assert.equal(estimate({ cachedInputTokens: 0 })?.estimatedUsd, 34.32);
+  assert.equal(estimate({ inputTokens: 0, cachedInputTokens: 0 })?.estimatedUsd, 0);
+  assert.equal(estimate({ cachedInputTokens: 17_160_001 }), null);
+});
+
 test("frozen catalog pricing charges each input bucket exactly once", () => {
   const cost = estimateCatalogUsageCost({
     reported: true,

@@ -14,6 +14,7 @@ import { reservePortableTurn } from "./portable-turn-budget.js";
 import { estimateFrozenScannerUsageCost } from "../model-pricing.js";
 import { createHttpAgentUpstream, type HttpAgentUpstreamOptions } from "../agent/http-agent-upstream.js";
 import { createAgentSession } from "../agent/session-runner.js";
+import { createOpenAiResponsesWireAdapter } from "../agent/openai-responses-session.js";
 import { readPortableCodexSecurityRuntime } from "./portable-codex-security-runtime.js";
 import { preflightPortableResume, preparePortableResumeRuntime } from "./resume-portable-scan.js";
 import fs from "node:fs";
@@ -1664,6 +1665,59 @@ test("Portable business review reserves provider-held input and cannot exceed it
     assert.ok(Math.abs(record.totals.spentUsd - spent) < 1e-12);
   } finally { remove(root); }
 });
+
+for (const businessLogic of [false, true]) {
+  test(`Portable settles known cached reads before reserving the next turn: business review=${businessLogic}`, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-cached-budget-"));
+    try {
+      const budget = costBudget({ maxCostUsd: businessLogic ? 2 : 0.5 });
+      budget.pricing = { ...budget.pricing, cachedInputUsdPerMillionTokens: 0.25, cacheWriteInputUsdPerMillionTokens: 1 };
+      const config = { ...configuration(root), graphify: false, businessLogic, costBudget: budget };
+      const stages = stageSessionFactory();
+      let dispatched = 0;
+      const run = runPortableCodexSecurity(config, dependencies({
+        createSession: async (input: { spec: AgentSessionSpec; toolSurface: readonly string[]; model: ProviderModel }) => {
+          if (businessLogic && !input.spec.instructions.includes("business-logic reviewer")) return stages(input);
+          const adapter = createOpenAiResponsesWireAdapter({ model: input.model, instructions: "" });
+          return {
+            ...completedStageSession("inventory", "inventory.json", "done"),
+            async *run() {
+              while (true) {
+                const prior = readPortableCodexSecurityRuntime(config.outputDir)!;
+                assert.equal(prior.budgetReservedUsd ?? 0, 0);
+                if (dispatched > 0) {
+                  const cost = estimateFrozenScannerUsageCost(prior.usage, budget.pricing)!;
+                  assert.ok(Math.abs(cost.estimatedUsd - dispatched * 0.0325) < 1e-12);
+                  assert.equal(cost.estimateKind, "upper-bound");
+                }
+                input.spec.beforeModelRequest!({ operation: "responses", body: { previous_response_id: "history", max_output_tokens: 16_384 } });
+                const reserved = readPortableCodexSecurityRuntime(config.outputDir)!.budgetReservedUsd!;
+                assert.ok(reserved >= 0.128);
+                assert.ok(dispatched * 0.0325 + reserved <= 0.5);
+                dispatched++;
+                yield { type: "usage", usage: adapter.readUsage!({ usage: {
+                  input_tokens: 100_000, input_tokens_details: { cached_tokens: 90_000 }, output_tokens: 0,
+                } }) } as const;
+              }
+            },
+          };
+        },
+      }));
+      if (businessLogic) {
+        const result = await run;
+        assert.equal(result.runtime.status, "completed");
+        const record = JSON.parse(fs.readFileSync(path.join(config.outputDir, "portable-codex-security-results", "portable-business-logic.json"), "utf8"));
+        assert.ok(Math.abs(record.totals.spentUsd - 0.39) < 1e-12);
+        assert.ok(record.totals.skippedBudget > 0);
+      } else {
+        await assert.rejects(run, { code: "cost_limit_reached" });
+        assert.ok(Math.abs(readPortableCodexSecurityRuntime(config.outputDir)!.budgetPartial!.spentUsd - 0.39) < 1e-12);
+      }
+      assert.equal(dispatched, 12);
+      assert.equal(readPortableCodexSecurityRuntime(config.outputDir)!.budgetReservedUsd, 0);
+    } finally { remove(root); }
+  });
+}
 
 for (const missingUsage of [false, true]) {
   test(`Portable main stages refuse the next turn before input can cross the cap: missing usage=${missingUsage}`, async () => {
