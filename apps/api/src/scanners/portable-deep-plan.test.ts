@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { createPortableDeepCoveragePlan } from "./portable-codex-security-deep-coverage.js";
-import { packDeepPlan, resolveDeepPlan, DEEP_PLAN_FILE } from "./portable-deep-plan.js";
+import { packDeepPlan, resolveDeepPlan, DEEP_PLAN_FILE, STANDARD_PLAN_FILE } from "./portable-deep-plan.js";
 
 function fixture(t: test.TestContext) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "deep-plan-"));
@@ -44,4 +44,31 @@ test("plan validation rejects rehashed duplicate coverage and symlink manifests"
   assert.throws(() => resolveDeepPlan({ ...f, resume: true }), /deep_plan_invalid/);
   fs.renameSync(filename, filename + ".old"); fs.symlinkSync(filename + ".old", filename);
   assert.throws(() => resolveDeepPlan({ ...f, resume: true }), /deep_plan_invalid/);
+});
+
+for (const mode of ["standard", "deep"] as const) {
+  test(`${mode} scope reduces partitions, preserves context files and pins scope on resume`, t => {
+    const f = fixture(t);
+    const whole = createPortableDeepCoveragePlan(f.snapshotRoot);
+    const scoped = resolveDeepPlan({ ...f, graph, mode, scopePaths: ["./a.ts"] });
+    assert.deepEqual(scoped.files, ["a.ts"]);
+    assert.ok(scoped.partitions.length < whole.partitions.length);
+    assert.equal(scoped.totalBytes, 60_000);
+    assert.equal(fs.readFileSync(path.join(f.snapshotRoot, "b.ts"), "utf8").length, 60_000);
+    assert.deepEqual(resolveDeepPlan({ ...f, mode, resume: true, scopePaths: ["a.ts"] }), scoped);
+    assert.deepEqual(resolveDeepPlan({ ...f, mode, resume: true }), scoped);
+    assert.throws(() => resolveDeepPlan({ ...f, mode, resume: true, scopePaths: [] }), /deep_plan_invalid/);
+    assert.throws(() => resolveDeepPlan({ ...f, mode, resume: true, scopePaths: ["b.ts"] }), /deep_plan_invalid/);
+  });
+}
+
+test("legacy persisted plans preserve their full universe even with configured scope", t => {
+  const f = fixture(t);
+  const whole = resolveDeepPlan(f);
+  const file = path.join(f.outputDir, DEEP_PLAN_FILE);
+  const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+  delete saved.scopePaths;
+  fs.writeFileSync(file, JSON.stringify(saved));
+  assert.deepEqual(resolveDeepPlan({ ...f, resume: true, scopePaths: ["a.ts"] }), whole);
+  assert.equal(fs.existsSync(path.join(f.outputDir, STANDARD_PLAN_FILE)), false);
 });

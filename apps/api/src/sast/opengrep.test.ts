@@ -8,8 +8,39 @@ import { readAiFindingsFile, readScanFindings, toFindingSummaries } from "../ing
 import { normalizeOpengrep, readOpengrepFindings, readOpengrepStatus, runOpengrep } from "./opengrep.js";
 import { opengrepConfiguration } from "../config.js";
 import { localMantisWorkerEnvironment, portableCodexSecurityWorkerEnvironment } from "../scanners/launch.js";
+import { planPortableSastTriage } from "../scanners/portable-sast-triage.js";
 
 const binary = fileURLToPath(new URL("./fixtures/fake-opengrep.mjs", import.meta.url));
+
+test("scoped OpenGrep results exclude outside alerts from persistence, triage, totals and scan findings", async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "opengrep-scope-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const files = ["routes/login.ts", "routes/admin/update.ts", "routes-old/login.ts", "server.ts", "server.ts.old", "lib/context.ts"];
+  for (const file of files) {
+    fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+    fs.writeFileSync(path.join(root, file), "export const value = true;\n");
+  }
+  const rules = path.join(root, "rules.json");
+  fs.writeFileSync(rules, JSON.stringify({ payload: { results: files.map(file => ({
+    check_id: "unit-marker", path: file, start: { line: 1 }, end: { line: 1 }, extra: { severity: "ERROR" },
+  })) } }));
+  const config = { enabled: true, binary, rules: [rules], timeoutMs: 5000 };
+  for (const [name, scope, expected] of [
+    ["scoped", ["./routes/", "server.ts"], ["routes/login.ts", "routes/admin/update.ts", "server.ts"]],
+    ["whole", [], files], ["root", ["."], files], ["empty", ["absent"], []],
+  ] as const) {
+    const output = path.join(root, name);
+    await runOpengrep(root, output, config, scope);
+    assert.equal(readOpengrepStatus(output)?.status, "completed");
+    assert.equal(readOpengrepStatus(output)?.count, expected.length);
+    const findings = readOpengrepFindings(output);
+    assert.deepEqual(findings.map(finding => finding.primaryPath), expected);
+    assert.deepEqual(readScanFindings(output).map(finding => finding.primaryPath), expected);
+    const triage = planPortableSastTriage(findings, root);
+    assert.equal(triage.total, expected.length);
+    assert.deepEqual(triage.queued.map(entry => entry.path).sort(), [...expected].sort());
+  }
+});
 
 test("configuration defaults offline and both restricted worker environments forward SAST settings", (t) => {
   const keys = ["SENTINEL_OPENGREP_ENABLED", "SENTINEL_OPENGREP_BIN", "SENTINEL_OPENGREP_RULES", "SENTINEL_OPENGREP_TIMEOUT_MS"];

@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { FindingDetail, ScanSastSummary } from "@csb/shared";
 import { opengrepConfiguration } from "../config.js";
+import { createScanScopeMatcher } from "../scan-scope-paths.js";
 
 export interface OpengrepStatus extends ScanSastSummary {
   rules: string[];
@@ -124,7 +125,7 @@ function execute(binary: string, args: string[], cwd: string, timeoutMs: number)
   });
 }
 
-export async function runOpengrep(snapshotRoot: string, scanDir: string, config: Configuration = opengrepConfiguration()): Promise<void> {
+export async function runOpengrep(snapshotRoot: string, scanDir: string, config: Configuration = opengrepConfiguration(), scopePaths: readonly string[] = []): Promise<void> {
   if (readOpengrepStatus(scanDir)?.status === "completed") return;
   const started = Date.now();
   const status: OpengrepStatus = {
@@ -142,7 +143,10 @@ export async function runOpengrep(snapshotRoot: string, scanDir: string, config:
       const { output, code } = await execute(config.binary, ["scan", "--json", ...config.rules.flatMap(rule => ["--config", path.resolve(rule)]), snapshotRoot], snapshotRoot, remaining());
       let payload: unknown;
       try { payload = JSON.parse(output); } catch { throw new Error(code !== 0 ? "nonzero_exit" : "invalid_json"); }
-      const { findings, errors } = normalizeResults(payload, snapshotRoot);
+      const normalized = normalizeResults(payload, snapshotRoot);
+      const inScope = createScanScopeMatcher(scopePaths);
+      const findings = normalized.findings.filter(finding => finding.primaryPath !== null && inScope(finding.primaryPath));
+      const errors = normalized.errors;
       const data = record(payload);
       const knownErrorTypes = new Set(["ParseError", "PartialParsing", "SyntaxError", "LexicalError", "Timeout", "TimeoutError", "RuleTimeout", "UnsupportedLanguage", "UnsupportedFile", "RuleParseError", "PatternParseError", "InvalidRuleSchemaError", "MatchingError", "FatalError", "SemgrepError", "InternalError", "TooManyMatches", "OutOfMemory"]);
       const scanErrors = Array.isArray(data.errors) ? data.errors : [];

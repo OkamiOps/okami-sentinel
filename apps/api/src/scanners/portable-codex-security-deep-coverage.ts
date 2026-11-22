@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createScanScopeMatcher } from "../scan-scope-paths.js";
 
 import type {
   PortableCandidate,
@@ -123,8 +124,9 @@ export interface PortableDeepCoveragePlan {
 }
 
 /** Enumerates the immutable, model-readable source/configuration universe for a Deep scan. */
-export function createPortableDeepCoveragePlan(snapshotRoot: string): PortableDeepCoveragePlan {
+export function createPortableDeepCoveragePlan(snapshotRoot: string, scopePaths: readonly string[] = []): PortableDeepCoveragePlan {
   const root = path.resolve(snapshotRoot);
+  const inScope = createScanScopeMatcher(scopePaths);
   const files: Array<{ path: string; bytes: number }> = [];
   const visit = (directory: string) => {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
@@ -136,7 +138,7 @@ export function createPortableDeepCoveragePlan(snapshotRoot: string): PortableDe
       }
       if (!entry.isFile()) continue;
       const relative = path.relative(root, absolute).split(path.sep).join("/");
-      if (!isAuditable(relative)) continue;
+      if (!inScope(relative) || !isAuditable(relative)) continue;
       const info = fs.lstatSync(absolute);
       if (info.isSymbolicLink() || !info.isFile() || info.size > MAX_AUDITABLE_FILE_BYTES) {
         throw new Error("deep_coverage_unavailable");
