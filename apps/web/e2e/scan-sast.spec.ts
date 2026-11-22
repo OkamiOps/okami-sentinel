@@ -110,3 +110,16 @@ for (const [status, label, reason] of [
     if (status === "failed") await expect(card).toContainText("Saída JSON inválida");
   });
 }
+
+test("scan report keeps OpenGrep alerts out of AI totals and lists them separately", async ({ page }) => {
+  const state = await setup(page);
+  state.reportFindings = [sastFinding, aiFinding];
+  state.runs[0].severity.high = 1;
+  state.runs[0].severity.total = 1;
+  await page.goto("/scans/scan-one/report");
+  await expect(page.getByText("1 findings critical/high possuem ficha técnica", { exact: false })).toBeVisible();
+  await expect(page.getByText("Alertas de análise estática · OpenGrep", { exact: true })).toBeVisible();
+  await expect(page.getByText("SAST-001", { exact: true })).toBeVisible();
+  await expect(page.getByText("OKS-002", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("1 alertas do OpenGrep listados à parte", { exact: false })).toBeVisible();
+});
