@@ -18,6 +18,7 @@ import { createPortableAssessmentPages, assessmentPageDirectory } from "./portab
 import { createPortableCodexSecurityReportShards } from "./portable-codex-security-report-shards.js";
 import { PORTABLE_CODEX_SECURITY_STAGES } from "./portable-codex-security-profile.js";
 import { assertBudgetResumeCap } from "./portable-budget-partial.js";
+import { readPortableReviewReuse, restorePortableReviewReuse, REVIEW_REUSE_FILE } from "./portable-review-reuse.js";
 
 /** Read-only checkpoint validation, shared by dry-run and actual recovery. */
 export function preflightPortableResume(scanDir: string, mode: "standard" | "deep") {
@@ -92,8 +93,19 @@ export function preflightPortableResume(scanDir: string, mode: "standard" | "dee
   if (discoveryComplete) {
     dossier = groupPortableCandidatesBeforeReview(dossier, artifacts, { resume: true, persist: false });
     if (fs.existsSync(path.join(artifacts, PORTABLE_CANDIDATE_GROUPS_FILE))) accepted.add(PORTABLE_CANDIDATE_GROUPS_FILE);
+    const reuse = readPortableReviewReuse(scanDir);
+    if (reuse) dossier = restorePortableReviewReuse(dossier, snapshotRoot, reuse);
   }
+  const reusedIds = new Set(readPortableReviewReuse(scanDir)?.candidates.map(c => c.candidateId) ?? []);
   for (const stage of PORTABLE_CODEX_SECURITY_STAGES.filter(s => s.id === "dataflow" || s.id === "validation")) {
+    const fullDossier = dossier;
+    dossier = { ...dossier, candidates: dossier.candidates.filter(c => !reusedIds.has(c.id)),
+      assessments: dossier.assessments.filter(a => !reusedIds.has(a.candidateId)) };
+    if (dossier.candidates.length === 0 && reusedIds.size > 0) {
+      dossier = fullDossier;
+      verifiedStages[stage.id] = 0;
+      continue;
+    }
     const paged = fullCoverage && dossier.candidates.length > (stage.id === "validation" ? 8 : 32);
     const pages = paged ? createPortableAssessmentPages(dossier, stage.id, index => {
       // Validate an existing legacy page even when it is not selected for replay.
@@ -117,6 +129,8 @@ export function preflightPortableResume(scanDir: string, mode: "standard" | "dee
       stageSummaries: [...dossier.stageSummaries, ...restoredPages[0]!.stageSummaries.filter(s => s.stage === stage.id)],
       assessments: [...dossier.assessments, ...restoredPages.flatMap(p => p.assessments.filter(a => a.stage === stage.id))] };
     if (resumable.indexOf(previous.stage!) > resumable.indexOf(stage.id) && !prerequisiteComplete) throw new Error("resume_missing_prerequisite_checkpoint");
+    dossier = { ...dossier, candidates: fullDossier.candidates,
+      assessments: [...dossier.assessments, ...fullDossier.assessments.filter(a => reusedIds.has(a.candidateId))] };
   }
   verifiedStages.report = 0;
   for (const shard of prerequisiteComplete ? createPortableCodexSecurityReportShards(dossier) : []) {
@@ -168,7 +182,7 @@ export async function resumeBudgetPortableScan(scanId: string, maxCostUsd: numbe
     }
     assertPortableCodexSecuritySnapshot({ snapshotRoot: path.join(outputDir, "portable-codex-security-snapshot"), snapshotId: previous.snapshotId! });
     fs.writeFileSync(path.join(outputDir, "portable-codex-security-runtime.json"), JSON.stringify(previous), { mode: 0o600 });
-    for (const name of ["portable-codex-security-pricing.json", "scanner-pricing.json", DEEP_PLAN_FILE, STANDARD_PLAN_FILE]) if (fs.existsSync(path.join(original.scanDir, name))) fs.copyFileSync(path.join(original.scanDir, name), path.join(outputDir, name));
+    for (const name of ["portable-codex-security-pricing.json", "scanner-pricing.json", DEEP_PLAN_FILE, STANDARD_PLAN_FILE, REVIEW_REUSE_FILE]) if (fs.existsSync(path.join(original.scanDir, name))) fs.copyFileSync(path.join(original.scanDir, name), path.join(outputDir, name));
     // Preserve accepted recovery fragments and attempt budgets across a new run ID.
     const recoveryRoot = path.join(original.scanDir, "portable-recovery");
     if (fs.existsSync(recoveryRoot)) {

@@ -155,7 +155,7 @@ export function comparableAnalysisLineage(current: ScanRun, candidate: ScanRun):
       (candidate.connection?.protocol ?? candidate.execution?.protocol ?? null);
 }
 
-function repositoryKeyFor(scan: ScanRun): string {
+export function repositoryKeyFor(scan: Pick<ScanRun, "repositoryPath" | "scanDir">): string {
   const value = scan.repositoryPath ?? scan.scanDir;
   return normalizeRepositoryKey(path.resolve(value));
 }

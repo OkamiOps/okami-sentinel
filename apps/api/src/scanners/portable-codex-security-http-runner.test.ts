@@ -19,6 +19,7 @@ import type {
   ModelCapabilities,
   ProviderModel,
   ScanConnectionSnapshot,
+  ScanRun,
 } from "@csb/shared";
 
 import type { StoredProviderConnection } from "../connections-store.js";
@@ -50,6 +51,7 @@ import {
   createPortableCodexSecurityDossier,
   normalizePortableCodexSecurityStageArtifact,
   readPortableCodexSecurityDossier,
+  writePortableCodexSecurityDossier,
   validatePortableCodexSecurityDiscoveryCandidateContext,
   validatePortableCodexSecurityReportCoverage,
 } from "./portable-codex-security-dossier.js";
@@ -61,6 +63,111 @@ import {
 } from "./portable-codex-security-worker.js";
 
 const NOW = new Date("2026-08-11T12:00:00.000Z");
+
+test("Portable reuse skips review sessions, retains report candidates and restores the persisted choice on resume", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-review-reuse-runner-"));
+  const config = configuration(root);
+  config.limits.totalTimeoutMs = 0;
+  const sourceDir = path.join(root, "prior");
+  fs.mkdirSync(sourceDir);
+  createPortableCodexSecuritySnapshot(config.repositoryPath, sourceDir);
+  let prior = createPortableCodexSecurityDossier();
+  for (const stage of PORTABLE_CODEX_SECURITY_STAGES.slice(0, 5)) {
+    const artifact = portableFixtureArtifact(stage.artifact, false);
+    if (stage.id === "dataflow" || stage.id === "validation") artifact.assessments[0].claim = "Request input reaches the account lookup sink";
+    prior = applyPortableCodexSecurityStageArtifact(prior, artifact);
+  }
+  writePortableCodexSecurityDossier(path.join(sourceDir, "portable-codex-security-results"), prior);
+  const source = { id: "prior", scanDir: sourceDir, mode: "deep", cost: { estimatedUsd: 1 } } as ScanRun;
+  const specs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }> = [];
+  const logs: string[] = [];
+  try {
+    const result = await runPortableCodexSecurity(config, dependencies({
+      reviewReuseSources: () => [source], createSession: dockerPortableFixtureSessionFactory(specs), log: (line: string) => logs.push(line),
+    }));
+    assert.equal(result.runtime.status, "completed");
+    assert.equal(specs.filter(({ spec }) => /stage "(?:dataflow|validation)"/.test(spec.instructions)).length, 0);
+    assert.ok(specs.some(({ spec }) => /stage "report"/.test(spec.instructions) && spec.resultArtifactValidationContext?.dossier?.candidates.length === 1));
+    assert.ok(logs.some(line => line.includes('"type":"review_reused"')));
+    const final = readPortableCodexSecurityDossier(path.join(config.outputDir, "portable-codex-security-results"))!;
+    assert.equal(final.assessments.length, 2);
+    const runtime = readPortableCodexSecurityRuntime(config.outputDir)!;
+    fs.writeFileSync(path.join(config.outputDir, "portable-codex-security-runtime.json"), JSON.stringify({ ...runtime, status: "failed", stage: "report" }));
+    const reuseBefore = fs.readFileSync(path.join(config.outputDir, "portable-codex-security-review-reuse.json"));
+    assert.equal(preflightPortableResume(config.outputDir, "standard").dossier.assessments.length, 2);
+    remove(sourceDir);
+    const resultsDir = path.join(config.outputDir, "portable-codex-security-results");
+    fs.rmSync(resultsDir, { recursive: true });
+    const resumedSpecs: typeof specs = [];
+    const resumed = await runPortableCodexSecurity(config, dependencies({ resumeDiscovery: true,
+      reviewReuseSources: () => { throw new Error("must not reselect sources"); },
+      createSession: dockerPortableFixtureSessionFactory(resumedSpecs),
+    }));
+    assert.equal(resumed.runtime.status, "completed");
+    assert.equal(resumedSpecs.length, 0);
+    assert.deepEqual(fs.readFileSync(path.join(config.outputDir, "portable-codex-security-review-reuse.json")), reuseBefore);
+  } finally { remove(root); }
+});
+
+test("Portable mixed reuse keeps reused candidates out of review pages and records stage usage", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-mixed-reuse-"));
+  const config = configuration(root);
+  config.limits.totalTimeoutMs = 0;
+  const priorDir = path.join(root, "prior");
+  fs.mkdirSync(priorDir);
+  createPortableCodexSecuritySnapshot(config.repositoryPath, priorDir);
+  let prior = createPortableCodexSecurityDossier();
+  for (const stage of PORTABLE_CODEX_SECURITY_STAGES.slice(0, 5)) {
+    const artifact = portableFixtureArtifact(stage.artifact, false);
+    if (stage.id === "dataflow" || stage.id === "validation") artifact.assessments[0].claim = "Request input reaches the account lookup sink";
+    prior = applyPortableCodexSecurityStageArtifact(prior, artifact);
+  }
+  writePortableCodexSecurityDossier(path.join(priorDir, "portable-codex-security-results"), prior);
+  const reviewed: string[][] = [];
+  try {
+    const result = await runPortableCodexSecurity(config, dependencies({
+      reviewReuseSources: () => [{ id: "prior", scanDir: priorDir, cost: null } as ScanRun],
+      createSession: async (input: { spec: AgentSessionSpec; toolSurface: readonly string[] }) => {
+        const stage = String(input.spec.instructions.match(/stage "([a-z-]+)"/)?.[1]);
+        const artifact = PORTABLE_CODEX_SECURITY_STAGES.find(s => s.id === stage)!.artifact;
+        const carried = input.spec.resultArtifactValidationContext!.dossier;
+        const isReview = stage === "dataflow" || stage === "validation";
+        const contents = portableFixtureArtifact(artifact, input.spec.resultArtifactValidationContext?.reportShard !== undefined,
+          carried.candidates.find(c => c.category === "authorization")?.id);
+        if (stage === "discovery") contents.candidates.push({ ...contents.candidates[0], id: "other", category: "injection" });
+        if (isReview) {
+          reviewed.push(carried.candidates.map(c => c.category));
+          assert.deepEqual(carried.candidates.map(c => c.category), ["injection"]);
+          contents.assessments = carried.candidates.map(c => ({ candidateId: c.id, status: "rejected", reason: "sanitized",
+            claim: "Input is sanitized before reaching the sink", evidence: c.anchors }));
+        }
+        const normalized = normalizeResultArtifactInput({ path: artifact, content: contents },
+          PORTABLE_STAGE_RESULT_ARTIFACT_CONTRACT, input.spec.snapshotRoot, input.spec.resultArtifactValidationContext);
+        assert.ok(normalized, `mixed reuse artifact rejected for ${stage}`);
+        fs.writeFileSync(path.join(input.spec.artifactRoot, artifact), normalized.content as string);
+        const session = completedStageSession(stage, artifact, `${stage} complete`);
+        return { ...session, async *run() {
+          if (stage === "inventory") yield { type: "usage", usage: { inputTokens: 1, cachedInputTokens: null,
+            cacheWriteInputTokens: null, outputTokens: null, reasoningTokens: null } } as const;
+          if (isReview) yield { type: "usage", usage: { inputTokens: 100, cachedInputTokens: 0,
+            cacheWriteInputTokens: 0, outputTokens: 10, reasoningTokens: null } } as const;
+          yield* session.run();
+        } };
+      },
+    }));
+    assert.equal(result.runtime.status, "completed");
+    assert.deepEqual(reviewed, [["injection"], ["injection"]]);
+    assert.equal(result.runtime.reviewStages?.dataflow?.usage.inputTokens, 100);
+    assert.equal(result.runtime.reviewStages?.validation?.usage.outputTokens, 10);
+    assert.equal(result.runtime.reviewStages?.validation?.usage.outputTokensKnown, true);
+    assert.equal(result.runtime.reviewStages?.validation?.estimatedCostUsd, null);
+    const dossier = readPortableCodexSecurityDossier(path.join(config.outputDir, "portable-codex-security-results"))!;
+    assert.equal(dossier.candidates.length, 2);
+    assert.equal(dossier.assessments.length, 4);
+    fs.writeFileSync(path.join(config.outputDir, "portable-codex-security-runtime.json"), JSON.stringify({ ...result.runtime, status: "failed", stage: "report" }));
+    assert.equal(preflightPortableResume(config.outputDir, "standard").dossier.assessments.length, 4);
+  } finally { remove(root); }
+});
 
 test("Portable assessments do not impose cumulative action ceilings", () => {
   const limits = portableAssessmentPageSessionLimits({
@@ -330,6 +437,7 @@ function costBudget(
 
 function dependencies(overrides: Record<string, unknown> = {}) {
   return {
+    reviewReuseSources: () => [],
     prepareGraph: async () => ({ status: "unavailable" as const, cacheHit: false, durationMs: 0, nodes: 0, edges: 0, reason: "runtime_unavailable" as const }),
     getSnapshot: () => snapshot(),
     getConnection: () => connection(),
@@ -1260,6 +1368,7 @@ test("Portable Codex Security cancels a hung stage at the total deadline, never 
   t.mock.timers.enable({ apis: ["setTimeout"] });
   t.after(() => t.mock.timers.reset());
   let clockMs = 0;
+  const reviewReuseSources = t.mock.fn(() => []);
   let creates = 0;
   let cancelCalls = 0;
   let rejectLate: ((error: Error) => void) | undefined;
@@ -1272,6 +1381,7 @@ test("Portable Codex Security cancels a hung stage at the total deadline, never 
   try {
     const running = runPortableCodexSecurity(config, dependencies({
         clockMs: () => clockMs,
+        reviewReuseSources,
         createSession: async () => {
           creates += 1;
           return {
@@ -1283,7 +1393,9 @@ test("Portable Codex Security cancels a hung stage at the total deadline, never 
           };
         },
       }));
-    await started;
+    await Promise.race([started, running]);
+    assert.equal(creates, 1);
+    assert.equal(cancelCalls, 0);
     clockMs = config.limits.totalTimeoutMs - 1;
     t.mock.timers.tick(clockMs);
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -1299,6 +1411,7 @@ test("Portable Codex Security cancels a hung stage at the total deadline, never 
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.equal(creates, 1);
     assert.equal(cancelCalls, 1);
+    assert.equal(reviewReuseSources.mock.callCount(), 0);
     assert.deepEqual(unhandled, []);
   } finally {
     remove(root);

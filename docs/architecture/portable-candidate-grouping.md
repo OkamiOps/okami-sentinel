@@ -24,3 +24,25 @@ verdict drift do not scale with duplicate count.
   and the representative's decisive assessment (validation, else dataflow) as
   the verdict shared by all members. Scans without the file report
   `recorded: false`.
+
+## Cited review reuse across scans
+
+After grouping, Portable can reuse both assessments of a candidate from the five
+most recent earlier completed or budget-partial Portable runs of the same
+regression repository identity. Deep only accepts Deep sources. Category and the
+complete anchor set must match; full raw line-range bytes for every candidate
+anchor and both assessments' citations must be identical in the retained and new
+snapshots. Safe bounded reads reject escapes, symlinks and missing lines.
+
+Only mechanically gated confirmed/rejected, nonlegacy, nondowngraded verdicts
+qualify. Inconclusive and insufficient-evidence assessments never qualify.
+`portable-codex-security-review-reuse.json` privately retains the chosen source,
+remapped assessments, evidence hashes and estimated savings. Resume restores that
+decision before planning checkpoints; it never selects a different source.
+Reused candidates bypass dataflow/validation sessions but remain in report
+generation and pass the current snapshot's verdict gate on API reads.
+
+Runtime review-stage usage supports an estimated avoided cost per candidate.
+Historical sources fall back to total scan cost per candidate, explicitly marked
+as an upper bound; unknown pricing stays unavailable. Savings are displayed
+separately and never subtracted from billed scan cost.

@@ -1795,6 +1795,7 @@ export interface AiVerdictMissingEvidence {
 
 /** TP/FP only when cited; otherwise inconclusive with what is still needed to decide. */
 export interface AiVerdict {
+  reusedFrom?: { scanId: string; candidateId: string };
   candidateId: string;
   category: string;
   hypothesis: string;
@@ -1809,7 +1810,15 @@ export interface AiVerdict {
   missingEvidence: AiVerdictMissingEvidence[];
 }
 
+export interface ScanReviewReuseSummary {
+  reusedCount: number;
+  reviewedCount: number;
+  estimatedCostAvoidedUsd: number | null;
+  upperBound: boolean;
+}
+
 export interface ScanAiVerdicts {
+  reuse?: ScanReviewReuseSummary;
   scanId: string;
   available: boolean;
   snapshotAvailable: boolean;
