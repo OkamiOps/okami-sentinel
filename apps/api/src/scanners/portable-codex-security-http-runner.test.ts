@@ -1734,6 +1734,38 @@ test("Portable reservation blocks unaffordable turns before upstream in producti
   }
 });
 
+for (const countedInputTokens of [1_000, null]) {
+  test(`a low cap permits only affordable counted turns, with full-window fallback: ${countedInputTokens}`, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-counted-budget-"));
+    const config = configuration(root);
+    config.costBudget = costBudget({ maxCostUsd: 0.01 });
+    let calls = 0;
+    try {
+      await assert.rejects(runPortableCodexSecurity(config, dependencies({
+        createSession: async (input: { spec: AgentSessionSpec }) => ({
+          ...completedStageSession("inventory", "inventory.json", "done"),
+          async *run() {
+            while (true) {
+              const request = input.spec.beforeModelRequest!({ operation: "responses", body: { input: "prompt", max_output_tokens: 4_096 } }, countedInputTokens);
+              const reserved = readPortableCodexSecurityRuntime(config.outputDir)!.budgetReservedUsd!;
+              assert.ok(reserved <= 0.005096);
+              assert.ok((request.body as Record<string, number>).max_output_tokens! >= 1_000);
+              calls++;
+              assert.ok(calls * 0.002 <= config.costBudget!.maxCostUsd);
+              yield { type: "usage", usage: { inputTokens: 1_000, cachedInputTokens: 0, cacheWriteInputTokens: 0,
+                outputTokens: 1_000, reasoningTokens: null } } as const;
+            }
+          },
+        }),
+      })), { code: "cost_limit_reached" });
+      const runtime = readPortableCodexSecurityRuntime(config.outputDir)!;
+      assert.equal(calls, countedInputTokens === null ? 0 : 4);
+      assert.equal(runtime.budgetPartial!.spentUsd, calls * 0.002);
+      assert.ok(runtime.budgetPartial!.spentUsd <= config.costBudget.maxCostUsd);
+    } finally { remove(root); }
+  });
+}
+
 test("Portable routes OpenGrep through ranked review to cited verdicts over HTTP and replays the same checkpoint", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-sast-http-"));
   t.after(() => remove(root));

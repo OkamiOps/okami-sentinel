@@ -13,6 +13,27 @@ const pricing: FrozenScannerPricing = {
   maximumInputTokensInclusive: null,
 };
 
+test("an authoritative full request count reserves far below the window and permits a low cap", () => {
+  const request = { operation: "responses" as const, body: { previous_response_id: "history", max_output_tokens: 4_096 } };
+  const budget = createPortableTurnBudget();
+  assert.equal(budget.reserve(request, pricing, 0.01, 128_000), null);
+  const counted = budget.reserve(request, pricing, 0.01, 128_000, 713)!;
+  assert.equal(counted.reservedUsd, (713 + 4_096) / 1_000_000);
+  assert.ok(counted.reservedUsd < (128_000 + 4_096) / 1_000_000 / 20);
+  assert.ok(counted.reservedUsd <= 0.01);
+  assert.equal(budget.reserve(request, pricing, 0.01, 128_000, null), null);
+});
+
+test("invalid counts fall back to the window; valid counts cannot exceed it or bypass a pricing tier", () => {
+  const request = { operation: "responses" as const, body: { max_output_tokens: 4_096 } };
+  for (const count of [undefined, null, -1, NaN, 0.5, Infinity]) {
+    assert.equal(createPortableTurnBudget().reserve(request, pricing, 0.01, 128_000, count), null);
+  }
+  const clipped = createPortableTurnBudget().reserve(request, pricing, 1, 128_000, 200_000)!;
+  assert.equal(clipped.reservedUsd, (128_000 + 4_096) / 1_000_000);
+  assert.equal(createPortableTurnBudget().reserve(request, { ...pricing, maximumInputTokensInclusive: 500 }, 1, 128_000, 713), null);
+});
+
 test("reservations include the entire input window, not a byte/token heuristic or a Responses delta", () => {
   for (const body of [{ messages: [{ role: "user", content: "你".repeat(200) }] }, { previous_response_id: "history" }, {}]) {
     assert.equal(reservePortableTurn({ operation: "responses", body }, pricing, 0.05, 128_000), null);

@@ -276,6 +276,7 @@ class HttpAgentUpstream implements AgentUpstream {
   readonly #operation: AgentWireOperation | null;
   readonly #transport: typeof fetch;
   readonly #maxRetries: number;
+  readonly #canCountInput: boolean;
   readonly #customEndpointLocalOverride: boolean | null;
   readonly #pinnedCustomEndpointDispatcher:
     | ((endpoint: string, allowInsecureLocalhost: boolean) => Promise<UndiciDispatcher>)
@@ -291,6 +292,7 @@ class HttpAgentUpstream implements AgentUpstream {
     this.#operation = route?.operation ?? null;
     this.#transport = options.transport ?? DEFAULT_HTTP_AGENT_TRANSPORT;
     this.#maxRetries = options.maxRetries ?? 2;
+    this.#canCountInput = options.routeKind === "openai-api" && options.protocol === "openai-responses";
     this.#customEndpointLocalOverride = route?.customEndpointLocalOverride ?? null;
     this.#pinnedCustomEndpointDispatcher = this.#customEndpointLocalOverride === null
       ? null
@@ -324,8 +326,26 @@ class HttpAgentUpstream implements AgentUpstream {
     }
   }
 
-  async #requestOnce(request: AgentUpstreamRequest): Promise<unknown> {
-    if (this.#endpoint === null || this.#operation === null || request.operation !== this.#operation) {
+  async countInputTokens(request: AgentUpstreamRequest): Promise<number | null> {
+    if (!this.#canCountInput || request.operation !== "responses" || !request.body || typeof request.body !== "object" || Array.isArray(request.body)) return null;
+    const { max_output_tokens: _outputCap, ...input } = request.body as Record<string, unknown>;
+    const fields = new Set(["model", "input", "instructions", "previous_response_id", "tools", "tool_choice",
+      "reasoning", "text", "parallel_tool_calls", "personality", "truncation"]);
+    if (Object.keys(input).some(key => !fields.has(key)) || input.truncation === "auto") return null;
+    try {
+      // OpenAI counts framing, tools and immutable previous_response_id history, not just delta text.
+      // https://developers.openai.com/api/docs/guides/token-counting
+      const result = await this.#requestOnce({ ...request, body: input,
+        signal: AbortSignal.any([request.signal, AbortSignal.timeout(10_000)]) }, "https://api.openai.com/v1/responses/input_tokens");
+      if (!result || typeof result !== "object") return null;
+      if ((result as Record<string, unknown>).object !== "response.input_tokens") return null;
+      const count = (result as Record<string, unknown>).input_tokens;
+      return typeof count === "number" && Number.isSafeInteger(count) && count >= 0 ? count : null;
+    } catch { return null; }
+  }
+
+  async #requestOnce(request: AgentUpstreamRequest, endpoint = this.#endpoint): Promise<unknown> {
+    if (endpoint === null || this.#operation === null || request.operation !== this.#operation) {
       throw new HttpAgentUpstreamError("protocol_unsupported");
     }
     const serialized = serializeBody(request.body);
@@ -340,7 +360,7 @@ class HttpAgentUpstream implements AgentUpstream {
         if (this.#pinnedCustomEndpointDispatcher !== null && this.#customEndpointLocalOverride !== null) {
           pinnedDispatcher = await createAbortablePinnedDispatcher(
             this.#pinnedCustomEndpointDispatcher,
-            this.#endpoint,
+            endpoint,
             this.#customEndpointLocalOverride,
             controller.signal,
           );
@@ -357,7 +377,7 @@ class HttpAgentUpstream implements AgentUpstream {
           }
         }
         response = await raceWithAbort(
-          Promise.resolve().then(() => this.#transport(this.#endpoint as string, {
+          Promise.resolve().then(() => this.#transport(endpoint, {
             method: "POST",
             headers,
             body: serialized,

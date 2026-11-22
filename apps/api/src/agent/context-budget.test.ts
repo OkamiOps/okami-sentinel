@@ -98,6 +98,41 @@ test("Responses continuation exceeds ceiling before another upstream call", asyn
   assert.equal(attempt.requests(), 1);
 });
 
+for (const mode of ["counted", "failed", "missing-usage", "unknown-chain", "unbudgeted"] as const) {
+  test(`authoritative counting reaches the gate with safe continuation fallback: ${mode}`, async () => {
+    let calls = 0, counts = 0;
+    const gated: Array<number | null | undefined> = [];
+    const bodies: unknown[] = [];
+    const session = createConstrainedWireSession({ limits, signal: new AbortController().signal,
+      ...(mode === "unbudgeted" ? {} : { beforeModelRequest: (request, count) => { gated.push(count); return request; } }),
+      host: { minimumOutputBytes() { return 1; }, async call() { return { content: "source" }; } },
+      upstream: {
+        async countInputTokens(request) {
+          counts++;
+          bodies.push(request.body);
+          if (mode === "failed") throw new Error("count unavailable");
+          return calls === 0 ? 100 : 230;
+        },
+        async request() { calls++; return {}; },
+      },
+      adapter: {
+        nextRequest() { return { operation: "responses", body: { input: calls === 0 ? "full prompt" : "delta",
+          ...(calls === 0 && mode !== "unknown-chain" ? {} : { previous_response_id: "immutable-history" }), max_output_tokens: 1_024 } }; },
+        readResponse() { return { toolCalls: calls === 1 ? [{ id: "read", name: "workspace.read", input: { path: "a.ts" } }] : [],
+          text: "done", structured: null, usage: mode === "missing-usage" ? null : {
+            inputTokens: 100, outputTokens: 120, reasoningTokens: 100, cachedInputTokens: 0, cacheWriteInputTokens: 0,
+          } }; },
+      },
+    });
+    for await (const _ of session.run()) { /* consume */ }
+    assert.equal(calls, 2);
+    assert.deepEqual(gated, mode === "unbudgeted" ? [] : mode === "failed" ? [null, null]
+      : mode === "missing-usage" ? [100, null] : mode === "unknown-chain" ? [null, 230] : [100, 230]);
+    assert.equal(counts, mode === "unbudgeted" ? 0 : mode === "missing-usage" || mode === "unknown-chain" ? 1 : 2);
+    if (mode === "counted") assert.deepEqual(bodies[1], { input: "delta", previous_response_id: "immutable-history", max_output_tokens: 1_024 });
+  });
+}
+
 for (const changes of [false, true]) test(`identical invalid artifacts stop after three failures; changed payloads allowed: ${changes}`, async () => {
   let requests = 0;
   const session = createConstrainedWireSession({ limits, terminalMode: "artifact-write", signal: new AbortController().signal,

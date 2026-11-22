@@ -68,6 +68,48 @@ test("AgentUpstream resolves the official route on the server and never accepts 
   assert.equal(transport.calls[0]?.headers.get("content-type"), "application/json");
 });
 
+test("OpenAI Responses counts the complete immutable request including retained history", async () => {
+  const transport = transcript([json(200, { object: "response.input_tokens", input_tokens: 713 })]);
+  const upstream = createHttpAgentUpstream({ routeKind: "openai-api", protocol: "openai-responses",
+    credentials: { apiKey: "test-secret" }, transport: transport.fetch });
+  const body = { model: "selected-model", input: [{ type: "function_call_output", call_id: "read", output: "delta" }],
+    previous_response_id: "immutable-history", tools: [{ type: "function", name: "workspace_read", parameters: {} }],
+    reasoning: { effort: "low" }, max_output_tokens: 4_096 };
+  assert.equal(await upstream.countInputTokens!({ operation: "responses", body, signal: new AbortController().signal }), 713);
+  assert.deepEqual(transport.calls.map(call => call.url), ["https://api.openai.com/v1/responses/input_tokens"]);
+  const { max_output_tokens: _cap, ...countedBody } = body;
+  assert.deepEqual(JSON.parse(String(transport.calls[0]!.init.body)), countedBody);
+  assert.equal(body.max_output_tokens, 4_096);
+});
+
+test("input counting fails closed without retries for failures, invalid counts, and unknown request fields", async () => {
+  for (const reply of [json(503, {}), json(200, {}), json(200, { input_tokens: 713 }),
+    json(200, { object: "response.input_tokens", input_tokens: -1 }), json(200, { object: "response.input_tokens", input_tokens: 1.5 })]) {
+    const transport = transcript([reply]);
+    const upstream = createHttpAgentUpstream({ routeKind: "openai-api", protocol: "openai-responses",
+      credentials: { apiKey: "test-secret" }, transport: transport.fetch });
+    assert.equal(await upstream.countInputTokens!({ operation: "responses", body: { model: "m", input: "x" }, signal: new AbortController().signal }), null);
+    assert.equal(transport.calls.length, 1);
+  }
+  const transport = transcript([]);
+  const upstream = createHttpAgentUpstream({ routeKind: "openai-api", protocol: "openai-responses",
+    credentials: { apiKey: "test-secret" }, transport: transport.fetch });
+  for (const body of [{ input: "x", unknown_context: "unaccounted" }, { input: "x", truncation: "auto" }, { conversation: "mutable" }]) {
+    assert.equal(await upstream.countInputTokens!({ operation: "responses", body, signal: new AbortController().signal }), null);
+  }
+  assert.equal(transport.calls.length, 0);
+});
+
+test("Grok OAuth and other non-authoritative protocols never use a text count as a request bound", async () => {
+  for (const [routeKind, protocol] of [["xai-oauth", "xai-oauth-responses"], ["xai-api", "openai-responses"],
+    ["anthropic-api", "anthropic-messages"], ["gemini-api", "openai-chat"], ["custom-openai-compatible", "openai-responses"]] as const) {
+    const transport = transcript([]);
+    const upstream = createHttpAgentUpstream({ routeKind, protocol, credentials: { apiKey: "test-secret" }, transport: transport.fetch });
+    assert.equal(await upstream.countInputTokens!({ operation: "responses", body: { model: "m", input: "x" }, signal: new AbortController().signal }), null);
+    assert.equal(transport.calls.length, 0);
+  }
+});
+
 test("AgentUpstream pins official origins and the documented MiniMax Token Plan header", async () => {
   const cases = [
     ["xai-api", "openai-responses", "responses", "https://api.x.ai/v1/responses", "authorization", "Bearer xai-secret"],

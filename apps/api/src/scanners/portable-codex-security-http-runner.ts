@@ -694,12 +694,12 @@ export async function runPortableCodexSecurity(
         let graphContext = discoveryContext;
         let reservation: ReturnType<typeof turnBudget.reserve> = null;
         const spec: AgentSessionSpec = {
-        ...(safeConfiguration.costBudget === undefined ? {} : { beforeModelRequest: (request) => {
+        ...(safeConfiguration.costBudget === undefined ? {} : { beforeModelRequest: (request, countedInputTokens) => {
           const budget = safeConfiguration.costBudget!;
           const spent = runtime.usage.reported
             ? estimateFrozenScannerUsageCost(runtime.usage, budget.pricing)?.estimatedUsd
             : 0;
-          reservation = spent === undefined ? null : turnBudget.reserve(request, budget.pricing, budget.maxCostUsd - spent, resolved.model.contextWindow);
+          reservation = spent === undefined ? null : turnBudget.reserve(request, budget.pricing, budget.maxCostUsd - spent, resolved.model.contextWindow, countedInputTokens);
           if (reservation !== null) return reservation.request;
           costBudgetStop = spent === undefined || resolved.model.contextWindow === null ? "cost_budget_unavailable" : "cost_limit_reached";
           throw new PortableCodexSecurityRunnerError(costBudgetStop);
@@ -1062,12 +1062,12 @@ export async function runPortableCodexSecurity(
             credentials,
             toolSurface: ["workspace.read", "results.write"],
             spec: {
-              ...(budget === undefined || passBudget === null ? {} : { beforeModelRequest: (request) => {
+              ...(budget === undefined || passBudget === null ? {} : { beforeModelRequest: (request, countedInputTokens) => {
                 const spent = passCost();
                 if (spent === null) { budgetRefused = true; throw new PortableCodexSecurityRunnerError("cost_budget_unavailable"); }
                 const total = runtime.usage.reported ? estimateFrozenScannerUsageCost(runtime.usage, budget.pricing)?.estimatedUsd : 0;
                 businessReservation = total === undefined ? null : turnBudget.reserve(request, budget.pricing,
-                  Math.min(passBudget - spent, budget.maxCostUsd - total), resolved.model.contextWindow);
+                  Math.min(passBudget - spent, budget.maxCostUsd - total), resolved.model.contextWindow, countedInputTokens);
                 if (businessReservation === null) { budgetRefused = true; throw new PortableCodexSecurityRunnerError("cost_limit_reached"); }
                 return businessReservation.request;
               } }),
