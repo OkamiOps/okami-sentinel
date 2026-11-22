@@ -54,6 +54,7 @@ for (const budget of [false, true]) {
     const f = fixture();
     try {
       const previous = readPortableCodexSecurityRuntime(f.scan)!;
+      previous.budgetReservedUsd = 0.14;
       if (budget) {
         previous.status = "incomplete";
         previous.budgetPartial = { stopReason: "budget", spentUsd: 2, maxCostUsd: 2,
@@ -63,10 +64,12 @@ for (const budget of [false, true]) {
       assert.equal(prepared.status, "preparing");
       assert.equal(prepared.completedAt, null);
       assert.equal(prepared.error, null);
+      assert.equal(prepared.budgetReservedUsd, previous.budgetReservedUsd);
       assert.deepEqual(prepared.budgetPartial, previous.budgetPartial);
       assert.equal(prepared.snapshotId, previous.snapshotId);
       assert.equal(prepared.stage, previous.stage);
       writePortableCodexSecurityRuntime(f.scan, prepared);
+      assert.equal(readPortableCodexSecurityRuntime(f.scan)?.budgetReservedUsd, previous.budgetReservedUsd);
       const launched = { id: "new", scanDir: f.scan, engine: "codex-security", status: "running",
         startedAt: new Date().toISOString(), execution: { executionProfile: "portable", profileVersion: previous.profileVersion, methodologyRef: previous.methodologyRef },
         severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0, total: 0 } } as ScanRun;

@@ -1,7 +1,7 @@
 import { projectionBudget } from "../graphify/projection-budget.js";
 import { readOpengrepFindings, runOpengrep } from "../sast/opengrep.js";
 import { addPortableSastCandidates, planPortableSastTriage, readPortableSastTriage, writePortableSastTriage } from "./portable-sast-triage.js";
-import { reservePortableTurn } from "./portable-turn-budget.js";
+import { createPortableTurnBudget } from "./portable-turn-budget.js";
 import { assertBudgetResumeCap, syncBudgetArtifact, writeBudgetPartial } from "./portable-budget-partial.js";
 import { buildDiscoveryGraphContext, buildPartitionRelations } from "../graphify/discovery-context.js";
 import { buildDiscoveryPriorities } from "../graphify/discovery-priorities.js";
@@ -307,6 +307,13 @@ export async function runPortableCodexSecurity(
 
   let releaseRedaction = () => undefined;
   let costBudgetStop: "cost_budget_unavailable" | "cost_limit_reached" | null = null;
+  const turnBudget = createPortableTurnBudget(resumeState?.budgetReservedUsd ?? 0, (outstandingUsd) => {
+    runtime = { ...runtime, budgetReservedUsd: outstandingUsd };
+    if (runtimeWritable) {
+      writePortableCodexSecurityRuntime(outputDir, runtime);
+      syncBudgetArtifact(path.join(outputDir, "portable-codex-security-runtime.json"));
+    }
+  });
   const work = new Map<string, ScanBudgetWorkItem>(PORTABLE_CODEX_SECURITY_STAGES.map(stage =>
     [stage.id, { stage: stage.id, page: null, artifactPath: null }]));
   const completedWork = new Set<string>();
@@ -339,7 +346,8 @@ export async function runPortableCodexSecurity(
       ? { snapshotRoot: path.join(outputDir, "portable-codex-security-snapshot"), snapshotId: previous.snapshotId! }
       : createPortableCodexSecuritySnapshot(safeConfiguration.repositoryPath, outputDir);
     if (previous) {
-      runtime = { ...runtime, startedAt: previous.startedAt, usage: previous.usage, ...(previous.reviewStages ? { reviewStages: previous.reviewStages } : {}) };
+      runtime = { ...runtime, startedAt: previous.startedAt, usage: previous.usage, budgetReservedUsd: previous.budgetReservedUsd ?? 0,
+        ...(previous.reviewStages ? { reviewStages: previous.reviewStages } : {}) };
       const stop = costBudgetStopCode(safeConfiguration.costBudget, runtime.usage);
       if (stop !== null && (previous.usage.reported || !previous.budgetPartial)) throw new PortableCodexSecurityRunnerError(stop);
     }
@@ -684,15 +692,16 @@ export async function runPortableCodexSecurity(
           if (path.basename(artifactRoot) === "discovery") fs.writeFileSync(priorProjectionFile, JSON.stringify(discoveryContext), { mode: 0o600 });
         }
         let graphContext = discoveryContext;
+        let reservation: ReturnType<typeof turnBudget.reserve> = null;
         const spec: AgentSessionSpec = {
         ...(safeConfiguration.costBudget === undefined ? {} : { beforeModelRequest: (request) => {
           const budget = safeConfiguration.costBudget!;
           const spent = runtime.usage.reported
             ? estimateFrozenScannerUsageCost(runtime.usage, budget.pricing)?.estimatedUsd
             : 0;
-          const reserved = spent === undefined ? null : reservePortableTurn(request, budget.pricing, budget.maxCostUsd - spent);
-          if (reserved !== null) return reserved;
-          costBudgetStop = spent === undefined ? "cost_budget_unavailable" : "cost_limit_reached";
+          reservation = spent === undefined ? null : turnBudget.reserve(request, budget.pricing, budget.maxCostUsd - spent, resolved.model.contextWindow);
+          if (reservation !== null) return reservation.request;
+          costBudgetStop = spent === undefined || resolved.model.contextWindow === null ? "cost_budget_unavailable" : "cost_limit_reached";
           throw new PortableCodexSecurityRunnerError(costBudgetStop);
         } }),
         connectionId: resolved.connection.id,
@@ -821,6 +830,8 @@ export async function runPortableCodexSecurity(
             } } };
           }
           runtime = { ...runtime, usage, updatedAt: now().toISOString() };
+          if (update.inputTokens !== null && update.outputTokens !== null) reservation?.settle();
+          reservation = null;
           if (runtimeWritable) writePortableCodexSecurityRuntime(outputDir, runtime);
           const stop = costBudgetStopCode(safeConfiguration.costBudget, usage);
           if (stop !== null) {
@@ -1016,6 +1027,7 @@ export async function runPortableCodexSecurity(
       const pricing = budget?.pricing ?? readScannerPricingQuote(outputDir);
       let passUsage = emptyUsage();
       let budgetRefused = false;
+      let businessReservation: ReturnType<typeof turnBudget.reserve> = null;
       const passCost = () => {
         if (!passUsage.reported) return 0;
         const cost = pricing ? estimateFrozenScannerUsageCost(passUsage, pricing)
@@ -1053,9 +1065,11 @@ export async function runPortableCodexSecurity(
               ...(budget === undefined || passBudget === null ? {} : { beforeModelRequest: (request) => {
                 const spent = passCost();
                 if (spent === null) { budgetRefused = true; throw new PortableCodexSecurityRunnerError("cost_budget_unavailable"); }
-                const reserved = reservePortableTurn(request, budget.pricing, passBudget - spent);
-                if (reserved === null) { budgetRefused = true; throw new PortableCodexSecurityRunnerError("cost_limit_reached"); }
-                return reserved;
+                const total = runtime.usage.reported ? estimateFrozenScannerUsageCost(runtime.usage, budget.pricing)?.estimatedUsd : 0;
+                businessReservation = total === undefined ? null : turnBudget.reserve(request, budget.pricing,
+                  Math.min(passBudget - spent, budget.maxCostUsd - total), resolved.model.contextWindow);
+                if (businessReservation === null) { budgetRefused = true; throw new PortableCodexSecurityRunnerError("cost_limit_reached"); }
+                return businessReservation.request;
               } }),
               connectionId: resolved.connection.id,
               routeKind: resolved.connection.routeKind,
@@ -1075,6 +1089,8 @@ export async function runPortableCodexSecurity(
           observeUsage: (event) => {
             passUsage = addPortableCodexSecurityUsage(passUsage, event.usage);
             runtime = { ...runtime, usage: addPortableCodexSecurityUsage(runtime.usage, event.usage), updatedAt: now().toISOString() };
+            if (event.usage.inputTokens !== null && event.usage.outputTokens !== null) businessReservation?.settle();
+            businessReservation = null;
             if (runtimeWritable) writePortableCodexSecurityRuntime(outputDir, runtime);
             return passCost();
           },
@@ -1328,6 +1344,7 @@ function productionSessionFactory(
       protocol: input.connection.protocol,
       credentials: input.credentials,
       resolveAccessToken,
+      ...(input.spec.beforeModelRequest === undefined ? {} : { maxRetries: 0 }),
     });
     return createAgentSession({ ...input.spec, probe: input.capability.capabilities }, upstream);
   };

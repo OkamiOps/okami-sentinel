@@ -11,6 +11,7 @@ import { readPortableSastTriage } from "./portable-sast-triage.js";
 import { materializePortableCodexSecurityReportShard } from "./portable-codex-security-report-shards.js";
 import assert from "node:assert/strict";
 import { reservePortableTurn } from "./portable-turn-budget.js";
+import type { HttpAgentUpstreamOptions } from "../agent/http-agent-upstream.js";
 import { createAgentSession } from "../agent/session-runner.js";
 import { readPortableCodexSecurityRuntime } from "./portable-codex-security-runtime.js";
 import { preflightPortableResume } from "./resume-portable-scan.js";
@@ -1613,16 +1614,88 @@ test("Portable turn reservations clamp partially affordable output and preserve 
     ["chat-completions", "max_completion_tokens"], ["chat-completions", "max_tokens"],
   ] as const) {
     const request = { operation, body: { [key]: 8_192, messages: [] } };
-    const clamped = reservePortableTurn(request, pricing, 0.004)!;
+    const clamped = reservePortableTurn(request, pricing, 0.004, 1_024)!;
     const cap = (clamped.body as Record<string, number>)[key]!;
     assert.ok(cap >= 1_024 && cap < 8_192);
-    assert.equal(reservePortableTurn(request, pricing, 1), request);
+    assert.equal(reservePortableTurn(request, pricing, 1, 1_024), request);
     assert.equal(request.body[key], 8_192);
-    assert.equal(reservePortableTurn(request, pricing, 0.0001), null);
+    assert.equal(reservePortableTurn(request, pricing, 0.0001, 1_024), null);
   }
-  const defaulted = reservePortableTurn({ operation: "responses", body: {} }, pricing, 1)!;
+  const defaulted = reservePortableTurn({ operation: "responses", body: {} }, pricing, 1, 1_024)!;
   assert.equal((defaulted.body as Record<string, number>).max_output_tokens, 65_536);
 });
+
+test("Portable business review reserves provider-held input and cannot exceed its share or the scan cap", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-business-budget-"));
+  try {
+    const config = { ...configuration(root), graphify: false, businessLogic: true, costBudget: costBudget({ maxCostUsd: 2 }) };
+    const stages = stageSessionFactory();
+    let dispatched = 0;
+    let refused = 0;
+    let spent = 0;
+    const result = await runPortableCodexSecurity(config, dependencies({
+      createSession: async (input: { spec: AgentSessionSpec; toolSurface: readonly string[] }) => {
+        if (!input.spec.instructions.includes("business-logic reviewer")) return stages(input);
+        return {
+          ...completedStageSession("business-logic", "business-logic.json", "done"),
+          async *run() {
+            while (true) {
+              try {
+                input.spec.beforeModelRequest!({ operation: "responses", body: { previous_response_id: "held-history", max_output_tokens: 16_384 } });
+              } catch (error) { refused++; throw error; }
+              dispatched++;
+              spent += (112_000 + 16_384) / 1_000_000;
+              assert.ok(spent <= config.costBudget.maxCostUsd * 0.25);
+              assert.ok(spent <= config.costBudget.maxCostUsd);
+              yield { type: "usage", usage: { inputTokens: 112_000, cachedInputTokens: 0, cacheWriteInputTokens: 0,
+                outputTokens: 16_384, reasoningTokens: null } } as const;
+            }
+          },
+        };
+      },
+    }));
+    assert.equal(result.runtime.status, "completed");
+    assert.equal(dispatched, 3);
+    assert.equal(refused, 1);
+    assert.equal(result.runtime.usage.inputTokens, 112_000 * dispatched);
+    const record = JSON.parse(fs.readFileSync(path.join(config.outputDir, "portable-codex-security-results", "portable-business-logic.json"), "utf8"));
+    assert.ok(record.totals.skippedBudget > 0);
+    assert.ok(Math.abs(record.totals.spentUsd - spent) < 1e-12);
+  } finally { remove(root); }
+});
+
+for (const missingUsage of [false, true]) {
+  test(`Portable main stages refuse the next turn before input can cross the cap: missing usage=${missingUsage}`, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-main-hard-cap-"));
+    const config = configuration(root);
+    config.costBudget = costBudget();
+    let dispatched = 0;
+    try {
+      await assert.rejects(runPortableCodexSecurity(config, dependencies({
+        createSession: async (input: { spec: AgentSessionSpec }) => ({
+          ...completedStageSession("inventory", "inventory.json", "done"),
+          async *run() {
+            while (true) {
+              input.spec.beforeModelRequest!({ operation: "responses", body: { previous_response_id: "history", max_output_tokens: 65_536 } });
+              assert.ok(readPortableCodexSecurityRuntime(config.outputDir)!.budgetReservedUsd! >= 0.128);
+              dispatched++;
+              assert.ok(dispatched * 0.128 <= config.costBudget!.maxCostUsd);
+              yield { type: "usage", usage: { inputTokens: missingUsage && dispatched > 1 ? null : 100_000,
+                cachedInputTokens: 0, cacheWriteInputTokens: 0,
+                outputTokens: missingUsage && dispatched > 1 ? null : 28_000, reasoningTokens: null } } as const;
+            }
+          },
+        }),
+      })), { code: missingUsage ? "cost_budget_unavailable" : "cost_limit_reached" });
+      const runtime = readPortableCodexSecurityRuntime(config.outputDir)!;
+      assert.equal(dispatched, missingUsage ? 2 : 3);
+      if (!missingUsage) assert.equal(runtime.budgetPartial!.spentUsd, 0.384);
+      const knownSpend = (runtime.usage.inputTokens + runtime.usage.outputTokens) / 1_000_000;
+      assert.ok(knownSpend + (runtime.budgetReservedUsd ?? 0) <= config.costBudget.maxCostUsd);
+      if (missingUsage) assert.ok(runtime.budgetReservedUsd! > 0);
+    } finally { remove(root); }
+  });
+}
 
 test("Portable reservation blocks unaffordable turns before upstream in production and injected sessions", async (t) => {
   const keys = ["SENTINEL_OPENGREP_BIN", "SENTINEL_OPENGREP_ENABLED", "SENTINEL_OPENGREP_RULES"] as const;
@@ -1643,7 +1716,7 @@ test("Portable reservation blocks unaffordable turns before upstream in producti
       await assert.rejects(runPortableCodexSecurity(config, dependencies(injected ? {
         createSession: async (input: { spec: AgentSessionSpec; capability: CapabilityReport }) =>
           createAgentSession({ ...input.spec, probe: input.capability.capabilities }, upstream),
-      } : { createUpstream: () => upstream })), { code: "cost_limit_reached" });
+      } : { createUpstream: (options: HttpAgentUpstreamOptions) => { assert.equal(options.maxRetries, 0); return upstream; } })), { code: "cost_limit_reached" });
       assert.equal(calls, 0);
       const runtime = JSON.parse(fs.readFileSync(path.join(config.outputDir, "portable-codex-security-runtime.json"), "utf8"));
       assert.equal(runtime.status, "incomplete");

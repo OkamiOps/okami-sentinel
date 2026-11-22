@@ -20,6 +20,20 @@ import {
 
 const NOW = "2026-08-11T15:00:00.000Z";
 
+test("runtime preserves unresolved request reservations and rejects invalid debits", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-request-reservations-"));
+  try {
+    for (const budgetReservedUsd of [undefined, 0, 0.14]) {
+      writePortableCodexSecurityRuntime(root, runtimeState({ budgetReservedUsd }));
+      assert.equal(readPortableCodexSecurityRuntime(root)?.budgetReservedUsd, budgetReservedUsd);
+    }
+    for (const budgetReservedUsd of [-1, null, "0.14"]) {
+      fs.writeFileSync(portableCodexSecurityRuntimePath(root), JSON.stringify({ ...runtimeState(), budgetReservedUsd }));
+      assert.equal(readPortableCodexSecurityRuntime(root), null);
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test("runtime round-trips review-stage usage and rejects invalid costs or stages", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-review-stage-"));
   try {

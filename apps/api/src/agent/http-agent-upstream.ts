@@ -131,6 +131,8 @@ export interface HttpAgentUpstreamOptions {
   resolveAccessToken?: (signal: AbortSignal) => Promise<string>;
   /** Injectable solely for deterministic tests; production defaults to fetch. */
   transport?: typeof fetch;
+  /** Budgeted inference cannot replay a possibly billed request without a new reservation. */
+  maxRetries?: 0 | 1 | 2;
   /** Injectable solely for deterministic custom-endpoint transport tests. */
   pinnedCustomEndpointDispatcher?: (endpoint: string, allowInsecureLocalhost: boolean) => Promise<UndiciDispatcher>;
 }
@@ -273,6 +275,7 @@ class HttpAgentUpstream implements AgentUpstream {
   readonly #headers: Record<string, string>;
   readonly #operation: AgentWireOperation | null;
   readonly #transport: typeof fetch;
+  readonly #maxRetries: number;
   readonly #customEndpointLocalOverride: boolean | null;
   readonly #pinnedCustomEndpointDispatcher:
     | ((endpoint: string, allowInsecureLocalhost: boolean) => Promise<UndiciDispatcher>)
@@ -287,6 +290,7 @@ class HttpAgentUpstream implements AgentUpstream {
     this.#headers = route?.headers ?? {};
     this.#operation = route?.operation ?? null;
     this.#transport = options.transport ?? DEFAULT_HTTP_AGENT_TRANSPORT;
+    this.#maxRetries = options.maxRetries ?? 2;
     this.#customEndpointLocalOverride = route?.customEndpointLocalOverride ?? null;
     this.#pinnedCustomEndpointDispatcher = this.#customEndpointLocalOverride === null
       ? null
@@ -308,7 +312,7 @@ class HttpAgentUpstream implements AgentUpstream {
           return await this.#requestOnce({ ...request, signal: controller.signal });
         } catch (error) {
           if (controller.signal.aborted) throw new AgentSessionError("agent_cancelled");
-          if (attempt >= 2 || !(error instanceof HttpAgentUpstreamError) ||
+          if (attempt >= this.#maxRetries || !(error instanceof HttpAgentUpstreamError) ||
               (error.code !== "provider_unreachable" && error.code !== "rate_limited")) throw error;
           try { await delay(1_000 * 2 ** attempt, undefined, { signal: controller.signal }); }
           catch { throw new AgentSessionError("agent_cancelled"); }

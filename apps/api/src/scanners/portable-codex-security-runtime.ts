@@ -30,6 +30,7 @@ export interface PortableCodexSecurityRuntimeState {
   methodologyRef: string;
   status: "preparing" | "running" | "completed" | "failed" | "cancelled" | "incomplete";
   budgetPartial?: ScanBudgetPartial;
+  budgetReservedUsd?: number;
   stage: PortableCodexSecurityStage["id"] | "normalize";
   stageLabel: string;
   percent: number;
@@ -66,6 +67,7 @@ const RUNTIME_STAGES = new Set([
 const RUNTIME_KEYS = new Set([
   "reviewStages",
   "budgetPartial",
+  "budgetReservedUsd",
   "engine",
   "executionProfile",
   "profileVersion",
@@ -149,6 +151,7 @@ function validPortableCodexSecurityRuntime(
     typeof value.status === "string" &&
     RUNTIME_STATUSES.has(value.status) &&
     (value.budgetPartial === undefined || validBudgetPartial(value.budgetPartial)) &&
+    (value.budgetReservedUsd === undefined || (typeof value.budgetReservedUsd === "number" && Number.isFinite(value.budgetReservedUsd) && value.budgetReservedUsd >= 0)) &&
     (value.status !== "incomplete" || validBudgetPartial(value.budgetPartial)) &&
     typeof value.stage === "string" &&
     RUNTIME_STAGES.has(value.stage) &&

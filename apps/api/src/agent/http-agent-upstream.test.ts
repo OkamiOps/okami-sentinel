@@ -878,6 +878,23 @@ test("persistent HTTP unavailability stops after three requests with a safe erro
   assert.equal(calls, 3);
 });
 
+test("budgeted inference can disable retries after a possibly billed transport failure", async () => {
+  for (const failure of [503, "network"] as const) {
+    let calls = 0;
+    const upstream = createHttpAgentUpstream({
+      routeKind: "openai-api", protocol: "openai-responses", credentials: { apiKey: "test-secret" }, maxRetries: 0,
+      transport: (async () => {
+        calls++;
+        if (failure === "network") throw new TypeError("socket closed after request");
+        return json(failure, {});
+      }) as typeof fetch,
+    });
+    await assert.rejects(upstream.request({ operation: "responses", body: {}, signal: new AbortController().signal }),
+      { code: "provider_unreachable" });
+    assert.equal(calls, 1);
+  }
+});
+
 test("HTTP recovery does not retry auth, protocol errors or cancellation during backoff", async () => {
   for (const status of [400, 401, 403]) {
     let calls = 0;
