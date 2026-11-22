@@ -101,7 +101,7 @@ export interface PortableCodexSecurityStageObservationInput {
   signal?: AbortSignal;
   onEvent?: (safeEvent: string) => void;
   /** Persists usage as it arrives so a later stage failure cannot erase it. */
-  onUsage?: (usage: ScannerUsage) => boolean | void;
+  onUsage?: (usage: ScannerUsage, update: AgentUsage) => boolean | void;
   /** Monotonic remaining-time seam used during synchronous evidence validation. */
   remainingMs?: () => number;
   /** Snapshot-owned cache shared by every stage so repeated anchors never reread a file. */
@@ -380,7 +380,7 @@ export async function observePortableCodexSecurityStage(
           break;
         case "usage":
           usage = addPortableCodexSecurityUsage(usage, event.usage);
-          if (input.onUsage?.(usage) === false) {
+          if (input.onUsage?.(usage, event.usage) === false) {
             stoppedByBudget = true;
             throw new PortableCodexSecurityStageError("cost_limit_reached");
           }
