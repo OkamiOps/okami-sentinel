@@ -131,6 +131,8 @@ export interface HttpAgentUpstreamOptions {
   resolveAccessToken?: (signal: AbortSignal) => Promise<string>;
   /** Injectable solely for deterministic tests; production defaults to fetch. */
   transport?: typeof fetch;
+  /** Budgeted inference cannot replay a possibly billed request without a new reservation. */
+  maxRetries?: 0 | 1 | 2;
   /** Injectable solely for deterministic custom-endpoint transport tests. */
   pinnedCustomEndpointDispatcher?: (endpoint: string, allowInsecureLocalhost: boolean) => Promise<UndiciDispatcher>;
 }
@@ -140,8 +142,10 @@ export interface HttpAgentUpstreamOptions {
  * carries neither a response body nor endpoint/header material.
  */
 export class HttpAgentUpstreamError extends AgentSessionError {
-  constructor(code: SafeProviderErrorCode) {
-    super(code);
+  constructor(code: SafeProviderErrorCode, protocolIssue?: "wire_operation_unsupported" | "request_body_invalid" |
+    "endpoint_policy_rejected" | "response_read_failed" | "response_body_empty" | "response_body_too_large" |
+    "response_json_invalid" | `http_status_${number}`) {
+    super(code, protocolIssue);
     this.name = "HttpAgentUpstreamError";
   }
 }
@@ -273,6 +277,8 @@ class HttpAgentUpstream implements AgentUpstream {
   readonly #headers: Record<string, string>;
   readonly #operation: AgentWireOperation | null;
   readonly #transport: typeof fetch;
+  readonly #maxRetries: number;
+  readonly #canCountInput: boolean;
   readonly #customEndpointLocalOverride: boolean | null;
   readonly #pinnedCustomEndpointDispatcher:
     | ((endpoint: string, allowInsecureLocalhost: boolean) => Promise<UndiciDispatcher>)
@@ -287,6 +293,8 @@ class HttpAgentUpstream implements AgentUpstream {
     this.#headers = route?.headers ?? {};
     this.#operation = route?.operation ?? null;
     this.#transport = options.transport ?? DEFAULT_HTTP_AGENT_TRANSPORT;
+    this.#maxRetries = options.maxRetries ?? 2;
+    this.#canCountInput = options.routeKind === "openai-api" && options.protocol === "openai-responses";
     this.#customEndpointLocalOverride = route?.customEndpointLocalOverride ?? null;
     this.#pinnedCustomEndpointDispatcher = this.#customEndpointLocalOverride === null
       ? null
@@ -308,7 +316,7 @@ class HttpAgentUpstream implements AgentUpstream {
           return await this.#requestOnce({ ...request, signal: controller.signal });
         } catch (error) {
           if (controller.signal.aborted) throw new AgentSessionError("agent_cancelled");
-          if (attempt >= 2 || !(error instanceof HttpAgentUpstreamError) ||
+          if (attempt >= this.#maxRetries || !(error instanceof HttpAgentUpstreamError) ||
               (error.code !== "provider_unreachable" && error.code !== "rate_limited")) throw error;
           try { await delay(1_000 * 2 ** attempt, undefined, { signal: controller.signal }); }
           catch { throw new AgentSessionError("agent_cancelled"); }
@@ -320,9 +328,27 @@ class HttpAgentUpstream implements AgentUpstream {
     }
   }
 
-  async #requestOnce(request: AgentUpstreamRequest): Promise<unknown> {
-    if (this.#endpoint === null || this.#operation === null || request.operation !== this.#operation) {
-      throw new HttpAgentUpstreamError("protocol_unsupported");
+  async countInputTokens(request: AgentUpstreamRequest): Promise<number | null> {
+    if (!this.#canCountInput || request.operation !== "responses" || !request.body || typeof request.body !== "object" || Array.isArray(request.body)) return null;
+    const { max_output_tokens: _outputCap, ...input } = request.body as Record<string, unknown>;
+    const fields = new Set(["model", "input", "instructions", "previous_response_id", "tools", "tool_choice",
+      "reasoning", "text", "parallel_tool_calls", "personality", "truncation"]);
+    if (Object.keys(input).some(key => !fields.has(key)) || input.truncation === "auto") return null;
+    try {
+      // OpenAI counts framing, tools and immutable previous_response_id history, not just delta text.
+      // https://developers.openai.com/api/docs/guides/token-counting
+      const result = await this.#requestOnce({ ...request, body: input,
+        signal: AbortSignal.any([request.signal, AbortSignal.timeout(10_000)]) }, "https://api.openai.com/v1/responses/input_tokens");
+      if (!result || typeof result !== "object") return null;
+      if ((result as Record<string, unknown>).object !== "response.input_tokens") return null;
+      const count = (result as Record<string, unknown>).input_tokens;
+      return typeof count === "number" && Number.isSafeInteger(count) && count >= 0 ? count : null;
+    } catch { return null; }
+  }
+
+  async #requestOnce(request: AgentUpstreamRequest, endpoint = this.#endpoint): Promise<unknown> {
+    if (endpoint === null || this.#operation === null || request.operation !== this.#operation) {
+      throw new HttpAgentUpstreamError("protocol_unsupported", "wire_operation_unsupported");
     }
     const serialized = serializeBody(request.body);
     const controller = new AbortController();
@@ -336,7 +362,7 @@ class HttpAgentUpstream implements AgentUpstream {
         if (this.#pinnedCustomEndpointDispatcher !== null && this.#customEndpointLocalOverride !== null) {
           pinnedDispatcher = await createAbortablePinnedDispatcher(
             this.#pinnedCustomEndpointDispatcher,
-            this.#endpoint,
+            endpoint,
             this.#customEndpointLocalOverride,
             controller.signal,
           );
@@ -353,7 +379,7 @@ class HttpAgentUpstream implements AgentUpstream {
           }
         }
         response = await raceWithAbort(
-          Promise.resolve().then(() => this.#transport(this.#endpoint as string, {
+          Promise.resolve().then(() => this.#transport(endpoint, {
             method: "POST",
             headers,
             body: serialized,
@@ -366,7 +392,7 @@ class HttpAgentUpstream implements AgentUpstream {
       } catch (error) {
         if (error instanceof AgentSessionError || error instanceof HttpAgentUpstreamError) throw error;
         if (error instanceof PinnedCustomEndpointError) {
-          throw new HttpAgentUpstreamError("protocol_unsupported");
+          throw new HttpAgentUpstreamError("protocol_unsupported", "endpoint_policy_rejected");
         }
         throw new HttpAgentUpstreamError("provider_unreachable");
       }
@@ -374,7 +400,7 @@ class HttpAgentUpstream implements AgentUpstream {
       const statusCode = statusError(response.status);
       if (statusCode !== null) {
         cancelResponseBody(response);
-        throw new HttpAgentUpstreamError(statusCode);
+        throw new HttpAgentUpstreamError(statusCode, `http_status_${response.status}`);
       }
       try {
         const parsed = await readBoundedJson(response, controller.signal);
@@ -382,7 +408,7 @@ class HttpAgentUpstream implements AgentUpstream {
         return parsed;
       } catch (error) {
         if (error instanceof AgentSessionError || error instanceof HttpAgentUpstreamError) throw error;
-        throw new HttpAgentUpstreamError("protocol_unsupported");
+        throw new HttpAgentUpstreamError("provider_unreachable", "response_read_failed");
       }
     } finally {
       this.#active.delete(controller);
@@ -643,7 +669,7 @@ function serializeBody(body: unknown): string {
     }
     return serialized;
   } catch {
-    throw new HttpAgentUpstreamError("protocol_unsupported");
+    throw new HttpAgentUpstreamError("protocol_unsupported", "request_body_invalid");
   }
 }
 
@@ -657,7 +683,7 @@ function statusError(status: number): SafeProviderErrorCode | null {
 }
 
 async function readBoundedJson(response: Response, signal: AbortSignal): Promise<unknown> {
-  if (response.body === null) throw new HttpAgentUpstreamError("protocol_unsupported");
+  if (response.body === null) throw new HttpAgentUpstreamError("protocol_unsupported", "response_body_empty");
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -671,7 +697,7 @@ async function readBoundedJson(response: Response, signal: AbortSignal): Promise
       size += next.value.byteLength;
       if (size > HTTP_AGENT_BODY_LIMIT_BYTES) {
         cancelReader();
-        throw new HttpAgentUpstreamError("protocol_unsupported");
+        throw new HttpAgentUpstreamError("protocol_unsupported", "response_body_too_large");
       }
       chunks.push(next.value);
     }
@@ -688,7 +714,7 @@ async function readBoundedJson(response: Response, signal: AbortSignal): Promise
   try {
     return JSON.parse(new TextDecoder().decode(body)) as unknown;
   } catch {
-    throw new HttpAgentUpstreamError("protocol_unsupported");
+    throw new HttpAgentUpstreamError("protocol_unsupported", "response_json_invalid");
   }
 }
 

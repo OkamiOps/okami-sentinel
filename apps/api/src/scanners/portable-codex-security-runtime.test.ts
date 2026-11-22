@@ -20,6 +20,20 @@ import {
 
 const NOW = "2026-08-11T15:00:00.000Z";
 
+test("runtime preserves unresolved request reservations and rejects invalid debits", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-request-reservations-"));
+  try {
+    for (const budgetReservedUsd of [undefined, 0, 0.14]) {
+      writePortableCodexSecurityRuntime(root, runtimeState({ budgetReservedUsd }));
+      assert.equal(readPortableCodexSecurityRuntime(root)?.budgetReservedUsd, budgetReservedUsd);
+    }
+    for (const budgetReservedUsd of [-1, null, "0.14"]) {
+      fs.writeFileSync(portableCodexSecurityRuntimePath(root), JSON.stringify({ ...runtimeState(), budgetReservedUsd }));
+      assert.equal(readPortableCodexSecurityRuntime(root), null);
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test("runtime round-trips review-stage usage and rejects invalid costs or stages", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-review-stage-"));
   try {
@@ -47,6 +61,21 @@ test("runtime persists budget partials and rejects malformed summaries", () => {
     for (const invalid of [{ ...budgetPartial, spentUsd: -1 }, { ...budgetPartial, interrupted: null },
       { ...budgetPartial, completed: [{ stage: "inventory", page: "inventory", artifactPath: "../outside" }] }]) {
       fs.writeFileSync(portableCodexSecurityRuntimePath(root), JSON.stringify({ ...runtimeState(), status: "incomplete", budgetPartial: invalid }));
+      assert.equal(readPortableCodexSecurityRuntime(root), null);
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("runtime persists provider partials without a budget and rejects invalid reasons and unsafe paths", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-provider-partial-"));
+  try {
+    const providerPartial = { stopReason: "provider_unreachable" as const, completed: [], pending: [],
+      interrupted: { stage: "inventory", page: null, artifactPath: null } };
+    writePortableCodexSecurityRuntime(root, runtimeState({ status: "incomplete", providerPartial }));
+    assert.deepEqual(readPortableCodexSecurityRuntime(root)?.providerPartial, providerPartial);
+    for (const invalid of [undefined, { ...providerPartial, stopReason: "credential_rejected" },
+      { ...providerPartial, pending: null }, { ...providerPartial, interrupted: { stage: "inventory", page: null, artifactPath: "../escape" } }]) {
+      fs.writeFileSync(portableCodexSecurityRuntimePath(root), JSON.stringify({ ...runtimeState(), status: "incomplete", providerPartial: invalid }));
       assert.equal(readPortableCodexSecurityRuntime(root), null);
     }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }

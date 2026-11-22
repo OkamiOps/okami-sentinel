@@ -11,9 +11,11 @@ import { readPortableSastTriage } from "./portable-sast-triage.js";
 import { materializePortableCodexSecurityReportShard } from "./portable-codex-security-report-shards.js";
 import assert from "node:assert/strict";
 import { reservePortableTurn } from "./portable-turn-budget.js";
+import { estimateFrozenScannerUsageCost } from "../model-pricing.js";
+import { createHttpAgentUpstream, type HttpAgentUpstreamOptions } from "../agent/http-agent-upstream.js";
 import { createAgentSession } from "../agent/session-runner.js";
 import { readPortableCodexSecurityRuntime } from "./portable-codex-security-runtime.js";
-import { preflightPortableResume } from "./resume-portable-scan.js";
+import { preflightPortableResume, preparePortableResumeRuntime } from "./resume-portable-scan.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -939,6 +941,41 @@ test("Portable business-logic review runs after the report without SAST candidat
     assert.equal(record.source, "code-context");
     assert.equal(record.totals.analyzed, 1);
     assert.equal(record.flows[0].findings[0].title, "Repeatable refund");
+    fs.writeFileSync(path.join(config.outputDir, "resume-source.json"), JSON.stringify({ scanId: "business-source" }));
+    for (const status of ["failed", "incomplete"] as const) {
+      const previous = readPortableCodexSecurityRuntime(config.outputDir)!;
+      fs.writeFileSync(path.join(config.outputDir, "portable-codex-security-runtime.json"), JSON.stringify({ ...previous, status, stage: "normalize",
+        ...(status === "incomplete" ? { budgetPartial: { stopReason: "budget", spentUsd: 0, maxCostUsd: 0.5,
+          completed: [], pending: [], interrupted: { stage: "report", page: null, artifactPath: null } } } : {}),
+      }));
+      assert.doesNotThrow(() => preflightPortableResume(config.outputDir, "standard"));
+      const resumedDir = path.join(root, `resumed-${status}`);
+      const resultsDir = path.join(config.outputDir, "portable-codex-security-results");
+      fs.cpSync(config.outputDir, resumedDir, { recursive: true, filter: source => source !== resultsDir });
+      fs.mkdirSync(path.join(resumedDir, "portable-codex-security-results"));
+      fs.copyFileSync(path.join(resultsDir, "portable-business-logic.json"), path.join(resumedDir, "portable-codex-security-results", "portable-business-logic.json"));
+      const resumedCalls: string[] = [];
+      const resumed = await runPortableCodexSecurity({ ...config, outputDir: resumedDir,
+        ...(status === "incomplete" ? { costBudget: costBudget({ maxCostUsd: 1 }) } : {}),
+      }, dependencies({
+        resumeDiscovery: true,
+        reviewReuseSources: () => [],
+        createSession: async (input: { spec: AgentSessionSpec; toolSurface: readonly string[] }) => {
+          resumedCalls.push(path.basename(input.spec.artifactRoot));
+          assert.match(input.spec.instructions, /business-logic reviewer/);
+          assert.doesNotMatch(input.spec.instructions, /src\/routes\/orders\.ts/);
+          fs.writeFileSync(path.join(input.spec.artifactRoot, "business-logic.json"), JSON.stringify({ schemaVersion: 1,
+            flows: [{ flowId: "flow-02", status: "no-issues", summary: "Reviewed remaining flow", findings: [] }] }));
+          return completedStageSession("business-logic", "business-logic.json", "done");
+        },
+      }));
+      assert.deepEqual(resumedCalls, ["business-logic-01"]);
+      assert.equal(resumed.runtime.status, "completed");
+      const reused = JSON.parse(fs.readFileSync(path.join(resumedDir, "portable-codex-security-results", "portable-business-logic.json"), "utf8"));
+      assert.equal(reused.totals.reused, 1);
+      assert.deepEqual(reused.flows[0].reusedFrom, { scanId: "business-source", flowId: "flow-01" });
+      assert.equal(reused.flows[0].findings[0].title, "Repeatable refund");
+    }
   } finally {
     remove(root);
   }
@@ -1578,16 +1615,88 @@ test("Portable turn reservations clamp partially affordable output and preserve 
     ["chat-completions", "max_completion_tokens"], ["chat-completions", "max_tokens"],
   ] as const) {
     const request = { operation, body: { [key]: 8_192, messages: [] } };
-    const clamped = reservePortableTurn(request, pricing, 0.004)!;
+    const clamped = reservePortableTurn(request, pricing, 0.004, 1_024)!;
     const cap = (clamped.body as Record<string, number>)[key]!;
     assert.ok(cap >= 1_024 && cap < 8_192);
-    assert.equal(reservePortableTurn(request, pricing, 1), request);
+    assert.equal(reservePortableTurn(request, pricing, 1, 1_024), request);
     assert.equal(request.body[key], 8_192);
-    assert.equal(reservePortableTurn(request, pricing, 0.0001), null);
+    assert.equal(reservePortableTurn(request, pricing, 0.0001, 1_024), null);
   }
-  const defaulted = reservePortableTurn({ operation: "responses", body: {} }, pricing, 1)!;
+  const defaulted = reservePortableTurn({ operation: "responses", body: {} }, pricing, 1, 1_024)!;
   assert.equal((defaulted.body as Record<string, number>).max_output_tokens, 65_536);
 });
+
+test("Portable business review reserves provider-held input and cannot exceed its share or the scan cap", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-business-budget-"));
+  try {
+    const config = { ...configuration(root), graphify: false, businessLogic: true, costBudget: costBudget({ maxCostUsd: 2 }) };
+    const stages = stageSessionFactory();
+    let dispatched = 0;
+    let refused = 0;
+    let spent = 0;
+    const result = await runPortableCodexSecurity(config, dependencies({
+      createSession: async (input: { spec: AgentSessionSpec; toolSurface: readonly string[] }) => {
+        if (!input.spec.instructions.includes("business-logic reviewer")) return stages(input);
+        return {
+          ...completedStageSession("business-logic", "business-logic.json", "done"),
+          async *run() {
+            while (true) {
+              try {
+                input.spec.beforeModelRequest!({ operation: "responses", body: { previous_response_id: "held-history", max_output_tokens: 16_384 } });
+              } catch (error) { refused++; throw error; }
+              dispatched++;
+              spent += (112_000 + 16_384) / 1_000_000;
+              assert.ok(spent <= config.costBudget.maxCostUsd * 0.25);
+              assert.ok(spent <= config.costBudget.maxCostUsd);
+              yield { type: "usage", usage: { inputTokens: 112_000, cachedInputTokens: 0, cacheWriteInputTokens: 0,
+                outputTokens: 16_384, reasoningTokens: null } } as const;
+            }
+          },
+        };
+      },
+    }));
+    assert.equal(result.runtime.status, "completed");
+    assert.equal(dispatched, 3);
+    assert.equal(refused, 1);
+    assert.equal(result.runtime.usage.inputTokens, 112_000 * dispatched);
+    const record = JSON.parse(fs.readFileSync(path.join(config.outputDir, "portable-codex-security-results", "portable-business-logic.json"), "utf8"));
+    assert.ok(record.totals.skippedBudget > 0);
+    assert.ok(Math.abs(record.totals.spentUsd - spent) < 1e-12);
+  } finally { remove(root); }
+});
+
+for (const missingUsage of [false, true]) {
+  test(`Portable main stages refuse the next turn before input can cross the cap: missing usage=${missingUsage}`, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-main-hard-cap-"));
+    const config = configuration(root);
+    config.costBudget = costBudget();
+    let dispatched = 0;
+    try {
+      await assert.rejects(runPortableCodexSecurity(config, dependencies({
+        createSession: async (input: { spec: AgentSessionSpec }) => ({
+          ...completedStageSession("inventory", "inventory.json", "done"),
+          async *run() {
+            while (true) {
+              input.spec.beforeModelRequest!({ operation: "responses", body: { previous_response_id: "history", max_output_tokens: 65_536 } });
+              assert.ok(readPortableCodexSecurityRuntime(config.outputDir)!.budgetReservedUsd! >= 0.128);
+              dispatched++;
+              assert.ok(dispatched * 0.128 <= config.costBudget!.maxCostUsd);
+              yield { type: "usage", usage: { inputTokens: missingUsage && dispatched > 1 ? null : 100_000,
+                cachedInputTokens: 0, cacheWriteInputTokens: 0,
+                outputTokens: missingUsage && dispatched > 1 ? null : 28_000, reasoningTokens: null } } as const;
+            }
+          },
+        }),
+      })), { code: missingUsage ? "cost_budget_unavailable" : "cost_limit_reached" });
+      const runtime = readPortableCodexSecurityRuntime(config.outputDir)!;
+      assert.equal(dispatched, missingUsage ? 2 : 3);
+      if (!missingUsage) assert.equal(runtime.budgetPartial!.spentUsd, 0.384);
+      const knownSpend = (runtime.usage.inputTokens + runtime.usage.outputTokens) / 1_000_000;
+      assert.ok(knownSpend + (runtime.budgetReservedUsd ?? 0) <= config.costBudget.maxCostUsd);
+      if (missingUsage) assert.ok(runtime.budgetReservedUsd! > 0);
+    } finally { remove(root); }
+  });
+}
 
 test("Portable reservation blocks unaffordable turns before upstream in production and injected sessions", async (t) => {
   const keys = ["SENTINEL_OPENGREP_BIN", "SENTINEL_OPENGREP_ENABLED", "SENTINEL_OPENGREP_RULES"] as const;
@@ -1608,7 +1717,7 @@ test("Portable reservation blocks unaffordable turns before upstream in producti
       await assert.rejects(runPortableCodexSecurity(config, dependencies(injected ? {
         createSession: async (input: { spec: AgentSessionSpec; capability: CapabilityReport }) =>
           createAgentSession({ ...input.spec, probe: input.capability.capabilities }, upstream),
-      } : { createUpstream: () => upstream })), { code: "cost_limit_reached" });
+      } : { createUpstream: (options: HttpAgentUpstreamOptions) => { assert.equal(options.maxRetries, 0); return upstream; } })), { code: "cost_limit_reached" });
       assert.equal(calls, 0);
       const runtime = JSON.parse(fs.readFileSync(path.join(config.outputDir, "portable-codex-security-runtime.json"), "utf8"));
       assert.equal(runtime.status, "incomplete");
@@ -1625,6 +1734,38 @@ test("Portable reservation blocks unaffordable turns before upstream in producti
     } finally { remove(root); }
   }
 });
+
+for (const countedInputTokens of [1_000, null]) {
+  test(`a low cap permits only affordable counted turns, with full-window fallback: ${countedInputTokens}`, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-counted-budget-"));
+    const config = configuration(root);
+    config.costBudget = costBudget({ maxCostUsd: 0.01 });
+    let calls = 0;
+    try {
+      await assert.rejects(runPortableCodexSecurity(config, dependencies({
+        createSession: async (input: { spec: AgentSessionSpec }) => ({
+          ...completedStageSession("inventory", "inventory.json", "done"),
+          async *run() {
+            while (true) {
+              const request = input.spec.beforeModelRequest!({ operation: "responses", body: { input: "prompt", max_output_tokens: 4_096 } }, countedInputTokens);
+              const reserved = readPortableCodexSecurityRuntime(config.outputDir)!.budgetReservedUsd!;
+              assert.ok(reserved <= 0.005096);
+              assert.ok((request.body as Record<string, number>).max_output_tokens! >= 1_000);
+              calls++;
+              assert.ok(calls * 0.002 <= config.costBudget!.maxCostUsd);
+              yield { type: "usage", usage: { inputTokens: 1_000, cachedInputTokens: 0, cacheWriteInputTokens: 0,
+                outputTokens: 1_000, reasoningTokens: null } } as const;
+            }
+          },
+        }),
+      })), { code: "cost_limit_reached" });
+      const runtime = readPortableCodexSecurityRuntime(config.outputDir)!;
+      assert.equal(calls, countedInputTokens === null ? 0 : 4);
+      assert.equal(runtime.budgetPartial!.spentUsd, calls * 0.002);
+      assert.ok(runtime.budgetPartial!.spentUsd <= config.costBudget.maxCostUsd);
+    } finally { remove(root); }
+  });
+}
 
 test("Portable routes OpenGrep through ranked review to cited verdicts over HTTP and replays the same checkpoint", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-sast-http-"));
@@ -1740,6 +1881,128 @@ test("Portable routes OpenGrep through ranked review to cited verdicts over HTTP
   assert.equal(resumed.runtime.status, "completed");
   assert.equal(stages.length, 6, "all stage checkpoints were reused");
 });
+
+for (const failure of [400, 503, 429, 408, 504, "connection-reset", "response-reset", "inventory-reset"] as const) {
+test(`Grok OAuth resumes saved stages without replaying ambiguous requests: ${failure}`, async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-grok-report-resume-"));
+  const tuple = { routeKind: "xai-oauth", protocol: "xai-oauth-responses" } as const;
+  const config = configuration(root, plan(tuple));
+  config.limits.totalTimeoutMs = 0;
+  config.costBudget = costBudget({ maxCostUsd: 20, pricing: { ...costBudget().pricing, ...tuple, providerKind: "xai" } });
+  const starts: string[] = [], logs: string[] = [];
+  const history = new Map<string, { stage: typeof PORTABLE_CODEX_SECURITY_STAGES[number]; prompt: string; turn: number }>();
+  let rejectReport = true, calls = 0;
+  const failedStage = failure === 400 ? "report" : failure === "inventory-reset" ? "inventory" : "discovery";
+  const stageIndex = PORTABLE_CODEX_SECURITY_STAGES.findIndex(stage => stage.id === failedStage);
+  const failureCode = failure === 400 ? "agent_session_failed" : failure === 429 ? "rate_limited" : "provider_unreachable";
+  const deps = dependencies({
+    getSnapshot: () => snapshot({ ...tuple, authKind: "device-code" }),
+    getConnection: () => connection({ ...tuple, providerKind: "xai", authKind: "device-code", credentialRef: null }),
+    getCapabilityCheck: () => report({ protocol: tuple.protocol }),
+    vault: { get: async () => { throw new Error("OAuth must not read the API-key vault"); } },
+    xaiOAuth: { getAccessToken: async () => "fixture-oauth-token" },
+    log: (line: string) => logs.push(line),
+    createUpstream: (options: HttpAgentUpstreamOptions) => {
+      assert.equal(options.routeKind, tuple.routeKind);
+      assert.equal(options.protocol, tuple.protocol);
+      assert.equal(options.maxRetries, 0);
+      return createHttpAgentUpstream({ ...options, transport: (async (url, init) => {
+        assert.equal(String(url), "https://api.x.ai/v1/responses", "Grok never sends an input_tokens request");
+        assert.equal(new Headers(init?.headers).get("authorization"), "Bearer fixture-oauth-token");
+        calls++;
+        const body = JSON.parse(String(init?.body));
+        let state = history.get(body.previous_response_id);
+        if (!state) {
+          assert.equal(body.previous_response_id, undefined, "each stage starts a fresh immutable history");
+          const prompt = body.input.find((item: { role: string }) => item.role === "system").content as string;
+          const stage = PORTABLE_CODEX_SECURITY_STAGES.find(item => prompt.includes(`stage "${item.id}"`))!;
+          assert.ok(stage);
+          starts.push(stage.id);
+          state = { stage, prompt, turn: 0 };
+        }
+        if (state.stage.id === failedStage && rejectReport) {
+          if (failure === "connection-reset" || failure === "inventory-reset") throw new TypeError("private connection reset detail");
+          if (failure === "response-reset") return new Response(new ReadableStream({ start(controller) { controller.error(new TypeError("private body reset detail")); } }));
+          return new Response('{"error":"private provider detail"}', { status: failure });
+        }
+        const artifact = portableFixtureArtifact(state.stage.artifact, state.stage.id === "report", portableCandidateIdFromInstruction(state.prompt));
+        const id = `grok-response-${calls}`;
+        history.set(id, { ...state, turn: state.turn + 1 });
+        const output: object[] = [{ type: "function_call", call_id: `call-${calls}`,
+          name: state.turn === 0 ? "workspace_read" : "results_write",
+          arguments: JSON.stringify(state.turn === 0 ? { path: "src/auth.ts" } : { path: state.stage.artifact, content: artifact }),
+        }];
+        if (state.stage.id === "report") {
+          if (state.turn === 0) {
+            output.splice(0, 1, ...Array.from({ length: 3 }, (_, index) => ({ type: "function_call",
+              call_id: `report-read-${index}`, name: "workspace_read", arguments: JSON.stringify({ path: "src/auth.ts" }) })));
+          } else if (state.turn === 1) {
+            assert.deepEqual(body.input.map((item: { call_id: string }) => item.call_id), ["report-read-0", "report-read-1", "report-read-2"]);
+            assert.ok(body.input.every((item: { type: string }) => item.type === "function_call_output"));
+            output.splice(0, 1, { type: "message", role: "assistant", content: [{ type: "output_text", text: JSON.stringify(artifact), annotations: [] }] });
+          }
+          output.unshift({ type: "reasoning", id: `reasoning-${calls}`, encrypted_content: "opaque-reasoning-content",
+            summary: [{ type: "summary_text", text: "Inspecting the cited source before reporting." }] });
+        }
+        return new Response(JSON.stringify({ id, output, usage: { input_tokens: 100, output_tokens: 100,
+          output_tokens_details: { reasoning_tokens: 80 }, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 } } }), { status: 200 });
+      }) as typeof fetch });
+    },
+  });
+  try {
+    await assert.rejects(runPortableCodexSecurity(config, deps), { code: failureCode });
+    assert.deepEqual(starts, PORTABLE_CODEX_SECURITY_STAGES.slice(0, stageIndex + 1).map(stage => stage.id));
+    assert.equal(calls, stageIndex * 2 + 1, "a possibly charged inference is never automatically retried");
+    if (failure === 400) assert.ok(logs.some(line => line.includes('"protocolIssue":"http_status_400"')));
+    if (failure === "response-reset") assert.ok(logs.some(line => line.includes('"protocolIssue":"response_read_failed"')));
+    assert.ok(logs.every(line => !line.includes("private provider detail")));
+    const source = readPortableCodexSecurityRuntime(config.outputDir)!;
+    assert.equal(source.stage, failedStage);
+    assert.equal(source.status, failure === 400 ? "failed" : "incomplete");
+    assert.ok((source.budgetReservedUsd ?? 0) > 0, "the failed request's unresolved debit remains durable");
+    if (failure !== 400) {
+      assert.equal(source.providerPartial?.stopReason, failureCode);
+      assert.deepEqual(source.providerPartial?.completed.map(item => item.stage), PORTABLE_CODEX_SECURITY_STAGES.slice(0, stageIndex).map(stage => stage.id));
+      assert.equal(source.providerPartial?.interrupted.stage, failedStage);
+      assert.ok(source.providerPartial?.pending.some(item => item.stage === "report"));
+    }
+    const verified = preflightPortableResume(config.outputDir, "standard").verifiedStages;
+    assert.deepEqual(verified, failedStage === "inventory" ? {} : Object.fromEntries(PORTABLE_CODEX_SECURITY_STAGES.map((stage, index) => [stage.id, index < stageIndex ? 1 : 0])));
+    const resumedConfig = { ...config, outputDir: path.join(root, "resumed") };
+    fs.cpSync(config.outputDir, resumedConfig.outputDir, { recursive: true });
+    const restoreModes = (source: string, copied: string) => {
+      for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
+        if (entry.isDirectory()) restoreModes(path.join(source, entry.name), path.join(copied, entry.name));
+      }
+      fs.chmodSync(copied, fs.statSync(source).mode & 0o777);
+    };
+    restoreModes(config.outputDir, resumedConfig.outputDir);
+    fs.writeFileSync(path.join(resumedConfig.outputDir, "portable-codex-security-runtime.json"), JSON.stringify(preparePortableResumeRuntime(source)));
+    rejectReport = false;
+    const resumed = await runPortableCodexSecurity(resumedConfig, { ...deps, resumeDiscovery: true });
+    assert.equal(resumed.runtime.status, "completed");
+    assert.equal(resumed.runtime.percent, 100);
+    assert.equal(resumed.runtime.providerPartial, undefined);
+    assert.ok(Math.abs(resumed.runtime.budgetReservedUsd! - source.budgetReservedUsd!) < 1e-10, "resume cannot refund the ambiguous request");
+    assert.ok((estimateFrozenScannerUsageCost(resumed.runtime.usage, config.costBudget.pricing)?.estimatedUsd ?? Infinity) +
+      (resumed.runtime.budgetReservedUsd ?? 0) <= config.costBudget.maxCostUsd);
+    assert.deepEqual(starts, [...PORTABLE_CODEX_SECURITY_STAGES.slice(0, stageIndex + 1), ...PORTABLE_CODEX_SECURITY_STAGES.slice(stageIndex)].map(stage => stage.id));
+    assert.equal(logs.filter(line => line.includes('"type":"checkpoint_reused"')).length, stageIndex);
+    assert.equal(preflightPortableResume(config.outputDir, "standard").verifiedStages.report ?? 0, 0, "source remains untouched");
+    const callsBeforeReplay = calls;
+    fs.rmSync(path.join(resumedConfig.outputDir, "portable-codex-security-results"), { recursive: true });
+    fs.writeFileSync(path.join(resumedConfig.outputDir, "portable-codex-security-runtime.json"),
+      JSON.stringify({ ...resumed.runtime, status: "failed", stage: "report" }));
+    assert.equal(preflightPortableResume(resumedConfig.outputDir, "standard").verifiedStages.report, 1);
+    const replay = await runPortableCodexSecurity(resumedConfig, { ...deps, resumeDiscovery: true });
+    assert.equal(replay.runtime.status, "completed");
+    assert.equal(calls, callsBeforeReplay, "a saved report is also reused without any HTTP request");
+  } catch (error) {
+    t.diagnostic(logs.slice(-30).join("\n"));
+    throw error;
+  } finally { remove(root); }
+});
+}
 
 test("Portable budget partial retains completed pages and resumes only pending work with prior spend", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-budget-resume-"));

@@ -4,9 +4,20 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { resolveDeepPlan, STANDARD_PLAN_FILE } from "./portable-deep-plan.js";
-import { preflightPortableResume } from "./resume-portable-scan.js";
-import { assertBudgetResumeCap } from "./portable-budget-partial.js";
+import { preflightPortableResume, preparePortableResumeRuntime } from "./resume-portable-scan.js";
+import { readPortableCodexSecurityRuntime, writePortableCodexSecurityRuntime } from "./portable-codex-security-runtime.js";
+import { refreshPortableCodexSecurityRunFromDisk } from "./portable-codex-security-reconcile.js";
+import type { ScanRun } from "@csb/shared";
+import { assertBudgetResumeCap, assertResumeSpendAndHolds } from "./portable-budget-partial.js";
 import { createPortableCodexSecuritySnapshot } from "./portable-codex-security-worker-support.js";
+
+test("resume cannot lower the cap below prior spend plus unresolved provider holds", () => {
+  for (const cap of [NaN, Infinity, 0.4, 1.2, 1.49]) {
+    assert.throws(() => assertResumeSpendAndHolds(0.39, 1.1, cap), /resume_budget_cap_must_exceed/);
+  }
+  assert.doesNotThrow(() => assertResumeSpendAndHolds(0.39, 1.1, 2));
+  assert.doesNotThrow(() => assertResumeSpendAndHolds(0, 0, 0.1));
+});
 
 function fixture(candidateCount = 1, extraFiles = 0) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "resume-checkpoint-test-"));
@@ -46,6 +57,76 @@ test("budget resume requires a higher finite cap above prior spend", () => {
   assert.doesNotThrow(() => assertBudgetResumeCap(summary, 3));
 });
 
+for (const threatModelComplete of [false, true]) {
+  test(`early budget resume counts every saved checkpoint regardless of stale runtime progress: ${threatModelComplete}`, () => {
+    const f = fixture();
+    try {
+      const artifacts = path.join(f.scan, "portable-codex-security-artifacts");
+      for (const entry of ["discovery-001", "dataflow"]) fs.rmSync(path.join(artifacts, entry), { recursive: true });
+      if (!threatModelComplete) fs.rmSync(path.join(artifacts, "threat-model"), { recursive: true });
+      const runtime = readPortableCodexSecurityRuntime(f.scan)!;
+      writePortableCodexSecurityRuntime(f.scan, { ...runtime, status: "incomplete", stage: "threat-model", percent: 0,
+        budgetPartial: { stopReason: "budget", spentUsd: 0.5, maxCostUsd: 0.5, completed: [], pending: [],
+          interrupted: { stage: "threat-model", page: null, artifactPath: null } } });
+      const result = preflightPortableResume(f.scan, "standard");
+      assert.deepEqual(result.verifiedStages, threatModelComplete ? { inventory: 1, "threat-model": 1 } : { inventory: 1 });
+      assert.equal(result.dossier.stageSummaries.length, threatModelComplete ? 2 : 1);
+      assert.equal(preparePortableResumeRuntime(result.previous).stage, "threat-model");
+    } finally { cleanup(f.root); }
+  });
+}
+
+test("provider interruption during threat-model exposes the saved inventory checkpoint", () => {
+  const f = fixture();
+  try {
+    const artifacts = path.join(f.scan, "portable-codex-security-artifacts");
+    for (const entry of ["threat-model", "discovery-001", "dataflow"]) fs.rmSync(path.join(artifacts, entry), { recursive: true });
+    const previous = readPortableCodexSecurityRuntime(f.scan)!;
+    writePortableCodexSecurityRuntime(f.scan, { ...previous, status: "incomplete", stage: "threat-model",
+      providerPartial: { stopReason: "provider_unreachable", completed: [], pending: [],
+        interrupted: { stage: "threat-model", page: null, artifactPath: null } } });
+    const result = preflightPortableResume(f.scan, "standard");
+    assert.deepEqual(result.verifiedStages, { inventory: 1 });
+    assert.equal(preparePortableResumeRuntime(result.previous).budgetReservedUsd, previous.budgetReservedUsd);
+  } finally { cleanup(f.root); }
+});
+
+for (const budget of [false, true]) {
+  test(`resume bootstrap cannot persist the source terminal status before worker startup: budget=${budget}`, () => {
+    const f = fixture();
+    try {
+      const previous = readPortableCodexSecurityRuntime(f.scan)!;
+      previous.budgetReservedUsd = 0.14;
+      if (budget) {
+        previous.status = "incomplete";
+        previous.budgetPartial = { stopReason: "budget", spentUsd: 2, maxCostUsd: 2,
+          completed: [], pending: [], interrupted: { stage: "validation", page: null, artifactPath: null } };
+      }
+      const prepared = preparePortableResumeRuntime(previous);
+      assert.equal(prepared.status, "preparing");
+      assert.equal(prepared.completedAt, null);
+      assert.equal(prepared.error, null);
+      assert.equal(prepared.budgetReservedUsd, previous.budgetReservedUsd);
+      assert.deepEqual(prepared.budgetPartial, previous.budgetPartial);
+      assert.equal(prepared.snapshotId, previous.snapshotId);
+      assert.equal(prepared.stage, previous.stage);
+      writePortableCodexSecurityRuntime(f.scan, prepared);
+      assert.equal(readPortableCodexSecurityRuntime(f.scan)?.budgetReservedUsd, previous.budgetReservedUsd);
+      const launched = { id: "new", scanDir: f.scan, engine: "codex-security", status: "running",
+        startedAt: new Date().toISOString(), execution: { executionProfile: "portable", profileVersion: previous.profileVersion, methodologyRef: previous.methodologyRef },
+        severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0, total: 0 } } as ScanRun;
+      const polled = refreshPortableCodexSecurityRunFromDisk(launched);
+      assert.equal(polled.status, "running");
+      writePortableCodexSecurityRuntime(f.scan, { ...prepared, status: "completed", budgetPartial: undefined, percent: 100 });
+      const completed = refreshPortableCodexSecurityRunFromDisk(polled);
+      assert.equal(completed.status, "completed");
+      assert.equal(completed.statusReason, undefined);
+      assert.equal(completed.budgetPartial, undefined);
+      assert.notEqual(previous.status, "preparing");
+    } finally { cleanup(f.root); }
+  });
+}
+
 test("validation recovery preflight preserves and accepts discovery/dataflow checkpoints", () => {
   const f=fixture(); try {
     const before=fs.readFileSync(path.join(f.scan,"portable-codex-security-artifacts/dataflow/04-dataflow.json"),"utf8");
@@ -59,6 +140,37 @@ test("validation recovery rejects corrupt checkpoint instead of replaying past i
     fs.writeFileSync(path.join(f.scan,"portable-codex-security-artifacts/dataflow/04-dataflow.json"),"invalid");
     assert.throws(()=>preflightPortableResume(f.scan,"deep"));
   } finally {cleanup(f.root);}
+});
+
+test("late resume accepts bounded business-logic pages but rejects unsafe or unknown checkpoint entries", () => {
+  const f = fixture();
+  try {
+    const root = path.join(f.scan, "portable-codex-security-artifacts", "business-logic");
+    const page = path.join(root, "business-logic-01");
+    fs.mkdirSync(page, { recursive: true });
+    const result = path.join(page, "business-logic.json");
+    fs.writeFileSync(result, "unfinished optional pass");
+    assert.doesNotThrow(() => preflightPortableResume(f.scan, "deep"));
+    fs.unlinkSync(result);
+    assert.doesNotThrow(() => preflightPortableResume(f.scan, "deep"));
+    fs.symlinkSync(path.join(f.scan, "portable-codex-security-runtime.json"), result);
+    assert.throws(() => preflightPortableResume(f.scan, "deep"), /resume_unrecognized_checkpoint/);
+    fs.unlinkSync(result);
+    fs.writeFileSync(path.join(page, "unexpected.json"), "{}");
+    assert.throws(() => preflightPortableResume(f.scan, "deep"), /resume_unrecognized_checkpoint/);
+  } finally { cleanup(f.root); }
+});
+
+test("normalization recovery requires the completed report checkpoints", () => {
+  const f = fixture();
+  try {
+    const previous = readPortableCodexSecurityRuntime(f.scan)!;
+    writePortableCodexSecurityRuntime(f.scan, { ...previous, stage: "normalize" });
+    assert.throws(() => preflightPortableResume(f.scan, "deep"), /resume_missing_prerequisite_checkpoint/);
+    const prepared = preparePortableResumeRuntime({ ...previous, stage: "normalize" });
+    assert.equal(prepared.stage, "normalize");
+    assert.equal(prepared.status, "preparing");
+  } finally { cleanup(f.root); }
 });
 test("validation recovery rejects tampered immutable snapshot", () => {
   const f=fixture(); try {

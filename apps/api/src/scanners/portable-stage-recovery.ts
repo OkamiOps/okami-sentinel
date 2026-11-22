@@ -127,7 +127,8 @@ export async function runPortableStageWithRecovery<T>(options: PortableStageReco
       try { return await options.run(state.attempts, state.lastErrorCode); }
       catch (error) {
         options.signal?.throwIfAborted();
-        if (error && typeof error === "object" && "code" in error && error.code === "cost_limit_reached") {
+        if (error && typeof error === "object" && "code" in error &&
+            (error.code === "cost_limit_reached" || error.code === "provider_unreachable" || error.code === "rate_limited")) {
           state.attempts--;
           save();
           throw error;

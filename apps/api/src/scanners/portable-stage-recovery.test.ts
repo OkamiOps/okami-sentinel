@@ -100,6 +100,18 @@ test("does not retry auth, cost, cancellation, time or unknown failures", async 
   }
 });
 
+test("provider outages never replay inference or consume repair attempts across manual resumes", async t => {
+  const base = setup(t);
+  const attempts: number[] = [];
+  for (const code of ["provider_unreachable", "rate_limited", "provider_unreachable", "rate_limited"]) {
+    await assert.rejects(runPortableStageWithRecovery({ ...base, run: async attempt => {
+      attempts.push(attempt); throw fail(code);
+    } }), { code });
+  }
+  assert.deepEqual(attempts, [1, 1, 1, 1]);
+  assert.equal(await runPortableStageWithRecovery({ ...base, run: async attempt => attempt }), 1);
+});
+
 test("aborted work never dispatches recovery", async t => {
   const controller = new AbortController(); let calls = 0;
   await assert.rejects(runPortableStageWithRecovery({ ...setup(t), signal: controller.signal, run: async () => {

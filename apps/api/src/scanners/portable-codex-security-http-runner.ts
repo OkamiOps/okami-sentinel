@@ -1,7 +1,7 @@
 import { projectionBudget } from "../graphify/projection-budget.js";
 import { readOpengrepFindings, runOpengrep } from "../sast/opengrep.js";
 import { addPortableSastCandidates, planPortableSastTriage, readPortableSastTriage, writePortableSastTriage } from "./portable-sast-triage.js";
-import { reservePortableTurn } from "./portable-turn-budget.js";
+import { createPortableTurnBudget } from "./portable-turn-budget.js";
 import { assertBudgetResumeCap, syncBudgetArtifact, writeBudgetPartial } from "./portable-budget-partial.js";
 import { buildDiscoveryGraphContext, buildPartitionRelations } from "../graphify/discovery-context.js";
 import { buildDiscoveryPriorities } from "../graphify/discovery-priorities.js";
@@ -30,6 +30,7 @@ import {
   type ScanConnectionSnapshot,
   type ScanMode,
   type ScanBudgetWorkItem,
+  type ScanRun,
 } from "@csb/shared";
 
 import {
@@ -306,6 +307,13 @@ export async function runPortableCodexSecurity(
 
   let releaseRedaction = () => undefined;
   let costBudgetStop: "cost_budget_unavailable" | "cost_limit_reached" | null = null;
+  const turnBudget = createPortableTurnBudget(resumeState?.budgetReservedUsd ?? 0, (outstandingUsd) => {
+    runtime = { ...runtime, budgetReservedUsd: outstandingUsd };
+    if (runtimeWritable) {
+      writePortableCodexSecurityRuntime(outputDir, runtime);
+      syncBudgetArtifact(path.join(outputDir, "portable-codex-security-runtime.json"));
+    }
+  });
   const work = new Map<string, ScanBudgetWorkItem>(PORTABLE_CODEX_SECURITY_STAGES.map(stage =>
     [stage.id, { stage: stage.id, page: null, artifactPath: null }]));
   const completedWork = new Set<string>();
@@ -329,7 +337,7 @@ export async function runPortableCodexSecurity(
     );
     assertPortableCostBudget(safeConfiguration.costBudget, plan, resolved);
     const previous = resumeState;
-    const resumableStages = previous?.budgetPartial ? ["inventory", "threat-model", "discovery", "dataflow", "validation", "report"] : ["discovery", "dataflow", "validation", "report"];
+    const resumableStages = previous?.budgetPartial || previous?.providerPartial ? ["inventory", "threat-model", "discovery", "dataflow", "validation", "report", "normalize"] : ["discovery", "dataflow", "validation", "report", "normalize"];
     if (dependencies.resumeDiscovery && (!previous || !resumableStages.includes(previous.stage) || previous.status === "completed" ||
         previous.sourceRef !== safeConfiguration.sourceRef || !previous.snapshotId)) {
       throw new PortableCodexSecurityRunnerError("snapshot_invalid");
@@ -338,9 +346,10 @@ export async function runPortableCodexSecurity(
       ? { snapshotRoot: path.join(outputDir, "portable-codex-security-snapshot"), snapshotId: previous.snapshotId! }
       : createPortableCodexSecuritySnapshot(safeConfiguration.repositoryPath, outputDir);
     if (previous) {
-      runtime = { ...runtime, startedAt: previous.startedAt, usage: previous.usage, ...(previous.reviewStages ? { reviewStages: previous.reviewStages } : {}) };
+      runtime = { ...runtime, startedAt: previous.startedAt, usage: previous.usage, budgetReservedUsd: previous.budgetReservedUsd ?? 0,
+        ...(previous.reviewStages ? { reviewStages: previous.reviewStages } : {}) };
       const stop = costBudgetStopCode(safeConfiguration.costBudget, runtime.usage);
-      if (stop !== null && (previous.usage.reported || !previous.budgetPartial)) throw new PortableCodexSecurityRunnerError(stop);
+      if (stop !== null && (previous.usage.reported || !(previous.budgetPartial || previous.providerPartial))) throw new PortableCodexSecurityRunnerError(stop);
     }
 
     assertPortableCodexSecuritySnapshot(snapshot);
@@ -455,7 +464,7 @@ export async function runPortableCodexSecurity(
             deferred: sastTriage.total - (dossier.candidates.length - discoveryCount) }));
           reviewReuse = dependencies.resumeDiscovery ? readPortableReviewReuse(outputDir) : null;
           if (reviewReuse === null) {
-            if (dependencies.resumeDiscovery && ["dataflow", "validation", "report"].includes(previous!.stage)) {
+            if (dependencies.resumeDiscovery && ["dataflow", "validation", "report", "normalize"].includes(previous!.stage)) {
               reviewReuse = planPortableReviewReuse(dossier, snapshot.snapshotRoot, []);
             } else {
               const sources = (dependencies.reviewReuseSources ?? reviewReuseSources)(plan.scanId,
@@ -683,15 +692,16 @@ export async function runPortableCodexSecurity(
           if (path.basename(artifactRoot) === "discovery") fs.writeFileSync(priorProjectionFile, JSON.stringify(discoveryContext), { mode: 0o600 });
         }
         let graphContext = discoveryContext;
+        let reservation: ReturnType<typeof turnBudget.reserve> = null;
         const spec: AgentSessionSpec = {
-        ...(safeConfiguration.costBudget === undefined ? {} : { beforeModelRequest: (request) => {
+        ...(safeConfiguration.costBudget === undefined ? {} : { beforeModelRequest: (request, countedInputTokens) => {
           const budget = safeConfiguration.costBudget!;
           const spent = runtime.usage.reported
             ? estimateFrozenScannerUsageCost(runtime.usage, budget.pricing)?.estimatedUsd
             : 0;
-          const reserved = spent === undefined ? null : reservePortableTurn(request, budget.pricing, budget.maxCostUsd - spent);
-          if (reserved !== null) return reserved;
-          costBudgetStop = spent === undefined ? "cost_budget_unavailable" : "cost_limit_reached";
+          reservation = spent === undefined ? null : turnBudget.reserve(request, budget.pricing, budget.maxCostUsd - spent, resolved.model.contextWindow, countedInputTokens);
+          if (reservation !== null) return reservation.request;
+          costBudgetStop = spent === undefined || resolved.model.contextWindow === null ? "cost_budget_unavailable" : "cost_limit_reached";
           throw new PortableCodexSecurityRunnerError(costBudgetStop);
         } }),
         connectionId: resolved.connection.id,
@@ -820,6 +830,8 @@ export async function runPortableCodexSecurity(
             } } };
           }
           runtime = { ...runtime, usage, updatedAt: now().toISOString() };
+          if (update.inputTokens !== null && update.outputTokens !== null) reservation?.settle();
+          reservation = null;
           if (runtimeWritable) writePortableCodexSecurityRuntime(outputDir, runtime);
           const stop = costBudgetStopCode(safeConfiguration.costBudget, usage);
           if (stop !== null) {
@@ -1005,6 +1017,8 @@ export async function runPortableCodexSecurity(
     const recordedGrouping = readPortableCandidateGrouping(artifactsRoot);
     if (recordedGrouping !== null) writePortableCandidateGrouping(resultsDir, recordedGrouping);
     if (safeConfiguration.businessLogic === true) {
+      interrupted = { stage: "normalize", page: "business-logic", artifactPath: path.relative(outputDir, path.join(resultsDir, "portable-business-logic.json")) };
+      work.set(interrupted.artifactPath!, interrupted);
       update({ stage: "normalize", stageLabel: "Business-logic review", percent: 99,
         detail: "AI review of business rules and workflows over code flows" });
       const budget = safeConfiguration.costBudget;
@@ -1015,6 +1029,7 @@ export async function runPortableCodexSecurity(
       const pricing = budget?.pricing ?? readScannerPricingQuote(outputDir);
       let passUsage = emptyUsage();
       let budgetRefused = false;
+      let businessReservation: ReturnType<typeof turnBudget.reserve> = null;
       const passCost = () => {
         if (!passUsage.reported) return 0;
         const cost = pricing ? estimateFrozenScannerUsageCost(passUsage, pricing)
@@ -1024,12 +1039,22 @@ export async function runPortableCodexSecurity(
       try {
         const flows = extractBusinessFlows(graphIndex, snapshot.snapshotRoot, safeConfiguration.paths);
         log(JSON.stringify({ type: "business_logic_flows", flows: flows.length, source: flows[0]?.source ?? null, budgetUsd: passBudget }));
+        const sources: Pick<ScanRun, "id" | "scanDir">[] = [...(dependencies.reviewReuseSources ?? reviewReuseSources)(plan.scanId, safeConfiguration.repositoryPath,
+          outputDir, safeConfiguration.mode, startedAt)];
+        if (dependencies.resumeDiscovery) {
+          const metadata = path.join(outputDir, "resume-source.json");
+          if (fs.existsSync(metadata)) {
+            const source = JSON.parse(fs.readFileSync(metadata, "utf8")) as { scanId?: unknown };
+            if (typeof source.scanId === "string") sources.unshift({ id: source.scanId, scanDir: outputDir });
+          }
+        }
+        let providerFailure: "provider_unreachable" | "rate_limited" | null = null;
         const record = await runBusinessLogicPass({
+          onProviderFailure: code => { providerFailure = code; },
           flows,
           snapshotRoot: snapshot.snapshotRoot,
           artifactsRoot: path.join(artifactsRoot, "business-logic"),
-          reuseSources: (dependencies.reviewReuseSources ?? reviewReuseSources)(plan.scanId, safeConfiguration.repositoryPath,
-            outputDir, safeConfiguration.mode, startedAt),
+          reuseSources: sources,
           budgetUsd: passBudget,
           budgetRefused: () => budgetRefused,
           signal: deadline.signal,
@@ -1041,12 +1066,14 @@ export async function runPortableCodexSecurity(
             credentials,
             toolSurface: ["workspace.read", "results.write"],
             spec: {
-              ...(budget === undefined || passBudget === null ? {} : { beforeModelRequest: (request) => {
+              ...(budget === undefined || passBudget === null ? {} : { beforeModelRequest: (request, countedInputTokens) => {
                 const spent = passCost();
                 if (spent === null) { budgetRefused = true; throw new PortableCodexSecurityRunnerError("cost_budget_unavailable"); }
-                const reserved = reservePortableTurn(request, budget.pricing, passBudget - spent);
-                if (reserved === null) { budgetRefused = true; throw new PortableCodexSecurityRunnerError("cost_limit_reached"); }
-                return reserved;
+                const total = runtime.usage.reported ? estimateFrozenScannerUsageCost(runtime.usage, budget.pricing)?.estimatedUsd : 0;
+                businessReservation = total === undefined ? null : turnBudget.reserve(request, budget.pricing,
+                  Math.min(passBudget - spent, budget.maxCostUsd - total), resolved.model.contextWindow, countedInputTokens);
+                if (businessReservation === null) { budgetRefused = true; throw new PortableCodexSecurityRunnerError("cost_limit_reached"); }
+                return businessReservation.request;
               } }),
               connectionId: resolved.connection.id,
               routeKind: resolved.connection.routeKind,
@@ -1066,13 +1093,17 @@ export async function runPortableCodexSecurity(
           observeUsage: (event) => {
             passUsage = addPortableCodexSecurityUsage(passUsage, event.usage);
             runtime = { ...runtime, usage: addPortableCodexSecurityUsage(runtime.usage, event.usage), updatedAt: now().toISOString() };
+            if (event.usage.inputTokens !== null && event.usage.outputTokens !== null) businessReservation?.settle();
+            businessReservation = null;
             if (runtimeWritable) writePortableCodexSecurityRuntime(outputDir, runtime);
             return passCost();
           },
         });
         writeBusinessLogicRecord(resultsDir, record);
+        if (providerFailure !== null) throw new PortableCodexSecurityRunnerError(providerFailure);
         log(JSON.stringify({ type: "business_logic_complete", ...record.totals }));
-      } catch {
+      } catch (error) {
+        if (error instanceof PortableCodexSecurityRunnerError && (error.code === "provider_unreachable" || error.code === "rate_limited")) throw error;
         log(JSON.stringify({ type: "business_logic_failed" }));
       }
     }
@@ -1108,10 +1139,17 @@ export async function runPortableCodexSecurity(
       interrupted,
       pending: orderedWork.filter(item => !completedWork.has(item.artifactPath!)),
     } : undefined;
+    const providerPartial = normalized.code === "provider_unreachable" || normalized.code === "rate_limited" ? {
+      stopReason: normalized.code,
+      completed: orderedWork.filter(item => completedWork.has(item.artifactPath!)),
+      interrupted,
+      pending: orderedWork.filter(item => !completedWork.has(item.artifactPath!)),
+    } : undefined;
     runtime = {
       ...runtime,
-      status: budgetPartial ? "incomplete" : normalized.code === "agent_cancelled" ? "cancelled" : "failed",
+      status: budgetPartial || providerPartial ? "incomplete" : normalized.code === "agent_cancelled" ? "cancelled" : "failed",
       ...(budgetPartial ? { budgetPartial, stageLabel: "Parcial por orçamento" } : {}),
+      ...(providerPartial ? { providerPartial } : {}),
       detail: budgetPartial ? "Parcial por orçamento" : normalized.code,
       error: normalized.code,
       errorCode: safeProviderCode(normalized.code),
@@ -1121,7 +1159,7 @@ export async function runPortableCodexSecurity(
     if (runtimeWritable) {
       if (budgetPartial) writeBudgetPartial(outputDir, budgetPartial);
       writePortableCodexSecurityRuntime(outputDir, runtime);
-      if (budgetPartial) syncBudgetArtifact(path.join(outputDir, "portable-codex-security-runtime.json"));
+      if (budgetPartial || providerPartial) syncBudgetArtifact(path.join(outputDir, "portable-codex-security-runtime.json"));
     }
     throw normalized;
   } finally {
@@ -1319,6 +1357,7 @@ function productionSessionFactory(
       protocol: input.connection.protocol,
       credentials: input.credentials,
       resolveAccessToken,
+      ...(input.spec.beforeModelRequest === undefined ? {} : { maxRetries: 0 }),
     });
     return createAgentSession({ ...input.spec, probe: input.capability.capabilities }, upstream);
   };
@@ -1538,6 +1577,9 @@ function normalizeRunnerError(
   }
   if (error instanceof AgentSessionError && error.code === "agent_cancelled") {
     return new PortableCodexSecurityRunnerError("agent_cancelled");
+  }
+  if (error instanceof AgentSessionError && (error.code === "provider_unreachable" || error.code === "rate_limited")) {
+    return new PortableCodexSecurityRunnerError(error.code);
   }
   return new PortableCodexSecurityRunnerError("agent_session_failed");
 }

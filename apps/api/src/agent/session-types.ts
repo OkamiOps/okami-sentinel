@@ -123,7 +123,7 @@ export type AgentSessionTerminalMode = "provider-completion" | "artifact-write";
 export const MAX_AGENT_SESSION_COMPLETION_TOKENS = 65_536;
 
 export interface AgentSessionSpec {
-  beforeModelRequest?: (request: AgentWireRequest) => AgentWireRequest;
+  beforeModelRequest?: (request: AgentWireRequest, countedInputTokens?: number | null) => AgentWireRequest;
   /** Server-built index for this immutable snapshot. */
   graphIndex?: GraphIndex;
   connectionId: string;
@@ -288,6 +288,7 @@ export interface AgentUpstreamRequest extends AgentWireRequest {
 /** The only provider boundary used by this package. Callers inject it; no fetch fallback exists. */
 export interface AgentUpstream {
   request(request: AgentUpstreamRequest): Promise<unknown>;
+  countInputTokens?(request: AgentUpstreamRequest): Promise<number | null>;
   cancel?(): Promise<boolean | void>;
 }
 
@@ -355,7 +356,7 @@ const MIN_ARTIFACT_REPAIR_MODEL_TURNS = 4;
 const MAX_ARTIFACT_REPAIR_INSPECTION_CALLS = 1;
 
 export interface ConstrainedWireSessionOptions {
-  beforeModelRequest?: (request: AgentWireRequest) => AgentWireRequest;
+  beforeModelRequest?: (request: AgentWireRequest, countedInputTokens?: number | null) => AgentWireRequest;
   limits: AgentSessionLimits;
   signal: AbortSignal;
   host: WorkspaceToolHost;
@@ -467,6 +468,7 @@ class ConstrainedWireSession implements AgentSession {
     const seenCallIds = new Set<string>();
     const contextEstimator = new ContextBudgetEstimator();
     let modelTurns = 0;
+    let previousUsageKnown = false;
     const modelTurnLimit = this.#options.limits.maxModelTurns === 0 ? Infinity : this.#options.limits.maxModelTurns;
     let toolCalls = 0;
     const sourceReads = new Set<string>();
@@ -536,7 +538,18 @@ class ConstrainedWireSession implements AgentSession {
             : undefined,
         );
         artifactRepairReminder = false;
-        request = this.#options.beforeModelRequest?.(request) ?? request;
+        let countedInputTokens: number | null = null;
+        if (this.#options.beforeModelRequest && this.#options.upstream.countInputTokens &&
+            (!carriesRemoteContext(request.body) || previousUsageKnown)) {
+          try {
+            countedInputTokens = await raceWithAbort(
+              this.#options.upstream.countInputTokens({ ...request, signal: this.#controller.signal }),
+              this.#controller.signal,
+            );
+          } catch { /* Unknown counts retain the full-window reservation. */ }
+          this.#throwIfStopped();
+        }
+        request = this.#options.beforeModelRequest?.(request, countedInputTokens) ?? request;
         const requestBytes = serializedByteLength(request.body);
         if (this.#options.limits.maxContextTokens !== undefined &&
             contextEstimator.estimate(requestBytes, carriesRemoteContext(request.body)) + completionContextReserve(request.body) >
@@ -585,6 +598,7 @@ class ConstrainedWireSession implements AgentSession {
           outputBytes += responseBytes;
           reply = this.#options.adapter.readResponse(response);
         } catch (error) {
+          previousUsageKnown = false;
           if (this.#options.adapter.readUsage !== undefined) {
             yield { type: "usage", usage: this.#options.adapter.readUsage(response) };
           }
@@ -604,6 +618,8 @@ class ConstrainedWireSession implements AgentSession {
           throw error;
         }
         const usage = reply.usage ?? emptyUsage();
+        previousUsageKnown = usage.inputTokens !== null && Number.isSafeInteger(usage.inputTokens) && usage.inputTokens >= 0 &&
+          usage.outputTokens !== null && Number.isSafeInteger(usage.outputTokens) && usage.outputTokens >= 0;
         contextEstimator.observe(requestBytes, usage.inputTokens, carriesRemoteContext(request.body), usage.outputTokens, completionContextReserve(request.body));
         yield { type: "usage", usage };
 

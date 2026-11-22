@@ -68,6 +68,83 @@ test("AgentUpstream resolves the official route on the server and never accepts 
   assert.equal(transport.calls[0]?.headers.get("content-type"), "application/json");
 });
 
+test("OpenAI Responses counts the complete immutable request including retained history", async () => {
+  const transport = transcript([json(200, { object: "response.input_tokens", input_tokens: 713 })]);
+  const upstream = createHttpAgentUpstream({ routeKind: "openai-api", protocol: "openai-responses",
+    credentials: { apiKey: "test-secret" }, transport: transport.fetch });
+  const body = { model: "selected-model", input: [{ type: "function_call_output", call_id: "read", output: "delta" }],
+    previous_response_id: "immutable-history", tools: [{ type: "function", name: "workspace_read", parameters: {} }],
+    reasoning: { effort: "low" }, max_output_tokens: 4_096 };
+  assert.equal(await upstream.countInputTokens!({ operation: "responses", body, signal: new AbortController().signal }), 713);
+  assert.deepEqual(transport.calls.map(call => call.url), ["https://api.openai.com/v1/responses/input_tokens"]);
+  const { max_output_tokens: _cap, ...countedBody } = body;
+  assert.deepEqual(JSON.parse(String(transport.calls[0]!.init.body)), countedBody);
+  assert.equal(body.max_output_tokens, 4_096);
+});
+
+test("input counting fails closed without retries for failures, invalid counts, and unknown request fields", async () => {
+  for (const reply of [json(503, {}), json(200, {}), json(200, { input_tokens: 713 }),
+    json(200, { object: "response.input_tokens", input_tokens: -1 }), json(200, { object: "response.input_tokens", input_tokens: 1.5 })]) {
+    const transport = transcript([reply]);
+    const upstream = createHttpAgentUpstream({ routeKind: "openai-api", protocol: "openai-responses",
+      credentials: { apiKey: "test-secret" }, transport: transport.fetch });
+    assert.equal(await upstream.countInputTokens!({ operation: "responses", body: { model: "m", input: "x" }, signal: new AbortController().signal }), null);
+    assert.equal(transport.calls.length, 1);
+  }
+  const transport = transcript([]);
+  const upstream = createHttpAgentUpstream({ routeKind: "openai-api", protocol: "openai-responses",
+    credentials: { apiKey: "test-secret" }, transport: transport.fetch });
+  for (const body of [{ input: "x", unknown_context: "unaccounted" }, { input: "x", truncation: "auto" }, { conversation: "mutable" }]) {
+    assert.equal(await upstream.countInputTokens!({ operation: "responses", body, signal: new AbortController().signal }), null);
+  }
+  assert.equal(transport.calls.length, 0);
+});
+
+test("Grok OAuth and other non-authoritative protocols never use a text count as a request bound", async () => {
+  for (const [routeKind, protocol] of [["xai-oauth", "xai-oauth-responses"], ["xai-api", "openai-responses"],
+    ["anthropic-api", "anthropic-messages"], ["gemini-api", "openai-chat"], ["custom-openai-compatible", "openai-responses"]] as const) {
+    const transport = transcript([]);
+    const upstream = createHttpAgentUpstream({ routeKind, protocol, credentials: { apiKey: "test-secret" }, transport: transport.fetch });
+    assert.equal(await upstream.countInputTokens!({ operation: "responses", body: { model: "m", input: "x" }, signal: new AbortController().signal }), null);
+    assert.equal(transport.calls.length, 0);
+  }
+});
+
+test("protocol failures distinguish HTTP rejection, body shape and local limits without provider content", async () => {
+  for (const [reply, issue] of [[json(422, { error: "private detail" }), "http_status_422"],
+    [new Response("private non-JSON detail", { status: 200 }), "response_json_invalid"],
+    [new Response(null, { status: 204 }), "response_body_empty"],
+    [new Response("x".repeat(HTTP_AGENT_BODY_LIMIT_BYTES + 1)), "response_body_too_large"]] as const) {
+    const transport = transcript([reply]);
+    const upstream = createHttpAgentUpstream({ routeKind: "xai-oauth", protocol: "xai-oauth-responses",
+      credentials: { apiKey: "fixture" }, maxRetries: 0, transport: transport.fetch });
+    await assert.rejects(upstream.request({ operation: "responses", body: {}, signal: new AbortController().signal }), error => {
+      assert.ok(error instanceof HttpAgentUpstreamError);
+      assert.equal(error.code, "protocol_unsupported");
+      assert.equal(error.protocolIssue, issue);
+      assert.ok(!JSON.stringify(error).includes("private"));
+      return true;
+    });
+    assert.equal(transport.calls.length, 1);
+  }
+});
+
+test("transient HTTP failures retain a safe status diagnostic without inference replay", async () => {
+  for (const status of [408, 429, 500, 503, 504]) {
+    const transport = transcript([json(status, { error: "private provider error" })]);
+    const upstream = createHttpAgentUpstream({ routeKind: "xai-oauth", protocol: "xai-oauth-responses",
+      credentials: { apiKey: "fixture" }, maxRetries: 0, transport: transport.fetch });
+    await assert.rejects(upstream.request({ operation: "responses", body: {}, signal: new AbortController().signal }), error => {
+      assert.ok(error instanceof HttpAgentUpstreamError);
+      assert.equal(error.code, status === 429 ? "rate_limited" : "provider_unreachable");
+      assert.equal(error.protocolIssue, `http_status_${status}`);
+      assert.ok(!JSON.stringify(error).includes("private"));
+      return true;
+    });
+    assert.equal(transport.calls.length, 1);
+  }
+});
+
 test("AgentUpstream pins official origins and the documented MiniMax Token Plan header", async () => {
   const cases = [
     ["xai-api", "openai-responses", "responses", "https://api.x.ai/v1/responses", "authorization", "Bearer xai-secret"],
@@ -876,6 +953,23 @@ test("persistent HTTP unavailability stops after three requests with a safe erro
   await assert.rejects(upstream.request({ operation: "responses", body: {}, signal: new AbortController().signal }),
     { code: "provider_unreachable" });
   assert.equal(calls, 3);
+});
+
+test("budgeted inference can disable retries after a possibly billed transport failure", async () => {
+  for (const failure of [503, "network"] as const) {
+    let calls = 0;
+    const upstream = createHttpAgentUpstream({
+      routeKind: "openai-api", protocol: "openai-responses", credentials: { apiKey: "test-secret" }, maxRetries: 0,
+      transport: (async () => {
+        calls++;
+        if (failure === "network") throw new TypeError("socket closed after request");
+        return json(failure, {});
+      }) as typeof fetch,
+    });
+    await assert.rejects(upstream.request({ operation: "responses", body: {}, signal: new AbortController().signal }),
+      { code: "provider_unreachable" });
+    assert.equal(calls, 1);
+  }
 });
 
 test("HTTP recovery does not retry auth, protocol errors or cancellation during backoff", async () => {

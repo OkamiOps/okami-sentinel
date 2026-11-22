@@ -58,6 +58,7 @@ export const ROUTE_POLICY: ReadonlyArray<readonly [method: string, pattern: stri
   ["POST", "/ingest", ADMIN], ["GET", "/fs/list", ADMIN], ["GET", "/metrics/summary", SCOPED], ["POST", "/compare", SCOPED],
   ["GET", "/scans", SCOPED], ["POST", "/scans", ADMIN], ["GET", "/scans/active", SCOPED], ["GET", "/scans/catalog", SCOPED],
   ["GET", "/scans/:id", viewerScan], ["DELETE", "/scans/:id", R("maintainer", "scan")],
+  ["POST", "/scans/:id/resume", ADMIN],
   ["GET", "/scans/:id/analysis-metrics", viewerScan], ["GET", "/scans/:id/files-graph", viewerScan],
   ["GET", "/scans/:id/candidate-preview", viewerScan], ["GET", "/scans/:id/candidate-groups", viewerScan], ["GET", "/scans/:id/verdicts", viewerScan], ["GET", "/scans/:id/business-logic", viewerScan], ["GET", "/scans/:id/telemetry", viewerScan],
   ["GET", "/scans/:id/report", viewerScan], ["GET", "/scans/:id/regression", viewerScan],

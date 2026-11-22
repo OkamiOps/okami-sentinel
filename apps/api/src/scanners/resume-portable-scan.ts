@@ -3,13 +3,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { nanoid } from "nanoid";
+import type { ScanRun } from "@csb/shared";
+import { estimateFrozenScannerUsageCost, readScannerPricingQuote, frozenScannerPricingSupportsCostBudget } from "../model-pricing.js";
 import { getRun, upsertRun, reserveScanCapacity, releaseScanCapacity } from "../db.js";
 import { MAX_CONCURRENT_SCANS } from "../config.js";
 import { getProviderRuntime } from "../provider-runtime.js";
 import { cliLogPath } from "../activity.js";
 import { captureProcessIdentity, persistProcessIdentity, findProcessIdentitiesForScanDir } from "../process-identity.js";
 import { readPortableCodexSecurityWorkerConfiguration } from "./portable-codex-security-worker.js";
-import { readPortableCodexSecurityRuntime } from "./portable-codex-security-runtime.js";
+import { readPortableCodexSecurityRuntime, type PortableCodexSecurityRuntimeState } from "./portable-codex-security-runtime.js";
 import { assertPortableCodexSecuritySnapshot, assertExactStageArtifact, assertPortableCodexSecurityDossierAnchors, assertPortableCodexSecurityReportAnchors } from "./portable-codex-security-worker-support.js";
 import { createPortableCodexSecurityDossier, applyPortableCodexSecurityStageArtifact, validatePortableCodexSecurityReportCoverage } from "./portable-codex-security-dossier.js";
 import { mergePortableDeepDiscoveryDossiers } from "./portable-codex-security-deep-coverage.js";
@@ -17,14 +19,15 @@ import { PORTABLE_CANDIDATE_GROUPS_FILE, groupPortableCandidatesBeforeReview } f
 import { createPortableAssessmentPages, assessmentPageDirectory } from "./portable-codex-security-assessment-pages.js";
 import { createPortableCodexSecurityReportShards } from "./portable-codex-security-report-shards.js";
 import { PORTABLE_CODEX_SECURITY_STAGES } from "./portable-codex-security-profile.js";
-import { assertBudgetResumeCap } from "./portable-budget-partial.js";
+import { assertBudgetResumeCap, assertResumeSpendAndHolds } from "./portable-budget-partial.js";
 import { readPortableReviewReuse, restorePortableReviewReuse, REVIEW_REUSE_FILE } from "./portable-review-reuse.js";
 import { addPortableSastCandidates, PORTABLE_SAST_TRIAGE_FILE, readPortableSastTriage } from "./portable-sast-triage.js";
+import { BUSINESS_LOGIC_FILE, BUSINESS_LOGIC_ARTIFACT } from "./portable-business-logic.js";
 
 /** Read-only checkpoint validation, shared by dry-run and actual recovery. */
 export function preflightPortableResume(scanDir: string, mode: "standard" | "deep") {
   const previous = readPortableCodexSecurityRuntime(scanDir);
-  const resumable = ["inventory", "threat-model", "discovery", "dataflow", "validation", "report"];
+  const resumable = ["inventory", "threat-model", "discovery", "dataflow", "validation", "report", "normalize"];
   if (!previous?.snapshotId || !resumable.includes(previous.stage ?? "") || previous.status === "completed") throw new Error("resume_requires_checkpoint");
   const snapshotRoot = path.join(scanDir, "portable-codex-security-snapshot");
   assertPortableCodexSecuritySnapshot({ snapshotRoot, snapshotId: previous.snapshotId });
@@ -40,17 +43,19 @@ export function preflightPortableResume(scanDir: string, mode: "standard" | "dee
     return assertExactStageArtifact(root, { artifact });
   }
   let dossier = createPortableCodexSecurityDossier();
-  if (previous.budgetPartial && ["inventory", "threat-model"].includes(previous.stage)) {
+  if ((previous.budgetPartial || previous.providerPartial) && ["inventory", "threat-model"].includes(previous.stage)) {
+    const verifiedStages: Record<string, number> = {};
     for (const stage of PORTABLE_CODEX_SECURITY_STAGES.slice(0, 2)) {
       const artifact = read(stage.id, stage.artifact);
       if (artifact) {
         dossier = applyPortableCodexSecurityStageArtifact(dossier, artifact);
         assertPortableCodexSecurityDossierAnchors(snapshotRoot, dossier);
+        verifiedStages[stage.id] = 1;
       } else if (stage.id !== previous.stage) throw new Error("resume_missing_prerequisite_checkpoint");
       if (stage.id === previous.stage) break;
     }
     if (fs.readdirSync(artifacts).some(entry => !accepted.has(entry))) throw new Error("resume_unrecognized_checkpoint");
-    return { previous, completed: 0, totalBatches: 0, verifiedStages: {}, dossier };
+    return { previous, completed: 0, totalBatches: 0, verifiedStages, dossier };
   }
   for (const stage of PORTABLE_CODEX_SECURITY_STAGES.slice(0, 2)) {
     const artifact = read(stage.id, stage.artifact);
@@ -89,7 +94,7 @@ export function preflightPortableResume(scanDir: string, mode: "standard" | "dee
     discoveryComplete = completed === 2;
   }
   if (previous.stage !== "discovery" && !discoveryComplete) throw new Error("resume_missing_prerequisite_checkpoint");
-  const verifiedStages: Record<string, number> = { discovery: completed };
+  const verifiedStages: Record<string, number> = { inventory: 1, "threat-model": 1, discovery: completed };
   let prerequisiteComplete = discoveryComplete;
   if (discoveryComplete) {
     dossier = groupPortableCandidatesBeforeReview(dossier, artifacts, { resume: true, persist: false });
@@ -144,20 +149,66 @@ export function preflightPortableResume(scanDir: string, mode: "standard" | "dee
     verifiedStages.report++;
   }
   for (const entry of fs.readdirSync(artifacts)) {
+    if (entry === "business-logic") {
+      const root = path.join(artifacts, entry);
+      if (!fs.lstatSync(root).isDirectory() || fs.lstatSync(root).isSymbolicLink()) throw new Error("resume_invalid_checkpoint_directory");
+      for (const page of fs.readdirSync(root)) {
+        const directory = path.join(root, page);
+        if (!/^business-logic-\d{2,}$/.test(page) || !fs.lstatSync(directory).isDirectory() || fs.lstatSync(directory).isSymbolicLink()) throw new Error("resume_unrecognized_checkpoint");
+        for (const file of fs.readdirSync(directory)) {
+          if (file !== BUSINESS_LOGIC_ARTIFACT || !fs.lstatSync(path.join(directory, file)).isFile()) throw new Error("resume_unrecognized_checkpoint");
+        }
+      }
+      accepted.add(entry);
+    }
     if (!accepted.has(entry)) throw new Error("resume_unrecognized_checkpoint");
+  }
+  if (previous.stage === "normalize") {
+    const shards = createPortableCodexSecurityReportShards(dossier);
+    if (shards.some(shard => shard.candidateIds.length > 0) && verifiedStages.report !== shards.length) throw new Error("resume_missing_prerequisite_checkpoint");
   }
   return { previous, completed, totalBatches, verifiedStages, dossier };
 }
 
-/** Local operator recovery. Does not mutate or overwrite the interrupted run. */
-export async function resumeBudgetPortableScan(scanId: string, maxCostUsd: number, dryRun = false) {
-  const original = getRun(scanId);
-  if (!original || original.status !== "incomplete" || original.engine !== "codex-security" || original.execution?.executionProfile !== "portable") throw new Error("resume_requires_budget_partial_scan");
+export function inspectPortableResume(original: ScanRun) {
+  if (!["incomplete", "failed"].includes(original.status) || original.engine !== "codex-security" || original.execution?.executionProfile !== "portable") throw new Error("resume_requires_partial_portable_scan");
   if (findProcessIdentitiesForScanDir(original.scanDir).length > 0) throw new Error("resume_source_still_running");
   const config = readPortableCodexSecurityWorkerConfiguration(path.join(original.scanDir, "portable-codex-security-run.json"));
+  if (!config.costBudget) {
+    const pricing = readScannerPricingQuote(original.scanDir);
+    if (!pricing || !frozenScannerPricingSupportsCostBudget(pricing)) throw new Error("resume_cost_unavailable");
+    config.costBudget = { maxCostUsd: 200, pricing };
+  }
   const { previous, completed, totalBatches, verifiedStages } = preflightPortableResume(original.scanDir, config.mode);
-  if (previous.status !== "incomplete" || !previous.budgetPartial || !config.costBudget) throw new Error("resume_requires_budget_partial_scan");
-  assertBudgetResumeCap(previous.budgetPartial, maxCostUsd);
+  if (!["incomplete", "failed"].includes(previous.status)) throw new Error("resume_requires_checkpoint");
+  const spentUsd = previous.budgetPartial?.spentUsd ?? (!previous.usage.reported ? 0
+    : config.costBudget ? estimateFrozenScannerUsageCost(previous.usage, config.costBudget.pricing)?.estimatedUsd : undefined);
+  if (config.costBudget && spentUsd === undefined) throw new Error("resume_cost_unavailable");
+  const suggestedMaxCostUsd = Math.max(200, Math.ceil(Math.max(spentUsd ?? 0, config.costBudget?.maxCostUsd ?? 0) * 2));
+  return { config, previous, completed, totalBatches, verifiedStages, spentUsd, suggestedMaxCostUsd };
+}
+
+export function portableResumeAvailability(original: ScanRun) {
+  try {
+    const { suggestedMaxCostUsd } = inspectPortableResume(original);
+    if (!getProviderRuntime().store.getSnapshot(original.id)?.modelId) return undefined;
+    return { suggestedMaxCostUsd };
+  } catch { return undefined; }
+}
+
+export function preparePortableResumeRuntime(previous: PortableCodexSecurityRuntimeState): PortableCodexSecurityRuntimeState {
+  return { ...previous, status: "preparing", completedAt: null, error: null, errorCode: null };
+}
+
+/** Does not mutate or overwrite the interrupted run. */
+export async function resumeBudgetPortableScan(scanId: string, requestedMaxCostUsd?: number, dryRun = false) {
+  const original = getRun(scanId);
+  if (!original) throw new Error("resume_scan_not_found");
+  if (!original.execution) throw new Error("resume_requires_partial_portable_scan");
+  const { config, previous, completed, totalBatches, verifiedStages, spentUsd, suggestedMaxCostUsd } = inspectPortableResume(original);
+  const maxCostUsd = requestedMaxCostUsd ?? suggestedMaxCostUsd;
+  assertResumeSpendAndHolds(spentUsd ?? 0, previous.budgetReservedUsd ?? 0, maxCostUsd);
+  if (previous.budgetPartial) assertBudgetResumeCap(previous.budgetPartial, maxCostUsd);
   console.log(JSON.stringify({ sourceScanId: scanId, snapshotId: previous.snapshotId, verifiedBatches: completed, totalBatches, verifiedStages, dryRun }));
   if (dryRun) return;
   const id = nanoid(12);
@@ -183,8 +234,14 @@ export async function resumeBudgetPortableScan(scanId: string, maxCostUsd: numbe
       restoreDirectoryModes(path.join(original.scanDir, name), path.join(outputDir, name));
     }
     assertPortableCodexSecuritySnapshot({ snapshotRoot: path.join(outputDir, "portable-codex-security-snapshot"), snapshotId: previous.snapshotId! });
-    fs.writeFileSync(path.join(outputDir, "portable-codex-security-runtime.json"), JSON.stringify(previous), { mode: 0o600 });
+    fs.writeFileSync(path.join(outputDir, "portable-codex-security-runtime.json"), JSON.stringify(preparePortableResumeRuntime(previous)), { mode: 0o600 });
     for (const name of ["portable-codex-security-pricing.json", "scanner-pricing.json", DEEP_PLAN_FILE, STANDARD_PLAN_FILE, REVIEW_REUSE_FILE, PORTABLE_SAST_TRIAGE_FILE]) if (fs.existsSync(path.join(original.scanDir, name))) fs.copyFileSync(path.join(original.scanDir, name), path.join(outputDir, name));
+    const businessRecord = path.join(original.scanDir, "portable-codex-security-results", BUSINESS_LOGIC_FILE);
+    if (fs.existsSync(businessRecord)) {
+      const results = path.join(outputDir, "portable-codex-security-results");
+      fs.mkdirSync(results, { mode: 0o700 });
+      fs.copyFileSync(businessRecord, path.join(results, BUSINESS_LOGIC_FILE));
+    }
     const sastFiles = ["opengrep-findings.json", "opengrep-status.json"];
     if (sastFiles.some(name => fs.existsSync(path.join(original.scanDir, "sast", name)))) {
       fs.mkdirSync(path.join(outputDir, "sast"), { mode: 0o700 });
@@ -210,12 +267,12 @@ export async function resumeBudgetPortableScan(scanId: string, maxCostUsd: numbe
     const workerLog = path.join(original.scanDir, "portable-worker-events.log");
     const eventLog = fs.existsSync(workerLog) ? workerLog : legacyLog;
     if (fs.existsSync(eventLog)) fs.copyFileSync(eventLog, path.join(outputDir, "portable-worker-events.log"));
-    const resumedConfig = { ...config, graphify: config.graphify === true, outputDir, costBudget: { ...config.costBudget, maxCostUsd }, limits: { ...config.limits, totalTimeoutMs: 0 }, providerPlan: { ...config.providerPlan, scanId: id, capabilityCheckId: probe.report.id } };
+    const resumedConfig = { ...config, graphify: config.graphify === true, outputDir, ...(config.costBudget ? { costBudget: { ...config.costBudget, maxCostUsd } } : {}), limits: { ...config.limits, totalTimeoutMs: 0 }, providerPlan: { ...config.providerPlan, scanId: id, capabilityCheckId: probe.report.id } };
     const configPath = path.join(outputDir, "portable-codex-security-run.json");
     fs.writeFileSync(configPath, JSON.stringify(resumedConfig), { mode: 0o600 });
     fs.writeFileSync(path.join(outputDir, "resume-source.json"), JSON.stringify({ scanId, resumedAt: new Date().toISOString(), verifiedBatches: completed, verifiedStages, snapshotId: previous.snapshotId }), { mode: 0o600 });
     runtime.store.writeSnapshot({ ...frozen, scanId: id, capabilityCheckId: probe.report.id, capturedAt: new Date().toISOString() });
-    const run = { ...original, graphify: resumedConfig.graphify, id, scanDir: outputDir, status: "queued" as const, displayName: `${original.displayName} · resumed`, pid: null, completedAt: null, durationMs: null, progress: null, execution: { ...original.execution, capabilityCheckId: probe.report.id } };
+    const run = { ...original, startedAt: new Date().toISOString(), cost: null, usage: null, statusReason: undefined, budgetPartial: undefined, providerPartial: undefined, resume: undefined, graphify: resumedConfig.graphify, id, scanDir: outputDir, status: "queued" as const, displayName: `${original.displayName} · resumed`, pid: null, completedAt: null, durationMs: null, progress: null, execution: { ...original.execution, capabilityCheckId: probe.report.id } };
     upsertRun(run);
     const fd = fs.openSync(cliLogPath(outputDir), "a", 0o600);
     const child = spawn(process.execPath, ["--import", "tsx", path.join(import.meta.dirname, "portable-codex-security-worker.ts"), configPath, "--resume-discovery"], { cwd: path.resolve(import.meta.dirname, "../.."), detached: true, stdio: ["ignore", fd, fd], env: process.env });
@@ -226,6 +283,7 @@ export async function resumeBudgetPortableScan(scanId: string, maxCostUsd: numbe
     upsertRun({ ...run, status: "running", pid: child.pid! });
     child.unref();
     console.log(JSON.stringify({ resumedScanId: id, pid: child.pid, verifiedBatches: completed, verifiedStages, outputDir }));
+    return id;
   } catch (error) { releaseScanCapacity(id); throw error; }
 }
 if (process.argv[1]?.endsWith("resume-portable-scan.ts")) {

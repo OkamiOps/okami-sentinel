@@ -379,6 +379,8 @@ export function withProgress(run: ScanRun): ScanRun {
   );
   return { ...run, progress, ...(runtime?.budgetPartial === undefined ? {} : {
     statusReason: "budget_exhausted" as const, budgetPartial: runtime.budgetPartial,
+  }), ...(runtime?.providerPartial === undefined ? {} : {
+    statusReason: "provider_unavailable" as const, providerPartial: runtime.providerPartial,
   }) };
 }
 

@@ -518,6 +518,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  resumeScan: (id: string, maxCostUsd: number) => request<{ scanId: string }>(`/scans/${id}/resume`, { method: "POST", body: JSON.stringify({ maxCostUsd }) }),
   cancelScan: (id: string) =>
     request<{ ok: boolean }>(`/scans/${id}/cancel`, { method: "POST" }),
   deleteScan: (id: string) =>
