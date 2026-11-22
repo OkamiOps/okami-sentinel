@@ -10,6 +10,7 @@ import { refreshPortableCodexSecurityRunFromDisk } from "./portable-codex-securi
 import type { ScanRun } from "@csb/shared";
 import { assertBudgetResumeCap, assertResumeSpendAndHolds } from "./portable-budget-partial.js";
 import { createPortableCodexSecuritySnapshot } from "./portable-codex-security-worker-support.js";
+import { writePortableSastTriage } from "./portable-sast-triage.js";
 
 test("resume cannot lower the cap below prior spend plus unresolved provider holds", () => {
   for (const cap of [NaN, Infinity, 0.4, 1.2, 1.49]) {
@@ -135,6 +136,29 @@ test("validation recovery preflight preserves and accepts discovery/dataflow che
     assert.equal(fs.readFileSync(path.join(f.scan,"portable-codex-security-artifacts/dataflow/04-dataflow.json"),"utf8"),before);
   } finally {cleanup(f.root);}
 });
+
+for (const count of [8, 32]) {
+  test(`resume preserves persisted SAST identities and dataflow checkpoints with ${count} entries`, () => {
+    const f = fixture(0);
+    try {
+      const queued = Array.from({ length: count }, (_, i) => ({
+        findingId: `opengrep:${i.toString(16).padStart(64, "0")}`, ruleId: "unit-marker", severity: "high" as const,
+        scope: count === 8 ? "supporting" as const : "runtime" as const,
+        path: "route.ts", startLine: 1, endLine: 1,
+      }));
+      writePortableSastTriage(f.scan, { version: 1, total: count + 10, queued });
+      f.write("dataflow", "04-dataflow.json", "dataflow", { assessments: queued.map(entry => ({
+        candidateId: entry.findingId, status: "inconclusive", reason: "insufficient-evidence",
+        evidence: [{ path: "route.ts", startLine: 1, endLine: 1, role: "evidence" }],
+      })) });
+      const result = preflightPortableResume(f.scan, "deep");
+      assert.deepEqual(result.dossier.candidates.map(candidate => candidate.id), queued.map(entry => entry.findingId));
+      assert.equal(result.verifiedStages.dataflow, 1);
+      assert.equal(result.dossier.assessments.length, count);
+      assert.equal(result.verifiedStages.validation, 0);
+    } finally { cleanup(f.root); }
+  });
+}
 test("validation recovery rejects corrupt checkpoint instead of replaying past it", () => {
   const f=fixture(); try {
     fs.writeFileSync(path.join(f.scan,"portable-codex-security-artifacts/dataflow/04-dataflow.json"),"invalid");
