@@ -29,7 +29,7 @@ export interface PortableReviewReuse {
 
 export function reviewReuseSources(scanId: string, repositoryPath: string, scanDir: string, mode: string, before: string): ScanRun[] {
   const rows = getDb().prepare(`SELECT id FROM runs WHERE id != ? AND created_at <
-    COALESCE((SELECT created_at FROM runs WHERE id = ?), ?) ORDER BY created_at DESC`).all(scanId, scanId, before) as Array<{ id: string }>;
+    COALESCE((SELECT created_at FROM runs WHERE id = ?), ?) ORDER BY created_at DESC LIMIT 200`).all(scanId, scanId, before) as Array<{ id: string }>;
   const key = repositoryKeyFor({ repositoryPath, scanDir });
   const sources: ScanRun[] = [];
   for (const row of rows) {
