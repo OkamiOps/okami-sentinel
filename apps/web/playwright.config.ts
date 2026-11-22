@@ -1,5 +1,11 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const webPort = Number(process.env.CSB_E2E_WEB_PORT || 4175);
+if (!Number.isSafeInteger(webPort) || webPort < 1 || webPort > 65_535) {
+  throw new Error("CSB_E2E_WEB_PORT must be a valid local port");
+}
+const baseURL = `http://127.0.0.1:${webPort}`;
+
 export default defineConfig({
   testDir: "./e2e",
   // Real API/SQLite coverage owns private processes and has a dedicated
@@ -13,7 +19,7 @@ export default defineConfig({
   reporter: "list",
   outputDir: "../../output/playwright-improvements/test-results",
   use: {
-    baseURL: "http://127.0.0.1:4175",
+    baseURL,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },
@@ -22,8 +28,8 @@ export default defineConfig({
     { name: "mobile", use: { ...devices["Pixel 7"], browserName: "chromium" } },
   ],
   webServer: {
-    command: "pnpm exec vite preview --host 127.0.0.1 --port 4175 --strictPort",
-    url: "http://127.0.0.1:4175",
+    command: `pnpm exec vite preview --host 127.0.0.1 --port ${webPort} --strictPort`,
+    url: baseURL,
     reuseExistingServer: false,
     timeout: 30_000,
   },
