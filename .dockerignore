@@ -28,6 +28,8 @@ scripts/docker/setup.mjs
 scripts/docker/setup.sh
 scripts/docker/smoke.mjs
 scripts/docker/workflow-smoke.mjs
+scripts/docker/ci-retention.sh
+scripts/docker/ci-retention.test.sh
 
 # Local operator configuration and secrets
 .env*

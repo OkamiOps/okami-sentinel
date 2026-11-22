@@ -1,10 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
+import { e2ePreviewServer } from "./src/lib/e2e-web-port";
 
-const webPort = Number(process.env.CSB_E2E_WEB_PORT || 4175);
-if (!Number.isSafeInteger(webPort) || webPort < 1 || webPort > 65_535) {
-  throw new Error("CSB_E2E_WEB_PORT must be a valid local port");
-}
-const baseURL = `http://127.0.0.1:${webPort}`;
+const preview = e2ePreviewServer();
 
 export default defineConfig({
   testDir: "./e2e",
@@ -19,7 +16,7 @@ export default defineConfig({
   reporter: "list",
   outputDir: "../../output/playwright-improvements/test-results",
   use: {
-    baseURL,
+    baseURL: preview.baseURL,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },
@@ -28,9 +25,9 @@ export default defineConfig({
     { name: "mobile", use: { ...devices["Pixel 7"], browserName: "chromium" } },
   ],
   webServer: {
-    command: `pnpm exec vite preview --host 127.0.0.1 --port ${webPort} --strictPort`,
-    url: baseURL,
-    reuseExistingServer: false,
+    command: preview.command,
+    url: preview.url,
+    reuseExistingServer: preview.reuseExistingServer,
     timeout: 30_000,
   },
 });

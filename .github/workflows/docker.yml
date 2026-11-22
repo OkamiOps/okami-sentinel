@@ -24,6 +24,9 @@ jobs:
       - name: Verify Docker setup script
         run: node --test scripts/docker/setup.test.mjs
 
+      - name: Verify image retention script
+        run: bash scripts/docker/ci-retention.test.sh
+
       - name: Build image
         run: >-
           docker build
@@ -43,8 +46,14 @@ jobs:
           CSB_DOCKER_QA_FIXTURE_UID: "1001"
         run: node scripts/docker/workflow-smoke.mjs csb-sentinel:${{ github.sha }}
 
+      # Five self-hosted runners share one Docker daemon. A successful push to
+      # main keeps this image and the previous main-* image. Every other run
+      # deletes only the plain sha tag built by this job.
       - name: Remove CI image
         if: always()
-        run: |
-          docker rmi -f csb-sentinel:${{ github.sha }} || true
-          docker builder prune -f --filter until=72h || true
+        env:
+          IMAGE_SHA: ${{ github.sha }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+          JOB_STATUS: ${{ job.status }}
+        run: bash scripts/docker/ci-retention.sh
