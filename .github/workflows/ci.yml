@@ -49,6 +49,19 @@ jobs:
       - name: Install browser for UI regression tests
         run: pnpm --filter @csb/web exec playwright install --with-deps chromium
 
+      - name: Allocate browser regression port
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync } from "node:fs";
+          import { createServer } from "node:net";
+          const server = createServer();
+          server.listen(0, "127.0.0.1", () => {
+            appendFileSync(process.env.GITHUB_ENV, `CSB_E2E_WEB_PORT=${server.address().port}\n`);
+            server.close();
+          });
+          NODE
+
       - name: Browser regression tests
         run: pnpm --filter @csb/web test:e2e
 
