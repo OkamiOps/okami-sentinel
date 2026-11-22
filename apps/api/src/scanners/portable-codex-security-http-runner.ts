@@ -1,5 +1,6 @@
 import { projectionBudget } from "../graphify/projection-budget.js";
-import { runOpengrep } from "../sast/opengrep.js";
+import { readOpengrepFindings, runOpengrep } from "../sast/opengrep.js";
+import { addPortableSastCandidates, planPortableSastTriage, readPortableSastTriage, writePortableSastTriage } from "./portable-sast-triage.js";
 import { reservePortableTurn } from "./portable-turn-budget.js";
 import { assertBudgetResumeCap, syncBudgetArtifact, writeBudgetPartial } from "./portable-budget-partial.js";
 import { buildDiscoveryGraphContext, buildPartitionRelations } from "../graphify/discovery-context.js";
@@ -361,6 +362,11 @@ export async function runPortableCodexSecurity(
     runtimeWritable = true;
     writePortableCodexSecurityRuntime(outputDir, runtime);
 
+    const sastTriage = previous ? readPortableSastTriage(outputDir)
+      : planPortableSastTriage(readOpengrepFindings(outputDir), snapshot.snapshotRoot, deadline.remainingMs);
+    if (sastTriage && !previous) writePortableSastTriage(outputDir, sastTriage);
+    if (sastTriage?.total) log(JSON.stringify({ type: "sast_triage", total: sastTriage.total, queued: sastTriage.queued.length }));
+
     let graphIndex: Awaited<ReturnType<typeof prepareManagedGraph>>["index"];
     if (safeConfiguration.graphify === true) {
       update({ detail: "indexing snapshot relationships locally with Graphify" });
@@ -440,6 +446,10 @@ export async function runPortableCodexSecurity(
       if (stage.id === "dataflow") {
         try {
           dossier = groupPortableCandidatesBeforeReview(dossier, artifactsRoot, { resume: dependencies.resumeDiscovery === true, persist: true });
+          const discoveryCount = dossier.candidates.length;
+          dossier = addPortableSastCandidates(dossier, sastTriage);
+          if (sastTriage?.total) log(JSON.stringify({ type: "sast_review_queue", selected: dossier.candidates.length - discoveryCount,
+            deferred: sastTriage.total - (dossier.candidates.length - discoveryCount) }));
           reviewReuse = dependencies.resumeDiscovery ? readPortableReviewReuse(outputDir) : null;
           if (reviewReuse === null) {
             if (dependencies.resumeDiscovery && ["dataflow", "validation", "report"].includes(previous!.stage)) {
@@ -1619,4 +1629,3 @@ function standardRecoveryPartition(snapshotRoot: string, graph: Parameters<typeo
   fs.renameSync(`${planFile}.tmp`, planFile);
   return result;
 }
-
