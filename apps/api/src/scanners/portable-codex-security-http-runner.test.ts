@@ -913,6 +913,37 @@ test("Portable Codex Security reads only the persisted vault reference for an AP
   }
 });
 
+test("Portable business-logic review runs after the report without SAST candidates and records cited flow results", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-business-logic-"));
+  try {
+    const config = { ...configuration(root), graphify: false, businessLogic: true };
+    fs.mkdirSync(path.join(config.repositoryPath, "src", "routes"), { recursive: true });
+    fs.writeFileSync(path.join(config.repositoryPath, "src", "routes", "orders.ts"), "export function refund(order) {\n  return pay(order.total);\n}\n");
+    const specs: Array<{ spec: AgentSessionSpec; toolSurface: readonly string[] }> = [];
+    const stages = stageSessionFactory(specs);
+    const result = await runPortableCodexSecurity(config, dependencies({
+      createSession: async (input: { spec: AgentSessionSpec; toolSurface: readonly string[] }) => {
+        if (!input.spec.instructions.includes("business-logic reviewer")) return stages(input);
+        specs.push(input);
+        fs.writeFileSync(path.join(input.spec.artifactRoot, "business-logic.json"), JSON.stringify({ schemaVersion: 1, flows: [{
+          flowId: "flow-01", status: "issues", summary: "refund is repeatable", findings: [{ title: "Repeatable refund", ruleKind: "idempotency-and-races",
+            severity: "high", claim: "No refunded check.", evidence: [{ path: "src/routes/orders.ts", startLine: 1, endLine: 2, role: "entrypoint" }] }] }] }));
+        return completedStageSession("business-logic", "business-logic.json", "done");
+      },
+    }));
+    assert.equal(result.runtime.status, "completed");
+    const review = specs.at(-1)!;
+    assert.deepEqual(review.toolSurface, ["workspace.read", "results.write"]);
+    assert.match(review.spec.instructions, /src\/routes\/orders\.ts/);
+    const record = JSON.parse(fs.readFileSync(path.join(config.outputDir, "portable-codex-security-results", "portable-business-logic.json"), "utf8"));
+    assert.equal(record.source, "code-context");
+    assert.equal(record.totals.analyzed, 1);
+    assert.equal(record.flows[0].findings[0].title, "Repeatable refund");
+  } finally {
+    remove(root);
+  }
+});
+
 for (const graphify of [undefined, false]) {
   test(`Portable Graphify ${String(graphify)} skips indexing and graph context`, async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-no-graph-"));

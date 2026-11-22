@@ -897,6 +897,8 @@ export interface MetricsSummary {
 export interface StartScanRequest {
   /** Enable local Graphify indexing for this Portable scan. Defaults to false. */
   graphify?: boolean;
+  /** Flow-level business-rule AI review for Portable scans. Defaults to true. */
+  businessLogic?: boolean;
   repositoryPath: string;
   engine?: ScannerEngine;
   executionProfilePreference?: CodexSecurityProfilePreference;
@@ -1825,6 +1827,49 @@ export interface ScanAiVerdicts {
   snapshotAvailable: boolean;
   counts: Record<AiVerdictStatus, number> & { downgraded: number; legacy: number };
   verdicts: AiVerdict[];
+}
+
+/** Second AI front: business-rule and workflow review over Graphify (or code-context) flows, independent of SAST alerts. */
+export type BusinessLogicFlowStatus = "issues" | "no-issues" | "inconclusive" | "skipped-budget" | "failed";
+export type BusinessLogicRuleKind =
+  | "authorization" | "state-transition" | "workflow-bypass" | "limits-and-quotas" | "pricing-and-amounts"
+  | "idempotency-and-races" | "data-integrity" | "other";
+
+export interface BusinessLogicFinding {
+  title: string;
+  ruleKind: BusinessLogicRuleKind;
+  severity: "critical" | "high" | "medium" | "low";
+  claim: string;
+  impact: string | null;
+  /** Confirmed only when every citation resolves to retained snapshot lines. */
+  status: "confirmed" | "inconclusive";
+  downgraded: boolean;
+  citations: AiVerdictCitation[];
+}
+
+export interface BusinessLogicFlow {
+  id: string;
+  entry: string;
+  source: "graphify" | "code-context";
+  status: BusinessLogicFlowStatus;
+  summary: string | null;
+  steps: Array<{ path: string; startLine: number; endLine: number; symbol: string }>;
+  missingEvidence: string[];
+  findings: BusinessLogicFinding[];
+  reusedFrom?: { scanId: string; flowId: string };
+}
+
+export interface ScanBusinessLogic {
+  scanId: string;
+  available: boolean;
+  snapshotAvailable: boolean;
+  source: "graphify" | "code-context" | null;
+  counts: { flows: number; issues: number; noIssues: number; inconclusive: number; skippedBudget: number; failed: number;
+    reused: number; findings: number; downgraded: number };
+  spentUsd: number | null;
+  budgetUsd: number | null;
+  estimatedCostAvoidedUsd: number | null;
+  flows: BusinessLogicFlow[];
 }
 
 /** One representative candidate reviewed by AI on behalf of deterministic duplicates. */

@@ -233,7 +233,7 @@ test("startScan dispatches only the Portable worker for a resolved Portable Code
     const config = JSON.parse(fs.readFileSync(configPath!, "utf8")) as Record<string, unknown>;
     const text = JSON.stringify({ config, args: launch.args, env: launch.env });
     assert.deepEqual(Object.keys(config).sort(), [
-      "graphify", "limits", "mode", "outputDir", "paths", "providerPlan", "repositoryPath", "sourceRef",
+      "businessLogic", "graphify", "limits", "mode", "outputDir", "paths", "providerPlan", "repositoryPath", "sourceRef",
     ]);
     assert.equal(config.graphify, false);
     assert.equal(config.mode, "standard");

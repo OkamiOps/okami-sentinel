@@ -1,5 +1,6 @@
 import type {
   ScanAiVerdicts,
+  ScanBusinessLogic,
   CompareRequest,
   CompareResult,
   CapabilityReport,
@@ -495,6 +496,7 @@ export const api = {
     request<{ scan: ScanRun; findings: FindingSummary[] }>(`/scans/${id}`),
   getFilesGraph: (id: string) => request<ScanFilesGraph>(`/scans/${encodeURIComponent(id)}/files-graph`),
   getVerdicts: (id: string) => request<ScanAiVerdicts>(`/scans/${encodeURIComponent(id)}/verdicts`),
+  getBusinessLogic: (id: string) => request<ScanBusinessLogic>(`/scans/${encodeURIComponent(id)}/business-logic`),
   getTelemetry: (id: string) =>
     request<ScanTelemetrySnapshot>(`/scans/${id}/telemetry?limit=500`),
   scanEventsUrl: (id: string, after = 0) =>

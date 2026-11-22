@@ -41,6 +41,7 @@ export function readPortableCodexSecurityWorkerConfiguration(
       sourceRef: parsed.sourceRef,
       mode: parsed.mode,
       graphify: parsed.graphify === true,
+      ...(parsed.businessLogic === true ? { businessLogic: true } : {}),
       providerPlan: createSafePortableCodexSecurityProviderPlan(parsed.providerPlan),
       limits: parsed.limits as unknown as PortableCodexSecurityWorkerConfiguration["limits"],
       ...(parsed.reasoningEffort === undefined ? {} : { reasoningEffort: parsed.reasoningEffort }),
@@ -148,7 +149,7 @@ function isConfigurationShape(value: unknown): value is Record<string, unknown> 
   costBudget?: { maxCostUsd: number; pricing: unknown };
 } {
   if (!isRecord(value) || !onlyKeys(value, [
-    "outputDir", "repositoryPath", "paths", "sourceRef", "mode", "providerPlan", "limits", "reasoningEffort", "costBudget", "graphify",
+    "outputDir", "repositoryPath", "paths", "sourceRef", "mode", "providerPlan", "limits", "reasoningEffort", "costBudget", "graphify", "businessLogic",
   ])) return false;
   if (
     !safeText(value.outputDir, 4_096) ||
@@ -156,6 +157,7 @@ function isConfigurationShape(value: unknown): value is Record<string, unknown> 
     !safeText(value.sourceRef, 256) ||
     (value.mode !== "standard" && value.mode !== "deep") ||
     (value.graphify !== undefined && typeof value.graphify !== "boolean") ||
+    (value.businessLogic !== undefined && typeof value.businessLogic !== "boolean") ||
     !Array.isArray(value.paths) ||
     value.paths.length > 256 ||
     !value.paths.every((item) => safeRelativePath(item)) ||

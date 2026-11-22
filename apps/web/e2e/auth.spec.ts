@@ -523,6 +523,44 @@ test("a portable scan shows a verdict with a missing citation as inconclusive wi
   await expect(panel.getByText("file does not exist")).toBeVisible();
 });
 
+test("a portable scan shows the business-rule review over code flows with cited evidence and reuse", async ({ page }, info) => {
+  const state = await mockApi(page, "pt-BR", { session: { isAdmin: true, grants: [] } });
+  state.runs[0] = { ...state.runs[0], execution: {
+    executionProfile: "portable", profileVersion: "sentinel-portable-v1", methodologyRef: "sentinel/portable-agent-session/v1",
+    capabilityCheckId: null, connectionId: "fixture-connection", routeKind: null, protocol: null, authKind: null,
+  } };
+  state.businessLogic = {
+    scanId: "scan-one", available: true, snapshotAvailable: true, source: "graphify",
+    counts: { flows: 2, issues: 1, noIssues: 1, inconclusive: 0, skippedBudget: 0, failed: 0, reused: 1, findings: 1, downgraded: 0 },
+    spentUsd: 0.18, budgetUsd: 2.5, estimatedCostAvoidedUsd: 0.09,
+    flows: [
+      { id: "flow-01", entry: "src/routes/orders.ts:12 refundOrder", source: "graphify", status: "issues",
+        summary: "O reembolso não verifica se o pedido já foi reembolsado nem o status de entrega.",
+        steps: [{ path: "src/routes/orders.ts", startLine: 12, endLine: 20, symbol: "refundOrder" }, { path: "src/services/payments.ts", startLine: 4, endLine: 9, symbol: "issueRefund" }],
+        missingEvidence: [], findings: [{ title: "Reembolso repetido do mesmo pedido", ruleKind: "idempotency-and-races", severity: "high",
+          claim: "refundOrder chama issueRefund sem checar order.refundedAt, permitindo reembolsar o mesmo pedido várias vezes.",
+          impact: "Perda financeira por reembolsos duplicados.", status: "confirmed", downgraded: false, citations: [
+            { path: "src/routes/orders.ts", startLine: 14, endLine: 15, role: "entrypoint", valid: true, excerpt: "const order = await db.orders.find(req.params.id);\nawait issueRefund(order);" },
+            { path: "src/services/payments.ts", startLine: 5, endLine: 5, role: "sink", valid: true, excerpt: "return gateway.refund(order.total);" },
+          ] }] },
+      { id: "flow-02", entry: "src/routes/invites.ts:3 acceptInvite", source: "graphify", status: "no-issues", summary: "O convite expira e é vinculado ao e-mail.",
+        steps: [{ path: "src/routes/invites.ts", startLine: 3, endLine: 18, symbol: "acceptInvite" }], missingEvidence: [], findings: [],
+        reusedFrom: { scanId: "previous-scan", flowId: "flow-02" } },
+    ],
+  };
+  await page.goto("/scans/scan-one");
+  const panel = page.getByRole("region", { name: "Regras de negócio e fluxos (IA)" });
+  await expect(panel.getByText("Reembolso repetido do mesmo pedido")).toBeVisible();
+  await expect(panel.getByText("return gateway.refund(order.total);")).toBeVisible();
+  await expect(panel.getByText(/Reaproveitado: 1 · custo evitado por reuso ≈ USD\s0,09/)).toBeVisible();
+  const screenshots = path.join(os.homedir(), "screenshots");
+  fs.mkdirSync(screenshots, { recursive: true });
+  await page.screenshot({ path: path.join(screenshots, `business-logic-${info.project.name}-pt-BR.png`), fullPage: true });
+  await panel.getByRole("button", { name: /acceptInvite/ }).click();
+  await expect(panel.getByRole("link", { name: "Reaproveitado", exact: true })).toHaveAttribute("href", "/scans/previous-scan");
+  await expect(panel.getByText("Nenhum problema de regra de negócio neste fluxo.")).toBeVisible();
+});
+
 // The five Settings sections used to disagree with each other: two of them put
 // the section tabs above the heading and three below it. The order is now one
 // order, and these tests fail the moment a section drifts back.
