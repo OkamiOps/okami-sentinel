@@ -16,7 +16,7 @@
     "@csb/gate-runtime": "workspace:*",
     "@csb/shared": "workspace:*",
     "@hono/node-server": "^1.14.4",
-    "better-sqlite3": "^11.10.0",
+    "better-sqlite3": "^13.2.0",
     "hono": "^4.8.5",
     "keytar": "7.9.0",
     "nanoid": "^5.1.5",
