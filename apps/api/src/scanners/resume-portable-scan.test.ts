@@ -166,6 +166,19 @@ test("validation recovery rejects corrupt checkpoint instead of replaying past i
   } finally {cleanup(f.root);}
 });
 
+test("resume preflight validates a scoped persisted plan against the full context snapshot", () => {
+  const f = fixture(0, 40);
+  try {
+    resolveDeepPlan({ snapshotRoot: f.snapshot.snapshotRoot, snapshotId: f.snapshot.snapshotId,
+      outputDir: f.scan, resume: false, mode: "deep", scopePaths: ["route.ts"] });
+    const result = preflightPortableResume(f.scan, "deep", ["./route.ts"]);
+    assert.equal(result.totalBatches, 1);
+    assert.equal(result.verifiedStages.dataflow, 1);
+    assert.equal(fs.existsSync(path.join(f.snapshot.snapshotRoot, "source-0.ts")), true);
+    assert.throws(() => preflightPortableResume(f.scan, "deep", ["source-0.ts"]), /deep_plan_invalid/);
+  } finally { cleanup(f.root); }
+});
+
 test("late resume accepts bounded business-logic pages but rejects unsafe or unknown checkpoint entries", () => {
   const f = fixture();
   try {

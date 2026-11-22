@@ -1738,7 +1738,8 @@ test("Portable reservation blocks unaffordable turns before upstream in producti
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-reservation-"));
     const config = configuration(root);
     const rules = path.join(root, "rules.json");
-    fs.writeFileSync(rules, JSON.stringify({ mode: "completed" }));
+    fs.writeFileSync(rules, JSON.stringify({ payload: { results: [{ check_id: "unit-marker", path: "src/auth.ts",
+      start: { line: 1 }, end: { line: 1 }, extra: { severity: "ERROR" } }] } }));
     process.env.SENTINEL_OPENGREP_RULES = rules;
     config.costBudget = costBudget({ maxCostUsd: 0.000001 });
     const logs: string[] = [];
@@ -1842,15 +1843,18 @@ test("Portable routes OpenGrep through ranked review to cited verdicts over HTTP
   config.limits.totalTimeoutMs = 60_000;
   const source = "src/auth.ts";
   fs.writeFileSync(path.join(config.repositoryPath, source), ["one", "two", "three"].map(name => `export const ${name} = true;\n`).join(""));
+  fs.mkdirSync(path.join(config.repositoryPath, "src-old"));
+  fs.writeFileSync(path.join(config.repositoryPath, "src-old/ignored.ts"), "export const outside = true;\n");
   const realBinary = process.env.SENTINEL_TEST_OPENGREP_BIN;
   const rules = path.join(root, realBinary ? "rules.yaml" : "rules.json");
   if (realBinary) {
     fs.writeFileSync(rules, 'rules:\n  - id: unit-marker\n    languages: [typescript]\n    severity: ERROR\n    message: Test marker\n    pattern: export const $NAME = true;\n');
   } else {
-    fs.writeFileSync(rules, JSON.stringify({ payload: { errors: [], results: [3, 1, 2].map(line => ({
+    fs.writeFileSync(rules, JSON.stringify({ payload: { errors: [], results: [...[3, 1, 2].map(line => ({
       check_id: "unit-marker", path: source, start: { line, col: 1 }, end: { line, col: 12 },
       extra: { severity: "ERROR", message: "Test marker" },
-    })) } }));
+    })), { check_id: "unit-marker", path: "src-old/ignored.ts", start: { line: 1 }, end: { line: 1 },
+      extra: { severity: "ERROR", message: "Outside scope" } }] } }));
   }
   const previousEnv = { ...process.env };
   for (const [key, value] of Object.entries({
@@ -1941,6 +1945,10 @@ test("Portable routes OpenGrep through ranked review to cited verdicts over HTTP
   assert.deepEqual(gated.verdicts.map(verdict => verdict.status), ["confirmed", "rejected", "inconclusive", "confirmed"]);
   assert.ok(gated.verdicts.every(verdict => verdict.citations.every(citation => citation.valid)));
   assert.equal(readScanFindings(config.outputDir).filter(finding => finding.origin?.kind === "sast").length, 3);
+  assert.ok(readScanFindings(config.outputDir).every(finding => finding.primaryPath !== "src-old/ignored.ts"));
+  assert.ok(fs.existsSync(path.join(config.outputDir, "portable-codex-security-snapshot/src-old/ignored.ts")), "context remains readable");
+  const coverage = JSON.parse(fs.readFileSync(path.join(config.outputDir, "portable-standard-plan.json"), "utf8"));
+  assert.deepEqual(coverage.plan.files, [source]);
   fs.writeFileSync(path.join(config.outputDir, "portable-codex-security-runtime.json"), JSON.stringify({ ...runtime, status: "failed", stage: "report" }));
   assert.deepEqual(preflightPortableResume(config.outputDir, "standard").dossier.candidates, dossier.candidates);
   fs.rmSync(path.join(config.outputDir, "portable-codex-security-results"), { recursive: true });

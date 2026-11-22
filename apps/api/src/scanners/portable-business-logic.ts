@@ -8,6 +8,7 @@ import type {
 import { AgentSessionError, type AgentEvent, type AgentSession, type AgentSessionSpec } from "../agent/session-types.js";
 import type { GraphIndex, GraphNode } from "../graphify/graph-index.js";
 import { globalSecretRedactor, type SecretRedactor } from "../redaction.js";
+import { createScanScopeMatcher } from "../scan-scope-paths.js";
 import { evidenceRangeHash } from "./portable-review-reuse.js";
 import { snapshotReader, type SnapshotReader, PORTABLE_CODEX_SECURITY_RESULTS_DIR, PORTABLE_CODEX_SECURITY_SNAPSHOT_DIR } from "./portable-codex-security-verdicts.js";
 import type { PortableCoverageAnchor } from "./portable-codex-security-dossier.js";
@@ -70,8 +71,7 @@ function lineCount(read: SnapshotReader, file: string): number {
 /** Deterministic flow selection: Graphify call chains from entry points, or without a graph the route/handler files and files whose name or content carries business-domain terms. */
 export function extractBusinessFlows(graph: GraphIndex | undefined, snapshotRoot: string, scopePaths: readonly string[] = []): BusinessFlowPlan[] {
   const read = snapshotReader(snapshotRoot).read;
-  const scopes = scopePaths.map(scope => scope.replace(/^(\.\/)+/, "").replace(/\/+$/, "") || ".");
-  const inScope = (file: string) => scopes.length === 0 || scopes.some(scope => scope === "." || file === scope || file.startsWith(`${scope}/`));
+  const inScope = createScanScopeMatcher(scopePaths);
   const flows: BusinessFlowPlan[] = [];
   if (graph && graph.nodes.length > 0) {
     const byId = new Map(graph.nodes.map(node => [node.id, node]));

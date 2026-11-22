@@ -15,6 +15,21 @@ import {
   portableCodexSecurityDossierBase64,
 } from "./portable-codex-security-dossier.js";
 
+test("Deep scope is applied before size checks and includes only exact files or directory descendants", t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-coverage-scope-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  for (const file of ["routes/login.ts", "routes/admin/update.ts", "routes-old/login.ts", "server.ts", "server.ts.old", "lib/context.ts"]) {
+    fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+    fs.writeFileSync(path.join(root, file), "export const value = true;\n");
+  }
+  fs.writeFileSync(path.join(root, "lib/context.ts"), "x".repeat(1_048_577));
+  const plan = createPortableDeepCoveragePlan(root, ["./routes/", "server.ts"]);
+  assert.deepEqual(plan.files, ["routes/admin/update.ts", "routes/login.ts", "server.ts"]);
+  assert.equal(plan.partitions.length, 1);
+  assert.throws(() => createPortableDeepCoveragePlan(root, ["missing"]), /deep_coverage_unavailable/);
+  assert.throws(() => createPortableDeepCoveragePlan(root), /deep_coverage_unavailable/);
+});
+
 test("Deep merges repeated control claims while preserving affected locations and distinct failures", () => {
   const plan: PortableDeepCoveragePlan = {
     files: ["a.ts", "b.ts"], totalBytes: 20,

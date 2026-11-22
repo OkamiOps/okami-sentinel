@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import type { GraphIndex } from "../graphify/graph-index.js";
+import { normalizeScanScopePaths } from "../scan-scope-paths.js";
 import { createPortableDeepCoveragePlan, type PortableDeepCoveragePlan } from "./portable-codex-security-deep-coverage.js";
 
 export const DEEP_PLAN_FILE = "portable-deep-plan.json";
@@ -57,8 +58,8 @@ export function packDeepPlan(baseline: PortableDeepCoveragePlan, graph: GraphInd
 /** Resume uses the persisted partition identities, even if Graphify later changes. Legacy runs retain their old ordering. */
 export function resolveDeepPlan(input: {
   snapshotRoot: string; snapshotId: string; outputDir: string; resume: boolean; graph?: GraphIndex; mode?: "standard" | "deep";
+  scopePaths?: readonly string[];
 }): PortableDeepCoveragePlan {
-  const baseline = createPortableDeepCoveragePlan(input.snapshotRoot);
   const planFile = input.mode === "standard" ? STANDARD_PLAN_FILE : DEEP_PLAN_FILE;
   const file = path.join(input.outputDir, planFile);
   if (fs.existsSync(file)) {
@@ -67,12 +68,21 @@ export function resolveDeepPlan(input: {
     const saved = JSON.parse(fs.readFileSync(file, "utf8"));
     if (saved.version !== 1 || saved.snapshotId !== input.snapshotId || !["graph-affinity-v1", "lexical-v1"].includes(saved.algorithm) ||
         saved.digest !== digest(saved.plan)) throw new Error("deep_plan_invalid");
+    if (saved.scopePaths !== undefined && (!Array.isArray(saved.scopePaths) ||
+        !saved.scopePaths.every((scope: unknown) => typeof scope === "string") ||
+        JSON.stringify(saved.scopePaths) !== JSON.stringify(normalizeScanScopePaths(input.scopePaths ?? saved.scopePaths)))) {
+      throw new Error("deep_plan_invalid");
+    }
+    // Legacy manifests used the entire snapshot, regardless of configured scope.
+    const baseline = createPortableDeepCoveragePlan(input.snapshotRoot, saved.scopePaths ?? []);
     validatePlan(saved.plan, baseline);
     return saved.plan;
   }
+  const scopePaths = normalizeScanScopePaths(input.scopePaths ?? []);
+  const baseline = createPortableDeepCoveragePlan(input.snapshotRoot, scopePaths);
   if (input.resume) return baseline;
   const plan = input.graph ? packDeepPlan(baseline, input.graph) : baseline;
-  const saved = { version: 1, snapshotId: input.snapshotId, algorithm: plan === baseline ? "lexical-v1" : "graph-affinity-v1", plan, digest: digest(plan) };
+  const saved = { version: 1, snapshotId: input.snapshotId, scopePaths, algorithm: plan === baseline ? "lexical-v1" : "graph-affinity-v1", plan, digest: digest(plan) };
   const temporary = path.join(input.outputDir, `${planFile}.${randomUUID()}.tmp`);
   try {
     const descriptor = fs.openSync(temporary, "wx", 0o600);

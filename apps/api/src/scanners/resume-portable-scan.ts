@@ -25,7 +25,7 @@ import { addPortableSastCandidates, PORTABLE_SAST_TRIAGE_FILE, readPortableSastT
 import { BUSINESS_LOGIC_FILE, BUSINESS_LOGIC_ARTIFACT } from "./portable-business-logic.js";
 
 /** Read-only checkpoint validation, shared by dry-run and actual recovery. */
-export function preflightPortableResume(scanDir: string, mode: "standard" | "deep") {
+export function preflightPortableResume(scanDir: string, mode: "standard" | "deep", scopePaths?: readonly string[]) {
   const previous = readPortableCodexSecurityRuntime(scanDir);
   const resumable = ["inventory", "threat-model", "discovery", "dataflow", "validation", "report", "normalize"];
   if (!previous?.snapshotId || !resumable.includes(previous.stage ?? "") || previous.status === "completed") throw new Error("resume_requires_checkpoint");
@@ -68,7 +68,7 @@ export function preflightPortableResume(scanDir: string, mode: "standard" | "dee
   let discoveryComplete = false;
   const fullCoverage = mode === "deep" || fs.existsSync(path.join(scanDir, STANDARD_PLAN_FILE));
   if (fullCoverage) {
-    const plan = resolveDeepPlan({ snapshotRoot, snapshotId: previous.snapshotId!, outputDir: scanDir, resume: true, mode });
+    const plan = resolveDeepPlan({ snapshotRoot, snapshotId: previous.snapshotId!, outputDir: scanDir, resume: true, mode, scopePaths });
     totalBatches = plan.partitions.length;
     const pages: typeof dossier[] = [];
     for (const partition of plan.partitions) {
@@ -179,7 +179,7 @@ export function inspectPortableResume(original: ScanRun) {
     if (!pricing || !frozenScannerPricingSupportsCostBudget(pricing)) throw new Error("resume_cost_unavailable");
     config.costBudget = { maxCostUsd: 200, pricing };
   }
-  const { previous, completed, totalBatches, verifiedStages } = preflightPortableResume(original.scanDir, config.mode);
+  const { previous, completed, totalBatches, verifiedStages } = preflightPortableResume(original.scanDir, config.mode, config.paths);
   if (!["incomplete", "failed"].includes(previous.status)) throw new Error("resume_requires_checkpoint");
   const spentUsd = previous.budgetPartial?.spentUsd ?? (!previous.usage.reported ? 0
     : config.costBudget ? estimateFrozenScannerUsageCost(previous.usage, config.costBudget.pricing)?.estimatedUsd : undefined);

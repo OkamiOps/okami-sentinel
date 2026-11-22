@@ -353,7 +353,7 @@ export async function runPortableCodexSecurity(
     }
 
     assertPortableCodexSecuritySnapshot(snapshot);
-    await runOpengrep(snapshot.snapshotRoot, outputDir);
+    await runOpengrep(snapshot.snapshotRoot, outputDir, undefined, safeConfiguration.paths);
     throwIfStopped(deadline);
     // Snapshotting is local-only; repeat metadata validation immediately
     // before crossing into the vault/network credential boundary.
@@ -439,7 +439,7 @@ export async function runPortableCodexSecurity(
     let deepCoveragePlan = null;
     if (safeConfiguration.mode === "deep" || dependencies.resumeDiscovery !== true || fs.existsSync(path.join(outputDir, STANDARD_PLAN_FILE))) {
       try {
-        deepCoveragePlan = resolveDeepPlan({ snapshotRoot: snapshot.snapshotRoot, snapshotId: snapshot.snapshotId, outputDir, resume: dependencies.resumeDiscovery === true, graph: graphIndex, mode: safeConfiguration.mode });
+        deepCoveragePlan = resolveDeepPlan({ snapshotRoot: snapshot.snapshotRoot, snapshotId: snapshot.snapshotId, outputDir, resume: dependencies.resumeDiscovery === true, graph: graphIndex, mode: safeConfiguration.mode, scopePaths: safeConfiguration.paths });
         log(JSON.stringify({ type: "deep_plan", mode: safeConfiguration.mode, coverage: "complete", files: deepCoveragePlan.files.length, bytes: deepCoveragePlan.totalBytes, batches: deepCoveragePlan.partitions.length, graphAvailable: !!graphIndex }));
       } catch {
         throw new PortableCodexSecurityRunnerError("deep_coverage_unavailable");
