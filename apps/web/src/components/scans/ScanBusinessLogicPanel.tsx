@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import type { BusinessLogicFlow, BusinessLogicFlowStatus, ScanBusinessLogic, ScanRun } from "@csb/shared";
 import { api } from "../../api";
+import { formatUsd } from "../../format";
 import { useScopedI18n } from "../../i18n/scoped";
 import { businessLogicMessages } from "../../i18n/business-logic";
 import { Button } from "../ui/button";
@@ -16,7 +17,7 @@ const STATUS_STYLE: Record<BusinessLogicFlowStatus, string> = {
 const STATUS_KEY = { issues: "issues", "no-issues": "noIssues", inconclusive: "inconclusive", "skipped-budget": "skipped-budget", failed: "failed" } as const;
 
 export function ScanBusinessLogicPanel({ scan }: { scan: ScanRun }) {
-  const { t, locale } = useScopedI18n(businessLogicMessages);
+  const { t } = useScopedI18n(businessLogicMessages);
   const [data, setData] = useState<ScanBusinessLogic | null>(null);
   const [error, setError] = useState(false);
   const [retry, setRetry] = useState(0);
@@ -30,7 +31,7 @@ export function ScanBusinessLogicPanel({ scan }: { scan: ScanRun }) {
     return () => { disposed = true; };
   }, [scan.id, scan.status, retry]);
   if (data && !data.available) return null;
-  const usd = (value: number | null) => value === null ? t("unavailable") : `US$ ${value.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;
+  const usd = (value: number | null) => value === null ? t("unavailable") : formatUsd(value);
   const flows = data?.flows ?? [];
   const selected: BusinessLogicFlow | undefined = flows.find((flow) => flow.id === selectedId) ?? flows.find((flow) => flow.status === "issues") ?? flows[0];
   return <section aria-label={t("title")} className="mb-4 min-w-0 border border-border bg-card">

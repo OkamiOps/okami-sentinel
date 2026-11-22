@@ -552,7 +552,7 @@ test("a portable scan shows the business-rule review over code flows with cited 
   const panel = page.getByRole("region", { name: "Regras de negócio e fluxos (IA)" });
   await expect(panel.getByText("Reembolso repetido do mesmo pedido")).toBeVisible();
   await expect(panel.getByText("return gateway.refund(order.total);")).toBeVisible();
-  await expect(panel.getByText(/Reaproveitado: 1 · custo evitado por reuso ≈ US\$ 0,09/)).toBeVisible();
+  await expect(panel.getByText(/Reaproveitado: 1 · custo evitado por reuso ≈ USD\s0,09/)).toBeVisible();
   const screenshots = path.join(os.homedir(), "screenshots");
   fs.mkdirSync(screenshots, { recursive: true });
   await page.screenshot({ path: path.join(screenshots, `business-logic-${info.project.name}-pt-BR.png`), fullPage: true });
