@@ -400,7 +400,7 @@ class HttpAgentUpstream implements AgentUpstream {
       const statusCode = statusError(response.status);
       if (statusCode !== null) {
         cancelResponseBody(response);
-        throw new HttpAgentUpstreamError(statusCode, statusCode === "protocol_unsupported" ? `http_status_${response.status}` : undefined);
+        throw new HttpAgentUpstreamError(statusCode, `http_status_${response.status}`);
       }
       try {
         const parsed = await readBoundedJson(response, controller.signal);
@@ -408,7 +408,7 @@ class HttpAgentUpstream implements AgentUpstream {
         return parsed;
       } catch (error) {
         if (error instanceof AgentSessionError || error instanceof HttpAgentUpstreamError) throw error;
-        throw new HttpAgentUpstreamError("protocol_unsupported", "response_read_failed");
+        throw new HttpAgentUpstreamError("provider_unreachable", "response_read_failed");
       }
     } finally {
       this.#active.delete(controller);

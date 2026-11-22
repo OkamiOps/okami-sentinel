@@ -11,6 +11,7 @@ import { readPortableSastTriage } from "./portable-sast-triage.js";
 import { materializePortableCodexSecurityReportShard } from "./portable-codex-security-report-shards.js";
 import assert from "node:assert/strict";
 import { reservePortableTurn } from "./portable-turn-budget.js";
+import { estimateFrozenScannerUsageCost } from "../model-pricing.js";
 import { createHttpAgentUpstream, type HttpAgentUpstreamOptions } from "../agent/http-agent-upstream.js";
 import { createAgentSession } from "../agent/session-runner.js";
 import { readPortableCodexSecurityRuntime } from "./portable-codex-security-runtime.js";
@@ -1881,7 +1882,8 @@ test("Portable routes OpenGrep through ranked review to cited verdicts over HTTP
   assert.equal(stages.length, 6, "all stage checkpoints were reused");
 });
 
-test("Grok OAuth report resume keeps its protocol and reuses every earlier checkpoint over Responses HTTP", async (t) => {
+for (const failure of [400, 503, 429, 408, 504, "connection-reset", "response-reset", "inventory-reset"] as const) {
+test(`Grok OAuth resumes saved stages without replaying ambiguous requests: ${failure}`, async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-grok-report-resume-"));
   const tuple = { routeKind: "xai-oauth", protocol: "xai-oauth-responses" } as const;
   const config = configuration(root, plan(tuple));
@@ -1890,6 +1892,9 @@ test("Grok OAuth report resume keeps its protocol and reuses every earlier check
   const starts: string[] = [], logs: string[] = [];
   const history = new Map<string, { stage: typeof PORTABLE_CODEX_SECURITY_STAGES[number]; prompt: string; turn: number }>();
   let rejectReport = true, calls = 0;
+  const failedStage = failure === 400 ? "report" : failure === "inventory-reset" ? "inventory" : "discovery";
+  const stageIndex = PORTABLE_CODEX_SECURITY_STAGES.findIndex(stage => stage.id === failedStage);
+  const failureCode = failure === 400 ? "agent_session_failed" : failure === 429 ? "rate_limited" : "provider_unreachable";
   const deps = dependencies({
     getSnapshot: () => snapshot({ ...tuple, authKind: "device-code" }),
     getConnection: () => connection({ ...tuple, providerKind: "xai", authKind: "device-code", credentialRef: null }),
@@ -1915,26 +1920,54 @@ test("Grok OAuth report resume keeps its protocol and reuses every earlier check
           starts.push(stage.id);
           state = { stage, prompt, turn: 0 };
         }
-        if (state.stage.id === "report" && rejectReport) return new Response('{"error":"private provider detail"}', { status: 400 });
+        if (state.stage.id === failedStage && rejectReport) {
+          if (failure === "connection-reset" || failure === "inventory-reset") throw new TypeError("private connection reset detail");
+          if (failure === "response-reset") return new Response(new ReadableStream({ start(controller) { controller.error(new TypeError("private body reset detail")); } }));
+          return new Response('{"error":"private provider detail"}', { status: failure });
+        }
         const artifact = portableFixtureArtifact(state.stage.artifact, state.stage.id === "report", portableCandidateIdFromInstruction(state.prompt));
         const id = `grok-response-${calls}`;
         history.set(id, { ...state, turn: state.turn + 1 });
-        return new Response(JSON.stringify({ id, output: [{ type: "function_call", call_id: `call-${calls}`,
+        const output: object[] = [{ type: "function_call", call_id: `call-${calls}`,
           name: state.turn === 0 ? "workspace_read" : "results_write",
           arguments: JSON.stringify(state.turn === 0 ? { path: "src/auth.ts" } : { path: state.stage.artifact, content: artifact }),
-        }], usage: { input_tokens: 100, output_tokens: 100, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 } } }), { status: 200 });
+        }];
+        if (state.stage.id === "report") {
+          if (state.turn === 0) {
+            output.splice(0, 1, ...Array.from({ length: 3 }, (_, index) => ({ type: "function_call",
+              call_id: `report-read-${index}`, name: "workspace_read", arguments: JSON.stringify({ path: "src/auth.ts" }) })));
+          } else if (state.turn === 1) {
+            assert.deepEqual(body.input.map((item: { call_id: string }) => item.call_id), ["report-read-0", "report-read-1", "report-read-2"]);
+            assert.ok(body.input.every((item: { type: string }) => item.type === "function_call_output"));
+            output.splice(0, 1, { type: "message", role: "assistant", content: [{ type: "output_text", text: JSON.stringify(artifact), annotations: [] }] });
+          }
+          output.unshift({ type: "reasoning", id: `reasoning-${calls}`, encrypted_content: "opaque-reasoning-content",
+            summary: [{ type: "summary_text", text: "Inspecting the cited source before reporting." }] });
+        }
+        return new Response(JSON.stringify({ id, output, usage: { input_tokens: 100, output_tokens: 100,
+          output_tokens_details: { reasoning_tokens: 80 }, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 } } }), { status: 200 });
       }) as typeof fetch });
     },
   });
   try {
-    await assert.rejects(runPortableCodexSecurity(config, deps), { code: "agent_session_failed" });
-    assert.deepEqual(starts, PORTABLE_CODEX_SECURITY_STAGES.map(stage => stage.id));
-    assert.ok(logs.some(line => line.includes('"protocolIssue":"http_status_400"')));
+    await assert.rejects(runPortableCodexSecurity(config, deps), { code: failureCode });
+    assert.deepEqual(starts, PORTABLE_CODEX_SECURITY_STAGES.slice(0, stageIndex + 1).map(stage => stage.id));
+    assert.equal(calls, stageIndex * 2 + 1, "a possibly charged inference is never automatically retried");
+    if (failure === 400) assert.ok(logs.some(line => line.includes('"protocolIssue":"http_status_400"')));
+    if (failure === "response-reset") assert.ok(logs.some(line => line.includes('"protocolIssue":"response_read_failed"')));
     assert.ok(logs.every(line => !line.includes("private provider detail")));
     const source = readPortableCodexSecurityRuntime(config.outputDir)!;
-    assert.equal(source.stage, "report");
+    assert.equal(source.stage, failedStage);
+    assert.equal(source.status, failure === 400 ? "failed" : "incomplete");
+    assert.ok((source.budgetReservedUsd ?? 0) > 0, "the failed request's unresolved debit remains durable");
+    if (failure !== 400) {
+      assert.equal(source.providerPartial?.stopReason, failureCode);
+      assert.deepEqual(source.providerPartial?.completed.map(item => item.stage), PORTABLE_CODEX_SECURITY_STAGES.slice(0, stageIndex).map(stage => stage.id));
+      assert.equal(source.providerPartial?.interrupted.stage, failedStage);
+      assert.ok(source.providerPartial?.pending.some(item => item.stage === "report"));
+    }
     const verified = preflightPortableResume(config.outputDir, "standard").verifiedStages;
-    assert.deepEqual(verified, { inventory: 1, "threat-model": 1, discovery: 1, dataflow: 1, validation: 1, report: 0 });
+    assert.deepEqual(verified, failedStage === "inventory" ? {} : Object.fromEntries(PORTABLE_CODEX_SECURITY_STAGES.map((stage, index) => [stage.id, index < stageIndex ? 1 : 0])));
     const resumedConfig = { ...config, outputDir: path.join(root, "resumed") };
     fs.cpSync(config.outputDir, resumedConfig.outputDir, { recursive: true });
     const restoreModes = (source: string, copied: string) => {
@@ -1949,9 +1982,13 @@ test("Grok OAuth report resume keeps its protocol and reuses every earlier check
     const resumed = await runPortableCodexSecurity(resumedConfig, { ...deps, resumeDiscovery: true });
     assert.equal(resumed.runtime.status, "completed");
     assert.equal(resumed.runtime.percent, 100);
-    assert.deepEqual(starts, [...PORTABLE_CODEX_SECURITY_STAGES.map(stage => stage.id), "report"]);
-    assert.equal(logs.filter(line => line.includes('"type":"checkpoint_reused"')).length, 5);
-    assert.equal(preflightPortableResume(config.outputDir, "standard").verifiedStages.report, 0, "source remains untouched");
+    assert.equal(resumed.runtime.providerPartial, undefined);
+    assert.ok(Math.abs(resumed.runtime.budgetReservedUsd! - source.budgetReservedUsd!) < 1e-10, "resume cannot refund the ambiguous request");
+    assert.ok((estimateFrozenScannerUsageCost(resumed.runtime.usage, config.costBudget.pricing)?.estimatedUsd ?? Infinity) +
+      (resumed.runtime.budgetReservedUsd ?? 0) <= config.costBudget.maxCostUsd);
+    assert.deepEqual(starts, [...PORTABLE_CODEX_SECURITY_STAGES.slice(0, stageIndex + 1), ...PORTABLE_CODEX_SECURITY_STAGES.slice(stageIndex)].map(stage => stage.id));
+    assert.equal(logs.filter(line => line.includes('"type":"checkpoint_reused"')).length, stageIndex);
+    assert.equal(preflightPortableResume(config.outputDir, "standard").verifiedStages.report ?? 0, 0, "source remains untouched");
     const callsBeforeReplay = calls;
     fs.rmSync(path.join(resumedConfig.outputDir, "portable-codex-security-results"), { recursive: true });
     fs.writeFileSync(path.join(resumedConfig.outputDir, "portable-codex-security-runtime.json"),
@@ -1965,6 +2002,7 @@ test("Grok OAuth report resume keeps its protocol and reuses every earlier check
     throw error;
   } finally { remove(root); }
 });
+}
 
 test("Portable budget partial retains completed pages and resumes only pending work with prior spend", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-budget-resume-"));

@@ -122,6 +122,25 @@ test("without a graph, handlers and files with business terms in their content b
   assert.ok(!entries.includes("src/util.ts"));
 });
 
+test("a transient provider failure stops business review without retrying or losing its flow record", async () => {
+  const { dir, snapshot } = scanDir();
+  try {
+    const flow = extractBusinessFlows(GRAPH, snapshot)[0]!;
+    const flows = Array.from({ length: 5 }, (_, index) => ({ ...flow, id: `flow-${index}` }));
+    let calls = 0;
+    const failures: string[] = [];
+    const record = await runBusinessLogicPass({ ...pass({ flows, snapshotRoot: snapshot, budgetUsd: 1 }, []),
+      onProviderFailure: code => failures.push(code),
+      startSession: async () => { calls++; return { async *run() { yield { type: "failure", code: "provider_unreachable" } as const; }, async cancel() { return { remote: false }; } }; },
+    });
+    assert.equal(calls, 1);
+    assert.deepEqual(failures, ["provider_unreachable"]);
+    assert.equal(record.totals.failed, 5);
+    assert.equal(record.totals.skippedBudget, 0);
+    assert.equal(record.flows.length, 5);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("the AI pass runs without any SAST alert, supplies flow source and gates findings on snapshot citations", async () => {
   const { dir, snapshot, results } = scanDir();
   const flows = extractBusinessFlows(GRAPH, snapshot);

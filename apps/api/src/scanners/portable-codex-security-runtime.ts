@@ -5,8 +5,9 @@ import {
   type SafeProviderErrorCode,
   type ScanProgress,
   type ScanBudgetPartial,
+  type ScanProviderPartial,
 } from "@csb/shared";
-import { validBudgetPartial } from "./portable-budget-partial.js";
+import { validBudgetPartial, validProviderPartial } from "./portable-budget-partial.js";
 
 import {
   PORTABLE_CODEX_SECURITY_METHODOLOGY_REF,
@@ -30,6 +31,7 @@ export interface PortableCodexSecurityRuntimeState {
   methodologyRef: string;
   status: "preparing" | "running" | "completed" | "failed" | "cancelled" | "incomplete";
   budgetPartial?: ScanBudgetPartial;
+  providerPartial?: ScanProviderPartial;
   budgetReservedUsd?: number;
   stage: PortableCodexSecurityStage["id"] | "normalize";
   stageLabel: string;
@@ -67,6 +69,7 @@ const RUNTIME_STAGES = new Set([
 const RUNTIME_KEYS = new Set([
   "reviewStages",
   "budgetPartial",
+  "providerPartial",
   "budgetReservedUsd",
   "engine",
   "executionProfile",
@@ -151,8 +154,9 @@ function validPortableCodexSecurityRuntime(
     typeof value.status === "string" &&
     RUNTIME_STATUSES.has(value.status) &&
     (value.budgetPartial === undefined || validBudgetPartial(value.budgetPartial)) &&
+    (value.providerPartial === undefined || validProviderPartial(value.providerPartial)) &&
     (value.budgetReservedUsd === undefined || (typeof value.budgetReservedUsd === "number" && Number.isFinite(value.budgetReservedUsd) && value.budgetReservedUsd >= 0)) &&
-    (value.status !== "incomplete" || validBudgetPartial(value.budgetPartial)) &&
+    (value.status !== "incomplete" || validBudgetPartial(value.budgetPartial) || validProviderPartial(value.providerPartial)) &&
     typeof value.stage === "string" &&
     RUNTIME_STAGES.has(value.stage) &&
     typeof value.stageLabel === "string" &&

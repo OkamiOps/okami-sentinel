@@ -661,6 +661,13 @@ export interface ScanBudgetPartial {
   pending: ScanBudgetWorkItem[];
 }
 
+export interface ScanProviderPartial {
+  stopReason: "provider_unreachable" | "rate_limited";
+  completed: ScanBudgetWorkItem[];
+  interrupted: ScanBudgetWorkItem;
+  pending: ScanBudgetWorkItem[];
+}
+
 export interface ScanRun {
   resume?: { suggestedMaxCostUsd: number };
   sast?: ScanSastSummary | null;
@@ -673,7 +680,8 @@ export interface ScanRun {
   revision: string | null;
   scanDir: string;
   status: ScanStatus;
-  statusReason?: "budget_exhausted";
+  statusReason?: "budget_exhausted" | "provider_unavailable";
+  providerPartial?: ScanProviderPartial;
   budgetPartial?: ScanBudgetPartial;
   model: string | null;
   effort: string | null;

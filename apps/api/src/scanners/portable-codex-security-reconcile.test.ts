@@ -44,6 +44,24 @@ test("budget partial is incomplete without findings and its summary survives per
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test("provider partials survive reconciliation and progress, and clear after completion", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-provider-public-"));
+  try {
+    const providerPartial = { stopReason: "rate_limited" as const, completed: [], pending: [],
+      interrupted: { stage: "discovery", page: null, artifactPath: null } };
+    writePortableCodexSecurityRuntime(root, runtime({ status: "incomplete", providerPartial, error: "rate_limited" }));
+    const partial = refreshPortableCodexSecurityRunFromDisk(run(root));
+    assert.equal(partial.status, "incomplete");
+    assert.equal(partial.statusReason, "provider_unavailable");
+    assert.deepEqual(partial.providerPartial, providerPartial);
+    assert.deepEqual(withProgress(run(root)).providerPartial, providerPartial);
+    writePortableCodexSecurityRuntime(root, runtime({ status: "completed" }));
+    const completed = refreshPortableCodexSecurityRunFromDisk({ ...partial, status: "running" });
+    assert.equal(completed.providerPartial, undefined);
+    assert.equal(completed.statusReason, undefined);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 function run(scanDir: string): ScanRun {
   return {
     id: "portable-run",

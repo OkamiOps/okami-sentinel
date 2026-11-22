@@ -8,8 +8,16 @@ import { preflightPortableResume, preparePortableResumeRuntime } from "./resume-
 import { readPortableCodexSecurityRuntime, writePortableCodexSecurityRuntime } from "./portable-codex-security-runtime.js";
 import { refreshPortableCodexSecurityRunFromDisk } from "./portable-codex-security-reconcile.js";
 import type { ScanRun } from "@csb/shared";
-import { assertBudgetResumeCap } from "./portable-budget-partial.js";
+import { assertBudgetResumeCap, assertResumeSpendAndHolds } from "./portable-budget-partial.js";
 import { createPortableCodexSecuritySnapshot } from "./portable-codex-security-worker-support.js";
+
+test("resume cannot lower the cap below prior spend plus unresolved provider holds", () => {
+  for (const cap of [NaN, Infinity, 0.4, 1.2, 1.49]) {
+    assert.throws(() => assertResumeSpendAndHolds(0.39, 1.1, cap), /resume_budget_cap_must_exceed/);
+  }
+  assert.doesNotThrow(() => assertResumeSpendAndHolds(0.39, 1.1, 2));
+  assert.doesNotThrow(() => assertResumeSpendAndHolds(0, 0, 0.1));
+});
 
 function fixture(candidateCount = 1, extraFiles = 0) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "resume-checkpoint-test-"));
@@ -67,6 +75,21 @@ for (const threatModelComplete of [false, true]) {
     } finally { cleanup(f.root); }
   });
 }
+
+test("provider interruption during threat-model exposes the saved inventory checkpoint", () => {
+  const f = fixture();
+  try {
+    const artifacts = path.join(f.scan, "portable-codex-security-artifacts");
+    for (const entry of ["threat-model", "discovery-001", "dataflow"]) fs.rmSync(path.join(artifacts, entry), { recursive: true });
+    const previous = readPortableCodexSecurityRuntime(f.scan)!;
+    writePortableCodexSecurityRuntime(f.scan, { ...previous, status: "incomplete", stage: "threat-model",
+      providerPartial: { stopReason: "provider_unreachable", completed: [], pending: [],
+        interrupted: { stage: "threat-model", page: null, artifactPath: null } } });
+    const result = preflightPortableResume(f.scan, "standard");
+    assert.deepEqual(result.verifiedStages, { inventory: 1 });
+    assert.equal(preparePortableResumeRuntime(result.previous).budgetReservedUsd, previous.budgetReservedUsd);
+  } finally { cleanup(f.root); }
+});
 
 for (const budget of [false, true]) {
   test(`resume bootstrap cannot persist the source terminal status before worker startup: budget=${budget}`, () => {

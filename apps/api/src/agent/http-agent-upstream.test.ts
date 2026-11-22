@@ -129,6 +129,22 @@ test("protocol failures distinguish HTTP rejection, body shape and local limits 
   }
 });
 
+test("transient HTTP failures retain a safe status diagnostic without inference replay", async () => {
+  for (const status of [408, 429, 500, 503, 504]) {
+    const transport = transcript([json(status, { error: "private provider error" })]);
+    const upstream = createHttpAgentUpstream({ routeKind: "xai-oauth", protocol: "xai-oauth-responses",
+      credentials: { apiKey: "fixture" }, maxRetries: 0, transport: transport.fetch });
+    await assert.rejects(upstream.request({ operation: "responses", body: {}, signal: new AbortController().signal }), error => {
+      assert.ok(error instanceof HttpAgentUpstreamError);
+      assert.equal(error.code, status === 429 ? "rate_limited" : "provider_unreachable");
+      assert.equal(error.protocolIssue, `http_status_${status}`);
+      assert.ok(!JSON.stringify(error).includes("private"));
+      return true;
+    });
+    assert.equal(transport.calls.length, 1);
+  }
+});
+
 test("AgentUpstream pins official origins and the documented MiniMax Token Plan header", async () => {
   const cases = [
     ["xai-api", "openai-responses", "responses", "https://api.x.ai/v1/responses", "authorization", "Bearer xai-secret"],

@@ -5,7 +5,7 @@ import type {
   AiVerdictCitation, BusinessLogicFinding, BusinessLogicFlow, BusinessLogicFlowStatus, BusinessLogicRuleKind,
   ScanBusinessLogic, ScanRun,
 } from "@csb/shared";
-import type { AgentEvent, AgentSession, AgentSessionSpec } from "../agent/session-types.js";
+import { AgentSessionError, type AgentEvent, type AgentSession, type AgentSessionSpec } from "../agent/session-types.js";
 import type { GraphIndex, GraphNode } from "../graphify/graph-index.js";
 import { globalSecretRedactor, type SecretRedactor } from "../redaction.js";
 import { evidenceRangeHash } from "./portable-review-reuse.js";
@@ -281,6 +281,7 @@ export interface BusinessLogicPassInput {
   observeUsage(event: Extract<AgentEvent, { type: "usage" }>): number | null;
   /** True once the per-turn budget reservation refused a model request. */
   budgetRefused?: () => boolean;
+  onProviderFailure?: (code: "provider_unreachable" | "rate_limited") => void;
   signal?: AbortSignal;
   log?: (line: string) => void;
 }
@@ -308,12 +309,21 @@ export async function runBusinessLogicPass(input: BusinessLogicPassInput): Promi
   let priced = input.budgetUsd !== null;
   let unpriced = false;
   let stopped = false;
+  let providerFailure = false;
+  const observeFailure = (code: string) => {
+    if (code === "provider_unreachable" || code === "rate_limited") {
+      providerFailure = true;
+      stopped = true;
+      input.onProviderFailure?.(code);
+    }
+  };
   for (let offset = 0; offset < pending.length; offset += FLOWS_PER_SESSION) {
     const page = pending.slice(offset, offset + FLOWS_PER_SESSION);
     const hashesFor = (flow: BusinessFlowPlan) => flowStepHashes(read, flow) ?? [];
     if (stopped || input.signal?.aborted || (input.budgetUsd !== null && spent >= input.budgetUsd)) {
-      for (const flow of page) record.flows.push({ ...flow, status: "skipped-budget", summary: null, findings: [], missingEvidence: [], stepHashes: hashesFor(flow) });
-      record.totals.skippedBudget += page.length;
+      for (const flow of page) record.flows.push({ ...flow, status: providerFailure ? "failed" : "skipped-budget", summary: null, findings: [], missingEvidence: [], stepHashes: hashesFor(flow) });
+      if (providerFailure) record.totals.failed += page.length;
+      else record.totals.skippedBudget += page.length;
       continue;
     }
     const root = path.join(input.artifactsRoot, `business-logic-${String(offset / FLOWS_PER_SESSION + 1).padStart(2, "0")}`);
@@ -330,7 +340,8 @@ export async function runBusinessLogicPass(input: BusinessLogicPassInput): Promi
             const cost = input.observeUsage(event);
             if (cost !== null) { spent = cost; priced = true; } else unpriced = true;
             if (input.budgetUsd !== null && (cost === null || spent >= input.budgetUsd)) { budgetHit = true; break; }
-          } else if (event.type === "failure" || event.type === "cancellation") break;
+          } else if (event.type === "failure") { observeFailure(event.code); break; }
+          else if (event.type === "cancellation") break;
         }
       } finally { await session.cancel().catch(() => undefined); }
       if (input.budgetRefused?.()) budgetHit = true;
@@ -338,7 +349,10 @@ export async function runBusinessLogicPass(input: BusinessLogicPassInput): Promi
       if (fs.existsSync(artifact) && fs.lstatSync(artifact).isFile() && fs.statSync(artifact).size <= MAX_FILE_BYTES) {
         parsed = parseBusinessLogicArtifact(JSON.parse(fs.readFileSync(artifact, "utf8")), page.map(f => f.id));
       }
-    } catch { if (input.budgetRefused?.()) budgetHit = true; }
+    } catch (error) {
+      if (error instanceof AgentSessionError) observeFailure(error.code);
+      if (input.budgetRefused?.()) budgetHit = true;
+    }
     input.log?.(JSON.stringify({ type: "business_logic_page", page: offset / FLOWS_PER_SESSION + 1, flows: page.length,
       parsed: parsed?.length ?? 0, spentUsd: input.budgetUsd === null ? null : spent - before, budgetHit }));
     for (const flow of page) {

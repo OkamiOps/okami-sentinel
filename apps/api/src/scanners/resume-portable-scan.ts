@@ -19,7 +19,7 @@ import { PORTABLE_CANDIDATE_GROUPS_FILE, groupPortableCandidatesBeforeReview } f
 import { createPortableAssessmentPages, assessmentPageDirectory } from "./portable-codex-security-assessment-pages.js";
 import { createPortableCodexSecurityReportShards } from "./portable-codex-security-report-shards.js";
 import { PORTABLE_CODEX_SECURITY_STAGES } from "./portable-codex-security-profile.js";
-import { assertBudgetResumeCap } from "./portable-budget-partial.js";
+import { assertBudgetResumeCap, assertResumeSpendAndHolds } from "./portable-budget-partial.js";
 import { readPortableReviewReuse, restorePortableReviewReuse, REVIEW_REUSE_FILE } from "./portable-review-reuse.js";
 import { addPortableSastCandidates, PORTABLE_SAST_TRIAGE_FILE, readPortableSastTriage } from "./portable-sast-triage.js";
 import { BUSINESS_LOGIC_FILE, BUSINESS_LOGIC_ARTIFACT } from "./portable-business-logic.js";
@@ -43,7 +43,7 @@ export function preflightPortableResume(scanDir: string, mode: "standard" | "dee
     return assertExactStageArtifact(root, { artifact });
   }
   let dossier = createPortableCodexSecurityDossier();
-  if (previous.budgetPartial && ["inventory", "threat-model"].includes(previous.stage)) {
+  if ((previous.budgetPartial || previous.providerPartial) && ["inventory", "threat-model"].includes(previous.stage)) {
     const verifiedStages: Record<string, number> = {};
     for (const stage of PORTABLE_CODEX_SECURITY_STAGES.slice(0, 2)) {
       const artifact = read(stage.id, stage.artifact);
@@ -181,7 +181,8 @@ export function inspectPortableResume(original: ScanRun) {
   }
   const { previous, completed, totalBatches, verifiedStages } = preflightPortableResume(original.scanDir, config.mode);
   if (!["incomplete", "failed"].includes(previous.status)) throw new Error("resume_requires_checkpoint");
-  const spentUsd = previous.budgetPartial?.spentUsd ?? (config.costBudget ? estimateFrozenScannerUsageCost(previous.usage, config.costBudget.pricing)?.estimatedUsd : undefined);
+  const spentUsd = previous.budgetPartial?.spentUsd ?? (!previous.usage.reported ? 0
+    : config.costBudget ? estimateFrozenScannerUsageCost(previous.usage, config.costBudget.pricing)?.estimatedUsd : undefined);
   if (config.costBudget && spentUsd === undefined) throw new Error("resume_cost_unavailable");
   const suggestedMaxCostUsd = Math.max(200, Math.ceil(Math.max(spentUsd ?? 0, config.costBudget?.maxCostUsd ?? 0) * 2));
   return { config, previous, completed, totalBatches, verifiedStages, spentUsd, suggestedMaxCostUsd };
@@ -206,7 +207,7 @@ export async function resumeBudgetPortableScan(scanId: string, requestedMaxCostU
   if (!original.execution) throw new Error("resume_requires_partial_portable_scan");
   const { config, previous, completed, totalBatches, verifiedStages, spentUsd, suggestedMaxCostUsd } = inspectPortableResume(original);
   const maxCostUsd = requestedMaxCostUsd ?? suggestedMaxCostUsd;
-  if (!Number.isFinite(maxCostUsd) || maxCostUsd <= (spentUsd ?? 0)) throw new Error("resume_budget_cap_must_exceed_prior_spend_and_cap");
+  assertResumeSpendAndHolds(spentUsd ?? 0, previous.budgetReservedUsd ?? 0, maxCostUsd);
   if (previous.budgetPartial) assertBudgetResumeCap(previous.budgetPartial, maxCostUsd);
   console.log(JSON.stringify({ sourceScanId: scanId, snapshotId: previous.snapshotId, verifiedBatches: completed, totalBatches, verifiedStages, dryRun }));
   if (dryRun) return;
@@ -271,7 +272,7 @@ export async function resumeBudgetPortableScan(scanId: string, requestedMaxCostU
     fs.writeFileSync(configPath, JSON.stringify(resumedConfig), { mode: 0o600 });
     fs.writeFileSync(path.join(outputDir, "resume-source.json"), JSON.stringify({ scanId, resumedAt: new Date().toISOString(), verifiedBatches: completed, verifiedStages, snapshotId: previous.snapshotId }), { mode: 0o600 });
     runtime.store.writeSnapshot({ ...frozen, scanId: id, capabilityCheckId: probe.report.id, capturedAt: new Date().toISOString() });
-    const run = { ...original, startedAt: new Date().toISOString(), cost: null, usage: null, statusReason: undefined, budgetPartial: undefined, resume: undefined, graphify: resumedConfig.graphify, id, scanDir: outputDir, status: "queued" as const, displayName: `${original.displayName} · resumed`, pid: null, completedAt: null, durationMs: null, progress: null, execution: { ...original.execution, capabilityCheckId: probe.report.id } };
+    const run = { ...original, startedAt: new Date().toISOString(), cost: null, usage: null, statusReason: undefined, budgetPartial: undefined, providerPartial: undefined, resume: undefined, graphify: resumedConfig.graphify, id, scanDir: outputDir, status: "queued" as const, displayName: `${original.displayName} · resumed`, pid: null, completedAt: null, durationMs: null, progress: null, execution: { ...original.execution, capabilityCheckId: probe.report.id } };
     upsertRun(run);
     const fd = fs.openSync(cliLogPath(outputDir), "a", 0o600);
     const child = spawn(process.execPath, ["--import", "tsx", path.join(import.meta.dirname, "portable-codex-security-worker.ts"), configPath, "--resume-discovery"], { cwd: path.resolve(import.meta.dirname, "../.."), detached: true, stdio: ["ignore", fd, fd], env: process.env });

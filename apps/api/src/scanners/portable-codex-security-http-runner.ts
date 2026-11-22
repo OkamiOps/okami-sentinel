@@ -337,7 +337,7 @@ export async function runPortableCodexSecurity(
     );
     assertPortableCostBudget(safeConfiguration.costBudget, plan, resolved);
     const previous = resumeState;
-    const resumableStages = previous?.budgetPartial ? ["inventory", "threat-model", "discovery", "dataflow", "validation", "report", "normalize"] : ["discovery", "dataflow", "validation", "report", "normalize"];
+    const resumableStages = previous?.budgetPartial || previous?.providerPartial ? ["inventory", "threat-model", "discovery", "dataflow", "validation", "report", "normalize"] : ["discovery", "dataflow", "validation", "report", "normalize"];
     if (dependencies.resumeDiscovery && (!previous || !resumableStages.includes(previous.stage) || previous.status === "completed" ||
         previous.sourceRef !== safeConfiguration.sourceRef || !previous.snapshotId)) {
       throw new PortableCodexSecurityRunnerError("snapshot_invalid");
@@ -349,7 +349,7 @@ export async function runPortableCodexSecurity(
       runtime = { ...runtime, startedAt: previous.startedAt, usage: previous.usage, budgetReservedUsd: previous.budgetReservedUsd ?? 0,
         ...(previous.reviewStages ? { reviewStages: previous.reviewStages } : {}) };
       const stop = costBudgetStopCode(safeConfiguration.costBudget, runtime.usage);
-      if (stop !== null && (previous.usage.reported || !previous.budgetPartial)) throw new PortableCodexSecurityRunnerError(stop);
+      if (stop !== null && (previous.usage.reported || !(previous.budgetPartial || previous.providerPartial))) throw new PortableCodexSecurityRunnerError(stop);
     }
 
     assertPortableCodexSecuritySnapshot(snapshot);
@@ -1017,6 +1017,8 @@ export async function runPortableCodexSecurity(
     const recordedGrouping = readPortableCandidateGrouping(artifactsRoot);
     if (recordedGrouping !== null) writePortableCandidateGrouping(resultsDir, recordedGrouping);
     if (safeConfiguration.businessLogic === true) {
+      interrupted = { stage: "normalize", page: "business-logic", artifactPath: path.relative(outputDir, path.join(resultsDir, "portable-business-logic.json")) };
+      work.set(interrupted.artifactPath!, interrupted);
       update({ stage: "normalize", stageLabel: "Business-logic review", percent: 99,
         detail: "AI review of business rules and workflows over code flows" });
       const budget = safeConfiguration.costBudget;
@@ -1046,7 +1048,9 @@ export async function runPortableCodexSecurity(
             if (typeof source.scanId === "string") sources.unshift({ id: source.scanId, scanDir: outputDir });
           }
         }
+        let providerFailure: "provider_unreachable" | "rate_limited" | null = null;
         const record = await runBusinessLogicPass({
+          onProviderFailure: code => { providerFailure = code; },
           flows,
           snapshotRoot: snapshot.snapshotRoot,
           artifactsRoot: path.join(artifactsRoot, "business-logic"),
@@ -1096,8 +1100,10 @@ export async function runPortableCodexSecurity(
           },
         });
         writeBusinessLogicRecord(resultsDir, record);
+        if (providerFailure !== null) throw new PortableCodexSecurityRunnerError(providerFailure);
         log(JSON.stringify({ type: "business_logic_complete", ...record.totals }));
-      } catch {
+      } catch (error) {
+        if (error instanceof PortableCodexSecurityRunnerError && (error.code === "provider_unreachable" || error.code === "rate_limited")) throw error;
         log(JSON.stringify({ type: "business_logic_failed" }));
       }
     }
@@ -1133,10 +1139,17 @@ export async function runPortableCodexSecurity(
       interrupted,
       pending: orderedWork.filter(item => !completedWork.has(item.artifactPath!)),
     } : undefined;
+    const providerPartial = normalized.code === "provider_unreachable" || normalized.code === "rate_limited" ? {
+      stopReason: normalized.code,
+      completed: orderedWork.filter(item => completedWork.has(item.artifactPath!)),
+      interrupted,
+      pending: orderedWork.filter(item => !completedWork.has(item.artifactPath!)),
+    } : undefined;
     runtime = {
       ...runtime,
-      status: budgetPartial ? "incomplete" : normalized.code === "agent_cancelled" ? "cancelled" : "failed",
+      status: budgetPartial || providerPartial ? "incomplete" : normalized.code === "agent_cancelled" ? "cancelled" : "failed",
       ...(budgetPartial ? { budgetPartial, stageLabel: "Parcial por orçamento" } : {}),
+      ...(providerPartial ? { providerPartial } : {}),
       detail: budgetPartial ? "Parcial por orçamento" : normalized.code,
       error: normalized.code,
       errorCode: safeProviderCode(normalized.code),
@@ -1146,7 +1159,7 @@ export async function runPortableCodexSecurity(
     if (runtimeWritable) {
       if (budgetPartial) writeBudgetPartial(outputDir, budgetPartial);
       writePortableCodexSecurityRuntime(outputDir, runtime);
-      if (budgetPartial) syncBudgetArtifact(path.join(outputDir, "portable-codex-security-runtime.json"));
+      if (budgetPartial || providerPartial) syncBudgetArtifact(path.join(outputDir, "portable-codex-security-runtime.json"));
     }
     throw normalized;
   } finally {
@@ -1564,6 +1577,9 @@ function normalizeRunnerError(
   }
   if (error instanceof AgentSessionError && error.code === "agent_cancelled") {
     return new PortableCodexSecurityRunnerError("agent_cancelled");
+  }
+  if (error instanceof AgentSessionError && (error.code === "provider_unreachable" || error.code === "rate_limited")) {
+    return new PortableCodexSecurityRunnerError(error.code);
   }
   return new PortableCodexSecurityRunnerError("agent_session_failed");
 }

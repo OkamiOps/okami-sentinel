@@ -66,6 +66,21 @@ test("runtime persists budget partials and rejects malformed summaries", () => {
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test("runtime persists provider partials without a budget and rejects invalid reasons and unsafe paths", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "portable-provider-partial-"));
+  try {
+    const providerPartial = { stopReason: "provider_unreachable" as const, completed: [], pending: [],
+      interrupted: { stage: "inventory", page: null, artifactPath: null } };
+    writePortableCodexSecurityRuntime(root, runtimeState({ status: "incomplete", providerPartial }));
+    assert.deepEqual(readPortableCodexSecurityRuntime(root)?.providerPartial, providerPartial);
+    for (const invalid of [undefined, { ...providerPartial, stopReason: "credential_rejected" },
+      { ...providerPartial, pending: null }, { ...providerPartial, interrupted: { stage: "inventory", page: null, artifactPath: "../escape" } }]) {
+      fs.writeFileSync(portableCodexSecurityRuntimePath(root), JSON.stringify({ ...runtimeState(), status: "incomplete", providerPartial: invalid }));
+      assert.equal(readPortableCodexSecurityRuntime(root), null);
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 function runtimeState(
   patch: Partial<PortableCodexSecurityRuntimeState> = {},
 ): PortableCodexSecurityRuntimeState {
