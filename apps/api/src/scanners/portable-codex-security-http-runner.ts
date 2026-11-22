@@ -702,7 +702,7 @@ export async function runPortableCodexSecurity(
           reservation = spent === undefined ? null : turnBudget.reserve(request, budget.pricing, budget.maxCostUsd - spent, resolved.model.contextWindow, countedInputTokens);
           if (reservation !== null) return reservation.request;
           costBudgetStop = spent === undefined || resolved.model.contextWindow === null ? "cost_budget_unavailable" : "cost_limit_reached";
-          throw new PortableCodexSecurityRunnerError(costBudgetStop);
+          throw new AgentSessionError(costBudgetStop);
         } }),
         connectionId: resolved.connection.id,
         routeKind: resolved.connection.routeKind,
@@ -1068,11 +1068,11 @@ export async function runPortableCodexSecurity(
             spec: {
               ...(budget === undefined || passBudget === null ? {} : { beforeModelRequest: (request, countedInputTokens) => {
                 const spent = passCost();
-                if (spent === null) { budgetRefused = true; throw new PortableCodexSecurityRunnerError("cost_budget_unavailable"); }
+                if (spent === null) { budgetRefused = true; throw new AgentSessionError("cost_budget_unavailable"); }
                 const total = runtime.usage.reported ? estimateFrozenScannerUsageCost(runtime.usage, budget.pricing)?.estimatedUsd : 0;
                 businessReservation = total === undefined ? null : turnBudget.reserve(request, budget.pricing,
                   Math.min(passBudget - spent, budget.maxCostUsd - total), resolved.model.contextWindow, countedInputTokens);
-                if (businessReservation === null) { budgetRefused = true; throw new PortableCodexSecurityRunnerError("cost_limit_reached"); }
+                if (businessReservation === null) { budgetRefused = true; throw new AgentSessionError("cost_limit_reached"); }
                 return businessReservation.request;
               } }),
               connectionId: resolved.connection.id,

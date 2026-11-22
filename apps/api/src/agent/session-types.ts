@@ -47,6 +47,8 @@ export type AgentSessionErrorCode =
   | "agent_time_limit"
   | "agent_protocol_error"
   | "agent_cancelled"
+  | "cost_limit_reached"
+  | "cost_budget_unavailable"
   | "runner_capability_missing"
   | "runner_protocol_unsupported"
   | "runner_invalid_spec"

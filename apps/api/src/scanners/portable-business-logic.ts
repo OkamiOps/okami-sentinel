@@ -340,7 +340,7 @@ export async function runBusinessLogicPass(input: BusinessLogicPassInput): Promi
             const cost = input.observeUsage(event);
             if (cost !== null) { spent = cost; priced = true; } else unpriced = true;
             if (input.budgetUsd !== null && (cost === null || spent >= input.budgetUsd)) { budgetHit = true; break; }
-          } else if (event.type === "failure") { observeFailure(event.code); break; }
+          } else if (event.type === "failure") { input.log?.(JSON.stringify(event)); observeFailure(event.code); break; }
           else if (event.type === "cancellation") break;
         }
       } finally { await session.cancel().catch(() => undefined); }
