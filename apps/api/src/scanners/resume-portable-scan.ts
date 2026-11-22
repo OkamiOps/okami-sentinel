@@ -19,6 +19,7 @@ import { createPortableCodexSecurityReportShards } from "./portable-codex-securi
 import { PORTABLE_CODEX_SECURITY_STAGES } from "./portable-codex-security-profile.js";
 import { assertBudgetResumeCap } from "./portable-budget-partial.js";
 import { readPortableReviewReuse, restorePortableReviewReuse, REVIEW_REUSE_FILE } from "./portable-review-reuse.js";
+import { addPortableSastCandidates, PORTABLE_SAST_TRIAGE_FILE, readPortableSastTriage } from "./portable-sast-triage.js";
 
 /** Read-only checkpoint validation, shared by dry-run and actual recovery. */
 export function preflightPortableResume(scanDir: string, mode: "standard" | "deep") {
@@ -92,6 +93,7 @@ export function preflightPortableResume(scanDir: string, mode: "standard" | "dee
   let prerequisiteComplete = discoveryComplete;
   if (discoveryComplete) {
     dossier = groupPortableCandidatesBeforeReview(dossier, artifacts, { resume: true, persist: false });
+    dossier = addPortableSastCandidates(dossier, readPortableSastTriage(scanDir));
     if (fs.existsSync(path.join(artifacts, PORTABLE_CANDIDATE_GROUPS_FILE))) accepted.add(PORTABLE_CANDIDATE_GROUPS_FILE);
     const reuse = readPortableReviewReuse(scanDir);
     if (reuse) dossier = restorePortableReviewReuse(dossier, snapshotRoot, reuse);
@@ -182,7 +184,15 @@ export async function resumeBudgetPortableScan(scanId: string, maxCostUsd: numbe
     }
     assertPortableCodexSecuritySnapshot({ snapshotRoot: path.join(outputDir, "portable-codex-security-snapshot"), snapshotId: previous.snapshotId! });
     fs.writeFileSync(path.join(outputDir, "portable-codex-security-runtime.json"), JSON.stringify(previous), { mode: 0o600 });
-    for (const name of ["portable-codex-security-pricing.json", "scanner-pricing.json", DEEP_PLAN_FILE, STANDARD_PLAN_FILE, REVIEW_REUSE_FILE]) if (fs.existsSync(path.join(original.scanDir, name))) fs.copyFileSync(path.join(original.scanDir, name), path.join(outputDir, name));
+    for (const name of ["portable-codex-security-pricing.json", "scanner-pricing.json", DEEP_PLAN_FILE, STANDARD_PLAN_FILE, REVIEW_REUSE_FILE, PORTABLE_SAST_TRIAGE_FILE]) if (fs.existsSync(path.join(original.scanDir, name))) fs.copyFileSync(path.join(original.scanDir, name), path.join(outputDir, name));
+    const sastFiles = ["opengrep-findings.json", "opengrep-status.json"];
+    if (sastFiles.some(name => fs.existsSync(path.join(original.scanDir, "sast", name)))) {
+      fs.mkdirSync(path.join(outputDir, "sast"), { mode: 0o700 });
+      for (const name of sastFiles) {
+        const source = path.join(original.scanDir, "sast", name);
+        if (fs.existsSync(source)) fs.copyFileSync(source, path.join(outputDir, "sast", name));
+      }
+    }
     // Preserve accepted recovery fragments and attempt budgets across a new run ID.
     const recoveryRoot = path.join(original.scanDir, "portable-recovery");
     if (fs.existsSync(recoveryRoot)) {
