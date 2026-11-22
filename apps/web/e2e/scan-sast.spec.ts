@@ -123,3 +123,11 @@ test("scan report keeps OpenGrep alerts out of AI totals and lists them separate
   await expect(page.getByText("OKS-002", { exact: true })).toHaveCount(0);
   await expect(page.getByText("1 alertas do OpenGrep listados à parte", { exact: false })).toBeVisible();
 });
+
+test("scan report paginates long OpenGrep alert lists", async ({ page }) => {
+  const state = await setup(page);
+  state.reportFindings = Array.from({ length: 13 }, (_, index) => ({ ...sastFinding, findingId: `opengrep-${index}`, title: `Alerta ${String(index).padStart(2, "0")}` }));
+  await page.goto("/scans/scan-one/report");
+  await expect(page.getByText("Alertas de análise estática · OpenGrep / 2", { exact: true })).toBeVisible();
+  await expect(page.getByText("SAST-013", { exact: true })).toBeVisible();
+});

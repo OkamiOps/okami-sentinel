@@ -110,6 +110,7 @@ export function ScanReportPage() {
   const findings = useMemo(() => allFindings.filter((finding) => finding.origin?.kind !== "sast"), [allFindings]);
   const sastFindings = useMemo(() => allFindings.filter((finding) => finding.origin?.kind === "sast"), [allFindings]);
   const indexPages = useMemo(() => chunk(findings, 12), [findings]);
+  const sastPages = useMemo(() => chunk(sastFindings, 12), [sastFindings]);
   const priorityFindings = useMemo(() => findings.filter((finding) => finding.severity === "critical" || finding.severity === "high"), [findings]);
   const lifecycle = useMemo(() => new Map((report?.regression.findings ?? []).map((finding) => [finding.findingId, finding])), [report]);
   const lifecycleCounts = useMemo(() => {
@@ -269,14 +270,14 @@ export function ScanReportPage() {
         <ReportFooter reportId={reportId} />
       </ReportSheet>)}
 
-      {sastFindings.length > 0 && <ReportSheet>
-        <ReportHeader section="03B" title={t("scanReport.sastIndexTitle")} reportId={reportId} />
+      {sastPages.map((page, pageIndex) => <ReportSheet key={`sast-${pageIndex}`}>
+        <ReportHeader section="03B" title={sastPages.length > 1 ? `${t("scanReport.sastIndexTitle")} / ${pageIndex + 1}` : t("scanReport.sastIndexTitle")} reportId={reportId} />
         <div className="mt-8 border border-border">
-          {sastFindings.map((finding, index) => <FindingIndexRow key={finding.findingId} finding={finding} index={index} prefix="SAST" signal={lifecycle.get(finding.findingId)} />)}
+          {page.map((finding) => <FindingIndexRow key={finding.findingId} finding={finding} index={sastFindings.indexOf(finding)} prefix="SAST" signal={lifecycle.get(finding.findingId)} />)}
         </div>
         <div className="mt-5 border-l-2 border-chart-3 px-4 text-[11px] leading-6 text-muted-foreground">{t("scanReport.sastIndexNote", { count: sastFindings.length })}</div>
         <ReportFooter reportId={reportId} />
-      </ReportSheet>}
+      </ReportSheet>)}
 
       {priorityFindings.map((finding) => <FindingSheet key={finding.findingId} finding={finding} index={findings.indexOf(finding)} signal={lifecycle.get(finding.findingId)} reportId={reportId} />)}
 
