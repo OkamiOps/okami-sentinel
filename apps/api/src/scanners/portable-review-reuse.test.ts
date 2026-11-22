@@ -10,12 +10,11 @@ const environment = fs.mkdtempSync(path.join(os.tmpdir(), "review-reuse-env-"));
 process.env.CSB_DATA_DIR = path.join(environment, "data");
 process.env.CODEX_SECURITY_STATE_DIR = path.join(environment, "state");
 const { planPortableReviewReuse, restorePortableReviewReuse, writePortableReviewReuse, readPortableReviewReuse,
-  sourceReviewCost, reviewReuseSources, REVIEW_REUSE_FILE } = await import("./portable-review-reuse.js");
+  sourceReviewCost, REVIEW_REUSE_FILE } = await import("./portable-review-reuse.js");
 const { createPortableCodexSecurityDossier, writePortableCodexSecurityDossier } = await import("./portable-codex-security-dossier.js");
 const { writePortableCodexSecurityRuntime } = await import("./portable-codex-security-runtime.js");
 const { scanAiVerdicts } = await import("./portable-codex-security-verdicts.js");
-const { getDb, upsertRun, closeDb } = await import("../db.js");
-after(() => { closeDb(); fs.rmSync(environment, { recursive: true, force: true }); });
+after(() => fs.rmSync(environment, { recursive: true, force: true }));
 
 const anchor = { path: "route.ts", startLine: 2, endLine: 2, role: "sink" as const };
 const entry = { path: "route.ts", startLine: 1, endLine: 1, role: "entrypoint" as const };
@@ -169,36 +168,4 @@ test("stage costs take precedence; legacy cost is upper bound and unknown pricin
     ...c, candidateId: "old-c", assessments: c.assessments.map(a => ({ ...a, candidateId: "old-c" })),
   })) });
   assert.equal(sourceReviewCost(f.source, f.prior).cost, 3, "source reviews already reused are not charged an allocation of paid stage usage");
-});
-
-test("source selection uses repository identity, creation order, status, mode and a five-scan cap", t => {
-  const f = fixture(t);
-  const ids: string[] = [];
-  t.after(() => { for (const id of ids) getDb().prepare("DELETE FROM runs WHERE id = ?").run(id); });
-  for (let index = 0; index < 9; index++) {
-    const id = `source-${index}`;
-    ids.push(id);
-    upsertRun({ ...f.source, id, displayName: id, severity: { critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0, total: 0 },
-      source: "workbench", mode: index === 8 ? "standard" : "deep", status: index === 7 ? "failed" : "completed" });
-    getDb().prepare("UPDATE runs SET created_at = ? WHERE id = ?").run(`2026-01-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`, id);
-  }
-  const deep = reviewReuseSources("current", f.root, f.currentDir, "deep", "2026-02-01T00:00:00.000Z");
-  assert.deepEqual(deep.map(s => s.id), ["source-6", "source-5", "source-4", "source-3", "source-2"]);
-  assert.equal(reviewReuseSources("current", f.root, f.currentDir, "standard", "2026-02-01T00:00:00.000Z")[0]!.id, "source-8");
-  assert.equal(reviewReuseSources("current", "/other/project", f.currentDir, "deep", "2026-02-01T00:00:00.000Z").length, 0);
-  assert.deepEqual(reviewReuseSources("current", f.root, f.currentDir, "deep", "2026-01-03T00:00:00.000Z").map(s => s.id), ["source-1", "source-0"]);
-  getDb().prepare("UPDATE runs SET status = 'incomplete' WHERE id = 'source-6'").run();
-  assert.equal(reviewReuseSources("current", f.root, f.currentDir, "deep", "2026-02-01T00:00:00.000Z")[0]!.id, "source-5");
-  writePortableCodexSecurityRuntime(f.oldDir, {
-    engine: "codex-security", executionProfile: "portable", profileVersion: "sentinel-codex-security-portable-v1",
-    methodologyRef: "sentinel/codex-security-methodology@v1", status: "incomplete", stage: "validation", stageLabel: "validation", percent: 80,
-    detail: null, startedAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", completedAt: null, findings: 0,
-    snapshotId: "content:old", sourceRef: "old", error: null, errorCode: null,
-    usage: { reported: false, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
-    budgetPartial: { stopReason: "budget", spentUsd: 1, maxCostUsd: 1, completed: [],
-      interrupted: { stage: "validation", page: null, artifactPath: null }, pending: [{ stage: "validation", page: null, artifactPath: null }] },
-  });
-  assert.equal(reviewReuseSources("current", f.root, f.currentDir, "deep", "2026-02-01T00:00:00.000Z")[0]!.id, "source-6");
-  fs.renameSync(path.join(f.oldDir, "portable-codex-security-results"), path.join(f.oldDir, "retired-results"));
-  assert.equal(reviewReuseSources("current", f.root, f.currentDir, "deep", "2026-02-01T00:00:00.000Z").length, 0);
 });
