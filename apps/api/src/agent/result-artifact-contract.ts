@@ -249,7 +249,9 @@ function portableStageContentSchema(context?: PortableResultArtifactValidationCo
     }
     if (expectedStage === "validation") {
       selected.assessments = array(object({ candidateId: text,
-        status: enumeration(["confirmed", "rejected"]), reason, evidence: anchors }));
+        status: enumeration(["confirmed", "rejected"]), reason, evidence: anchors,
+        claim: { ...text, maxLength: 4_096,
+          description: "What the cited evidence lines prove about this candidate. Every evidence anchor must cite exact existing snapshot lines; a confirmation must cite where untrusted input enters (source or entrypoint) and the reached sink or missing control. Uncited or unresolvable verdicts are downgraded to inconclusive." } }));
     }
     return object(selected, fields.filter((field) => field !== "scope" ||
       (expectedStage === "discovery" && context?.requireDiscoveryCandidateContext === true && context.deepCoverage === undefined)));

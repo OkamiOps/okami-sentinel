@@ -43,9 +43,22 @@ test("groups expose members and share the representative's decisive verdict", t 
   assert.equal(value.candidates, 3);
   assert.equal(value.reviewed, 2);
   assert.deepEqual(value.groups.map(group => [group.representativeId, group.memberIds, group.verdict]), [
-    ["a", ["a", "b"], { status: "rejected", stage: "validation", reason: "not-vulnerable" }],
+    ["a", ["a", "b"], { status: "inconclusive", stage: "validation", reason: "not-vulnerable" }],
   ]);
   assert.deepEqual(value.groups[0]!.members[1], { id: "b", category: "authorization", hypothesis: "Pass b found a missing tenant check.", anchors: [{ path: "src/orders.ts", startLine: 12, endLine: 14, role: "control" }] });
+});
+
+test("a group shares its representative's cited verdict as decided", t => {
+  const { root, scan, dossier, grouping } = setup(t);
+  const resultsDir = path.join(root, "portable-codex-security-results");
+  const snapshotFile = path.join(root, "portable-codex-security-snapshot", "src", "orders.ts");
+  fs.mkdirSync(path.dirname(snapshotFile), { recursive: true });
+  fs.writeFileSync(snapshotFile, Array.from({ length: 20 }, (_, line) => `const line${line + 1} = ${line + 1};`).join("\n"));
+  writePortableCandidateGrouping(resultsDir, grouping);
+  writePortableCodexSecurityDossier(resultsDir, { ...dossier, assessments: [
+    { candidateId: "a", stage: "validation", status: "rejected", reason: "not-vulnerable", claim: "The tenant check on these lines scopes every order read.", evidence: [{ path: "src/orders.ts", startLine: 12, endLine: 14, role: "control" as const }] },
+  ] });
+  assert.deepEqual(scanCandidateGroups(scan).groups.map(group => group.verdict), [{ status: "rejected", stage: "validation", reason: "not-vulnerable" }]);
 });
 
 test("a running scan shows recorded groups as pending before AI review finishes", t => {

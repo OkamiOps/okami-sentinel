@@ -84,6 +84,10 @@ export interface PortableCandidateAssessment {
   status: "confirmed" | "rejected" | "inconclusive";
   reason: string;
   evidence: PortableCoverageAnchor[];
+  /** What the cited code proves; required for confirmed or rejected verdicts. */
+  claim?: string;
+  /** What is still needed to decide; required for inconclusive verdicts. */
+  missingEvidence?: string[];
 }
 
 export interface PortableScope {
@@ -861,13 +865,14 @@ function parseAssessments(
   const assessments: Array<Omit<PortableCandidateAssessment, "stage">> = [];
   for (const item of value) {
     const record = asRecord(item);
-    if (record === null || !hasOnlyKeys(record, new Set(["candidateId", "status", "reason", "evidence"]))) return null;
+    if (record === null || !hasOnlyKeys(record, ASSESSMENT_KEYS)) return null;
     const candidateId = identifier(record.candidateId);
     const status = enumValue(record.status, ASSESSMENT_STATUSES);
     const reason = enumValue(record.reason, COVERAGE_REASONS);
     const evidence = parseAnchors(record.evidence, false);
-    if (candidateId === null || status === null || reason === null || evidence === null || evidence.length === 0) return null;
-    assessments.push({ candidateId, status: status as PortableCandidateAssessment["status"], reason, evidence });
+    const verdict = parseVerdictText(record);
+    if (candidateId === null || status === null || reason === null || evidence === null || evidence.length === 0 || verdict === null) return null;
+    assessments.push({ candidateId, status: status as PortableCandidateAssessment["status"], reason, evidence, ...verdict });
   }
   return assessments;
 }
@@ -877,22 +882,48 @@ function parseStoredAssessments(value: unknown): PortableCandidateAssessment[] |
   const assessments: PortableCandidateAssessment[] = [];
   for (const item of value) {
     const record = asRecord(item);
-    if (record === null || !hasOnlyKeys(record, new Set(["candidateId", "stage", "status", "reason", "evidence"]))) return null;
+    if (record === null || !hasOnlyKeys(record, STORED_ASSESSMENT_KEYS)) return null;
     const candidateId = identifier(record.candidateId);
     const stage = enumValue(record.stage, ASSESSMENT_STAGES);
     const status = enumValue(record.status, ASSESSMENT_STATUSES);
     const reason = enumValue(record.reason, COVERAGE_REASONS);
     const evidence = parseAnchors(record.evidence, false);
-    if (candidateId === null || stage === null || status === null || reason === null || evidence === null || evidence.length === 0) return null;
+    const verdict = parseVerdictText(record);
+    if (candidateId === null || stage === null || status === null || reason === null || evidence === null || evidence.length === 0 || verdict === null) return null;
     assessments.push({
       candidateId,
       stage: stage as PortableCandidateAssessment["stage"],
       status: status as PortableCandidateAssessment["status"],
       reason,
       evidence,
+      ...verdict,
     });
   }
   return assessments;
+}
+
+const ASSESSMENT_KEYS = new Set(["candidateId", "status", "reason", "evidence", "claim", "missingEvidence"]);
+const STORED_ASSESSMENT_KEYS = new Set([...ASSESSMENT_KEYS, "stage"]);
+const MAX_VERDICT_TEXT = 4_096;
+const MAX_MISSING_EVIDENCE = 16;
+
+/** Optional for historical artifacts; the verdict gate decides whether a verdict is cited. */
+function parseVerdictText(record: Record<string, unknown>): Pick<PortableCandidateAssessment, "claim" | "missingEvidence"> | null {
+  const result: Pick<PortableCandidateAssessment, "claim" | "missingEvidence"> = {};
+  if (record.claim !== undefined) {
+    if (typeof record.claim !== "string" || record.claim.length > MAX_VERDICT_TEXT) return null;
+    if (record.claim.trim() !== "") result.claim = record.claim.trim();
+  }
+  if (record.missingEvidence !== undefined) {
+    if (!Array.isArray(record.missingEvidence) || record.missingEvidence.length > MAX_MISSING_EVIDENCE) return null;
+    const items: string[] = [];
+    for (const item of record.missingEvidence) {
+      if (typeof item !== "string" || item.length > MAX_VERDICT_TEXT) return null;
+      if (item.trim() !== "") items.push(item.trim());
+    }
+    if (items.length > 0) result.missingEvidence = items;
+  }
+  return result;
 }
 
 function parseScope(value: unknown, narrative = false): PortableScope | null {
@@ -1212,6 +1243,14 @@ function hasSupportedConfirmation(
   return confirmationRepairDetail(candidate, assessment, "assessments") === undefined;
 }
 
+/** Mechanical support check for a confirmation: candidate path plus entry-to-sink (or control) roles. */
+export function portableConfirmationGap(
+  candidate: PortableCandidate,
+  assessment: Omit<PortableCandidateAssessment, "stage"> | PortableCandidateAssessment,
+): PortableAssessmentRepairDetail["code"] | undefined {
+  return confirmationRepairDetail(candidate, assessment, "assessment")?.code;
+}
+
 function confirmationRepairDetail(
   candidate: PortableCandidate,
   assessment: Omit<PortableCandidateAssessment, "stage"> | PortableCandidateAssessment,
@@ -1243,7 +1282,9 @@ function sameAssessment(
   right: Omit<PortableCandidateAssessment, "stage">,
 ): boolean {
   return left.status === right.status && left.reason === right.reason &&
-    JSON.stringify(left.evidence) === JSON.stringify(right.evidence);
+    JSON.stringify(left.evidence) === JSON.stringify(right.evidence) &&
+    left.claim === right.claim &&
+    JSON.stringify(left.missingEvidence ?? []) === JSON.stringify(right.missingEvidence ?? []);
 }
 
 function copyAssessment(assessment: Omit<PortableCandidateAssessment, "stage">): Omit<PortableCandidateAssessment, "stage">;
@@ -1251,7 +1292,10 @@ function copyAssessment(assessment: PortableCandidateAssessment): PortableCandid
 function copyAssessment(
   assessment: PortableCandidateAssessment | Omit<PortableCandidateAssessment, "stage">,
 ): PortableCandidateAssessment | Omit<PortableCandidateAssessment, "stage"> {
-  return { ...assessment, evidence: assessment.evidence.map(copyAnchor) };
+  return {
+    ...assessment, evidence: assessment.evidence.map(copyAnchor),
+    ...(assessment.missingEvidence === undefined ? {} : { missingEvidence: [...assessment.missingEvidence] }),
+  };
 }
 
 function copyAnchor(anchor: PortableCoverageAnchor): PortableCoverageAnchor {
