@@ -188,7 +188,7 @@ export function writeBusinessLogicRecord(resultsDir: string, record: BusinessLog
 }
 
 /** Prior flow analyses whose every step range hashes identically in this snapshot. */
-export function planBusinessLogicReuse(flows: BusinessFlowPlan[], snapshotRoot: string, sources: readonly ScanRun[]):
+export function planBusinessLogicReuse(flows: BusinessFlowPlan[], snapshotRoot: string, sources: readonly Pick<ScanRun, "id" | "scanDir">[]):
   Map<string, { record: BusinessLogicRecord["flows"][number]; scanId: string; costUsd: number | null }> {
   const read = snapshotReader(snapshotRoot).read;
   const reused = new Map<string, { record: BusinessLogicRecord["flows"][number]; scanId: string; costUsd: number | null }>();
@@ -272,7 +272,7 @@ export interface BusinessLogicPassInput {
   flows: BusinessFlowPlan[];
   snapshotRoot: string;
   artifactsRoot: string;
-  reuseSources: readonly ScanRun[];
+  reuseSources: readonly Pick<ScanRun, "id" | "scanDir">[];
   /** Maximum USD this pass may spend; null when the scan has no enforceable cap. */
   budgetUsd: number | null;
   /** Starts one bounded session with the given instructions and artifact root. */

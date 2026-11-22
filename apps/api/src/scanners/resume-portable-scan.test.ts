@@ -96,6 +96,37 @@ test("validation recovery rejects corrupt checkpoint instead of replaying past i
     assert.throws(()=>preflightPortableResume(f.scan,"deep"));
   } finally {cleanup(f.root);}
 });
+
+test("late resume accepts bounded business-logic pages but rejects unsafe or unknown checkpoint entries", () => {
+  const f = fixture();
+  try {
+    const root = path.join(f.scan, "portable-codex-security-artifacts", "business-logic");
+    const page = path.join(root, "business-logic-01");
+    fs.mkdirSync(page, { recursive: true });
+    const result = path.join(page, "business-logic.json");
+    fs.writeFileSync(result, "unfinished optional pass");
+    assert.doesNotThrow(() => preflightPortableResume(f.scan, "deep"));
+    fs.unlinkSync(result);
+    assert.doesNotThrow(() => preflightPortableResume(f.scan, "deep"));
+    fs.symlinkSync(path.join(f.scan, "portable-codex-security-runtime.json"), result);
+    assert.throws(() => preflightPortableResume(f.scan, "deep"), /resume_unrecognized_checkpoint/);
+    fs.unlinkSync(result);
+    fs.writeFileSync(path.join(page, "unexpected.json"), "{}");
+    assert.throws(() => preflightPortableResume(f.scan, "deep"), /resume_unrecognized_checkpoint/);
+  } finally { cleanup(f.root); }
+});
+
+test("normalization recovery requires the completed report checkpoints", () => {
+  const f = fixture();
+  try {
+    const previous = readPortableCodexSecurityRuntime(f.scan)!;
+    writePortableCodexSecurityRuntime(f.scan, { ...previous, stage: "normalize" });
+    assert.throws(() => preflightPortableResume(f.scan, "deep"), /resume_missing_prerequisite_checkpoint/);
+    const prepared = preparePortableResumeRuntime({ ...previous, stage: "normalize" });
+    assert.equal(prepared.stage, "normalize");
+    assert.equal(prepared.status, "preparing");
+  } finally { cleanup(f.root); }
+});
 test("validation recovery rejects tampered immutable snapshot", () => {
   const f=fixture(); try {
     const file=path.join(f.snapshot.snapshotRoot,"route.ts"); fs.chmodSync(file,0o600); fs.writeFileSync(file,"changed");

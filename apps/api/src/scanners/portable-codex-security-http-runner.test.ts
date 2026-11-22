@@ -939,6 +939,41 @@ test("Portable business-logic review runs after the report without SAST candidat
     assert.equal(record.source, "code-context");
     assert.equal(record.totals.analyzed, 1);
     assert.equal(record.flows[0].findings[0].title, "Repeatable refund");
+    fs.writeFileSync(path.join(config.outputDir, "resume-source.json"), JSON.stringify({ scanId: "business-source" }));
+    for (const status of ["failed", "incomplete"] as const) {
+      const previous = readPortableCodexSecurityRuntime(config.outputDir)!;
+      fs.writeFileSync(path.join(config.outputDir, "portable-codex-security-runtime.json"), JSON.stringify({ ...previous, status, stage: "normalize",
+        ...(status === "incomplete" ? { budgetPartial: { stopReason: "budget", spentUsd: 0, maxCostUsd: 0.5,
+          completed: [], pending: [], interrupted: { stage: "report", page: null, artifactPath: null } } } : {}),
+      }));
+      assert.doesNotThrow(() => preflightPortableResume(config.outputDir, "standard"));
+      const resumedDir = path.join(root, `resumed-${status}`);
+      const resultsDir = path.join(config.outputDir, "portable-codex-security-results");
+      fs.cpSync(config.outputDir, resumedDir, { recursive: true, filter: source => source !== resultsDir });
+      fs.mkdirSync(path.join(resumedDir, "portable-codex-security-results"));
+      fs.copyFileSync(path.join(resultsDir, "portable-business-logic.json"), path.join(resumedDir, "portable-codex-security-results", "portable-business-logic.json"));
+      const resumedCalls: string[] = [];
+      const resumed = await runPortableCodexSecurity({ ...config, outputDir: resumedDir,
+        ...(status === "incomplete" ? { costBudget: costBudget({ maxCostUsd: 1 }) } : {}),
+      }, dependencies({
+        resumeDiscovery: true,
+        reviewReuseSources: () => [],
+        createSession: async (input: { spec: AgentSessionSpec; toolSurface: readonly string[] }) => {
+          resumedCalls.push(path.basename(input.spec.artifactRoot));
+          assert.match(input.spec.instructions, /business-logic reviewer/);
+          assert.doesNotMatch(input.spec.instructions, /src\/routes\/orders\.ts/);
+          fs.writeFileSync(path.join(input.spec.artifactRoot, "business-logic.json"), JSON.stringify({ schemaVersion: 1,
+            flows: [{ flowId: "flow-02", status: "no-issues", summary: "Reviewed remaining flow", findings: [] }] }));
+          return completedStageSession("business-logic", "business-logic.json", "done");
+        },
+      }));
+      assert.deepEqual(resumedCalls, ["business-logic-01"]);
+      assert.equal(resumed.runtime.status, "completed");
+      const reused = JSON.parse(fs.readFileSync(path.join(resumedDir, "portable-codex-security-results", "portable-business-logic.json"), "utf8"));
+      assert.equal(reused.totals.reused, 1);
+      assert.deepEqual(reused.flows[0].reusedFrom, { scanId: "business-source", flowId: "flow-01" });
+      assert.equal(reused.flows[0].findings[0].title, "Repeatable refund");
+    }
   } finally {
     remove(root);
   }

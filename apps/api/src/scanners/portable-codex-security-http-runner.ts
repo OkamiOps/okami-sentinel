@@ -30,6 +30,7 @@ import {
   type ScanConnectionSnapshot,
   type ScanMode,
   type ScanBudgetWorkItem,
+  type ScanRun,
 } from "@csb/shared";
 
 import {
@@ -329,7 +330,7 @@ export async function runPortableCodexSecurity(
     );
     assertPortableCostBudget(safeConfiguration.costBudget, plan, resolved);
     const previous = resumeState;
-    const resumableStages = previous?.budgetPartial ? ["inventory", "threat-model", "discovery", "dataflow", "validation", "report"] : ["discovery", "dataflow", "validation", "report"];
+    const resumableStages = previous?.budgetPartial ? ["inventory", "threat-model", "discovery", "dataflow", "validation", "report", "normalize"] : ["discovery", "dataflow", "validation", "report", "normalize"];
     if (dependencies.resumeDiscovery && (!previous || !resumableStages.includes(previous.stage) || previous.status === "completed" ||
         previous.sourceRef !== safeConfiguration.sourceRef || !previous.snapshotId)) {
       throw new PortableCodexSecurityRunnerError("snapshot_invalid");
@@ -455,7 +456,7 @@ export async function runPortableCodexSecurity(
             deferred: sastTriage.total - (dossier.candidates.length - discoveryCount) }));
           reviewReuse = dependencies.resumeDiscovery ? readPortableReviewReuse(outputDir) : null;
           if (reviewReuse === null) {
-            if (dependencies.resumeDiscovery && ["dataflow", "validation", "report"].includes(previous!.stage)) {
+            if (dependencies.resumeDiscovery && ["dataflow", "validation", "report", "normalize"].includes(previous!.stage)) {
               reviewReuse = planPortableReviewReuse(dossier, snapshot.snapshotRoot, []);
             } else {
               const sources = (dependencies.reviewReuseSources ?? reviewReuseSources)(plan.scanId,
@@ -1024,12 +1025,20 @@ export async function runPortableCodexSecurity(
       try {
         const flows = extractBusinessFlows(graphIndex, snapshot.snapshotRoot, safeConfiguration.paths);
         log(JSON.stringify({ type: "business_logic_flows", flows: flows.length, source: flows[0]?.source ?? null, budgetUsd: passBudget }));
+        const sources: Pick<ScanRun, "id" | "scanDir">[] = [...(dependencies.reviewReuseSources ?? reviewReuseSources)(plan.scanId, safeConfiguration.repositoryPath,
+          outputDir, safeConfiguration.mode, startedAt)];
+        if (dependencies.resumeDiscovery) {
+          const metadata = path.join(outputDir, "resume-source.json");
+          if (fs.existsSync(metadata)) {
+            const source = JSON.parse(fs.readFileSync(metadata, "utf8")) as { scanId?: unknown };
+            if (typeof source.scanId === "string") sources.unshift({ id: source.scanId, scanDir: outputDir });
+          }
+        }
         const record = await runBusinessLogicPass({
           flows,
           snapshotRoot: snapshot.snapshotRoot,
           artifactsRoot: path.join(artifactsRoot, "business-logic"),
-          reuseSources: (dependencies.reviewReuseSources ?? reviewReuseSources)(plan.scanId, safeConfiguration.repositoryPath,
-            outputDir, safeConfiguration.mode, startedAt),
+          reuseSources: sources,
           budgetUsd: passBudget,
           budgetRefused: () => budgetRefused,
           signal: deadline.signal,

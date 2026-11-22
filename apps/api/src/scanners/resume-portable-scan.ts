@@ -22,11 +22,12 @@ import { PORTABLE_CODEX_SECURITY_STAGES } from "./portable-codex-security-profil
 import { assertBudgetResumeCap } from "./portable-budget-partial.js";
 import { readPortableReviewReuse, restorePortableReviewReuse, REVIEW_REUSE_FILE } from "./portable-review-reuse.js";
 import { addPortableSastCandidates, PORTABLE_SAST_TRIAGE_FILE, readPortableSastTriage } from "./portable-sast-triage.js";
+import { BUSINESS_LOGIC_FILE, BUSINESS_LOGIC_ARTIFACT } from "./portable-business-logic.js";
 
 /** Read-only checkpoint validation, shared by dry-run and actual recovery. */
 export function preflightPortableResume(scanDir: string, mode: "standard" | "deep") {
   const previous = readPortableCodexSecurityRuntime(scanDir);
-  const resumable = ["inventory", "threat-model", "discovery", "dataflow", "validation", "report"];
+  const resumable = ["inventory", "threat-model", "discovery", "dataflow", "validation", "report", "normalize"];
   if (!previous?.snapshotId || !resumable.includes(previous.stage ?? "") || previous.status === "completed") throw new Error("resume_requires_checkpoint");
   const snapshotRoot = path.join(scanDir, "portable-codex-security-snapshot");
   assertPortableCodexSecuritySnapshot({ snapshotRoot, snapshotId: previous.snapshotId });
@@ -146,7 +147,23 @@ export function preflightPortableResume(scanDir: string, mode: "standard" | "dee
     verifiedStages.report++;
   }
   for (const entry of fs.readdirSync(artifacts)) {
+    if (entry === "business-logic") {
+      const root = path.join(artifacts, entry);
+      if (!fs.lstatSync(root).isDirectory() || fs.lstatSync(root).isSymbolicLink()) throw new Error("resume_invalid_checkpoint_directory");
+      for (const page of fs.readdirSync(root)) {
+        const directory = path.join(root, page);
+        if (!/^business-logic-\d{2,}$/.test(page) || !fs.lstatSync(directory).isDirectory() || fs.lstatSync(directory).isSymbolicLink()) throw new Error("resume_unrecognized_checkpoint");
+        for (const file of fs.readdirSync(directory)) {
+          if (file !== BUSINESS_LOGIC_ARTIFACT || !fs.lstatSync(path.join(directory, file)).isFile()) throw new Error("resume_unrecognized_checkpoint");
+        }
+      }
+      accepted.add(entry);
+    }
     if (!accepted.has(entry)) throw new Error("resume_unrecognized_checkpoint");
+  }
+  if (previous.stage === "normalize") {
+    const shards = createPortableCodexSecurityReportShards(dossier);
+    if (shards.some(shard => shard.candidateIds.length > 0) && verifiedStages.report !== shards.length) throw new Error("resume_missing_prerequisite_checkpoint");
   }
   return { previous, completed, totalBatches, verifiedStages, dossier };
 }
@@ -216,6 +233,12 @@ export async function resumeBudgetPortableScan(scanId: string, requestedMaxCostU
     assertPortableCodexSecuritySnapshot({ snapshotRoot: path.join(outputDir, "portable-codex-security-snapshot"), snapshotId: previous.snapshotId! });
     fs.writeFileSync(path.join(outputDir, "portable-codex-security-runtime.json"), JSON.stringify(preparePortableResumeRuntime(previous)), { mode: 0o600 });
     for (const name of ["portable-codex-security-pricing.json", "scanner-pricing.json", DEEP_PLAN_FILE, STANDARD_PLAN_FILE, REVIEW_REUSE_FILE, PORTABLE_SAST_TRIAGE_FILE]) if (fs.existsSync(path.join(original.scanDir, name))) fs.copyFileSync(path.join(original.scanDir, name), path.join(outputDir, name));
+    const businessRecord = path.join(original.scanDir, "portable-codex-security-results", BUSINESS_LOGIC_FILE);
+    if (fs.existsSync(businessRecord)) {
+      const results = path.join(outputDir, "portable-codex-security-results");
+      fs.mkdirSync(results, { mode: 0o700 });
+      fs.copyFileSync(businessRecord, path.join(results, BUSINESS_LOGIC_FILE));
+    }
     const sastFiles = ["opengrep-findings.json", "opengrep-status.json"];
     if (sastFiles.some(name => fs.existsSync(path.join(original.scanDir, "sast", name)))) {
       fs.mkdirSync(path.join(outputDir, "sast"), { mode: 0o700 });
