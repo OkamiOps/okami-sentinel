@@ -1396,8 +1396,12 @@ test("Portable Codex Security cancels a hung stage at the total deadline, never 
     await Promise.race([started, running]);
     assert.equal(creates, 1);
     assert.equal(cancelCalls, 0);
-    clockMs = config.limits.totalTimeoutMs;
-    t.mock.timers.tick(config.limits.totalTimeoutMs);
+    clockMs = config.limits.totalTimeoutMs - 1;
+    t.mock.timers.tick(clockMs);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(cancelCalls, 0);
+    clockMs += 1;
+    t.mock.timers.tick(1);
     await assert.rejects(
       running,
       (error: unknown) => error instanceof PortableCodexSecurityRunnerError &&
