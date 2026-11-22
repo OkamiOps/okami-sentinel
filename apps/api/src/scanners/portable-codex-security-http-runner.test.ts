@@ -1367,6 +1367,8 @@ test("Portable Codex Security cancels a hung stage at the total deadline, never 
   config.limits.totalTimeoutMs = 20;
   t.mock.timers.enable({ apis: ["setTimeout"] });
   t.after(() => t.mock.timers.reset());
+  let clockMs = 0;
+  const reviewReuseSources = t.mock.fn(() => []);
   let creates = 0;
   let cancelCalls = 0;
   let rejectLate: ((error: Error) => void) | undefined;
@@ -1378,6 +1380,8 @@ test("Portable Codex Security cancels a hung stage at the total deadline, never 
   t.after(() => process.off("unhandledRejection", onUnhandled));
   try {
     const running = runPortableCodexSecurity(config, dependencies({
+        clockMs: () => clockMs,
+        reviewReuseSources,
         createSession: async () => {
           creates += 1;
           return {
@@ -1389,7 +1393,10 @@ test("Portable Codex Security cancels a hung stage at the total deadline, never 
           };
         },
       }));
-    await started;
+    await Promise.race([started, running]);
+    assert.equal(creates, 1);
+    assert.equal(cancelCalls, 0);
+    clockMs = config.limits.totalTimeoutMs;
     t.mock.timers.tick(config.limits.totalTimeoutMs);
     await assert.rejects(
       running,
@@ -1400,6 +1407,7 @@ test("Portable Codex Security cancels a hung stage at the total deadline, never 
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.equal(creates, 1);
     assert.equal(cancelCalls, 1);
+    assert.equal(reviewReuseSources.mock.callCount(), 0);
     assert.deepEqual(unhandled, []);
   } finally {
     remove(root);
