@@ -59,6 +59,47 @@ find_row() {
   awk -F '\t' -v repo="$repo" -v tag="$tag" '$3 == repo && $4 == tag { print; exit }' "${state}/images.tsv"
 }
 
+duration_seconds() {
+  local spec="$1"
+  case "$spec" in
+    *h) printf '%s\n' "$(( ${spec%h} * 3600 ))" ;;
+    *m) printf '%s\n' "$(( ${spec%m} * 60 ))" ;;
+    *s) printf '%s\n' "${spec%s}" ;;
+    *) die "bad duration ${spec}" ;;
+  esac
+}
+
+apply_cache_prune() {
+  local all="$1" until_seconds="$2"
+  local id bytes age shared in_use drop reclaimed=0
+  local tmp="${state}/cache.tsv.next"
+  : > "$tmp"
+  if [ -s "${state}/cache.tsv" ]; then
+    while IFS=$'\t' read -r id bytes age shared in_use; do
+      [ -n "${id:-}" ] || continue
+      drop=0
+      if [ "$in_use" != "1" ] && { [ "$all" = "1" ] || [ "$shared" != "1" ]; } && [ "$age" -ge "$until_seconds" ]; then
+        drop=1
+      fi
+      if [ "$drop" = "1" ]; then
+        reclaimed=$((reclaimed + bytes))
+      else
+        printf '%s\t%s\t%s\t%s\t%s\n' "$id" "$bytes" "$age" "$shared" "$in_use" >> "$tmp"
+      fi
+    done < "${state}/cache.tsv"
+  fi
+  mv "$tmp" "${state}/cache.tsv"
+  printf '%s\n' "$reclaimed"
+}
+
+reclaimable_cache_bytes() {
+  if [ ! -s "${state}/cache.tsv" ]; then
+    printf '0\n'
+    return 0
+  fi
+  awk -F '\t' '$5 != "1" { sum += $2 } END { printf "%.0f\n", sum + 0 }' "${state}/cache.tsv"
+}
+
 cmd="${1:-}"
 shift || true
 case "$cmd" in
@@ -180,6 +221,64 @@ case "$cmd" in
       exit 0
     fi
     printf '%s\n' "$*" >> "${state}/prune-log"
+    printf 'Total reclaimed space: 0B\n'
+    ;;
+  buildx)
+    sub="${1:-}"
+    shift || true
+    case "$sub" in
+      ls)
+        printf '%s\n' 'NAME/NODE DRIVER/ENDPOINT STATUS'
+        printf '%s\n' 'default* docker'
+        ;;
+      prune)
+        printf 'prune %s\n' "$*" >> "${state}/prune-log"
+        all=0
+        until_spec=""
+        saw_builder=0
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            -f|--force) shift ;;
+            --all|-a) all=1; shift ;;
+            --builder)
+              shift
+              [ -n "${1:-}" ] || die "missing builder name"
+              saw_builder=1
+              shift
+              ;;
+            --filter)
+              shift
+              case "${1:-}" in
+                until=*) until_spec="${1#until=}" ;;
+                *) die "unsupported buildx filter ${1:-}" ;;
+              esac
+              shift
+              ;;
+            --max-used-space|--keep-storage|--reserved-space|--min-free-space)
+              die "buildx size flag is not the reclaimable cap: $1"
+              ;;
+            *) die "unsupported buildx prune arg $1" ;;
+          esac
+        done
+        [ "$saw_builder" = "1" ] || die "buildx prune requires --builder"
+        [ -n "$until_spec" ] || die "buildx prune requires until="
+        reclaimed="$(apply_cache_prune "$all" "$(duration_seconds "$until_spec")")"
+        printf 'Total:\t%sB\n' "$reclaimed"
+        ;;
+      *)
+        die "unsupported buildx subcommand ${sub}"
+        ;;
+    esac
+    ;;
+  system)
+    [ "${1:-}" = "df" ] || die "unsupported system subcommand ${1:-}"
+    shift
+    [ "${1:-}" = "--format" ] || die "system df requires --format"
+    shift
+    [ "${1:-}" = '{{json .}}' ] || die "unexpected system df format ${1:-}"
+    reclaim="$(reclaimable_cache_bytes)"
+    printf '%s\n' '{"Active":"0","Reclaimable":"0B","Size":"0B","TotalCount":"0","Type":"Images"}'
+    printf '{"Active":"0","Reclaimable":"%sB","Size":"%sB","TotalCount":"0","Type":"Build Cache"}\n' "$reclaim" "$reclaim"
     ;;
   *)
     die "unsupported docker command ${cmd}"
@@ -201,6 +300,7 @@ Options:
       --max-used-space bytes   Maximum amount of disk space allowed to keep for cache
 EOF
   : > "${STATE}/images.tsv"
+  : > "${STATE}/cache.tsv"
   : > "${STATE}/in-use"
   : > "${STATE}/log"
   : > "${STATE}/prune-log"
@@ -302,11 +402,9 @@ require_log_line "rmi -f csb-sentinel:${IMAGE_SHA}"
 refuse_log_line "rmi csb-sentinel:${PLAIN_OTHER}"
 refuse_log_line "rmi csb-sentinel:main-a"
 refuse_log_line "image prune -f"
-assert_eq "pr prune order" "-f --filter until=24h
--f --max-used-space 8GB" "$(cat "${STATE}/prune-log")"
-assert_eq "pr stdout" "delete csb-sentinel:${IMAGE_SHA}
-prune builder --filter until=24h
-prune builder --max-used-space 8GB" "$(cat "${STATE}/stdout")"
+assert_eq "pr prune order" "prune --builder default -f --filter until=24h" "$(cat "${STATE}/prune-log")"
+pr_stdout="$(printf 'delete csb-sentinel:%s\nTotal:\t0B\nreclaimed 0 bytes: docker buildx prune --builder default -f --filter until=24h\nbuild cache reclaimable 0 bytes is within 8GB' "$IMAGE_SHA")"
+assert_eq "pr stdout" "$pr_stdout" "$(cat "${STATE}/stdout")"
 
 printf '== failed main push matches the pull-request cleanup ==\n'
 reset_state
@@ -348,8 +446,7 @@ refuse_log_line "rmi csb-sentinel:main-${IMAGE_SHA}"
 refuse_log_line "rmi csb-sentinel:main-latest"
 refuse_log_line "rmi csb-sentinel:${PLAIN_OTHER}"
 require_log_line "image prune -f"
-assert_eq "main prune order" "-f --filter until=24h
--f --max-used-space 8GB" "$(cat "${STATE}/prune-log")"
+assert_eq "main prune order" "prune --builder default -f --filter until=24h" "$(cat "${STATE}/prune-log")"
 current_id="$(awk -F '\t' -v tag="main-${IMAGE_SHA}" '$4 == tag { print $1 }' "${STATE}/images.tsv")"
 latest_id="$(awk -F '\t' -v tag="main-latest" '$4 == tag { print $1 }' "${STATE}/images.tsv")"
 [ "$current_id" = "img-current" ] || fail "main tag should stay on the built image"
@@ -362,17 +459,20 @@ checksum="$(cksum "${STATE}/images.tsv")"
 run_script push refs/heads/main success 1
 require_status 0
 [ "$checksum" = "$(cksum "${STATE}/images.tsv")" ] || fail "dry-run mutated the image store"
-assert_eq "dry-run stdout" "would tag csb-sentinel:${IMAGE_SHA} csb-sentinel:main-${IMAGE_SHA}
-would tag csb-sentinel:${IMAGE_SHA} csb-sentinel:main-latest
-would delete csb-sentinel:${IMAGE_SHA}
-keep csb-sentinel:main-${IMAGE_SHA}
-keep csb-sentinel:main-c
-would delete csb-sentinel:main-b
-would delete csb-sentinel:main-a
-would run: docker image prune -f
-would run: docker builder prune -f --filter until=24h
-would run: docker builder prune -f --max-used-space 8GB" "$(cat "${STATE}/stdout")"
-if grep -Eq '^(tag |rmi |image prune -f|builder prune -f)' "${STATE}/log"; then
+dry_stdout="$(printf '%s\n' \
+  "would tag csb-sentinel:${IMAGE_SHA} csb-sentinel:main-${IMAGE_SHA}" \
+  "would tag csb-sentinel:${IMAGE_SHA} csb-sentinel:main-latest" \
+  "would delete csb-sentinel:${IMAGE_SHA}" \
+  "keep csb-sentinel:main-${IMAGE_SHA}" \
+  "keep csb-sentinel:main-c" \
+  "would delete csb-sentinel:main-b" \
+  "would delete csb-sentinel:main-a" \
+  "would run: docker image prune -f" \
+  "would run: docker buildx prune --builder default -f --filter until=24h" \
+  "reclaimed 0 bytes: dry-run docker buildx prune --builder default -f --filter until=24h" \
+  "build cache reclaimable 0 bytes is within 8GB")"
+assert_eq "dry-run stdout" "$dry_stdout" "$(cat "${STATE}/stdout")"
+if grep -Eq '^(tag |rmi |image prune -f|builder prune -f|buildx prune )' "${STATE}/log"; then
   fail "dry-run invoked a mutating docker command"
 fi
 
@@ -431,6 +531,58 @@ run_script push refs/heads/main success 0
 require_status 0
 assert_tags main-a
 require_log_line "rmi -f csb-sentinel:${IMAGE_SHA}"
+
+add_cache() {
+  printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" >> "${STATE}/cache.tsv"
+}
+
+cache_ids() {
+  awk -F '\t' '{ print $1 }' "${STATE}/cache.tsv" | LC_ALL=C sort | paste -sd' ' -
+}
+
+printf '== shared reclaimable cache is capped without max-used-space ==\n'
+reset_state
+seed_history
+# 48h shared record is invisible to --max-used-space and survives until=24h without --all.
+add_cache old-shared 5000000000 172800 1 0
+add_cache new-shared 6000000000 3600 1 0
+add_cache new-private 1000000000 3600 0 0
+run_script pull_request refs/pull/9/merge success 0
+require_status 0
+assert_tags main-a main-b main-c "$PLAIN_OTHER"
+[ "$(cache_ids)" = "new-private new-shared" ] || fail "expected newest 7GB of reclaimable cache, got $(cache_ids)"
+grep -q 'reclaimed 0 bytes: docker buildx prune --builder default -f --filter until=24h' "${STATE}/stdout" || fail "age step did not log 0 bytes"
+grep -q 'reclaimed 0 bytes: docker buildx prune --builder default -f --all --filter until=336h' "${STATE}/stdout" || fail "336h step did not log 0 bytes"
+grep -q 'reclaimed 0 bytes: docker buildx prune --builder default -f --all --filter until=168h' "${STATE}/stdout" || fail "168h step did not log 0 bytes"
+grep -q 'reclaimed 0 bytes: docker buildx prune --builder default -f --all --filter until=72h' "${STATE}/stdout" || fail "72h step did not log 0 bytes"
+grep -q 'reclaimed 5000000000 bytes: docker buildx prune --builder default -f --all --filter until=48h' "${STATE}/stdout" || fail "cap step did not log 5000000000 bytes"
+grep -q 'build cache reclaimable 7000000000 bytes is within 8GB' "${STATE}/stdout" || fail "cap did not stop at 7GB"
+if grep -q 'max-used-space' "${STATE}/prune-log" "${STATE}/log"; then
+  fail "cap must not use --max-used-space"
+fi
+if grep -q 'prune --builder default -f --all --filter until=24h' "${STATE}/prune-log"; then
+  fail "cap should stop before the younger --all step"
+fi
+
+printf '== dry-run over cap does not prune build cache ==\n'
+reset_state
+add_cache old-shared 9000000000 172800 1 0
+run_script pull_request refs/pull/9/merge success 1
+require_status 0
+[ "$(cache_ids)" = "old-shared" ] || fail "dry-run removed build cache: $(cache_ids)"
+grep -q 'would run: docker buildx prune --builder default -f --all --filter until=<age> while reclaimable > 8GB' "${STATE}/stdout" || fail "dry-run did not describe the age ladder"
+if grep -Eq '^(tag |rmi |image prune -f|builder prune -f|buildx prune )' "${STATE}/log"; then
+  fail "dry-run over cap invoked a mutating docker command"
+fi
+
+printf '== in-use build cache survives the cap ==\n'
+reset_state
+add_cache live 9000000000 10 0 1
+add_cache stale 9000000000 100000 1 0
+run_script pull_request refs/pull/9/merge failure 0
+require_status 0
+[ "$(cache_ids)" = "live" ] || fail "in-use cache was removed: $(cache_ids)"
+grep -q 'reclaimed 9000000000 bytes: docker buildx prune --builder default -f --all --filter until=24h' "${STATE}/stdout" || fail "stale shared cache was not reclaimed at 24h"
 
 printf '== plain sha that looks like a main tag is rejected ==\n'
 reset_state
