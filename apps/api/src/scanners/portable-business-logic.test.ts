@@ -86,6 +86,33 @@ function pass(input: Partial<BusinessLogicPassInput> & Pick<BusinessLogicPassInp
   };
 }
 
+test("business review logs each usage with page, tokens and per-call cost without changing accounting", async () => {
+  const { snapshot } = scanDir();
+  for (const priced of [true, false]) {
+    const lines: string[] = [];
+    let observed = 0;
+    const usage = { inputTokens: 100, cachedInputTokens: 80, cacheWriteInputTokens: null, outputTokens: 10, reasoningTokens: null };
+    const input = pass({ flows: extractBusinessFlows(GRAPH, snapshot), snapshotRoot: snapshot,
+      budgetUsd: 1, log: line => lines.push(line),
+      observeUsage() { observed++; return priced ? observed * 0.1 : null; },
+      async startSession() {
+        return { async *run() {
+          yield { type: "usage", usage } as const;
+          yield { type: "usage", usage } as const;
+        }, async cancel() { return { remote: false }; } };
+      },
+    });
+    const result = await runBusinessLogicPass(input);
+    const events = lines.map(line => JSON.parse(line)).filter(event => event.type === "usage");
+    assert.equal(events.length, priced ? 2 : 1);
+    assert.equal(observed, events.length);
+    for (const event of events) assert.deepEqual(event, {
+      type: "usage", usage, stage: "business-logic", page: "business-logic-01", costUsd: priced ? 0.1 : null,
+    });
+    assert.equal(result.totals.spentUsd, priced ? 0.2 : null);
+  }
+});
+
 test("flows follow extracted Graphify call chains from business entry points", () => {
   const { snapshot } = scanDir();
   const flows = extractBusinessFlows(GRAPH, snapshot);
