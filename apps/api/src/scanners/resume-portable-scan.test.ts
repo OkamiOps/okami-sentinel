@@ -4,13 +4,44 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { resolveDeepPlan, STANDARD_PLAN_FILE } from "./portable-deep-plan.js";
-import { preflightPortableResume, preparePortableResumeRuntime } from "./resume-portable-scan.js";
+import { preflightPortableResume, preparePortableResumeRuntime, probePortableResume } from "./resume-portable-scan.js";
 import { readPortableCodexSecurityRuntime, writePortableCodexSecurityRuntime } from "./portable-codex-security-runtime.js";
 import { refreshPortableCodexSecurityRunFromDisk } from "./portable-codex-security-reconcile.js";
-import type { ScanRun } from "@csb/shared";
+import type { CapabilityReport, ScanRun } from "@csb/shared";
 import { assertBudgetResumeCap, assertResumeSpendAndHolds } from "./portable-budget-partial.js";
 import { createPortableCodexSecuritySnapshot } from "./portable-codex-security-worker-support.js";
 import { writePortableSastTriage } from "./portable-sast-triage.js";
+
+test("resume retries only transient probe failures once before any scan creation", async () => {
+  const passed = { report: { status: "passed", errorCode: null, id: "fresh-probe" } as CapabilityReport };
+  const failed = (code: CapabilityReport["errorCode"]) => ({ report: { ...passed.report, status: "failed" as const, errorCode: code } });
+  for (const failure of [failed("provider_unreachable"), failed("rate_limited"),
+    { status: 503 }, { status: 429 }, { status: 408 }, { code: "ECONNRESET" },
+    new DOMException("timeout", "TimeoutError"), new TypeError("fetch failed")]) {
+    let calls = 0;
+    const waits: number[] = [];
+    const result = await probePortableResume(async () => {
+      if (++calls > 1) return passed;
+      if ("report" in failure) return failure;
+      throw failure;
+    }, async ms => { waits.push(ms); });
+    assert.equal(result, passed);
+    assert.equal(calls, 2);
+    assert.deepEqual(waits, [500]);
+  }
+  for (const failure of [failed("provider_unreachable"), failed("rate_limited"), failed("credential_rejected"),
+    failed("model_access_denied"), failed("protocol_unsupported"), null]) {
+    let calls = 0;
+    let waits = 0;
+    await assert.rejects(probePortableResume(async () => { calls++; return failure; }, async () => { waits++; }), /resume_capability_probe_failed/);
+    const transient = failure?.report.errorCode === "provider_unreachable" || failure?.report.errorCode === "rate_limited";
+    assert.equal(calls, transient ? 2 : 1);
+    assert.equal(waits, transient ? 1 : 0);
+  }
+  let waits = 0;
+  assert.equal(await probePortableResume(async () => passed, async () => { waits++; }), passed);
+  assert.equal(waits, 0);
+});
 
 test("resume cannot lower the cap below prior spend plus unresolved provider holds", () => {
   for (const cap of [NaN, Infinity, 0.4, 1.2, 1.49]) {

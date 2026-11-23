@@ -10,6 +10,7 @@ export const scanBudgetMessages = {
     resumeStageFailed: "Scan parcial · etapa interrompida",
     resumeAdvanced: "Avançado: retomar pela CLI",
     resumeError: "Não foi possível retomar o scan.",
+    resumeProbeFailed: "O teste de conexão com o provedor falhou. O scan original não foi alterado. Você pode tentar novamente.",
     capWarning: '{engine} não consegue aplicar um teto em USD por scan: a execução usa o consumo do plano. Para continuar, escolha Codex Security ou marque explicitamente “Sem teto em USD” para este scan.',
     unlimitedUsd: "Sem teto em USD para este scan",
     budgetPartial: "Parcial por orçamento",
@@ -33,6 +34,7 @@ export const scanBudgetMessages = {
     resumeStageFailed: "Partial scan · stage interrupted",
     resumeAdvanced: "Advanced: resume via CLI",
     resumeError: "Unable to resume scan.",
+    resumeProbeFailed: "The provider connection test failed. The original scan was not changed. You can try again.",
     capWarning: '{engine} cannot enforce a per-scan USD cap: execution uses your plan allowance. Choose Codex Security or explicitly select “No USD cap” for this scan to continue.',
     unlimitedUsd: "No USD cap for this scan",
     budgetPartial: "Partial · budget exhausted",
@@ -46,6 +48,7 @@ export const scanBudgetMessages = {
     budgetResume: "To resume with a higher cap (prior spend counts against it), run from apps/api on the server:",
   },
   es: {
+    resumeProbeFailed: "La prueba de conexión con el proveedor falló. El scan original no se modificó. Puedes intentarlo de nuevo.",
     providerPartial: "Scan parcial · proveedor no disponible",
     providerRateLimited: "Scan parcial · límite de tasa del proveedor",
     providerPartialReason: "La conexión con el proveedor se interrumpió temporalmente. Las solicitudes sin confirmar siguen reservadas en el presupuesto. Reanuda cuando la conexión esté disponible.",
@@ -63,6 +66,7 @@ export const scanBudgetMessages = {
     budgetResume: "Para reanudar con un techo mayor (incluye el gasto anterior), ejecuta desde apps/api en el servidor:",
   },
   de: {
+    resumeProbeFailed: "Der Verbindungstest zum Anbieter ist fehlgeschlagen. Der ursprüngliche Scan wurde nicht verändert. Du kannst es erneut versuchen.",
     providerPartial: "Teilscan · Anbieter nicht erreichbar",
     providerRateLimited: "Teilscan · Anbieterratenlimit",
     providerPartialReason: "Die Verbindung zum Anbieter wurde vorübergehend unterbrochen. Unbestätigte Anfragen bleiben im Budget reserviert. Setze den Scan fort, sobald die Verbindung verfügbar ist.",
@@ -80,6 +84,7 @@ export const scanBudgetMessages = {
     budgetResume: "Zum Fortsetzen mit höherem Limit (bisherige Kosten zählen mit) unter apps/api auf dem Server ausführen:",
   },
   fr: {
+    resumeProbeFailed: "Le test de connexion au fournisseur a échoué. Le scan original n’a pas été modifié. Vous pouvez réessayer.",
     providerPartial: "Scan partiel · fournisseur indisponible",
     providerRateLimited: "Scan partiel · limite de débit du fournisseur",
     providerPartialReason: "La connexion au fournisseur a été temporairement interrompue. Les requêtes non confirmées restent réservées dans le budget. Reprenez lorsque la connexion est disponible.",

@@ -22,7 +22,7 @@ for (const cap of [undefined, 300, 100]) {
   });
 }
 
-for (const [code, status] of [["resume_requires_checkpoint", 422], ["resume_scan_not_found", 404], ["scan_capacity_full", 409], ["unexpected", 500]] as const) {
+for (const [code, status] of [["resume_capability_probe_failed", 422], ["resume_requires_checkpoint", 422], ["resume_scan_not_found", 404], ["scan_capacity_full", 409], ["unexpected", 500]] as const) {
   test(`resume endpoint maps ${code}`, async () => {
     const app = createScanResumeApp({ async resume() { throw new Error(code); } });
     const response = await app.request("/scans/source/resume", { method: "POST", body: "{}" });
