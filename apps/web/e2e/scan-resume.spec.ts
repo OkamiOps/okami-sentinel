@@ -55,6 +55,31 @@ for (const reason of ["budget", "stage", "provider", "rate"] as const) {
   });
 }
 
+for (const locale of ["pt-BR", "en"] as const) {
+  test(`resume localizes provider probe failure and allows another attempt: ${locale}`, async ({ page }) => {
+    const state = await mockApi(page, locale);
+    state.runs[0].status = "incomplete";
+    state.runs[0].resume = { suggestedMaxCostUsd: 400 };
+    let attempts = 0;
+    await page.route("**/api/scans/scan-one/resume", async route => {
+      attempts++;
+      await route.fulfill({ status: attempts === 1 ? 422 : 201, contentType: "application/json",
+        body: JSON.stringify(attempts === 1 ? { code: "resume_capability_probe_failed", error: "resume capability probe failed" } : { scanId: "scan-two" }) });
+    });
+    await page.goto("/scans/scan-one");
+    const button = page.getByRole("button", { name: locale === "pt-BR" ? "Retomar scan" : "Resume scan", exact: true });
+    await button.click();
+    await expect(page.getByRole("alert")).toHaveText(locale === "pt-BR"
+      ? "O teste de conexão com o provedor falhou. O scan original não foi alterado. Você pode tentar novamente."
+      : "The provider connection test failed. The original scan was not changed. You can try again.");
+    await expect(page).toHaveURL(/\/scans\/scan-one$/);
+    await expect(button).toBeEnabled();
+    await button.click();
+    await expect(page).toHaveURL(/\/scans\/scan-two$/);
+    expect(attempts).toBe(2);
+  });
+}
+
 test("non-resumable partial scan does not offer a resume button", async ({ page }) => {
   const state = await mockApi(page);
   state.runs[0].status = "failed";

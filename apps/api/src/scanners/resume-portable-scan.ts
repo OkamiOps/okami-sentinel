@@ -2,8 +2,9 @@ import { resolveDeepPlan, DEEP_PLAN_FILE, STANDARD_PLAN_FILE } from "./portable-
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 import { nanoid } from "nanoid";
-import type { ScanRun } from "@csb/shared";
+import type { CapabilityReport, ScanRun } from "@csb/shared";
 import { estimateFrozenScannerUsageCost, readScannerPricingQuote, frozenScannerPricingSupportsCostBudget } from "../model-pricing.js";
 import { getRun, upsertRun, reserveScanCapacity, releaseScanCapacity } from "../db.js";
 import { MAX_CONCURRENT_SCANS } from "../config.js";
@@ -200,6 +201,34 @@ export function preparePortableResumeRuntime(previous: PortableCodexSecurityRunt
   return { ...previous, status: "preparing", completedAt: null, error: null, errorCode: null };
 }
 
+export async function probePortableResume<T extends { report: CapabilityReport }>(
+  probe: () => Promise<T | null>,
+  wait: (ms: number) => Promise<unknown> = delay,
+): Promise<T> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let transient = false;
+    try {
+      const result = await probe();
+      if (result?.report.status === "passed") return result;
+      transient = transientResumeProbeFailure({ code: result?.report.errorCode });
+    } catch (error) {
+      transient = transientResumeProbeFailure(error);
+    }
+    if (!transient || attempt === 1) break;
+    await wait(500);
+  }
+  throw new Error("resume_capability_probe_failed");
+}
+
+function transientResumeProbeFailure(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const failure = error as { code?: unknown; status?: unknown; name?: unknown; message?: unknown };
+  return ["provider_unreachable", "rate_limited", "agent_time_limit", "ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"].includes(String(failure.code)) ||
+    (typeof failure.status === "number" && (failure.status === 408 || failure.status === 429 || failure.status >= 500 && failure.status <= 599)) ||
+    failure.name === "TimeoutError" || failure.name === "AbortError" ||
+    (error instanceof TypeError && /fetch failed|failed to fetch|network error/i.test(error.message));
+}
+
 /** Does not mutate or overwrite the interrupted run. */
 export async function resumeBudgetPortableScan(scanId: string, requestedMaxCostUsd?: number, dryRun = false) {
   const original = getRun(scanId);
@@ -217,8 +246,7 @@ export async function resumeBudgetPortableScan(scanId: string, requestedMaxCostU
     const runtime = getProviderRuntime();
     const frozen = runtime.store.getSnapshot(scanId);
     if (!frozen?.modelId) throw new Error("resume_missing_connection_snapshot");
-    const probe = await runtime.connections.probe(frozen.connectionId, { connectionId: frozen.connectionId, modelId: frozen.modelId, modelSelectionMode: "catalog" });
-    if (probe?.report.status !== "passed") throw new Error("resume_capability_probe_failed");
+    const probe = await probePortableResume(() => runtime.connections.probe(frozen.connectionId, { connectionId: frozen.connectionId, modelId: frozen.modelId, modelSelectionMode: "catalog" }));
     const outputDir = path.join(path.dirname(original.scanDir), `csb-resumed-${id}`);
     fs.mkdirSync(outputDir, { mode: 0o700 });
     for (const name of ["portable-codex-security-snapshot", "portable-codex-security-artifacts"]) fs.cpSync(path.join(original.scanDir, name), path.join(outputDir, name), { recursive: true, preserveTimestamps: true, errorOnExist: true, force: false });

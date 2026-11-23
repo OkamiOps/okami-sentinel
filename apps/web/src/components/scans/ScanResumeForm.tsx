@@ -17,7 +17,11 @@ export function ScanResumeForm({ scan }: { scan: ScanRun }) {
     setBusy(true);
     setError(null);
     try { const result = await api.resumeScan(scan.id, Number(cap)); navigate(`/scans/${result.scanId}`); }
-    catch (err) { setError(err instanceof Error ? err.message : t("resumeError")); setBusy(false); }
+    catch (err) {
+      setError(err instanceof Error && /^resume[ _]capability[ _]probe[ _]failed$/.test(err.message)
+        ? t("resumeProbeFailed") : err instanceof Error ? err.message : t("resumeError"));
+      setBusy(false);
+    }
   }}>
     <p>{t("resumeReuse")}</p>
     <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
