@@ -338,6 +338,8 @@ export async function runBusinessLogicPass(input: BusinessLogicPassInput): Promi
         for await (const event of session.run()) {
           if (event.type === "usage") {
             const cost = input.observeUsage(event);
+            input.log?.(JSON.stringify({ ...event, stage: "business-logic", page: path.basename(root),
+              costUsd: cost === null || unpriced ? null : cost - spent }));
             if (cost !== null) { spent = cost; priced = true; } else unpriced = true;
             if (input.budgetUsd !== null && (cost === null || spent >= input.budgetUsd)) { budgetHit = true; break; }
           } else if (event.type === "failure") { input.log?.(JSON.stringify(event)); observeFailure(event.code); break; }
